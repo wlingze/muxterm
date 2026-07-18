@@ -6,6 +6,7 @@ pub mod input_bar;
 pub mod keymap;
 pub mod notebook;
 pub mod pane_view;
+pub mod quick_pick;
 pub mod tab_bar;
 pub mod theme;
 pub mod tmux_dialog;

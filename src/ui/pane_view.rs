@@ -7,6 +7,7 @@
 //! - [`PaneMode::Tmux`]：tmux `-CC` 的 `%output` 内容通过 `feed_output()` 喂给
 //!   vte4 渲染；键盘输入走底部输入栏的 `send-keys`（`input_enabled=false`）。
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use crate::config::{program_basename, Rgb, Theme};
@@ -45,11 +46,22 @@ pub struct PaneView {
     pub terminal: Terminal,
     pub mode: PaneMode,
     pub pane_id: Option<crate::tmux::protocol::PaneId>,
-    /// 显示名：本地为 argv[0] basename；tmux 为 pane id 字符串。
+    /// 默认名：本地为 argv[0] basename；tmux 为 pane id 字符串。
     pub program_name: String,
+    /// 用户重命名（优先于 program_name）。
+    pub custom_name: Option<String>,
+    /// 本地子进程 pid（用于 close pane 发信号）。
+    pub child_pid: Cell<Option<i32>>,
 }
 
 impl PaneView {
+    /// 当前显示名（自定义名优先）。
+    pub fn display_name(&self) -> String {
+        self.custom_name
+            .clone()
+            .unwrap_or_else(|| self.program_name.clone())
+    }
+
     /// 本地程序 pane：按 `opts` spawn。
     pub fn new_local(
         theme: &Theme,
@@ -69,6 +81,8 @@ impl PaneView {
             .as_ref()
             .and_then(|p| p.to_str().map(|s| s.to_string()));
         let workdir_ref = workdir.as_deref();
+        let child_pid = Cell::new(None);
+        let pid_slot = child_pid.clone();
         terminal.spawn_async(
             PtyFlags::DEFAULT,
             workdir_ref,
@@ -78,13 +92,19 @@ impl PaneView {
             || {},
             -1,
             None::<&gtk4::gio::Cancellable>,
-            move |_res| {},
+            move |res| {
+                if let Ok(pid) = res {
+                    pid_slot.set(Some(pid.0 as i32));
+                }
+            },
         );
         Self {
             terminal,
             mode: PaneMode::Local,
             pane_id: None,
             program_name,
+            custom_name: None,
+            child_pid,
         }
     }
 
@@ -103,6 +123,25 @@ impl PaneView {
             mode: PaneMode::Tmux,
             pane_id: Some(pane_id),
             program_name,
+            custom_name: None,
+            child_pid: Cell::new(None),
+        }
+    }
+
+    /// 终止本地子进程（若有 pid）。
+    pub fn kill_child(&self) -> bool {
+        let Some(pid) = self.child_pid.get() else {
+            return false;
+        };
+        #[cfg(unix)]
+        {
+            let r = unsafe { libc::kill(pid, libc::SIGTERM) };
+            r == 0
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            false
         }
     }
 

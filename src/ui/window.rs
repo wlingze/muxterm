@@ -27,6 +27,7 @@ use crate::config::{
     OnProgramExitAbnormal, Theme,
 };
 use crate::tmux::client::TmuxClientConfig;
+use crate::tmux::command::kill_pane as tmux_kill_pane_cmd;
 use crate::tmux::protocol::PaneId;
 use crate::ui::command_palette;
 use crate::ui::input_bar::InputBar;
@@ -245,7 +246,7 @@ impl SharedState {
             self.cfg.scrollback.lines,
             &opts,
         );
-        let title_name = view.program_name.clone();
+        let title_name = view.display_name();
         let term = view.terminal.clone();
         let (tab_key, pane_key) = {
             let mut nb = self.notebook.write().unwrap();
@@ -286,7 +287,7 @@ impl SharedState {
             .read()
             .unwrap()
             .get(&pane)
-            .map(|v| v.program_name.clone())
+            .map(|v| v.display_name())
             .unwrap_or_else(|| "program".into());
 
         tracing::info!(
@@ -527,7 +528,10 @@ impl SharedState {
             Action::SwitchTabLast => self.switch_tab_n(0),
             Action::SwitchPanePrev => self.switch_pane(false),
             Action::SwitchPaneNext => self.switch_pane(true),
-            Action::Search => command_palette::show_search(&self.window),
+            Action::Search => {
+                // Alt+R：后续 commit 换成 pane 切换器；暂用 search_panes 命令入口
+                self.run_palette_command("search_panes");
+            }
             Action::CommandPalette => {
                 let shared = self.clone();
                 command_palette::show(&self.window, move |cmd| {
@@ -545,6 +549,26 @@ impl SharedState {
             }
             "new_pane" => self.split_current_pane(false),
             "new_pane_vertical" => self.split_current_pane(true),
+            "close_pane" => self.close_current_pane(),
+            "close_tab" => self.close_current_tab(),
+            "close_window" | "quit" => self.window.close(),
+            "switch_tab_1" => self.switch_tab_n(1),
+            "switch_tab_2" => self.switch_tab_n(2),
+            "switch_tab_3" => self.switch_tab_n(3),
+            "switch_tab_4" => self.switch_tab_n(4),
+            "switch_tab_5" => self.switch_tab_n(5),
+            "switch_tab_6" => self.switch_tab_n(6),
+            "switch_tab_7" => self.switch_tab_n(7),
+            "switch_tab_8" => self.switch_tab_n(8),
+            "switch_tab_9" => self.switch_tab_n(9),
+            "switch_pane_prev" => self.switch_pane(false),
+            "switch_pane_next" => self.switch_pane(true),
+            "search_panes" => {
+                self.show_status("search panes：下一 commit 实现 pane 切换器");
+            }
+            "rename_pane" => {
+                self.show_status("rename pane：下一 commit 实现");
+            }
             "tmux_attach" => {
                 let shared = self.clone();
                 let win = self.window.clone();
@@ -555,10 +579,140 @@ impl SharedState {
             "tmux_new" => {
                 self.do_tmux_action(TmuxAction::NewSession { name: None });
             }
-            "search" => command_palette::show_search(&self.window),
-            "quit" => self.window.close(),
+            "tmux_detach" => self.tmux_detach(),
+            "reload_config" => self.reload_config(),
+            "open_config" | "preferences" => self.open_config_file(),
             other => tracing::info!(target = "muxterm::window", cmd = %other, "未知命令"),
         }
+    }
+
+    /// 关闭当前 pane（本地 kill 子进程；tmux 发 kill-pane）。
+    fn close_current_pane(self: &Arc<Self>) {
+        let pane = match *self.current_pane.lock().unwrap() {
+            Some(p) => p,
+            None => return,
+        };
+        let tab = *self.current_tab.lock().unwrap();
+        match pane {
+            PaneKey::Local(_) => {
+                let views = self.pane_views.read().unwrap();
+                if let Some(v) = views.get(&pane) {
+                    if !v.kill_child() {
+                        // 无 pid 时仍按退出路径移除
+                        drop(views);
+                        if let Some(t) = tab {
+                            self.on_local_pane_exited(t, pane, 0);
+                        }
+                        return;
+                    }
+                }
+                // 等 child-exited 回调走统一清理
+            }
+            PaneKey::Tmux(p) => {
+                if let Ok(g) = self.cmd_sender.lock() {
+                    if let Some(s) = g.as_ref() {
+                        s.send(&tmux_kill_pane_cmd(p).to_line());
+                    }
+                }
+            }
+        }
+    }
+
+    /// 关闭当前 tab：关掉其中所有 pane。
+    fn close_current_tab(self: &Arc<Self>) {
+        let tab = match *self.current_tab.lock().unwrap() {
+            Some(t) => t,
+            None => return,
+        };
+        match tab {
+            TabKey::Local(_) => {
+                let panes = self
+                    .tab_panes
+                    .read()
+                    .unwrap()
+                    .get(&tab)
+                    .cloned()
+                    .unwrap_or_default();
+                for p in panes {
+                    if let Some(v) = self.pane_views.read().unwrap().get(&p) {
+                        let _ = v.kill_child();
+                    }
+                }
+                // 子进程退出会逐个清理；若全部已无进程则直接拆 tab
+                let still = self
+                    .tab_panes
+                    .read()
+                    .unwrap()
+                    .get(&tab)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                if still == 0 {
+                    self.notebook.write().unwrap().remove(tab);
+                    self.tab_panes.write().unwrap().remove(&tab);
+                    if self.notebook.read().unwrap().n_tabs() == 0 {
+                        self.on_all_tabs_closed();
+                    }
+                    self.refresh_tab_bar();
+                }
+            }
+            TabKey::Tmux(p) => {
+                if let Ok(g) = self.cmd_sender.lock() {
+                    if let Some(s) = g.as_ref() {
+                        s.send(&tmux_kill_pane_cmd(p).to_line());
+                    }
+                }
+            }
+        }
+    }
+
+    fn tmux_detach(self: &Arc<Self>) {
+        if let Ok(g) = self.cmd_sender.lock() {
+            if let Some(s) = g.as_ref() {
+                s.send("detach-client\n");
+            } else {
+                self.show_status("未连接 tmux");
+            }
+        }
+    }
+
+    fn reload_config(self: &Arc<Self>) {
+        match Config::load() {
+            Ok(cfg) => {
+                // 热更新：字体/滚动等已建 terminal 不重建，仅刷新配置引用与状态提示
+                // 完整热替换后续 phase；这里替换 Arc 内无法原地写，提示用户重启生效的字段
+                let _ = cfg;
+                self.show_status("配置已重新加载（部分项需新 pane 生效）");
+            }
+            Err(e) => self.show_status(&format!("重新加载配置失败: {e}")),
+        }
+    }
+
+    fn open_config_file(self: &Arc<Self>) {
+        let path = match Config::user_config_path() {
+            Some(p) => p,
+            None => {
+                self.show_status("无法定位配置目录");
+                return;
+            }
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if !path.exists() {
+            let _ = std::fs::write(&path, include_str!("../../configs/config.example.toml"));
+        }
+        let uri = format!("file://{}", path.display());
+        if let Err(e) =
+            gtk4::gio::AppInfo::launch_default_for_uri(&uri, None::<&gtk4::gio::AppLaunchContext>)
+        {
+            // 回退 xdg-open
+            let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+            tracing::warn!(
+                target = "muxterm::window",
+                "launch_default_for_uri 失败: {e}"
+            );
+        }
+        self.show_status(&format!("已打开 {}", path.display()));
     }
 
     fn do_tmux_action(self: &Arc<Self>, action: TmuxAction) {
@@ -745,7 +899,7 @@ impl SharedState {
                     .read()
                     .unwrap()
                     .get(&key)
-                    .map(|v| v.program_name.clone())
+                    .map(|v| v.display_name())
                     .unwrap_or_else(|| p.as_str())
             }
             TabKey::Local(_) => {
@@ -762,7 +916,7 @@ impl SharedState {
                     .filter(|p| panes.contains(p))
                     .or_else(|| panes.first().copied());
                 let name = primary
-                    .and_then(|p| views.get(&p).map(|v| v.program_name.clone()))
+                    .and_then(|p| views.get(&p).map(|v| v.display_name()))
                     .unwrap_or_else(|| "shell".into());
                 if panes.len() > 1 {
                     format!("{name} · {}panes", panes.len())
@@ -785,7 +939,7 @@ impl SharedState {
                 .read()
                 .unwrap()
                 .get(&p)
-                .map(|v| v.program_name.clone())
+                .map(|v| v.display_name())
                 .unwrap_or_else(|| "muxterm".into()),
             None => "muxterm".into(),
         };

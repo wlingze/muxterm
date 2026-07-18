@@ -26,6 +26,7 @@ async-trait = "0.1"
 # 仅 Unix: 为 tmux -CC 子进程分配 pty
 # （tmux 在非 tty 的 stdout 下会立即报错退出）
 portable-pty = "0.8"
+libc = "0.2"
 
 [dev-dependencies]
 pretty_assertions = "1"
