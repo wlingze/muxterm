@@ -1,18 +1,18 @@
-//! tmux 集成对话框。
+//! tmux attach 流程（VSCode Quick Pick 风格）。
 //!
-//! 打开后：
-//! - 列出当前所有 tmux session（调 `tmux list-sessions`）。
-//! - 选中一个 → attach（attach 到已有 session）。
-//! - 「新建 session」按钮 → 输入名字 → new-session。
-//! - attach/new 成功后关闭对话框，把结果回调给上层（上层据此连 tmux -CC）。
+//! 由命令面板触发：
+//! 1. 列出 `tmux list-sessions`（名 + 创建时间 + 窗口数）
+//! 2. 顶部 `+ Create new session`
+//! 3. 选已有 → attach；选 Create → 输入名字 → new-session + attach
 
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk4::prelude::*;
-use gtk4::{
-    Box, Button, Dialog, Entry, Label, ListBox, ListBoxRow, Orientation, ScrolledWindow,
-    SelectionMode,
-};
+use gtk4::Window;
+
+use crate::ui::pane_switcher;
+use crate::ui::quick_pick::{self, QuickPickItem};
 
 /// tmux 集成动作结果。
 #[derive(Debug, Clone)]
@@ -23,146 +23,164 @@ pub enum TmuxAction {
     NewSession { name: Option<String> },
 }
 
-/// 弹出 tmux 集成对话框。`on_done` 在用户选择一个动作后（UI 线程）被调用。
-pub fn show<F>(parent: &impl IsA<gtk4::Window>, on_done: F)
+const CREATE_ID: &str = "__create__";
+
+/// 弹出 tmux session 选择器。
+pub fn show<F>(parent: &impl IsA<Window>, on_done: F)
 where
     F: Fn(TmuxAction) + 'static,
 {
-    let dlg = Dialog::with_buttons(
-        Some("tmux 集成"),
-        Some(parent),
-        gtk4::DialogFlags::MODAL,
-        &[("关闭", gtk4::ResponseType::Close)],
-    );
-    dlg.set_default_size(360, 420);
-
-    let content = dlg.content_area();
-    content.set_spacing(6);
-    content.set_margin_start(8);
-    content.set_margin_end(8);
-    content.set_margin_top(8);
-    content.set_margin_bottom(8);
-
-    let hint = Label::new(Some("选择要 attach 的 tmux session，或新建一个："));
-    hint.set_halign(gtk4::Align::Start);
-    content.append(&hint);
-
-    // session 列表
-    let list = ListBox::new();
-    list.set_selection_mode(SelectionMode::Single);
-    let sessions = list_tmux_sessions();
-    if sessions.is_empty() {
-        let empty = Label::new(Some("（没有检测到 tmux session）"));
-        empty.set_sensitive(false);
-        list.append(&empty);
-    } else {
-        for s in &sessions {
-            let row = ListBoxRow::new();
-            let label = Label::new(Some(s));
-            label.set_halign(gtk4::Align::Start);
-            label.set_margin_start(6);
-            label.set_margin_end(6);
-            label.set_margin_top(4);
-            label.set_margin_bottom(4);
-            row.set_child(Some(&label));
-            list.append(&row);
-        }
-    }
-
-    let sw = ScrolledWindow::new();
-    sw.set_vexpand(true);
-    sw.set_child(Some(&list));
-    content.append(&sw);
-
-    // 新建 session 行
-    let new_row = Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(6)
-        .build();
-    let name_entry = Entry::builder()
-        .placeholder_text("新 session 名（可空）")
-        .hexpand(true)
-        .build();
-    let new_btn = Button::with_label("新建并 attach");
-    new_row.append(&name_entry);
-    new_row.append(&new_btn);
-    content.append(&new_row);
-
-    // 状态/错误标签
-    let status = Label::new(Some(""));
-    status.set_halign(gtk4::Align::Start);
-    content.append(&status);
-
-    let dlg_clone = dlg.clone();
-    let status_clone = status.clone();
-    let on_done_box = std::cell::RefCell::new(Some(on_done));
-    let on_done_done = std::rc::Rc::new(on_done_box);
-
-    // 双击 / 选中后点 attach：用 list row activated
-    {
-        let dlg = dlg_clone.clone();
-        let status = status_clone.clone();
-        let on_done = on_done_done.clone();
-        list.connect_row_activated(move |_lb, row| {
-            if let Some(label) = row.child().and_then(|w| w.downcast::<Label>().ok()) {
-                let session = label.label().to_string();
-                if session.starts_with("（") {
-                    return;
-                }
-                let action = TmuxAction::Attach { session };
-                if let Some(cb) = on_done.borrow_mut().take() {
-                    cb(action);
-                }
-                dlg.close();
-            } else {
-                status.set_label("无法读取选中的 session");
-            }
-        });
-    }
-
-    // 新建按钮
-    {
-        let dlg = dlg_clone.clone();
-        let name_entry = name_entry.clone();
-        let on_done = on_done_done.clone();
-        new_btn.connect_clicked(move |_| {
-            let name = name_entry.text().to_string();
-            let action = if name.trim().is_empty() {
-                TmuxAction::NewSession { name: None }
-            } else {
-                TmuxAction::NewSession {
-                    name: Some(name.trim().to_string()),
-                }
-            };
-            if let Some(cb) = on_done.borrow_mut().take() {
-                cb(action);
-            }
-            dlg.close();
-        });
-    }
-
-    dlg.connect_response(move |d, resp| {
-        if resp == gtk4::ResponseType::Close {
-            d.close();
-        }
+    let sessions = list_tmux_sessions_detailed();
+    let mut items = Vec::with_capacity(sessions.len() + 1);
+    items.push(QuickPickItem {
+        id: CREATE_ID.into(),
+        label: "+ Create new session".into(),
+        detail: Some("tmux new-session -d -s <name> then attach".into()),
     });
+    for s in &sessions {
+        items.push(QuickPickItem {
+            id: s.name.clone(),
+            label: s.name.clone(),
+            detail: Some(format_session_detail(s)),
+        });
+    }
 
-    dlg.show();
+    let parent_win = parent.clone().upcast::<Window>();
+    let on_done = std::rc::Rc::new(std::cell::RefCell::new(Some(on_done)));
+    let parent_for_cb = parent_win.clone();
+
+    quick_pick::show(
+        &parent_win,
+        "Attach to tmux session…",
+        items,
+        move |picked| {
+            let Some(item) = picked else {
+                return;
+            };
+            if item.id == CREATE_ID {
+                let default_name = default_new_session_name();
+                let on_done = on_done.clone();
+                pane_switcher::show_rename(&parent_for_cb, &default_name, move |name| {
+                    if let Some(cb) = on_done.borrow_mut().take() {
+                        cb(TmuxAction::NewSession { name: Some(name) });
+                    }
+                });
+            } else if let Some(cb) = on_done.borrow_mut().take() {
+                cb(TmuxAction::Attach { session: item.id });
+            }
+        },
+    );
 }
 
-/// 调 `tmux list-sessions`，返回 session 名列表（失败返回空）。
-fn list_tmux_sessions() -> Vec<String> {
+/// session 列表项（解析自 tmux）。
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub name: String,
+    pub created: Option<u64>,
+    pub windows: Option<u32>,
+}
+
+/// 调 `tmux list-sessions`，带创建时间与窗口数。
+pub fn list_tmux_sessions_detailed() -> Vec<SessionInfo> {
     let out = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
+        .args([
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_created}\t#{session_windows}",
+        ])
         .output();
     match out {
         Ok(o) if o.status.success() => {
             let s = String::from_utf8_lossy(&o.stdout);
             s.lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
+                .filter_map(|line| {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        return None;
+                    }
+                    let mut parts = line.split('\t');
+                    let name = parts.next()?.trim().to_string();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let created = parts.next().and_then(|t| t.trim().parse().ok());
+                    let windows = parts.next().and_then(|t| t.trim().parse().ok());
+                    Some(SessionInfo {
+                        name,
+                        created,
+                        windows,
+                    })
+                })
                 .collect()
         }
         _ => Vec::new(),
+    }
+}
+
+fn format_session_detail(s: &SessionInfo) -> String {
+    let age = s
+        .created
+        .map(|ts| format!("created {}", relative_age(ts, now_secs())))
+        .unwrap_or_else(|| "created ?".into());
+    let wins = s
+        .windows
+        .map(|n| format!("{n} windows"))
+        .unwrap_or_else(|| "? windows".into());
+    format!("{age}, {wins}")
+}
+
+fn default_new_session_name() -> String {
+    let ts = now_secs();
+    format!("muxterm-{ts}")
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 相对时间文案（如 `2h ago` / `3d ago`）。
+pub fn relative_age(created_secs: u64, now: u64) -> String {
+    let ago = now.saturating_sub(created_secs);
+    if ago < 60 {
+        return format!("{ago}s ago");
+    }
+    let mins = ago / 60;
+    if mins < 60 {
+        return format!("{mins}m ago");
+    }
+    let hours = mins / 60;
+    if hours < 48 {
+        return format!("{hours}h ago");
+    }
+    let days = hours / 24;
+    format!("{days}d ago")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_age_buckets() {
+        let now = 1_000_000u64;
+        assert_eq!(relative_age(now - 10, now), "10s ago");
+        assert_eq!(relative_age(now - 120, now), "2m ago");
+        assert_eq!(relative_age(now - 7200, now), "2h ago");
+        assert_eq!(relative_age(now - 3 * 86400, now), "3d ago");
+    }
+
+    #[test]
+    fn format_session_detail_contains_windows() {
+        let s = SessionInfo {
+            name: "main".into(),
+            created: Some(now_secs().saturating_sub(7200)),
+            windows: Some(3),
+        };
+        let d = format_session_detail(&s);
+        assert!(d.contains("3 windows"), "{d}");
+        assert!(d.contains("ago"), "{d}");
     }
 }

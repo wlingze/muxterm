@@ -173,6 +173,17 @@ impl AppWindow {
         // 启动即一个本地程序 tab（默认 shell）
         app_win.new_local_tab();
 
+        // 可选：配置了 default_session 则启动时自动 attach
+        let default_session = shared.cfg.tmux.default_session.trim().to_string();
+        if !default_session.is_empty() {
+            SharedState::do_tmux_action(
+                &shared,
+                TmuxAction::Attach {
+                    session: default_session,
+                },
+            );
+        }
+
         app_win
     }
 
@@ -571,7 +582,20 @@ impl SharedState {
                 });
             }
             "tmux_new" => {
-                self.do_tmux_action(TmuxAction::NewSession { name: None });
+                let shared = self.clone();
+                let default_name = format!(
+                    "muxterm-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                );
+                pane_switcher::show_rename(&self.window, &default_name, move |name| {
+                    SharedState::do_tmux_action(
+                        &shared,
+                        TmuxAction::NewSession { name: Some(name) },
+                    );
+                });
             }
             "tmux_detach" => self.tmux_detach(),
             "reload_config" => self.reload_config(),
