@@ -1,7 +1,10 @@
-//! VSCode 风格 Quick Pick（可复用选择器）。
+//! VSCode 风格快捷选择器（Quick Pick）。
 //!
 //! 顶部输入框模糊过滤 + 下方列表；↑↓ 选中，Enter 确认，Esc 取消。
 //! 命令面板、tmux session 选择、pane 切换器都基于此组件。
+//!
+//! 以 Overlay 挂在父窗口上（非独立 Window），高度钳在父窗口一半内，
+//! 列表在固定高度的 ScrolledWindow 内滚动，不会溢出屏幕。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,8 +13,8 @@ use gtk4::gdk::Key;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Entry, EventControllerKey, Label, ListBox, ListBoxRow, Orientation,
-    ScrolledWindow, SelectionMode, Window,
+    Align, Box as GtkBox, Entry, EventControllerKey, GestureClick, Label, ListBox, ListBoxRow,
+    Orientation, Overlay, ScrolledWindow, SelectionMode, Widget, Window,
 };
 
 /// 一条可选项。
@@ -27,43 +30,67 @@ pub fn show<F>(parent: &impl IsA<Window>, placeholder: &str, items: Vec<QuickPic
 where
     F: Fn(Option<QuickPickItem>) + 'static,
 {
-    let win = Window::builder()
-        .transient_for(parent)
-        .modal(true)
-        .decorated(false)
-        .resizable(false)
-        .default_width(520)
-        .default_height(320)
-        .title("Quick Pick")
-        .build();
-    win.add_css_class("quick-pick");
+    let parent = parent.as_ref();
+    let parent_h = parent_height(parent);
+    // 面板总高 ≤ 父窗口一半
+    let panel_h = (parent_h / 2).clamp(200, 420);
+    let entry_h = 44;
+    let list_h = (panel_h - entry_h - 8).max(100);
+    let panel_w = 520;
 
-    let root = GtkBox::builder()
+    let overlay = ensure_overlay(parent);
+
+    // 半透明遮罩：点击关闭
+    let backdrop = GtkBox::new(Orientation::Vertical, 0);
+    backdrop.set_hexpand(true);
+    backdrop.set_vexpand(true);
+    backdrop.add_css_class("quick-pick-backdrop");
+
+    let panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(0)
+        .halign(Align::Center)
+        .valign(Align::Start)
+        .hexpand(false)
+        .vexpand(false)
         .build();
-    root.add_css_class("quick-pick-root");
+    panel.add_css_class("quick-pick-root");
+    panel.set_margin_top(40);
+    panel.set_size_request(panel_w, panel_h);
+    // 禁止随内容长高
+    panel.set_overflow(gtk4::Overflow::Hidden);
 
     let entry = Entry::builder()
         .placeholder_text(placeholder)
         .hexpand(true)
+        .vexpand(false)
         .build();
     entry.add_css_class("quick-pick-entry");
-    root.append(&entry);
+    entry.set_size_request(-1, entry_h);
+    panel.append(&entry);
 
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Browse);
+    list.set_vexpand(false);
     list.add_css_class("quick-pick-list");
 
+    // 固定高度：不传播 natural height，由 size_request 约束，溢出则滚动
     let sw = ScrolledWindow::builder()
-        .vexpand(true)
+        .vexpand(false)
         .hexpand(true)
-        .min_content_height(240)
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .propagate_natural_height(false)
+        .propagate_natural_width(false)
+        .min_content_height(list_h)
+        .max_content_height(list_h)
         .child(&list)
         .build();
-    root.append(&sw);
+    sw.set_size_request(panel_w, list_h);
+    panel.append(&sw);
 
-    win.set_child(Some(&root));
+    overlay.add_overlay(&backdrop);
+    overlay.add_overlay(&panel);
 
     let all_items = Rc::new(items);
     let filtered: Rc<RefCell<Vec<QuickPickItem>>> = Rc::new(RefCell::new(all_items.to_vec()));
@@ -71,7 +98,9 @@ where
     let finished = Rc::new(RefCell::new(false));
 
     let finish = {
-        let win = win.clone();
+        let overlay = overlay.clone();
+        let backdrop = backdrop.clone();
+        let panel = panel.clone();
         let done = done.clone();
         let finished = finished.clone();
         move |item: Option<QuickPickItem>| {
@@ -79,12 +108,23 @@ where
                 return;
             }
             *finished.borrow_mut() = true;
+            overlay.remove_overlay(&backdrop);
+            overlay.remove_overlay(&panel);
             if let Some(cb) = done.borrow_mut().take() {
                 cb(item);
             }
-            win.close();
         }
     };
+
+    // 点击遮罩 → 取消
+    {
+        let finish = finish.clone();
+        let gesture = GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
+            finish(None);
+        });
+        backdrop.add_controller(gesture);
+    }
 
     let rebuild = {
         let list = list.clone();
@@ -93,7 +133,7 @@ where
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
-            for (i, item) in filtered.borrow().iter().enumerate() {
+            for item in filtered.borrow().iter() {
                 let row = ListBoxRow::new();
                 row.set_activatable(true);
                 let box_ = GtkBox::builder()
@@ -121,7 +161,6 @@ where
                     box_.append(&d);
                 }
                 row.set_child(Some(&box_));
-                let _ = i; // 顺序即 ListBox 索引
                 list.append(&row);
             }
             if let Some(first) = list.row_at_index(0) {
@@ -161,7 +200,6 @@ where
         });
     }
 
-    // 键盘：Esc 取消；↑↓ 已由 ListBox 处理；Enter 在 entry 上确认当前选中
     {
         let finish = finish.clone();
         let list = list.clone();
@@ -207,23 +245,46 @@ where
             }
             glib::Propagation::Proceed
         });
-        win.add_controller(controller);
+        panel.add_controller(controller);
     }
 
-    {
-        win.connect_close_request(move |_| {
-            if !*finished.borrow() {
-                if let Some(cb) = done.borrow_mut().take() {
-                    cb(None);
-                }
-                *finished.borrow_mut() = true;
-            }
-            glib::Propagation::Proceed
-        });
-    }
-
-    win.present();
     entry.grab_focus();
+}
+
+fn parent_height(parent: &Window) -> i32 {
+    let h = parent.height();
+    if h > 80 {
+        return h;
+    }
+    let d = parent.default_height();
+    if d > 80 {
+        d
+    } else {
+        650
+    }
+}
+
+/// 确保父窗口内容包在 Overlay 里（只包一次）。
+fn ensure_overlay(parent: &Window) -> Overlay {
+    match parent.child() {
+        Some(child) if child.is::<Overlay>() => child.downcast::<Overlay>().expect("Overlay"),
+        Some(child) => {
+            parent.set_child(None::<&Widget>);
+            let ov = Overlay::new();
+            ov.set_hexpand(true);
+            ov.set_vexpand(true);
+            ov.set_child(Some(&child));
+            parent.set_child(Some(&ov));
+            ov
+        }
+        None => {
+            let ov = Overlay::new();
+            ov.set_hexpand(true);
+            ov.set_vexpand(true);
+            parent.set_child(Some(&ov));
+            ov
+        }
+    }
 }
 
 /// 模糊匹配：查询的每个字符按序出现在目标中（大小写不敏感）。
@@ -233,11 +294,9 @@ pub fn fuzzy_match(query: &str, target: &str) -> bool {
     }
     let q = query.to_lowercase();
     let t = target.to_lowercase();
-    // 优先：子串
     if t.contains(&q) {
         return true;
     }
-    // 次选：子序列
     let mut ti = t.chars().peekable();
     for qc in q.chars() {
         loop {
