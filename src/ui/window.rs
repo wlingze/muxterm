@@ -33,6 +33,7 @@ use crate::ui::command_palette;
 use crate::ui::input_bar::InputBar;
 use crate::ui::keymap::KeyMap;
 use crate::ui::notebook::{LocalPaneId, PaneKey, PaneNotebook, TabKey};
+use crate::ui::pane_switcher::{self, PaneEntry};
 use crate::ui::pane_view::{PaneView, SpawnOpts};
 use crate::ui::tab_bar::{TabBar, TabBarItem};
 use crate::ui::tmux_dialog::{self, TmuxAction};
@@ -528,10 +529,7 @@ impl SharedState {
             Action::SwitchTabLast => self.switch_tab_n(0),
             Action::SwitchPanePrev => self.switch_pane(false),
             Action::SwitchPaneNext => self.switch_pane(true),
-            Action::Search => {
-                // Alt+R：后续 commit 换成 pane 切换器；暂用 search_panes 命令入口
-                self.run_palette_command("search_panes");
-            }
+            Action::Search => self.show_pane_switcher(),
             Action::CommandPalette => {
                 let shared = self.clone();
                 command_palette::show(&self.window, move |cmd| {
@@ -563,12 +561,8 @@ impl SharedState {
             "switch_tab_9" => self.switch_tab_n(9),
             "switch_pane_prev" => self.switch_pane(false),
             "switch_pane_next" => self.switch_pane(true),
-            "search_panes" => {
-                self.show_status("search panes：下一 commit 实现 pane 切换器");
-            }
-            "rename_pane" => {
-                self.show_status("rename pane：下一 commit 实现");
-            }
+            "search_panes" => self.show_pane_switcher(),
+            "rename_pane" => self.rename_current_pane(),
             "tmux_attach" => {
                 let shared = self.clone();
                 let win = self.window.clone();
@@ -663,6 +657,110 @@ impl SharedState {
                 }
             }
         }
+    }
+
+    /// Alt+R / search panes：按名字切换 pane。
+    fn show_pane_switcher(self: &Arc<Self>) {
+        let entries = self.collect_pane_entries();
+        if entries.is_empty() {
+            self.show_status("没有可切换的 pane");
+            return;
+        }
+        let shared = self.clone();
+        pane_switcher::show(&self.window, entries, move |entry| {
+            shared.jump_to_pane(entry.tab, entry.pane);
+        });
+    }
+
+    fn collect_pane_entries(self: &Arc<Self>) -> Vec<PaneEntry> {
+        let keys = self.notebook.read().unwrap().keys_in_order();
+        let views = self.pane_views.read().unwrap();
+        let tab_panes = self.tab_panes.read().unwrap();
+        let mut out = Vec::new();
+        for (ti, tab) in keys.iter().enumerate() {
+            let tab_no = ti + 1;
+            match tab {
+                TabKey::Tmux(p) => {
+                    let pane = PaneKey::Tmux(*p);
+                    let name = views
+                        .get(&pane)
+                        .map(|v| v.display_name())
+                        .unwrap_or_else(|| p.as_str());
+                    out.push(PaneEntry {
+                        tab: *tab,
+                        pane,
+                        name: name.clone(),
+                        label: format!("{tab_no}:{name}"),
+                        detail: Some("tmux".into()),
+                    });
+                }
+                TabKey::Local(_) => {
+                    let panes = tab_panes.get(tab).cloned().unwrap_or_default();
+                    for (pi, pane) in panes.iter().enumerate() {
+                        let name = views
+                            .get(pane)
+                            .map(|v| v.display_name())
+                            .unwrap_or_else(|| "shell".into());
+                        let label = if panes.len() > 1 {
+                            format!("{tab_no}:{name} · pane{}", pi + 1)
+                        } else {
+                            format!("{tab_no}:{name}")
+                        };
+                        out.push(PaneEntry {
+                            tab: *tab,
+                            pane: *pane,
+                            name,
+                            label,
+                            detail: Some("local".into()),
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn jump_to_pane(self: &Arc<Self>, tab: TabKey, pane: PaneKey) {
+        self.notebook.read().unwrap().select(tab);
+        *self.current_tab.lock().unwrap() = Some(tab);
+        *self.current_pane.lock().unwrap() = Some(pane);
+        self.refresh_tab_bar();
+        self.refresh_window_title();
+        self.refresh_input_visibility();
+        // 给本地 terminal 焦点
+        if let Some(v) = self.pane_views.read().unwrap().get(&pane) {
+            v.terminal.grab_focus();
+        }
+    }
+
+    fn rename_current_pane(self: &Arc<Self>) {
+        let pane = match *self.current_pane.lock().unwrap() {
+            Some(p) => p,
+            None => {
+                self.show_status("没有激活的 pane");
+                return;
+            }
+        };
+        let current = self
+            .pane_views
+            .read()
+            .unwrap()
+            .get(&pane)
+            .map(|v| v.display_name())
+            .unwrap_or_else(|| "pane".into());
+        let shared = self.clone();
+        pane_switcher::show_rename(&self.window, &current, move |name| {
+            if let Some(v) = shared.pane_views.write().unwrap().get_mut(&pane) {
+                v.custom_name = Some(name);
+            }
+            shared.refresh_tab_bar();
+            shared.refresh_window_title();
+            // 同步 notebook 页标题（虽已隐藏，保持一致）
+            if let Some(tab) = *shared.current_tab.lock().unwrap() {
+                let title = shared.tab_display_name(tab);
+                shared.notebook.read().unwrap().set_title(tab, &title);
+            }
+        });
     }
 
     fn tmux_detach(self: &Arc<Self>) {
