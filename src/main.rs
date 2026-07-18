@@ -5,9 +5,16 @@
 
 use clap::Parser;
 
+#[allow(dead_code)]
+mod tmux;
+
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]
-#[command(name = "muxterm", version, about = "Native UI terminal for tmux control mode")]
+#[command(
+    name = "muxterm",
+    version,
+    about = "Native UI terminal for tmux control mode"
+)]
 struct Cli {
     /// 启用详细日志（RUST_LOG 也可以控制）
     #[arg(short, long)]
