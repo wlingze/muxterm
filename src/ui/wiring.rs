@@ -1,9 +1,11 @@
-//! tmux client ↔ UI 事件桥接（按需连接，不启动即连）。
+//! tmux client ↔ UI 事件桥接（按需连接）。
 //!
-//! 用户在 tmux 集成对话框里选 attach/新建 session 后，上层调用 `spawn_bridge`
-//! 启动后台 tokio task 跑 tmux `-CC`。事件经 `std::sync::mpsc` 跨线程送到 UI
-//! 线程，UI 线程用 `glib::timeout_add_local`（16ms）轮询 `try_recv` 派发。
-//! UI → tmux 命令走 `tokio::sync::mpsc`，后台 task 串行 `send_raw` 写 pty。
+//! 用户连上 tmux 后，后台 tokio task 跑 `tmux -CC`，把 `TmuxEvent` 转成线程安全
+//! `UiEvent`，经 `std::sync::mpsc` 跨线程送 UI 线程，UI 线程用
+//! `glib::timeout_add_local`（16ms）轮询 `try_recv` 派发。UI → tmux 命令走
+//! `tokio::sync::mpsc`，后台 task 串行 `send_raw` 写 pty。
+//!
+//! attach 后根据配置自动发 `set -g mouse on`（auto_mouse）。
 
 use std::sync::{mpsc as std_mpsc, Arc};
 
@@ -13,7 +15,6 @@ use tokio::sync::mpsc;
 use crate::tmux::client::{ConnectMode, TmuxClient, TmuxClientConfig, TmuxEvent};
 use crate::tmux::protocol::{Message, PaneId, WindowId};
 
-/// 跨线程传递的 UI 事件。
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     PaneOutput { pane: PaneId, data: Vec<u8> },
@@ -42,10 +43,13 @@ impl CommandSender {
     }
 }
 
-/// 启动 tmux 桥接。`on_event` 在 UI 线程被调用（通过 glib timeout 轮询）。
-///
-/// 返回 `CommandSender` 供 UI 线程把命令字符串发到后台写循环。
-pub fn spawn_bridge<F>(config: TmuxClientConfig, on_event: F) -> Option<CommandSender>
+/// 启动 tmux 桥接。`on_event` 在 UI 线程被调用。`auto_mouse` 控制 attach 后是否
+/// 自动 `set -g mouse on`。返回 `CommandSender` 供 UI 线程发命令。
+pub fn spawn_bridge<F>(
+    config: TmuxClientConfig,
+    auto_mouse: bool,
+    on_event: F,
+) -> Option<CommandSender>
 where
     F: Fn(&UiEvent) + 'static,
 {
@@ -71,6 +75,13 @@ where
             }
         };
         let _ = ui_tx.send(UiEvent::Connected);
+
+        // 自动开鼠标（tmux 鼠标：滚轮/点击选 pane/拖动分割）。
+        if auto_mouse {
+            if let Err(e) = tmux.send_raw("set -g mouse on\n").await {
+                tracing::warn!(target = "muxterm::wiring", "set -g mouse on 失败: {e}");
+            }
+        }
 
         tokio::spawn(async move {
             while let Some(line) = cmd_rx.recv().await {
@@ -121,7 +132,6 @@ where
     })
 }
 
-/// 构造一个 attach 模式的 `TmuxClientConfig`。
 pub fn attach_config(session: &str) -> TmuxClientConfig {
     TmuxClientConfig {
         mode: Some(ConnectMode::Attach {
@@ -133,7 +143,6 @@ pub fn attach_config(session: &str) -> TmuxClientConfig {
     }
 }
 
-/// 构造一个 new-session 模式的 `TmuxClientConfig`。
 pub fn new_session_config(name: Option<String>) -> TmuxClientConfig {
     TmuxClientConfig {
         mode: Some(ConnectMode::NewSession { name }),

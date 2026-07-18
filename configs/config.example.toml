@@ -1,18 +1,111 @@
-# Muxterm 配置示例
+# Muxterm 配置示例（Alacritty 风格）
 # 复制到 ~/.config/muxterm/config.toml 即可生效。
 
-[terminal]
-# 等宽字体家族（默认依赖系统 Monospace 别名）
-font_family = "Monospace"
-# 字号
-font_size = 12
-# 主题名，对应 configs/themes/<name>.toml
-theme = "dark"
-# 回滚行数（每个 pane 的 scrollback 缓冲长度）
-scrollback_lines = 10000
+# 字体
+[font]
+family = "JetBrains Mono"
+size = 13.0
 
+# 主题（对应 configs/themes/<name>.toml）
+[theme]
+name = "dark"  # 或 light
+
+# tmux
 [tmux]
-# 连接模式：local（spawn 本地 tmux）后续 phase 再加 remote
-mode = "local"
-# session 名：空字符串 = 自动新建
-session_name = ""
+auto_mouse = true       # attach 后自动 set -g mouse on
+default_session = ""    # 空则不自动 attach
+
+# scrollback
+[scrollback]
+lines = 10000
+
+# 快捷键（可自定义，mods: control/shift/alt/super）
+[[keybindings]]
+key = "n"
+mods = ["alt"]
+action = "new_window"      # tmux new-window = 新 tab + 新 pane
+
+[[keybindings]]
+key = "t"
+mods = ["alt"]
+action = "new_tab"         # 新本地 shell tab
+
+[[keybindings]]
+key = "d"
+mods = ["alt"]
+action = "new_pane"        # 当前 tab 内水平分割
+
+[[keybindings]]
+key = "D"
+mods = ["alt", "shift"]
+action = "new_pane_vertical"  # 垂直分割
+
+[[keybindings]]
+key = "1"
+mods = ["alt"]
+action = "switch_tab_1"
+
+[[keybindings]]
+key = "2"
+mods = ["alt"]
+action = "switch_tab_2"
+
+[[keybindings]]
+key = "3"
+mods = ["alt"]
+action = "switch_tab_3"
+
+[[keybindings]]
+key = "4"
+mods = ["alt"]
+action = "switch_tab_4"
+
+[[keybindings]]
+key = "5"
+mods = ["alt"]
+action = "switch_tab_5"
+
+[[keybindings]]
+key = "6"
+mods = ["alt"]
+action = "switch_tab_6"
+
+[[keybindings]]
+key = "7"
+mods = ["alt"]
+action = "switch_tab_7"
+
+[[keybindings]]
+key = "8"
+mods = ["alt"]
+action = "switch_tab_8"
+
+[[keybindings]]
+key = "9"
+mods = ["alt"]
+action = "switch_tab_9"
+
+[[keybindings]]
+key = "0"
+mods = ["alt"]
+action = "switch_tab_last"
+
+[[keybindings]]
+key = "["
+mods = ["alt"]
+action = "switch_pane_prev"
+
+[[keybindings]]
+key = "]"
+mods = ["alt"]
+action = "switch_pane_next"
+
+[[keybindings]]
+key = "r"
+mods = ["alt"]
+action = "search"
+
+[[keybindings]]
+key = "p"
+mods = ["alt"]
+action = "command_palette"
