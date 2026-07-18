@@ -88,7 +88,6 @@ impl AppWindow {
         toolbar.append(&session_label);
         root.append(&toolbar);
 
-        // Notebook
         let notebook = Arc::new(RwLock::new(PaneNotebook::new()));
         root.append(&notebook.read().unwrap().notebook);
 
@@ -354,8 +353,21 @@ impl SharedState {
     }
 
     /// Notebook 切 tab 回调。
+    ///
+    /// 注意：在持有外层 `RwLock<PaneNotebook>` 写锁期间调用
+    /// `notebook.append_page` / `set_current_page` 会同步触发 `switch-page`
+    /// 信号 → 回调本函数。若这里用 `read()` 会死锁（等写锁释放）。因此用
+    /// `try_read()`：拿不到锁说明正在 add_pane，直接跳过——add_pane 的调用方
+    /// 会显式更新 `current_tab`，跳过这次回调无副作用。
     fn on_switch_page(self: &Arc<Self>, page_num: u32) {
-        let key = self.notebook.read().unwrap().find_key_by_index(page_num);
+        let nb = match self.notebook.try_read() {
+            Ok(g) => g,
+            Err(_) => {
+                return;
+            }
+        };
+        let key = nb.find_key_by_index(page_num);
+        drop(nb);
         *self.current_tab.lock().unwrap() = key;
         self.refresh_input_visibility();
     }

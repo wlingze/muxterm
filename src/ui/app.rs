@@ -46,7 +46,13 @@ pub fn run() -> anyhow::Result<()> {
         win.window.show();
     });
 
-    let exit = app.run_with_args::<&str>(&[]);
+    // run() 阻塞直到窗口关闭。GApplication 需要 argv[0]（程序名）才能 emit
+    // activate 信号——空 argv 会导致不触发 activate（窗口不出现）。
+    // 但不能把原始 argv 全传给 GApplication：它不认识 --verbose 等业务参数会报
+    // "Unknown option" 退出。--verbose 已被 clap 在 main() 解析，这里只传
+    // argv[0]（程序名），让 GApplication 走默认流程触发 activate。
+    let argv0 = std::env::args().next().unwrap_or_else(|| "muxterm".into());
+    let exit = app.run_with_args(&[argv0]);
     let code: i32 = exit.into();
     if code != 0 {
         anyhow::bail!("GTK 应用退出码非零: {code}");

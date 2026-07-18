@@ -48,9 +48,6 @@ impl PaneView {
         let envv: Vec<String> = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
         let env_refs: Vec<&str> = envv.iter().map(|s| s.as_str()).collect();
 
-        let pid_cell = std::cell::RefCell::new(None::<glib::Pid>);
-        let pid_for_cb = pid_cell.borrow().clone();
-        let _ = pid_for_cb;
         terminal.spawn_async(
             PtyFlags::DEFAULT,
             None,
@@ -60,14 +57,8 @@ impl PaneView {
             || {},
             -1,
             None::<&gtk4::gio::Cancellable>,
-            {
-                // 用一个共享 Cell 记录 PID —— 但闭包是 'static，只能用 Box 通道。
-                // 简化：PID 不强制记录（关闭 tab 时直接靠 widget 销毁释放 pty）。
-                move |_res| {}
-            },
+            move |_res| {},
         );
-        // vte4 spawn_async 的回调是异步的，PID 无法在构造时同步拿到；这里先置 None，
-        // 关闭 tab 靠 widget destroy 触发 pty 关闭，子进程随之退出。
 
         Self {
             terminal,
