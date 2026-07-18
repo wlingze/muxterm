@@ -581,17 +581,12 @@ mod tests {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => break,
                 ev = rx.recv() => match ev {
-                    Some(TmuxEvent::Message(m)) => {
-                        eprintln!("[e2e] msg: {:?}", m.keyword());
-                        match &m {
-                            Message::WindowAdd { .. } => got_window_add = true,
-                            Message::SessionChanged { .. } => got_session_changed = true,
-                            _ => {}
-                        }
-                    }
-                    Some(TmuxEvent::ResponseLine { line, .. }) => eprintln!("[e2e] resp: {line:?}"),
-                    Some(TmuxEvent::Exit { code }) => { eprintln!("[e2e] exit: {code:?}"); break; }
-                    None => { eprintln!("[e2e] none"); break; }
+                    Some(TmuxEvent::Message(m)) => match &m {
+                        Message::WindowAdd { .. } => got_window_add = true,
+                        Message::SessionChanged { .. } => got_session_changed = true,
+                        _ => {}
+                    },
+                    Some(TmuxEvent::Exit { .. }) | None => break,
                     _ => {}
                 }
             }
