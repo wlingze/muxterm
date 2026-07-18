@@ -1,0 +1,40 @@
+spawn tmux -CC -L muxterm-cmd new-session -s cmd -x 100 -y 30
+P1000p%begin 1784356613 279 0
+%end 1784356613 279 0
+%window-add @0
+%sessions-changed
+%session-changed $0 cmd
+%window-renamed @0 tmux
+%begin 1784356613 286 1
+cmd: 1 windows (created Sat Jul 18 14:36:53 2026) (attached)
+%end 1784356613 286 1
+%begin 1784356613 287 1
+cmd:0.0
+%end 1784356613 287 1
+%begin 1784356613 288 1
+%end 1784356613 288 1
+%session-window-changed $0 @1
+%window-add @1
+%output %0 \033]133;A;cl=m;aid=1073964\007
+%output %1 \033]133;A;cl=m;aid=1073966\007
+%output %0 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_PROG=\007\033\134
+%output %1 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_PROG=\007\033\134
+%output %0 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_USER=d2x6\007\033\134
+%output %1 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_USER=d2x6\007\033\134
+%output %0 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_IN_TMUX=MQ==\007\033\134
+%output %1 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_IN_TMUX=MQ==\007\033\134
+%output %0 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_HOST=YXJjaG1pbmk=\007\033\134
+%output %1 \033Ptmux;\033\033]1337;SetUserVar=WEZTERM_HOST=YXJjaG1pbmk=\007\033\134
+%output %0 \033Ptmux;\033\033]7;file://archmini/home/wlz/Project/muxterm/\033\033\134\033\134\033]7;file://archmini/home/wlz/Project/muxterm/\033\134
+%output %1 \033Ptmux;\033\033]7;file://archmini/home/wlz/Project/muxterm/\033\033\134\033\134\033]7;file://archmini/home/wlz/Project/muxterm/\033\134
+%output %0 \033]3008;start=af7e58b6-5181-4d54-9328-4667cdacc005;machineid=b3fe05e6a8ec4740b0cb1654e67fa48d;user=wlz;hostname=archmini;bootid=62f196f0-e413-4cca-8d1b-2a5948fd5b0f;pid=00000000000001073964;type=shell;cwd=/home/wlz/Project/muxterm\033\134
+%output %0 \033]0;wlz@archmini:~/Project/muxterm\007
+%output %0 \033[?2004h\033]133;P;k=i\007[wlz@archmini muxterm]$ \033]133;B\007
+%output %1 \033]3008;start=22393ae2-8488-46be-9722-0a7d84b032cd;machineid=b3fe05e6a8ec4740b0cb1654e67fa48d;user=wlz;hostname=archmini;bootid=62f196f0-e413-4cca-8d1b-2a5948fd5b0f;pid=00000000000001073966;type=shell;cwd=/home/wlz/Project/muxterm\033\134
+%output %1 \033]0;wlz@archmini:~/Project/muxterm\007
+%output %1 \033[?2004h\033]133;P;k=i\007[wlz@archmini muxterm]$ \033]133;B\007
+%window-renamed @0 bash
+%begin 1784356614 294 1
+0: bash- (1 panes) [100x30] [layout a87d,100x30,0,0,0] @0
+1: second* (1 panes) [100x30] [layout a87e,100x30,0,0,1] @1 (active)
+%end 1784356614 294 1

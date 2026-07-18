@@ -1,0 +1,7 @@
+spawn tmux -CC -L muxterm-driven new-session -s drv -x 100 -y 30
+P1000p%begin 1784356590 279 0
+%end 1784356590 279 0
+%window-add @0
+%sessions-changed
+%session-changed $0 drv
+%window-renamed @0 tmux
