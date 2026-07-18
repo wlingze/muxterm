@@ -5,7 +5,8 @@
 //!   键盘输入直接进 vte4（`input_enabled=true`）。子进程退出时 emit
 //!   `child-exited`，上层据此关闭对应 pane（不是再开空 shell）。
 //! - [`PaneMode::Tmux`]：tmux `-CC` 的 `%output` 内容通过 `feed_output()` 喂给
-//!   vte4 渲染；键盘输入走底部输入栏的 `send-keys`（`input_enabled=false`）。
+//!   vte4 渲染；`input_enabled=true`，由上层连接 `commit` 信号转发 `send-keys`
+//!   （不再使用底部输入栏）。
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -108,7 +109,9 @@ impl PaneView {
         }
     }
 
-    /// tmux attach 的 pane：feed 输出，输入走 send-keys。
+    /// tmux attach 的 pane：仅 feed `%output`；键盘由上层 EventController → send-keys。
+    ///
+    /// `input_enabled=false`：避免 VTE 本地回显导致与 tmux echo 双重显示。
     pub fn new_tmux(
         pane_id: crate::tmux::protocol::PaneId,
         theme: &Theme,
@@ -117,6 +120,8 @@ impl PaneView {
         scrollback: u32,
     ) -> Self {
         let terminal = build_terminal(theme, font_family, font_size, scrollback, false);
+        terminal.set_can_focus(true);
+        terminal.set_focusable(true);
         let program_name = pane_id.as_str();
         Self {
             terminal,
@@ -126,6 +131,13 @@ impl PaneView {
             custom_name: None,
             child_pid: Cell::new(None),
         }
+    }
+
+    /// 连接 commit：把用户输入交给回调（tmux 侧用于 send-keys）。
+    pub fn connect_commit<F: Fn(&str) + 'static>(&self, f: F) {
+        self.terminal.connect_commit(move |_t, text, _len| {
+            f(text);
+        });
     }
 
     /// 终止本地子进程（若有 pid）。
