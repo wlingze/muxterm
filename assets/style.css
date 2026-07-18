@@ -1,0 +1,80 @@
+/* Muxterm 极简布局：干掉 padding/border，terminal 占满，tab 栏一行小字 */
+
+window {
+  padding: 0;
+  margin: 0;
+}
+
+.muxterm-root {
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
+notebook {
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+}
+
+notebook > stack {
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
+notebook > header {
+  /* show_tabs=false 时本就不显示；再兜底压掉 */
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
+.tab-bar {
+  padding: 0;
+  margin: 0;
+  border-top: 1px solid alpha(@theme_fg_color, 0.15);
+  background-color: @theme_bg_color;
+  min-height: 24px;
+}
+
+.tab-bar-item {
+  padding: 0 8px;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  min-height: 24px;
+  font-size: 10pt;
+  box-shadow: none;
+  background: transparent;
+  color: alpha(@theme_fg_color, 0.7);
+}
+
+.tab-bar-item:hover {
+  background-color: alpha(@theme_fg_color, 0.08);
+  color: @theme_fg_color;
+}
+
+.tab-bar-item.active {
+  background-color: alpha(@theme_fg_color, 0.14);
+  color: @theme_fg_color;
+  font-weight: bold;
+  text-decoration: underline;
+}
+
+.status-bar {
+  padding: 0 6px;
+  margin: 0;
+  min-height: 0;
+  font-size: 9pt;
+  color: alpha(@theme_fg_color, 0.75);
+  border: none;
+}
+
+.status-bar.hidden {
+  opacity: 0;
+  min-height: 0;
+  padding: 0;
+}

@@ -1,20 +1,25 @@
-//! 主窗口（程序/pane 生命周期模型）。
+//! 主窗口（极简布局 + 程序/pane 生命周期）。
+//!
+//! 布局（自上而下，tab 栏位置可配置）：
+//! 1. 窗口标题：当前 pane 程序名
+//! 2. Terminal 区域（Notebook，隐藏原生 tabs）占满
+//! 3. 极简 TabBar（默认底部 ~24px）
+//! 4. 状态提示（异常退出等，平时可隐藏）
 //!
 //! 程序退出模型：
 //! - 正常/异常退出 → 关闭对应 pane（异常可提示）
 //! - tab 内无 pane → 关 tab
 //! - 无 tab → 按 `behavior.on_last_pane_exit`（默认关窗）
 //! - **不再**「最后一个 shell 退出开新空 shell」
-//!
-//! 布局仍用 Notebook 原生 tab（极简 TabBar 在后续 commit）。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{Box, EventControllerKey, Label, Orientation, Window};
+use gtk4::{Box, CssProvider, EventControllerKey, Label, Orientation, Window};
 use vte4::prelude::*;
 
 use crate::config::{
@@ -28,6 +33,7 @@ use crate::ui::input_bar::InputBar;
 use crate::ui::keymap::KeyMap;
 use crate::ui::notebook::{LocalPaneId, PaneKey, PaneNotebook, TabKey};
 use crate::ui::pane_view::{PaneView, SpawnOpts};
+use crate::ui::tab_bar::{TabBar, TabBarItem};
 use crate::ui::tmux_dialog::{self, TmuxAction};
 use crate::ui::wiring::{spawn_bridge, CommandSender, UiEvent};
 
@@ -56,6 +62,7 @@ struct SharedState {
     input_bar: Arc<InputBar>,
     input_bar_container: gtk4::Box,
     status_label: Label,
+    tab_bar: TabBar,
     window: Window,
 }
 
@@ -67,30 +74,59 @@ impl AppWindow {
             .default_height(650)
             .build();
 
+        apply_css();
+
+        if config.ui.borderless {
+            // GTK4 无统一无边框 API；保留配置项，后续可接 CSD/扩展。
+            tracing::debug!(
+                target = "muxterm::window",
+                "borderless 已配置，当前为预留项"
+            );
+        }
+
         let root = Box::builder()
             .orientation(Orientation::Vertical)
             .spacing(0)
             .build();
+        root.add_css_class("muxterm-root");
+        root.set_margin_start(0);
+        root.set_margin_end(0);
+        root.set_margin_top(0);
+        root.set_margin_bottom(0);
 
         let notebook = Arc::new(RwLock::new(PaneNotebook::new()));
-        root.append(&notebook.read().unwrap().notebook);
+        let nb_widget = notebook.read().unwrap().notebook.clone();
+        nb_widget.set_hexpand(true);
+        nb_widget.set_vexpand(true);
+
+        let tab_bar = TabBar::new(config.ui.tab_bar_height);
 
         let input_bar_container = Box::builder().orientation(Orientation::Horizontal).build();
         let input_bar = Arc::new(InputBar::new());
         input_bar_container.append(&input_bar.container);
         input_bar_container.set_visible(false);
-        root.append(&input_bar_container);
 
         let status_label = Label::builder()
-            .label("状态：本地")
+            .label("")
             .halign(gtk4::Align::Start)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(2)
-            .margin_bottom(2)
+            .hexpand(true)
             .build();
         status_label.add_css_class("status-bar");
-        root.append(&status_label);
+        status_label.add_css_class("hidden");
+        status_label.set_visible(false);
+
+        // 组装：terminal 占满；tab 栏 top/bottom；状态条贴 tab 栏内侧
+        if config.ui.tab_bar_at_bottom() {
+            root.append(&nb_widget);
+            root.append(&input_bar_container);
+            root.append(&status_label);
+            root.append(&tab_bar.container);
+        } else {
+            root.append(&tab_bar.container);
+            root.append(&nb_widget);
+            root.append(&input_bar_container);
+            root.append(&status_label);
+        }
 
         window.set_child(Some(&root));
 
@@ -111,6 +147,7 @@ impl AppWindow {
             input_bar,
             input_bar_container,
             status_label,
+            tab_bar,
             window: window.clone(),
         });
 
@@ -118,6 +155,14 @@ impl AppWindow {
             window: window.clone(),
             shared: shared.clone(),
         };
+
+        // TabBar 点击 → 切 Notebook page
+        {
+            let shared_click = shared.clone();
+            shared.tab_bar.connect_activate(move |key| {
+                shared_click.notebook.read().unwrap().select(key);
+            });
+        }
 
         app_win.wire_notebook_switch();
         app_win.wire_input_bar();
@@ -220,6 +265,7 @@ impl SharedState {
         *self.current_tab.lock().unwrap() = Some(tab_key);
         *self.current_pane.lock().unwrap() = Some(pane_key);
         self.input_bar_container.set_visible(false);
+        self.refresh_tab_bar();
         self.refresh_window_title();
         (tab_key, pane_key)
     }
@@ -286,6 +332,7 @@ impl SharedState {
         } else {
             self.rebuild_local_tab(tab);
         }
+        self.refresh_tab_bar();
         self.refresh_window_title();
         self.refresh_input_visibility();
     }
@@ -316,6 +363,8 @@ impl SharedState {
     }
 
     fn show_status(self: &Arc<Self>, msg: &str) {
+        self.status_label.remove_css_class("hidden");
+        self.status_label.set_visible(true);
         self.status_label.set_label(msg);
     }
 
@@ -417,6 +466,7 @@ impl SharedState {
             nb.relayout_local_tab(tab, &title);
         }
         *self.current_pane.lock().unwrap() = Some(new_pane);
+        self.refresh_tab_bar();
         self.refresh_window_title();
     }
 
@@ -454,6 +504,7 @@ impl SharedState {
         };
         drop(cur);
         *self.current_pane.lock().unwrap() = Some(panes[new_idx]);
+        self.refresh_tab_bar();
         self.refresh_window_title();
     }
 
@@ -568,6 +619,7 @@ impl SharedState {
                     let k = self.notebook.write().unwrap().add_tmux_tab(&view, &title);
                     self.pane_views.write().unwrap().insert(pane_key, view);
                     self.pane_tab.write().unwrap().insert(pane.0, k);
+                    self.refresh_tab_bar();
                 }
                 if let Some(view) = self.pane_views.read().unwrap().get(&pane_key) {
                     view.feed_output(data);
@@ -598,6 +650,7 @@ impl SharedState {
                 if self.notebook.read().unwrap().n_tabs() == 0 {
                     self.on_all_tabs_closed();
                 }
+                self.refresh_tab_bar();
                 self.refresh_window_title();
                 self.refresh_input_visibility();
             }
@@ -609,6 +662,7 @@ impl SharedState {
                         self.notebook.read().unwrap().set_title(t, name);
                     }
                 }
+                self.refresh_tab_bar();
             }
             UiEvent::SessionChanged { sid, name } => {
                 *self.session_name.write().unwrap() = name.clone();
@@ -646,6 +700,7 @@ impl SharedState {
             None => None,
         };
         *self.current_pane.lock().unwrap() = pane;
+        self.refresh_tab_bar();
         self.refresh_window_title();
         self.refresh_input_visibility();
     }
@@ -663,6 +718,22 @@ impl SharedState {
         } else {
             self.input_bar_container.set_visible(false);
         }
+    }
+
+    /// 刷新极简 TabBar。
+    fn refresh_tab_bar(self: &Arc<Self>) {
+        let keys = self.notebook.read().unwrap().keys_in_order();
+        let current = *self.current_tab.lock().unwrap();
+        let mut items = Vec::with_capacity(keys.len());
+        for (i, key) in keys.iter().enumerate() {
+            let name = self.tab_display_name(*key);
+            items.push(TabBarItem {
+                key: *key,
+                title: format!("{}:{}", i + 1, name),
+                active: current == Some(*key),
+            });
+        }
+        self.tab_bar.rebuild(&items);
     }
 
     /// tab 显示名：激活 pane 程序名；多 pane 时加 ` · Npanes`。
@@ -703,6 +774,10 @@ impl SharedState {
     }
 
     fn refresh_window_title(self: &Arc<Self>) {
+        if !self.cfg.ui.show_title_bar {
+            self.window.set_title(Some("muxterm"));
+            return;
+        }
         let pane = *self.current_pane.lock().unwrap();
         let title = match pane {
             Some(p) => self
@@ -715,5 +790,18 @@ impl SharedState {
             None => "muxterm".into(),
         };
         self.window.set_title(Some(&title));
+    }
+}
+
+/// 加载极简 CSS。
+fn apply_css() {
+    let provider = CssProvider::new();
+    provider.load_from_data(include_str!("../../assets/style.css"));
+    if let Some(display) = gdk::Display::default() {
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
     }
 }

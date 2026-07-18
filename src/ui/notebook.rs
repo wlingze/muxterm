@@ -11,7 +11,7 @@ use gtk4::prelude::*;
 use gtk4::{Label, Notebook, Orientation, Paned, PositionType, Widget};
 
 use crate::tmux::protocol::PaneId;
-use crate::ui::pane_view::{PaneMode, PaneView};
+use crate::ui::pane_view::PaneView;
 
 /// tab 标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,15 +69,33 @@ pub struct PaneNotebook {
 impl PaneNotebook {
     pub fn new() -> Self {
         let nb = Notebook::new();
-        nb.set_show_tabs(true);
-        nb.set_tab_pos(PositionType::Top);
-        nb.set_scrollable(true);
+        // 极简布局：隐藏 GTK 自带 tab，改用自定义 TabBar
+        nb.set_show_tabs(false);
+        nb.set_show_border(false);
+        nb.set_tab_pos(PositionType::Bottom);
+        nb.set_scrollable(false);
+        nb.set_margin_start(0);
+        nb.set_margin_end(0);
+        nb.set_margin_top(0);
+        nb.set_margin_bottom(0);
         Self {
             notebook: nb,
             tabs: HashMap::new(),
             tmux_widgets: HashMap::new(),
             next_local: 0,
         }
+    }
+
+    /// 按页面索引顺序返回所有 tab key。
+    pub fn keys_in_order(&self) -> Vec<TabKey> {
+        let n = self.notebook.n_pages();
+        let mut out = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            if let Some(k) = self.find_key_by_index(i) {
+                out.push(k);
+            }
+        }
+        out
     }
 
     /// 新建一个本地 tab，内含一个 pane。返回 (tab key, pane key)。

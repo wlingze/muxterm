@@ -1,7 +1,7 @@
 //! GTK Application 启动。
 //!
-//! 加载配置/主题，构造主窗口，进入 GTK 主循环。启动即一个本地 shell tab，
-//! tmux 是可选的 attach（Alt+P → tmux_attach / tmux_new）。
+//! 加载配置/主题，构造主窗口，进入 GTK 主循环。启动即一个本地程序 tab
+//!（默认 `$SHELL`），程序退出关 pane；tmux 是可选 attach。
 
 use gtk4::prelude::*;
 use gtk4::Application;

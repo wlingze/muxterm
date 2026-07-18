@@ -5,6 +5,7 @@
 //! - `[theme]` name
 //! - `[tmux]` auto_mouse / default_session
 //! - `[scrollback]` lines
+//! - `[ui]` tab 栏位置/高度、标题栏
 //! - `[pane]` 默认程序与工作目录
 //! - `[behavior]` 最后 pane 退出 / 异常退出策略
 //! - `[[keybindings]]` key/mods/action 数组
@@ -32,6 +33,8 @@ pub struct Config {
     pub tmux: TmuxConfig,
     #[serde(default)]
     pub scrollback: ScrollbackConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
     #[serde(default)]
     pub pane: PaneConfig,
     #[serde(default)]
@@ -119,6 +122,49 @@ impl Default for ScrollbackConfig {
     }
 }
 
+/// `[ui]`：极简布局相关。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiConfig {
+    /// tab 栏位置：`"bottom"`（默认，像 tmux）或 `"top"`。
+    #[serde(default = "default_tab_bar_position")]
+    pub tab_bar_position: String,
+    /// tab 栏高度（像素）。
+    #[serde(default = "default_tab_bar_height")]
+    pub tab_bar_height: u32,
+    /// 是否显示窗口标题文字（程序名 / tab 标题）。
+    #[serde(default = "default_true")]
+    pub show_title_bar: bool,
+    /// 无边框模式（预留，GTK 侧按能力启用）。
+    #[serde(default)]
+    pub borderless: bool,
+}
+fn default_tab_bar_position() -> String {
+    "bottom".into()
+}
+fn default_tab_bar_height() -> u32 {
+    24
+}
+fn default_true() -> bool {
+    true
+}
+impl Default for UiConfig {
+    fn default() -> Self {
+        UiConfig {
+            tab_bar_position: default_tab_bar_position(),
+            tab_bar_height: default_tab_bar_height(),
+            show_title_bar: true,
+            borderless: false,
+        }
+    }
+}
+
+impl UiConfig {
+    /// tab 栏是否放在底部。
+    pub fn tab_bar_at_bottom(&self) -> bool {
+        !self.tab_bar_position.eq_ignore_ascii_case("top")
+    }
+}
+
 /// `[pane]`：本地 pane 默认程序与工作目录。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PaneConfig {
@@ -194,6 +240,7 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             tmux: TmuxConfig::default(),
             scrollback: ScrollbackConfig::default(),
+            ui: UiConfig::default(),
             pane: PaneConfig::default(),
             behavior: BehaviorConfig::default(),
             keybindings: default_keybindings(),
@@ -714,8 +761,14 @@ color15 = "#a6adc8"
     }
 
     #[test]
-    fn parse_pane_behavior_sections() {
+    fn parse_ui_pane_behavior_sections() {
         let raw = r##"
+[ui]
+tab_bar_position = "top"
+tab_bar_height = 28
+show_title_bar = false
+borderless = true
+
 [pane]
 default_command = "/bin/zsh"
 workdir = "/tmp"
@@ -725,6 +778,11 @@ on_last_pane_exit = "keep_empty"
 on_program_exit_abnormal = "close"
 "##;
         let c = parse_config_toml(raw).unwrap();
+        assert_eq!(c.ui.tab_bar_position, "top");
+        assert_eq!(c.ui.tab_bar_height, 28);
+        assert!(!c.ui.show_title_bar);
+        assert!(c.ui.borderless);
+        assert!(!c.ui.tab_bar_at_bottom());
         assert_eq!(c.pane.default_command, "/bin/zsh");
         assert_eq!(c.pane.workdir, "/tmp");
         assert_eq!(c.behavior.on_last_pane_exit, OnLastPaneExit::KeepEmpty);
@@ -735,8 +793,13 @@ on_program_exit_abnormal = "close"
     }
 
     #[test]
-    fn parse_pane_behavior_defaults() {
+    fn parse_ui_pane_behavior_defaults() {
         let c = parse_config_toml("").unwrap();
+        assert_eq!(c.ui.tab_bar_position, "bottom");
+        assert_eq!(c.ui.tab_bar_height, 24);
+        assert!(c.ui.show_title_bar);
+        assert!(!c.ui.borderless);
+        assert!(c.ui.tab_bar_at_bottom());
         assert_eq!(c.pane.default_command, "$SHELL");
         assert_eq!(c.pane.workdir, "$HOME");
         assert_eq!(c.behavior.on_last_pane_exit, OnLastPaneExit::CloseWindow);

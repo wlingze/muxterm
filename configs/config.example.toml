@@ -19,6 +19,12 @@ default_session = ""    # 空则不自动 attach
 [scrollback]
 lines = 10000
 
+# UI 极简布局
+[ui]
+tab_bar_position = "bottom"  # 或 "top"
+tab_bar_height = 24
+show_title_bar = true
+borderless = false
 
 # 本地 pane 默认程序
 [pane]
