@@ -13,3 +13,4 @@ Cargo.lock
 # Logs / local
 *.log
 .env
+.codex-next-task.md

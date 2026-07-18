@@ -93,39 +93,60 @@ kill-pane -t <pane_id>
 
 ## MVP 功能清单
 
-- [ ] 本地 spawn `tmux -CC new-session` 或 `attach`
-- [ ] 协议解析器：解析所有 `%` 消息类型
-- [ ] pane 列表 + 每个 pane 独立输出缓冲
-- [ ] GTK4 Notebook tab：每个 pane 一个 tab
-- [ ] ANSI 颜色/样式渲染（vte crate）
-- [ ] 输入框：`send-keys -t <pane_id> <text>` Enter
-- [ ] pane 切换、关闭
-- [ ] 自动 reattach / 状态同步
+- [x] 本地 spawn `tmux -CC new-session` 或 `attach`
+- [x] 协议解析器：解析所有 `%` 消息类型
+- [x] pane 列表 + 每个 pane 独立输出缓冲（vte4 Terminal，懒建）
+- [x] GTK4 Notebook tab：每个 pane 一个 tab
+- [x] ANSI 颜色/样式渲染（vte4 Terminal 自带 24-bit 真彩色 + Unicode/emoji）
+- [x] 输入框：`send-keys -t <pane_id> <text>` Enter（逐字 `-l`）
+- [x] pane 切换（Notebook 切 tab）、关闭（kill-pane 走 tmux 命令）
+- [x] 状态同步：窗口标题显示 session 名，状态栏显示连接状态 / session / pane 数
+- [ ] 自动 reattach（后续 phase）
+- [x] 配置文件：`~/.config/muxterm/config.toml`（字体/字号/主题/scrollback/tmux 模式）
+- [x] 主题：内置 dark / light，`configs/themes/<name>.toml`，ANSI 16 色 + 前景/背景/光标
+- [x] 输入快捷键：Ctrl+C / Ctrl+D / Ctrl+Enter（逐字）/ Tab（拦截焦点切换）
 
 **后续 Phase（不在 MVP 范围）：** SSH 传输、Mosh、多端同步、AI agent 检测、通知推送、文件浏览器（见原计划文档）。
 
-## 代码结构（建议，Codex 可调整）
+## 代码结构（实际）
 
 ```
 src/
 ├── main.rs              # 入口，GTK app 启动
+├── config.rs            # 配置 + 主题解析（纯函数 + 单元测试）
 ├── tmux/
 │   ├── mod.rs
 │   ├── protocol.rs      # % 消息解析器（line-oriented parser）
 │   ├── client.rs        # tmux -CC 进程管理 + stdin/stdout 通道
-│   └── command.rs       # send-keys 等命令构造器
-├── terminal/
-│   ├── mod.rs
-│   └── screen.rs        # pane 屏幕缓冲（基于 vte）
-├── ui/
-│   ├── mod.rs
-│   ├── app.rs           # GTK Application
-│   ├── notebook.rs      # Notebook tab 管理
-│   ├── pane_view.rs     # 单个 pane 的渲染视图
-│   └── input_bar.rs     # 底部输入框
-└── state/
-    └── mod.rs           # session/window/pane 状态树
+│   ├── command.rs       # send-keys 等命令构造器
+│   └── pty.rs           # PTY 辅助
+└── ui/
+    ├── mod.rs
+    ├── app.rs           # GTK Application 启动 + 配置/主题加载
+    ├── window.rs        # 主窗口（Notebook + 输入栏 + 状态栏 + 事件分发）
+    ├── notebook.rs      # Notebook tab 管理
+    ├── pane_view.rs     # vte4 Terminal 单 pane 视图（颜色/字体应用）
+    ├── input_bar.rs     # 底部输入框 + 快捷键
+    ├── theme.rs         # ANSI SGR → CellStyle 映射（纯函数 + 单元测试）
+    └── wiring.rs        # tmux client ↔ UI 事件桥接（tokio + std::mpsc + glib timeout）
+configs/
+├── config.example.toml
+└── themes/{dark,light}.toml
 ```
+
+## UI 架构要点
+
+- **不阻塞 UI 线程**：tmux I/O 在后台 tokio task；事件经 `std::sync::mpsc` 跨线程
+  传到 UI 线程，UI 线程用 `glib::timeout_add_local`（16ms 轮询）`try_recv` 派发。
+- **UI → tmux 命令**：`tokio::sync::mpsc` 通道，后台 task 串行 `send_raw` 写 pty。
+- **vte4 Terminal 作为输出渲染器**：不自 spawn 子进程（tmux 已管理 shell），
+  `input_enabled=false`，把 `%output` 字节流 `feed()` 进去即可。ANSI 颜色/
+  样式/24-bit 真彩色/中文/emoji/自动滚动/scrollback 全由 vte4 处理。
+- **输入**：底部 GtkEntry，Enter 逐字发送（`send-keys -l`），Ctrl+Enter 多行粘贴，
+  Ctrl+C/Ctrl+D/Tab 走特殊键。当前目标 pane id 显示在输入框旁。
+- **运行前提**：需要图形环境（`DISPLAY` 或 `WAYLAND_DISPLAY`）；系统需装
+  `gtk4`（>=4.6）与 `libvte-2.91-gtk4`（即 `vte4` 系统包）。无显示时
+  `cargo build` 与 `cargo test` 仍可通过（UI 启动需 DISPLAY）。
 
 ## 开发约定
 
