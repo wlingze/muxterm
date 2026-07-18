@@ -1,13 +1,15 @@
 //! 单个 pane 的渲染视图（vte4 Terminal）。
 //!
 //! 两种模式：
-//! - [`PaneMode::Local`]：vte4 自己 spawn 子进程（本地 shell），键盘输入直接进
-//!   vte4（`input_enabled=true`）。子进程退出时 emit `child-exited`，上层据此
-//!   关闭对应 tab。
+//! - [`PaneMode::Local`]：vte4 `spawn_async` 跑一个程序（默认 shell，可配置），
+//!   键盘输入直接进 vte4（`input_enabled=true`）。子进程退出时 emit
+//!   `child-exited`，上层据此关闭对应 pane（不是再开空 shell）。
 //! - [`PaneMode::Tmux`]：tmux `-CC` 的 `%output` 内容通过 `feed_output()` 喂给
 //!   vte4 渲染；键盘输入走底部输入栏的 `send-keys`（`input_enabled=false`）。
 
-use crate::config::{Rgb, Theme};
+use std::path::{Path, PathBuf};
+
+use crate::config::{program_basename, Rgb, Theme};
 use gtk4::glib;
 use gtk4::pango;
 use vte4::prelude::*;
@@ -20,25 +22,57 @@ pub enum PaneMode {
     Tmux,
 }
 
+/// 本地 pane 的 spawn 参数。
+#[derive(Debug, Clone)]
+pub struct SpawnOpts {
+    /// argv（至少一个元素）。
+    pub argv: Vec<String>,
+    /// 工作目录；None 则用进程 cwd。
+    pub workdir: Option<PathBuf>,
+}
+
+impl SpawnOpts {
+    pub fn program_name(&self) -> String {
+        self.argv
+            .first()
+            .map(|a| program_basename(a))
+            .unwrap_or_else(|| "shell".into())
+    }
+}
+
 /// 一个 pane 的视图。
 pub struct PaneView {
     pub terminal: Terminal,
     pub mode: PaneMode,
     pub pane_id: Option<crate::tmux::protocol::PaneId>,
+    /// 显示名：本地为 argv[0] basename；tmux 为 pane id 字符串。
+    pub program_name: String,
 }
 
 impl PaneView {
-    /// 本地 shell pane：vte4 自 spawn 默认 shell。
-    pub fn new_local(theme: &Theme, font_family: &str, font_size: f32, scrollback: u32) -> Self {
+    /// 本地程序 pane：按 `opts` spawn。
+    pub fn new_local(
+        theme: &Theme,
+        font_family: &str,
+        font_size: f32,
+        scrollback: u32,
+        opts: &SpawnOpts,
+    ) -> Self {
         let terminal = build_terminal(theme, font_family, font_size, scrollback, true);
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let argv = [shell.as_str()];
+        let program_name = opts.program_name();
+        let argv_owned = opts.argv.clone();
+        let argv_refs: Vec<&str> = argv_owned.iter().map(|s| s.as_str()).collect();
         let envv: Vec<String> = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
         let env_refs: Vec<&str> = envv.iter().map(|s| s.as_str()).collect();
+        let workdir = opts
+            .workdir
+            .as_ref()
+            .and_then(|p| p.to_str().map(|s| s.to_string()));
+        let workdir_ref = workdir.as_deref();
         terminal.spawn_async(
             PtyFlags::DEFAULT,
-            None,
-            &argv,
+            workdir_ref,
+            &argv_refs,
             &env_refs,
             glib::SpawnFlags::DEFAULT,
             || {},
@@ -50,6 +84,7 @@ impl PaneView {
             terminal,
             mode: PaneMode::Local,
             pane_id: None,
+            program_name,
         }
     }
 
@@ -62,10 +97,12 @@ impl PaneView {
         scrollback: u32,
     ) -> Self {
         let terminal = build_terminal(theme, font_family, font_size, scrollback, false);
+        let program_name = pane_id.as_str();
         Self {
             terminal,
             mode: PaneMode::Tmux,
             pane_id: Some(pane_id),
+            program_name,
         }
     }
 
@@ -77,9 +114,27 @@ impl PaneView {
         self.mode == PaneMode::Tmux
     }
 
-    /// 注册 child-exited 回调（仅本地 shell 有意义）。返回信号 id。
+    /// 注册 child-exited 回调（仅本地程序有意义）。
     pub fn connect_child_exited<F: Fn(&Terminal, i32) + 'static>(&self, f: F) {
         self.terminal.connect_child_exited(f);
+    }
+
+    /// 尝试读取该 terminal 的当前工作目录（OSC 7 / VTE）。
+    pub fn current_workdir(&self) -> Option<PathBuf> {
+        terminal_workdir(&self.terminal)
+    }
+}
+
+/// 从 vte Terminal 读当前目录 URI。
+pub fn terminal_workdir(term: &Terminal) -> Option<PathBuf> {
+    let uri = term.current_directory_uri()?;
+    let s = uri.as_str();
+    let path = s.strip_prefix("file://").unwrap_or(s);
+    let p = Path::new(path);
+    if p.is_absolute() {
+        Some(p.to_path_buf())
+    } else {
+        None
     }
 }
 

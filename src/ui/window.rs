@@ -1,16 +1,15 @@
-//! 主窗口。
+//! 主窗口（程序/pane 生命周期模型）。
 //!
-//! - 顶部：只有 Notebook tab 栏（无按钮）。
-//! - 中间：当前 tab 的 pane 区域（本地 shell 可分割；tmux pane 1:1）。
-//! - 底部：输入栏（仅 tmux pane 显示）+ 状态栏。
+//! 程序退出模型：
+//! - 正常/异常退出 → 关闭对应 pane（异常可提示）
+//! - tab 内无 pane → 关 tab
+//! - 无 tab → 按 `behavior.on_last_pane_exit`（默认关窗）
+//! - **不再**「最后一个 shell 退出开新空 shell」
 //!
-//! 快捷键（EventControllerKey 绑在 window 上）：
-//! Alt+N/T/D/Shift+D/1-9/0/[ ]/R/P，详见 `configs/config.example.toml`。
-//!
-//! 启动即一个本地 shell tab。shell 退出 → 自动关 tab；最后一个 tab 关 → 新开
-//! 空 shell tab。tmux 是可选的 attach（Alt+P → tmux_attach / tmux_new）。
+//! 布局仍用 Notebook 原生 tab（极简 TabBar 在后续 commit）。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use gtk4::glib;
@@ -18,15 +17,17 @@ use gtk4::prelude::*;
 use gtk4::{Box, EventControllerKey, Label, Orientation, Window};
 use vte4::prelude::*;
 
-use crate::config::{Action, Config, Theme};
+use crate::config::{
+    decode_wait_status, expand_config_value, parse_command_argv, Action, Config, OnLastPaneExit,
+    OnProgramExitAbnormal, Theme,
+};
 use crate::tmux::client::TmuxClientConfig;
-use crate::tmux::command::{kill_pane as tmux_kill_pane, send_keys, Key, PaneId as CmdPaneId};
 use crate::tmux::protocol::PaneId;
 use crate::ui::command_palette;
 use crate::ui::input_bar::InputBar;
 use crate::ui::keymap::KeyMap;
-use crate::ui::notebook::{LocalPaneId, PaneKey, PaneNotebook, TabContent, TabKey};
-use crate::ui::pane_view::{PaneMode, PaneView};
+use crate::ui::notebook::{LocalPaneId, PaneKey, PaneNotebook, TabKey};
+use crate::ui::pane_view::{PaneView, SpawnOpts};
 use crate::ui::tmux_dialog::{self, TmuxAction};
 use crate::ui::wiring::{spawn_bridge, CommandSender, UiEvent};
 
@@ -37,13 +38,13 @@ pub struct AppWindow {
 
 struct SharedState {
     notebook: Arc<RwLock<PaneNotebook>>,
-    /// 所有 pane key → PaneView（持有 terminal，用于 feed / child-exited 查找）。
+    /// 所有 pane key → PaneView。
     pane_views: Arc<RwLock<HashMap<PaneKey, PaneView>>>,
-    /// 本地 tab key → 该 tab 内的 pane keys（用于 child-exited 时定位 tab）。
+    /// 本地 tab key → 该 tab 内的 pane keys。
     tab_panes: Arc<RwLock<HashMap<TabKey, Vec<PaneKey>>>>,
-    /// tmux pane id → window id（tmux 侧 window/pane 关系）。
+    /// tmux pane id → window id。
     pane_window: Arc<RwLock<HashMap<u32, u32>>>,
-    /// tmux pane id → tab key（用于 close 反查）。
+    /// tmux pane id → tab key。
     pane_tab: Arc<RwLock<HashMap<u32, TabKey>>>,
     session_name: Arc<RwLock<Option<String>>>,
     cfg: Arc<Config>,
@@ -70,6 +71,7 @@ impl AppWindow {
             .orientation(Orientation::Vertical)
             .spacing(0)
             .build();
+
         let notebook = Arc::new(RwLock::new(PaneNotebook::new()));
         root.append(&notebook.read().unwrap().notebook);
 
@@ -80,7 +82,7 @@ impl AppWindow {
         root.append(&input_bar_container);
 
         let status_label = Label::builder()
-            .label("状态：本地 shell")
+            .label("状态：本地")
             .halign(gtk4::Align::Start)
             .margin_start(6)
             .margin_end(6)
@@ -121,13 +123,12 @@ impl AppWindow {
         app_win.wire_input_bar();
         app_win.wire_global_key_events();
 
-        // 启动即一个本地 shell
+        // 启动即一个本地程序 tab（默认 shell）
         app_win.new_local_tab();
 
         app_win
     }
 
-    /// Notebook 切 tab 回调。
     fn wire_notebook_switch(&self) {
         let shared = self.shared.clone();
         let nbook = self.shared.notebook.read().unwrap().notebook.clone();
@@ -136,7 +137,6 @@ impl AppWindow {
         });
     }
 
-    /// 输入栏接线（tmux pane 用）。
     fn wire_input_bar(&self) {
         let dispatcher: Arc<dyn Fn(&str) + Send + Sync> = {
             let sender = self.shared.cmd_sender.clone();
@@ -149,17 +149,14 @@ impl AppWindow {
             })
         };
         let current_pane = self.shared.current_pane.clone();
-        let current_pane_fn: Arc<dyn Fn() -> Option<PaneId> + Send + Sync> = Arc::new(move || {
-            // 当前激活 pane 若是 tmux，返回 pane id
-            match *current_pane.lock().unwrap() {
+        let current_pane_fn: Arc<dyn Fn() -> Option<PaneId> + Send + Sync> =
+            Arc::new(move || match *current_pane.lock().unwrap() {
                 Some(PaneKey::Tmux(p)) => Some(p),
                 _ => None,
-            }
-        });
+            });
         self.shared.input_bar.wire(dispatcher, current_pane_fn);
     }
 
-    /// 全局快捷键：EventControllerKey 绑在 window 上。
     fn wire_global_key_events(&self) {
         let shared = self.shared.clone();
         let controller = EventControllerKey::new();
@@ -174,32 +171,46 @@ impl AppWindow {
         self.window.add_controller(controller);
     }
 
-    /// 新建一个本地 shell tab。
     fn new_local_tab(&self) {
         SharedState::new_local_tab(&self.shared);
     }
 }
 
 impl SharedState {
-    /// 新建本地 shell tab（1 个 pane）。
+    /// 构造本地 spawn 参数（命令 + 工作目录）。
+    fn local_spawn_opts(self: &Arc<Self>, workdir_override: Option<PathBuf>) -> SpawnOpts {
+        let argv = parse_command_argv(&self.cfg.pane.default_command);
+        let workdir = workdir_override.or_else(|| {
+            let w = expand_config_value(&self.cfg.pane.workdir);
+            Some(PathBuf::from(w))
+        });
+        SpawnOpts { argv, workdir }
+    }
+
+    /// 新建本地程序 tab（1 个 pane）。
     fn new_local_tab(self: &Arc<Self>) -> (TabKey, PaneKey) {
+        let workdir = self
+            .inherit_workdir()
+            .or_else(|| Some(PathBuf::from(expand_config_value(&self.cfg.pane.workdir))));
+        let opts = self.local_spawn_opts(workdir);
         let view = PaneView::new_local(
             &self.theme,
             &self.cfg.font.family,
             self.cfg.font.size,
             self.cfg.scrollback.lines,
+            &opts,
         );
+        let title_name = view.program_name.clone();
         let term = view.terminal.clone();
         let (tab_key, pane_key) = {
             let mut nb = self.notebook.write().unwrap();
-            nb.add_local_tab(&view, "shell")
+            nb.add_local_tab(&view, &title_name)
         };
-        // 注册 child-exited：shell 退出 → 关 pane/tab
         let shared = self.clone();
         let tab_for_cb = tab_key;
         let pane_for_cb = pane_key;
-        term.connect_child_exited(move |_t, _status| {
-            shared.on_local_pane_exited(tab_for_cb, pane_for_cb);
+        term.connect_child_exited(move |_t, status| {
+            shared.on_local_pane_exited(tab_for_cb, pane_for_cb, status);
         });
         self.pane_views.write().unwrap().insert(pane_key, view);
         self.tab_panes
@@ -209,13 +220,49 @@ impl SharedState {
         *self.current_tab.lock().unwrap() = Some(tab_key);
         *self.current_pane.lock().unwrap() = Some(pane_key);
         self.input_bar_container.set_visible(false);
+        self.refresh_window_title();
         (tab_key, pane_key)
     }
 
-    /// 本地 pane 子进程退出：移除该 pane；若 tab 内无 pane 则关 tab；
-    /// 若最后一个 tab 被关则新开一个空 shell tab。
-    fn on_local_pane_exited(self: &Arc<Self>, tab: TabKey, pane: PaneKey) {
-        tracing::info!(target = "muxterm::window", ?tab, ?pane, "本地 pane 退出");
+    /// 继承当前激活 pane 的工作目录（若可得）。
+    fn inherit_workdir(self: &Arc<Self>) -> Option<PathBuf> {
+        let pane = *self.current_pane.lock().unwrap();
+        let pane = pane?;
+        let views = self.pane_views.read().unwrap();
+        views.get(&pane).and_then(|v| v.current_workdir())
+    }
+
+    /// 本地 pane 子进程退出。
+    fn on_local_pane_exited(self: &Arc<Self>, tab: TabKey, pane: PaneKey, status: i32) {
+        let code = decode_wait_status(status);
+        let prog = self
+            .pane_views
+            .read()
+            .unwrap()
+            .get(&pane)
+            .map(|v| v.program_name.clone())
+            .unwrap_or_else(|| "program".into());
+
+        tracing::info!(
+            target = "muxterm::window",
+            ?tab,
+            ?pane,
+            code,
+            %prog,
+            "本地 pane 程序退出"
+        );
+
+        // 异常退出且策略为 Keep：保留 pane，仅提示
+        if code != 0 && self.cfg.behavior.on_program_exit_abnormal == OnProgramExitAbnormal::Keep {
+            self.show_status(&format!("{prog} exited with code {code}"));
+            return;
+        }
+
+        if code != 0 && self.cfg.behavior.on_program_exit_abnormal == OnProgramExitAbnormal::Notify
+        {
+            self.show_status(&format!("{prog} exited with code {code}"));
+        }
+
         // 从 tab_panes 移除该 pane
         let mut tp = self.tab_panes.write().unwrap();
         if let Some(panes) = tp.get_mut(&tab) {
@@ -225,29 +272,53 @@ impl SharedState {
         let tab_empty = remaining.is_empty();
         drop(tp);
 
-        // 移除 pane view
         self.pane_views.write().unwrap().remove(&pane);
 
         if tab_empty {
-            // 关 tab
             self.notebook.write().unwrap().remove(tab);
             self.tab_panes.write().unwrap().remove(&tab);
-            // 若是最后一个 tab → 新开空 shell
             let n = self.notebook.read().unwrap().n_tabs();
             if n == 0 {
-                self.new_local_tab();
+                self.on_all_tabs_closed();
             } else {
-                // 切到第一个 tab
                 self.notebook.read().unwrap().select_by_index(0);
             }
         } else {
-            // tab 内还有 pane，rebuild
             self.rebuild_local_tab(tab);
         }
+        self.refresh_window_title();
         self.refresh_input_visibility();
     }
 
-    /// 重建本地 tab 的分割布局（pane 增减后）。
+    /// 所有 tab 都关了之后的行为（**不再**默认开新 shell）。
+    fn on_all_tabs_closed(self: &Arc<Self>) {
+        match self.cfg.behavior.on_last_pane_exit {
+            OnLastPaneExit::CloseWindow => {
+                tracing::info!(target = "muxterm::window", "无剩余 tab，关闭窗口");
+                self.window.close();
+            }
+            OnLastPaneExit::KeepEmpty => {
+                tracing::info!(target = "muxterm::window", "无剩余 tab，保留空窗口");
+                self.show_status("所有 pane 已关闭");
+                *self.current_tab.lock().unwrap() = None;
+                *self.current_pane.lock().unwrap() = None;
+                self.refresh_window_title();
+            }
+            OnLastPaneExit::NewShell => {
+                // 废弃旧逻辑：仍兼容配置，但打 warn
+                tracing::warn!(
+                    target = "muxterm::window",
+                    "on_last_pane_exit=new_shell 已废弃，将开新 tab（请改用 close_window）"
+                );
+                self.new_local_tab();
+            }
+        }
+    }
+
+    fn show_status(self: &Arc<Self>, msg: &str) {
+        self.status_label.set_label(msg);
+    }
+
     fn rebuild_local_tab(self: &Arc<Self>, tab: TabKey) {
         let panes: Vec<PaneKey> = self
             .tab_panes
@@ -266,17 +337,15 @@ impl SharedState {
                 .filter_map(|p| views.get(p).map(|v| (*p, v.terminal.clone())))
                 .collect()
         };
+        let title = self.tab_display_name(tab);
         {
             let mut nb = self.notebook.write().unwrap();
-            // 设 orientation：取该 tab 第一个 PaneContent 已存的，或默认水平
-            // 简化：split 时设了 orientation，这里读不到——用 HashMap 外存？
-            // 这里用 tab_panes 的顺序 + 默认水平。split 时若改过方向需更新。
             nb.rebuild_local_root(tab, &terminals);
-            nb.relayout_local_tab(tab, "shell");
+            nb.relayout_local_tab(tab, &title);
         }
     }
 
-    /// 分割当前激活的本地 pane，加一个新 pane。
+    /// 分割当前激活的本地 pane。
     fn split_current_pane(self: &Arc<Self>, vertical: bool) {
         let tab = match *self.current_tab.lock().unwrap() {
             Some(TabKey::Local(_)) => self.current_tab.lock().unwrap().unwrap(),
@@ -285,15 +354,16 @@ impl SharedState {
                 return;
             }
         };
-        // 新建一个本地 shell pane
+        let workdir = self.inherit_workdir();
+        let opts = self.local_spawn_opts(workdir);
         let view = PaneView::new_local(
             &self.theme,
             &self.cfg.font.family,
             self.cfg.font.size,
             self.cfg.scrollback.lines,
+            &opts,
         );
         let term = view.terminal.clone();
-        // 新 pane key
         let new_pane = {
             let panes = self.tab_panes.read().unwrap();
             let max = panes
@@ -309,12 +379,11 @@ impl SharedState {
                 + 1;
             PaneKey::Local(LocalPaneId(max))
         };
-        // 注册 child-exited
         let shared = self.clone();
         let tab_cb = tab;
         let pane_cb = new_pane;
-        term.connect_child_exited(move |_t, _s| {
-            shared.on_local_pane_exited(tab_cb, pane_cb);
+        term.connect_child_exited(move |_t, status| {
+            shared.on_local_pane_exited(tab_cb, pane_cb, status);
         });
         self.pane_views.write().unwrap().insert(new_pane, view);
         self.tab_panes
@@ -322,13 +391,11 @@ impl SharedState {
             .unwrap()
             .get_mut(&tab)
             .map(|v| v.push(new_pane));
-        // 设 orientation
         let orient = if vertical {
             gtk4::Orientation::Vertical
         } else {
             gtk4::Orientation::Horizontal
         };
-        // 在 notebook 里更新 TabContent orientation 并 rebuild
         {
             let mut nb = self.notebook.write().unwrap();
             if let Some((_idx, Some(content))) = nb.tabs.get_mut(&tab) {
@@ -345,13 +412,14 @@ impl SharedState {
                     .filter_map(|p| views.get(p).map(|v| (*p, v.terminal.clone())))
                     .collect()
             };
+            let title = self.tab_display_name(tab);
             nb.rebuild_local_root(tab, &terminals);
-            nb.relayout_local_tab(tab, "shell");
+            nb.relayout_local_tab(tab, &title);
         }
         *self.current_pane.lock().unwrap() = Some(new_pane);
+        self.refresh_window_title();
     }
 
-    /// 切换 tab（按数字 1-9 / 最后）。
     fn switch_tab_n(self: &Arc<Self>, n: u32) {
         let nb = self.notebook.read().unwrap();
         let total = nb.n_tabs();
@@ -362,7 +430,6 @@ impl SharedState {
         nb.select_by_index(idx);
     }
 
-    /// 切换当前 tab 内的 pane（前/后）。
     fn switch_pane(self: &Arc<Self>, next: bool) {
         let tab = self.current_tab.lock().unwrap();
         let tab = match *tab {
@@ -385,16 +452,14 @@ impl SharedState {
         } else {
             idx - 1
         };
+        drop(cur);
         *self.current_pane.lock().unwrap() = Some(panes[new_idx]);
+        self.refresh_window_title();
     }
 
-    /// 执行一个 action。
     fn dispatch_action(self: &Arc<Self>, action: Action) {
         match action {
-            Action::NewWindow => {
-                self.new_local_tab();
-            }
-            Action::NewTab => {
+            Action::NewWindow | Action::NewTab => {
                 self.new_local_tab();
             }
             Action::NewPane => self.split_current_pane(false),
@@ -422,7 +487,6 @@ impl SharedState {
         }
     }
 
-    /// 命令面板执行。
     fn run_palette_command(self: &Arc<Self>, cmd: &str) {
         match cmd {
             "new_window" | "new_tab" => {
@@ -470,15 +534,13 @@ impl SharedState {
         }
     }
 
-    /// 处理一条 tmux UI 事件（UI 线程）。
     fn handle_ui_event(self: &Arc<Self>, ev: &UiEvent) {
         match ev {
             UiEvent::Connected => {
-                self.status_label
-                    .set_label("状态：已连接 tmux | 等待 pane…");
+                self.show_status("已连接 tmux");
             }
             UiEvent::Error { msg } => {
-                self.status_label.set_label("状态：tmux 连接失败");
+                self.show_status("tmux 连接失败");
                 let dlg = gtk4::MessageDialog::builder()
                     .transient_for(&self.window)
                     .modal(true)
@@ -493,7 +555,6 @@ impl SharedState {
                 dlg.show();
             }
             UiEvent::PaneOutput { pane, data } => {
-                let key = TabKey::Tmux(*pane);
                 let pane_key = PaneKey::Tmux(*pane);
                 if !self.pane_views.read().unwrap().contains_key(&pane_key) {
                     let view = PaneView::new_tmux(
@@ -503,7 +564,7 @@ impl SharedState {
                         self.cfg.font.size,
                         self.cfg.scrollback.lines,
                     );
-                    let title = PaneNotebook::default_title(key, None);
+                    let title = view.program_name.clone();
                     let k = self.notebook.write().unwrap().add_tmux_tab(&view, &title);
                     self.pane_views.write().unwrap().insert(pane_key, view);
                     self.pane_tab.write().unwrap().insert(pane.0, k);
@@ -534,6 +595,10 @@ impl SharedState {
                     }
                     self.pane_tab.write().unwrap().remove(&p.0);
                 }
+                if self.notebook.read().unwrap().n_tabs() == 0 {
+                    self.on_all_tabs_closed();
+                }
+                self.refresh_window_title();
                 self.refresh_input_visibility();
             }
             UiEvent::WindowRenamed { window, name } => {
@@ -547,22 +612,17 @@ impl SharedState {
             }
             UiEvent::SessionChanged { sid, name } => {
                 *self.session_name.write().unwrap() = name.clone();
-                let title = match name {
-                    Some(n) => format!("muxterm — session: {n}"),
-                    None => format!("muxterm — session: ${sid}"),
-                };
-                self.window.set_title(Some(&title));
                 let n = self.notebook.read().unwrap().tab_count();
                 let nm = name.clone().unwrap_or_else(|| format!("${sid}"));
-                self.status_label
-                    .set_label(&format!("状态：已连接 | session: {nm} | tabs: {n}"));
+                self.show_status(&format!("session: {nm} | tabs: {n}"));
+                self.refresh_window_title();
             }
             UiEvent::Exit { reason } => {
                 let msg = match reason {
-                    Some(r) => format!("状态：tmux 已断开（{r}）"),
-                    None => "状态：tmux 已断开".to_string(),
+                    Some(r) => format!("tmux 已断开（{r}）"),
+                    None => "tmux 已断开".to_string(),
                 };
-                self.status_label.set_label(&msg);
+                self.show_status(&msg);
             }
         }
     }
@@ -575,7 +635,6 @@ impl SharedState {
         let key = nb.find_key_by_index(page_num);
         drop(nb);
         *self.current_tab.lock().unwrap() = key;
-        // 更新当前 pane：本地 tab 取第一个 pane，tmux tab 取对应 pane
         let pane = match key {
             Some(TabKey::Tmux(p)) => Some(PaneKey::Tmux(p)),
             Some(t @ TabKey::Local(_)) => self
@@ -587,6 +646,7 @@ impl SharedState {
             None => None,
         };
         *self.current_pane.lock().unwrap() = pane;
+        self.refresh_window_title();
         self.refresh_input_visibility();
     }
 
@@ -604,6 +664,56 @@ impl SharedState {
             self.input_bar_container.set_visible(false);
         }
     }
-}
 
-// （TabContent orientation 更新通过 pub(crate) tabs 字段直接访问）
+    /// tab 显示名：激活 pane 程序名；多 pane 时加 ` · Npanes`。
+    fn tab_display_name(self: &Arc<Self>, tab: TabKey) -> String {
+        match tab {
+            TabKey::Tmux(p) => {
+                let key = PaneKey::Tmux(p);
+                self.pane_views
+                    .read()
+                    .unwrap()
+                    .get(&key)
+                    .map(|v| v.program_name.clone())
+                    .unwrap_or_else(|| p.as_str())
+            }
+            TabKey::Local(_) => {
+                let panes = self
+                    .tab_panes
+                    .read()
+                    .unwrap()
+                    .get(&tab)
+                    .cloned()
+                    .unwrap_or_default();
+                let active = self.current_pane.lock().unwrap().clone();
+                let views = self.pane_views.read().unwrap();
+                let primary = active
+                    .filter(|p| panes.contains(p))
+                    .or_else(|| panes.first().copied());
+                let name = primary
+                    .and_then(|p| views.get(&p).map(|v| v.program_name.clone()))
+                    .unwrap_or_else(|| "shell".into());
+                if panes.len() > 1 {
+                    format!("{name} · {}panes", panes.len())
+                } else {
+                    name
+                }
+            }
+        }
+    }
+
+    fn refresh_window_title(self: &Arc<Self>) {
+        let pane = *self.current_pane.lock().unwrap();
+        let title = match pane {
+            Some(p) => self
+                .pane_views
+                .read()
+                .unwrap()
+                .get(&p)
+                .map(|v| v.program_name.clone())
+                .unwrap_or_else(|| "muxterm".into()),
+            None => "muxterm".into(),
+        };
+        self.window.set_title(Some(&title));
+    }
+}

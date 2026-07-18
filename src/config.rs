@@ -5,6 +5,8 @@
 //! - `[theme]` name
 //! - `[tmux]` auto_mouse / default_session
 //! - `[scrollback]` lines
+//! - `[pane]` 默认程序与工作目录
+//! - `[behavior]` 最后 pane 退出 / 异常退出策略
 //! - `[[keybindings]]` key/mods/action 数组
 //!
 //! 主题：`configs/themes/<name>.toml` 或 `~/.config/muxterm/themes/<name>.toml`，
@@ -30,6 +32,10 @@ pub struct Config {
     pub tmux: TmuxConfig,
     #[serde(default)]
     pub scrollback: ScrollbackConfig,
+    #[serde(default)]
+    pub pane: PaneConfig,
+    #[serde(default)]
+    pub behavior: BehaviorConfig,
     #[serde(default)]
     pub keybindings: Vec<KeyBinding>,
 }
@@ -113,6 +119,74 @@ impl Default for ScrollbackConfig {
     }
 }
 
+/// `[pane]`：本地 pane 默认程序与工作目录。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PaneConfig {
+    /// 默认启动命令（支持 `$SHELL`）。
+    #[serde(default = "default_pane_command")]
+    pub default_command: String,
+    /// 初始工作目录（支持 `$HOME`）。
+    #[serde(default = "default_pane_workdir")]
+    pub workdir: String,
+}
+fn default_pane_command() -> String {
+    "$SHELL".into()
+}
+fn default_pane_workdir() -> String {
+    "$HOME".into()
+}
+impl Default for PaneConfig {
+    fn default() -> Self {
+        PaneConfig {
+            default_command: default_pane_command(),
+            workdir: default_pane_workdir(),
+        }
+    }
+}
+
+/// 最后 pane/tab 全部退出后的行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnLastPaneExit {
+    /// 关闭窗口（默认）。
+    #[default]
+    CloseWindow,
+    /// 保留空窗口，等用户手动关或新建 tab。
+    KeepEmpty,
+    /// 旧逻辑：再开一个空 shell（已废弃，解析时仍接受）。
+    NewShell,
+}
+
+/// 程序异常退出（非 0）时的附加行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnProgramExitAbnormal {
+    /// 关 pane，并在状态栏提示（默认）。
+    #[default]
+    Notify,
+    /// 关 pane，不提示。
+    Close,
+    /// 不关 pane（保留终端输出，便于查看错误）。
+    Keep,
+}
+
+/// `[behavior]`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorConfig {
+    #[serde(default)]
+    pub on_last_pane_exit: OnLastPaneExit,
+    #[serde(default)]
+    pub on_program_exit_abnormal: OnProgramExitAbnormal,
+}
+impl Default for BehaviorConfig {
+    fn default() -> Self {
+        BehaviorConfig {
+            on_last_pane_exit: OnLastPaneExit::CloseWindow,
+            on_program_exit_abnormal: OnProgramExitAbnormal::Notify,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -120,8 +194,60 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             tmux: TmuxConfig::default(),
             scrollback: ScrollbackConfig::default(),
+            pane: PaneConfig::default(),
+            behavior: BehaviorConfig::default(),
             keybindings: default_keybindings(),
         }
+    }
+}
+
+/// 展开配置里的简单环境变量占位（`$SHELL` / `$HOME`）。
+pub fn expand_config_value(raw: &str) -> String {
+    let t = raw.trim();
+    if t == "$SHELL" {
+        return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    }
+    if t == "$HOME" {
+        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    }
+    if let Some(rest) = t.strip_prefix('$') {
+        if let Ok(v) = std::env::var(rest) {
+            return v;
+        }
+    }
+    t.to_string()
+}
+
+/// 从 `default_command` 解析 argv（空白分割；无空白则单元素）。
+pub fn parse_command_argv(command: &str) -> Vec<String> {
+    let expanded = expand_config_value(command);
+    let parts: Vec<String> = expanded.split_whitespace().map(|s| s.to_string()).collect();
+    if parts.is_empty() {
+        vec![expand_config_value("$SHELL")]
+    } else {
+        parts
+    }
+}
+
+/// argv[0] 的 basename，用作 pane 默认显示名。
+pub fn program_basename(argv0: &str) -> String {
+    Path::new(argv0)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(argv0)
+        .to_string()
+}
+
+/// 解码 waitpid 风格的 status → 退出码（信号终止为 128+sig）。
+pub fn decode_wait_status(status: i32) -> i32 {
+    // WIFEXITED: (status & 0x7f) == 0
+    if status & 0x7f == 0 {
+        (status >> 8) & 0xff
+    } else if ((status & 0x7f) + 1) as i8 >> 1 > 0 {
+        // WIFSIGNALED
+        128 + (status & 0x7f)
+    } else {
+        status
     }
 }
 
@@ -585,5 +711,65 @@ color15 = "#a6adc8"
         let t = parse_theme_toml(&light).unwrap();
         assert_eq!(t.name, "Light");
         assert_eq!(t.colors.len(), 16);
+    }
+
+    #[test]
+    fn parse_pane_behavior_sections() {
+        let raw = r##"
+[pane]
+default_command = "/bin/zsh"
+workdir = "/tmp"
+
+[behavior]
+on_last_pane_exit = "keep_empty"
+on_program_exit_abnormal = "close"
+"##;
+        let c = parse_config_toml(raw).unwrap();
+        assert_eq!(c.pane.default_command, "/bin/zsh");
+        assert_eq!(c.pane.workdir, "/tmp");
+        assert_eq!(c.behavior.on_last_pane_exit, OnLastPaneExit::KeepEmpty);
+        assert_eq!(
+            c.behavior.on_program_exit_abnormal,
+            OnProgramExitAbnormal::Close
+        );
+    }
+
+    #[test]
+    fn parse_pane_behavior_defaults() {
+        let c = parse_config_toml("").unwrap();
+        assert_eq!(c.pane.default_command, "$SHELL");
+        assert_eq!(c.pane.workdir, "$HOME");
+        assert_eq!(c.behavior.on_last_pane_exit, OnLastPaneExit::CloseWindow);
+        assert_eq!(
+            c.behavior.on_program_exit_abnormal,
+            OnProgramExitAbnormal::Notify
+        );
+    }
+
+    #[test]
+    fn expand_and_parse_command() {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        assert_eq!(expand_config_value("$SHELL"), shell);
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        assert_eq!(expand_config_value("$HOME"), home);
+        assert_eq!(expand_config_value("/bin/bash"), "/bin/bash");
+        assert_eq!(
+            parse_command_argv("/usr/bin/python3 script.py"),
+            vec!["/usr/bin/python3".to_string(), "script.py".to_string()]
+        );
+        assert_eq!(program_basename("/usr/bin/bash"), "bash");
+        assert_eq!(program_basename("vim"), "vim");
+    }
+
+    #[test]
+    fn decode_wait_status_exited_and_signaled() {
+        // exit 0 → status 0
+        assert_eq!(decode_wait_status(0), 0);
+        // exit 1 → ((1) << 8)
+        assert_eq!(decode_wait_status(1 << 8), 1);
+        // exit 42
+        assert_eq!(decode_wait_status(42 << 8), 42);
+        // SIGTERM (15) → 128+15
+        assert_eq!(decode_wait_status(15), 128 + 15);
     }
 }

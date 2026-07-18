@@ -19,6 +19,17 @@ default_session = ""    # 空则不自动 attach
 [scrollback]
 lines = 10000
 
+
+# 本地 pane 默认程序
+[pane]
+default_command = "$SHELL"   # 或 bash / zsh / 具体路径
+workdir = "$HOME"
+
+# 程序退出行为
+[behavior]
+on_last_pane_exit = "close_window"       # close_window / keep_empty / new_shell(废弃)
+on_program_exit_abnormal = "notify"      # notify / close / keep
+
 # 快捷键（可自定义，mods: control/shift/alt/super）
 [[keybindings]]
 key = "n"
