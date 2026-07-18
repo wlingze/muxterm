@@ -7,6 +7,10 @@ license = "MIT"
 
 [dependencies]
 vte = "0.13"
+gtk4 = "0.9"
+vte4 = "0.8"
+toml = "0.8"
+futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 thiserror = "1"

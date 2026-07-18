@@ -1,0 +1,18 @@
+# Muxterm 配置示例
+# 复制到 ~/.config/muxterm/config.toml 即可生效。
+
+[terminal]
+# 等宽字体家族（默认依赖系统 Monospace 别名）
+font_family = "Monospace"
+# 字号
+font_size = 12
+# 主题名，对应 configs/themes/<name>.toml
+theme = "dark"
+# 回滚行数（每个 pane 的 scrollback 缓冲长度）
+scrollback_lines = 10000
+
+[tmux]
+# 连接模式：local（spawn 本地 tmux）后续 phase 再加 remote
+mode = "local"
+# session 名：空字符串 = 自动新建
+session_name = ""

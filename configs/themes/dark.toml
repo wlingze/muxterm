@@ -1,0 +1,22 @@
+name = "Dark"
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+cursor = "#f5e0dc"
+
+# ANSI 16 色
+color0  = "#45475a"   # 黑
+color1  = "#f38ba8"   # 红
+color2  = "#a6e3a1"   # 绿
+color3  = "#f9e2af"   # 黄
+color4  = "#89b4fa"   # 蓝
+color5  = "#f5c2e7"   # 品红
+color6  = "#94e2d5"   # 青
+color7  = "#bac2de"   # 白
+color8  = "#585b70"   # 亮黑
+color9  = "#f38ba8"   # 亮红
+color10 = "#a6e3a1"   # 亮绿
+color11 = "#f9e2af"   # 亮黄
+color12 = "#89b4fa"   # 亮蓝
+color13 = "#f5c2e7"   # 亮品红
+color14 = "#94e2d5"   # 亮青
+color15 = "#a6adc8"   # 亮白

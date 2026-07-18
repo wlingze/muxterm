@@ -1,0 +1,22 @@
+name = "Light"
+background = "#eff1f5"
+foreground = "#4c4f69"
+cursor = "#dc8a78"
+
+# ANSI 16 色
+color0  = "#bcc0cc"   # 黑
+color1  = "#d20f39"   # 红
+color2  = "#40a02b"   # 绿
+color3  = "#df8e1d"   # 黄
+color4  = "#1e66f5"   # 蓝
+color5  = "#ea76cb"   # 品红
+color6  = "#179299"   # 青
+color7  = "#5c5f77"   # 白
+color8  = "#6c6f85"   # 亮黑
+color9  = "#d20f39"   # 亮红
+color10 = "#40a02b"   # 亮绿
+color11 = "#df8e1d"   # 亮黄
+color12 = "#1e66f5"   # 亮蓝
+color13 = "#ea76cb"   # 亮品红
+color14 = "#179299"   # 亮青
+color15 = "#acb0be"   # 亮白
