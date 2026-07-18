@@ -1,11 +1,56 @@
-# Muxterm — Native UI terminal for tmux control mode (Linux)
+# Muxterm — 跨平台终端（iTerm2 风格）
 
 > 仓库：`~/Project/muxterm/`（bare：`~/Project/muxterm.git`）
-> 状态：MVP 开发中
+> 状态：Phase 1 开发中
 > 创建：2026-07-18
 > 原始产品计划：`~/Documents/think/product/tmux-mobile.md`
 
+---
+
 ## 一句话
+
+**跨平台的 iTerm2 风格终端**，原生支持 tmux 控制模式（`-CC`），把 tmux 的 session/window/pane 渲染成自己的 tab/pane UI。最终目标是全平台（Linux / Windows / macOS / 移动端）统一体验 + AI agent 感知。
+
+---
+
+## 总路线图：两阶段
+
+### Phase 1：iTerm2 风格跨平台终端（当前）
+
+核心目标：做一个**好看、好用、跨平台**的终端，支持 tab/pane 分割、tmux 控制模式。像 iTerm2 一样，连不连 tmux 操作体验一致。
+
+| 平台 | 状态 | 技术方案 |
+|------|------|---------|
+| **Linux** | ✅ 开发中 | Rust + GTK4 + vte4 |
+| **macOS** | 📅 后续 | Rust 核心 + SwiftUI + SwiftTerm |
+| **Windows** | 📅 后续 | Rust 核心 + WinUI 3 / DirectWrite |
+| **iOS** | 📅 后续 | Rust 核心 + SwiftUI + SwiftTerm |
+| **Android** | 📅 远期 | Rust 核心 + Jetpack Compose |
+
+核心设计原则：
+- tmux 与非 tmux 模式体验**完全一致**（像 iTerm2 的 tmux integration）
+- 快捷键统一：Alt+N/T/D/1-9/[]/R/P
+- VSCode 风格命令面板（Alt+P）
+- Alacritty 风格配置文件（TOML）
+- 所有操作可配（快捷键 / 主题 / 字体 / 行为）
+
+### Phase 2：AI Agent 原生（后续）
+
+在 Phase 1 终端基础上增加 AI agent 感知功能：
+
+- 检测 pane 里跑的是 Codex / Claude Code / Hermes / Cursor Agent
+- 状态标签：运行中 / 等待输入 / 空闲 / 卡住了
+- 通知推送：agent 完成时提醒
+- Agent 上下文预算显示
+- 智能快捷指令（"重新生成"、"查看 diff"）
+- 多端同步 attach 同一 tmux session
+- 手机端查看 agent 进度
+
+详见原始计划：`~/Documents/think/product/tmux-mobile.md`
+
+---
+
+## 一句话（当前聚焦）
 
 Linux 桌面终端工具，通过 **tmux 控制模式 (`-CC`)** 与本地/远程 tmux 通信，把 tmux 的 session/window/pane 渲染成自己的原生 **tab pane UI**（类似 iTerm2 的 `-CC` 集成，但搬到 Linux + GTK4），而不是黑框终端 + `Ctrl+B` 操作。
 
@@ -14,12 +59,13 @@ Linux 桌面终端工具，通过 **tmux 控制模式 (`-CC`)** 与本地/远程
 - tmux 前缀键 `Ctrl+B` + 方向键反人类
 - 现有终端（GNOME Terminal、Alacritty、Kitty）都只是"黑框"，tmux 操作方式没变
 - Linux 上没有产品把 tmux pane 渲染成原生 GUI tab
+- iTerm2 只有 macOS，全平台没有替代品
 
-## 技术栈
+## 技术栈（Linux 阶段）
 
-- **Rust 2021**（核心引擎 + UI）
+- **Rust 2021**（核心引擎 + UI，全平台复用）
 - **GTK4 + gtk4-rs**（Linux 原生 UI）
-- **vte crate**（ANSI 转义序列解析，终端样式渲染）
+- **vte4**（终端模拟渲染）
 - **tokio**（异步，处理 tmux 进程 I/O）
 - 本地实测版本：rustc 1.97.1 / tmux 3.7b / gtk4 4.22.4
 
