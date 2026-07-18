@@ -179,7 +179,7 @@ fn standard16_fallback(n: u32) -> Rgb {
 }
 
 /// 反转前后景色（处理 SGR 7 reverse）。
-pub fn resolve(s: CellStyle, theme: &Theme) -> (Rgb, Rgb) {
+pub fn resolve(s: CellStyle, _theme: &Theme) -> (Rgb, Rgb) {
     if s.reverse {
         (s.bg, s.fg)
     } else {

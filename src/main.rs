@@ -8,8 +8,6 @@ mod config;
 mod tmux;
 mod ui;
 
-#[allow(unused_imports)]
-use ui::theme::CellStyle;
 
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]

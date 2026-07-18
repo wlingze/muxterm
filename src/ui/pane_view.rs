@@ -13,8 +13,7 @@
 //! 输入：tmux → UI 的输出字节流；UI → tmux 的按键由 `input_bar` 走命令通道。
 
 use crate::config::Theme;
-use gtk4::prelude::*;
-use gtk4::{gdk, pango};
+use gtk4::pango;
 use vte4::prelude::*;
 use vte4::Terminal;
 

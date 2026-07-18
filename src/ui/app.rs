@@ -2,14 +2,12 @@
 //!
 //! 负责加载配置、主题，构造主窗口，连本地 tmux，进入 GTK 主循环。
 
-use std::sync::Arc;
 
 use gtk4::prelude::*;
 use gtk4::Application;
 
 use crate::config::Config;
 use crate::tmux::client::{ConnectMode, TmuxClientConfig};
-use crate::ui::theme::CellStyle;
 use crate::ui::window::AppWindow;
 
 /// 应用 ID（GTK Application 的唯一标识，用于实例单例/桌面集成）。
