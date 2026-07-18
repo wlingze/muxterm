@@ -1,12 +1,15 @@
-// Muxterm 主入口
+// Muxterm 主入口。
 //
-// 当前 phase 只实现 tmux 控制协议客户端库，UI 留待后续 phase。
-// 这里只做最小占位：初始化日志并打印欢迎信息。
+// Phase 2：GTK4 终端 UI，连本地 tmux -CC，把 pane 渲染成 tab。
 
 use clap::Parser;
 
-#[allow(dead_code)]
+mod config;
 mod tmux;
+mod ui;
+
+#[allow(unused_imports)]
+use ui::theme::CellStyle;
 
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]
@@ -30,8 +33,6 @@ fn main() -> anyhow::Result<()> {
         .compact()
         .init();
 
-    tracing::info!("muxterm 启动（协议库 phase，UI 待后续 phase）");
-    println!("欢迎使用 Muxterm —— tmux 控制模式客户端库已就绪。");
-    println!("当前 phase: 协议解析 / 命令构造 / 异步客户端。UI 留待后续 phase。");
-    Ok(())
+    tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI phase）");
+    ui::app::run()
 }
