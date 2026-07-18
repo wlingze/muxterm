@@ -1,23 +1,25 @@
 //! GTK Application 启动与主入口。
 //!
-//! 负责加载配置、主题，构造主窗口，连本地 tmux，进入 GTK 主循环。
+//! 加载配置/主题，构造主窗口，进入 GTK 主循环。启动即一个本地 shell tab，
+//! tmux 是可选的 attach 功能（点工具栏「tmux」按钮）。
 
 use gtk4::prelude::*;
 use gtk4::Application;
 
 use crate::config::Config;
-use crate::tmux::client::{ConnectMode, TmuxClientConfig};
-use crate::ui::window::AppWindow;
 
-/// 应用 ID（GTK Application 的唯一标识，用于实例单例/桌面集成）。
+/// 应用 ID。
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 
 /// 启动 GTK 应用。阻塞直到窗口关闭。
 pub fn run() -> anyhow::Result<()> {
-    let app = Application::builder().application_id(APP_ID).build();
+    // NON_UNIQUE 允许同时跑多个实例（开发期方便）
+    let app = Application::builder()
+        .application_id(APP_ID)
+        .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
 
     app.connect_activate(move |a| {
-        // 加载配置与主题
         let cfg = Config::load().unwrap_or_else(|e| {
             tracing::warn!(target = "muxterm::app", "加载配置失败，用默认: {e}");
             Config::default()
@@ -34,34 +36,16 @@ pub fn run() -> anyhow::Result<()> {
             }
         };
 
-        let win = AppWindow::new(
+        let win = crate::ui::window::AppWindow::new(
             theme,
             &cfg.terminal.font_family,
             cfg.terminal.font_size,
             cfg.terminal.scrollback_lines,
         );
         a.add_window(&win.window);
-
-        // 构造 tmux 连接配置
-        let mode = if cfg.tmux.session_name.is_empty() {
-            ConnectMode::NewSession { name: None }
-        } else {
-            ConnectMode::NewSession {
-                name: Some(cfg.tmux.session_name.clone()),
-            }
-        };
-        let tmux_cfg = TmuxClientConfig {
-            mode: Some(mode),
-            cols: Some(100),
-            rows: Some(30),
-            ..Default::default()
-        };
-
-        win.connect(tmux_cfg);
         win.window.show();
     });
 
-    // run() 阻塞；退出码非零视为错误
     let exit = app.run_with_args::<&str>(&[]);
     let code: i32 = exit.into();
     if code != 0 {
@@ -70,7 +54,7 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 极端兜底主题（连内置 dark.toml 都读不到时用）。
+/// 极端兜底主题。
 fn fallback_theme() -> crate::config::Theme {
     use crate::config::Rgb;
     let colors = [

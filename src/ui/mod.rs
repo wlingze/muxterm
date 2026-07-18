@@ -3,16 +3,18 @@
 //! 模块：
 //! - `theme`：主题 → ANSI 样式映射（纯函数）
 //! - `app`：GTK Application 启动
-//! - `window`：主窗口（Notebook + 输入框 + 状态栏）
-//! - `notebook`：tab 管理（每个 pane 一个 tab）
-//! - `pane_view`：vte4 终端输出视图
-//! - `input_bar`：底部输入框 + 快捷键
-//! - `wiring`：tmux client ↔ UI 的事件桥接
+//! - `window`：主窗口（工具栏 + Notebook + 输入栏 + 状态栏）
+//! - `notebook`：tab 管理（本地 shell / tmux pane）
+//! - `pane_view`：vte4 终端视图（本地 shell 自 spawn 子进程 / tmux pane feed 输出）
+//! - `input_bar`：底部输入框 + 快捷键（仅 tmux pane 显示）
+//! - `tmux_dialog`：tmux 集成对话框（列 session / attach / 新建 session）
+//! - `wiring`：tmux client ↔ UI 事件桥接
 
 pub mod app;
 pub mod input_bar;
 pub mod notebook;
 pub mod pane_view;
 pub mod theme;
+pub mod tmux_dialog;
 pub mod window;
 pub mod wiring;

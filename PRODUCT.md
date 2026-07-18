@@ -148,6 +148,23 @@ configs/
   `gtk4`（>=4.6）与 `libvte-2.91-gtk4`（即 `vte4` 系统包）。无显示时
   `cargo build` 与 `cargo test` 仍可通过（UI 启动需 DISPLAY）。
 
+## UI 交互模型（Phase 2 重构后）
+
+参考 iTerm2 / GNOME Terminal 的启动体验：**打开即用，tmux 可选 attach**。
+
+- **启动即一个本地 shell tab**：vte4 `Terminal::spawn_async` 自 spawn 默认
+  shell（`$SHELL`），`input_enabled=true`，用户能立刻敲命令，不是空输入框。
+- **Tab 栏**：顶部 Notebook，每个 tab 一个独立 shell/pane；工具栏「+ 新建 tab」
+  按钮新建本地 shell tab；点 tab 切换。
+- **tmux 集成按钮**：工具栏「tmux」按钮弹对话框，列出当前所有 tmux session
+  （调 `tmux list-sessions`），双击 attach / 点「新建并 attach」新建 session。
+  attach 成功后 tmux 的每个 pane 作为新 tab 加入（`%output` 喂给对应 vte4）。
+- **底部输入栏**：仅对 tmux attach 的 pane 显示（本地 shell tab 直接用 vte4 自己
+  的键盘输入，无需底部输入框）；Enter 逐字发送（`send-keys -l`），Ctrl+Enter
+  多行粘贴，Ctrl+C/Ctrl+D/Tab 走特殊键。
+- **不强制绑定 tmux**：tmux 连接失败 / 断开不影响本地 shell，状态栏显示连接状态。
+- **字体主题**：保留 `configs/themes/<name>.toml` + `~/.config/muxterm/config.toml`。
+
 ## 开发约定
 
 - Rust 2021 edition
