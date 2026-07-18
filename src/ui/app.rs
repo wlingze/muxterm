@@ -26,10 +26,10 @@ pub fn run() -> anyhow::Result<()> {
             Err(e) => {
                 tracing::warn!(
                     target = "muxterm::app",
-                    "加载主题 {} 失败，用默认 dark: {e}",
+                    "加载主题 {} 失败，用默认 light: {e}",
                     cfg.theme.name
                 );
-                crate::config::Theme::load("dark").unwrap_or_else(|_| fallback_theme())
+                crate::config::Theme::load("light").unwrap_or_else(|_| fallback_theme())
             }
         };
         let win = crate::ui::window::AppWindow::new(cfg, theme);

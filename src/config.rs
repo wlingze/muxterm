@@ -73,7 +73,7 @@ pub struct ThemeConfig {
     pub name: String,
 }
 fn default_theme() -> String {
-    "dark".into()
+    "light".into()
 }
 impl Default for ThemeConfig {
     fn default() -> Self {
@@ -647,7 +647,7 @@ color15 = "#a6adc8"
         let c = parse_config_toml(CONFIG_SAMPLE).unwrap();
         assert_eq!(c.font.family, "JetBrains Mono");
         assert_eq!(c.font.size, 13.0);
-        assert_eq!(c.theme.name, "dark");
+        assert_eq!(c.theme.name, "dark"); // 样例文件显式指定 dark
         assert!(c.tmux.auto_mouse);
         assert_eq!(c.scrollback.lines, 5000);
         // 用户只写了 2 条 keybindings，应保留用户的（不补默认）
@@ -660,7 +660,7 @@ color15 = "#a6adc8"
         let c = parse_config_toml("").unwrap();
         assert_eq!(c.font.family, "Monospace");
         assert_eq!(c.font.size, 12.0);
-        assert_eq!(c.theme.name, "dark");
+        assert_eq!(c.theme.name, "light"); // 默认浅色
         assert!(c.tmux.auto_mouse);
         assert_eq!(c.scrollback.lines, 10000);
         // 空 keybindings → 补默认全套
