@@ -1,75 +1,340 @@
 //! Notebook tab 管理。
 //!
-//! - 本地 tab（`TabKey::Local`）：内容是一个 [`TabContent`]，可包含多个 pane
-//!   （水平/竖直分割，GtkPaned 线性链）。每个 pane 是一个本地 shell。
-//! - tmux tab（`TabKey::Tmux(PaneId)`）：内容是单个 vte4 Terminal（tmux 的每个
-//!   pane 渲染成我们的一个 tab，1:1）。
+//! 术语（与 tmux 对照）：
+//! - **Tab**：我们 app 底部/顶部的标签（一个可切换页面）
+//! - **Pane**：Tab 内部的分割区域（vte4 Terminal）
+//! - tmux **window** ↔ 我们的 **Tab**
+//! - tmux **pane** ↔ 我们的 **Pane**（同一 window 内多个 pane 嵌套分割）
+//!
+//! 分割布局：嵌套 `GtkPaned`（每次在当前激活 pane 内分割，不是整 tab 平铺）。
 
 use std::collections::HashMap;
 
 use gtk4::prelude::*;
 use gtk4::{Label, Notebook, Orientation, Paned, PositionType, Widget};
 
-use crate::tmux::protocol::PaneId;
+use crate::tmux::protocol::{PaneId, WindowId};
 use crate::ui::pane_view::PaneView;
 
-/// tab 标识。
+/// 我们 app 的 Tab 标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TabKey {
+    /// 本地程序 tab。
     Local(u64),
-    Tmux(PaneId),
+    /// 对应一个 tmux window（不是 pane）。
+    TmuxWindow(WindowId),
 }
 
 /// 一个本地 pane 在 tab 内的序号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalPaneId(pub u64);
 
-/// pane 标识（跨 local/tmux）。
+/// 我们 app 的 Pane 标识（跨 local / tmux）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaneKey {
     Local(LocalPaneId),
     Tmux(PaneId),
 }
 
-/// 一个本地 tab 的内容：若干 pane 的线性分割。
+/// 分割方向（与 GTK Orientation 对应：Horizontal=左右，Vertical=上下）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitOrient {
+    Horizontal,
+    Vertical,
+}
+
+impl SplitOrient {
+    pub fn to_gtk(self) -> Orientation {
+        match self {
+            SplitOrient::Horizontal => Orientation::Horizontal,
+            SplitOrient::Vertical => Orientation::Vertical,
+        }
+    }
+
+    pub fn from_gtk(o: Orientation) -> Self {
+        match o {
+            Orientation::Vertical => SplitOrient::Vertical,
+            _ => SplitOrient::Horizontal,
+        }
+    }
+}
+
+/// 嵌套 pane 布局树。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneNode {
+    Leaf(PaneKey),
+    Split {
+        orientation: SplitOrient,
+        first: Box<PaneNode>,
+        second: Box<PaneNode>,
+    },
+}
+
+impl PaneNode {
+    pub fn leaf(pane: PaneKey) -> Self {
+        PaneNode::Leaf(pane)
+    }
+
+    /// 前序遍历收集所有叶节点。
+    pub fn leaves(&self) -> Vec<PaneKey> {
+        let mut out = Vec::new();
+        self.collect_leaves(&mut out);
+        out
+    }
+
+    fn collect_leaves(&self, out: &mut Vec<PaneKey>) {
+        match self {
+            PaneNode::Leaf(k) => out.push(*k),
+            PaneNode::Split { first, second, .. } => {
+                first.collect_leaves(out);
+                second.collect_leaves(out);
+            }
+        }
+    }
+
+    /// 在 `target` 叶节点处嵌套分割：原 pane 为 first，新 pane 为 second。
+    pub fn split_leaf(
+        &mut self,
+        target: PaneKey,
+        new_pane: PaneKey,
+        orientation: SplitOrient,
+    ) -> bool {
+        match self {
+            PaneNode::Leaf(k) if *k == target => {
+                *self = PaneNode::Split {
+                    orientation,
+                    first: Box::new(PaneNode::Leaf(target)),
+                    second: Box::new(PaneNode::Leaf(new_pane)),
+                };
+                true
+            }
+            PaneNode::Leaf(_) => false,
+            PaneNode::Split { first, second, .. } => {
+                first.split_leaf(target, new_pane, orientation)
+                    || second.split_leaf(target, new_pane, orientation)
+            }
+        }
+    }
+
+    /// 移除叶节点并折叠：若某侧被移除，整棵 Split 收缩为另一侧。
+    /// 返回 false 表示未找到；若移除后树为空则不应发生（至少留一个 leaf）。
+    pub fn remove_leaf(&mut self, target: PaneKey) -> bool {
+        match self {
+            PaneNode::Leaf(k) => *k == target, // 调用方处理「根就是该叶」
+            PaneNode::Split { first, second, .. } => {
+                if matches!(first.as_ref(), PaneNode::Leaf(k) if *k == target) {
+                    *self = second.as_ref().clone();
+                    return true;
+                }
+                if matches!(second.as_ref(), PaneNode::Leaf(k) if *k == target) {
+                    *self = first.as_ref().clone();
+                    return true;
+                }
+                if first.remove_leaf(target) {
+                    // 若子树变成「空」不可能；但若 first 自身是被删的 leaf 已在上面处理
+                    return true;
+                }
+                second.remove_leaf(target)
+            }
+        }
+    }
+
+    /// 根是目标叶时返回 true（整 tab 应关闭）。
+    pub fn is_leaf(&self, key: PaneKey) -> bool {
+        matches!(self, PaneNode::Leaf(k) if *k == key)
+    }
+}
+
+/// tmux window_layout 解析出的树（纯数据，便于单测）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutNode {
+    Leaf(u32),
+    /// `vertical=false` → `{...}` 左右；`true` → `[...]` 上下。
+    Split {
+        vertical: bool,
+        children: Vec<LayoutNode>,
+    },
+}
+
+impl LayoutNode {
+    pub fn leaves(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.collect_leaves(&mut out);
+        out
+    }
+
+    fn collect_leaves(&self, out: &mut Vec<u32>) {
+        match self {
+            LayoutNode::Leaf(id) => out.push(*id),
+            LayoutNode::Split { children, .. } => {
+                for c in children {
+                    c.collect_leaves(out);
+                }
+            }
+        }
+    }
+
+    /// 转成二叉 PaneNode（多子节点时左结合嵌套）。
+    pub fn to_pane_node(&self) -> PaneNode {
+        match self {
+            LayoutNode::Leaf(id) => PaneNode::Leaf(PaneKey::Tmux(PaneId(*id))),
+            LayoutNode::Split { vertical, children } => {
+                let orient = if *vertical {
+                    SplitOrient::Vertical
+                } else {
+                    SplitOrient::Horizontal
+                };
+                let mut nodes: Vec<PaneNode> = children.iter().map(|c| c.to_pane_node()).collect();
+                if nodes.is_empty() {
+                    return PaneNode::Leaf(PaneKey::Tmux(PaneId(0)));
+                }
+                let mut acc = nodes.remove(0);
+                for n in nodes {
+                    acc = PaneNode::Split {
+                        orientation: orient,
+                        first: Box::new(acc),
+                        second: Box::new(n),
+                    };
+                }
+                acc
+            }
+        }
+    }
+}
+
+/// 解析 tmux `window_layout` 字符串为嵌套树。
+///
+/// 格式：`[<checksum>,]<WxH>,<X>,<Y>,<pane_id>` 或
+/// `...{child,child}`（左右）/ `...[child,child]`（上下）。
+pub fn parse_layout_tree(layout: &str) -> Option<LayoutNode> {
+    let bytes = layout.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'x' {
+            let mut k = j + 1;
+            if k < bytes.len() && bytes[k].is_ascii_digit() {
+                while k < bytes.len() && bytes[k].is_ascii_digit() {
+                    k += 1;
+                }
+                if let Some((node, _)) = parse_layout_node(&layout[i..]) {
+                    return Some(node);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 从 `WxH,X,Y...` 起解析一个节点，返回 (节点, 剩余)。
+fn parse_layout_node(s: &str) -> Option<(LayoutNode, &str)> {
+    let (w, rest) = split_digits(s)?;
+    let rest = rest.strip_prefix('x')?;
+    let (_h, rest) = split_digits(rest)?;
+    let rest = rest.strip_prefix(',')?;
+    let (_x, rest) = split_digits(rest)?;
+    let rest = rest.strip_prefix(',')?;
+    let (_y, rest) = split_digits(rest)?;
+
+    if let Some(rest) = rest.strip_prefix('{') {
+        let (children, rest) = parse_layout_children(rest, '}')?;
+        return Some((
+            LayoutNode::Split {
+                vertical: false,
+                children,
+            },
+            rest,
+        ));
+    }
+    if let Some(rest) = rest.strip_prefix('[') {
+        let (children, rest) = parse_layout_children(rest, ']')?;
+        return Some((
+            LayoutNode::Split {
+                vertical: true,
+                children,
+            },
+            rest,
+        ));
+    }
+    // 叶：,pane_id
+    let rest = rest.strip_prefix(',')?;
+    let (id, rest) = split_digits(rest)?;
+    let id: u32 = id.parse().ok()?;
+    let _ = (w,); // 几何宽仅用于跳过
+    Some((LayoutNode::Leaf(id), rest))
+}
+
+fn parse_layout_children(mut s: &str, end: char) -> Option<(Vec<LayoutNode>, &str)> {
+    let mut children = Vec::new();
+    loop {
+        if s.starts_with(end) {
+            return Some((children, &s[end.len_utf8()..]));
+        }
+        if children.is_empty() || s.starts_with(',') {
+            if s.starts_with(',') {
+                s = &s[1..];
+            }
+            let (node, rest) = parse_layout_node(s)?;
+            children.push(node);
+            s = rest;
+        } else {
+            return None;
+        }
+    }
+}
+
+fn split_digits(s: &str) -> Option<(&str, &str)> {
+    let n = s.chars().take_while(|c| c.is_ascii_digit()).count();
+    if n == 0 {
+        return None;
+    }
+    Some((&s[..n], &s[n..]))
+}
+
+/// 一个 Tab 的内容：嵌套 pane 树。
 #[derive(Clone)]
 pub struct TabContent {
-    /// 该 tab 内所有 pane 的 key（按分割顺序）。
-    pub panes: Vec<PaneKey>,
+    pub tree: PaneNode,
     /// 当前激活 pane（焦点所在）。
     pub active: Option<PaneKey>,
     /// 根 widget（随分割变化重建）。
     pub root: Widget,
-    /// 分割方向（首个 Paned 的方向）。
-    pub orientation: Orientation,
 }
 
 impl TabContent {
     pub fn single(pane: PaneKey, terminal: &vte4::Terminal) -> Self {
         let root = terminal.clone().upcast::<Widget>();
         TabContent {
-            panes: vec![pane],
+            tree: PaneNode::leaf(pane),
             active: Some(pane),
             root,
-            orientation: Orientation::Horizontal,
         }
+    }
+
+    pub fn panes(&self) -> Vec<PaneKey> {
+        self.tree.leaves()
     }
 }
 
 /// tab 管理器。
 pub struct PaneNotebook {
     pub notebook: Notebook,
-    /// tab key → (页面索引, TabContent 或 None for tmux 单 pane)
-    pub(crate) tabs: HashMap<TabKey, (u32, Option<TabContent>)>,
-    /// tmux pane：tab key → terminal widget（直接持有，无分割）
-    pub(crate) tmux_widgets: HashMap<TabKey, Widget>,
+    /// tab key → (页面索引, TabContent)
+    pub(crate) tabs: HashMap<TabKey, (u32, TabContent)>,
     next_local: u64,
 }
 
 impl PaneNotebook {
     pub fn new() -> Self {
         let nb = Notebook::new();
-        // 极简布局：隐藏 GTK 自带 tab，改用自定义 TabBar
         nb.set_show_tabs(false);
         nb.set_show_border(false);
         nb.set_tab_pos(PositionType::Bottom);
@@ -81,7 +346,6 @@ impl PaneNotebook {
         Self {
             notebook: nb,
             tabs: HashMap::new(),
-            tmux_widgets: HashMap::new(),
             next_local: 0,
         }
     }
@@ -106,22 +370,27 @@ impl PaneNotebook {
         let content = TabContent::single(pane_key, &view.terminal);
         let widget = content.root.clone();
         let idx = self.append(&widget, title);
-        self.tabs.insert(tab_key, (idx, Some(content)));
+        self.tabs.insert(tab_key, (idx, content));
         self.notebook.set_current_page(Some(idx));
         (tab_key, pane_key)
     }
 
-    /// 新建一个 tmux pane tab（1:1）。
-    pub fn add_tmux_tab(&mut self, view: &PaneView, title: &str) -> TabKey {
-        let pane_id = view.pane_id.expect("tmux pane 必须有 pane id");
-        let key = TabKey::Tmux(pane_id);
+    /// 确保存在对应 tmux window 的 tab；若无则用首个 pane 创建。
+    pub fn ensure_tmux_window_tab(
+        &mut self,
+        window: WindowId,
+        first_pane: &PaneView,
+        title: &str,
+    ) -> TabKey {
+        let key = TabKey::TmuxWindow(window);
         if self.tabs.contains_key(&key) {
             return key;
         }
-        let widget = view.terminal.clone().upcast::<Widget>();
+        let pane_key = PaneKey::Tmux(first_pane.pane_id.expect("tmux pane 必须有 pane id"));
+        let content = TabContent::single(pane_key, &first_pane.terminal);
+        let widget = content.root.clone();
         let idx = self.append(&widget, title);
-        self.tabs.insert(key, (idx, None));
-        self.tmux_widgets.insert(key, widget);
+        self.tabs.insert(key, (idx, content));
         self.notebook.set_current_page(Some(idx));
         key
     }
@@ -131,87 +400,121 @@ impl PaneNotebook {
         self.notebook.append_page(widget, Some(&label))
     }
 
-    /// 在指定本地 tab 的当前激活 pane 旁分割出一个新 pane，返回新 pane key。
-    /// orientation: Horizontal = 左右分（vte 术语），Vertical = 上下分。
-    pub fn split_local_pane(&mut self, tab: TabKey, orientation: Orientation) -> Option<PaneKey> {
-        let (_idx, content_opt) = self.tabs.get_mut(&tab)?;
-        let content = content_opt.as_mut()?;
-        // 新 pane id = 当前最大 + 1
-        let next_id = content
-            .panes
-            .iter()
-            .filter_map(|p| match p {
-                PaneKey::Local(LocalPaneId(n)) => Some(*n),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let new_pane = PaneKey::Local(LocalPaneId(next_id));
-        content.panes.push(new_pane);
-        content.orientation = orientation;
-        Some(new_pane)
+    /// 用完整布局树替换 tab 内容并安全重建嵌套 Paned。
+    pub fn set_tree_and_relayout(
+        &mut self,
+        tab: TabKey,
+        tree: PaneNode,
+        active: Option<PaneKey>,
+        terminals: &HashMap<PaneKey, vte4::Terminal>,
+        title: &str,
+    ) {
+        if let Some((_, content)) = self.tabs.get_mut(&tab) {
+            content.tree = tree;
+            let leaves = content.tree.leaves();
+            content.active = active
+                .filter(|a| leaves.contains(a))
+                .or_else(|| leaves.first().copied());
+        }
+        self.relayout_tab(tab, terminals, title);
     }
 
-    /// 重建本地 tab 的根 widget（分割变化后调用）。
-    /// `terminals` 提供 pane key → Terminal 的映射。
-    pub fn rebuild_local_root(
+    /// 在当前激活叶上嵌套分割后重建。
+    pub fn split_and_relayout(
+        &mut self,
+        tab: TabKey,
+        target: PaneKey,
+        new_pane: PaneKey,
+        orientation: SplitOrient,
+        terminals: &HashMap<PaneKey, vte4::Terminal>,
+        title: &str,
+    ) -> bool {
+        let ok = if let Some((_, content)) = self.tabs.get_mut(&tab) {
+            content.tree.split_leaf(target, new_pane, orientation)
+        } else {
+            false
+        };
+        if ok {
+            if let Some((_, content)) = self.tabs.get_mut(&tab) {
+                // 焦点留在原 pane（first / 左或上）
+                content.active = Some(target);
+            }
+            self.relayout_tab(tab, terminals, title);
+        }
+        ok
+    }
+
+    /// 从树中移除 pane 并重建；若 tab 变空返回 true。
+    pub fn remove_pane_and_relayout(
+        &mut self,
+        tab: TabKey,
+        pane: PaneKey,
+        terminals: &HashMap<PaneKey, vte4::Terminal>,
+        title: &str,
+    ) -> bool {
+        let Some((_, content)) = self.tabs.get_mut(&tab) else {
+            return true;
+        };
+        if content.tree.is_leaf(pane) {
+            return true; // 调用方应关 tab
+        }
+        if !content.tree.remove_leaf(pane) {
+            return false;
+        }
+        let leaves = content.tree.leaves();
+        content.active = content
+            .active
+            .filter(|a| *a != pane && leaves.contains(a))
+            .or_else(|| leaves.first().copied());
+        self.relayout_tab(tab, terminals, title);
+        false
+    }
+
+    /// 安全重建：先 `remove_page` → `unparent` 每个 terminal → 嵌套 Paned → `insert_page`。
+    pub fn relayout_tab(
         &mut self,
         tab: TabKey,
         terminals: &HashMap<PaneKey, vte4::Terminal>,
+        title: &str,
     ) {
-        let Some((_idx, content_opt)) = self.tabs.get_mut(&tab) else {
+        let Some(idx) = self.tabs.get(&tab).map(|(i, _)| *i) else {
             return;
         };
-        let Some(content) = content_opt.as_mut() else {
-            return;
+        let tree = match self.tabs.get(&tab) {
+            Some((_, c)) => c.tree.clone(),
+            None => return,
         };
-        if content.panes.is_empty() {
+        let leaves = tree.leaves();
+        if leaves.is_empty() {
             return;
         }
-        // 线性链：第一个 pane 作左/上，依次往右/下加。
-        let first = terminals.get(&content.panes[0]).cloned();
-        let Some(mut acc) = first.map(|t| t.upcast::<Widget>()) else {
-            return;
-        };
-        for p in content.panes.iter().skip(1) {
-            let Some(t) = terminals.get(p) else {
-                continue;
-            };
-            let paned = Paned::builder()
-                .orientation(content.orientation)
-                .wide_handle(true)
-                .build();
-            paned.set_start_child(Some(&acc));
-            paned.set_end_child(Some(&t.clone().upcast::<gtk4::Widget>()));
-            paned.set_position(400);
-            acc = paned.upcast::<Widget>();
-        }
-        content.root = acc;
-    }
 
-    /// 替换 tab 的页面 widget（rebuild 后旧 widget 需要换成新 root）。
-    /// Notebook 没有 replace page，用 remove + insert（保持索引）。
-    pub fn relayout_local_tab(&mut self, tab: TabKey, title: &str) {
-        let idx = match self.tabs.get(&tab) {
-            Some((i, _)) => *i,
-            None => return,
-        };
-        let content = match self.tabs.get(&tab).and_then(|(_, c)| c.clone()) {
-            Some(c) => c,
-            None => return,
-        };
-        // remove 旧 page
         self.notebook.remove_page(Some(idx));
-        // insert 新 root 到原位置
-        let label = Label::new(Some(title));
-        let new_idx = self
-            .notebook
-            .insert_page(&content.root, Some(&label), Some(idx));
-        self.reindex();
-        if let Some(entry) = self.tabs.get_mut(&tab) {
-            entry.0 = new_idx;
+
+        for pk in &leaves {
+            if let Some(t) = terminals.get(pk) {
+                if t.parent().is_some() {
+                    t.unparent();
+                }
+            }
         }
+
+        let root = build_pane_paned(&tree, terminals);
+        let active = self
+            .tabs
+            .get(&tab)
+            .and_then(|(_, c)| c.active)
+            .or_else(|| leaves.first().copied());
+        let content = TabContent {
+            tree,
+            active,
+            root: root.clone(),
+        };
+
+        let label = Label::new(Some(title));
+        let new_idx = self.notebook.insert_page(&root, Some(&label), Some(idx));
+        self.tabs.insert(tab, (new_idx, content));
+        self.reindex();
         self.notebook.set_current_page(Some(new_idx));
     }
 
@@ -219,28 +522,18 @@ impl PaneNotebook {
     pub fn remove(&mut self, key: TabKey) {
         if let Some((idx, _)) = self.tabs.remove(&key) {
             self.notebook.remove_page(Some(idx));
-            self.tmux_widgets.remove(&key);
             self.reindex();
         }
     }
 
     fn reindex(&mut self) {
         let n = self.notebook.n_pages();
-        let mut new_tabs: HashMap<TabKey, (u32, Option<TabContent>)> = HashMap::new();
+        let mut new_tabs: HashMap<TabKey, (u32, TabContent)> = HashMap::new();
         for i in 0..n {
             if let Some(page) = self.notebook.nth_page(Some(i)) {
                 let ptr = page.as_ptr() as usize;
-                // 本地 tab：匹配 content.root
                 let found = self.tabs.iter().find_map(|(k, (_, c))| {
-                    let matches = match c {
-                        Some(content) => content.root.as_ptr() as usize == ptr,
-                        None => self
-                            .tmux_widgets
-                            .get(k)
-                            .map(|w| w.as_ptr() as usize == ptr)
-                            .unwrap_or(false),
-                    };
-                    if matches {
+                    if c.root.as_ptr() as usize == ptr {
                         Some(*k)
                     } else {
                         None
@@ -257,15 +550,10 @@ impl PaneNotebook {
     }
 
     pub fn set_title(&self, key: TabKey, title: &str) {
-        let widget = match self.tabs.get(&key) {
-            Some((_, Some(c))) => Some(&c.root),
-            Some((_, None)) => self.tmux_widgets.get(&key),
-            None => None,
-        };
-        if let Some(w) = widget {
+        if let Some((_, c)) = self.tabs.get(&key) {
             if let Some(label) = self
                 .notebook
-                .tab_label(w)
+                .tab_label(&c.root)
                 .and_then(|l| l.downcast::<Label>().ok())
             {
                 label.set_label(title);
@@ -275,9 +563,7 @@ impl PaneNotebook {
 
     pub fn current_key(&self) -> Option<TabKey> {
         let idx = self.notebook.current_page()?;
-        self.tabs
-            .iter()
-            .find_map(|(k, (i, _))| if *i == idx { Some(*k) } else { None })
+        self.find_key_by_index(idx)
     }
 
     pub fn find_key_by_index(&self, idx: u32) -> Option<TabKey> {
@@ -304,17 +590,188 @@ impl PaneNotebook {
         self.tabs.len()
     }
 
+    pub fn contains(&self, key: TabKey) -> bool {
+        self.tabs.contains_key(&key)
+    }
+
     pub fn default_title(key: TabKey, name: Option<&str>) -> String {
         match key {
-            TabKey::Tmux(pane) => match name {
+            TabKey::TmuxWindow(w) => match name {
                 Some(n) if !n.is_empty() => n.to_string(),
-                _ => pane.as_str(),
+                _ => format!("@{}", w.0),
             },
             TabKey::Local(_) => "shell".into(),
         }
     }
+}
 
-    pub fn next_local_tab_key(&self) -> TabKey {
-        TabKey::Local(self.next_local)
+/// 用嵌套 GtkPaned 构建布局。先 unparent 再挂载。
+fn build_pane_paned(node: &PaneNode, terminals: &HashMap<PaneKey, vte4::Terminal>) -> Widget {
+    match node {
+        PaneNode::Leaf(pk) => {
+            let term = terminals
+                .get(pk)
+                .expect("build_pane_paned: 缺 terminal")
+                .clone();
+            term.set_hexpand(true);
+            term.set_vexpand(true);
+            term.add_css_class("pane-terminal");
+            term.upcast()
+        }
+        PaneNode::Split {
+            orientation,
+            first,
+            second,
+        } => {
+            let orient = *orientation;
+            let paned = Paned::new(orient.to_gtk());
+            paned.add_css_class("pane-split");
+            paned.set_wide_handle(true);
+            paned.set_hexpand(true);
+            paned.set_vexpand(true);
+            let a = build_pane_paned(first, terminals);
+            let b = build_pane_paned(second, terminals);
+            paned.set_start_child(Some(&a));
+            paned.set_end_child(Some(&b));
+            paned.set_resize_start_child(true);
+            paned.set_resize_end_child(true);
+            paned.set_shrink_start_child(false);
+            paned.set_shrink_end_child(false);
+            // 默认对半；realize 后按分配尺寸设 position
+            let paned_pos = paned.clone();
+            paned.connect_realize(move |p| {
+                let alloc = p.allocation();
+                let mid = match orient.to_gtk() {
+                    Orientation::Vertical => alloc.height() / 2,
+                    _ => alloc.width() / 2,
+                };
+                if mid > 0 {
+                    paned_pos.set_position(mid);
+                }
+            });
+            paned.upcast()
+        }
+    }
+}
+
+/// 从 tmux window_layout 原始字符串提取 pane id 列表（兼容旧调用）。
+pub fn extract_pane_ids_from_layout(layout: &str) -> Vec<u32> {
+    parse_layout_tree(layout)
+        .map(|n| n.leaves())
+        .unwrap_or_default()
+}
+
+/// 根据 layout 字符串猜测根分割方向。
+pub fn layout_orientation(layout: &str) -> Orientation {
+    match parse_layout_tree(layout) {
+        Some(LayoutNode::Split { vertical: true, .. }) => Orientation::Vertical,
+        _ => Orientation::Horizontal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_single_pane() {
+        assert_eq!(extract_pane_ids_from_layout("a87e,100x30,0,0,1"), vec![1]);
+        assert_eq!(extract_pane_ids_from_layout("80x24,0,0,0"), vec![0]);
+    }
+
+    #[test]
+    fn extract_split_panes() {
+        let layout = "abc,100x30,0,0{50x30,0,0,2,50x30,50,0,3}";
+        assert_eq!(extract_pane_ids_from_layout(layout), vec![2, 3]);
+    }
+
+    #[test]
+    fn parse_nested_layout() {
+        // 左：上下两 pane；右：一个 pane
+        let layout = "x,100x30,0,0{50x30,0,0[50x15,0,0,1,50x15,0,15,2],50x30,50,0,3}";
+        let tree = parse_layout_tree(layout).expect("parse");
+        assert_eq!(tree.leaves(), vec![1, 2, 3]);
+        match &tree {
+            LayoutNode::Split {
+                vertical: false,
+                children,
+            } => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(
+                    &children[0],
+                    LayoutNode::Split { vertical: true, .. }
+                ));
+                assert_eq!(children[1], LayoutNode::Leaf(3));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let pane_tree = tree.to_pane_node();
+        assert_eq!(
+            pane_tree.leaves(),
+            vec![
+                PaneKey::Tmux(PaneId(1)),
+                PaneKey::Tmux(PaneId(2)),
+                PaneKey::Tmux(PaneId(3))
+            ]
+        );
+    }
+
+    #[test]
+    fn orientation_brackets() {
+        assert_eq!(
+            layout_orientation("a,10x10,0,0{5x10,0,0,1,5x10,5,0,2}"),
+            Orientation::Horizontal
+        );
+        assert_eq!(
+            layout_orientation("a,10x10,0,0[10x5,0,0,1,10x5,0,5,2]"),
+            Orientation::Vertical
+        );
+    }
+
+    #[test]
+    fn nested_split_leaf() {
+        let a = PaneKey::Local(LocalPaneId(0));
+        let b = PaneKey::Local(LocalPaneId(1));
+        let c = PaneKey::Local(LocalPaneId(2));
+        let mut tree = PaneNode::leaf(a);
+        assert!(tree.split_leaf(a, b, SplitOrient::Horizontal));
+        // 再在左边（a）竖直分割
+        assert!(tree.split_leaf(a, c, SplitOrient::Vertical));
+        assert_eq!(tree.leaves(), vec![a, c, b]);
+        match &tree {
+            PaneNode::Split {
+                orientation: SplitOrient::Horizontal,
+                first,
+                second,
+            } => {
+                assert_eq!(**second, PaneNode::Leaf(b));
+                match first.as_ref() {
+                    PaneNode::Split {
+                        orientation: SplitOrient::Vertical,
+                        first: f2,
+                        second: s2,
+                    } => {
+                        assert_eq!(**f2, PaneNode::Leaf(a));
+                        assert_eq!(**s2, PaneNode::Leaf(c));
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_leaf_collapses() {
+        let a = PaneKey::Local(LocalPaneId(0));
+        let b = PaneKey::Local(LocalPaneId(1));
+        let c = PaneKey::Local(LocalPaneId(2));
+        let mut tree = PaneNode::leaf(a);
+        tree.split_leaf(a, b, SplitOrient::Horizontal);
+        tree.split_leaf(a, c, SplitOrient::Vertical);
+        assert!(tree.remove_leaf(c));
+        assert_eq!(tree.leaves(), vec![a, b]);
+        assert!(tree.remove_leaf(b));
+        assert_eq!(tree, PaneNode::Leaf(a));
     }
 }

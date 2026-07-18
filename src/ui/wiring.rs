@@ -5,6 +5,9 @@
 //! `glib::timeout_add_local`（16ms）轮询 `try_recv` 派发。UI → tmux 命令走
 //! `tokio::sync::mpsc`，后台 task 串行 `send_raw` 写 pty。
 //!
+//! **重要**：必须持有 [`TmuxBridge`]（内含 `Runtime`），否则 Runtime drop 会取消
+//! 所有 task，表现为 attach 无反应 / `task was cancelled`。
+//!
 //! attach 后根据配置自动发 `set -g mouse on`（auto_mouse）。
 
 use std::sync::{mpsc as std_mpsc, Arc};
@@ -17,14 +20,36 @@ use crate::tmux::protocol::{Message, PaneId, WindowId};
 
 #[derive(Debug, Clone)]
 pub enum UiEvent {
-    PaneOutput { pane: PaneId, data: Vec<u8> },
-    WindowAdd { window: WindowId },
-    WindowClose { window: WindowId },
-    WindowRenamed { window: WindowId, name: String },
-    SessionChanged { sid: u32, name: Option<String> },
-    Exit { reason: Option<String> },
+    PaneOutput {
+        pane: PaneId,
+        data: Vec<u8>,
+    },
+    WindowAdd {
+        window: WindowId,
+    },
+    WindowClose {
+        window: WindowId,
+    },
+    WindowRenamed {
+        window: WindowId,
+        name: String,
+    },
+    LayoutChange {
+        window: WindowId,
+        layout: String,
+        visible: Option<String>,
+    },
+    SessionChanged {
+        sid: u32,
+        name: Option<String>,
+    },
+    Exit {
+        reason: Option<String>,
+    },
     Connected,
-    Error { msg: String },
+    Error {
+        msg: String,
+    },
 }
 
 /// 命令发送器（UI 线程持有）。
@@ -43,13 +68,26 @@ impl CommandSender {
     }
 }
 
-/// 启动 tmux 桥接。`on_event` 在 UI 线程被调用。`auto_mouse` 控制 attach 后是否
-/// 自动 `set -g mouse on`。返回 `CommandSender` 供 UI 线程发命令。
+/// 持有 tokio Runtime，保证 tmux I/O task 不被提前 cancel。
+pub struct TmuxBridge {
+    sender: CommandSender,
+    /// 必须存活；drop 会关掉整个 runtime 与 tmux 子进程。
+    _runtime: tokio::runtime::Runtime,
+}
+
+impl TmuxBridge {
+    pub fn sender(&self) -> &CommandSender {
+        &self.sender
+    }
+}
+
+/// 启动 tmux 桥接。`on_event` 在 UI 线程被调用。返回持有 Runtime 的
+/// [`TmuxBridge`]——调用方必须长期持有，不可立刻 drop。
 pub fn spawn_bridge<F>(
     config: TmuxClientConfig,
     auto_mouse: bool,
     on_event: F,
-) -> Option<CommandSender>
+) -> Option<TmuxBridge>
 where
     F: Fn(&UiEvent) + 'static,
 {
@@ -83,6 +121,7 @@ where
             }
         }
 
+        // 写任务持有 handle；读循环只消费 rx。Runtime 由 TmuxBridge 持有。
         tokio::spawn(async move {
             while let Some(line) = cmd_rx.recv().await {
                 if let Err(e) = tmux.send_raw(&line).await {
@@ -126,9 +165,12 @@ where
         });
     }
 
-    Some(CommandSender {
-        tx: cmd_tx,
-        rt: rt_handle,
+    Some(TmuxBridge {
+        sender: CommandSender {
+            tx: cmd_tx,
+            rt: rt_handle,
+        },
+        _runtime: rt,
     })
 }
 
@@ -161,6 +203,15 @@ fn to_ui_event(m: Message) -> Option<UiEvent> {
         Message::WindowAdd { window } => Some(UiEvent::WindowAdd { window }),
         Message::WindowClose { window } => Some(UiEvent::WindowClose { window }),
         Message::WindowRenamed { window, name } => Some(UiEvent::WindowRenamed { window, name }),
+        Message::LayoutChange {
+            window,
+            layout,
+            visible_layout,
+        } => Some(UiEvent::LayoutChange {
+            window,
+            layout: layout.raw,
+            visible: visible_layout.map(|v| v.raw),
+        }),
         Message::SessionChanged { session, name } => Some(UiEvent::SessionChanged {
             sid: session.0,
             name,

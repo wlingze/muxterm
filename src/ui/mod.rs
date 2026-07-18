@@ -10,6 +10,7 @@ pub mod pane_view;
 pub mod quick_pick;
 pub mod tab_bar;
 pub mod theme;
+pub mod title_watch;
 pub mod tmux_dialog;
 pub mod window;
 pub mod wiring;
