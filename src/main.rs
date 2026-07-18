@@ -8,7 +8,6 @@ mod config;
 mod tmux;
 mod ui;
 
-
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]
 #[command(

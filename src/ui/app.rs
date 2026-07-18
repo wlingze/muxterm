@@ -2,7 +2,6 @@
 //!
 //! 负责加载配置、主题，构造主窗口，连本地 tmux，进入 GTK 主循环。
 
-
 use gtk4::prelude::*;
 use gtk4::Application;
 
