@@ -20,6 +20,8 @@
 use std::str::FromStr;
 use thiserror::Error;
 
+pub use crate::core::types::{PaneId, SessionId, WindowId};
+
 /// 协议解析错误（库层）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProtocolError {
@@ -188,12 +190,8 @@ impl ControlEscapeDecoder {
 }
 
 // ============================================================================
-// ID 与辅助类型
+// ID 解析（类型定义在 crate::core::types）
 // ============================================================================
-
-/// %output / %extended-output / %pane-mode-changed 里的 pane id（`@N`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PaneId(pub u32);
 
 impl PaneId {
     /// 从 `@N` 形式解析。
@@ -205,14 +203,7 @@ impl PaneId {
             .map_err(|_| ProtocolError::MalformedField(format!("pane id 非数字: {s}")))?;
         Ok(PaneId(n))
     }
-    pub fn as_str(self) -> String {
-        format!("@{}", self.0)
-    }
 }
-
-/// window id（`@N`），与 pane id 同形式，靠字段位置区分。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WindowId(pub u32);
 
 impl WindowId {
     pub fn parse(s: &str) -> Result<Self, ProtocolError> {
@@ -223,14 +214,7 @@ impl WindowId {
             .map_err(|_| ProtocolError::MalformedField(format!("window id 非数字: {s}")))?;
         Ok(WindowId(n))
     }
-    pub fn as_str(self) -> String {
-        format!("@{}", self.0)
-    }
 }
-
-/// session id（`$N`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionId(pub u32);
 
 impl SessionId {
     pub fn parse(s: &str) -> Result<Self, ProtocolError> {
@@ -240,9 +224,6 @@ impl SessionId {
         let n = u32::from_str(s)
             .map_err(|_| ProtocolError::MalformedField(format!("session id 非数字: {s}")))?;
         Ok(SessionId(n))
-    }
-    pub fn as_str(self) -> String {
-        format!("${}", self.0)
     }
 }
 
@@ -1193,7 +1174,7 @@ mod tests {
 
     #[test]
     fn real_sample_new_session_lines() {
-        let raw = include_str!("../../tests/samples/new-session.txt");
+        let raw = include_str!("../../../tests/samples/new-session.txt");
         // 样本第一行可能是 DCS 包装（P1000p%begin ...），parse_line 只认 % 开头，
         // DCS 前缀的行会被当成非通知返回 None（client 层负责剥 DCS）。
         let mut msgs = Vec::new();
@@ -1217,7 +1198,7 @@ mod tests {
 
     #[test]
     fn real_sample_cmd_response() {
-        let raw = include_str!("../../tests/samples/cmd-response.txt");
+        let raw = include_str!("../../../tests/samples/cmd-response.txt");
         let mut begins = 0;
         let mut ends = 0;
         let mut outputs = 0;
@@ -1249,7 +1230,7 @@ mod tests {
 
     #[test]
     fn real_sample_output_decodes_ansi() {
-        let raw = include_str!("../../tests/samples/new-session.txt");
+        let raw = include_str!("../../../tests/samples/new-session.txt");
         for line in raw.lines() {
             let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
             if let Some(Message::Output { content, .. }) = parse_line(stripped) {

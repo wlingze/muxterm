@@ -6,7 +6,7 @@
 use gtk4::prelude::*;
 use gtk4::Application;
 
-use crate::config::Config;
+use crate::core::config::Config;
 
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 
@@ -21,7 +21,7 @@ pub fn run() -> anyhow::Result<()> {
             tracing::warn!(target = "muxterm::app", "加载配置失败，用默认: {e}");
             Config::default()
         });
-        let theme = match crate::config::Theme::load(&cfg.theme.name) {
+        let theme = match crate::core::config::Theme::load(&cfg.theme.name) {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(
@@ -29,10 +29,10 @@ pub fn run() -> anyhow::Result<()> {
                     "加载主题 {} 失败，用默认 light: {e}",
                     cfg.theme.name
                 );
-                crate::config::Theme::load("light").unwrap_or_else(|_| fallback_theme())
+                crate::core::config::Theme::load("light").unwrap_or_else(|_| fallback_theme())
             }
         };
-        let win = crate::ui::window::AppWindow::new(cfg, theme);
+        let win = crate::platform::linux::window::AppWindow::new(cfg, theme);
         a.add_window(&win.window);
         win.window.show();
     });
@@ -46,8 +46,8 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn fallback_theme() -> crate::config::Theme {
-    use crate::config::Rgb;
+fn fallback_theme() -> crate::core::config::Theme {
+    use crate::core::config::Rgb;
     let colors = [
         Rgb(0, 0, 0),
         Rgb(205, 0, 0),
@@ -66,7 +66,7 @@ fn fallback_theme() -> crate::config::Theme {
         Rgb(0, 255, 255),
         Rgb(255, 255, 255),
     ];
-    crate::config::Theme {
+    crate::core::config::Theme {
         name: "fallback".into(),
         background: Rgb(0x1e, 0x1e, 0x2e),
         foreground: Rgb(0xcd, 0xd6, 0xf4),

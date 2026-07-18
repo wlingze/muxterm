@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use gtk4::gdk;
 
-use crate::config::{Action, KeyBinding, ModSet};
+use crate::core::config::{Action, KeyBinding, ModSet};
 
 /// 快捷键匹配表。
 pub struct KeyMap {

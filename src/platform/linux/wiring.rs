@@ -15,8 +15,8 @@ use std::sync::{mpsc as std_mpsc, Arc};
 use gtk4::glib;
 use tokio::sync::mpsc;
 
-use crate::tmux::client::{ConnectMode, TmuxClient, TmuxClientConfig, TmuxEvent};
-use crate::tmux::protocol::{Message, PaneId, WindowId};
+use crate::core::tmux::client::{ConnectMode, TmuxClient, TmuxClientConfig, TmuxEvent};
+use crate::core::tmux::protocol::{Message, PaneId, WindowId};
 
 #[derive(Debug, Clone)]
 pub enum UiEvent {

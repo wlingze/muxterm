@@ -19,26 +19,26 @@ use gtk4::prelude::*;
 use gtk4::{Box, CssProvider, EventControllerKey, Label, Orientation, Window};
 use vte4::prelude::*;
 
-use crate::config::{
+use crate::core::config::{
     decode_wait_status, expand_config_value, parse_command_argv, Action, Config, OnLastPaneExit,
     OnProgramExitAbnormal, Theme,
 };
-use crate::tmux::client::TmuxClientConfig;
-use crate::tmux::command::{
+use crate::core::tmux::client::TmuxClientConfig;
+use crate::core::tmux::command::{
     kill_pane as tmux_kill_pane_cmd, kill_window as tmux_kill_window_cmd, send_keys, Key,
 };
-use crate::tmux::protocol::{PaneId, WindowId};
-use crate::ui::command_palette;
-use crate::ui::input_bar::InputBar;
-use crate::ui::keymap::KeyMap;
-use crate::ui::notebook::{
+use crate::core::tmux::protocol::{PaneId, WindowId};
+use crate::platform::linux::command_palette;
+use crate::platform::linux::input_bar::InputBar;
+use crate::platform::linux::keymap::KeyMap;
+use crate::platform::linux::notebook::{
     parse_layout_tree, LocalPaneId, PaneKey, PaneNotebook, SplitOrient, TabKey,
 };
-use crate::ui::pane_switcher::{self, PaneEntry};
-use crate::ui::pane_view::{PaneView, SpawnOpts};
-use crate::ui::tab_bar::{TabBar, TabBarItem};
-use crate::ui::tmux_dialog::{self, TmuxAction};
-use crate::ui::wiring::{spawn_bridge, TmuxBridge, UiEvent};
+use crate::platform::linux::pane_switcher::{self, PaneEntry};
+use crate::platform::linux::pane_view::{PaneView, SpawnOpts};
+use crate::platform::linux::tab_bar::{TabBar, TabBarItem};
+use crate::platform::linux::tmux_dialog::{self, TmuxAction};
+use crate::platform::linux::wiring::{spawn_bridge, TmuxBridge, UiEvent};
 
 pub struct AppWindow {
     pub window: Window,
@@ -934,7 +934,7 @@ impl SharedState {
             let _ = std::fs::create_dir_all(parent);
         }
         if !path.exists() {
-            let _ = std::fs::write(&path, include_str!("../../configs/config.example.toml"));
+            let _ = std::fs::write(&path, include_str!("../../../configs/config.example.toml"));
         }
         let uri = format!("file://{}", path.display());
         if let Err(e) =
@@ -969,11 +969,11 @@ impl SharedState {
     fn connect_tmux_action(self: &Arc<Self>, action: TmuxAction) {
         let (config, auto_mouse) = match action {
             TmuxAction::Attach { session } => {
-                let cfg = crate::ui::wiring::attach_config(&session);
+                let cfg = crate::platform::linux::wiring::attach_config(&session);
                 (cfg, self.cfg.tmux.auto_mouse)
             }
             TmuxAction::NewSession { name } => {
-                let cfg = crate::ui::wiring::new_session_config(name);
+                let cfg = crate::platform::linux::wiring::new_session_config(name);
                 (cfg, self.cfg.tmux.auto_mouse)
             }
         };
@@ -1194,8 +1194,8 @@ impl SharedState {
                     PaneKey::Local(_) => view
                         .child_pid
                         .get()
-                        .and_then(crate::ui::title_watch::local_foreground_name),
-                    PaneKey::Tmux(p) => crate::ui::title_watch::tmux_pane_command(*p),
+                        .and_then(crate::platform::linux::title_watch::local_foreground_name),
+                    PaneKey::Tmux(p) => crate::platform::linux::title_watch::tmux_pane_command(*p),
                 };
                 if let Some(n) = new_name {
                     if n != view.program_name {
@@ -1400,7 +1400,7 @@ fn gdk_key_to_tmux(keyval: gdk::Key, mods: gdk::ModifierType) -> Option<Vec<Key>
 /// 加载极简 CSS。
 fn apply_css() {
     let provider = CssProvider::new();
-    provider.load_from_data(include_str!("../../assets/style.css"));
+    provider.load_from_data(include_str!("../../../assets/style.css"));
     if let Some(display) = gdk::Display::default() {
         gtk4::style_context_add_provider_for_display(
             &display,

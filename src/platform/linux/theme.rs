@@ -3,7 +3,7 @@
 //! 把 vte4 解析出的 SGR 参数映射成具体 RGB 颜色 + 样式位，复用 `config::Theme`
 //! 的 ANSI 16 色与背景/前景。这部分是纯函数，便于单元测试。
 
-use crate::config::{Rgb, Theme};
+use crate::core::config::{Rgb, Theme};
 
 /// 终端字符样式（前景/背景/粗体/下划线等）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -11,7 +11,7 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
-use crate::config::{program_basename, Rgb, Theme};
+use crate::core::config::{program_basename, Rgb, Theme};
 use gtk4::glib;
 use gtk4::pango;
 use vte4::prelude::*;
@@ -46,7 +46,7 @@ impl SpawnOpts {
 pub struct PaneView {
     pub terminal: Terminal,
     pub mode: PaneMode,
-    pub pane_id: Option<crate::tmux::protocol::PaneId>,
+    pub pane_id: Option<crate::core::tmux::protocol::PaneId>,
     /// 默认名：本地为 argv[0] basename；tmux 为 pane id 字符串。
     pub program_name: String,
     /// 用户重命名（优先于 program_name）。
@@ -113,7 +113,7 @@ impl PaneView {
     ///
     /// `input_enabled=false`：避免 VTE 本地回显导致与 tmux echo 双重显示。
     pub fn new_tmux(
-        pane_id: crate::tmux::protocol::PaneId,
+        pane_id: crate::core::tmux::protocol::PaneId,
         theme: &Theme,
         font_family: &str,
         font_size: f32,

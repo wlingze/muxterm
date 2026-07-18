@@ -10,11 +10,12 @@
 //!
 //! 所有构造器返回 [`TmuxCommand`]，调用 `.to_string()` 得到带换行的完整命令行。
 
-use super::protocol::{ControlEscapeDecoder, PaneId as ProtoPaneId};
+use super::protocol::ControlEscapeDecoder;
+use crate::core::types::PaneId as ProtoPaneId;
 use std::fmt::Write;
 
-// 复用 protocol 里的 ID 类型，保持单一来源。
-pub use super::protocol::{PaneId, SessionId, WindowId};
+// 复用 core::types 里的 ID 类型，保持单一来源。
+pub use crate::core::types::{PaneId, SessionId, WindowId};
 
 /// 一个已构造好的 tmux 命令。
 ///

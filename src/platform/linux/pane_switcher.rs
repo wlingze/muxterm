@@ -5,8 +5,8 @@
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Dialog, Entry, Label, Orientation, Window};
 
-use crate::ui::notebook::{PaneKey, TabKey};
-use crate::ui::quick_pick::{self, QuickPickItem};
+use crate::platform::linux::notebook::{PaneKey, TabKey};
+use crate::platform::linux::quick_pick::{self, QuickPickItem};
 
 /// 一条可切换的 pane。
 #[derive(Debug, Clone)]

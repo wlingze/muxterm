@@ -1,12 +1,12 @@
 //! VSCode 风格命令面板（Alt+P）。
 //!
 //! 顶部输入框模糊搜索 + 下方命令列表；↑↓ 选中，Enter 执行，Esc 关闭。
-//! 基于 [`crate::ui::quick_pick`]。
+//! 基于 [`crate::platform::linux::quick_pick`]。
 
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::ui::quick_pick::{self, QuickPickItem};
+use crate::platform::linux::quick_pick::{self, QuickPickItem};
 
 /// 一条核心命令。
 #[derive(Debug, Clone, Copy)]

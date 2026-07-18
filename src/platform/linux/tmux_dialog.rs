@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::ui::pane_switcher;
-use crate::ui::quick_pick::{self, QuickPickItem};
+use crate::platform::linux::pane_switcher;
+use crate::platform::linux::quick_pick::{self, QuickPickItem};
 
 /// tmux 集成动作结果。
 #[derive(Debug, Clone)]

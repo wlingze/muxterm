@@ -4,9 +4,8 @@
 
 use clap::Parser;
 
-mod config;
-mod tmux;
-mod ui;
+mod core;
+mod platform;
 
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]
@@ -31,5 +30,5 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI phase）");
-    ui::app::run()
+    platform::linux::app::run()
 }

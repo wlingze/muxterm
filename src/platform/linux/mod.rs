@@ -1,4 +1,4 @@
-//! UI 层（GTK4 + vte4）。
+//! Linux 前端（GTK4 + vte4）。
 
 pub mod app;
 pub mod command_palette;

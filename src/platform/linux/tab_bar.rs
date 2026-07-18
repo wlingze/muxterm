@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Orientation};
 
-use crate::ui::notebook::TabKey;
+use crate::platform::linux::notebook::TabKey;
 
 /// 一条 tab 的展示信息。
 #[derive(Debug, Clone)]
