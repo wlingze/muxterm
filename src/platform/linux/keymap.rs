@@ -36,11 +36,19 @@ impl KeyMap {
         let modset = ModSet::from_gdk(mods);
         self.map.get(&(key_str, modset)).copied()
     }
+
+    /// 纯字符串查找（单测 / 配置校验用，不依赖 GDK）。
+    pub fn lookup_str(&self, key: &str, mods: &[&str]) -> Option<Action> {
+        let mods: Vec<String> = mods.iter().map(|s| (*s).to_string()).collect();
+        let modset = ModSet::from_binding(&mods);
+        self.map.get(&(key.to_string(), modset)).copied()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::default_keybindings;
 
     #[test]
     fn from_bindings_ignores_unknown_action() {
@@ -53,5 +61,83 @@ mod tests {
         assert!(km
             .map
             .contains_key(&("x".into(), ModSet::from_binding(&["alt".into()]))));
+    }
+
+    /// 对应：Alt+N → new_window。
+    #[test]
+    fn test_keymap_alt_n_new_window() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("n", &["alt"]), Some(Action::NewWindow));
+    }
+
+    /// 对应：Alt+Shift+D → 竖直分割 pane。
+    #[test]
+    fn test_keymap_alt_shift_d_vertical_pane() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(
+            km.lookup_str("D", &["alt", "shift"]),
+            Some(Action::NewPaneVertical)
+        );
+    }
+
+    /// 对应：Alt+1..9 切 tab。
+    #[test]
+    fn test_keymap_alt_digits_switch_tabs() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("1", &["alt"]), Some(Action::SwitchTab1));
+        assert_eq!(km.lookup_str("5", &["alt"]), Some(Action::SwitchTab5));
+        assert_eq!(km.lookup_str("9", &["alt"]), Some(Action::SwitchTab9));
+    }
+
+    /// 对应：Alt+0 → 最后一个 tab。
+    #[test]
+    fn test_keymap_alt_0_switch_tab_last() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("0", &["alt"]), Some(Action::SwitchTabLast));
+    }
+
+    /// 对应：自定义快捷键覆盖默认同键位。
+    #[test]
+    fn test_keymap_custom_override_same_chord() {
+        let mut bs = default_keybindings();
+        bs.push(KeyBinding {
+            key: "n".into(),
+            mods: vec!["alt".into()],
+            action: "new_tab".into(),
+        });
+        let km = KeyMap::from_bindings(&bs);
+        // HashMap 后写覆盖
+        assert_eq!(km.lookup_str("n", &["alt"]), Some(Action::NewTab));
+    }
+
+    /// 对应：同一组合键绑定两个 action → 取最后注册的。
+    #[test]
+    fn test_keymap_duplicate_chord_last_wins() {
+        let bs = vec![
+            KeyBinding {
+                key: "p".into(),
+                mods: vec!["alt".into()],
+                action: "search".into(),
+            },
+            KeyBinding {
+                key: "p".into(),
+                mods: vec!["alt".into()],
+                action: "command_palette".into(),
+            },
+        ];
+        let km = KeyMap::from_bindings(&bs);
+        assert_eq!(km.lookup_str("p", &["alt"]), Some(Action::CommandPalette));
+    }
+
+    #[test]
+    fn test_keymap_empty_bindings_lookup_none() {
+        let km = KeyMap::from_bindings(&[]);
+        assert_eq!(km.lookup_str("n", &["alt"]), None);
+    }
+
+    #[test]
+    fn test_keymap_alt_p_command_palette() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("p", &["alt"]), Some(Action::CommandPalette));
     }
 }

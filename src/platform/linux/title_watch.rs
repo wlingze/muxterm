@@ -51,14 +51,17 @@ pub fn tmux_pane_command(pane: PaneId) -> Option<String> {
     if s.is_empty() {
         None
     } else {
-        // basename：有时是路径
-        let base = PathBuf::from(&s)
-            .file_name()
-            .and_then(|x| x.to_str())
-            .unwrap_or(&s)
-            .to_string();
-        Some(base)
+        Some(basename_command(&s))
     }
+}
+
+/// 从命令路径抽 basename（`/usr/bin/bash` → `bash`）。
+pub fn basename_command(s: &str) -> String {
+    PathBuf::from(s)
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or(s)
+        .to_string()
 }
 
 fn read_comm(pid: i32) -> Option<String> {
@@ -90,5 +93,36 @@ mod tests {
         let pid = std::process::id() as i32;
         let name = read_comm(pid);
         assert!(name.is_some());
+    }
+
+    /// 对应：进程名提取 /usr/bin/bash → bash。
+    #[test]
+    fn test_title_watch_basename_bash() {
+        assert_eq!(basename_command("/usr/bin/bash"), "bash");
+    }
+
+    #[test]
+    fn test_title_watch_basename_opencode() {
+        assert_eq!(basename_command("/usr/local/bin/opencode"), "opencode");
+    }
+
+    /// 对应：`python3 /path/to/script.py` 取 argv0 basename。
+    #[test]
+    fn test_title_watch_basename_python3() {
+        assert_eq!(basename_command("python3"), "python3");
+        assert_eq!(basename_command("/usr/bin/python3"), "python3");
+    }
+
+    /// 对应：未知/空路径回退。
+    #[test]
+    fn test_title_watch_basename_fallback() {
+        assert_eq!(basename_command(""), "");
+        assert_eq!(basename_command("vim"), "vim");
+    }
+
+    #[test]
+    fn test_title_watch_local_invalid_pid() {
+        assert!(local_foreground_name(0).is_none());
+        assert!(local_foreground_name(-1).is_none());
     }
 }

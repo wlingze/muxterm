@@ -4,6 +4,7 @@ pub mod app;
 pub mod command_palette;
 pub mod input_bar;
 pub mod keymap;
+pub mod lifecycle;
 pub mod notebook;
 pub mod pane_switcher;
 pub mod pane_view;

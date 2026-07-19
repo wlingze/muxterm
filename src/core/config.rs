@@ -835,4 +835,106 @@ on_program_exit_abnormal = "close"
         // SIGTERM (15) → 128+15
         assert_eq!(decode_wait_status(15), 128 + 15);
     }
+
+    /// 对应：无配置文件时应走默认值（load 路径缺失）。
+    #[test]
+    fn test_config_default_snapshot() {
+        let c = Config::default();
+        assert_eq!(c.font.family, "Monospace");
+        assert_eq!(c.font.size, 12.0);
+        assert_eq!(c.theme.name, "light");
+        assert!(c.tmux.auto_mouse);
+        assert_eq!(c.scrollback.lines, 10000);
+        assert_eq!(c.behavior.on_last_pane_exit, OnLastPaneExit::CloseWindow);
+        assert_eq!(c.pane.default_command, "$SHELL");
+        assert_eq!(c.keybindings, default_keybindings());
+    }
+
+    /// 对应：自定义字体/主题/快捷键覆盖默认。
+    #[test]
+    fn test_config_custom_overrides_font_theme_keys() {
+        let raw = r##"
+[font]
+family = "Fira Code"
+size = 14.5
+[theme]
+name = "dark"
+[[keybindings]]
+key = "n"
+mods = ["alt"]
+action = "new_tab"
+"##;
+        let c = parse_config_toml(raw).unwrap();
+        assert_eq!(c.font.family, "Fira Code");
+        assert_eq!(c.font.size, 14.5);
+        assert_eq!(c.theme.name, "dark");
+        assert_eq!(c.keybindings.len(), 1);
+        assert_eq!(c.keybindings[0].action, "new_tab");
+    }
+
+    /// 对应：残缺合法 TOML 缺失字段回落默认（不是整份失败）。
+    #[test]
+    fn test_config_partial_toml_falls_back_fields() {
+        let c = parse_config_toml("[scrollback]\nlines = 123\n").unwrap();
+        assert_eq!(c.scrollback.lines, 123);
+        assert_eq!(c.font.family, "Monospace");
+        assert_eq!(c.theme.name, "light");
+        assert!(!c.keybindings.is_empty()); // 未写 [[keybindings]] → 补默认
+    }
+
+    /// 对应：非法 TOML 语法应报错，不能 silently 吞掉。
+    #[test]
+    fn test_config_invalid_toml_errors() {
+        assert!(parse_config_toml("[[[not valid").is_err());
+        assert!(parse_config_toml("font = ???").is_err());
+    }
+
+    /// 对应：用户写了 [[keybindings]] 后只保留用户条目，不混入默认全套。
+    #[test]
+    fn test_config_user_keybindings_replace_defaults() {
+        let raw = "[[keybindings]]\nkey = \"x\"\nmods = []\naction = \"search\"\n";
+        let c = parse_config_toml(raw).unwrap();
+        assert_eq!(c.keybindings.len(), 1);
+        assert_eq!(c.keybindings[0].key, "x");
+        assert_eq!(c.keybindings[0].action, "search");
+    }
+
+    #[test]
+    fn test_config_rgb_to_u32_packing() {
+        assert_eq!(Rgb(0x12, 0x34, 0x56).to_u32(), 0x0012_3456);
+        assert_eq!(Rgb(0xff, 0x00, 0xaa).to_u32(), 0x00ff_00aa);
+    }
+
+    #[test]
+    fn test_config_tab_bar_position_helpers() {
+        let mut ui = UiConfig::default();
+        ui.tab_bar_position = "bottom".into();
+        assert!(ui.tab_bar_at_bottom());
+        ui.tab_bar_position = "TOP".into();
+        assert!(!ui.tab_bar_at_bottom());
+        ui.tab_bar_position = "Bottom".into();
+        assert!(ui.tab_bar_at_bottom());
+    }
+
+    #[test]
+    fn test_config_program_basename_paths() {
+        // 对应：标题栏/tab 名从路径抽 basename
+        assert_eq!(program_basename("/usr/bin/bash"), "bash");
+        assert_eq!(program_basename("/usr/local/bin/opencode"), "opencode");
+        assert_eq!(program_basename("python3"), "python3");
+        assert_eq!(program_basename(""), "");
+    }
+
+    #[test]
+    fn test_config_parse_command_argv_empty_uses_shell() {
+        let shell = expand_config_value("$SHELL");
+        assert_eq!(parse_command_argv(""), vec![shell.clone()]);
+        assert_eq!(parse_command_argv("   "), vec![shell]);
+    }
+
+    #[test]
+    fn test_config_behavior_new_shell_deprecated_variant() {
+        let c = parse_config_toml("[behavior]\non_last_pane_exit = \"new_shell\"\n").unwrap();
+        assert_eq!(c.behavior.on_last_pane_exit, OnLastPaneExit::NewShell);
+    }
 }

@@ -25,6 +25,27 @@ pub struct QuickPickItem {
     pub detail: Option<String>,
 }
 
+/// 根据父窗口高度计算面板/列表高度（纯函数，保证列表不溢出）。
+/// 返回 `(panel_h, list_h)`。
+pub fn panel_list_heights(parent_h: i32) -> (i32, i32) {
+    let panel_h = (parent_h / 2).clamp(200, 420);
+    let entry_h = 44;
+    let list_h = (panel_h - entry_h - 8).max(100);
+    (panel_h, list_h)
+}
+
+/// 按 query 过滤候选项（label / detail 模糊匹配）。
+pub fn filter_items(items: &[QuickPickItem], query: &str) -> Vec<QuickPickItem> {
+    items
+        .iter()
+        .filter(|it| {
+            fuzzy_match(query, &it.label)
+                || it.detail.as_ref().is_some_and(|d| fuzzy_match(query, d))
+        })
+        .cloned()
+        .collect()
+}
+
 /// 弹出 Quick Pick。`on_done(None)` 表示取消；`Some(item)` 表示选中。
 pub fn show<F>(parent: &impl IsA<Window>, placeholder: &str, items: Vec<QuickPickItem>, on_done: F)
 where
@@ -32,10 +53,8 @@ where
 {
     let parent = parent.as_ref();
     let parent_h = parent_height(parent);
-    // 面板总高 ≤ 父窗口一半
-    let panel_h = (parent_h / 2).clamp(200, 420);
+    let (panel_h, list_h) = panel_list_heights(parent_h);
     let entry_h = 44;
-    let list_h = (panel_h - entry_h - 8).max(100);
     let panel_w = 520;
 
     let overlay = ensure_overlay(parent);
@@ -330,5 +349,93 @@ mod tests {
     fn fuzzy_subsequence() {
         assert!(fuzzy_match("ntb", "new tab"));
         assert!(fuzzy_match("tcns", "tmux: create new session"));
+    }
+
+    /// 对应：模糊匹配大小写不敏感。
+    #[test]
+    fn test_quick_pick_fuzzy_case_insensitive() {
+        assert!(fuzzy_match("TMUX", "tmux: attach"));
+        assert!(fuzzy_match("NeW tAb", "new tab"));
+        assert!(fuzzy_match("ntb", "NEW TAB"));
+    }
+
+    /// 对应：中文命令名可匹配。
+    #[test]
+    fn test_quick_pick_fuzzy_chinese() {
+        assert!(fuzzy_match("命令", "打开命令面板"));
+        assert!(fuzzy_match("面板", "打开命令面板"));
+        assert!(!fuzzy_match("窗口", "打开命令面板"));
+    }
+
+    #[test]
+    fn test_quick_pick_fuzzy_no_match() {
+        assert!(!fuzzy_match("zzz", "new tab"));
+        assert!(!fuzzy_match("abcdef", "ab"));
+    }
+
+    /// 对应：过滤保持输入顺序（无额外排序）。
+    #[test]
+    fn test_quick_pick_filter_preserves_order() {
+        let items = vec![
+            QuickPickItem {
+                id: "a".into(),
+                label: "new tab".into(),
+                detail: None,
+            },
+            QuickPickItem {
+                id: "b".into(),
+                label: "tmux: attach".into(),
+                detail: None,
+            },
+            QuickPickItem {
+                id: "c".into(),
+                label: "close tab".into(),
+                detail: None,
+            },
+        ];
+        let f = filter_items(&items, "tab");
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0].id, "a");
+        assert_eq!(f[1].id, "c");
+    }
+
+    #[test]
+    fn test_quick_pick_filter_empty_query_keeps_all() {
+        let items = vec![QuickPickItem {
+            id: "1".into(),
+            label: "x".into(),
+            detail: Some("detail".into()),
+        }];
+        assert_eq!(filter_items(&items, "").len(), 1);
+    }
+
+    #[test]
+    fn test_quick_pick_filter_empty_list() {
+        assert!(filter_items(&[], "anything").is_empty());
+    }
+
+    /// 对应：命令面板滚动——列表高度钳制，不超过面板可用区。
+    #[test]
+    fn test_quick_pick_list_height_clamped() {
+        let (panel, list) = panel_list_heights(900);
+        assert_eq!(panel, 420); // clamp 上限
+        assert_eq!(list, panel - 44 - 8);
+        assert!(list <= panel);
+
+        let (panel2, list2) = panel_list_heights(100);
+        assert_eq!(panel2, 200); // clamp 下限
+        assert_eq!(list2, (200 - 44 - 8).max(100)); // 148
+        assert!(list2 <= panel2);
+        assert!(list2 >= 100);
+    }
+
+    #[test]
+    fn test_quick_pick_filter_matches_detail() {
+        let items = vec![QuickPickItem {
+            id: "s".into(),
+            label: "session".into(),
+            detail: Some("main · 2 windows".into()),
+        }];
+        assert_eq!(filter_items(&items, "windows").len(), 1);
     }
 }

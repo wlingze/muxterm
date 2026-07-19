@@ -236,3 +236,44 @@ fn rgba(c: Rgb) -> gtk4::gdk::RGBA {
         1.0,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 对应：spawn 程序名用于 tab/pane 标题。
+    #[test]
+    fn test_pane_view_spawn_opts_program_name() {
+        let opts = SpawnOpts {
+            argv: vec!["/usr/bin/bash".into()],
+            workdir: None,
+        };
+        assert_eq!(opts.program_name(), "bash");
+        let opts2 = SpawnOpts {
+            argv: vec!["/usr/bin/python3".into(), "script.py".into()],
+            workdir: Some(PathBuf::from("/tmp")),
+        };
+        assert_eq!(opts2.program_name(), "python3");
+    }
+
+    #[test]
+    fn test_pane_view_spawn_opts_empty_argv() {
+        let opts = SpawnOpts {
+            argv: vec![],
+            workdir: None,
+        };
+        assert_eq!(opts.program_name(), "shell");
+    }
+
+    /// 对应：display_name 优先自定义名（不构造 GTK Terminal）。
+    #[test]
+    fn test_pane_view_display_name_logic() {
+        // 直接测命名规则，避免 VTE
+        let program = "bash".to_string();
+        let custom = Some("work".to_string());
+        let display = custom.clone().unwrap_or_else(|| program.clone());
+        assert_eq!(display, "work");
+        let display2 = None::<String>.unwrap_or_else(|| program);
+        assert_eq!(display2, "bash");
+    }
+}

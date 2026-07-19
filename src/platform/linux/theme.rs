@@ -343,4 +343,61 @@ mod tests {
         assert_eq!(indexed_color(21), Rgb(0, 0, 255)); // 16+5 → b=255
         assert_eq!(indexed_color(196), Rgb(255, 0, 0)); // 16 + 5*36
     }
+
+    /// 对应：未知 SGR 码忽略、不 panic。
+    #[test]
+    fn test_theme_unknown_sgr_ignored() {
+        let t = theme();
+        let s = apply_sgr(&[999, 1234], base(&t), &t);
+        assert_eq!(s, base(&t));
+    }
+
+    /// 对应：256 色边界索引。
+    #[test]
+    fn test_theme_indexed_256_boundaries() {
+        assert_eq!(indexed_color(16), Rgb(0, 0, 0));
+        assert_eq!(indexed_color(231), Rgb(255, 255, 255));
+        let g0 = indexed_color(232);
+        assert_eq!(g0.0, g0.1);
+        assert_eq!(g0.1, g0.2);
+        let g_last = indexed_color(255);
+        assert!(g_last.0 >= g0.0);
+    }
+
+    /// 对应：bold+red+reverse 组合。
+    #[test]
+    fn test_theme_bold_red_reverse_combo() {
+        let t = theme();
+        let s = apply_sgr(&[1, 31, 7], base(&t), &t);
+        assert!(s.bold && s.reverse);
+        assert_eq!(s.fg, t.colors[1]);
+        let (fg, bg) = resolve(s, &t);
+        assert_eq!(fg, t.background);
+        assert_eq!(bg, t.colors[1]);
+    }
+
+    /// 对应：light/dark 主题文件可加载。
+    #[test]
+    fn test_theme_load_light_and_dark() {
+        let dark = Theme::load("dark").expect("dark");
+        let light = Theme::load("light").expect("light");
+        assert_eq!(dark.name, "Dark");
+        assert_eq!(light.name, "Light");
+        assert_ne!(dark.background, light.background);
+    }
+
+    /// 对应：无效主题名回退失败（调用方再选默认）。
+    #[test]
+    fn test_theme_load_invalid_name_errors() {
+        assert!(Theme::load("not-a-real-theme-xyz").is_err());
+    }
+
+    #[test]
+    fn test_theme_resolve_without_reverse() {
+        let t = theme();
+        let s = base(&t);
+        let (fg, bg) = resolve(s, &t);
+        assert_eq!(fg, t.foreground);
+        assert_eq!(bg, t.background);
+    }
 }

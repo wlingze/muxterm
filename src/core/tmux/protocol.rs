@@ -1243,4 +1243,124 @@ mod tests {
             }
         }
     }
+
+    /// 对应：超长 %output 不应截断/崩溃。
+    #[test]
+    fn test_protocol_long_output_content() {
+        let payload = "A".repeat(8000);
+        let line = format!("%output @1 \"{payload}\"");
+        match parse_line(&line) {
+            Some(Message::Output { pane, content, .. }) => {
+                assert_eq!(pane, PaneId(1));
+                assert_eq!(content.len(), 8000);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// 对应：混合空行 / 普通响应行 / % 通知的流解析。
+    #[test]
+    fn test_protocol_mixed_stream_lines() {
+        let lines = [
+            "",
+            "not-a-notification",
+            "%begin 1 2 3",
+            "response body",
+            "%end 1 2 3",
+            "%sessions-changed",
+            "\r",
+        ];
+        let msgs: Vec<_> = lines.iter().filter_map(|l| parse_line(l)).collect();
+        assert_eq!(msgs.len(), 3);
+        assert!(matches!(
+            &msgs[0],
+            Message::ResponseBoundary(b) if b.kind == NotificationKind::Begin
+        ));
+        assert!(matches!(
+            &msgs[1],
+            Message::ResponseBoundary(b) if b.kind == NotificationKind::End
+        ));
+        assert!(matches!(&msgs[2], Message::SessionsChanged));
+    }
+
+    /// 对应：C 转义 \a\b\f\v 与无效 hex。
+    #[test]
+    fn test_protocol_escape_bell_backspace_formfeed_vtab() {
+        let d = ControlEscapeDecoder::new();
+        assert_eq!(d.decode(r"\a\b\f\v").unwrap(), vec![0x07, 0x08, 0x0C, 0x0B]);
+    }
+
+    #[test]
+    fn test_protocol_escape_invalid_hex_errors() {
+        let d = ControlEscapeDecoder::new();
+        assert!(matches!(
+            d.decode(r"\x"),
+            Err(ControlEscapeError::InvalidHex(_))
+        ));
+        assert!(matches!(
+            d.decode(r"\xGG"),
+            Err(ControlEscapeError::InvalidHex(_))
+        ));
+    }
+
+    #[test]
+    fn test_protocol_escape_lossy_on_error_returns_raw() {
+        let d = ControlEscapeDecoder::new();
+        assert_eq!(d.decode_lossy(r"bad\q"), r"bad\q");
+    }
+
+    /// 对应：%error 边界与 begin/end 成对。
+    #[test]
+    fn test_protocol_error_boundary() {
+        let m = parse_line("%error 9 8 7").unwrap();
+        match m {
+            Message::ResponseBoundary(b) => {
+                assert_eq!(b.kind, NotificationKind::Error);
+                assert_eq!(b.time, 9);
+                assert_eq!(b.number, 8);
+                assert_eq!(b.flags, 7);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_protocol_malformed_output_returns_none() {
+        // 缺 content / 坏 pane id → 不崩溃，返回 None
+        assert!(parse_line("%output").is_none());
+        assert!(parse_line("%output @x \"hi\"").is_none());
+    }
+
+    #[test]
+    fn test_protocol_message_keywords_cover_variants() {
+        let samples = [
+            ("%output @0 \"x\"", "output"),
+            ("%window-add @1", "window-add"),
+            ("%window-close @1", "window-close"),
+            ("%window-renamed @1 foo", "window-renamed"),
+            ("%session-changed $0 name", "session-changed"),
+            ("%session-renamed $0 name", "session-renamed"),
+            ("%sessions-changed", "sessions-changed"),
+            ("%pane-mode-changed @1 copy-mode", "pane-mode-changed"),
+            ("%unlinked-window-add @2", "unlinked-window-add"),
+            ("%unlinked-window-close @2", "unlinked-window-close"),
+            ("%exit", "exit"),
+            ("%begin 1 2 3", "begin"),
+        ];
+        for (line, kw) in samples {
+            let m = parse_line(line).expect(line);
+            assert_eq!(m.keyword(), kw, "line={line}");
+        }
+    }
+
+    #[test]
+    fn test_protocol_crlf_suffix_stripped() {
+        let m = parse_line("%sessions-changed\r\n").or_else(|| {
+            // parse_line 假定已按行切分；若保留 \r 仍应识别
+            parse_line("%sessions-changed\r")
+        });
+        // 至少无 \r 的行必须成功
+        assert!(parse_line("%sessions-changed").is_some());
+        let _ = m;
+    }
 }

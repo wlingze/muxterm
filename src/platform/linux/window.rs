@@ -20,7 +20,7 @@ use gtk4::{Box, CssProvider, EventControllerKey, Label, Orientation, Window};
 use vte4::prelude::*;
 
 use crate::core::config::{
-    decode_wait_status, expand_config_value, parse_command_argv, Action, Config, OnLastPaneExit,
+    decode_wait_status, expand_config_value, parse_command_argv, Action, Config,
     OnProgramExitAbnormal, Theme,
 };
 use crate::core::tmux::client::TmuxClientConfig;
@@ -31,12 +31,18 @@ use crate::core::tmux::protocol::{PaneId, WindowId};
 use crate::platform::linux::command_palette;
 use crate::platform::linux::input_bar::InputBar;
 use crate::platform::linux::keymap::KeyMap;
+use crate::platform::linux::lifecycle::{
+    last_tabs_closed_action, next_pane_index, pane_exit_decision, tab_index_for_shortcut,
+    LastTabsClosedAction, PaneExitDecision,
+};
 use crate::platform::linux::notebook::{
     parse_layout_tree, LocalPaneId, PaneKey, PaneNotebook, SplitOrient, TabKey,
 };
 use crate::platform::linux::pane_switcher::{self, PaneEntry};
 use crate::platform::linux::pane_view::{PaneView, SpawnOpts};
-use crate::platform::linux::tab_bar::{TabBar, TabBarItem};
+use crate::platform::linux::tab_bar::{
+    format_tab_bar_title, format_tab_display_name, TabBar, TabBarItem,
+};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 use crate::platform::linux::wiring::{spawn_bridge, TmuxBridge, UiEvent};
 
@@ -360,14 +366,13 @@ impl SharedState {
             "本地 pane 程序退出"
         );
 
-        // 异常退出且策略为 Keep：保留 pane，仅提示
-        if code != 0 && self.cfg.behavior.on_program_exit_abnormal == OnProgramExitAbnormal::Keep {
+        let policy = self.cfg.behavior.on_program_exit_abnormal;
+        if pane_exit_decision(code, policy) == PaneExitDecision::Keep {
             self.show_status(&format!("{prog} exited with code {code}"));
             return;
         }
 
-        if code != 0 && self.cfg.behavior.on_program_exit_abnormal == OnProgramExitAbnormal::Notify
-        {
+        if code != 0 && policy == OnProgramExitAbnormal::Notify {
             self.show_status(&format!("{prog} exited with code {code}"));
         }
 
@@ -416,19 +421,19 @@ impl SharedState {
 
     /// 所有 tab 都关了之后的行为（**不再**默认开新 shell）。
     fn on_all_tabs_closed(self: &Arc<Self>) {
-        match self.cfg.behavior.on_last_pane_exit {
-            OnLastPaneExit::CloseWindow => {
+        match last_tabs_closed_action(self.cfg.behavior.on_last_pane_exit) {
+            LastTabsClosedAction::CloseWindow => {
                 tracing::info!(target = "muxterm::window", "无剩余 tab，关闭窗口");
                 self.window.close();
             }
-            OnLastPaneExit::KeepEmpty => {
+            LastTabsClosedAction::KeepEmpty => {
                 tracing::info!(target = "muxterm::window", "无剩余 tab，保留空窗口");
                 self.show_status("所有 pane 已关闭");
                 *self.current_tab.lock().unwrap() = None;
                 *self.current_pane.lock().unwrap() = None;
                 self.refresh_window_title();
             }
-            OnLastPaneExit::NewShell => {
+            LastTabsClosedAction::NewShell => {
                 // 废弃旧逻辑：仍兼容配置，但打 warn
                 tracing::warn!(
                     target = "muxterm::window",
@@ -581,12 +586,11 @@ impl SharedState {
         // 先算索引并释放 notebook 读锁，再 select——避免持锁触发 switch-page
         let (nbook, idx) = {
             let nb = self.notebook.read().unwrap();
-            let total = nb.n_tabs();
-            if total == 0 {
+            let total = nb.n_tabs() as usize;
+            let Some(idx) = tab_index_for_shortcut(n, total) else {
                 return;
-            }
-            let idx = if n == 0 { total - 1 } else { n.min(total) - 1 };
-            (nb.notebook.clone(), idx)
+            };
+            (nb.notebook.clone(), idx as u32)
         };
         nbook.set_current_page(Some(idx));
     }
@@ -604,17 +608,10 @@ impl SharedState {
             .get(&tab)
             .cloned()
             .unwrap_or_default();
-        if panes.len() <= 1 {
-            return;
-        }
         let cur = *self.current_pane.lock().unwrap();
         let idx = panes.iter().position(|p| Some(*p) == cur).unwrap_or(0);
-        let new_idx = if next {
-            (idx + 1) % panes.len()
-        } else if idx == 0 {
-            panes.len() - 1
-        } else {
-            idx - 1
+        let Some(new_idx) = next_pane_index(panes.len(), idx, next) else {
+            return;
         };
         let new_pane = panes[new_idx];
         *self.current_pane.lock().unwrap() = Some(new_pane);
@@ -1128,7 +1125,7 @@ impl SharedState {
             let name = self.tab_display_name(*key);
             items.push(TabBarItem {
                 key: *key,
-                title: format!("{}:{}", i + 1, name),
+                title: format_tab_bar_title(i + 1, &name),
                 active: current == Some(*key),
             });
         }
@@ -1147,11 +1144,7 @@ impl SharedState {
                         .get(&tab)
                         .map(|p| p.len())
                         .unwrap_or(1);
-                    return if n_panes > 1 {
-                        format!("{n} · {n_panes}panes")
-                    } else {
-                        n.clone()
-                    };
+                    return format_tab_display_name(n, n_panes);
                 }
             }
         }
@@ -1174,11 +1167,7 @@ impl SharedState {
         let name = primary
             .and_then(|p| views.get(&p).map(|v| v.display_name()))
             .unwrap_or_else(|| fallback.into());
-        if panes.len() > 1 {
-            format!("{name} · {}panes", panes.len())
-        } else {
-            name
-        }
+        format_tab_display_name(&name, panes.len())
     }
 
     /// 轮询更新各 pane 的 program_name（用户未自定义时）。

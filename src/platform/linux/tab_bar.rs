@@ -20,6 +20,31 @@ pub struct TabBarItem {
     pub active: bool,
 }
 
+/// 生成 tab 栏按钮标题：`序号:显示名`。
+pub fn format_tab_bar_title(index_1based: usize, display_name: &str) -> String {
+    format!("{index_1based}:{display_name}")
+}
+
+/// 多 pane 时附加 ` · Npanes` 后缀；单 pane 原样返回。
+pub fn format_tab_display_name(name: &str, n_panes: usize) -> String {
+    if n_panes > 1 {
+        format!("{name} · {n_panes}panes")
+    } else {
+        name.to_string()
+    }
+}
+
+/// 过长名字截断（保留前缀 + …）。
+pub fn truncate_tab_name(name: &str, max_chars: usize) -> String {
+    let count = name.chars().count();
+    if max_chars == 0 || count <= max_chars {
+        return name.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let prefix: String = name.chars().take(keep).collect();
+    format!("{prefix}…")
+}
+
 /// 极简 tab 栏。
 pub struct TabBar {
     pub container: GtkBox,
@@ -84,5 +109,50 @@ impl TabBar {
             self.container.append(&btn);
             self.buttons.borrow_mut().push((item.key, btn));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 对应：tab 显示名 `1:bash`。
+    #[test]
+    fn test_tab_bar_format_title_plain() {
+        assert_eq!(format_tab_bar_title(1, "bash"), "1:bash");
+        assert_eq!(format_tab_bar_title(3, "vim"), "3:vim");
+    }
+
+    /// 对应：多 pane tab 显示 `名 · Npanes`。
+    #[test]
+    fn test_tab_bar_multi_pane_suffix() {
+        assert_eq!(format_tab_display_name("bash", 1), "bash");
+        assert_eq!(format_tab_display_name("bash", 2), "bash · 2panes");
+        assert_eq!(
+            format_tab_bar_title(2, &format_tab_display_name("vim", 3)),
+            "2:vim · 3panes"
+        );
+    }
+
+    /// 对应：过长名字截断不撑爆 tab 栏。
+    #[test]
+    fn test_tab_bar_truncate_long_name() {
+        let long = "a".repeat(40);
+        let t = truncate_tab_name(&long, 10);
+        assert_eq!(t.chars().count(), 10);
+        assert!(t.ends_with('…'));
+        assert_eq!(truncate_tab_name("bash", 10), "bash");
+    }
+
+    /// 对应：激活 tab 标记（纯数据，UI 用 CSS class）。
+    #[test]
+    fn test_tab_bar_item_active_flag() {
+        let item = TabBarItem {
+            key: TabKey::Local(1),
+            title: "1:shell".into(),
+            active: true,
+        };
+        assert!(item.active);
+        assert_eq!(item.title, "1:shell");
     }
 }

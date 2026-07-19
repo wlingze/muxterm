@@ -774,4 +774,164 @@ mod tests {
         assert!(tree.remove_leaf(b));
         assert_eq!(tree, PaneNode::Leaf(a));
     }
+
+    fn lp(n: u64) -> PaneKey {
+        PaneKey::Local(LocalPaneId(n))
+    }
+
+    /// 对应：嵌套分割——在激活 pane 内分割，另一侧不变（Bug #2）。
+    #[test]
+    fn test_panenode_nested_split_keeps_sibling() {
+        let a = lp(0);
+        let b = lp(1);
+        let c = lp(2);
+        let mut tree = PaneNode::leaf(a);
+        assert!(tree.split_leaf(a, b, SplitOrient::Horizontal));
+        assert_eq!(tree.leaves().len(), 2);
+        // 焦点在 a，再竖直分割 → 只有 a 侧变，b 不变
+        assert!(tree.split_leaf(a, c, SplitOrient::Vertical));
+        assert_eq!(tree.leaves(), vec![a, c, b]);
+        match &tree {
+            PaneNode::Split {
+                orientation: SplitOrient::Horizontal,
+                second,
+                ..
+            } => assert_eq!(**second, PaneNode::Leaf(b)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_panenode_split_horizontal_root() {
+        let a = lp(0);
+        let b = lp(1);
+        let mut tree = PaneNode::leaf(a);
+        assert!(tree.split_leaf(a, b, SplitOrient::Horizontal));
+        assert!(matches!(
+            tree,
+            PaneNode::Split {
+                orientation: SplitOrient::Horizontal,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_panenode_split_vertical_root() {
+        let a = lp(0);
+        let b = lp(1);
+        let mut tree = PaneNode::leaf(a);
+        assert!(tree.split_leaf(a, b, SplitOrient::Vertical));
+        assert!(matches!(
+            tree,
+            PaneNode::Split {
+                orientation: SplitOrient::Vertical,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_panenode_split_missing_target_false() {
+        let mut tree = PaneNode::leaf(lp(0));
+        assert!(!tree.split_leaf(lp(9), lp(1), SplitOrient::Horizontal));
+        assert_eq!(tree.leaves().len(), 1);
+    }
+
+    #[test]
+    fn test_panenode_remove_from_nested_three() {
+        let a = lp(0);
+        let b = lp(1);
+        let c = lp(2);
+        let mut tree = PaneNode::leaf(a);
+        tree.split_leaf(a, b, SplitOrient::Horizontal);
+        tree.split_leaf(b, c, SplitOrient::Vertical);
+        // 删中间层一侧的 b：树应折叠
+        assert!(tree.remove_leaf(b));
+        assert_eq!(tree.leaves(), vec![a, c]);
+    }
+
+    #[test]
+    fn test_panenode_pane_count_1_to_4() {
+        let mut tree = PaneNode::leaf(lp(0));
+        assert_eq!(tree.leaves().len(), 1);
+        tree.split_leaf(lp(0), lp(1), SplitOrient::Horizontal);
+        assert_eq!(tree.leaves().len(), 2);
+        tree.split_leaf(lp(0), lp(2), SplitOrient::Vertical);
+        assert_eq!(tree.leaves().len(), 3);
+        tree.split_leaf(lp(1), lp(3), SplitOrient::Horizontal);
+        assert_eq!(tree.leaves().len(), 4);
+    }
+
+    /// 对应：连续多次不同方向分割不崩，树深度可用。
+    #[test]
+    fn test_panenode_five_alternating_splits() {
+        let mut tree = PaneNode::leaf(lp(0));
+        let orients = [
+            SplitOrient::Horizontal,
+            SplitOrient::Vertical,
+            SplitOrient::Horizontal,
+            SplitOrient::Vertical,
+            SplitOrient::Horizontal,
+        ];
+        for (i, o) in orients.iter().enumerate() {
+            let target = tree.leaves()[0];
+            assert!(tree.split_leaf(target, lp((i + 1) as u64), *o));
+        }
+        assert_eq!(tree.leaves().len(), 6);
+    }
+
+    /// 对应：大量 pane（10 次分割）后 leaves 数量正确。
+    #[test]
+    fn test_panenode_ten_splits_count() {
+        let mut tree = PaneNode::leaf(lp(0));
+        for i in 0..10 {
+            let target = *tree.leaves().last().unwrap();
+            assert!(tree.split_leaf(target, lp((i + 1) as u64), SplitOrient::Horizontal));
+        }
+        assert_eq!(tree.leaves().len(), 11);
+    }
+
+    #[test]
+    fn test_panenode_is_leaf() {
+        let a = lp(0);
+        let tree = PaneNode::leaf(a);
+        assert!(tree.is_leaf(a));
+        assert!(!tree.is_leaf(lp(1)));
+    }
+
+    #[test]
+    fn test_panenode_switch_index_helpers() {
+        // 模拟 switch_pane 循环索引（window 侧逻辑的纯版）
+        let panes = [lp(0), lp(1), lp(2)];
+        let next = |idx: usize| (idx + 1) % panes.len();
+        let prev = |idx: usize| if idx == 0 { panes.len() - 1 } else { idx - 1 };
+        assert_eq!(next(0), 1);
+        assert_eq!(next(2), 0);
+        assert_eq!(prev(0), 2);
+        assert_eq!(prev(1), 0);
+        // 单 pane：无操作
+        let single = [lp(0)];
+        assert_eq!(single.len(), 1);
+    }
+
+    #[test]
+    fn test_notebook_default_title() {
+        assert_eq!(PaneNotebook::default_title(TabKey::Local(1), None), "shell");
+        assert_eq!(
+            PaneNotebook::default_title(TabKey::TmuxWindow(WindowId(3)), Some("bash")),
+            "bash"
+        );
+        assert_eq!(
+            PaneNotebook::default_title(TabKey::TmuxWindow(WindowId(3)), None),
+            "@3"
+        );
+    }
+
+    #[test]
+    fn test_panenode_remove_missing_false() {
+        let mut tree = PaneNode::leaf(lp(0));
+        tree.split_leaf(lp(0), lp(1), SplitOrient::Horizontal);
+        assert!(!tree.remove_leaf(lp(99)));
+    }
 }

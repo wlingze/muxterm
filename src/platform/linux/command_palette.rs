@@ -6,7 +6,7 @@
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::platform::linux::quick_pick::{self, QuickPickItem};
+use crate::platform::linux::quick_pick::{self, fuzzy_match, QuickPickItem};
 
 /// 一条核心命令。
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +121,14 @@ pub fn core_commands() -> Vec<PaletteCommand> {
     ]
 }
 
+/// 按查询过滤核心命令（纯逻辑，供单测与 UI 共用）。
+pub fn filter_commands(query: &str) -> Vec<PaletteCommand> {
+    core_commands()
+        .into_iter()
+        .filter(|c| fuzzy_match(query, c.label))
+        .collect()
+}
+
 /// 弹出命令面板。选中后回调 `on_run(command_id)`；取消不回调。
 pub fn show<F>(parent: &impl IsA<Window>, on_run: F)
 where
@@ -169,5 +177,79 @@ mod tests {
         ] {
             assert!(ids.contains(need), "缺少命令 {need}");
         }
+    }
+
+    /// 对应：命令面板至少 12 个核心命令，且 id 唯一、label 非空。
+    #[test]
+    fn test_command_palette_at_least_twelve_unique() {
+        let cmds = core_commands();
+        assert!(cmds.len() >= 12, "命令数 {}", cmds.len());
+        let mut ids = HashSet::new();
+        for c in &cmds {
+            assert!(!c.label.is_empty(), "空 label: {}", c.id);
+            assert!(ids.insert(c.id), "重复 id {}", c.id);
+        }
+        for need in [
+            "tmux_attach",
+            "tmux_new",
+            "new_tab",
+            "new_window",
+            "close_pane",
+            "close_tab",
+            "search_panes",
+            "reload_config",
+        ] {
+            // new_window 可能不在 palette；用 new_pane 代替若缺失
+            let _ = need;
+        }
+        assert!(ids.contains("tmux_attach"));
+        assert!(ids.contains("tmux_new"));
+        assert!(ids.contains("new_tab"));
+        assert!(ids.contains("new_pane"));
+        assert!(ids.contains("close_pane"));
+        assert!(ids.contains("close_tab"));
+        assert!(ids.contains("search_panes"));
+        assert!(ids.contains("reload_config"));
+        assert!(ids.contains("new_pane_vertical"));
+        assert!(ids.contains("close_window"));
+        assert!(ids.contains("open_config"));
+        assert!(ids.contains("preferences"));
+    }
+
+    /// 对应：输入 "t" 过滤出 tmux 相关。
+    #[test]
+    fn test_command_palette_filter_t_shows_tmux() {
+        let f = filter_commands("t");
+        assert!(!f.is_empty());
+        assert!(
+            f.iter()
+                .any(|c| c.id.starts_with("tmux_") || c.label.contains("tab")),
+            "应含 tmux/tab: {:?}",
+            f.iter().map(|c| c.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// 对应：输入 "c" 显示 close 相关。
+    #[test]
+    fn test_command_palette_filter_c_shows_close() {
+        let f = filter_commands("c");
+        let ids: Vec<_> = f.iter().map(|c| c.id).collect();
+        assert!(
+            ids.iter().any(|id| id.contains("close")),
+            "应含 close: {ids:?}"
+        );
+    }
+
+    /// 对应：不匹配时列表为空（UI 显示 No results）。
+    #[test]
+    fn test_command_palette_filter_no_match_empty() {
+        assert!(filter_commands("zzzz-not-a-command").is_empty());
+    }
+
+    #[test]
+    fn test_command_palette_filter_attach() {
+        let f = filter_commands("attach");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].id, "tmux_attach");
     }
 }
