@@ -15,6 +15,13 @@ name = "light"  # 或 dark
 auto_mouse = true       # attach 后自动 set -g mouse on
 default_session = ""    # 空则不自动 attach
 
+# SSH 远程 tmux -CC（命令面板 "ssh: connect"）
+[ssh]
+host = ""               # 如 "example.com"；空则需在 QuickPick 里输入
+port = 22
+user = ""               # 空则用 $USER
+key_path = ""           # 私钥路径；空则尝试 ssh-agent
+
 # scrollback
 [scrollback]
 lines = 10000

@@ -3,14 +3,18 @@
 //! 对外暴露：
 //! - [`protocol`]：消息类型与行解析器（`Message` / `parse_line`）
 //! - [`command`]：强类型命令构造器（`TmuxCommand` 及各 newtype ID）
-//! - [`client`]：异步 tmux `-CC` 客户端（`TmuxClient`）
+//! - [`client`]：异步本地 tmux `-CC` 客户端（`TmuxClient`）
 //! - [`pty`]：PTY 辅助（为 tmux -CC 分配伪终端）
+//!
+//! 远程 client 见 [`crate::core::ssh::RemoteTmuxClient`]（此处 re-export）。
 
 pub mod client;
 pub mod command;
 pub mod protocol;
 pub mod pty;
 
+#[allow(unused_imports)]
+pub use crate::core::ssh::{RemoteTmuxClient, SshSession};
 #[allow(unused_imports)]
 pub use client::{ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent};
 #[allow(unused_imports)]

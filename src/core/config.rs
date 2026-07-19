@@ -4,6 +4,7 @@
 //! - `[font]` family / size
 //! - `[theme]` name
 //! - `[tmux]` auto_mouse / default_session
+//! - `[ssh]` host / port / user / key_path
 //! - `[scrollback]` lines
 //! - `[ui]` tab 栏位置/高度、标题栏
 //! - `[pane]` 默认程序与工作目录
@@ -31,6 +32,8 @@ pub struct Config {
     pub theme: ThemeConfig,
     #[serde(default)]
     pub tmux: TmuxConfig,
+    #[serde(default)]
+    pub ssh: SshFileConfig,
     #[serde(default)]
     pub scrollback: ScrollbackConfig,
     #[serde(default)]
@@ -102,6 +105,55 @@ impl Default for TmuxConfig {
             auto_mouse: true,
             default_session: String::new(),
         }
+    }
+}
+
+/// `[ssh]`：远程 tmux -CC 默认连接参数。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshFileConfig {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub user: String,
+    /// 私钥路径；空则尝试 ssh-agent。
+    #[serde(default)]
+    pub key_path: String,
+}
+fn default_ssh_port() -> u16 {
+    22
+}
+impl Default for SshFileConfig {
+    fn default() -> Self {
+        SshFileConfig {
+            host: String::new(),
+            port: default_ssh_port(),
+            user: String::new(),
+            key_path: String::new(),
+        }
+    }
+}
+
+impl SshFileConfig {
+    /// 是否已配置可用 host。
+    pub fn is_configured(&self) -> bool {
+        !self.host.trim().is_empty()
+    }
+
+    /// 转为运行时 [`crate::core::ssh::SshConfig`]。
+    pub fn to_ssh_config(&self) -> crate::core::ssh::SshConfig {
+        let user = if self.user.trim().is_empty() {
+            std::env::var("USER").unwrap_or_else(|_| "root".into())
+        } else {
+            self.user.clone()
+        };
+        crate::core::ssh::SshConfig::from_file_fields(
+            self.host.clone(),
+            self.port,
+            user,
+            self.key_path.clone(),
+        )
     }
 }
 
@@ -239,6 +291,7 @@ impl Default for Config {
             font: FontConfig::default(),
             theme: ThemeConfig::default(),
             tmux: TmuxConfig::default(),
+            ssh: SshFileConfig::default(),
             scrollback: ScrollbackConfig::default(),
             ui: UiConfig::default(),
             pane: PaneConfig::default(),
@@ -605,6 +658,12 @@ name = "dark"
 auto_mouse = true
 default_session = ""
 
+[ssh]
+host = "example.com"
+port = 2222
+user = "alice"
+key_path = "/home/alice/.ssh/id_ed25519"
+
 [scrollback]
 lines = 5000
 
@@ -649,6 +708,10 @@ color15 = "#a6adc8"
         assert_eq!(c.font.size, 13.0);
         assert_eq!(c.theme.name, "dark"); // 样例文件显式指定 dark
         assert!(c.tmux.auto_mouse);
+        assert_eq!(c.ssh.host, "example.com");
+        assert_eq!(c.ssh.port, 2222);
+        assert_eq!(c.ssh.user, "alice");
+        assert!(c.ssh.key_path.ends_with("id_ed25519"));
         assert_eq!(c.scrollback.lines, 5000);
         // 用户只写了 2 条 keybindings，应保留用户的（不补默认）
         assert_eq!(c.keybindings.len(), 2);
@@ -680,6 +743,32 @@ color15 = "#a6adc8"
             parse_config_toml("[tmux]\nauto_mouse = false\ndefault_session = \"main\"\n").unwrap();
         assert!(!c.tmux.auto_mouse);
         assert_eq!(c.tmux.default_session, "main");
+    }
+
+    #[test]
+    fn parse_config_ssh_section() {
+        let c = parse_config_toml(
+            r#"[ssh]
+host = "box"
+port = 2200
+user = "bob"
+key_path = "~/.ssh/id_rsa"
+"#,
+        )
+        .unwrap();
+        assert!(c.ssh.is_configured());
+        assert_eq!(c.ssh.port, 2200);
+        let runtime = c.ssh.to_ssh_config();
+        assert_eq!(runtime.host, "box");
+        assert_eq!(runtime.user, "bob");
+        assert_eq!(runtime.port, 2200);
+    }
+
+    #[test]
+    fn parse_config_ssh_defaults_when_absent() {
+        let c = parse_config_toml("").unwrap();
+        assert!(!c.ssh.is_configured());
+        assert_eq!(c.ssh.port, 22);
     }
 
     #[test]

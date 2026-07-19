@@ -401,7 +401,9 @@ async fn read_stream_loop(stdout: ChildStdout, tx: mpsc::Sender<TmuxEvent>) {
 }
 
 /// 处理单行：解析为 Message 或 ResponseLine，并维护响应状态机。
-async fn process_line(
+///
+/// `pub(crate)`：SSH 远程 client 复用同一套行状态机。
+pub(crate) async fn process_line(
     line: &str,
     tx: &mpsc::Sender<TmuxEvent>,
     in_response: &mut bool,
