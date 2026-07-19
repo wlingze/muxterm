@@ -33,8 +33,8 @@ use crate::platform::linux::command_palette;
 use crate::platform::linux::input_bar::InputBar;
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::lifecycle::{
-    last_tabs_closed_action, next_pane_index, pane_exit_decision, tab_index_for_shortcut,
-    LastTabsClosedAction, PaneExitDecision,
+    last_tabs_closed_action, next_pane_index, palette_should_refocus_terminal,
+    pane_exit_decision, tab_index_for_shortcut, LastTabsClosedAction, PaneExitDecision,
 };
 use crate::platform::linux::notebook::{
     parse_layout_tree, LocalPaneId, PaneKey, PaneNotebook, SplitOrient, TabKey,
@@ -601,10 +601,11 @@ impl SharedState {
             .map(|(_, c)| c.tree.leaves())
             .unwrap_or_default();
         self.tab_panes.write().unwrap().insert(tab, leaves.clone());
-        // 焦点留在原 pane（嵌套树的 first）
-        *self.current_pane.lock().unwrap() = Some(target);
+        // 焦点立刻落到新 pane（ARCHITECTURE §2.3）
+        *self.current_pane.lock().unwrap() = Some(new_pane);
         self.refresh_tab_bar();
         self.refresh_window_title();
+        self.refresh_input_visibility();
         self.focus_active_pane();
         self.show_status(&format!(
             "已嵌套分割（{}，{} panes）",
@@ -697,6 +698,11 @@ impl SharedState {
                 let shared = self.clone();
                 command_palette::show(&self.window, move |cmd| {
                     SharedState::run_palette_command(&shared, cmd);
+                    // 打开二级对话框的命令自行抢焦点；其余回到 terminal
+                    if palette_should_refocus_terminal(cmd) {
+                        shared.refresh_input_visibility();
+                        shared.focus_active_pane();
+                    }
                 });
             }
             Action::Unknown => {}
@@ -782,6 +788,8 @@ impl SharedState {
             presets,
             move |picked| {
                 let Some(item) = picked else {
+                    shared.refresh_input_visibility();
+                    shared.focus_active_pane();
                     return;
                 };
                 let line = item.label;
@@ -960,8 +968,13 @@ impl SharedState {
                     self.tab_panes.write().unwrap().remove(&tab);
                     if self.notebook.read().unwrap().n_tabs() == 0 {
                         self.on_all_tabs_closed();
+                    } else {
+                        self.notebook.read().unwrap().select_by_index(0);
                     }
                     self.refresh_tab_bar();
+                    self.refresh_window_title();
+                    self.refresh_input_visibility();
+                    self.focus_active_pane();
                 }
             }
             TabKey::TmuxWindow(w) => {
@@ -1064,6 +1077,8 @@ impl SharedState {
                 let title = shared.tab_display_name(tab);
                 shared.notebook.read().unwrap().set_title(tab, &title);
             }
+            shared.refresh_input_visibility();
+            shared.focus_active_pane();
         });
     }
 
@@ -1156,6 +1171,9 @@ impl SharedState {
                 if let Ok(mut g) = self.cmd_sender.lock() {
                     *g = Some(bridge); // 持有 Runtime，防止 task 被 cancel
                 }
+                // tmux attach：无底部输入框，焦点进 terminal
+                self.refresh_input_visibility();
+                self.focus_active_pane();
             }
             None => {
                 self.show_status("启动 tmux 桥接失败");
@@ -1287,8 +1305,10 @@ impl SharedState {
         self.focus_active_pane();
     }
 
-    /// 底部输入栏已废弃：tmux/本地都直接在 terminal 打字。始终隐藏。
+    /// 底部输入栏已废弃：tmux/本地都直接在 terminal 打字。
+    /// 始终 `set_visible(false)`（不 remove / 不销毁控件）。
     fn refresh_input_visibility(self: &Arc<Self>) {
+        debug_assert!(!crate::platform::linux::lifecycle::input_bar_should_be_visible());
         self.input_bar_container.set_visible(false);
     }
 

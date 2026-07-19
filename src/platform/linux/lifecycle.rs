@@ -78,6 +78,21 @@ pub fn empty_window_is_safe(n_tabs: usize) -> bool {
     n_tabs == 0 || n_tabs > 0
 }
 
+/// 底部 input_bar 在正常 UI 中应始终隐藏（保留控件，仅 `set_visible(false)`）。
+pub fn input_bar_should_be_visible() -> bool {
+    false
+}
+
+/// 命令面板执行后是否应立刻把焦点还给 terminal。
+///
+/// 会打开二级对话框/QuickPick 的命令返回 false（由对话框关闭后再聚焦）。
+pub fn palette_should_refocus_terminal(cmd: &str) -> bool {
+    !matches!(
+        cmd,
+        "tmux_attach" | "tmux_new" | "ssh_connect" | "rename_pane" | "search_panes"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +200,25 @@ mod tests {
             assert!(next_pane_index(n, 0, true).is_some());
         }
         assert_eq!(n, 6);
+    }
+
+    /// 对应：input_bar 始终隐藏（不删除）。
+    #[test]
+    fn test_lifecycle_input_bar_always_hidden() {
+        assert!(!input_bar_should_be_visible());
+    }
+
+    /// 对应：命令面板后焦点回 terminal；二级对话框除外。
+    #[test]
+    fn test_lifecycle_palette_refocus_rules() {
+        assert!(palette_should_refocus_terminal("new_tab"));
+        assert!(palette_should_refocus_terminal("new_pane"));
+        assert!(palette_should_refocus_terminal("close_pane"));
+        assert!(palette_should_refocus_terminal("ssh_disconnect"));
+        assert!(!palette_should_refocus_terminal("ssh_connect"));
+        assert!(!palette_should_refocus_terminal("tmux_attach"));
+        assert!(!palette_should_refocus_terminal("tmux_new"));
+        assert!(!palette_should_refocus_terminal("rename_pane"));
+        assert!(!palette_should_refocus_terminal("search_panes"));
     }
 }
