@@ -12,6 +12,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use crate::core::config::{program_basename, Rgb, Theme};
+use crate::core::terminal::process::{kill as kill_process, ProcessHandle};
 use gtk4::glib;
 use gtk4::pango;
 use vte4::prelude::*;
@@ -140,21 +141,15 @@ impl PaneView {
         });
     }
 
-    /// 终止本地子进程（若有 pid）。
+    /// 终止本地子进程（若有 pid）；走 `core::terminal::process::kill`。
     pub fn kill_child(&self) -> bool {
         let Some(pid) = self.child_pid.get() else {
             return false;
         };
-        #[cfg(unix)]
-        {
-            let r = unsafe { libc::kill(pid, libc::SIGTERM) };
-            r == 0
+        if pid <= 0 {
+            return false;
         }
-        #[cfg(not(unix))]
-        {
-            let _ = pid;
-            false
-        }
+        kill_process(&ProcessHandle::from_pid(pid as u32)).is_ok()
     }
 
     pub fn feed_output(&self, data: &[u8]) {
