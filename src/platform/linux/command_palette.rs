@@ -31,6 +31,14 @@ pub fn core_commands() -> Vec<PaletteCommand> {
             label: "tmux: detach current",
         },
         PaletteCommand {
+            id: "ssh_connect",
+            label: "ssh: connect",
+        },
+        PaletteCommand {
+            id: "ssh_disconnect",
+            label: "ssh: disconnect",
+        },
+        PaletteCommand {
             id: "new_tab",
             label: "new tab",
         },
@@ -162,6 +170,8 @@ mod tests {
             "tmux_attach",
             "tmux_new",
             "tmux_detach",
+            "ssh_connect",
+            "ssh_disconnect",
             "new_tab",
             "new_pane",
             "close_pane",
@@ -177,6 +187,14 @@ mod tests {
         ] {
             assert!(ids.contains(need), "缺少命令 {need}");
         }
+    }
+
+    #[test]
+    fn test_command_palette_filter_ssh() {
+        let f = filter_commands("ssh");
+        let ids: Vec<_> = f.iter().map(|c| c.id).collect();
+        assert!(ids.contains(&"ssh_connect"), "{ids:?}");
+        assert!(ids.contains(&"ssh_disconnect"), "{ids:?}");
     }
 
     /// 对应：命令面板至少 12 个核心命令，且 id 唯一、label 非空。

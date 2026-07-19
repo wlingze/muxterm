@@ -270,6 +270,265 @@ where
     entry.grab_focus();
 }
 
+/// 带自由输入的 Quick Pick：输入框非空时，始终把当前文本作为首选项。
+///
+/// 用于 SSH 目标等「可从列表选、也可直接敲」的场景。选中自由输入项时
+/// `id == FREEFORM_ID`。
+pub const FREEFORM_ID: &str = "__typed__";
+
+/// 自由输入过滤（纯函数）：query 非空时首项为 typed target。
+pub fn freeform_filter(presets: &[QuickPickItem], query: &str) -> Vec<QuickPickItem> {
+    let mut next = Vec::new();
+    let qtrim = query.trim();
+    if !qtrim.is_empty() {
+        next.push(QuickPickItem {
+            id: FREEFORM_ID.into(),
+            label: qtrim.to_string(),
+            detail: Some("use typed target".into()),
+        });
+    }
+    for it in presets {
+        if qtrim.is_empty()
+            || fuzzy_match(qtrim, &it.label)
+            || it.detail.as_ref().is_some_and(|d| fuzzy_match(qtrim, d))
+        {
+            next.push(it.clone());
+        }
+    }
+    next
+}
+
+pub fn show_freeform<F>(
+    parent: &impl IsA<Window>,
+    placeholder: &str,
+    presets: Vec<QuickPickItem>,
+    on_done: F,
+) where
+    F: Fn(Option<QuickPickItem>) + 'static,
+{
+    let parent = parent.as_ref();
+    let parent_h = parent_height(parent);
+    let (panel_h, list_h) = panel_list_heights(parent_h);
+    let entry_h = 44;
+    let panel_w = 520;
+
+    let overlay = ensure_overlay(parent);
+
+    let backdrop = GtkBox::new(Orientation::Vertical, 0);
+    backdrop.set_hexpand(true);
+    backdrop.set_vexpand(true);
+    backdrop.add_css_class("quick-pick-backdrop");
+
+    let panel = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(0)
+        .halign(Align::Center)
+        .valign(Align::Start)
+        .hexpand(false)
+        .vexpand(false)
+        .build();
+    panel.add_css_class("quick-pick-root");
+    panel.set_margin_top(40);
+    panel.set_size_request(panel_w, panel_h);
+    panel.set_overflow(gtk4::Overflow::Hidden);
+
+    let entry = Entry::builder()
+        .placeholder_text(placeholder)
+        .hexpand(true)
+        .vexpand(false)
+        .build();
+    entry.add_css_class("quick-pick-entry");
+    entry.set_size_request(-1, entry_h);
+    panel.append(&entry);
+
+    let list = ListBox::new();
+    list.set_selection_mode(SelectionMode::Browse);
+    list.set_vexpand(false);
+    list.add_css_class("quick-pick-list");
+
+    let sw = ScrolledWindow::builder()
+        .vexpand(false)
+        .hexpand(true)
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .propagate_natural_height(false)
+        .propagate_natural_width(false)
+        .min_content_height(list_h)
+        .max_content_height(list_h)
+        .child(&list)
+        .build();
+    sw.set_size_request(panel_w, list_h);
+    panel.append(&sw);
+
+    overlay.add_overlay(&backdrop);
+    overlay.add_overlay(&panel);
+
+    let all_items = Rc::new(presets);
+    let filtered: Rc<RefCell<Vec<QuickPickItem>>> = Rc::new(RefCell::new(Vec::new()));
+    let done = Rc::new(RefCell::new(Some(on_done)));
+    let finished = Rc::new(RefCell::new(false));
+
+    let finish = {
+        let overlay = overlay.clone();
+        let backdrop = backdrop.clone();
+        let panel = panel.clone();
+        let done = done.clone();
+        let finished = finished.clone();
+        move |item: Option<QuickPickItem>| {
+            if *finished.borrow() {
+                return;
+            }
+            *finished.borrow_mut() = true;
+            overlay.remove_overlay(&backdrop);
+            overlay.remove_overlay(&panel);
+            if let Some(cb) = done.borrow_mut().take() {
+                cb(item);
+            }
+        }
+    };
+
+    {
+        let finish = finish.clone();
+        let gesture = GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
+            finish(None);
+        });
+        backdrop.add_controller(gesture);
+    }
+
+    let rebuild = {
+        let list = list.clone();
+        let filtered = filtered.clone();
+        move || {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            for item in filtered.borrow().iter() {
+                let row = ListBoxRow::new();
+                row.set_activatable(true);
+                let box_ = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .spacing(0)
+                    .margin_start(8)
+                    .margin_end(8)
+                    .margin_top(4)
+                    .margin_bottom(4)
+                    .build();
+                let label = Label::builder()
+                    .label(&item.label)
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                label.add_css_class("quick-pick-label");
+                box_.append(&label);
+                if let Some(detail) = &item.detail {
+                    let d = Label::builder()
+                        .label(detail)
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .build();
+                    d.add_css_class("quick-pick-detail");
+                    box_.append(&d);
+                }
+                row.set_child(Some(&box_));
+                list.append(&row);
+            }
+            if let Some(first) = list.row_at_index(0) {
+                list.select_row(Some(&first));
+            }
+        }
+    };
+
+    let apply_filter = Rc::new({
+        let all_items = all_items.clone();
+        let filtered = filtered.clone();
+        let rebuild = rebuild.clone();
+        move |q: &str| {
+            *filtered.borrow_mut() = freeform_filter(&all_items, q);
+            rebuild();
+        }
+    });
+
+    apply_filter("");
+
+    {
+        let apply_filter = apply_filter.clone();
+        entry.connect_changed(move |e| {
+            apply_filter(&e.text());
+        });
+    }
+
+    {
+        let filtered = filtered.clone();
+        let finish = finish.clone();
+        list.connect_row_activated(move |_lb, row| {
+            let idx = row.index() as usize;
+            let item = filtered.borrow().get(idx).cloned();
+            finish(item);
+        });
+    }
+
+    {
+        let finish = finish.clone();
+        let list = list.clone();
+        let filtered = filtered.clone();
+        let entry = entry.clone();
+        let controller = EventControllerKey::new();
+        controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        controller.connect_key_pressed(move |_c, keyval, _keycode, _mods| {
+            if keyval == Key::Escape {
+                finish(None);
+                return glib::Propagation::Stop;
+            }
+            if keyval == Key::Return || keyval == Key::KP_Enter {
+                if let Some(row) = list.selected_row() {
+                    let idx = row.index() as usize;
+                    let item = filtered.borrow().get(idx).cloned();
+                    finish(item);
+                } else {
+                    let t = entry.text().trim().to_string();
+                    if t.is_empty() {
+                        finish(None);
+                    } else {
+                        finish(Some(QuickPickItem {
+                            id: FREEFORM_ID.into(),
+                            label: t,
+                            detail: Some("use typed target".into()),
+                        }));
+                    }
+                }
+                return glib::Propagation::Stop;
+            }
+            if keyval == Key::Down {
+                if let Some(row) = list.selected_row() {
+                    let i = row.index();
+                    if let Some(next) = list.row_at_index(i + 1) {
+                        list.select_row(Some(&next));
+                    }
+                } else if let Some(first) = list.row_at_index(0) {
+                    list.select_row(Some(&first));
+                }
+                return glib::Propagation::Stop;
+            }
+            if keyval == Key::Up {
+                if let Some(row) = list.selected_row() {
+                    let i = row.index();
+                    if i > 0 {
+                        if let Some(prev) = list.row_at_index(i - 1) {
+                            list.select_row(Some(&prev));
+                        }
+                    }
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        panel.add_controller(controller);
+    }
+
+    entry.grab_focus();
+}
+
 fn parent_height(parent: &Window) -> i32 {
     let h = parent.height();
     if h > 80 {
@@ -437,5 +696,27 @@ mod tests {
             detail: Some("main · 2 windows".into()),
         }];
         assert_eq!(filter_items(&items, "windows").len(), 1);
+    }
+
+    #[test]
+    fn test_quick_pick_freeform_filter_prepends_typed() {
+        let presets = vec![QuickPickItem {
+            id: "cfg".into(),
+            label: "alice@box:22".into(),
+            detail: Some("from config".into()),
+        }];
+        let f = freeform_filter(&presets, "bob@h");
+        assert_eq!(f[0].id, FREEFORM_ID);
+        assert_eq!(f[0].label, "bob@h");
+        // 不匹配预设时只有 typed 一项
+        assert_eq!(f.len(), 1);
+
+        let f2 = freeform_filter(&presets, "alice");
+        assert_eq!(f2[0].id, FREEFORM_ID);
+        assert!(f2.iter().any(|i| i.id == "cfg"));
+
+        let empty_q = freeform_filter(&presets, "");
+        assert_eq!(empty_q.len(), 1);
+        assert_eq!(empty_q[0].id, "cfg");
     }
 }

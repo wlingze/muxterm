@@ -15,6 +15,7 @@ use std::sync::{mpsc as std_mpsc, Arc};
 use gtk4::glib;
 use tokio::sync::mpsc;
 
+use crate::core::ssh::{SshConfig, SshSession};
 use crate::core::tmux::client::{ConnectMode, TmuxClient, TmuxClientConfig, TmuxEvent};
 use crate::core::tmux::protocol::{Message, PaneId, WindowId};
 
@@ -148,6 +149,112 @@ where
     });
 
     // UI 线程轮询
+    {
+        let ui_rx = ui_rx.clone();
+        let on_event = on_event.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+            let g = ui_rx.lock().unwrap();
+            let mut evs: Vec<UiEvent> = Vec::new();
+            while let Ok(ev) = g.try_recv() {
+                evs.push(ev);
+            }
+            drop(g);
+            for ev in &evs {
+                on_event(ev);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    Some(TmuxBridge {
+        sender: CommandSender {
+            tx: cmd_tx,
+            rt: rt_handle,
+        },
+        _runtime: rt,
+    })
+}
+
+/// 启动 SSH → 远程 `tmux -CC` 桥接（事件/命令通道与本地 attach 相同）。
+pub fn spawn_ssh_bridge<F>(
+    ssh: SshConfig,
+    session_name: String,
+    auto_mouse: bool,
+    on_event: F,
+) -> Option<TmuxBridge>
+where
+    F: Fn(&UiEvent) + 'static,
+{
+    let on_event = Arc::new(on_event);
+
+    let (ui_tx, ui_rx) = std_mpsc::channel::<UiEvent>();
+    let ui_rx = Arc::new(std::sync::Mutex::new(ui_rx));
+
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(64);
+    let cmd_tx = Arc::new(cmd_tx);
+
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    let rt_handle = rt.handle().clone();
+
+    rt_handle.spawn(async move {
+        let session = match SshSession::connect(ssh).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = ui_tx.send(UiEvent::Error {
+                    msg: format!("SSH 连接失败: {e}"),
+                });
+                return;
+            }
+        };
+        let (mut remote, mut rx) = match session.spawn_tmux_cc(&session_name).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = ui_tx.send(UiEvent::Error {
+                    msg: format!("远程 tmux -CC 失败: {e}"),
+                });
+                let _ = session.disconnect().await;
+                return;
+            }
+        };
+        let _ = ui_tx.send(UiEvent::Connected);
+
+        if auto_mouse {
+            if let Err(e) = remote.send_raw("set -g mouse on\n").await {
+                tracing::warn!(
+                    target = "muxterm::wiring",
+                    "remote set -g mouse on 失败: {e}"
+                );
+            }
+        }
+
+        // 保持 SSH session 存活，直到写/读循环结束
+        tokio::spawn(async move {
+            while let Some(line) = cmd_rx.recv().await {
+                if let Err(e) = remote.send_raw(&line).await {
+                    tracing::error!(target = "muxterm::wiring", "SSH 发送命令失败: {e}");
+                    break;
+                }
+            }
+            let _ = remote.kill().await;
+            let _ = session.disconnect().await;
+        });
+
+        loop {
+            match rx.recv().await {
+                Some(TmuxEvent::Message(m)) => {
+                    if let Some(ev) = to_ui_event(m) {
+                        let _ = ui_tx.send(ev);
+                    }
+                }
+                Some(TmuxEvent::ResponseLine { .. }) => {}
+                Some(TmuxEvent::Exit { .. }) | None => {
+                    let _ = ui_tx.send(UiEvent::Exit { reason: None });
+                    break;
+                }
+            }
+        }
+    });
+
     {
         let ui_rx = ui_rx.clone();
         let on_event = on_event.clone();

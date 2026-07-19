@@ -23,6 +23,7 @@ use crate::core::config::{
     decode_wait_status, expand_config_value, parse_command_argv, Action, Config,
     OnProgramExitAbnormal, Theme,
 };
+use crate::core::ssh::{parse_ssh_connect_line, SshAuth, SshConfig};
 use crate::core::tmux::client::TmuxClientConfig;
 use crate::core::tmux::command::{
     kill_pane as tmux_kill_pane_cmd, kill_window as tmux_kill_window_cmd, send_keys, Key,
@@ -40,11 +41,12 @@ use crate::platform::linux::notebook::{
 };
 use crate::platform::linux::pane_switcher::{self, PaneEntry};
 use crate::platform::linux::pane_view::{PaneView, SpawnOpts};
+use crate::platform::linux::quick_pick::{self, QuickPickItem};
 use crate::platform::linux::tab_bar::{
     format_tab_bar_title, format_tab_display_name, TabBar, TabBarItem,
 };
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
-use crate::platform::linux::wiring::{spawn_bridge, TmuxBridge, UiEvent};
+use crate::platform::linux::wiring::{spawn_bridge, spawn_ssh_bridge, TmuxBridge, UiEvent};
 
 pub struct AppWindow {
     pub window: Window,
@@ -84,6 +86,11 @@ enum WindowBoot {
     LocalShell,
     /// tmux session 窗口：不建本地 tab，立即 connect。
     TmuxSession(TmuxAction),
+    /// SSH → 远程 tmux -CC：不建本地 tab，立即 connect。
+    SshSession {
+        ssh: SshConfig,
+        session_name: String,
+    },
 }
 
 impl AppWindow {
@@ -104,6 +111,17 @@ impl AppWindow {
             }
             WindowBoot::TmuxSession(TmuxAction::NewSession { name }) => {
                 format!("muxterm — tmux:{}", name.as_deref().unwrap_or("new"))
+            }
+            WindowBoot::SshSession { ssh, session_name } => {
+                let sess = if session_name.is_empty() {
+                    "new".to_string()
+                } else {
+                    session_name.clone()
+                };
+                format!(
+                    "muxterm — ssh:{}@{}:{}/{}",
+                    ssh.user, ssh.host, ssh.port, sess
+                )
             }
         };
         let window = Window::builder()
@@ -227,9 +245,22 @@ impl AppWindow {
             WindowBoot::TmuxSession(action) => {
                 SharedState::connect_tmux_action(&shared, action);
             }
+            WindowBoot::SshSession { ssh, session_name } => {
+                SharedState::connect_ssh(&shared, ssh, session_name);
+            }
         }
 
         app_win
+    }
+
+    /// 为 SSH 远程 tmux 新建独立 GTK 窗口。
+    pub fn new_ssh_session(
+        config: Config,
+        theme: Theme,
+        ssh: SshConfig,
+        session_name: String,
+    ) -> Self {
+        Self::new_inner(config, theme, WindowBoot::SshSession { ssh, session_name })
     }
 
     fn wire_notebook_switch(&self) {
@@ -719,9 +750,148 @@ impl SharedState {
                 });
             }
             "tmux_detach" => self.tmux_detach(),
+            "ssh_connect" => self.show_ssh_connect(),
+            "ssh_disconnect" => self.ssh_disconnect(),
             "reload_config" => self.reload_config(),
             "open_config" | "preferences" => self.open_config_file(),
             other => tracing::info!(target = "muxterm::window", cmd = %other, "未知命令"),
+        }
+    }
+
+    /// 命令面板「ssh: connect」：QuickPick 选配置预设或输入 `user@host[:port][/session]`。
+    fn show_ssh_connect(self: &Arc<Self>) {
+        let mut presets = Vec::new();
+        if self.cfg.ssh.is_configured() {
+            let user = if self.cfg.ssh.user.trim().is_empty() {
+                std::env::var("USER").unwrap_or_else(|_| "root".into())
+            } else {
+                self.cfg.ssh.user.clone()
+            };
+            let label = format!("{}@{}:{}", user, self.cfg.ssh.host, self.cfg.ssh.port);
+            presets.push(QuickPickItem {
+                id: "config".into(),
+                label,
+                detail: Some("from config [ssh]".into()),
+            });
+        }
+        let shared = self.clone();
+        let key_path = self.cfg.ssh.key_path.clone();
+        quick_pick::show_freeform(
+            &self.window,
+            "user@host[:port][/session]…",
+            presets,
+            move |picked| {
+                let Some(item) = picked else {
+                    return;
+                };
+                let line = item.label;
+                let Some((user, host, port, session)) = parse_ssh_connect_line(&line) else {
+                    shared.show_status("无法解析 SSH 目标（格式: user@host[:port][/session]）");
+                    return;
+                };
+                let auth = if key_path.trim().is_empty() {
+                    SshAuth::Agent
+                } else {
+                    SshAuth::Key {
+                        path: key_path.clone(),
+                        passphrase: None,
+                    }
+                };
+                let ssh = SshConfig {
+                    host,
+                    port,
+                    user,
+                    auth,
+                };
+                SharedState::do_ssh_connect(&shared, ssh, session);
+            },
+        );
+    }
+
+    /// 断开 SSH/tmux：释放桥接并关闭相关 tmux tab。
+    fn ssh_disconnect(self: &Arc<Self>) {
+        if let Ok(mut g) = self.cmd_sender.lock() {
+            if g.is_none() {
+                self.show_status("未连接远程/tmux");
+                return;
+            }
+            *g = None; // drop Runtime → 断开
+        }
+        self.close_all_tmux_tabs();
+        self.show_status("已断开 SSH/tmux");
+        self.focus_active_pane();
+    }
+
+    fn do_ssh_connect(self: &Arc<Self>, ssh: SshConfig, session_name: String) {
+        let Some(app) = self.window.application() else {
+            SharedState::connect_ssh(self, ssh, session_name);
+            return;
+        };
+        let win = AppWindow::new_ssh_session(
+            (*self.cfg).clone(),
+            (*self.theme).clone(),
+            ssh,
+            session_name,
+        );
+        app.add_window(&win.window);
+        win.window.present();
+    }
+
+    fn connect_ssh(self: &Arc<Self>, ssh: SshConfig, session_name: String) {
+        let shared = self.clone();
+        let auto_mouse = self.cfg.tmux.auto_mouse;
+        let on_event = move |ev: &UiEvent| shared.handle_ui_event(ev);
+        match spawn_ssh_bridge(ssh, session_name, auto_mouse, on_event) {
+            Some(bridge) => {
+                self.show_status("正在连接 SSH tmux…");
+                if let Ok(mut g) = self.cmd_sender.lock() {
+                    *g = Some(bridge);
+                }
+                self.refresh_input_visibility();
+            }
+            None => self.show_status("启动 SSH 桥接失败"),
+        }
+    }
+
+    /// 关闭窗口内所有 tmux tab（断开连接时调用）。
+    fn close_all_tmux_tabs(self: &Arc<Self>) {
+        let keys: Vec<TabKey> = self
+            .notebook
+            .read()
+            .unwrap()
+            .keys_in_order()
+            .into_iter()
+            .filter(|k| matches!(k, TabKey::TmuxWindow(_)))
+            .collect();
+        for tab in keys {
+            if let TabKey::TmuxWindow(window) = tab {
+                let panes = self
+                    .tab_panes
+                    .read()
+                    .unwrap()
+                    .get(&tab)
+                    .cloned()
+                    .unwrap_or_default();
+                for p in &panes {
+                    if let PaneKey::Tmux(pid) = p {
+                        self.pane_window.write().unwrap().remove(&pid.0);
+                        self.pane_tab.write().unwrap().remove(&pid.0);
+                        self.pane_views.write().unwrap().remove(p);
+                    }
+                }
+                self.tab_panes.write().unwrap().remove(&tab);
+                self.window_names.write().unwrap().remove(&window.0);
+                self.notebook.write().unwrap().remove(tab);
+            }
+        }
+        if self.notebook.read().unwrap().n_tabs() == 0 {
+            self.on_all_tabs_closed();
+        } else {
+            self.notebook.read().unwrap().select_by_index(0);
+            self.refresh_tab_bar();
+            self.refresh_window_title();
+            self.refresh_input_visibility();
+            self.focus_active_pane();
         }
     }
 
@@ -1083,6 +1253,12 @@ impl SharedState {
                     None => "tmux 已断开".to_string(),
                 };
                 self.show_status(&msg);
+                if let Ok(mut g) = self.cmd_sender.lock() {
+                    *g = None;
+                }
+                self.close_all_tmux_tabs();
+                self.refresh_input_visibility();
+                self.focus_active_pane();
             }
         }
     }

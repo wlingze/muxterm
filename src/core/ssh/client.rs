@@ -373,6 +373,32 @@ pub fn shell_single_quote(s: &str) -> String {
     out
 }
 
+/// 解析 `user@host[:port][ /session]`（命令面板 SSH 连接用）。
+///
+/// 返回 `(SshConfig 基础字段所需的 user/host/port, session_name)`。
+/// session 可省略（空字符串 = 远端 `new-session`）。
+pub fn parse_ssh_connect_line(input: &str) -> Option<(String, String, u16, String)> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // 空格或 `/` 分隔 session
+    let (target, session) = if let Some((t, sess)) = s.split_once(' ') {
+        (t.trim(), sess.trim().to_string())
+    } else if let Some((t, sess)) = s.split_once('/') {
+        // 避免把 IPv6 里的 / 误判：仅当左侧含 `@` 或看起来像 host:port 时
+        if t.contains('@') || !t.contains(':') || t.matches(':').count() == 1 {
+            (t.trim(), sess.trim().to_string())
+        } else {
+            (s, String::new())
+        }
+    } else {
+        (s, String::new())
+    };
+    let (user, host, port) = parse_ssh_target(target)?;
+    Some((user, host, port, session))
+}
+
 /// 解析 `user@host[:port]` 快捷写法（UI QuickPick 用）。
 pub fn parse_ssh_target(input: &str) -> Option<(String, String, u16)> {
     let s = input.trim();
@@ -455,6 +481,26 @@ mod tests {
         assert!(parse_ssh_target("").is_none());
         assert!(parse_ssh_target("   ").is_none());
         assert!(parse_ssh_target("@host").is_none());
+    }
+
+    #[test]
+    fn parse_ssh_connect_line_with_session() {
+        let (u, h, p, s) = parse_ssh_connect_line("alice@box:2222/dev").unwrap();
+        assert_eq!(u, "alice");
+        assert_eq!(h, "box");
+        assert_eq!(p, 2222);
+        assert_eq!(s, "dev");
+        let (_, _, _, s2) = parse_ssh_connect_line("alice@box main").unwrap();
+        assert_eq!(s2, "main");
+    }
+
+    #[test]
+    fn parse_ssh_connect_line_no_session() {
+        let (u, h, p, s) = parse_ssh_connect_line("bob@host").unwrap();
+        assert_eq!(u, "bob");
+        assert_eq!(h, "host");
+        assert_eq!(p, 22);
+        assert!(s.is_empty());
     }
 
     #[test]

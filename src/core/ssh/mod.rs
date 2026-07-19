@@ -6,4 +6,7 @@
 pub mod client;
 
 #[allow(unused_imports)] // 供平台层与后续模块选用
-pub use client::{CommandStream, RemoteTmuxClient, SshAuth, SshConfig, SshError, SshSession};
+pub use client::{
+    parse_ssh_connect_line, parse_ssh_target, CommandStream, RemoteTmuxClient, SshAuth, SshConfig,
+    SshError, SshSession,
+};
