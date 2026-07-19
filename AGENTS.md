@@ -17,7 +17,7 @@
 
 ## 工作原则
 
-1. **先读 `PRODUCT.md`** 理解协议规范和架构，再动代码。
+先读 `PRODUCT.md`（产品规划）、`ARCHITECTURE.md`（架构与交互规范），再动代码。
 2. **增量提交**：每个可独立验证的逻辑单元一个 commit。commit 信息 `feat: / fix: / test: / refactor: / docs:`。
 3. **TDD 优先**：协议解析这种纯逻辑模块，先写单元测试（`#[cfg(test)] mod tests`），再写实现。实现要能 `cargo test` 通过。
 4. **不要跳步**：每次只做当前任务清单里的内容，做完汇报，等下一轮指令。
