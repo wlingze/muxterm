@@ -16,7 +16,7 @@
 use crate::core::model::backend::Backend;
 use crate::core::model::state::{State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
-use crate::core::types::PaneId;
+use crate::core::types::{PaneId, TabId, WindowId};
 use std::collections::VecDeque;
 
 /// 状态变更回调类型。
@@ -190,11 +190,11 @@ impl TerminalModel {
     }
 
     /// 当前激活 window 下的所有 pane id（便捷方法）。
-    pub fn pane_ids_in_active_window(&self) -> Vec<PaneId> {
+    pub fn pane_ids_in_active_tab(&self) -> Vec<PaneId> {
         self.state()
-            .active_window()
-            .and_then(|w| self.state().layout(&w.id))
-            .map(|wl| wl.tree.leaves())
+            .active_tab()
+            .and_then(|t| self.state().layout(&t.id))
+            .map(|tl| tl.tree.leaves())
             .unwrap_or_default()
     }
 
@@ -202,18 +202,18 @@ impl TerminalModel {
     pub fn next_pane_id(&self) -> Option<PaneId> {
         let active = self.active_pane_id()?;
         self.state()
-            .active_window()
-            .and_then(|w| self.state().layout(&w.id))
-            .and_then(|wl| wl.tree.next_leaf(active))
+            .active_tab()
+            .and_then(|t| self.state().layout(&t.id))
+            .and_then(|tl| tl.tree.next_leaf(active))
     }
 
     /// 上一个 pane id（Alt+[ 语义），基于当前激活 window 的布局树。
     pub fn prev_pane_id(&self) -> Option<PaneId> {
         let active = self.active_pane_id()?;
         self.state()
-            .active_window()
-            .and_then(|w| self.state().layout(&w.id))
-            .and_then(|wl| wl.tree.prev_leaf(active))
+            .active_tab()
+            .and_then(|t| self.state().layout(&t.id))
+            .and_then(|tl| tl.tree.prev_leaf(active))
     }
 }
 
@@ -224,8 +224,8 @@ mod tests {
     use crate::core::model::layout::SplitDir;
     use crate::core::model::state::BackendStatus;
     use crate::core::terminal::input::KeyEvent;
-    use crate::core::types::PaneId;
-    use crate::core::types::WindowId;
+    use crate::core::types::{PaneId, TabId, WindowId};
+
     use std::sync::{Arc, Mutex};
 
     fn make_model() -> TerminalModel {
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn state_access_after_split() {
         let mut m = make_model();
-        assert_eq!(m.state().panes(&WindowId(1)).len(), 1);
+        assert_eq!(m.state().panes(&TabId(1)).len(), 1);
         m.execute(Task::SplitPane {
             target: None,
             dir: SplitDir::Horizontal,
@@ -329,7 +329,7 @@ mod tests {
         })
         .unwrap();
         let _ = m.poll_events();
-        assert_eq!(m.state().panes(&WindowId(1)).len(), 2);
+        assert_eq!(m.state().panes(&TabId(1)).len(), 2);
         assert_eq!(m.active_pane_id(), Some(PaneId(2)));
     }
 
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn pane_ids_in_active_window() {
         let mut m = make_model();
-        assert_eq!(m.pane_ids_in_active_window(), vec![PaneId(1)]);
+        assert_eq!(m.pane_ids_in_active_tab(), vec![PaneId(1)]);
         m.execute(Task::SplitPane {
             target: None,
             dir: SplitDir::Horizontal,
@@ -394,7 +394,7 @@ mod tests {
         })
         .unwrap();
         let _ = m.poll_events();
-        assert_eq!(m.pane_ids_in_active_window(), vec![PaneId(1), PaneId(2)]);
+        assert_eq!(m.pane_ids_in_active_tab(), vec![PaneId(1), PaneId(2)]);
     }
 
     #[tokio::test]
@@ -457,7 +457,7 @@ mod tests {
     fn empty_state_no_active_pane() {
         let mut m = TerminalModel::new(Box::new(MockBackend::new()));
         assert!(m.active_pane_id().is_none());
-        assert!(m.pane_ids_in_active_window().is_empty());
+        assert!(m.pane_ids_in_active_tab().is_empty());
         assert!(m.next_pane_id().is_none());
         assert!(m.prev_pane_id().is_none());
     }
@@ -529,7 +529,7 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, StateChange::PaneClosed { pane: PaneId(2) })));
-        assert_eq!(m.state().panes(&WindowId(1)).len(), 1);
+        assert_eq!(m.state().panes(&TabId(1)).len(), 1);
         assert_eq!(m.active_pane_id(), Some(PaneId(1)));
     }
 
@@ -548,7 +548,7 @@ mod tests {
             .any(|e| matches!(e, StateChange::WindowAdded { .. })));
         // 校验：window 数量增加（新 window 有自己的 pane），active 切到新 window
         assert_eq!(m.state().sessions()[0].name, "mock");
-        let total_panes = m.state().panes(&WindowId(1)).len() + m.state().panes(&WindowId(2)).len();
+        let total_panes = m.state().panes(&TabId(1)).len() + m.state().panes(&TabId(2)).len();
         assert!(total_panes >= 2);
         assert_eq!(m.state().active_window().map(|w| w.id), Some(WindowId(2)));
     }

@@ -19,7 +19,7 @@
 //! ```
 
 use crate::core::model::state::{BackendStatus, State};
-use crate::core::types::{PaneId, WindowId};
+use crate::core::types::{PaneId, TabId, WindowId};
 
 /// 渲染选项。
 #[derive(Debug, Clone, Copy)]
@@ -62,17 +62,17 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
     lines.push(border_mid(cols));
 
     // ── pane 标题栏 ─────────────────────────────────────────
-    let pane_titles = render_pane_titles(state, state.active_window().map(|w| w.id), cols);
+    let pane_titles = render_pane_titles(state, state.active_tab().map(|t| t.id), cols);
     lines.push(format!("│{}│", pad(&pane_titles, cols - 2)));
 
     // ── 分隔线 ──────────────────────────────────────────────
     lines.push(border_mid(cols));
 
     // ── pane 内容区 ─────────────────────────────────────────
-    let active_win = state.active_window();
-    let panes: Vec<PaneId> = active_win
-        .and_then(|w| state.layout(&w.id))
-        .map(|wl| wl.tree.leaves())
+    let active_tab = state.active_tab();
+    let panes: Vec<PaneId> = active_tab
+        .and_then(|t| state.layout(&t.id))
+        .map(|tl| tl.tree.leaves())
         .unwrap_or_default();
 
     // 固定行：top + tab + mid + titles + mid + mid(content后) + status + bottom = 8
@@ -166,10 +166,10 @@ fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
 }
 
 /// 渲染 pane 标题栏：`@1 bash | @2 zsh`
-fn render_pane_titles(state: &dyn State, window: Option<WindowId>, _cols: usize) -> String {
+fn render_pane_titles(state: &dyn State, tab: Option<TabId>, _cols: usize) -> String {
     let mut parts = Vec::new();
-    if let Some(wid) = window {
-        for p in state.panes(&wid) {
+    if let Some(tid) = tab {
+        for p in state.panes(&tid) {
             let mark = if p.active { "*" } else { " " };
             parts.push(format!("{}@{} {}{}", mark, p.id.0, p.title, mark));
         }
@@ -191,8 +191,8 @@ fn render_status_bar(state: &dyn State, _cols: usize) -> String {
         BackendStatus::Exited => "exited",
     };
     let n_panes = state
-        .active_window()
-        .map(|w| state.panes(&w.id).len())
+        .active_tab()
+        .map(|t| state.panes(&t.id).len())
         .unwrap_or(0);
     format!(" {status} | {n_panes} panes | Alt+T new tab | Ctrl-Q quit ")
 }
@@ -220,15 +220,21 @@ fn truncate(s: &str, cols: usize) -> String {
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockBackend;
-    use crate::core::model::layout::{LayoutNode, SplitDir, WindowLayout};
-    use crate::core::model::state::{PaneInfo, WindowInfo};
-    use crate::core::types::{PaneId, WindowId};
+    use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
+    use crate::core::model::state::{PaneInfo, TabInfo, WindowInfo};
+    use crate::core::types::{PaneId, TabId, WindowId};
 
     fn mock_with_two_panes() -> MockBackend {
         let mut b = MockBackend::with_single_pane();
+        b.tabs.push(TabInfo {
+            id: TabId(2),
+            name: "t2".into(),
+            window: WindowId(1),
+            active: false,
+        });
         b.panes.push(PaneInfo {
             id: PaneId(2),
-            window: WindowId(1),
+            tab: TabId(1),
             active: false,
             title: "zsh".into(),
             cols: 40,
@@ -237,8 +243,8 @@ mod tests {
         b.layouts.clear();
         let mut tree = LayoutNode::leaf(PaneId(1));
         tree.split_at(PaneId(1), PaneId(2), SplitDir::Horizontal);
-        b.layouts.push(WindowLayout {
-            window: WindowId(1),
+        b.layouts.push(crate::core::model::layout::TabLayout {
+            tab: TabId(1),
             tree,
             active: PaneId(1),
         });

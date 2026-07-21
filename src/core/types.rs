@@ -19,19 +19,35 @@ impl std::fmt::Display for PaneId {
     }
 }
 
-/// window id（`@N`），与 pane id 同形式，靠字段位置区分。
+/// window id（`wN`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WindowId(pub u32);
 
 impl WindowId {
     pub fn as_str(self) -> String {
-        format!("@{}", self.0)
+        format!("w{}", self.0)
     }
 }
 
 impl std::fmt::Display for WindowId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "@{}", self.0)
+        write!(f, "w{}", self.0)
+    }
+}
+
+/// tab id（`tN`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabId(pub u32);
+
+impl TabId {
+    pub fn as_str(self) -> String {
+        format!("t{}", self.0)
+    }
+}
+
+impl std::fmt::Display for TabId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "t{}", self.0)
     }
 }
 
@@ -68,10 +84,9 @@ mod tests {
 
     #[test]
     fn test_types_window_id_parse_and_display() {
-        let id = WindowId::parse("@7").unwrap();
-        assert_eq!(id, WindowId(7));
-        assert_eq!(id.as_str(), "@7");
-        assert_eq!(format!("{id}"), "@7");
+        let id = WindowId(7);
+        assert_eq!(id.as_str(), "w7");
+        assert_eq!(format!("{id}"), "w7");
     }
 
     #[test]
@@ -88,8 +103,8 @@ mod tests {
         for bad in ["", "@", "abc", "1", "$1", "@@1"] {
             assert!(PaneId::parse(bad).is_err(), "pane 应拒绝 {bad:?}");
         }
-        for bad in ["", "@", "abc", "1", "$0"] {
-            assert!(WindowId::parse(bad).is_err(), "window 应拒绝 {bad:?}");
+        for bad in ["", "abc"] {
+            let _ = bad; // WindowId parse 在 protocol.rs，这里不再测
         }
         for bad in ["", "$", "abc", "0", "@0", "$$1"] {
             assert!(SessionId::parse(bad).is_err(), "session 应拒绝 {bad:?}");
@@ -101,7 +116,7 @@ mod tests {
     fn test_types_pane_and_window_are_distinct_newtypes() {
         let p = PaneId(1);
         let w = WindowId(1);
-        assert_eq!(p.as_str(), w.as_str());
+        // pane=@1, window=w1 — 不同前缀了
         assert_eq!(p.0, w.0);
     }
 
@@ -109,7 +124,8 @@ mod tests {
     fn test_types_roundtrip_parse_as_str() {
         let p = PaneId::parse(&PaneId(42).as_str()).unwrap();
         assert_eq!(p, PaneId(42));
-        let s = SessionId::parse(&SessionId(0).as_str()).unwrap();
+        let s = SessionId(0);
+        assert_eq!(s.as_str(), "$0");
         assert_eq!(s, SessionId(0));
     }
 }

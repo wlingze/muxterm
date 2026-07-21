@@ -8,7 +8,7 @@
 //! 所有 Task 都针对「当前激活的 pane/window/session」，除非显式指定 target。
 use crate::core::model::layout::SplitDir;
 use crate::core::terminal::input::KeyEvent;
-use crate::core::types::{PaneId, WindowId};
+use crate::core::types::{PaneId, TabId, WindowId};
 
 /// 所有终端操作任务。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,12 +54,28 @@ pub enum Task {
         command: Option<Vec<String>>,
         workdir: Option<String>,
     },
-    /// 关闭 window（含所有 pane）。
+    /// 关闭 window（含所有 tab/pane）。
     CloseWindow { target: WindowId },
     /// 切换激活 window（同 session 内）。
     SwitchWindow { target: WindowId },
     /// 重命名 window。
     RenameWindow { target: WindowId, name: String },
+
+    // ── Tab 操作 ───────────────────────────────────────────
+    /// 在 window 内新建 tab。新建后焦点跳到新 tab。
+    NewTab {
+        window: WindowId,
+        name: Option<String>,
+        /// 新 tab 第一个 pane 的启动程序；None = 默认。
+        command: Option<Vec<String>>,
+        workdir: Option<String>,
+    },
+    /// 关闭 tab（含所有 pane）。
+    CloseTab { target: TabId },
+    /// 切换激活 tab（同 window 内）。
+    SwitchTab { target: TabId },
+    /// 重命名 tab。
+    RenameTab { target: TabId, name: String },
 
     // ── Session 操作 ──────────────────────────────────────
     /// 切换激活 session。

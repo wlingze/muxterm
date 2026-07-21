@@ -9,17 +9,18 @@
 
 use super::*;
 use crate::core::model::layout::SplitDir;
-use crate::core::model::layout::{LayoutNode, WindowLayout};
-use crate::core::model::state::{PaneInfo, SessionInfo, WindowInfo};
+use crate::core::model::layout::{LayoutNode, TabLayout};
+use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
 use crate::core::model::task::Task;
-use crate::core::types::{PaneId, SessionId, WindowId};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。
 pub struct MockBackend {
     pub(crate) sessions: Vec<SessionInfo>,
     pub(crate) windows: Vec<WindowInfo>,
+    pub(crate) tabs: Vec<TabInfo>,
     pub(crate) panes: Vec<PaneInfo>,
-    pub(crate) layouts: Vec<WindowLayout>,
+    pub(crate) layouts: Vec<TabLayout>,
     pub(crate) outputs: Vec<(PaneId, Vec<u8>)>,
     pub(crate) status: BackendStatus,
     pub(crate) events: Vec<StateChange>,
@@ -31,6 +32,7 @@ impl MockBackend {
         Self {
             sessions: vec![],
             windows: vec![],
+            tabs: vec![],
             panes: vec![],
             layouts: vec![],
             outputs: vec![],
@@ -54,16 +56,22 @@ impl MockBackend {
             session: SessionId(1),
             active: true,
         });
+        b.tabs.push(TabInfo {
+            id: TabId(1),
+            name: "t1".into(),
+            window: WindowId(1),
+            active: true,
+        });
         b.panes.push(PaneInfo {
             id: PaneId(1),
-            window: WindowId(1),
+            tab: TabId(1),
             active: true,
             title: "bash".into(),
             cols: 80,
             rows: 24,
         });
-        b.layouts.push(WindowLayout {
-            window: WindowId(1),
+        b.layouts.push(TabLayout {
+            tab: TabId(1),
             tree: LayoutNode::leaf(PaneId(1)),
             active: PaneId(1),
         });
@@ -83,14 +91,23 @@ impl State for MockBackend {
     fn active_window(&self) -> Option<&WindowInfo> {
         self.windows.iter().find(|w| w.active)
     }
+    fn active_tab(&self) -> Option<&TabInfo> {
+        self.tabs.iter().find(|t| t.active)
+    }
     fn active_pane(&self) -> Option<&PaneInfo> {
         self.panes.iter().find(|p| p.active)
     }
-    fn layout(&self, window: &WindowId) -> Option<&WindowLayout> {
-        self.layouts.iter().find(|l| &l.window == window)
+    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
+        self.tabs.iter().filter(|t| &t.window == window).collect()
     }
-    fn panes(&self, window: &WindowId) -> Vec<&PaneInfo> {
-        self.panes.iter().filter(|p| &p.window == window).collect()
+    fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
+        self.tabs.iter().find(|t| &t.id == tab)
+    }
+    fn layout(&self, tab: &TabId) -> Option<&TabLayout> {
+        self.layouts.iter().find(|l| &l.tab == tab)
+    }
+    fn panes(&self, tab: &TabId) -> Vec<&PaneInfo> {
+        self.panes.iter().filter(|p| &p.tab == tab).collect()
     }
     fn pane(&self, pane: &PaneId) -> Option<&PaneInfo> {
         self.panes.iter().find(|p| &p.id == pane)
@@ -120,41 +137,41 @@ impl Backend for MockBackend {
         let outcome = match task {
             Task::SplitPane { target, dir, .. } => {
                 let target = target.unwrap_or(PaneId(1));
-                let win_id = self
+                let tab_id = self
                     .panes
                     .iter()
                     .find(|p| p.id == target)
-                    .map(|p| p.window)
-                    .unwrap_or(WindowId(1));
+                    .map(|p| p.tab)
+                    .unwrap_or(TabId(1));
                 let new_id = PaneId(self.panes.iter().map(|p| p.id.0).max().unwrap_or(0) + 1);
                 // 取消旧 active，设置新 pane 为 active
                 for p in self.panes.iter_mut() {
-                    if p.window == win_id {
+                    if p.tab == tab_id {
                         p.active = p.id == new_id;
                     }
                 }
                 self.panes.push(PaneInfo {
                     id: new_id,
-                    window: win_id,
+                    tab: tab_id,
                     active: true,
                     title: "bash".into(),
                     cols: 40,
                     rows: 24,
                 });
                 self.outputs.push((new_id, Vec::new()));
-                if let Some(wl) = self.layouts.iter_mut().find(|l| l.window == win_id) {
+                if let Some(wl) = self.layouts.iter_mut().find(|l| l.tab == tab_id) {
                     wl.tree.split_at(target, new_id, *dir);
                     wl.active = new_id;
                     self.events.push(StateChange::PaneAdded {
                         pane: new_id,
-                        window: win_id,
+                        tab: tab_id,
                     });
                     self.events.push(StateChange::LayoutChanged {
-                        window: win_id,
+                        tab: tab_id,
                         layout: wl.clone(),
                     });
                     self.events.push(StateChange::ActivePaneChanged {
-                        window: win_id,
+                        tab: tab_id,
                         pane: new_id,
                     });
                 }
@@ -166,17 +183,22 @@ impl Backend for MockBackend {
                         reason: format!("pane {target} 不存在"),
                     });
                 }
-                let win_id = self
+                let tab_id = self
                     .panes
                     .iter()
                     .find(|p| p.id == *target)
-                    .map(|p| p.window)
-                    .unwrap_or(WindowId(1));
+                    .map(|p| p.tab)
+                    .unwrap_or(TabId(1));
+                let was_active = self
+                    .panes
+                    .iter()
+                    .find(|p| p.id == *target)
+                    .map(|p| p.active)
+                    .unwrap_or(false);
                 self.panes.retain(|p| p.id != *target);
                 self.outputs.retain(|(pid, _)| pid != target);
-                let was_active = self.layouts.iter().any(|l| l.active == *target);
                 // 更新布局树（移除叶子）
-                if let Some(wl) = self.layouts.iter_mut().find(|l| l.window == win_id) {
+                if let Some(wl) = self.layouts.iter_mut().find(|l| l.tab == tab_id) {
                     let _ = wl.tree.remove(*target);
                     if wl.active == *target {
                         // active 切到剩余的第一个 pane
@@ -184,7 +206,7 @@ impl Backend for MockBackend {
                     }
                     self.events.push(StateChange::PaneClosed { pane: *target });
                     self.events.push(StateChange::LayoutChanged {
-                        window: win_id,
+                        tab: tab_id,
                         layout: wl.clone(),
                     });
                 }
@@ -193,16 +215,16 @@ impl Backend for MockBackend {
                     let new_active = self
                         .layouts
                         .iter()
-                        .find(|l| l.window == win_id)
+                        .find(|l| l.tab == tab_id)
                         .map(|l| l.active);
                     for p in self.panes.iter_mut() {
-                        if p.window == win_id {
+                        if p.tab == tab_id {
                             p.active = Some(p.id) == new_active;
                         }
                     }
                     if let Some(a) = new_active {
                         self.events.push(StateChange::ActivePaneChanged {
-                            window: win_id,
+                            tab: tab_id,
                             pane: a,
                         });
                     }
@@ -215,30 +237,26 @@ impl Backend for MockBackend {
                         reason: format!("pane {target} 不存在"),
                     });
                 }
-                let win_id = self.panes.iter().find(|p| p.id == *target).unwrap().window;
+                let tab_id = self.panes.iter().find(|p| p.id == *target).unwrap().tab;
                 for p in self.panes.iter_mut() {
-                    if p.window == win_id {
+                    if p.tab == tab_id {
                         p.active = p.id == *target;
                     }
                 }
-                if let Some(wl) = self.layouts.iter_mut().find(|l| l.window == win_id) {
+                if let Some(wl) = self.layouts.iter_mut().find(|l| l.tab == tab_id) {
                     wl.active = *target;
                 }
                 self.events.push(StateChange::ActivePaneChanged {
-                    window: win_id,
+                    tab: tab_id,
                     pane: *target,
                 });
                 TaskOutcome::Done
             }
             Task::NextPane | Task::PrevPane => {
                 // model 层已 resolve 成 SwitchPane，这里兜底：按布局算下一个/上一个
-                let active = self
-                    .panes
-                    .iter()
-                    .find(|p| p.active)
-                    .map(|p| (p.id, p.window));
-                if let Some((active_id, win_id)) = active {
-                    let wl = self.layouts.iter().find(|l| l.window == win_id);
+                let active = self.panes.iter().find(|p| p.active).map(|p| (p.id, p.tab));
+                if let Some((active_id, tab_id)) = active {
+                    let wl = self.layouts.iter().find(|l| l.tab == tab_id);
                     let next = match task {
                         Task::NextPane => wl.and_then(|l| l.tree.next_leaf(active_id)),
                         Task::PrevPane => wl.and_then(|l| l.tree.prev_leaf(active_id)),
@@ -246,15 +264,15 @@ impl Backend for MockBackend {
                     };
                     if let Some(n) = next {
                         for p in self.panes.iter_mut() {
-                            if p.window == win_id {
+                            if p.tab == tab_id {
                                 p.active = p.id == n;
                             }
                         }
-                        if let Some(wl) = self.layouts.iter_mut().find(|l| l.window == win_id) {
+                        if let Some(wl) = self.layouts.iter_mut().find(|l| l.tab == tab_id) {
                             wl.active = n;
                         }
                         self.events.push(StateChange::ActivePaneChanged {
-                            window: win_id,
+                            tab: tab_id,
                             pane: n,
                         });
                     }
@@ -263,10 +281,14 @@ impl Backend for MockBackend {
             }
             Task::NewWindow { name, .. } => {
                 let new_win = WindowId(self.windows.iter().map(|w| w.id.0).max().unwrap_or(0) + 1);
+                let new_tab = TabId(self.tabs.iter().map(|t| t.id.0).max().unwrap_or(0) + 1);
                 let sess = self.sessions.first().map(|s| s.id).unwrap_or(SessionId(1));
                 // 旧 window 取消 active
                 for w in self.windows.iter_mut() {
                     w.active = false;
+                }
+                for t in self.tabs.iter_mut() {
+                    t.active = false;
                 }
                 self.windows.push(WindowInfo {
                     id: new_win,
@@ -274,18 +296,24 @@ impl Backend for MockBackend {
                     session: sess,
                     active: true,
                 });
+                self.tabs.push(TabInfo {
+                    id: new_tab,
+                    name: format!("t{}", new_tab.0),
+                    window: new_win,
+                    active: true,
+                });
                 let new_pane = PaneId(self.panes.iter().map(|p| p.id.0).max().unwrap_or(0) + 1);
                 self.panes.push(PaneInfo {
                     id: new_pane,
-                    window: new_win,
+                    tab: new_tab,
                     active: true,
                     title: "bash".into(),
                     cols: 80,
                     rows: 24,
                 });
                 self.outputs.push((new_pane, Vec::new()));
-                self.layouts.push(WindowLayout {
-                    window: new_win,
+                self.layouts.push(TabLayout {
+                    tab: new_tab,
                     tree: LayoutNode::leaf(new_pane),
                     active: new_pane,
                 });
@@ -314,16 +342,23 @@ impl Backend for MockBackend {
                     .find(|w| w.id == *target)
                     .map(|w| w.session)
                     .unwrap_or(SessionId(1));
-                // 移除该 window 下所有 pane
+                // 移除该 window 下所有 tab + pane
+                let tab_ids: Vec<TabId> = self
+                    .tabs
+                    .iter()
+                    .filter(|t| t.window == *target)
+                    .map(|t| t.id)
+                    .collect();
                 let to_remove: Vec<PaneId> = self
                     .panes
                     .iter()
-                    .filter(|p| p.window == *target)
+                    .filter(|p| tab_ids.contains(&p.tab))
                     .map(|p| p.id)
                     .collect();
-                self.panes.retain(|p| p.window != *target);
+                self.panes.retain(|p| !to_remove.contains(&p.id));
                 self.outputs.retain(|(pid, _)| !to_remove.contains(pid));
-                self.layouts.retain(|l| l.window != *target);
+                self.tabs.retain(|t| t.window != *target);
+                self.layouts.retain(|l| !tab_ids.contains(&l.tab));
                 self.windows.retain(|w| w.id != *target);
                 // active window 切到剩余的第一个
                 if let Some(w) = self.windows.first() {
@@ -446,6 +481,98 @@ impl Backend for MockBackend {
                 }
                 TaskOutcome::Done
             }
+            Task::NewTab {
+                window,
+                name,
+                command: _,
+                workdir: _,
+            } => {
+                if !self.windows.iter().any(|w| w.id == *window) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("window {window} 不存在"),
+                    });
+                }
+                let new_tab = TabId(self.tabs.iter().map(|t| t.id.0).max().unwrap_or(0) + 1);
+                let new_pane = PaneId(self.panes.iter().map(|p| p.id.0).max().unwrap_or(0) + 1);
+                for t in self.tabs.iter_mut() {
+                    if t.window == *window {
+                        t.active = false;
+                    }
+                }
+                self.tabs.push(TabInfo {
+                    id: new_tab,
+                    name: name.clone().unwrap_or_else(|| format!("t{}", new_tab.0)),
+                    window: *window,
+                    active: true,
+                });
+                self.panes.push(PaneInfo {
+                    id: new_pane,
+                    tab: new_tab,
+                    active: true,
+                    title: "bash".into(),
+                    cols: 80,
+                    rows: 24,
+                });
+                self.outputs.push((new_pane, Vec::new()));
+                self.layouts.push(TabLayout {
+                    tab: new_tab,
+                    tree: LayoutNode::leaf(new_pane),
+                    active: new_pane,
+                });
+                self.events.push(StateChange::TabAdded {
+                    tab: new_tab,
+                    window: *window,
+                });
+                self.events.push(StateChange::PaneAdded {
+                    pane: new_pane,
+                    tab: new_tab,
+                });
+                TaskOutcome::Done
+            }
+            Task::CloseTab { target } => {
+                if !self.tabs.iter().any(|t| t.id == *target) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {target} 不存在"),
+                    });
+                }
+                self.panes.retain(|p| p.tab != *target);
+                self.layouts.retain(|l| l.tab != *target);
+                self.tabs.retain(|t| t.id != *target);
+                self.events.push(StateChange::TabClosed { tab: *target });
+                TaskOutcome::Done
+            }
+            Task::SwitchTab { target } => {
+                if !self.tabs.iter().any(|t| t.id == *target) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {target} 不存在"),
+                    });
+                }
+                let win = self.tabs.iter().find(|t| t.id == *target).map(|t| t.window);
+                for t in self.tabs.iter_mut() {
+                    if let Some(w) = win {
+                        if t.window == w {
+                            t.active = t.id == *target;
+                        }
+                    }
+                }
+                if let Some(w) = win {
+                    self.events.push(StateChange::ActiveTabChanged {
+                        window: w,
+                        tab: *target,
+                    });
+                }
+                TaskOutcome::Done
+            }
+            Task::RenameTab { target, name } => {
+                if let Some(t) = self.tabs.iter_mut().find(|t| t.id == *target) {
+                    t.name = name.clone();
+                }
+                self.events.push(StateChange::TabRenamed {
+                    tab: *target,
+                    name: name.clone(),
+                });
+                TaskOutcome::Done
+            }
             Task::Shutdown => {
                 self.status = BackendStatus::Exited;
                 self.events
@@ -509,7 +636,7 @@ mod tests {
         ));
 
         // 验证状态更新
-        assert_eq!(b.panes(&WindowId(1)).len(), 2);
+        assert_eq!(b.panes(&TabId(1)).len(), 2);
         assert_eq!(b.active_pane().unwrap().id, PaneId(2));
     }
 

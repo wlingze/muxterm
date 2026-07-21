@@ -27,13 +27,13 @@ use tokio::sync::mpsc;
 
 use crate::core::config::{expand_config_value, parse_command_argv, program_basename};
 use crate::core::model::backend::Backend;
-use crate::core::model::layout::{LayoutNode, WindowLayout};
+use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{
-    BackendStatus, PaneInfo, SessionInfo, State, StateChange, WindowInfo,
+    BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::terminal::input::encode;
-use crate::core::types::{PaneId, SessionId, WindowId};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 默认字符格尺寸。
 const DEFAULT_COLS: u16 = 80;
@@ -71,7 +71,7 @@ impl std::fmt::Debug for LocalPane {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalPane")
             .field("id", &self.info.id)
-            .field("window", &self.info.window)
+            .field("tab", &self.info.tab)
             .field("active", &self.info.active)
             .field("cols", &self.info.cols)
             .field("rows", &self.info.rows)
@@ -81,10 +81,15 @@ impl std::fmt::Debug for LocalPane {
     }
 }
 
+/// 一个本地 tab。
+struct LocalTab {
+    info: TabInfo,
+    layout: TabLayout,
+}
+
 /// 一个本地 window。
 struct LocalWindow {
     info: WindowInfo,
-    layout: WindowLayout,
 }
 
 /// 本地 shell 后端。
@@ -95,12 +100,15 @@ pub struct LocalBackend {
 
     session: Option<SessionInfo>,
     windows: Vec<LocalWindow>,
+    tabs: Vec<LocalTab>,
     panes: Vec<LocalPane>,
     status: BackendStatus,
     events: VecDeque<StateChange>,
 
     /// 下一个 window id。
     next_window: u32,
+    /// 下一个 tab id。
+    next_tab: u32,
     /// 下一个 pane id。
     next_pane: u32,
 
@@ -118,10 +126,12 @@ impl LocalBackend {
             default_workdir: default_workdir.into(),
             session: None,
             windows: vec![],
+            tabs: vec![],
             panes: vec![],
             status: BackendStatus::Disconnected,
             events: VecDeque::new(),
             next_window: 0,
+            next_tab: 0,
             next_pane: 0,
             pty_tx: None,
             pty_rx: None,
@@ -178,11 +188,17 @@ impl LocalBackend {
         PaneId(self.next_pane)
     }
 
+    /// 分配下一个 tab id。
+    fn alloc_tab_id(&mut self) -> TabId {
+        self.next_tab += 1;
+        TabId(self.next_tab)
+    }
+
     /// spawn 一个本地 pane（pty + 子进程），返回 pane id。
     /// 调用方负责把 pane 加入布局树 + 推事件。
     fn spawn_pane(
         &mut self,
-        window: WindowId,
+        tab: TabId,
         command: Option<&[String]>,
         workdir: Option<&str>,
         cols: u16,
@@ -272,7 +288,7 @@ impl LocalBackend {
         let pane = LocalPane {
             info: PaneInfo {
                 id: pane_id,
-                window,
+                tab,
                 active,
                 title,
                 cols,
@@ -294,8 +310,9 @@ impl LocalBackend {
         name: Option<String>,
         command: Option<&[String]>,
         workdir: Option<&str>,
-    ) -> Result<(WindowId, PaneId)> {
+    ) -> Result<(WindowId, TabId, PaneId)> {
         let win_id = self.alloc_window_id();
+        let tab_id = self.alloc_tab_id();
         let sess = self.session.as_ref().map(|s| s.id).unwrap_or(SessionId(1));
         let win_name = name.unwrap_or_else(|| format!("w{}", win_id.0));
 
@@ -303,51 +320,62 @@ impl LocalBackend {
         for w in self.windows.iter_mut() {
             w.info.active = false;
         }
+        // 旧 tab 取消 active
+        for t in self.tabs.iter_mut() {
+            t.info.active = false;
+        }
         // 旧 pane 取消 active
         for p in self.panes.iter_mut() {
             p.info.active = false;
         }
 
         let pane_id =
-            self.spawn_pane(win_id, command, workdir, DEFAULT_COLS, DEFAULT_ROWS, true)?;
+            self.spawn_pane(tab_id, command, workdir, DEFAULT_COLS, DEFAULT_ROWS, true)?;
 
-        let window = LocalWindow {
+        self.windows.push(LocalWindow {
             info: WindowInfo {
                 id: win_id,
                 name: win_name,
                 session: sess,
                 active: true,
             },
-            layout: WindowLayout {
+        });
+        self.tabs.push(LocalTab {
+            info: TabInfo {
+                id: tab_id,
+                name: format!("t{}", tab_id.0),
                 window: win_id,
+                active: true,
+            },
+            layout: TabLayout {
+                tab: tab_id,
                 tree: LayoutNode::leaf(pane_id),
                 active: pane_id,
             },
-        };
-        self.windows.push(window);
+        });
         if let Some(s) = self.session.as_mut() {
             s.active_window = Some(win_id);
         }
-        Ok((win_id, pane_id))
+        Ok((win_id, tab_id, pane_id))
     }
 
     /// 找 pane 所在 window。
-    fn window_of_pane(&self, pane: PaneId) -> Option<WindowId> {
+    fn tab_of_pane(&self, pane: PaneId) -> Option<TabId> {
         self.panes
             .iter()
             .find(|p| p.info.id == pane)
-            .map(|p| p.info.window)
+            .map(|p| p.info.tab)
     }
 
     /// 设置某 window 下某 pane 为 active（取消其他）。
-    fn set_active_pane(&mut self, window: WindowId, pane: PaneId) {
+    fn set_active_pane(&mut self, tab: TabId, pane: PaneId) {
         for p in self.panes.iter_mut() {
-            if p.info.window == window {
+            if p.info.tab == tab {
                 p.info.active = p.info.id == pane;
             }
         }
-        if let Some(wl) = self.windows.iter_mut().find(|w| w.info.id == window) {
-            wl.layout.active = pane;
+        if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab) {
+            tl.layout.active = pane;
         }
     }
 
@@ -360,6 +388,15 @@ impl LocalBackend {
             .map(|w| w.info.session);
         for w in self.windows.iter_mut() {
             w.info.active = w.info.id == window;
+        }
+        // 同时激活该 window 下第一个 tab
+        if let Some(t) = self.tabs.iter().find(|t| t.info.window == window) {
+            let tid = t.info.id;
+            for t in self.tabs.iter_mut() {
+                if t.info.window == window {
+                    t.info.active = t.info.id == tid;
+                }
+            }
         }
         if let (Some(s), Some(sess)) = (self.session.as_mut(), sess) {
             s.active_window = Some(window);
@@ -415,7 +452,6 @@ impl LocalBackend {
 
 impl State for LocalBackend {
     fn sessions(&self) -> &[SessionInfo] {
-        // 单 session：用 slice 引用 session 字段
         static EMPTY: Vec<SessionInfo> = Vec::new();
         match &self.session {
             Some(s) => std::slice::from_ref(s),
@@ -431,21 +467,40 @@ impl State for LocalBackend {
         self.windows.iter().find(|w| w.info.active).map(|w| &w.info)
     }
 
+    fn active_tab(&self) -> Option<&TabInfo> {
+        self.tabs.iter().find(|t| t.info.active).map(|t| &t.info)
+    }
+
     fn active_pane(&self) -> Option<&PaneInfo> {
         self.panes.iter().find(|p| p.info.active).map(|p| &p.info)
     }
 
-    fn layout(&self, window: &WindowId) -> Option<&WindowLayout> {
-        self.windows
+    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
+        self.tabs
             .iter()
-            .find(|w| &w.info.id == window)
-            .map(|w| &w.layout)
+            .filter(|t| &t.info.window == window)
+            .map(|t| &t.info)
+            .collect()
     }
 
-    fn panes(&self, window: &WindowId) -> Vec<&PaneInfo> {
+    fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
+        self.tabs
+            .iter()
+            .find(|t| t.info.id == *tab)
+            .map(|t| &t.info)
+    }
+
+    fn layout(&self, tab: &TabId) -> Option<&TabLayout> {
+        self.tabs
+            .iter()
+            .find(|t| t.info.id == *tab)
+            .map(|t| &t.layout)
+    }
+
+    fn panes(&self, tab: &TabId) -> Vec<&PaneInfo> {
         self.panes
             .iter()
-            .filter(|p| &p.info.window == window)
+            .filter(|p| p.info.tab == *tab)
             .map(|p| &p.info)
             .collect()
     }
@@ -491,22 +546,30 @@ impl Backend for LocalBackend {
 
         // spawn 第一个 window + pane
         match self.new_window_internal(None, None, None) {
-            Ok((win_id, pane_id)) => {
+            Ok((win_id, tab_id, pane_id)) => {
                 self.status = BackendStatus::Connected;
                 self.events.push_back(StateChange::WindowAdded {
                     window: win_id,
                     session: sess_id,
                 });
+                self.events.push_back(StateChange::TabAdded {
+                    tab: tab_id,
+                    window: win_id,
+                });
                 self.events.push_back(StateChange::PaneAdded {
                     pane: pane_id,
-                    window: win_id,
+                    tab: tab_id,
                 });
                 self.events.push_back(StateChange::ActiveWindowChanged {
                     session: sess_id,
                     window: win_id,
                 });
-                self.events.push_back(StateChange::ActivePaneChanged {
+                self.events.push_back(StateChange::ActiveTabChanged {
                     window: win_id,
+                    tab: tab_id,
+                });
+                self.events.push_back(StateChange::ActivePaneChanged {
+                    tab: tab_id,
                     pane: pane_id,
                 });
                 self.events
@@ -535,7 +598,7 @@ impl Backend for LocalBackend {
                         reason: "SplitPane 缺少 target".into(),
                     });
                 };
-                let Some(win_id) = self.window_of_pane(target_id) else {
+                let Some(tab_id) = self.tab_of_pane(target_id) else {
                     return Ok(TaskOutcome::Rejected {
                         reason: format!("pane {target_id} 不存在"),
                     });
@@ -548,7 +611,7 @@ impl Backend for LocalBackend {
                     .map(|p| (p.info.cols, p.info.rows))
                     .unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
                 let new_pane = match self.spawn_pane(
-                    win_id,
+                    tab_id,
                     command.as_deref(),
                     workdir.as_deref(),
                     cols / 2,
@@ -564,24 +627,24 @@ impl Backend for LocalBackend {
                 };
                 // 取消旧 active
                 for p in self.panes.iter_mut() {
-                    if p.info.window == win_id {
+                    if p.info.tab == tab_id {
                         p.info.active = p.info.id == new_pane;
                     }
                 }
                 // 更新布局树
-                if let Some(wl) = self.windows.iter_mut().find(|w| w.info.id == win_id) {
-                    wl.layout.tree.split_at(target_id, new_pane, *dir);
-                    wl.layout.active = new_pane;
+                if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab_id) {
+                    tl.layout.tree.split_at(target_id, new_pane, *dir);
+                    tl.layout.active = new_pane;
                     self.events.push_back(StateChange::PaneAdded {
                         pane: new_pane,
-                        window: win_id,
+                        tab: tab_id,
                     });
                     self.events.push_back(StateChange::LayoutChanged {
-                        window: win_id,
-                        layout: wl.layout.clone(),
+                        tab: tab_id,
+                        layout: tl.layout.clone(),
                     });
                     self.events.push_back(StateChange::ActivePaneChanged {
-                        window: win_id,
+                        tab: tab_id,
                         pane: new_pane,
                     });
                 }
@@ -589,7 +652,7 @@ impl Backend for LocalBackend {
             }
 
             Task::ClosePane { target } => {
-                let Some(win_id) = self.window_of_pane(*target) else {
+                let Some(tab_id) = self.tab_of_pane(*target) else {
                     return Ok(TaskOutcome::Rejected {
                         reason: format!("pane {target} 不存在"),
                     });
@@ -602,20 +665,20 @@ impl Backend for LocalBackend {
                     .unwrap_or(false);
                 self.kill_pane(*target);
                 // 更新布局树
-                if let Some(wl) = self.windows.iter_mut().find(|w| w.info.id == win_id) {
-                    let _ = wl.layout.tree.remove(*target);
+                if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab_id) {
+                    let _ = tl.layout.tree.remove(*target);
                     self.events
                         .push_back(StateChange::PaneClosed { pane: *target });
                     self.events.push_back(StateChange::LayoutChanged {
-                        window: win_id,
-                        layout: wl.layout.clone(),
+                        tab: tab_id,
+                        layout: tl.layout.clone(),
                     });
                     if was_active {
-                        let new_active = wl.layout.tree.leaves().first().copied();
+                        let new_active = tl.layout.tree.leaves().first().copied();
                         if let Some(a) = new_active {
-                            self.set_active_pane(win_id, a);
+                            self.set_active_pane(tab_id, a);
                             self.events.push_back(StateChange::ActivePaneChanged {
-                                window: win_id,
+                                tab: tab_id,
                                 pane: a,
                             });
                         }
@@ -625,14 +688,14 @@ impl Backend for LocalBackend {
             }
 
             Task::SwitchPane { target } => {
-                let Some(win_id) = self.window_of_pane(*target) else {
+                let Some(tab_id) = self.tab_of_pane(*target) else {
                     return Ok(TaskOutcome::Rejected {
                         reason: format!("pane {target} 不存在"),
                     });
                 };
-                self.set_active_pane(win_id, *target);
+                self.set_active_pane(tab_id, *target);
                 self.events.push_back(StateChange::ActivePaneChanged {
-                    window: win_id,
+                    tab: tab_id,
                     pane: *target,
                 });
                 TaskOutcome::Done
@@ -643,27 +706,27 @@ impl Backend for LocalBackend {
                     .panes
                     .iter()
                     .find(|p| p.info.active)
-                    .map(|p| (p.info.id, p.info.window))
+                    .map(|p| (p.info.id, p.info.tab))
                 else {
                     return Ok(TaskOutcome::Rejected {
                         reason: "无激活 pane".into(),
                     });
                 };
-                let (active_id, win_id) = active;
-                let Some(wl) = self.windows.iter().find(|w| w.info.id == win_id) else {
+                let (active_id, tab_id) = active;
+                let Some(tl) = self.tabs.iter().find(|t| t.info.id == tab_id) else {
                     return Ok(TaskOutcome::Rejected {
                         reason: "无布局".into(),
                     });
                 };
                 let next = match task {
-                    Task::NextPane => wl.layout.tree.next_leaf(active_id),
-                    Task::PrevPane => wl.layout.tree.prev_leaf(active_id),
+                    Task::NextPane => tl.layout.tree.next_leaf(active_id),
+                    Task::PrevPane => tl.layout.tree.prev_leaf(active_id),
                     _ => None,
                 };
                 if let Some(n) = next {
-                    self.set_active_pane(win_id, n);
+                    self.set_active_pane(tab_id, n);
                     self.events.push_back(StateChange::ActivePaneChanged {
-                        window: win_id,
+                        tab: tab_id,
                         pane: n,
                     });
                 }
@@ -677,22 +740,30 @@ impl Backend for LocalBackend {
             } => {
                 match self.new_window_internal(name.clone(), command.as_deref(), workdir.as_deref())
                 {
-                    Ok((win_id, pane_id)) => {
+                    Ok((win_id, tab_id, pane_id)) => {
                         let sess = self.session.as_ref().map(|s| s.id).unwrap_or(SessionId(1));
                         self.events.push_back(StateChange::WindowAdded {
                             window: win_id,
                             session: sess,
                         });
+                        self.events.push_back(StateChange::TabAdded {
+                            tab: tab_id,
+                            window: win_id,
+                        });
                         self.events.push_back(StateChange::PaneAdded {
                             pane: pane_id,
-                            window: win_id,
+                            tab: tab_id,
                         });
                         self.events.push_back(StateChange::ActiveWindowChanged {
                             session: sess,
                             window: win_id,
                         });
-                        self.events.push_back(StateChange::ActivePaneChanged {
+                        self.events.push_back(StateChange::ActiveTabChanged {
                             window: win_id,
+                            tab: tab_id,
+                        });
+                        self.events.push_back(StateChange::ActivePaneChanged {
+                            tab: tab_id,
                             pane: pane_id,
                         });
                         TaskOutcome::Done
@@ -716,15 +787,22 @@ impl Backend for LocalBackend {
                     .map(|w| w.info.session)
                     .unwrap_or(SessionId(1));
                 // kill 该 window 下所有 pane
+                let tab_ids: Vec<TabId> = self
+                    .tabs
+                    .iter()
+                    .filter(|t| t.info.window == *target)
+                    .map(|t| t.info.id)
+                    .collect();
                 let to_kill: Vec<PaneId> = self
                     .panes
                     .iter()
-                    .filter(|p| p.info.window == *target)
+                    .filter(|p| tab_ids.contains(&p.info.tab))
                     .map(|p| p.info.id)
                     .collect();
                 for pid in to_kill {
                     self.kill_pane(pid);
                 }
+                self.tabs.retain(|t| t.info.window != *target);
                 self.windows.retain(|w| w.info.id != *target);
                 // active window 回退到剩余第一个
                 if let Some(w) = self.windows.first() {
@@ -839,6 +917,145 @@ impl Backend for LocalBackend {
                 TaskOutcome::Done
             }
 
+            Task::NewTab {
+                window,
+                name,
+                command,
+                workdir,
+            } => {
+                if !self.windows.iter().any(|w| w.info.id == *window) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("window {window} 不存在"),
+                    });
+                }
+                let tab_id = self.alloc_tab_id();
+                // 旧 tab 取消 active
+                for t in self.tabs.iter_mut() {
+                    if t.info.window == *window {
+                        t.info.active = false;
+                    }
+                }
+                let pane_id = self.spawn_pane(
+                    tab_id,
+                    command.as_deref(),
+                    workdir.as_deref(),
+                    DEFAULT_COLS,
+                    DEFAULT_ROWS,
+                    true,
+                )?;
+                self.tabs.push(LocalTab {
+                    info: TabInfo {
+                        id: tab_id,
+                        name: name.clone().unwrap_or_else(|| format!("t{}", tab_id.0)),
+                        window: *window,
+                        active: true,
+                    },
+                    layout: TabLayout {
+                        tab: tab_id,
+                        tree: LayoutNode::leaf(pane_id),
+                        active: pane_id,
+                    },
+                });
+                self.events.push_back(StateChange::TabAdded {
+                    tab: tab_id,
+                    window: *window,
+                });
+                self.events.push_back(StateChange::PaneAdded {
+                    pane: pane_id,
+                    tab: tab_id,
+                });
+                self.events.push_back(StateChange::ActiveTabChanged {
+                    window: *window,
+                    tab: tab_id,
+                });
+                self.events.push_back(StateChange::ActivePaneChanged {
+                    tab: tab_id,
+                    pane: pane_id,
+                });
+                TaskOutcome::Done
+            }
+
+            Task::CloseTab { target } => {
+                if !self.tabs.iter().any(|t| t.info.id == *target) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {target} 不存在"),
+                    });
+                }
+                let win_id = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.info.id == *target)
+                    .map(|t| t.info.window)
+                    .unwrap_or(WindowId(0));
+                // kill 该 tab 下所有 pane
+                let to_kill: Vec<PaneId> = self
+                    .panes
+                    .iter()
+                    .filter(|p| p.info.tab == *target)
+                    .map(|p| p.info.id)
+                    .collect();
+                for pid in to_kill {
+                    self.kill_pane(pid);
+                }
+                self.tabs.retain(|t| t.info.id != *target);
+                self.events
+                    .push_back(StateChange::TabClosed { tab: *target });
+                // 激活剩余 tab
+                if let Some(t) = self.tabs.iter().find(|t| t.info.window == win_id) {
+                    let tid = t.info.id;
+                    for t in self.tabs.iter_mut() {
+                        if t.info.window == win_id {
+                            t.info.active = t.info.id == tid;
+                        }
+                    }
+                    self.events.push_back(StateChange::ActiveTabChanged {
+                        window: win_id,
+                        tab: tid,
+                    });
+                }
+                TaskOutcome::Done
+            }
+
+            Task::SwitchTab { target } => {
+                if !self.tabs.iter().any(|t| t.info.id == *target) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {target} 不存在"),
+                    });
+                }
+                let win_id = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.info.id == *target)
+                    .map(|t| t.info.window)
+                    .unwrap_or(WindowId(0));
+                for t in self.tabs.iter_mut() {
+                    if t.info.window == win_id {
+                        t.info.active = t.info.id == *target;
+                    }
+                }
+                self.events.push_back(StateChange::ActiveTabChanged {
+                    window: win_id,
+                    tab: *target,
+                });
+                TaskOutcome::Done
+            }
+
+            Task::RenameTab { target, name } => {
+                if !self.tabs.iter().any(|t| t.info.id == *target) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {target} 不存在"),
+                    });
+                }
+                if let Some(t) = self.tabs.iter_mut().find(|t| t.info.id == *target) {
+                    t.info.name = name.clone();
+                }
+                self.events.push_back(StateChange::TabRenamed {
+                    tab: *target,
+                    name: name.clone(),
+                });
+                TaskOutcome::Done
+            }
+
             Task::Shutdown => {
                 // kill 所有 pane
                 let all: Vec<PaneId> = self.panes.iter().map(|p| p.info.id).collect();
@@ -846,6 +1063,7 @@ impl Backend for LocalBackend {
                     self.kill_pane(pid);
                 }
                 self.windows.clear();
+                self.tabs.clear();
                 self.session = None;
                 self.status = BackendStatus::Exited;
                 self.events
@@ -1097,8 +1315,8 @@ mod tests {
         assert_eq!(b.sessions()[0].name, "local");
         assert_eq!(b.active_window().map(|w| w.id), Some(WindowId(1)));
         assert_eq!(b.active_pane().map(|p| p.id), Some(PaneId(1)));
-        assert_eq!(b.panes(&WindowId(1)).len(), 1);
-        assert!(b.layout(&WindowId(1)).is_some());
+        assert_eq!(b.panes(&TabId(1)).len(), 1);
+        assert!(b.layout(&TabId(1)).is_some());
         assert!(b.pane_output(&PaneId(1)).is_some());
     }
 

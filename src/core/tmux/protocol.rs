@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn window_id_parse() {
         assert_eq!(WindowId::parse("@0").unwrap(), WindowId(0));
-        assert_eq!(WindowId(12).as_str(), "@12");
+        assert_eq!(WindowId(12).as_str(), "w12");
     }
 
     #[test]

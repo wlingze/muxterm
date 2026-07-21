@@ -7,8 +7,7 @@
 //! - 前端只读 `State` 做渲染；状态变更通过 `BackendEvent` 推送（见 `backend.rs`）。
 //! - pane 输出是字节流（`&[u8]`），因为可能含非 UTF-8 的 ANSI 序列。
 //! - 所有方法返回 `Option` / `&` 引用，不 clone，便于高频渲染。
-use crate::core::model::layout::WindowLayout;
-use crate::core::types::{PaneId, SessionId, WindowId};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 一个 session 的元信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,12 +29,23 @@ pub struct WindowInfo {
     pub active: bool,
 }
 
+/// 一个 tab 的元信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabInfo {
+    pub id: TabId,
+    pub name: String,
+    /// 所属 window。
+    pub window: WindowId,
+    /// 是否激活（在所属 window 中）。
+    pub active: bool,
+}
+
 /// 一个 pane 的元信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneInfo {
     pub id: PaneId,
-    /// 所属 window。
-    pub window: WindowId,
+    /// 所属 tab。
+    pub tab: TabId,
     /// 是否激活（在所属 window 中）。
     pub active: bool,
     /// pane 标题（通常 = 当前进程名），由 Backend 更新。
@@ -65,14 +75,22 @@ pub enum StateChange {
     WindowClosed { window: WindowId },
     /// window 被重命名。
     WindowRenamed { window: WindowId, name: String },
-    /// window 布局变化（分割 / resize / pane 增减）。
+    /// tab 被加入。
+    TabAdded { tab: TabId, window: WindowId },
+    /// tab 被关闭。
+    TabClosed { tab: TabId },
+    /// tab 被重命名。
+    TabRenamed { tab: TabId, name: String },
+    /// 激活的 tab 变化。
+    ActiveTabChanged { window: WindowId, tab: TabId },
+    /// tab 布局变化（分割 / resize / pane 增减）。
     LayoutChanged {
-        window: WindowId,
+        tab: TabId,
         /// 新布局树（完整快照，非增量）。
-        layout: WindowLayout,
+        layout: crate::core::model::layout::TabLayout,
     },
     /// pane 被加入（split 的结果，或 tmux 新建 pane）。
-    PaneAdded { pane: PaneId, window: WindowId },
+    PaneAdded { pane: PaneId, tab: TabId },
     /// pane 被关闭。
     PaneClosed { pane: PaneId },
     /// pane 标题变化。
@@ -80,7 +98,7 @@ pub enum StateChange {
     /// pane 尺寸变化。
     PaneResized { pane: PaneId, cols: u16, rows: u16 },
     /// 激活的 pane 变化。
-    ActivePaneChanged { window: WindowId, pane: PaneId },
+    ActivePaneChanged { tab: TabId, pane: PaneId },
     /// 激活的 window 变化。
     ActiveWindowChanged {
         session: SessionId,
@@ -128,14 +146,23 @@ pub trait State {
     /// 当前激活的 window（属于激活 session）。
     fn active_window(&self) -> Option<&WindowInfo>;
 
-    /// 当前激活的 pane（属于激活 window）。
+    /// 当前激活的 tab（属于激活 window）。
+    fn active_tab(&self) -> Option<&TabInfo>;
+
+    /// 当前激活的 pane（属于激活 tab）。
     fn active_pane(&self) -> Option<&PaneInfo>;
 
-    /// 某 window 的布局树。
-    fn layout(&self, window: &WindowId) -> Option<&WindowLayout>;
+    /// 某 window 下的所有 tab。
+    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo>;
 
-    /// 某 window 下的所有 pane。
-    fn panes(&self, window: &WindowId) -> Vec<&PaneInfo>;
+    /// 某 tab 的元信息。
+    fn tab(&self, tab: &TabId) -> Option<&TabInfo>;
+
+    /// 某 tab 的布局树。
+    fn layout(&self, tab: &TabId) -> Option<&crate::core::model::layout::TabLayout>;
+
+    /// 某 tab 下的所有 pane。
+    fn panes(&self, tab: &TabId) -> Vec<&PaneInfo>;
 
     /// 某 pane 的元信息。
     fn pane(&self, pane: &PaneId) -> Option<&PaneInfo>;
@@ -157,12 +184,14 @@ mod tests {
     struct MemState {
         sessions: Vec<SessionInfo>,
         windows: Vec<WindowInfo>,
+        tabs: Vec<TabInfo>,
         panes: Vec<PaneInfo>,
-        layouts: Vec<WindowLayout>,
+        layouts: Vec<crate::core::model::layout::TabLayout>,
         outputs: Vec<(PaneId, Vec<u8>)>,
         status: BackendStatus,
         active_session: Option<SessionId>,
         active_window: Option<WindowId>,
+        active_tab: Option<TabId>,
         active_pane: Option<PaneId>,
     }
 
@@ -178,15 +207,25 @@ mod tests {
             self.active_window
                 .and_then(|wid| self.windows.iter().find(|w| w.id == wid))
         }
+        fn active_tab(&self) -> Option<&TabInfo> {
+            self.active_tab
+                .and_then(|tid| self.tabs.iter().find(|t| t.id == tid))
+        }
         fn active_pane(&self) -> Option<&PaneInfo> {
             self.active_pane
                 .and_then(|pid| self.panes.iter().find(|p| p.id == pid))
         }
-        fn layout(&self, window: &WindowId) -> Option<&WindowLayout> {
-            self.layouts.iter().find(|l| &l.window == window)
+        fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
+            self.tabs.iter().filter(|t| &t.window == window).collect()
         }
-        fn panes(&self, window: &WindowId) -> Vec<&PaneInfo> {
-            self.panes.iter().filter(|p| &p.window == window).collect()
+        fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
+            self.tabs.iter().find(|t| &t.id == tab)
+        }
+        fn layout(&self, tab: &TabId) -> Option<&crate::core::model::layout::TabLayout> {
+            self.layouts.iter().find(|l| &l.tab == tab)
+        }
+        fn panes(&self, tab: &TabId) -> Vec<&PaneInfo> {
+            self.panes.iter().filter(|p| &p.tab == tab).collect()
         }
         fn pane(&self, pane: &PaneId) -> Option<&PaneInfo> {
             self.panes.iter().find(|p| &p.id == pane)
@@ -216,16 +255,22 @@ mod tests {
                 session: SessionId(1),
                 active: true,
             }],
+            tabs: vec![TabInfo {
+                id: TabId(1),
+                name: "shell".into(),
+                window: WindowId(1),
+                active: true,
+            }],
             panes: vec![PaneInfo {
                 id: PaneId(1),
-                window: WindowId(1),
+                tab: TabId(1),
                 active: true,
                 title: "bash".into(),
                 cols: 80,
                 rows: 24,
             }],
-            layouts: vec![WindowLayout {
-                window: WindowId(1),
+            layouts: vec![crate::core::model::layout::TabLayout {
+                tab: TabId(1),
                 tree: LayoutNode::leaf(PaneId(1)),
                 active: PaneId(1),
             }],
@@ -233,14 +278,17 @@ mod tests {
             status: BackendStatus::Connected,
             active_session: Some(SessionId(1)),
             active_window: Some(WindowId(1)),
+            active_tab: Some(TabId(1)),
             active_pane: Some(PaneId(1)),
         };
         assert_eq!(s.sessions().len(), 1);
         assert_eq!(s.active_session().unwrap().name, "main");
         assert_eq!(s.active_window().unwrap().name, "bash");
         assert_eq!(s.active_pane().unwrap().title, "bash");
-        assert_eq!(s.panes(&WindowId(1)).len(), 1);
-        assert!(s.layout(&WindowId(1)).is_some());
+        assert_eq!(s.panes(&TabId(1)).len(), 1);
+        assert!(s.layout(&TabId(1)).is_some());
+        assert_eq!(s.active_tab().unwrap().name, "shell");
+        assert_eq!(s.tabs(&WindowId(1)).len(), 1);
         assert_eq!(s.pane(&PaneId(1)).unwrap().cols, 80);
         assert_eq!(s.pane_output(&PaneId(1)).unwrap(), b"hello");
         assert_eq!(s.status(), BackendStatus::Connected);
@@ -270,19 +318,24 @@ mod tests {
         let s = MemState {
             sessions: vec![],
             windows: vec![],
+            tabs: vec![],
             panes: vec![],
             layouts: vec![],
             outputs: vec![],
             status: BackendStatus::Disconnected,
             active_session: None,
             active_window: None,
+            active_tab: None,
             active_pane: None,
         };
         assert!(s.sessions().is_empty());
         assert!(s.active_session().is_none());
         assert!(s.active_window().is_none());
+        assert!(s.active_tab().is_none());
         assert!(s.active_pane().is_none());
-        assert!(s.layout(&WindowId(1)).is_none());
+        assert!(s.layout(&TabId(1)).is_none());
+        assert!(s.tab(&TabId(1)).is_none());
+        assert!(s.tabs(&WindowId(1)).is_empty());
         assert!(s.pane(&PaneId(1)).is_none());
         assert!(s.pane_output(&PaneId(1)).is_none());
         assert_eq!(s.status(), BackendStatus::Disconnected);
