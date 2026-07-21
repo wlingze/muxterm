@@ -4,23 +4,31 @@
 //! - [`state`]：状态快照 + `State` trait + `StateChange` 事件
 //! - [`task`]：`Task` enum，纯操作描述
 //! - [`backend`]：`Backend` trait，统一 TmuxBackend / LocalBackend
+//! - [`terminal_model`]：`TerminalModel`，编排 task → backend → state → 事件流
 //!
 //! 本模块**无 I/O、无 GUI 依赖**，所有代码可在无 DISPLAY 环境下 `cargo test`。
-//! TerminalModel（Step 2 引入）将组合这些 trait，提供可测试的纯逻辑层。
 //!
-//! 当前为 Step 1：trait/类型已定义，尚未被平台层使用，故暂挂 `dead_code` 以
-//! 避免编译警告；Step 2 接入 TerminalModel 后逐步移除。
-
+//! Step 2：TerminalModel 已接入，MockBackend 覆盖常见 Task 行为；后续 Step 3+
+//! 接入 LocalBackend / TmuxBackend 后，逐步把平台层切到 TerminalModel。
+// ⚠ 重构过渡期：core::model 的类型/trait 尚未被平台层使用，
+// 保留所有 API 以便 Step 3+ 接入真实 backend / 前端。统一放宽 dead_code 警告，
+// 待 Step 6 全量接入后删除此属性并逐个收紧。
 #![allow(dead_code)]
-#![allow(unused_imports)]
 
 pub mod backend;
 pub mod layout;
 pub mod state;
 pub mod task;
+pub mod terminal_model;
 
-// 便捷 re-export（Step 2+ 起被 TerminalModel / 平台层使用）
+// 便捷 re-export（被 TerminalModel / 平台层使用）
+#[allow(unused_imports)]
 pub use backend::Backend;
-pub use layout::{LayoutNode, SplitDir, WindowLayout};
+#[allow(unused_imports)]
+pub use layout::{LayoutNode, RemoveRootError, SplitDir, WindowLayout};
+#[allow(unused_imports)]
 pub use state::{BackendStatus, PaneInfo, SessionInfo, State, StateChange, WindowInfo};
+#[allow(unused_imports)]
 pub use task::{Task, TaskOutcome};
+#[allow(unused_imports)]
+pub use terminal_model::{StateChangeCallback, TerminalModel};
