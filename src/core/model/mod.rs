@@ -10,9 +10,8 @@
 //!
 //! Step 2：TerminalModel 已接入，MockBackend 覆盖常见 Task 行为；后续 Step 3+
 //! 接入 LocalBackend / TmuxBackend 后，逐步把平台层切到 TerminalModel。
-// ⚠ 重构过渡期：core::model 的类型/trait 尚未被平台层使用，
-// 保留所有 API 以便 Step 3+ 接入真实 backend / 前端。统一放宽 dead_code 警告，
-// 待 Step 6 全量接入后删除此属性并逐个收紧。
+// 重构过渡期：core::model 的部分 API 尚未被 GTK 前端使用（GTK 仍走旧路径），
+// 保留全部 API 供 TUI 前端 + 未来 GTK 切换。统一放宽 dead_code。
 #![allow(dead_code)]
 
 pub mod backend;

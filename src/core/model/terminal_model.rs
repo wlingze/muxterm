@@ -151,6 +151,7 @@ impl TerminalModel {
     }
 
     /// 取消订阅。
+    #[allow(unused_must_use)]
     pub fn unsubscribe(&mut self, id: usize) {
         if id < self.subscribers.len() {
             self.subscribers.remove(id);
