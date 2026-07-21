@@ -1,3 +1,5 @@
+#![cfg(feature = "tui")]
+
 //! TUI 集成测试：spawn TUI 进程在 tmux pane 里，capture-pane 抓画面，断言渲染。
 //!
 //! 这些测试需要 tmux + 可执行 muxterm 二进制（编译时 --features tui）。
