@@ -172,7 +172,8 @@ fn pane_target(p: PaneId) -> String {
     target_arg(&p.as_str())
 }
 fn window_target(w: WindowId) -> String {
-    target_arg(&w.as_str())
+    // tmux 协议用 @N 格式的 window id（与 muxterm 的 wN 显示格式不同）
+    target_arg(&format!("@{}", w.0))
 }
 fn session_target(s: SessionId) -> String {
     target_arg(&s.as_str())

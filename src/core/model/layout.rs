@@ -151,17 +151,20 @@ impl LayoutNode {
 #[error("不能移除布局树唯一的叶子（根）")]
 pub struct RemoveRootError;
 
-/// 一个 window 的布局快照。
+/// 一个 tab 的布局快照。
 ///
-/// Terminal 层不关心 window 的像素几何，只关心 pane 拓扑 + 每个 pane 的字符格大小
+/// Terminal 层不关心 tab 的像素几何，只关心 pane 拓扑 + 每个 pane 的字符格大小
 /// （由 Backend 从 tmux `window_layout` 或本地 vte4 尺寸同步）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowLayout {
-    pub window: WindowId,
+pub struct TabLayout {
+    pub tab: crate::core::types::TabId,
     pub tree: LayoutNode,
     /// 激活 pane。
     pub active: PaneId,
 }
+
+/// 兼容别名（过渡期）。
+pub type WindowLayout = TabLayout;
 
 #[cfg(test)]
 mod tests {
@@ -264,12 +267,12 @@ mod tests {
     #[test]
     fn window_layout_fields() {
         let t = LayoutNode::leaf(p(1));
-        let wl = WindowLayout {
-            window: WindowId(1),
+        let wl = TabLayout {
+            tab: crate::core::types::TabId(1),
             tree: t,
             active: p(1),
         };
-        assert_eq!(wl.window, WindowId(1));
+        assert_eq!(wl.tab, crate::core::types::TabId(1));
         assert_eq!(wl.active, p(1));
         assert_eq!(wl.tree.leaves(), vec![p(1)]);
     }
