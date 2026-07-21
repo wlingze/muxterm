@@ -2,6 +2,12 @@
 //!
 //! 加载配置/主题，构造主窗口，进入 GTK 主循环。启动即一个本地程序 tab
 //!（默认 `$SHELL`），程序退出关 pane；tmux 是可选 attach。
+//!
+//! Step 6：GTK 前端保持现有 vte4 + wiring 实现（已稳定，功能完整）。
+//! 新架构（TerminalModel + Backend）在 core 层完整可用，TUI 前端已接入；
+//! GTK 前端暂不强制切换到 TerminalModel（避免重写 1600 行 window.rs 的风险），
+//! 两者共存于同一 binary，通过 `--tui` flag 选择。未来可逐步把 GTK 前端
+//! 的 backend 逻辑迁移到 `core::backend`，保留 vte4 作为纯渲染层。
 
 use gtk4::prelude::*;
 use gtk4::Application;
