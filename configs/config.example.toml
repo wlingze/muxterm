@@ -14,6 +14,7 @@ name = "light"  # 或 dark
 [tmux]
 auto_mouse = true       # attach 后自动 set -g mouse on
 default_session = ""    # 空则不自动 attach
+# socket = "muxterm"    # 可选；也可用 CLI -L/--socket 隔离 tmux server
 
 # SSH 远程 tmux -CC（命令面板 "ssh: connect"）
 [ssh]

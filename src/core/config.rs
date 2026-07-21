@@ -95,6 +95,10 @@ pub struct TmuxConfig {
     /// 启动时自动 attach 的 session 名（空=不自动 attach）。
     #[serde(default)]
     pub default_session: String,
+    /// tmux socket 名（`tmux -L`）；空则用默认 socket。
+    /// CLI `-L/--socket` 会覆盖此字段。
+    #[serde(default)]
+    pub socket: String,
 }
 fn default_auto_mouse() -> bool {
     true
@@ -104,6 +108,19 @@ impl Default for TmuxConfig {
         TmuxConfig {
             auto_mouse: true,
             default_session: String::new(),
+            socket: String::new(),
+        }
+    }
+}
+
+impl TmuxConfig {
+    /// 非空 socket → `["-L", name]`，供本地 tmux 子进程使用。
+    pub fn socket_args(&self) -> Vec<String> {
+        let sock = self.socket.trim();
+        if sock.is_empty() {
+            Vec::new()
+        } else {
+            vec!["-L".into(), sock.to_string()]
         }
     }
 }

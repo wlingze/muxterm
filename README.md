@@ -131,9 +131,16 @@ cp configs/config.example.toml ~/.config/muxterm/config.toml
 muxterm [OPTIONS]
 
 Options:
-  -v, --verbose  启用详细日志（也可用 RUST_LOG）
+  -v, --verbose              启用详细日志（也可用 RUST_LOG）
+  -L, --socket <SOCKET>      tmux socket 名（传给 `tmux -L`，隔离独立 server）
   -h, --help
   -V, --version
+```
+
+示例：用独立 socket，不影响默认 tmux 会话：
+
+```bash
+muxterm -L muxterm
 ```
 
 ## 项目结构

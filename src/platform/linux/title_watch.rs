@@ -18,17 +18,18 @@ pub fn local_foreground_name(pid: i32) -> Option<String> {
 }
 
 /// tmux pane：查询 `#{pane_current_command}`。
-pub fn tmux_pane_command(pane: PaneId) -> Option<String> {
-    let out = Command::new("tmux")
-        .args([
-            "display-message",
-            "-p",
-            "-t",
-            &pane.as_str(),
-            "#{pane_current_command}",
-        ])
-        .output()
-        .ok()?;
+///
+/// `socket_args` 需与 -CC 客户端一致（如 `["-L", "muxterm"]`）。
+pub fn tmux_pane_command(pane: PaneId, socket_args: &[String]) -> Option<String> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(socket_args).args([
+        "display-message",
+        "-p",
+        "-t",
+        &pane.as_str(),
+        "#{pane_current_command}",
+    ]);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
