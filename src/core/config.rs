@@ -16,8 +16,11 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// `HashSet` 仅在 `from_gdk`（GTK 前端）里用到，跟随 feature 启用。
+#[cfg(feature = "gtk")]
+use std::collections::HashSet;
 
 // ============================================================================
 // 顶层配置
@@ -504,6 +507,8 @@ fn kb(key: &str, mods: &[&str], action: &str) -> KeyBinding {
 pub struct ModSet(pub Vec<String>);
 
 impl ModSet {
+    /// 从 GDK `ModifierType` 构造（GTK 前端用）。
+    #[cfg(feature = "gtk")]
     pub fn from_gdk(mods: gtk4::gdk::ModifierType) -> Self {
         let mut s = HashSet::new();
         use gtk4::gdk::ModifierType as M;
@@ -662,6 +667,7 @@ fn dirs_themes() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     const CONFIG_SAMPLE: &str = r##"
 [font]
