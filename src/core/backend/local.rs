@@ -884,7 +884,16 @@ impl Backend for LocalBackend {
                         reason: format!("pane {target} 不存在"),
                     });
                 }
-                if self.write_to_pane(*target, data) {
+                let written = self.write_to_pane(*target, data);
+                // 累积到输出缓冲（不等 pty 回显）
+                if let Some(p) = self.panes.iter_mut().find(|p| p.info.id == *target) {
+                    p.output.extend_from_slice(data);
+                }
+                self.events.push_back(StateChange::PaneOutput {
+                    pane: *target,
+                    data: data.clone(),
+                });
+                if written {
                     TaskOutcome::Done
                 } else {
                     TaskOutcome::Rejected {

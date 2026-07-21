@@ -21,7 +21,7 @@ pub struct MockBackend {
     pub(crate) tabs: Vec<TabInfo>,
     pub(crate) panes: Vec<PaneInfo>,
     pub(crate) layouts: Vec<TabLayout>,
-    pub(crate) outputs: Vec<(PaneId, Vec<u8>)>,
+    pub outputs: Vec<(PaneId, Vec<u8>)>,
     pub(crate) status: BackendStatus,
     pub(crate) events: Vec<StateChange>,
     pub executed: Vec<Task>,
