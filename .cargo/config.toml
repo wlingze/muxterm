@@ -1,0 +1,5 @@
+# 所有 worktree 共享同一编译缓存（相对本仓库根目录的上一级）。
+# 主仓库 ~/Project/muxterm 与 ~/Project/muxterm-<name> worktree
+# 都会解析到 ~/Project/muxterm-target。
+[build]
+target-dir = "../muxterm-target"
