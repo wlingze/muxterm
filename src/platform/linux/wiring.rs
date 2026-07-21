@@ -329,3 +329,66 @@ fn to_ui_event(m: Message) -> Option<UiEvent> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::tmux::client::build_argv;
+
+    #[test]
+    fn attach_config_forwards_socket_into_extra_args() {
+        let sock = vec!["-L".into(), "muxterm-dev".into()];
+        let cfg = attach_config("main", &sock);
+        assert_eq!(cfg.extra_args, sock);
+    }
+
+    #[test]
+    fn new_session_config_forwards_socket_into_extra_args() {
+        let sock = vec!["-L".into(), "iso".into()];
+        let cfg = new_session_config(Some("dev".into()), &sock);
+        assert_eq!(cfg.extra_args, sock);
+    }
+
+    /// socket 必须出现在 `-CC` 之前（tmux 二进制级选项）。
+    #[test]
+    fn socket_appears_before_cc_in_tmux_argv_attach() {
+        let sock = vec!["-L".into(), "muxterm-dev".into()];
+        let cfg = attach_config("main", &sock);
+        let argv = build_argv(&cfg);
+        assert_eq!(
+            argv,
+            vec![
+                "-L".to_string(),
+                "muxterm-dev".to_string(),
+                "-CC".to_string(),
+                "attach".to_string(),
+                "-t".to_string(),
+                "main".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn socket_appears_before_cc_in_tmux_argv_new_session() {
+        let sock = vec!["-L".into(), "iso".into()];
+        let cfg = new_session_config(Some("s1".into()), &sock);
+        let argv = build_argv(&cfg);
+        assert_eq!(&argv[..4], ["-L", "iso", "-CC", "new-session"]);
+        assert!(argv.windows(2).any(|w| w == ["-s", "s1"]));
+    }
+
+    #[test]
+    fn empty_socket_keeps_default_argv_prefix() {
+        let cfg = attach_config("main", &[]);
+        let argv = build_argv(&cfg);
+        assert_eq!(
+            argv,
+            vec![
+                "-CC".to_string(),
+                "attach".to_string(),
+                "-t".to_string(),
+                "main".to_string(),
+            ]
+        );
+    }
+}
