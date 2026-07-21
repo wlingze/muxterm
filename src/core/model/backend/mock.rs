@@ -16,13 +16,13 @@ use crate::core::types::{PaneId, SessionId, WindowId};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。
 pub struct MockBackend {
-    sessions: Vec<SessionInfo>,
-    windows: Vec<WindowInfo>,
-    panes: Vec<PaneInfo>,
-    layouts: Vec<WindowLayout>,
-    outputs: Vec<(PaneId, Vec<u8>)>,
-    status: BackendStatus,
-    events: Vec<StateChange>,
+    pub(crate) sessions: Vec<SessionInfo>,
+    pub(crate) windows: Vec<WindowInfo>,
+    pub(crate) panes: Vec<PaneInfo>,
+    pub(crate) layouts: Vec<WindowLayout>,
+    pub(crate) outputs: Vec<(PaneId, Vec<u8>)>,
+    pub(crate) status: BackendStatus,
+    pub(crate) events: Vec<StateChange>,
     pub executed: Vec<Task>,
 }
 
