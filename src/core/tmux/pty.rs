@@ -136,3 +136,306 @@ pub fn reader_only(master: &Box<dyn portable_pty::MasterPty + Send>) -> Result<P
     let reader = master.try_clone_reader().context("try_clone_reader 失败")?;
     Ok(PtyReader::new(reader))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // ── spawn_pty ────────────────────────────────────────────────────────
+
+    #[test]
+    fn spawn_pty_echo_and_read_output() {
+        // /bin/echo 立即输出后退出，master reader 应能读到它的 stdout
+        let mut child = spawn_pty("echo", &["hello-pty"], 40, 12).expect("spawn echo");
+
+        let reader = child.master.try_clone_reader().expect("try_clone_reader");
+        let mut reader = reader;
+
+        // 阻塞读直到拿到包含 "hello-pty" 的块或 EOF
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match reader.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if String::from_utf8_lossy(&buf).contains("hello-pty") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("hello-pty"), "应读到 echo 输出, 实际: {out:?}");
+
+        // 等待子进程退出
+        let _ = child.child.try_wait();
+    }
+
+    #[test]
+    fn spawn_pty_child_has_pid() {
+        let child = spawn_pty("true", &[], 10, 5).expect("spawn true");
+        let pid = child.child.process_id();
+        assert!(pid.is_some(), "子进程应有 pid");
+        assert!(pid.unwrap() > 0);
+    }
+
+    #[test]
+    fn spawn_pty_missing_binary_errors() {
+        let err = spawn_pty("/nonexistent/binary/xyz", &[], 10, 5);
+        assert!(err.is_err(), "不存在的二进制应返回 Err");
+    }
+
+    #[test]
+    fn spawn_pty_cat_echoes_stdin() {
+        // /bin/cat 把 stdin 原样输出；写什么读回什么
+        let mut child = spawn_pty("cat", &[], 40, 12).expect("spawn cat");
+
+        let reader = child.master.try_clone_reader().expect("try_clone_reader");
+        let writer = child.master.take_writer().expect("take_writer");
+        let mut reader = reader;
+        let mut writer = writer;
+
+        // 写一行
+        let payload = b"pty-test-line\n";
+        writer.write_all(payload).expect("write to cat");
+
+        // 读回（cat 会回显 stdin；终端模式可能 echo，但至少应包含我们写的内容）
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match reader.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    // 终端 echo + cat 回显，可能读到多次；只要含 payload 即可
+                    if String::from_utf8_lossy(&buf).contains("pty-test-line") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("pty-test-line"),
+            "cat 应回显 stdin, 实际: {out:?}"
+        );
+
+        // 关闭 writer（EOF）让 cat 退出
+        drop(writer);
+        let _ = child.child.try_wait();
+    }
+
+    // ── PtyReader ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pty_reader_streams_chunks() {
+        // echo 输出后退出；PtyReader 把字节块通过 mpsc 异步投递
+        let mut child = spawn_pty("echo", &["stream-test"], 40, 12).expect("spawn echo");
+        let reader = child.master.try_clone_reader().expect("try_clone_reader");
+        let mut reader = PtyReader::new(reader);
+
+        // 收集所有块直到 EOF 或超时
+        let mut all = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                chunk = reader.read_chunk() => match chunk {
+                    Some(Ok(data)) => all.extend_from_slice(&data),
+                    Some(Err(_)) | None => break,
+                }
+            }
+            if String::from_utf8_lossy(&all).contains("stream-test") {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&all);
+        assert!(
+            out.contains("stream-test"),
+            "PtyReader 应流式投递输出, 实际: {out:?}"
+        );
+        let _ = child.child.try_wait();
+    }
+
+    #[tokio::test]
+    async fn pty_reader_eof_returns_none() {
+        // true 立即退出；PtyReader 读到 EOF 后 read_chunk 返回 None
+        let mut child = spawn_pty("true", &[], 10, 5).expect("spawn true");
+        let reader = child.master.try_clone_reader().expect("try_clone_reader");
+        let mut reader = PtyReader::new(reader);
+
+        // 持续读直到 None（EOF）
+        let mut got_none = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                chunk = reader.read_chunk() => match chunk {
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => {
+                        got_none = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(got_none, "EOF 后 read_chunk 应返回 None");
+        let _ = child.child.try_wait();
+    }
+
+    // ── PtyWriter ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pty_writer_writes_to_cat() {
+        // PtyWriter 异步写到 cat 的 stdin，cat 回显
+        let mut child = spawn_pty("cat", &[], 40, 12).expect("spawn cat");
+
+        let reader = child.master.try_clone_reader().expect("try_clone_reader");
+        let writer = child.master.take_writer().expect("take_writer");
+        let mut reader = PtyReader::new(reader);
+        let writer = PtyWriter::new(writer);
+
+        let payload = b"writer-test\n".to_vec();
+        writer
+            .write_all(payload)
+            .await
+            .expect("PtyWriter write_all");
+
+        // 读回
+        let mut all = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                chunk = reader.read_chunk() => match chunk {
+                    Some(Ok(data)) => all.extend_from_slice(&data),
+                    Some(Err(_)) | None => break,
+                }
+            }
+            if String::from_utf8_lossy(&all).contains("writer-test") {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&all);
+        assert!(
+            out.contains("writer-test"),
+            "PtyWriter 写入后 cat 应回显, 实际: {out:?}"
+        );
+        let _ = child.child.try_wait();
+    }
+
+    #[tokio::test]
+    async fn pty_writer_multiple_writes_concatenate() {
+        let mut child = spawn_pty("cat", &[], 40, 12).expect("spawn cat");
+        let reader = child.master.try_clone_reader().expect("try_clone_reader");
+        let writer = child.master.take_writer().expect("take_writer");
+        let mut reader = PtyReader::new(reader);
+        let writer = PtyWriter::new(writer);
+
+        // 连续写两块
+        writer
+            .write_all(b"part1-".to_vec())
+            .await
+            .expect("write part1");
+        writer
+            .write_all(b"part2\n".to_vec())
+            .await
+            .expect("write part2");
+
+        let mut all = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                chunk = reader.read_chunk() => match chunk {
+                    Some(Ok(data)) => all.extend_from_slice(&data),
+                    Some(Err(_)) | None => break,
+                }
+            }
+            let s = String::from_utf8_lossy(&all);
+            if s.contains("part1-") && s.contains("part2") {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&all);
+        assert!(
+            out.contains("part1-") && out.contains("part2"),
+            "两次写入都应被 cat 回显, 实际: {out:?}"
+        );
+        let _ = child.child.try_wait();
+    }
+
+    // ── split_master ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn split_master_provides_reader_and_writer() {
+        let mut child = spawn_pty("cat", &[], 40, 12).expect("spawn cat");
+        let (mut reader, writer) = split_master(&mut child.master).expect("split_master");
+
+        writer
+            .write_all(b"split-test\n".to_vec())
+            .await
+            .expect("write via split writer");
+
+        let mut all = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                chunk = reader.read_chunk() => match chunk {
+                    Some(Ok(data)) => all.extend_from_slice(&data),
+                    Some(Err(_)) | None => break,
+                }
+            }
+            if String::from_utf8_lossy(&all).contains("split-test") {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&all);
+        assert!(
+            out.contains("split-test"),
+            "split_master 的 reader+writer 应可读写, 实际: {out:?}"
+        );
+        let _ = child.child.try_wait();
+    }
+
+    // ── reader_only ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn reader_only_streams_output() {
+        let child = spawn_pty("echo", &["only-reader"], 40, 12).expect("spawn echo");
+        let mut reader = reader_only(&child.master).expect("reader_only");
+
+        let mut all = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                chunk = reader.read_chunk() => match chunk {
+                    Some(Ok(data)) => all.extend_from_slice(&data),
+                    Some(Err(_)) | None => break,
+                }
+            }
+            if String::from_utf8_lossy(&all).contains("only-reader") {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&all);
+        assert!(
+            out.contains("only-reader"),
+            "reader_only 应能读到输出, 实际: {out:?}"
+        );
+    }
+}
