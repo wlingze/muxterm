@@ -33,8 +33,8 @@ use crate::platform::linux::command_palette;
 use crate::platform::linux::input_bar::InputBar;
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::lifecycle::{
-    last_tabs_closed_action, next_pane_index, palette_should_refocus_terminal,
-    pane_exit_decision, tab_index_for_shortcut, LastTabsClosedAction, PaneExitDecision,
+    last_tabs_closed_action, next_pane_index, palette_should_refocus_terminal, pane_exit_decision,
+    tab_index_for_shortcut, LastTabsClosedAction, PaneExitDecision,
 };
 use crate::platform::linux::notebook::{
     parse_layout_tree, LocalPaneId, PaneKey, PaneNotebook, SplitOrient, TabKey,
