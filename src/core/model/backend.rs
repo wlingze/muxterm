@@ -47,5 +47,4 @@ pub trait Backend: State {
     async fn shutdown(&mut self) -> anyhow::Result<()>;
 }
 
-#[cfg(test)]
-pub(crate) mod mock;
+pub mod mock;
