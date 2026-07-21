@@ -26,11 +26,13 @@ pub enum TmuxAction {
 const CREATE_ID: &str = "__create__";
 
 /// 弹出 tmux session 选择器。
-pub fn show<F>(parent: &impl IsA<Window>, on_done: F)
+///
+/// `socket_args` 为 `["-L", name]` 或空；列出 session 时必须与 -CC 连接同一 socket。
+pub fn show<F>(parent: &impl IsA<Window>, socket_args: &[String], on_done: F)
 where
     F: Fn(TmuxAction) + 'static,
 {
-    let sessions = list_tmux_sessions_detailed();
+    let sessions = list_tmux_sessions_detailed(socket_args);
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
         id: CREATE_ID.into(),
@@ -81,14 +83,14 @@ pub struct SessionInfo {
 }
 
 /// 调 `tmux list-sessions`，带创建时间与窗口数。
-pub fn list_tmux_sessions_detailed() -> Vec<SessionInfo> {
-    let out = Command::new("tmux")
-        .args([
-            "list-sessions",
-            "-F",
-            "#{session_name}\t#{session_created}\t#{session_windows}",
-        ])
-        .output();
+pub fn list_tmux_sessions_detailed(socket_args: &[String]) -> Vec<SessionInfo> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(socket_args).args([
+        "list-sessions",
+        "-F",
+        "#{session_name}\t#{session_created}\t#{session_windows}",
+    ]);
+    let out = cmd.output();
     match out {
         Ok(o) if o.status.success() => {
             let s = String::from_utf8_lossy(&o.stdout);

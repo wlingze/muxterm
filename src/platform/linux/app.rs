@@ -10,17 +10,26 @@ use crate::core::config::Config;
 
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 
-pub fn run() -> anyhow::Result<()> {
+/// 启动 GTK 应用。
+///
+/// `socket` 对应 CLI `-L/--socket`：非空时写入配置，本地 tmux 调用统一带 `-L`。
+pub fn run(socket: Option<String>) -> anyhow::Result<()> {
     let app = Application::builder()
         .application_id(APP_ID)
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
     app.connect_activate(move |a| {
-        let cfg = Config::load().unwrap_or_else(|e| {
+        let mut cfg = Config::load().unwrap_or_else(|e| {
             tracing::warn!(target = "muxterm::app", "加载配置失败，用默认: {e}");
             Config::default()
         });
+        if let Some(ref sock) = socket {
+            let sock = sock.trim();
+            if !sock.is_empty() {
+                cfg.tmux.socket = sock.to_string();
+            }
+        }
         let theme = match crate::core::config::Theme::load(&cfg.theme.name) {
             Ok(t) => t,
             Err(e) => {
@@ -37,6 +46,7 @@ pub fn run() -> anyhow::Result<()> {
         win.window.show();
     });
 
+    // 仅传 argv0：clap 已在 main 解析过 -L/--verbose，避免 GTK 再吃参数报错
     let argv0 = std::env::args().next().unwrap_or_else(|| "muxterm".into());
     let exit = app.run_with_args(&[argv0]);
     let code: i32 = exit.into();

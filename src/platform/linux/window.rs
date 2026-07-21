@@ -735,7 +735,8 @@ impl SharedState {
             "tmux_attach" => {
                 let shared = self.clone();
                 let win = self.window.clone();
-                tmux_dialog::show(&win, move |action| {
+                let socket_args = self.cfg.tmux.socket_args();
+                tmux_dialog::show(&win, &socket_args, move |action| {
                     SharedState::do_tmux_action(&shared, action);
                 });
             }
@@ -1149,13 +1150,14 @@ impl SharedState {
     }
 
     fn connect_tmux_action(self: &Arc<Self>, action: TmuxAction) {
+        let socket_args = self.cfg.tmux.socket_args();
         let (config, auto_mouse) = match action {
             TmuxAction::Attach { session } => {
-                let cfg = crate::platform::linux::wiring::attach_config(&session);
+                let cfg = crate::platform::linux::wiring::attach_config(&session, &socket_args);
                 (cfg, self.cfg.tmux.auto_mouse)
             }
             TmuxAction::NewSession { name } => {
-                let cfg = crate::platform::linux::wiring::new_session_config(name);
+                let cfg = crate::platform::linux::wiring::new_session_config(name, &socket_args);
                 (cfg, self.cfg.tmux.auto_mouse)
             }
         };
@@ -1380,7 +1382,10 @@ impl SharedState {
                         .child_pid
                         .get()
                         .and_then(crate::platform::linux::title_watch::local_foreground_name),
-                    PaneKey::Tmux(p) => crate::platform::linux::title_watch::tmux_pane_command(*p),
+                    PaneKey::Tmux(p) => crate::platform::linux::title_watch::tmux_pane_command(
+                        *p,
+                        &self.cfg.tmux.socket_args(),
+                    ),
                 };
                 if let Some(n) = new_name {
                     if n != view.program_name {

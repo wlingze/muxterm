@@ -281,22 +281,24 @@ where
     })
 }
 
-pub fn attach_config(session: &str) -> TmuxClientConfig {
+pub fn attach_config(session: &str, socket_args: &[String]) -> TmuxClientConfig {
     TmuxClientConfig {
         mode: Some(ConnectMode::Attach {
             target: Some(session.to_string()),
         }),
         cols: Some(100),
         rows: Some(30),
+        extra_args: socket_args.to_vec(),
         ..Default::default()
     }
 }
 
-pub fn new_session_config(name: Option<String>) -> TmuxClientConfig {
+pub fn new_session_config(name: Option<String>, socket_args: &[String]) -> TmuxClientConfig {
     TmuxClientConfig {
         mode: Some(ConnectMode::NewSession { name }),
         cols: Some(100),
         rows: Some(30),
+        extra_args: socket_args.to_vec(),
         ..Default::default()
     }
 }

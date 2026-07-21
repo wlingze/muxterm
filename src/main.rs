@@ -18,6 +18,10 @@ struct Cli {
     /// 启用详细日志（RUST_LOG 也可以控制）
     #[arg(short, long)]
     verbose: bool,
+
+    /// tmux socket 名（传给 `tmux -L`，隔离独立 server，不影响默认会话）
+    #[arg(short = 'L', long = "socket", value_name = "SOCKET")]
+    socket: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -29,6 +33,9 @@ fn main() -> anyhow::Result<()> {
         .compact()
         .init();
 
+    if let Some(ref sock) = cli.socket {
+        tracing::info!(target = "muxterm", socket = %sock, "使用独立 tmux socket (-L)");
+    }
     tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI phase）");
-    platform::linux::app::run()
+    platform::linux::app::run(cli.socket)
 }
