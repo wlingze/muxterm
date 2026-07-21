@@ -5,10 +5,17 @@
 //!
 //! 渲染布局（自顶向下）：
 //! ```text
-//! ┌ tab 栏：[1:main*] [2:dev] ─────────────────────────────┐
-//! ├ pane 标题栏：@1 bash | @2 zsh ─────────────────────────┤
-//! │ pane 内容区（每个 pane 最近 N 行输出，按布局分割）        │
-//! └ 状态栏：connected | 2 panes | Ctrl-Q quit ─────────────┘
+//! ┌─────────────────────────────────────────────────────────┐
+//! │ tab 栏：[1:main*] [2:dev]                                 │
+//! ├─────────────────────────────────────────────────────────┤
+//! │ pane 标题栏：@1 bash | @2 zsh                             │
+//! ├───────────┬─────────────────────────────────────────────┤
+//! │ pane 1    │ pane 2                                        │
+//! │ output    │ output                                        │
+//! │           │                                               │
+//! ├─────────────────────────────────────────────────────────┤
+//! │ 状态栏：connected | 2 panes | Alt+T new tab | Ctrl-Q quit │
+//! └─────────────────────────────────────────────────────────┘
 //! ```
 
 use crate::core::model::state::{BackendStatus, State};
@@ -30,7 +37,7 @@ impl Default for RenderOpts {
         Self {
             cols: 80,
             rows: 24,
-            max_output_lines: 8,
+            max_output_lines: 20,
         }
     }
 }
@@ -44,88 +51,122 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
 
     let mut lines: Vec<String> = Vec::with_capacity(rows);
 
+    // ── 顶部边框 ────────────────────────────────────────────
+    lines.push(border_top(cols));
+
     // ── tab 栏 ──────────────────────────────────────────────
     let tab_bar = render_tab_bar(state, cols);
-    lines.push(tab_bar);
+    lines.push(format!("│{}│", pad(&tab_bar, cols - 2)));
+
+    // ── 分隔线 ──────────────────────────────────────────────
+    lines.push(border_mid(cols));
 
     // ── pane 标题栏 ─────────────────────────────────────────
-    let active_win = state.active_window();
-    let pane_titles = render_pane_titles(state, active_win.map(|w| w.id), cols);
-    lines.push(pane_titles);
+    let pane_titles = render_pane_titles(state, state.active_window().map(|w| w.id), cols);
+    lines.push(format!("│{}│", pad(&pane_titles, cols - 2)));
+
+    // ── 分隔线 ──────────────────────────────────────────────
+    lines.push(border_mid(cols));
 
     // ── pane 内容区 ─────────────────────────────────────────
+    let active_win = state.active_window();
     let panes: Vec<PaneId> = active_win
         .and_then(|w| state.layout(&w.id))
         .map(|wl| wl.tree.leaves())
         .unwrap_or_default();
 
-    let remaining = rows.saturating_sub(4); // 减去 tab/标题/状态栏 + 边距
-    let pane_area = remaining.max(1);
-    let per_pane = if panes.is_empty() {
-        pane_area
-    } else {
-        (pane_area / panes.len()).max(1)
-    };
+    // 固定行：top + tab + mid + titles + mid + mid(content后) + status + bottom = 8
+    let used = 8;
+    let content_rows = rows.saturating_sub(used).max(1);
 
-    for pid in &panes {
-        let out = state.pane_output(pid).unwrap_or(&[]);
-        let text = String::from_utf8_lossy(out);
-        let mut shown = 0;
-        for raw_line in text.lines().rev() {
-            if shown >= per_pane || shown as usize >= opts.max_output_lines {
-                break;
-            }
-            let truncated = truncate(raw_line, cols);
-            lines.push(truncated);
-            shown += 1;
-        }
-        // 补空行对齐
-        while shown < per_pane {
-            lines.push(String::new());
-            shown += 1;
-        }
-    }
     if panes.is_empty() {
-        for _ in 0..pane_area {
-            lines.push(String::new());
+        // 无 pane：填空行
+        for _ in 0..content_rows {
+            lines.push(format!("│{}│", pad("", cols - 2)));
+        }
+    } else {
+        // 每个 pane 平均分配行数
+        let per_pane = (content_rows / panes.len()).max(1);
+        // 每个 pane 的列宽
+        let pane_cols = ((cols - 2) / panes.len()).max(1);
+        // 收集每个 pane 的输出行
+        let pane_outputs: Vec<Vec<String>> = panes
+            .iter()
+            .map(|pid| {
+                let out = state.pane_output(pid).unwrap_or(&[]);
+                let text = String::from_utf8_lossy(out);
+                let mut all_lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+                // 取最后 per_pane 行，正序显示
+                if all_lines.len() > per_pane {
+                    let start = all_lines.len() - per_pane;
+                    all_lines = all_lines[start..].to_vec();
+                }
+                // pad/truncate 到 pane_cols
+                all_lines.iter().map(|l| truncate(l, pane_cols)).collect()
+            })
+            .collect();
+
+        // 按 per_pane 行逐行拼接
+        for row in 0..per_pane {
+            let mut row_parts = Vec::new();
+            for pane_out in &pane_outputs {
+                let line = pane_out.get(row).map(|s| s.as_str()).unwrap_or("");
+                row_parts.push(pad(line, pane_cols));
+            }
+            let content = row_parts.join("│");
+            let content = pad(&content, cols - 2);
+            lines.push(format!("│{}│", content));
+        }
+        // 补足剩余行
+        let drawn = per_pane;
+        if drawn < content_rows {
+            for _ in drawn..content_rows {
+                lines.push(format!("│{}│", pad("", cols - 2)));
+            }
         }
     }
+
+    // ── 分隔线 ──────────────────────────────────────────────
+    lines.push(border_mid(cols));
 
     // ── 状态栏 ──────────────────────────────────────────────
     let status_bar = render_status_bar(state, cols);
-    lines.push(status_bar);
+    lines.push(format!("│{}│", pad(&status_bar, cols - 2)));
+
+    // ── 底部边框 ────────────────────────────────────────────
+    lines.push(border_bottom(cols));
 
     // 截断到 rows
     lines.truncate(rows);
     lines
 }
 
-/// 渲染 tab 栏：`[1:name*] [2:name] ...`
-fn render_tab_bar(state: &dyn State, cols: usize) -> String {
-    let mut s = String::new();
-    for w in state.sessions().iter().flat_map(|sess| {
-        // 没有 windows() 接口，用 active_window + sessions 模拟
-        // 简化：只显示 active window
-        std::iter::once((sess.id, sess.name.clone(), true))
-    }) {
-        let _ = w;
-    }
-    // 实际上 State 没有 all_windows()；用 active_window 单个 tab
+/// 顶部边框 `┌─...─┐`
+fn border_top(cols: usize) -> String {
+    format!("┌{}┐", "─".repeat(cols.saturating_sub(2)))
+}
+
+/// 中间分隔线 `├─...─┤`
+fn border_mid(cols: usize) -> String {
+    format!("├{}┤", "─".repeat(cols.saturating_sub(2)))
+}
+
+/// 底部边框 `└─...─┘`
+fn border_bottom(cols: usize) -> String {
+    format!("└{}┘", "─".repeat(cols.saturating_sub(2)))
+}
+
+/// 渲染 tab 栏：`[1:main*] [2:dev]`
+fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
     if let Some(w) = state.active_window() {
-        s.push_str(&format!(
-            "[{}:{}{}]",
-            w.id.0,
-            w.name,
-            if w.active { "*" } else { "" }
-        ));
+        format!(" {}:{} ", w.id.0, w.name)
     } else {
-        s.push_str("[no window]");
+        " (no window) ".to_string()
     }
-    truncate(&s, cols)
 }
 
 /// 渲染 pane 标题栏：`@1 bash | @2 zsh`
-fn render_pane_titles(state: &dyn State, window: Option<WindowId>, cols: usize) -> String {
+fn render_pane_titles(state: &dyn State, window: Option<WindowId>, _cols: usize) -> String {
     let mut parts = Vec::new();
     if let Some(wid) = window {
         for p in state.panes(&wid) {
@@ -133,12 +174,15 @@ fn render_pane_titles(state: &dyn State, window: Option<WindowId>, cols: usize) 
             parts.push(format!("{}@{} {}{}", mark, p.id.0, p.title, mark));
         }
     }
-    let s = parts.join(" | ");
-    truncate(if s.is_empty() { "(no pane)" } else { &s }, cols)
+    if parts.is_empty() {
+        "(no pane)".to_string()
+    } else {
+        parts.join(" | ")
+    }
 }
 
-/// 渲染状态栏：`connected | 2 panes | Ctrl-Q quit`
-fn render_status_bar(state: &dyn State, cols: usize) -> String {
+/// 渲染状态栏：`connected | 2 panes | Alt+T new | Ctrl-Q quit`
+fn render_status_bar(state: &dyn State, _cols: usize) -> String {
     let status = match state.status() {
         BackendStatus::Disconnected => "disconnected",
         BackendStatus::Connecting => "connecting",
@@ -150,31 +194,26 @@ fn render_status_bar(state: &dyn State, cols: usize) -> String {
         .active_window()
         .map(|w| state.panes(&w.id).len())
         .unwrap_or(0);
-    let s = format!("{status} | {n_panes} panes | Ctrl-Q quit");
-    truncate(&s, cols)
+    format!(" {status} | {n_panes} panes | Alt+T new tab | Ctrl-Q quit ")
 }
 
-/// 截断字符串到指定列数（按 char count 粗略）。
+/// 把字符串 pad 到指定宽度（左侧空格填充，右侧截断）。
+fn pad(s: &str, width: usize) -> String {
+    let current = s.chars().count();
+    if current >= width {
+        s.chars().take(width).collect()
+    } else {
+        let pad = width - current;
+        format!("{}{}", s, " ".repeat(pad))
+    }
+}
+
+/// 截断字符串到指定列数（按 char count）。
 fn truncate(s: &str, cols: usize) -> String {
     if s.chars().count() <= cols {
         return s.to_string();
     }
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i >= cols {
-            break;
-        }
-        out.push(c);
-    }
-    if out.chars().count() == cols && s.chars().count() > cols {
-        // 末尾省略号（如果还有空间）
-        if cols >= 3 {
-            let chars: Vec<char> = out.chars().collect();
-            out = chars[..cols - 1].iter().collect();
-            out.push('…');
-        }
-    }
-    out
+    s.chars().take(cols).collect()
 }
 
 #[cfg(test)]
@@ -182,12 +221,11 @@ mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockBackend;
     use crate::core::model::layout::{LayoutNode, SplitDir, WindowLayout};
-    use crate::core::model::state::{PaneInfo, SessionInfo, WindowInfo};
-    use crate::core::types::{PaneId, SessionId, WindowId};
+    use crate::core::model::state::{PaneInfo, WindowInfo};
+    use crate::core::types::{PaneId, WindowId};
 
     fn mock_with_two_panes() -> MockBackend {
         let mut b = MockBackend::with_single_pane();
-        // 手动加第二个 pane
         b.panes.push(PaneInfo {
             id: PaneId(2),
             window: WindowId(1),
@@ -214,22 +252,32 @@ mod tests {
         let b = MockBackend::new();
         let lines = render_frame(&b, RenderOpts::default());
         assert!(!lines.is_empty());
-        assert!(lines[0].starts_with('[')); // tab 栏
+        // 顶部边框
+        assert!(lines[0].starts_with('┌'));
     }
 
     #[test]
-    fn render_single_pane_has_tab_bar() {
+    fn render_has_top_and_bottom_border() {
         let b = MockBackend::with_single_pane();
         let lines = render_frame(&b, RenderOpts::default());
-        assert!(lines[0].contains("1:w1") || lines[0].contains("w1"));
+        assert!(lines[0].starts_with('┌'));
+        assert!(lines.last().unwrap().starts_with('└'));
+    }
+
+    #[test]
+    fn render_tab_bar_shows_window_name() {
+        let b = MockBackend::with_single_pane();
+        let lines = render_frame(&b, RenderOpts::default());
+        // tab 栏在第 2 行
+        let tab_line = &lines[1];
+        assert!(tab_line.contains("1:w1"));
     }
 
     #[test]
     fn render_two_panes_shows_both_titles() {
         let b = mock_with_two_panes();
         let lines = render_frame(&b, RenderOpts::default());
-        // pane 标题栏（第二行）应含两个 pane
-        let title_line = &lines[1];
+        let title_line = &lines[3];
         assert!(title_line.contains("@1"));
         assert!(title_line.contains("@2"));
     }
@@ -238,16 +286,16 @@ mod tests {
     fn render_status_bar_shows_connected() {
         let b = MockBackend::with_single_pane();
         let lines = render_frame(&b, RenderOpts::default());
-        let last = lines.last().unwrap();
-        assert!(last.contains("connected"));
-        assert!(last.contains("Ctrl-Q"));
+        // 状态栏在倒数第二行（最后一行是底部边框）
+        let status_line = &lines[lines.len() - 2];
+        assert!(status_line.contains("connected"));
+        assert!(status_line.contains("Ctrl-Q"));
     }
 
     #[test]
     fn render_includes_pane_output() {
         let b = mock_with_two_panes();
         let lines = render_frame(&b, RenderOpts::default());
-        // 至少有一行含 "hello" 或 "line1"（pane 输出）
         let joined = lines.join("\n");
         assert!(joined.contains("hello") || joined.contains("line1"));
     }
@@ -257,11 +305,50 @@ mod tests {
         let b = mock_with_two_panes();
         let opts = RenderOpts {
             cols: 80,
-            rows: 5,
+            rows: 8,
             max_output_lines: 2,
         };
         let lines = render_frame(&b, opts);
-        assert!(lines.len() <= 5);
+        assert!(lines.len() <= 8);
+    }
+
+    #[test]
+    fn render_has_pane_separator_between_panes() {
+        let b = mock_with_two_panes();
+        let lines = render_frame(&b, RenderOpts::default());
+        // 内容区应有 │ 分隔两个 pane
+        let content_lines: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with('│') && l.contains("│") && !l.starts_with("├"))
+            .collect();
+        // 至少有一行内容区含中间 │（pane 分隔）
+        assert!(
+            content_lines.iter().any(|l| l.matches('│').count() >= 3),
+            "内容区应有 pane 分隔符 │"
+        );
+    }
+
+    #[test]
+    fn render_status_bar_shows_alt_t_hint() {
+        let b = MockBackend::with_single_pane();
+        let lines = render_frame(&b, RenderOpts::default());
+        let status_line = &lines[lines.len() - 2];
+        assert!(status_line.contains("Alt+T"));
+    }
+
+    #[test]
+    fn render_exited_status() {
+        let mut b = MockBackend::with_single_pane();
+        b.status = BackendStatus::Exited;
+        let lines = render_frame(&b, RenderOpts::default());
+        let status_line = &lines[lines.len() - 2];
+        assert!(status_line.contains("exited"));
+    }
+
+    #[test]
+    fn pad_fills_to_width() {
+        assert_eq!(pad("ab", 5), "ab   ");
+        assert_eq!(pad("abcde", 3), "abc");
     }
 
     #[test]
@@ -271,15 +358,6 @@ mod tests {
 
     #[test]
     fn truncate_long_cut() {
-        assert_eq!(truncate("abcdefgh", 4), "abc…");
-    }
-
-    #[test]
-    fn render_exited_status() {
-        let mut b = MockBackend::with_single_pane();
-        b.status = BackendStatus::Exited;
-        let lines = render_frame(&b, RenderOpts::default());
-        let last = lines.last().unwrap();
-        assert!(last.contains("exited"));
+        assert_eq!(truncate("abcdefgh", 4), "abcd");
     }
 }
