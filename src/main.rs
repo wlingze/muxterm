@@ -39,3 +39,35 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI phase）");
     platform::linux::app::run(cli.socket)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_short_l_socket() {
+        let cli = Cli::try_parse_from(["muxterm", "-L", "muxterm-dev"]).unwrap();
+        assert_eq!(cli.socket.as_deref(), Some("muxterm-dev"));
+        assert!(!cli.verbose);
+    }
+
+    #[test]
+    fn cli_parses_long_socket() {
+        let cli = Cli::try_parse_from(["muxterm", "--socket", "iso"]).unwrap();
+        assert_eq!(cli.socket.as_deref(), Some("iso"));
+    }
+
+    #[test]
+    fn cli_parses_socket_with_verbose() {
+        let cli = Cli::try_parse_from(["muxterm", "-v", "-L", "dev"]).unwrap();
+        assert!(cli.verbose);
+        assert_eq!(cli.socket.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn cli_socket_defaults_to_none() {
+        let cli = Cli::try_parse_from(["muxterm"]).unwrap();
+        assert!(cli.socket.is_none());
+        assert!(!cli.verbose);
+    }
+}

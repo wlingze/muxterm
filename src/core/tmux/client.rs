@@ -186,10 +186,12 @@ impl TmuxClient {
 
 /// 构造 tmux 命令参数（不含 bin）。
 ///
+/// 构造传给 tmux 可执行文件的 argv（不含二进制名本身）。
+///
 /// 顺序：`[extra_args] -CC <command> <command args>`。extra_args（如 `-L socket`）
 /// 是 tmux **二进制级**选项，必须放在 `-CC` 之前；`-CC` 之后的第一个 token 才是
 /// tmux 命令（new-session/attach），否则会被 tmux 当成命令参数解析报错。
-fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
+pub(crate) fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
     // 二进制级选项（如 -L socket_name）放在 -CC 前
     for a in &config.extra_args {

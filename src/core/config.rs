@@ -760,6 +760,57 @@ color15 = "#a6adc8"
             parse_config_toml("[tmux]\nauto_mouse = false\ndefault_session = \"main\"\n").unwrap();
         assert!(!c.tmux.auto_mouse);
         assert_eq!(c.tmux.default_session, "main");
+        assert_eq!(c.tmux.socket, "");
+    }
+
+    /// `[tmux].socket`（socket 配置）反序列化 + `socket_args()`。
+    #[test]
+    fn tmux_socket_config_deserialize() {
+        let c = parse_config_toml("[tmux]\nsocket = \"muxterm-dev\"\n").unwrap();
+        assert_eq!(c.tmux.socket, "muxterm-dev");
+        assert_eq!(
+            c.tmux.socket_args(),
+            vec!["-L".to_string(), "muxterm-dev".to_string()]
+        );
+    }
+
+    /// `[tmux].socket` 序列化往返（serde TOML）。
+    #[test]
+    fn tmux_socket_config_serialize_roundtrip() {
+        let original = TmuxConfig {
+            auto_mouse: true,
+            default_session: "main".into(),
+            socket: "iso".into(),
+        };
+        let encoded = toml::to_string(&original).expect("serialize TmuxConfig");
+        assert!(
+            encoded.contains("socket") && encoded.contains("iso"),
+            "encoded={encoded}"
+        );
+        let decoded: TmuxConfig = toml::from_str(&encoded).expect("deserialize TmuxConfig");
+        assert_eq!(decoded, original);
+        assert_eq!(
+            decoded.socket_args(),
+            vec!["-L".to_string(), "iso".to_string()]
+        );
+    }
+
+    #[test]
+    fn tmux_socket_args_empty_and_trim() {
+        assert!(TmuxConfig::default().socket_args().is_empty());
+        let spaced = TmuxConfig {
+            socket: "  mux  ".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            spaced.socket_args(),
+            vec!["-L".to_string(), "mux".to_string()]
+        );
+        let blank = TmuxConfig {
+            socket: "   ".into(),
+            ..Default::default()
+        };
+        assert!(blank.socket_args().is_empty());
     }
 
     #[test]
