@@ -1,6 +1,9 @@
 // Muxterm 主入口。
 //
-// Phase 2：GTK4 终端 UI，连本地 tmux -CC，把 pane 渲染成 tab。
+// 根据 Cargo feature flag 选择前端：
+// - `gtk`：GTK4 原生前端
+// - `tui`：纯 crossterm TUI 前端
+// 至少要启用一个，否则编译期报错。
 
 use clap::Parser;
 
@@ -25,6 +28,10 @@ struct Cli {
 }
 
 fn main() -> anyhow::Result<()> {
+    // 编译期保证至少启用了一个前端 feature。
+    #[cfg(not(any(feature = "gtk", feature = "tui")))]
+    compile_error!("muxterm 需要至少启用一个前端 feature: `gtk` 或 `tui`");
+
     let cli = Cli::parse();
     let filter = if cli.verbose { "debug" } else { "info" };
     tracing_subscriber::fmt()
@@ -36,8 +43,18 @@ fn main() -> anyhow::Result<()> {
     if let Some(ref sock) = cli.socket {
         tracing::info!(target = "muxterm", socket = %sock, "使用独立 tmux socket (-L)");
     }
-    tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI phase）");
-    platform::linux::app::run(cli.socket)
+
+    // 根据启用的 feature 选择前端运行时。同时启用两个时优先 GTK。
+    #[cfg(feature = "gtk")]
+    {
+        tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI）");
+        platform::linux::app::run(cli.socket)
+    }
+    #[cfg(all(not(feature = "gtk"), feature = "tui"))]
+    {
+        tracing::info!(target = "muxterm", "muxterm 启动（TUI）");
+        platform::tui::app::run(cli.socket)
+    }
 }
 
 #[cfg(test)]

@@ -5,10 +5,17 @@ edition = "2021"
 description = "Native UI terminal for tmux control mode (Linux)"
 license = "MIT"
 
+[features]
+# 默认编译 GTK4 前端（archmini 等 GTK 机器用）。
+default = ["gtk"]
+# GTK4 原生前端：依赖 gtk4 / vte4 系统库。
+gtk = ["dep:gtk4", "dep:vte4"]
+# TUI 前端：纯 crossterm，无 GTK 依赖，任何 unix 机器都能编译。
+tui = ["dep:crossterm"]
+
 [dependencies]
+# 核心依赖（始终需要，无系统 GUI 依赖）
 vte = "0.13"
-gtk4 = "0.9"
-vte4 = "0.8"
 toml = "0.8"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
@@ -22,6 +29,13 @@ clap = { version = "4", features = ["derive"] }
 async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
+
+# 可选：GTK4 前端
+gtk4 = { version = "0.9", optional = true }
+vte4 = { version = "0.8", optional = true }
+
+# 可选：TUI 前端
+crossterm = { version = "0.28", optional = true }
 
 [target."cfg(unix)".dependencies]
 # 仅 Unix: 为 tmux -CC 子进程分配 pty

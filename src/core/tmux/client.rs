@@ -705,14 +705,14 @@ mod tests {
             }
         }
         assert!(lines.len() >= 2, "list-windows 应返回至少 2 行: {lines:?}");
-        // 每行应以窗口序号开头
+        // 每行应是 `<n>: ...` 形式的窗口列表行。窗口序号受 tmux `base-index`
+        // 全局设置影响（用户 `~/.tmux.conf` 可能设为 1），所以不硬编码 0/1，
+        // 只校验至少出现两个**不同**的窗口序号。
+        let window_idxs: Vec<&str> = lines.iter().filter_map(|l| l.split(':').next()).collect();
+        let distinct: std::collections::HashSet<&str> = window_idxs.iter().copied().collect();
         assert!(
-            lines.iter().any(|l| l.starts_with("0:")),
-            "缺第 0 窗口: {lines:?}"
-        );
-        assert!(
-            lines.iter().any(|l| l.starts_with("1:")),
-            "缺第 1 窗口: {lines:?}"
+            distinct.len() >= 2,
+            "应至少出现 2 个不同窗口序号: {lines:?}"
         );
 
         let _ = handle.kill().await;
