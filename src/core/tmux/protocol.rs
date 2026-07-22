@@ -1,4 +1,4 @@
-//! tmux 控制协议解析器（line-oriented）。
+//! tmux 控制协议解析器（line-oriented） + layout tree 解析器。
 //!
 //! tmux 以 `-CC` 启动后会向 stdout 输出结构化通知，每行以 `%` 开头（命令响应内容
 //! 除外，夹在 `%begin` / `%end` 之间）。本模块提供：
@@ -6,6 +6,8 @@
 //! - [`Message`]：覆盖所有已知通知类型的 enum
 //! - [`parse_line`]：解析单行原始输出（已按真换行切分）为 `Option<Message>`
 //! - [`ControlEscapeDecoder`]：解码 `%output` 里 C 风格转义字符串
+//! - [`parse_layout_tree`]：把 tmux 的 window_layout 树字符串解析成 [`LayoutTree`]，
+//!   供 TmuxBackend 映射成 [`LayoutNode`](crate::core::model::layout::LayoutNode)。
 //!
 //! 设计要点：
 //! - 纯函数，输入 `&str` 输出 `Message`，方便单元测试。
@@ -20,6 +22,7 @@
 use std::str::FromStr;
 use thiserror::Error;
 
+use crate::core::model::layout::SplitDir;
 pub use crate::core::types::{PaneId, SessionId, WindowId};
 
 /// 协议解析错误（库层）。
@@ -386,6 +389,13 @@ pub enum Message {
     UnlinkedWindowClose { window: WindowId },
     /// `%exit [<reason>...]`
     Exit { reason: Option<String> },
+    /// `%window-pane-changed <window_id> <pane_id>`：某 window 的激活 pane 切换。
+    WindowPaneChanged { window: WindowId, pane: PaneId },
+    /// `%session-window-changed <session_id> <window_id>`：某 session 的激活 window 切换。
+    SessionWindowChanged {
+        session: SessionId,
+        window: WindowId,
+    },
     /// `%extended-output <pane_id> <type> <args>`（tmux 3.3+，如 hyperlink）
     ExtendedOutput {
         pane: PaneId,
@@ -414,6 +424,8 @@ impl Message {
             Message::UnlinkedWindowAdd { .. } => "unlinked-window-add",
             Message::UnlinkedWindowClose { .. } => "unlinked-window-close",
             Message::Exit { .. } => "exit",
+            Message::WindowPaneChanged { .. } => "window-pane-changed",
+            Message::SessionWindowChanged { .. } => "session-window-changed",
             Message::ExtendedOutput { .. } => "extended-output",
             Message::ResponseBoundary(b) => match b.kind {
                 NotificationKind::Begin => "begin",
@@ -464,6 +476,8 @@ pub fn parse_line(line: &str) -> Option<Message> {
         "session-changed" => parse_session_changed(rest),
         "session-renamed" => parse_session_renamed(rest),
         "sessions-changed" => Ok(Message::SessionsChanged),
+        "window-pane-changed" => parse_window_pane_changed(rest),
+        "session-window-changed" => parse_session_window_changed(rest),
         "pane-mode-changed" => parse_pane_mode_changed(rest),
         "unlinked-window-add" => parse_window_id_only(rest, WindowKind::UnlinkedAdd),
         "unlinked-window-close" => parse_window_id_only(rest, WindowKind::UnlinkedClose),
@@ -644,6 +658,234 @@ fn parse_layout_change(rest: &str) -> Result<Message, ProtocolError> {
         layout,
         visible_layout: visible,
     })
+}
+
+fn parse_window_pane_changed(rest: &str) -> Result<Message, ProtocolError> {
+    // %window-pane-changed @0 %1   （window id 用 @，pane id 用 % 或 @）
+    let mut it = rest.splitn(2, ' ');
+    let wid = it
+        .next()
+        .ok_or_else(|| ProtocolError::MalformedField("window-pane-changed 缺 window id".into()))?;
+    let window = WindowId::parse(wid)?;
+    let pid = it
+        .next()
+        .ok_or_else(|| ProtocolError::MalformedField("window-pane-changed 缺 pane id".into()))?;
+    let pane = parse_pane_id_lenient(pid.trim())?;
+    Ok(Message::WindowPaneChanged { window, pane })
+}
+
+fn parse_session_window_changed(rest: &str) -> Result<Message, ProtocolError> {
+    // %session-window-changed $0 @1
+    let mut it = rest.splitn(2, ' ');
+    let sid = it.next().ok_or_else(|| {
+        ProtocolError::MalformedField("session-window-changed 缺 session id".into())
+    })?;
+    let session = SessionId::parse(sid)?;
+    let wid = it.next().ok_or_else(|| {
+        ProtocolError::MalformedField("session-window-changed 缺 window id".into())
+    })?;
+    let window = WindowId::parse(wid.trim())?;
+    Ok(Message::SessionWindowChanged { session, window })
+}
+
+// ============================================================================
+// tmux window_layout 树字符串解析
+// ============================================================================
+
+/// tmux window_layout 树的一个节点。
+///
+/// 格式（tmux 3.x）：
+/// ```text
+/// <tree_id>,<cols>x<rows>,<x>,<y>,<flags>
+/// {<child>,<child>}   ← 左右分割（水平）
+/// [<child>,<child>]   ← 上下分割（垂直）
+/// ```
+/// 叶子节点的 tree_id 是一个数字（pane 的 layout-cell 序号），但**叶子本身
+/// 不直接含 pane id**——pane id 需要通过 `list-panes` 的 `#{pane_id}` + 几何
+/// 匹配来关联。所以本结构只提供几何拓扑；pane id 的映射由 TmuxBackend 完成。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutTree {
+    /// 根节点的几何（整个 window 的 cols/rows）。
+    pub cols: u32,
+    pub rows: u32,
+    pub x: u32,
+    pub y: u32,
+    pub flags: u32,
+    /// 树前缀 id（tmux 内部 layout-cell id，如 `a87d`），叶子节点为数字。
+    pub tree_id: String,
+    /// 子节点（None = 叶子）。
+    pub children: Option<(Box<LayoutTree>, Box<LayoutTree>)>,
+    /// 子节点分割方向：`{}` = 水平（左右），`[]` = 垂直（上下）。
+    pub dir: SplitDir,
+}
+
+impl LayoutTree {
+    /// 是否叶子节点。
+    pub fn is_leaf(&self) -> bool {
+        self.children.is_none()
+    }
+}
+
+/// 解析 tmux window_layout 树字符串。
+///
+/// 例：
+/// - `75ac,140x30,0,0{70x30,0,0,0,69x30,71,0,1}` — 一次水平分割（2 叶子）
+/// - `1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}` —
+///   水平分割，右子再垂直分割（3 叶子，嵌套）
+/// - `a980,140x30,0,0,3` — 单叶子
+///
+/// 算法：递归下降解析。遇到 `{` 或 `[` 进入子节点，遇到 `}` `]` 或 `,` 结束当前节点。
+pub fn parse_layout_tree(s: &str) -> Result<LayoutTree, ProtocolError> {
+    let s = s.trim();
+    let mut parser = LayoutParser {
+        chars: s.chars().peekable(),
+    };
+    let tree = parser.parse_node()?;
+    // 跳过可能剩余空白
+    while parser.chars.peek().is_some() {
+        // 容忍尾随字符
+        let _ = parser.chars.next();
+    }
+    Ok(tree)
+}
+
+/// 递归下降解析器内部状态。
+struct LayoutParser<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+}
+
+impl<'a> LayoutParser<'a> {
+    /// 解析一个节点。
+    ///
+    /// 格式：`[<tree_id>,]<cols>x<rows>,<x>,<y>[,<flags>][{...}|[...]]`
+    /// - tree_id 仅根节点有（如 `75ac`）
+    /// - flags 仅叶子节点有（无子节点时）
+    /// - `{` = 水平分割（左右），`[` = 垂直分割（上下）
+    fn parse_node(&mut self) -> Result<LayoutTree, ProtocolError> {
+        // 判断是否有 tree_id：peek 第一个字段（到 ',' 或 'x' 为止），
+        // 不含 'x' → 是 tree_id（仅根节点）
+        let first_field = self.peek_field();
+        let tree_id;
+        if !first_field.contains('x') && !first_field.is_empty() {
+            // 有 tree_id
+            tree_id = self.read_until_char(',')?;
+            self.expect_char(',')?;
+        } else {
+            tree_id = String::new();
+        }
+        let cols = self.read_u32()?;
+        self.expect_char('x')?;
+        let rows = self.read_u32()?;
+        self.expect_char(',')?;
+        let x = self.read_u32()?;
+        self.expect_char(',')?;
+        let y = self.read_u32()?;
+        // flags 可选：仅在叶子节点有（子节点前无 flags）
+        let flags;
+        match self.chars.peek() {
+            Some(',') => {
+                self.chars.next(); // consume ,
+                flags = self.read_u32()?;
+            }
+            _ => {
+                flags = 0;
+            }
+        }
+        // 子节点
+        let dir;
+        let children;
+        match self.chars.peek() {
+            Some('{') => {
+                self.chars.next();
+                dir = SplitDir::Horizontal;
+                let first = self.parse_node()?;
+                self.expect_char(',')?;
+                let second = self.parse_node()?;
+                self.expect_char('}')?;
+                children = Some((Box::new(first), Box::new(second)));
+            }
+            Some('[') => {
+                self.chars.next();
+                dir = SplitDir::Vertical;
+                let first = self.parse_node()?;
+                self.expect_char(',')?;
+                let second = self.parse_node()?;
+                self.expect_char(']')?;
+                children = Some((Box::new(first), Box::new(second)));
+            }
+            _ => {
+                dir = SplitDir::Horizontal;
+                children = None;
+            }
+        }
+        Ok(LayoutTree {
+            cols,
+            rows,
+            x,
+            y,
+            flags,
+            tree_id,
+            children,
+            dir,
+        })
+    }
+
+    /// Peek 到第一个 ',' 为止（不消费字符），用于判断是否有 tree_id 前缀。
+    /// 含 'x' → 是 `<cols>x<rows>` 几何字段（无 tree_id）；不含 'x' → 是 tree_id。
+    fn peek_field(&self) -> String {
+        let mut s = String::new();
+        let mut iter = self.chars.clone();
+        while let Some(&ch) = iter.peek() {
+            if ch == ',' || ch == '}' || ch == ']' {
+                break;
+            }
+            s.push(ch);
+            iter.next();
+        }
+        s
+    }
+
+    /// 读到指定字符为止（不含该字符），trim 后返回。
+    fn read_until_char(&mut self, c: char) -> Result<String, ProtocolError> {
+        let mut s = String::new();
+        while let Some(&ch) = self.chars.peek() {
+            if ch == c {
+                break;
+            }
+            s.push(ch);
+            self.chars.next();
+        }
+        Ok(s.trim().to_string())
+    }
+
+    /// 期望当前字符是指定字符，消费它。
+    fn expect_char(&mut self, c: char) -> Result<(), ProtocolError> {
+        match self.chars.next() {
+            Some(ch) if ch == c => Ok(()),
+            other => Err(ProtocolError::MalformedField(format!(
+                "layout 期望 '{c}'，得到 {:?}",
+                other
+            ))),
+        }
+    }
+
+    /// 读一个无符号整数。
+    fn read_u32(&mut self) -> Result<u32, ProtocolError> {
+        let mut s = String::new();
+        while let Some(&ch) = self.chars.peek() {
+            if ch.is_ascii_digit() {
+                s.push(ch);
+                self.chars.next();
+            } else {
+                break;
+            }
+        }
+        if s.is_empty() {
+            return Err(ProtocolError::MalformedField("layout 期望数字".into()));
+        }
+        u32::from_str(&s)
+            .map_err(|_| ProtocolError::MalformedField(format!("layout 数字溢出: {s}")))
+    }
 }
 
 fn parse_boundary(rest: &str, kind: NotificationKind) -> Result<ResponseBoundary, ProtocolError> {
@@ -1150,15 +1392,42 @@ mod tests {
     }
 
     #[test]
-    fn parse_unknown_keyword() {
+    fn parse_window_pane_changed() {
+        let m = parse_line("%window-pane-changed @0 %1").unwrap();
+        assert_eq!(
+            m,
+            Message::WindowPaneChanged {
+                window: WindowId(0),
+                pane: PaneId(1),
+            }
+        );
+        // 兼容 @ 前缀的 pane id
+        let m2 = parse_line("%window-pane-changed @1 @2").unwrap();
+        assert_eq!(
+            m2,
+            Message::WindowPaneChanged {
+                window: WindowId(1),
+                pane: PaneId(2),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_session_window_changed() {
         let m = parse_line("%session-window-changed $0 @1").unwrap();
         assert_eq!(
             m,
-            Message::Unknown {
-                keyword: "session-window-changed".into(),
-                raw: "$0 @1".into(),
+            Message::SessionWindowChanged {
+                session: SessionId(0),
+                window: WindowId(1),
             }
         );
+    }
+
+    #[test]
+    fn parse_unknown_keyword() {
+        let m = parse_line("%no-such-notification $0 @1").unwrap();
+        assert!(matches!(m, Message::Unknown { .. }));
     }
 
     #[test]
@@ -1362,5 +1631,70 @@ mod tests {
         // 至少无 \r 的行必须成功
         assert!(parse_line("%sessions-changed").is_some());
         let _ = m;
+    }
+
+    // ---------- layout tree 解析 ----------
+
+    #[test]
+    fn parse_layout_tree_single_leaf() {
+        // a980,140x30,0,0,3
+        let t = parse_layout_tree("a980,140x30,0,0,3").unwrap();
+        assert!(t.is_leaf());
+        assert_eq!((t.cols, t.rows, t.x, t.y, t.flags), (140, 30, 0, 0, 3));
+        assert_eq!(t.tree_id, "a980");
+    }
+
+    #[test]
+    fn parse_layout_tree_horizontal_split() {
+        // 75ac,140x30,0,0{70x30,0,0,0,69x30,71,0,1}
+        let t = parse_layout_tree("75ac,140x30,0,0{70x30,0,0,0,69x30,71,0,1}").unwrap();
+        assert!(!t.is_leaf());
+        assert_eq!(t.dir, SplitDir::Horizontal);
+        let (a, b) = t.children.as_ref().unwrap();
+        assert!(a.is_leaf());
+        assert!(b.is_leaf());
+        assert_eq!((a.cols, a.rows), (70, 30));
+        assert_eq!((b.cols, b.rows, b.x), (69, 30, 71));
+    }
+
+    #[test]
+    fn parse_layout_tree_nested() {
+        // 1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}
+        let t = parse_layout_tree(
+            "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}",
+        )
+        .unwrap();
+        assert_eq!(t.dir, SplitDir::Horizontal);
+        let (left, right) = t.children.as_ref().unwrap();
+        assert!(left.is_leaf());
+        assert!(!right.is_leaf());
+        assert_eq!(right.dir, SplitDir::Vertical);
+        let (r1, r2) = right.children.as_ref().unwrap();
+        assert_eq!((r1.cols, r1.rows, r1.y), (69, 15, 0));
+        assert_eq!((r2.cols, r2.rows, r2.y), (69, 14, 16));
+    }
+
+    #[test]
+    fn parse_layout_tree_vertical_split() {
+        // 完整 layout：根是垂直分割（上下）
+        // b97f,140x30,0,0[70x15,0,0,1,70x14,0,16,2]
+        let t = parse_layout_tree("b97f,140x30,0,0[70x15,0,0,1,70x14,0,16,2]").unwrap();
+        assert_eq!(t.dir, SplitDir::Vertical);
+        let (a, b) = t.children.as_ref().unwrap();
+        assert_eq!((a.rows, b.rows), (15, 14));
+    }
+
+    #[test]
+    fn parse_layout_tree_missing_flags() {
+        // 缺 flags（如 abc,80x24,0,0）应容错为 flags=0
+        let t = parse_layout_tree("abc,80x24,0,0").unwrap();
+        assert!(t.is_leaf());
+        assert_eq!((t.cols, t.rows, t.x, t.y, t.flags), (80, 24, 0, 0, 0));
+    }
+
+    #[test]
+    fn parse_layout_tree_bad() {
+        assert!(parse_layout_tree("nope").is_err());
+        assert!(parse_layout_tree("").is_err());
     }
 }
