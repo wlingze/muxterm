@@ -20,7 +20,7 @@
 
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::{BackendStatus, State};
-use crate::core::types::{PaneId, TabId};
+use crate::core::types::TabId;
 
 /// 渲染选项。
 #[derive(Debug, Clone, Copy)]
@@ -210,9 +210,9 @@ fn render_title_node(
                     render_title_node(buf, col0, col1, first, state);
                     // 找 first 已填充的最右位置
                     let mut end = col0;
-                    for c in col0..col1 {
-                        if buf[c] != ' ' {
-                            end = c + 1;
+                    for (c, &ch) in buf[col0..col1].iter().enumerate() {
+                        if ch != ' ' {
+                            end = col0 + c + 1;
                         }
                     }
                     let start2 = (end + 1).min(col1);

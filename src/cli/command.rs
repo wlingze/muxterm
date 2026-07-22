@@ -272,8 +272,8 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
 
 /// 获取 `-X value` 形式的可选参数。
 fn get_opt_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut iter = args.iter().enumerate();
-    while let Some((i, a)) = iter.next() {
+    let iter = args.iter().enumerate();
+    for (i, a) in iter {
         if a == flag {
             return args.get(i + 1).cloned();
         }

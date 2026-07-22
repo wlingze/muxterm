@@ -653,7 +653,7 @@ fn strip_c_string(s: &str) -> Result<&str, ProtocolError> {
         Ok(&s[1..s.len() - 1])
     } else if s.starts_with('"') {
         // 只有左引号（行被截断？）容错返回剩余
-        Ok(&s[1..])
+        Ok(s.strip_prefix('"').unwrap_or(s))
     } else {
         // 无引号，原样返回（容错）
         Ok(s)
@@ -807,6 +807,7 @@ impl<'a> LayoutParser<'a> {
         self.expect_char(',')?;
         let y = self.read_u32()?;
         // flags 可选：仅在叶子节点有（子节点前无 flags）
+        #[allow(clippy::needless_late_init)]
         let flags;
         match self.chars.peek() {
             Some(',') => {

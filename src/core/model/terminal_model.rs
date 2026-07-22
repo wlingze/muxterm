@@ -16,7 +16,7 @@
 use crate::core::model::backend::Backend;
 use crate::core::model::state::{State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
-use crate::core::types::{PaneId, TabId, WindowId};
+use crate::core::types::PaneId;
 use std::collections::VecDeque;
 
 /// 状态变更回调类型。

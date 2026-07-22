@@ -113,8 +113,7 @@ impl PtyWriter {
             let mut w = inner.lock().unwrap();
             w.write_all(&data)
         });
-        h.await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        h.await.map_err(std::io::Error::other)?
     }
 }
 
@@ -132,6 +131,7 @@ pub fn split_master(
 
 /// 单独构造 reader（用 try_clone_reader），保留 master 自己持有 writer。
 #[allow(dead_code)]
+#[allow(clippy::borrowed_box)]
 pub fn reader_only(master: &Box<dyn portable_pty::MasterPty + Send>) -> Result<PtyReader> {
     let reader = master.try_clone_reader().context("try_clone_reader 失败")?;
     Ok(PtyReader::new(reader))

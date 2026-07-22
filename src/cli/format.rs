@@ -3,7 +3,7 @@
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
 use crate::core::model::state::State;
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId, WindowId};
 
 /// 输出格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -13,6 +13,7 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "text" | "txt" => OutputFormat::Text,
@@ -185,11 +186,9 @@ fn format_panes(state: &dyn State, tab: Option<TabId>, format: OutputFormat) -> 
 }
 
 fn format_layout(state: &dyn State, window: Option<WindowId>, format: OutputFormat) -> String {
-    let win = window
-        .map(|w| w)
-        .or_else(|| state.active_window().map(|w| w.id));
+    let win = window.or_else(|| state.active_window().map(|w| w.id));
     // For text format, render a tree
-    let win_info = win.and_then(|w| {
+    let win_info = win.and_then(|_w| {
         state
             .sessions()
             .iter()
