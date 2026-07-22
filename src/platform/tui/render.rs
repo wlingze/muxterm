@@ -18,6 +18,7 @@
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 
+use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::{BackendStatus, State};
 use crate::core::types::{PaneId, TabId};
 
@@ -61,68 +62,36 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
     // ── 分隔线 ──────────────────────────────────────────────
     lines.push(border_mid(cols));
 
-    // ── pane 标题栏 ─────────────────────────────────────────
-    let pane_titles = render_pane_titles(state, state.active_tab().map(|t| t.id), cols);
-    lines.push(format!("│{}│", pad(&pane_titles, cols - 2)));
+    // ── pane 标题栏（递归布局树）────────────────────────────
+    let inner_cols = cols.saturating_sub(2);
+    let tab_id = state.active_tab().map(|t| t.id);
+    let pane_titles = render_pane_titles(state, tab_id, inner_cols);
+    lines.push(format!("│{}│", pad(&pane_titles, inner_cols)));
 
     // ── 分隔线 ──────────────────────────────────────────────
     lines.push(border_mid(cols));
 
-    // ── pane 内容区 ─────────────────────────────────────────
-    let active_tab = state.active_tab();
-    let panes: Vec<PaneId> = active_tab
-        .and_then(|t| state.layout(&t.id))
-        .map(|tl| tl.tree.leaves())
-        .unwrap_or_default();
-
+    // ── pane 内容区（递归布局树）────────────────────────────
     // 固定行：top + tab + mid + titles + mid + mid(content后) + status + bottom = 8
     let used = 8;
     let content_rows = rows.saturating_sub(used).max(1);
+    let content_cols = inner_cols;
 
-    if panes.is_empty() {
-        // 无 pane：填空行
-        for _ in 0..content_rows {
-            lines.push(format!("│{}│", pad("", cols - 2)));
+    let active_tab = state.active_tab();
+    let layout = active_tab.and_then(|t| state.layout(&t.id));
+
+    if let Some(tl) = layout {
+        // 构建字符网格，递归布局树填充每个 pane 的输出到对应矩形区域
+        let mut grid: Vec<Vec<char>> = vec![vec![' '; content_cols]; content_rows];
+        render_node(&mut grid, 0, content_rows, 0, content_cols, &tl.tree, state);
+        for row in &grid {
+            let line: String = row.iter().collect();
+            lines.push(format!("│{}│", line));
         }
     } else {
-        // 每个 pane 平均分配行数
-        let per_pane = (content_rows / panes.len()).max(1);
-        // 每个 pane 的列宽
-        let pane_cols = ((cols - 2) / panes.len()).max(1);
-        // 收集每个 pane 的输出行
-        let pane_outputs: Vec<Vec<String>> = panes
-            .iter()
-            .map(|pid| {
-                let out = state.pane_output(pid).unwrap_or(&[]);
-                let text = String::from_utf8_lossy(out);
-                let mut all_lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
-                // 取最后 per_pane 行，正序显示
-                if all_lines.len() > per_pane {
-                    let start = all_lines.len() - per_pane;
-                    all_lines = all_lines[start..].to_vec();
-                }
-                // pad/truncate 到 pane_cols
-                all_lines.iter().map(|l| truncate(l, pane_cols)).collect()
-            })
-            .collect();
-
-        // 按 per_pane 行逐行拼接
-        for row in 0..per_pane {
-            let mut row_parts = Vec::new();
-            for pane_out in &pane_outputs {
-                let line = pane_out.get(row).map(|s| s.as_str()).unwrap_or("");
-                row_parts.push(pad(line, pane_cols));
-            }
-            let content = row_parts.join("│");
-            let content = pad(&content, cols - 2);
-            lines.push(format!("│{}│", content));
-        }
-        // 补足剩余行
-        let drawn = per_pane;
-        if drawn < content_rows {
-            for _ in drawn..content_rows {
-                lines.push(format!("│{}│", pad("", cols - 2)));
-            }
+        // 无 layout：填空行
+        for _ in 0..content_rows {
+            lines.push(format!("│{}│", pad("", content_cols)));
         }
     }
 
@@ -165,19 +134,197 @@ fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
     }
 }
 
-/// 渲染 pane 标题栏：`@1 bash | @2 zsh`
-fn render_pane_titles(state: &dyn State, tab: Option<TabId>, _cols: usize) -> String {
-    let mut parts = Vec::new();
+/// 渲染 pane 标题栏（递归布局树）。
+///
+/// 水平分割（左右）→ 按比例分列宽，`│` 分隔；
+/// 垂直分割（上下）→ 两个 pane 共享同一列范围，标题依次排列。
+fn render_pane_titles(state: &dyn State, tab: Option<TabId>, cols: usize) -> String {
+    if cols == 0 {
+        return String::new();
+    }
+    let mut buf: Vec<char> = vec![' '; cols];
     if let Some(tid) = tab {
-        for p in state.panes(&tid) {
-            let mark = if p.active { "*" } else { " " };
-            parts.push(format!("{}@{} {}{}", mark, p.id.0, p.title, mark));
+        if let Some(tl) = state.layout(&tid) {
+            render_title_node(&mut buf, 0, cols, &tl.tree, state);
         }
     }
-    if parts.is_empty() {
-        "(no pane)".to_string()
-    } else {
-        parts.join(" | ")
+    // 检查是否全空白（无 pane）
+    if buf.iter().all(|&c| c == ' ') {
+        return "(no pane)".to_string();
+    }
+    buf.iter().collect()
+}
+
+/// 递归填充标题栏字符缓冲。
+fn render_title_node(
+    buf: &mut [char],
+    col0: usize,
+    col1: usize,
+    node: &LayoutNode,
+    state: &dyn State,
+) {
+    match node {
+        LayoutNode::Leaf(pid) => {
+            let title = state
+                .pane(pid)
+                .map(|p| {
+                    let mark = if p.active { "*" } else { " " };
+                    format!("{}@{} {}{}", mark, pid.0, p.title, mark)
+                })
+                .unwrap_or_default();
+            for (i, ch) in title.chars().enumerate() {
+                let c = col0 + i;
+                if c >= col1 {
+                    break;
+                }
+                buf[c] = ch;
+            }
+        }
+        LayoutNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => {
+            match dir {
+                SplitDir::Horizontal => {
+                    let total = col1.saturating_sub(col0);
+                    if total < 3 {
+                        render_title_node(buf, col0, col1, first, state);
+                        return;
+                    }
+                    let usable = total - 1;
+                    let first_cols = ((usable * *ratio as usize) / 1000)
+                        .max(1)
+                        .min(usable.saturating_sub(1));
+                    let mid = col0 + first_cols;
+                    render_title_node(buf, col0, mid, first, state);
+                    if mid < col1 {
+                        buf[mid] = '│';
+                    }
+                    render_title_node(buf, mid + 1, col1, second, state);
+                }
+                SplitDir::Vertical => {
+                    // 上下分割：两个 pane 共享同一列范围。
+                    // 先渲染 first 的标题，找到其结尾，再在剩余空间渲染 second。
+                    render_title_node(buf, col0, col1, first, state);
+                    // 找 first 已填充的最右位置
+                    let mut end = col0;
+                    for c in col0..col1 {
+                        if buf[c] != ' ' {
+                            end = c + 1;
+                        }
+                    }
+                    let start2 = (end + 1).min(col1);
+                    if start2 < col1 {
+                        render_title_node(buf, start2, col1, second, state);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 递归填充内容区字符网格。
+///
+/// `Leaf(pid)` → 在分配的矩形 [row0,row1)×[col0,col1) 内渲染 pane 输出（取最后若干行）。
+/// `Split { Horizontal, .. }` → 左右分列，`│` 分隔。
+/// `Split { Vertical, .. }` → 上下分行，`─` 分隔。
+fn render_node(
+    grid: &mut [Vec<char>],
+    row0: usize,
+    row1: usize,
+    col0: usize,
+    col1: usize,
+    node: &LayoutNode,
+    state: &dyn State,
+) {
+    match node {
+        LayoutNode::Leaf(pid) => {
+            let avail_rows = row1.saturating_sub(row0);
+            let avail_cols = col1.saturating_sub(col0);
+            if avail_rows == 0 || avail_cols == 0 {
+                return;
+            }
+            let out = state.pane_output(pid).unwrap_or(&[]);
+            let text = String::from_utf8_lossy(out);
+            let all_lines: Vec<&str> = text.lines().collect();
+            // 取最后 avail_rows 行，正序显示（底部对齐）
+            let start = all_lines.len().saturating_sub(avail_rows);
+            let visible = &all_lines[start..];
+            for (i, line) in visible.iter().enumerate() {
+                let r = row0 + i;
+                if r >= row1 {
+                    break;
+                }
+                for (j, ch) in line.chars().enumerate() {
+                    let c = col0 + j;
+                    if c >= col1 {
+                        break;
+                    }
+                    grid[r][c] = ch;
+                }
+            }
+        }
+        LayoutNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => {
+            match dir {
+                SplitDir::Horizontal => {
+                    // 左右分割
+                    let total_cols = col1.saturating_sub(col0);
+                    if total_cols < 3 {
+                        render_node(grid, row0, row1, col0, col1, first, state);
+                        return;
+                    }
+                    let sep = 1;
+                    let usable = total_cols - sep;
+                    let first_cols = ((usable * *ratio as usize) / 1000)
+                        .max(1)
+                        .min(usable.saturating_sub(1));
+                    let mid = col0 + first_cols;
+                    // first: [col0, mid)
+                    render_node(grid, row0, row1, col0, mid, first, state);
+                    // 分隔线 │
+                    for r in row0..row1 {
+                        if r < grid.len() && mid < grid[r].len() {
+                            grid[r][mid] = '│';
+                        }
+                    }
+                    // second: [mid+1, col1)
+                    render_node(grid, row0, row1, mid + 1, col1, second, state);
+                }
+                SplitDir::Vertical => {
+                    // 上下分割
+                    let total_rows = row1.saturating_sub(row0);
+                    if total_rows < 3 {
+                        render_node(grid, row0, row1, col0, col1, first, state);
+                        return;
+                    }
+                    let sep = 1;
+                    let usable = total_rows - sep;
+                    let first_rows = ((usable * *ratio as usize) / 1000)
+                        .max(1)
+                        .min(usable.saturating_sub(1));
+                    let mid = row0 + first_rows;
+                    // first: [row0, mid)
+                    render_node(grid, row0, mid, col0, col1, first, state);
+                    // 分隔线 ─
+                    if mid < grid.len() {
+                        for c in col0..col1 {
+                            if c < grid[mid].len() {
+                                grid[mid][c] = '─';
+                            }
+                        }
+                    }
+                    // second: [mid+1, row1)
+                    render_node(grid, mid + 1, row1, col0, col1, second, state);
+                }
+            }
+        }
     }
 }
 
@@ -334,6 +481,146 @@ mod tests {
             content_lines.iter().any(|l| l.matches('│').count() >= 3),
             "内容区应有 pane 分隔符 │"
         );
+    }
+
+    /// 构造嵌套布局 Split(H, @1, Split(V, @2, @3)) 的 mock。
+    fn mock_with_nested_split() -> MockBackend {
+        let mut b = MockBackend::with_single_pane();
+        // @2 pane
+        b.panes.push(PaneInfo {
+            id: PaneId(2),
+            tab: TabId(1),
+            active: false,
+            title: "zsh".into(),
+            cols: 40,
+            rows: 12,
+        });
+        // @3 pane
+        b.panes.push(PaneInfo {
+            id: PaneId(3),
+            tab: TabId(1),
+            active: false,
+            title: "fish".into(),
+            cols: 40,
+            rows: 12,
+        });
+        // 布局: Split(H, @1, Split(V, @2, @3))
+        let mut tree = LayoutNode::leaf(PaneId(1));
+        tree.split_at(PaneId(1), PaneId(2), SplitDir::Horizontal);
+        tree.split_at(PaneId(2), PaneId(3), SplitDir::Vertical);
+        b.layouts.clear();
+        b.layouts.push(TabLayout {
+            tab: TabId(1),
+            tree,
+            active: PaneId(1),
+        });
+        // 输出内容
+        b.outputs.clear();
+        b.outputs.push((
+            PaneId(1),
+            b"left
+"
+            .to_vec(),
+        ));
+        b.outputs.push((
+            PaneId(2),
+            b"top-right
+"
+            .to_vec(),
+        ));
+        b.outputs.push((
+            PaneId(3),
+            b"bottom-right
+"
+            .to_vec(),
+        ));
+        b
+    }
+
+    #[test]
+    fn render_nested_split_shows_all_three_pane_titles() {
+        let b = mock_with_nested_split();
+        let lines = render_frame(&b, RenderOpts::default());
+        let title_line = &lines[3];
+        assert!(title_line.contains("@1"), "标题栏应有 @1: {title_line}");
+        assert!(title_line.contains("@2"), "标题栏应有 @2: {title_line}");
+        assert!(title_line.contains("@3"), "标题栏应有 @3: {title_line}");
+    }
+
+    #[test]
+    fn render_nested_split_left_pane_content_on_left() {
+        let b = mock_with_nested_split();
+        // 用足够大的终端确保有空间
+        let lines = render_frame(
+            &b,
+            RenderOpts {
+                cols: 80,
+                rows: 24,
+                max_output_lines: 20,
+            },
+        );
+        let joined = lines.join(
+            "
+",
+        );
+        assert!(joined.contains("left"), "应包含 @1 的 left 输出: {joined}");
+    }
+
+    #[test]
+    fn render_nested_split_right_panes_stacked_vertically() {
+        let b = mock_with_nested_split();
+        let lines = render_frame(
+            &b,
+            RenderOpts {
+                cols: 80,
+                rows: 24,
+                max_output_lines: 20,
+            },
+        );
+        let joined = lines.join(
+            "
+",
+        );
+        // @2 (top-right) 和 @3 (bottom-right) 都应出现
+        assert!(
+            joined.contains("top-right"),
+            "应包含 @2 的 top-right 输出: {joined}"
+        );
+        assert!(
+            joined.contains("bottom-right"),
+            "应包含 @3 的 bottom-right 输出: {joined}"
+        );
+        // top-right 应出现在 bottom-right 之前的行
+        let top_row = lines
+            .iter()
+            .position(|l| l.contains("top-right"))
+            .unwrap_or(usize::MAX);
+        let bot_row = lines
+            .iter()
+            .position(|l| l.contains("bottom-right"))
+            .unwrap_or(usize::MAX);
+        assert!(
+            top_row < bot_row,
+            "top-right 应在 bottom-right 上方 (top={top_row}, bot={bot_row})"
+        );
+    }
+
+    #[test]
+    fn render_nested_split_has_horizontal_separator() {
+        let b = mock_with_nested_split();
+        let lines = render_frame(&b, RenderOpts::default());
+        // 内容区应有 ─ 分隔上下两个右栏 pane
+        let has_h_sep = lines.iter().any(|l| l.contains('─'));
+        assert!(has_h_sep, "内容区应有水平分隔线 ─ (垂直分割): {lines:?}");
+    }
+
+    #[test]
+    fn render_nested_split_has_vertical_separator() {
+        let b = mock_with_nested_split();
+        let lines = render_frame(&b, RenderOpts::default());
+        // 内容区应有 │ 分隔左右
+        let has_v_sep = lines.iter().any(|l| l.matches('│').count() >= 2);
+        assert!(has_v_sep, "内容区应有垂直分隔线 │ (水平分割): {lines:?}");
     }
 
     #[test]
