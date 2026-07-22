@@ -14,7 +14,7 @@
 //! │ output    │ output                                        │
 //! │           │                                               │
 //! ├─────────────────────────────────────────────────────────┤
-//! │ 状态栏：connected | 2 panes | Alt+T new tab | Ctrl-Q quit │
+//! │ 状态栏：connected | 2 panes | Alt+T new tab | Alt+S split | Alt+V vsplit | Ctrl-Q quit │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 
@@ -181,7 +181,7 @@ fn render_pane_titles(state: &dyn State, tab: Option<TabId>, _cols: usize) -> St
     }
 }
 
-/// 渲染状态栏：`connected | 2 panes | Alt+T new | Ctrl-Q quit`
+/// 渲染状态栏：`connected | 2 panes | Alt+T new tab | Alt+S split | Alt+V vsplit | Ctrl-Q quit`
 fn render_status_bar(state: &dyn State, _cols: usize) -> String {
     let status = match state.status() {
         BackendStatus::Disconnected => "disconnected",
@@ -194,7 +194,9 @@ fn render_status_bar(state: &dyn State, _cols: usize) -> String {
         .active_tab()
         .map(|t| state.panes(&t.id).len())
         .unwrap_or(0);
-    format!(" {status} | {n_panes} panes | Alt+T new tab | Ctrl-Q quit ")
+    format!(
+        " {status} | {n_panes} panes | Alt+T new tab | Alt+S split | Alt+V vsplit | Ctrl-Q quit "
+    )
 }
 
 /// 把字符串 pad 到指定宽度（左侧空格填充，右侧截断）。
@@ -340,6 +342,15 @@ mod tests {
         let lines = render_frame(&b, RenderOpts::default());
         let status_line = &lines[lines.len() - 2];
         assert!(status_line.contains("Alt+T"));
+    }
+
+    #[test]
+    fn render_status_bar_shows_split_hints() {
+        let b = MockBackend::with_single_pane();
+        let lines = render_frame(&b, RenderOpts::default());
+        let status_line = &lines[lines.len() - 2];
+        assert!(status_line.contains("Alt+S"), "状态栏应提示 Alt+S 水平分割");
+        assert!(status_line.contains("Alt+V"), "状态栏应提示 Alt+V 垂直分割");
     }
 
     #[test]
