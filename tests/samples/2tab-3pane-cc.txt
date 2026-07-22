@@ -1,0 +1,57 @@
+P1000p%begin 1784716227 327 0
+%end 1784716227 327 0
+%window-add @0
+%sessions-changed
+%session-changed $0 d2
+%window-renamed @0 muxterm
+%output %0 \033]0;(ryzen) ~/Developer/self/muxterm\007
+%output %0 \015\012
+%output %0 \033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%output %0 \033[?2004h
+%output %0 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%output %0 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[38;5;218m*\033[39m\015\012\015\033[35m❯\033[39m 
+%output %0 \033[K
+%begin 1784716228 341 1
+%end 1784716228 341 1
+%window-pane-changed @0 %1
+%layout-change @0 75ac,140x30,0,0{70x30,0,0,0,69x30,71,0,1} 75ac,140x30,0,0{70x30,0,0,0,69x30,71,0,1} *
+%output %0 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[38;5;218m*\033[39m\015\012\015\033[35m❯\033[39m 
+%output %1 \033]0;(ryzen) ~/Developer/self/muxterm\007
+%output %1 \015\012
+%output %1 \033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m\015\012\015\033[35m❯\033[39m 
+%output %1 \033[K\033[?2004h
+%output %1 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%output %1 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[38;5;218m*\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%begin 1784716229 349 1
+%end 1784716229 349 1
+%window-pane-changed @0 %2
+%layout-change @0 1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]} 1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]} *
+%output %1 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[38;5;218m*\033[39m\015\012\015\033[35m❯\033[39m 
+%output %2 \033]0;(ryzen) ~/Developer/self/muxterm\007
+%output %2 \015\012
+%output %2 \033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%output %2 \033[?2004h
+%output %2 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%output %2 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[38;5;218m*\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%begin 1784716229 357 1
+%end 1784716229 357 1
+%session-window-changed $0 @1
+%window-add @1
+%window-renamed @1 muxterm
+%output %3 \033]0;(ryzen) ~/Developer/self/muxterm\007
+%output %3 \015\012
+%output %3 \033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m\015\012\015\033[35m❯\033[39m 
+%output %3 \033[K\033[?2004h
+%output %3 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[39m\015\012\015\033[35m❯\033[39m \033[K
+%output %3 \015\015\033M\033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/self/muxterm\033[39m \033[38;5;242mfeat/tmux-backend\033[38;5;218m*\033[39m\015\012\015\033[35m❯\033[39m 
+%output %3 \033[K
+%begin 1784716230 368 1
+1: muxterm- (3 panes) [140x30] [layout 1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}] @0
+2: muxterm* (1 panes) [140x30] [layout a980,140x30,0,0,3] @1 (active)
+%end 1784716230 368 1
+%begin 1784716230 369 1
+%0 @0 0
+%1 @0 0
+%2 @0 1
+%3 @1 1
+%end 1784716230 369 1
