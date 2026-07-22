@@ -467,6 +467,10 @@ impl State for LocalBackend {
         self.windows.iter().find(|w| w.info.active).map(|w| &w.info)
     }
 
+    fn all_windows(&self) -> Vec<&WindowInfo> {
+        self.windows.iter().map(|w| &w.info).collect()
+    }
+
     fn active_tab(&self) -> Option<&TabInfo> {
         self.tabs.iter().find(|t| t.info.active).map(|t| &t.info)
     }

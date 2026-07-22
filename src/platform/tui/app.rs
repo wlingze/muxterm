@@ -45,8 +45,11 @@ fn run_inner(out: &mut impl Write, socket: Option<String>) -> Result<()> {
     execute!(out, EnterAlternateScreen, Hide, Clear(ClearType::All))
         .context("enter alternate screen")?;
 
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // 用 multi_thread runtime 让后台 I/O task（tmux pty reader / sender）
+    // 在 worker 线程上持续运行，不依赖主线程 block_on 驱动。
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(2)
         .build()
         .context("build tokio runtime")?;
 
