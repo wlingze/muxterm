@@ -146,6 +146,11 @@ pub trait State {
     /// 当前激活的 window（属于激活 session）。
     fn active_window(&self) -> Option<&WindowInfo>;
 
+    /// 所有 window（跨 session）。默认实现返回空（后端可覆盖）。
+    fn all_windows(&self) -> Vec<&WindowInfo> {
+        Vec::new()
+    }
+
     /// 当前激活的 tab（属于激活 window）。
     fn active_tab(&self) -> Option<&TabInfo>;
 
@@ -206,6 +211,9 @@ mod tests {
         fn active_window(&self) -> Option<&WindowInfo> {
             self.active_window
                 .and_then(|wid| self.windows.iter().find(|w| w.id == wid))
+        }
+        fn all_windows(&self) -> Vec<&WindowInfo> {
+            self.windows.iter().collect()
         }
         fn active_tab(&self) -> Option<&TabInfo> {
             self.active_tab

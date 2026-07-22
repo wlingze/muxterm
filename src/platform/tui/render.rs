@@ -127,11 +127,20 @@ fn border_bottom(cols: usize) -> String {
 
 /// 渲染 tab 栏：`[1:main*] [2:dev]`
 fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
-    if let Some(w) = state.active_window() {
-        format!(" {}:{} ", w.id.0, w.name)
-    } else {
-        " (no window) ".to_string()
+    // 列出所有 tab（= window），active 标 *
+    let active_wid = state.active_window().map(|w| w.id);
+    let windows = state.all_windows();
+    if windows.is_empty() {
+        return " (no window) ".to_string();
     }
+    let parts: Vec<String> = windows
+        .iter()
+        .map(|w| {
+            let mark = if active_wid == Some(w.id) { "*" } else { " " };
+            format!("{}:{}{}", w.id.0, w.name, mark)
+        })
+        .collect();
+    format!(" {} ", parts.join("  "))
 }
 
 /// 渲染 pane 标题栏（递归布局树）。

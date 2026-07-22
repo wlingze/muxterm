@@ -689,6 +689,10 @@ impl State for TmuxBackend {
         self.windows.iter().find(|w| w.active)
     }
 
+    fn all_windows(&self) -> Vec<&WindowInfo> {
+        self.windows.iter().collect()
+    }
+
     fn active_tab(&self) -> Option<&TabInfo> {
         self.tabs.iter().find(|t| t.active)
     }
