@@ -163,19 +163,15 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                     workdir: None,
                 },
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                    let n = lower.to_digit(10).unwrap() as u32;
+                    let n = lower.to_digit(10).unwrap();
                     Task::SwitchWindow {
                         target: WindowId(n),
                     }
                 }
                 // Alt+W 关闭当前 window
-                'w' => {
-                    if let Some(w) = state.active_window() {
-                        Task::CloseWindow { target: w.id }
-                    } else {
-                        return None;
-                    }
-                }
+                'w' => Task::CloseWindow {
+                    target: state.active_window()?.id,
+                },
                 // Alt+S 左右分割（水平分割）
                 's' => Task::SplitPane {
                     target,
