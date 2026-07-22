@@ -49,6 +49,16 @@ impl TerminalModel {
         }
     }
 
+    /// 借用 backend（只读），供测试或前端查询后端状态。
+    pub fn backend(&self) -> &dyn Backend {
+        self.backend.as_ref()
+    }
+
+    /// 借用 backend（可变），供测试直接注入事件（模拟 pty 输出等）。
+    pub fn backend_mut(&mut self) -> &mut dyn Backend {
+        self.backend.as_mut()
+    }
+
     /// 只读访问当前状态（`&dyn State`）。
     pub fn state(&self) -> &dyn State {
         self.backend.as_ref()
@@ -135,6 +145,18 @@ impl TerminalModel {
             }
         }
         events
+    }
+
+    /// 刷新事件流：先从 backend 拉取最新事件（如 pty 输出）放入 pending，
+    /// 再 `poll_events()` 派发给订阅者。
+    ///
+    /// TUI 等前端在没有新键盘事件时，需要周期性调用此方法以读取 shell 输出；
+    /// 否则 `execute()` 之外的 pty 产出（如敲完回车后 shell 的回显/命令输出）
+    /// 会一直堆积在 backend 内部缓冲里，永远显示不出来。
+    pub fn refresh(&mut self) -> Vec<StateChange> {
+        let backend_events = self.backend.take_events();
+        self.pending_events.extend(backend_events);
+        self.poll_events()
     }
 
     /// 拉取 pending 事件但不触发回调（供前端自己处理事件分发）。
@@ -315,6 +337,60 @@ mod tests {
         let events = m.take_events();
         assert_eq!(events.len(), 3);
         assert_eq!(*fired.lock().unwrap(), 0); // 不触发
+    }
+
+    /// refresh() 应先从 backend 拉取事件再派发给订阅者。
+    /// 验证：execute 后不 poll，backend 仍有 pending；refresh 一次性取走并触发回调。
+    #[test]
+    fn refresh_pulls_backend_events_and_fires_callbacks() {
+        let mut m = make_model();
+        let fired = Arc::new(Mutex::new(0u32));
+        let fired_cb = fired.clone();
+        m.subscribe(Box::new(move |_| {
+            *fired_cb.lock().unwrap() += 1;
+        }));
+        // execute 产生事件但留在 pending（未 poll）
+        m.execute(Task::SplitPane {
+            target: None,
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        // 先 poll 清空 pending（模拟前端已处理 execute 的即时事件）
+        let _ = m.poll_events();
+        assert_eq!(*fired.lock().unwrap(), 3);
+
+        // 此时 backend 已被 execute 内部 take_events 清空，
+        // refresh 应返回空且不重复触发。
+        let n = m.refresh().len();
+        assert_eq!(n, 0);
+        assert_eq!(*fired.lock().unwrap(), 3);
+    }
+
+    /// refresh() 在 pending 有事件时应拉取并派发，且排空后为空。
+    /// 用 connect 注入事件来验证 refresh 拉取路径（connect 内部 take_events
+    /// 到 pending；refresh 再从 backend take + poll）。
+    #[tokio::test]
+    async fn refresh_drains_pending_and_fires_callbacks() {
+        let mut m = make_model();
+        let fired = Arc::new(Mutex::new(0u32));
+        let fired_cb = fired.clone();
+        m.subscribe(Box::new(move |_| {
+            *fired_cb.lock().unwrap() += 1;
+        }));
+
+        // connect 后 backend 通常会推事件；MockBackend::with_single_pane 已 Connected，
+        // connect 是空操作但 shutdown 会推一个 Exited 事件。这里用 shutdown 注入。
+        m.shutdown().await.unwrap();
+        // shutdown 内部已 take_events 到 pending，但未 poll。
+        // refresh 应从 pending 取走并触发回调。
+        let events = m.refresh();
+        assert!(!events.is_empty());
+        let fired_after = *fired.lock().unwrap();
+        assert_eq!(fired_after, events.len() as u32);
+        // 排空后 refresh 返回空。
+        assert!(m.refresh().is_empty());
     }
 
     #[test]

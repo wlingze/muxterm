@@ -77,8 +77,11 @@ fn run_inner(out: &mut impl Write, socket: Option<String>) -> Result<()> {
 
     // 事件循环
     loop {
-        // drain 状态变更事件（pty 输出等），有变化则重绘
-        let events = model.poll_events();
+        // drain 状态变更事件（pty 输出等），有变化则重绘。
+        // 用 refresh() 而非 poll_events()：refresh 会先从 backend 拉取
+        // 最新 pty 输出（execute 之后 shell 产生的回显/命令输出），否则
+        // 这些输出会一直堆积在 backend 缓冲里，TUI 永远看不到。
+        let events = model.refresh();
         if !events.is_empty() {
             if let Ok((c, r)) = size() {
                 opts.cols = c;
