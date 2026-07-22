@@ -265,6 +265,8 @@ impl TmuxBackend {
             | Message::UnlinkedWindowAdd { .. }
             | Message::UnlinkedWindowClose { .. }
             | Message::ResponseBoundary(_)
+            | Message::WindowPaneChanged { .. }
+            | Message::SessionWindowChanged { .. }
             | Message::Unknown { .. } => {
                 // 暂不处理
             }
