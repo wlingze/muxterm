@@ -119,26 +119,17 @@ fn cli_mode(args: &[String]) -> anyhow::Result<()> {
     let backend = LocalBackend::new("$SHELL", "");
     let mut model = TerminalModel::new(Box::new(backend));
 
-    // 把 CliCommand 转成 Task 执行（对于操作类命令）
+    // 对所有命令都 connect：查询命令需要 state（connect 后才有
+    // session/window/pane），操作命令需要 session 才能执行 Task。
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(model.connect())?;
+    let _ = model.poll_events();
+
+    // 操作类命令转成 Task 执行（查询命令 cli_command_to_task 返回 None，跳过）
     let task = cli_command_to_task(&cmd, &model);
     if let Some(t) = task {
-        // 查询类命令不需要 connect（state 为空也行）
-        // 操作类命令需要 connect
-        let needs_connect = !matches!(
-            cmd,
-            CliCommand::ListSessions
-                | CliCommand::ListWindows { .. }
-                | CliCommand::ListTabs { .. }
-                | CliCommand::ListPanes { .. }
-                | CliCommand::ListLayout { .. }
-        );
-        if needs_connect {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            rt.block_on(model.connect())?;
-            let _ = model.poll_events();
-        }
         model.execute(t)?;
         let _ = model.poll_events();
     }
@@ -150,9 +141,6 @@ fn cli_mode(args: &[String]) -> anyhow::Result<()> {
     }
 
     // 关闭
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
     let _ = rt.block_on(model.shutdown());
 
     Ok(())
