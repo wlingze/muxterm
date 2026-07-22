@@ -412,6 +412,118 @@ fn cli_list_layout_after_split() {
     assert!(out.contains("@2"));
 }
 
+// ── 嵌套分割布局测试 ─────────────────────────────────────
+
+#[test]
+fn cli_nested_split_layout_tree() {
+    let mut model = make_model();
+    let pane1 = model.state().active_pane().unwrap().id;
+
+    // 水平分割 → @1 | @2
+    exec_and_drain(
+        &mut model,
+        Task::SplitPane {
+            target: Some(pane1),
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        },
+    );
+
+    // 切到 @2（新 pane 成为 active）
+    let pane2 = model.state().active_pane().unwrap().id;
+    assert_eq!(pane2, PaneId(2), "分割后 active 应为 @2");
+
+    // 对 @2 垂直分割 → @2 上 / @3 下
+    exec_and_drain(
+        &mut model,
+        Task::SplitPane {
+            target: Some(pane2),
+            dir: muxterm::core::model::layout::SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        },
+    );
+
+    // 验证布局树: Split(H, @1, Split(V, @2, @3))
+    let out = format_output(
+        model.state(),
+        &CliCommand::ListLayout { window: None },
+        OutputFormat::Json,
+    );
+    assert!(
+        out.contains(r#""dir":"horizontal""#),
+        "布局 JSON 应含 horizontal: {out}"
+    );
+    assert!(
+        out.contains(r#""dir":"vertical""#),
+        "布局 JSON 应含 vertical: {out}"
+    );
+
+    // 验证 3 个 pane
+    let panes = format_output(
+        model.state(),
+        &CliCommand::ListPanes { tab: None },
+        OutputFormat::Json,
+    );
+    assert!(
+        panes.contains("@1") && panes.contains("@2") && panes.contains("@3"),
+        "list-panes 应含 @1 @2 @3: {panes}"
+    );
+
+    // 验证 leaves 顺序: @1, @2, @3
+    let layout = model
+        .state()
+        .active_tab()
+        .and_then(|t| model.state().layout(&t.id));
+    assert!(layout.is_some(), "应有 layout");
+    let leaves = layout.unwrap().tree.leaves();
+    assert_eq!(
+        leaves,
+        vec![PaneId(1), PaneId(2), PaneId(3)],
+        "leaves 顺序应为 [@1, @2, @3], 实际: {leaves:?}"
+    );
+}
+
+#[test]
+fn cli_nested_split_text_layout_shows_tree() {
+    let mut model = make_model();
+    let pane1 = model.state().active_pane().unwrap().id;
+
+    // Split(H) @1 → @1 | @2
+    exec_and_drain(
+        &mut model,
+        Task::SplitPane {
+            target: Some(pane1),
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        },
+    );
+
+    // 切到 @1，再 Split(V) @1 → @1 上 / @3 下
+    exec_and_drain(&mut model, Task::SwitchPane { target: pane1 });
+    exec_and_drain(
+        &mut model,
+        Task::SplitPane {
+            target: Some(pane1),
+            dir: muxterm::core::model::layout::SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        },
+    );
+
+    // text 格式布局
+    let out = format_output(
+        model.state(),
+        &CliCommand::ListLayout { window: None },
+        OutputFormat::Text,
+    );
+    assert!(out.contains("@1"), "text 布局应含 @1: {out}");
+    assert!(out.contains("@2"), "text 布局应含 @2: {out}");
+    assert!(out.contains("@3"), "text 布局应含 @3: {out}");
+}
+
 // ── display-message 测试 ──────────────────────────────────
 
 #[test]
