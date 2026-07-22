@@ -34,6 +34,17 @@ use crate::core::tmux::command as cmd;
 use crate::core::tmux::protocol::Message;
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
+/// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
+#[derive(Debug, Clone)]
+enum PendingQuery {
+    /// list-panes -t <window> -F '...'：解析所有 pane（pane_id, window_id, active, cols, rows）。
+    ListPanes { window: WindowId },
+    /// list-windows -t <session> -F '...'：解析所有 window（window_id, name, active, layout, panes）。
+    ListWindows,
+    /// display-message -p -t <pane> '<format>'：取单行响应。
+    DisplayMessage { pane: PaneId },
+}
+
 /// tmux -CC 后端。
 pub struct TmuxBackend {
     config: TmuxClientConfig,
@@ -58,6 +69,13 @@ pub struct TmuxBackend {
 
     status: BackendStatus,
     events: VecDeque<StateChange>,
+
+    /// 待发送的命令（connect 时用同步发送，不走 cmd_tx channel）。
+    pending_response_lines: Vec<String>,
+    /// 当前命令响应累积的行（%begin..%end 之间），带 number 标识。
+    response_accum: HashMap<i64, Vec<String>>,
+    /// 等待响应的命令回调（number → 处理函数）。简化为存命令类型标记。
+    pending_queries: VecDeque<PendingQuery>,
 }
 
 impl TmuxBackend {
@@ -94,6 +112,9 @@ impl TmuxBackend {
             outputs: HashMap::new(),
             status: BackendStatus::Disconnected,
             events: VecDeque::new(),
+            pending_response_lines: Vec::new(),
+            response_accum: HashMap::new(),
+            pending_queries: VecDeque::new(),
         }
     }
 
@@ -261,12 +282,42 @@ impl TmuxBackend {
                 self.events
                     .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
             }
+            Message::WindowPaneChanged { window, pane } => {
+                // tmux window 对应 muxterm tab（TabId(window.0)）
+                let tab_id = TabId(window.0);
+                for p in self.panes.iter_mut() {
+                    if p.tab == tab_id {
+                        p.active = p.id == pane;
+                    }
+                }
+                if let Some(tl) = self.layouts.get_mut(&tab_id) {
+                    tl.active = pane;
+                }
+                self.events
+                    .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+            }
+            Message::SessionWindowChanged { session, window } => {
+                // tmux session 的 active window 切换 → muxterm active tab 切换
+                let tab_id = TabId(window.0);
+                for t in self.tabs.iter_mut() {
+                    t.active = t.id == tab_id;
+                }
+                if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session) {
+                    sess.active_window = Some(window);
+                }
+                // 也更新 windows active 标记（虚拟 window）
+                for w in self.windows.iter_mut() {
+                    w.active = w.id == window;
+                }
+                self.events.push_back(StateChange::ActiveTabChanged {
+                    window,
+                    tab: tab_id,
+                });
+            }
             Message::ExtendedOutput { .. }
             | Message::UnlinkedWindowAdd { .. }
             | Message::UnlinkedWindowClose { .. }
             | Message::ResponseBoundary(_)
-            | Message::WindowPaneChanged { .. }
-            | Message::SessionWindowChanged { .. }
             | Message::Unknown { .. } => {
                 // 暂不处理
             }
