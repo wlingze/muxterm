@@ -31,7 +31,7 @@ use crate::core::model::state::{
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::tmux::client::{TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent};
 use crate::core::tmux::command as cmd;
-use crate::core::tmux::protocol::Message;
+use crate::core::tmux::protocol::{Message, NotificationKind};
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
@@ -70,8 +70,6 @@ pub struct TmuxBackend {
     status: BackendStatus,
     events: VecDeque<StateChange>,
 
-    /// 待发送的命令（connect 时用同步发送，不走 cmd_tx channel）。
-    pending_response_lines: Vec<String>,
     /// 当前命令响应累积的行（%begin..%end 之间），带 number 标识。
     response_accum: HashMap<i64, Vec<String>>,
     /// 等待响应的命令回调（number → 处理函数）。简化为存命令类型标记。
@@ -112,7 +110,6 @@ impl TmuxBackend {
             outputs: HashMap::new(),
             status: BackendStatus::Disconnected,
             events: VecDeque::new(),
-            pending_response_lines: Vec::new(),
             response_accum: HashMap::new(),
             pending_queries: VecDeque::new(),
         }
@@ -229,6 +226,8 @@ impl TmuxBackend {
                         tab: TabId(window.0),
                         window,
                     });
+                    // 主动查询该 window 的 pane（%window-add 不带 pane 信息）
+                    self.query_list_panes(window);
                 }
             }
             Message::WindowClose { window } => {
@@ -335,9 +334,37 @@ impl TmuxBackend {
         }
         for ev in pending {
             match ev {
-                TmuxEvent::Message(msg) => self.handle_message(msg),
-                TmuxEvent::ResponseLine { .. } => {
-                    // 命令响应正文行暂不处理
+                TmuxEvent::Message(msg) => {
+                    // 先处理 ResponseBoundary（begin/end 状态机），再处理其他消息。
+                    if let Message::ResponseBoundary(b) = &msg {
+                        match b.kind {
+                            NotificationKind::Begin => {
+                                self.response_accum.insert(b.number, Vec::new());
+                            }
+                            NotificationKind::End => {
+                                let lines =
+                                    self.response_accum.remove(&b.number).unwrap_or_default();
+
+                                self.dispatch_response(b.number, lines);
+                            }
+                            NotificationKind::Error => {
+                                self.response_accum.remove(&b.number);
+                                tracing::warn!(
+                                    target: "muxterm::tmux",
+                                    "tmux 命令 {} 出错",
+                                    b.number
+                                );
+                            }
+                        }
+                    }
+                    // 通知消息（WindowAdd / Output 等）先于对应的 %begin/%end 到达，
+                    // 所以先 handle_message 处理通知，再在上面处理响应边界。
+                    self.handle_message(msg);
+                }
+                TmuxEvent::ResponseLine { number, line, .. } => {
+                    // 累积到对应 number 的响应缓冲（begin 后、end 前的行）
+
+                    self.response_accum.entry(number).or_default().push(line);
                 }
                 TmuxEvent::Exit { .. } => {
                     self.status = BackendStatus::Exited;
@@ -347,6 +374,267 @@ impl TmuxBackend {
             }
         }
         self.sync_active_marks();
+    }
+
+    /// 处理一条命令的完整响应（%begin..%end 之间的行）。
+    ///
+    /// 从 pending_queries 弹出最早的一个查询，按类型解析响应行。
+    fn dispatch_response(&mut self, _number: i64, lines: Vec<String>) {
+        // 简化：按 FIFO 弹出 pending_queries；tmux 命令是串行的，顺序匹配。
+        if let Some(query) = self.pending_queries.pop_front() {
+            match query {
+                PendingQuery::ListPanes { window } => {
+                    self.handle_list_panes_response(window, lines);
+                }
+                PendingQuery::ListWindows => {
+                    self.handle_list_windows_response(lines);
+                }
+                PendingQuery::DisplayMessage { pane } => {
+                    // 单行响应：用作 pane 标题
+                    if let Some(line) = lines.first() {
+                        let title = line.trim().to_string();
+                        if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
+                            if p.title != title {
+                                p.title = title.clone();
+                                self.events
+                                    .push_back(StateChange::PaneTitleChanged { pane, title });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 解析 `list-panes -t <window> -F '#{pane_id} #{window_id} #{pane_active} #{pane_width}x#{pane_height} x=#{pane_left} y=#{pane_top}'` 的响应。
+    ///
+    /// 每行格式：`%N @M 0 70x30 x=0 y=0`（active=1 表示激活）
+    fn handle_list_panes_response(&mut self, window: WindowId, lines: Vec<String>) {
+        let tab_id = TabId(window.0);
+        let mut new_panes: Vec<PaneInfo> = Vec::new();
+        for line in lines {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // 期望格式：%N,@M,<active>,<cols>x<rows>,<x>,<y>（逗号分隔）
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() < 6 {
+                continue;
+            }
+            let pane = match parse_pane_id_lenient(parts[0]) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let active = parts[2] == "1";
+            let (cols, rows) = parse_pane_size(Some(parts[3]));
+            let (px, py) = parse_pane_pos(Some(parts[4]), Some(parts[5]));
+            new_panes.push(PaneInfo {
+                id: pane,
+                tab: tab_id,
+                active,
+                title: String::new(),
+                cols,
+                rows,
+            });
+            // 记录 pane 几何位置用于 layout tree 匹配
+            let _ = (px, py);
+        }
+        // 合并：更新已有 pane + 新增 pane
+        let mut changed = false;
+        for np in &new_panes {
+            if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
+                if existing.cols != np.cols
+                    || existing.rows != np.rows
+                    || existing.active != np.active
+                {
+                    existing.cols = np.cols;
+                    existing.rows = np.rows;
+                    existing.active = np.active;
+                    self.events.push_back(StateChange::PaneResized {
+                        pane: np.id,
+                        cols: np.cols,
+                        rows: np.rows,
+                    });
+                }
+            } else {
+                self.panes.push(np.clone());
+                self.events.push_back(StateChange::PaneAdded {
+                    pane: np.id,
+                    tab: tab_id,
+                });
+                changed = true;
+            }
+        }
+        // 删除不再存在的 pane
+        let valid_ids: Vec<PaneId> = new_panes.iter().map(|p| p.id).collect();
+        let to_remove: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|p| p.tab == tab_id && !valid_ids.contains(&p.id))
+            .map(|p| p.id)
+            .collect();
+        for pid in to_remove {
+            self.panes.retain(|p| p.id != pid);
+            self.events.push_back(StateChange::PaneClosed { pane: pid });
+            changed = true;
+        }
+        // 重建 layout tree（如果有 layout 几何信息）
+        if changed || !new_panes.is_empty() {
+            // 尝试用 list-windows 缓存的 layout 重建 LayoutNode 树
+            self.rebuild_layout(tab_id, window, &new_panes);
+        }
+    }
+
+    /// 解析 `list-windows -t <session> -F '#{window_id} #{window_name} #{window_active} #{window_layout} #{window_panes}'` 的响应。
+    fn handle_list_windows_response(&mut self, lines: Vec<String>) {
+        let sess = self.active_session.unwrap_or(SessionId(0));
+        for line in lines {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // 格式：@0,name,1,75ac,140x30,...{...},3（逗号分隔，但 window_layout 含逗号）
+            // window_layout 本身含逗号，所以用 splitn(5, ',') 分割前 4 个字段 + 剩余
+            let parts: Vec<&str> = line.splitn(5, ',').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let window = match WindowId::parse(parts[0]) {
+                Ok(w) => w,
+                Err(_) => continue,
+            };
+            let name = parts[1].to_string();
+            let active = parts[2] == "1";
+            let layout_str = parts[3];
+            let _panes_count: u32 = parts[4].parse().unwrap_or(0);
+
+            // 更新 / 创建 window（虚拟）
+            if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
+                w.name = name.clone();
+                w.active = active;
+            } else {
+                self.windows.push(WindowInfo {
+                    id: window,
+                    name: name.clone(),
+                    session: sess,
+                    active,
+                });
+            }
+            // 更新 / 创建 tab
+            let tab_id = TabId(window.0);
+            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                t.name = name.clone();
+                t.active = active;
+            } else {
+                self.tabs.push(TabInfo {
+                    id: tab_id,
+                    name: name.clone(),
+                    window,
+                    active,
+                });
+                self.events.push_back(StateChange::TabAdded {
+                    tab: tab_id,
+                    window,
+                });
+            }
+
+            // 主动查询该 window 的 panes
+            self.query_list_panes(window);
+        }
+    }
+
+    /// 发送 list-panes 查询（异步，通过 cmd_tx）。
+    fn query_list_panes(&mut self, window: WindowId) {
+        // 用 -F 格式拿 pane 几何。tmux 命令行的 -F 值用双引号 C 转义字符串
+        // （与 protocol 的 %output content 同规则）。#{...} 不需转义。
+        // tmux CC 模式下 # 开头的 token 被当作注释，所以 -F 的格式字符串
+        // 必须用双引号包裹（tmux 的 C 风格字符串），这样 # 在引号内是字面量。
+        let line = format!(
+            "list-panes -t @{} -F \"#{{pane_id}},#{{window_id}},#{{pane_active}},#{{pane_width}}x#{{pane_height}},#{{pane_left}},#{{pane_top}}\"\n",
+            window.0
+        );
+
+        if self.dispatch_command(line).is_ok() {
+            self.pending_queries
+                .push_back(PendingQuery::ListPanes { window });
+        }
+    }
+
+    /// 发送 list-windows 查询。
+    fn query_list_windows(&mut self) {
+        let sess = self.active_session.unwrap_or(SessionId(0));
+        let line = format!(
+            "list-windows -t {} -F \"#{{window_id}},#{{window_name}},#{{window_active}},#{{window_layout}},#{{window_panes}}\"\n",
+            sess
+        );
+
+        if self.dispatch_command(line).is_ok() {
+            self.pending_queries.push_back(PendingQuery::ListWindows);
+        }
+    }
+
+    /// 用 parse_layout_tree 重建 LayoutNode 树。
+    ///
+    /// 需要 list-windows 的 window_layout 字符串。这里通过几何匹配把
+    /// LayoutTree 叶子映射到 pane id（位置匹配）。
+    fn rebuild_layout(&mut self, tab_id: TabId, window: WindowId, panes: &[PaneInfo]) {
+        // 从 windows 缓存里拿 layout 字符串——但我们没存原始字符串。
+        // 简化：先发 display-message 查 window_layout，收到后重建。
+        // 这里先用叶子列表建一个朴素的树（按 active + 顺序），
+        // 如果只有一个 pane 就是 leaf。
+        if panes.is_empty() {
+            return;
+        }
+        if panes.len() == 1 {
+            let tree = LayoutNode::leaf(panes[0].id);
+            let layout = TabLayout {
+                tab: tab_id,
+                tree,
+                active: panes
+                    .iter()
+                    .find(|p| p.active)
+                    .map(|p| p.id)
+                    .unwrap_or(panes[0].id),
+            };
+            self.layouts.insert(tab_id, layout.clone());
+            self.events.push_back(StateChange::LayoutChanged {
+                tab: tab_id,
+                layout,
+            });
+            return;
+        }
+        // 多 pane：发 display-message 查 window_layout，收到后用 parse_layout_tree 重建。
+        // 用 display-message -p -t <window> '#{window_layout}'
+        let line = format!("display-message -p -t @{} '#{{window_layout}}'", window.0);
+        // display-message 响应是单行，但我们用 ListPanes 的 window 标记
+        // 简化：这里不阻塞，发命令后用 pane id 几何匹配。
+        // 实际上 list-windows 响应已含 window_layout，我们在 handle_list_windows_response
+        // 里已有 layout_str。这里改用：直接用 panes 几何排序建一个顺序树（临时）。
+        // 真正的树重建在 query_window_layout 完成后做。
+        let _ = line;
+        // 临时：按几何位置建 LayoutNode（水平排列）
+        let mut sorted: Vec<PaneInfo> = panes.to_vec();
+        sorted.sort_by_key(|p| (p.cols, p.id.0));
+        let mut tree = LayoutNode::leaf(sorted[0].id);
+        for p in &sorted[1..] {
+            tree.split_at(sorted[0].id, p.id, SplitDir::Horizontal);
+        }
+        let active = panes
+            .iter()
+            .find(|p| p.active)
+            .map(|p| p.id)
+            .unwrap_or(panes[0].id);
+        let layout = TabLayout {
+            tab: tab_id,
+            tree,
+            active,
+        };
+        self.layouts.insert(tab_id, layout.clone());
+        self.events.push_back(StateChange::LayoutChanged {
+            tab: tab_id,
+            layout,
+        });
     }
 
     /// 把一个命令异步发送给 tmux（通过 channel）。
@@ -479,6 +767,22 @@ impl Backend for TmuxBackend {
             anyhow::bail!("tmux 启动后未收到 session 事件");
         }
 
+        // 主动查询所有 window + pane，建立完整初始 state（attach 已有 session 必需）
+        self.query_list_windows();
+        // 等待 list-windows + list-panes 响应到达（最多 3 秒）
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            self.pump_events();
+            // 等 panes 非空（至少有一个 window 的 pane 查询完成）
+            if !self.panes.is_empty() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
         self.status = BackendStatus::Connected;
         self.events
             .push_back(StateChange::BackendStatusChanged(BackendStatus::Connected));
@@ -556,7 +860,9 @@ impl Backend for TmuxBackend {
             }
             Task::NewWindow { name, .. } => {
                 let sess = self.active_session.unwrap_or(SessionId(0));
+
                 let c = cmd::new_window(sess, name.as_deref());
+
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
@@ -743,6 +1049,45 @@ impl Backend for TmuxBackend {
     }
 }
 
+/// 兼容解析 pane id（复用 protocol 的 lenient 解析）。
+fn parse_pane_id_lenient(s: &str) -> Result<PaneId, crate::core::tmux::protocol::ProtocolError> {
+    use crate::core::tmux::protocol::ProtocolError;
+    let num_part = s
+        .strip_prefix('@')
+        .or_else(|| s.strip_prefix('%'))
+        .unwrap_or(s);
+    let n = num_part
+        .parse::<u32>()
+        .map_err(|_| ProtocolError::MalformedField(format!("pane id 非数字: {s}")))?;
+    Ok(PaneId(n))
+}
+
+/// 解析 `70x30` 形式的 pane 尺寸字符串。
+fn parse_pane_size(s: Option<&str>) -> (u16, u16) {
+    let s = match s {
+        Some(s) => s,
+        None => return (80, 24),
+    };
+    if let Some((w, h)) = s.split_once('x') {
+        (w.parse().unwrap_or(80), h.parse().unwrap_or(24))
+    } else {
+        (80, 24)
+    }
+}
+
+/// 解析 `x=0` / `y=0` 形式的位置字段。
+fn parse_pane_pos(xs: Option<&str>, ys: Option<&str>) -> (u32, u32) {
+    let x = xs
+        .and_then(|s| s.strip_prefix("x="))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let y = ys
+        .and_then(|s| s.strip_prefix("y="))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    (x, y)
+}
+
 /// 把抽象 KeyEvent 转成 tmux Key。
 fn key_event_to_tmux_key(ev: &crate::core::terminal::input::KeyEvent) -> cmd::Key {
     use crate::core::terminal::input::{ArrowDir, KeyEvent};
@@ -837,9 +1182,18 @@ mod tests {
             workdir: None,
         })
         .unwrap();
-        // 等待 tmux 推送 WindowAdd 事件
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        let _ = b.take_events();
+        // 等待 tmux 推送 WindowAdd 事件（轮询 pump_events 而非 sleep）
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+        loop {
+            let _ = b.take_events();
+            if b.windows.len() > initial_windows {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
         assert!(b.windows.len() > initial_windows, "新 window 未建立");
         let _ = b.shutdown().await;
         cleanup(&socket);
