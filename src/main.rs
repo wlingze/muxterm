@@ -104,9 +104,8 @@ fn main() -> anyhow::Result<()> {
 /// CLI 命令模式：解析命令 → TerminalModel::execute → 格式化输出。
 fn cli_mode(args: &[String]) -> anyhow::Result<()> {
     use crate::core::backend::LocalBackend;
-    use crate::core::model::task::Task;
     use crate::core::model::TerminalModel;
-    use cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
+    use cli::{format_output, parse_cli_command, OutputFormat};
 
     let (cmd, format_str) = parse_cli_command(args)?;
     let format = format_str

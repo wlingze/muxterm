@@ -19,7 +19,7 @@
 //! ```
 
 use crate::core::model::state::{BackendStatus, State};
-use crate::core::types::{PaneId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 
 /// 渲染选项。
 #[derive(Debug, Clone, Copy)]
