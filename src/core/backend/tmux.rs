@@ -31,7 +31,7 @@ use crate::core::model::state::{
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::tmux::client::{TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent};
 use crate::core::tmux::command as cmd;
-use crate::core::tmux::protocol::{Message, NotificationKind};
+use crate::core::tmux::protocol::{parse_layout_tree, LayoutTree, Message, NotificationKind};
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
@@ -75,6 +75,8 @@ pub struct TmuxBackend {
     response_accum: HashMap<i64, Vec<String>>,
     /// 等待响应的命令回调（number → 处理函数）。简化为存命令类型标记。
     pending_queries: VecDeque<PendingQuery>,
+    /// 缓存每个 window 的 layout 字符串（从 list-windows 响应获取），用于重建 LayoutNode。
+    window_layouts: HashMap<WindowId, String>,
 }
 
 impl TmuxBackend {
@@ -113,6 +115,7 @@ impl TmuxBackend {
             events: VecDeque::new(),
             response_accum: HashMap::new(),
             pending_queries: VecDeque::new(),
+            window_layouts: HashMap::new(),
         }
     }
 
@@ -417,25 +420,26 @@ impl TmuxBackend {
     /// 解析 `list-panes -a -t <session> -F '...'` 的响应。
     ///
     /// 每行格式：`%N,@M,<active>,<cols>x<rows>,<x>,<y>`（逗号分隔）
-    /// -a 返回 session 内所有 pane，按 window_id 分组更新。
-    fn handle_list_panes_response(&mut self, _window: WindowId, lines: Vec<String>) {
-        tracing::debug!(target: "muxterm::tmux", "list-panes 响应: {} 行", lines.len());
-        let mut panes_by_window: HashMap<WindowId, Vec<PaneInfo>> = HashMap::new();
+    /// 解析 `list-panes -t @N` 的响应。
+    ///
+    /// 默认格式："1: [70x30] [history ...] %0 (active)"
+    /// 参数 window 是这些 pane 所属的 tmux window。
+    fn handle_list_panes_response(&mut self, window: WindowId, lines: Vec<String>) {
+        tracing::debug!(target: "muxterm::tmux", "list-panes 响应 window=@{}: {} 行", window.0, lines.len());
+        let tab_id = TabId(window.0);
+        let mut new_panes: Vec<PaneInfo> = Vec::new();
         for line in lines {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            // 默认格式："0:1.1: [80x24] [history ...] %0 (active)"
             let pane = match extract_pane_id_from_default(line) {
                 Some(p) => p,
                 None => continue,
             };
             let (cols, rows) = extract_size_from_default(line);
             let active = line.contains("(active)");
-            let win = self.windows.first().map(|w| w.id).unwrap_or(WindowId(0));
-            let tab_id = TabId(win.0);
-            panes_by_window.entry(win).or_default().push(PaneInfo {
+            new_panes.push(PaneInfo {
                 id: pane,
                 tab: tab_id,
                 active,
@@ -444,49 +448,45 @@ impl TmuxBackend {
                 rows,
             });
         }
-        // 按窗口分组更新 panes
-        for (win, new_panes) in &panes_by_window {
-            let tab_id = TabId(win.0);
-            let mut changed = false;
-            for np in new_panes {
-                if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
-                    if existing.cols != np.cols
-                        || existing.rows != np.rows
-                        || existing.active != np.active
-                    {
-                        existing.cols = np.cols;
-                        existing.rows = np.rows;
-                        existing.active = np.active;
-                        self.events.push_back(StateChange::PaneResized {
-                            pane: np.id,
-                            cols: np.cols,
-                            rows: np.rows,
-                        });
-                    }
-                } else {
-                    self.panes.push(np.clone());
-                    self.events.push_back(StateChange::PaneAdded {
+        let mut changed = false;
+        for np in &new_panes {
+            if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
+                if existing.cols != np.cols
+                    || existing.rows != np.rows
+                    || existing.active != np.active
+                {
+                    existing.cols = np.cols;
+                    existing.rows = np.rows;
+                    existing.active = np.active;
+                    self.events.push_back(StateChange::PaneResized {
                         pane: np.id,
-                        tab: tab_id,
+                        cols: np.cols,
+                        rows: np.rows,
                     });
-                    changed = true;
                 }
-            }
-            let valid_ids: Vec<PaneId> = new_panes.iter().map(|p| p.id).collect();
-            let to_remove: Vec<PaneId> = self
-                .panes
-                .iter()
-                .filter(|p| p.tab == tab_id && !valid_ids.contains(&p.id))
-                .map(|p| p.id)
-                .collect();
-            for pid in to_remove {
-                self.panes.retain(|p| p.id != pid);
-                self.events.push_back(StateChange::PaneClosed { pane: pid });
+            } else {
+                self.panes.push(np.clone());
+                self.events.push_back(StateChange::PaneAdded {
+                    pane: np.id,
+                    tab: tab_id,
+                });
                 changed = true;
             }
-            if changed || !new_panes.is_empty() {
-                self.rebuild_layout(tab_id, *win, new_panes);
-            }
+        }
+        let valid_ids: Vec<PaneId> = new_panes.iter().map(|p| p.id).collect();
+        let to_remove: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|p| p.tab == tab_id && !valid_ids.contains(&p.id))
+            .map(|p| p.id)
+            .collect();
+        for pid in to_remove {
+            self.panes.retain(|p| p.id != pid);
+            self.events.push_back(StateChange::PaneClosed { pane: pid });
+            changed = true;
+        }
+        if changed || !new_panes.is_empty() {
+            self.rebuild_layout(tab_id, window, &new_panes);
         }
     }
 
@@ -510,7 +510,9 @@ impl TmuxBackend {
             };
             let name = parts[1].to_string();
             let active = parts[2] == "1";
-            let _layout_str = parts[3];
+            let layout_str = parts[3].to_string();
+            // 缓存 window_layout 字符串，供 rebuild_layout 使用
+            self.window_layouts.insert(window, layout_str);
             let _panes_count: u32 = parts[4].parse().unwrap_or(0);
 
             // 更新 / 创建 window（虚拟）
@@ -550,11 +552,9 @@ impl TmuxBackend {
 
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
     fn query_list_panes(&mut self, window: WindowId) {
-        // tmux CC 模式下 -F #{...} 无法使用（双引号阻止展开，裸用 # 被当注释）。
-        // 用默认格式列出所有 pane，由 handle_list_panes_response 解析。
-        let line = "list-panes -a\n".to_string();
-        let sent = self.dispatch_command(line).is_ok();
-        if sent {
+        // 用 list-panes -t @N 查询单个 window 的 pane（默认格式不含 window_id）。
+        let line = format!("list-panes -t @{}\n", window.0);
+        if self.dispatch_command(line).is_ok() {
             self.pending_queries
                 .push_back(PendingQuery::ListPanes { window });
         }
@@ -578,23 +578,20 @@ impl TmuxBackend {
     /// 需要 list-windows 的 window_layout 字符串。这里通过几何匹配把
     /// LayoutTree 叶子映射到 pane id（位置匹配）。
     fn rebuild_layout(&mut self, tab_id: TabId, window: WindowId, panes: &[PaneInfo]) {
-        // 从 windows 缓存里拿 layout 字符串——但我们没存原始字符串。
-        // 简化：先发 display-message 查 window_layout，收到后重建。
-        // 这里先用叶子列表建一个朴素的树（按 active + 顺序），
-        // 如果只有一个 pane 就是 leaf。
         if panes.is_empty() {
             return;
         }
+        let active = panes
+            .iter()
+            .find(|p| p.active)
+            .map(|p| p.id)
+            .unwrap_or(panes[0].id);
         if panes.len() == 1 {
             let tree = LayoutNode::leaf(panes[0].id);
             let layout = TabLayout {
                 tab: tab_id,
                 tree,
-                active: panes
-                    .iter()
-                    .find(|p| p.active)
-                    .map(|p| p.id)
-                    .unwrap_or(panes[0].id),
+                active,
             };
             self.layouts.insert(tab_id, layout.clone());
             self.events.push_back(StateChange::LayoutChanged {
@@ -603,27 +600,48 @@ impl TmuxBackend {
             });
             return;
         }
-        // 多 pane：发 display-message 查 window_layout，收到后用 parse_layout_tree 重建。
-        // 用 display-message -p -t <window> '#{window_layout}'
-        let line = format!("display-message -p -t @{} '#{{window_layout}}'", window.0);
-        // display-message 响应是单行，但我们用 ListPanes 的 window 标记
-        // 简化：这里不阻塞，发命令后用 pane id 几何匹配。
-        // 实际上 list-windows 响应已含 window_layout，我们在 handle_list_windows_response
-        // 里已有 layout_str。这里改用：直接用 panes 几何排序建一个顺序树（临时）。
-        // 真正的树重建在 query_window_layout 完成后做。
-        let _ = line;
-        // 临时：按几何位置建 LayoutNode（水平排列）
+        let layout_str = match self.window_layouts.get(&window) {
+            Some(s) => s.clone(),
+            None => {
+                self.build_fallback_layout(tab_id, panes, active);
+                return;
+            }
+        };
+        let tree = match parse_layout_tree(&layout_str) {
+            Ok(lt) => lt,
+            Err(e) => {
+                tracing::warn!(target: "muxterm::tmux", "layout tree 解析失败: {e}");
+                self.build_fallback_layout(tab_id, panes, active);
+                return;
+            }
+        };
+        let layout_node = match layout_tree_to_node(&tree, panes) {
+            Some(n) => n,
+            None => {
+                self.build_fallback_layout(tab_id, panes, active);
+                return;
+            }
+        };
+        let layout = TabLayout {
+            tab: tab_id,
+            tree: layout_node,
+            active,
+        };
+        self.layouts.insert(tab_id, layout.clone());
+        self.events.push_back(StateChange::LayoutChanged {
+            tab: tab_id,
+            layout,
+        });
+    }
+
+    /// 朴素兜底布局：按顺序水平排列 pane。
+    fn build_fallback_layout(&mut self, tab_id: TabId, panes: &[PaneInfo], active: PaneId) {
         let mut sorted: Vec<PaneInfo> = panes.to_vec();
         sorted.sort_by_key(|p| (p.cols, p.id.0));
         let mut tree = LayoutNode::leaf(sorted[0].id);
         for p in &sorted[1..] {
             tree.split_at(sorted[0].id, p.id, SplitDir::Horizontal);
         }
-        let active = panes
-            .iter()
-            .find(|p| p.active)
-            .map(|p| p.id)
-            .unwrap_or(panes[0].id);
         let layout = TabLayout {
             tab: tab_id,
             tree,
@@ -1044,6 +1062,51 @@ impl Backend for TmuxBackend {
         self.events
             .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
         Ok(())
+    }
+}
+
+/// 把 LayoutTree（几何拓扑）转成 LayoutNode（pane id 树），按几何位置匹配。
+fn layout_tree_to_node(tree: &LayoutTree, panes: &[PaneInfo]) -> Option<LayoutNode> {
+    let leaves = collect_layout_leaves(tree);
+    if leaves.len() != panes.len() {
+        return None;
+    }
+    let mut mapping = HashMap::new();
+    for (leaf, pane) in leaves.iter().zip(panes.iter()) {
+        mapping.insert((leaf.x, leaf.y), pane.id);
+    }
+    layout_tree_to_node_inner(tree, &mapping)
+}
+
+fn collect_layout_leaves(tree: &LayoutTree) -> Vec<&LayoutTree> {
+    match &tree.children {
+        None => vec![tree],
+        Some((a, b)) => {
+            let mut v = collect_layout_leaves(a);
+            v.extend(collect_layout_leaves(b));
+            v
+        }
+    }
+}
+
+fn layout_tree_to_node_inner(
+    tree: &LayoutTree,
+    mapping: &HashMap<(u32, u32), PaneId>,
+) -> Option<LayoutNode> {
+    match &tree.children {
+        None => mapping
+            .get(&(tree.x, tree.y))
+            .map(|&pid| LayoutNode::leaf(pid)),
+        Some((a, b)) => {
+            let first = layout_tree_to_node_inner(a, mapping)?;
+            let second = layout_tree_to_node_inner(b, mapping)?;
+            Some(LayoutNode::Split {
+                dir: tree.dir,
+                ratio: 500,
+                first: Box::new(first),
+                second: Box::new(second),
+            })
+        }
     }
 }
 

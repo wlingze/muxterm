@@ -163,9 +163,10 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                     workdir: None,
                 },
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
+                    // Alt+N → 第 N 个 window（0-based: Alt+1=@0, Alt+2=@1...）
                     let n = lower.to_digit(10).unwrap();
                     Task::SwitchWindow {
-                        target: WindowId(n),
+                        target: WindowId(n.saturating_sub(1)),
                     }
                 }
                 // Alt+W 关闭当前 window
