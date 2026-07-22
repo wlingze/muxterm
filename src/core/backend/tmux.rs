@@ -146,6 +146,8 @@ impl TmuxBackend {
                 layout,
                 visible_layout,
             } => {
+                // layout 变化可能意味着 pane 增减，重新查询 pane 列表
+                self.query_list_panes(window);
                 // 从 layout 几何更新 pane 尺寸（如果有对应 pane）
                 let cols = layout.cols as u16;
                 let rows = layout.rows as u16;
@@ -348,12 +350,17 @@ impl TmuxBackend {
                                 self.dispatch_response(b.number, lines);
                             }
                             NotificationKind::Error => {
-                                self.response_accum.remove(&b.number);
-                                tracing::warn!(
-                                    target: "muxterm::tmux",
-                                    "tmux 命令 {} 出错",
-                                    b.number
-                                );
+                                let err_lines =
+                                    self.response_accum.remove(&b.number).unwrap_or_default();
+
+                                if let Some(q) = self.pending_queries.pop_front() {
+                                    tracing::warn!(
+                                        target: "muxterm::tmux",
+                                        "tmux 命令 {} 出错（丢弃查询 {:?}）",
+                                        b.number,
+                                        q
+                                    );
+                                }
                             }
                         }
                     }
@@ -406,30 +413,28 @@ impl TmuxBackend {
         }
     }
 
-    /// 解析 `list-panes -t <window> -F '#{pane_id} #{window_id} #{pane_active} #{pane_width}x#{pane_height} x=#{pane_left} y=#{pane_top}'` 的响应。
+    /// 解析 `list-panes -a -t <session> -F '...'` 的响应。
     ///
-    /// 每行格式：`%N @M 0 70x30 x=0 y=0`（active=1 表示激活）
-    fn handle_list_panes_response(&mut self, window: WindowId, lines: Vec<String>) {
-        let tab_id = TabId(window.0);
-        let mut new_panes: Vec<PaneInfo> = Vec::new();
+    /// 每行格式：`%N,@M,<active>,<cols>x<rows>,<x>,<y>`（逗号分隔）
+    /// -a 返回 session 内所有 pane，按 window_id 分组更新。
+    fn handle_list_panes_response(&mut self, _window: WindowId, lines: Vec<String>) {
+        tracing::debug!(target: "muxterm::tmux", "list-panes 响应: {} 行", lines.len());
+        let mut panes_by_window: HashMap<WindowId, Vec<PaneInfo>> = HashMap::new();
         for line in lines {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            // 期望格式：%N,@M,<active>,<cols>x<rows>,<x>,<y>（逗号分隔）
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() < 6 {
-                continue;
-            }
-            let pane = match parse_pane_id_lenient(parts[0]) {
-                Ok(p) => p,
-                Err(_) => continue,
+            // 默认格式："0:1.1: [80x24] [history ...] %0 (active)"
+            let pane = match extract_pane_id_from_default(line) {
+                Some(p) => p,
+                None => continue,
             };
-            let active = parts[2] == "1";
-            let (cols, rows) = parse_pane_size(Some(parts[3]));
-            let (px, py) = parse_pane_pos(Some(parts[4]), Some(parts[5]));
-            new_panes.push(PaneInfo {
+            let (cols, rows) = extract_size_from_default(line);
+            let active = line.contains("(active)");
+            let win = self.windows.first().map(|w| w.id).unwrap_or(WindowId(0));
+            let tab_id = TabId(win.0);
+            panes_by_window.entry(win).or_default().push(PaneInfo {
                 id: pane,
                 tab: tab_id,
                 active,
@@ -437,52 +442,50 @@ impl TmuxBackend {
                 cols,
                 rows,
             });
-            // 记录 pane 几何位置用于 layout tree 匹配
-            let _ = (px, py);
         }
-        // 合并：更新已有 pane + 新增 pane
-        let mut changed = false;
-        for np in &new_panes {
-            if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
-                if existing.cols != np.cols
-                    || existing.rows != np.rows
-                    || existing.active != np.active
-                {
-                    existing.cols = np.cols;
-                    existing.rows = np.rows;
-                    existing.active = np.active;
-                    self.events.push_back(StateChange::PaneResized {
+        // 按窗口分组更新 panes
+        for (win, new_panes) in &panes_by_window {
+            let tab_id = TabId(win.0);
+            let mut changed = false;
+            for np in new_panes {
+                if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
+                    if existing.cols != np.cols
+                        || existing.rows != np.rows
+                        || existing.active != np.active
+                    {
+                        existing.cols = np.cols;
+                        existing.rows = np.rows;
+                        existing.active = np.active;
+                        self.events.push_back(StateChange::PaneResized {
+                            pane: np.id,
+                            cols: np.cols,
+                            rows: np.rows,
+                        });
+                    }
+                } else {
+                    self.panes.push(np.clone());
+                    self.events.push_back(StateChange::PaneAdded {
                         pane: np.id,
-                        cols: np.cols,
-                        rows: np.rows,
+                        tab: tab_id,
                     });
+                    changed = true;
                 }
-            } else {
-                self.panes.push(np.clone());
-                self.events.push_back(StateChange::PaneAdded {
-                    pane: np.id,
-                    tab: tab_id,
-                });
+            }
+            let valid_ids: Vec<PaneId> = new_panes.iter().map(|p| p.id).collect();
+            let to_remove: Vec<PaneId> = self
+                .panes
+                .iter()
+                .filter(|p| p.tab == tab_id && !valid_ids.contains(&p.id))
+                .map(|p| p.id)
+                .collect();
+            for pid in to_remove {
+                self.panes.retain(|p| p.id != pid);
+                self.events.push_back(StateChange::PaneClosed { pane: pid });
                 changed = true;
             }
-        }
-        // 删除不再存在的 pane
-        let valid_ids: Vec<PaneId> = new_panes.iter().map(|p| p.id).collect();
-        let to_remove: Vec<PaneId> = self
-            .panes
-            .iter()
-            .filter(|p| p.tab == tab_id && !valid_ids.contains(&p.id))
-            .map(|p| p.id)
-            .collect();
-        for pid in to_remove {
-            self.panes.retain(|p| p.id != pid);
-            self.events.push_back(StateChange::PaneClosed { pane: pid });
-            changed = true;
-        }
-        // 重建 layout tree（如果有 layout 几何信息）
-        if changed || !new_panes.is_empty() {
-            // 尝试用 list-windows 缓存的 layout 重建 LayoutNode 树
-            self.rebuild_layout(tab_id, window, &new_panes);
+            if changed || !new_panes.is_empty() {
+                self.rebuild_layout(tab_id, *win, new_panes);
+            }
         }
     }
 
@@ -546,16 +549,11 @@ impl TmuxBackend {
 
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
     fn query_list_panes(&mut self, window: WindowId) {
-        // 用 -F 格式拿 pane 几何。tmux 命令行的 -F 值用双引号 C 转义字符串
-        // （与 protocol 的 %output content 同规则）。#{...} 不需转义。
-        // tmux CC 模式下 # 开头的 token 被当作注释，所以 -F 的格式字符串
-        // 必须用双引号包裹（tmux 的 C 风格字符串），这样 # 在引号内是字面量。
-        let line = format!(
-            "list-panes -t @{} -F \"#{{pane_id}},#{{window_id}},#{{pane_active}},#{{pane_width}}x#{{pane_height}},#{{pane_left}},#{{pane_top}}\"\n",
-            window.0
-        );
-
-        if self.dispatch_command(line).is_ok() {
+        // tmux CC 模式下 -F #{...} 无法使用（双引号阻止展开，裸用 # 被当注释）。
+        // 用默认格式列出所有 pane，由 handle_list_panes_response 解析。
+        let line = "list-panes -a\n".to_string();
+        let sent = self.dispatch_command(line).is_ok();
+        if sent {
             self.pending_queries
                 .push_back(PendingQuery::ListPanes { window });
         }
@@ -1049,43 +1047,39 @@ impl Backend for TmuxBackend {
     }
 }
 
-/// 兼容解析 pane id（复用 protocol 的 lenient 解析）。
-fn parse_pane_id_lenient(s: &str) -> Result<PaneId, crate::core::tmux::protocol::ProtocolError> {
-    use crate::core::tmux::protocol::ProtocolError;
-    let num_part = s
-        .strip_prefix('@')
-        .or_else(|| s.strip_prefix('%'))
-        .unwrap_or(s);
-    let n = num_part
-        .parse::<u32>()
-        .map_err(|_| ProtocolError::MalformedField(format!("pane id 非数字: {s}")))?;
-    Ok(PaneId(n))
-}
-
-/// 解析 `70x30` 形式的 pane 尺寸字符串。
-fn parse_pane_size(s: Option<&str>) -> (u16, u16) {
-    let s = match s {
-        Some(s) => s,
-        None => return (80, 24),
-    };
-    if let Some((w, h)) = s.split_once('x') {
-        (w.parse().unwrap_or(80), h.parse().unwrap_or(24))
-    } else {
-        (80, 24)
+/// 从默认格式的 list-panes 行提取 pane id。
+///
+/// 格式：`0:1.1: [80x24] [history ...] %0 (active)`
+/// 提取 `%0` 部分 → PaneId(0)
+fn extract_pane_id_from_default(line: &str) -> Option<PaneId> {
+    // 找 %N token（pane id）
+    for token in line.split_whitespace() {
+        if token.starts_with('%') && token.len() > 1 {
+            let num = &token[1..];
+            // 去除尾部非数字字符（如 "%0(active)" 或 "%0")
+            let digits: String = num.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = digits.parse::<u32>() {
+                return Some(PaneId(n));
+            }
+        }
     }
+    None
 }
 
-/// 解析 `x=0` / `y=0` 形式的位置字段。
-fn parse_pane_pos(xs: Option<&str>, ys: Option<&str>) -> (u32, u32) {
-    let x = xs
-        .and_then(|s| s.strip_prefix("x="))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let y = ys
-        .and_then(|s| s.strip_prefix("y="))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    (x, y)
+/// 从默认格式的 list-panes 行提取尺寸。
+///
+/// 格式：`... [80x24] ...` → (80, 24)
+fn extract_size_from_default(line: &str) -> (u16, u16) {
+    // 找 [WxH] 模式
+    if let Some(start) = line.find('[') {
+        if let Some(end) = line[start..].find(']') {
+            let inside = &line[start + 1..start + end];
+            if let Some((w, h)) = inside.split_once('x') {
+                return (w.parse().unwrap_or(80), h.parse().unwrap_or(24));
+            }
+        }
+    }
+    (80, 24)
 }
 
 /// 把抽象 KeyEvent 转成 tmux Key。
