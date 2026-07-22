@@ -10,6 +10,7 @@ use clap::Parser;
 
 mod cli;
 mod core;
+mod main_entry;
 mod platform;
 
 /// Muxterm 命令行参数
@@ -101,166 +102,190 @@ fn main() -> anyhow::Result<()> {
     anyhow::bail!("没有可用的前端（启用 `gtk` 或 `tui` feature）")
 }
 
-/// CLI 命令模式：解析命令 → TerminalModel::execute → 格式化输出。
+/// CLI 命令模式：解析命令 → 执行 → 格式化输出。
+///
+/// 两种路径：
+/// 1. **daemon 模式**（`-s <name>` 或 `new-session -s <name>`）：
+///    连接到持久 daemon 的 unix socket，命令在 daemon 内执行，状态保留。
+///    `new-session` 时如果 daemon 不存在则 fork 启动。
+/// 2. **临时模式**（无 `-s`）：创建临时 LocalBackend，执行后关闭（状态不保留）。
 fn cli_mode(args: &[String]) -> anyhow::Result<()> {
-    use crate::core::backend::LocalBackend;
-    use crate::core::model::TerminalModel;
-    use cli::{format_output, parse_cli_command, OutputFormat};
+    use cli::{parse_cli_command, OutputFormat};
 
     let (cmd, format_str) = parse_cli_command(args)?;
     let format = format_str
         .map(|s| OutputFormat::from_str(&s))
         .unwrap_or(OutputFormat::Json);
 
-    // CLI 命令用 LocalBackend（本地 shell）
-    // 每个 CLI 命令独立连接 → 执行 → 输出 → 关闭
-    // 对于查询命令（list-*），需要先 connect 建立 session
+    // 判断是否走 daemon 模式
+    let session_name = extract_session_name(&cmd, args);
+
+    match session_name {
+        Some(name) => {
+            // daemon 模式
+            cli_mode_daemon(&name, &cmd, format)
+        }
+        None => {
+            // 临时模式（原有逻辑）
+            cli_mode_ephemeral(&cmd, format)
+        }
+    }
+}
+
+/// 从命令参数中提取 session name（`-s <name>`）。
+///
+/// `-s <name>` 是全局参数，可出现在任何命令的参数中（parse_cli_command 的
+/// filter 只处理 --format，其余参数原样保留）。这里扫描原始 args 查找 -s。
+fn extract_session_name(cmd: &cli::CliCommand, args: &[String]) -> Option<String> {
+    // NewSession 的 -s 参数优先
+    if let cli::CliCommand::NewSession { socket, .. } = cmd {
+        if socket.is_some() {
+            return socket.clone();
+        }
+    }
+    // 全局 -s 参数：扫描原始 args
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-s" {
+            if let Some(name) = iter.next() {
+                return Some(name.clone());
+            }
+        }
+    }
+    None
+}
+
+/// daemon 模式：连接/启动 daemon，发送命令，打印输出。
+fn cli_mode_daemon(
+    name: &str,
+    cmd: &cli::CliCommand,
+    format: cli::OutputFormat,
+) -> anyhow::Result<()> {
+    use cli::client::send_command;
+    use cli::session::session_socket_path;
+
+    let sock = session_socket_path(name);
+
+    // 如果是 NewSession 且 socket 不存在 → 启动 daemon
+    if matches!(cmd, cli::CliCommand::NewSession { .. }) && !sock.exists() {
+        spawn_daemon(&sock, name)?;
+        // 等待 daemon 就绪（最多 3 秒）
+        wait_for_socket(&sock, std::time::Duration::from_secs(3))?;
+    }
+
+    if !sock.exists() {
+        anyhow::bail!(
+            "session '{}' 不存在（socket: {}）。用 `muxterm new-session -s {}` 创建。",
+            name,
+            sock.display(),
+            name
+        );
+    }
+
+    // NewSession 命令只负责启动 daemon，不发送给 daemon 执行
+    // （NewSession → Task::NewWindow 会创建多余的 window）。
+    // daemon 在 connect 时已自动建立第一个 session/window/tab/pane。
+    if matches!(cmd, cli::CliCommand::NewSession { .. }) {
+        tracing::info!(target: "muxterm", session = %name, "session 已创建");
+        return Ok(());
+    }
+
+    // 发送命令到 daemon
+    let resp = send_command(&sock, cmd, format)?;
+    if resp.ok {
+        if !resp.output.is_empty() {
+            println!("{}", resp.output);
+        }
+    } else {
+        eprintln!("错误: {}", resp.error);
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// fork 启动 daemon 进程（后台）。
+fn spawn_daemon(socket_path: &std::path::Path, name: &str) -> anyhow::Result<()> {
+    use cli::daemon::run_daemon;
+
+    // 获取当前可执行文件路径
+    let exe =
+        std::env::current_exe().map_err(|e| anyhow::anyhow!("获取当前可执行文件路径: {e}"))?;
+    let _ = exe; // daemon 用 exec 重入自身
+
+    // fork
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        anyhow::bail!("fork 失败");
+    }
+    if pid > 0 {
+        // 父进程：daemon 已启动，直接返回
+        tracing::info!(target: "muxterm", pid = pid, "daemon 进程已 fork");
+        return Ok(());
+    }
+
+    // 子进程：setsid 脱离控制终端
+    unsafe {
+        libc::setsid();
+    }
+
+    // 运行 daemon
+    if let Err(e) = run_daemon(socket_path.to_path_buf(), name.to_string()) {
+        tracing::error!(target: "muxterm", error = %e, "daemon 运行失败");
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
+/// 等待 socket 文件出现（轮询）。
+fn wait_for_socket(path: &std::path::Path, timeout: std::time::Duration) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    anyhow::bail!("等待 daemon 启动超时: {}", path.display())
+}
+
+/// 临时模式：创建临时 LocalBackend，执行后关闭（状态不保留）。
+fn cli_mode_ephemeral(cmd: &cli::CliCommand, format: cli::OutputFormat) -> anyhow::Result<()> {
+    use crate::core::backend::LocalBackend;
+    use crate::core::model::TerminalModel;
+    use cli::format_output;
+
     let backend = LocalBackend::new("$SHELL", "");
     let mut model = TerminalModel::new(Box::new(backend));
 
-    // 对所有命令都 connect：查询命令需要 state（connect 后才有
-    // session/window/pane），操作命令需要 session 才能执行 Task。
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     rt.block_on(model.connect())?;
     let _ = model.poll_events();
 
-    // 操作类命令转成 Task 执行（查询命令 cli_command_to_task 返回 None，跳过）
-    let task = cli_command_to_task(&cmd, &model);
+    let task = cli_command_to_task(cmd, model.state());
     if let Some(t) = task {
         model.execute(t)?;
         let _ = model.poll_events();
     }
 
-    // 格式化输出
-    let output = format_output(model.state(), &cmd, format);
+    let output = format_output(model.state(), cmd, format);
     if !output.is_empty() {
         println!("{output}");
     }
 
-    // 关闭
     let _ = rt.block_on(model.shutdown());
 
     Ok(())
 }
 
-/// 把 CliCommand 转成 TerminalModel 的 Task。
+/// 把 CliCommand 转成 TerminalModel 的 Task（委托给 main_entry 模块，供 daemon 复用）。
 fn cli_command_to_task(
     cmd: &cli::CliCommand,
-    model: &crate::core::model::TerminalModel,
+    state: &dyn crate::core::model::state::State,
 ) -> Option<crate::core::model::task::Task> {
-    use crate::core::model::layout::SplitDir;
-    use crate::core::model::task::Task;
-    use cli::CliCommand::*;
-
-    match cmd {
-        // Session
-        NewSession { .. } => Some(Task::NewWindow {
-            name: None,
-            command: None,
-            workdir: None,
-        }),
-        KillSession { .. } => Some(Task::Shutdown),
-        AttachSession { .. } => None, // 暂不支持
-        Detach { .. } => None,
-        RenameSession { .. } => None,
-
-        // Window
-        NewWindow { name, .. } => Some(Task::NewWindow {
-            name: name.clone(),
-            command: None,
-            workdir: None,
-        }),
-        KillWindow { target } => {
-            let wid = target.or_else(|| model.state().active_window().map(|w| w.id))?;
-            Some(Task::CloseWindow { target: wid })
-        }
-        SelectWindow { target } => Some(Task::SwitchWindow { target: *target }),
-        RenameWindow { new_name } => {
-            let wid = model.state().active_window()?.id;
-            Some(Task::RenameWindow {
-                target: wid,
-                name: new_name.clone(),
-            })
-        }
-
-        // Tab
-        NewTab { name, window } => {
-            let wid = window.or_else(|| model.state().active_window().map(|w| w.id))?;
-            Some(Task::NewTab {
-                window: wid,
-                name: name.clone(),
-                command: None,
-                workdir: None,
-            })
-        }
-        KillTab { target } => {
-            let tid = target.or_else(|| model.state().active_tab().map(|t| t.id))?;
-            Some(Task::CloseTab { target: tid })
-        }
-        SelectTab { target } => Some(Task::SwitchTab { target: *target }),
-        RenameTab { new_name } => {
-            let tid = model.state().active_tab()?.id;
-            Some(Task::RenameTab {
-                target: tid,
-                name: new_name.clone(),
-            })
-        }
-
-        // Pane
-        SplitPane {
-            horizontal, target, ..
-        } => {
-            let pid = target.or_else(|| model.state().active_pane().map(|p| p.id));
-            let dir = if *horizontal {
-                SplitDir::Horizontal
-            } else {
-                SplitDir::Vertical
-            };
-            Some(Task::SplitPane {
-                target: pid,
-                dir,
-                command: None,
-                workdir: None,
-            })
-        }
-        KillPane { target } => {
-            let pid = target.or_else(|| model.state().active_pane().map(|p| p.id))?;
-            Some(Task::ClosePane { target: pid })
-        }
-        SelectPane { target } => Some(Task::SwitchPane { target: *target }),
-        ResizePane {
-            target,
-            width,
-            height,
-        } => {
-            let cols = width.unwrap_or(80);
-            let rows = height.unwrap_or(24);
-            Some(Task::ResizePane {
-                target: *target,
-                cols,
-                rows,
-            })
-        }
-
-        // 输入输出
-        SendKeys { target, text } => {
-            let pid = target.or_else(|| model.state().active_pane().map(|p| p.id))?;
-            use crate::core::terminal::input::KeyEvent;
-            let keys = text.chars().map(KeyEvent::Char).collect();
-            Some(Task::SendKeys { target: pid, keys })
-        }
-        CapturePane { .. } => None, // 查询命令
-
-        // 查询命令
-        ListSessions
-        | ListWindows { .. }
-        | ListTabs { .. }
-        | ListPanes { .. }
-        | ListLayout { .. } => None,
-        DisplayMessage { .. } => None,
-    }
+    crate::main_entry::cli_command_to_task(cmd, state)
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@ use crate::core::model::state::State;
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 输出格式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OutputFormat {
     Json,
     Text,

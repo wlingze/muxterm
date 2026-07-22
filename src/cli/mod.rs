@@ -3,8 +3,14 @@
 //! 不依赖任何 feature flag（gtk/tui），任何构建都能用 `muxterm <command>`。
 //! 复用 TerminalModel + Backend 接口，不经过 UI 渲染层。
 
+pub mod client;
 pub mod command;
+pub mod daemon;
 pub mod format;
+pub mod ipc;
+pub mod session;
 
 pub use command::{parse_cli_command, CliCommand, CliError};
 pub use format::{format_output, OutputFormat};
+pub use ipc::{Request, Response};
+pub use session::{list_session_sockets, session_socket_path};
