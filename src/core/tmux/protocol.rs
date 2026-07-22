@@ -254,18 +254,50 @@ pub struct LayoutChange {
     pub raw: String,
 }
 
+/// 在字符串中查找任一指定字符的首次出现位置。
+trait FindAnyOf {
+    fn find_any_of(&self, chars: &[char]) -> Option<usize>;
+}
+
+impl FindAnyOf for str {
+    fn find_any_of(&self, chars: &[char]) -> Option<usize> {
+        self.chars().position(|c| chars.contains(&c))
+    }
+}
+
 impl LayoutChange {
     /// 解析形如 `<cols>x<rows>,<x>,<y>,<flags>` 的布局几何字符串。
     ///
     /// 注意 tmux 的完整 window_layout 可能带树前缀（如 `aabd,100x30,0,0,0`），
     /// 这里只取最后一段 `<cols>x<rows>,<x>,<y>,<flags>`。
     pub fn parse(layout: &str) -> Result<Self, ProtocolError> {
-        // 取最后一个逗号段里含 'x' 的部分（几何段）
-        let parts: Vec<&str> = layout.split(',').collect();
-        // 找到包含 'x' 的段（几何段）
-        let geo_idx = parts.iter().position(|p| p.contains('x')).ok_or_else(|| {
-            ProtocolError::MalformedField(format!("layout 无 x 几何段: {layout}"))
-        })?;
+        // tmux 的 layout 字符串格式：
+        //   <tree_id>,<cols>x<rows>,<x>,<y>[,<flags>][{...}|[...]]
+        // 树后缀（{...}/[...]）在叶子节点的最后字段后会紧跟 { 或 [。
+        // 我们只解析顶层几何，树部分交给 parse_layout_tree 处理。
+        //
+        // 策略：找到第一个 'x'（几何段的 cols x rows），然后取其后的数字字段，
+        // 遇到非数字（如 { 或 [）就停止。
+        let layout = layout.trim();
+        // 找到包含 'x' 且 'x' 前是数字的段（几何段）
+        // 先按逗号切，但树后缀内的逗号会干扰。所以只取第一个 { 或 [ 之前的部分。
+        let top_level = match layout.find_any_of(&['{', '[']) {
+            Some(idx) => &layout[..idx],
+            None => layout,
+        };
+        let parts: Vec<&str> = top_level.split(',').collect();
+        let geo_idx = parts
+            .iter()
+            .position(|p| {
+                p.contains('x')
+                    && p.chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+            })
+            .ok_or_else(|| {
+                ProtocolError::MalformedField(format!("layout 无 x 几何段: {layout}"))
+            })?;
         let geo = parts[geo_idx];
         let (cw, ch) = geo
             .split_once('x')
@@ -274,32 +306,20 @@ impl LayoutChange {
             .map_err(|_| ProtocolError::MalformedField(format!("layout cols 非数字: {cw}")))?;
         let rows = u32::from_str(ch)
             .map_err(|_| ProtocolError::MalformedField(format!("layout rows 非数字: {ch}")))?;
-        // 几何段之后的若干个数字字段：x, y, flags（至少 flags）
-        // 标准格式：<tree>,<cols>x<rows>,<x>,<y>,<flags>
-        // 我们从 geo_idx 之后取 3 个数字作为 x,y,flags；不足则补 0。
+        // 几何段之后的数字字段：x, y, flags
         let after = &parts[geo_idx + 1..];
-        let num_after = after.len();
-        let x = if num_after >= 1 {
-            u32::from_str(after[0]).map_err(|_| {
-                ProtocolError::MalformedField(format!("layout x 非数字: {}", after[0]))
-            })?
-        } else {
-            0
-        };
-        let y = if num_after >= 2 {
-            u32::from_str(after[1]).map_err(|_| {
-                ProtocolError::MalformedField(format!("layout y 非数字: {}", after[1]))
-            })?
-        } else {
-            0
-        };
-        let flags = if num_after >= 3 {
-            u32::from_str(after[2]).map_err(|_| {
-                ProtocolError::MalformedField(format!("layout flags 非数字: {}", after[2]))
-            })?
-        } else {
-            0
-        };
+        let x = after
+            .first()
+            .and_then(|s| u32::from_str(s).ok())
+            .unwrap_or(0);
+        let y = after
+            .get(1)
+            .and_then(|s| u32::from_str(s).ok())
+            .unwrap_or(0);
+        let flags = after
+            .get(2)
+            .and_then(|s| u32::from_str(s).ok())
+            .unwrap_or(0);
         Ok(LayoutChange {
             cols,
             rows,
@@ -652,7 +672,13 @@ fn parse_layout_change(rest: &str) -> Result<Message, ProtocolError> {
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("layout-change 缺 layout".into()))?;
     let layout = LayoutChange::parse(layout_str)?;
-    let visible = parts.next().map(LayoutChange::parse).transpose()?;
+    // visible_layout 可选，可能是合法的 layout 字符串，也可能是 flags（如 *）。
+    // 如果 parse 失败则忽略（容错），不丢弃整条消息。
+    let visible = parts
+        .next()
+        .map(LayoutChange::parse)
+        .filter(|r| r.is_ok())
+        .map(|r| r.unwrap());
     Ok(Message::LayoutChange {
         window,
         layout,
@@ -1511,6 +1537,147 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 真实样例：new-session + split-window + new-window 的完整 CC 消息流。
+    /// 验证能逐行解析出所有关键通知。
+    #[test]
+    fn real_sample_2tab_3pane_cc() {
+        let raw = include_str!("../../../tests/samples/2tab-3pane-cc.txt");
+        let mut msgs = Vec::new();
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(m) = parse_line(stripped) {
+                msgs.push(m);
+            }
+        }
+        let keywords: Vec<&str> = msgs.iter().map(|m| m.keyword()).collect();
+        // 关键通知必须全部出现
+        assert!(
+            keywords.contains(&"window-add"),
+            "missing window-add: {keywords:?}"
+        );
+        assert!(
+            keywords.contains(&"window-pane-changed"),
+            "missing window-pane-changed: {keywords:?}"
+        );
+        assert!(
+            keywords.contains(&"layout-change"),
+            "missing layout-change: {keywords:?}"
+        );
+        assert!(
+            keywords.contains(&"session-window-changed"),
+            "missing session-window-changed: {keywords:?}"
+        );
+        assert!(
+            keywords.contains(&"session-changed"),
+            "missing session-changed: {keywords:?}"
+        );
+        // 两个 window-add（@0, @1）
+        let window_adds: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.keyword() == "window-add")
+            .collect();
+        assert_eq!(window_adds.len(), 2, "应有 2 个 window-add");
+        // 两次 layout-change（一次水平分割，一次嵌套垂直分割）
+        let layout_changes: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.keyword() == "layout-change")
+            .collect();
+        assert_eq!(layout_changes.len(), 2, "应有 2 个 layout-change");
+        // 验证嵌套 layout 字符串可被 parse_layout_tree 解析
+        if let Some(Message::LayoutChange { layout, .. }) = layout_changes.get(1) {
+            let tree = parse_layout_tree(&layout.raw).expect("layout tree 应解析成功");
+            assert!(!tree.is_leaf(), "嵌套 layout 应有子节点");
+            assert_eq!(tree.dir, SplitDir::Horizontal);
+            let (_, right) = tree.children.as_ref().unwrap();
+            assert_eq!(right.dir, SplitDir::Vertical, "右子树应为垂直分割");
+        }
+    }
+
+    /// 真实样例：attach 已有 session 的 CC 消息流。
+    /// 验证 %session-changed + list-windows/list-panes 响应行能正确分离。
+    #[test]
+    fn real_sample_attach_cc() {
+        let raw = include_str!("../../../tests/samples/attach-cc.txt");
+        let mut notifications = Vec::new();
+        let mut response_lines = Vec::new();
+        let mut in_response = false;
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(m) = parse_line(stripped) {
+                if let Message::ResponseBoundary(b) = &m {
+                    in_response = matches!(b.kind, NotificationKind::Begin);
+                    if matches!(b.kind, NotificationKind::End) {
+                        in_response = false;
+                    }
+                } else if !in_response {
+                    notifications.push(m);
+                } else {
+                    // 在响应区内，即使是 % 开头的行（如 %0 @0 0）也是响应内容
+                    response_lines.push(stripped.to_string());
+                }
+            } else if in_response {
+                response_lines.push(stripped.to_string());
+            }
+        }
+        // attach 只有一个通知：session-changed
+        assert!(
+            notifications
+                .iter()
+                .any(|m| m.keyword() == "session-changed"),
+            "应有 session-changed: {:?}",
+            notifications
+                .iter()
+                .map(|m| m.keyword())
+                .collect::<Vec<_>>()
+        );
+        // 响应行应包含 window 列表行和 pane 列表行
+        // 响应行含 @0 和 @1（各一行 window 列表行）
+        assert!(
+            response_lines.iter().any(|l| l.contains("@0")),
+            "应有含 @0 的 window 行: {response_lines:?}"
+        );
+        assert!(
+            response_lines.iter().any(|l| l.contains("@1")),
+            "应有含 @1 的 window 行: {response_lines:?}"
+        );
+        assert!(
+            response_lines.iter().any(|l| l.contains("%0")),
+            "应有含 %0 的 pane 行: {response_lines:?}"
+        );
+        assert!(
+            response_lines.iter().any(|l| l.contains("%3")),
+            "应有含 %3 的 pane 行: {response_lines:?}"
+        );
+    }
+
+    /// 真实样例：attach 样例里的 window_layout 树字符串解析。
+    #[test]
+    fn real_sample_attach_layout_tree() {
+        let raw = include_str!("../../../tests/samples/attach-cc.txt");
+        // 找到 list-windows 响应行里的 layout 字符串
+        for line in raw.lines() {
+            if line.contains("1268,140x30,0,0{") {
+                // 提取 layout 部分（[layout ...] 里的内容）
+                if let Some(start) = line.find("1268,") {
+                    let rest = &line[start..];
+                    // layout 字符串到行尾或空格
+                    let layout_str = rest.split_whitespace().next().unwrap_or(rest);
+                    let tree = parse_layout_tree(layout_str).expect("layout tree 解析");
+                    assert_eq!(tree.cols, 140);
+                    assert_eq!(tree.rows, 30);
+                    assert_eq!(tree.dir, SplitDir::Horizontal);
+                    let (left, right) = tree.children.as_ref().unwrap();
+                    assert!(left.is_leaf());
+                    assert_eq!(right.dir, SplitDir::Vertical);
+                    assert_eq!(right.children.as_ref().unwrap().0.rows, 15);
+                    assert_eq!(right.children.as_ref().unwrap().1.rows, 14);
+                    return;
+                }
+            }
+        }
+        panic!("未找到 layout 字符串");
     }
 
     /// 对应：超长 %output 不应截断/崩溃。
