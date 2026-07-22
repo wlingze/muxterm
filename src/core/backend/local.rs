@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::core::config::{expand_config_value, parse_command_argv, program_basename};
 use crate::core::model::backend::Backend;
-use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
+use crate::core::model::layout::{LayoutNode, TabLayout};
 use crate::core::model::state::{
     BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };

@@ -1,3 +1,4 @@
+#![allow(clippy::while_let_loop)]
 //! 异步 tmux `-CC` 客户端。
 //!
 //! 封装与 `tmux -CC` 子进程的通信：
@@ -284,7 +285,7 @@ impl TmuxClientHandle {
             pty_child
                 .child
                 .wait()
-                .map(|s| s.success().then_some(0).or_else(|| None))
+                .map(|s| s.success().then_some(0).or(None))
                 .map_err(|e| anyhow!("等待 tmux 退出失败: {e}"))
         } else {
             Ok(None)

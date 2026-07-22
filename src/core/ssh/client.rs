@@ -1,3 +1,4 @@
+#![allow(clippy::while_let_loop)]
 //! SSH 客户端与远程 tmux -CC。
 
 use anyhow::{anyhow, Context, Result};

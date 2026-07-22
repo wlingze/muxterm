@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Muxterm 主入口。
 //
 // 根据 Cargo feature flag + CLI flag 选择前端：

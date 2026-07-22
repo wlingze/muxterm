@@ -102,7 +102,7 @@ pub fn spawn_program(
                 pixel_width: size.cell_width,
                 pixel_height: size.cell_height,
             })
-            .map_err(|e| SpawnError::OpenPty(e.into()))?;
+            .map_err(SpawnError::OpenPty)?;
 
         let mut cmd = CommandBuilder::new(program);
         for a in args {
@@ -117,7 +117,7 @@ pub fn spawn_program(
             .spawn_command(cmd)
             .map_err(|e| SpawnError::Spawn {
                 program: program.to_string(),
-                source: e.into(),
+                source: e,
             })?;
         drop(pair.slave);
 

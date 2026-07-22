@@ -8,8 +8,8 @@
 #![allow(dead_code)]
 
 use super::*;
-use crate::core::model::layout::SplitDir;
-use crate::core::model::layout::{LayoutNode, TabLayout};
+#[allow(unused_imports)]
+use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
 use crate::core::model::task::Task;
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
@@ -25,6 +25,12 @@ pub struct MockBackend {
     pub(crate) status: BackendStatus,
     pub(crate) events: Vec<StateChange>,
     pub executed: Vec<Task>,
+}
+
+impl Default for MockBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockBackend {

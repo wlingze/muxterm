@@ -193,7 +193,7 @@ fn session_target(s: SessionId) -> String {
 pub fn send_keys(pane: PaneId, keys: &[Key]) -> TmuxCommand {
     if keys.is_empty() {
         // 空发送：仍发一条 send-keys -t（tmux 会忽略）
-        return build(&[format!("{}", pane_target(pane))], "send-keys");
+        return build(&[pane_target(pane).to_string()], "send-keys");
     }
     let any_literal = keys.iter().any(|k| matches!(k, Key::Literal(_)));
     if any_literal {

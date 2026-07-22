@@ -36,6 +36,7 @@ use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum PendingQuery {
     /// list-panes -t <window> -F '...'：解析所有 pane（pane_id, window_id, active, cols, rows）。
     ListPanes { window: WindowId },
@@ -350,7 +351,7 @@ impl TmuxBackend {
                                 self.dispatch_response(b.number, lines);
                             }
                             NotificationKind::Error => {
-                                let err_lines =
+                                let _err_lines =
                                     self.response_accum.remove(&b.number).unwrap_or_default();
 
                                 if let Some(q) = self.pending_queries.pop_front() {
@@ -509,7 +510,7 @@ impl TmuxBackend {
             };
             let name = parts[1].to_string();
             let active = parts[2] == "1";
-            let layout_str = parts[3];
+            let _layout_str = parts[3];
             let _panes_count: u32 = parts[4].parse().unwrap_or(0);
 
             // 更新 / 创建 window（虚拟）
@@ -914,7 +915,6 @@ impl Backend for TmuxBackend {
                 TaskOutcome::Done
             }
             Task::SendKeys { target, keys } => {
-                use crate::core::terminal::input::KeyEvent;
                 let tmux_keys: Vec<cmd::Key> = keys.iter().map(key_event_to_tmux_key).collect();
                 let c = cmd::send_keys(*target, &tmux_keys);
                 if self.dispatch_tmux_command(&c).is_err() {
