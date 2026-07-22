@@ -26,7 +26,7 @@ impl std::fmt::Display for CliError {
 impl std::error::Error for CliError {}
 
 /// CLI 命令（已解析的结构化表示）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CliCommand {
     // Session
     NewSession {

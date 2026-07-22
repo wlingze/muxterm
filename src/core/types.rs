@@ -4,7 +4,7 @@
 //! 避免 types ↔ protocol 循环依赖。
 
 /// %output / %extended-output / %pane-mode-changed 里的 pane id（`@N`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PaneId(pub u32);
 
 impl PaneId {
@@ -20,7 +20,7 @@ impl std::fmt::Display for PaneId {
 }
 
 /// window id（`wN`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct WindowId(pub u32);
 
 impl WindowId {
@@ -36,7 +36,7 @@ impl std::fmt::Display for WindowId {
 }
 
 /// tab id（`tN`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TabId(pub u32);
 
 impl TabId {
@@ -52,7 +52,7 @@ impl std::fmt::Display for TabId {
 }
 
 /// session id（`$N`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SessionId(pub u32);
 
 impl SessionId {
