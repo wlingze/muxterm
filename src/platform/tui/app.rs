@@ -20,6 +20,7 @@ use crossterm::terminal::{
 use crossterm::{execute, queue};
 
 use crate::core::backend::{LocalBackend, TmuxBackend};
+use crate::core::model::layout::SplitDir;
 use crate::core::model::state::State;
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::TerminalModel;
@@ -175,6 +176,20 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                         return None;
                     }
                 }
+                // Alt+S 左右分割（水平分割）
+                's' => Task::SplitPane {
+                    target,
+                    dir: SplitDir::Horizontal,
+                    command: None,
+                    workdir: None,
+                },
+                // Alt+V 上下分割（垂直分割）
+                'v' => Task::SplitPane {
+                    target,
+                    dir: SplitDir::Vertical,
+                    command: None,
+                    workdir: None,
+                },
                 _ => {
                     let target = target?;
                     return Some(Task::SendKeys {
