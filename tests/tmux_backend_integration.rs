@@ -1124,3 +1124,548 @@ fn bug4_edge_rapid_tab_switch() {
     let _ = model.shutdown();
     cleanup(&socket);
 }
+
+// ============================================================================
+// Fix3 正向测试：切 tab 后 pane 数据不丢失（2 tab 3 pane + 1 pane）
+// ============================================================================
+
+#[test]
+fn fix3_positive_switch_tab_panes_preserved() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    // 等待初始 pane
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+
+    // 在 tab1 分割出 3 pane（水平 + 垂直）
+    let pane = model.state().active_pane().unwrap().id;
+    model
+        .execute(Task::SplitPane {
+            target: Some(pane),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.panes(&s.active_tab().map(|t| t.id).unwrap_or(TabId(0)))
+            .len()
+            >= 2
+    });
+
+    let tab1 = model.state().active_tab().unwrap().id;
+    let new_pane = model
+        .state()
+        .panes(&tab1)
+        .iter()
+        .find(|p| p.id != pane)
+        .map(|p| p.id)
+        .unwrap_or(pane);
+    model
+        .execute(Task::SplitPane {
+            target: Some(new_pane),
+            dir: SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.panes(&s.active_tab().map(|t| t.id).unwrap_or(tab1)).len() >= 3
+    });
+
+    let tab1_pane_count = model.state().panes(&tab1).len();
+    assert!(tab1_pane_count >= 3, "tab1 应有 >= 3 个 pane");
+
+    // 新建 tab2
+    model
+        .execute(Task::NewWindow {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_tab().is_some()
+            && s.active_tab().unwrap().id != tab1
+            && !s.panes(&s.active_tab().unwrap().id).is_empty()
+    });
+
+    let tab2 = model.state().active_tab().unwrap().id;
+    let tab2_pane_count = model.state().panes(&tab2).len();
+    assert_eq!(tab2_pane_count, 1, "tab2 应有 1 个 pane");
+
+    // 正向：切到 tab1，pane 数据应仍在
+    model
+        .execute(Task::SwitchWindow {
+            target: WindowId(tab1.0),
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_tab().map(|t| t.id) == Some(tab1)
+    });
+
+    let tab1_panes_after_switch = model.state().panes(&tab1).len();
+    assert_eq!(
+        tab1_panes_after_switch, tab1_pane_count,
+        "切到 tab1 后 pane 数应不变: 期望 {}, 实际 {}",
+        tab1_pane_count, tab1_panes_after_switch
+    );
+
+    // 正向：切回 tab2，pane 数据应仍在
+    model
+        .execute(Task::SwitchWindow {
+            target: WindowId(tab2.0),
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_tab().map(|t| t.id) == Some(tab2)
+    });
+
+    let tab2_panes_after_switch = model.state().panes(&tab2).len();
+    assert_eq!(
+        tab2_panes_after_switch, tab2_pane_count,
+        "切回 tab2 后 pane 数应不变: 期望 {}, 实际 {}",
+        tab2_pane_count, tab2_panes_after_switch
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Fix3 正向测试：切 tab 后 layout 树保持正确
+// ============================================================================
+
+#[test]
+fn fix3_positive_switch_tab_layout_preserved() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let pane = model.state().active_pane().unwrap().id;
+    let tab1 = model.state().active_tab().unwrap().id;
+
+    // 分割 3 pane
+    model
+        .execute(Task::SplitPane {
+            target: Some(pane),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.panes(&s.active_tab().map(|t| t.id).unwrap_or(tab1)).len() >= 2
+    });
+    let p2 = model
+        .state()
+        .panes(&tab1)
+        .iter()
+        .find(|p| p.id != pane)
+        .map(|p| p.id)
+        .unwrap_or(pane);
+    model
+        .execute(Task::SplitPane {
+            target: Some(p2),
+            dir: SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.panes(&s.active_tab().map(|t| t.id).unwrap_or(tab1)).len() >= 3
+    });
+
+    // tab1 layout 应有嵌套
+    let layout1 = model.state().layout(&tab1).cloned();
+    assert!(layout1.is_some(), "tab1 应有 layout");
+    assert!(
+        layout1.as_ref().unwrap().tree.depth() >= 2,
+        "tab1 layout 应有嵌套深度 >= 2"
+    );
+
+    // 新建 tab2
+    model
+        .execute(Task::NewWindow {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_tab().is_some()
+            && s.active_tab().unwrap().id != tab1
+            && !s.panes(&s.active_tab().unwrap().id).is_empty()
+    });
+    let tab2 = model.state().active_tab().unwrap().id;
+
+    // 切回 tab1
+    model
+        .execute(Task::SwitchWindow {
+            target: WindowId(tab1.0),
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_tab().map(|t| t.id) == Some(tab1)
+    });
+
+    // layout 应保持不变
+    let layout1_after = model.state().layout(&tab1);
+    assert!(layout1_after.is_some(), "切回 tab1 后 layout 仍在");
+    assert_eq!(
+        layout1_after.unwrap().tree.depth(),
+        layout1.as_ref().unwrap().tree.depth(),
+        "切回 tab1 后 layout 深度不变"
+    );
+    assert_eq!(
+        layout1_after.unwrap().tree.leaves().len(),
+        layout1.as_ref().unwrap().tree.leaves().len(),
+        "切回 tab1 后 layout 叶子数不变"
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Fix3 正向测试：切 tab 后 pty 输出仍能显示
+// ============================================================================
+
+#[test]
+fn fix3_positive_switch_tab_output_works() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let tab1 = model.state().active_tab().unwrap().id;
+    let pane1 = model.state().active_pane().unwrap().id;
+
+    // 在 tab1 发送 echo
+    for c in "echo tab1_output".chars() {
+        model
+            .execute(Task::SendKeys {
+                target: pane1,
+                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+            })
+            .unwrap();
+        let _ = model.poll_events();
+    }
+    model
+        .execute(Task::SendKeys {
+            target: pane1,
+            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&pane1)
+            .map(|o| String::from_utf8_lossy(o).contains("tab1_output"))
+            .unwrap_or(false)
+    });
+
+    // 新建 tab2
+    model
+        .execute(Task::NewWindow {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_tab().is_some()
+            && s.active_tab().unwrap().id != tab1
+            && !s.panes(&s.active_tab().unwrap().id).is_empty()
+    });
+    let pane2 = model.state().active_pane().unwrap().id;
+
+    // 在 tab2 发送 echo
+    for c in "echo tab2_output".chars() {
+        model
+            .execute(Task::SendKeys {
+                target: pane2,
+                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+            })
+            .unwrap();
+        let _ = model.poll_events();
+    }
+    model
+        .execute(Task::SendKeys {
+            target: pane2,
+            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&pane2)
+            .map(|o| String::from_utf8_lossy(o).contains("tab2_output"))
+            .unwrap_or(false)
+    });
+
+    // 切回 tab1，tab1 的输出应仍在
+    model
+        .execute(Task::SwitchWindow {
+            target: WindowId(tab1.0),
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_tab().map(|t| t.id) == Some(tab1)
+    });
+
+    let tab1_output = model.state().pane_output(&pane1);
+    assert!(
+        tab1_output.is_some(),
+        "切回 tab1 后 pane1 的 output 仍应存在"
+    );
+    assert!(
+        String::from_utf8_lossy(tab1_output.unwrap()).contains("tab1_output"),
+        "切回 tab1 后 tab1_output 应仍在 output 中"
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Fix3 反向测试：切到不存在的 tab 后 pane 不丢
+// ============================================================================
+
+#[test]
+fn fix3_negative_nonexistent_tab_preserves_panes() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let initial_tab = model.state().active_tab().unwrap().id;
+    let initial_pane_count = model.state().panes(&initial_tab).len();
+
+    // 切到不存在的 WindowId(99)
+    model
+        .execute(Task::SwitchWindow {
+            target: WindowId(99),
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    std::thread::sleep(Duration::from_millis(500));
+    let _ = model.refresh();
+
+    // 当前 tab 的 pane 数应不变（tmux 忽略不存在的 window）
+    let current_tab = model.state().active_tab().map(|t| t.id);
+    let current_panes = current_tab
+        .map(|t| model.state().panes(&t).len())
+        .unwrap_or(0);
+    assert!(
+        current_panes >= initial_pane_count,
+        "切到不存在的 tab 后 pane 数不应减少: 初始 {}, 现在 {}",
+        initial_pane_count,
+        current_panes
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Fix3 边界测试：切 tab 后 split-pane 在正确的 tab
+// ============================================================================
+
+#[test]
+fn fix3_edge_split_after_switch() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let tab1 = model.state().active_tab().unwrap().id;
+
+    // 新建 tab2
+    model
+        .execute(Task::NewWindow {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_tab().is_some()
+            && s.active_tab().unwrap().id != tab1
+            && !s.panes(&s.active_tab().unwrap().id).is_empty()
+    });
+    let tab2 = model.state().active_tab().unwrap().id;
+    assert_eq!(model.state().panes(&tab2).len(), 1, "tab2 初始应有 1 pane");
+
+    // 切回 tab1
+    model
+        .execute(Task::SwitchWindow {
+            target: WindowId(tab1.0),
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_tab().map(|t| t.id) == Some(tab1)
+    });
+
+    // 在 tab1 split
+    let pane = model.state().active_pane().unwrap().id;
+    model
+        .execute(Task::SplitPane {
+            target: Some(pane),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.panes(&s.active_tab().map(|t| t.id).unwrap_or(tab1)).len() >= 2
+    });
+
+    // tab1 应有 >= 2 pane
+    let tab1_panes = model.state().panes(&tab1).len();
+    assert!(
+        tab1_panes >= 2,
+        "tab1 split 后应有 >= 2 pane: {}",
+        tab1_panes
+    );
+
+    // tab2 pane 数应不变
+    let tab2_panes = model.state().panes(&tab2).len();
+    assert_eq!(tab2_panes, 1, "tab2 pane 数应不变: {}", tab2_panes);
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Fix3 边界测试：connect 时获取所有 tab 的 pane（不只 active tab）
+// ============================================================================
+
+#[test]
+fn fix3_edge_all_tabs_panes_on_connect() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 用原生 tmux 创建 2 tab 布局
+    let rc = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "demo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status();
+    if rc.is_err() || !rc.unwrap().success() {
+        eprintln!("skip: 无法创建 tmux session");
+        cleanup(&socket);
+        return;
+    }
+    let w0 = String::from_utf8(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "list-windows",
+                "-t",
+                "demo",
+                "-F",
+                "#{window_id}",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    // 在 tab1 分割
+    let _ = Command::new("tmux")
+        .args(["-L", &socket, "split-window", "-h", "-t", &w0])
+        .status();
+    // 新建 tab2
+    let _ = Command::new("tmux")
+        .args(["-L", &socket, "new-window", "-t", "demo"])
+        .status();
+
+    // muxterm 连接（new-session 模式创建新 session，共享 server）
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    // 等待所有 tab 的 pane 都到达
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some() && s.all_windows().len() >= 1
+    });
+
+    // 验证：所有 window 都有 pane（不只 active tab）
+    for w in model.state().all_windows() {
+        let tab_id = TabId(w.id.0);
+        let panes = model.state().panes(&tab_id);
+        assert!(
+            !panes.is_empty(),
+            "window {:?} (tab {:?}) 的 pane 不应为空",
+            w.id,
+            tab_id
+        );
+    }
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
