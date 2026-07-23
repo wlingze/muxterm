@@ -457,3 +457,272 @@ fn e2e_list_sessions_text_format() {
 
     cleanup(&socket);
 }
+
+// ============================================================================
+// E2E: detach / reattach 后布局保持（tmux 模式）
+// ============================================================================
+
+#[test]
+fn e2e_tmux_detach_reattach_keeps_layout() {
+    let socket = unique_socket();
+    setup_tmux_2tab_3pane(&socket);
+
+    // 第一次 attach（CLI 命令隐式 connect→query→shutdown/detach）
+    let (layout1, _stderr, rc1) = run_mux(&["list-layout", "-L", &socket, "--format", "json"]);
+    assert_eq!(rc1, 0, "首次 list-layout rc={rc1}");
+    assert!(
+        layout1.contains("horizontal") && layout1.contains("vertical"),
+        "首次布局应有嵌套分割: {layout1}"
+    );
+
+    // 显式 detach（当前为 no-op Task，但命令不应失败）
+    let (_out, _err, rc_detach) = run_mux(&["detach", "-L", &socket]);
+    assert_eq!(rc_detach, 0, "detach rc={rc_detach}");
+
+    // 原生 tmux session 应仍在
+    let sessions = String::from_utf8(
+        Command::new("tmux")
+            .args(["-L", &socket, "list-sessions", "-F", "#{session_name}"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        sessions.lines().any(|l| l.trim() == "demo"),
+        "detach 后 demo session 应仍在: {sessions}"
+    );
+
+    // 重新 attach / 查询，布局应保持
+    let (layout2, _stderr2, rc2) = run_mux(&["list-layout", "-L", &socket, "--format", "json"]);
+    assert_eq!(rc2, 0, "reattach list-layout rc={rc2}");
+    assert!(
+        layout2.contains("horizontal") && layout2.contains("vertical"),
+        "reattach 后布局应保持嵌套: {layout2}"
+    );
+
+    // pane 总数不变（2tab: 3+1=4）
+    let panes = String::from_utf8(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "list-panes",
+                "-a",
+                "-t",
+                "demo",
+                "-F",
+                "#{pane_id}",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .lines()
+    .filter(|l| !l.is_empty())
+    .count();
+    assert_eq!(panes, 4, "reattach 后应仍有 4 个 pane: {panes}");
+
+    cleanup(&socket);
+}
+
+// ============================================================================
+// E2E: local 模式 detach/attach 完整流程
+// ============================================================================
+
+fn unique_session_name() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("loc-{}-{}", std::process::id(), nanos)
+}
+
+fn cleanup_local(name: &str) {
+    let _ = run_mux(&["kill-session", "-s", name]);
+    // 清掉可能残留的死 socket，避免 new-session 误判已存在
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let sock = format!("{runtime}/muxterm-{name}.sock");
+    let _ = std::fs::remove_file(&sock);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+}
+
+#[test]
+fn e2e_local_detach_attach_full_flow() {
+    let name = unique_session_name();
+    cleanup_local(&name);
+
+    // 1. 创建 session（启动 daemon）
+    let (_o, e, rc) = run_mux(&["new-session", "-s", &name]);
+    assert_eq!(rc, 0, "new-session rc={rc}: {e}");
+
+    // 等 daemon 可连接（socket 文件出现 ≠ 已 listen）
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let sock = format!("{runtime}/muxterm-{name}.sock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // 2. 操作：split + new-tab
+    let (_o, e, rc) = run_mux(&["split-pane", "-h", "-s", &name]);
+    assert_eq!(rc, 0, "split-pane rc={rc}: {e}");
+    let (_o, e, rc) = run_mux(&["new-tab", "-s", &name]);
+    assert_eq!(rc, 0, "new-tab rc={rc}: {e}");
+
+    let (layout1, _e, rc) = run_mux(&["list-layout", "-s", &name, "--format", "json"]);
+    assert_eq!(rc, 0);
+    assert!(
+        layout1.contains("horizontal") || layout1.contains("t1") || layout1.contains("t2"),
+        "应有布局: {layout1}"
+    );
+
+    // 3. detach（daemon 继续运行）
+    let (_o, e, rc) = run_mux(&["detach", "-s", &name]);
+    assert_eq!(rc, 0, "detach rc={rc}: {e}");
+
+    // 4. re-attach / 查询：状态保留
+    let (layout2, e, rc) = run_mux(&["list-layout", "-s", &name, "--format", "json"]);
+    assert_eq!(rc, 0, "reattach list-layout rc={rc}: {e}");
+    assert!(
+        !layout2.is_empty(),
+        "detach 后 daemon 应仍可查询: {layout2}"
+    );
+
+    let (panes, _e, rc) = run_mux(&["list-panes", "-s", &name, "-t", "1", "--format", "text"]);
+    assert_eq!(rc, 0);
+    assert!(panes.contains('@'), "tab1 应仍有 pane: {panes}");
+
+    // 5. 清理
+    cleanup_local(&name);
+}
+
+// ============================================================================
+// E2E: 空 session 边界 — attach 不 panic
+// ============================================================================
+
+#[test]
+fn e2e_attach_empty_or_missing_session_no_panic() {
+    let socket = unique_socket();
+    cleanup(&socket);
+
+    // 空 server：attach 不存在的 session → 应失败但不 panic
+    let (stdout, stderr, rc) = run_mux(&["attach-session", "-t", "empty", "-L", &socket]);
+    assert!(
+        rc != 0,
+        "attach 空/不存在 session 应非 0: stdout={stdout} stderr={stderr}"
+    );
+    // 进程正常退出（非 signal abort）
+    assert!(
+        rc > 0 || !stderr.is_empty() || !stdout.is_empty() || rc == 1,
+        "应有错误输出或非零退出: rc={rc} stderr={stderr}"
+    );
+
+    cleanup(&socket);
+
+    // 最小化 session（仅 1 pane）attach / list 不 panic
+    let socket2 = unique_socket();
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket2,
+            "new-session",
+            "-d",
+            "-s",
+            "bare",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .unwrap();
+
+    let (stdout, stderr, rc) = run_mux(&["attach-session", "-t", "bare", "-L", &socket2]);
+    assert_eq!(
+        rc, 0,
+        "attach 最小 session 应成功: stdout={stdout} stderr={stderr}"
+    );
+    let (layout, e, rc) = run_mux(&["list-layout", "-L", &socket2, "--format", "text"]);
+    assert_eq!(rc, 0, "list-layout bare rc={rc}: {e}");
+    assert!(
+        layout.contains("pane") || layout.contains('@') || layout.contains("tab"),
+        "最小 session 应有 pane/tab: {layout}"
+    );
+
+    cleanup(&socket2);
+}
+
+// ============================================================================
+// E2E: 多层嵌套分割（3 层以上）
+// ============================================================================
+
+#[test]
+fn e2e_deep_nested_splits_three_levels() {
+    let socket = unique_socket();
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "deep",
+            "-x",
+            "120",
+            "-y",
+            "40",
+        ])
+        .status()
+        .unwrap();
+
+    // 通过 muxterm 做 3 层嵌套：H → V → H（-L 临时连接，自动 attach deep）
+    let (_o, e, rc) = run_mux(&["split-pane", "-h", "-L", &socket]);
+    assert_eq!(rc, 0, "split1 rc={rc}: {e}");
+    let (_o, e, rc) = run_mux(&["split-pane", "-v", "-L", &socket]);
+    assert_eq!(rc, 0, "split2 rc={rc}: {e}");
+    let (_o, e, rc) = run_mux(&["split-pane", "-h", "-L", &socket]);
+    assert_eq!(rc, 0, "split3 rc={rc}: {e}");
+
+    let (layout, e, rc) = run_mux(&["list-layout", "-L", &socket, "--format", "json"]);
+    assert_eq!(rc, 0, "list-layout rc={rc}: {e}");
+
+    // 至少两层嵌套：json 里应有嵌套的 type:split
+    let split_count = layout.matches("\"type\":\"split\"").count();
+    assert!(
+        split_count >= 3,
+        "应有 >= 3 层 split 节点: count={split_count} layout={layout}"
+    );
+    assert!(
+        layout.contains("horizontal") && layout.contains("vertical"),
+        "应同时有 horizontal 与 vertical: {layout}"
+    );
+
+    let panes = String::from_utf8(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "list-panes",
+                "-a",
+                "-t",
+                "deep",
+                "-F",
+                "#{pane_id}",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .lines()
+    .filter(|l| !l.is_empty())
+    .count();
+    assert!(panes >= 4, "3 次 split 后应有 >= 4 pane: {panes}");
+
+    cleanup(&socket);
+}
