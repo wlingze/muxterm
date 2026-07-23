@@ -39,14 +39,35 @@ unsafe impl Sync for DaemonState {}
 ///
 /// `socket_path` 是 unix socket 路径，`name` 是 session 名（日志用）。
 /// 返回时表示 daemon 即将退出。
-pub fn run_daemon(socket_path: PathBuf, name: String) -> Result<()> {
+pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String>) -> Result<()> {
     info!(target: "muxterm", session = %name, "daemon 启动");
 
     // 创建 backend + model
-    let backend = LocalBackend::new("$SHELL", "");
-    let mut model = TerminalModel::new(Box::new(backend));
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // 有 tmux_socket → TmuxBackend（-CC 连接 tmux），否则 LocalBackend
+    let backend: Box<dyn crate::core::model::Backend> = if let Some(ref ts) = tmux_socket {
+        // 检查 tmux server 是否已有同名 session
+        let existing = std::process::Command::new("tmux")
+            .args(["-L", ts, "list-sessions", "-F", "#{session_name}"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+        let backend = if existing.as_deref() == Some(&name) {
+            // session 已存在 → attach
+            crate::core::backend::TmuxBackend::new_with_attach(Some(ts), &name)
+        } else {
+            // session 不存在 → new-session -s <name>
+            crate::core::backend::TmuxBackend::new_with_session_name(Some(ts), &name)
+        };
+        Box::new(backend)
+    } else {
+        Box::new(LocalBackend::new("$SHELL", ""))
+    };
+    let mut model = TerminalModel::new(backend);
+    // TmuxBackend 需要 multi_thread runtime（后台 I/O task）
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(2)
         .build()
         .context("build tokio runtime")?;
     rt.block_on(model.connect())?;

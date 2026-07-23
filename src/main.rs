@@ -124,17 +124,21 @@ fn cli_mode(args: &[String]) -> anyhow::Result<()> {
     // 判断是否走 daemon 模式
     let session_name = extract_session_name(&cmd, args);
 
-    match session_name {
-        Some(name) => {
-            // daemon 模式
-            cli_mode_daemon(&name, &cmd, format)
+    match (session_name, socket.is_some()) {
+        // -s + -L → daemon 模式 + TmuxBackend（持久 daemon 通过 -CC 连接 tmux）
+        (Some(name), true) => {
+            cli_mode_daemon(&name, &cmd, format, socket.as_deref())
         }
-        None if socket.is_some() => {
-            // 有 -L 参数 → 用 TmuxBackend 连接 tmux
-            cli_mode_tmux(socket.as_deref(), &cmd, format)
+        // 只有 -s → daemon 模式（LocalBackend）
+        (Some(name), false) => {
+            cli_mode_daemon(&name, &cmd, format, None)
         }
-        None => {
-            // 临时模式（LocalBackend）
+        // 只有 -L → tmux 模式（临时连接，无 daemon）
+        (None, true) => {
+            cli_mode_tmux(socket.as_deref(), None, &cmd, format)
+        }
+        // 都没有 → 临时模式（LocalBackend）
+        (None, false) => {
             cli_mode_ephemeral(&cmd, format)
         }
     }
@@ -153,13 +157,31 @@ fn extract_socket_arg(args: &[String]) -> Option<String> {
     None
 }
 
+
+/// 用 `tmux -L <socket> list-sessions` 查找已有的 session 名。
+/// 返回第一个 session 的名字（如果有）。
+fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
+    let mut cmd = std::process::Command::new("tmux");
+    if let Some(s) = socket {
+        cmd.args(["-L", s]);
+    }
+    cmd.args(["list-sessions", "-F", "#{session_name}"]);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let output = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().next().map(|s| s.trim().to_string())
+}
+
 /// tmux 模式：用 TmuxBackend 连接 tmux server，执行命令后关闭。
 ///
-/// 根据命令类型选择连接模式：
-/// - AttachSession { target } → attach 到已有 session
-/// - 其他命令 → new-session 模式（创建新 session）
+/// 连接模式选择：
+/// - AttachSession { target } → attach 到 target session
+/// - -s <name> → attach 到 <name> session（如果存在），否则 new-session -s <name>
+/// - 无 -s → attach 到第一个已有 session，否则 new-session
 fn cli_mode_tmux(
     socket: Option<&str>,
+    session_name: Option<&str>,
     cmd: &cli::CliCommand,
     format: cli::OutputFormat,
 ) -> anyhow::Result<()> {
@@ -170,12 +192,31 @@ fn cli_mode_tmux(
     // 根据命令选择连接模式
     let backend: Box<dyn crate::core::model::Backend> = match cmd {
         cli::CliCommand::AttachSession { target } => {
-            // attach 模式：target 是 SessionId，转为 tmux session 名
-            // tmux session 名可以是 $N 或名字，这里用 $N 格式
-            let target_str = format!("${}", target.0);
-            Box::new(TmuxBackend::new_with_attach(socket, &target_str))
+            // attach 模式：target 是 session 名或 $N 格式
+            Box::new(TmuxBackend::new_with_attach(socket, target))
         }
-        _ => Box::new(TmuxBackend::new(socket)),
+        _ => {
+            // 非 attach 命令
+            if let Some(name) = session_name {
+                // 有 -s <name>：检查 session 是否已存在
+                let existing = find_existing_tmux_session(socket);
+                if existing.as_deref() == Some(name) {
+                    // session 已存在 → attach
+                    Box::new(TmuxBackend::new_with_attach(socket, name))
+                } else {
+                    // session 不存在 → new-session -s <name>
+                    Box::new(TmuxBackend::new_with_session_name(socket, name))
+                }
+            } else {
+                // 无 -s：检查 tmux server 是否已有 session
+                let existing_session = find_existing_tmux_session(socket);
+                if let Some(name) = existing_session {
+                    Box::new(TmuxBackend::new_with_attach(socket, &name))
+                } else {
+                    Box::new(TmuxBackend::new(socket))
+                }
+            }
+        }
     };
     let mut model = TerminalModel::new(backend);
 
@@ -236,6 +277,7 @@ fn cli_mode_daemon(
     name: &str,
     cmd: &cli::CliCommand,
     format: cli::OutputFormat,
+    tmux_socket: Option<&str>,
 ) -> anyhow::Result<()> {
     use cli::client::send_command;
     use cli::session::session_socket_path;
@@ -244,9 +286,9 @@ fn cli_mode_daemon(
 
     // 如果是 NewSession 且 socket 不存在 → 启动 daemon
     if matches!(cmd, cli::CliCommand::NewSession { .. }) && !sock.exists() {
-        spawn_daemon(&sock, name)?;
-        // 等待 daemon 就绪（最多 3 秒）
-        wait_for_socket(&sock, std::time::Duration::from_secs(3))?;
+        spawn_daemon(&sock, name, tmux_socket)?;
+        // 等待 daemon 就绪（最多 5 秒，tmux -CC 启动较慢）
+        wait_for_socket(&sock, std::time::Duration::from_secs(5))?;
     }
 
     if !sock.exists() {
@@ -258,9 +300,7 @@ fn cli_mode_daemon(
         );
     }
 
-    // NewSession 命令只负责启动 daemon，不发送给 daemon 执行
-    // （NewSession → Task::NewWindow 会创建多余的 window）。
-    // daemon 在 connect 时已自动建立第一个 session/window/tab/pane。
+    // NewSession 命令只负责启动 daemon
     if matches!(cmd, cli::CliCommand::NewSession { .. }) {
         tracing::info!(target: "muxterm", session = %name, "session 已创建");
         return Ok(());
@@ -281,32 +321,31 @@ fn cli_mode_daemon(
 }
 
 /// fork 启动 daemon 进程（后台）。
-fn spawn_daemon(socket_path: &std::path::Path, name: &str) -> anyhow::Result<()> {
+fn spawn_daemon(
+    socket_path: &std::path::Path,
+    name: &str,
+    tmux_socket: Option<&str>,
+) -> anyhow::Result<()> {
     use cli::daemon::run_daemon;
 
-    // 获取当前可执行文件路径
-    let exe =
-        std::env::current_exe().map_err(|e| anyhow::anyhow!("获取当前可执行文件路径: {e}"))?;
-    let _ = exe; // daemon 用 exec 重入自身
-
-    // fork
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         anyhow::bail!("fork 失败");
     }
     if pid > 0 {
-        // 父进程：daemon 已启动，直接返回
         tracing::info!(target: "muxterm", pid = pid, "daemon 进程已 fork");
         return Ok(());
     }
 
-    // 子进程：setsid 脱离控制终端
     unsafe {
         libc::setsid();
     }
 
-    // 运行 daemon
-    if let Err(e) = run_daemon(socket_path.to_path_buf(), name.to_string()) {
+    if let Err(e) = run_daemon(
+        socket_path.to_path_buf(),
+        name.to_string(),
+        tmux_socket.map(|s| s.to_string()),
+    ) {
         tracing::error!(target: "muxterm", error = %e, "daemon 运行失败");
         std::process::exit(1);
     }

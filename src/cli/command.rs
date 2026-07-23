@@ -38,7 +38,7 @@ pub enum CliCommand {
     },
     ListSessions,
     AttachSession {
-        target: SessionId,
+        target: String,
     },
     Detach {
         target: Option<SessionId>,
@@ -166,7 +166,6 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
         "list-sessions" | "ls" => CliCommand::ListSessions,
         "attach-session" | "attach" => CliCommand::AttachSession {
             target: get_req_arg(rest, "-t")
-                .and_then(|s| parse_session_id(&s))
                 .ok_or_else(|| CliError::MissingArg("-t session".into()))?,
         },
         "detach" => CliCommand::Detach {

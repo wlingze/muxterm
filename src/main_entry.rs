@@ -20,11 +20,7 @@ pub fn cli_command_to_task(
 
     match cmd {
         // Session
-        NewSession { .. } => Some(Task::NewWindow {
-            name: None,
-            command: None,
-            workdir: None,
-        }),
+        NewSession { .. } => None,
         KillSession { .. } => Some(Task::Shutdown),
         AttachSession { .. } => None,
         Detach { .. } => None,
