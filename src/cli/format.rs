@@ -83,35 +83,38 @@ fn format_sessions(state: &dyn State, format: OutputFormat) -> String {
 }
 
 fn format_windows(state: &dyn State, format: OutputFormat) -> String {
+    let windows = state.all_windows();
     match format {
         OutputFormat::Json => {
-            let items: Vec<String> = state
-                .sessions()
+            let items: Vec<String> = windows
                 .iter()
-                .flat_map(|s| {
-                    // State 没有 all_windows，用 active_window
-                    if let Some(w) = state.active_window() {
-                        let tabs = state.tabs(&w.id).len();
-                        vec![format!(
-                            r#"{{"id":"w{}","name":"{}","tabs":{},"session":"${}"}}"#,
-                            w.id.0,
-                            json_escape(&w.name),
-                            tabs,
-                            s.id.0
-                        )]
-                    } else {
-                        vec![]
-                    }
+                .map(|w| {
+                    let tabs = state.tabs(&w.id).len();
+                    let sess = w.session;
+                    format!(
+                        r#"{{"id":"w{}","name":"{}","tabs":{},"session":"${}"}}"#,
+                        w.id.0,
+                        json_escape(&w.name),
+                        tabs,
+                        sess.0
+                    )
                 })
                 .collect();
             format!("[{}]", items.join(","))
         }
         OutputFormat::Text => {
-            if let Some(w) = state.active_window() {
-                let tabs = state.tabs(&w.id).len();
-                format!("w{}: {} ({} tabs)", w.id.0, w.name, tabs)
-            } else {
+            let items: Vec<String> = windows
+                .iter()
+                .map(|w| {
+                    let tabs = state.tabs(&w.id).len();
+                    let mark = if w.active { "*" } else { " " };
+                    format!("w{}: {}{} ({} tabs)", w.id.0, w.name, mark, tabs)
+                })
+                .collect();
+            if items.is_empty() {
                 String::new()
+            } else {
+                items.join("\n")
             }
         }
     }

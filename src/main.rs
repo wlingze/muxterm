@@ -118,6 +118,9 @@ fn cli_mode(args: &[String]) -> anyhow::Result<()> {
         .map(|s| OutputFormat::from_str(&s))
         .unwrap_or(OutputFormat::Json);
 
+    // 提取全局 -L <socket> 参数（CLI 命令模式下的 tmux socket）
+    let socket = extract_socket_arg(args);
+
     // 判断是否走 daemon 模式
     let session_name = extract_session_name(&cmd, args);
 
@@ -126,11 +129,63 @@ fn cli_mode(args: &[String]) -> anyhow::Result<()> {
             // daemon 模式
             cli_mode_daemon(&name, &cmd, format)
         }
+        None if socket.is_some() => {
+            // 有 -L 参数 → 用 TmuxBackend 连接 tmux
+            cli_mode_tmux(socket.as_deref(), &cmd, format)
+        }
         None => {
-            // 临时模式（原有逻辑）
+            // 临时模式（LocalBackend）
             cli_mode_ephemeral(&cmd, format)
         }
     }
+}
+
+/// 从命令参数中提取 -L <socket> 参数。
+fn extract_socket_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-L" {
+            if let Some(name) = iter.next() {
+                return Some(name.clone());
+            }
+        }
+    }
+    None
+}
+
+/// tmux 模式：用 TmuxBackend 连接 tmux server，执行命令后关闭。
+fn cli_mode_tmux(
+    socket: Option<&str>,
+    cmd: &cli::CliCommand,
+    format: cli::OutputFormat,
+) -> anyhow::Result<()> {
+    use crate::core::backend::TmuxBackend;
+    use crate::core::model::TerminalModel;
+    use cli::format_output;
+
+    let backend = TmuxBackend::new(socket);
+    let mut model = TerminalModel::new(Box::new(backend));
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()?;
+    rt.block_on(model.connect())?;
+    let _ = model.poll_events();
+
+    let task = cli_command_to_task(cmd, model.state());
+    if let Some(t) = task {
+        model.execute(t)?;
+        let _ = model.poll_events();
+    }
+
+    let output = format_output(model.state(), cmd, format);
+    if !output.is_empty() {
+        println!("{output}");
+    }
+
+    let _ = rt.block_on(model.shutdown());
+    Ok(())
 }
 
 /// 从命令参数中提取 session name（`-s <name>`）。

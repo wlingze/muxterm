@@ -1669,3 +1669,407 @@ fn fix3_edge_all_tabs_panes_on_connect() {
     let _ = model.shutdown();
     cleanup(&socket);
 }
+
+// ============================================================================
+// Bug 5 测试：CLI -L 用 TmuxBackend
+// ============================================================================
+
+#[test]
+fn bug5_cli_list_sessions_with_tmux_socket() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 用 TmuxBackend 连接（通过 TerminalModel，模拟 CLI 路径）
+    let backend = TmuxBackend::new(Some(&socket));
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+    // 应有 session（TmuxBackend 创建的新 session）
+    assert!(!model.state().sessions().is_empty(), "CLI -L 应有 session");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+#[test]
+fn bug5_cli_list_windows_with_tmux_socket() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let backend = TmuxBackend::new(Some(&socket));
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    });
+
+    // 应有至少 1 个 window
+    let windows = model.state().all_windows();
+    assert!(!windows.is_empty(), "CLI -L 应有 window");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+#[test]
+fn bug5_cli_list_panes_with_tmux_socket() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let backend = TmuxBackend::new(Some(&socket));
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+
+    let tab = model.state().active_tab().unwrap().id;
+    let panes = model.state().panes(&tab);
+    assert!(!panes.is_empty(), "CLI -L 应有 pane");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+#[test]
+fn bug5_cli_split_pane_via_tmux_socket() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let backend = TmuxBackend::new(Some(&socket));
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let pane = model.state().active_pane().unwrap().id;
+
+    model
+        .execute(Task::SplitPane {
+            target: Some(pane),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+
+    // 等待 split 完成
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.panes(&s.active_tab().map(|t| t.id).unwrap_or(TabId(0)))
+            .len()
+            >= 2
+    });
+    assert!(ok, "CLI -L split-pane 后应有 >= 2 个 pane");
+
+    // 用原生 tmux 验证
+    let session_name = model
+        .state()
+        .active_session()
+        .map(|s| s.name.clone())
+        .unwrap_or_default();
+    let pane_count = String::from_utf8(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "list-panes",
+                "-t",
+                &session_name,
+                "-F",
+                "#{pane_id}",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .lines()
+    .count();
+    assert!(
+        pane_count >= 2,
+        "原生 tmux 应看到 >= 2 个 pane: {}",
+        pane_count
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+#[test]
+fn bug5_cli_new_window_via_tmux_socket() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let backend = TmuxBackend::new(Some(&socket));
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    });
+    let initial_windows = model.state().all_windows().len();
+
+    model
+        .execute(Task::NewWindow {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.all_windows().len() > initial_windows
+    });
+    assert!(ok, "CLI -L new-window 后 window 数应增加");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+#[test]
+fn bug5_cli_send_keys_via_tmux_socket() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let backend = TmuxBackend::new(Some(&socket));
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let pane = model.state().active_pane().unwrap().id;
+
+    for c in "echo cli_test_output".chars() {
+        model
+            .execute(Task::SendKeys {
+                target: pane,
+                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+            })
+            .unwrap();
+        let _ = model.poll_events();
+    }
+    model
+        .execute(Task::SendKeys {
+            target: pane,
+            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+        })
+        .unwrap();
+    let _ = model.poll_events();
+
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&pane)
+            .map(|o| String::from_utf8_lossy(o).contains("cli_test_output"))
+            .unwrap_or(false)
+    });
+    assert!(ok, "CLI -L send-keys 后 output 应包含 cli_test_output");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Bug 5 边界测试：CLI 无 -L 仍用 LocalBackend
+// ============================================================================
+
+#[test]
+fn bug5_edge_no_socket_uses_local_backend() {
+    use muxterm::core::backend::LocalBackend;
+
+    let backend = LocalBackend::new("sleep", "/");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+
+    // LocalBackend 的 session name 是 "local"
+    let sessions = model.state().sessions();
+    assert!(!sessions.is_empty());
+    assert_eq!(
+        sessions[0].name, "local",
+        "无 -L 应用 LocalBackend (local session)"
+    );
+
+    let _ = rt.block_on(model.shutdown());
+}
+
+// ============================================================================
+// Bug 6 测试：Alt+N 按 all_windows() 顺序映射
+// ============================================================================
+
+#[test]
+fn bug6_alt_n_maps_to_window_index() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+
+    // 新建第二个 tab
+    model
+        .execute(Task::NewWindow {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.all_windows().len() >= 2
+    });
+
+    // 正向：Alt+1 → 第 1 个 window（index 0）
+    let windows = model.state().all_windows();
+    let first_window = windows[0].id;
+    let second_window = windows[1].id;
+
+    model
+        .execute(Task::SwitchWindow {
+            target: first_window,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_window().map(|w| w.id) == Some(first_window)
+    });
+    assert_eq!(
+        model.state().active_window().map(|w| w.id),
+        Some(first_window),
+        "Alt+1 应切到第一个 window {:?}",
+        first_window
+    );
+
+    // 正向：Alt+2 → 第 2 个 window（index 1）
+    model
+        .execute(Task::SwitchWindow {
+            target: second_window,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_window().map(|w| w.id) == Some(second_window)
+    });
+    assert_eq!(
+        model.state().active_window().map(|w| w.id),
+        Some(second_window),
+        "Alt+2 应切到第二个 window {:?}",
+        second_window
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Bug 6 边界测试：Alt+9 不存在 → 不 crash
+// ============================================================================
+
+#[test]
+fn bug6_edge_alt9_nonexistent_no_crash() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+
+    // 只有 1 个 window，Alt+9 → 不存在
+    let windows = model.state().all_windows();
+    assert_eq!(windows.len(), 1, "应只有 1 个 window");
+
+    // 发送 SwitchWindow 到不存在的 window id
+    let outcome = model
+        .execute(Task::SwitchWindow {
+            target: WindowId(999),
+        })
+        .unwrap();
+    let _ = model.poll_events();
+
+    // 不应 crash，状态应仍为 Connected
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
