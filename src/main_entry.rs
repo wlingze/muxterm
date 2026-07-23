@@ -110,6 +110,13 @@ pub fn cli_command_to_task(
             let keys = text.chars().map(KeyEvent::Char).collect();
             Some(Task::SendKeys { target: pid, keys })
         }
+        WriteRaw { target, data } => {
+            let pid = target.or_else(|| state.active_pane().map(|p| p.id))?;
+            Some(Task::WriteRaw {
+                target: pid,
+                data: data.clone(),
+            })
+        }
         CapturePane { .. } => None,
 
         // 查询命令
@@ -117,7 +124,8 @@ pub fn cli_command_to_task(
         | ListWindows { .. }
         | ListTabs { .. }
         | ListPanes { .. }
-        | ListLayout { .. } => None,
+        | ListLayout { .. }
+        | DumpState => None,
         DisplayMessage { .. } => None,
     }
 }

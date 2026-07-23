@@ -10,7 +10,7 @@
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 一个 session 的元信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
@@ -19,7 +19,7 @@ pub struct SessionInfo {
 }
 
 /// 一个 window 的元信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WindowInfo {
     pub id: WindowId,
     pub name: String,
@@ -30,7 +30,7 @@ pub struct WindowInfo {
 }
 
 /// 一个 tab 的元信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TabInfo {
     pub id: TabId,
     pub name: String,
@@ -41,7 +41,7 @@ pub struct TabInfo {
 }
 
 /// 一个 pane 的元信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PaneInfo {
     pub id: PaneId,
     /// 所属 tab。
@@ -118,7 +118,7 @@ pub enum StateChange {
 }
 
 /// 后端连接/运行状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BackendStatus {
     /// 未连接（初始 / 已断开）。
     Disconnected,

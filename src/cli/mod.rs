@@ -11,4 +11,4 @@ pub mod ipc;
 pub mod session;
 
 pub use command::{parse_cli_command, CliCommand};
-pub use format::{format_output, OutputFormat};
+pub use format::{format_output, OutputFormat, StateSnapshot};

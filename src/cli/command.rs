@@ -109,6 +109,11 @@ pub enum CliCommand {
         target: Option<PaneId>,
         text: String,
     },
+    /// 向 pane 写入原始字节（TUI→daemon IPC 用，data 为原始字节）。
+    WriteRaw {
+        target: Option<PaneId>,
+        data: Vec<u8>,
+    },
     CapturePane {
         target: Option<PaneId>,
         lines: Option<usize>,
@@ -122,6 +127,9 @@ pub enum CliCommand {
         target: PaneId,
         format: String,
     },
+
+    /// 导出完整状态快照（TUI DaemonBackend 同步用）。
+    DumpState,
 }
 
 /// 解析 CLI 命令行参数（不含程序名）。
@@ -245,6 +253,10 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
             target: get_opt_arg(rest, "-t").and_then(|s| parse_pane_id(&s)),
             text: get_text_arg(rest),
         },
+        "write-raw" => CliCommand::WriteRaw {
+            target: get_opt_arg(rest, "-t").and_then(|s| parse_pane_id(&s)),
+            data: get_text_arg(rest).into_bytes(),
+        },
         "capture-pane" | "capturep" => CliCommand::CapturePane {
             target: get_opt_arg(rest, "-t").and_then(|s| parse_pane_id(&s)),
             lines: get_opt_arg(rest, "-S").and_then(|s| s.parse().ok()),
@@ -260,6 +272,7 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
                 .ok_or_else(|| CliError::MissingArg("-t pane".into()))?,
             format: get_opt_arg(rest, "-F").unwrap_or_default(),
         },
+        "dump-state" => CliCommand::DumpState,
 
         other => return Err(CliError::UnknownCommand(other.to_string())),
     };
@@ -524,12 +537,10 @@ mod tests {
     #[test]
     fn parse_attach_session() {
         let (cmd, _) = parse_cli_command(&args("attach", &["-t", "$1"])).unwrap();
-        assert!(matches!(
-            cmd,
-            CliCommand::AttachSession {
-                target: SessionId(1)
-            }
-        ));
+        match cmd {
+            CliCommand::AttachSession { target } => assert_eq!(target, "$1"),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]

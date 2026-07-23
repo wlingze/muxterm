@@ -30,6 +30,10 @@ struct Cli {
     #[arg(short = 'L', long = "socket", value_name = "SOCKET")]
     socket: Option<String>,
 
+    /// session 名（local 模式连 daemon；tmux 模式指定 attach 目标）
+    #[arg(short = 's', long = "session", value_name = "NAME")]
+    session: Option<String>,
+
     /// 使用 ASCII TUI 前端（而非 GTK4）。需要启用 `tui` feature。
     #[arg(long = "tui", default_value_t = false)]
     tui: bool,
@@ -80,7 +84,16 @@ fn main() -> anyhow::Result<()> {
         #[cfg(feature = "tui")]
         {
             tracing::info!(target = "muxterm", "muxterm 启动（TUI）");
-            return platform::tui::app::run(cli.socket);
+            // TUI × local（-s 无 -L）：确保 daemon 存在
+            if let Some(ref name) = cli.session {
+                if cli.socket.is_none() {
+                    ensure_local_daemon(name)?;
+                }
+            }
+            return platform::tui::app::run(platform::tui::app::TuiOpts {
+                socket: cli.socket,
+                session: cli.session,
+            });
         }
         #[cfg(not(feature = "tui"))]
         {
@@ -126,21 +139,13 @@ fn cli_mode(args: &[String]) -> anyhow::Result<()> {
 
     match (session_name, socket.is_some()) {
         // -s + -L → daemon 模式 + TmuxBackend（持久 daemon 通过 -CC 连接 tmux）
-        (Some(name), true) => {
-            cli_mode_daemon(&name, &cmd, format, socket.as_deref())
-        }
+        (Some(name), true) => cli_mode_daemon(&name, &cmd, format, socket.as_deref()),
         // 只有 -s → daemon 模式（LocalBackend）
-        (Some(name), false) => {
-            cli_mode_daemon(&name, &cmd, format, None)
-        }
+        (Some(name), false) => cli_mode_daemon(&name, &cmd, format, None),
         // 只有 -L → tmux 模式（临时连接，无 daemon）
-        (None, true) => {
-            cli_mode_tmux(socket.as_deref(), None, &cmd, format)
-        }
+        (None, true) => cli_mode_tmux(socket.as_deref(), None, &cmd, format),
         // 都没有 → 临时模式（LocalBackend）
-        (None, false) => {
-            cli_mode_ephemeral(&cmd, format)
-        }
+        (None, false) => cli_mode_ephemeral(&cmd, format),
     }
 }
 
@@ -156,7 +161,6 @@ fn extract_socket_arg(args: &[String]) -> Option<String> {
     }
     None
 }
-
 
 /// 用 `tmux -L <socket> list-sessions` 查找已有的 session 名。
 /// 返回第一个 session 的名字（如果有）。
@@ -364,6 +368,19 @@ fn wait_for_socket(path: &std::path::Path, timeout: std::time::Duration) -> anyh
     anyhow::bail!("等待 daemon 启动超时: {}", path.display())
 }
 
+/// TUI × local：若 daemon 不存在则 fork 启动（等价于先 new-session）。
+fn ensure_local_daemon(name: &str) -> anyhow::Result<()> {
+    use cli::session::session_socket_path;
+    let sock = session_socket_path(name);
+    if sock.exists() {
+        return Ok(());
+    }
+    tracing::info!(target: "muxterm", session = %name, "TUI 启动前创建 local daemon");
+    spawn_daemon(&sock, name, None)?;
+    wait_for_socket(&sock, std::time::Duration::from_secs(5))?;
+    Ok(())
+}
+
 /// 临时模式：创建临时 LocalBackend，执行后关闭（状态不保留）。
 fn cli_mode_ephemeral(cmd: &cli::CliCommand, format: cli::OutputFormat) -> anyhow::Result<()> {
     use crate::core::backend::LocalBackend;
@@ -443,6 +460,22 @@ mod tests {
         let cli = Cli::try_parse_from(["muxterm", "--tui"]).unwrap();
         assert!(cli.tui);
         assert!(!cli.gtk);
+    }
+
+    #[test]
+    fn cli_parses_session_short_s() {
+        let cli = Cli::try_parse_from(["muxterm", "--tui", "-s", "mywork"]).unwrap();
+        assert!(cli.tui);
+        assert_eq!(cli.session.as_deref(), Some("mywork"));
+        assert!(cli.socket.is_none());
+    }
+
+    #[test]
+    fn cli_parses_tui_with_socket_and_session() {
+        let cli = Cli::try_parse_from(["muxterm", "--tui", "-L", "test1", "-s", "demo"]).unwrap();
+        assert!(cli.tui);
+        assert_eq!(cli.socket.as_deref(), Some("test1"));
+        assert_eq!(cli.session.as_deref(), Some("demo"));
     }
 
     #[test]
