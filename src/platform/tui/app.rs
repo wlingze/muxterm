@@ -25,7 +25,7 @@ use crate::core::model::state::State;
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::TerminalModel;
 use crate::core::terminal::input::{ArrowDir, KeyEvent as MuxKeyEvent};
-use crate::core::types::WindowId;
+use crate::core::types::{TabId, WindowId};
 use crate::platform::tui::render::{render_frame, RenderOpts};
 
 /// 启动 TUI 前端。
@@ -166,23 +166,29 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                     workdir: None,
                 },
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                    // Alt+N → 第 N 个 window（按 all_windows() 顺序，1-based 索引）
+                    // Alt+N → 切到第 N 个 Tab（1-based 索引）
                     let n = lower.to_digit(10).unwrap() as usize;
-                    let windows = state.all_windows();
-                    if n <= windows.len() {
-                        Task::SwitchWindow {
-                            target: windows[n - 1].id,
+                    let aw = state.active_window();
+                    let tabs = aw
+                        .map(|w| state.tabs(&w.id))
+                        .unwrap_or_default();
+                    if n <= tabs.len() {
+                        Task::SwitchTab {
+                            target: tabs[n - 1].id,
                         }
                     } else {
-                        // 不存在的 tab，返回一个会被 Reject 的 task
-                        Task::SwitchWindow {
-                            target: WindowId(n as u32),
-                        }
+                        // 不存在的 tab，返回 None 忽略
+                        return None;
                     }
                 }
-                // Alt+W 关闭当前 window
-                'w' => Task::CloseWindow {
-                    target: state.active_window()?.id,
+                // Alt+W 关闭当前 tab
+                'w' => {
+                    let aw = state.active_window()?;
+                    let tabs = state.tabs(&aw.id);
+                    let active_tab = tabs.iter().find(|t| t.active).or(tabs.first())?;
+                    Task::CloseTab {
+                        target: active_tab.id,
+                    }
                 },
                 // Alt+S 左右分割（水平分割）
                 's' => Task::SplitPane {
