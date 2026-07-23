@@ -166,10 +166,18 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                     workdir: None,
                 },
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                    // Alt+N → 第 N 个 window（0-based: Alt+1=@0, Alt+2=@1...）
-                    let n = lower.to_digit(10).unwrap();
-                    Task::SwitchWindow {
-                        target: WindowId(n.saturating_sub(1)),
+                    // Alt+N → 第 N 个 window（按 all_windows() 顺序，1-based 索引）
+                    let n = lower.to_digit(10).unwrap() as usize;
+                    let windows = state.all_windows();
+                    if n <= windows.len() {
+                        Task::SwitchWindow {
+                            target: windows[n - 1].id,
+                        }
+                    } else {
+                        // 不存在的 tab，返回一个会被 Reject 的 task
+                        Task::SwitchWindow {
+                            target: WindowId(n as u32),
+                        }
                     }
                 }
                 // Alt+W 关闭当前 window
