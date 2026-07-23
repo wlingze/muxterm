@@ -253,7 +253,7 @@ impl TmuxBackend {
             }
             Message::WindowAdd { window } => {
                 // tmux window → muxterm Tab（不是 Window！）
-                let sess = self.active_session.unwrap_or(SessionId(0));
+                let _sess = self.active_session.unwrap_or(SessionId(0));
                 self.ensure_virtual_window();
                 let tab_id = TabId(window.0);
                 if !self.tabs.iter().any(|t| t.id == tab_id) {
@@ -290,7 +290,8 @@ impl TmuxBackend {
                 self.panes.retain(|p| p.tab != tab_id);
                 self.layouts.remove(&tab_id);
                 self.tabs.retain(|t| t.id != tab_id);
-                self.events.push_back(StateChange::TabClosed { tab: tab_id });
+                self.events
+                    .push_back(StateChange::TabClosed { tab: tab_id });
             }
             Message::WindowRenamed { window, name } => {
                 // tmux window 重命名 → muxterm Tab 重命名
@@ -298,10 +299,8 @@ impl TmuxBackend {
                 if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                     t.name = name.clone();
                 }
-                self.events.push_back(StateChange::TabRenamed {
-                    tab: tab_id,
-                    name,
-                });
+                self.events
+                    .push_back(StateChange::TabRenamed { tab: tab_id, name });
             }
             Message::SessionChanged { session, name } => {
                 if !self.sessions.iter().any(|s| s.id == session) {
@@ -598,7 +597,8 @@ impl TmuxBackend {
             let layout_str = parts[3].to_string();
             self.window_layouts.insert(tmux_window, layout_str);
             let panes_count: usize = parts[4].parse().unwrap_or(0);
-            self.expected_panes_per_window.insert(tmux_window, panes_count);
+            self.expected_panes_per_window
+                .insert(tmux_window, panes_count);
 
             // tmux window → muxterm Tab
             let tab_id = TabId(tmux_window.0);

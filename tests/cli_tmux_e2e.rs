@@ -30,12 +30,31 @@ fn cleanup(socket: &str) {
 /// 创建 2-tab 3-pane 布局：tab1 有左1右上下2，tab2 有 1 pane。
 fn setup_tmux_2tab_3pane(socket: &str) {
     Command::new("tmux")
-        .args(["-L", socket, "new-session", "-d", "-s", "demo", "-x", "80", "-y", "24"])
+        .args([
+            "-L",
+            socket,
+            "new-session",
+            "-d",
+            "-s",
+            "demo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
         .status()
         .unwrap();
     let w0 = String::from_utf8(
         Command::new("tmux")
-            .args(["-L", socket, "list-windows", "-t", "demo", "-F", "#{window_id}"])
+            .args([
+                "-L",
+                socket,
+                "list-windows",
+                "-t",
+                "demo",
+                "-F",
+                "#{window_id}",
+            ])
             .output()
             .unwrap()
             .stdout,
@@ -94,7 +113,10 @@ fn e2e_list_sessions_shows_demo() {
 
     let (stdout, _stderr, rc) = run_mux(&["list-sessions", "-L", &socket]);
     assert_eq!(rc, 0, "list-sessions rc={rc}: {_stderr}");
-    assert!(stdout.contains("demo"), "list-sessions 应包含 'demo': {stdout}");
+    assert!(
+        stdout.contains("demo"),
+        "list-sessions 应包含 'demo': {stdout}"
+    );
 
     cleanup(&socket);
 }
@@ -109,7 +131,10 @@ fn e2e_attach_session_works() {
     setup_tmux_2tab_3pane(&socket);
 
     let (stdout, stderr, rc) = run_mux(&["attach-session", "-t", "demo", "-L", &socket]);
-    assert_eq!(rc, 0, "attach-session rc={rc}: stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        rc, 0,
+        "attach-session rc={rc}: stdout={stdout} stderr={stderr}"
+    );
 
     cleanup(&socket);
 }
@@ -179,7 +204,10 @@ fn e2e_list_layout_shows_nested_tree() {
     assert_eq!(rc, 0, "list-layout rc={rc}");
 
     // 应有 window 行和 tab 行
-    assert!(stdout.contains("window"), "list-layout 应有 window: {stdout}");
+    assert!(
+        stdout.contains("window"),
+        "list-layout 应有 window: {stdout}"
+    );
     assert!(stdout.contains("tab"), "list-layout 应有 tab: {stdout}");
 
     // 应有 pane 行（@N 格式）
@@ -204,7 +232,15 @@ fn e2e_select_window_switches_tab() {
     // 验证 tmux 侧确实切了
     let active_win = String::from_utf8(
         Command::new("tmux")
-            .args(["-L", &socket, "display-message", "-t", "demo", "-p", "#{window_index}"])
+            .args([
+                "-L",
+                &socket,
+                "display-message",
+                "-t",
+                "demo",
+                "-p",
+                "#{window_index}",
+            ])
             .output()
             .unwrap()
             .stdout,
@@ -233,7 +269,15 @@ fn e2e_split_pane_increases_pane_count() {
     // 先看当前 pane 数
     let panes_before = String::from_utf8(
         Command::new("tmux")
-            .args(["-L", &socket, "list-panes", "-t", "demo", "-F", "#{pane_id}"])
+            .args([
+                "-L",
+                &socket,
+                "list-panes",
+                "-t",
+                "demo",
+                "-F",
+                "#{pane_id}",
+            ])
             .output()
             .unwrap()
             .stdout,
@@ -251,7 +295,15 @@ fn e2e_split_pane_increases_pane_count() {
 
     let panes_after = String::from_utf8(
         Command::new("tmux")
-            .args(["-L", &socket, "list-panes", "-t", "demo", "-F", "#{pane_id}"])
+            .args([
+                "-L",
+                &socket,
+                "list-panes",
+                "-t",
+                "demo",
+                "-F",
+                "#{pane_id}",
+            ])
             .output()
             .unwrap()
             .stdout,
@@ -278,7 +330,8 @@ fn e2e_send_keys_output_visible() {
     setup_tmux_2tab_3pane(&socket);
 
     // send-keys
-    let (_stdout, _stderr, rc) = run_mux(&["send-keys", "-t", "@0", "echo e2e_hello", "-L", &socket]);
+    let (_stdout, _stderr, rc) =
+        run_mux(&["send-keys", "-t", "@0", "echo e2e_hello", "-L", &socket]);
     assert_eq!(rc, 0, "send-keys rc={rc}");
 
     // 按 Enter（send-keys Enter）
@@ -345,7 +398,10 @@ fn e2e_attach_nonexistent_session_errors() {
 
     let (_stdout, stderr, rc) = run_mux(&["attach-session", "-t", "nonexistent", "-L", &socket]);
     // attach 不存在的 session 应该失败
-    assert!(rc != 0 || !stderr.is_empty(), "attach 不存在的 session 应报错: rc={rc}");
+    assert!(
+        rc != 0 || !stderr.is_empty(),
+        "attach 不存在的 session 应报错: rc={rc}"
+    );
 
     cleanup(&socket);
 }
@@ -358,7 +414,18 @@ fn e2e_attach_nonexistent_session_errors() {
 fn e2e_single_tab_list_windows_one() {
     let socket = unique_socket();
     Command::new("tmux")
-        .args(["-L", &socket, "new-session", "-d", "-s", "solo", "-x", "80", "-y", "24"])
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "solo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
         .status()
         .unwrap();
 

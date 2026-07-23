@@ -14,7 +14,7 @@ use crate::core::types::PaneId;
 ///
 /// 注意：与 GTK `Orientation` 命名相反（GTK Horizontal = 水平排列 = 左右），
 /// 这里沿用 `notebook.rs` 既有语义，避免行为回归。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SplitDir {
     Horizontal,
     Vertical,
@@ -24,7 +24,7 @@ pub enum SplitDir {
 ///
 /// 与现有 `platform::linux::notebook::PaneNode` 同构，但用 `PaneId`（newtype）
 /// 统一标识空间（local / tmux 共用）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LayoutNode {
     /// 叶子节点 = 一个 pane。
     Leaf(PaneId),
@@ -155,7 +155,7 @@ pub struct RemoveRootError;
 ///
 /// Terminal 层不关心 tab 的像素几何，只关心 pane 拓扑 + 每个 pane 的字符格大小
 /// （由 Backend 从 tmux `window_layout` 或本地 vte4 尺寸同步）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TabLayout {
     pub tab: crate::core::types::TabId,
     pub tree: LayoutNode,

@@ -1,7 +1,7 @@
 //! TUI 事件循环入口。
 //!
 //! `run()` 进入 crossterm raw mode + alternate screen，构造 `TerminalModel`（
-//! LocalBackend 或 TmuxBackend），轮询键盘事件 → `Task`，轮询 `StateChange`
+//! LocalBackend / TmuxBackend / DaemonBackend），轮询键盘事件 → `Task`，轮询 `StateChange`
 //! → 重绘。Ctrl-Q 退出，Alt+T 新建 tab，Alt+数字切 tab。
 //!
 //! 不做单元测试（需要真实终端 I/O）；渲染逻辑在 `render.rs` 单测，
@@ -19,29 +19,35 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, queue};
 
-use crate::core::backend::{LocalBackend, TmuxBackend};
+use crate::core::backend::{DaemonBackend, LocalBackend, TmuxBackend};
 use crate::core::model::layout::SplitDir;
 use crate::core::model::state::State;
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::TerminalModel;
 use crate::core::terminal::input::{ArrowDir, KeyEvent as MuxKeyEvent};
-use crate::core::types::{TabId, WindowId};
 use crate::platform::tui::render::{render_frame, RenderOpts};
 
-/// 启动 TUI 前端。
+/// TUI 启动参数。
 ///
-/// `socket` 对应 CLI `-L/--socket`：非空时用 TmuxBackend，否则用 LocalBackend。
-pub fn run(socket: Option<String>) -> Result<()> {
+/// - `socket`：CLI `-L/--socket`；有值 → tmux 模式
+/// - `session`：CLI `-s/--session`；local 模式下连 daemon，tmux 模式下指定 attach 目标
+pub struct TuiOpts {
+    pub socket: Option<String>,
+    pub session: Option<String>,
+}
+
+/// 启动 TUI 前端。
+pub fn run(opts: TuiOpts) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut out = stdout();
-    let result = run_inner(&mut out, socket);
+    let result = run_inner(&mut out, opts);
     // 恢复终端（无论如何都执行）
     let _ = disable_raw_mode();
     let _ = execute!(out, Show, LeaveAlternateScreen);
     result
 }
 
-fn run_inner(out: &mut impl Write, socket: Option<String>) -> Result<()> {
+fn run_inner(out: &mut impl Write, opts: TuiOpts) -> Result<()> {
     execute!(out, EnterAlternateScreen, Hide, Clear(ClearType::All))
         .context("enter alternate screen")?;
 
@@ -54,30 +60,27 @@ fn run_inner(out: &mut impl Write, socket: Option<String>) -> Result<()> {
         .context("build tokio runtime")?;
 
     // 构造 backend + model
-    let backend: Box<dyn crate::core::model::Backend> = if let Some(ref sock) = socket {
-        let s = sock.trim();
-        if s.is_empty() {
-            Box::new(LocalBackend::new("$SHELL", ""))
-        } else {
-            Box::new(TmuxBackend::new(Some(s)))
-        }
-    } else {
-        Box::new(LocalBackend::new("$SHELL", ""))
-    };
+    let backend = build_backend(&opts)?;
     let mut model = TerminalModel::new(backend);
 
-    // connect（spawn 默认 shell / tmux）
+    // connect（spawn 默认 shell / tmux / 连 daemon）
     rt.block_on(model.connect())?;
     let _ = model.poll_events();
 
+    // tmux attach 后给查询响应一点时间
+    if opts.socket.is_some() {
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = model.refresh();
+    }
+
     let (cols, rows) = size().unwrap_or((80, 24));
-    let mut opts = RenderOpts {
-        cols,
-        rows,
+    let mut opts_render = RenderOpts {
+        cols: cols.max(20),
+        rows: rows.max(8),
         max_output_lines: 20,
     };
 
-    redraw(out, model.state(), opts)?;
+    redraw(out, model.state(), opts_render)?;
 
     // 事件循环
     loop {
@@ -88,10 +91,10 @@ fn run_inner(out: &mut impl Write, socket: Option<String>) -> Result<()> {
         let events = model.refresh();
         if !events.is_empty() {
             if let Ok((c, r)) = size() {
-                opts.cols = c;
-                opts.rows = r;
+                opts_render.cols = c.max(20);
+                opts_render.rows = r.max(8);
             }
-            redraw(out, model.state(), opts)?;
+            redraw(out, model.state(), opts_render)?;
         }
 
         // 轮询键盘事件（100ms 超时，让 pty 输出有机会被 drain）
@@ -107,13 +110,13 @@ fn run_inner(out: &mut impl Write, socket: Option<String>) -> Result<()> {
                         if matches!(outcome, TaskOutcome::Rejected { .. }) {
                             // 忽略 reject
                         }
-                        redraw(out, model.state(), opts)?;
+                        redraw(out, model.state(), opts_render)?;
                     }
                 }
                 Event::Resize(c, r) => {
-                    opts.cols = c;
-                    opts.rows = r;
-                    redraw(out, model.state(), opts)?;
+                    opts_render.cols = c.max(20);
+                    opts_render.rows = r.max(8);
+                    redraw(out, model.state(), opts_render)?;
                 }
                 _ => {}
             }
@@ -122,6 +125,71 @@ fn run_inner(out: &mut impl Write, socket: Option<String>) -> Result<()> {
 
     let _ = rt.block_on(model.shutdown());
     Ok(())
+}
+
+/// 按 `-L` / `-s` 选择 Backend。
+///
+/// | 参数 | Backend |
+/// |------|---------|
+/// | `-L sock`（可选 `-s name`） | TmuxBackend（attach 已有 / 否则 new） |
+/// | `-s name`（无 `-L`） | DaemonBackend（连本地 daemon） |
+/// | 都无 | LocalBackend（临时进程内 session） |
+fn build_backend(opts: &TuiOpts) -> Result<Box<dyn crate::core::model::Backend>> {
+    match (opts.socket.as_deref(), opts.session.as_deref()) {
+        (Some(sock), session) => {
+            let sock = sock.trim();
+            let sock_opt = if sock.is_empty() { None } else { Some(sock) };
+            let backend = match session {
+                Some(name) => {
+                    if tmux_session_exists(sock_opt, name) {
+                        TmuxBackend::new_with_attach(sock_opt, name)
+                    } else {
+                        TmuxBackend::new_with_session_name(sock_opt, name)
+                    }
+                }
+                None => {
+                    if let Some(name) = find_existing_tmux_session(sock_opt) {
+                        TmuxBackend::new_with_attach(sock_opt, &name)
+                    } else {
+                        TmuxBackend::new(sock_opt)
+                    }
+                }
+            };
+            Ok(Box::new(backend))
+        }
+        (None, Some(name)) => {
+            let path = crate::cli::session::session_socket_path(name);
+            Ok(Box::new(DaemonBackend::new(path, name.to_string())))
+        }
+        (None, None) => Ok(Box::new(LocalBackend::new("$SHELL", ""))),
+    }
+}
+
+/// 用 `tmux -L <socket> list-sessions` 查找已有的 session 名。
+fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
+    let mut cmd = std::process::Command::new("tmux");
+    if let Some(s) = socket {
+        cmd.args(["-L", s]);
+    }
+    cmd.args(["list-sessions", "-F", "#{session_name}"]);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let output = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().next().map(|s| s.trim().to_string())
+}
+
+fn tmux_session_exists(socket: Option<&str>, name: &str) -> bool {
+    let mut cmd = std::process::Command::new("tmux");
+    if let Some(s) = socket {
+        cmd.args(["-L", s]);
+    }
+    cmd.args(["has-session", "-t", name]);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// 重绘一帧。
@@ -169,9 +237,7 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                     // Alt+N → 切到第 N 个 Tab（1-based 索引）
                     let n = lower.to_digit(10).unwrap() as usize;
                     let aw = state.active_window();
-                    let tabs = aw
-                        .map(|w| state.tabs(&w.id))
-                        .unwrap_or_default();
+                    let tabs = aw.map(|w| state.tabs(&w.id)).unwrap_or_default();
                     if n <= tabs.len() {
                         Task::SwitchTab {
                             target: tabs[n - 1].id,
@@ -189,7 +255,7 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                     Task::CloseTab {
                         target: active_tab.id,
                     }
-                },
+                }
                 // Alt+S 左右分割（水平分割）
                 's' => Task::SplitPane {
                     target,

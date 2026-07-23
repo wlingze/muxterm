@@ -40,8 +40,64 @@ pub fn format_output(
             target,
             format: fmt_str,
         } => format_display(state, *target, fmt_str),
+        DumpState => format_dump_state(state),
         _ => String::new(), // 非 query 命令无输出
     }
+}
+
+/// 完整状态快照（供 TUI DaemonBackend 反序列化）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StateSnapshot {
+    pub sessions: Vec<crate::core::model::state::SessionInfo>,
+    pub windows: Vec<crate::core::model::state::WindowInfo>,
+    pub tabs: Vec<crate::core::model::state::TabInfo>,
+    pub panes: Vec<crate::core::model::state::PaneInfo>,
+    pub layouts: Vec<crate::core::model::layout::TabLayout>,
+    /// pane_id.0 → 累计输出（lossy UTF-8；含 ANSI）。
+    pub outputs: Vec<(u32, String)>,
+    pub status: crate::core::model::state::BackendStatus,
+    pub active_session: Option<u32>,
+    pub active_window: Option<u32>,
+    pub active_tab: Option<u32>,
+    pub active_pane: Option<u32>,
+}
+
+fn format_dump_state(state: &dyn State) -> String {
+    let windows: Vec<_> = state.all_windows().into_iter().cloned().collect();
+    let mut tabs = Vec::new();
+    let mut panes = Vec::new();
+    let mut layouts = Vec::new();
+    let mut outputs = Vec::new();
+
+    for w in &windows {
+        for t in state.tabs(&w.id) {
+            tabs.push(t.clone());
+            if let Some(layout) = state.layout(&t.id) {
+                layouts.push(layout.clone());
+            }
+            for p in state.panes(&t.id) {
+                panes.push(p.clone());
+                if let Some(out) = state.pane_output(&p.id) {
+                    outputs.push((p.id.0, String::from_utf8_lossy(out).into_owned()));
+                }
+            }
+        }
+    }
+
+    let snap = StateSnapshot {
+        sessions: state.sessions().to_vec(),
+        windows,
+        tabs,
+        panes,
+        layouts,
+        outputs,
+        status: state.status(),
+        active_session: state.active_session().map(|s| s.id.0),
+        active_window: state.active_window().map(|w| w.id.0),
+        active_tab: state.active_tab().map(|t| t.id.0),
+        active_pane: state.active_pane().map(|p| p.id.0),
+    };
+    serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into())
 }
 
 fn format_sessions(state: &dyn State, format: OutputFormat) -> String {

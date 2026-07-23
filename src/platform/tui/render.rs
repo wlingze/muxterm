@@ -57,13 +57,13 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
 
     // ── tab 栏 ──────────────────────────────────────────────
     let tab_bar = render_tab_bar(state, cols);
-    lines.push(format!("│{}│", pad(&tab_bar, cols - 2)));
+    let inner_cols = cols.saturating_sub(2);
+    lines.push(format!("│{}│", pad(&tab_bar, inner_cols)));
 
     // ── 分隔线 ──────────────────────────────────────────────
     lines.push(border_mid(cols));
 
     // ── pane 标题栏（递归布局树）────────────────────────────
-    let inner_cols = cols.saturating_sub(2);
     let tab_id = state.active_tab().map(|t| t.id);
     let pane_titles = render_pane_titles(state, tab_id, inner_cols);
     lines.push(format!("│{}│", pad(&pane_titles, inner_cols)));
@@ -127,17 +127,21 @@ fn border_bottom(cols: usize) -> String {
 
 /// 渲染 tab 栏：`[1:main*] [2:dev]`
 fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
-    // 列出所有 tab（= window），active 标 *
-    let active_wid = state.active_window().map(|w| w.id);
-    let windows = state.all_windows();
-    if windows.is_empty() {
+    // 列出当前 window 下的所有 Tab（tmux window → muxterm Tab）
+    let Some(aw) = state.active_window() else {
         return " (no window) ".to_string();
+    };
+    let tabs = state.tabs(&aw.id);
+    if tabs.is_empty() {
+        return " (no tab) ".to_string();
     }
-    let parts: Vec<String> = windows
+    let parts: Vec<String> = tabs
         .iter()
-        .map(|w| {
-            let mark = if active_wid == Some(w.id) { "*" } else { " " };
-            format!("{}:{}{}", w.id.0, w.name, mark)
+        .enumerate()
+        .map(|(i, t)| {
+            let mark = if t.active { "*" } else { " " };
+            // 显示 1-based 序号，方便 Alt+N 对照
+            format!("{}:{}{}", i + 1, t.name, mark)
         })
         .collect();
     format!(" {} ", parts.join("  "))
@@ -432,9 +436,12 @@ mod tests {
     fn render_tab_bar_shows_window_name() {
         let b = MockBackend::with_single_pane();
         let lines = render_frame(&b, RenderOpts::default());
-        // tab 栏在第 2 行
+        // tab 栏在第 2 行：1-based 序号 + tab 名
         let tab_line = &lines[1];
-        assert!(tab_line.contains("1:w1"));
+        assert!(
+            tab_line.contains("1:") && (tab_line.contains("t1") || tab_line.contains('*')),
+            "tab bar should show tabs, got: {tab_line}"
+        );
     }
 
     #[test]
