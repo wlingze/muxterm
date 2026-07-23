@@ -169,7 +169,9 @@ fn target_arg(target: &str) -> String {
 }
 
 fn pane_target(p: PaneId) -> String {
-    target_arg(&p.as_str())
+    // tmux 命令里 pane id 是 %N（-CC 通知里也是 %output %N）；
+    // @N 是 window id，不能混用。
+    target_arg(&format!("%{}", p.0))
 }
 fn window_target(w: WindowId) -> String {
     // tmux 协议用 @N 格式的 window id（与 muxterm 的 wN 显示格式不同）
@@ -371,64 +373,64 @@ mod tests {
     #[test]
     fn send_keys_special_enter() {
         let c = send_keys(PaneId(1), &[Key::enter()]);
-        assert_eq!(c.as_str(), "send-keys -t @1 Enter");
-        assert_eq!(c.to_line(), "send-keys -t @1 Enter\n");
+        assert_eq!(c.as_str(), "send-keys -t %1 Enter");
+        assert_eq!(c.to_line(), "send-keys -t %1 Enter\n");
     }
 
     #[test]
     fn send_keys_ctrl_c() {
         let c = send_keys(PaneId(2), &[Key::ctrl('c')]);
-        assert_eq!(c.as_str(), "send-keys -t @2 C-c");
+        assert_eq!(c.as_str(), "send-keys -t %2 C-c");
     }
 
     #[test]
     fn send_keys_multiple_special() {
         let c = send_keys(PaneId(0), &[Key::up(), Key::up(), Key::down()]);
-        assert_eq!(c.as_str(), "send-keys -t @0 Up Up Down");
+        assert_eq!(c.as_str(), "send-keys -t %0 Up Up Down");
     }
 
     #[test]
     fn send_keys_literal() {
         let c = send_keys(PaneId(3), &[Key::literal("echo hi")]);
-        assert_eq!(c.as_str(), r#"send-keys -t @3 -l "echo hi""#);
+        assert_eq!(c.as_str(), r#"send-keys -t %3 -l "echo hi""#);
     }
 
     #[test]
     fn send_keys_literal_escapes_quote_and_backslash() {
         let c = send_keys(PaneId(3), &[Key::literal(r#"a"b\c"#)]);
-        assert_eq!(c.as_str(), r#"send-keys -t @3 -l "a\"b\\c""#);
+        assert_eq!(c.as_str(), r#"send-keys -t %3 -l "a\"b\\c""#);
     }
 
     #[test]
     fn send_keys_literal_escapes_newline_and_esc() {
         let c = send_keys(PaneId(0), &[Key::literal("a\nb\x1B")]);
-        assert_eq!(c.as_str(), r#"send-keys -t @0 -l "a\nb\e""#);
+        assert_eq!(c.as_str(), r#"send-keys -t %0 -l "a\nb\e""#);
     }
 
     #[test]
     fn send_keys_mixed_literal_and_special() {
         // 混合：走逐字模式，特殊键按字面拼入文本
         let c = send_keys(PaneId(1), &[Key::literal("ls "), Key::enter()]);
-        assert_eq!(c.as_str(), r#"send-keys -t @1 -l "ls Enter""#);
+        assert_eq!(c.as_str(), r#"send-keys -t %1 -l "ls Enter""#);
     }
 
     #[test]
     fn send_keys_tab_bspace_escape_arrows() {
         assert_eq!(
             send_keys(PaneId(1), &[Key::tab()]).as_str(),
-            "send-keys -t @1 Tab"
+            "send-keys -t %1 Tab"
         );
         assert_eq!(
             send_keys(PaneId(1), &[Key::bspace()]).as_str(),
-            "send-keys -t @1 BSpace"
+            "send-keys -t %1 BSpace"
         );
         assert_eq!(
             send_keys(PaneId(1), &[Key::escape()]).as_str(),
-            "send-keys -t @1 Escape"
+            "send-keys -t %1 Escape"
         );
         assert_eq!(
             send_keys(PaneId(1), &[Key::left(), Key::right()]).as_str(),
-            "send-keys -t @1 Left Right"
+            "send-keys -t %1 Left Right"
         );
     }
 
@@ -436,43 +438,43 @@ mod tests {
     fn send_keys_ctrl_generic() {
         assert_eq!(
             send_keys(PaneId(0), &[Key::ctrl('z')]).as_str(),
-            "send-keys -t @0 C-z"
+            "send-keys -t %0 C-z"
         );
     }
 
     #[test]
     fn send_keys_empty() {
         let c = send_keys(PaneId(1), &[]);
-        assert_eq!(c.as_str(), "send-keys -t @1");
+        assert_eq!(c.as_str(), "send-keys -t %1");
     }
 
     #[test]
     fn send_prefix_cmd() {
-        assert_eq!(send_prefix(PaneId(1)).as_str(), "send-prefix -t @1");
+        assert_eq!(send_prefix(PaneId(1)).as_str(), "send-prefix -t %1");
     }
 
     #[test]
     fn resize_pane_both() {
         let c = resize_pane(PaneId(1), Some(80), Some(24));
-        assert_eq!(c.as_str(), "resize-pane -t @1 -x 80 -y 24");
+        assert_eq!(c.as_str(), "resize-pane -t %1 -x 80 -y 24");
     }
 
     #[test]
     fn resize_pane_only_width() {
         let c = resize_pane(PaneId(1), Some(80), None);
-        assert_eq!(c.as_str(), "resize-pane -t @1 -x 80");
+        assert_eq!(c.as_str(), "resize-pane -t %1 -x 80");
     }
 
     #[test]
     fn resize_pane_only_height() {
         let c = resize_pane(PaneId(2), None, Some(40));
-        assert_eq!(c.as_str(), "resize-pane -t @2 -y 40");
+        assert_eq!(c.as_str(), "resize-pane -t %2 -y 40");
     }
 
     #[test]
     fn resize_pane_none() {
         let c = resize_pane(PaneId(2), None, None);
-        assert_eq!(c.as_str(), "resize-pane -t @2");
+        assert_eq!(c.as_str(), "resize-pane -t %2");
     }
 
     #[test]
@@ -490,14 +492,14 @@ mod tests {
         let c = display_message(PaneId(0), "#{pane_current_command}");
         assert_eq!(
             c.as_str(),
-            r##"display-message -p -t @0 "#{pane_current_command}""##
+            r##"display-message -p -t %0 "#{pane_current_command}""##
         );
     }
 
     #[test]
     fn display_message_escapes_quote() {
         let c = display_message(PaneId(0), r#"a"b"#);
-        assert_eq!(c.as_str(), r##"display-message -p -t @0 "a\"b""##);
+        assert_eq!(c.as_str(), r##"display-message -p -t %0 "a\"b""##);
     }
 
     #[test]
@@ -518,7 +520,7 @@ mod tests {
 
     #[test]
     fn kill_pane_cmd() {
-        assert_eq!(kill_pane(PaneId(3)).as_str(), "kill-pane -t @3");
+        assert_eq!(kill_pane(PaneId(3)).as_str(), "kill-pane -t %3");
     }
 
     #[test]
@@ -535,7 +537,7 @@ mod tests {
 
     #[test]
     fn select_pane_cmd() {
-        assert_eq!(select_pane(PaneId(2)).as_str(), "select-pane -t @2");
+        assert_eq!(select_pane(PaneId(2)).as_str(), "select-pane -t %2");
     }
 
     #[test]
@@ -575,7 +577,7 @@ mod tests {
     fn display_implements_with_newline() {
         let c = send_keys(PaneId(1), &[Key::enter()]);
         let s = format!("{c}");
-        assert_eq!(s, "send-keys -t @1 Enter\n");
+        assert_eq!(s, "send-keys -t %1 Enter\n");
     }
 
     #[test]

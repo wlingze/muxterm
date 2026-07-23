@@ -98,10 +98,10 @@ fn tui_shows_tab_bar_with_window_name() {
         return;
     }
     let screen = capture_tui_screen(&[]);
-    // tab 栏（第二行）应含 window 名（如 1:w1）
+    // tab 栏（第二行）应含 1-based 序号（如 1:t1*）
     assert!(
-        screen.contains("1:w"),
-        "tab 栏应显示 window 名, 画面:\n{screen}"
+        screen.contains("1:"),
+        "tab 栏应显示 tab 序号, 画面:\n{screen}"
     );
 }
 
@@ -210,9 +210,9 @@ fn tui_alt_t_creates_new_tab() {
         .args(["-L", &socket, "kill-server"])
         .status();
 
-    // Alt+T 后 tab 栏应显示新 window（2:w2）
+    // Alt+T 后 tab 栏应显示第二个 tab（2:...）
     assert!(
-        screen.contains("2:w"),
-        "Alt+T 应创建新 tab (2:w), 画面:\n{screen}"
+        screen.contains("2:"),
+        "Alt+T 应创建新 tab (2:...), 画面:\n{screen}"
     );
 }

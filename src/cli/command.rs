@@ -303,7 +303,7 @@ fn get_req_arg(args: &[String], flag: &str) -> Option<String> {
 
 /// 获取 send-keys 的文本参数（最后的引号包裹或不带引号的文本）。
 fn get_text_arg(args: &[String]) -> String {
-    // 跳过 -t 开头的参数对
+    // 跳过 -t/-L/-s 等 flag 及其取值，避免全局参数污染文本
     let mut skip_next = false;
     let mut text_parts = Vec::new();
     for a in args {
@@ -311,11 +311,17 @@ fn get_text_arg(args: &[String]) -> String {
             skip_next = false;
             continue;
         }
-        if a == "-t" {
+        if a == "-t" || a == "-L" || a == "-s" || a == "--socket" || a == "--session" {
             skip_next = true;
             continue;
         }
-        if a.starts_with("-t=") || a.starts_with("-") {
+        if a.starts_with("-t=")
+            || a.starts_with("-L=")
+            || a.starts_with("-s=")
+            || a.starts_with("--socket=")
+            || a.starts_with("--session=")
+            || a.starts_with('-')
+        {
             continue;
         }
         text_parts.push(a.trim_matches('"').to_string());
@@ -451,6 +457,23 @@ mod tests {
                 assert_eq!(text, "echo hello");
             }
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn parse_send_keys_skips_global_l_and_s() {
+        // -L/-s 是全局参数，不能拼进 send-keys 文本
+        let (cmd, _) = parse_cli_command(&args(
+            "send-keys",
+            &["-t", "@0", "echo hi", "-L", "sock1", "-s", "demo"],
+        ))
+        .unwrap();
+        match cmd {
+            CliCommand::SendKeys { target, text } => {
+                assert_eq!(target, Some(PaneId(0)));
+                assert_eq!(text, "echo hi");
+            }
+            other => panic!("unexpected: {other:?}"),
         }
     }
 

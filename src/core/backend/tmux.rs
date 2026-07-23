@@ -1354,18 +1354,19 @@ mod tests {
             return;
         }
         let _ = b.take_events();
-        let initial_windows = b.windows.len();
+        // NewWindow = 新建 tmux window = muxterm Tab；虚拟 Window 数不变
+        let initial_tabs = b.tabs.len();
         b.execute(&Task::NewWindow {
             name: Some("test-win".into()),
             command: None,
             workdir: None,
         })
         .unwrap();
-        // 等待 tmux 推送 WindowAdd 事件（轮询 pump_events 而非 sleep）
+        // 等待 tmux 推送 WindowAdd → TabAdded 事件
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
         loop {
             let _ = b.take_events();
-            if b.windows.len() > initial_windows {
+            if b.tabs.len() > initial_tabs {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
@@ -1373,7 +1374,12 @@ mod tests {
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
-        assert!(b.windows.len() > initial_windows, "新 window 未建立");
+        assert!(
+            b.tabs.len() > initial_tabs,
+            "新 tab（tmux window）未建立: tabs={}",
+            b.tabs.len()
+        );
+        assert_eq!(b.windows.len(), 1, "虚拟 Window 应始终只有 1 个");
         let _ = b.shutdown().await;
         cleanup(&socket);
     }
