@@ -288,11 +288,23 @@ fn cli_mode_daemon(
 
     let sock = session_socket_path(name);
 
-    // 如果是 NewSession 且 socket 不存在 → 启动 daemon
-    if matches!(cmd, cli::CliCommand::NewSession { .. }) && !sock.exists() {
-        spawn_daemon(&sock, name, tmux_socket)?;
-        // 等待 daemon 就绪（最多 5 秒，tmux -CC 启动较慢）
-        wait_for_socket(&sock, std::time::Duration::from_secs(5))?;
+    // NewSession：启动 daemon；若残留死 socket 则清掉再起
+    if matches!(cmd, cli::CliCommand::NewSession { .. }) {
+        if sock.exists() && !socket_is_alive(&sock) {
+            tracing::warn!(
+                target: "muxterm",
+                socket = %sock.display(),
+                "发现残留死 socket，删除后重建 daemon"
+            );
+            let _ = std::fs::remove_file(&sock);
+        }
+        if !sock.exists() {
+            spawn_daemon(&sock, name, tmux_socket)?;
+            // 等待 daemon 就绪（最多 5 秒，tmux -CC 启动较慢）
+            wait_for_socket(&sock, std::time::Duration::from_secs(5))?;
+        }
+        tracing::info!(target: "muxterm", session = %name, "session 已创建");
+        return Ok(());
     }
 
     if !sock.exists() {
@@ -302,12 +314,6 @@ fn cli_mode_daemon(
             sock.display(),
             name
         );
-    }
-
-    // NewSession 命令只负责启动 daemon
-    if matches!(cmd, cli::CliCommand::NewSession { .. }) {
-        tracing::info!(target: "muxterm", session = %name, "session 已创建");
-        return Ok(());
     }
 
     // 发送命令到 daemon
@@ -341,26 +347,41 @@ fn spawn_daemon(
         return Ok(());
     }
 
+    // 子进程：脱离终端，并关掉从 parent Command 继承的 stdout/stderr pipe。
+    // 否则调用方的 `.output()` 会一直等 EOF（daemon 仍握着 pipe 写端）。
     unsafe {
         libc::setsid();
+        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        if devnull >= 0 {
+            let _ = libc::dup2(devnull, libc::STDIN_FILENO);
+            let _ = libc::dup2(devnull, libc::STDOUT_FILENO);
+            let _ = libc::dup2(devnull, libc::STDERR_FILENO);
+            if devnull > libc::STDERR_FILENO {
+                let _ = libc::close(devnull);
+            }
+        }
     }
 
-    if let Err(e) = run_daemon(
+    if let Err(_e) = run_daemon(
         socket_path.to_path_buf(),
         name.to_string(),
         tmux_socket.map(|s| s.to_string()),
     ) {
-        tracing::error!(target: "muxterm", error = %e, "daemon 运行失败");
         std::process::exit(1);
     }
     std::process::exit(0);
 }
 
-/// 等待 socket 文件出现（轮询）。
+/// socket 文件存在且可 connect（排除残留死 socket）。
+fn socket_is_alive(path: &std::path::Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+/// 等待 socket 可连接（轮询）。
 fn wait_for_socket(path: &std::path::Path, timeout: std::time::Duration) -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        if path.exists() {
+        if socket_is_alive(path) {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -372,6 +393,9 @@ fn wait_for_socket(path: &std::path::Path, timeout: std::time::Duration) -> anyh
 fn ensure_local_daemon(name: &str) -> anyhow::Result<()> {
     use cli::session::session_socket_path;
     let sock = session_socket_path(name);
+    if sock.exists() && !socket_is_alive(&sock) {
+        let _ = std::fs::remove_file(&sock);
+    }
     if sock.exists() {
         return Ok(());
     }

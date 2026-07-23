@@ -573,7 +573,7 @@ impl TmuxBackend {
         }
     }
 
-    /// 解析 `list-windows -t <session> -F '#{window_id} #{window_name} #{window_active} #{window_layout} #{window_panes}'` 的响应。
+    /// 解析 `list-windows -t <session> -F '#{window_id},#{window_name},#{window_active},#{window_layout},#{window_panes}'` 的响应。
     fn handle_list_windows_response(&mut self, lines: Vec<String>) {
         // tmux list-windows 返回所有 tmux window → 每个创建/更新一个 muxterm Tab
         // 虚拟 Window 不动（永远 1 个）
@@ -583,20 +583,14 @@ impl TmuxBackend {
             if line.is_empty() {
                 continue;
             }
-            // 格式：@0,name,1,75ac,140x30,...{...},3
-            let parts: Vec<&str> = line.splitn(5, ',').collect();
-            if parts.len() < 5 {
+            // window_layout 本身含逗号（如 `d67e,80x24,0,0{...}`），不能用 splitn(5)
+            let Some((tmux_window, name, active, layout_str, panes_count)) =
+                parse_list_windows_line(line)
+            else {
+                tracing::warn!(target: "muxterm::tmux", "list-windows 行解析失败: {line}");
                 continue;
-            }
-            let tmux_window = match WindowId::parse(parts[0]) {
-                Ok(w) => w,
-                Err(_) => continue,
             };
-            let name = parts[1].to_string();
-            let active = parts[2] == "1";
-            let layout_str = parts[3].to_string();
             self.window_layouts.insert(tmux_window, layout_str);
-            let panes_count: usize = parts[4].parse().unwrap_or(0);
             self.expected_panes_per_window
                 .insert(tmux_window, panes_count);
 
@@ -1187,15 +1181,49 @@ impl Backend for TmuxBackend {
     }
 }
 
+/// 解析 list-windows -F 单行。
+///
+/// 格式：`@N,name,active,LAYOUT,panes`
+/// LAYOUT 含逗号，因此前三个字段用 `split_once`，最后一个用 `rsplit_once`。
+fn parse_list_windows_line(line: &str) -> Option<(WindowId, String, bool, String, usize)> {
+    let (id_str, rest) = line.split_once(',')?;
+    let (name, rest) = rest.split_once(',')?;
+    let (active_str, rest) = rest.split_once(',')?;
+    let (layout_str, panes_str) = rest.rsplit_once(',')?;
+    let tmux_window = WindowId::parse(id_str).ok()?;
+    let active = active_str == "1";
+    let panes_count = panes_str.parse().ok()?;
+    Some((
+        tmux_window,
+        name.to_string(),
+        active,
+        layout_str.to_string(),
+        panes_count,
+    ))
+}
+
 /// 把 LayoutTree（几何拓扑）转成 LayoutNode（pane id 树），按几何位置匹配。
 fn layout_tree_to_node(tree: &LayoutTree, panes: &[PaneInfo]) -> Option<LayoutNode> {
     let leaves = collect_layout_leaves(tree);
     if leaves.len() != panes.len() {
         return None;
     }
+    // 优先用 layout 叶子的 flags（tmux pane index）映射 PaneId
+    let pane_by_idx: HashMap<u32, PaneId> = panes.iter().map(|p| (p.id.0, p.id)).collect();
     let mut mapping = HashMap::new();
-    for (leaf, pane) in leaves.iter().zip(panes.iter()) {
-        mapping.insert((leaf.x, leaf.y), pane.id);
+    let mapped_by_flags = leaves.iter().all(|leaf| {
+        if let Some(&pid) = pane_by_idx.get(&leaf.flags) {
+            mapping.insert((leaf.x, leaf.y), pid);
+            true
+        } else {
+            false
+        }
+    });
+    if !mapped_by_flags {
+        mapping.clear();
+        for (leaf, pane) in leaves.iter().zip(panes.iter()) {
+            mapping.insert((leaf.x, leaf.y), pane.id);
+        }
     }
     layout_tree_to_node_inner(tree, &mapping)
 }
@@ -1305,6 +1333,31 @@ fn key_event_to_tmux_key(ev: &crate::core::terminal::input::KeyEvent) -> cmd::Ke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_list_windows_line_keeps_full_layout_with_commas() {
+        let line = "@1,zsh,1,d67e,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]},3";
+        let (wid, name, active, layout, panes) = parse_list_windows_line(line).unwrap();
+        assert_eq!(wid, WindowId(1));
+        assert_eq!(name, "zsh");
+        assert!(active);
+        assert_eq!(
+            layout,
+            "d67e,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]}"
+        );
+        assert_eq!(panes, 3);
+        // 完整 layout 应能解析出嵌套 vertical
+        let tree = parse_layout_tree(&layout).unwrap();
+        assert_eq!(tree.dir, crate::core::model::layout::SplitDir::Horizontal);
+        let right = tree.children.as_ref().unwrap().1.as_ref();
+        assert_eq!(right.dir, crate::core::model::layout::SplitDir::Vertical);
+    }
+
+    #[test]
+    fn parse_list_windows_line_rejects_short() {
+        assert!(parse_list_windows_line("@1,name").is_none());
+        assert!(parse_list_windows_line("").is_none());
+    }
 
     fn unique_socket() -> String {
         format!("muxterm-tb-{}-{}", std::process::id(), rand_suffix())
