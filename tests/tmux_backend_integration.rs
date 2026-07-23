@@ -222,12 +222,14 @@ fn scenario3_new_window_via_muxterm() {
     let mut model = connect_tmux(&socket);
     assert_eq!(model.state().status(), BackendStatus::Connected);
 
-    // 等待初始 window
+    // 等待初始 window + tab
     wait_for(&mut model, Duration::from_secs(5), |s| {
         s.active_window().is_some() && s.active_pane().is_some()
     });
 
-    let initial_window = model.state().active_window().map(|w| w.id);
+    let aw = model.state().active_window().unwrap().id;
+    let initial_tab = model.state().active_tab().map(|t| t.id);
+    let initial_tabs = model.state().tabs(&aw).len();
 
     // 新建 window（= tmux new-window = muxterm new-tab）
     model
@@ -238,12 +240,13 @@ fn scenario3_new_window_via_muxterm() {
         })
         .unwrap();
 
-    // 等待 window-add 事件：active window 应变化
+    // 等待新 tab：active tab 变化或 tab 数增加（Window 仍是虚拟的 1 个）
     let ok = wait_for(&mut model, Duration::from_secs(3), |s| {
-        let cur = s.active_window().map(|w| w.id);
-        cur != initial_window && cur.is_some()
+        let tabs = s.active_window().map(|w| s.tabs(&w.id).len()).unwrap_or(0);
+        let cur = s.active_tab().map(|t| t.id);
+        tabs > initial_tabs || (cur.is_some() && cur != initial_tab)
     });
-    assert!(ok, "新 window 未建立");
+    assert!(ok, "新 tab（tmux window）未建立");
 
     // 原生 tmux 验证
     let session_name = model
@@ -781,9 +784,10 @@ fn bug2_positive_alt_switch_tab() {
     wait_for(&mut model, Duration::from_secs(5), |s| {
         s.active_pane().is_some()
     });
-    let initial_window = model.state().active_window().map(|w| w.id);
+    let aw = model.state().active_window().unwrap().id;
+    let tab1 = model.state().active_tab().map(|t| t.id);
 
-    // 新建第二个 window（tab）
+    // 新建第二个 tab（tmux window）
     model
         .execute(Task::NewWindow {
             name: None,
@@ -793,48 +797,48 @@ fn bug2_positive_alt_switch_tab() {
         .unwrap();
     let _ = model.poll_events();
     wait_for(&mut model, Duration::from_secs(3), |s| {
-        s.active_window().map(|w| w.id) != initial_window && s.active_window().is_some()
+        s.tabs(&aw).len() >= 2 && s.active_tab().map(|t| t.id) != tab1 && s.active_tab().is_some()
     });
 
-    // 应有 2 个 window
-    let all_windows = model.state().all_windows();
-    assert!(
-        all_windows.len() >= 2,
-        "应有 >= 2 个 window: {}",
-        all_windows.len()
-    );
-
-    // Alt+1 → SwitchWindow{WindowId(0)} → 切到第一个 tab
-    model
-        .execute(Task::SwitchWindow {
-            target: WindowId(0),
-        })
-        .unwrap();
-    let _ = model.poll_events();
-    // 等待 %session-window-changed 通知
-    wait_for(&mut model, Duration::from_secs(3), |s| {
-        s.active_window().map(|w| w.id) == Some(WindowId(0))
-    });
+    // 应有 2 个 tab；Window 仍是虚拟的 1 个
     assert_eq!(
-        model.state().active_window().map(|w| w.id),
-        Some(WindowId(0)),
-        "Alt+1 应切到 WindowId(0)"
+        model.state().all_windows().len(),
+        1,
+        "muxterm Window 应永远只有 1 个"
     );
+    let tabs = model.state().tabs(&aw);
+    assert!(tabs.len() >= 2, "应有 >= 2 个 tab: {}", tabs.len());
+    let first_tab = tabs[0].id;
+    let second_tab = tabs[1].id;
 
-    // Alt+2 → SwitchWindow{WindowId(1)} → 切到第二个 tab
+    // Alt+1 → SwitchTab → 切到第一个 tab
     model
-        .execute(Task::SwitchWindow {
-            target: WindowId(1),
-        })
+        .execute(Task::SwitchTab { target: first_tab })
         .unwrap();
     let _ = model.poll_events();
     wait_for(&mut model, Duration::from_secs(3), |s| {
-        s.active_window().map(|w| w.id) == Some(WindowId(1))
+        s.active_tab().map(|t| t.id) == Some(first_tab)
     });
     assert_eq!(
-        model.state().active_window().map(|w| w.id),
-        Some(WindowId(1)),
-        "Alt+2 应切到 WindowId(1)"
+        model.state().active_tab().map(|t| t.id),
+        Some(first_tab),
+        "Alt+1 应切到第一个 tab {:?}",
+        first_tab
+    );
+
+    // Alt+2 → SwitchTab → 切到第二个 tab
+    model
+        .execute(Task::SwitchTab { target: second_tab })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_tab().map(|t| t.id) == Some(second_tab)
+    });
+    assert_eq!(
+        model.state().active_tab().map(|t| t.id),
+        Some(second_tab),
+        "Alt+2 应切到第二个 tab {:?}",
+        second_tab
     );
 
     let _ = model.shutdown();
@@ -894,17 +898,25 @@ fn bug2_edge_single_tab_alt1() {
         s.active_pane().is_some()
     });
 
-    // 只有 1 个 tab，Alt+1 → WindowId(0) — 应保持当前 tab
-    model
-        .execute(Task::SwitchWindow {
-            target: WindowId(0),
-        })
-        .unwrap();
+    let aw = model.state().active_window().unwrap().id;
+    let tabs = model.state().tabs(&aw);
+    assert_eq!(tabs.len(), 1, "应只有 1 个 tab");
+    let only_tab = tabs[0].id;
+
+    // 只有 1 个 tab，Alt+1 → SwitchTab — 应保持当前 tab
+    model.execute(Task::SwitchTab { target: only_tab }).unwrap();
     let _ = model.poll_events();
     assert_eq!(
+        model.state().active_tab().map(|t| t.id),
+        Some(only_tab),
+        "单 tab session Alt+1 应保持当前 tab {:?}",
+        only_tab
+    );
+    // Window 仍是虚拟的唯一 Window
+    assert_eq!(
         model.state().active_window().map(|w| w.id),
-        Some(WindowId(0)),
-        "单 tab session Alt+1 应切到 WindowId(0)"
+        Some(aw),
+        "单 tab session 的虚拟 Window 不变"
     );
 
     let _ = model.shutdown();
@@ -1651,19 +1663,18 @@ fn fix3_edge_all_tabs_panes_on_connect() {
 
     // 等待所有 tab 的 pane 都到达
     wait_for(&mut model, Duration::from_secs(10), |s| {
-        s.active_pane().is_some() && s.all_windows().len() >= 1
+        s.active_pane().is_some() && s.active_window().is_some()
     });
 
-    // 验证：所有 window 都有 pane（不只 active tab）
-    for w in model.state().all_windows() {
-        let tab_id = TabId(w.id.0);
-        let panes = model.state().panes(&tab_id);
-        assert!(
-            !panes.is_empty(),
-            "window {:?} (tab {:?}) 的 pane 不应为空",
-            w.id,
-            tab_id
-        );
+    // 验证：所有 tab 都有 pane（不只 active tab）
+    // 注意：connect_tmux 是 new-session，本 session 只有 1 个 tab；
+    // 这里断言本 session 的每个 tab 都有 pane。
+    let aw = model.state().active_window().unwrap().id;
+    let tabs = model.state().tabs(&aw);
+    assert!(!tabs.is_empty(), "应至少有 1 个 tab");
+    for t in &tabs {
+        let panes = model.state().panes(&t.id);
+        assert!(!panes.is_empty(), "tab {:?} 的 pane 不应为空", t.id);
     }
 
     let _ = model.shutdown();
@@ -1862,7 +1873,8 @@ fn bug5_cli_new_window_via_tmux_socket() {
     wait_for(&mut model, Duration::from_secs(5), |s| {
         s.active_pane().is_some()
     });
-    let initial_windows = model.state().all_windows().len();
+    let aw = model.state().active_window().unwrap().id;
+    let initial_tabs = model.state().tabs(&aw).len();
 
     model
         .execute(Task::NewWindow {
@@ -1874,9 +1886,9 @@ fn bug5_cli_new_window_via_tmux_socket() {
     let _ = model.poll_events();
 
     let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
-        s.all_windows().len() > initial_windows
+        s.active_window().map(|w| s.tabs(&w.id).len()).unwrap_or(0) > initial_tabs
     });
-    assert!(ok, "CLI -L new-window 后 window 数应增加");
+    assert!(ok, "CLI -L new-window 后 tab 数应增加");
 
     let _ = model.shutdown();
     cleanup(&socket);
@@ -1981,6 +1993,8 @@ fn bug6_alt_n_maps_to_window_index() {
         s.active_pane().is_some()
     });
 
+    let aw = model.state().active_window().unwrap().id;
+
     // 新建第二个 tab
     model
         .execute(Task::NewWindow {
@@ -1991,45 +2005,41 @@ fn bug6_alt_n_maps_to_window_index() {
         .unwrap();
     let _ = model.poll_events();
     wait_for(&mut model, Duration::from_secs(5), |s| {
-        s.all_windows().len() >= 2
+        s.tabs(&aw).len() >= 2
     });
 
-    // 正向：Alt+1 → 第 1 个 window（index 0）
-    let windows = model.state().all_windows();
-    let first_window = windows[0].id;
-    let second_window = windows[1].id;
+    // 正向：Alt+1 → 第 1 个 tab；Alt+2 → 第 2 个 tab
+    let tabs = model.state().tabs(&aw);
+    assert!(tabs.len() >= 2, "应有 >= 2 个 tab");
+    let first_tab = tabs[0].id;
+    let second_tab = tabs[1].id;
 
     model
-        .execute(Task::SwitchWindow {
-            target: first_window,
-        })
+        .execute(Task::SwitchTab { target: first_tab })
         .unwrap();
     let _ = model.poll_events();
     wait_for(&mut model, Duration::from_secs(3), |s| {
-        s.active_window().map(|w| w.id) == Some(first_window)
+        s.active_tab().map(|t| t.id) == Some(first_tab)
     });
     assert_eq!(
-        model.state().active_window().map(|w| w.id),
-        Some(first_window),
-        "Alt+1 应切到第一个 window {:?}",
-        first_window
+        model.state().active_tab().map(|t| t.id),
+        Some(first_tab),
+        "Alt+1 应切到第一个 tab {:?}",
+        first_tab
     );
 
-    // 正向：Alt+2 → 第 2 个 window（index 1）
     model
-        .execute(Task::SwitchWindow {
-            target: second_window,
-        })
+        .execute(Task::SwitchTab { target: second_tab })
         .unwrap();
     let _ = model.poll_events();
     wait_for(&mut model, Duration::from_secs(3), |s| {
-        s.active_window().map(|w| w.id) == Some(second_window)
+        s.active_tab().map(|t| t.id) == Some(second_tab)
     });
     assert_eq!(
-        model.state().active_window().map(|w| w.id),
-        Some(second_window),
-        "Alt+2 应切到第二个 window {:?}",
-        second_window
+        model.state().active_tab().map(|t| t.id),
+        Some(second_tab),
+        "Alt+2 应切到第二个 tab {:?}",
+        second_tab
     );
 
     let _ = model.shutdown();
@@ -2170,28 +2180,39 @@ fn bug7_positive_attach_existing_session() {
         "attach 后应有 session"
     );
 
-    // 等待 windows 和 panes 到达
+    // 等待 tabs 和 panes 到达（Window 永远只有 1 个虚拟 Window）
     wait_for(&mut model, Duration::from_secs(10), |s| {
-        s.all_windows().len() >= 2 && s.active_pane().is_some()
+        s.active_window()
+            .map(|w| s.tabs(&w.id).len() >= 2)
+            .unwrap_or(false)
+            && s.active_pane().is_some()
     });
 
-    // 正向：应有 2 个 window（tab）
-    let windows = model.state().all_windows();
-    assert!(
-        windows.len() >= 2,
-        "attach 后应有 >= 2 个 window: {}",
-        windows.len()
+    assert_eq!(
+        model.state().all_windows().len(),
+        1,
+        "attach 后 muxterm Window 应只有 1 个"
     );
 
-    // 正向：第一个 tab 应有 3 个 pane
-    let tab0 = TabId(windows[0].id.0);
-    let tab0_panes = model.state().panes(&tab0).len();
-    assert_eq!(tab0_panes, 3, "tab0 应有 3 个 pane: {}", tab0_panes);
+    let aw = model.state().active_window().unwrap().id;
+    let tabs = model.state().tabs(&aw);
+    assert!(tabs.len() >= 2, "attach 后应有 >= 2 个 tab: {}", tabs.len());
 
-    // 正向：第二个 tab 应有 1 个 pane
-    let tab1 = TabId(windows[1].id.0);
-    let tab1_panes = model.state().panes(&tab1).len();
-    assert_eq!(tab1_panes, 1, "tab1 应有 1 个 pane: {}", tab1_panes);
+    // 正向：按 pane 数区分 — 一个 tab 3 pane，另一个 1 pane
+    let pane_counts: Vec<usize> = tabs
+        .iter()
+        .map(|t| model.state().panes(&t.id).len())
+        .collect();
+    assert!(
+        pane_counts.contains(&3),
+        "应有一个 3-pane tab: {:?}",
+        pane_counts
+    );
+    assert!(
+        pane_counts.contains(&1),
+        "应有一个 1-pane tab: {:?}",
+        pane_counts
+    );
 
     let _ = model.shutdown();
     cleanup(&socket);
@@ -2443,32 +2464,35 @@ fn bug7_edge_attach_switch_tab() {
     let _ = model.poll_events();
     std::mem::forget(rt);
 
-    // 等待所有 window + pane 到达
+    // 等待所有 tab + pane 到达
     wait_for(&mut model, Duration::from_secs(10), |s| {
-        s.all_windows().len() >= 2
+        s.active_window()
+            .map(|w| s.tabs(&w.id).len() >= 2)
+            .unwrap_or(false)
     });
 
-    let window_ids: Vec<WindowId> = model.state().all_windows().iter().map(|w| w.id).collect();
-    assert!(window_ids.len() >= 2, "应有 >= 2 个 window");
+    let aw = model.state().active_window().unwrap().id;
+    let tab_ids: Vec<TabId> = model.state().tabs(&aw).iter().map(|t| t.id).collect();
+    assert!(tab_ids.len() >= 2, "应有 >= 2 个 tab");
 
     // 切到第一个 tab
-    let w0 = window_ids[0];
-    model.execute(Task::SwitchWindow { target: w0 }).unwrap();
+    let t0 = tab_ids[0];
+    model.execute(Task::SwitchTab { target: t0 }).unwrap();
     let _ = model.poll_events();
     wait_for(&mut model, Duration::from_secs(3), |s| {
-        s.active_window().map(|w| w.id) == Some(w0)
+        s.active_tab().map(|t| t.id) == Some(t0)
     });
-    let tab0_panes = model.state().panes(&TabId(w0.0)).len();
+    let tab0_panes = model.state().panes(&t0).len();
     assert!(tab0_panes >= 1, "tab0 应有 >= 1 pane: {}", tab0_panes);
 
     // 切到第二个 tab
-    let w1 = window_ids[1];
-    model.execute(Task::SwitchWindow { target: w1 }).unwrap();
+    let t1 = tab_ids[1];
+    model.execute(Task::SwitchTab { target: t1 }).unwrap();
     let _ = model.poll_events();
     wait_for(&mut model, Duration::from_secs(3), |s| {
-        s.active_window().map(|w| w.id) == Some(w1)
+        s.active_tab().map(|t| t.id) == Some(t1)
     });
-    let tab1_panes = model.state().panes(&TabId(w1.0)).len();
+    let tab1_panes = model.state().panes(&t1).len();
     assert!(tab1_panes >= 1, "tab1 应有 >= 1 pane: {}", tab1_panes);
 
     let _ = model.shutdown();

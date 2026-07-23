@@ -266,13 +266,14 @@ fn e2e_split_pane_increases_pane_count() {
     let socket = unique_socket();
     setup_tmux_2tab_3pane(&socket);
 
-    // 先看当前 pane 数
+    // 统计 session 内全部 pane（-a），避免只数到 active window
     let panes_before = String::from_utf8(
         Command::new("tmux")
             .args([
                 "-L",
                 &socket,
                 "list-panes",
+                "-a",
                 "-t",
                 "demo",
                 "-F",
@@ -299,6 +300,7 @@ fn e2e_split_pane_increases_pane_count() {
                 "-L",
                 &socket,
                 "list-panes",
+                "-a",
                 "-t",
                 "demo",
                 "-F",
@@ -329,21 +331,18 @@ fn e2e_send_keys_output_visible() {
     let socket = unique_socket();
     setup_tmux_2tab_3pane(&socket);
 
-    // send-keys
+    // send-keys 到 pane @0（tmux %0）；文本末尾 \r = Enter
     let (_stdout, _stderr, rc) =
-        run_mux(&["send-keys", "-t", "@0", "echo e2e_hello", "-L", &socket]);
+        run_mux(&["send-keys", "-t", "@0", "echo e2e_hello\r", "-L", &socket]);
     assert_eq!(rc, 0, "send-keys rc={rc}");
-
-    // 按 Enter（send-keys Enter）
-    let (_stdout2, _stderr2, _rc2) = run_mux(&["send-keys", "-t", "@0", "Enter", "-L", &socket]);
 
     // 等待 shell 执行
     std::thread::sleep(std::time::Duration::from_millis(1000));
 
-    // 用原生 tmux capture-pane 验证
+    // 用原生 tmux capture-pane 验证 %0
     let captured = String::from_utf8(
         Command::new("tmux")
-            .args(["-L", &socket, "capture-pane", "-t", "demo:0", "-p"])
+            .args(["-L", &socket, "capture-pane", "-t", "%0", "-p"])
             .output()
             .unwrap()
             .stdout,

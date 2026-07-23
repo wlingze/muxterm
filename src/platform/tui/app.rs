@@ -215,8 +215,8 @@ fn is_quit(key: &KeyEvent) -> bool {
 
 /// 把 crossterm KeyEvent 转成 muxterm Task。
 ///
-/// - Alt+T → new window（新建 tab）
-/// - Alt+1..9 → switch window（切 tab）
+/// - Alt+T → new tab
+/// - Alt+1..9 → switch tab
 /// - Alt+字符 → 发 ESC 前缀
 /// - Ctrl+字符 → Ctrl 组合键
 /// - 方向键 / 普通字符 → 对应 KeyEvent
@@ -227,49 +227,56 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
     if key.modifiers.contains(KeyModifiers::ALT) {
         if let KeyCode::Char(c) = key.code {
             let lower = c.to_ascii_lowercase();
-            return Some(match lower {
-                't' => Task::NewWindow {
-                    name: None,
-                    command: None,
-                    workdir: None,
-                },
+            match lower {
+                't' => {
+                    // Alt+T → 新建 tab（LocalBackend / TmuxBackend 语义一致）
+                    let aw = state.active_window()?;
+                    return Some(Task::NewTab {
+                        window: aw.id,
+                        name: None,
+                        command: None,
+                        workdir: None,
+                    });
+                }
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
                     // Alt+N → 切到第 N 个 Tab（1-based 索引）
                     let n = lower.to_digit(10).unwrap() as usize;
                     let aw = state.active_window();
                     let tabs = aw.map(|w| state.tabs(&w.id)).unwrap_or_default();
                     if n <= tabs.len() {
-                        Task::SwitchTab {
+                        return Some(Task::SwitchTab {
                             target: tabs[n - 1].id,
-                        }
-                    } else {
-                        // 不存在的 tab，返回 None 忽略
-                        return None;
+                        });
                     }
+                    return None;
                 }
                 // Alt+W 关闭当前 tab
                 'w' => {
                     let aw = state.active_window()?;
                     let tabs = state.tabs(&aw.id);
                     let active_tab = tabs.iter().find(|t| t.active).or(tabs.first())?;
-                    Task::CloseTab {
+                    return Some(Task::CloseTab {
                         target: active_tab.id,
-                    }
+                    });
                 }
                 // Alt+S 左右分割（水平分割）
-                's' => Task::SplitPane {
-                    target,
-                    dir: SplitDir::Horizontal,
-                    command: None,
-                    workdir: None,
-                },
+                's' => {
+                    return Some(Task::SplitPane {
+                        target,
+                        dir: SplitDir::Horizontal,
+                        command: None,
+                        workdir: None,
+                    });
+                }
                 // Alt+V 上下分割（垂直分割）
-                'v' => Task::SplitPane {
-                    target,
-                    dir: SplitDir::Vertical,
-                    command: None,
-                    workdir: None,
-                },
+                'v' => {
+                    return Some(Task::SplitPane {
+                        target,
+                        dir: SplitDir::Vertical,
+                        command: None,
+                        workdir: None,
+                    });
+                }
                 _ => {
                     let target = target?;
                     return Some(Task::SendKeys {
@@ -277,7 +284,7 @@ fn key_event_to_task(key: &KeyEvent, state: &dyn State) -> Option<Task> {
                         keys: vec![MuxKeyEvent::Alt(c)],
                     });
                 }
-            });
+            }
         }
     }
 
