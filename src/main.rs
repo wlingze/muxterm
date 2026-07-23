@@ -154,6 +154,10 @@ fn extract_socket_arg(args: &[String]) -> Option<String> {
 }
 
 /// tmux 模式：用 TmuxBackend 连接 tmux server，执行命令后关闭。
+///
+/// 根据命令类型选择连接模式：
+/// - AttachSession { target } → attach 到已有 session
+/// - 其他命令 → new-session 模式（创建新 session）
 fn cli_mode_tmux(
     socket: Option<&str>,
     cmd: &cli::CliCommand,
@@ -163,8 +167,17 @@ fn cli_mode_tmux(
     use crate::core::model::TerminalModel;
     use cli::format_output;
 
-    let backend = TmuxBackend::new(socket);
-    let mut model = TerminalModel::new(Box::new(backend));
+    // 根据命令选择连接模式
+    let backend: Box<dyn crate::core::model::Backend> = match cmd {
+        cli::CliCommand::AttachSession { target } => {
+            // attach 模式：target 是 SessionId，转为 tmux session 名
+            // tmux session 名可以是 $N 或名字，这里用 $N 格式
+            let target_str = format!("${}", target.0);
+            Box::new(TmuxBackend::new_with_attach(socket, &target_str))
+        }
+        _ => Box::new(TmuxBackend::new(socket)),
+    };
+    let mut model = TerminalModel::new(backend);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -173,10 +186,17 @@ fn cli_mode_tmux(
     rt.block_on(model.connect())?;
     let _ = model.poll_events();
 
+    // 给后台 task 时间处理查询响应（list-sessions, list-windows 等）
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = model.refresh();
+
     let task = cli_command_to_task(cmd, model.state());
     if let Some(t) = task {
         model.execute(t)?;
         let _ = model.poll_events();
+        // 等待操作结果
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = model.refresh();
     }
 
     let output = format_output(model.state(), cmd, format);
