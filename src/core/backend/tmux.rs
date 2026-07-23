@@ -77,6 +77,8 @@ pub struct TmuxBackend {
     pending_queries: VecDeque<PendingQuery>,
     /// 缓存每个 window 的 layout 字符串（从 list-windows 响应获取），用于重建 LayoutNode。
     window_layouts: HashMap<WindowId, String>,
+    /// 每个 window 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
+    expected_panes_per_window: HashMap<WindowId, usize>,
 }
 
 impl TmuxBackend {
@@ -116,6 +118,7 @@ impl TmuxBackend {
             response_accum: HashMap::new(),
             pending_queries: VecDeque::new(),
             window_layouts: HashMap::new(),
+            expected_panes_per_window: HashMap::new(),
         }
     }
 
@@ -313,6 +316,12 @@ impl TmuxBackend {
                 // 也更新 windows active 标记（虚拟 window）
                 for w in self.windows.iter_mut() {
                     w.active = w.id == window;
+                }
+                // 如果目标 tab 的 pane 数据为空，重新查询（兜底）
+                let pane_count = self.panes.iter().filter(|p| p.tab == tab_id).count();
+                if pane_count == 0 {
+                    tracing::debug!(target: "muxterm::tmux", "切 tab 到 @{} 但 pane 为空，重新查询", window.0);
+                    self.query_list_panes(window);
                 }
                 self.events.push_back(StateChange::ActiveTabChanged {
                     window,
@@ -513,7 +522,8 @@ impl TmuxBackend {
             let layout_str = parts[3].to_string();
             // 缓存 window_layout 字符串，供 rebuild_layout 使用
             self.window_layouts.insert(window, layout_str);
-            let _panes_count: u32 = parts[4].parse().unwrap_or(0);
+            let panes_count: usize = parts[4].parse().unwrap_or(0);
+            self.expected_panes_per_window.insert(window, panes_count);
 
             // 更新 / 创建 window（虚拟）
             if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
@@ -790,12 +800,33 @@ impl Backend for TmuxBackend {
 
         // 主动查询所有 window + pane，建立完整初始 state（attach 已有 session 必需）
         self.query_list_windows();
-        // 等待 list-windows + list-panes 响应到达（最多 3 秒）
+        // 等待 list-windows 响应到达（最多 3 秒），拿到所有 window 列表后再等 pane 查询
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             self.pump_events();
-            // 等 panes 非空（至少有一个 window 的 pane 查询完成）
-            if !self.panes.is_empty() {
+            // 等 list-windows 响应到达：windows 非空且 expected_panes_per_window 非空
+            if !self.windows.is_empty() && !self.expected_panes_per_window.is_empty() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        // 现在所有 window 的 pane 查询已发出（handle_list_windows_response 对每个 window 调了 query_list_panes）
+        // 等待所有 window 的 pane 查询响应到达（最多 5 秒）
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            self.pump_events();
+            // 检查是否所有 window 的 pane 都已到达
+            let all_ready = self
+                .expected_panes_per_window
+                .iter()
+                .all(|(wid, expected)| {
+                    let tab_id = TabId(wid.0);
+                    self.panes.iter().filter(|p| p.tab == tab_id).count() >= *expected
+                });
+            if all_ready {
                 break;
             }
             if std::time::Instant::now() >= deadline {
