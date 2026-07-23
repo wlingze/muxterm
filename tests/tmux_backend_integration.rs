@@ -2073,3 +2073,476 @@ fn bug6_edge_alt9_nonexistent_no_crash() {
     let _ = model.shutdown();
     cleanup(&socket);
 }
+
+// ============================================================================
+// Bug 7 正向测试：attach 到已有 session，正确显示 window/pane
+// ============================================================================
+
+#[test]
+fn bug7_positive_attach_existing_session() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 用原生 tmux 创建 2-tab 3-pane 布局
+    let rc = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "demo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status();
+    if rc.is_err() || !rc.unwrap().success() {
+        eprintln!("skip: 无法创建 tmux session");
+        cleanup(&socket);
+        return;
+    }
+    let w0 = String::from_utf8(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "list-windows",
+                "-t",
+                "demo",
+                "-F",
+                "#{window_id}",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    Command::new("tmux")
+        .args(["-L", &socket, "split-window", "-h", "-t", &w0])
+        .status()
+        .unwrap();
+    let p1 = String::from_utf8(
+        Command::new("tmux")
+            .args(["-L", &socket, "list-panes", "-t", &w0, "-F", "#{pane_id}"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .lines()
+    .nth(1)
+    .unwrap_or("")
+    .to_string();
+    if !p1.is_empty() {
+        Command::new("tmux")
+            .args(["-L", &socket, "split-window", "-v", "-t", &p1])
+            .status()
+            .unwrap();
+    }
+    Command::new("tmux")
+        .args(["-L", &socket, "new-window", "-t", "demo"])
+        .status()
+        .unwrap();
+
+    // 用 TmuxBackend attach 到 demo session
+    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+    // 应有 session（demo）
+    assert!(
+        !model.state().sessions().is_empty(),
+        "attach 后应有 session"
+    );
+
+    // 等待 windows 和 panes 到达
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.all_windows().len() >= 2 && s.active_pane().is_some()
+    });
+
+    // 正向：应有 2 个 window（tab）
+    let windows = model.state().all_windows();
+    assert!(
+        windows.len() >= 2,
+        "attach 后应有 >= 2 个 window: {}",
+        windows.len()
+    );
+
+    // 正向：第一个 tab 应有 3 个 pane
+    let tab0 = TabId(windows[0].id.0);
+    let tab0_panes = model.state().panes(&tab0).len();
+    assert_eq!(tab0_panes, 3, "tab0 应有 3 个 pane: {}", tab0_panes);
+
+    // 正向：第二个 tab 应有 1 个 pane
+    let tab1 = TabId(windows[1].id.0);
+    let tab1_panes = model.state().panes(&tab1).len();
+    assert_eq!(tab1_panes, 1, "tab1 应有 1 个 pane: {}", tab1_panes);
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Bug 7 正向测试：attach 后 split-pane 原生 tmux 验证
+// ============================================================================
+
+#[test]
+fn bug7_positive_attach_then_split() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "demo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .unwrap();
+
+    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let pane = model.state().active_pane().unwrap().id;
+
+    // split
+    model
+        .execute(Task::SplitPane {
+            target: Some(pane),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.panes(&s.active_tab().map(|t| t.id).unwrap_or(TabId(0)))
+            .len()
+            >= 2
+    });
+
+    // 原生 tmux 验证
+    let pane_count = String::from_utf8(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "list-panes",
+                "-t",
+                "demo",
+                "-F",
+                "#{pane_id}",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .lines()
+    .count();
+    assert!(
+        pane_count >= 2,
+        "原生 tmux 应看到 >= 2 个 pane: {}",
+        pane_count
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Bug 7 正向测试：list-sessions 列出所有 tmux session
+// ============================================================================
+
+#[test]
+fn bug7_positive_list_sessions_shows_all() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 创建两个 session
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "sess1",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .unwrap();
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "sess2",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .unwrap();
+
+    // 用 TmuxBackend 连接（new-session 模式，会创建第三个 session）
+    let backend = TmuxBackend::new(Some(&socket));
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    // 等待 list-sessions 响应
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.sessions().len() >= 2
+    });
+
+    // 应列出所有 session（至少 sess1, sess2）
+    let session_names: Vec<String> = model
+        .state()
+        .sessions()
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    assert!(
+        session_names.iter().any(|n| n == "sess1"),
+        "应包含 sess1: {:?}",
+        session_names
+    );
+    assert!(
+        session_names.iter().any(|n| n == "sess2"),
+        "应包含 sess2: {:?}",
+        session_names
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Bug 7 反向测试：attach 不存在的 session → 错误处理
+// ============================================================================
+
+#[test]
+fn bug7_negative_attach_nonexistent_session() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 不创建任何 session，直接 attach
+    let backend = TmuxBackend::new_with_attach(Some(&socket), "nonexistent_session");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+
+    // attach 不存在的 session 应该失败
+    let result = rt.block_on(model.connect());
+    assert!(result.is_err(), "attach 不存在的 session 应失败");
+
+    let _ = rt.block_on(model.shutdown());
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Bug 7 边界测试：attach 后切 tab pane 正确显示
+// ============================================================================
+
+#[test]
+fn bug7_edge_attach_switch_tab() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 创建 2-tab session
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "demo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .unwrap();
+    Command::new("tmux")
+        .args(["-L", &socket, "new-window", "-t", "demo"])
+        .status()
+        .unwrap();
+
+    // attach
+    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    // 等待所有 window + pane 到达
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.all_windows().len() >= 2
+    });
+
+    let window_ids: Vec<WindowId> = model.state().all_windows().iter().map(|w| w.id).collect();
+    assert!(window_ids.len() >= 2, "应有 >= 2 个 window");
+
+    // 切到第一个 tab
+    let w0 = window_ids[0];
+    model.execute(Task::SwitchWindow { target: w0 }).unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_window().map(|w| w.id) == Some(w0)
+    });
+    let tab0_panes = model.state().panes(&TabId(w0.0)).len();
+    assert!(tab0_panes >= 1, "tab0 应有 >= 1 pane: {}", tab0_panes);
+
+    // 切到第二个 tab
+    let w1 = window_ids[1];
+    model.execute(Task::SwitchWindow { target: w1 }).unwrap();
+    let _ = model.poll_events();
+    wait_for(&mut model, Duration::from_secs(3), |s| {
+        s.active_window().map(|w| w.id) == Some(w1)
+    });
+    let tab1_panes = model.state().panes(&TabId(w1.0)).len();
+    assert!(tab1_panes >= 1, "tab1 应有 >= 1 pane: {}", tab1_panes);
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// Bug 7 边界测试：attach 后 send-keys 输出显示
+// ============================================================================
+
+#[test]
+fn bug7_edge_attach_send_keys() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "demo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .unwrap();
+
+    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some()
+    });
+    let pane = model.state().active_pane().unwrap().id;
+
+    for c in "echo attach_test".chars() {
+        model
+            .execute(Task::SendKeys {
+                target: pane,
+                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+            })
+            .unwrap();
+        let _ = model.poll_events();
+    }
+    model
+        .execute(Task::SendKeys {
+            target: pane,
+            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+        })
+        .unwrap();
+    let _ = model.poll_events();
+
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&pane)
+            .map(|o| String::from_utf8_lossy(o).contains("attach_test"))
+            .unwrap_or(false)
+    });
+    assert!(ok, "attach 后 send-keys 输出应显示");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}

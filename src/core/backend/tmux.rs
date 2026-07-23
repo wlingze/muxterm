@@ -29,7 +29,9 @@ use crate::core::model::state::{
     BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };
 use crate::core::model::task::{Task, TaskOutcome};
-use crate::core::tmux::client::{TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent};
+use crate::core::tmux::client::{
+    ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent,
+};
 use crate::core::tmux::command as cmd;
 use crate::core::tmux::protocol::{parse_layout_tree, LayoutTree, Message, NotificationKind};
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
@@ -44,6 +46,8 @@ enum PendingQuery {
     ListWindows,
     /// display-message -p -t <pane> '<format>'：取单行响应。
     DisplayMessage { pane: PaneId },
+    /// list-sessions：列出 tmux server 上所有 session。
+    ListSessions,
 }
 
 /// tmux -CC 后端。
@@ -120,6 +124,17 @@ impl TmuxBackend {
             window_layouts: HashMap::new(),
             expected_panes_per_window: HashMap::new(),
         }
+    }
+
+    /// 创建后端并指定 attach 模式（连接已有 tmux session）。
+    ///
+    /// `target` 是 tmux session 名或 id（如 "demo" 或 "$0"）。
+    pub fn new_with_attach(socket: Option<&str>, target: &str) -> Self {
+        let mut backend = Self::new(socket);
+        backend.config.mode = Some(ConnectMode::Attach {
+            target: Some(target.to_string()),
+        });
+        backend
     }
 
     /// 从内部 state 同步更新 active 标记。
@@ -422,6 +437,33 @@ impl TmuxBackend {
                         }
                     }
                 }
+                PendingQuery::ListSessions => {
+                    // list-sessions 默认格式: "demo: 1 windows (created ...)"
+                    for line in &lines {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        let name = line.split(':').next().unwrap_or("").trim();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let sid = self
+                            .sessions
+                            .iter()
+                            .find(|s| s.name == name)
+                            .map(|s| s.id)
+                            .unwrap_or(SessionId(self.sessions.len() as u32));
+                        if !self.sessions.iter().any(|s| s.name == name) {
+                            self.sessions.push(SessionInfo {
+                                id: sid,
+                                name: name.to_string(),
+                                active_window: None,
+                            });
+                        }
+                    }
+                    self.events.push_back(StateChange::SessionsChanged);
+                }
             }
         }
     }
@@ -567,6 +609,14 @@ impl TmuxBackend {
         if self.dispatch_command(line).is_ok() {
             self.pending_queries
                 .push_back(PendingQuery::ListPanes { window });
+        }
+    }
+
+    /// 发送 list-sessions 查询（列出 tmux server 上所有 session）。
+    fn query_list_sessions(&mut self) {
+        let line = "list-sessions\n".to_string();
+        if self.dispatch_command(line).is_ok() {
+            self.pending_queries.push_back(PendingQuery::ListSessions);
         }
     }
 
@@ -776,13 +826,23 @@ impl Backend for TmuxBackend {
         self._sender_handle = Some(sender_join);
         self.handle = None; // handle 已 move 进 sender task
 
-        // 等待 tmux 启动事件（WindowAdd / SessionChanged）建立初始 state
-        // 给一定时间 drain 启动事件
+        // 等待 tmux 启动事件建立初始 state
+        // new-session 模式：等 SessionChanged + WindowAdd
+        // attach 模式：等 SessionChanged（window 不通过通知到达，需主动查询）
+        let is_attach = matches!(self.config.mode, Some(ConnectMode::Attach { .. }));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             self.pump_events();
-            if !self.sessions.is_empty() && !self.windows.is_empty() {
-                break;
+            if is_attach {
+                // attach 模式只需 session 事件
+                if !self.sessions.is_empty() {
+                    break;
+                }
+            } else {
+                // new-session 模式需 session + window
+                if !self.sessions.is_empty() && !self.windows.is_empty() {
+                    break;
+                }
             }
             if std::time::Instant::now() >= deadline {
                 break;
@@ -834,6 +894,9 @@ impl Backend for TmuxBackend {
             }
             tokio::task::yield_now().await;
         }
+
+        // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
+        self.query_list_sessions();
 
         self.status = BackendStatus::Connected;
         self.events
