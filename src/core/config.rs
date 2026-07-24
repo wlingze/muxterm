@@ -18,10 +18,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// `HashSet` 仅在 `from_gdk`（GTK 前端）里用到，跟随 feature 启用。
-#[cfg(feature = "gtk")]
-use std::collections::HashSet;
-
 // ============================================================================
 // 顶层配置
 // ============================================================================
@@ -502,32 +498,56 @@ fn kb(key: &str, mods: &[&str], action: &str) -> KeyBinding {
     }
 }
 
-/// 修饰键集合（规范化小写）。
+/// 平台无关修饰键（自建 bitflags，不依赖任何 GUI 库）。
+///
+/// GTK / AppKit / WinUI 在各自 platform 层把原生修饰键转成此类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Modifiers(pub u8);
+
+impl Modifiers {
+    pub const NONE: Modifiers = Modifiers(0);
+    pub const CONTROL: Modifiers = Modifiers(0b0001);
+    pub const SHIFT: Modifiers = Modifiers(0b0010);
+    pub const ALT: Modifiers = Modifiers(0b0100);
+    pub const SUPER: Modifiers = Modifiers(0b1000);
+
+    /// 是否包含全部 `other` 标志位。
+    pub fn contains(self, other: Modifiers) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// 并入标志位。
+    pub fn insert(&mut self, other: Modifiers) {
+        self.0 |= other.0;
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// 修饰键集合（规范化小写，排序存以便 Hash/Eq）。
+///
+/// 用于 keybinding 查找表；与 [`Modifiers`] 可互转。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct ModSet(pub Vec<String>);
 
 impl ModSet {
-    /// 从 GDK `ModifierType` 构造（GTK 前端用）。
-    #[cfg(feature = "gtk")]
-    pub fn from_gdk(mods: gtk4::gdk::ModifierType) -> Self {
-        let mut s = HashSet::new();
-        use gtk4::gdk::ModifierType as M;
-        if mods.contains(M::CONTROL_MASK) {
-            s.insert("control".into());
+    /// 从平台无关 [`Modifiers`] 构造。
+    pub fn from_modifiers(mods: Modifiers) -> Self {
+        let mut v = Vec::new();
+        if mods.contains(Modifiers::CONTROL) {
+            v.push("control".into());
         }
-        if mods.contains(M::SHIFT_MASK) {
-            s.insert("shift".into());
+        if mods.contains(Modifiers::SHIFT) {
+            v.push("shift".into());
         }
-        if mods.contains(M::ALT_MASK) {
-            s.insert("alt".into());
+        if mods.contains(Modifiers::ALT) {
+            v.push("alt".into());
         }
-        if mods.contains(M::SUPER_MASK) {
-            s.insert("super".into());
+        if mods.contains(Modifiers::SUPER) {
+            v.push("super".into());
         }
-        let mut v: Vec<String> = s.into_iter().collect();
-        v.sort();
-        v.dedup();
         ModSet(v)
     }
 
@@ -909,6 +929,21 @@ key_path = "~/.ssh/id_rsa"
         let ms = ModSet::from_binding(&["Alt".into(), "SHIFT".into()]);
         assert!(ms.0.contains(&"alt".to_string()));
         assert!(ms.0.contains(&"shift".to_string()));
+    }
+
+    #[test]
+    fn modifiers_bitflags_and_modset_roundtrip() {
+        let mut m = Modifiers::NONE;
+        m.insert(Modifiers::ALT);
+        m.insert(Modifiers::CONTROL);
+        assert!(m.contains(Modifiers::ALT));
+        assert!(m.contains(Modifiers::CONTROL));
+        assert!(!m.contains(Modifiers::SHIFT));
+        let ms = ModSet::from_modifiers(m);
+        assert_eq!(
+            ms.0,
+            vec!["alt".to_string(), "control".to_string()]
+        );
     }
 
     #[test]
