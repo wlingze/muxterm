@@ -34,6 +34,8 @@ struct StateChange: Equatable {
     let name: String
 
     var isPaneOutput: Bool { type == STATE_PANE_OUTPUT }
+    var isPaneClosed: Bool { type == STATE_PANE_CLOSED }
+    var isTabClosed: Bool { type == STATE_TAB_CLOSED }
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }
 }
 

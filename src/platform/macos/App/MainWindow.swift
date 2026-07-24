@@ -8,6 +8,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var pollTimer: Timer?
     private var lastSnapshot = FrameSnapshot()
     private var needsLayoutReload = true
+    private var isClosing = false
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
@@ -24,6 +25,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 480, height: 320)
         window.center()
         window.contentView = content
+        window.setAccessibilityIdentifier("muxterm.mainWindow")
 
         super.init(window: window)
         window.delegate = self
@@ -34,21 +36,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.refreshUI()
         }
         content.tabBar.onNewTab = { [weak self] in
-            self?.bridge.execute(task: MuxTask.newTab())
-            self?.needsLayoutReload = true
-            self?.refreshUI()
+            self?.newTab()
         }
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
-            // 点击激活：聚焦对应终端视图
             let view = self.terminalManager.view(for: paneId)
             self.window?.makeFirstResponder(view)
             self.terminalManager.focusTarget = view
         }
+        terminalManager.onOutputSnippetChanged = { [weak self] snippet in
+            self?.content.statusBar.updateOutputSnippet(snippet)
+        }
 
         installKeyEquivalents()
         startPolling()
-        // 初次快照
         DispatchQueue.main.async { [weak self] in
             self?.refreshUI()
         }
@@ -61,13 +62,36 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     deinit {
         pollTimer?.invalidate()
-        bridge.shutdown()
+        if !isClosing {
+            bridge.shutdown()
+        }
+    }
+
+    // MARK: - 公开动作（菜单 / 快捷键）
+
+    @objc func newTab() {
+        bridge.execute(task: MuxTask.newTab())
+        needsLayoutReload = true
+        refreshUI()
+    }
+
+    @objc func closeActivePane() {
+        let pane = lastSnapshot.activePane
+        guard pane != 0 else { return }
+        // 唯一 pane 时关 pane 会触发后端关 window；UI 侧随后收到 Exited 再关窗口。
+        bridge.execute(task: MuxTask.closePane(pane))
+        needsLayoutReload = true
+        refreshUI()
+        maybeCloseIfSessionEnded()
+    }
+
+    @objc func closeActiveWindow() {
+        closeSessionWindow()
     }
 
     // MARK: - 事件循环
 
     private func startPolling() {
-        // ~10Hz 轮询 FFI 事件（与 TUI 的 100ms poll 对齐）
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.pollOnce()
         }
@@ -78,18 +102,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func pollOnce() {
         let events = bridge.pollEvents()
         var outputSeen = false
+        var structureChanged = false
         for ev in events {
             if ev.isPaneOutput {
                 terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
                 outputSeen = true
             } else {
+                structureChanged = true
                 needsLayoutReload = true
             }
+            if ev.isBackendStatus, ev.paneId == 4 {
+                // pane_id 复用状态码：4 = exited
+                closeSessionWindow()
+                return
+            }
+            if ev.isPaneClosed || ev.isTabClosed {
+                structureChanged = true
+            }
         }
-        if needsLayoutReload || (!events.isEmpty && !outputSeen) {
+        if needsLayoutReload || structureChanged {
             refreshUI()
+            maybeCloseIfSessionEnded()
         } else if outputSeen {
-            // 仅更新状态栏（pane 数等可能不变）
             content.statusBar.update(snapshot: lastSnapshot)
         }
     }
@@ -103,6 +137,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             needsLayoutReload = false
         }
         content.statusBar.update(snapshot: snap)
+        content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
 
         if snap.activePane != 0 {
             let view = terminalManager.view(for: snap.activePane)
@@ -113,10 +148,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    // MARK: - 快捷键（窗口级）
+    /// session/window 已空时关闭 NSWindow。
+    private func maybeCloseIfSessionEnded() {
+        let snap = bridge.snapshot()
+        if snap.tabs.isEmpty && snap.panes.isEmpty {
+            closeSessionWindow()
+        }
+    }
+
+    private func closeSessionWindow() {
+        guard !isClosing else { return }
+        isClosing = true
+        pollTimer?.invalidate()
+        pollTimer = nil
+        bridge.shutdown()
+        window?.close()
+    }
+
+    // MARK: - 快捷键
 
     private func installKeyEquivalents() {
-        // 菜单栏快捷键在 AppDelegate 安装；这里处理 Alt+数字等本地键。
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             return self.handleKey(event) ? nil : event
@@ -126,17 +177,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 返回 true 表示已消费事件。
     private func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        // Alt+T 新建 tab
-        if flags.contains(.option), event.charactersIgnoringModifiers == "t" {
-            bridge.execute(task: MuxTask.newTab())
-            needsLayoutReload = true
-            refreshUI()
+        let ch = event.charactersIgnoringModifiers?.lowercased()
+
+        // Cmd+T 新建 tab
+        if flags.contains(.command), ch == "t" {
+            newTab()
+            return true
+        }
+        // Cmd+D 关闭 pane
+        if flags.contains(.command), ch == "d" {
+            closeActivePane()
+            return true
+        }
+        // Cmd+W 关闭 window
+        if flags.contains(.command), ch == "w" {
+            closeActiveWindow()
+            return true
+        }
+
+        // Alt+T 新建 tab（兼容 TUI）
+        if flags.contains(.option), ch == "t" {
+            newTab()
             return true
         }
         // Alt+1..9 切 tab
         if flags.contains(.option),
-           let ch = event.charactersIgnoringModifiers?.first,
-           let n = Int(String(ch)),
+           let raw = event.charactersIgnoringModifiers?.first,
+           let n = Int(String(raw)),
            (1...9).contains(n),
            n <= lastSnapshot.tabs.count
         {
@@ -145,17 +212,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             refreshUI()
             return true
         }
-        // Ctrl+Q 退出
-        if flags.contains(.control), event.charactersIgnoringModifiers == "q" {
+        // Ctrl+Q 退出应用
+        if flags.contains(.control), ch == "q" {
             NSApp.terminate(nil)
             return true
         }
+        // Ctrl+D：交给终端（EOF）；若唯一 pane，后端 Exit 后 UI 关窗。
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
-        pollTimer?.invalidate()
-        pollTimer = nil
-        bridge.shutdown()
+        if !isClosing {
+            isClosing = true
+            pollTimer?.invalidate()
+            pollTimer = nil
+            bridge.shutdown()
+        }
     }
 }

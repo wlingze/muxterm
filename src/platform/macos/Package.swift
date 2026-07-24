@@ -44,6 +44,9 @@ let package = Package(
                 "CoreBridge/include",
                 "CoreBridge/shim.c",
                 "CoreBridge/muxterm.h",
+                "MuxtermAppUITests",
+                "project.yml",
+                ".build",
             ],
             sources: [
                 "main.swift",
