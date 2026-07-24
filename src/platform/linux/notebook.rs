@@ -367,7 +367,7 @@ impl PaneNotebook {
         let tab_key = TabKey::Local(self.next_local);
         self.next_local += 1;
         let pane_key = PaneKey::Local(LocalPaneId(0));
-        let content = TabContent::single(pane_key, &view.terminal);
+        let content = TabContent::single(pane_key, view.terminal());
         let widget = content.root.clone();
         let idx = self.append(&widget, title);
         self.tabs.insert(tab_key, (idx, content));
@@ -386,8 +386,8 @@ impl PaneNotebook {
         if self.tabs.contains_key(&key) {
             return key;
         }
-        let pane_key = PaneKey::Tmux(first_pane.pane_id.expect("tmux pane 必须有 pane id"));
-        let content = TabContent::single(pane_key, &first_pane.terminal);
+        let pane_key = PaneKey::Tmux(PaneId(first_pane.pane_id()));
+        let content = TabContent::single(pane_key, first_pane.terminal());
         let widget = content.root.clone();
         let idx = self.append(&widget, title);
         self.tabs.insert(key, (idx, content));

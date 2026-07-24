@@ -74,8 +74,9 @@ pub fn tab_index_for_shortcut(n: u32, total: usize) -> Option<usize> {
 }
 
 /// 空窗口（无 tab）是否应允许继续操作而不崩。
-pub fn empty_window_is_safe(n_tabs: usize) -> bool {
-    n_tabs == 0 || n_tabs > 0
+pub fn empty_window_is_safe(_n_tabs: usize) -> bool {
+    // 空窗口是合法状态，调用方自行决定下一步（关窗 / 新建）
+    true
 }
 
 /// 底部 input_bar 在正常 UI 中应始终隐藏（保留控件，仅 `set_visible(false)`）。

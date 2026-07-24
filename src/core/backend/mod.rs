@@ -9,6 +9,8 @@ pub mod daemon;
 pub mod local;
 pub mod tmux;
 
+// DaemonBackend 仅 TUI 路径直接 `use`；无 tui feature 时 bin 会报 unused_imports
+#[cfg(feature = "tui")]
 pub use daemon::DaemonBackend;
 pub use local::LocalBackend;
 pub use tmux::TmuxBackend;

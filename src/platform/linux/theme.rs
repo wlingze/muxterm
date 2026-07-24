@@ -83,11 +83,8 @@ fn parse_extended_color(params: &[u32], i: usize) -> Option<Rgb> {
             // `38;2;R;G;B` 或 `38;2;<colorspace>;R;G;B`（ITU-T T.416，多一个参数）
             // 兼容：跳过可能的 colorspace id
             if params.len() >= i + 5 && params[i + 2] <= 255 {
-                let (r, g, b) = if params.len() >= i + 6
-                    && params[i + 2] > 255.min(0)
-                    && params.len() >= i + 6
-                    && params.get(i + 5).is_some()
-                {
+                // 有第 6 个参数且 colorspace/占位非 0 时按 ITU-T T.416 取后三色
+                let (r, g, b) = if params.len() >= i + 6 && params[i + 2] > 0 {
                     (
                         params[i + 3] as u8,
                         params[i + 4] as u8,

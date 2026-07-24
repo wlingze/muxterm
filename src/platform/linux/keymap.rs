@@ -47,12 +47,9 @@ impl KeyMap {
     /// 查找匹配的 action。
     pub fn lookup(&self, keyval: gdk::Key, mods: gdk::ModifierType) -> Option<Action> {
         // 优先用 keyval 的 unicode 字符（区分大小写）
-        let key_str = if let Some(c) = keyval.to_unicode() {
-            c.to_string()
-        } else if let Some(n) = keyval.name() {
-            n.to_string().to_lowercase()
-        } else {
-            return None;
+        let key_str = match keyval.to_unicode() {
+            Some(c) => c.to_string(),
+            None => keyval.name()?.to_string().to_lowercase(),
         };
         let modset = ModSet::from_modifiers(modifiers_from_gdk(mods));
         self.map.get(&(key_str, modset)).copied()
