@@ -167,9 +167,7 @@ unsafe fn active_pane_count(h: *mut muxterm::core::ffi::api::MuxtermHandle) -> i
     muxterm_get_panes(h, 0, panes.as_mut_ptr(), 16)
 }
 
-unsafe fn active_layout_root(
-    h: *mut muxterm::core::ffi::api::MuxtermHandle,
-) -> CLayoutNode {
+unsafe fn active_layout_root(h: *mut muxterm::core::ffi::api::MuxtermHandle) -> CLayoutNode {
     let mut root = CLayoutNode {
         type_: LAYOUT_LEAF,
         pane_id: 0,

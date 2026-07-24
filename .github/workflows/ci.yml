@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Ubuntu：core / TUI（fmt + clippy + test）
   ci:
     name: check / fmt / clippy / test
     runs-on: ubuntu-latest
@@ -62,26 +63,25 @@ jobs:
         # 只编译检查：CI runner 无显示器，不跑 GTK UI 测试
         run: cargo check --features gtk
 
-  # macOS 原生客户端：FFI 单测 + 构建 + XCUITest（键盘驱动）
-  # 钉 macos-15 + Xcode 16.4，避开 macos-26/Xcode 26 缺省无 Metal Toolchain 的问题
-  # （见 https://github.com/actions/runner-images/issues/13014 ，核对时间 2026-07-24）
+  # macOS：FFI release 构建 → macos_integration → XCUITest
+  # macos-latest 现为 macos-26（核对时间 2026-07-24，
+  # https://github.com/actions/runner-images/issues/14167 ）
   macos:
     name: macos / ffi / XCUITest
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 45
     env:
       # 与 .cargo/config.toml 的 ../muxterm-target 对齐（相对仓库根）
       CARGO_TARGET_DIR: ${{ github.workspace }}/../muxterm-target
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.4
+      - name: Show Xcode
         run: |
-          sudo xcode-select -s "$DEVELOPER_DIR"
           xcodebuild -version
           swift --version
+          /usr/bin/automationmodetool || true
 
       - name: Install tools
         run: |
@@ -92,8 +92,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -105,22 +103,20 @@ jobs:
             ${{ github.workspace }}/../muxterm-target
           key: ${{ runner.os }}-macos-cargo-${{ hashFiles('**/Cargo.toml', '**/Package.resolved') }}
 
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
+      - name: cargo build ffi (release)
+        run: cargo build --release --no-default-features --features ffi
 
-      - name: cargo clippy (ffi)
-        run: cargo clippy --no-default-features --features ffi -- -D warnings
-
-      - name: cargo test (ffi)
-        run: cargo test --no-default-features --features ffi
+      - name: cargo test macos_integration
+        # 与 release 构建同 feature 集；勿拉默认 gtk
+        run: cargo test --no-default-features --features ffi --test macos_integration
         timeout-minutes: 15
-
-      - name: Build macOS app
-        run: ./scripts/build-macos.sh
 
       - name: Generate Xcode project
         working-directory: src/platform/macos
-        run: xcodegen generate
+        run: |
+          mkdir -p Vendor
+          ln -sfn ../../../../../muxterm-target/release/libmuxterm.a Vendor/libmuxterm.a
+          xcodegen generate
 
       - name: XCUITest
         working-directory: src/platform/macos
@@ -129,8 +125,9 @@ jobs:
           xcodebuild test \
             -project Muxterm.xcodeproj \
             -scheme MuxtermApp \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MuxtermAppUITests \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES \
             CODE_SIGN_IDENTITY=- \
+            ENABLE_DEBUG_DYLIB=NO \
             | xcbeautify --renderer github-actions
