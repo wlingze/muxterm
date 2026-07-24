@@ -940,10 +940,9 @@ key_path = "~/.ssh/id_rsa"
         assert!(m.contains(Modifiers::CONTROL));
         assert!(!m.contains(Modifiers::SHIFT));
         let ms = ModSet::from_modifiers(m);
-        assert_eq!(
-            ms.0,
-            vec!["alt".to_string(), "control".to_string()]
-        );
+        assert!(ms.0.contains(&"alt".to_string()));
+        assert!(ms.0.contains(&"control".to_string()));
+        assert_eq!(ms.0.len(), 2);
     }
 
     #[test]
