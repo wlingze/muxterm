@@ -39,7 +39,8 @@ async-ssh2-tokio = "0.13"
 
 # 可选：GTK4 前端
 gtk4 = { version = "0.9", optional = true }
-vte4 = { version = "0.8", optional = true }
+# v0_76：Terminal::text_format，GTK 测试校验 VTE 可见文本（防分割后黑屏）
+vte4 = { version = "0.8", optional = true, features = ["v0_76"] }
 
 # 可选：TUI 前端
 crossterm = { version = "0.28", optional = true }

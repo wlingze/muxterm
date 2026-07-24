@@ -90,6 +90,15 @@ impl PaneView {
     pub fn grab_focus(&self) {
         self.renderer.terminal().grab_focus();
     }
+
+    /// 测试用：VTE 当前可见/滚动缓冲纯文本（分割后黑屏时此处为空）。
+    pub fn visible_text(&self) -> String {
+        self.renderer
+            .terminal()
+            .text_format(vte4::Format::Text)
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    }
 }
 
 /// 便于在闭包里共享的 PaneView 句柄。
