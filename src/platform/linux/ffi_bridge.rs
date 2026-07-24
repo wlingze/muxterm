@@ -7,6 +7,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
+use gtk4::glib;
+
 use crate::core::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
@@ -62,8 +64,11 @@ pub struct BridgePane {
 /// 核心 FFI 桥。
 ///
 /// **非线程安全**：仅在 GTK 主线程使用（内含 `*mut`，自动 !Send/!Sync）。
+/// 事件轮询用 `glib::timeout_add_local` 挂在 GTK 主循环上（见 [`Self::start_polling`]）。
 pub struct CoreBridge {
     handle: *mut MuxtermHandle,
+    /// 轮询定时器；`start_polling` 设置，Drop / `stop_polling` 清除。
+    poll_source: Option<glib::SourceId>,
 }
 
 impl CoreBridge {
@@ -88,7 +93,36 @@ impl CoreBridge {
             unsafe { muxterm_free(handle) };
             anyhow::bail!("muxterm_connect 失败: {rc}");
         }
-        Ok(Self { handle })
+        Ok(Self {
+            handle,
+            poll_source: None,
+        })
+    }
+
+    /// 在 GTK 主循环上启动周期轮询（默认由 window 以 16ms 调用）。
+    ///
+    /// `on_tick` 返回 `false` 时停止定时器。已有定时器会先被替换。
+    pub fn start_polling<F>(&mut self, interval_ms: u64, mut on_tick: F)
+    where
+        F: FnMut() -> bool + 'static,
+    {
+        self.stop_polling();
+        let id =
+            glib::timeout_add_local(std::time::Duration::from_millis(interval_ms), move || {
+                if on_tick() {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
+            });
+        self.poll_source = Some(id);
+    }
+
+    /// 停止事件轮询定时器。
+    pub fn stop_polling(&mut self) {
+        if let Some(id) = self.poll_source.take() {
+            id.remove();
+        }
     }
 
     pub fn execute(&self, task: CTask) -> i32 {
@@ -205,6 +239,7 @@ impl CoreBridge {
 
 impl Drop for CoreBridge {
     fn drop(&mut self) {
+        self.stop_polling();
         if !self.handle.is_null() {
             unsafe {
                 let _ = muxterm_shutdown(self.handle);

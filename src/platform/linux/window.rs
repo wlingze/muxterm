@@ -24,6 +24,8 @@ use crate::platform::linux::tab_bar::TabBar;
 /// 主窗口。
 pub struct AppWindow {
     pub window: Window,
+    /// 保持 UI 状态与 CoreBridge 存活（轮询闭包只用 Weak，避免循环引用）。
+    _state: Rc<RefCell<UiState>>,
 }
 
 struct UiState {
@@ -152,7 +154,7 @@ impl AppWindow {
             });
         }
 
-        // 首次刷新 + 定时轮询（Rc 由 timeout 持有，窗口存活期间有效）
+        // 首次刷新 + 由 CoreBridge 托管的 16ms 轮询（GTK 主线程）
         {
             let mut s = state.borrow_mut();
             let _ = s.bridge.poll_events();
@@ -160,23 +162,30 @@ impl AppWindow {
         }
 
         {
-            let st = state.clone();
+            let st_weak = Rc::downgrade(&state);
             let win_weak = window.downgrade();
-            glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+            let mut s = state.borrow_mut();
+            s.bridge.start_polling(16, move || {
                 if win_weak.upgrade().is_none() {
-                    return glib::ControlFlow::Break;
+                    return false;
                 }
+                let Some(st) = st_weak.upgrade() else {
+                    return false;
+                };
                 let mut s = st.borrow_mut();
                 let events = s.bridge.poll_events();
                 for ev in events {
                     dispatch_event(&mut s, &ev);
                 }
                 sync_pane_outputs(&mut s);
-                glib::ControlFlow::Continue
+                true
             });
         }
 
-        Self { window }
+        Self {
+            window,
+            _state: state,
+        }
     }
 }
 
