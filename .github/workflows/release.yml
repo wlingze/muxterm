@@ -12,52 +12,66 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Linux CLI 二进制 —— 纯 TUI，单文件，零依赖 ──
   release-linux:
-    name: Build Linux x86_64
+    name: Linux CLI (TUI)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
-            tmux
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: release-linux-cargo-${{ hashFiles('**/Cargo.toml') }}
-
-      - name: Build TUI binary
-        run: cargo build --release --no-default-features --features tui
-
-      - name: Test
-        run: cargo test --release --no-default-features --features tui
-
-      - name: Package binary
-        run: |
+          path: ~/.cargo/
+          key: release-linux-${{ hashFiles('**/Cargo.toml') }}
+      - run: cargo build --release --no-default-features --features tui
+      - run: cargo test --release --no-default-features --features tui
+      - run: |
           mkdir -p dist
           cp target/release/muxterm dist/muxterm-linux-x86_64
-          chmod +x dist/muxterm-linux-x86_64
-          # 生成 SHA256
           cd dist && sha256sum muxterm-linux-x86_64 > muxterm-linux-x86_64.sha256
-
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/muxterm-linux-x86_64
-            dist/muxterm-linux-x86_64.sha256
+          files: dist/*
+
+  # ── macOS .app 客户端 ──
+  release-macos:
+    name: macOS Client (.app)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install tmux xcodegen
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/
+          key: release-macos-${{ hashFiles('**/Cargo.toml') }}
+      - name: Build Rust FFI + macOS client
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          cargo build --release --no-default-features --features ffi
+          ./scripts/build-macos.sh
+      - name: Package .app
+        run: |
+          mkdir -p dist
+          cp -r build/macos/Muxterm.app dist/
+          cd dist && zip -r muxterm-macos-arm64.zip Muxterm.app/
+          sha256sum muxterm-macos-arm64.zip > muxterm-macos-arm64.zip.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+
+  # ── Linux GTK 客户端（预留，待 GTK4 前端完善）──
+  # release-linux-gtk:
+  #   name: Linux Client (GTK4)
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 30
+  #   ...
+
+  # ── Windows 客户端（预留，待 WinUI 前端完成）──
+  # release-windows:
+  #   name: Windows Client
+  #   runs-on: windows-latest
+  #   ...

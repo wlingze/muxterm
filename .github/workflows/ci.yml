@@ -63,6 +63,58 @@ jobs:
         # 只编译检查：CI runner 无显示器，不跑 GTK UI 测试
         run: cargo check --features gtk
 
+  # 路径过滤（workflow 级 paths 无法按 job 过滤，用 dorny/paths-filter）
+  changes:
+    name: path filter
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      linux: ${{ steps.filter.outputs.linux }}
+    steps:
+      # push 事件用 git 比对，需 checkout；PR 事件走 REST API，可不 checkout
+      - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request'
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            linux:
+              - 'src/platform/linux/**'
+
+  # Linux GTK 集成测试（仅 src/platform/linux/ 变动时跑）
+  linux-gtk:
+    name: linux-gtk
+    needs: changes
+    if: needs.changes.outputs.linux == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # 覆盖仓库 .cargo/config.toml 的 ../muxterm-target，避免 CI 写到 workspace 外
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK / VTE / xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config tmux xvfb \
+            libgtk-4-dev libvte-2.91-gtk4-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-gtk-${{ hashFiles('**/Cargo.toml') }}
+      - run: cargo clippy --features gtk -- -D warnings
+      - name: GTK integration tests (only linux_gtk_integration)
+        run: xvfb-run -a cargo test --features gtk --test linux_gtk_integration -- --test-threads=1
+
   # macOS：FFI release 构建 → macos_integration → XCUITest
   # macos-latest 现为 macos-26（核对时间 2026-07-24，
   # https://github.com/actions/runner-images/issues/14167 ）
