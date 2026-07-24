@@ -17,8 +17,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let wc = MainWindowController(bridge: bridge)
             mainWindow = wc
             buildMenu(windowController: wc)
-            wc.showWindow(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            Self.bringToForeground(windowController: wc)
+            // UITest：多抢几次前台（macOS 对 focus-steal 更严，且 XCUITest 依赖 runningForeground）
+            if ProcessInfo.processInfo.environment["MUXTERM_UITEST"] == "1" {
+                for delay in [0.0, 0.15, 0.4] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        Self.bringToForeground(windowController: wc)
+                    }
+                }
+            }
         } catch {
             buildMenu(windowController: nil)
             let alert = NSAlert()
@@ -133,7 +140,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         splitV.target = windowController
         viewMenu.addItem(splitV)
 
+        let nextPane = NSMenuItem(
+            title: "下一个 Pane",
+            action: #selector(MainWindowController.nextPane),
+            keyEquivalent: "]"
+        )
+        nextPane.target = windowController
+        viewMenu.addItem(nextPane)
+
+        let prevPane = NSMenuItem(
+            title: "上一个 Pane",
+            action: #selector(MainWindowController.prevPane),
+            keyEquivalent: "["
+        )
+        prevPane.target = windowController
+        viewMenu.addItem(prevPane)
+
+        viewMenu.addItem(NSMenuItem.separator())
+
+        let tabTop = NSMenuItem(
+            title: "标签栏在顶部",
+            action: #selector(MainWindowController.setTabBarTop(_:)),
+            keyEquivalent: ""
+        )
+        tabTop.target = windowController
+        viewMenu.addItem(tabTop)
+
+        let tabBottom = NSMenuItem(
+            title: "标签栏在底部",
+            action: #selector(MainWindowController.setTabBarBottom(_:)),
+            keyEquivalent: ""
+        )
+        tabBottom.target = windowController
+        viewMenu.addItem(tabBottom)
+
         NSApp.mainMenu = mainMenu
+    }
+
+    /// 强制窗口可见并尝试成为前台应用。
+    private static func bringToForeground(windowController: MainWindowController) {
+        windowController.showWindow(nil)
+        if let window = windowController.window {
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if #available(macOS 14.0, *) {
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+        } else {
+            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
     }
 
     /// 解析 CLI：`-L sock` → tmux；`-s name`（无 -L）→ daemon；都无 → local。

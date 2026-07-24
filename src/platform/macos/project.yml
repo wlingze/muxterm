@@ -48,6 +48,10 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: ""
         CLANG_ENABLE_MODULES: YES
         MACOSX_DEPLOYMENT_TARGET: "13.0"
+        # Xcode 16+ 默认把 App 打成 stub+debug.dylib，XCUITest 常卡在 Running Background
+        ENABLE_DEBUG_DYLIB: "NO"
+        CODE_SIGNING_ALLOWED: "YES"
+        CODE_SIGN_IDENTITY: "-"
     dependencies:
       - package: SwiftTerm
         product: SwiftTerm
