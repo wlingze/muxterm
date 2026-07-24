@@ -2,13 +2,16 @@ import XCTest
 
 /// Muxterm macOS XCUITest（键盘驱动）。
 ///
-/// ## CLI/TUI 复现结论（写测试前已核对）
-/// - **双写**：LocalBackend `WriteRaw` 曾本地回显 + pty 回显（全平台 FFI）；已修。
-/// - **Cmd+数字 noop**：仅 macOS/SwiftTerm；TUI 用 Alt+N，无此问题。
-/// - **Tab 栏空白**：仅 AppKit `fullSizeContentView`；TUI 无此问题。
-/// - **Ctrl+D**：
-///   - TUI：`is_quit` 把 Ctrl+D 当**退出 TUI**（不发给 shell）——与「EOF 关 tab」语义不同。
-///   - LocalBackend：单 pane 退出关 window；多 tab 时末 pane Exit 应只关该 tab（已补单测）。
+/// ## 快捷键（macOS）
+/// - **Cmd+T**：新建 tab
+/// - **Cmd+D** / **Cmd+Shift+D**：水平 / 竖直分割 pane
+/// - **Ctrl+D**：关闭当前 pane（末 pane 关 tab；末 tab 关 window）
+/// - **Cmd+1..9**：切 tab
+///
+/// ## CLI/TUI 复现结论
+/// - **双写**：LocalBackend `WriteRaw` 曾本地回显 + pty 回显；已修。
+/// - **Cmd+数字 noop**：仅 macOS/SwiftTerm；TUI 用 Alt+N。
+/// - **Ctrl+D**：macOS 显式关 pane/tab/window；TUI 仍把 Ctrl+D 当退出应用。
 ///
 /// ## 运行
 /// ```
@@ -35,7 +38,7 @@ final class MuxtermAppUITests: XCTestCase {
 
     // MARK: - 2tab3pane（全键盘）
 
-    /// 启动 → 输入验证输出 → Cmd+Shift+S/V 搭 3 pane → Cmd+T 第二 tab → Cmd+1 回 tab1 验布局。
+    /// 启动 → 输入验证输出 → Cmd+D / Cmd+Shift+D 搭 3 pane → Cmd+T → Cmd+1 验布局。
     func testTwoTabThreePaneViaKeyboard() throws {
         let window = waitMainWindow()
         let status = statusBar()
@@ -51,18 +54,17 @@ final class MuxtermAppUITests: XCTestCase {
         let echoed = (snippet.value as? String) ?? ""
         XCTAssertFalse(echoed.contains(marker + marker), "不应双写: \(echoed)")
 
-        // 2) Cmd+Shift+S/V → 当前 tab 3 panes
-        // （XCUITest 下 Option 修饰键常无法传到 AppKit；人手 Alt+S/V 仍可用）
-        app.typeKey("s", modifierFlags: [.command, .shift])
+        // 2) Cmd+D 水平 + Cmd+Shift+D 竖直 → 3 panes
+        app.typeKey("d", modifierFlags: .command)
         waitStatusContains(status, "panes: 2", timeout: 8)
-        app.typeKey("v", modifierFlags: [.command, .shift])
+        app.typeKey("d", modifierFlags: [.command, .shift])
         waitStatusContains(status, "panes: 3", timeout: 8)
 
         // 3) Cmd+T → 2 tabs（新 tab 默认 1 pane）
         app.typeKey("t", modifierFlags: .command)
         waitStatusContains(status, "tabs: 2", timeout: 5)
 
-        // 4) Cmd+2 确保在 tab2，再 Cmd+1 切回 tab1，验证 3-pane 布局
+        // 4) Cmd+2 → tab2，再 Cmd+1 回 tab1 验 3-pane
         app.typeKey("2", modifierFlags: .command)
         waitStatusContains(status, "panes: 1", timeout: 5)
         app.typeKey("1", modifierFlags: .command)
@@ -73,15 +75,14 @@ final class MuxtermAppUITests: XCTestCase {
         XCTAssertTrue(tabBar.waitForExistence(timeout: 3), "Tab 栏应可见")
     }
 
-    // MARK: - Ctrl+D 退出
+    // MARK: - Ctrl+D 关闭 pane / tab / window
 
-    /// 单 tab：Ctrl+D（EOF）退出 shell → 关闭整个窗口。
+    /// 单 tab 单 pane：Ctrl+D → 关闭整个窗口。
     func testCtrlDSingleTabClosesWindow() throws {
         let window = waitMainWindow()
         window.click()
         waitStatusContains(statusBar(), "connected", timeout: 5)
 
-        // 发给 shell 的 EOF
         app.typeKey("d", modifierFlags: .control)
 
         let disappeared = NSPredicate(format: "exists == false")
@@ -100,17 +101,40 @@ final class MuxtermAppUITests: XCTestCase {
         window.click()
         waitStatusContains(status, "connected", timeout: 5)
 
-        // 两个 tab
         app.typeKey("t", modifierFlags: .command)
         waitStatusContains(status, "tabs: 2", timeout: 5)
 
-        // 在当前（多半是 tab2）Ctrl+D
         app.typeKey("d", modifierFlags: .control)
 
-        // 窗口仍在，tabs 回到 1
         XCTAssertTrue(window.waitForExistence(timeout: 3), "多 tab 时窗口应保留")
         waitStatusContains(status, "tabs: 1", timeout: 8)
         waitStatusContains(status, "connected", timeout: 3)
+    }
+
+    /// 多 pane：Ctrl+D 只关当前 pane，窗口与剩余 pane 保留。
+    func testCtrlDClosesOnlyCurrentPane() throws {
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 5)
+
+        app.typeKey("d", modifierFlags: .command)
+        waitStatusContains(status, "panes: 2", timeout: 8)
+
+        app.typeKey("d", modifierFlags: .control)
+        waitStatusContains(status, "panes: 1", timeout: 8)
+        waitStatusContains(status, "tabs: 1", timeout: 3)
+        waitStatusContains(status, "connected", timeout: 3)
+        XCTAssertTrue(window.waitForExistence(timeout: 2), "多 pane 时 Ctrl+D 不应关窗")
+
+        // 再搭 3 panes，Ctrl+D → 2
+        app.typeKey("d", modifierFlags: .command)
+        waitStatusContains(status, "panes: 2", timeout: 8)
+        app.typeKey("d", modifierFlags: [.command, .shift])
+        waitStatusContains(status, "panes: 3", timeout: 8)
+        app.typeKey("d", modifierFlags: .control)
+        waitStatusContains(status, "panes: 2", timeout: 8)
+        XCTAssertTrue(window.waitForExistence(timeout: 2), "3→2 pane 时窗口应保留")
     }
 
     // MARK: - 基础冒烟

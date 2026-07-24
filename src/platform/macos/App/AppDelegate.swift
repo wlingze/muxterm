@@ -73,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(MainWindowController.closeActivePane),
             keyEquivalent: "d"
         )
+        closePane.keyEquivalentModifierMask = .control
         closePane.target = windowController
         fileMenu.addItem(closePane)
 
@@ -117,16 +118,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let splitH = NSMenuItem(
             title: "水平分割",
             action: #selector(MainWindowController.splitHorizontal),
-            keyEquivalent: "s"
+            keyEquivalent: "d"
         )
-        splitH.keyEquivalentModifierMask = [.command, .shift]
+        splitH.keyEquivalentModifierMask = .command
         splitH.target = windowController
         viewMenu.addItem(splitH)
 
         let splitV = NSMenuItem(
             title: "竖直分割",
             action: #selector(MainWindowController.splitVertical),
-            keyEquivalent: "v"
+            keyEquivalent: "d"
         )
         splitV.keyEquivalentModifierMask = [.command, .shift]
         splitV.target = windowController

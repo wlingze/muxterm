@@ -223,9 +223,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             newTab()
             return true
         }
-        // Cmd+D 关闭 pane
+        // Cmd+D 水平分割 / Cmd+Shift+D 竖直分割
         if flags.contains(.command), !flags.contains(.shift), ch == "d" {
-            closeActivePane()
+            splitActivePane(horizontal: true)
+            return true
+        }
+        if flags.contains(.command), flags.contains(.shift), ch == "d" {
+            splitActivePane(horizontal: false)
             return true
         }
         // Cmd+W 关闭 window
@@ -258,15 +262,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             splitActivePane(horizontal: false)
             return true
         }
-        // Cmd+Shift+S / Cmd+Shift+V：XCUITest 的 Option 修饰键不可靠，测分屏走这组
-        if flags.contains(.command), flags.contains(.shift), ch == "s" {
-            splitActivePane(horizontal: true)
-            return true
-        }
-        if flags.contains(.command), flags.contains(.shift), ch == "v" {
-            splitActivePane(horizontal: false)
-            return true
-        }
         // Alt+1..9 切 tab
         if flags.contains(.option),
            !flags.contains(.command),
@@ -282,7 +277,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             NSApp.terminate(nil)
             return true
         }
-        // Ctrl+D：交给终端（EOF）；若唯一 pane，后端 Exit 后 UI 关窗。
+        // Ctrl+D：关当前 pane（末 pane 关 tab / 末 tab 关 window）
+        if flags.contains(.control), !flags.contains(.command), ch == "d" {
+            closeActivePane()
+            return true
+        }
         return false
     }
 

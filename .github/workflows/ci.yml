@@ -61,3 +61,76 @@ jobs:
       - name: cargo check gtk
         # 只编译检查：CI runner 无显示器，不跑 GTK UI 测试
         run: cargo check --features gtk
+
+  # macOS 原生客户端：FFI 单测 + 构建 + XCUITest（键盘驱动）
+  # 钉 macos-15 + Xcode 16.4，避开 macos-26/Xcode 26 缺省无 Metal Toolchain 的问题
+  # （见 https://github.com/actions/runner-images/issues/13014 ，核对时间 2026-07-24）
+  macos:
+    name: macos / ffi / XCUITest
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      # 与 .cargo/config.toml 的 ../muxterm-target 对齐（相对仓库根）
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../muxterm-target
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 16.4
+        run: |
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          swift --version
+
+      - name: Install tools
+        run: |
+          brew list tmux >/dev/null 2>&1 || brew install tmux
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          tmux -V
+          xcodegen --version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ github.workspace }}/../muxterm-target
+          key: ${{ runner.os }}-macos-cargo-${{ hashFiles('**/Cargo.toml', '**/Package.resolved') }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (ffi)
+        run: cargo clippy --no-default-features --features ffi -- -D warnings
+
+      - name: cargo test (ffi)
+        run: cargo test --no-default-features --features ffi
+        timeout-minutes: 15
+
+      - name: Build macOS app
+        run: ./scripts/build-macos.sh
+
+      - name: Generate Xcode project
+        working-directory: src/platform/macos
+        run: xcodegen generate
+
+      - name: XCUITest
+        working-directory: src/platform/macos
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Muxterm.xcodeproj \
+            -scheme MuxtermApp \
+            -destination 'platform=macOS' \
+            -only-testing:MuxtermAppUITests \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY=- \
+            | xcbeautify --renderer github-actions
