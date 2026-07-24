@@ -16,7 +16,7 @@
 //! - 所有 pane 的后台读线程共用一个 `mpsc::Sender<PtyMsg>`（clone 后传入线程），
 //!   backend 持有唯一的 `mpsc::Receiver`，`take_events` 时 drain
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
@@ -116,6 +116,8 @@ pub struct LocalBackend {
     pty_tx: Option<mpsc::Sender<PtyMsg>>,
     /// 唯一接收端。首次 connect 时建立。
     pty_rx: Option<mpsc::Receiver<PtyMsg>>,
+    /// 已主动 kill 的 pane：忽略随后到达的 PtyMsg::Exit，避免误关剩余 window。
+    intentionally_closed: HashSet<PaneId>,
 }
 
 impl LocalBackend {
@@ -135,6 +137,7 @@ impl LocalBackend {
             next_pane: 0,
             pty_tx: None,
             pty_rx: None,
+            intentionally_closed: HashSet::new(),
         }
     }
 
@@ -147,23 +150,140 @@ impl LocalBackend {
     }
 
     /// drain pty 读线程的字节块，转成 PaneOutput 事件并累积输出。
+    ///
+    /// 子进程 Exit（如 Ctrl+D 退出 shell）：仅剩 1 个 pane 时关闭整个 window；
+    /// 否则只关闭该 pane。
     fn drain_pty_output(&mut self) {
         let Some(rx) = self.pty_rx.as_mut() else {
             return;
         };
+        let mut outputs = Vec::new();
+        let mut exits = Vec::new();
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                PtyMsg::Output { pane, data } => {
-                    if let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) {
-                        p.output.extend_from_slice(&data);
-                    }
-                    self.events
-                        .push_back(StateChange::PaneOutput { pane, data });
-                }
-                PtyMsg::Exit { pane: _ } => {
-                    // 子进程输出结束；保留输出，不自动关 pane（由调用方决定策略）
+                PtyMsg::Output { pane, data } => outputs.push((pane, data)),
+                PtyMsg::Exit { pane } => exits.push(pane),
+            }
+        }
+        for (pane, data) in outputs {
+            if let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) {
+                p.output.extend_from_slice(&data);
+            }
+            self.events
+                .push_back(StateChange::PaneOutput { pane, data });
+        }
+        for pane in exits {
+            self.handle_pane_process_exit(pane);
+        }
+    }
+
+    /// shell/pty 子进程退出后的清理策略。
+    fn handle_pane_process_exit(&mut self, pane: PaneId) {
+        // 主动 ClosePane/CloseWindow 已 kill 的，忽略后续 Exit
+        if self.intentionally_closed.remove(&pane) {
+            return;
+        }
+        if !self.panes.iter().any(|p| p.info.id == pane) {
+            return;
+        }
+        // 唯一 pane → 关整个 window（及 session 若无剩余 window）
+        if self.panes.len() == 1 {
+            if let Some(tab_id) = self.tab_of_pane(pane) {
+                if let Some(win) = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.info.id == tab_id)
+                    .map(|t| t.info.window)
+                {
+                    self.close_window_internal(win);
                 }
             }
+            return;
+        }
+        // 多 pane：只关退出的那个
+        self.close_pane_internal(pane);
+    }
+
+    /// 关闭单个 pane（布局 + 事件），供 ClosePane / 进程退出复用。
+    fn close_pane_internal(&mut self, target: PaneId) {
+        let Some(tab_id) = self.tab_of_pane(target) else {
+            return;
+        };
+        let was_active = self
+            .panes
+            .iter()
+            .find(|p| p.info.id == target)
+            .map(|p| p.info.active)
+            .unwrap_or(false);
+        self.kill_pane(target);
+        if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab_id) {
+            let _ = tl.layout.tree.remove(target);
+            self.events
+                .push_back(StateChange::PaneClosed { pane: target });
+            self.events.push_back(StateChange::LayoutChanged {
+                tab: tab_id,
+                layout: tl.layout.clone(),
+            });
+            if was_active {
+                let new_active = tl.layout.tree.leaves().first().copied();
+                if let Some(a) = new_active {
+                    self.set_active_pane(tab_id, a);
+                    self.events.push_back(StateChange::ActivePaneChanged {
+                        tab: tab_id,
+                        pane: a,
+                    });
+                }
+            }
+        }
+    }
+
+    /// 关闭 window 及其下所有 pane/tab（供 CloseWindow / 末 pane 退出复用）。
+    fn close_window_internal(&mut self, target: WindowId) {
+        if !self.windows.iter().any(|w| w.info.id == target) {
+            return;
+        }
+        let sess = self
+            .windows
+            .iter()
+            .find(|w| w.info.id == target)
+            .map(|w| w.info.session)
+            .unwrap_or(SessionId(1));
+        let tab_ids: Vec<TabId> = self
+            .tabs
+            .iter()
+            .filter(|t| t.info.window == target)
+            .map(|t| t.info.id)
+            .collect();
+        let to_kill: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|p| tab_ids.contains(&p.info.tab))
+            .map(|p| p.info.id)
+            .collect();
+        for pid in &to_kill {
+            self.kill_pane(*pid);
+            self.events
+                .push_back(StateChange::PaneClosed { pane: *pid });
+        }
+        for tid in &tab_ids {
+            self.events.push_back(StateChange::TabClosed { tab: *tid });
+        }
+        self.tabs.retain(|t| t.info.window != target);
+        self.windows.retain(|w| w.info.id != target);
+        self.events
+            .push_back(StateChange::WindowClosed { window: target });
+        if let Some(w) = self.windows.first() {
+            let wid = w.info.id;
+            self.set_active_window(wid);
+            self.events.push_back(StateChange::ActiveWindowChanged {
+                session: sess,
+                window: wid,
+            });
+        } else {
+            // 无剩余 window → session 结束
+            self.status = BackendStatus::Exited;
+            self.events
+                .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
         }
     }
 
@@ -407,6 +527,7 @@ impl LocalBackend {
     /// kill 一个 pane 的子进程并从内部移除（调用方负责布局/事件）。
     fn kill_pane(&mut self, pane: PaneId) -> Option<LocalPane> {
         let idx = self.panes.iter().position(|p| p.info.id == pane)?;
+        self.intentionally_closed.insert(pane);
         let mut p = self.panes.remove(idx);
         // kill 子进程
         let _ = p.child.kill();
@@ -656,38 +777,12 @@ impl Backend for LocalBackend {
             }
 
             Task::ClosePane { target } => {
-                let Some(tab_id) = self.tab_of_pane(*target) else {
+                if self.tab_of_pane(*target).is_none() {
                     return Ok(TaskOutcome::Rejected {
                         reason: format!("pane {target} 不存在"),
                     });
-                };
-                let was_active = self
-                    .panes
-                    .iter()
-                    .find(|p| p.info.id == *target)
-                    .map(|p| p.info.active)
-                    .unwrap_or(false);
-                self.kill_pane(*target);
-                // 更新布局树
-                if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab_id) {
-                    let _ = tl.layout.tree.remove(*target);
-                    self.events
-                        .push_back(StateChange::PaneClosed { pane: *target });
-                    self.events.push_back(StateChange::LayoutChanged {
-                        tab: tab_id,
-                        layout: tl.layout.clone(),
-                    });
-                    if was_active {
-                        let new_active = tl.layout.tree.leaves().first().copied();
-                        if let Some(a) = new_active {
-                            self.set_active_pane(tab_id, a);
-                            self.events.push_back(StateChange::ActivePaneChanged {
-                                tab: tab_id,
-                                pane: a,
-                            });
-                        }
-                    }
                 }
+                self.close_pane_internal(*target);
                 TaskOutcome::Done
             }
 
@@ -784,41 +879,7 @@ impl Backend for LocalBackend {
                         reason: format!("window {target} 不存在"),
                     });
                 }
-                let sess = self
-                    .windows
-                    .iter()
-                    .find(|w| w.info.id == *target)
-                    .map(|w| w.info.session)
-                    .unwrap_or(SessionId(1));
-                // kill 该 window 下所有 pane
-                let tab_ids: Vec<TabId> = self
-                    .tabs
-                    .iter()
-                    .filter(|t| t.info.window == *target)
-                    .map(|t| t.info.id)
-                    .collect();
-                let to_kill: Vec<PaneId> = self
-                    .panes
-                    .iter()
-                    .filter(|p| tab_ids.contains(&p.info.tab))
-                    .map(|p| p.info.id)
-                    .collect();
-                for pid in to_kill {
-                    self.kill_pane(pid);
-                }
-                self.tabs.retain(|t| t.info.window != *target);
-                self.windows.retain(|w| w.info.id != *target);
-                // active window 回退到剩余第一个
-                if let Some(w) = self.windows.first() {
-                    let wid = w.info.id;
-                    self.set_active_window(wid);
-                    self.events.push_back(StateChange::ActiveWindowChanged {
-                        session: sess,
-                        window: wid,
-                    });
-                }
-                self.events
-                    .push_back(StateChange::WindowClosed { window: *target });
+                self.close_window_internal(*target);
                 TaskOutcome::Done
             }
 
@@ -888,15 +949,8 @@ impl Backend for LocalBackend {
                         reason: format!("pane {target} 不存在"),
                     });
                 }
+                // 只写入 pty；显示依赖 shell 回显（drain_pty_output），避免双写。
                 let written = self.write_to_pane(*target, data);
-                // 累积到输出缓冲（不等 pty 回显）
-                if let Some(p) = self.panes.iter_mut().find(|p| p.info.id == *target) {
-                    p.output.extend_from_slice(data);
-                }
-                self.events.push_back(StateChange::PaneOutput {
-                    pane: *target,
-                    data: data.clone(),
-                });
                 if written {
                     TaskOutcome::Done
                 } else {
@@ -1106,9 +1160,8 @@ mod tests {
     use crate::core::model::layout::SplitDir;
 
     fn backend() -> LocalBackend {
-        // 用 `cat` 作为默认命令（立即读 stdin 后退出，便于测试不阻塞）
-        // 实际上用 `sleep` 更稳定，这里用 sleep 0.1 让子进程短暂存活
-        LocalBackend::new("sleep", "/")
+        // 长驻进程，避免测试中途 Exit 触发「末 pane 关 window」逻辑。
+        LocalBackend::new("sleep 60", "/")
     }
 
     #[tokio::test]
@@ -1178,6 +1231,26 @@ mod tests {
             .any(|e| matches!(e, StateChange::PaneClosed { pane: p } if *p == second)));
         assert_eq!(b.panes.len(), 1);
         assert_eq!(b.active_pane_id(), Some(first));
+    }
+
+    #[tokio::test]
+    async fn last_pane_process_exit_closes_window() {
+        // 短命命令：退出后若仅剩该 pane，应关闭整个 window/session
+        let mut b = LocalBackend::new("sleep 0.05", "/");
+        b.connect().await.unwrap();
+        let _ = b.take_events();
+        // 等子进程退出
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let events = b.take_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StateChange::WindowClosed { .. } | StateChange::BackendStatusChanged(BackendStatus::Exited)
+            )),
+            "末 pane 退出应关闭 window/session: {events:?}"
+        );
+        assert!(b.panes.is_empty());
+        assert!(b.windows.is_empty());
     }
 
     #[tokio::test]

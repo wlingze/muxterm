@@ -6,21 +6,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        buildMenu()
 
         do {
             let (backend, socket, session) = Self.resolveBackend(from: CommandLine.arguments)
             let bridge = try CoreBridge(backendType: backend, socket: socket, session: session)
-            // tmux attach 后给查询响应一点时间
             if socket != nil {
                 Thread.sleep(forTimeInterval: 0.3)
                 _ = bridge.pollEvents()
             }
             let wc = MainWindowController(bridge: bridge)
             mainWindow = wc
+            buildMenu(windowController: wc)
             wc.showWindow(nil)
             NSApp.activate(ignoringOtherApps: true)
         } catch {
+            buildMenu(windowController: nil)
             let alert = NSAlert()
             alert.messageText = "无法连接 Muxterm 核心"
             alert.informativeText = error.localizedDescription
@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 菜单
 
-    private func buildMenu() {
+    private func buildMenu(windowController: MainWindowController?) {
         let mainMenu = NSMenu()
 
         let appMenuItem = NSMenuItem()
@@ -54,6 +54,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
+
+        let fileMenuItem = NSMenuItem()
+        mainMenu.addItem(fileMenuItem)
+        let fileMenu = NSMenu(title: "文件")
+        fileMenuItem.submenu = fileMenu
+
+        let newTab = NSMenuItem(
+            title: "新建标签页",
+            action: #selector(MainWindowController.newTab),
+            keyEquivalent: "t"
+        )
+        newTab.target = windowController
+        fileMenu.addItem(newTab)
+
+        let closePane = NSMenuItem(
+            title: "关闭 Pane",
+            action: #selector(MainWindowController.closeActivePane),
+            keyEquivalent: "d"
+        )
+        closePane.target = windowController
+        fileMenu.addItem(closePane)
+
+        let closeWindow = NSMenuItem(
+            title: "关闭窗口",
+            action: #selector(MainWindowController.closeActiveWindow),
+            keyEquivalent: "w"
+        )
+        closeWindow.target = windowController
+        fileMenu.addItem(closeWindow)
 
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)

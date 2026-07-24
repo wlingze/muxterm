@@ -2,6 +2,9 @@ import AppKit
 import SwiftTerm
 
 /// 单个 pane 的 SwiftTerm 终端视图；输入经 delegate 回传到 FFI。
+///
+/// 不重写 `keyDown`：交给 SwiftTerm → `interpretKeyEvents` → `insertText`（NSTextInputClient）
+/// 单路径发送，避免 keyDown 与 insertText 双写。
 final class MuxTerminalView: TerminalView {
     /// 对应 muxterm pane id。
     let paneId: UInt32
@@ -14,6 +17,10 @@ final class MuxTerminalView: TerminalView {
         wantsLayer = true
         nativeForegroundColor = NSColor.textColor
         nativeBackgroundColor = NSColor.textBackgroundColor
+        setAccessibilityIdentifier("muxterm.terminal.\(paneId)")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.textArea)
+        setAccessibilityLabel("Terminal Pane \(paneId)")
     }
 
     @available(*, unavailable)

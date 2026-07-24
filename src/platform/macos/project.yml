@@ -1,0 +1,87 @@
+# XcodeGen 规格：为 XCUITest 提供可启动的 .app host。
+# 生成：cd src/platform/macos && xcodegen generate
+# 测试：xcodebuild test -project Muxterm.xcodeproj -scheme MuxtermApp -destination 'platform=macOS'
+#
+# SwiftPM 无法单独声明 UI Testing bundle + host app，故用 xcodegen 补齐。
+# 参考：https://github.com/Spooky-Labs/spooktacular (project.yml + XCUITest)
+
+name: Muxterm
+options:
+  bundleIdPrefix: dev.muxterm
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: 1.15.0
+
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGN_IDENTITY: "-"
+
+targets:
+  MuxtermApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: main.swift
+      - path: App
+      - path: Terminal
+      - path: UI
+      - path: CoreBridge/CoreBridge.swift
+      - path: CoreBridge/shim.c
+        compilerFlags: []
+    settings:
+      base:
+        PRODUCT_NAME: Muxterm
+        PRODUCT_BUNDLE_IDENTIFIER: dev.muxterm.app
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/CoreBridge/include"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../../../../muxterm-target/release $(SRCROOT)/Vendor"
+        OTHER_LDFLAGS: "-lmuxterm -liconv -lresolv"
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        CLANG_ENABLE_MODULES: YES
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+    dependencies:
+      - package: SwiftTerm
+        product: SwiftTerm
+    info:
+      path: Info.plist
+      properties:
+        CFBundleIdentifier: dev.muxterm.app
+        CFBundleName: Muxterm
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+
+  MuxtermAppUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: MuxtermAppUITests
+    dependencies:
+      - target: MuxtermApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.muxterm.app.uitests
+        TEST_TARGET_NAME: MuxtermApp
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: MuxtermAppUITests/Info.plist
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+schemes:
+  MuxtermApp:
+    build:
+      targets:
+        MuxtermApp: all
+        MuxtermAppUITests: [test]
+    run:
+      config: Debug
+      executable: MuxtermApp
+    test:
+      config: Debug
+      targets:
+        - MuxtermAppUITests
