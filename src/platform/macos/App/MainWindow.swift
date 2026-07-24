@@ -112,6 +112,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshUI()
     }
 
+    @objc func splitHorizontal() {
+        splitActivePane(horizontal: true)
+    }
+
+    @objc func splitVertical() {
+        splitActivePane(horizontal: false)
+    }
+
+    private func splitActivePane(horizontal: Bool) {
+        let pane = lastSnapshot.activePane
+        guard pane != 0 else { return }
+        bridge.execute(task: MuxTask.splitPane(targetPane: pane, horizontal: horizontal))
+        needsLayoutReload = true
+        refreshUI()
+    }
+
     // MARK: - 事件循环
 
     private func startPolling() {
@@ -231,6 +247,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Alt+T 新建 tab（兼容 TUI）
         if flags.contains(.option), !flags.contains(.command), ch == "t" {
             newTab()
+            return true
+        }
+        // Alt+S / Alt+V：与 TUI 一致
+        if flags.contains(.option), !flags.contains(.command), ch == "s" {
+            splitActivePane(horizontal: true)
+            return true
+        }
+        if flags.contains(.option), !flags.contains(.command), ch == "v" {
+            splitActivePane(horizontal: false)
+            return true
+        }
+        // Cmd+Shift+S / Cmd+Shift+V：XCUITest 的 Option 修饰键不可靠，测分屏走这组
+        if flags.contains(.command), flags.contains(.shift), ch == "s" {
+            splitActivePane(horizontal: true)
+            return true
+        }
+        if flags.contains(.command), flags.contains(.shift), ch == "v" {
+            splitActivePane(horizontal: false)
             return true
         }
         // Alt+1..9 切 tab

@@ -1,0 +1,5 @@
+// XcodeGen / xcodebuild 侧用；SwiftPM 的 CMuxterm target 也会优先用此 map。
+module CMuxterm {
+    header "muxterm.h"
+    export *
+}
