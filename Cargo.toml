@@ -10,8 +10,8 @@ license = "MIT"
 default = ["gtk"]
 # GTK4 原生前端：依赖 gtk4 / vte4，并通过 ffi 调用核心。
 gtk = ["dep:gtk4", "dep:vte4", "ffi"]
-# TUI 前端：纯 crossterm，无 GTK 依赖，任何 unix 机器都能编译。
-tui = ["dep:crossterm"]
+# TUI 前端：纯 crossterm，经 ffi 调用核心（CI / 无头）。
+tui = ["dep:crossterm", "ffi"]
 # C ABI 导出（不依赖任何 GUI）。
 ffi = []
 

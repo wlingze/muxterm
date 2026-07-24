@@ -1,7 +1,8 @@
-//! TUI 前端（crossterm，无 GTK 依赖）。
+//! TUI 前端（crossterm，经 FFI 调核心）。
 //!
-//! ASCII 文本终端前端：渲染 `State` 快照 + 把键盘事件转成 `Task` 发给
-//! `TerminalModel`。适合无 GTK 的机器（headless / SSH）跑 muxterm。
+//! ASCII 文本终端前端：`CoreBridge` 拉快照 → `render` 画帧；键盘经
+//! `execute` / `send_input` 回写。适合无 GTK 的机器（headless / SSH）。
 
 pub mod app;
+pub mod ffi_bridge;
 pub mod render;
