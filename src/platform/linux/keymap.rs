@@ -5,7 +5,28 @@ use std::collections::HashMap;
 
 use gtk4::gdk;
 
-use crate::core::config::{Action, KeyBinding, ModSet};
+use crate::core::config::{Action, KeyBinding, ModSet, Modifiers};
+
+/// 把 GDK `ModifierType` 转成平台无关 [`Modifiers`]。
+///
+/// GTK 依赖留在 platform 层，core 不引用 gtk4。
+pub fn modifiers_from_gdk(mods: gdk::ModifierType) -> Modifiers {
+    use gdk::ModifierType as M;
+    let mut m = Modifiers::NONE;
+    if mods.contains(M::CONTROL_MASK) {
+        m.insert(Modifiers::CONTROL);
+    }
+    if mods.contains(M::SHIFT_MASK) {
+        m.insert(Modifiers::SHIFT);
+    }
+    if mods.contains(M::ALT_MASK) {
+        m.insert(Modifiers::ALT);
+    }
+    if mods.contains(M::SUPER_MASK) {
+        m.insert(Modifiers::SUPER);
+    }
+    m
+}
 
 /// 快捷键匹配表。
 pub struct KeyMap {
@@ -33,7 +54,7 @@ impl KeyMap {
         } else {
             return None;
         };
-        let modset = ModSet::from_gdk(mods);
+        let modset = ModSet::from_modifiers(modifiers_from_gdk(mods));
         self.map.get(&(key_str, modset)).copied()
     }
 
