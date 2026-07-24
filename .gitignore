@@ -17,3 +17,4 @@ Cargo.lock
 .codex-*.md
 REFACTOR-PLAN.md
 migration-plan.md
+build/macos/
