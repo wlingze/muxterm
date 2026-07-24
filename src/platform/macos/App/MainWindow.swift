@@ -17,11 +17,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Muxterm"
+        window.titleVisibility = .visible
         window.minSize = NSSize(width: 480, height: 320)
         window.center()
         window.contentView = content
@@ -87,6 +88,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func closeActiveWindow() {
         closeSessionWindow()
+    }
+
+    /// 菜单 Cmd+1..9：tag 为 1-based 序号。
+    @objc func switchTabByNumber(_ sender: Any?) {
+        let n: Int
+        if let item = sender as? NSMenuItem {
+            n = item.tag
+        } else if let num = sender as? NSNumber {
+            n = num.intValue
+        } else {
+            return
+        }
+        switchToTabIndex(n)
+    }
+
+    /// 1-based 序号切换 tab。
+    func switchToTabIndex(_ oneBased: Int) {
+        guard oneBased >= 1, oneBased <= lastSnapshot.tabs.count else { return }
+        let tabId = lastSnapshot.tabs[oneBased - 1].id
+        bridge.execute(task: MuxTask.switchTab(tabId))
+        needsLayoutReload = true
+        refreshUI()
     }
 
     // MARK: - 事件循环
@@ -180,36 +203,44 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let ch = event.charactersIgnoringModifiers?.lowercased()
 
         // Cmd+T 新建 tab
-        if flags.contains(.command), ch == "t" {
+        if flags.contains(.command), !flags.contains(.shift), ch == "t" {
             newTab()
             return true
         }
         // Cmd+D 关闭 pane
-        if flags.contains(.command), ch == "d" {
+        if flags.contains(.command), !flags.contains(.shift), ch == "d" {
             closeActivePane()
             return true
         }
         // Cmd+W 关闭 window
-        if flags.contains(.command), ch == "w" {
+        if flags.contains(.command), !flags.contains(.shift), ch == "w" {
             closeActiveWindow()
+            return true
+        }
+        // Cmd+1..9 切 tab（必须在 SwiftTerm interpretKeyEvents 之前吞掉，否则 noop:）
+        if flags.contains(.command),
+           !flags.contains(.option),
+           let raw = event.charactersIgnoringModifiers?.first,
+           let n = Int(String(raw)),
+           (1...9).contains(n)
+        {
+            switchToTabIndex(n)
             return true
         }
 
         // Alt+T 新建 tab（兼容 TUI）
-        if flags.contains(.option), ch == "t" {
+        if flags.contains(.option), !flags.contains(.command), ch == "t" {
             newTab()
             return true
         }
         // Alt+1..9 切 tab
         if flags.contains(.option),
+           !flags.contains(.command),
            let raw = event.charactersIgnoringModifiers?.first,
            let n = Int(String(raw)),
-           (1...9).contains(n),
-           n <= lastSnapshot.tabs.count
+           (1...9).contains(n)
         {
-            bridge.execute(task: MuxTask.switchTab(lastSnapshot.tabs[n - 1].id))
-            needsLayoutReload = true
-            refreshUI()
+            switchToTabIndex(n)
             return true
         }
         // Ctrl+Q 退出应用
