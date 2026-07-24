@@ -9,30 +9,42 @@ final class TabBarView: NSView {
     private var buttons: [NSButton] = []
     private let stack = NSStackView()
     private let newTabButton = NSButton()
+    private let bottomBorder = CALayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        // 与窗口背景区分，避免「顶部空白」观感
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        setAccessibilityIdentifier("muxterm.tabBar")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.tabGroup)
+        setAccessibilityLabel("Tabs")
+
+        bottomBorder.backgroundColor = NSColor.separatorColor.cgColor
+        layer?.addSublayer(bottomBorder)
 
         stack.orientation = .horizontal
-        stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        stack.alignment = .centerY
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
         newTabButton.title = "+"
-        newTabButton.bezelStyle = .flexiblePush
+        newTabButton.bezelStyle = .rounded
+        newTabButton.isBordered = true
         newTabButton.target = self
         newTabButton.action = #selector(newTabClicked)
-        newTabButton.toolTip = "新建 Tab（Alt+T）"
+        newTabButton.toolTip = "新建 Tab（Cmd+T）"
+        newTabButton.setAccessibilityIdentifier("muxterm.newTabButton")
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            heightAnchor.constraint(equalToConstant: 36),
+            heightAnchor.constraint(equalToConstant: 40),
         ])
     }
 
@@ -41,26 +53,45 @@ final class TabBarView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func layout() {
+        super.layout()
+        bottomBorder.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 1)
+    }
+
     func update(tabs: [Tab]) {
         self.tabs = tabs
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         buttons.removeAll()
 
-        for tab in tabs {
-            let btn = NSButton(title: tab.name.isEmpty ? "Tab \(tab.id)" : tab.name, target: self, action: #selector(tabClicked(_:)))
-            btn.bezelStyle = .flexiblePush
-            btn.tag = Int(tab.id)
-            btn.contentTintColor = tab.isActive ? NSColor.controlAccentColor : NSColor.labelColor
-            if tab.isActive {
-                btn.state = .on
+        if tabs.isEmpty {
+            let placeholder = NSTextField(labelWithString: "无标签页")
+            placeholder.font = NSFont.systemFont(ofSize: 12)
+            placeholder.textColor = NSColor.secondaryLabelColor
+            stack.addArrangedSubview(placeholder)
+        } else {
+            for (index, tab) in tabs.enumerated() {
+                let title = tab.name.isEmpty ? "Tab \(index + 1)" : tab.name
+                let btn = NSButton(title: title, target: self, action: #selector(tabClicked(_:)))
+                btn.bezelStyle = .rounded
+                btn.isBordered = true
+                btn.tag = Int(tab.id)
+                btn.setAccessibilityIdentifier("muxterm.tab.\(index + 1)")
+                if tab.isActive {
+                    btn.contentTintColor = NSColor.controlAccentColor
+                    btn.state = .on
+                } else {
+                    btn.contentTintColor = NSColor.labelColor
+                    btn.state = .off
+                }
+                buttons.append(btn)
+                stack.addArrangedSubview(btn)
             }
-            buttons.append(btn)
-            stack.addArrangedSubview(btn)
         }
         stack.addArrangedSubview(newTabButton)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         stack.addArrangedSubview(spacer)
+        needsDisplay = true
     }
 
     @objc private func tabClicked(_ sender: NSButton) {

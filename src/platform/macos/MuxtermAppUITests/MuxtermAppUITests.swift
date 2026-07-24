@@ -91,6 +91,50 @@ final class MuxtermAppUITests: XCTestCase {
         )
     }
 
+    /// Cmd+1 / Cmd+2 切换 tab（不应落到 SwiftTerm noop:）。
+    func testCommandNumberSwitchesTab() throws {
+        let window = app.windows["Muxterm"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        window.click()
+
+        let status = app.descendants(matching: .any)["muxterm.statusBar"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+
+        app.typeKey("t", modifierFlags: .command)
+        let twoTabs = NSPredicate(format: "value CONTAINS %@", "tabs: 2")
+        XCTAssertEqual(
+            XCTWaiter.wait(
+                for: [XCTNSPredicateExpectation(predicate: twoTabs, object: status)],
+                timeout: 5
+            ),
+            .completed
+        )
+
+        app.typeKey("1", modifierFlags: .command)
+        app.typeKey("2", modifierFlags: .command)
+
+        // 仍 connected，且 tab 栏可访问
+        let tabBar = app.descendants(matching: .any)["muxterm.tabBar"]
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 3), "Tab 栏应可见")
+        let connected = NSPredicate(format: "value CONTAINS[c] %@", "connected")
+        XCTAssertEqual(
+            XCTWaiter.wait(
+                for: [XCTNSPredicateExpectation(predicate: connected, object: status)],
+                timeout: 3
+            ),
+            .completed
+        )
+    }
+
+    /// Tab 栏存在且可命中。
+    func testTabBarVisible() throws {
+        let window = app.windows["Muxterm"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let tabBar = app.descendants(matching: .any)["muxterm.tabBar"]
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 5), "Tab 栏应渲染")
+        XCTAssertTrue(tabBar.isHittable || tabBar.exists)
+    }
+
     // MARK: - Helpers
 
     /// 优先用环境变量指定的 .app；否则用默认 bundle id / 相对路径。

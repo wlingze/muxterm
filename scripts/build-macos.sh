@@ -31,12 +31,19 @@ APP="$OUT_DIR/Muxterm.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp -f "$BIN" "$APP/Contents/MacOS/Muxterm"
+chmod +x "$APP/Contents/MacOS/Muxterm"
+# 清掉可能阻止启动的 quarantine / 扩展属性
+xattr -cr "$APP" 2>/dev/null || true
 cp -f "$MACOS_DIR/Info.plist" "$APP/Contents/Info.plist"
 # 确保可执行名与 plist 一致
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Muxterm" "$APP/Contents/Info.plist" 2>/dev/null \
   || true
+# 再次确保权限（PlistBuddy / cp 之后）
+chmod +x "$APP/Contents/MacOS/Muxterm"
+chmod 755 "$APP" "$APP/Contents" "$APP/Contents/MacOS"
 
 echo "==> done"
 echo "    binary: $OUT_DIR/muxterm"
 echo "    app:    $APP"
+ls -la "$APP/Contents/MacOS/Muxterm"
 file "$OUT_DIR/muxterm"

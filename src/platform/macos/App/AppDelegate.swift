@@ -84,6 +84,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         closeWindow.target = windowController
         fileMenu.addItem(closeWindow)
 
+        // Window 菜单：Cmd+1..9 切 tab（避免落到 SwiftTerm noop:）
+        let windowMenuItem = NSMenuItem()
+        mainMenu.addItem(windowMenuItem)
+        let windowMenu = NSMenu(title: "窗口")
+        windowMenuItem.submenu = windowMenu
+        for i in 1...9 {
+            let item = NSMenuItem(
+                title: "切换到标签页 \(i)",
+                action: #selector(MainWindowController.switchTabByNumber(_:)),
+                keyEquivalent: "\(i)"
+            )
+            item.tag = i
+            item.target = windowController
+            item.keyEquivalentModifierMask = .command
+            windowMenu.addItem(item)
+        }
+
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "编辑")
