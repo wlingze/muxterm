@@ -52,3 +52,9 @@ libc = "0.2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+# Linux GTK 前端集成测试（需显示器或 xvfb-run）
+[[test]]
+name = "linux_gtk_integration"
+path = "tests/linux_gtk_integration.rs"
+required-features = ["gtk"]

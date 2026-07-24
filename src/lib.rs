@@ -11,3 +11,7 @@
 pub mod cli;
 pub mod core;
 pub mod main_entry;
+
+/// 平台前端（GTK / TUI），供集成测试与库调用方使用。
+#[cfg(any(feature = "gtk", feature = "tui"))]
+pub mod platform;
