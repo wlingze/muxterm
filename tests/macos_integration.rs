@@ -10,8 +10,9 @@
 //! （`testTwoTabThreePaneViaKeyboard` / Ctrl+D 用例），必须用 `app.typeKey`。
 //!
 //! ## CLI/TUI 复现笔记
-//! - TUI 将 Ctrl+D 映射为退出应用（`is_quit`），不会 EOF 关 tab。
-//! - LocalBackend：单 pane Exit → 关 window；多 tab 末 pane Exit → 只关该 tab。
+//! - macOS：Cmd+D / Cmd+Shift+D 分屏；Ctrl+D 关 pane/tab/window。
+//! - TUI 仍将 Ctrl+D 映射为退出应用（`is_quit`）。
+//! - LocalBackend：单 pane Close → 关 window；多 tab 末 pane → 只关该 tab。
 //!
 //! 跑：`cargo test --no-default-features --features ffi --test macos_integration`
 
