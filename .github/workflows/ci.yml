@@ -13,6 +13,7 @@ jobs:
   ci:
     name: check / fmt / clippy / test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,16 +24,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             pkg-config \
-            libgtk-4-dev \
-            libvte-2.91-gtk4-dev \
-            libssl-dev
+            tmux
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo and target
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -40,19 +39,14 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: cargo check
-        run: cargo check --all-targets
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --no-default-features --features tui -- -D warnings
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --no-default-features --features tui
+        timeout-minutes: 15
