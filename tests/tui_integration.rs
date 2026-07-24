@@ -476,6 +476,62 @@ fn tui_alt_s_and_alt_v_split() {
     );
 }
 
+/// TUI 键盘搭 2tab3pane：Alt+S → Alt+V（右侧）→ Alt+T，再 Alt+1 验证 3 panes + echo 输出。
+#[test]
+fn tui_build_2tab3pane_via_keys_and_echo() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let host = HostTmux::new("tui-2t3p");
+    let bin = muxterm_bin();
+    host.send_line(&format!("{} --tui", bin.to_string_lossy()));
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // tab1: 水平分割 → 再竖直分割（新 pane 为激活侧，即右侧）
+    host.send_keys("M-s");
+    std::thread::sleep(Duration::from_millis(700));
+    host.send_keys("M-v");
+    std::thread::sleep(Duration::from_millis(700));
+    // tab2
+    host.send_keys("M-t");
+    std::thread::sleep(Duration::from_millis(700));
+
+    let after_tabs = host.capture();
+    assert!(
+        after_tabs.contains("1:") && after_tabs.contains("2:"),
+        "Alt+T 后应有 2 个 tab: {after_tabs}"
+    );
+    assert!(
+        after_tabs.contains("1 pane") || after_tabs.contains("connected"),
+        "新建 tab 应为单 pane: {after_tabs}"
+    );
+
+    // 回到 tab1（3 panes）
+    host.send_keys("M-1");
+    std::thread::sleep(Duration::from_millis(1000));
+    let tab1 = host.capture();
+    assert!(tab1.contains("3 panes"), "Alt+1 后应显示 3 panes: {tab1}");
+
+    let marker = {
+        let s = rand_suffix();
+        format!("e{}", &s[s.len().saturating_sub(6)..])
+    };
+    for ch in format!("echo {marker}").chars() {
+        host.send_keys(&ch.to_string());
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    host.send_keys("Enter");
+    std::thread::sleep(Duration::from_millis(1200));
+    let screen = host.capture();
+    host.kill();
+
+    assert!(
+        screen.contains(&marker),
+        "tab1 应显示 echo 输出 '{marker}': {screen}"
+    );
+}
+
 // ============================================================================
 // TUI: pty 输出显示
 // ============================================================================

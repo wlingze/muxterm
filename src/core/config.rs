@@ -471,6 +471,9 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
     vec![
         kb("n", &["alt"], "new_window"),
         kb("t", &["alt"], "new_tab"),
+        // 水平 / 竖直分割：与 TUI（Alt+S / Alt+V）对齐；保留 Alt+D 兼容 ARCHITECTURE
+        kb("s", &["alt"], "new_pane"),
+        kb("v", &["alt"], "new_pane_vertical"),
         kb("d", &["alt"], "new_pane"),
         kb("D", &["alt", "shift"], "new_pane_vertical"),
         kb("1", &["alt"], "switch_tab_1"),
