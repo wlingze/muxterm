@@ -15,7 +15,7 @@ final class MuxtermAppUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        try preflightAutomationMode()
+        try preflightUITestEnvironment()
         let lingering = XCUIApplication(bundleIdentifier: "dev.muxterm.app")
         if lingering.state != .notRunning {
             lingering.terminate()
@@ -23,8 +23,6 @@ final class MuxtermAppUITests: XCTestCase {
         }
         app = makeApplication()
         app.launchEnvironment["MUXTERM_UITEST"] = "1"
-        // 先 activate 再 launch：部分环境下可避免卡在 Running Background
-        app.activate()
         app.launch()
         app.activate()
         XCTAssertTrue(
@@ -33,8 +31,21 @@ final class MuxtermAppUITests: XCTestCase {
         )
     }
 
-    /// macOS XCUITest 依赖 UI Automation；未开启时 launch 会卡在 Running Background ~60s。
-    private func preflightAutomationMode() throws {
+    /// SSH / 非 Aqua 会话无法 activate App；缺 UI Automation 认证时失败。
+    private func preflightUITestEnvironment() throws {
+        let env = ProcessInfo.processInfo.environment
+        // SSH 无 GUI 登录会话：跳过（本地 GUI / CI macos runner 继续跑）
+        if env["SSH_CONNECTION"] != nil || env["SSH_CLIENT"] != nil || env["SSH_TTY"] != nil {
+            throw XCTSkip("XCUITest 需要 GUI 登录会话；SSH 环境跳过（由 CI 跑）")
+        }
+        if env["MUXTERM_SKIP_UITEST"] == "1" {
+            throw XCTSkip("MUXTERM_SKIP_UITEST=1")
+        }
+        // Cursor agent / launchd Background 域同样无法 activate
+        if launchctlManagerName() == "Background" {
+            throw XCTSkip("XCUITest 需要 Aqua GUI 会话（当前 launchctl manager=Background）")
+        }
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/automationmodetool")
         let pipe = Pipe()
@@ -48,16 +59,37 @@ final class MuxtermAppUITests: XCTestCase {
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let out = String(data: data, encoding: .utf8) ?? ""
-        if out.localizedCaseInsensitiveContains("Automation Mode is disabled") {
+        // “disabled + 不需认证” 正常——xcodebuild 会自行 flip on
+        let needsAuth = out.localizedCaseInsensitiveContains("requires user authentication")
+        if needsAuth {
             XCTFail(
                 """
-                UI Automation 未开启，XCUITest 无法把 Muxterm 拉到前台。
-                请在本机执行一次（需管理员密码）：
+                本机开启 UI Automation 仍需密码，XCUITest 无法把 Muxterm 拉到前台。
+                请执行一次：
                   sudo /usr/bin/automationmodetool enable-automationmode-without-authentication
-                然后确认 `/usr/bin/automationmodetool` 显示 enabled。
+                确认输出含 “DOES NOT REQUIRE user authentication”。
                 """
             )
         }
+    }
+
+    private func launchctlManagerName() -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        proc.arguments = ["managername"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let out = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return out?.isEmpty == false ? out : nil
     }
 
     override func tearDownWithError() throws {
