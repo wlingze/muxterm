@@ -8,6 +8,8 @@
 
 pub mod backend;
 pub mod config;
+#[cfg(feature = "ffi")]
+pub mod ffi;
 pub mod model;
 pub mod ssh;
 pub mod terminal;

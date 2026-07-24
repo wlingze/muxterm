@@ -12,10 +12,13 @@ default = ["gtk"]
 gtk = ["dep:gtk4", "dep:vte4"]
 # TUI 前端：纯 crossterm，无 GTK 依赖，任何 unix 机器都能编译。
 tui = ["dep:crossterm"]
+# C ABI 导出（不依赖任何 GUI）。
+ffi = []
 
 [lib]
 name = "muxterm"
 path = "src/lib.rs"
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 # 核心依赖（始终需要，无系统 GUI 依赖）
