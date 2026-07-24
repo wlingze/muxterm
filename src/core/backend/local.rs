@@ -1205,6 +1205,26 @@ mod tests {
         LocalBackend::new("sleep 60", "/")
     }
 
+    /// 轮询 `take_events`，直到 `pred` 成立或超时（避免短命子进程 Exit 与单次 sleep 竞态）。
+    async fn wait_events(
+        b: &mut LocalBackend,
+        timeout: std::time::Duration,
+        mut pred: impl FnMut(&[StateChange]) -> bool,
+    ) -> Vec<StateChange> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut collected = Vec::new();
+        loop {
+            collected.extend(b.take_events());
+            if pred(&collected) {
+                return collected;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return collected;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     #[tokio::test]
     async fn connect_creates_session_window_pane() {
         let mut b = backend();
@@ -1276,13 +1296,20 @@ mod tests {
 
     #[tokio::test]
     async fn last_pane_process_exit_closes_window() {
-        // 短命命令：退出后若仅剩该 pane，应关闭整个 window/session
+        // 短命命令：退出后若仅剩该 pane，应关闭整个 window/session。
+        // 注意：不能先 `let _ = take_events()` 再 sleep——Exit 可能已在 connect 后立刻到达并被丢弃。
         let mut b = LocalBackend::new("sleep 0.05", "/");
         b.connect().await.unwrap();
-        let _ = b.take_events();
-        // 等子进程退出
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let events = b.take_events();
+        let events = wait_events(&mut b, std::time::Duration::from_secs(2), |ev| {
+            ev.iter().any(|e| {
+                matches!(
+                    e,
+                    StateChange::WindowClosed { .. }
+                        | StateChange::BackendStatusChanged(BackendStatus::Exited)
+                )
+            })
+        })
+        .await;
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -1309,13 +1336,15 @@ mod tests {
             workdir: None,
         })
         .unwrap();
-        let _ = b.take_events();
         assert_eq!(b.tabs.len(), 2, "应有 2 tabs");
         assert_eq!(b.panes.len(), 2);
 
-        // 等第二个 tab 的 sleep 退出
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let events = b.take_events();
+        // 从 NewTab 之后开始累积，避免短命 sleep 的 Exit 被单次 drain 丢掉
+        let events = wait_events(&mut b, std::time::Duration::from_secs(2), |ev| {
+            ev.iter()
+                .any(|e| matches!(e, StateChange::TabClosed { .. }))
+        })
+        .await;
         assert!(
             events
                 .iter()
