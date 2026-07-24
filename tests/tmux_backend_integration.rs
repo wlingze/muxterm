@@ -1954,7 +1954,7 @@ fn bug5_cli_send_keys_via_tmux_socket() {
 fn bug5_edge_no_socket_uses_local_backend() {
     use muxterm::core::backend::LocalBackend;
 
-    let backend = LocalBackend::new("sleep", "/");
+    let backend = LocalBackend::new("sleep 60", "/");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

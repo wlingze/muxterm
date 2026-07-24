@@ -2,6 +2,9 @@
 //!
 //! 直接调用 cli 模块函数，不 spawn 进程（避免共享 state 的复杂性）。
 //! 覆盖：session/window/tab/pane 管理 + send-keys/capture-pane。
+//!
+//! `make_model` 使用长驻 `cat`（勿用裸 `sleep`：无参数会立刻退出，
+//! 触发末 pane Exit → 关 window，导致 kill/select/split 等用例假失败）。
 
 #![cfg(feature = "tui")]
 
@@ -12,7 +15,8 @@ use muxterm::core::model::TerminalModel;
 use muxterm::core::types::{PaneId, TabId, WindowId};
 
 fn make_model() -> TerminalModel {
-    let backend = LocalBackend::new("sleep", "/");
+    // cat：阻塞读 stdin、回显 stdout，适合结构测试 + WriteRaw/capture
+    let backend = LocalBackend::new("cat", "/");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -326,7 +330,7 @@ fn cli_resize_pane() {
 fn cli_send_keys_and_capture() {
     let mut model = make_model();
     let pane = model.state().active_pane().unwrap().id;
-    // WriteRaw 更直接，不经过编码
+    // WriteRaw 更直接，不经过编码；cat 回显后需 drain 进 pane_output
     exec_and_drain(
         &mut model,
         Task::WriteRaw {
@@ -334,15 +338,25 @@ fn cli_send_keys_and_capture() {
             data: b"hello cli\n".to_vec(),
         },
     );
-    let out = format_output(
-        model.state(),
-        &CliCommand::CapturePane {
-            target: Some(pane),
-            lines: None,
-        },
-        OutputFormat::Text,
-    );
-    assert!(out.contains("hello cli"));
+    // 短轮询：pty 读线程异步送达
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut out = String::new();
+    while std::time::Instant::now() < deadline {
+        let _ = model.poll_events();
+        out = format_output(
+            model.state(),
+            &CliCommand::CapturePane {
+                target: Some(pane),
+                lines: None,
+            },
+            OutputFormat::Text,
+        );
+        if out.contains("hello cli") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(out.contains("hello cli"), "capture 应含写入内容: {out:?}");
 }
 
 #[test]
