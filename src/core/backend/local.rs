@@ -193,11 +193,7 @@ impl LocalBackend {
         let Some(tab_id) = self.tab_of_pane(pane) else {
             return;
         };
-        let panes_in_tab = self
-            .panes
-            .iter()
-            .filter(|p| p.info.tab == tab_id)
-            .count();
+        let panes_in_tab = self.panes.iter().filter(|p| p.info.tab == tab_id).count();
 
         // 唯一 pane → 关整个 window（及 session 若无剩余 window）
         if self.panes.len() == 1 {
@@ -304,10 +300,8 @@ impl LocalBackend {
                 .and_then(|t| t.layout.tree.leaves().first().copied())
             {
                 self.set_active_pane(tid, pane);
-                self.events.push_back(StateChange::ActivePaneChanged {
-                    tab: tid,
-                    pane,
-                });
+                self.events
+                    .push_back(StateChange::ActivePaneChanged { tab: tid, pane });
             }
         } else {
             // 无剩余 tab → 关 window
@@ -1292,7 +1286,8 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                StateChange::WindowClosed { .. } | StateChange::BackendStatusChanged(BackendStatus::Exited)
+                StateChange::WindowClosed { .. }
+                    | StateChange::BackendStatusChanged(BackendStatus::Exited)
             )),
             "末 pane 退出应关闭 window/session: {events:?}"
         );
