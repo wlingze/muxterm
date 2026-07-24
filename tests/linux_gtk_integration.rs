@@ -5,7 +5,7 @@
 //! 模拟 Alt+T / Alt+S / Alt+V / Alt+1/2。
 //!
 //! 2tab3pane 流程（先在 TUI `tui_build_2tab3pane_via_keys_and_echo` 跑通）：
-//! Alt+S 水平分割 → Alt+V 竖直分割右侧 → Alt+T 新 tab → Alt+1 回 3-pane tab → echo 验证输出。
+//! Alt+S → Alt+V → Alt+T → Alt+1/2；每步后 `echo` 校验核心缓冲与 VTE 可见文本。
 //!
 //! 无 DISPLAY 时跳过。本地：`xvfb-run -a cargo test --features gtk --test linux_gtk_integration`
 
@@ -149,6 +149,33 @@ fn wait_until(app: &AppWindow, ms: u64, mut pred: impl FnMut(&AppWindow) -> bool
     false
 }
 
+/// 短唯一标记，避免窄 pane 截断。
+fn unique_marker(tag: &str) -> String {
+    let s = rand_suffix();
+    format!("{tag}{}", &s[s.len().saturating_sub(5)..])
+}
+
+/// 向当前激活 pane 发 `echo`，断言核心缓冲与 VTE 可见文本都出现标记。
+///
+/// 只查状态栏 pane 数无法发现分割后黑屏；必须走真实输入→输出。
+fn assert_active_pane_echo(app: &AppWindow, step: &str) {
+    let marker = unique_marker(step);
+    app.test_send_input(format!("echo {marker}\n").as_bytes());
+    let ok = wait_until(app, 5000, |a| {
+        let core_buf = a.test_active_pane_output();
+        let core = String::from_utf8_lossy(&core_buf);
+        let vte = a.test_active_pane_vte_text();
+        core.contains(&marker) && vte.contains(&marker)
+    });
+    let core_buf = app.test_active_pane_output();
+    let core = String::from_utf8_lossy(&core_buf);
+    let vte = app.test_active_pane_vte_text();
+    assert!(
+        ok,
+        "{step}: echo '{marker}' 应同时出现在核心缓冲与 VTE 可见文本\ncore={core}\nvte={vte}"
+    );
+}
+
 fn assert_tab_bar_renders() {
     let tabs = TabBar::new(28);
     let win = gtk4::Window::builder()
@@ -206,7 +233,7 @@ fn assert_pane_layout_widget() {
     pump_main_loop(40);
 }
 
-/// 经 EventControllerKey 搭 2tab3pane，并验证 echo 输出。
+/// 经 EventControllerKey 搭 2tab3pane；每步结构变化后 `echo` 校验核心+VTE 输出。
 ///
 /// 键位与 TUI 一致：Alt+S 水平、Alt+V 竖直（激活侧=右侧新 pane）、Alt+T 新 tab。
 fn assert_build_2tab3pane_via_keys() {
@@ -232,6 +259,9 @@ fn assert_build_2tab3pane_via_keys() {
 
     let ctrl = window_key_controller(&app.window).expect("窗口应有 EventControllerKey");
 
+    // 启动后单 pane 先确认 I/O 通路
+    assert_active_pane_echo(&app, "boot");
+
     // Alt+S → 水平 2 panes
     simulate_key_press(&ctrl, gdk::Key::s, gdk::ModifierType::ALT_MASK);
     assert!(
@@ -241,6 +271,7 @@ fn assert_build_2tab3pane_via_keys() {
         app.test_tab_and_pane_counts(),
         app.test_status_text()
     );
+    assert_active_pane_echo(&app, "s2");
 
     // Alt+V → 在激活（右侧）pane 竖直分割 → 3 panes
     simulate_key_press(&ctrl, gdk::Key::v, gdk::ModifierType::ALT_MASK);
@@ -257,6 +288,7 @@ fn assert_build_2tab3pane_via_keys() {
         count_paned(&root) >= 2 && has_nested_paned(&root),
         "3-pane 应为嵌套 Paned"
     );
+    assert_active_pane_echo(&app, "v3");
 
     // Alt+T → 第 2 个 tab
     simulate_key_press(&ctrl, gdk::Key::t, gdk::ModifierType::ALT_MASK);
@@ -275,6 +307,7 @@ fn assert_build_2tab3pane_via_keys() {
         2,
         "tab 栏应显示 2 个 tab"
     );
+    assert_active_pane_echo(&app, "t2");
 
     // Alt+1 → 回到 3-pane tab
     simulate_key_press(&ctrl, gdk::Key::_1, gdk::ModifierType::ALT_MASK);
@@ -285,20 +318,7 @@ fn assert_build_2tab3pane_via_keys() {
         app.test_tab_and_pane_counts(),
         app.test_status_text()
     );
-
-    // 输入命令（与 VTE commit→send_input 同路径）验证输出
-    let marker = {
-        let s = rand_suffix();
-        format!("e{}", &s[s.len().saturating_sub(6)..])
-    };
-    app.test_send_input(format!("echo {marker}\n").as_bytes());
-    assert!(
-        wait_until(&app, 4000, |a| {
-            String::from_utf8_lossy(&a.test_active_pane_output()).contains(&marker)
-        }),
-        "echo 输出应出现，got={}",
-        String::from_utf8_lossy(&app.test_active_pane_output())
-    );
+    assert_active_pane_echo(&app, "a1");
 
     // Alt+2 → 单 pane tab
     simulate_key_press(&ctrl, gdk::Key::_2, gdk::ModifierType::ALT_MASK);
@@ -309,6 +329,7 @@ fn assert_build_2tab3pane_via_keys() {
         app.test_tab_and_pane_counts(),
         app.test_status_text()
     );
+    assert_active_pane_echo(&app, "a2");
 
     app.shutdown();
     pump_main_loop(250);

@@ -209,10 +209,19 @@ impl AppWindow {
         let _ = s.bridge.send_input(s.active_pane, data);
     }
 
-    /// 测试用：当前激活 pane 的输出快照。
+    /// 测试用：当前激活 pane 的核心输出快照。
     pub fn test_active_pane_output(&self) -> Vec<u8> {
         let s = self._state.borrow();
         s.bridge.get_pane_output(s.active_pane)
+    }
+
+    /// 测试用：当前激活 pane 的 VTE 可见文本（比核心缓冲更能发现黑屏）。
+    pub fn test_active_pane_vte_text(&self) -> String {
+        let s = self._state.borrow();
+        s.layout
+            .pane(s.active_pane)
+            .map(|v| v.visible_text())
+            .unwrap_or_default()
     }
 
     /// 测试用：tab / 当前 tab 的 pane 数量。
