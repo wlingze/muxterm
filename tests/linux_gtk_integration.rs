@@ -13,13 +13,16 @@
 //! 无 `DISPLAY`/`WAYLAND_DISPLAY` 时跳过（CI 无显示器）。
 //! 本地验证：`xvfb-run -a cargo test --features gtk --test linux_gtk_integration`
 
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gtk4::gdk;
 use gtk4::glib;
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
-use gtk4::{Button, EventControllerKey, Orientation, Paned, Widget};
+use gtk4::{Button, EventControllerKey, Label, Orientation, Paned, Widget};
 
 use muxterm::core::config::{Config, Theme};
 use muxterm::platform::linux::ffi_bridge::{BridgeLayout, BridgeTab};
@@ -39,6 +42,129 @@ fn skip_no_display() -> bool {
     eprintln!("skip: 无 DISPLAY/WAYLAND_DISPLAY（可用 xvfb-run -a cargo test --features gtk）");
     true
 }
+
+fn tmux_available() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn rand_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("{nanos}")
+}
+
+fn muxterm_bin() -> PathBuf {
+    if let Ok(p) = std::env::var("CARGO_BIN_EXE_muxterm") {
+        return PathBuf::from(p);
+    }
+    let target =
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "../muxterm-target".to_string());
+    let p = PathBuf::from(&target).join("debug").join("muxterm");
+    if p.exists() {
+        return p;
+    }
+    PathBuf::from("target/debug/muxterm")
+}
+
+fn run_mux(args: &[&str]) -> (String, String, i32) {
+    let output = Command::new(muxterm_bin())
+        .args(args)
+        .output()
+        .expect("muxterm binary");
+    (
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+/// 用 muxterm CLI 建 2tab3pane tmux session：tab1=3 panes（H+V），tab2=1 pane。
+///
+/// 参考 `tests/tui_integration.rs` / `cli_tmux_e2e` 的 2tab 布局。
+fn setup_cli_tmux_2tab_3pane(socket: &str, session: &str) {
+    let _ = Command::new("tmux")
+        .args(["-L", socket, "kill-server"])
+        .output();
+    // 顺带清可能残留的 daemon unix socket
+    let _ = run_mux(&["kill-session", "-L", socket, "-s", session]);
+
+    let (_o, e, rc) = run_mux(&["new-session", "-L", socket, "-s", session]);
+    assert_eq!(rc, 0, "CLI new-session 失败: {e}");
+    let (_o, e, rc) = run_mux(&["split-pane", "-h", "-L", socket, "-s", session]);
+    assert_eq!(rc, 0, "CLI split-pane -h 失败: {e}");
+    let (_o, e, rc) = run_mux(&["split-pane", "-v", "-L", socket, "-s", session]);
+    assert_eq!(rc, 0, "CLI split-pane -v 失败: {e}");
+    let (_o, e, rc) = run_mux(&["new-tab", "-L", socket, "-s", session]);
+    assert_eq!(rc, 0, "CLI new-tab 失败: {e}");
+
+    // 原生 tmux 校验：window1=3 panes，window2=1 pane
+    let out = Command::new("tmux")
+        .args([
+            "-L",
+            socket,
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_index}:#{window_panes}",
+        ])
+        .output()
+        .expect("list-windows");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("1:") && l.contains(":3")),
+        "CLI 后 tab1 应有 3 panes: {text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("2:") && l.contains(":1")),
+        "CLI 后 tab2 应有 1 pane: {text}"
+    );
+}
+
+fn cleanup_cli_tmux(socket: &str, session: &str) {
+    let _ = run_mux(&["kill-session", "-L", socket, "-s", session]);
+    let _ = Command::new("tmux")
+        .args(["-L", socket, "kill-server"])
+        .output();
+}
+
+fn status_bar_text(root: &impl IsA<Widget>) -> String {
+    let w = find_by_css_class(root, "status-bar").expect("应有 status-bar");
+    w.downcast_ref::<Label>()
+        .expect("status-bar 应为 Label")
+        .label()
+        .to_string()
+}
+
+fn count_paned(root: &impl IsA<Widget>) -> usize {
+    let root = root.as_ref();
+    let mut n = usize::from(root.is::<Paned>());
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        n += count_paned(&c);
+        child = c.next_sibling();
+    }
+    n
+}
+
+fn has_nested_paned(root: &impl IsA<Widget>) -> bool {
+    let Some(outer) = find_first_paned(root) else {
+        return false;
+    };
+    outer.start_child().is_some_and(|c| c.is::<Paned>())
+        || outer.end_child().is_some_and(|c| c.is::<Paned>())
+}
+
+/// 同测试二进制内是否已跑过含 AppWindow 的重用例（避免二次析构堆损坏）。
+static HEAVY_GTK_UI_DONE: AtomicBool = AtomicBool::new(false);
 
 fn gtk_test_framework_smoke() {
     gtk4::test_register_all_types();
@@ -271,6 +397,64 @@ fn assert_app_window_and_keyboard() {
     pump_main_loop(200);
 }
 
+/// GTK attach 已有 2tab3pane tmux session：2 个 tab；Alt+1 后嵌套 Paned + 3 panes。
+fn assert_tmux_attach_2tab_3pane(socket: &str, session: &str) {
+    let mut cfg = Config::default();
+    cfg.tmux.socket = socket.to_string();
+    cfg.tmux.default_session = session.to_string();
+    let theme = load_theme();
+    let app = AppWindow::new(cfg, theme);
+    app.window.set_title(Some("muxterm-gtk-2tab3pane"));
+    app.window.present();
+    gtk4::test_widget_wait_for_draw(&app.window);
+    // 等 tmux -CC 同步 tabs/layout
+    pump_main_loop(1500);
+
+    let root = app.window.child().expect("root");
+    let tabs = count_css_class(&root, "tab-button");
+    assert_eq!(
+        tabs,
+        2,
+        "attach 后 tab 栏应有 2 个 tab，status={}",
+        status_bar_text(&root)
+    );
+
+    // 新建后多半停在 tab2（1 pane）；Alt+1 → tab1（3 panes）
+    let ctrl = window_key_controller(&app.window).expect("EventControllerKey");
+    simulate_key_press(&ctrl, gdk::Key::_1, gdk::ModifierType::ALT_MASK);
+    pump_main_loop(800);
+
+    let root = app.window.child().expect("root");
+    let status = status_bar_text(&root);
+    assert!(
+        status.contains("3 panes"),
+        "Alt+1 后应显示 3 panes，status={status}"
+    );
+    assert!(
+        count_paned(&root) >= 2,
+        "3-pane 布局应有嵌套 Paned（>=2），实际 {} status={status}",
+        count_paned(&root)
+    );
+    assert!(
+        has_nested_paned(&root),
+        "3-pane 布局应为 H+V 嵌套 Paned，status={status}"
+    );
+
+    // Alt+2 → 单 pane tab：无嵌套（或 0 Paned）
+    simulate_key_press(&ctrl, gdk::Key::_2, gdk::ModifierType::ALT_MASK);
+    pump_main_loop(800);
+    let root = app.window.child().expect("root");
+    let status2 = status_bar_text(&root);
+    assert!(
+        status2.contains("1 pane"),
+        "Alt+2 后应显示 1 pane，status={status2}"
+    );
+
+    app.shutdown();
+    // tmux -CC + VTE 收尾比 local 更慢，多泵一会避免污染后续用例
+    pump_main_loop(400);
+}
+
 /// 冒烟：`gtk_test_register_all_types` / `gtk_test_list_all_types`。
 #[test]
 fn gtk_test_types_registered() {
@@ -282,16 +466,89 @@ fn gtk_test_types_registered() {
     });
 }
 
-/// 启动窗口、tab 栏、pane 布局、键盘模拟（同一次 GTK 主线程会话）。
+/// 启动窗口、tab 栏、pane 布局、键盘模拟，以及 CLI 2tab3pane tmux attach。
+///
+/// 全部在同一次 `gtk4::test_synced` 中串行，避免多次 AppWindow 析构污染堆。
 #[test]
 fn gtk_linux_ui_integration() {
     if skip_no_display() {
         return;
     }
-    gtk4::test_synced(|| {
+
+    let tmux_fixture = if tmux_available() && muxterm_bin().exists() {
+        let socket = format!("gtk-2t3p-{}-{}", std::process::id(), rand_suffix());
+        let session = format!("demo-{}-{}", std::process::id(), rand_suffix());
+        setup_cli_tmux_2tab_3pane(&socket, &session);
+        Some((socket, session))
+    } else {
+        if !tmux_available() {
+            eprintln!("note: tmux 不可用，跳过 2tab3pane attach 段");
+        }
+        None
+    };
+
+    struct Cleanup(Option<(String, String)>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if let Some((ref socket, ref session)) = self.0 {
+                cleanup_cli_tmux(socket, session);
+            }
+        }
+    }
+    let _cleanup = Cleanup(tmux_fixture.clone());
+
+    gtk4::test_synced(move || {
         gtk_test_framework_smoke();
         assert_tab_bar_renders();
         assert_pane_layout();
         assert_app_window_and_keyboard();
+        if let Some((ref socket, ref session)) = tmux_fixture {
+            assert_tmux_attach_2tab_3pane(socket, session);
+        }
+        HEAVY_GTK_UI_DONE.store(true, Ordering::SeqCst);
+    });
+}
+
+/// 仅 2tab3pane attach（可单独过滤）。全量 suite 时若 integration 已跑则跳过。
+#[test]
+fn gtk_tmux_attach_2tab_3pane() {
+    if skip_no_display() {
+        return;
+    }
+    if HEAVY_GTK_UI_DONE.load(Ordering::SeqCst) {
+        eprintln!("skip: 同进程已由 gtk_linux_ui_integration 覆盖 2tab3pane");
+        return;
+    }
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    if !muxterm_bin().exists() {
+        eprintln!("skip: muxterm 二进制不存在 ({})", muxterm_bin().display());
+        return;
+    }
+
+    let socket = format!("gtk-2t3p-{}-{}", std::process::id(), rand_suffix());
+    let session = format!("demo-{}-{}", std::process::id(), rand_suffix());
+    setup_cli_tmux_2tab_3pane(&socket, &session);
+
+    struct Cleanup {
+        socket: String,
+        session: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            cleanup_cli_tmux(&self.socket, &self.session);
+        }
+    }
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        session: session.clone(),
+    };
+
+    gtk4::test_synced(move || {
+        gtk_test_framework_smoke();
+        assert_tmux_attach_2tab_3pane(&socket, &session);
+        HEAVY_GTK_UI_DONE.store(true, Ordering::SeqCst);
     });
 }
