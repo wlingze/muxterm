@@ -67,7 +67,13 @@ impl LayoutHost {
         }
         self.last_sig = sig;
 
-        // 清空根
+        // 先把 pane widget 从旧 Paned 摘掉，再清空根（顺序反了会触发 unparent 断言）
+        for view in self.panes.values() {
+            let w = view.widget();
+            if w.parent().is_some() {
+                w.unparent();
+            }
+        }
         while let Some(child) = self.root_box.first_child() {
             self.root_box.remove(&child);
         }

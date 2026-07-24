@@ -202,6 +202,41 @@ impl AppWindow {
             _state: state,
         }
     }
+
+    /// 测试用：向当前激活 pane 发送原始输入（如 `echo hi\n` / `\x04` Ctrl+D）。
+    pub fn test_send_input(&self, data: &[u8]) {
+        let s = self._state.borrow();
+        let _ = s.bridge.send_input(s.active_pane, data);
+    }
+
+    /// 测试用：当前激活 pane 的输出快照。
+    pub fn test_active_pane_output(&self) -> Vec<u8> {
+        let s = self._state.borrow();
+        s.bridge.get_pane_output(s.active_pane)
+    }
+
+    /// 测试用：tab / 当前 tab 的 pane 数量。
+    pub fn test_tab_and_pane_counts(&self) -> (usize, usize) {
+        let s = self._state.borrow();
+        let n_tabs = s.bridge.get_tabs().len();
+        let n_panes = s.bridge.get_panes(s.active_tab).len();
+        (n_tabs, n_panes)
+    }
+
+    /// 测试用：状态栏文案。
+    pub fn test_status_text(&self) -> String {
+        self._state.borrow().status.label().to_string()
+    }
+
+    /// 测试用：手动轮询一次核心事件并刷新输出（不等待 16ms 定时器）。
+    pub fn test_poll_once(&self) {
+        let mut s = self._state.borrow_mut();
+        let events = s.bridge.poll_events();
+        for ev in events {
+            dispatch_event(&mut s, &ev);
+        }
+        sync_pane_outputs(&mut s);
+    }
 }
 
 fn handle_action(s: &mut UiState, action: Action) {
