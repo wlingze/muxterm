@@ -12,7 +12,7 @@ use gtk4::glib;
 use crate::core::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
-    muxterm_shutdown, MuxtermHandle,
+    MuxtermHandle,
 };
 use crate::core::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -241,8 +241,9 @@ impl Drop for CoreBridge {
     fn drop(&mut self) {
         self.stop_polling();
         if !self.handle.is_null() {
+            // `muxterm_free` 内部会再调一次 shutdown；勿先 shutdown 再 free，
+            // 避免后端二次清理导致堆损坏（集成测试里表现为后续 VTE 分配 double free）。
             unsafe {
-                let _ = muxterm_shutdown(self.handle);
                 muxterm_free(self.handle);
             }
             self.handle = ptr::null_mut();

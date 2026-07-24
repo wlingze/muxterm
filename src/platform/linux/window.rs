@@ -3,7 +3,7 @@
 //! - 启动 `CoreBridge`（muxterm_new/connect）
 //! - 16ms 轮询 `poll_events`，分发到 tab / pane
 //! - 快捷键 → `execute(CTask)`
-//! - 退出 → Drop CoreBridge（shutdown+free）
+//! - 退出 → `shutdown()` 或 Drop（`muxterm_free`）
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,6 +39,21 @@ struct UiState {
 }
 
 impl AppWindow {
+    /// 有序关闭：停轮询 → 摘掉子树 → destroy 窗口，避免与 PaneView 持有的 VTE 交叉销毁。
+    pub fn shutdown(self) {
+        {
+            let mut s = self._state.borrow_mut();
+            s.bridge.stop_polling();
+            while let Some(child) = s.layout.root_box.first_child() {
+                s.layout.root_box.remove(&child);
+            }
+            s.layout.panes_mut().clear();
+        }
+        self.window.set_child(None::<&gtk4::Widget>);
+        self.window.destroy();
+        while glib::MainContext::default().iteration(false) {}
+    }
+
     pub fn new(cfg: Config, theme: Theme) -> Self {
         let window = ApplicationWindow::builder()
             .title("muxterm")
