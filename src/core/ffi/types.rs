@@ -27,6 +27,7 @@ pub const TASK_CLOSE_TAB: u32 = 4;
 pub const TASK_NEXT_PANE: u32 = 5;
 pub const TASK_PREV_PANE: u32 = 6;
 pub const TASK_SHUTDOWN: u32 = 7;
+pub const TASK_SWITCH_PANE: u32 = 8;
 
 // ── Split dir / layout node ────────────────────────────────
 pub const DIR_HORIZONTAL: u32 = 0;

@@ -67,6 +67,7 @@ struct CLayoutNode {
 #define TASK_NEXT_PANE   5u
 #define TASK_PREV_PANE   6u
 #define TASK_SHUTDOWN    7u
+#define TASK_SWITCH_PANE 8u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u
@@ -85,6 +86,7 @@ int muxterm_shutdown(struct MuxtermHandle* h);
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
 int muxterm_send_input(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
+int muxterm_resize_pane(struct MuxtermHandle* h, uint32_t pane_id, uint16_t cols, uint16_t rows);
 
 // ── 事件轮询 ──
 int muxterm_poll_events(struct MuxtermHandle* h, struct CStateChange* out, int max_count);

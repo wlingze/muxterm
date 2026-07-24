@@ -9,6 +9,8 @@ final class MuxTerminalView: TerminalView {
     /// 对应 muxterm pane id。
     let paneId: UInt32
     weak var inputHandler: TerminalInputHandler?
+    /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
+    private(set) var accessibilityOutput: String = ""
 
     init(paneId: UInt32, frame: NSRect = .zero) {
         self.paneId = paneId
@@ -21,6 +23,7 @@ final class MuxTerminalView: TerminalView {
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityLabel("Terminal Pane \(paneId)")
+        setAccessibilityValue("")
     }
 
     @available(*, unavailable)
@@ -28,11 +31,47 @@ final class MuxTerminalView: TerminalView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// 将 FFI 输出喂给终端引擎。
+    /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
     func feedOutput(_ data: Data) {
         guard !data.isEmpty else { return }
         let bytes = [UInt8](data)
         feed(byteArray: bytes[...])
+        if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+            accessibilityOutput += text
+            if accessibilityOutput.count > 800 {
+                accessibilityOutput = String(accessibilityOutput.suffix(800))
+            }
+            setAccessibilityValue(accessibilityOutput)
+        }
+        needsDisplay = true
+    }
+
+    /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列，并通知 PTY resize。
+    /// 返回是否成功同步到合法行列（≥2×1）。
+    @discardableResult
+    func syncSizeToPty() -> Bool {
+        layoutSubtreeIfNeeded()
+        let size = bounds.size
+        guard size.width >= 40, size.height >= 24 else { return false }
+
+        // 走 SwiftTerm setFrameSize → processSizeChange（会 callback sizeChanged）
+        setFrameSize(NSSize(width: size.width + 0.5, height: size.height))
+        setFrameSize(size)
+
+        let term = getTerminal()
+        guard term.cols >= 2, term.rows >= 1 else { return false }
+        inputHandler?.terminal(self, sizeChanged: term.cols, rows: term.rows)
+        needsDisplay = true
+        return true
+    }
+
+    func forceRedraw() {
+        needsDisplay = true
+        // 触达 Metal/CG 显示路径
+        if let layer {
+            layer.setNeedsDisplay()
+        }
+        displayIfNeeded()
     }
 }
 
@@ -44,6 +83,7 @@ protocol TerminalInputHandler: AnyObject {
 
 extension MuxTerminalView: TerminalViewDelegate {
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        guard newCols >= 2, newRows >= 1 else { return }
         inputHandler?.terminal(self, sizeChanged: newCols, rows: newRows)
     }
 

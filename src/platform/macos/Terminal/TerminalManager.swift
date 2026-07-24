@@ -8,6 +8,8 @@ final class TerminalManager: TerminalInputHandler {
     private var fedLengths: [UInt32: Int] = [:]
     /// 最近喂给终端的 UTF-8 片段（供 UITest / 状态栏无障碍查询）。
     private(set) var recentOutputSnippet: String = ""
+    /// 上次成功同步到 PTY 的行列，避免无意义重复 resize。
+    private var lastPtySize: [UInt32: (UInt16, UInt16)] = [:]
 
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
@@ -49,6 +51,23 @@ final class TerminalManager: TerminalInputHandler {
             views[id]?.removeFromSuperview()
             views.removeValue(forKey: id)
             fedLengths.removeValue(forKey: id)
+            lastPtySize.removeValue(forKey: id)
+        }
+    }
+
+    /// 布局完成后：对所有可见 pane 同步像素→行列→PTY。
+    func syncAllVisibleSizes(paneIds: Set<UInt32>) {
+        for id in paneIds {
+            guard let view = views[id] else { continue }
+            view.layoutSubtreeIfNeeded()
+            _ = view.syncSizeToPty()
+        }
+    }
+
+    /// 强制重绘（分割后 Metal/layer 偶发留黑）。
+    func forceRedraw(paneIds: Set<UInt32>) {
+        for id in paneIds {
+            views[id]?.forceRedraw()
         }
     }
 
@@ -60,7 +79,14 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {
-        _ = (cols, rows)
+        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
+        let c = UInt16(cols)
+        let r = UInt16(rows)
+        if let prev = lastPtySize[view.paneId], prev.0 == c, prev.1 == r {
+            return
+        }
+        lastPtySize[view.paneId] = (c, r)
+        bridge?.resizePane(paneId: view.paneId, cols: c, rows: r)
     }
 
     private func appendSnippet(_ data: Data) {

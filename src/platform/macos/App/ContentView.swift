@@ -1,10 +1,14 @@
 import AppKit
 
-/// 根内容视图：上 TabBar、中 PaneLayout、下 StatusBar。
+/// 根内容视图：TabBar（上或下）+ PaneLayout + StatusBar。
 final class ContentView: NSView {
     let tabBar = TabBarView()
     let paneLayout: PaneLayoutView
     let statusBar = StatusBarView()
+
+    private var tabTopConstraints: [NSLayoutConstraint] = []
+    private var tabBottomConstraints: [NSLayoutConstraint] = []
+    private var position: TabBarPosition = .top
 
     init(terminalManager: TerminalManager) {
         self.paneLayout = PaneLayoutView(terminalManager: terminalManager)
@@ -15,11 +19,12 @@ final class ContentView: NSView {
         paneLayout.translatesAutoresizingMaskIntoConstraints = false
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(tabBar)
         addSubview(paneLayout)
+        addSubview(tabBar)
         addSubview(statusBar)
 
-        NSLayoutConstraint.activate([
+        // 顶部布局：tab | pane | status
+        tabTopConstraints = [
             tabBar.topAnchor.constraint(equalTo: topAnchor),
             tabBar.leadingAnchor.constraint(equalTo: leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -32,11 +37,44 @@ final class ContentView: NSView {
             statusBar.leadingAnchor.constraint(equalTo: leadingAnchor),
             statusBar.trailingAnchor.constraint(equalTo: trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
+        ]
+
+        // 底部布局：pane | tab | status（tab 紧贴状态栏上方）
+        tabBottomConstraints = [
+            paneLayout.topAnchor.constraint(equalTo: topAnchor),
+            paneLayout.leadingAnchor.constraint(equalTo: leadingAnchor),
+            paneLayout.trailingAnchor.constraint(equalTo: trailingAnchor),
+            paneLayout.bottomAnchor.constraint(equalTo: tabBar.topAnchor),
+
+            tabBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            tabBar.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+
+            statusBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ]
+
+        applyTabBarPosition(TabBarPosition.current)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func applyTabBarPosition(_ position: TabBarPosition) {
+        self.position = position
+        NSLayoutConstraint.deactivate(tabTopConstraints)
+        NSLayoutConstraint.deactivate(tabBottomConstraints)
+        switch position {
+        case .top:
+            NSLayoutConstraint.activate(tabTopConstraints)
+            tabBar.setEdgeLineAtBottom(true)
+        case .bottom:
+            NSLayoutConstraint.activate(tabBottomConstraints)
+            tabBar.setEdgeLineAtBottom(false)
+        }
+        needsLayout = true
     }
 }

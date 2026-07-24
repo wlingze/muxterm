@@ -21,7 +21,7 @@ use super::types::{
     STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT,
     STATE_PANE_RESIZED, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED, TASK_CLOSE_PANE,
     TASK_CLOSE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE,
-    TASK_SWITCH_TAB,
+    TASK_SWITCH_PANE, TASK_SWITCH_TAB,
 };
 
 /// FFI 句柄：TerminalModel + runtime + 供 C 侧借用的缓冲。
@@ -227,6 +227,14 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
         }),
         TASK_NEXT_PANE => Some(Task::NextPane),
         TASK_PREV_PANE => Some(Task::PrevPane),
+        TASK_SWITCH_PANE => {
+            let pane = if task.target_pane == 0 {
+                model.active_pane_id()?
+            } else {
+                PaneId(task.target_pane)
+            };
+            Some(Task::SwitchPane { target: pane })
+        }
         TASK_SHUTDOWN => Some(Task::Shutdown),
         _ => None,
     }
@@ -398,6 +406,39 @@ pub unsafe extern "C" fn muxterm_send_input(
     match handle.model.execute(Task::WriteRaw {
         target: pane,
         data: bytes,
+    }) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// 调整 pane 的 pty 行列。0=ok，-1=err。
+///
+/// # Safety
+/// `h` 有效。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_resize_pane(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+) -> i32 {
+    if h.is_null() || cols == 0 || rows == 0 {
+        return -1;
+    }
+    let handle = &mut *h;
+    let pane = if pane_id == 0 {
+        match handle.model.active_pane_id() {
+            Some(p) => p,
+            None => return -1,
+        }
+    } else {
+        PaneId(pane_id)
+    };
+    match handle.model.execute(Task::ResizePane {
+        target: pane,
+        cols,
+        rows,
     }) {
         Ok(_) => 0,
         Err(_) => -1,

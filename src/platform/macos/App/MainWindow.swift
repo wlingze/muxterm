@@ -41,9 +41,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
-            let view = self.terminalManager.view(for: paneId)
-            self.window?.makeFirstResponder(view)
-            self.terminalManager.focusTarget = view
+            self.bridge.execute(task: MuxTask.switchPane(paneId))
+            self.refreshUI()
+            self.focusActiveTerminal()
         }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
@@ -120,12 +120,57 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         splitActivePane(horizontal: false)
     }
 
+    @objc func setTabBarTop(_ sender: Any?) {
+        TabBarPosition.set(.top)
+        content.applyTabBarPosition(.top)
+    }
+
+    @objc func setTabBarBottom(_ sender: Any?) {
+        TabBarPosition.set(.bottom)
+        content.applyTabBarPosition(.bottom)
+    }
+
+    @objc func nextPane() {
+        bridge.execute(task: MuxTask.nextPane())
+        needsLayoutReload = true
+        refreshUI()
+        focusActiveTerminal()
+    }
+
+    @objc func prevPane() {
+        bridge.execute(task: MuxTask.prevPane())
+        needsLayoutReload = true
+        refreshUI()
+        focusActiveTerminal()
+    }
+
+    private func focusActiveTerminal() {
+        let snap = bridge.snapshot()
+        guard snap.activePane != 0 else { return }
+        let view = terminalManager.view(for: snap.activePane)
+        terminalManager.focusTarget = view
+        window?.makeFirstResponder(view)
+        content.paneLayout.markActivePane(snap.activePane)
+    }
+
     private func splitActivePane(horizontal: Bool) {
         let pane = lastSnapshot.activePane
         guard pane != 0 else { return }
         bridge.execute(task: MuxTask.splitPane(targetPane: pane, horizontal: horizontal))
         needsLayoutReload = true
         refreshUI()
+        // 分割后立刻把焦点交回活跃终端，避免「看起来黑且键入无响应」
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let snap = self.bridge.snapshot()
+            if snap.activePane != 0 {
+                let view = self.terminalManager.view(for: snap.activePane)
+                self.window?.makeFirstResponder(view)
+                self.terminalManager.focusTarget = view
+                _ = view.syncSizeToPty()
+                view.forceRedraw()
+            }
+        }
     }
 
     // MARK: - 事件循环
@@ -181,6 +226,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if snap.activePane != 0 {
             let view = terminalManager.view(for: snap.activePane)
             terminalManager.focusTarget = view
+            content.paneLayout.markActivePane(snap.activePane)
             if window?.firstResponder !== view {
                 window?.makeFirstResponder(view)
             }
@@ -248,6 +294,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return true
         }
 
+        // Cmd+[ / Cmd+]：上一个 / 下一个 pane（焦点跟随）
+        if flags.contains(.command), !flags.contains(.shift), ch == "[" {
+            prevPane()
+            return true
+        }
+        if flags.contains(.command), !flags.contains(.shift), ch == "]" {
+            nextPane()
+            return true
+        }
+
         // Alt+T 新建 tab（兼容 TUI）
         if flags.contains(.option), !flags.contains(.command), ch == "t" {
             newTab()
@@ -260,6 +316,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         if flags.contains(.option), !flags.contains(.command), ch == "v" {
             splitActivePane(horizontal: false)
+            return true
+        }
+        // Alt+[ / Alt+]：切 pane
+        if flags.contains(.option), !flags.contains(.command), ch == "[" {
+            prevPane()
+            return true
+        }
+        if flags.contains(.option), !flags.contains(.command), ch == "]" {
+            nextPane()
             return true
         }
         // Alt+1..9 切 tab

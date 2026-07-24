@@ -80,6 +80,10 @@ struct MuxTask {
     static func prevPane() -> MuxTask {
         MuxTask(type: TASK_PREV_PANE, targetPane: 0, targetTab: 0, dir: 0, name: nil)
     }
+
+    static func switchPane(_ paneId: UInt32) -> MuxTask {
+        MuxTask(type: TASK_SWITCH_PANE, targetPane: paneId, targetTab: 0, dir: 0, name: nil)
+    }
 }
 
 /// 一帧渲染快照。
@@ -174,6 +178,13 @@ final class CoreBridge {
             let ptr = raw.bindMemory(to: UInt8.self).baseAddress
             return muxterm_send_input(handle, paneId, ptr, raw.count)
         }
+    }
+
+    /// 同步 pty 行列（SwiftTerm sizeChanged → LocalBackend resize）。
+    @discardableResult
+    func resizePane(paneId: UInt32, cols: UInt16, rows: UInt16) -> Int32 {
+        guard let handle, cols > 0, rows > 0 else { return -1 }
+        return muxterm_resize_pane(handle, paneId, cols, rows)
     }
 
     func getTabs() -> [Tab] {
