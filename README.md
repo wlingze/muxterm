@@ -56,7 +56,13 @@ sudo apt-get install -y build-essential pkg-config \
 
 ## 安装
 
-目前以源码构建为主：
+目前以源码构建为主。三种前端 / 产物：
+
+| 命令 | 产物 |
+|------|------|
+| `cargo build`（默认 feature `gtk`） | GTK4 桌面前端 |
+| `cargo build --no-default-features --features tui` | 纯终端 TUI（CI / 无头） |
+| `cargo build --no-default-features --features ffi` | C ABI：`libmuxterm.a` + `libmuxterm.so` |
 
 ```bash
 git clone https://github.com/wlingze/muxterm.git
@@ -71,6 +77,9 @@ cargo build --release
 cargo run
 # 或更详细日志
 cargo run -- --verbose
+# 显式选前端
+cargo run --features gtk -- --gtk
+cargo run --no-default-features --features tui -- --tui
 ```
 
 可选：把二进制装到 PATH：
@@ -183,9 +192,10 @@ muxterm/
 
 ```bash
 cargo fmt
-cargo check
-cargo clippy --all-targets
-cargo test
+cargo check --features gtk
+cargo clippy --features gtk -- -D warnings
+cargo test --no-default-features --features tui
+cargo check --no-default-features --features ffi
 ```
 
 约定摘要：
