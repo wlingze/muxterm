@@ -109,6 +109,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
+        let viewMenuItem = NSMenuItem()
+        mainMenu.addItem(viewMenuItem)
+        let viewMenu = NSMenu(title: "视图")
+        viewMenuItem.submenu = viewMenu
+
+        let splitH = NSMenuItem(
+            title: "水平分割",
+            action: #selector(MainWindowController.splitHorizontal),
+            keyEquivalent: "s"
+        )
+        splitH.keyEquivalentModifierMask = [.command, .shift]
+        splitH.target = windowController
+        viewMenu.addItem(splitH)
+
+        let splitV = NSMenuItem(
+            title: "竖直分割",
+            action: #selector(MainWindowController.splitVertical),
+            keyEquivalent: "v"
+        )
+        splitV.keyEquivalentModifierMask = [.command, .shift]
+        splitV.target = windowController
+        viewMenu.addItem(splitV)
+
         NSApp.mainMenu = mainMenu
     }
 

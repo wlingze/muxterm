@@ -5,9 +5,15 @@
 //! 与 `tests/tui_integration.rs` 的 `setup_tmux_backend_2tab` 同构：
 //! tab1 = 3 panes（水平 split + 右侧竖直 split），tab2 = 1 pane。
 //!
-//! 跑：`cargo test --no-default-features --features ffi --test macos_integration`
+//! **键盘驱动的端到端 UI 测试**见
+//! `src/platform/macos/MuxtermAppUITests/MuxtermAppUITests.swift`
+//! （`testTwoTabThreePaneViaKeyboard` / Ctrl+D 用例），必须用 `app.typeKey`。
 //!
-//! 注意：FFI 约定 `tab_id == 0` 表示「当前 active tab」，因此查询时先 SwitchTab 再传 0。
+//! ## CLI/TUI 复现笔记
+//! - TUI 将 Ctrl+D 映射为退出应用（`is_quit`），不会 EOF 关 tab。
+//! - LocalBackend：单 pane Exit → 关 window；多 tab 末 pane Exit → 只关该 tab。
+//!
+//! 跑：`cargo test --no-default-features --features ffi --test macos_integration`
 
 use std::ffi::CString;
 use std::process::Command;

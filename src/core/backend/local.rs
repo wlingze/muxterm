@@ -178,6 +178,10 @@ impl LocalBackend {
     }
 
     /// shell/pty 子进程退出后的清理策略。
+    ///
+    /// - 整个 session 只剩 1 个 pane → 关 window/session
+    /// - 当前 tab 只剩这 1 个 pane（还有其他 tab）→ 只关该 tab
+    /// - 否则只关该 pane
     fn handle_pane_process_exit(&mut self, pane: PaneId) {
         // 主动 ClosePane/CloseWindow 已 kill 的，忽略后续 Exit
         if self.intentionally_closed.remove(&pane) {
@@ -186,21 +190,33 @@ impl LocalBackend {
         if !self.panes.iter().any(|p| p.info.id == pane) {
             return;
         }
+        let Some(tab_id) = self.tab_of_pane(pane) else {
+            return;
+        };
+        let panes_in_tab = self
+            .panes
+            .iter()
+            .filter(|p| p.info.tab == tab_id)
+            .count();
+
         // 唯一 pane → 关整个 window（及 session 若无剩余 window）
         if self.panes.len() == 1 {
-            if let Some(tab_id) = self.tab_of_pane(pane) {
-                if let Some(win) = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.info.id == tab_id)
-                    .map(|t| t.info.window)
-                {
-                    self.close_window_internal(win);
-                }
+            if let Some(win) = self
+                .tabs
+                .iter()
+                .find(|t| t.info.id == tab_id)
+                .map(|t| t.info.window)
+            {
+                self.close_window_internal(win);
             }
             return;
         }
-        // 多 pane：只关退出的那个
+        // 该 tab 的最后一个 pane → 关 tab（保留其他 tab）
+        if panes_in_tab <= 1 {
+            self.close_tab_internal(tab_id);
+            return;
+        }
+        // 同 tab 还有其他 pane：只关退出的那个
         self.close_pane_internal(pane);
     }
 
@@ -217,23 +233,85 @@ impl LocalBackend {
             .unwrap_or(false);
         self.kill_pane(target);
         if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab_id) {
-            let _ = tl.layout.tree.remove(target);
-            self.events
-                .push_back(StateChange::PaneClosed { pane: target });
-            self.events.push_back(StateChange::LayoutChanged {
-                tab: tab_id,
-                layout: tl.layout.clone(),
-            });
-            if was_active {
-                let new_active = tl.layout.tree.leaves().first().copied();
-                if let Some(a) = new_active {
-                    self.set_active_pane(tab_id, a);
-                    self.events.push_back(StateChange::ActivePaneChanged {
+            match tl.layout.tree.remove(target) {
+                Ok(()) => {
+                    self.events
+                        .push_back(StateChange::PaneClosed { pane: target });
+                    self.events.push_back(StateChange::LayoutChanged {
                         tab: tab_id,
-                        pane: a,
+                        layout: tl.layout.clone(),
                     });
+                    if was_active {
+                        let new_active = tl.layout.tree.leaves().first().copied();
+                        if let Some(a) = new_active {
+                            self.set_active_pane(tab_id, a);
+                            self.events.push_back(StateChange::ActivePaneChanged {
+                                tab: tab_id,
+                                pane: a,
+                            });
+                        }
+                    }
+                }
+                Err(_) => {
+                    // 根叶子被移除：退化为关 tab
+                    self.close_tab_internal(tab_id);
                 }
             }
+        }
+    }
+
+    /// 关闭 tab 及其下所有 pane（供 CloseTab / 末 pane Exit 复用）。
+    fn close_tab_internal(&mut self, target: TabId) {
+        if !self.tabs.iter().any(|t| t.info.id == target) {
+            return;
+        }
+        let win_id = self
+            .tabs
+            .iter()
+            .find(|t| t.info.id == target)
+            .map(|t| t.info.window)
+            .unwrap_or(WindowId(0));
+        let to_kill: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|p| p.info.tab == target)
+            .map(|p| p.info.id)
+            .collect();
+        for pid in &to_kill {
+            self.kill_pane(*pid);
+            self.events
+                .push_back(StateChange::PaneClosed { pane: *pid });
+        }
+        self.tabs.retain(|t| t.info.id != target);
+        self.events
+            .push_back(StateChange::TabClosed { tab: target });
+        if let Some(t) = self.tabs.iter().find(|t| t.info.window == win_id) {
+            let tid = t.info.id;
+            for t in self.tabs.iter_mut() {
+                if t.info.window == win_id {
+                    t.info.active = t.info.id == tid;
+                }
+            }
+            self.events.push_back(StateChange::ActiveTabChanged {
+                window: win_id,
+                tab: tid,
+            });
+            // 激活新 tab 的 active pane
+            if let Some(pane) = self
+                .tabs
+                .iter()
+                .find(|t| t.info.id == tid)
+                .and_then(|t| t.layout.tree.leaves().first().copied())
+            {
+                self.set_active_pane(tid, pane);
+                self.events.push_back(StateChange::ActivePaneChanged {
+                    tab: tid,
+                    pane,
+                });
+            }
+        } else {
+            // 无剩余 tab → 关 window
+            self.close_window_internal(win_id);
         }
     }
 
@@ -1048,38 +1126,7 @@ impl Backend for LocalBackend {
                         reason: format!("tab {target} 不存在"),
                     });
                 }
-                let win_id = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.info.id == *target)
-                    .map(|t| t.info.window)
-                    .unwrap_or(WindowId(0));
-                // kill 该 tab 下所有 pane
-                let to_kill: Vec<PaneId> = self
-                    .panes
-                    .iter()
-                    .filter(|p| p.info.tab == *target)
-                    .map(|p| p.info.id)
-                    .collect();
-                for pid in to_kill {
-                    self.kill_pane(pid);
-                }
-                self.tabs.retain(|t| t.info.id != *target);
-                self.events
-                    .push_back(StateChange::TabClosed { tab: *target });
-                // 激活剩余 tab
-                if let Some(t) = self.tabs.iter().find(|t| t.info.window == win_id) {
-                    let tid = t.info.id;
-                    for t in self.tabs.iter_mut() {
-                        if t.info.window == win_id {
-                            t.info.active = t.info.id == tid;
-                        }
-                    }
-                    self.events.push_back(StateChange::ActiveTabChanged {
-                        window: win_id,
-                        tab: tid,
-                    });
-                }
+                self.close_tab_internal(*target);
                 TaskOutcome::Done
             }
 
@@ -1251,6 +1298,45 @@ mod tests {
         );
         assert!(b.panes.is_empty());
         assert!(b.windows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multi_tab_pane_exit_closes_only_that_tab() {
+        // 复现：多 tab 时某一 tab 的 shell Exit 应只关该 tab，不关整个 window。
+        let mut b = backend();
+        b.connect().await.unwrap();
+        let _ = b.take_events();
+        let win = b.active_window().map(|w| w.id).unwrap();
+        b.execute(&Task::NewTab {
+            window: win,
+            name: None,
+            command: Some(vec!["sleep".into(), "0.05".into()]),
+            workdir: None,
+        })
+        .unwrap();
+        let _ = b.take_events();
+        assert_eq!(b.tabs.len(), 2, "应有 2 tabs");
+        assert_eq!(b.panes.len(), 2);
+
+        // 等第二个 tab 的 sleep 退出
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let events = b.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StateChange::TabClosed { .. })),
+            "应关闭退出 pane 所在 tab: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StateChange::WindowClosed { .. })),
+            "多 tab 时不应关整个 window: {events:?}"
+        );
+        assert_eq!(b.tabs.len(), 1, "应剩 1 tab");
+        assert_eq!(b.windows.len(), 1, "window 应保留");
+        assert_eq!(b.panes.len(), 1, "应剩 1 pane");
+        assert_eq!(b.status(), BackendStatus::Connected);
     }
 
     #[tokio::test]
