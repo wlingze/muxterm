@@ -1,7 +1,7 @@
-//! 纯函数渲染器：把 `State` 快照渲染成 ASCII 文本帧。
+//! 纯函数渲染器：把 `FrameSnapshot` 渲染成 ASCII 文本帧。
 //!
-//! 不做任何 I/O，输入是 `&dyn State` + 终端尺寸，输出是 `Vec<String>`（每行一行）。
-//! 方便单元测试：构造 mock state → render → 断言输出行。
+//! 不做任何 I/O，输入是桥接快照 + 终端尺寸，输出是 `Vec<String>`（每行一行）。
+//! 方便单元测试：构造 snapshot → render → 断言输出行。
 //!
 //! 渲染布局（自顶向下）：
 //! ```text
@@ -14,13 +14,13 @@
 //! │ output    │ output                                        │
 //! │           │                                               │
 //! ├─────────────────────────────────────────────────────────┤
-//! │ 状态栏：connected | 2 panes | Alt+T new tab | Alt+S split | Alt+V vsplit | Ctrl-Q quit │
+//! │ 状态栏：connected | 2 panes | Alt+T new tab | ...        │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 
-use crate::core::model::layout::{LayoutNode, SplitDir};
-use crate::core::model::state::{BackendStatus, State};
-use crate::core::types::TabId;
+use std::collections::HashMap;
+
+use crate::platform::tui::ffi_bridge::{BridgeLayout, BridgePane, BridgeTab, FrameSnapshot};
 
 /// 渲染选项。
 #[derive(Debug, Clone, Copy)]
@@ -43,10 +43,10 @@ impl Default for RenderOpts {
     }
 }
 
-/// 把 state 渲染成一帧文本（每行一个 String，不含换行）。
+/// 把快照渲染成一帧文本（每行一个 String，不含换行）。
 ///
 /// 返回的行数 <= rows。
-pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
+pub fn render_frame(snap: &FrameSnapshot, opts: RenderOpts) -> Vec<String> {
     let cols = opts.cols.max(1) as usize;
     let rows = opts.rows.max(1) as usize;
 
@@ -56,7 +56,7 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
     lines.push(border_top(cols));
 
     // ── tab 栏 ──────────────────────────────────────────────
-    let tab_bar = render_tab_bar(state, cols);
+    let tab_bar = render_tab_bar(&snap.tabs);
     let inner_cols = cols.saturating_sub(2);
     lines.push(format!("│{}│", pad(&tab_bar, inner_cols)));
 
@@ -64,8 +64,7 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
     lines.push(border_mid(cols));
 
     // ── pane 标题栏（递归布局树）────────────────────────────
-    let tab_id = state.active_tab().map(|t| t.id);
-    let pane_titles = render_pane_titles(state, tab_id, inner_cols);
+    let pane_titles = render_pane_titles(snap.layout.as_ref(), &snap.panes, inner_cols);
     lines.push(format!("│{}│", pad(&pane_titles, inner_cols)));
 
     // ── 分隔线 ──────────────────────────────────────────────
@@ -77,19 +76,22 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
     let content_rows = rows.saturating_sub(used).max(1);
     let content_cols = inner_cols;
 
-    let active_tab = state.active_tab();
-    let layout = active_tab.and_then(|t| state.layout(&t.id));
-
-    if let Some(tl) = layout {
-        // 构建字符网格，递归布局树填充每个 pane 的输出到对应矩形区域
+    if let Some(ref layout) = snap.layout {
         let mut grid: Vec<Vec<char>> = vec![vec![' '; content_cols]; content_rows];
-        render_node(&mut grid, 0, content_rows, 0, content_cols, &tl.tree, state);
+        render_node(
+            &mut grid,
+            0,
+            content_rows,
+            0,
+            content_cols,
+            layout,
+            &snap.outputs,
+        );
         for row in &grid {
             let line: String = row.iter().collect();
             lines.push(format!("│{}│", line));
         }
     } else {
-        // 无 layout：填空行
         for _ in 0..content_rows {
             lines.push(format!("│{}│", pad("", content_cols)));
         }
@@ -99,13 +101,12 @@ pub fn render_frame(state: &dyn State, opts: RenderOpts) -> Vec<String> {
     lines.push(border_mid(cols));
 
     // ── 状态栏 ──────────────────────────────────────────────
-    let status_bar = render_status_bar(state, cols);
+    let status_bar = render_status_bar(snap);
     lines.push(format!("│{}│", pad(&status_bar, cols - 2)));
 
     // ── 底部边框 ────────────────────────────────────────────
     lines.push(border_bottom(cols));
 
-    // 截断到 rows
     lines.truncate(rows);
     lines
 }
@@ -126,12 +127,7 @@ fn border_bottom(cols: usize) -> String {
 }
 
 /// 渲染 tab 栏：`[1:main*] [2:dev]`
-fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
-    // 列出当前 window 下的所有 Tab（tmux window → muxterm Tab）
-    let Some(aw) = state.active_window() else {
-        return " (no window) ".to_string();
-    };
-    let tabs = state.tabs(&aw.id);
+fn render_tab_bar(tabs: &[BridgeTab]) -> String {
     if tabs.is_empty() {
         return " (no tab) ".to_string();
     }
@@ -139,8 +135,7 @@ fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let mark = if t.active { "*" } else { " " };
-            // 显示 1-based 序号，方便 Alt+N 对照
+            let mark = if t.is_active { "*" } else { " " };
             format!("{}:{}{}", i + 1, t.name, mark)
         })
         .collect();
@@ -148,24 +143,34 @@ fn render_tab_bar(state: &dyn State, _cols: usize) -> String {
 }
 
 /// 渲染 pane 标题栏（递归布局树）。
-///
-/// 水平分割（左右）→ 按比例分列宽，`│` 分隔；
-/// 垂直分割（上下）→ 两个 pane 共享同一列范围，标题依次排列。
-fn render_pane_titles(state: &dyn State, tab: Option<TabId>, cols: usize) -> String {
+fn render_pane_titles(layout: Option<&BridgeLayout>, panes: &[BridgePane], cols: usize) -> String {
     if cols == 0 {
         return String::new();
     }
     let mut buf: Vec<char> = vec![' '; cols];
-    if let Some(tid) = tab {
-        if let Some(tl) = state.layout(&tid) {
-            render_title_node(&mut buf, 0, cols, &tl.tree, state);
-        }
+    if let Some(tree) = layout {
+        render_title_node(&mut buf, 0, cols, tree, panes);
     }
-    // 检查是否全空白（无 pane）
     if buf.iter().all(|&c| c == ' ') {
         return "(no pane)".to_string();
     }
     buf.iter().collect()
+}
+
+fn pane_title(panes: &[BridgePane], pane_id: u32) -> String {
+    let p = panes.iter().find(|p| p.id == pane_id);
+    match p {
+        Some(p) => {
+            let mark = if p.is_active { "*" } else { " " };
+            let title = if p.title.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", p.title)
+            };
+            format!("{}@{}{}{}", mark, pane_id, title, mark)
+        }
+        None => format!(" @{} ", pane_id),
+    }
 }
 
 /// 递归填充标题栏字符缓冲。
@@ -173,18 +178,12 @@ fn render_title_node(
     buf: &mut [char],
     col0: usize,
     col1: usize,
-    node: &LayoutNode,
-    state: &dyn State,
+    node: &BridgeLayout,
+    panes: &[BridgePane],
 ) {
     match node {
-        LayoutNode::Leaf(pid) => {
-            let title = state
-                .pane(pid)
-                .map(|p| {
-                    let mark = if p.active { "*" } else { " " };
-                    format!("{}@{} {}{}", mark, pid.0, p.title, mark)
-                })
-                .unwrap_or_default();
+        BridgeLayout::Leaf { pane_id } => {
+            let title = pane_title(panes, *pane_id);
             for (i, ch) in title.chars().enumerate() {
                 let c = col0 + i;
                 if c >= col1 {
@@ -193,45 +192,40 @@ fn render_title_node(
                 buf[c] = ch;
             }
         }
-        LayoutNode::Split {
-            dir,
+        BridgeLayout::Split {
+            horizontal,
             ratio,
             first,
             second,
         } => {
-            match dir {
-                SplitDir::Horizontal => {
-                    let total = col1.saturating_sub(col0);
-                    if total < 3 {
-                        render_title_node(buf, col0, col1, first, state);
-                        return;
-                    }
-                    let usable = total - 1;
-                    let first_cols = ((usable * *ratio as usize) / 1000)
-                        .max(1)
-                        .min(usable.saturating_sub(1));
-                    let mid = col0 + first_cols;
-                    render_title_node(buf, col0, mid, first, state);
-                    if mid < col1 {
-                        buf[mid] = '│';
-                    }
-                    render_title_node(buf, mid + 1, col1, second, state);
+            if *horizontal {
+                let total = col1.saturating_sub(col0);
+                if total < 3 {
+                    render_title_node(buf, col0, col1, first, panes);
+                    return;
                 }
-                SplitDir::Vertical => {
-                    // 上下分割：两个 pane 共享同一列范围。
-                    // 先渲染 first 的标题，找到其结尾，再在剩余空间渲染 second。
-                    render_title_node(buf, col0, col1, first, state);
-                    // 找 first 已填充的最右位置
-                    let mut end = col0;
-                    for (c, &ch) in buf[col0..col1].iter().enumerate() {
-                        if ch != ' ' {
-                            end = col0 + c + 1;
-                        }
+                let usable = total - 1;
+                let first_cols = ((usable * *ratio as usize) / 1000)
+                    .max(1)
+                    .min(usable.saturating_sub(1));
+                let mid = col0 + first_cols;
+                render_title_node(buf, col0, mid, first, panes);
+                if mid < col1 {
+                    buf[mid] = '│';
+                }
+                render_title_node(buf, mid + 1, col1, second, panes);
+            } else {
+                // 上下分割：两个 pane 共享同一列范围。
+                render_title_node(buf, col0, col1, first, panes);
+                let mut end = col0;
+                for (c, &ch) in buf[col0..col1].iter().enumerate() {
+                    if ch != ' ' {
+                        end = col0 + c + 1;
                     }
-                    let start2 = (end + 1).min(col1);
-                    if start2 < col1 {
-                        render_title_node(buf, start2, col1, second, state);
-                    }
+                }
+                let start2 = (end + 1).min(col1);
+                if start2 < col1 {
+                    render_title_node(buf, start2, col1, second, panes);
                 }
             }
         }
@@ -239,30 +233,25 @@ fn render_title_node(
 }
 
 /// 递归填充内容区字符网格。
-///
-/// `Leaf(pid)` → 在分配的矩形 [row0,row1)×[col0,col1) 内渲染 pane 输出（取最后若干行）。
-/// `Split { Horizontal, .. }` → 左右分列，`│` 分隔。
-/// `Split { Vertical, .. }` → 上下分行，`─` 分隔。
 fn render_node(
     grid: &mut [Vec<char>],
     row0: usize,
     row1: usize,
     col0: usize,
     col1: usize,
-    node: &LayoutNode,
-    state: &dyn State,
+    node: &BridgeLayout,
+    outputs: &HashMap<u32, Vec<u8>>,
 ) {
     match node {
-        LayoutNode::Leaf(pid) => {
+        BridgeLayout::Leaf { pane_id } => {
             let avail_rows = row1.saturating_sub(row0);
             let avail_cols = col1.saturating_sub(col0);
             if avail_rows == 0 || avail_cols == 0 {
                 return;
             }
-            let out = state.pane_output(pid).unwrap_or(&[]);
+            let out = outputs.get(pane_id).map(|v| v.as_slice()).unwrap_or(&[]);
             let text = String::from_utf8_lossy(out);
             let all_lines: Vec<&str> = text.lines().collect();
-            // 取最后 avail_rows 行，正序显示（底部对齐）
             let start = all_lines.len().saturating_sub(avail_rows);
             let visible = &all_lines[start..];
             for (i, line) in visible.iter().enumerate() {
@@ -279,81 +268,65 @@ fn render_node(
                 }
             }
         }
-        LayoutNode::Split {
-            dir,
+        BridgeLayout::Split {
+            horizontal,
             ratio,
             first,
             second,
         } => {
-            match dir {
-                SplitDir::Horizontal => {
-                    // 左右分割
-                    let total_cols = col1.saturating_sub(col0);
-                    if total_cols < 3 {
-                        render_node(grid, row0, row1, col0, col1, first, state);
-                        return;
+            if *horizontal {
+                let total_cols = col1.saturating_sub(col0);
+                if total_cols < 3 {
+                    render_node(grid, row0, row1, col0, col1, first, outputs);
+                    return;
+                }
+                let sep = 1;
+                let usable = total_cols - sep;
+                let first_cols = ((usable * *ratio as usize) / 1000)
+                    .max(1)
+                    .min(usable.saturating_sub(1));
+                let mid = col0 + first_cols;
+                render_node(grid, row0, row1, col0, mid, first, outputs);
+                for r in row0..row1 {
+                    if r < grid.len() && mid < grid[r].len() {
+                        grid[r][mid] = '│';
                     }
-                    let sep = 1;
-                    let usable = total_cols - sep;
-                    let first_cols = ((usable * *ratio as usize) / 1000)
-                        .max(1)
-                        .min(usable.saturating_sub(1));
-                    let mid = col0 + first_cols;
-                    // first: [col0, mid)
-                    render_node(grid, row0, row1, col0, mid, first, state);
-                    // 分隔线 │
-                    for r in row0..row1 {
-                        if r < grid.len() && mid < grid[r].len() {
-                            grid[r][mid] = '│';
+                }
+                render_node(grid, row0, row1, mid + 1, col1, second, outputs);
+            } else {
+                let total_rows = row1.saturating_sub(row0);
+                if total_rows < 3 {
+                    render_node(grid, row0, row1, col0, col1, first, outputs);
+                    return;
+                }
+                let sep = 1;
+                let usable = total_rows - sep;
+                let first_rows = ((usable * *ratio as usize) / 1000)
+                    .max(1)
+                    .min(usable.saturating_sub(1));
+                let mid = row0 + first_rows;
+                render_node(grid, row0, mid, col0, col1, first, outputs);
+                if mid < grid.len() {
+                    for c in col0..col1 {
+                        if c < grid[mid].len() {
+                            grid[mid][c] = '─';
                         }
                     }
-                    // second: [mid+1, col1)
-                    render_node(grid, row0, row1, mid + 1, col1, second, state);
                 }
-                SplitDir::Vertical => {
-                    // 上下分割
-                    let total_rows = row1.saturating_sub(row0);
-                    if total_rows < 3 {
-                        render_node(grid, row0, row1, col0, col1, first, state);
-                        return;
-                    }
-                    let sep = 1;
-                    let usable = total_rows - sep;
-                    let first_rows = ((usable * *ratio as usize) / 1000)
-                        .max(1)
-                        .min(usable.saturating_sub(1));
-                    let mid = row0 + first_rows;
-                    // first: [row0, mid)
-                    render_node(grid, row0, mid, col0, col1, first, state);
-                    // 分隔线 ─
-                    if mid < grid.len() {
-                        for c in col0..col1 {
-                            if c < grid[mid].len() {
-                                grid[mid][c] = '─';
-                            }
-                        }
-                    }
-                    // second: [mid+1, row1)
-                    render_node(grid, mid + 1, row1, col0, col1, second, state);
-                }
+                render_node(grid, mid + 1, row1, col0, col1, second, outputs);
             }
         }
     }
 }
 
-/// 渲染状态栏：`connected | 2 panes | Alt+T new tab | Alt+S split | Alt+V vsplit | Ctrl-Q quit`
-fn render_status_bar(state: &dyn State, _cols: usize) -> String {
-    let status = match state.status() {
-        BackendStatus::Disconnected => "disconnected",
-        BackendStatus::Connecting => "connecting",
-        BackendStatus::Connected => "connected",
-        BackendStatus::Error => "error",
-        BackendStatus::Exited => "exited",
+/// 渲染状态栏。
+fn render_status_bar(snap: &FrameSnapshot) -> String {
+    let status = if snap.status.is_empty() {
+        "unknown"
+    } else {
+        snap.status.as_str()
     };
-    let n_panes = state
-        .active_tab()
-        .map(|t| state.panes(&t.id).len())
-        .unwrap_or(0);
+    let n_panes = snap.panes.len();
     format!(
         " {status} | {n_panes} panes | Alt+T new tab | Alt+S split | Alt+V vsplit | Ctrl-Q quit "
     )
@@ -381,62 +354,155 @@ fn truncate(s: &str, cols: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockBackend;
-    use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
-    use crate::core::model::state::{PaneInfo, TabInfo, WindowInfo};
-    use crate::core::types::{PaneId, TabId, WindowId};
+    use crate::platform::tui::ffi_bridge::{BridgeLayout, BridgePane, BridgeTab, FrameSnapshot};
+    use std::collections::HashMap;
 
-    fn mock_with_two_panes() -> MockBackend {
-        let mut b = MockBackend::with_single_pane();
-        b.tabs.push(TabInfo {
-            id: TabId(2),
-            name: "t2".into(),
-            window: WindowId(1),
-            active: false,
-        });
-        b.panes.push(PaneInfo {
-            id: PaneId(2),
-            tab: TabId(1),
-            active: false,
-            title: "zsh".into(),
-            cols: 40,
-            rows: 24,
-        });
-        b.layouts.clear();
-        let mut tree = LayoutNode::leaf(PaneId(1));
-        tree.split_at(PaneId(1), PaneId(2), SplitDir::Horizontal);
-        b.layouts.push(crate::core::model::layout::TabLayout {
-            tab: TabId(1),
-            tree,
-            active: PaneId(1),
-        });
-        b.outputs.push((PaneId(2), b"line1\nline2\n".to_vec()));
-        b.outputs[0].1 = b"hello\nworld\n".to_vec();
-        b
+    fn snap_empty() -> FrameSnapshot {
+        FrameSnapshot {
+            status: "disconnected".into(),
+            ..Default::default()
+        }
+    }
+
+    fn snap_single_pane() -> FrameSnapshot {
+        let mut outputs = HashMap::new();
+        outputs.insert(1, b"hello\nworld\n".to_vec());
+        FrameSnapshot {
+            tabs: vec![BridgeTab {
+                id: 1,
+                name: "t1".into(),
+                is_active: true,
+            }],
+            panes: vec![BridgePane {
+                id: 1,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "bash".into(),
+            }],
+            layout: Some(BridgeLayout::Leaf { pane_id: 1 }),
+            outputs,
+            status: "connected".into(),
+            active_tab: 1,
+            active_pane: 1,
+        }
+    }
+
+    fn snap_two_panes() -> FrameSnapshot {
+        let mut outputs = HashMap::new();
+        outputs.insert(1, b"hello\nworld\n".to_vec());
+        outputs.insert(2, b"line1\nline2\n".to_vec());
+        FrameSnapshot {
+            tabs: vec![
+                BridgeTab {
+                    id: 1,
+                    name: "t1".into(),
+                    is_active: true,
+                },
+                BridgeTab {
+                    id: 2,
+                    name: "t2".into(),
+                    is_active: false,
+                },
+            ],
+            panes: vec![
+                BridgePane {
+                    id: 1,
+                    cols: 40,
+                    rows: 24,
+                    is_active: true,
+                    title: "bash".into(),
+                },
+                BridgePane {
+                    id: 2,
+                    cols: 40,
+                    rows: 24,
+                    is_active: false,
+                    title: "zsh".into(),
+                },
+            ],
+            layout: Some(BridgeLayout::Split {
+                horizontal: true,
+                ratio: 500,
+                first: Box::new(BridgeLayout::Leaf { pane_id: 1 }),
+                second: Box::new(BridgeLayout::Leaf { pane_id: 2 }),
+            }),
+            outputs,
+            status: "connected".into(),
+            active_tab: 1,
+            active_pane: 1,
+        }
+    }
+
+    fn snap_nested_split() -> FrameSnapshot {
+        let mut outputs = HashMap::new();
+        outputs.insert(1, b"left\n".to_vec());
+        outputs.insert(2, b"top-right\n".to_vec());
+        outputs.insert(3, b"bottom-right\n".to_vec());
+        FrameSnapshot {
+            tabs: vec![BridgeTab {
+                id: 1,
+                name: "t1".into(),
+                is_active: true,
+            }],
+            panes: vec![
+                BridgePane {
+                    id: 1,
+                    cols: 40,
+                    rows: 24,
+                    is_active: true,
+                    title: "bash".into(),
+                },
+                BridgePane {
+                    id: 2,
+                    cols: 40,
+                    rows: 12,
+                    is_active: false,
+                    title: "zsh".into(),
+                },
+                BridgePane {
+                    id: 3,
+                    cols: 40,
+                    rows: 12,
+                    is_active: false,
+                    title: "fish".into(),
+                },
+            ],
+            layout: Some(BridgeLayout::Split {
+                horizontal: true,
+                ratio: 500,
+                first: Box::new(BridgeLayout::Leaf { pane_id: 1 }),
+                second: Box::new(BridgeLayout::Split {
+                    horizontal: false,
+                    ratio: 500,
+                    first: Box::new(BridgeLayout::Leaf { pane_id: 2 }),
+                    second: Box::new(BridgeLayout::Leaf { pane_id: 3 }),
+                }),
+            }),
+            outputs,
+            status: "connected".into(),
+            active_tab: 1,
+            active_pane: 1,
+        }
     }
 
     #[test]
     fn render_empty_state() {
-        let b = MockBackend::new();
-        let lines = render_frame(&b, RenderOpts::default());
+        let lines = render_frame(&snap_empty(), RenderOpts::default());
         assert!(!lines.is_empty());
-        // 顶部边框
         assert!(lines[0].starts_with('┌'));
     }
 
     #[test]
     fn render_has_top_and_bottom_border() {
-        let b = MockBackend::with_single_pane();
-        let lines = render_frame(&b, RenderOpts::default());
+        let lines = render_frame(&snap_single_pane(), RenderOpts::default());
         assert!(lines[0].starts_with('┌'));
         assert!(lines.last().unwrap().starts_with('└'));
     }
 
     #[test]
     fn render_tab_bar_shows_window_name() {
-        let b = MockBackend::with_single_pane();
-        let lines = render_frame(&b, RenderOpts::default());
-        // tab 栏在第 2 行：1-based 序号 + tab 名
+        let lines = render_frame(&snap_single_pane(), RenderOpts::default());
         let tab_line = &lines[1];
         assert!(
             tab_line.contains("1:") && (tab_line.contains("t1") || tab_line.contains('*')),
@@ -446,8 +512,7 @@ mod tests {
 
     #[test]
     fn render_two_panes_shows_both_titles() {
-        let b = mock_with_two_panes();
-        let lines = render_frame(&b, RenderOpts::default());
+        let lines = render_frame(&snap_two_panes(), RenderOpts::default());
         let title_line = &lines[3];
         assert!(title_line.contains("@1"));
         assert!(title_line.contains("@2"));
@@ -455,9 +520,7 @@ mod tests {
 
     #[test]
     fn render_status_bar_shows_connected() {
-        let b = MockBackend::with_single_pane();
-        let lines = render_frame(&b, RenderOpts::default());
-        // 状态栏在倒数第二行（最后一行是底部边框）
+        let lines = render_frame(&snap_single_pane(), RenderOpts::default());
         let status_line = &lines[lines.len() - 2];
         assert!(status_line.contains("connected"));
         assert!(status_line.contains("Ctrl-Q"));
@@ -465,98 +528,38 @@ mod tests {
 
     #[test]
     fn render_includes_pane_output() {
-        let b = mock_with_two_panes();
-        let lines = render_frame(&b, RenderOpts::default());
+        let lines = render_frame(&snap_two_panes(), RenderOpts::default());
         let joined = lines.join("\n");
         assert!(joined.contains("hello") || joined.contains("line1"));
     }
 
     #[test]
     fn render_respects_max_rows() {
-        let b = mock_with_two_panes();
         let opts = RenderOpts {
             cols: 80,
             rows: 8,
             max_output_lines: 2,
         };
-        let lines = render_frame(&b, opts);
+        let lines = render_frame(&snap_two_panes(), opts);
         assert!(lines.len() <= 8);
     }
 
     #[test]
     fn render_has_pane_separator_between_panes() {
-        let b = mock_with_two_panes();
-        let lines = render_frame(&b, RenderOpts::default());
-        // 内容区应有 │ 分隔两个 pane
+        let lines = render_frame(&snap_two_panes(), RenderOpts::default());
         let content_lines: Vec<&String> = lines
             .iter()
-            .filter(|l| l.starts_with('│') && l.contains("│") && !l.starts_with("├"))
+            .filter(|l| l.starts_with('│') && l.contains('│') && !l.starts_with('├'))
             .collect();
-        // 至少有一行内容区含中间 │（pane 分隔）
         assert!(
             content_lines.iter().any(|l| l.matches('│').count() >= 3),
             "内容区应有 pane 分隔符 │"
         );
     }
 
-    /// 构造嵌套布局 Split(H, @1, Split(V, @2, @3)) 的 mock。
-    fn mock_with_nested_split() -> MockBackend {
-        let mut b = MockBackend::with_single_pane();
-        // @2 pane
-        b.panes.push(PaneInfo {
-            id: PaneId(2),
-            tab: TabId(1),
-            active: false,
-            title: "zsh".into(),
-            cols: 40,
-            rows: 12,
-        });
-        // @3 pane
-        b.panes.push(PaneInfo {
-            id: PaneId(3),
-            tab: TabId(1),
-            active: false,
-            title: "fish".into(),
-            cols: 40,
-            rows: 12,
-        });
-        // 布局: Split(H, @1, Split(V, @2, @3))
-        let mut tree = LayoutNode::leaf(PaneId(1));
-        tree.split_at(PaneId(1), PaneId(2), SplitDir::Horizontal);
-        tree.split_at(PaneId(2), PaneId(3), SplitDir::Vertical);
-        b.layouts.clear();
-        b.layouts.push(TabLayout {
-            tab: TabId(1),
-            tree,
-            active: PaneId(1),
-        });
-        // 输出内容
-        b.outputs.clear();
-        b.outputs.push((
-            PaneId(1),
-            b"left
-"
-            .to_vec(),
-        ));
-        b.outputs.push((
-            PaneId(2),
-            b"top-right
-"
-            .to_vec(),
-        ));
-        b.outputs.push((
-            PaneId(3),
-            b"bottom-right
-"
-            .to_vec(),
-        ));
-        b
-    }
-
     #[test]
     fn render_nested_split_shows_all_three_pane_titles() {
-        let b = mock_with_nested_split();
-        let lines = render_frame(&b, RenderOpts::default());
+        let lines = render_frame(&snap_nested_split(), RenderOpts::default());
         let title_line = &lines[3];
         assert!(title_line.contains("@1"), "标题栏应有 @1: {title_line}");
         assert!(title_line.contains("@2"), "标题栏应有 @2: {title_line}");
@@ -565,39 +568,29 @@ mod tests {
 
     #[test]
     fn render_nested_split_left_pane_content_on_left() {
-        let b = mock_with_nested_split();
-        // 用足够大的终端确保有空间
         let lines = render_frame(
-            &b,
+            &snap_nested_split(),
             RenderOpts {
                 cols: 80,
                 rows: 24,
                 max_output_lines: 20,
             },
         );
-        let joined = lines.join(
-            "
-",
-        );
+        let joined = lines.join("\n");
         assert!(joined.contains("left"), "应包含 @1 的 left 输出: {joined}");
     }
 
     #[test]
     fn render_nested_split_right_panes_stacked_vertically() {
-        let b = mock_with_nested_split();
         let lines = render_frame(
-            &b,
+            &snap_nested_split(),
             RenderOpts {
                 cols: 80,
                 rows: 24,
                 max_output_lines: 20,
             },
         );
-        let joined = lines.join(
-            "
-",
-        );
-        // @2 (top-right) 和 @3 (bottom-right) 都应出现
+        let joined = lines.join("\n");
         assert!(
             joined.contains("top-right"),
             "应包含 @2 的 top-right 输出: {joined}"
@@ -606,7 +599,6 @@ mod tests {
             joined.contains("bottom-right"),
             "应包含 @3 的 bottom-right 输出: {joined}"
         );
-        // top-right 应出现在 bottom-right 之前的行
         let top_row = lines
             .iter()
             .position(|l| l.contains("top-right"))
@@ -623,34 +615,28 @@ mod tests {
 
     #[test]
     fn render_nested_split_has_horizontal_separator() {
-        let b = mock_with_nested_split();
-        let lines = render_frame(&b, RenderOpts::default());
-        // 内容区应有 ─ 分隔上下两个右栏 pane
+        let lines = render_frame(&snap_nested_split(), RenderOpts::default());
         let has_h_sep = lines.iter().any(|l| l.contains('─'));
         assert!(has_h_sep, "内容区应有水平分隔线 ─ (垂直分割): {lines:?}");
     }
 
     #[test]
     fn render_nested_split_has_vertical_separator() {
-        let b = mock_with_nested_split();
-        let lines = render_frame(&b, RenderOpts::default());
-        // 内容区应有 │ 分隔左右
+        let lines = render_frame(&snap_nested_split(), RenderOpts::default());
         let has_v_sep = lines.iter().any(|l| l.matches('│').count() >= 2);
         assert!(has_v_sep, "内容区应有垂直分隔线 │ (水平分割): {lines:?}");
     }
 
     #[test]
     fn render_status_bar_shows_alt_t_hint() {
-        let b = MockBackend::with_single_pane();
-        let lines = render_frame(&b, RenderOpts::default());
+        let lines = render_frame(&snap_single_pane(), RenderOpts::default());
         let status_line = &lines[lines.len() - 2];
         assert!(status_line.contains("Alt+T"));
     }
 
     #[test]
     fn render_status_bar_shows_split_hints() {
-        let b = MockBackend::with_single_pane();
-        let lines = render_frame(&b, RenderOpts::default());
+        let lines = render_frame(&snap_single_pane(), RenderOpts::default());
         let status_line = &lines[lines.len() - 2];
         assert!(status_line.contains("Alt+S"), "状态栏应提示 Alt+S 水平分割");
         assert!(status_line.contains("Alt+V"), "状态栏应提示 Alt+V 垂直分割");
@@ -658,9 +644,9 @@ mod tests {
 
     #[test]
     fn render_exited_status() {
-        let mut b = MockBackend::with_single_pane();
-        b.status = BackendStatus::Exited;
-        let lines = render_frame(&b, RenderOpts::default());
+        let mut snap = snap_single_pane();
+        snap.status = "exited".into();
+        let lines = render_frame(&snap, RenderOpts::default());
         let status_line = &lines[lines.len() - 2];
         assert!(status_line.contains("exited"));
     }

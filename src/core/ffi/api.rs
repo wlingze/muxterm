@@ -6,7 +6,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use crate::core::backend::{LocalBackend, TmuxBackend};
+use crate::cli::session::session_socket_path;
+use crate::core::backend::{DaemonBackend, LocalBackend, TmuxBackend};
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
@@ -72,8 +73,8 @@ fn cstr_opt(p: *const c_char) -> Option<String> {
 
 /// 创建 handle。
 ///
-/// `backend_type`：`"local"` / `"tmux"`（大小写不敏感）。
-/// `socket` / `session`：tmux 模式可选；local 忽略。
+/// `backend_type`：`"local"` / `"tmux"` / `"daemon"`（大小写不敏感）。
+/// `socket` / `session`：tmux 模式可选；daemon 用 `session` 推导 socket 路径；local 忽略。
 ///
 /// 失败返回 null。
 #[no_mangle]
@@ -97,6 +98,14 @@ pub extern "C" fn muxterm_new(
             } else {
                 Box::new(TmuxBackend::new(sock_ref))
             }
+        }
+        "daemon" => {
+            // TUI × local：连已有 daemon（unix socket IPC）
+            let name = sess.unwrap_or_else(|| "default".into());
+            let path = sock
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| session_socket_path(&name));
+            Box::new(DaemonBackend::new(path, name))
         }
         // 默认 local
         _ => Box::new(LocalBackend::new("$SHELL", "")),
