@@ -332,6 +332,12 @@ pub struct PaneNotebook {
     next_local: u64,
 }
 
+impl Default for PaneNotebook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PaneNotebook {
     pub fn new() -> Self {
         let nb = Notebook::new();

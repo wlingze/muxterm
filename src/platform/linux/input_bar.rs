@@ -25,6 +25,12 @@ pub struct InputBar {
     pane_label: Label,
 }
 
+impl Default for InputBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputBar {
     pub fn new() -> Self {
         let container = Box::builder()
