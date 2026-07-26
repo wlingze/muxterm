@@ -863,8 +863,8 @@ impl Backend for TmuxBackend {
             if std::time::Instant::now() >= deadline {
                 break;
             }
-            // 短暂让出
-            tokio::task::yield_now().await;
+            // 短暂睡眠：仅 yield_now 忙等会饿死读循环，且拉长真实等待
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
         if self.sessions.is_empty() {
@@ -887,7 +887,7 @@ impl Backend for TmuxBackend {
             if std::time::Instant::now() >= deadline {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         // 现在所有 window 的 pane 查询已发出（handle_list_windows_response 对每个 window 调了 query_list_panes）
         // 等待所有 window 的 pane 查询响应到达（最多 5 秒）
@@ -908,7 +908,7 @@ impl Backend for TmuxBackend {
             if std::time::Instant::now() >= deadline {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
         // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
@@ -1170,9 +1170,17 @@ impl Backend for TmuxBackend {
         self.execute(&Task::Shutdown)?;
         // 关闭命令通道，sender task 收到 None 后会 kill tmux 子进程并退出
         self.cmd_tx.take();
-        // 等待 sender task 结束
-        if let Some(h) = self._sender_handle.take() {
-            let _ = h.await;
+        // 等待 sender task 结束；pty 写卡死时 abort，避免测试/CI 无限挂起
+        if let Some(mut h) = self._sender_handle.take() {
+            tokio::select! {
+                r = &mut h => {
+                    let _ = r;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                    tracing::warn!(target = "muxterm::tmux_backend", "shutdown: sender task 超时，abort");
+                    h.abort();
+                }
+            }
         }
         self.status = BackendStatus::Exited;
         self.events
@@ -1372,113 +1380,137 @@ mod tests {
         format!("{nanos}")
     }
 
+    fn cleanup(socket: &str) {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", socket, "kill-server"])
+            .output();
+    }
+
+    /// 整个用例上限，防止 connect/shutdown/pty 写卡住拖死 CI（曾 15min 挂起）。
+    const TMUX_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn connect_establishes_session_and_window() {
         let socket = unique_socket();
-        let mut b = TmuxBackend::new(Some(&socket));
-        b.connect().await.unwrap_or_else(|e| {
-            eprintln!("skip: tmux 不可用: {e}");
-            return;
-        });
-        if b.status() != BackendStatus::Connected {
-            cleanup(&socket);
-            return;
-        }
-        assert_eq!(b.status(), BackendStatus::Connected);
-        // drain 事件
-        let events = b.take_events();
-        assert!(events.iter().any(|e| matches!(
-            e,
-            StateChange::BackendStatusChanged(BackendStatus::Connected)
-        )));
-        // 应有 session + window
-        assert!(!b.sessions().is_empty());
-        assert!(!b.windows.is_empty());
-        let _ = b.shutdown().await;
+        let run = async {
+            let mut b = TmuxBackend::new(Some(&socket));
+            b.connect().await.unwrap_or_else(|e| {
+                eprintln!("skip: tmux 不可用: {e}");
+            });
+            if b.status() != BackendStatus::Connected {
+                return;
+            }
+            assert_eq!(b.status(), BackendStatus::Connected);
+            let events = b.take_events();
+            assert!(events.iter().any(|e| matches!(
+                e,
+                StateChange::BackendStatusChanged(BackendStatus::Connected)
+            )));
+            assert!(!b.sessions().is_empty());
+            assert!(!b.windows.is_empty());
+            let _ = b.shutdown().await;
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
         cleanup(&socket);
+        if timed.is_err() {
+            panic!("connect_establishes_session_and_window 超时");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn new_window_via_tmux() {
         let socket = unique_socket();
-        let mut b = TmuxBackend::new(Some(&socket));
-        if b.connect().await.is_err() {
-            cleanup(&socket);
-            return;
-        }
-        let _ = b.take_events();
-        // NewWindow = 新建 tmux window = muxterm Tab；虚拟 Window 数不变
-        let initial_tabs = b.tabs.len();
-        b.execute(&Task::NewWindow {
-            name: Some("test-win".into()),
-            command: None,
-            workdir: None,
-        })
-        .unwrap();
-        // 等待 tmux 推送 WindowAdd → TabAdded 事件
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
-        loop {
+        let run = async {
+            let mut b = TmuxBackend::new(Some(&socket));
+            if b.connect().await.is_err() {
+                return;
+            }
             let _ = b.take_events();
-            if b.tabs.len() > initial_tabs {
-                break;
+            let initial_tabs = b.tabs.len();
+            b.execute(&Task::NewWindow {
+                name: Some("test-win".into()),
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+            loop {
+                let _ = b.take_events();
+                if b.tabs.len() > initial_tabs {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
-            if tokio::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
-        assert!(
-            b.tabs.len() > initial_tabs,
-            "新 tab（tmux window）未建立: tabs={}",
-            b.tabs.len()
-        );
-        assert_eq!(b.windows.len(), 1, "虚拟 Window 应始终只有 1 个");
-        let _ = b.shutdown().await;
+            assert!(
+                b.tabs.len() > initial_tabs,
+                "新 tab（tmux window）未建立: tabs={}",
+                b.tabs.len()
+            );
+            assert_eq!(b.windows.len(), 1, "虚拟 Window 应始终只有 1 个");
+            let _ = b.shutdown().await;
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
         cleanup(&socket);
+        if timed.is_err() {
+            panic!("new_window_via_tmux 超时");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn send_keys_does_not_error() {
         let socket = unique_socket();
-        let mut b = TmuxBackend::new(Some(&socket));
-        if b.connect().await.is_err() {
-            cleanup(&socket);
-            return;
-        }
-        let _ = b.take_events();
-        let pane = b.active_pane().map(|p| p.id).unwrap_or(PaneId(0));
-        let outcome = b
-            .execute(&Task::SendKeys {
-                target: pane,
-                keys: vec![crate::core::terminal::input::KeyEvent::Char('x')],
-            })
-            .unwrap();
-        assert_eq!(outcome, TaskOutcome::Done);
-        let _ = b.shutdown().await;
+        let run = async {
+            let mut b = TmuxBackend::new(Some(&socket));
+            if b.connect().await.is_err() {
+                return;
+            }
+            let _ = b.take_events();
+            let pane = b.active_pane().map(|p| p.id).unwrap_or(PaneId(0));
+            let outcome = b
+                .execute(&Task::SendKeys {
+                    target: pane,
+                    keys: vec![crate::core::terminal::input::KeyEvent::Char('x')],
+                })
+                .unwrap();
+            assert_eq!(outcome, TaskOutcome::Done);
+            let _ = b.shutdown().await;
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
         cleanup(&socket);
+        if timed.is_err() {
+            panic!("send_keys_does_not_error 超时（tmux socket/shutdown 挂起）");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn split_pane_dispatched() {
         let socket = unique_socket();
-        let mut b = TmuxBackend::new(Some(&socket));
-        if b.connect().await.is_err() {
-            cleanup(&socket);
-            return;
-        }
-        let _ = b.take_events();
-        let pane = b.active_pane().map(|p| p.id).unwrap_or(PaneId(0));
-        let outcome = b
-            .execute(&Task::SplitPane {
-                target: Some(pane),
-                dir: SplitDir::Horizontal,
-                command: None,
-                workdir: None,
-            })
-            .unwrap();
-        assert_eq!(outcome, TaskOutcome::Done);
-        let _ = b.shutdown().await;
+        let run = async {
+            let mut b = TmuxBackend::new(Some(&socket));
+            if b.connect().await.is_err() {
+                return;
+            }
+            let _ = b.take_events();
+            let pane = b.active_pane().map(|p| p.id).unwrap_or(PaneId(0));
+            let outcome = b
+                .execute(&Task::SplitPane {
+                    target: Some(pane),
+                    dir: SplitDir::Horizontal,
+                    command: None,
+                    workdir: None,
+                })
+                .unwrap();
+            assert_eq!(outcome, TaskOutcome::Done);
+            let _ = b.shutdown().await;
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
         cleanup(&socket);
+        if timed.is_err() {
+            panic!("split_pane_dispatched 超时");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1491,11 +1523,5 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(outcome, TaskOutcome::Rejected { .. }));
-    }
-
-    fn cleanup(socket: &str) {
-        let _ = std::process::Command::new("tmux")
-            .args(["-L", socket, "kill-server"])
-            .output();
     }
 }
