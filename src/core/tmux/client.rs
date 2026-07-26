@@ -262,15 +262,17 @@ impl TmuxClientHandle {
         self.send_raw("detach-client\n").await
     }
 
-    /// 强制 kill：先尝试 detach，再 kill 子进程。
+    /// 强制 kill：先关写端并杀子进程。
+    ///
+    /// 不先 `detach`：pty 写可能阻塞，导致 sender task / `shutdown` 永远等不到。
     pub async fn kill(&mut self) -> Result<()> {
-        let _ = self.detach().await;
         self.close_writer();
         if let Some(child) = &mut self.child {
             let _ = child.kill().await;
         }
         if let Some(pty_child) = &mut self.pty_child {
             let _ = pty_child.child.kill();
+            let _ = pty_child.child.try_wait();
         }
         Ok(())
     }
