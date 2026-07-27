@@ -17,12 +17,23 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
+        .library(name: "MuxtermChrome", targets: ["MuxtermChrome"]),
         .executable(name: "MuxtermApp", targets: ["MuxtermApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.15.0"),
     ],
     targets: [
+        // 纯 chrome / 快捷键逻辑（无 AppKit、不链 libmuxterm）
+        .target(
+            name: "MuxtermChrome",
+            path: "Chrome"
+        ),
+        .testTarget(
+            name: "MuxtermChromeTests",
+            dependencies: ["MuxtermChrome"],
+            path: "ChromeTests"
+        ),
         // C ABI 头文件模块（对应 CoreBridge/muxterm.h）
         .target(
             name: "CMuxterm",
@@ -34,6 +45,7 @@ let package = Package(
             name: "MuxtermApp",
             dependencies: [
                 "CMuxterm",
+                "MuxtermChrome",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
             path: ".",
@@ -45,6 +57,8 @@ let package = Package(
                 "CoreBridge/shim.c",
                 "CoreBridge/muxterm.h",
                 "MuxtermAppUITests",
+                "Chrome",
+                "ChromeTests",
                 "project.yml",
                 ".build",
             ],

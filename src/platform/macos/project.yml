@@ -23,6 +23,17 @@ settings:
     CODE_SIGN_IDENTITY: "-"
 
 targets:
+  MuxtermChrome:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: Chrome
+    settings:
+      base:
+        PRODUCT_NAME: MuxtermChrome
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        GENERATE_INFOPLIST_FILE: YES
+
   MuxtermApp:
     type: application
     platform: macOS
@@ -53,6 +64,7 @@ targets:
         CODE_SIGNING_ALLOWED: "YES"
         CODE_SIGN_IDENTITY: "-"
     dependencies:
+      - target: MuxtermChrome
       - package: SwiftTerm
         product: SwiftTerm
     info:
@@ -82,6 +94,7 @@ schemes:
   MuxtermApp:
     build:
       targets:
+        MuxtermChrome: all
         MuxtermApp: all
         MuxtermAppUITests: [test]
     run:

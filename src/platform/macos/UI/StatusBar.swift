@@ -1,19 +1,24 @@
 import AppKit
+import MuxtermChrome
 
-/// 底部状态栏：连接状态、pane 数、活跃 tab/pane；并暴露输出片段供 XCUITest。
+/// 底部一行状态：连接态 + tabs/panes/活跃 pane；输出片段仅供 XCUITest AX。
 final class StatusBarView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let outputProbe = NSTextField(labelWithString: "")
+    private let edgeLine = CALayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        // 容器本身不当 accessibility 元素，否则子控件（含 outputSnippet）会被吞掉
+        // 与窗口同色，不做独立面板底
+        layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         setAccessibilityElement(false)
 
-        label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        label.textColor = NSColor.secondaryLabelColor
+        edgeLine.backgroundColor = NSColor.separatorColor.cgColor
+        layer?.addSublayer(edgeLine)
+
+        label.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        label.textColor = NSColor.tertiaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         label.setAccessibilityIdentifier("muxterm.statusBar")
         label.setAccessibilityElement(true)
@@ -33,14 +38,20 @@ final class StatusBarView: NSView {
         addSubview(outputProbe)
 
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            label.leadingAnchor.constraint(
+                equalTo: leadingAnchor,
+                constant: FlatChrome.statusHorizontalInset
+            ),
+            label.trailingAnchor.constraint(
+                lessThanOrEqualTo: trailingAnchor,
+                constant: -FlatChrome.statusHorizontalInset
+            ),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             outputProbe.leadingAnchor.constraint(equalTo: leadingAnchor),
             outputProbe.topAnchor.constraint(equalTo: topAnchor),
             outputProbe.widthAnchor.constraint(equalToConstant: 2),
             outputProbe.heightAnchor.constraint(equalToConstant: 2),
-            heightAnchor.constraint(equalToConstant: 24),
+            heightAnchor.constraint(equalToConstant: FlatChrome.statusBarHeight),
         ])
     }
 
@@ -49,10 +60,18 @@ final class StatusBarView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func layout() {
+        super.layout()
+        edgeLine.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
+    }
+
     func update(snapshot: FrameSnapshot) {
-        let tabName = snapshot.tabs.first(where: { $0.id == snapshot.activeTab })?.name ?? "-"
-        let text =
-            "\(snapshot.status)  |  tabs: \(snapshot.tabs.count)  panes: \(snapshot.panes.count)  |  tab: \(tabName)  pane: @\(snapshot.activePane)"
+        let text = FlatChrome.statusText(
+            status: snapshot.status,
+            tabCount: snapshot.tabs.count,
+            paneCount: snapshot.panes.count,
+            activePane: snapshot.activePane
+        )
         label.stringValue = text
         label.setAccessibilityValue(text)
     }
