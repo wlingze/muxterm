@@ -23,6 +23,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::core::model::backend::Backend;
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{
@@ -183,6 +184,41 @@ impl TmuxBackend {
         }
     }
 
+    /// 事件队列过长时丢弃最旧的 PaneOutput，避免挂起轮询时涨到数 GB。
+    fn trim_event_queue(&mut self) {
+        while self.events.len() > MAX_STATE_EVENTS {
+            let Some(idx) = self
+                .events
+                .iter()
+                .position(|e| matches!(e, StateChange::PaneOutput { .. }))
+            else {
+                break;
+            };
+            self.events.remove(idx);
+        }
+        // 若仍超限（几乎全是结构事件），硬裁最旧
+        while self.events.len() > MAX_STATE_EVENTS {
+            self.events.pop_front();
+        }
+    }
+
+    /// abort/卡死路径：按 `-L socket` 强制 kill-server，回收残留 tmux。
+    fn force_cleanup_tmux_server(&self) {
+        let mut socket: Option<&str> = None;
+        let mut it = self.config.extra_args.iter();
+        while let Some(a) = it.next() {
+            if a == "-L" {
+                socket = it.next().map(String::as_str);
+                break;
+            }
+        }
+        if let Some(s) = socket {
+            let _ = std::process::Command::new(self.config.tmux_bin.as_deref().unwrap_or("tmux"))
+                .args(["-L", s, "kill-server"])
+                .output();
+        }
+    }
+
     /// 从内部 state 同步更新 active 标记。
     fn sync_active_marks(&mut self) {
         if let Some(sid) = self.active_session {
@@ -200,14 +236,16 @@ impl TmuxBackend {
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Output { pane, content, .. } => {
-                self.outputs
-                    .entry(pane)
-                    .or_default()
-                    .extend_from_slice(&content);
+                append_capped(
+                    self.outputs.entry(pane).or_default(),
+                    &content,
+                    MAX_PANE_OUTPUT_BYTES,
+                );
                 self.events.push_back(StateChange::PaneOutput {
                     pane,
                     data: content,
                 });
+                self.trim_event_queue();
             }
             Message::LayoutChange {
                 window,
@@ -1171,6 +1209,7 @@ impl Backend for TmuxBackend {
         // 关闭命令通道，sender task 收到 None 后会 kill tmux 子进程并退出
         self.cmd_tx.take();
         // 等待 sender task 结束；pty 写卡死时 abort，避免测试/CI 无限挂起
+        let mut aborted = false;
         if let Some(mut h) = self._sender_handle.take() {
             tokio::select! {
                 r = &mut h => {
@@ -1179,9 +1218,18 @@ impl Backend for TmuxBackend {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
                     tracing::warn!(target = "muxterm::tmux_backend", "shutdown: sender task 超时，abort");
                     h.abort();
+                    aborted = true;
                 }
             }
         }
+        if aborted {
+            // abort 可能跳过 sender 末尾的 kill()；强制回收 server / 子进程
+            self.force_cleanup_tmux_server();
+        }
+        // 丢掉事件接收端，让读线程/读 task 在 send 失败后退出，停止无界积压
+        self.event_rx.take();
+        self.outputs.clear();
+        self.events.clear();
         self.status = BackendStatus::Exited;
         self.events
             .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
@@ -1523,5 +1571,59 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(outcome, TaskOutcome::Rejected { .. }));
+    }
+
+    /// 回归：大量 %output 不得把 outputs/events 撑到数 GB（曾观测挂起时 ~20GB）。
+    #[test]
+    fn pane_output_accumulation_is_capped() {
+        use crate::core::buffer_cap::MAX_PANE_OUTPUT_BYTES;
+        use crate::core::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let pane = PaneId(42);
+        let chunk = vec![b'x'; 64 * 1024];
+        // 灌入远超上限的数据
+        for _ in 0..80 {
+            b.handle_message(Message::Output {
+                pane,
+                content: chunk.clone(),
+                raw_content: String::new(),
+            });
+        }
+        let stored = b.outputs.get(&pane).map(|v| v.len()).unwrap_or(0);
+        assert!(
+            stored <= MAX_PANE_OUTPUT_BYTES,
+            "outputs 应有界，实际 {stored} > {MAX_PANE_OUTPUT_BYTES}"
+        );
+        assert!(
+            b.events.len() <= crate::core::buffer_cap::MAX_STATE_EVENTS,
+            "events 应有界，实际 {}",
+            b.events.len()
+        );
+    }
+
+    /// 回归：shutdown 必须在有限时间内返回（含清理 outputs）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shutdown_completes_and_clears_buffers() {
+        let socket = unique_socket();
+        let run = async {
+            let mut b = TmuxBackend::new(Some(&socket));
+            if b.connect().await.is_err() {
+                return;
+            }
+            // 人为塞一点输出缓冲
+            b.handle_message(crate::core::tmux::protocol::Message::Output {
+                pane: PaneId(1),
+                content: vec![b'z'; 1024],
+                raw_content: String::new(),
+            });
+            assert!(!b.outputs.is_empty());
+            let _ = b.shutdown().await;
+            assert!(b.outputs.is_empty(), "shutdown 后应清空 outputs");
+            assert_eq!(b.status(), BackendStatus::Exited);
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
+        cleanup(&socket);
+        assert!(timed.is_ok(), "shutdown_completes_and_clears_buffers 超时");
     }
 }

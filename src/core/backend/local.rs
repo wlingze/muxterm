@@ -11,7 +11,7 @@
 //! 设计要点：
 //! - `connect()` spawn 第一个 window 的第一个 pane（默认 shell）
 //! - pane id / window id 单调递增，LocalBackend 自行分配
-//! - pane 输出累积在 `Vec<u8>`（环形裁剪在 scrollback 层做，这里先不裁）
+//! - pane 输出累积在 `Vec<u8>`（有界裁剪，上限见 `buffer_cap::MAX_PANE_OUTPUT_BYTES`）
 //! - `execute(Task)` 直接改本地状态 + spawn/kill/resize/write，产生事件入队
 //! - 所有 pane 的后台读线程共用一个 `mpsc::Sender<PtyMsg>`（clone 后传入线程），
 //!   backend 持有唯一的 `mpsc::Receiver`，`take_events` 时 drain
@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::mpsc;
 
+use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::core::config::{expand_config_value, parse_command_argv, program_basename};
 use crate::core::model::backend::Backend;
 use crate::core::model::layout::{LayoutNode, TabLayout};
@@ -167,10 +168,23 @@ impl LocalBackend {
         }
         for (pane, data) in outputs {
             if let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) {
-                p.output.extend_from_slice(&data);
+                append_capped(&mut p.output, &data, MAX_PANE_OUTPUT_BYTES);
             }
             self.events
                 .push_back(StateChange::PaneOutput { pane, data });
+            while self.events.len() > MAX_STATE_EVENTS {
+                let Some(idx) = self
+                    .events
+                    .iter()
+                    .position(|e| matches!(e, StateChange::PaneOutput { .. }))
+                else {
+                    break;
+                };
+                self.events.remove(idx);
+            }
+            while self.events.len() > MAX_STATE_EVENTS {
+                self.events.pop_front();
+            }
         }
         for pane in exits {
             self.handle_pane_process_exit(pane);
