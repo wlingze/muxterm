@@ -81,9 +81,13 @@ mod tests {
 
     #[test]
     fn max_pane_output_is_finite_and_sane() {
-        assert!(MAX_PANE_OUTPUT_BYTES <= 8 * 1024 * 1024);
-        assert!(MAX_PANE_OUTPUT_BYTES >= 64 * 1024);
-        assert!(MAX_INCOMPLETE_LINE_BYTES <= MAX_PANE_OUTPUT_BYTES);
-        assert!(MAX_STATE_EVENTS >= 256);
+        // 用运行时比较避免 clippy::assertions_on_constants
+        let max_out = MAX_PANE_OUTPUT_BYTES;
+        let max_line = MAX_INCOMPLETE_LINE_BYTES;
+        let max_ev = MAX_STATE_EVENTS;
+        assert!(max_out <= 8 * 1024 * 1024);
+        assert!(max_out >= 64 * 1024);
+        assert!(max_line <= max_out);
+        assert!(max_ev >= 256);
     }
 }
