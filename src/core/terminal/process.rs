@@ -298,11 +298,23 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn get_process_name_self() {
         let pid = std::process::id();
         let name = get_process_name(pid);
         assert!(name.is_some());
         assert!(!name.unwrap().is_empty());
+    }
+
+    /// 非 Linux：实现约定返回 `None`（无 /proc）。
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn get_process_name_unsupported_on_non_linux() {
+        let pid = std::process::id();
+        assert!(
+            get_process_name(pid).is_none(),
+            "non-Linux 应返回 None（不读 /proc）"
+        );
     }
 
     #[test]
@@ -311,11 +323,23 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn get_process_info_self() {
         let pid = std::process::id();
         let info = get_process_info(pid).expect("self info");
         assert_eq!(info.pid, pid);
         assert!(!info.name.is_empty());
+    }
+
+    /// 非 Linux：实现约定返回 `None`（无 /proc）。
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn get_process_info_unsupported_on_non_linux() {
+        let pid = std::process::id();
+        assert!(
+            get_process_info(pid).is_none(),
+            "non-Linux 应返回 None（不读 /proc）"
+        );
     }
 
     #[test]
