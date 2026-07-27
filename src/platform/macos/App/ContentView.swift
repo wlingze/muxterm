@@ -1,6 +1,6 @@
 import AppKit
 
-/// 根内容视图：TabBar（上或下）+ PaneLayout + StatusBar。
+/// 根内容视图：扁平 TabBar + 主导终端区 + 一行 StatusBar（无嵌套卡片）。
 final class ContentView: NSView {
     let tabBar = TabBarView()
     let paneLayout: PaneLayoutView
@@ -14,6 +14,7 @@ final class ContentView: NSView {
         self.paneLayout = PaneLayoutView(terminalManager: terminalManager)
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
 
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         paneLayout.translatesAutoresizingMaskIntoConstraints = false

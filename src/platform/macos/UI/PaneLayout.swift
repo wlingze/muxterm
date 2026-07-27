@@ -1,4 +1,5 @@
 import AppKit
+import MuxtermChrome
 
 /// 递归二叉树 Pane 分割布局（对应 CLayoutNode）。
 ///
@@ -153,8 +154,10 @@ final class PaneHostView: NSView {
 
     func setActive(_ active: Bool) {
         isPaneActive = active
-        layer?.borderWidth = active ? 2 : 0
+        // 1px 指示，避免厚边框「卡片」感
+        layer?.borderWidth = active ? FlatChrome.activePaneBorderWidth : 0
         layer?.borderColor = active ? NSColor.controlAccentColor.cgColor : nil
+        layer?.cornerRadius = 0
         publishGeometry()
     }
 
@@ -177,7 +180,7 @@ final class PaneHostView: NSView {
     }
 }
 
-/// 二分容器：纯 Auto Layout，按 ratio 分配 first/second。
+/// 二分容器：纯 Auto Layout，按 ratio 分配 first/second；1px 分隔线。
 private final class SplitContainerView: NSView {
     init(horizontal: Bool, ratio: CGFloat, first: NSView, second: NSView) {
         super.init(frame: .zero)
@@ -197,7 +200,7 @@ private final class SplitContainerView: NSView {
         addSubview(divider)
         addSubview(second)
 
-        let divThickness: CGFloat = 4
+        let divThickness = FlatChrome.splitDividerThickness
         let multiplier = r / (1.0 - r)
 
         if horizontal {

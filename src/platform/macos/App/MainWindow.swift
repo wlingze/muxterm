@@ -1,4 +1,5 @@
 import AppKit
+import MuxtermChrome
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
 final class MainWindowController: NSWindowController, NSWindowDelegate {
@@ -262,92 +263,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 返回 true 表示已消费事件。
     private func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let ch = event.charactersIgnoringModifiers?.lowercased()
-
-        // Cmd+T 新建 tab
-        if flags.contains(.command), !flags.contains(.shift), ch == "t" {
+        guard let raw = event.charactersIgnoringModifiers, let key = raw.first.map(String.init) else {
+            return false
+        }
+        let chord = KeyChord(
+            command: flags.contains(.command),
+            shift: flags.contains(.shift),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            key: key
+        )
+        guard let action = KeyBindings.action(for: chord) else { return false }
+        switch action {
+        case .newTab:
             newTab()
-            return true
-        }
-        // Cmd+D 水平分割 / Cmd+Shift+D 竖直分割
-        if flags.contains(.command), !flags.contains(.shift), ch == "d" {
+        case .splitHorizontal:
             splitActivePane(horizontal: true)
-            return true
-        }
-        if flags.contains(.command), flags.contains(.shift), ch == "d" {
+        case .splitVertical:
             splitActivePane(horizontal: false)
-            return true
-        }
-        // Cmd+W 关闭 window
-        if flags.contains(.command), !flags.contains(.shift), ch == "w" {
+        case .closeWindow:
             closeActiveWindow()
-            return true
-        }
-        // Cmd+1..9 切 tab（必须在 SwiftTerm interpretKeyEvents 之前吞掉，否则 noop:）
-        if flags.contains(.command),
-           !flags.contains(.option),
-           let raw = event.charactersIgnoringModifiers?.first,
-           let n = Int(String(raw)),
-           (1...9).contains(n)
-        {
-            switchToTabIndex(n)
-            return true
-        }
-
-        // Cmd+[ / Cmd+]：上一个 / 下一个 pane（焦点跟随）
-        if flags.contains(.command), !flags.contains(.shift), ch == "[" {
-            prevPane()
-            return true
-        }
-        if flags.contains(.command), !flags.contains(.shift), ch == "]" {
-            nextPane()
-            return true
-        }
-
-        // Alt+T 新建 tab（兼容 TUI）
-        if flags.contains(.option), !flags.contains(.command), ch == "t" {
-            newTab()
-            return true
-        }
-        // Alt+S / Alt+V：与 TUI 一致
-        if flags.contains(.option), !flags.contains(.command), ch == "s" {
-            splitActivePane(horizontal: true)
-            return true
-        }
-        if flags.contains(.option), !flags.contains(.command), ch == "v" {
-            splitActivePane(horizontal: false)
-            return true
-        }
-        // Alt+[ / Alt+]：切 pane
-        if flags.contains(.option), !flags.contains(.command), ch == "[" {
-            prevPane()
-            return true
-        }
-        if flags.contains(.option), !flags.contains(.command), ch == "]" {
-            nextPane()
-            return true
-        }
-        // Alt+1..9 切 tab
-        if flags.contains(.option),
-           !flags.contains(.command),
-           let raw = event.charactersIgnoringModifiers?.first,
-           let n = Int(String(raw)),
-           (1...9).contains(n)
-        {
-            switchToTabIndex(n)
-            return true
-        }
-        // Ctrl+Q 退出应用
-        if flags.contains(.control), ch == "q" {
-            NSApp.terminate(nil)
-            return true
-        }
-        // Ctrl+D：关当前 pane（末 pane 关 tab / 末 tab 关 window）
-        if flags.contains(.control), !flags.contains(.command), ch == "d" {
+        case .closePane:
             closeActivePane()
-            return true
+        case .switchTab(let n):
+            switchToTabIndex(n)
+        case .nextPane:
+            nextPane()
+        case .prevPane:
+            prevPane()
+        case .quit:
+            NSApp.terminate(nil)
         }
-        return false
+        return true
     }
 
     func windowWillClose(_ notification: Notification) {

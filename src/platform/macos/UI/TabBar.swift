@@ -1,4 +1,5 @@
 import AppKit
+import MuxtermChrome
 
 /// Tab 栏位置（UserDefaults: `muxterm.tabBarPosition`）。
 enum TabBarPosition: String {
@@ -15,7 +16,7 @@ enum TabBarPosition: String {
     }
 }
 
-/// iTerm 风格 Tab 栏：多 tab 时等分铺满，最右固定小「+」；单 tab 时整体隐藏。
+/// iTerm Minimal 风格扁平 Tab 栏：多 tab 等分铺满，最右固定「+」；单 tab 隐藏。
 final class TabBarView: NSView {
     var onSelectTab: ((UInt32) -> Void)?
     var onNewTab: (() -> Void)?
@@ -32,7 +33,8 @@ final class TabBarView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        // 与终端同色底，避免独立面板感
+        layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         setAccessibilityIdentifier("muxterm.tabBar")
         setAccessibilityElement(true)
         setAccessibilityRole(.tabGroup)
@@ -51,7 +53,8 @@ final class TabBarView: NSView {
         newTabButton.title = "+"
         newTabButton.bezelStyle = .shadowlessSquare
         newTabButton.isBordered = false
-        newTabButton.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        newTabButton.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        newTabButton.contentTintColor = NSColor.secondaryLabelColor
         newTabButton.target = self
         newTabButton.action = #selector(newTabClicked)
         newTabButton.toolTip = "新建 Tab（Cmd+T）"
@@ -72,7 +75,7 @@ final class TabBarView: NSView {
             newTabButton.trailingAnchor.constraint(equalTo: trailingAnchor),
             newTabButton.topAnchor.constraint(equalTo: topAnchor),
             newTabButton.bottomAnchor.constraint(equalTo: bottomAnchor),
-            newTabButton.widthAnchor.constraint(equalToConstant: 36),
+            newTabButton.widthAnchor.constraint(equalToConstant: FlatChrome.newTabButtonWidth),
         ])
 
         applyVisibility(false, notify: false)
@@ -85,7 +88,6 @@ final class TabBarView: NSView {
 
     /// `edgeAtBottom == true` 时画底部分隔线（tab 在上）；否则画顶部分隔线（tab 在下）。
     func setEdgeLineAtBottom(_ atBottom: Bool) {
-        // layout() 里根据 flag 画线
         edgeAtBottom = atBottom
         needsLayout = true
     }
@@ -108,7 +110,7 @@ final class TabBarView: NSView {
         guard show else { return }
 
         for (index, tab) in tabs.enumerated() {
-            let title = tab.name.isEmpty ? "Tab \(index + 1)" : tab.name
+            let title = tab.name.isEmpty ? "\(index + 1)" : "\(index + 1):\(tab.name)"
             let cell = TabCellButton(title: title, tabId: tab.id, active: tab.isActive)
             cell.target = self
             cell.action = #selector(tabClicked(_:))
@@ -120,7 +122,7 @@ final class TabBarView: NSView {
 
     private func applyVisibility(_ visible: Bool, notify: Bool) {
         isHidden = !visible
-        heightConstraint.constant = visible ? 28 : 0
+        heightConstraint.constant = visible ? FlatChrome.tabBarHeight : 0
         if isBarVisible != visible {
             isBarVisible = visible
             if notify {
@@ -138,7 +140,7 @@ final class TabBarView: NSView {
     }
 }
 
-/// 等分 tab 单元：铺满、底边高亮当前项。
+/// 扁平 tab 单元：透明底、无圆角/阴影；活跃项字重 + 底边指示线。
 private final class TabCellButton: NSButton {
     init(title: String, tabId: UInt32, active: Bool) {
         super.init(frame: .zero)
@@ -147,23 +149,22 @@ private final class TabCellButton: NSButton {
         bezelStyle = .shadowlessSquare
         isBordered = false
         setButtonType(.momentaryChange)
-        font = NSFont.systemFont(ofSize: 12, weight: active ? .semibold : .regular)
+        font = NSFont.systemFont(ofSize: 11, weight: active ? .semibold : .regular)
         contentTintColor = active ? NSColor.labelColor : NSColor.secondaryLabelColor
         wantsLayer = true
-        layer?.backgroundColor = active
-            ? NSColor.controlBackgroundColor.cgColor
-            : NSColor.windowBackgroundColor.cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.cornerRadius = 0
 
         if active {
             let underline = CALayer()
             underline.backgroundColor = NSColor.controlAccentColor.cgColor
-            underline.frame = CGRect(x: 0, y: 0, width: 2000, height: 2)
+            underline.frame = CGRect(x: 0, y: 0, width: 2000, height: FlatChrome.activeTabUnderlineHeight)
             underline.name = "activeUnderline"
             layer?.addSublayer(underline)
         }
 
         let sep = CALayer()
-        sep.backgroundColor = NSColor.separatorColor.cgColor
+        sep.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
         sep.name = "sep"
         layer?.addSublayer(sep)
     }
@@ -176,10 +177,20 @@ private final class TabCellButton: NSButton {
     override func layout() {
         super.layout()
         if let underline = layer?.sublayers?.first(where: { $0.name == "activeUnderline" }) {
-            underline.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 2)
+            underline.frame = CGRect(
+                x: 0,
+                y: 0,
+                width: bounds.width,
+                height: FlatChrome.activeTabUnderlineHeight
+            )
         }
         if let sep = layer?.sublayers?.first(where: { $0.name == "sep" }) {
-            sep.frame = CGRect(x: bounds.width - 1, y: 4, width: 1, height: max(0, bounds.height - 8))
+            sep.frame = CGRect(
+                x: bounds.width - 1,
+                y: 4,
+                width: 1,
+                height: max(0, bounds.height - 8)
+            )
         }
     }
 }
