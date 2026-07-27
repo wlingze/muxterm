@@ -33,6 +33,8 @@ let package = Package(
             name: "MuxtermChromeTests",
             dependencies: ["MuxtermChrome"],
             path: "ChromeTests"
+            // XCTest only（Swift Testing 在此包无 @Test，勿依赖其 0-test runner 输出）。
+            // 跑：swift test --disable-swift-testing --filter FlatChromeTests
         ),
         // C ABI 头文件模块（对应 CoreBridge/muxterm.h）
         .target(
