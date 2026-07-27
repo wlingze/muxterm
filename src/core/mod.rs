@@ -7,6 +7,7 @@
 //! - `config` / `types` / `ssh`：配置、共享类型、远程 SSH
 
 pub mod backend;
+pub mod buffer_cap;
 pub mod config;
 #[cfg(feature = "ffi")]
 pub mod ffi;

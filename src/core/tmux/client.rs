@@ -19,6 +19,7 @@
 use super::command::TmuxCommand;
 use super::protocol::{parse_line, Message, NotificationKind};
 use super::pty::{self, split_master, PtyChild, PtyReader, PtyWriter};
+use crate::core::buffer_cap::{trim_incomplete_line, MAX_INCOMPLETE_LINE_BYTES};
 use anyhow::{anyhow, Context, Result};
 use std::process::Stdio;
 use tokio::process::{Child, ChildStdout};
@@ -328,6 +329,7 @@ async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
             continue;
         }
         buf.extend_from_slice(&chunk);
+        trim_incomplete_line(&mut buf, MAX_INCOMPLETE_LINE_BYTES);
         // 按真换行切行
         loop {
             let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
@@ -373,6 +375,7 @@ async fn read_stream_loop(stdout: ChildStdout, tx: mpsc::Sender<TmuxEvent>) {
             Ok(0) => break,
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
+                trim_incomplete_line(&mut buf, MAX_INCOMPLETE_LINE_BYTES);
                 loop {
                     let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
                         break;

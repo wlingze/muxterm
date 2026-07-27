@@ -105,15 +105,21 @@ impl PtyWriter {
         }
     }
 
-    /// 异步写：把数据克隆后丢到阻塞线程池写。
+    /// 异步写：把数据克隆后丢到阻塞线程池写；超时返回 TimedOut，便于 shutdown 推进。
     pub async fn write_all(&self, data: Vec<u8>) -> std::io::Result<()> {
         let inner = self.inner.clone();
-        // 用长超时的 spawn_blocking，避免 tokio 限流阻塞
-        let h = tokio::task::spawn_blocking(move || {
+        let write_fut = tokio::task::spawn_blocking(move || {
             let mut w = inner.lock().unwrap();
             w.write_all(&data)
         });
-        h.await.map_err(std::io::Error::other)?
+        match tokio::time::timeout(std::time::Duration::from_secs(2), write_fut).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(join_err)) => Err(std::io::Error::other(join_err)),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "pty write timeout (2s)",
+            )),
+        }
     }
 }
 
@@ -437,5 +443,36 @@ mod tests {
             out.contains("only-reader"),
             "reader_only 应能读到输出, 实际: {out:?}"
         );
+    }
+
+    /// 阻塞写必须在时限内失败返回，避免 sender/shutdown 永久挂起。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_all_times_out_when_blocked() {
+        struct BlockingWrite;
+        impl Write for BlockingWrite {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                // 略长于 write_all 的 2s 超时；勿睡太久以免拖慢整 suite 收尾
+                std::thread::sleep(Duration::from_millis(3500));
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let writer = PtyWriter::new(Box::new(BlockingWrite));
+        let start = std::time::Instant::now();
+        let err = writer
+            .write_all(b"block".to_vec())
+            .await
+            .expect_err("阻塞写应超时");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "超时应约 2s，实际 {:?}",
+            start.elapsed()
+        );
+        // 等阻塞线程结束，避免 runtime drop 时再挂数秒
+        tokio::time::sleep(Duration::from_millis(2000)).await;
     }
 }
