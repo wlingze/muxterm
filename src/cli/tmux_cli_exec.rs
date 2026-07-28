@@ -52,9 +52,19 @@ fn execute_tmux_cli(cmd: &TmuxCliCommand) -> anyhow::Result<serde_json::Value> {
     }
 }
 
-/// 构造本地 tmux RuntimeMode + TerminalModel 并连接。
-fn connect_local_tmux(socket: Option<&str>, session_name: &str) -> anyhow::Result<TerminalModel> {
-    // 检查 session 是否已存在：用 has-session 精确匹配
+/// 构造本地 tmux backend + TerminalModel，在 runtime 内执行 fn 并返回结果。
+///
+/// **关键**：runtime 必须在整个命令生命周期内存活，否则 sender task 被杀，
+/// 命令无法到达 tmux。
+fn with_local_tmux<F>(
+    socket: Option<&str>,
+    session_name: &str,
+    _deadline: Instant,
+    f: F,
+) -> anyhow::Result<serde_json::Value>
+where
+    F: FnOnce(&mut TerminalModel) -> anyhow::Result<serde_json::Value>,
+{
     let session_exists = tmux_session_exists(socket, session_name);
     let backend: Box<dyn crate::core::model::Backend> = if session_exists {
         Box::new(TmuxBackend::new_with_attach(socket, session_name))
@@ -69,7 +79,16 @@ fn connect_local_tmux(socket: Option<&str>, session_name: &str) -> anyhow::Resul
     rt.block_on(model.connect()).context("tmux connect 失败")?;
     let _ = model.poll_events();
     wait_ready(&mut model, READY_POLL_DURATION);
-    Ok(model)
+
+    // 在 runtime 存活期间执行命令
+    let result = f(&mut model)?;
+
+    // 命令执行后，短暂等待事件回流（最多 500ms）
+    wait_events_brief(&mut model);
+
+    // 优雅关闭
+    let _ = rt.block_on(model.shutdown());
+    Ok(result)
 }
 
 /// 轮询事件直到有 tab 或超时。
@@ -80,6 +99,44 @@ fn wait_ready(model: &mut TerminalModel, duration: Duration) {
         if model.state().active_tab().is_some() {
             break;
         }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// 等待 pane 数量变化（确认 tmux 已处理 split/new-window 等命令）。
+///
+/// 在 deadline 内持续 refresh+poll，当 pane 数 ≥ `min_panes` 时立即返回。
+/// 如果超时仍未达到，也返回（调用方通过后续查询断言结果）。
+fn wait_for_pane_count(model: &mut TerminalModel, min_panes: usize, deadline: Instant) {
+    while Instant::now() < deadline {
+        let _ = model.refresh();
+        if let Some(tab) = model.state().active_tab() {
+            if model.state().panes(&tab.id).len() >= min_panes {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// 等待 tab 数量变化。
+fn wait_for_tab_count(model: &mut TerminalModel, min_tabs: usize, deadline: Instant) {
+    while Instant::now() < deadline {
+        let _ = model.refresh();
+        if let Some(win) = model.state().active_window() {
+            if model.state().tabs(&win.id).len() >= min_tabs {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// 等待事件回流（给 tmux 一小段处理时间，最多 500ms）。
+fn wait_events_brief(model: &mut TerminalModel) {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        let _ = model.refresh();
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -113,11 +170,12 @@ fn tmux_session_exists(socket: Option<&str>, name: &str) -> bool {
 
 fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_json::Value> {
     match cmd {
-        SessionCmd::List { target } => {
+        SessionCmd::List { target, socket } => {
             check_timeout(deadline)?;
             match target {
                 Target::Local => {
-                    let sessions = crate::core::discovery::list_local_tmux_sessions(None);
+                    let sessions =
+                        crate::core::discovery::list_local_tmux_sessions(socket.as_deref());
                     let arr: Vec<serde_json::Value> = sessions
                         .iter()
                         .map(|s| {
@@ -138,15 +196,14 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
         }
         SessionCmd::New {
             target,
+            socket,
             name,
             cwd: _,
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => {
-                    let mut model = connect_local_tmux(None, name)?;
-                    // 新建后等 tab 就绪
-                    wait_ready(&mut model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |model| {
+                    wait_ready(model, READY_POLL_DURATION);
                     let session_name = model
                         .state()
                         .active_session()
@@ -156,18 +213,21 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                         "session": session_name,
                         "created": true,
                     }))
-                }
+                }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote session new 尚未实现（alias={alias}）"
                 )),
             }
         }
-        SessionCmd::Attach { target, name } => {
+        SessionCmd::Attach {
+            target,
+            socket,
+            name,
+        } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => {
-                    let mut model = connect_local_tmux(None, name)?;
-                    wait_ready(&mut model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |model| {
+                    wait_ready(model, READY_POLL_DURATION);
                     let tabs = model
                         .state()
                         .active_window()
@@ -178,7 +238,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                         "attached": true,
                         "tabs": tabs,
                     }))
-                }
+                }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote session attach 尚未实现（alias={alias}）"
                 )),
@@ -189,12 +249,15 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
 
 fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Value> {
     match cmd {
-        TabCmd::List { target, session } => {
+        TabCmd::List {
+            target,
+            socket,
+            session,
+        } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => {
-                    let mut model = connect_local_tmux(None, session)?;
-                    wait_ready(&mut model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
+                    wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
                     let tabs: Vec<serde_json::Value> = model
                         .state()
@@ -215,7 +278,7 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
                         })
                         .unwrap_or_default();
                     Ok(serde_json::json!({"tabs": tabs}))
-                }
+                }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote tab list 尚未实现（alias={alias}）"
                 )),
@@ -223,14 +286,14 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
         }
         TabCmd::New {
             target,
+            socket,
             session,
             name,
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => {
-                    let mut model = connect_local_tmux(None, session)?;
-                    wait_ready(&mut model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
+                    wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
                     let wid = model
                         .state()
@@ -243,20 +306,25 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
                         command: None,
                         workdir: None,
                     })?;
-                    let _ = model.poll_events();
-                    wait_ready(&mut model, Duration::from_millis(500));
+                    // 等待 tab 数增加（确认 tmux 已处理 new-window，最多 2s）
+                    wait_for_tab_count(model, 2, Instant::now() + Duration::from_secs(2));
                     let _ = model.refresh();
-                    // 找最新 tab（clone data 避免引用问题）
                     let new_tab = {
                         let state = model.state();
                         let win_id = state.active_window().map(|w| w.id);
                         win_id
                             .and_then(|wid| state.tabs(&wid).last().copied())
-                            .map(|t| serde_json::json!({"id": t.id.0, "name": t.name, "active": t.active}))
+                            .map(|t| {
+                                serde_json::json!({
+                                    "id": t.id.0,
+                                    "name": t.name,
+                                    "active": t.active
+                                })
+                            })
                             .unwrap_or(serde_json::json!({}))
                     };
                     Ok(new_tab)
-                }
+                }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote tab new 尚未实现（alias={alias}）"
                 )),
@@ -269,14 +337,14 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
     match cmd {
         PaneCmd::List {
             target,
+            socket,
             session,
             tab,
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => {
-                    let mut model = connect_local_tmux(None, session)?;
-                    wait_ready(&mut model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
+                    wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
                     let tab_id = tab
                         .map(TabId)
@@ -300,7 +368,7 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                         Vec::new()
                     };
                     Ok(serde_json::json!({"panes": panes}))
-                }
+                }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote pane list 尚未实现（alias={alias}）"
                 )),
@@ -308,15 +376,15 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
         }
         PaneCmd::Split {
             target,
+            socket,
             session,
             pane,
             direction,
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => {
-                    let mut model = connect_local_tmux(None, session)?;
-                    wait_ready(&mut model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
+                    wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
                     let dir = match direction {
                         SplitDirection::Horizontal => {
@@ -324,16 +392,16 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                         }
                         SplitDirection::Vertical => crate::core::model::layout::SplitDir::Vertical,
                     };
+                    // 使用 CLI 传入的 pane ID（muxterm pane id = tmux %N 的 N）
                     model.execute(Task::SplitPane {
                         target: Some(PaneId(*pane)),
                         dir,
                         command: None,
                         workdir: None,
                     })?;
-                    let _ = model.poll_events();
-                    wait_ready(&mut model, Duration::from_millis(500));
+                    // 等待 pane 数增加（确认 tmux 已处理 split-window，最多 3s）
+                    wait_for_pane_count(model, 2, Instant::now() + Duration::from_secs(3));
                     let _ = model.refresh();
-                    // 找最新 pane（clone data 避免引用问题）
                     let new_pane = {
                         let state = model.state();
                         let tab_id = state.active_tab().map(|t| t.id);
@@ -350,7 +418,7 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                             .unwrap_or(serde_json::json!({}))
                     };
                     Ok(new_pane)
-                }
+                }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote pane split 尚未实现（alias={alias}）"
                 )),
@@ -358,25 +426,32 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
         }
         PaneCmd::SendKeys {
             target,
+            socket,
             session,
             pane,
             text,
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => {
-                    let mut model = connect_local_tmux(None, session)?;
-                    wait_ready(&mut model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
+                    wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
                     use crate::core::terminal::input::KeyEvent;
-                    let keys: Vec<KeyEvent> = text.chars().map(KeyEvent::Char).collect();
+                    // 发送文本 + Enter（让 shell 执行命令）
+                    let mut keys: Vec<KeyEvent> = text.chars().map(KeyEvent::Char).collect();
+                    keys.push(KeyEvent::Enter);
                     model.execute(Task::SendKeys {
                         target: PaneId(*pane),
                         keys,
                     })?;
-                    let _ = model.poll_events();
+                    // 等待 shell 执行并产生输出（最多 2s）
+                    let send_deadline = Instant::now() + Duration::from_secs(2);
+                    while Instant::now() < send_deadline {
+                        let _ = model.refresh();
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                     Ok(serde_json::json!({"sent": true, "pane": pane}))
-                }
+                }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote send-keys 尚未实现（alias={alias}）"
                 )),
@@ -384,28 +459,28 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
         }
         PaneCmd::Capture {
             target,
-            session,
+            socket,
+            session: _,
             pane,
             lines,
         } => {
             check_timeout(deadline)?;
             match target {
                 Target::Local => {
-                    let mut model = connect_local_tmux(None, session)?;
-                    wait_ready(&mut model, READY_POLL_DURATION);
-                    let _ = model.refresh();
-                    let output = model.state().pane_output(&PaneId(*pane)).unwrap_or(&[]);
-                    let text = String::from_utf8_lossy(output);
-                    let captured = if let Some(n) = lines {
-                        let all_lines: Vec<&str> = text.lines().collect();
-                        let start = all_lines.len().saturating_sub(*n);
-                        all_lines[start..].join("\n")
-                    } else {
-                        text.to_string()
-                    };
+                    // 使用 raw tmux capture-pane 获取可靠输出（不依赖 -CC %output 事件）
+                    let mut tmux_cmd = std::process::Command::new("tmux");
+                    if let Some(s) = socket {
+                        tmux_cmd.args(["-L", s]);
+                    }
+                    tmux_cmd.args(["capture-pane", "-t", &format!("%{}", pane), "-p"]);
+                    if let Some(n) = lines {
+                        tmux_cmd.args(["-S", &format!("-{}", n)]);
+                    }
+                    let output = tmux_cmd.output().context("tmux capture-pane 失败")?;
+                    let text = String::from_utf8_lossy(&output.stdout).to_string();
                     Ok(serde_json::json!({
                         "pane": pane,
-                        "output": captured,
+                        "output": text,
                     }))
                 }
                 Target::Ssh { alias } => Err(anyhow::anyhow!(

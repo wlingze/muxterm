@@ -197,27 +197,48 @@ pub fn send_keys(pane: PaneId, keys: &[Key]) -> TmuxCommand {
         // 空发送：仍发一条 send-keys -t（tmux 会忽略）
         return build(&[pane_target(pane).to_string()], "send-keys");
     }
-    let any_literal = keys.iter().any(|k| matches!(k, Key::Literal(_)));
-    if any_literal {
-        // 逐字模式：把所有 key 拼成一段文本
-        let mut text = String::new();
-        for k in keys {
-            match k {
-                Key::Literal(s) => text.push_str(s),
-                Key::Special(name) => text.push_str(name),
-            }
-        }
+    // 分离 Literal 和 Special 键：Literal 用 -l 逐字发送，Special 用 tmux 键名发送。
+    // 混合时先发 -l 文本，再发特殊键（两条命令用换行连接）。
+    let literals: Vec<&str> = keys
+        .iter()
+        .filter_map(|k| match k {
+            Key::Literal(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    let specials: Vec<&Key> = keys
+        .iter()
+        .filter(|k| matches!(k, Key::Special(_)))
+        .collect();
+
+    if !literals.is_empty() && specials.is_empty() {
+        // 纯逐字模式
+        let text: String = literals.concat();
         build(
             &[pane_target(pane), "-l".to_string(), quote_c_string(&text)],
             "send-keys",
         )
-    } else {
+    } else if literals.is_empty() && !specials.is_empty() {
         // 纯特殊键模式
         let mut args = vec![pane_target(pane)];
-        for k in keys {
+        for k in &specials {
             args.push(render_key(k));
         }
         build(&args, "send-keys")
+    } else {
+        // 混合模式：先 -l 文本，再特殊键（用换行连接两条命令）
+        let text: String = literals.concat();
+        let lit_cmd = build(
+            &[pane_target(pane), "-l".to_string(), quote_c_string(&text)],
+            "send-keys",
+        );
+        let mut special_args = vec![pane_target(pane)];
+        for k in &specials {
+            special_args.push(render_key(k));
+        }
+        let special_cmd = build(&special_args, "send-keys");
+        // 两条命令用换行连接（TmuxCommand::to_line 已自带末尾换行）
+        TmuxCommand::from_raw(format!("{}\n{}", lit_cmd.as_str(), special_cmd.as_str()))
     }
 }
 
@@ -409,9 +430,17 @@ mod tests {
 
     #[test]
     fn send_keys_mixed_literal_and_special() {
-        // 混合：走逐字模式，特殊键按字面拼入文本
+        // 混合：Literal 用 -l，Special 用 tmux 键名，两条命令换行分隔
         let c = send_keys(PaneId(1), &[Key::literal("ls "), Key::enter()]);
-        assert_eq!(c.as_str(), r#"send-keys -t %1 -l "ls Enter""#);
+        let line = c.to_line();
+        // 应含 -l "ls "（逐字文本）
+        assert!(line.contains(r#"-l "ls ""#), "应含逐字文本: {line}");
+        // 应含 Enter 作为特殊键（单独命令）
+        assert!(line.contains("Enter"), "应含 Enter 特殊键: {line}");
+        // 不应把 Enter 拼进 -l 文本
+        assert!(!line.contains("ls Enter"), "Enter 不应被拼进 -l: {line}");
+        // 应有换行分隔两条命令
+        assert!(line.contains("\n"), "应有换行分隔: {line}");
     }
 
     #[test]
