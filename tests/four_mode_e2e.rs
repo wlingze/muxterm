@@ -385,12 +385,13 @@ fn ssh_shell_cli() {
         // 验证 SSH 连接：通过 alias 执行 echo
         let mut cmd = Command::new("ssh");
         ssh_env.env_for_command(&mut cmd);
-        cmd.args([&ssh_env.alias, "echo", "ssh-shell-ok"]);
+        cmd.args([&ssh_env.alias, "echo ssh-shell-ok"]);
         let output = cmd.output().expect("SSH 连接失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stdout.contains("ssh-shell-ok"),
-            "SSH shell 应能执行 echo: {stdout}"
+            "SSH shell 应能执行 echo: stdout={stdout} stderr={stderr}"
         );
     });
 }
