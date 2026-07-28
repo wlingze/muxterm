@@ -53,10 +53,9 @@ fn execute_tmux_v1(cmd: &TmuxV1Command) -> anyhow::Result<serde_json::Value> {
 
 /// 构造本地 tmux RuntimeMode + TerminalModel 并连接。
 fn connect_local_tmux(socket: Option<&str>, session_name: &str) -> anyhow::Result<TerminalModel> {
-    // 检查 session 是否已存在
-    let existing = find_existing_tmux_session(socket);
-    let backend: Box<dyn crate::core::model::Backend> = if existing.as_deref() == Some(session_name)
-    {
+    // 检查 session 是否已存在：用 has-session 精确匹配
+    let session_exists = tmux_session_exists(socket, session_name);
+    let backend: Box<dyn crate::core::model::Backend> = if session_exists {
         Box::new(TmuxBackend::new_with_attach(socket, session_name))
     } else {
         Box::new(TmuxBackend::new_with_session_name(socket, session_name))
@@ -97,6 +96,18 @@ fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
         .lines()
         .next()
         .map(|s| s.trim().to_string())
+}
+
+/// 检查指定名称的 tmux session 是否存在。
+fn tmux_session_exists(socket: Option<&str>, name: &str) -> bool {
+    let mut cmd = std::process::Command::new("tmux");
+    if let Some(s) = socket {
+        cmd.args(["-L", s]);
+    }
+    cmd.args(["has-session", "-t", name]);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_json::Value> {
