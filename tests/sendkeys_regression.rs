@@ -117,9 +117,9 @@ fn send_keys_pure_special_produces_single_special_command() {
 /// 通过 TmuxBackend 发送 echo MARKER + Enter，用原生 tmux capture-pane 验证。
 #[test]
 fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
-    use muxterm::core::backend::TmuxBackend;
     use muxterm::core::model::task::Task;
     use muxterm::core::model::TerminalModel;
+    use muxterm::core::runtime::TmuxBackend;
     use muxterm::core::terminal::input::KeyEvent;
     use muxterm::core::types::PaneId;
 

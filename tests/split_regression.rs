@@ -283,7 +283,9 @@ fn split_real_binary_increases_pane_count() {
 /// ── Layer 2: CLI parse → Task::SplitPane 映射 ──
 #[test]
 fn split_cli_parse_produces_correct_command() {
-    use muxterm::platform::cli::tmux_cli::{parse_tmux_cli, PaneCmd, SplitDirection, Target, TmuxCliCommand};
+    use muxterm::platform::cli::tmux_cli::{
+        parse_tmux_cli, PaneCmd, SplitDirection, Target, TmuxCliCommand,
+    };
 
     let args: Vec<String> = [
         "pane",
@@ -399,10 +401,10 @@ fn paneid_to_tabid_to_windowid_mapping_matches_tmux_window_id() {
 /// 这个测试保持 model 存活足够长，所以命令能到达 tmux。
 #[test]
 fn backend_split_actually_creates_pane_in_tmux() {
-    use muxterm::core::backend::TmuxBackend;
     use muxterm::core::model::layout::SplitDir;
     use muxterm::core::model::task::Task;
     use muxterm::core::model::TerminalModel;
+    use muxterm::core::runtime::TmuxBackend;
 
     let socket = unique_socket("layer4");
     let session = format!("backend-split-{}", rand_suffix());
