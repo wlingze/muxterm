@@ -224,6 +224,7 @@ fn ssh_shell_cli() {
             .env("MUXTERM_TEST_SSH_PORT", ssh_env.port.to_string())
             .env("MUXTERM_TEST_SSH_USER", &ssh_env.user)
             .env("MUXTERM_TEST_SSH_KEY", &ssh_env.client_key_path)
+            .env("MUXTERM_SSH_CONFIG_PATH", &ssh_env.ssh_config_path)
             .output()
             .expect("muxterm tmux session list 失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
