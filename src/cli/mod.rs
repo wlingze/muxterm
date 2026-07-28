@@ -9,6 +9,9 @@ pub mod daemon;
 pub mod format;
 pub mod ipc;
 pub mod session;
+pub mod tmux_v1;
+pub mod tmux_v1_exec;
 
 pub use command::{parse_cli_command, CliCommand};
 pub use format::{format_output, OutputFormat, StateSnapshot};
+pub use tmux_v1::{parse_tmux_v1, CliEnvelope, TmuxV1Command};

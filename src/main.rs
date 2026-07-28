@@ -124,6 +124,11 @@ fn main() -> anyhow::Result<()> {
 ///    `new-session` 时如果 daemon 不存在则 fork 启动。
 /// 2. **临时模式**（无 `-s`）：创建临时 LocalBackend，执行后关闭（状态不保留）。
 fn cli_mode(args: &[String]) -> anyhow::Result<()> {
+    // tmux v1 结构化命令：muxterm tmux session/tab/pane ...
+    if args.first().map(|s| s.as_str()) == Some("tmux") {
+        return cli::tmux_v1_exec::run_tmux_v1(&args[1..]);
+    }
+
     use cli::{parse_cli_command, OutputFormat};
 
     let (cmd, format_str) = parse_cli_command(args)?;
