@@ -1,0 +1,96 @@
+name: Four-Mode E2E (Linux)
+
+on:
+  push:
+    branches: [main, "feat/**", "design/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── 普通 Linux 测试（不需要 sshd）──
+  standard:
+    name: standard (local CLI/TUI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-features --no-install-recommends \
+            build-essential pkg-config tmux
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: four-mode-standard-${{ hashFiles('**/Cargo.toml') }}
+      - name: Build (ffi)
+        run: cargo build --no-default-features --features ffi
+      - name: Local-shell CLI E2E
+        run: timeout 30 cargo test --no-default-features --features ffi --test four_mode_e2e -- local_shell_cli --nocapture
+      - name: Local-tmux CLI E2E
+        run: timeout 30 cargo test --no-default-features --features ffi --test four_mode_e2e -- local_tmux_cli --nocapture
+      - name: Build (tui)
+        run: cargo build --no-default-features --features tui
+      - name: Local-shell TUI E2E
+        run: timeout 60 cargo test --no-default-features --features tui --test four_mode_e2e -- local_shell_tui --nocapture --ignored
+      - name: Local-tmux TUI E2E
+        run: timeout 60 cargo test --no-default-features --features tui --test four_mode_e2e -- local_tmux_tui --nocapture --ignored
+
+  # ── SSH E2E 测试（临时 loopback sshd）──
+  ssh-integration:
+    name: SSH E2E (${{ matrix.case }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - ssh-shell-cli
+          - ssh-tmux-cli
+          - ssh-shell-tui
+          - ssh-tmux-tui
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config tmux \
+            openssh-server openssh-client
+      - name: Ensure sshd binary
+        run: |
+          which sshd || sudo apt-get install -y openssh-server
+          sshd -V 2>&1 || true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: four-mode-ssh-${{ hashFiles('**/Cargo.toml') }}
+      - name: Build (tui)
+        run: cargo build --no-default-features --features tui
+      - name: Run ${{ matrix.case }}
+        run: |
+          timeout 120 cargo test --no-default-features --features tui --test four_mode_e2e -- ${{ matrix.case }} --nocapture --ignored
+        env:
+          RUST_BACKTRACE: 1
+      - name: Upload sshd logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sshd-logs-${{ matrix.case }}
+          path: |
+            /tmp/muxterm-ssh-test-*/sshd.log
+            /tmp/muxterm-ssh-test-*/home/.ssh/
+          retention-days: 7
