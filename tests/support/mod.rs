@@ -4,6 +4,7 @@
 //! - sshd_test_support: SSH loopback sshd 连接参数
 //! - tmux_test_support: 独立 tmux socket/session 管理 + 硬超时
 
+#[allow(dead_code)]
 pub mod behavior_driver;
 pub mod sshd_test_support;
 pub mod tmux_test_support;

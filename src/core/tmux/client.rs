@@ -55,6 +55,8 @@ pub struct TmuxClientConfig {
     pub rows: Option<u32>,
     /// 事件通道容量。
     pub event_buffer: usize,
+    /// SSH alias：非空时通过 SSH transport 在远端启动 tmux -CC。
+    pub ssh_alias: Option<String>,
 }
 
 /// tmux `-CC` 客户端工厂。
@@ -96,7 +98,92 @@ impl TmuxClient {
     pub async fn spawn(
         config: TmuxClientConfig,
     ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
-        Self::spawn_pty(config).await
+        if config.ssh_alias.is_some() {
+            Self::spawn_ssh(config).await
+        } else {
+            Self::spawn_pty(config).await
+        }
+    }
+
+    /// SSH 模式：通过 SSH transport 在远端启动 `tmux -CC`。
+    ///
+    /// 用 `SshProcessTransport` spawn `ssh <alias> -- tmux -CC ...`，
+    /// 取其 reader/writer 替代本地 pty。读循环与本地 pty 模式相同。
+    pub async fn spawn_ssh(
+        config: TmuxClientConfig,
+    ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
+        use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
+        use crate::core::transport::Transport;
+
+        let alias = config
+            .ssh_alias
+            .as_ref()
+            .ok_or_else(|| anyhow!("spawn_ssh 需要 ssh_alias"))?;
+
+        // 构造远端 tmux 命令字符串
+        let argv = build_argv(&config);
+        let remote_tmux = argv.join(" ");
+        let (program, ssh_args) = build_ssh_command(alias, &remote_tmux, None);
+        let arg_refs: Vec<&str> = ssh_args.iter().map(|s| s.as_str()).collect();
+
+        let pty_size = crate::core::transport::PtySize::new(
+            config.cols.unwrap_or(80) as u16,
+            config.rows.unwrap_or(24) as u16,
+        );
+
+        tracing::info!(
+            target = "muxterm::client",
+            alias = %alias,
+            remote = %remote_tmux,
+            "spawn tmux -CC via SSH"
+        );
+
+        let mut transport = SshProcessTransport::new();
+        transport
+            .spawn_exec(&program, &arg_refs, pty_size)
+            .context("SSH transport spawn 失败")?;
+
+        // 先取 writer（take_pty_writer 消费 master 的 writer 端）
+        let writer = transport
+            .take_pty_writer()
+            .context("SSH transport take_writer 失败")?;
+        let writer = PtyWriter::new(writer);
+
+        // 再把 transport 移入读线程（read 是非阻塞，用后台线程桥接到 mpsc）
+        let (read_tx, read_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>(4096);
+        let mut read_transport = transport;
+        std::thread::Builder::new()
+            .name("muxterm-ssh-read".into())
+            .spawn(move || loop {
+                match read_transport.read() {
+                    Ok(Some(data)) => {
+                        if read_tx.blocking_send(Ok(data)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            })
+            .expect("spawn ssh read thread");
+
+        // 用 PtyReader::from_channel 包装 read_rx，复用 read_pty_loop
+        let reader = PtyReader::from_channel(read_rx);
+        let (tx, rx) = mpsc::channel(config.event_buffer.max(32));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            read_pty_loop(reader, tx_clone).await;
+        });
+
+        let handle = TmuxClientHandle {
+            pty_writer: Some(writer),
+            stdin: None,
+            child: None,
+            pty_child: None,
+        };
+        Ok((handle, rx))
     }
 
     /// pty 模式 spawn（推荐，tmux -CC 需要 tty）。

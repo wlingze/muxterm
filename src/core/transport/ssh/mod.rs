@@ -111,6 +111,8 @@ pub struct SshProcessTransport {
     reader: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     stderr_buf: Arc<Mutex<Vec<u8>>>,
     pid: Option<u32>,
+    /// 可选 ssh_config 路径（-F），测试/CI 用显式生成的 config。
+    ssh_config_path: Option<String>,
     /// 记录最后一次 spawn 的参数（测试验证用）。
     last_program: Option<String>,
     last_args: Option<Vec<String>>,
@@ -122,6 +124,12 @@ impl SshProcessTransport {
         Self::with_launcher(Box::new(SystemLauncher))
     }
 
+    /// 设置 ssh_config 路径（-F <path>）。
+    pub fn with_ssh_config(mut self, path: impl Into<String>) -> Self {
+        self.ssh_config_path = Some(path.into());
+        self
+    }
+
     /// 创建使用自定义 launcher 的 SSH Transport（测试用）。
     pub fn with_launcher(launcher: Box<dyn ProcessLauncher>) -> Self {
         Self {
@@ -131,6 +139,7 @@ impl SshProcessTransport {
             reader: None,
             stderr_buf: Arc::new(Mutex::new(Vec::new())),
             pid: None,
+            ssh_config_path: None,
             last_program: None,
             last_args: None,
         }
@@ -165,25 +174,48 @@ impl Default for SshProcessTransport {
 ///
 /// `-T` 禁用 ssh 的伪终端分配（muxterm 自己通过 PTY 转发）；
 /// 实际上 muxterm 在本地 pty 中 spawn ssh 进程，ssh 负责远端 pty 转发。
-pub fn build_ssh_command(alias: &str, remote_command: &str) -> (String, Vec<String>) {
+pub fn build_ssh_command(
+    alias: &str,
+    remote_command: &str,
+    ssh_config_path: Option<&str>,
+) -> (String, Vec<String>) {
     let program = "ssh".to_string();
-    // -T: 禁用 ssh 自身 pty 分配（我们的 pty 包裹 ssh 进程）
-    // -o BatchMode=yes: 禁用密码交互（非交互模式下避免挂起）
+    let mut args = Vec::new();
+    // -F <config>：显式指定 ssh config（测试/CI 用生成 config，不读 ~/.ssh/config）
+    if let Some(path) = ssh_config_path {
+        args.push("-F".to_string());
+        args.push(path.to_string());
+    }
+    // -T: 禁用 ssh 自身 pty 分配
+    args.push("-T".to_string());
+    // -o BatchMode=yes: 禁用密码交互
+    args.push("-o".to_string());
+    args.push("BatchMode=yes".to_string());
     // -o ConnectTimeout=10: 连接超时
-    let mut args = vec![
-        "-T".to_string(),
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        "-o".to_string(),
-        "ConnectTimeout=10".to_string(),
-        alias.to_string(),
-    ];
+    args.push("-o".to_string());
+    args.push("ConnectTimeout=10".to_string());
+    args.push(alias.to_string());
     if !remote_command.is_empty() {
         args.push("--".to_string());
         // remote_command 作为单个参数传递（由远端 shell 解释）
         args.push(remote_command.to_string());
     }
     (program, args)
+}
+
+impl SshProcessTransport {
+    /// 取出 writer（供外部读取写端，如 TmuxClient SSH 模式）。
+    ///
+    /// 调用后 transport 不再可写，但仍可读。
+    pub fn take_pty_writer(&mut self) -> Result<Box<dyn std::io::Write + Send>> {
+        let master = self
+            .master
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("SSH transport 未启动"))?;
+        master
+            .take_writer()
+            .map_err(|e| anyhow::anyhow!("SSH transport take_writer 失败: {e}"))
+    }
 }
 
 impl Transport for SshProcessTransport {
@@ -211,7 +243,14 @@ impl Transport for SshProcessTransport {
         match rx.try_recv() {
             Ok(data) => Ok(Some(data)),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                // Channel closed = reader thread exited = EOF
+                self.reader = None;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "SSH transport EOF",
+                ))
+            }
         }
     }
 
@@ -308,7 +347,7 @@ mod tests {
     /// 验证 `build_ssh_command` 生成正确的 ssh 命令行。
     #[test]
     fn build_ssh_command_basic() {
-        let (program, args) = build_ssh_command("myserver", "tmux -CC new-session");
+        let (program, args) = build_ssh_command("myserver", "tmux -CC new-session", None);
         assert_eq!(program, "ssh");
         assert!(args.contains(&"-T".to_string()));
         assert!(args.contains(&"myserver".to_string()));
@@ -319,7 +358,7 @@ mod tests {
     /// 验证 ssh 命令包含 BatchMode 和 ConnectTimeout（非交互安全）。
     #[test]
     fn build_ssh_command_batch_mode_and_timeout() {
-        let (_, args) = build_ssh_command("host", "echo hi");
+        let (_, args) = build_ssh_command("host", "echo hi", None);
         assert!(
             args.contains(&"BatchMode=yes".to_string()),
             "应包含 BatchMode=yes 以避免密码交互挂起"
@@ -333,7 +372,7 @@ mod tests {
     /// 验证空 remote_command 不加 `--`。
     #[test]
     fn build_ssh_command_empty_remote() {
-        let (_, args) = build_ssh_command("host", "");
+        let (_, args) = build_ssh_command("host", "", None);
         assert!(args.contains(&"host".to_string()));
         assert!(!args.contains(&"--".to_string()));
     }
@@ -341,8 +380,27 @@ mod tests {
     /// 验证 alias 不会被 shell 解释（应原样传递）。
     #[test]
     fn build_ssh_command_alias_preserved() {
-        let (_, args) = build_ssh_command("prod-jump-host", "uptime");
+        let (_, args) = build_ssh_command("prod-jump-host", "uptime", None);
         assert!(args.contains(&"prod-jump-host".to_string()));
+    }
+
+    /// 验证 ssh_config_path 时命令包含 -F <path>。
+    #[test]
+    fn build_ssh_command_with_config_includes_f_flag() {
+        let (_, args) = build_ssh_command("myserver", "echo hi", Some("/tmp/test-ssh-config"));
+        let f_idx = args.iter().position(|a| a == "-F").expect("命令应包含 -F");
+        assert_eq!(
+            args.get(f_idx + 1),
+            Some(&"/tmp/test-ssh-config".to_string()),
+            "-F 后应跟 config 路径"
+        );
+    }
+
+    /// 验证无 config 时不包含 -F。
+    #[test]
+    fn build_ssh_command_without_config_no_f_flag() {
+        let (_, args) = build_ssh_command("host", "echo hi", None);
+        assert!(!args.contains(&"-F".to_string()), "无 config 不应有 -F");
     }
 
     /// Fake launcher 用于注入测试，不依赖外部进程。
@@ -452,7 +510,7 @@ mod tests {
         };
         let mut transport = SshProcessTransport::with_launcher(Box::new(rl));
 
-        let (program, args) = build_ssh_command("test-alias", "echo hello");
+        let (program, args) = build_ssh_command("test-alias", "echo hello", None);
         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         transport
             .spawn_exec(&program, &args_ref, super::super::PtySize::new(80, 24))

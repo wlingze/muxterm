@@ -187,8 +187,15 @@ fn local_tmux_cli() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SSH shell CLI — 走 muxterm SSH transport（--remote <alias>）
+// SSH shell CLI — 通过 muxterm 产品路径（--target <alias>）走 SSH transport
 // ═══════════════════════════════════════════════════════════════
+//
+// 测试 muxterm CLI 的 SSH session list 路径：
+//   muxterm tmux session list --target <alias>
+// 这会通过 SshProcessTransport 在远端执行 tmux 命令，
+// 而不是直接用 raw ssh + tmux。
+//
+// 前置条件：共享 loopback sshd（由 CI 或本地环境提供）。
 
 #[test]
 #[ignore]
@@ -200,11 +207,38 @@ fn ssh_shell_cli() {
         let bin = muxterm_bin();
         assert!(bin.exists());
 
-        // 验证 SSH 连接可用
-        let (ok, stdout, stderr) = ssh_env.remote_exec("echo ssh-shell-ok");
+        // 先用 raw ssh 验证 sshd 可用（测试基础设施，不是产品路径）
+        let (ok, stdout, stderr) = ssh_env.remote_exec("echo sshd-ok");
         assert!(
-            ok && stdout.contains("ssh-shell-ok"),
-            "SSH shell 应能执行 echo: ok={ok} stdout={stdout} stderr={stderr}"
+            ok && stdout.contains("sshd-ok"),
+            "sshd 连通性验证失败: ok={ok} stdout={stdout} stderr={stderr}"
+        );
+
+        // 产品路径：muxterm tmux session list --target <alias>
+        // 这应该通过 SSH transport 在远端列出 tmux sessions
+        let alias = ssh_env.alias.clone();
+        let output = Command::new(&bin)
+            .args(["tmux", "session", "list", "--target", &alias])
+            .env("HOME", &ssh_env.home_dir)
+            .env("MUXTERM_TEST_SSH_HOST", &ssh_env.host)
+            .env("MUXTERM_TEST_SSH_PORT", ssh_env.port.to_string())
+            .env("MUXTERM_TEST_SSH_USER", &ssh_env.user)
+            .env("MUXTERM_TEST_SSH_KEY", &ssh_env.client_key_path)
+            .output()
+            .expect("muxterm tmux session list 失败");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // 必须返回 JSON envelope（ok 或 error），不能是空输出或 panic
+        assert!(
+            stdout.contains("ok") || stderr.contains("SSH") || stderr.contains("remote"),
+            "muxterm SSH session list 应返回 JSON envelope: stdout={stdout} stderr={stderr}"
+        );
+
+        // SSH session list 应返回 ok:true（即使远端没有 tmux session，也应返回空列表）
+        assert!(
+            stdout.contains(r#""ok":true"#),
+            "SSH session list 应成功: stdout={stdout} stderr={stderr}"
         );
     });
 }

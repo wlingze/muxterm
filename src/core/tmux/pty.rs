@@ -58,6 +58,11 @@ pub struct PtyReader {
 }
 
 impl PtyReader {
+    /// 由已有的 mpsc Receiver 构造（用于 SSH transport 桥接）。
+    pub fn from_channel(rx: mpsc::Receiver<std::io::Result<Vec<u8>>>) -> Self {
+        Self { rx }
+    }
+
     /// 由 master 的 reader 构造，立即启动后台阻塞读线程。
     pub fn new(mut reader: Box<dyn Read + Send>) -> Self {
         let (tx, rx) = mpsc::channel::<std::io::Result<Vec<u8>>>(4096);
