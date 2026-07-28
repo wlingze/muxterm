@@ -190,9 +190,10 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                     Ok(serde_json::json!({"sessions": arr}))
                 }
                 Target::Ssh { alias } => {
+                    let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
                     let sessions = crate::core::discovery::list_ssh_tmux_sessions(
                         alias,
-                        None,
+                        ssh_config.as_deref(),
                         std::time::Duration::from_secs(10),
                     )?;
                     let arr: Vec<serde_json::Value> = sessions
