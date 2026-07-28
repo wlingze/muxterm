@@ -3,14 +3,24 @@
 //! 设计基线：`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md` §4。
 //!
 //! 扩展规则：新增 Runtime 不修改 Transport、不修改 Core Protocol。
-//! - [`ShellRuntime`]：muxterm 自管 pane 分割 + shell 进程生命周期
-//! - [`TmuxRuntime`]：tmux 控制模式；内部含 adapter（协议解析 + 命令映射 + ID 映射）
+//! - `shell`：ShellRuntime（自管 pane 分割 + shell 进程生命周期）
+//! - `tmux`：TmuxRuntime（tmux 控制模式；内部含 adapter）
+//! - `daemon`：DaemonBackend（IPC client，连本地 daemon）
 //!
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
-//! tmux 的 %pane/@window 等真实 ID 只能在 TmuxRuntime adapter 内部。
+//! tmux 的 %pane/@window 等真实 ID 只能在 runtime/tmux 内部。
 
-// Facade：从 core::model re-export Backend trait（迁移期不破坏现有引用）。
+pub mod daemon;
+pub mod shell;
+pub mod tmux;
+
+// Re-export Backend trait from model
 pub use crate::core::model::backend::Backend;
+
+// Re-export backend implementations
+pub use daemon::DaemonBackend;
+pub use shell::LocalBackend;
+pub use tmux::backend::TmuxBackend;
 
 /// 运行时模式：四种组合的入口。
 ///
@@ -87,31 +97,26 @@ impl RuntimeMode {
 /// 构造逻辑。后续阶段逐步替换为 ShellRuntime / TmuxRuntime + Transport。
 pub fn create_backend(mode: &RuntimeMode) -> Box<dyn Backend> {
     match mode {
-        RuntimeMode::LocalShell { .. } => {
-            Box::new(crate::core::backend::LocalBackend::new("$SHELL", ""))
-        }
+        RuntimeMode::LocalShell { .. } => Box::new(LocalBackend::new("$SHELL", "")),
         RuntimeMode::LocalTmux {
             socket,
             session_name,
         } => {
             if let Some(name) = session_name {
-                Box::new(crate::core::backend::TmuxBackend::new_with_session_name(
-                    socket.as_deref(),
-                    name,
-                ))
+                Box::new(TmuxBackend::new_with_session_name(socket.as_deref(), name))
             } else {
-                Box::new(crate::core::backend::TmuxBackend::new(socket.as_deref()))
+                Box::new(TmuxBackend::new(socket.as_deref()))
             }
         }
         RuntimeMode::SshShell { .. } => {
             // v1: SSH shell 尚未完全接入，fallback 到 LocalBackend
             // TODO(phase 4): SshProcessTransport + ShellRuntime
-            Box::new(crate::core::backend::LocalBackend::new("$SHELL", ""))
+            Box::new(LocalBackend::new("$SHELL", ""))
         }
         RuntimeMode::SshTmux { .. } => {
             // v1: SSH tmux 尚未完全接入
             // TODO(phase 4): SshProcessTransport + TmuxRuntime
-            Box::new(crate::core::backend::LocalBackend::new("$SHELL", ""))
+            Box::new(LocalBackend::new("$SHELL", ""))
         }
     }
 }

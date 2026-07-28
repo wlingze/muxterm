@@ -6,11 +6,11 @@
 
 #![cfg(feature = "tui")]
 
-use muxterm::core::backend::TmuxBackend;
 use muxterm::core::model::layout::SplitDir;
 use muxterm::core::model::state::{BackendStatus, State};
 use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
+use muxterm::core::runtime::TmuxBackend;
 use muxterm::core::types::{PaneId, TabId, WindowId};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -1952,7 +1952,7 @@ fn bug5_cli_send_keys_via_tmux_socket() {
 
 #[test]
 fn bug5_edge_no_socket_uses_local_backend() {
-    use muxterm::core::backend::LocalBackend;
+    use muxterm::core::runtime::LocalBackend;
 
     let backend = LocalBackend::new("sleep 60", "/");
     let mut model = TerminalModel::new(Box::new(backend));

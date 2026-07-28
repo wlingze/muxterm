@@ -17,8 +17,8 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
-use crate::core::backend::LocalBackend;
 use crate::core::model::TerminalModel;
+use crate::core::runtime::shell::LocalBackend;
 use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::format_output;
 use crate::platform::cli::ipc::{Request, Response};
@@ -54,10 +54,10 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
             .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
         let backend = if existing.as_deref() == Some(&name) {
             // session 已存在 → attach
-            crate::core::backend::TmuxBackend::new_with_attach(Some(ts), &name)
+            crate::core::runtime::tmux::TmuxBackend::new_with_attach(Some(ts), &name)
         } else {
             // session 不存在 → new-session -s <name>
-            crate::core::backend::TmuxBackend::new_with_session_name(Some(ts), &name)
+            crate::core::runtime::tmux::TmuxBackend::new_with_session_name(Some(ts), &name)
         };
         Box::new(backend)
     } else {

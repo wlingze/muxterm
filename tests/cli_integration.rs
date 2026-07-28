@@ -8,11 +8,11 @@
 
 #![cfg(feature = "tui")]
 
-use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
-use muxterm::core::backend::LocalBackend;
 use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
+use muxterm::core::runtime::LocalBackend;
 use muxterm::core::types::{PaneId, TabId, WindowId};
+use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 
 fn make_model() -> TerminalModel {
     // cat：阻塞读 stdin、回显 stdout，适合结构测试 + WriteRaw/capture
@@ -339,10 +339,11 @@ fn cli_send_keys_and_capture() {
         },
     );
     // 短轮询：pty 读线程异步送达
+    // 用 refresh() 而非 poll_events()——refresh 先从 backend 拉取 pty 输出
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut out = String::new();
     while std::time::Instant::now() < deadline {
-        let _ = model.poll_events();
+        let _ = model.refresh();
         out = format_output(
             model.state(),
             &CliCommand::CapturePane {
@@ -608,7 +609,7 @@ fn cli_parse_send_keys_with_text() {
 
 #[test]
 fn cli_tmux_backend_connect_and_list() {
-    use muxterm::core::backend::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -646,7 +647,7 @@ fn cli_tmux_backend_connect_and_list() {
 
 #[test]
 fn cli_tmux_backend_new_window() {
-    use muxterm::core::backend::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -696,7 +697,7 @@ fn cli_tmux_backend_new_window() {
 
 #[test]
 fn cli_tmux_backend_send_keys() {
-    use muxterm::core::backend::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -752,9 +753,9 @@ fn cli_tmux_backend_send_keys() {
 #[cfg(unix)]
 mod daemon_tests {
     use super::*;
+    use muxterm::core::types::PaneId;
     use muxterm::platform::cli::client::send_command;
     use muxterm::platform::cli::session::session_socket_path;
-    use muxterm::core::types::PaneId;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 

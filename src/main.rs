@@ -193,8 +193,8 @@ fn cli_mode_tmux(
     cmd: &crate::platform::cli::CliCommand,
     format: crate::platform::cli::OutputFormat,
 ) -> anyhow::Result<()> {
-    use crate::core::backend::TmuxBackend;
     use crate::core::model::TerminalModel;
+    use crate::core::runtime::tmux::TmuxBackend;
     use crate::platform::cli::format_output;
 
     // 根据命令选择连接模式
@@ -414,8 +414,8 @@ fn cli_mode_ephemeral(
     cmd: &crate::platform::cli::CliCommand,
     format: crate::platform::cli::OutputFormat,
 ) -> anyhow::Result<()> {
-    use crate::core::backend::LocalBackend;
     use crate::core::model::TerminalModel;
+    use crate::core::runtime::shell::LocalBackend;
     use crate::platform::cli::format_output;
 
     let backend = LocalBackend::new("$SHELL", "");
