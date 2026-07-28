@@ -1,4 +1,4 @@
-//! tmux 测试 harness：管理独立 tmux socket/session，硬超时，自动清理。
+//! tmux 测试支持：管理独立 tmux socket/session，硬超时，自动清理。
 
 use std::process::Command;
 use std::time::{Duration, Instant};

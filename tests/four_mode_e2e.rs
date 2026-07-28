@@ -21,7 +21,7 @@ mod support;
 
 use std::process::Command;
 use std::time::Duration;
-use support::tmux_harness::*;
+use support::tmux_test_support::*;
 
 /// 找到 muxterm binary 路径。
 fn muxterm_bin() -> std::path::PathBuf {
@@ -242,7 +242,7 @@ fn local_tmux_cli() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         // tmux 会创建新 session（-A 语义）或报错；都验证有 JSON 输出
         assert!(
-            stdout.contains("\"version\":1"),
+            stdout.contains("\"ok\":"),
             "错误也应返回 envelope: {stdout}"
         );
 
@@ -377,7 +377,7 @@ fn local_tmux_tui() {
 #[ignore]
 fn ssh_shell_cli() {
     run_with_timeout(Duration::from_secs(30), "ssh-shell-cli", || {
-        use support::sshd_harness::*;
+        use support::sshd_test_support::*;
         assert!(sshd_available(), "需要 sshd（openssh-server）");
 
         let ssh_env = SshTestEnv::setup("ssh-shell-cli").expect("SSH 测试环境创建失败");
@@ -399,7 +399,7 @@ fn ssh_shell_cli() {
 #[ignore]
 fn ssh_tmux_cli() {
     run_with_timeout(Duration::from_secs(45), "ssh-tmux-cli", || {
-        use support::sshd_harness::*;
+        use support::sshd_test_support::*;
         assert!(sshd_available(), "需要 sshd");
         assert!(tmux_available(), "需要 tmux");
 
@@ -462,7 +462,7 @@ fn ssh_tmux_cli() {
 #[ignore]
 fn ssh_shell_tui() {
     run_with_timeout(Duration::from_secs(45), "ssh-shell-tui", || {
-        use support::sshd_harness::*;
+        use support::sshd_test_support::*;
         assert!(sshd_available(), "需要 sshd");
         assert!(tmux_available(), "需要 tmux");
 
@@ -504,7 +504,7 @@ fn ssh_shell_tui() {
 #[ignore]
 fn ssh_tmux_tui() {
     run_with_timeout(Duration::from_secs(45), "ssh-tmux-tui", || {
-        use support::sshd_harness::*;
+        use support::sshd_test_support::*;
         assert!(sshd_available(), "需要 sshd");
         assert!(tmux_available(), "需要 tmux");
 
