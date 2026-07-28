@@ -36,8 +36,7 @@ fn kill_server(socket: &str) {
 
 /// ── Test 1: command builder mixed-key produces separate commands ──
 /// [Literal("echo MARKER"), Special("Enter")] 必须生成两条命令：
-/// 1. send-keys -t %N -l "echo MARKER"
-/// 2. send-keys -t %N Enter
+/// send-keys -t %N -l "echo MARKER" + send-keys -t %N Enter。
 /// 不能把 "Enter" 拼成字面文本 "echo MARKEREnter"。
 #[test]
 fn send_keys_mixed_literal_and_special_produces_separate_commands() {
@@ -121,7 +120,6 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
     use muxterm::core::model::TerminalModel;
     use muxterm::core::runtime::TmuxBackend;
     use muxterm::core::terminal::input::KeyEvent;
-    use muxterm::core::types::PaneId;
 
     let socket = unique_socket("backend-sk");
     let session = format!("sk-test-{}", rand_suffix());
@@ -170,21 +168,7 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
 
     // 发送 echo MARKER + Enter
     let marker = format!("sk_marker_{}", rand_suffix());
-    let keys = vec![
-        KeyEvent::Char('e'),
-        KeyEvent::Char('c'),
-        KeyEvent::Char('h'),
-        KeyEvent::Char('o'),
-        KeyEvent::Char(' '),
-        KeyEvent::Char('m'),
-        KeyEvent::Char('a'),
-        KeyEvent::Char('r'),
-        KeyEvent::Char('k'),
-        KeyEvent::Char('e'),
-        KeyEvent::Char('r'),
-        // This won't match the marker exactly — we need the full text
-    ];
-    // Actually, let's send the marker chars directly
+    // Send the marker chars directly
     let mut all_keys: Vec<KeyEvent> = "echo ".chars().map(KeyEvent::Char).collect();
     all_keys.extend(marker.chars().map(KeyEvent::Char));
     all_keys.push(KeyEvent::Enter);

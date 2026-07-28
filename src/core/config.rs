@@ -1108,8 +1108,10 @@ action = "new_tab"
 
     #[test]
     fn test_config_tab_bar_position_helpers() {
-        let mut ui = UiConfig::default();
-        ui.tab_bar_position = "bottom".into();
+        let mut ui = UiConfig {
+            tab_bar_position: "bottom".into(),
+            ..Default::default()
+        };
         assert!(ui.tab_bar_at_bottom());
         ui.tab_bar_position = "TOP".into();
         assert!(!ui.tab_bar_at_bottom());

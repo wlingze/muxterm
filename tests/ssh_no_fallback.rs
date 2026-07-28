@@ -7,7 +7,6 @@
 #![cfg(feature = "ffi")]
 
 use std::process::Command;
-use std::time::Duration;
 
 fn muxterm_bin() -> std::path::PathBuf {
     let target =
@@ -159,7 +158,6 @@ fn remote_target_tab_list_does_not_fallback() {
 /// 应返回 SSH 错误，不创建 local tmux session
 #[test]
 fn remote_target_split_does_not_create_local_tmux() {
-    let socket = format!("fallback-test-{}", std::process::id());
     let (stdout, _stderr, _rc) = run_mux(&[
         "tmux",
         "pane",

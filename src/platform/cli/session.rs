@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn sanitize_replaces_unsafe_chars() {
         let p = session_socket_path("my/work space");
-        let s = p.to_string_lossy();
+        let _s = p.to_string_lossy();
         // 路径分隔符会出现在目录部分，只检查文件名部分
         let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         assert!(!fname.contains('/'), "文件名不应含路径分隔符: {fname}");

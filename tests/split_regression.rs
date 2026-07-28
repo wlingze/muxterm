@@ -95,6 +95,7 @@ fn kill_server(socket: &str) {
         .output();
 }
 
+#[allow(dead_code)]
 fn kill_default_session(name: &str) {
     let _ = Command::new("tmux")
         .args(["kill-session", "-t", name])

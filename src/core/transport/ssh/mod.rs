@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn ssh_transport_uses_injected_launcher() {
         let launcher = FakeLauncher::new();
-        let launcher_box = Box::new(launcher);
+        let _launcher_box = Box::new(launcher);
         // 我们需要从 FakeLauncher 读取记录，所以用 Arc 共享
         // 但 ProcessLauncher 要求 Send + owned，这里简化：spawn 前记录地址
         let recorded_program = Arc::new(Mutex::new(None::<String>));

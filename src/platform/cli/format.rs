@@ -398,9 +398,7 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockBackend;
-    use crate::core::model::layout::{LayoutNode, SplitDir};
-    use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
-    use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+    use crate::core::types::PaneId;
     use crate::platform::cli::command::CliCommand;
 
     fn mock_with_pane() -> MockBackend {

@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn empty_state_no_active_pane() {
-        let mut m = TerminalModel::new(Box::new(MockBackend::new()));
+        let m = TerminalModel::new(Box::new(MockBackend::new()));
         assert!(m.active_pane_id().is_none());
         assert!(m.pane_ids_in_active_tab().is_empty());
         assert!(m.next_pane_id().is_none());

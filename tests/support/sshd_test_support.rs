@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! SSH 测试支持：为 SSH E2E 测试提供临时 HOME + 显式 ssh config。
 //!
 //! **关键约束**：
