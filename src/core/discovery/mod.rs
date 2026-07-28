@@ -52,7 +52,7 @@ pub fn list_local_tmux_sessions(socket: Option<&str>) -> Vec<TmuxSessionInfo> {
     cmd.args([
         "list-sessions",
         "-F",
-        "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}",
+        "#{session_name},#{session_windows},#{session_attached},#{session_created}",
     ]);
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -65,7 +65,7 @@ pub fn list_local_tmux_sessions(socket: Option<&str>) -> Vec<TmuxSessionInfo> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.split('\t').collect();
+            let parts: Vec<&str> = line.split(',').collect();
             if parts.len() != 4 {
                 return None;
             }
@@ -87,6 +87,7 @@ pub fn list_local_tmux_sessions(socket: Option<&str>) -> Vec<TmuxSessionInfo> {
 pub fn list_ssh_tmux_sessions(
     alias: &str,
     ssh_config_path: Option<&str>,
+    remote_socket: Option<&str>,
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<TmuxSessionInfo>> {
     use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
@@ -95,8 +96,12 @@ pub fn list_ssh_tmux_sessions(
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
-    let remote_cmd = "tmux list-sessions -F '#{session_name}\\t#{session_windows}\\t#{session_attached}\\t#{session_created}'";
-    let (program, args) = build_ssh_command(alias, remote_cmd, ssh_config_path);
+    let remote_tmux = if let Some(sk) = remote_socket {
+        format!("tmux -L {} list-sessions -F '#{{session_name}},#{{session_windows}},#{{session_attached}},#{{session_created}}'", sk)
+    } else {
+        "tmux list-sessions -F '#{session_name},#{session_windows},#{session_attached},#{session_created}'".to_string()
+    };
+    let (program, args) = build_ssh_command(alias, &remote_tmux, ssh_config_path);
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let mut transport = SshProcessTransport::new();
@@ -179,7 +184,7 @@ pub fn list_ssh_tmux_sessions(
     let sessions: Vec<TmuxSessionInfo> = text
         .lines()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.split('\t').collect();
+            let parts: Vec<&str> = line.split(',').collect();
             if parts.len() != 4 {
                 return None;
             }
@@ -193,6 +198,115 @@ pub fn list_ssh_tmux_sessions(
         .collect();
 
     Ok(sessions)
+}
+
+/// 通过 SSH transport 在远端执行 `tmux list-panes`，解析结果。
+///
+/// 使用 muxterm 自己的 `SshProcessTransport`，不直接调用 raw ssh。
+/// SSH 远端 pane 信息：(pane_id, active, cols, rows, title)
+pub type SshPaneInfo = (u32, bool, u16, u16, String);
+
+pub fn list_ssh_tmux_panes(
+    alias: &str,
+    ssh_config_path: Option<&str>,
+    remote_socket: Option<&str>,
+    session: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Vec<SshPaneInfo>> {
+    use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
+    use crate::core::transport::{PtySize, Transport, TransportSignal};
+    use std::sync::mpsc as std_mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    let remote_tmux = if let Some(sk) = remote_socket {
+        format!(
+            "tmux -L {} list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
+            sk, session
+        )
+    } else {
+        format!(
+            "tmux list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
+            session
+        )
+    };
+    let (program, args) = build_ssh_command(alias, &remote_tmux, ssh_config_path);
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let mut transport = SshProcessTransport::new();
+    transport
+        .spawn_exec(&program, &arg_refs, PtySize::new(80, 24))
+        .map_err(|e| anyhow::anyhow!("SSH transport spawn 失败: {e}"))?;
+
+    let transport = Arc::new(Mutex::new(transport));
+    let (tx, rx) = std_mpsc::channel::<Vec<u8>>();
+    let rt = transport.clone();
+    let read_handle = std::thread::spawn(move || loop {
+        let mut t = rt.lock().unwrap();
+        match t.read() {
+            Ok(Some(data)) => {
+                drop(t);
+                if tx.send(data).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                drop(t);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut all_output = Vec::new();
+    while Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(data) => all_output.extend_from_slice(&data),
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                let mut t = transport.lock().unwrap();
+                if let Ok(Some(code)) = t.try_wait() {
+                    if code != 0 && code != 1 {
+                        let text = String::from_utf8_lossy(&all_output);
+                        return Err(anyhow::anyhow!(
+                            "SSH remote pane list failed (exit {code}): {text}"
+                        ));
+                    }
+                    drop(t);
+                    while let Ok(d) = rx.try_recv() {
+                        all_output.extend_from_slice(&d);
+                    }
+                    break;
+                }
+            }
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    {
+        let mut t = transport.lock().unwrap();
+        let _ = t.kill(TransportSignal::Term);
+    }
+    let _ = read_handle.join();
+
+    let text = String::from_utf8_lossy(&all_output);
+    let panes: Vec<(u32, bool, u16, u16, String)> = text
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() < 5 {
+                return None;
+            }
+            let pane_id = parts[0].strip_prefix('%')?.parse().ok()?;
+            let active = parts[1] == "1";
+            let cols: u16 = parts[2].parse().unwrap_or(80);
+            let rows: u16 = parts[3].parse().unwrap_or(24);
+            let title = parts[4].to_string();
+            Some((pane_id, active, cols, rows, title))
+        })
+        .collect();
+
+    Ok(panes)
 }
 
 #[cfg(test)]
