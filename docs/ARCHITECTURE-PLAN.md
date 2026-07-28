@@ -1,11 +1,34 @@
 # Muxterm 全平台架构方案
 
-## 一、C ABI 拆分方案
+> **本文档保留历史 C ABI 拆分方案与平台前端选型记录。**
+>
+> **分层架构（权威）**：见 [`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md`](TRANSPORT-PROTOCOL-ARCHITECTURE.md) —
+> 主链 **Frontend → Core Protocol → Runtime → Transport**，Config 横切，Discovery 连接前查询。
+>
+> **目录结构（权威）**：见 [`docs/PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE-ARCHITECTURE.md) —
+> 当前与目标目录职责，`[proposed]` 标记尚未创建的目录。
+>
+> **ID 体系**：见 [`docs/ID-SYSTEM.md`](ID-SYSTEM.md) —
+> `s{name}` / `wN` / `tN` / `pN`，tmux 真实 ID 只在 TmuxRuntime adapter 内部。
+>
+> **层级映射**：见 [`docs/LAYER-MAPPING.md`](LAYER-MAPPING.md) —
+> tmux window → muxterm Tab；muxterm Window 虚拟固定 1 个。
+>
+> **交互模型**：见根目录 `ARCHITECTURE.md` —
+> 窗口/tab/pane 生命周期、嵌套分割、焦点管理、快捷键表。
+
+---
+
+## 一、C ABI 拆分方案（历史记录，已部分实现）
 
 ### 1.1 核心原则
 
 `src/core/` 编译为 `staticlib` + `cdylib`，导出 C ABI。
 `src/platform/` 各平台前端通过 FFI 调用核心。
+
+> **更新**：FFI 的权威设计见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §9（FFI ABI 草案），
+> 包含 `muxterm_open(MuxtermOpenSpec)` + mode 枚举 + Discovery + 内存所有权约束。
+> 本节保留历史方案记录，实际实现以新设计为准。
 
 ### 1.2 当前问题
 
@@ -22,6 +45,9 @@ src/core/ffi/
 ├── api.rs          # 导出函数（muxterm_connect, muxterm_execute, muxterm_poll_events）
 └── callbacks.rs    # 回调注册（on_output, on_state_change）
 ```
+
+> **更新**：目标结构见 `PROJECT-STRUCTURE.md`，`ffi/` 保留在 `core/` 下，补
+> `CSession`/`CWindow`/`CPane.title`/`MuxtermOpenSpec`/`discover_*`。
 
 ### 1.4 C ABI 接口
 
@@ -54,6 +80,10 @@ int muxterm_get_pane_output(muxterm_handle* h, uint32_t pane_id, uint8_t* buf, u
 int muxterm_send_input(muxterm_handle* h, uint32_t pane_id, const uint8_t* data, uintptr_t len);
 int muxterm_resize(muxterm_handle* h, uint32_t pane_id, uint16_t cols, uint16_t rows);
 ```
+
+> **更新**：新设计用 `muxterm_open(MuxtermOpenSpec)` 替代 `muxterm_new` 字符串参数，
+> 增加 `muxterm_discover_*` / `muxterm_get_sessions` / `muxterm_last_error` 等。
+> 详见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §9。`muxterm_new` 保留为 wrapper。
 
 ### 1.5 C 友好类型
 
@@ -103,6 +133,9 @@ struct CLayoutNode {
 };
 ```
 
+> **更新**：新设计增加 `CPane.title`、`CSession`、`CWindow`、`MuxtermOpenSpec`。
+> 内存所有权约束见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §9.5（borrowed vs owned）。
+
 ### 1.6 Cargo.toml 改动
 
 ```toml
@@ -127,6 +160,9 @@ ffi = []
 5. async fn connect/shutdown 改为同步（内部 tokio runtime block_on）
 6. 添加 `#[cfg(feature = "ffi")]` gate
 7. 测试：C 程序 link staticlib，验证基本流程
+
+> **更新**：上述步骤已部分完成（`src/core/ffi/` 已存在并工作）。
+> 后续 FFI 扩展计划见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §13（阶段 5）。
 
 ---
 
@@ -196,6 +232,9 @@ macos/
 └── Package.swift
 ```
 
+> **更新**：macOS 前端已有 `src/platform/macos/` 实现（SwiftUI + CoreBridge）。
+> FFI 桥接共用边界见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §10。
+
 ### 2.3 Windows — WinUI 3 + ConPTY + Direct2D/DirectWrite
 
 | 项 | 选择 | 理由 |
@@ -223,25 +262,7 @@ macos/
 
 **推荐**：WinUI 3 + Direct2D，参考 Windows Terminal 的渲染架构。
 
-**架构**：
-```
-windows/
-├── MuxtermApp.sln
-├── MuxtermApp/
-│   ├── App.xaml              # WinUI 3 应用入口
-│   ├── Views/
-│   │   ├── MainWindow.xaml   # 主窗口 + tab 栏
-│   │   ├── TerminalControl.cs # Direct2D 终端控件
-│   │   └── PaneLayout.cs     # 分割布局
-│   ├── Renderer/
-│   │   ├── D2DRenderer.cs   # Direct2D 渲染器
-│   │   ├── TextRenderer.cs  # DirectWrite 文字
-│   │   └── ColorScheme.cs   # 颜色方案
-│   └── Bridge/
-│       └── MuxtermFFI.cs    # Rust FFI P/Invoke
-├── muxterm.lib              # Rust staticlib
-└── muxterm.dll              # Rust cdylib
-```
+> **更新**：Windows 不在 v1 范围（见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §1.2）。
 
 ---
 
@@ -262,10 +283,7 @@ windows/
 - macOS: SwiftTerm（快速起步，MIT 兼容）
 - Windows: Direct2D + DirectWrite（参考 Windows Terminal）
 
-**性能优化（Phase 2）**：
-- Linux: 考虑自建 OpenGL renderer（如果 VTE 成为瓶颈）
-- macOS: 换 libghostty 或自建 Metal
-- Windows: 已是 Direct2D，够快
+> 详见 `docs/RENDERING-OPTIMIZATION.md`（Linux 渲染优化调研）。
 
 ---
 
@@ -277,7 +295,7 @@ windows/
 │  UI 事件      │           │  TerminalModel        │
 │  (键盘/鼠标)  │  execute  │  ┌─────────────────┐ │
 │  → CTask     │ ────────→ │  │ Backend trait    │ │
-│              │           │  │ (Tmux/Local/Herdr)│ │
+│              │           │  │ (Shell/Tmux)     │ │
 │  ┌──────────┐│           │  └─────────────────┘ │
 │  │ 轮询/回调 ││  poll     │                       │
 │  │ ← events ││ ←───────  │  StateChange 事件流   │
@@ -289,6 +307,8 @@ windows/
 │  ← layout    │           └──────────────────────┘
 └──────────────┘
 ```
+
+> **更新**：权威数据流见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §2.2（主链数据流）。
 
 ---
 
@@ -324,3 +344,6 @@ windows/
 1. HerdrBackend
 2. Agent 感知层
 3. 性能优化（自建 renderer）
+
+> **更新**：权威分阶段实施计划见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §13。
+> 上述 Phase 1/2 保留为历史记录；实际执行以新计划为准。
