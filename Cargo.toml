@@ -59,3 +59,8 @@ pretty_assertions = "1"
 name = "linux_gtk_integration"
 path = "tests/linux_gtk_integration.rs"
 required-features = ["gtk"]
+
+# 四模式 E2E 测试（local/ssh × shell/tmux × CLI/TUI）
+[[test]]
+name = "four_mode_e2e"
+path = "tests/four_mode_e2e.rs"
