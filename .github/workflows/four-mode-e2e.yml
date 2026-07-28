@@ -20,7 +20,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-features --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config tmux
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo

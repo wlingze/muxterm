@@ -45,9 +45,11 @@ impl SshTestEnv {
         fs::create_dir_all(&ssh_dir)?;
         fs::set_permissions(&ssh_dir, PermissionsExt::from_mode(0o700))?;
 
-        // 生成 host key
+        // 生成 host key（RSA + ed25519，兼容不同 sshd 版本）
         let host_key_path = tmp.join("host_key");
         run_ssh_keygen(&host_key_path)?;
+        let host_rsa_path = tmp.join("host_rsa");
+        run_ssh_keygen_rsa(&host_rsa_path)?;
 
         // 生成 client key
         let client_key_path = ssh_dir.join("id_ed25519");
@@ -73,6 +75,7 @@ impl SshTestEnv {
         let sshd_config = format!(
             r#"Port {port}
 ListenAddress 127.0.0.1
+HostKey {host_rsa}
 HostKey {host_key}
 PidFile {tmp}/sshd.pid
 AuthorizedKeysFile {authorized_keys}
@@ -84,6 +87,7 @@ StrictModes no
 Subsystem sftp internal-sftp
 "#,
             port = port,
+            host_rsa = host_rsa_path.display(),
             host_key = host_key_path.display(),
             tmp = tmp.display(),
             authorized_keys = authorized_keys_path.display(),
@@ -91,9 +95,12 @@ Subsystem sftp internal-sftp
         fs::write(&sshd_config_path, &sshd_config)?;
 
         // 启动 sshd
-        let sshd_child = Command::new("sshd")
+        // Start sshd with absolute path (required by sshd)
+        // Without -D: sshd daemonizes (forks), parent exits with rc=0
+        // With -E: logs to file
+        let sshd_bin = which_sshd();
+        let sshd_child = Command::new(sshd_bin)
             .args([
-                "-D",
                 "-f",
                 &sshd_config_path.to_string_lossy(),
                 "-E",
@@ -103,6 +110,15 @@ Subsystem sftp internal-sftp
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| anyhow::anyhow!("启动 sshd 失败（需安装 openssh-server）：{e}"))?;
+
+        // sshd daemonizes (forks); wait for port to be ready
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
 
         // 等待 sshd 就绪（最多 5 秒）
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -122,6 +138,7 @@ Subsystem sftp internal-sftp
     Port {port}
     User {user}
     IdentityFile {client_key}
+    IdentitiesOnly yes
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
     LogLevel ERROR
@@ -151,6 +168,8 @@ Subsystem sftp internal-sftp
     /// 设置 HOME 环境变量（供子进程使用）。
     pub fn env_for_command<'a>(&self, cmd: &'a mut Command) -> &'a mut Command {
         cmd.env("HOME", &self.home_dir);
+        // Explicitly pass -F config file to avoid reading system ssh_config
+        cmd.arg("-F").arg(&self.ssh_config_path);
         cmd
     }
 
@@ -193,20 +212,50 @@ fn run_ssh_keygen(key_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_ssh_keygen_rsa(key_path: &Path) -> anyhow::Result<()> {
+    let output = Command::new("ssh-keygen")
+        .args([
+            "-t",
+            "rsa",
+            "-b",
+            "2048",
+            "-f",
+            &key_path.to_string_lossy(),
+            "-N",
+            "",
+            "-q",
+        ])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ssh-keygen rsa 失败: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 fn whoami() -> String {
     std::env::var("USER").unwrap_or_else(|_| "root".to_string())
 }
 
+/// Find sshd binary path (sshd requires absolute path).
+fn which_sshd() -> String {
+    for path in [
+        "/usr/sbin/sshd",
+        "/usr/lib/openssh/sshd",
+        "/usr/local/sbin/sshd",
+    ] {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
+    "sshd".to_string()
+}
+
 /// 检查 sshd 是否可用。
 pub fn sshd_available() -> bool {
-    Command::new("sshd")
-        .arg("-V")
-        .output()
-        .map(|_| true)
-        .unwrap_or(false)
-        || Command::new("which")
-            .arg("sshd")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+    // Check that sshd binary exists and is executable
+    let sshd = which_sshd();
+    std::path::Path::new(&sshd).exists()
 }
