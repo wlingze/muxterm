@@ -5,7 +5,7 @@
 > **分层架构（权威）**：见 [`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md`](TRANSPORT-PROTOCOL-ARCHITECTURE.md) —
 > 主链 **Frontend → Core Protocol → Runtime → Transport**，Config 横切，Discovery 连接前查询。
 >
-> **目录结构（权威）**：见 [`docs/PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE-ARCHITECTURE.md) —
+> **目录结构（权威）**：见 [`docs/PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md) —
 > 当前与目标目录职责，`[proposed]` 标记尚未创建的目录。
 >
 > **ID 体系**：见 [`docs/ID-SYSTEM.md`](ID-SYSTEM.md) —
