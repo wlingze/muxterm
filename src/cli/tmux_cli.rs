@@ -73,16 +73,13 @@ pub enum PaneCmd {
 }
 
 /// 连接目标：local 或 SSH alias。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum Target {
+    #[default]
     Local,
-    Ssh { alias: String },
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        Target::Local
-    }
+    Ssh {
+        alias: String,
+    },
 }
 
 impl Target {
