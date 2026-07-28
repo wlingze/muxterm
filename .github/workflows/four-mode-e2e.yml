@@ -44,7 +44,7 @@ jobs:
       - name: Local-tmux TUI E2E
         run: timeout 60 cargo test --no-default-features --features tui --test four_mode_e2e -- local_tmux_tui --nocapture --ignored
 
-  # ── SSH E2E 测试（临时 loopback sshd）──
+  # ── SSH E2E 测试（每 matrix job 启动一次共享 sshd）──
   ssh-integration:
     name: SSH E2E (${{ matrix.case }})
     runs-on: ubuntu-latest
@@ -65,10 +65,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config tmux \
             openssh-server openssh-client
-      - name: Ensure sshd binary
+      - name: Setup shared loopback sshd
         run: |
-          which sshd || sudo apt-get install -y openssh-server
-          sshd -V 2>&1 || true
+          set -euo pipefail
+          MUXTERM_ENV_FILE="$RUNNER_TEMP/muxterm-sshd.env" bash scripts/ci/setup-sshd.sh
+          cat "$RUNNER_TEMP/muxterm-sshd.env" >> "$GITHUB_ENV"
+        timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: actions/cache@v4
@@ -90,7 +92,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sshd-logs-${{ matrix.case }}
-          path: |
-            /tmp/muxterm-ssh-test-*/sshd.log
-            /tmp/muxterm-ssh-test-*/home/.ssh/
+          path: ${{ env.MUXTERM_SSHD_TMP_DIR }}
           retention-days: 7
+      - name: Cleanup sshd
+        if: always()
+        run: |
+          if [ -n "${MUXTERM_SSHD_TMP_DIR:-}" ] && [ -f "$MUXTERM_SSHD_TMP_DIR/sshd.pid" ]; then
+            kill "$(cat "$MUXTERM_SSHD_TMP_DIR/sshd.pid")" 2>/dev/null || true
+            rm -rf "$MUXTERM_SSHD_TMP_DIR"
+          fi
