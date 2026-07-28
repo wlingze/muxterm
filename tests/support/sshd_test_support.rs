@@ -1,4 +1,4 @@
-//! SSH loopback sshd harness：为 SSH E2E 测试提供临时 sshd。
+//! SSH loopback sshd test support：为 SSH E2E 测试提供临时 sshd。
 //!
 //! **安全约束**：
 //! - 只监听 127.0.0.1 的随机端口

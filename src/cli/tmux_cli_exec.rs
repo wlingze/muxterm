@@ -1,29 +1,30 @@
-//! tmux v1 命令执行器：把 TmuxV1Command 映射到 Runtime + Backend，输出 JSON envelope。
+//! tmux CLI 命令执行器：把 TmuxCliCommand 映射到 Runtime + Backend，输出 JSON envelope。
 //!
 //! 设计基线：`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md` §8。
-//! 所有命令输出统一 envelope：`{"version":1,"ok":true|false,...}`。
+//! 所有命令输出统一 envelope：`{"ok":true|false,...}`。
 
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
-use crate::cli::tmux_v1::{
-    parse_tmux_v1, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target, TmuxV1Command,
+use crate::cli::tmux_cli::{
+    parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
+    TmuxCliCommand,
 };
 use crate::core::backend::TmuxBackend;
 use crate::core::model::task::Task;
 use crate::core::model::TerminalModel;
 use crate::core::types::{PaneId, TabId, WindowId};
 
-/// tmux v1 命令执行超时（硬限制）。
+/// tmux CLI 命令执行超时（硬限制）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// tmux 启动后等待事件就绪的轮询时间。
 const READY_POLL_DURATION: Duration = Duration::from_millis(800);
 
 /// `muxterm tmux ...` 入口：解析 + 执行 + 输出 envelope。
-pub fn run_tmux_v1(args: &[String]) -> anyhow::Result<()> {
-    let cmd = match parse_tmux_v1(args) {
+pub fn run_tmux_cli(args: &[String]) -> anyhow::Result<()> {
+    let cmd = match parse_tmux_cli(args) {
         Ok(c) => c,
         Err(e) => {
             let env = CliEnvelope::error("PARSE_ERROR", &e);
@@ -32,7 +33,7 @@ pub fn run_tmux_v1(args: &[String]) -> anyhow::Result<()> {
         }
     };
 
-    let result = execute_tmux_v1(&cmd);
+    let result = execute_tmux_cli(&cmd);
     let envelope = match result {
         Ok(data) => CliEnvelope::ok(data),
         Err(e) => CliEnvelope::error("EXEC_ERROR", &e.to_string()),
@@ -41,13 +42,13 @@ pub fn run_tmux_v1(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 执行 tmux v1 命令，返回 JSON data 或错误。
-fn execute_tmux_v1(cmd: &TmuxV1Command) -> anyhow::Result<serde_json::Value> {
+/// 执行 tmux CLI 命令，返回 JSON data 或错误。
+fn execute_tmux_cli(cmd: &TmuxCliCommand) -> anyhow::Result<serde_json::Value> {
     let deadline = Instant::now() + EXEC_TIMEOUT;
     match cmd {
-        TmuxV1Command::Session(s) => execute_session(s, deadline),
-        TmuxV1Command::Tab(t) => execute_tab(t, deadline),
-        TmuxV1Command::Pane(p) => execute_pane(p, deadline),
+        TmuxCliCommand::Session(s) => execute_session(s, deadline),
+        TmuxCliCommand::Tab(t) => execute_tab(t, deadline),
+        TmuxCliCommand::Pane(p) => execute_pane(p, deadline),
     }
 }
 

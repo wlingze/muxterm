@@ -1,16 +1,16 @@
-//! CLI tmux v1 结构化命令：`muxterm tmux session/tab/pane ...`
+//! CLI tmux 结构化命令：`muxterm tmux session/tab/pane ...`
 //!
 //! 设计基线：`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md` §8。
 //!
 //! 默认 JSON 输出，统一 envelope：
 //! ```json
-//! {"version":1,"ok":true,"data":...}
-//! {"version":1,"ok":false,"error":{"code":"...","message":"..."}}
+//! {"ok":true,"data":...}
+//! {"ok":false,"error":{"code":"...","message":"..."}}
 //! ```
 
-/// tmux v1 命令（已解析）。
+/// tmux CLI 命令（已解析）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum TmuxV1Command {
+pub enum TmuxCliCommand {
     Session(SessionCmd),
     Tab(TabCmd),
     Pane(PaneCmd),
@@ -114,10 +114,9 @@ impl SplitDirection {
     }
 }
 
-/// JSON 输出 envelope（v1 稳定）。
+/// JSON 输出 envelope。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CliEnvelope {
-    pub version: u32,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
@@ -134,7 +133,6 @@ pub struct CliErrorInfo {
 impl CliEnvelope {
     pub fn ok(data: serde_json::Value) -> Self {
         Self {
-            version: 1,
             ok: true,
             data: Some(data),
             error: None,
@@ -143,7 +141,6 @@ impl CliEnvelope {
 
     pub fn error(code: &str, message: &str) -> Self {
         Self {
-            version: 1,
             ok: false,
             data: None,
             error: Some(CliErrorInfo {
@@ -158,7 +155,7 @@ impl CliEnvelope {
 ///
 /// 输入为 `tmux` 之后的参数（不含 `tmux` 本身）。
 /// 例如 `["session", "list", "--target", "local"]`。
-pub fn parse_tmux_v1(args: &[String]) -> Result<TmuxV1Command, String> {
+pub fn parse_tmux_cli(args: &[String]) -> Result<TmuxCliCommand, String> {
     if args.is_empty() {
         return Err("tmux 子命令需要指定 session/tab/pane".into());
     }
@@ -167,9 +164,9 @@ pub fn parse_tmux_v1(args: &[String]) -> Result<TmuxV1Command, String> {
     let rest = &args[1..];
 
     match sub {
-        "session" => parse_session_cmd(rest).map(TmuxV1Command::Session),
-        "tab" => parse_tab_cmd(rest).map(TmuxV1Command::Tab),
-        "pane" => parse_pane_cmd(rest).map(TmuxV1Command::Pane),
+        "session" => parse_session_cmd(rest).map(TmuxCliCommand::Session),
+        "tab" => parse_tab_cmd(rest).map(TmuxCliCommand::Tab),
+        "pane" => parse_pane_cmd(rest).map(TmuxCliCommand::Pane),
         other => Err(format!(
             "未知 tmux 子命令: {other}（应为 session/tab/pane）"
         )),
@@ -321,10 +318,10 @@ mod tests {
 
     #[test]
     fn parse_session_list_local() {
-        let cmd = parse_tmux_v1(&args(&["session", "list", "--target", "local"])).unwrap();
+        let cmd = parse_tmux_cli(&args(&["session", "list", "--target", "local"])).unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Session(SessionCmd::List {
+            TmuxCliCommand::Session(SessionCmd::List {
                 target: Target::Local
             })
         );
@@ -332,10 +329,10 @@ mod tests {
 
     #[test]
     fn parse_session_list_default_target() {
-        let cmd = parse_tmux_v1(&args(&["session", "list"])).unwrap();
+        let cmd = parse_tmux_cli(&args(&["session", "list"])).unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Session(SessionCmd::List {
+            TmuxCliCommand::Session(SessionCmd::List {
                 target: Target::Local
             })
         );
@@ -343,10 +340,10 @@ mod tests {
 
     #[test]
     fn parse_session_list_ssh_target() {
-        let cmd = parse_tmux_v1(&args(&["session", "list", "--target", "myserver"])).unwrap();
+        let cmd = parse_tmux_cli(&args(&["session", "list", "--target", "myserver"])).unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Session(SessionCmd::List {
+            TmuxCliCommand::Session(SessionCmd::List {
                 target: Target::Ssh {
                     alias: "myserver".into()
                 }
@@ -356,13 +353,13 @@ mod tests {
 
     #[test]
     fn parse_session_new() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "session", "new", "--target", "local", "--name", "dev",
         ]))
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Session(SessionCmd::New {
+            TmuxCliCommand::Session(SessionCmd::New {
                 target: Target::Local,
                 name: "dev".into(),
                 cwd: None,
@@ -372,13 +369,13 @@ mod tests {
 
     #[test]
     fn parse_session_new_with_cwd() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "session", "new", "--target", "local", "--name", "dev", "--cwd", "/tmp",
         ]))
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Session(SessionCmd::New {
+            TmuxCliCommand::Session(SessionCmd::New {
                 target: Target::Local,
                 name: "dev".into(),
                 cwd: Some("/tmp".into()),
@@ -388,13 +385,13 @@ mod tests {
 
     #[test]
     fn parse_session_attach() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "session", "attach", "--target", "local", "--name", "test",
         ]))
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Session(SessionCmd::Attach {
+            TmuxCliCommand::Session(SessionCmd::Attach {
                 target: Target::Local,
                 name: "test".into(),
             })
@@ -403,14 +400,14 @@ mod tests {
 
     #[test]
     fn parse_session_new_missing_name() {
-        let result = parse_tmux_v1(&args(&["session", "new", "--target", "local"]));
+        let result = parse_tmux_cli(&args(&["session", "new", "--target", "local"]));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("--name"));
     }
 
     #[test]
     fn parse_session_invalid_sub() {
-        let result = parse_tmux_v1(&args(&["session", "delete"]));
+        let result = parse_tmux_cli(&args(&["session", "delete"]));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("delete"));
     }
@@ -419,7 +416,7 @@ mod tests {
 
     #[test]
     fn parse_tab_list() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "tab",
             "list",
             "--target",
@@ -430,7 +427,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Tab(TabCmd::List {
+            TmuxCliCommand::Tab(TabCmd::List {
                 target: Target::Local,
                 session: "dev".into(),
             })
@@ -439,7 +436,7 @@ mod tests {
 
     #[test]
     fn parse_tab_new() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "tab",
             "new",
             "--target",
@@ -452,7 +449,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Tab(TabCmd::New {
+            TmuxCliCommand::Tab(TabCmd::New {
                 target: Target::Local,
                 session: "dev".into(),
                 name: Some("work".into()),
@@ -462,7 +459,7 @@ mod tests {
 
     #[test]
     fn parse_tab_list_missing_session() {
-        let result = parse_tmux_v1(&args(&["tab", "list", "--target", "local"]));
+        let result = parse_tmux_cli(&args(&["tab", "list", "--target", "local"]));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("--session"));
     }
@@ -471,7 +468,7 @@ mod tests {
 
     #[test]
     fn parse_pane_list() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "pane",
             "list",
             "--target",
@@ -482,7 +479,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Pane(PaneCmd::List {
+            TmuxCliCommand::Pane(PaneCmd::List {
                 target: Target::Local,
                 session: "dev".into(),
                 tab: None,
@@ -492,7 +489,7 @@ mod tests {
 
     #[test]
     fn parse_pane_list_with_tab() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "pane",
             "list",
             "--target",
@@ -505,7 +502,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Pane(PaneCmd::List {
+            TmuxCliCommand::Pane(PaneCmd::List {
                 target: Target::Local,
                 session: "dev".into(),
                 tab: Some(2),
@@ -515,7 +512,7 @@ mod tests {
 
     #[test]
     fn parse_pane_split_horizontal() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "pane",
             "split",
             "--target",
@@ -530,7 +527,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Pane(PaneCmd::Split {
+            TmuxCliCommand::Pane(PaneCmd::Split {
                 target: Target::Local,
                 session: "dev".into(),
                 pane: 1,
@@ -541,7 +538,7 @@ mod tests {
 
     #[test]
     fn parse_pane_split_vertical_abbreviated() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "pane",
             "split",
             "--target",
@@ -556,7 +553,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Pane(PaneCmd::Split {
+            TmuxCliCommand::Pane(PaneCmd::Split {
                 target: Target::Local,
                 session: "dev".into(),
                 pane: 3,
@@ -567,7 +564,7 @@ mod tests {
 
     #[test]
     fn parse_pane_split_invalid_direction() {
-        let result = parse_tmux_v1(&args(&[
+        let result = parse_tmux_cli(&args(&[
             "pane",
             "split",
             "--target",
@@ -585,7 +582,7 @@ mod tests {
 
     #[test]
     fn parse_pane_send_keys() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "pane",
             "send-keys",
             "--target",
@@ -600,7 +597,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Pane(PaneCmd::SendKeys {
+            TmuxCliCommand::Pane(PaneCmd::SendKeys {
                 target: Target::Local,
                 session: "dev".into(),
                 pane: 1,
@@ -611,7 +608,7 @@ mod tests {
 
     #[test]
     fn parse_pane_capture() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "pane",
             "capture",
             "--target",
@@ -624,7 +621,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Pane(PaneCmd::Capture {
+            TmuxCliCommand::Pane(PaneCmd::Capture {
                 target: Target::Local,
                 session: "dev".into(),
                 pane: 1,
@@ -635,7 +632,7 @@ mod tests {
 
     #[test]
     fn parse_pane_capture_with_lines() {
-        let cmd = parse_tmux_v1(&args(&[
+        let cmd = parse_tmux_cli(&args(&[
             "pane",
             "capture",
             "--target",
@@ -650,7 +647,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cmd,
-            TmuxV1Command::Pane(PaneCmd::Capture {
+            TmuxCliCommand::Pane(PaneCmd::Capture {
                 target: Target::Local,
                 session: "dev".into(),
                 pane: 1,
@@ -661,7 +658,7 @@ mod tests {
 
     #[test]
     fn parse_pane_split_non_numeric_pane() {
-        let result = parse_tmux_v1(&args(&[
+        let result = parse_tmux_cli(&args(&[
             "pane",
             "split",
             "--target",
@@ -683,7 +680,6 @@ mod tests {
     fn envelope_ok() {
         let env = CliEnvelope::ok(serde_json::json!({"sessions": []}));
         let json = serde_json::to_string(&env).unwrap();
-        assert!(json.contains("\"version\":1"));
         assert!(json.contains("\"ok\":true"));
         assert!(json.contains("\"data\""));
     }
