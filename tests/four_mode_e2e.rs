@@ -370,7 +370,11 @@ fn local_tmux_tui() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SSH CLI tests (#[ignore]：需要 sshd)
+// SSH CLI tests (#[ignore]：需要共享 sshd 已启动)
+//
+// sshd 由外部管理（CI setup-sshd.sh 或本地环境）。
+// 测试从 MUXTERM_TEST_SSH_* 环境变量读取连接参数。
+// 测试本身绝不 spawn/kill sshd。
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
@@ -378,20 +382,19 @@ fn local_tmux_tui() {
 fn ssh_shell_cli() {
     run_with_timeout(Duration::from_secs(30), "ssh-shell-cli", || {
         use support::sshd_test_support::*;
-        assert!(sshd_available(), "需要 sshd（openssh-server）");
+        assert!(
+            sshd_available(),
+            "需要 sshd 在 127.0.0.1 监听（设 MUXTERM_TEST_SSH_PORT）"
+        );
+        assert!(ssh_client_available(), "需要 ssh 客户端");
 
         let ssh_env = SshTestEnv::setup("ssh-shell-cli").expect("SSH 测试环境创建失败");
 
         // 验证 SSH 连接：通过 alias 执行 echo
-        let mut cmd = Command::new("ssh");
-        ssh_env.env_for_command(&mut cmd);
-        cmd.args([&ssh_env.alias, "echo ssh-shell-ok"]);
-        let output = cmd.output().expect("SSH 连接失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let (ok, stdout, stderr) = ssh_env.remote_exec("echo ssh-shell-ok");
         assert!(
-            stdout.contains("ssh-shell-ok"),
-            "SSH shell 应能执行 echo: stdout={stdout} stderr={stderr}"
+            ok && stdout.contains("ssh-shell-ok"),
+            "SSH shell 应能执行 echo: ok={ok} stdout={stdout} stderr={stderr}"
         );
     });
 }
@@ -405,57 +408,30 @@ fn ssh_tmux_cli() {
         assert!(tmux_available(), "需要 tmux");
 
         let ssh_env = SshTestEnv::setup("ssh-tmux-cli").expect("SSH 测试环境创建失败");
+        let session_name = format!("rt-{}", ssh_env.remote_tmux_socket);
 
-        let remote_socket = unique_socket("ssh-tmux-remote");
-        let session_name = format!("remote-{}", remote_socket);
+        // 远端创建 tmux session（用独立 socket）
+        let (ok, _stdout, stderr) =
+            ssh_env.remote_tmux(&format!("new-session -d -s {} -x 80 -y 24", session_name));
+        assert!(ok, "远端 tmux session 创建失败: {stderr}");
 
-        // 通过 SSH 在远端创建 tmux session
-        let mut cmd = Command::new("ssh");
-        ssh_env.env_for_command(&mut cmd);
-        cmd.args([
-            &ssh_env.alias,
-            &format!(
-                "tmux -L {} new-session -d -s {} -x 80 -y 24",
-                remote_socket, session_name
-            ),
-        ]);
-        let output = cmd.output().expect("SSH tmux 创建失败");
-        assert!(
-            output.status.success(),
-            "远端 tmux session 创建失败: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        // 通过 SSH 验证 session 存在
-        let mut cmd = Command::new("ssh");
-        ssh_env.env_for_command(&mut cmd);
-        cmd.args([
-            &ssh_env.alias,
-            &format!(
-                "tmux -L {} list-sessions -F '#{{session_name}}'",
-                remote_socket
-            ),
-        ]);
-        let output = cmd.output().expect("SSH tmux list 失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        // 远端验证 session 存在
+        let (ok, stdout, stderr) = ssh_env.remote_tmux("list-sessions -F '#{session_name}'");
+        assert!(ok, "远端 tmux list-sessions 失败: {stderr}");
         assert!(
             stdout.contains(&session_name),
             "远端应列出 session: {stdout}"
         );
 
-        // 清理远端
-        let mut cmd = Command::new("ssh");
-        ssh_env.env_for_command(&mut cmd);
-        cmd.args([
-            &ssh_env.alias,
-            &format!("tmux -L {} kill-server", remote_socket),
-        ]);
-        let _ = cmd.output();
+        // 清理远端 tmux
+        let _ = ssh_env.remote_tmux("kill-server");
     });
 }
 
 // ═══════════════════════════════════════════════════════════════
 // SSH TUI tests (#[ignore])
+//
+// sshd 由外部管理；TUI 进程在独立本地 tmux socket 里启动。
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(feature = "tui")]
@@ -472,7 +448,7 @@ fn ssh_shell_tui() {
 
         let ssh_env = SshTestEnv::setup("ssh-shell-tui").expect("SSH 测试环境创建失败");
 
-        // 在独立 tmux socket 里启动 TUI，通过 SSH alias 连接
+        // 在独立本地 tmux socket 里启动 TUI
         let socket = unique_socket("ssh-shell-tui");
         let tui_session = "tui-ssh-shell";
         create_session(&socket, tui_session, 80, 24);
@@ -491,7 +467,7 @@ fn ssh_shell_tui() {
         let pane_text = capture_pane(&socket, tui_session);
         assert!(!pane_text.is_empty(), "SSH shell TUI 应渲染画面");
 
-        // 清理
+        // 清理本地 tmux
         let _ = Command::new("tmux")
             .args(["-L", &socket, "send-keys", "-t", tui_session, "C-c"])
             .output();
@@ -513,22 +489,12 @@ fn ssh_tmux_tui() {
         assert!(bin.exists());
 
         let ssh_env = SshTestEnv::setup("ssh-tmux-tui").expect("SSH 测试环境创建失败");
+        let remote_session = format!("rtui-{}", ssh_env.remote_tmux_socket);
 
         // 远端创建 tmux session
-        let remote_socket = unique_socket("ssh-tmux-tui-remote");
-        let remote_session = format!("rtui-{}", remote_socket);
-        let mut cmd = Command::new("ssh");
-        ssh_env.env_for_command(&mut cmd);
-        cmd.args([
-            &ssh_env.alias,
-            &format!(
-                "tmux -L {} new-session -d -s {} -x 80 -y 24",
-                remote_socket, remote_session
-            ),
-        ]);
-        let _ = cmd.output();
+        let _ = ssh_env.remote_tmux(&format!("new-session -d -s {} -x 80 -y 24", remote_session));
 
-        // 本地 TUI 通过 SSH alias attach 远端 tmux
+        // 本地 TUI 在独立 tmux socket 里启动，通过 SSH 连远端
         let local_socket = unique_socket("ssh-tmux-tui-local");
         let tui_session = "tui-ssh-tmux";
         create_session(&local_socket, tui_session, 80, 24);
@@ -540,7 +506,7 @@ fn ssh_tmux_tui() {
                 "HOME={} {} --tui -L {} -s {}",
                 ssh_env.home_dir.display(),
                 bin.display(),
-                remote_socket,
+                ssh_env.remote_tmux_socket,
                 remote_session
             ),
         );
@@ -549,19 +515,14 @@ fn ssh_tmux_tui() {
         let pane_text = capture_pane(&local_socket, tui_session);
         assert!(!pane_text.is_empty(), "SSH tmux TUI 应渲染画面");
 
-        // 清理
+        // 清理本地 tmux
         let _ = Command::new("tmux")
             .args(["-L", &local_socket, "send-keys", "-t", tui_session, "C-c"])
             .output();
         std::thread::sleep(Duration::from_millis(500));
         kill_server(&local_socket);
 
-        let mut cmd = Command::new("ssh");
-        ssh_env.env_for_command(&mut cmd);
-        cmd.args([
-            &ssh_env.alias,
-            &format!("tmux -L {} kill-server", remote_socket),
-        ]);
-        let _ = cmd.output();
+        // 清理远端 tmux
+        let _ = ssh_env.remote_tmux("kill-server");
     });
 }
