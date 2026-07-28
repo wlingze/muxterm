@@ -5,6 +5,9 @@
 //! 场景 3：通过 muxterm 修改布局 → 原生 tmux 验证
 
 #![cfg(feature = "tui")]
+#![allow(clippy::let_underscore_future)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
 
 use muxterm::core::model::layout::SplitDir;
 use muxterm::core::model::state::{BackendStatus, State};
@@ -48,11 +51,8 @@ where
     F: Fn(&dyn State) -> bool,
 {
     let deadline = Instant::now() + timeout;
-    let mut iterations = 0;
     loop {
         let events = model.refresh();
-        if iterations % 10 == 0 {}
-        iterations += 1;
         if cond(model.state()) {
             return true;
         }

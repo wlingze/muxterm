@@ -241,7 +241,7 @@ mod tests {
     /// 验证 RuntimeMode 四种组合可区分。
     #[test]
     fn runtime_mode_four_combinations_distinct() {
-        let modes = vec![
+        let modes = [
             RuntimeMode::LocalShell { session_name: None },
             RuntimeMode::LocalTmux {
                 socket: None,

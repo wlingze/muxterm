@@ -775,12 +775,13 @@ mod daemon_tests {
     }
 
     /// 启动 daemon（fork 后台进程），等待 socket 就绪。
+    #[allow(dead_code)]
     fn start_daemon(name: &str) -> PathBuf {
         let sock = session_socket_path(name);
         cleanup_session(name);
 
         // 用 std::process::Command 启动 daemon（fork 方式）
-        let exe = std::env::current_exe()
+        let _exe = std::env::current_exe()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|_| PathBuf::from("target/debug/muxterm"));
 
@@ -938,6 +939,7 @@ mod daemon_tests {
     }
 
     /// 安全启动 daemon：失败返回 None 而非 panic。
+    #[allow(dead_code)]
     fn start_daemon_safe(name: &str) -> Option<PathBuf> {
         let sock = session_socket_path(name);
         cleanup_session(name);
