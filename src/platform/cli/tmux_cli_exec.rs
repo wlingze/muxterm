@@ -194,6 +194,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                     let sessions = crate::core::discovery::list_ssh_tmux_sessions(
                         alias,
                         ssh_config.as_deref(),
+                        socket.as_deref(),
                         std::time::Duration::from_secs(10),
                     )?;
                     let arr: Vec<serde_json::Value> = sessions
@@ -386,9 +387,29 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                     };
                     Ok(serde_json::json!({"panes": panes}))
                 }),
-                Target::Ssh { alias } => Err(anyhow::anyhow!(
-                    "SSH remote pane list 尚未实现（alias={alias}）"
-                )),
+                Target::Ssh { alias } => {
+                    let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+                    let panes = crate::core::discovery::list_ssh_tmux_panes(
+                        alias,
+                        ssh_config.as_deref(),
+                        socket.as_deref(),
+                        session,
+                        std::time::Duration::from_secs(10),
+                    )?;
+                    let arr: Vec<serde_json::Value> = panes
+                        .iter()
+                        .map(|(id, active, cols, rows, title)| {
+                            serde_json::json!({
+                                "id": id,
+                                "active": active,
+                                "cols": cols,
+                                "rows": rows,
+                                "title": title,
+                            })
+                        })
+                        .collect();
+                    Ok(serde_json::json!({"panes": arr}))
+                }
             }
         }
         PaneCmd::Split {

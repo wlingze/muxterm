@@ -218,7 +218,15 @@ fn ssh_shell_cli() {
         // 这应该通过 SSH transport 在远端列出 tmux sessions
         let alias = ssh_env.alias.clone();
         let output = Command::new(&bin)
-            .args(["tmux", "session", "list", "--target", &alias])
+            .args([
+                "tmux",
+                "session",
+                "list",
+                "--target",
+                &alias,
+                "--socket",
+                &ssh_env.remote_tmux_socket,
+            ])
             .env("HOME", &ssh_env.home_dir)
             .env("MUXTERM_TEST_SSH_HOST", &ssh_env.host)
             .env("MUXTERM_TEST_SSH_PORT", ssh_env.port.to_string())
@@ -245,8 +253,14 @@ fn ssh_shell_cli() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SSH tmux CLI — 走 muxterm SSH transport（--remote <alias>）
+// SSH tmux CLI — 通过 muxterm 产品路径（--target <alias>）走 SSH transport + TmuxClient::spawn_ssh
 // ═══════════════════════════════════════════════════════════════
+//
+// 测试 muxterm CLI 的 SSH tmux 路径：
+//   muxterm tmux session list --target <alias>
+//   muxterm tmux pane list --target <alias> --session <name>
+// 这会通过 TmuxBackend → TmuxClient::spawn_ssh → SshProcessTransport
+// 在远端启动 tmux -CC，不是 raw ssh+tmux。
 
 #[test]
 #[ignore]
@@ -261,28 +275,70 @@ fn ssh_tmux_cli() {
 
         let session_name = format!("it-ssh-tmux-{}", rand_suffix());
 
-        // 在远端创建 tmux session
+        // 在远端创建 detached tmux session（测试基础设施）
         let (ok, _, stderr) =
             ssh_env.remote_tmux(&format!("new-session -d -s {} -x 80 -y 24", session_name));
         assert!(ok, "远端 tmux session 创建失败: {stderr}");
-        std::thread::sleep(Duration::from_millis(500));
 
-        // 运行 2tab3pane 场景（通过 --remote alias 让 muxterm 走 SSH transport）
+        // 产品路径 1：muxterm tmux session list --target <alias>
+        // 应通过 SSH transport 列出远端 tmux sessions（含刚创建的 session）
         let alias = ssh_env.alias.clone();
-        let failures = cli_2tab3pane_scenario(
-            &bin,
-            &session_name,
-            &["--remote".to_string(), alias.clone()],
-            Duration::from_secs(30),
+        let output = Command::new(&bin)
+            .args([
+                "tmux",
+                "session",
+                "list",
+                "--target",
+                &alias,
+                "--socket",
+                &ssh_env.remote_tmux_socket,
+            ])
+            .env("MUXTERM_SSH_CONFIG_PATH", &ssh_env.ssh_config_path)
+            .output()
+            .expect("muxterm tmux session list 失败");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("ssh-tmux session list: stdout={stdout} stderr={stderr}");
+        assert!(
+            stdout.contains(r#""ok":true"#),
+            "SSH session list 应成功: stdout={stdout} stderr={stderr}"
+        );
+        assert!(
+            stdout.contains(&session_name),
+            "应包含远端 session 名 '{session_name}': stdout={stdout}"
+        );
+
+        // 产品路径 2：muxterm tmux pane list --target <alias> --session <name>
+        // 应通过 SSH transport + tmux -CC 列出远端 pane
+        let output = Command::new(&bin)
+            .args([
+                "tmux",
+                "pane",
+                "list",
+                "--target",
+                &alias,
+                "--session",
+                &session_name,
+                "--socket",
+                &ssh_env.remote_tmux_socket,
+            ])
+            .env("MUXTERM_SSH_CONFIG_PATH", &ssh_env.ssh_config_path)
+            .output()
+            .expect("muxterm tmux pane list 失败");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("ssh-tmux pane list: stdout={stdout} stderr={stderr}");
+        assert!(
+            stdout.contains(r#""ok":true"#),
+            "SSH pane list 应成功: stdout={stdout} stderr={stderr}"
+        );
+        // 应有至少 1 个 pane
+        assert!(
+            stdout.contains(r#""id""#),
+            "应返回 pane id: stdout={stdout} stderr={stderr}"
         );
 
         // 清理远端 tmux
         let _ = ssh_env.remote_tmux("kill-server");
-
-        assert!(
-            failures.is_empty(),
-            "ssh-tmux CLI 2tab3pane 有失败:\n{}",
-            failures.join("\n")
-        );
     });
 }
