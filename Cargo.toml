@@ -64,3 +64,11 @@ required-features = ["gtk"]
 [[test]]
 name = "four_mode_e2e"
 path = "tests/four_mode_e2e.rs"
+
+[[test]]
+name = "split_regression"
+path = "tests/split_regression.rs"
+
+[[test]]
+name = "sendkeys_regression"
+path = "tests/sendkeys_regression.rs"

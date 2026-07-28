@@ -20,14 +20,17 @@ pub enum TmuxCliCommand {
 pub enum SessionCmd {
     List {
         target: Target,
+        socket: Option<String>,
     },
     New {
         target: Target,
+        socket: Option<String>,
         name: String,
         cwd: Option<String>,
     },
     Attach {
         target: Target,
+        socket: Option<String>,
         name: String,
     },
 }
@@ -36,10 +39,12 @@ pub enum SessionCmd {
 pub enum TabCmd {
     List {
         target: Target,
+        socket: Option<String>,
         session: String,
     },
     New {
         target: Target,
+        socket: Option<String>,
         session: String,
         name: Option<String>,
     },
@@ -49,23 +54,27 @@ pub enum TabCmd {
 pub enum PaneCmd {
     List {
         target: Target,
+        socket: Option<String>,
         session: String,
         tab: Option<u32>,
     },
     Split {
         target: Target,
+        socket: Option<String>,
         session: String,
         pane: u32,
         direction: SplitDirection,
     },
     SendKeys {
         target: Target,
+        socket: Option<String>,
         session: String,
         pane: u32,
         text: String,
     },
     Capture {
         target: Target,
+        socket: Option<String>,
         session: String,
         pane: u32,
         lines: Option<usize>,
@@ -193,6 +202,10 @@ fn parse_target(args: &[String]) -> Target {
         .unwrap_or_default()
 }
 
+fn parse_socket(args: &[String]) -> Option<String> {
+    get_opt_arg(args, "--socket")
+}
+
 fn parse_session_cmd(args: &[String]) -> Result<SessionCmd, String> {
     if args.is_empty() {
         return Err("需要指定 session 子命令: list/new/attach".into());
@@ -200,17 +213,27 @@ fn parse_session_cmd(args: &[String]) -> Result<SessionCmd, String> {
     let sub = args[0].as_str();
     let rest = &args[1..];
     let target = parse_target(rest);
+    let socket = parse_socket(rest);
 
     match sub {
-        "list" => Ok(SessionCmd::List { target }),
+        "list" => Ok(SessionCmd::List { target, socket }),
         "new" => {
             let name = get_req_arg(rest, "--name")?;
             let cwd = get_opt_arg(rest, "--cwd");
-            Ok(SessionCmd::New { target, name, cwd })
+            Ok(SessionCmd::New {
+                target,
+                socket,
+                name,
+                cwd,
+            })
         }
         "attach" => {
             let name = get_req_arg(rest, "--name")?;
-            Ok(SessionCmd::Attach { target, name })
+            Ok(SessionCmd::Attach {
+                target,
+                socket,
+                name,
+            })
         }
         other => Err(format!(
             "未知 session 子命令: {other}（应为 list/new/attach）"
@@ -225,14 +248,20 @@ fn parse_tab_cmd(args: &[String]) -> Result<TabCmd, String> {
     let sub = args[0].as_str();
     let rest = &args[1..];
     let target = parse_target(rest);
+    let socket = parse_socket(rest);
     let session = get_req_arg(rest, "--session")?;
 
     match sub {
-        "list" => Ok(TabCmd::List { target, session }),
+        "list" => Ok(TabCmd::List {
+            target,
+            socket,
+            session,
+        }),
         "new" => {
             let name = get_opt_arg(rest, "--name");
             Ok(TabCmd::New {
                 target,
+                socket,
                 session,
                 name,
             })
@@ -248,6 +277,7 @@ fn parse_pane_cmd(args: &[String]) -> Result<PaneCmd, String> {
     let sub = args[0].as_str();
     let rest = &args[1..];
     let target = parse_target(rest);
+    let socket = parse_socket(rest);
     let session = get_req_arg(rest, "--session")?;
 
     match sub {
@@ -255,6 +285,7 @@ fn parse_pane_cmd(args: &[String]) -> Result<PaneCmd, String> {
             let tab = get_opt_arg(rest, "--tab").and_then(|s| s.parse().ok());
             Ok(PaneCmd::List {
                 target,
+                socket,
                 session,
                 tab,
             })
@@ -268,6 +299,7 @@ fn parse_pane_cmd(args: &[String]) -> Result<PaneCmd, String> {
                 .ok_or_else(|| format!("无效 direction: {dir_str}（应为 horizontal/vertical）"))?;
             Ok(PaneCmd::Split {
                 target,
+                socket,
                 session,
                 pane,
                 direction,
@@ -280,6 +312,7 @@ fn parse_pane_cmd(args: &[String]) -> Result<PaneCmd, String> {
             let text = get_req_arg(rest, "--text")?;
             Ok(PaneCmd::SendKeys {
                 target,
+                socket,
                 session,
                 pane,
                 text,
@@ -292,6 +325,7 @@ fn parse_pane_cmd(args: &[String]) -> Result<PaneCmd, String> {
             let lines = get_opt_arg(rest, "--lines").and_then(|s| s.parse().ok());
             Ok(PaneCmd::Capture {
                 target,
+                socket,
                 session,
                 pane,
                 lines,
@@ -319,7 +353,8 @@ mod tests {
         assert_eq!(
             cmd,
             TmuxCliCommand::Session(SessionCmd::List {
-                target: Target::Local
+                target: Target::Local,
+                socket: None,
             })
         );
     }
@@ -330,7 +365,8 @@ mod tests {
         assert_eq!(
             cmd,
             TmuxCliCommand::Session(SessionCmd::List {
-                target: Target::Local
+                target: Target::Local,
+                socket: None,
             })
         );
     }
@@ -343,7 +379,8 @@ mod tests {
             TmuxCliCommand::Session(SessionCmd::List {
                 target: Target::Ssh {
                     alias: "myserver".into()
-                }
+                },
+                socket: None,
             })
         );
     }
@@ -358,6 +395,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Session(SessionCmd::New {
                 target: Target::Local,
+                socket: None,
                 name: "dev".into(),
                 cwd: None,
             })
@@ -374,6 +412,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Session(SessionCmd::New {
                 target: Target::Local,
+                socket: None,
                 name: "dev".into(),
                 cwd: Some("/tmp".into()),
             })
@@ -390,6 +429,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Session(SessionCmd::Attach {
                 target: Target::Local,
+                socket: None,
                 name: "test".into(),
             })
         );
@@ -426,6 +466,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Tab(TabCmd::List {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
             })
         );
@@ -448,6 +489,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Tab(TabCmd::New {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 name: Some("work".into()),
             })
@@ -478,6 +520,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Pane(PaneCmd::List {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 tab: None,
             })
@@ -501,6 +544,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Pane(PaneCmd::List {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 tab: Some(2),
             })
@@ -526,6 +570,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Pane(PaneCmd::Split {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 pane: 1,
                 direction: SplitDirection::Horizontal,
@@ -552,6 +597,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Pane(PaneCmd::Split {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 pane: 3,
                 direction: SplitDirection::Vertical,
@@ -596,6 +642,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Pane(PaneCmd::SendKeys {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 pane: 1,
                 text: "echo hello".into(),
@@ -620,6 +667,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Pane(PaneCmd::Capture {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 pane: 1,
                 lines: None,
@@ -646,6 +694,7 @@ mod tests {
             cmd,
             TmuxCliCommand::Pane(PaneCmd::Capture {
                 target: Target::Local,
+                socket: None,
                 session: "dev".into(),
                 pane: 1,
                 lines: Some(10),

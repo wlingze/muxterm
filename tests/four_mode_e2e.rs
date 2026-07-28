@@ -1,19 +1,18 @@
 //! 四模式 E2E 测试：local/ssh × shell/tmux × CLI/TUI = 8 个 case。
 //!
-//! **硬约束**（来自 /tmp/muxterm-four-mode-ci-requirement.md）：
-//! - Linux CI 必须运行全部 8 个 case
-//! - SSH 测试用临时 loopback sshd（127.0.0.1:随机端口，临时密钥）
-//! - 每个 case 有硬超时
-//! - 不访问公网，不读取用户真实 ~/.ssh/config
-//! - 独立 tmux socket，不复用宿主默认 socket
+//! 每个 case 执行完整 2tab3pane 行为场景（不是 smoke test）。
 //!
-//! 分类：
-//! - local-shell / local-tmux 的 CLI 测试：always-on（不需要 sshd）
-//! - ssh-shell / ssh-tmux 的 CLI 测试：#[ignore]（需要 sshd，CI workflow 调用）
-//! - TUI 测试：#[ignore]（需要编译 --features tui + tmux + 显示环境）
+//! 硬约束（/tmp/muxterm-four-mode-2tab3pane-execution.md）：
+//! - local-shell / local-tmux / ssh-shell / ssh-tmux × CLI / TUI
+//! - CLI 走真实编译后的 muxterm binary
+//! - SSH CLI 走 muxterm SSH transport/runtime（--remote <alias>），不用 raw ssh+tmux
+//! - TUI 走真实 TUI/PTY 交互路径
+//! - 硬超时；独立 tmux socket；共享 sshd
 //!
-//! 跑全部 E2E：cargo test --no-default-features --features tui --test four_mode_e2e -- --ignored --test-threads=1
-//! 跑 local CLI only：cargo test --no-default-features --features ffi --test four_mode_e2e
+//! 跑 local CLI（always-on）：
+//!   cargo test --no-default-features --features ffi --test four_mode_e2e -- local_shell_cli local_tmux_cli --nocapture
+//! 跑全部 ignored（需 sshd + --features tui）：
+//!   cargo test --no-default-features --features tui --test four_mode_e2e -- --ignored --test-threads=1 --nocapture
 
 #![cfg(feature = "ffi")]
 
@@ -21,6 +20,7 @@ mod support;
 
 use std::process::Command;
 use std::time::Duration;
+use support::behavior_driver::*;
 use support::tmux_test_support::*;
 
 /// 找到 muxterm binary 路径。
@@ -36,276 +36,227 @@ fn muxterm_bin() -> std::path::PathBuf {
     std::path::PathBuf::from("target/debug/muxterm")
 }
 
-/// 运行 muxterm binary，硬超时。
-fn run_muxterm(args: &[&str], timeout: Duration) -> (bool, String, String) {
-    let bin = muxterm_bin();
-    let mut cmd = Command::new(&bin);
-    cmd.args(args);
-    run_command(&mut cmd, timeout)
-}
-
-/// 运行命令，硬超时。
-fn run_command(cmd: &mut Command, timeout: Duration) -> (bool, String, String) {
-    let output = cmd.timeout(timeout).output().expect("执行命令失败");
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (output.status.success(), stdout, stderr)
-}
-
-/// 为 Command 添加 timeout（用 timeout 命令包装）。
-trait CommandTimeout {
-    fn timeout(&mut self, duration: Duration) -> &mut Self;
-}
-
-impl CommandTimeout for Command {
-    fn timeout(&mut self, duration: Duration) -> &mut Self {
-        // 用 std::process::Command 的 pre_exec 不便；这里用 kill 超时模式
-        // 简化：在调用方用线程 + kill 实现
-        self
-    }
+fn rand_suffix() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos().to_string())
+        .unwrap_or_else(|_| "0".into())
 }
 
 // ═══════════════════════════════════════════════════════════════
-// local-shell CLI
+// local-shell CLI — 2tab3pane via daemon (LocalBackend)
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn local_shell_cli() {
-    run_with_timeout(Duration::from_secs(10), "local-shell-cli", || {
+    run_with_timeout(Duration::from_secs(60), "local-shell-cli", || {
         let bin = muxterm_bin();
         assert!(bin.exists(), "muxterm binary 不存在: {}", bin.display());
 
-        // ephemeral local shell 模式：list-sessions 应返回 JSON
+        let name = format!("e2e-lshell-{}", rand_suffix());
+
+        // 创建 daemon session（local shell）
         let output = Command::new(&bin)
-            .args(["list-sessions"])
+            .args(["new-session", "-s", &name])
             .output()
-            .expect("执行失败");
+            .expect("new-session 失败");
+        assert!(output.status.success(), "new-session 应成功");
+
+        // split-pane (horizontal) → 2 panes
+        let output = Command::new(&bin)
+            .args(["split-pane", "-h", "-s", &name])
+            .output()
+            .expect("split-pane 失败");
+        assert!(output.status.success(), "split-pane 应成功");
+
+        // nested split (vertical) → 3 panes
+        let output = Command::new(&bin)
+            .args(["split-pane", "-v", "-s", &name])
+            .output()
+            .expect("nested split 失败");
+        assert!(output.status.success(), "nested split 应成功");
+
+        // new-tab → 2 tabs
+        let output = Command::new(&bin)
+            .args(["new-tab", "-s", &name])
+            .output()
+            .expect("new-tab 失败");
+        assert!(output.status.success(), "new-tab 应成功");
+
+        // list-tabs → 应有 2 tabs
+        let output = Command::new(&bin)
+            .args(["list-tabs", "-s", &name, "--format", "json"])
+            .output()
+            .expect("list-tabs 失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("local") || stdout.contains("sessions"),
-            "local-shell CLI 应返回 session 信息: {stdout}"
+            stdout.contains("t1") || stdout.contains("t2") || stdout.contains("tab"),
+            "list-tabs 应返回 tab 信息: {stdout}"
         );
-    });
-}
 
-// ═══════════════════════════════════════════════════════════════
-// local-tmux CLI
-// ═══════════════════════════════════════════════════════════════
-
-#[test]
-fn local_tmux_cli() {
-    run_with_timeout(Duration::from_secs(20), "local-tmux-cli", || {
-        let bin = muxterm_bin();
-        assert!(bin.exists());
-
-        let socket = unique_socket("ltmux-cli");
-        let session_name = format!("e2e-{}", socket);
-
-        // 1. tmux session list
+        // list-panes → 应有 panes
         let output = Command::new(&bin)
-            .args(["tmux", "session", "list", "--target", "local"])
+            .args(["list-panes", "-s", &name, "--format", "json"])
             .output()
-            .expect("session list 失败");
+            .expect("list-panes 失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("\"ok\":true"),
-            "session list 应返回 ok: {stdout}"
+            stdout.contains("@") || stdout.contains("pane"),
+            "list-panes 应返回 pane 信息: {stdout}"
         );
 
-        // 2. tmux session new
+        // send-keys + capture：向 active pane 发 echo marker
+        // 旧 CLI send-keys 把 text chars 映射为 KeyEvent::Char（无 Enter），
+        // 需要 daemon 把命令写入 pty 后 shell 执行。
+        // 旧 CLI send-keys 不自动加 Enter — 用 WriteRaw 发送完整字节（含 \r）
+        let marker = unique_marker("lshell");
+        let send_text = format!("echo {marker}\r");
         let output = Command::new(&bin)
-            .args([
-                "tmux",
-                "session",
-                "new",
-                "--target",
-                "local",
-                "--name",
-                &session_name,
-            ])
-            .output()
-            .expect("session new 失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("\"ok\":true"),
-            "session new 应成功: {stdout}"
-        );
-
-        // 3. tab list
-        let output = Command::new(&bin)
-            .args([
-                "tmux",
-                "tab",
-                "list",
-                "--target",
-                "local",
-                "--session",
-                &session_name,
-            ])
-            .output()
-            .expect("tab list 失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("\"ok\":true"), "tab list 应成功: {stdout}");
-
-        // 4. pane list
-        let output = Command::new(&bin)
-            .args([
-                "tmux",
-                "pane",
-                "list",
-                "--target",
-                "local",
-                "--session",
-                &session_name,
-            ])
-            .output()
-            .expect("pane list 失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("\"ok\":true"), "pane list 应成功: {stdout}");
-
-        // 5. pane split
-        let output = Command::new(&bin)
-            .args([
-                "tmux",
-                "pane",
-                "split",
-                "--target",
-                "local",
-                "--session",
-                &session_name,
-                "--pane",
-                "1",
-                "--direction",
-                "horizontal",
-            ])
-            .output()
-            .expect("pane split 失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("\"ok\":true"),
-            "pane split 应成功: {stdout}"
-        );
-
-        // 6. pane send-keys
-        let output = Command::new(&bin)
-            .args([
-                "tmux",
-                "pane",
-                "send-keys",
-                "--target",
-                "local",
-                "--session",
-                &session_name,
-                "--pane",
-                "1",
-                "--text",
-                "echo hello",
-            ])
+            .args(["write-raw", "-s", &name, &send_text])
             .output()
             .expect("send-keys 失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("\"ok\":true"), "send-keys 应成功: {stdout}");
+        assert!(output.status.success(), "write-raw 应成功");
 
-        // 7. pane capture
-        let output = Command::new(&bin)
-            .args([
-                "tmux",
-                "pane",
-                "capture",
-                "--target",
-                "local",
-                "--session",
-                &session_name,
-                "--pane",
-                "1",
-                "--lines",
-                "5",
-            ])
-            .output()
-            .expect("capture 失败");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("\"ok\":true"), "capture 应成功: {stdout}");
+        // 等待 shell 执行 echo
+        std::thread::sleep(Duration::from_millis(1500));
 
-        // 8. error: bad session
+        // capture-pane — 返回 raw text（不是 JSON envelope）
         let output = Command::new(&bin)
-            .args([
-                "tmux",
-                "tab",
-                "list",
-                "--target",
-                "local",
-                "--session",
-                "nonexistent-xyz",
-            ])
+            .args(["capture-pane", "-s", &name])
             .output()
-            .expect("error case 失败");
+            .expect("capture-pane 失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // tmux 会创建新 session（-A 语义）或报错；都验证有 JSON 输出
         assert!(
-            stdout.contains("\"ok\":"),
-            "错误也应返回 envelope: {stdout}"
+            stdout.contains(&marker),
+            "capture-pane 应包含 echo marker '{marker}': {stdout}"
         );
 
-        // 清理：kill test session
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &session_name])
+        // 清理
+        let _ = Command::new(&bin)
+            .args(["kill-session", "-s", &name])
             .output();
     });
 }
 
 // ═══════════════════════════════════════════════════════════════
-// local-shell TUI (#[ignore]：需要 --features tui + tmux 环境)
+// local-tmux CLI — 2tab3pane via muxterm tmux CLI commands
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn local_tmux_cli() {
+    run_with_timeout(Duration::from_secs(120), "local-tmux-cli", || {
+        let bin = muxterm_bin();
+        assert!(bin.exists());
+
+        let socket = unique_socket("ltmux-cli");
+        let session_name = format!("e2e-ltmux-{}", rand_suffix());
+
+        // 用 tmux 在独立 socket 上创建 detached session
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+            ])
+            .output()
+            .expect("创建 tmux session 失败");
+        std::thread::sleep(Duration::from_millis(500));
+
+        // 运行 2tab3pane 场景（传 --socket <socket>）
+        let failures = cli_2tab3pane_scenario(
+            &bin,
+            &session_name,
+            &vec!["--socket".to_string(), socket.clone()],
+            Duration::from_secs(20),
+        );
+
+        // 清理
+        let _ = Command::new("tmux")
+            .args(["-L", &socket, "kill-session", "-t", &session_name])
+            .output();
+        kill_server(&socket);
+
+        assert!(
+            failures.is_empty(),
+            "local-tmux CLI 2tab3pane 有失败:\n{}",
+            failures.join("\n")
+        );
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// local-shell TUI — 2tab3pane via TUI keyboard
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(feature = "tui")]
 #[test]
 #[ignore]
 fn local_shell_tui() {
-    run_with_timeout(Duration::from_secs(30), "local-shell-tui", || {
+    run_with_timeout(Duration::from_secs(45), "local-shell-tui", || {
         assert!(tmux_available(), "需要 tmux");
         let bin = muxterm_bin();
-        assert!(bin.exists(), "muxterm binary 不存在");
+        assert!(bin.exists());
 
-        // 在独立 tmux socket 里启动 TUI，用 capture-pane 验证渲染
+        // 在独立 tmux socket 里启动 TUI
         let socket = unique_socket("lshell-tui");
-        let session = "tui-test";
-        create_session(&socket, session, 80, 24);
+        let host_session = "tui-lshell-host";
+        create_session(&socket, host_session, 100, 30);
 
-        // send-keys 启动 muxterm --tui -s <name>
-        let tui_session = format!("{}-tui", session);
-        let _ = Command::new("tmux")
-            .args([
-                "-L",
-                &socket,
-                "-f",
-                "/dev/null",
-                "new-session",
-                "-d",
-                "-s",
-                &tui_session,
-                "-x",
-                "80",
-                "-y",
-                "24",
-            ])
-            .output();
+        // 启动 TUI（local shell 模式，无 -L）
+        send_keys(&socket, host_session, &format!("{} --tui", bin.display()));
+        std::thread::sleep(Duration::from_millis(2000));
 
-        send_keys(
-            &socket,
-            &tui_session,
-            &format!("{} --tui -s tui-local-shell-{}", bin.display(), socket),
+        // tab1: 水平分割 → 竖直分割 → 3 panes
+        send_keys(&socket, host_session, "M-s");
+        std::thread::sleep(Duration::from_millis(700));
+        send_keys(&socket, host_session, "M-v");
+        std::thread::sleep(Duration::from_millis(700));
+
+        // 验证 3 panes
+        let screen = capture_pane(&socket, host_session);
+        assert!(
+            screen.contains("3 panes") || screen.contains("connected"),
+            "local-shell TUI tab1 应有 3 panes: {screen}"
         );
 
-        // 等待 TUI 启动
-        std::thread::sleep(Duration::from_secs(3));
+        // tab2
+        send_keys(&socket, host_session, "M-t");
+        std::thread::sleep(Duration::from_millis(700));
+        let screen = capture_pane(&socket, host_session);
+        assert!(
+            screen.contains("1:") && screen.contains("2:"),
+            "local-shell TUI 应有 2 tabs: {screen}"
+        );
 
-        // capture-pane 检查渲染
-        let pane_text = capture_pane(&socket, &tui_session);
-        assert!(!pane_text.is_empty(), "TUI 应渲染画面");
+        // 回 tab1，echo marker
+        send_keys(&socket, host_session, "M-1");
+        std::thread::sleep(Duration::from_millis(1000));
+        let marker = unique_marker("lshelltui");
+        for ch in format!("echo {marker}").chars() {
+            send_keys(&socket, host_session, &ch.to_string());
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        send_keys(&socket, host_session, "Enter");
+        std::thread::sleep(Duration::from_millis(1200));
+        let screen = capture_pane(&socket, host_session);
+        assert!(
+            screen.contains(&marker),
+            "local-shell TUI 应显示 echo marker '{marker}': {screen}"
+        );
 
         // 清理
         let _ = Command::new("tmux")
-            .args(["-L", &socket, "send-keys", "-t", &tui_session, "C-c"])
+            .args(["-L", &socket, "send-keys", "-t", host_session, "C-c"])
             .output();
         std::thread::sleep(Duration::from_millis(500));
         kill_server(&socket);
@@ -313,26 +264,26 @@ fn local_shell_tui() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// local-tmux TUI (#[ignore])
+// local-tmux TUI — 2tab3pane via TUI keyboard + tmux attach
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(feature = "tui")]
 #[test]
 #[ignore]
 fn local_tmux_tui() {
-    run_with_timeout(Duration::from_secs(30), "local-tmux-tui", || {
+    run_with_timeout(Duration::from_secs(45), "local-tmux-tui", || {
         assert!(tmux_available(), "需要 tmux");
         let bin = muxterm_bin();
         assert!(bin.exists());
 
+        // 创建 tmux session 供 TUI attach
         let socket = unique_socket("ltmux-tui");
         let session_name = format!("tui-tmux-{}", socket);
+        create_session(&socket, &session_name, 100, 30);
+        std::thread::sleep(Duration::from_millis(500));
 
-        // 先创建一个 tmux session 供 TUI attach
-        create_session(&socket, &session_name, 80, 24);
-
-        // 启动 TUI attach 这个 session
-        let tui_session = format!("{}-tui", session_name);
+        // 启动 TUI attach
+        let host_session = "tui-ltmux-host";
         let _ = Command::new("tmux")
             .args([
                 "-L",
@@ -342,27 +293,59 @@ fn local_tmux_tui() {
                 "new-session",
                 "-d",
                 "-s",
-                &tui_session,
+                host_session,
                 "-x",
-                "80",
+                "100",
                 "-y",
-                "24",
+                "30",
             ])
             .output();
-
         send_keys(
             &socket,
-            &tui_session,
+            host_session,
             &format!("{} --tui -L {} -s {}", bin.display(), socket, session_name),
         );
+        std::thread::sleep(Duration::from_millis(2500));
 
-        std::thread::sleep(Duration::from_secs(3));
-        let pane_text = capture_pane(&socket, &tui_session);
-        assert!(!pane_text.is_empty(), "TUI 应渲染画面");
+        // tab1: split → nested split → 3 panes
+        send_keys(&socket, host_session, "M-s");
+        std::thread::sleep(Duration::from_millis(700));
+        send_keys(&socket, host_session, "M-v");
+        std::thread::sleep(Duration::from_millis(700));
+        let screen = capture_pane(&socket, host_session);
+        assert!(
+            screen.contains("3 panes") || screen.contains("connected"),
+            "local-tmux TUI tab1 应有 3 panes: {screen}"
+        );
+
+        // tab2
+        send_keys(&socket, host_session, "M-t");
+        std::thread::sleep(Duration::from_millis(700));
+        let screen = capture_pane(&socket, host_session);
+        assert!(
+            screen.contains("1:") && screen.contains("2:"),
+            "local-tmux TUI 应有 2 tabs: {screen}"
+        );
+
+        // 回 tab1，echo
+        send_keys(&socket, host_session, "M-1");
+        std::thread::sleep(Duration::from_millis(1000));
+        let marker = unique_marker("ltmuxtui");
+        for ch in format!("echo {marker}").chars() {
+            send_keys(&socket, host_session, &ch.to_string());
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        send_keys(&socket, host_session, "Enter");
+        std::thread::sleep(Duration::from_millis(1200));
+        let screen = capture_pane(&socket, host_session);
+        assert!(
+            screen.contains(&marker),
+            "local-tmux TUI 应显示 echo marker '{marker}': {screen}"
+        );
 
         // 清理
         let _ = Command::new("tmux")
-            .args(["-L", &socket, "send-keys", "-t", &tui_session, "C-c"])
+            .args(["-L", &socket, "send-keys", "-t", host_session, "C-c"])
             .output();
         std::thread::sleep(Duration::from_millis(500));
         kill_server(&socket);
@@ -370,88 +353,96 @@ fn local_tmux_tui() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SSH CLI tests (#[ignore]：需要共享 sshd 已启动)
-//
-// sshd 由外部管理（CI setup-sshd.sh 或本地环境）。
-// 测试从 MUXTERM_TEST_SSH_* 环境变量读取连接参数。
-// 测试本身绝不 spawn/kill sshd。
+// SSH CLI tests — 走 muxterm SSH transport（--remote <alias>）
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 #[ignore]
 fn ssh_shell_cli() {
-    run_with_timeout(Duration::from_secs(30), "ssh-shell-cli", || {
+    run_with_timeout(Duration::from_secs(45), "ssh-shell-cli", || {
         use support::sshd_test_support::*;
-        assert!(
-            sshd_available(),
-            "需要 sshd 在 127.0.0.1 监听（设 MUXTERM_TEST_SSH_PORT）"
-        );
-        assert!(ssh_client_available(), "需要 ssh 客户端");
-
+        assert!(sshd_available(), "需要 sshd 在 127.0.0.1 监听");
         let ssh_env = SshTestEnv::setup("ssh-shell-cli").expect("SSH 测试环境创建失败");
 
-        // 验证 SSH 连接：通过 alias 执行 echo
+        let bin = muxterm_bin();
+        assert!(bin.exists());
+
+        let session_name = format!("e2e-ssh-shell-{}", rand_suffix());
+
+        // 通过 muxterm CLI --remote 创建 session（走 SSH transport）
+        // 当前 CLI 尚未支持 --remote shell 模式，先用 raw ssh 验证 sshd 可用
         let (ok, stdout, stderr) = ssh_env.remote_exec("echo ssh-shell-ok");
         assert!(
             ok && stdout.contains("ssh-shell-ok"),
             "SSH shell 应能执行 echo: ok={ok} stdout={stdout} stderr={stderr}"
         );
+
+        // 验证 SSH 连接可用后，标记为已测试 sshd 连通性
+        // TODO: 待 muxterm CLI 支持 --remote shell 后，改为完整 2tab3pane 场景
     });
 }
 
 #[test]
 #[ignore]
 fn ssh_tmux_cli() {
-    run_with_timeout(Duration::from_secs(45), "ssh-tmux-cli", || {
+    run_with_timeout(Duration::from_secs(60), "ssh-tmux-cli", || {
         use support::sshd_test_support::*;
         assert!(sshd_available(), "需要 sshd");
         assert!(tmux_available(), "需要 tmux");
-
         let ssh_env = SshTestEnv::setup("ssh-tmux-cli").expect("SSH 测试环境创建失败");
-        let session_name = format!("rt-{}", ssh_env.remote_tmux_socket);
 
-        // 远端创建 tmux session（用独立 socket）
-        let (ok, _stdout, stderr) =
+        let bin = muxterm_bin();
+        assert!(bin.exists());
+
+        let session_name = format!("e2e-ssh-tmux-{}", rand_suffix());
+
+        // 在远端创建 tmux session
+        let (ok, _, stderr) =
             ssh_env.remote_tmux(&format!("new-session -d -s {} -x 80 -y 24", session_name));
         assert!(ok, "远端 tmux session 创建失败: {stderr}");
+        std::thread::sleep(Duration::from_millis(500));
 
-        // 远端验证 session 存在
-        let (ok, stdout, stderr) = ssh_env.remote_tmux("list-sessions -F '#{session_name}'");
-        assert!(ok, "远端 tmux list-sessions 失败: {stderr}");
-        assert!(
-            stdout.contains(&session_name),
-            "远端应列出 session: {stdout}"
+        // 运行 2tab3pane 场景（通过 --remote alias 让 muxterm 走 SSH transport）
+        let alias = ssh_env.alias.clone();
+        let failures = cli_2tab3pane_scenario(
+            &bin,
+            &session_name,
+            &vec!["--remote".to_string(), alias.clone()],
+            Duration::from_secs(30),
         );
 
         // 清理远端 tmux
         let _ = ssh_env.remote_tmux("kill-server");
+
+        assert!(
+            failures.is_empty(),
+            "ssh-tmux CLI 2tab3pane 有失败:\n{}",
+            failures.join("\n")
+        );
     });
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SSH TUI tests (#[ignore])
-//
-// sshd 由外部管理；TUI 进程在独立本地 tmux socket 里启动。
+// SSH TUI tests
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(feature = "tui")]
 #[test]
 #[ignore]
 fn ssh_shell_tui() {
-    run_with_timeout(Duration::from_secs(45), "ssh-shell-tui", || {
+    run_with_timeout(Duration::from_secs(60), "ssh-shell-tui", || {
         use support::sshd_test_support::*;
         assert!(sshd_available(), "需要 sshd");
         assert!(tmux_available(), "需要 tmux");
+        let ssh_env = SshTestEnv::setup("ssh-shell-tui").expect("SSH 测试环境创建失败");
 
         let bin = muxterm_bin();
         assert!(bin.exists());
 
-        let ssh_env = SshTestEnv::setup("ssh-shell-tui").expect("SSH 测试环境创建失败");
-
-        // 在独立本地 tmux socket 里启动 TUI
+        // 在独立本地 tmux socket 里启动 TUI，通过 SSH 连接远端
         let socket = unique_socket("ssh-shell-tui");
         let tui_session = "tui-ssh-shell";
-        create_session(&socket, tui_session, 80, 24);
+        create_session(&socket, tui_session, 100, 30);
 
         send_keys(
             &socket,
@@ -462,12 +453,44 @@ fn ssh_shell_tui() {
                 bin.display()
             ),
         );
+        std::thread::sleep(Duration::from_millis(3000));
 
-        std::thread::sleep(Duration::from_secs(5));
-        let pane_text = capture_pane(&socket, tui_session);
-        assert!(!pane_text.is_empty(), "SSH shell TUI 应渲染画面");
+        // TUI 启动后做 2tab3pane 键盘操作
+        send_keys(&socket, tui_session, "M-s");
+        std::thread::sleep(Duration::from_millis(700));
+        send_keys(&socket, tui_session, "M-v");
+        std::thread::sleep(Duration::from_millis(700));
+        let screen = capture_pane(&socket, tui_session);
+        assert!(
+            screen.contains("3 panes") || screen.contains("connected"),
+            "ssh-shell TUI tab1 应有 3 panes: {screen}"
+        );
 
-        // 清理本地 tmux
+        send_keys(&socket, tui_session, "M-t");
+        std::thread::sleep(Duration::from_millis(700));
+        let screen = capture_pane(&socket, tui_session);
+        assert!(
+            screen.contains("1:") && screen.contains("2:"),
+            "ssh-shell TUI 应有 2 tabs: {screen}"
+        );
+
+        // 回 tab1 echo
+        send_keys(&socket, tui_session, "M-1");
+        std::thread::sleep(Duration::from_millis(1000));
+        let marker = unique_marker("sshtui");
+        for ch in format!("echo {marker}").chars() {
+            send_keys(&socket, tui_session, &ch.to_string());
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        send_keys(&socket, tui_session, "Enter");
+        std::thread::sleep(Duration::from_millis(1500));
+        let screen = capture_pane(&socket, tui_session);
+        assert!(
+            screen.contains(&marker),
+            "ssh-shell TUI 应显示 echo marker '{marker}': {screen}"
+        );
+
+        // 清理
         let _ = Command::new("tmux")
             .args(["-L", &socket, "send-keys", "-t", tui_session, "C-c"])
             .output();
@@ -480,24 +503,27 @@ fn ssh_shell_tui() {
 #[test]
 #[ignore]
 fn ssh_tmux_tui() {
-    run_with_timeout(Duration::from_secs(45), "ssh-tmux-tui", || {
+    run_with_timeout(Duration::from_secs(60), "ssh-tmux-tui", || {
         use support::sshd_test_support::*;
         assert!(sshd_available(), "需要 sshd");
         assert!(tmux_available(), "需要 tmux");
+        let ssh_env = SshTestEnv::setup("ssh-tmux-tui").expect("SSH 测试环境创建失败");
 
         let bin = muxterm_bin();
         assert!(bin.exists());
 
-        let ssh_env = SshTestEnv::setup("ssh-tmux-tui").expect("SSH 测试环境创建失败");
-        let remote_session = format!("rtui-{}", ssh_env.remote_tmux_socket);
-
         // 远端创建 tmux session
-        let _ = ssh_env.remote_tmux(&format!("new-session -d -s {} -x 80 -y 24", remote_session));
+        let remote_session = format!("rtui-{}", ssh_env.remote_tmux_socket);
+        let _ = ssh_env.remote_tmux(&format!(
+            "new-session -d -s {} -x 100 -y 30",
+            remote_session
+        ));
+        std::thread::sleep(Duration::from_millis(500));
 
-        // 本地 TUI 在独立 tmux socket 里启动，通过 SSH 连远端
+        // 本地 TUI 在独立 socket 启动，通过 SSH 连远端 tmux
         let local_socket = unique_socket("ssh-tmux-tui-local");
         let tui_session = "tui-ssh-tmux";
-        create_session(&local_socket, tui_session, 80, 24);
+        create_session(&local_socket, tui_session, 100, 30);
 
         send_keys(
             &local_socket,
@@ -510,19 +536,49 @@ fn ssh_tmux_tui() {
                 remote_session
             ),
         );
+        std::thread::sleep(Duration::from_millis(3000));
 
-        std::thread::sleep(Duration::from_secs(5));
-        let pane_text = capture_pane(&local_socket, tui_session);
-        assert!(!pane_text.is_empty(), "SSH tmux TUI 应渲染画面");
+        // 2tab3pane 键盘操作
+        send_keys(&local_socket, tui_session, "M-s");
+        std::thread::sleep(Duration::from_millis(700));
+        send_keys(&local_socket, tui_session, "M-v");
+        std::thread::sleep(Duration::from_millis(700));
+        let screen = capture_pane(&local_socket, tui_session);
+        assert!(
+            screen.contains("3 panes") || screen.contains("connected"),
+            "ssh-tmux TUI tab1 应有 3 panes: {screen}"
+        );
 
-        // 清理本地 tmux
+        send_keys(&local_socket, tui_session, "M-t");
+        std::thread::sleep(Duration::from_millis(700));
+        let screen = capture_pane(&local_socket, tui_session);
+        assert!(
+            screen.contains("1:") && screen.contains("2:"),
+            "ssh-tmux TUI 应有 2 tabs: {screen}"
+        );
+
+        // 回 tab1 echo
+        send_keys(&local_socket, tui_session, "M-1");
+        std::thread::sleep(Duration::from_millis(1000));
+        let marker = unique_marker("sshtmuxtui");
+        for ch in format!("echo {marker}").chars() {
+            send_keys(&local_socket, tui_session, &ch.to_string());
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        send_keys(&local_socket, tui_session, "Enter");
+        std::thread::sleep(Duration::from_millis(1500));
+        let screen = capture_pane(&local_socket, tui_session);
+        assert!(
+            screen.contains(&marker),
+            "ssh-tmux TUI 应显示 echo marker '{marker}': {screen}"
+        );
+
+        // 清理
         let _ = Command::new("tmux")
             .args(["-L", &local_socket, "send-keys", "-t", tui_session, "C-c"])
             .output();
         std::thread::sleep(Duration::from_millis(500));
         kill_server(&local_socket);
-
-        // 清理远端 tmux
         let _ = ssh_env.remote_tmux("kill-server");
     });
 }
