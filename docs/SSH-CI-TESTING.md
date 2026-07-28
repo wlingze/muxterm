@@ -15,25 +15,25 @@ Linux CI 必须运行全部 8 个 case：
 
 ## Workflow 文件
 
-- `.github/workflows/four-mode-e2e.yml`
+- `.github/workflows/four-mode-integration.yml`
   - `standard` job：local CLI + local TUI（不需要 sshd）
   - `ssh-integration` job：matrix strategy 运行 4 个 SSH case
 
 ## 所需 workflow 变更
 
-现有 `.github/workflows/ci.yml` 不含四模式 E2E。需在 CI 中引用 `four-mode-e2e.yml`，
+现有 `.github/workflows/ci.yml` 不含四模式 E2E。需在 CI 中引用 `four-mode-integration.yml`，
 或将其 job 合并到 `ci.yml`。
 
 最小变更：在 `ci.yml` 末尾添加：
 
 ```yaml
-  four-mode-e2e:
+  four-mode-integration:
     name: Four-Mode E2E
     needs: ci
-    uses: ./.github/workflows/four-mode-e2e.yml
+    uses: ./.github/workflows/four-mode-integration.yml
 ```
 
-或直接在 push/PR 触发时运行 `four-mode-e2e.yml`。
+或直接在 push/PR 触发时运行 `four-mode-integration.yml`。
 
 ## SSH 测试环境要求
 
@@ -49,16 +49,16 @@ Linux CI 必须运行全部 8 个 case：
 
 ```bash
 # local CLI（always-on）
-cargo test --no-default-features --features ffi --test four_mode_e2e -- local_shell_cli local_tmux_cli --nocapture
+cargo test --no-default-features --features ffi --test four_mode_integration -- local_shell_cli local_tmux_cli --nocapture
 
 # local TUI（需要 --features tui + tmux）
-cargo test --no-default-features --features tui --test four_mode_e2e -- local_shell_tui local_tmux_tui --nocapture --ignored
+cargo test --no-default-features --features tui --test four_mode_integration -- local_shell_tui local_tmux_tui --nocapture --ignored
 
 # SSH CLI（需要 sshd + tmux）
-cargo test --no-default-features --features tui --test four_mode_e2e -- ssh_shell_cli ssh_tmux_cli --nocapture --ignored
+cargo test --no-default-features --features tui --test four_mode_integration -- ssh_shell_cli ssh_tmux_cli --nocapture --ignored
 
 # SSH TUI
-cargo test --no-default-features --features tui --test four_mode_e2e -- ssh_shell_tui ssh_tmux_tui --nocapture --ignored
+cargo test --no-default-features --features tui --test four_mode_integration -- ssh_shell_tui ssh_tmux_tui --nocapture --ignored
 ```
 
 ## 硬超时

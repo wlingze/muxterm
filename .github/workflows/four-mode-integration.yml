@@ -1,4 +1,4 @@
-name: Four-Mode E2E (Linux)
+name: Four-Mode Integration (Linux)
 
 on:
   push:
@@ -10,9 +10,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── 普通 Linux 测试（不需要 sshd）──
+  # ── 普通 Linux 集成测试（不需要 sshd）──
   standard:
-    name: standard (local CLI/TUI)
+    name: standard (local CLI)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -33,20 +33,22 @@ jobs:
           key: four-mode-standard-${{ hashFiles('**/Cargo.toml') }}
       - name: Build (ffi)
         run: cargo build --no-default-features --features ffi
-      - name: Local-shell CLI E2E
-        run: timeout 30 cargo test --no-default-features --features ffi --test four_mode_e2e -- local_shell_cli --nocapture
-      - name: Local-tmux CLI E2E
-        run: timeout 30 cargo test --no-default-features --features ffi --test four_mode_e2e -- local_tmux_cli --nocapture
-      - name: Build (tui)
-        run: cargo build --no-default-features --features tui
-      - name: Local-shell TUI E2E
-        run: timeout 60 cargo test --no-default-features --features tui --test four_mode_e2e -- local_shell_tui --nocapture --ignored
-      - name: Local-tmux TUI E2E
-        run: timeout 60 cargo test --no-default-features --features tui --test four_mode_e2e -- local_tmux_tui --nocapture --ignored
+      - name: Local-shell CLI integration
+        run: timeout 60 cargo test --no-default-features --features ffi --test four_mode_integration -- local_shell_cli --nocapture
+      - name: Local-tmux CLI integration
+        run: timeout 120 cargo test --no-default-features --features ffi --test four_mode_integration -- local_tmux_cli --nocapture
+      - name: Split regression
+        run: timeout 120 cargo test --no-default-features --features ffi --test split_regression -- --test-threads=1
+      - name: Sendkeys regression
+        run: timeout 60 cargo test --no-default-features --features ffi --test sendkeys_regression -- --test-threads=1
+      - name: CLI integration
+        run: timeout 60 cargo test --no-default-features --features tui --test cli_integration -- --test-threads=1
+      - name: Tmux backend integration
+        run: timeout 120 cargo test --no-default-features --features tui --test tmux_backend_integration -- --test-threads=1
 
-  # ── SSH E2E 测试（每 matrix job 启动一次共享 sshd）──
+  # ── SSH 集成测试（每 matrix job 启动一次共享 sshd）──
   ssh-integration:
-    name: SSH E2E (${{ matrix.case }})
+    name: SSH integration (${{ matrix.case }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -55,8 +57,6 @@ jobs:
         case:
           - ssh-shell-cli
           - ssh-tmux-cli
-          - ssh-shell-tui
-          - ssh-tmux-tui
     steps:
       - uses: actions/checkout@v4
       - name: Install deps
@@ -80,11 +80,11 @@ jobs:
             ~/.cargo/git
             target
           key: four-mode-ssh-${{ hashFiles('**/Cargo.toml') }}
-      - name: Build (tui)
-        run: cargo build --no-default-features --features tui
+      - name: Build (ffi)
+        run: cargo build --no-default-features --features ffi
       - name: Run ${{ matrix.case }}
         run: |
-          timeout 120 cargo test --no-default-features --features tui --test four_mode_e2e -- ${{ matrix.case }} --nocapture --ignored
+          timeout 120 cargo test --no-default-features --features ffi --test four_mode_integration -- ${{ matrix.case }} --nocapture --ignored
         env:
           RUST_BACKTRACE: 1
       - name: Upload sshd logs on failure

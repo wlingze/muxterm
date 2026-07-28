@@ -60,10 +60,11 @@ name = "linux_gtk_integration"
 path = "tests/linux_gtk_integration.rs"
 required-features = ["gtk"]
 
-# 四模式 E2E 测试（local/ssh × shell/tmux × CLI/TUI）
+# 四模式集成测试（local/ssh × shell/tmux × CLI）
 [[test]]
-name = "four_mode_e2e"
-path = "tests/four_mode_e2e.rs"
+name = "four_mode_integration"
+path = "tests/four_mode_integration.rs"
+required-features = ["ffi"]
 
 [[test]]
 name = "split_regression"
