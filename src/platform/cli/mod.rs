@@ -14,6 +14,7 @@ pub mod tmux_cli_exec;
 
 pub use command::{parse_cli_command, CliCommand};
 pub use format::{format_output, OutputFormat, StateSnapshot};
-// pub use tmux_cli::{parse_tmux_cli, CliEnvelope, TmuxCliCommand};
+#[allow(unused_imports)]
+pub use tmux_cli::{parse_tmux_cli, CliEnvelope, Target, TmuxCliCommand};
 
 pub mod entry;

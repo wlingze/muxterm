@@ -35,6 +35,16 @@ pub enum SessionCmd {
     },
 }
 
+impl SessionCmd {
+    pub fn target(&self) -> &Target {
+        match self {
+            SessionCmd::List { target, .. }
+            | SessionCmd::New { target, .. }
+            | SessionCmd::Attach { target, .. } => target,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TabCmd {
     List {
@@ -48,6 +58,14 @@ pub enum TabCmd {
         session: String,
         name: Option<String>,
     },
+}
+
+impl TabCmd {
+    pub fn target(&self) -> &Target {
+        match self {
+            TabCmd::List { target, .. } | TabCmd::New { target, .. } => target,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -79,6 +97,17 @@ pub enum PaneCmd {
         pane: u32,
         lines: Option<usize>,
     },
+}
+
+impl PaneCmd {
+    pub fn target(&self) -> &Target {
+        match self {
+            PaneCmd::List { target, .. }
+            | PaneCmd::Split { target, .. }
+            | PaneCmd::SendKeys { target, .. }
+            | PaneCmd::Capture { target, .. } => target,
+        }
+    }
 }
 
 /// 连接目标：local 或 SSH alias。
@@ -196,10 +225,18 @@ fn get_req_arg(args: &[String], flag: &str) -> Result<String, String> {
     get_opt_arg(args, flag).ok_or_else(|| format!("缺少参数: {flag} <value>"))
 }
 
-fn parse_target(args: &[String]) -> Target {
-    get_opt_arg(args, "--target")
-        .map(|s| Target::from_str(&s))
-        .unwrap_or_default()
+fn parse_target(args: &[String]) -> Result<Target, String> {
+    // 检测 --target 是否存在（包括 --target=value 形式）
+    let has_flag = args
+        .iter()
+        .any(|a| a == "--target" || a.starts_with("--target="));
+    if !has_flag {
+        return Ok(Target::default()); // 无 --target → Local
+    }
+    // --target 存在但无值 → 错误（不回退 local）
+    let value =
+        get_opt_arg(args, "--target").ok_or_else(|| "缺少参数: --target <value>".to_string())?;
+    Ok(Target::from_str(&value))
 }
 
 fn parse_socket(args: &[String]) -> Option<String> {
@@ -212,7 +249,7 @@ fn parse_session_cmd(args: &[String]) -> Result<SessionCmd, String> {
     }
     let sub = args[0].as_str();
     let rest = &args[1..];
-    let target = parse_target(rest);
+    let target = parse_target(rest)?;
     let socket = parse_socket(rest);
 
     match sub {
@@ -247,7 +284,7 @@ fn parse_tab_cmd(args: &[String]) -> Result<TabCmd, String> {
     }
     let sub = args[0].as_str();
     let rest = &args[1..];
-    let target = parse_target(rest);
+    let target = parse_target(rest)?;
     let socket = parse_socket(rest);
     let session = get_req_arg(rest, "--session")?;
 
@@ -276,7 +313,7 @@ fn parse_pane_cmd(args: &[String]) -> Result<PaneCmd, String> {
     }
     let sub = args[0].as_str();
     let rest = &args[1..];
-    let target = parse_target(rest);
+    let target = parse_target(rest)?;
     let socket = parse_socket(rest);
     let session = get_req_arg(rest, "--session")?;
 
