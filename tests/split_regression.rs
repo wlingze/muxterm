@@ -533,3 +533,95 @@ fn cli_exec_waits_for_command_completion_before_shutdown() {
 
     kill_server(&socket);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Layer 5: deep nested splits (3 levels: H → V → H) via CLI binary
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn deep_nested_splits_three_levels() {
+    let socket = unique_socket("deep3");
+    let session = format!("deep-{}", rand_suffix());
+
+    // 创建 detached session
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            &session,
+            "-x",
+            "120",
+            "-y",
+            "40",
+        ])
+        .status()
+        .expect("tmux new-session 失败");
+
+    // 3 次 split via muxterm tmux CLI (returns JSON envelope)
+    for (i, dir) in ["horizontal", "vertical", "horizontal"].iter().enumerate() {
+        let output = Command::new(muxterm_bin())
+            .args([
+                "tmux",
+                "pane",
+                "split",
+                "--socket",
+                &socket,
+                "--session",
+                &session,
+                "--pane",
+                "1",
+                "--direction",
+                dir,
+            ])
+            .output()
+            .expect("muxterm split 执行失败");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("\"ok\":true"),
+            "split {} 应返回 ok: {stdout}",
+            i + 1
+        );
+    }
+
+    // 验证 pane 数 >= 4（用原生 tmux 验证）
+    let panes = count_panes(&socket, &session);
+    assert!(panes >= 4, "3 次 split 后应有 >= 4 pane: got {panes}");
+
+    // 验证 layout：用 muxterm tmux CLI 查询 pane list，验证有 >= 4 pane
+    let output = Command::new(muxterm_bin())
+        .args([
+            "tmux",
+            "pane",
+            "list",
+            "--socket",
+            &socket,
+            "--session",
+            &session,
+        ])
+        .output()
+        .expect("pane list 失败");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"ok\":true"),
+        "pane list 应返回 ok: {stdout}"
+    );
+    // 统计 pane 数量（JSON 中 "id" 字段出现次数）
+    let pane_count = stdout.matches("\"id\"").count();
+    assert!(
+        pane_count >= 4,
+        "pane list 应有 >= 4 pane: got {pane_count} stdout={stdout}"
+    );
+
+    // 验证没有泄漏到默认 socket
+    assert!(
+        !session_exists_on_default(&session),
+        "不应泄漏到默认 socket"
+    );
+
+    kill_server(&socket);
+}

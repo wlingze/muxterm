@@ -78,7 +78,7 @@ muxterm/
 │           └── ...
 ├── tests/                        # 集成测试
 │   ├── cli_integration.rs        #   CLI × LocalBackend（cat 子进程）
-│   ├── cli_tmux_e2e.rs           #   真实二进制 + tmux -L
+│   ├── four_mode_integration.rs   #   四模式集成测试
 │   ├── tmux_backend_integration.rs #  TmuxBackend
 │   ├── tui_integration.rs        #   TUI 进程 + 宿主 tmux capture
 │   ├── macos_integration.rs      #   FFI + tmux attach（feature = "ffi"）
@@ -200,7 +200,7 @@ tests/                           # 现有 + 新增
 ├── cli_v1_new.rs                [proposed] — ssh hosts / shell open / tmux session / fs / watch
 ├── ffi_extended.rs              [proposed] — 新 FFI 函数
 ├── cli_integration.rs           #   现有
-├── cli_tmux_e2e.rs              #   现有
+├── four_mode_integration.rs  #   四模式集成测试
 ├── tmux_backend_integration.rs #   现有
 ├── tui_integration.rs           #   现有
 ├── macos_integration.rs         #   现有
