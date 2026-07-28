@@ -17,11 +17,11 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
-use crate::cli::format_output;
-use crate::cli::ipc::{Request, Response};
 use crate::core::backend::LocalBackend;
 use crate::core::model::TerminalModel;
-use crate::main_entry::cli_command_to_task;
+use crate::platform::cli::entry::cli_command_to_task;
+use crate::platform::cli::format_output;
+use crate::platform::cli::ipc::{Request, Response};
 
 /// daemon 共享状态：单个 TerminalModel（线程安全包装）。
 struct DaemonState {
@@ -154,7 +154,10 @@ fn handle_connection(
         };
 
         // 检查是否是 KillSession
-        if matches!(req.command, crate::cli::CliCommand::KillSession { .. }) {
+        if matches!(
+            req.command,
+            crate::platform::cli::CliCommand::KillSession { .. }
+        ) {
             should_kill = true;
         }
 

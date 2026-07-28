@@ -1,10 +1,11 @@
-//! 平台适配层。
+//! 平台适配层：所有前端。
 //!
-//! 用 Cargo feature flag 选择前端：
-//! - `gtk`：GTK4 原生前端（`linux` 模块）
-//! - `tui`：纯 crossterm TUI 前端（`tui` 模块）
-//!
-//! 至少要启用其中一个，否则 `main` 在启动时报错。
+//! - `cli`：命令行前端（CLI 命令模式）
+//! - `tui`：crossterm TUI 前端（feature = "tui"）
+//! - `linux`：GTK4 原生前端（feature = "gtk"）
+//! - `macos`：SwiftUI 前端（Swift 代码，不在 Rust 编译范围）
+
+pub mod cli;
 
 #[cfg(feature = "gtk")]
 pub mod linux;

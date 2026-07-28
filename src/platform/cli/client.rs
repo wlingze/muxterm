@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::cli::ipc::{Request, Response};
-use crate::cli::{CliCommand, OutputFormat};
+use crate::platform::cli::ipc::{Request, Response};
+use crate::platform::cli::{CliCommand, OutputFormat};
 
 /// 连接到 daemon socket，发送命令，返回响应。
 ///

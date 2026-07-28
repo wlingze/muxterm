@@ -3,9 +3,9 @@
 //! `cli_command_to_task` 把 CliCommand 映射到 TerminalModel 的 Task，
 //! daemon 和 CLI 直接调用模式都需要它。
 
-use crate::cli::CliCommand;
 use crate::core::model::layout::SplitDir;
 use crate::core::model::task::Task;
+use crate::platform::cli::CliCommand;
 
 /// 把 CliCommand 转成 TerminalModel 的 Task。
 ///
