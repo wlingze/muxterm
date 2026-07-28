@@ -1,3 +1,4 @@
+#![allow(unreachable_code)]
 #![allow(dead_code)]
 // Muxterm 主入口。
 //

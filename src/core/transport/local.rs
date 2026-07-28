@@ -113,7 +113,7 @@ impl Transport for LocalProcessTransport {
         };
         let mut writer = master
             .take_writer()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         writer.write_all(data)?;
         writer.flush()?;
         Ok(data.len())

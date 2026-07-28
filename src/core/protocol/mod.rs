@@ -5,15 +5,17 @@
 //!
 //! 设计基线：`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md` §3。
 //!
-//! **v1 稳定**：Task / StateChange / Snapshot / ID 规则 / 能力差异 / 错误。
+//! Task / StateChange / Snapshot / ID 规则 / 能力差异 / 错误是稳定接口。
 //! 新增 Runtime 不修改这些类型；新增 Transport 不修改这些类型。
 
-// 从 core::model re-export（facade，迁移期不破坏现有引用）
-pub use crate::core::model::{
-    layout::{self, LayoutNode, RemoveRootError, SplitDir, TabLayout, WindowLayout},
-    state::{self, BackendStatus, PaneInfo, SessionInfo, State, StateChange, WindowInfo},
-    task::{self, Task, TaskOutcome},
-};
+// 从 core::model re-export（facade）
+/// Re-export layout module (unused warnings suppressed for facade)
+#[allow(unused_imports)]
+pub use crate::core::model::layout;
+#[allow(unused_imports)]
+pub use crate::core::model::state;
+#[allow(unused_imports)]
+pub use crate::core::model::task;
 
 /// Runtime 能力声明：描述某 Runtime 支持的操作集合。
 ///

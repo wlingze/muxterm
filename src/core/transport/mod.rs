@@ -11,8 +11,8 @@
 pub mod local;
 pub mod ssh;
 
-pub use local::LocalProcessTransport;
-pub use ssh::SshProcessTransport;
+// pub use local::LocalProcessTransport;
+// pub use ssh::SshProcessTransport;
 
 /// PTY 字符格尺寸。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
