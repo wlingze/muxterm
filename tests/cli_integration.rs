@@ -8,7 +8,7 @@
 
 #![cfg(feature = "tui")]
 
-use muxterm::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
+use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 use muxterm::core::backend::LocalBackend;
 use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
@@ -752,8 +752,8 @@ fn cli_tmux_backend_send_keys() {
 #[cfg(unix)]
 mod daemon_tests {
     use super::*;
-    use muxterm::cli::client::send_command;
-    use muxterm::cli::session::session_socket_path;
+    use muxterm::platform::cli::client::send_command;
+    use muxterm::platform::cli::session::session_socket_path;
     use muxterm::core::types::PaneId;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

@@ -3,7 +3,7 @@
 //! 用 serde_json over unix socket 通信（每条消息一行 JSON，以 `\n` 分隔）。
 //! CliCommand 和 OutputFormat 直接 derive serde，用 tagged enum 序列化。
 
-use crate::cli::{CliCommand, OutputFormat};
+use crate::platform::cli::{CliCommand, OutputFormat};
 use serde::{Deserialize, Serialize};
 
 /// Client → Daemon 请求。

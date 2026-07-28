@@ -10,9 +10,7 @@
 
 use clap::Parser;
 
-mod cli;
 mod core;
-mod main_entry;
 mod platform;
 
 /// Muxterm 命令行参数
@@ -127,10 +125,10 @@ fn main() -> anyhow::Result<()> {
 fn cli_mode(args: &[String]) -> anyhow::Result<()> {
     // tmux CLI 结构化命令：muxterm tmux session/tab/pane ...
     if args.first().map(|s| s.as_str()) == Some("tmux") {
-        return cli::tmux_cli_exec::run_tmux_cli(&args[1..]);
+        return crate::platform::cli::tmux_cli_exec::run_tmux_cli(&args[1..]);
     }
 
-    use cli::{parse_cli_command, OutputFormat};
+    use crate::platform::cli::{parse_cli_command, OutputFormat};
 
     let (cmd, format_str) = parse_cli_command(args)?;
     let format = format_str
@@ -192,16 +190,16 @@ fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
 fn cli_mode_tmux(
     socket: Option<&str>,
     session_name: Option<&str>,
-    cmd: &cli::CliCommand,
-    format: cli::OutputFormat,
+    cmd: &crate::platform::cli::CliCommand,
+    format: crate::platform::cli::OutputFormat,
 ) -> anyhow::Result<()> {
     use crate::core::backend::TmuxBackend;
     use crate::core::model::TerminalModel;
-    use cli::format_output;
+    use crate::platform::cli::format_output;
 
     // 根据命令选择连接模式
     let backend: Box<dyn crate::core::model::Backend> = match cmd {
-        cli::CliCommand::AttachSession { target } => {
+        crate::platform::cli::CliCommand::AttachSession { target } => {
             // attach 模式：target 是 session 名或 $N 格式
             Box::new(TmuxBackend::new_with_attach(socket, target))
         }
@@ -263,9 +261,9 @@ fn cli_mode_tmux(
 ///
 /// `-s <name>` 是全局参数，可出现在任何命令的参数中（parse_cli_command 的
 /// filter 只处理 --format，其余参数原样保留）。这里扫描原始 args 查找 -s。
-fn extract_session_name(cmd: &cli::CliCommand, args: &[String]) -> Option<String> {
+fn extract_session_name(cmd: &crate::platform::cli::CliCommand, args: &[String]) -> Option<String> {
     // NewSession 的 -s 参数优先
-    if let cli::CliCommand::NewSession { socket, .. } = cmd {
+    if let crate::platform::cli::CliCommand::NewSession { socket, .. } = cmd {
         if socket.is_some() {
             return socket.clone();
         }
@@ -285,17 +283,17 @@ fn extract_session_name(cmd: &cli::CliCommand, args: &[String]) -> Option<String
 /// daemon 模式：连接/启动 daemon，发送命令，打印输出。
 fn cli_mode_daemon(
     name: &str,
-    cmd: &cli::CliCommand,
-    format: cli::OutputFormat,
+    cmd: &crate::platform::cli::CliCommand,
+    format: crate::platform::cli::OutputFormat,
     tmux_socket: Option<&str>,
 ) -> anyhow::Result<()> {
-    use cli::client::send_command;
-    use cli::session::session_socket_path;
+    use crate::platform::cli::client::send_command;
+    use crate::platform::cli::session::session_socket_path;
 
     let sock = session_socket_path(name);
 
     // NewSession：启动 daemon；若残留死 socket 则清掉再起
-    if matches!(cmd, cli::CliCommand::NewSession { .. }) {
+    if matches!(cmd, crate::platform::cli::CliCommand::NewSession { .. }) {
         if sock.exists() && !socket_is_alive(&sock) {
             tracing::warn!(
                 target: "muxterm",
@@ -342,7 +340,7 @@ fn spawn_daemon(
     name: &str,
     tmux_socket: Option<&str>,
 ) -> anyhow::Result<()> {
-    use cli::daemon::run_daemon;
+    use crate::platform::cli::daemon::run_daemon;
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -397,7 +395,7 @@ fn wait_for_socket(path: &std::path::Path, timeout: std::time::Duration) -> anyh
 
 /// TUI × local：若 daemon 不存在则 fork 启动（等价于先 new-session）。
 fn ensure_local_daemon(name: &str) -> anyhow::Result<()> {
-    use cli::session::session_socket_path;
+    use crate::platform::cli::session::session_socket_path;
     let sock = session_socket_path(name);
     if sock.exists() && !socket_is_alive(&sock) {
         let _ = std::fs::remove_file(&sock);
@@ -412,10 +410,13 @@ fn ensure_local_daemon(name: &str) -> anyhow::Result<()> {
 }
 
 /// 临时模式：创建临时 LocalBackend，执行后关闭（状态不保留）。
-fn cli_mode_ephemeral(cmd: &cli::CliCommand, format: cli::OutputFormat) -> anyhow::Result<()> {
+fn cli_mode_ephemeral(
+    cmd: &crate::platform::cli::CliCommand,
+    format: crate::platform::cli::OutputFormat,
+) -> anyhow::Result<()> {
     use crate::core::backend::LocalBackend;
     use crate::core::model::TerminalModel;
-    use cli::format_output;
+    use crate::platform::cli::format_output;
 
     let backend = LocalBackend::new("$SHELL", "");
     let mut model = TerminalModel::new(Box::new(backend));
@@ -444,10 +445,10 @@ fn cli_mode_ephemeral(cmd: &cli::CliCommand, format: cli::OutputFormat) -> anyho
 
 /// 把 CliCommand 转成 TerminalModel 的 Task（委托给 main_entry 模块，供 daemon 复用）。
 fn cli_command_to_task(
-    cmd: &cli::CliCommand,
+    cmd: &crate::platform::cli::CliCommand,
     state: &dyn crate::core::model::state::State,
 ) -> Option<crate::core::model::task::Task> {
-    crate::main_entry::cli_command_to_task(cmd, state)
+    crate::platform::cli::entry::cli_command_to_task(cmd, state)
 }
 
 #[cfg(test)]

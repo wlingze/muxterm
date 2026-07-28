@@ -283,7 +283,7 @@ fn split_real_binary_increases_pane_count() {
 /// ── Layer 2: CLI parse → Task::SplitPane 映射 ──
 #[test]
 fn split_cli_parse_produces_correct_command() {
-    use muxterm::cli::tmux_cli::{parse_tmux_cli, PaneCmd, SplitDirection, Target, TmuxCliCommand};
+    use muxterm::platform::cli::tmux_cli::{parse_tmux_cli, PaneCmd, SplitDirection, Target, TmuxCliCommand};
 
     let args: Vec<String> = [
         "pane",
