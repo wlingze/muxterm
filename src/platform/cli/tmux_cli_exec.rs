@@ -189,9 +189,25 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                         .collect();
                     Ok(serde_json::json!({"sessions": arr}))
                 }
-                Target::Ssh { alias } => Err(anyhow::anyhow!(
-                    "SSH remote session list 尚未实现（alias={alias}）"
-                )),
+                Target::Ssh { alias } => {
+                    let sessions = crate::core::discovery::list_ssh_tmux_sessions(
+                        alias,
+                        None,
+                        std::time::Duration::from_secs(10),
+                    )?;
+                    let arr: Vec<serde_json::Value> = sessions
+                        .iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "name": s.name,
+                                "windows": s.windows,
+                                "attached": s.attached,
+                                "created": s.created,
+                            })
+                        })
+                        .collect();
+                    Ok(serde_json::json!({"sessions": arr}))
+                }
             }
         }
         SessionCmd::New {

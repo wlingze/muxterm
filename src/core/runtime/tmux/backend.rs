@@ -123,6 +123,7 @@ impl TmuxBackend {
                 cols: Some(80),
                 rows: Some(24),
                 event_buffer: 0,
+                ssh_alias: None,
             },
             handle: None,
             event_rx: None,

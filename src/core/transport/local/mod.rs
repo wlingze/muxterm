@@ -100,7 +100,13 @@ impl Transport for LocalProcessTransport {
         match rx.try_recv() {
             Ok(data) => Ok(Some(data)),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.reader = None;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "local transport EOF",
+                ))
+            }
         }
     }
 
