@@ -30,7 +30,6 @@ fn ssh_env(label: &str) -> SshTestEnv {
 
 /// 阶段化 echo marker 测试：每步打印标记，定位卡在哪。
 #[test]
-#[ignore]
 fn ssh_transport_echo_marker_staged() {
     bounded(20, "echo-staged", || {
         assert!(sshd_ready(), "需要共享 sshd");

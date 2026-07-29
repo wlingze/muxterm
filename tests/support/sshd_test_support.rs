@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-//! SSH 测试支持：为 SSH E2E 测试提供临时 HOME + 显式 ssh config。
+//! SSH 测试支持：为 SSH long-chain 集成测试提供临时 HOME + 显式 ssh config。
 //!
 //! **关键约束**：
 //! - **不启动/停止 sshd**：sshd 由外部（CI setup 或本地环境）管理。

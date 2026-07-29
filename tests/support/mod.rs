@@ -1,4 +1,4 @@
-//! 测试支持模块：共享 E2E 测试支持。
+//! 测试支持模块：共享 long-chain 集成测试支持。
 //!
 //! - behavior_driver: 共享 2tab3pane 行为场景和断言
 //! - sshd_test_support: SSH loopback sshd 连接参数
