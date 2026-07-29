@@ -1,6 +1,6 @@
 //! 四模式集成测试：local/ssh × shell/tmux × CLI = 4 个 case。
 //!
-//! 替代旧 four_mode_e2e.rs。使用硬超时 + 独立 tmux socket + 共享 sshd。
+//! 四模式 long-chain 集成测试。使用硬超时 + 独立 tmux socket + 共享 sshd。
 //! SSH 走 muxterm SSH transport（--remote <alias>），不用 raw ssh+tmux。
 //!
 //! 跑 local CLI（always-on）：
@@ -198,7 +198,6 @@ fn local_tmux_cli() {
 // 前置条件：共享 loopback sshd（由 CI 或本地环境提供）。
 
 #[test]
-#[ignore]
 fn ssh_shell_cli() {
     run_with_timeout(Duration::from_secs(45), "ssh-shell-cli", || {
         assert!(sshd_available(), "需要 sshd 在 127.0.0.1 监听");
@@ -263,7 +262,6 @@ fn ssh_shell_cli() {
 // 在远端启动 tmux -CC，不是 raw ssh+tmux。
 
 #[test]
-#[ignore]
 fn ssh_tmux_cli() {
     run_with_timeout(Duration::from_secs(60), "ssh-tmux-cli", || {
         assert!(sshd_available(), "需要 sshd");

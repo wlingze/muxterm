@@ -289,8 +289,28 @@ pub fn list_ssh_tmux_panes(
     }
     let _ = read_handle.join();
 
+    // Check child exit code: nonzero (except 1 = tmux no server) = error
+    let exit_code = {
+        let mut t = transport.lock().unwrap();
+        t.try_wait().ok().flatten()
+    };
+    if let Some(code) = exit_code {
+        if code != 0 && code != 1 {
+            let text = String::from_utf8_lossy(&all_output);
+            if code == 255 {
+                return Err(anyhow::anyhow!(
+                    "SSH connection failed (exit {code}): {text}"
+                ));
+            }
+            // Other nonzero = remote command failed
+            return Err(anyhow::anyhow!(
+                "SSH remote pane list failed (exit {code}): {text}"
+            ));
+        }
+    }
+
     let text = String::from_utf8_lossy(&all_output);
-    let panes: Vec<(u32, bool, u16, u16, String)> = text
+    let panes: Vec<SshPaneInfo> = text
         .lines()
         .filter_map(|line| {
             let parts: Vec<&str> = line.split(',').collect();

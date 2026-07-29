@@ -635,7 +635,7 @@ int muxterm_discover_fs_list(const char* path, const char* ssh_alias, struct CFs
 | TUI | muxterm --tui + 宿主 tmux capture | tmux + 编译 | 30s |
 | GTK | UI | DISPLAY/xvfb | 30s |
 | macOS | CoreBridge FFI + tmux attach | tmux | 30s |
-| E2E | 真实二进制 + tmux -L | 编译 | 30s |
+| long-chain | 真实二进制 + tmux -L | 编译 | 30s |
 
 ### 11.2 硬超时
 
