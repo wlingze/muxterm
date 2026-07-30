@@ -6,7 +6,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Orientation, Paned, Widget};
 
-use crate::core::config::Theme;
+use crate::config::Theme;
 use crate::platform::linux::ffi_bridge::BridgeLayout;
 use crate::platform::linux::pane_view::PaneView;
 

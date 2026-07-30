@@ -1,4 +1,4 @@
-//! TUI ↔ `core::ffi` C ABI 桥接。
+//! TUI ↔ `protocol::ffi` C ABI 桥接。
 //!
 //! 不直接使用 TerminalModel / Backend trait；所有状态经 muxterm_* 导出函数。
 //! 与 Linux `ffi_bridge` 同构，但不依赖 glib（TUI 自己在事件循环里 poll）。
@@ -8,12 +8,12 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use crate::core::ffi::api::{
+use crate::protocol::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
     muxterm_shutdown, MuxtermHandle,
 };
-use crate::core::ffi::types::{
+use crate::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
     STATE_BACKEND_STATUS, STATE_PANE_OUTPUT,
 };
@@ -333,7 +333,7 @@ fn collect_layout_panes(layout: &BridgeLayout, f: &mut dyn FnMut(u32)) {
 /// 构造常用 CTask。
 pub mod tasks {
     use super::*;
-    use crate::core::ffi::types::{
+    use crate::protocol::ffi::types::{
         DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_NEW_TAB,
         TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
     };

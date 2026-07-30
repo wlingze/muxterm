@@ -1,4 +1,4 @@
-//! FFI Bridge：GTK 前端 ↔ `core::ffi` C ABI。
+//! FFI Bridge：GTK 前端 ↔ `protocol::ffi` C ABI。
 //!
 //! 所有核心交互经此模块，不直接使用 TerminalModel / Backend trait。
 //! GTK 主线程轮询事件；`MuxtermHandle` 生命周期由本结构体管理。
@@ -9,12 +9,12 @@ use std::ptr;
 
 use gtk4::glib;
 
-use crate::core::ffi::api::{
+use crate::protocol::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
     MuxtermHandle,
 };
-use crate::core::ffi::types::{
+use crate::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
     STATE_PANE_OUTPUT,
 };
@@ -287,7 +287,7 @@ unsafe fn clone_layout(node: &CLayoutNode) -> BridgeLayout {
 /// 构造常用 CTask 的便捷函数。
 pub mod tasks {
     use super::*;
-    use crate::core::ffi::types::{
+    use crate::protocol::ffi::types::{
         DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_NEW_TAB,
         TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
     };

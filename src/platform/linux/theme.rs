@@ -3,7 +3,7 @@
 //! 把 vte4 解析出的 SGR 参数映射成具体 RGB 颜色 + 样式位，复用 `config::Theme`
 //! 的 ANSI 16 色与背景/前景。这部分是纯函数，便于单元测试。
 
-use crate::core::config::{Rgb, Theme};
+use crate::config::{Rgb, Theme};
 
 /// 终端字符样式（前景/背景/粗体/下划线等）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -310,7 +310,7 @@ mod tests {
     fn indexed_256_greyscale() {
         let t = theme();
         let s = apply_sgr(&[38, 5, 255], base(&t), &t);
-        let v = (8 + (255 - 232) * 10).min(255) as u8;
+        let v = (8 + (255 - 232) * 10) as u8;
         assert_eq!(s.fg, Rgb(v, v, v));
     }
 

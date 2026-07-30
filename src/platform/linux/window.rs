@@ -15,7 +15,7 @@ use gtk4::{
     Align, ApplicationWindow, Box, CssProvider, EventControllerKey, Label, Orientation, Window,
 };
 
-use crate::core::config::{Action, Config, Theme};
+use crate::config::{Action, Config, Theme};
 use crate::platform::linux::ffi_bridge::{tasks, BridgeEvent, CoreBridge};
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
@@ -295,7 +295,7 @@ fn switch_tab_n(s: &mut UiState, n: usize) {
 }
 
 fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
-    use crate::core::ffi::types::*;
+    use crate::protocol::ffi::types::*;
     match ev.type_ {
         STATE_PANE_OUTPUT => {
             if let Some(view) = s.layout.pane(ev.pane_id) {

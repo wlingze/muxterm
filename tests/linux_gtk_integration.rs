@@ -18,7 +18,7 @@ use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use gtk4::{EventControllerKey, Orientation, Paned, Widget};
 
-use muxterm::core::config::{Config, Theme};
+use muxterm::config::{Config, Theme};
 use muxterm::platform::linux::ffi_bridge::{BridgeLayout, BridgeTab};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
@@ -56,10 +56,10 @@ fn gtk_test_framework_smoke() {
 fn load_theme() -> Theme {
     Theme::load("light").unwrap_or_else(|_| Theme {
         name: "test".into(),
-        background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-        foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-        cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-        colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+        background: muxterm::config::Rgb(0x1e, 0x1e, 0x2e),
+        foreground: muxterm::config::Rgb(0xcd, 0xd6, 0xf4),
+        cursor: muxterm::config::Rgb(0xf5, 0xe0, 0xdc),
+        colors: [muxterm::config::Rgb(0, 0, 0); 16],
     })
 }
 
@@ -237,18 +237,18 @@ fn assert_pane_layout_widget() {
 ///
 /// 键位与 TUI 一致：Alt+S 水平、Alt+V 竖直（激活侧=右侧新 pane）、Alt+T 新 tab。
 fn assert_build_2tab3pane_via_keys() {
-    let km = KeyMap::from_bindings(&muxterm::core::config::default_keybindings());
+    let km = KeyMap::from_bindings(&muxterm::config::default_keybindings());
     assert_eq!(
         km.lookup(gdk::Key::s, gdk::ModifierType::ALT_MASK),
-        Some(muxterm::core::config::Action::NewPane)
+        Some(muxterm::config::Action::NewPane)
     );
     assert_eq!(
         km.lookup(gdk::Key::v, gdk::ModifierType::ALT_MASK),
-        Some(muxterm::core::config::Action::NewPaneVertical)
+        Some(muxterm::config::Action::NewPaneVertical)
     );
     assert_eq!(
         km.lookup(gdk::Key::t, gdk::ModifierType::ALT_MASK),
-        Some(muxterm::core::config::Action::NewTab)
+        Some(muxterm::config::Action::NewTab)
     );
 
     let app = AppWindow::new(Config::default(), load_theme());
@@ -340,7 +340,7 @@ fn gtk_test_types_registered() {
     if skip_no_display() {
         return;
     }
-    gtk4::test_synced(|| gtk_test_framework_smoke());
+    gtk4::test_synced(gtk_test_framework_smoke);
 }
 
 #[test]
@@ -381,7 +381,7 @@ fn gtk_z_build_2tab3pane_via_keys() {
 #[cfg(test)]
 mod keymap_alt_s_v {
     use super::*;
-    use muxterm::core::config::{default_keybindings, Action};
+    use muxterm::config::{default_keybindings, Action};
 
     #[test]
     fn default_bindings_include_alt_s_and_alt_v() {

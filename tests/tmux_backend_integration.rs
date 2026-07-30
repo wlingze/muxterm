@@ -9,12 +9,12 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use muxterm::core::model::layout::SplitDir;
-use muxterm::core::model::state::{BackendStatus, State};
-use muxterm::core::model::task::Task;
-use muxterm::core::model::TerminalModel;
-use muxterm::core::runtime::TmuxBackend;
-use muxterm::core::types::{PaneId, TabId, WindowId};
+use muxterm::protocol::model::layout::SplitDir;
+use muxterm::protocol::model::state::{BackendStatus, State};
+use muxterm::protocol::model::task::Task;
+use muxterm::protocol::model::TerminalModel;
+use muxterm::runtime::TmuxBackend;
+use muxterm::types::{PaneId, TabId, WindowId};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -315,14 +315,14 @@ fn scenario4_send_keys_and_output() {
         .execute(Task::SendKeys {
             target: pane,
             keys: vec![
-                muxterm::core::terminal::input::KeyEvent::Char('e'),
-                muxterm::core::terminal::input::KeyEvent::Char('c'),
-                muxterm::core::terminal::input::KeyEvent::Char('h'),
-                muxterm::core::terminal::input::KeyEvent::Char('o'),
-                muxterm::core::terminal::input::KeyEvent::Char(' '),
-                muxterm::core::terminal::input::KeyEvent::Char('h'),
-                muxterm::core::terminal::input::KeyEvent::Char('i'),
-                muxterm::core::terminal::input::KeyEvent::Enter,
+                muxterm::terminal::input::KeyEvent::Char('e'),
+                muxterm::terminal::input::KeyEvent::Char('c'),
+                muxterm::terminal::input::KeyEvent::Char('h'),
+                muxterm::terminal::input::KeyEvent::Char('o'),
+                muxterm::terminal::input::KeyEvent::Char(' '),
+                muxterm::terminal::input::KeyEvent::Char('h'),
+                muxterm::terminal::input::KeyEvent::Char('i'),
+                muxterm::terminal::input::KeyEvent::Enter,
             ],
         })
         .unwrap();
@@ -549,13 +549,13 @@ fn bug4_output_synced_to_pane_output() {
         .execute(Task::SendKeys {
             target: pane,
             keys: vec![
-                muxterm::core::terminal::input::KeyEvent::Char('e'),
-                muxterm::core::terminal::input::KeyEvent::Char('c'),
-                muxterm::core::terminal::input::KeyEvent::Char('h'),
-                muxterm::core::terminal::input::KeyEvent::Char('o'),
-                muxterm::core::terminal::input::KeyEvent::Char(' '),
-                muxterm::core::terminal::input::KeyEvent::Char('x'),
-                muxterm::core::terminal::input::KeyEvent::Enter,
+                muxterm::terminal::input::KeyEvent::Char('e'),
+                muxterm::terminal::input::KeyEvent::Char('c'),
+                muxterm::terminal::input::KeyEvent::Char('h'),
+                muxterm::terminal::input::KeyEvent::Char('o'),
+                muxterm::terminal::input::KeyEvent::Char(' '),
+                muxterm::terminal::input::KeyEvent::Char('x'),
+                muxterm::terminal::input::KeyEvent::Enter,
             ],
         })
         .unwrap();
@@ -948,7 +948,7 @@ fn bug4_positive_send_keys_output_visible() {
         model
             .execute(Task::SendKeys {
                 target: pane,
-                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+                keys: vec![muxterm::terminal::input::KeyEvent::Char(c)],
             })
             .unwrap();
         let _ = model.poll_events();
@@ -956,7 +956,7 @@ fn bug4_positive_send_keys_output_visible() {
     model
         .execute(Task::SendKeys {
             target: pane,
-            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+            keys: vec![muxterm::terminal::input::KeyEvent::Enter],
         })
         .unwrap();
     let _ = model.poll_events();
@@ -1390,7 +1390,7 @@ fn fix3_positive_switch_tab_output_works() {
         model
             .execute(Task::SendKeys {
                 target: pane1,
-                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+                keys: vec![muxterm::terminal::input::KeyEvent::Char(c)],
             })
             .unwrap();
         let _ = model.poll_events();
@@ -1398,7 +1398,7 @@ fn fix3_positive_switch_tab_output_works() {
     model
         .execute(Task::SendKeys {
             target: pane1,
-            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+            keys: vec![muxterm::terminal::input::KeyEvent::Enter],
         })
         .unwrap();
     let _ = model.poll_events();
@@ -1429,7 +1429,7 @@ fn fix3_positive_switch_tab_output_works() {
         model
             .execute(Task::SendKeys {
                 target: pane2,
-                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+                keys: vec![muxterm::terminal::input::KeyEvent::Char(c)],
             })
             .unwrap();
         let _ = model.poll_events();
@@ -1437,7 +1437,7 @@ fn fix3_positive_switch_tab_output_works() {
     model
         .execute(Task::SendKeys {
             target: pane2,
-            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+            keys: vec![muxterm::terminal::input::KeyEvent::Enter],
         })
         .unwrap();
     let _ = model.poll_events();
@@ -1922,7 +1922,7 @@ fn bug5_cli_send_keys_via_tmux_socket() {
         model
             .execute(Task::SendKeys {
                 target: pane,
-                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+                keys: vec![muxterm::terminal::input::KeyEvent::Char(c)],
             })
             .unwrap();
         let _ = model.poll_events();
@@ -1930,7 +1930,7 @@ fn bug5_cli_send_keys_via_tmux_socket() {
     model
         .execute(Task::SendKeys {
             target: pane,
-            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+            keys: vec![muxterm::terminal::input::KeyEvent::Enter],
         })
         .unwrap();
     let _ = model.poll_events();
@@ -1952,7 +1952,7 @@ fn bug5_cli_send_keys_via_tmux_socket() {
 
 #[test]
 fn bug5_edge_no_socket_uses_local_backend() {
-    use muxterm::core::runtime::LocalBackend;
+    use muxterm::runtime::LocalBackend;
 
     let backend = LocalBackend::new("sleep 60", "/");
     let mut model = TerminalModel::new(Box::new(backend));
@@ -2547,7 +2547,7 @@ fn bug7_edge_attach_send_keys() {
         model
             .execute(Task::SendKeys {
                 target: pane,
-                keys: vec![muxterm::core::terminal::input::KeyEvent::Char(c)],
+                keys: vec![muxterm::terminal::input::KeyEvent::Char(c)],
             })
             .unwrap();
         let _ = model.poll_events();
@@ -2555,7 +2555,7 @@ fn bug7_edge_attach_send_keys() {
     model
         .execute(Task::SendKeys {
             target: pane,
-            keys: vec![muxterm::core::terminal::input::KeyEvent::Enter],
+            keys: vec![muxterm::terminal::input::KeyEvent::Enter],
         })
         .unwrap();
     let _ = model.poll_events();

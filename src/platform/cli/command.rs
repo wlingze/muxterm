@@ -3,7 +3,7 @@
 //! 支持 20+ 命令（spec 定义），缩写兼容。
 //! 不依赖 clap subcommand（保持 main.rs 的 clap Parser 兼容）。
 
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::types::{PaneId, SessionId, TabId, WindowId};
 
 /// CLI 解析错误。
 #[derive(Debug, Clone)]

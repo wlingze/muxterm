@@ -104,12 +104,15 @@ muxterm/
 
 ---
 
-## 2. 目标目录结构（proposed）
+## 2. 目标目录结构（proposed，已实现为扁平布局）
 
-以下目录在代码中**尚不存在**，标记为 `[proposed]`。实现时按 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` 的分层创建。
+> **更新（PR #11）**：以下 `[proposed]` 结构已实现，但采用**扁平顶层布局**而非 `src/core/` 前缀：
+> `protocol/`、`runtime/`、`transport/`、`config/`、`discovery/`、`terminal/`、`types.rs`、`buffer_cap.rs` 直接位于 `src/` 顶层；
+> `ffi/` 归入 `protocol/ffi/`；`tmux/` 归入 `runtime/tmux/`；`SshConfig` 作为纯配置留在 `config/`（`RemoteTmuxClient` 在 `runtime/tmux/`）。
+> 以下树保留为历史设计记录。
 
 ```
-src/core/
+src/
 ├── protocol/                    [proposed] — Core Protocol 层
 │   ├── mod.rs                   #   Session/Window/Tab/Pane 模型、ID 规则、能力声明
 │   ├── task.rs                  ← 从 model/task.rs 迁入
@@ -214,7 +217,7 @@ tests/                           # 现有 + 新增
 
 ### 3.1 model/ → protocol/ + runtime/
 
-现有 `core/model/` 里的纯数据类型（Task/StateChange/LayoutNode）迁入 `core/protocol/`；Backend trait 迁入 `core/runtime/`。TerminalModel 可留在 `core/protocol/` 或 `core/runtime/`（它是编排层，用 Backend trait）。
+现有 `model/` 里的纯数据类型（Task/StateChange/LayoutNode）已迁入 `protocol/model/`；Backend trait 归入 `runtime/`。TerminalModel 留在 `protocol/model/`（它是编排层，用 Backend trait）。
 
 ### 3.2 backend/ → runtime/ + transport/
 
