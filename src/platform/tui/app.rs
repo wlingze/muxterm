@@ -20,9 +20,9 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, queue};
 
-use crate::core::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::render::{render_frame, RenderOpts};
+use crate::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 
 /// TUI 启动参数。
 ///
@@ -52,11 +52,9 @@ fn run_inner(out: &mut impl Write, opts: TuiOpts) -> Result<()> {
     let mut bridge = CoreBridge::new(backend_type, socket.as_deref(), session.as_deref())
         .context("CoreBridge::new")?;
 
-    // tmux attach 后给查询响应一点时间
-    if opts.socket.is_some() {
-        std::thread::sleep(Duration::from_millis(300));
-        let _ = bridge.poll_events();
-    }
+    // 连接后给查询响应一点时间，再做一次 poll 让初始状态到达
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = bridge.poll_events();
 
     let (cols, rows) = size().unwrap_or((80, 24));
     let mut opts_render = RenderOpts {

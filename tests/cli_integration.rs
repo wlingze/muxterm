@@ -8,11 +8,11 @@
 
 #![cfg(feature = "tui")]
 
-use muxterm::core::model::task::Task;
-use muxterm::core::model::TerminalModel;
-use muxterm::core::runtime::LocalBackend;
-use muxterm::core::types::{PaneId, TabId, WindowId};
 use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
+use muxterm::protocol::model::task::Task;
+use muxterm::protocol::model::TerminalModel;
+use muxterm::runtime::LocalBackend;
+use muxterm::types::{PaneId, TabId, WindowId};
 
 fn make_model() -> TerminalModel {
     // cat：阻塞读 stdin、回显 stdout，适合结构测试 + WriteRaw/capture
@@ -232,7 +232,7 @@ fn cli_split_pane_and_list() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -254,7 +254,7 @@ fn cli_split_pane_text_format() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::model::layout::SplitDir::Vertical,
+            dir: muxterm::protocol::model::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -276,7 +276,7 @@ fn cli_kill_pane() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -295,7 +295,7 @@ fn cli_select_pane() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -362,8 +362,8 @@ fn cli_send_keys_and_capture() {
 
 #[test]
 fn cli_capture_pane_with_lines_limit() {
-    use muxterm::core::model::backend::mock::MockBackend;
-    use muxterm::core::model::TerminalModel;
+    use muxterm::protocol::model::backend::mock::MockBackend;
+    use muxterm::protocol::model::TerminalModel;
     let mut b = MockBackend::with_single_pane();
     b.outputs[0].1 = b"alpha\nbeta\ngamma\ndelta\n".to_vec();
     let model = TerminalModel::new(Box::new(b));
@@ -413,7 +413,7 @@ fn cli_list_layout_after_split() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -439,7 +439,7 @@ fn cli_nested_split_layout_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -454,7 +454,7 @@ fn cli_nested_split_layout_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane2),
-            dir: muxterm::core::model::layout::SplitDir::Vertical,
+            dir: muxterm::protocol::model::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -510,7 +510,7 @@ fn cli_nested_split_text_layout_shows_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -522,7 +522,7 @@ fn cli_nested_split_text_layout_shows_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::model::layout::SplitDir::Vertical,
+            dir: muxterm::protocol::model::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -609,7 +609,7 @@ fn cli_parse_send_keys_with_text() {
 
 #[test]
 fn cli_tmux_backend_connect_and_list() {
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -647,7 +647,7 @@ fn cli_tmux_backend_connect_and_list() {
 
 #[test]
 fn cli_tmux_backend_new_window() {
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -697,7 +697,7 @@ fn cli_tmux_backend_new_window() {
 
 #[test]
 fn cli_tmux_backend_send_keys() {
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -731,12 +731,12 @@ fn cli_tmux_backend_send_keys() {
     let outcome = model
         .execute(Task::SendKeys {
             target: pane,
-            keys: vec![muxterm::core::terminal::input::KeyEvent::Char('x')],
+            keys: vec![muxterm::terminal::input::KeyEvent::Char('x')],
         })
         .unwrap();
     assert!(matches!(
         outcome,
-        muxterm::core::model::task::TaskOutcome::Done
+        muxterm::protocol::model::task::TaskOutcome::Done
     ));
 
     let _ = rt.block_on(model.shutdown());
@@ -753,9 +753,9 @@ fn cli_tmux_backend_send_keys() {
 #[cfg(unix)]
 mod daemon_tests {
     use super::*;
-    use muxterm::core::types::PaneId;
     use muxterm::platform::cli::client::send_command;
     use muxterm::platform::cli::session::session_socket_path;
+    use muxterm::types::PaneId;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 

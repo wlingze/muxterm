@@ -17,11 +17,11 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
-use crate::core::model::TerminalModel;
-use crate::core::runtime::shell::LocalBackend;
 use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::format_output;
 use crate::platform::cli::ipc::{Request, Response};
+use crate::protocol::model::TerminalModel;
+use crate::runtime::shell::LocalBackend;
 
 /// daemon 共享状态：单个 TerminalModel（线程安全包装）。
 struct DaemonState {
@@ -44,7 +44,7 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
 
     // 创建 backend + model
     // 有 tmux_socket → TmuxBackend（-CC 连接 tmux），否则 LocalBackend
-    let backend: Box<dyn crate::core::model::Backend> = if let Some(ref ts) = tmux_socket {
+    let backend: Box<dyn crate::protocol::model::Backend> = if let Some(ref ts) = tmux_socket {
         // 检查 tmux server 是否已有同名 session
         let existing = std::process::Command::new("tmux")
             .args(["-L", ts, "list-sessions", "-F", "#{session_name}"])
@@ -54,10 +54,10 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
             .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
         let backend = if existing.as_deref() == Some(&name) {
             // session 已存在 → attach
-            crate::core::runtime::tmux::TmuxBackend::new_with_attach(Some(ts), &name)
+            crate::runtime::tmux::TmuxBackend::new_with_attach(Some(ts), &name)
         } else {
             // session 不存在 → new-session -s <name>
-            crate::core::runtime::tmux::TmuxBackend::new_with_session_name(Some(ts), &name)
+            crate::runtime::tmux::TmuxBackend::new_with_session_name(Some(ts), &name)
         };
         Box::new(backend)
     } else {

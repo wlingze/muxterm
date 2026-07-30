@@ -10,8 +10,16 @@
 
 use clap::Parser;
 
-mod core;
+mod buffer_cap;
+mod config;
+mod discovery;
 mod platform;
+#[cfg(feature = "ffi")]
+mod protocol;
+mod runtime;
+mod terminal;
+mod transport;
+mod types;
 
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]
@@ -193,12 +201,12 @@ fn cli_mode_tmux(
     cmd: &crate::platform::cli::CliCommand,
     format: crate::platform::cli::OutputFormat,
 ) -> anyhow::Result<()> {
-    use crate::core::model::TerminalModel;
-    use crate::core::runtime::tmux::TmuxBackend;
     use crate::platform::cli::format_output;
+    use crate::protocol::model::TerminalModel;
+    use crate::runtime::tmux::TmuxBackend;
 
     // 根据命令选择连接模式
-    let backend: Box<dyn crate::core::model::Backend> = match cmd {
+    let backend: Box<dyn crate::protocol::model::Backend> = match cmd {
         crate::platform::cli::CliCommand::AttachSession { target } => {
             // attach 模式：target 是 session 名或 $N 格式
             Box::new(TmuxBackend::new_with_attach(socket, target))
@@ -414,9 +422,9 @@ fn cli_mode_ephemeral(
     cmd: &crate::platform::cli::CliCommand,
     format: crate::platform::cli::OutputFormat,
 ) -> anyhow::Result<()> {
-    use crate::core::model::TerminalModel;
-    use crate::core::runtime::shell::LocalBackend;
     use crate::platform::cli::format_output;
+    use crate::protocol::model::TerminalModel;
+    use crate::runtime::shell::LocalBackend;
 
     let backend = LocalBackend::new("$SHELL", "");
     let mut model = TerminalModel::new(Box::new(backend));
@@ -446,8 +454,8 @@ fn cli_mode_ephemeral(
 /// 把 CliCommand 转成 TerminalModel 的 Task（委托给 main_entry 模块，供 daemon 复用）。
 fn cli_command_to_task(
     cmd: &crate::platform::cli::CliCommand,
-    state: &dyn crate::core::model::state::State,
-) -> Option<crate::core::model::task::Task> {
+    state: &dyn crate::protocol::model::state::State,
+) -> Option<crate::protocol::model::task::Task> {
     crate::platform::cli::entry::cli_command_to_task(cmd, state)
 }
 

@@ -7,14 +7,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
-use crate::core::model::task::Task;
-use crate::core::model::TerminalModel;
-use crate::core::runtime::tmux::TmuxBackend;
-use crate::core::types::{PaneId, TabId, WindowId};
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
 };
+use crate::protocol::model::task::Task;
+use crate::protocol::model::TerminalModel;
+use crate::runtime::tmux::TmuxBackend;
+use crate::types::{PaneId, TabId, WindowId};
 
 /// tmux CLI 命令执行超时（硬限制）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
@@ -66,7 +66,7 @@ where
     F: FnOnce(&mut TerminalModel) -> anyhow::Result<serde_json::Value>,
 {
     let session_exists = tmux_session_exists(socket, session_name);
-    let backend: Box<dyn crate::core::model::Backend> = if session_exists {
+    let backend: Box<dyn crate::protocol::model::Backend> = if session_exists {
         Box::new(TmuxBackend::new_with_attach(socket, session_name))
     } else {
         Box::new(TmuxBackend::new_with_session_name(socket, session_name))
@@ -174,8 +174,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
             check_timeout(deadline)?;
             match target {
                 Target::Local => {
-                    let sessions =
-                        crate::core::discovery::list_local_tmux_sessions(socket.as_deref());
+                    let sessions = crate::discovery::list_local_tmux_sessions(socket.as_deref());
                     let arr: Vec<serde_json::Value> = sessions
                         .iter()
                         .map(|s| {
@@ -191,7 +190,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                 }
                 Target::Ssh { alias } => {
                     let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                    let sessions = crate::core::discovery::list_ssh_tmux_sessions(
+                    let sessions = crate::discovery::list_ssh_tmux_sessions(
                         alias,
                         ssh_config.as_deref(),
                         socket.as_deref(),
@@ -389,7 +388,7 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                 }),
                 Target::Ssh { alias } => {
                     let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                    let panes = crate::core::discovery::list_ssh_tmux_panes(
+                    let panes = crate::discovery::list_ssh_tmux_panes(
                         alias,
                         ssh_config.as_deref(),
                         socket.as_deref(),
@@ -426,9 +425,11 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                     let _ = model.refresh();
                     let dir = match direction {
                         SplitDirection::Horizontal => {
-                            crate::core::model::layout::SplitDir::Horizontal
+                            crate::protocol::model::layout::SplitDir::Horizontal
                         }
-                        SplitDirection::Vertical => crate::core::model::layout::SplitDir::Vertical,
+                        SplitDirection::Vertical => {
+                            crate::protocol::model::layout::SplitDir::Vertical
+                        }
                     };
                     // 使用 CLI 传入的 pane ID（muxterm pane id = tmux %N 的 N）
                     model.execute(Task::SplitPane {
@@ -474,7 +475,7 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                 Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
                     wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
-                    use crate::core::terminal::input::KeyEvent;
+                    use crate::terminal::input::KeyEvent;
                     // 发送文本 + Enter（让 shell 执行命令）
                     let mut keys: Vec<KeyEvent> = text.chars().map(KeyEvent::Char).collect();
                     keys.push(KeyEvent::Enter);

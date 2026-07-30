@@ -7,8 +7,8 @@
 
 mod support;
 
-use muxterm::core::transport::ssh::{build_ssh_command, SshProcessTransport};
-use muxterm::core::transport::{PtySize, Transport, TransportSignal};
+use muxterm::transport::ssh::{build_ssh_command, SshProcessTransport};
+use muxterm::transport::{PtySize, Transport, TransportSignal};
 use std::time::{Duration, Instant};
 use support::sshd_test_support::*;
 use support::tmux_test_support::*;

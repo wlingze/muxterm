@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use gtk4::gdk;
 
-use crate::core::config::{Action, KeyBinding, ModSet, Modifiers};
+use crate::config::{Action, KeyBinding, ModSet, Modifiers};
 
 /// 把 GDK `ModifierType` 转成平台无关 [`Modifiers`]。
 ///
@@ -66,7 +66,7 @@ impl KeyMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::default_keybindings;
+    use crate::config::default_keybindings;
 
     #[test]
     fn from_bindings_ignores_unknown_action() {

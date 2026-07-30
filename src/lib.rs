@@ -4,9 +4,13 @@
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::while_let_loop)]
 #![allow(clippy::needless_pass_by_value)]
-//! Muxterm library root — re-exports core modules for integration tests.
-//!
-//! main.rs 仍然作为 bin 入口；这个 lib.rs 让集成测试能 `use muxterm::core::...`。
-
-pub mod core;
+//! Muxterm library root.
+pub mod buffer_cap;
+pub mod config;
+pub mod discovery;
 pub mod platform;
+pub mod protocol;
+pub mod runtime;
+pub mod terminal;
+pub mod transport;
+pub mod types;

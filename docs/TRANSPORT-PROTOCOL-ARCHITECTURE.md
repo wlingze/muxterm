@@ -268,8 +268,8 @@ spawn 一个 `tmux -CC` 进程，解析 %消息，发送 tmux 命令，把 tmux 
 - **单 Transport**：所有 pane 输出经 `%output %N "..."` 消息从同一 Transport 到达，Runtime 按 pane id 分发。
 - **内部 adapter**（不扩散到 Transport）：
   - **ID Mapper**：`muxterm_pane ↔ tmux %N`、`muxterm_tab ↔ tmux @N`、tmux session name → muxterm session name。
-  - **Protocol Parser**：复用现有 `core::tmux::protocol::parse_line()`（130+ 测试）。
-  - **Command Builder**：复用现有 `core::tmux::command::TmuxCommand` 构造器。
+  - **Protocol Parser**：复用现有 `runtime::tmux::protocol::parse_line()`（130+ 测试）。
+  - **Command Builder**：复用现有 `runtime::tmux::command::TmuxCommand` 构造器。
 - 命令经 `Transport::write()` 发送（命令字符串 + `\n`）。
 
 > 现有 `TmuxBackend` 已实现大部分逻辑；重构为 TmuxRuntime 主要是抽出 Transport 接口、显式化 ID 映射表、从 StateChange 事件中清除 tmux ID。
@@ -346,7 +346,7 @@ pub trait Transport: Send {
 
 ### 5.3 LocalProcessTransport
 
-用 `portable-pty` 分配 PTY 对，spawn 子进程。复用现有 `core/tmux/pty.rs` 和 `core/terminal/process.rs` 的模式。
+用 `portable-pty` 分配 PTY 对，spawn 子进程。复用现有 `runtime/tmux/pty.rs` 和 `terminal/process.rs` 的模式。
 
 | 关注点 | 实现 |
 |--------|------|
@@ -415,7 +415,7 @@ pub trait ConfigService {
 | `~/.config/muxterm/themes/<name>.toml` | 用户主题 |
 | `configs/themes/<name>.toml` | 内置主题（随包分发） |
 
-格式见 `ARCHITECTURE.md` §3.2 与现有 `core/config.rs`：`[font]`/`[theme]`/`[tmux]`/`[ssh]`/`[scrollback]`/`[ui]`/`[pane]`/`[behavior]`/`[[keybindings]]`。
+格式见 `ARCHITECTURE.md` §3.2 与现有 `config/`：`[font]`/`[theme]`/`[tmux]`/`[ssh]`/`[scrollback]`/`[ui]`/`[pane]`/`[behavior]`/`[[keybindings]]`。
 
 ### 6.3 变更事件
 
@@ -437,7 +437,7 @@ Config 变更时发出 `ConfigChanged { key, old, new }` 事件，供前端即�
 
 - CLI `settings get/set`（reserved）读写 Config。
 - FFI `muxterm_config_get/set`（草案）读写 Config。
-- Config 不依赖任何 GUI 框架（现有 `core/config.rs` 的 gtk4 引用需移到 platform 层）。
+- Config 不依赖任何 GUI 框架（`config/` 已无 gtk4 依赖，移到 platform 层）。
 
 ---
 
@@ -592,7 +592,7 @@ int muxterm_discover_fs_list(const char* path, const char* ssh_alias, struct CFs
 
 ### 10.1 共用核心
 
-所有平台共用 `core/` 纯逻辑层 + FFI C ABI。前端不直接调用 Runtime/Transport，只经 Core Protocol（TerminalModel/Backend/State/Task）或 FFI。
+所有平台共用顶层纯逻辑模块（protocol/runtime/transport/terminal/config/discovery）+ FFI C ABI。前端不直接调用 Runtime/Transport，只经 Core Protocol（TerminalModel/Backend/State/Task）或 FFI。
 
 ### 10.2 平台桥接
 
@@ -734,13 +734,13 @@ int muxterm_discover_fs_list(const char* path, const char* ssh_alias, struct CFs
 
 | 设计概念 | 现有代码 | 重构方向 |
 |---------|---------|---------|
-| `Transport` trait | `core/tmux/pty.rs` + `core/backend/local.rs` | 提取为 `core/transport/` |
+| `Transport` trait | `runtime/tmux/pty.rs` + `runtime/shell` | 提取为 `transport/` |
 | `LocalProcessTransport` | `LocalBackend` 内 portable-pty | 提取 |
-| `SshProcessTransport` | `core/ssh/client.rs`（库级） | 改为 spawn 系统 ssh |
+| `SshProcessTransport` | `runtime/tmux/ssh_client.rs`（库级） | 改为 spawn 系统 ssh |
 | `ShellRuntime` | `LocalBackend` | 重命名 + 接受 Transport |
 | `TmuxRuntime` | `TmuxBackend` | 重命名 + 接受 Transport + ID 映射强化 |
-| `ConfigService` | `core/config.rs` | 加 API + 移除 gtk4 依赖 |
-| `SshHostDiscovery` | 无 | 新增 `core/discovery/` |
+| `ConfigService` | `config/` | 加 API + 移除 gtk4 依赖 |
+| `SshHostDiscovery` | 无 | 新增 `discovery/` |
 | `TmuxSessionDiscovery` | `main.rs::find_existing_tmux_session` | 提取 |
 | `RuntimeMode` | `main.rs::cli_mode` match | 提取为 enum + 工厂 |
 

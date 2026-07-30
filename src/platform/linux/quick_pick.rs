@@ -683,7 +683,7 @@ mod tests {
 
         let (panel2, list2) = panel_list_heights(100);
         assert_eq!(panel2, 200); // clamp 下限
-        assert_eq!(list2, (200 - 44 - 8).max(100)); // 148
+        assert_eq!(list2, 148); // 200 - 44 - 8 = 148 (>100)
         assert!(list2 <= panel2);
         assert!(list2 >= 100);
     }

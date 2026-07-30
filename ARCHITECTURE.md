@@ -10,17 +10,19 @@
 ```
 src/
 ├── main.rs                  # 入口：选择平台
-├── core/                    # 全平台共用核心（逻辑与状态，无 UI）
-│   ├── types.rs             # 共享类型（PaneId, WindowId 等）
-│   ├── config.rs            # 配置解析（TOML）
-│   ├── terminal/            # 终端管理抽象
-│   │   └── mod.rs           # （待填充：进程管理、输出缓冲）
-│   └── tmux/                # tmux 控制协议（与平台无关）
-│       ├── mod.rs
-│       ├── protocol.rs      # % 消息解析器
-│       ├── client.rs        # 异步 tmux -CC 客户端
-│       ├── command.rs       # 命令构造器
-│       └── pty.rs           # PTY 辅助
+├── types.rs                 # 全平台共享类型（PaneId, WindowId 等）
+├── buffer_cap.rs            # 有界缓冲（防止 pane 输出/事件无界增长）
+├── config/                  # 配置解析（TOML，纯配置，无 GUI 依赖）
+├── protocol/                # Core Protocol（稳定接口：Task/State/Layout + FFI）
+│   ├── model/               # 纯数据模型（layout/state/task/backend/terminal_model）
+│   └── ffi/                 # C ABI 导出（feature = "ffi"）
+├── runtime/                 # Runtime 层（建立在 Transport 之上，理解终端语义）
+│   ├── shell/               # LocalBackend（自管 pane 分割 + 本地 shell 进程）
+│   ├── tmux/                # TmuxBackend（tmux 控制模式；含 client/command/protocol/pty/ssh_client）
+│   └── daemon.rs            # DaemonBackend（IPC client）
+├── transport/               # Transport 层（纯字节流通道：local / ssh）
+├── terminal/                # 终端管理抽象（进程/scrollback/input，无 GUI 依赖）
+├── discovery/               # 连接前的无状态查询（ssh hosts / tmux sessions / 目录）
 │
 ├── platform/                # 平台适配层（各平台独立实现）
 │   ├── linux/               # Linux → GTK4
@@ -48,7 +50,7 @@ src/
 
 ### 核心原则
 
-**core/ 不依赖任何 GUI 框架。** 它的所有代码都可以在无显示环境下编译和测试。`core/tmux/` 只做 tmux 协议通信（字节流 → 结构化消息），`core/config.rs` 只做配置解析（TOML → 结构化配置）。`core/terminal/` 将存放终端管理抽象（进程生命周期、输出缓冲等），目前为空壳。
+**核心层不依赖任何 GUI 框架。** 它的所有代码都可以在无显示环境下编译和测试。`runtime/tmux/` 只做 tmux 控制协议通信（字节流 → 结构化消息），`config/` 只做配置解析（TOML → 结构化配置）。`terminal/` 存放跨平台终端管理抽象（进程生命周期、scrollback、输入编码）。
 
 **platform/ 各平台独立实现同一个交互模型。** 每个平台的前端必须实现本文档描述的所有交互行为，保持一致的用户体验。平台层可以使用各自的原生 API（GTK4 / SwiftUI / WinUI3），但交互逻辑必须遵循本文档。
 
@@ -161,9 +163,9 @@ Pane 分割使用**嵌套模型**（不是平铺模型）。这是用户多次�
 
 ---
 
-## 三、核心层详解（core/）
+## 三、核心层详解（顶层模块）
 
-### 3.1 core/types.rs
+### 3.1 types.rs
 
 跨平台共享的基本类型，不依赖任何 crate（纯 std）：
 
@@ -187,7 +189,7 @@ pub struct LayoutRect {
 - `Parse` / `Display` trait 实现
 - 非法输入时返回错误（非 panic）
 
-### 3.2 core/config.rs
+### 3.2 config/
 
 Alacritty 风格 TOML 配置，全平台共用。不同平台可忽略不支持的配置项。
 
@@ -229,9 +231,9 @@ action = "new_window"
 - 所有字段有默认值，空配置文件 = 正常运行
 - 所有快捷键可自定义，未配置的快捷键使用默认绑定
 
-### 3.3 core/tmux/（完整）
+### 3.3 runtime/tmux/（完整）
 
-tmux 控制协议的核心实现。详情见 `core/tmux/mod.rs` 和 `PRODUCT.md` 的协议说明。
+tmux 控制协议的核心实现。详情见 `runtime/tmux/mod.rs` 和 `PRODUCT.md` 的协议说明。
 
 - **protocol.rs**：行导向的 `%` 消息解析器。`parse_line(&str) -> Option<Message>`。纯函数，可独立单元测试
 - **command.rs**：强类型命令构造器（`PaneId` newtype 防注入）。`send_keys()` / `split_window()` 等
@@ -240,7 +242,7 @@ tmux 控制协议的核心实现。详情见 `core/tmux/mod.rs` 和 `PRODUCT.md`
 
 各平台前端不直接操作 tmux 进程，而是通过 `TmuxClient` 的消息流接收事件，通过 `CommandSender` 发送命令。
 
-### 3.4 core/terminal/（待填充）
+### 3.4 terminal/
 
 将来存放跨平台的终端管理抽象。目前为空壳，但以下概念已被识别：
 
@@ -249,7 +251,7 @@ tmux 控制协议的核心实现。详情见 `core/tmux/mod.rs` 和 `PRODUCT.md`
 - **输入协议**：输入编码（将键盘事件转换为字节流写入 pty）
 - **终端尺寸通知**：SIGWINCH / pty resize
 
-各平台实现应将这些逻辑逐步上移到 `core/terminal/`，使其脱离 GUI 框架依赖。
+这些逻辑已上移到 `terminal/`，脱离 GUI 框架依赖。
 
 ---
 
@@ -261,10 +263,10 @@ tmux 控制协议的核心实现。详情见 `core/tmux/mod.rs` 和 `PRODUCT.md`
 
 **关键模块职责：**
 
-| 模块 | 职责 | 依赖 core |
+| 模块 | 职责 | 依赖核心 |
 |------|------|-----------|
 | `app.rs` | GTK Application 启动、配置加载、主题加载 | config |
-| `window.rs` | 主窗口布局、快捷键分发、焦点管理、生命周期协调 | 所有 core + platform 模块 |
+| `window.rs` | 主窗口布局、快捷键分发、焦点管理、生命周期协调 | 所有核心 + platform 模块 |
 | `notebook.rs` | `PaneNotebook`（tab 管理）+ `TabContent`（pane 列表）+ `PaneNode`（嵌套分割树） | types |
 | `pane_view.rs` | `PaneView`：包裹 vte4 Terminal，处理 spawn、child-exited、commit 信号 | tmux(command) |
 | `tab_bar.rs` | 极简 TabBar：序号+名字，高亮激活，点击切换 | — |
@@ -284,10 +286,10 @@ tmux 控制协议的核心实现。详情见 `core/tmux/mod.rs` 和 `PRODUCT.md`
 当你实现 macOS（SwiftUI）或 Windows（WinUI3）版本时：
 
 1. **可复用的代码**（直接拿过来用）：
-   - `core/tmux/` 全部（纯 Rust，无系统依赖）
-   - `core/config.rs`（纯 Rust）
-   - `core/types.rs`（纯 Rust）
-   - `core/terminal/`（将来填充后）
+   - `runtime/tmux/` 全部（纯 Rust，无系统依赖）
+   - `config/`（纯 Rust）
+   - `types.rs`（纯 Rust）
+   - `terminal/`（已填充）
    - Rust FFI 绑定：将核心编译为静态库，通过 C ABI 暴露给平台语言
 
 2. **必须重新实现的模块**（平台特定 UI）：
@@ -361,11 +363,11 @@ tmux 是底层实现细节，不是用户界面。用户不应该感知到"我�
 ## 七、测试策略
 
 ### 可测试的（必须有单元测试）
-- `core/types.rs`：类型解析和序列化
-- `core/config.rs`：配置解析和降级
-- `core/tmux/protocol.rs`：消息解析（89+ 测试，已覆盖所有消息类型和边界）
-- `core/tmux/command.rs`：命令字符串生成
-- `core/tmux/client.rs`：异步流程（mock tmux 进程）
+- `types.rs`：类型解析和序列化
+- `config/`：配置解析和降级
+- `runtime/tmux/protocol.rs`：消息解析（89+ 测试，已覆盖所有消息类型和边界）
+- `runtime/tmux/command.rs`：命令字符串生成
+- `runtime/tmux/client.rs`：异步流程（mock tmux 进程）
 - `platform/*/keymap.rs`：快捷键匹配逻辑
 - `platform/*/quick_pick.rs`：模糊搜索逻辑
 - `platform/*/command_palette.rs`：命令列表和过滤

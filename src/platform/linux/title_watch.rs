@@ -1,13 +1,13 @@
 //! Pane 标题跟踪：进程名变化时更新显示名。
 //!
-//! - 本地 pane：沿 `/proc/<pid>` 子进程树取最深 `comm`（`core::terminal::process`）
+//! - 本地 pane：沿 `/proc/<pid>` 子进程树取最深 `comm`（`terminal::process`）
 //! - tmux pane：调用 `tmux display-message -p '#{pane_current_command}'`
 //!   （走独立 tmux 客户端，不经过 -CC 通道）
 
 use std::process::Command;
 
-use crate::core::terminal::process::{basename_command, foreground_process_name};
-use crate::core::tmux::protocol::PaneId;
+use crate::runtime::tmux::protocol::PaneId;
+use crate::terminal::process::{basename_command, foreground_process_name};
 
 /// 本地 pane：根据 vte 子进程 pid 推断当前应显示的程序名。
 pub fn local_foreground_name(pid: i32) -> Option<String> {

@@ -15,8 +15,8 @@ use gtk4::glib::Propagation;
 use gtk4::prelude::*;
 use gtk4::{Box, Entry, Label, Orientation};
 
-use crate::core::tmux::command::{send_keys, Key};
-use crate::core::tmux::protocol::PaneId;
+use crate::runtime::tmux::command::{send_keys, Key};
+use crate::runtime::tmux::protocol::PaneId;
 
 /// 输入栏：水平布局 [pane 标签] [输入框] [发送按钮]。
 pub struct InputBar {

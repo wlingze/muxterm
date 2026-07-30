@@ -198,6 +198,7 @@ fn local_tmux_cli() {
 // 前置条件：共享 loopback sshd（由 CI 或本地环境提供）。
 
 #[test]
+#[ignore = "requires sshd + SSH key setup"]
 fn ssh_shell_cli() {
     run_with_timeout(Duration::from_secs(45), "ssh-shell-cli", || {
         assert!(sshd_available(), "需要 sshd 在 127.0.0.1 监听");
@@ -262,6 +263,7 @@ fn ssh_shell_cli() {
 // 在远端启动 tmux -CC，不是 raw ssh+tmux。
 
 #[test]
+#[ignore = "requires sshd + SSH key setup"]
 fn ssh_tmux_cli() {
     run_with_timeout(Duration::from_secs(60), "ssh-tmux-cli", || {
         assert!(sshd_available(), "需要 sshd");

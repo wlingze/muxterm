@@ -3,19 +3,19 @@
 //! `cli_command_to_task` 把 CliCommand 映射到 TerminalModel 的 Task，
 //! daemon 和 CLI 直接调用模式都需要它。
 
-use crate::core::model::layout::SplitDir;
-use crate::core::model::task::Task;
 use crate::platform::cli::CliCommand;
+use crate::protocol::model::layout::SplitDir;
+use crate::protocol::model::task::Task;
 
 /// 把 CliCommand 转成 TerminalModel 的 Task。
 ///
 /// 查询命令（list-*, capture-pane, display-message）返回 None。
 pub fn cli_command_to_task(
     cmd: &CliCommand,
-    state: &dyn crate::core::model::state::State,
+    state: &dyn crate::protocol::model::state::State,
 ) -> Option<Task> {
-    use crate::core::model::task::Task;
-    use crate::core::terminal::input::KeyEvent;
+    use crate::protocol::model::task::Task;
+    use crate::terminal::input::KeyEvent;
     use CliCommand::*;
 
     match cmd {
@@ -133,8 +133,8 @@ pub fn cli_command_to_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockBackend;
-    use crate::core::model::TerminalModel;
+    use crate::protocol::model::backend::mock::MockBackend;
+    use crate::protocol::model::TerminalModel;
 
     fn make_model() -> TerminalModel {
         TerminalModel::new(Box::new(MockBackend::with_single_pane()))
@@ -146,7 +146,7 @@ mod tests {
         let task = cli_command_to_task(
             &CliCommand::SplitPane {
                 horizontal: true,
-                target: Some(crate::core::types::PaneId(1)),
+                target: Some(crate::types::PaneId(1)),
                 size: None,
             },
             model.state(),
