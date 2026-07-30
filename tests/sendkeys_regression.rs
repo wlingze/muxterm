@@ -180,24 +180,29 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
         })
         .expect("SendKeys 失败");
 
-    // 等待 shell 执行
-    std::thread::sleep(Duration::from_millis(1500));
-
-    // 用原生 tmux capture-pane 验证 marker
-    let output = Command::new("tmux")
-        .args([
-            "-L",
-            &socket,
-            "capture-pane",
-            "-t",
-            &format!("%{}", pane_id.0),
-            "-p",
-            "-S",
-            "-20",
-        ])
-        .output()
-        .expect("capture-pane 失败");
-    let captured = String::from_utf8_lossy(&output.stdout);
+    // 轮询原生 tmux capture-pane 直到出现 marker 或超时（10s），
+    // 替代固定 sleep(1500ms) — 在 CI 慢速 runner 上固定 sleep 会 flake。
+    let cap_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let captured = loop {
+        let output = Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "capture-pane",
+                "-t",
+                &format!("%{}", pane_id.0),
+                "-p",
+                "-S",
+                "-20",
+            ])
+            .output()
+            .expect("capture-pane 失败");
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        if text.contains(&marker) || std::time::Instant::now() >= cap_deadline {
+            break text;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
 
     assert!(
         captured.contains(&marker),
