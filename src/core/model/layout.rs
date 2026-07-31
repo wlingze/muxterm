@@ -1,7 +1,7 @@
 //! 纯布局树：session / window / pane 嵌套分割模型。
 //!
 //! Terminal 层的纯数据结构，**无 I/O、无 GUI 依赖**。
-//! 由 [`crate::protocol::model::state`] 引用，由各 Backend 构造/同步。
+//! 由 [`crate::core::model::state`] 引用，由各 Backend 构造/同步。
 //!
 //! 嵌套模型（非平铺）：每次分割只替换当前激活的叶子 pane，不重排其他 pane。
 //! 参考 `ARCHITECTURE.md` §2.4。

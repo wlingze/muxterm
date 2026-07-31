@@ -7,13 +7,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
+use crate::core::model::task::Task;
+use crate::core::model::TerminalModel;
 use crate::core::types::{PaneId, TabId, WindowId};
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
 };
-use crate::protocol::model::task::Task;
-use crate::protocol::model::TerminalModel;
 use crate::runtime::tmux::TmuxBackend;
 
 /// tmux CLI 命令执行超时（硬限制）。
@@ -66,7 +66,7 @@ where
     F: FnOnce(&mut TerminalModel) -> anyhow::Result<serde_json::Value>,
 {
     let session_exists = tmux_session_exists(socket, session_name);
-    let backend: Box<dyn crate::protocol::model::Backend> = if session_exists {
+    let backend: Box<dyn crate::core::model::Backend> = if session_exists {
         Box::new(TmuxBackend::new_with_attach(socket, session_name))
     } else {
         Box::new(TmuxBackend::new_with_session_name(socket, session_name))
@@ -426,11 +426,9 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                     let _ = model.refresh();
                     let dir = match direction {
                         SplitDirection::Horizontal => {
-                            crate::protocol::model::layout::SplitDir::Horizontal
+                            crate::core::model::layout::SplitDir::Horizontal
                         }
-                        SplitDirection::Vertical => {
-                            crate::protocol::model::layout::SplitDir::Vertical
-                        }
+                        SplitDirection::Vertical => crate::core::model::layout::SplitDir::Vertical,
                     };
                     // 使用 CLI 传入的 pane ID（muxterm pane id = tmux %N 的 N）
                     model.execute(Task::SplitPane {

@@ -21,11 +21,11 @@ use std::process::Command;
 use std::ptr;
 use std::time::Duration;
 
-use muxterm::protocol::ffi::api::{
+use muxterm::core::protocol::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_panes,
     muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_shutdown,
 };
-use muxterm::protocol::ffi::types::{
+use muxterm::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
     TASK_SWITCH_TAB,
 };
@@ -140,7 +140,7 @@ fn layout_has_split(node: &CLayoutNode) -> bool {
     matches!(node.type_, LAYOUT_SPLIT_H | LAYOUT_SPLIT_V)
 }
 
-unsafe fn switch_tab(h: *mut muxterm::protocol::ffi::api::MuxtermHandle, tab_id: u32) {
+unsafe fn switch_tab(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle, tab_id: u32) {
     let task = CTask {
         type_: TASK_SWITCH_TAB,
         target_pane: 0,
@@ -156,7 +156,7 @@ unsafe fn switch_tab(h: *mut muxterm::protocol::ffi::api::MuxtermHandle, tab_id:
     }
 }
 
-unsafe fn active_pane_count(h: *mut muxterm::protocol::ffi::api::MuxtermHandle) -> i32 {
+unsafe fn active_pane_count(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle) -> i32 {
     let mut panes = [CPane {
         id: 0,
         cols: 0,
@@ -167,7 +167,9 @@ unsafe fn active_pane_count(h: *mut muxterm::protocol::ffi::api::MuxtermHandle) 
     muxterm_get_panes(h, 0, panes.as_mut_ptr(), 16)
 }
 
-unsafe fn active_layout_root(h: *mut muxterm::protocol::ffi::api::MuxtermHandle) -> CLayoutNode {
+unsafe fn active_layout_root(
+    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+) -> CLayoutNode {
     let mut root = CLayoutNode {
         type_: LAYOUT_LEAF,
         pane_id: 0,

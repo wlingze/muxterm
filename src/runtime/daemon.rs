@@ -12,16 +12,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
+use crate::core::model::backend::Backend;
+use crate::core::model::layout::{SplitDir, TabLayout};
+use crate::core::model::state::{
+    BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
+};
+use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 use crate::platform::cli::client::send_command;
 use crate::platform::cli::{CliCommand, OutputFormat, StateSnapshot};
-use crate::protocol::model::backend::Backend;
-use crate::protocol::model::layout::{SplitDir, TabLayout};
-use crate::protocol::model::state::{
-    BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
-};
-use crate::protocol::model::task::{Task, TaskOutcome};
 
 /// 通过 unix socket 连接本地 daemon 的 Backend。
 pub struct DaemonBackend {

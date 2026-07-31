@@ -8,8 +8,8 @@
 //! - Backend 通过通道推送 `StateChange` 事件（异步），前端/TerminalModel 订阅。
 //! - 连接（connect）和关闭（shutdown）是异步方法。
 //! - 协议解析器（`tmux::protocol`）、命令构造器（`tmux::command`）是 Backend 的内部实现细节，不暴露给 TerminalModel。
-use crate::protocol::model::state::{BackendStatus, State, StateChange};
-use crate::protocol::model::task::{Task, TaskOutcome};
+use crate::core::model::state::{BackendStatus, State, StateChange};
+use crate::core::model::task::{Task, TaskOutcome};
 use async_trait::async_trait;
 
 /// 终端后端 trait。

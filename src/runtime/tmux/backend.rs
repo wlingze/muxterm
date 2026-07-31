@@ -24,13 +24,13 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
-use crate::protocol::model::backend::Backend;
-use crate::protocol::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::protocol::model::state::{
+use crate::core::model::backend::Backend;
+use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
+use crate::core::model::state::{
     BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };
-use crate::protocol::model::task::{Task, TaskOutcome};
+use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 use crate::runtime::tmux::client::{
     ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent,
 };
@@ -1405,15 +1405,9 @@ mod tests {
         assert_eq!(panes, 3);
         // 完整 layout 应能解析出嵌套 vertical
         let tree = parse_layout_tree(&layout).unwrap();
-        assert_eq!(
-            tree.dir,
-            crate::protocol::model::layout::SplitDir::Horizontal
-        );
+        assert_eq!(tree.dir, crate::core::model::layout::SplitDir::Horizontal);
         let right = tree.children.as_ref().unwrap().1.as_ref();
-        assert_eq!(
-            right.dir,
-            crate::protocol::model::layout::SplitDir::Vertical
-        );
+        assert_eq!(right.dir, crate::core::model::layout::SplitDir::Vertical);
     }
 
     #[test]
