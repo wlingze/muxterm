@@ -1353,8 +1353,8 @@ fn extract_size_from_default(line: &str) -> (u16, u16) {
 }
 
 /// 把抽象 KeyEvent 转成 tmux Key。
-fn key_event_to_tmux_key(ev: &crate::terminal::input::KeyEvent) -> cmd::Key {
-    use crate::terminal::input::{ArrowDir, KeyEvent};
+fn key_event_to_tmux_key(ev: &crate::core::protocol::terminal::input::KeyEvent) -> cmd::Key {
+    use crate::core::protocol::terminal::input::{ArrowDir, KeyEvent};
     match ev {
         KeyEvent::Char(c) => cmd::Key::Literal(c.to_string()),
         KeyEvent::Enter => cmd::Key::enter(),
@@ -1527,7 +1527,7 @@ mod tests {
             let outcome = b
                 .execute(&Task::SendKeys {
                     target: pane,
-                    keys: vec![crate::terminal::input::KeyEvent::Char('x')],
+                    keys: vec![crate::core::protocol::terminal::input::KeyEvent::Char('x')],
                 })
                 .unwrap();
             assert_eq!(outcome, TaskOutcome::Done);

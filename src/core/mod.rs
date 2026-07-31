@@ -3,4 +3,5 @@
 pub mod buffer_cap;
 pub mod config;
 pub mod discovery;
+pub mod protocol;
 pub mod types;

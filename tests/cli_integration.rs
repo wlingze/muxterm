@@ -731,7 +731,9 @@ fn cli_tmux_backend_send_keys() {
     let outcome = model
         .execute(Task::SendKeys {
             target: pane,
-            keys: vec![muxterm::terminal::input::KeyEvent::Char('x')],
+            keys: vec![muxterm::core::protocol::terminal::input::KeyEvent::Char(
+                'x',
+            )],
         })
         .unwrap();
     assert!(matches!(

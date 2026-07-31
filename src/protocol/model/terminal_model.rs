@@ -242,11 +242,11 @@ impl TerminalModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::protocol::terminal::input::KeyEvent;
     use crate::core::types::{PaneId, TabId, WindowId};
     use crate::protocol::model::backend::mock::MockBackend;
     use crate::protocol::model::layout::SplitDir;
     use crate::protocol::model::state::BackendStatus;
-    use crate::terminal::input::KeyEvent;
 
     use std::sync::{Arc, Mutex};
 

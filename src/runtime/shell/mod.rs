@@ -27,6 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::core::config::{expand_config_value, parse_command_argv, program_basename};
+use crate::core::protocol::terminal::input::encode;
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 use crate::protocol::model::backend::Backend;
 use crate::protocol::model::layout::{LayoutNode, TabLayout};
@@ -34,7 +35,6 @@ use crate::protocol::model::state::{
     BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };
 use crate::protocol::model::task::{Task, TaskOutcome};
-use crate::terminal::input::encode;
 
 /// 默认字符格尺寸。
 const DEFAULT_COLS: u16 = 80;
@@ -1432,7 +1432,7 @@ mod tests {
         let outcome = b
             .execute(&Task::SendKeys {
                 target: pane,
-                keys: vec![crate::terminal::input::KeyEvent::Char('x')],
+                keys: vec![crate::core::protocol::terminal::input::KeyEvent::Char('x')],
             })
             .unwrap();
         assert_eq!(outcome, TaskOutcome::Done);
