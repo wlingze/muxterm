@@ -20,3 +20,5 @@ migration-plan.md
 build/macos/
 .build-target/
 .build-tmp/
+src/platform/macos/Vendor/libmuxterm.a
+*.a
