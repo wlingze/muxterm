@@ -60,9 +60,10 @@ sudo apt-get install -y build-essential pkg-config \
 
 | 命令 | 产物 |
 |------|------|
-| `cargo build`（默认 feature `gtk`） | GTK4 桌面前端 |
-| `cargo build --no-default-features --features tui` | 纯终端 TUI（CI / 无头） |
-| `cargo build --no-default-features --features ffi` | C ABI：`libmuxterm.a` + `libmuxterm.so` |
+| `scripts/build-linux.sh`（默认 feature `gtk`） | GTK4 桌面前端 |
+| `scripts/build-tui.sh` | 纯终端 TUI（CI / 无头） |
+| `scripts/build-cli.sh` | C ABI：`libmuxterm.a` + `libmuxterm.so` |
+| `scripts/build-macos.sh` | macOS SwiftUI app（libmuxterm.a + SwiftPM） |
 
 ```bash
 git clone https://github.com/wlingze/muxterm.git
@@ -157,22 +158,34 @@ muxterm -L muxterm
 ```text
 muxterm/
 ├── src/
-│   ├── main.rs                 # 入口（clap + tracing）
-│   ├── core/                   # 可跨平台核心
-│   │   ├── tmux/               # -CC 协议解析、命令、本地 pty 客户端
-│   │   ├── ssh/                # 远程 tmux -CC（SSH）
-│   │   ├── terminal/           # 进程 / scrollback / 输入抽象
-│   │   ├── config.rs           # TOML 配置
-│   │   └── types.rs
-│   └── platform/linux/         # GTK4 + vte4 UI
-│       ├── app.rs / window.rs  # 应用与主窗口
-│       ├── notebook.rs         # tab
-│       ├── pane_view.rs        # pane 终端视图
-│       ├── command_palette.rs  # 命令面板
-│       └── ...
+│   ├── lib.rs                  # 库根（pub mod core + platform）
+│   ├── main.rs                 # 薄入口（arg 解析 → 委托 platform::cli/tui/linux）
+│   ├── core/                   # 非 GUI 核心，平台无关
+│   │   ├── model/              # Session→Window→Tab→Pane 模型 + Backend trait
+│   │   ├── protocol/
+│   │   │   ├── terminal/       # 输入编码 / 进程查询 / scrollback
+│   │   │   └── ffi/            # C ABI 导出（macOS/Linux TUI 经此调用）
+│   │   ├── runtime/
+│   │   │   ├── shell/          # 本地 shell 后端（LocalBackend）
+│   │   │   ├── tmux/           # tmux -CC 后端 + 协议解析 + pty
+│   │   │   └── daemon.rs       # daemon IPC 后端（DaemonBackend）
+│   │   ├── transport/          # local + ssh 字节流传输
+│   │   ├── config.rs           # TOML 配置 + 主题
+│   │   ├── discovery.rs        # SSH session 发现
+│   │   ├── types.rs            # PaneId / WindowId / TabId / SessionId
+│   │   └── buffer_cap.rs       # 输出/事件有界缓冲
+│   └── platform/              # 前端
+│       ├── cli/               # CLI 命令（解析 + 路由 + daemon + 格式化）
+│       ├── tui/               # crossterm TUI（feature = "tui"）
+│       ├── linux/             # GTK4 + vte4（feature = "gtk"）
+│       └── macos/             # SwiftUI + SwiftPM（C ABI via CoreBridge）
+├── scripts/                    # 构建脚本
+│   ├── build-cli.sh            # cargo build --features ffi
+│   ├── build-tui.sh            # cargo build --features tui
+│   ├── build-linux.sh          # cargo build --features gtk
+│   └── build-macos.sh          # cargo build ffi release + swift build
 ├── configs/                    # 示例配置与主题
-├── assets/                     # 样式与截图
-├── tests/                      # 集成 / 样例测试
+├── tests/                      # 集成 / 回归测试
 ├── PRODUCT.md                  # 产品规划
 ├── ARCHITECTURE.md             # 架构与交互规范
 └── AGENTS.md                   # 给 coding agent 的开发约定
