@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use gtk4::prelude::*;
 use gtk4::{Label, Notebook, Orientation, Paned, PositionType, Widget};
 
-use crate::core::runtime::tmux::protocol::{PaneId, WindowId};
 use crate::platform::linux::pane_view::PaneView;
 
 /// 我们 app 的 Tab 标识。
@@ -22,7 +21,7 @@ pub enum TabKey {
     /// 本地程序 tab。
     Local(u64),
     /// 对应一个 tmux window（不是 pane）。
-    TmuxWindow(WindowId),
+    TmuxWindow(u32),
 }
 
 /// 一个本地 pane 在 tab 内的序号。
@@ -33,7 +32,7 @@ pub struct LocalPaneId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaneKey {
     Local(LocalPaneId),
-    Tmux(PaneId),
+    Tmux(u32),
 }
 
 /// 分割方向（与 GTK Orientation 对应：Horizontal=左右，Vertical=上下）。
@@ -177,7 +176,7 @@ impl LayoutNode {
     /// 转成二叉 PaneNode（多子节点时左结合嵌套）。
     pub fn to_pane_node(&self) -> PaneNode {
         match self {
-            LayoutNode::Leaf(id) => PaneNode::Leaf(PaneKey::Tmux(PaneId(*id))),
+            LayoutNode::Leaf(id) => PaneNode::Leaf(PaneKey::Tmux(*id)),
             LayoutNode::Split { vertical, children } => {
                 let orient = if *vertical {
                     SplitOrient::Vertical
@@ -186,7 +185,7 @@ impl LayoutNode {
                 };
                 let mut nodes: Vec<PaneNode> = children.iter().map(|c| c.to_pane_node()).collect();
                 if nodes.is_empty() {
-                    return PaneNode::Leaf(PaneKey::Tmux(PaneId(0)));
+                    return PaneNode::Leaf(PaneKey::Tmux(0));
                 }
                 let mut acc = nodes.remove(0);
                 for n in nodes {
@@ -384,7 +383,7 @@ impl PaneNotebook {
     /// 确保存在对应 tmux window 的 tab；若无则用首个 pane 创建。
     pub fn ensure_tmux_window_tab(
         &mut self,
-        window: WindowId,
+        window: u32,
         first_pane: &PaneView,
         title: &str,
     ) -> TabKey {
@@ -392,7 +391,7 @@ impl PaneNotebook {
         if self.tabs.contains_key(&key) {
             return key;
         }
-        let pane_key = PaneKey::Tmux(PaneId(first_pane.pane_id()));
+        let pane_key = PaneKey::Tmux(first_pane.pane_id());
         let content = TabContent::single(pane_key, first_pane.terminal());
         let widget = content.root.clone();
         let idx = self.append(&widget, title);
@@ -604,7 +603,7 @@ impl PaneNotebook {
         match key {
             TabKey::TmuxWindow(w) => match name {
                 Some(n) if !n.is_empty() => n.to_string(),
-                _ => format!("@{}", w.0),
+                _ => format!("@{w}"),
             },
             TabKey::Local(_) => "shell".into(),
         }
@@ -714,11 +713,7 @@ mod tests {
         let pane_tree = tree.to_pane_node();
         assert_eq!(
             pane_tree.leaves(),
-            vec![
-                PaneKey::Tmux(PaneId(1)),
-                PaneKey::Tmux(PaneId(2)),
-                PaneKey::Tmux(PaneId(3))
-            ]
+            vec![PaneKey::Tmux(1), PaneKey::Tmux(2), PaneKey::Tmux(3)]
         );
     }
 
@@ -925,11 +920,11 @@ mod tests {
     fn test_notebook_default_title() {
         assert_eq!(PaneNotebook::default_title(TabKey::Local(1), None), "shell");
         assert_eq!(
-            PaneNotebook::default_title(TabKey::TmuxWindow(WindowId(3)), Some("bash")),
+            PaneNotebook::default_title(TabKey::TmuxWindow(3), Some("bash")),
             "bash"
         );
         assert_eq!(
-            PaneNotebook::default_title(TabKey::TmuxWindow(WindowId(3)), None),
+            PaneNotebook::default_title(TabKey::TmuxWindow(3), None),
             "@3"
         );
     }
