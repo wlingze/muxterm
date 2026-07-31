@@ -402,9 +402,9 @@ fn paneid_to_tabid_to_windowid_mapping_matches_tmux_window_id() {
 /// 这个测试保持 model 存活足够长，所以命令能到达 tmux。
 #[test]
 fn backend_split_actually_creates_pane_in_tmux() {
-    use muxterm::protocol::model::layout::SplitDir;
-    use muxterm::protocol::model::task::Task;
-    use muxterm::protocol::model::TerminalModel;
+    use muxterm::core::model::layout::SplitDir;
+    use muxterm::core::model::task::Task;
+    use muxterm::core::model::TerminalModel;
     use muxterm::runtime::TmuxBackend;
 
     let socket = unique_socket("layer4");

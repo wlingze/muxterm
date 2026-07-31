@@ -8,11 +8,11 @@
 #![allow(dead_code)]
 
 use super::*;
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 #[allow(unused_imports)]
-use crate::protocol::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::protocol::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
-use crate::protocol::model::task::Task;
+use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
+use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
+use crate::core::model::task::Task;
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。
 pub struct MockBackend {

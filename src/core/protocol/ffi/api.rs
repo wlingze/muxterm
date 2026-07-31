@@ -6,12 +6,12 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
+use crate::core::model::layout::{LayoutNode, SplitDir};
+use crate::core::model::state::StateChange;
+use crate::core::model::task::Task;
+use crate::core::model::terminal_model::TerminalModel;
 use crate::core::types::{PaneId, TabId, WindowId};
 use crate::platform::cli::session::session_socket_path;
-use crate::protocol::model::layout::{LayoutNode, SplitDir};
-use crate::protocol::model::state::StateChange;
-use crate::protocol::model::task::Task;
-use crate::protocol::model::terminal_model::TerminalModel;
 use crate::runtime::{DaemonBackend, LocalBackend, TmuxBackend};
 
 use super::callbacks::FfiCallbacks;
@@ -89,7 +89,7 @@ pub extern "C" fn muxterm_new(
     let sock = cstr_opt(socket);
     let sess = cstr_opt(session);
 
-    let backend: Box<dyn crate::protocol::model::Backend> = match kind.as_str() {
+    let backend: Box<dyn crate::core::model::Backend> = match kind.as_str() {
         "tmux" => {
             let sock_ref = sock.as_deref();
             if let Some(name) = sess.as_deref() {
@@ -324,11 +324,11 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
         StateChange::BackendStatusChanged(status) => {
             out.type_ = STATE_BACKEND_STATUS;
             out.pane_id = match status {
-                crate::protocol::model::state::BackendStatus::Disconnected => 0,
-                crate::protocol::model::state::BackendStatus::Connecting => 1,
-                crate::protocol::model::state::BackendStatus::Connected => 2,
-                crate::protocol::model::state::BackendStatus::Error => 3,
-                crate::protocol::model::state::BackendStatus::Exited => 4,
+                crate::core::model::state::BackendStatus::Disconnected => 0,
+                crate::core::model::state::BackendStatus::Connecting => 1,
+                crate::core::model::state::BackendStatus::Connected => 2,
+                crate::core::model::state::BackendStatus::Error => 3,
+                crate::core::model::state::BackendStatus::Exited => 4,
             };
         }
         StateChange::PaneTitleChanged { pane, title } => {
@@ -652,8 +652,8 @@ fn fixup_layout_pointers(pool: &mut [CLayoutNode]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ffi::muxterm_set_callbacks;
-    use crate::protocol::ffi::types::DIR_HORIZONTAL;
+    use crate::core::protocol::ffi::muxterm_set_callbacks;
+    use crate::core::protocol::ffi::types::DIR_HORIZONTAL;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]

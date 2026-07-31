@@ -295,7 +295,7 @@ fn switch_tab_n(s: &mut UiState, n: usize) {
 }
 
 fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
-    use crate::protocol::ffi::types::*;
+    use crate::core::protocol::ffi::types::*;
     match ev.type_ {
         STATE_PANE_OUTPUT => {
             if let Some(view) = s.layout.pane(ev.pane_id) {

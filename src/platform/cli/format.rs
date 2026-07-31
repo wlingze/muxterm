@@ -2,8 +2,8 @@
 //!
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
+use crate::core::model::state::State;
 use crate::core::types::{PaneId, TabId, WindowId};
-use crate::protocol::model::state::State;
 
 /// 输出格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -48,14 +48,14 @@ pub fn format_output(
 /// 完整状态快照（供 TUI DaemonBackend 反序列化）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StateSnapshot {
-    pub sessions: Vec<crate::protocol::model::state::SessionInfo>,
-    pub windows: Vec<crate::protocol::model::state::WindowInfo>,
-    pub tabs: Vec<crate::protocol::model::state::TabInfo>,
-    pub panes: Vec<crate::protocol::model::state::PaneInfo>,
-    pub layouts: Vec<crate::protocol::model::layout::TabLayout>,
+    pub sessions: Vec<crate::core::model::state::SessionInfo>,
+    pub windows: Vec<crate::core::model::state::WindowInfo>,
+    pub tabs: Vec<crate::core::model::state::TabInfo>,
+    pub panes: Vec<crate::core::model::state::PaneInfo>,
+    pub layouts: Vec<crate::core::model::layout::TabLayout>,
     /// pane_id.0 → 累计输出（lossy UTF-8；含 ANSI）。
     pub outputs: Vec<(u32, String)>,
-    pub status: crate::protocol::model::state::BackendStatus,
+    pub status: crate::core::model::state::BackendStatus,
     pub active_session: Option<u32>,
     pub active_window: Option<u32>,
     pub active_tab: Option<u32>,
@@ -327,8 +327,8 @@ fn format_layout(state: &dyn State, window: Option<WindowId>, format: OutputForm
     }
 }
 
-fn layout_node_to_json(node: &crate::protocol::model::layout::LayoutNode) -> String {
-    use crate::protocol::model::layout::LayoutNode;
+fn layout_node_to_json(node: &crate::core::model::layout::LayoutNode) -> String {
+    use crate::core::model::layout::LayoutNode;
     match node {
         LayoutNode::Leaf(pid) => format!(r#""@{}""#, pid.0),
         LayoutNode::Split {
@@ -338,8 +338,8 @@ fn layout_node_to_json(node: &crate::protocol::model::layout::LayoutNode) -> Str
             second,
         } => {
             let dir_str = match dir {
-                crate::protocol::model::layout::SplitDir::Horizontal => "horizontal",
-                crate::protocol::model::layout::SplitDir::Vertical => "vertical",
+                crate::core::model::layout::SplitDir::Horizontal => "horizontal",
+                crate::core::model::layout::SplitDir::Vertical => "vertical",
             };
             format!(
                 r#"{{"type":"split","dir":"{}","ratio":{},"first":{},"second":{}}}"#,
@@ -397,9 +397,9 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::backend::mock::MockBackend;
     use crate::core::types::PaneId;
     use crate::platform::cli::command::CliCommand;
-    use crate::protocol::model::backend::mock::MockBackend;
 
     fn mock_with_pane() -> MockBackend {
         MockBackend::with_single_pane()

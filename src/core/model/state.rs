@@ -87,7 +87,7 @@ pub enum StateChange {
     LayoutChanged {
         tab: TabId,
         /// 新布局树（完整快照，非增量）。
-        layout: crate::protocol::model::layout::TabLayout,
+        layout: crate::core::model::layout::TabLayout,
     },
     /// pane 被加入（split 的结果，或 tmux 新建 pane）。
     PaneAdded { pane: PaneId, tab: TabId },
@@ -164,7 +164,7 @@ pub trait State {
     fn tab(&self, tab: &TabId) -> Option<&TabInfo>;
 
     /// 某 tab 的布局树。
-    fn layout(&self, tab: &TabId) -> Option<&crate::protocol::model::layout::TabLayout>;
+    fn layout(&self, tab: &TabId) -> Option<&crate::core::model::layout::TabLayout>;
 
     /// 某 tab 下的所有 pane。
     fn panes(&self, tab: &TabId) -> Vec<&PaneInfo>;
@@ -183,7 +183,7 @@ pub trait State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::model::layout::LayoutNode;
+    use crate::core::model::layout::LayoutNode;
 
     /// 一个最小可用的内存 State 实现，用于 trait 编译期检查 + 后续 mock。
     struct MemState {
@@ -191,7 +191,7 @@ mod tests {
         windows: Vec<WindowInfo>,
         tabs: Vec<TabInfo>,
         panes: Vec<PaneInfo>,
-        layouts: Vec<crate::protocol::model::layout::TabLayout>,
+        layouts: Vec<crate::core::model::layout::TabLayout>,
         outputs: Vec<(PaneId, Vec<u8>)>,
         status: BackendStatus,
         active_session: Option<SessionId>,
@@ -229,7 +229,7 @@ mod tests {
         fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
             self.tabs.iter().find(|t| &t.id == tab)
         }
-        fn layout(&self, tab: &TabId) -> Option<&crate::protocol::model::layout::TabLayout> {
+        fn layout(&self, tab: &TabId) -> Option<&crate::core::model::layout::TabLayout> {
             self.layouts.iter().find(|l| &l.tab == tab)
         }
         fn panes(&self, tab: &TabId) -> Vec<&PaneInfo> {
@@ -277,7 +277,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
             }],
-            layouts: vec![crate::protocol::model::layout::TabLayout {
+            layouts: vec![crate::core::model::layout::TabLayout {
                 tab: TabId(1),
                 tree: LayoutNode::leaf(PaneId(1)),
                 active: PaneId(1),

@@ -8,10 +8,10 @@
 
 #![cfg(feature = "tui")]
 
+use muxterm::core::model::task::Task;
+use muxterm::core::model::TerminalModel;
 use muxterm::core::types::{PaneId, TabId, WindowId};
 use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
-use muxterm::protocol::model::task::Task;
-use muxterm::protocol::model::TerminalModel;
 use muxterm::runtime::LocalBackend;
 
 fn make_model() -> TerminalModel {
@@ -232,7 +232,7 @@ fn cli_split_pane_and_list() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -254,7 +254,7 @@ fn cli_split_pane_text_format() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::protocol::model::layout::SplitDir::Vertical,
+            dir: muxterm::core::model::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -276,7 +276,7 @@ fn cli_kill_pane() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -295,7 +295,7 @@ fn cli_select_pane() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -362,8 +362,8 @@ fn cli_send_keys_and_capture() {
 
 #[test]
 fn cli_capture_pane_with_lines_limit() {
-    use muxterm::protocol::model::backend::mock::MockBackend;
-    use muxterm::protocol::model::TerminalModel;
+    use muxterm::core::model::backend::mock::MockBackend;
+    use muxterm::core::model::TerminalModel;
     let mut b = MockBackend::with_single_pane();
     b.outputs[0].1 = b"alpha\nbeta\ngamma\ndelta\n".to_vec();
     let model = TerminalModel::new(Box::new(b));
@@ -413,7 +413,7 @@ fn cli_list_layout_after_split() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -439,7 +439,7 @@ fn cli_nested_split_layout_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -454,7 +454,7 @@ fn cli_nested_split_layout_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane2),
-            dir: muxterm::protocol::model::layout::SplitDir::Vertical,
+            dir: muxterm::core::model::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -510,7 +510,7 @@ fn cli_nested_split_text_layout_shows_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::protocol::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -522,7 +522,7 @@ fn cli_nested_split_text_layout_shows_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::protocol::model::layout::SplitDir::Vertical,
+            dir: muxterm::core::model::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -738,7 +738,7 @@ fn cli_tmux_backend_send_keys() {
         .unwrap();
     assert!(matches!(
         outcome,
-        muxterm::protocol::model::task::TaskOutcome::Done
+        muxterm::core::model::task::TaskOutcome::Done
     ));
 
     let _ = rt.block_on(model.shutdown());

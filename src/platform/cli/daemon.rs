@@ -17,10 +17,10 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
+use crate::core::model::TerminalModel;
 use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::format_output;
 use crate::platform::cli::ipc::{Request, Response};
-use crate::protocol::model::TerminalModel;
 use crate::runtime::shell::LocalBackend;
 
 /// daemon 共享状态：单个 TerminalModel（线程安全包装）。
@@ -44,7 +44,7 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
 
     // 创建 backend + model
     // 有 tmux_socket → TmuxBackend（-CC 连接 tmux），否则 LocalBackend
-    let backend: Box<dyn crate::protocol::model::Backend> = if let Some(ref ts) = tmux_socket {
+    let backend: Box<dyn crate::core::model::Backend> = if let Some(ref ts) = tmux_socket {
         // 检查 tmux server 是否已有同名 session
         let existing = std::process::Command::new("tmux")
             .args(["-L", ts, "list-sessions", "-F", "#{session_name}"])

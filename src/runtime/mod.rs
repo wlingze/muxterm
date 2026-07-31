@@ -15,7 +15,7 @@ pub mod shell;
 pub mod tmux;
 
 // Re-export Backend trait from model
-pub use crate::protocol::model::backend::Backend;
+pub use crate::core::model::backend::Backend;
 
 // Re-export backend implementations
 pub use daemon::DaemonBackend;

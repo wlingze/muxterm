@@ -39,7 +39,7 @@ pub const LAYOUT_SPLIT_V: u32 = 2;
 
 /// 状态变更事件（核心 → 平台）。
 ///
-/// `data` / `name` 指向由 [`crate::protocol::ffi::api::MuxtermHandle`] 持有的缓冲，
+/// `data` / `name` 指向由 [`crate::core::protocol::ffi::api::MuxtermHandle`] 持有的缓冲，
 /// 在下一次 `muxterm_poll_events` / `muxterm_free` 前有效。
 #[repr(C)]
 #[derive(Clone, Copy)]

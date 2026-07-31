@@ -27,14 +27,14 @@ use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::core::config::{expand_config_value, parse_command_argv, program_basename};
-use crate::core::protocol::terminal::input::encode;
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
-use crate::protocol::model::backend::Backend;
-use crate::protocol::model::layout::{LayoutNode, TabLayout};
-use crate::protocol::model::state::{
+use crate::core::model::backend::Backend;
+use crate::core::model::layout::{LayoutNode, TabLayout};
+use crate::core::model::state::{
     BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };
-use crate::protocol::model::task::{Task, TaskOutcome};
+use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::protocol::terminal::input::encode;
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 默认字符格尺寸。
 const DEFAULT_COLS: u16 = 80;
@@ -1212,7 +1212,7 @@ impl Backend for LocalBackend {
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::protocol::model::layout::SplitDir;
+    use crate::core::model::layout::SplitDir;
 
     fn backend() -> LocalBackend {
         // 长驻进程，避免测试中途 Exit 触发「末 pane 关 window」逻辑。
