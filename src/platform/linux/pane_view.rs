@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use vte4::prelude::*;
 
-use crate::config::Theme;
+use crate::core::config::Theme;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 
 /// 一个 pane 的 GTK 视图。

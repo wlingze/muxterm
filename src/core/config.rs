@@ -157,14 +157,14 @@ impl SshFileConfig {
         !self.host.trim().is_empty()
     }
 
-    /// 转为运行时 [`crate::config::SshConfig`]。
-    pub fn to_ssh_config(&self) -> crate::config::SshConfig {
+    /// 转为运行时 [`crate::core::config::SshConfig`]。
+    pub fn to_ssh_config(&self) -> crate::core::config::SshConfig {
         let user = if self.user.trim().is_empty() {
             std::env::var("USER").unwrap_or_else(|_| "root".into())
         } else {
             self.user.clone()
         };
-        crate::config::SshConfig::from_file_fields(
+        crate::core::config::SshConfig::from_file_fields(
             self.host.clone(),
             self.port,
             user,

@@ -10,9 +10,7 @@
 
 use clap::Parser;
 
-mod config;
 mod core;
-mod discovery;
 mod platform;
 #[cfg(feature = "ffi")]
 mod protocol;
