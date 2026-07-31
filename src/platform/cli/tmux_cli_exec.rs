@@ -174,7 +174,8 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
             check_timeout(deadline)?;
             match target {
                 Target::Local => {
-                    let sessions = crate::discovery::list_local_tmux_sessions(socket.as_deref());
+                    let sessions =
+                        crate::core::discovery::list_local_tmux_sessions(socket.as_deref());
                     let arr: Vec<serde_json::Value> = sessions
                         .iter()
                         .map(|s| {
@@ -190,7 +191,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                 }
                 Target::Ssh { alias } => {
                     let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                    let sessions = crate::discovery::list_ssh_tmux_sessions(
+                    let sessions = crate::core::discovery::list_ssh_tmux_sessions(
                         alias,
                         ssh_config.as_deref(),
                         socket.as_deref(),
@@ -388,7 +389,7 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                 }),
                 Target::Ssh { alias } => {
                     let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                    let panes = crate::discovery::list_ssh_tmux_panes(
+                    let panes = crate::core::discovery::list_ssh_tmux_panes(
                         alias,
                         ssh_config.as_deref(),
                         socket.as_deref(),

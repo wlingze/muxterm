@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::mpsc;
 
-use crate::config::{expand_config_value, parse_command_argv, program_basename};
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
+use crate::core::config::{expand_config_value, parse_command_argv, program_basename};
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 use crate::protocol::model::backend::Backend;
 use crate::protocol::model::layout::{LayoutNode, TabLayout};
@@ -143,7 +143,7 @@ impl LocalBackend {
     }
 
     /// 用 `Config` 创建。
-    pub fn from_config(config: &crate::config::Config) -> Self {
+    pub fn from_config(config: &crate::core::config::Config) -> Self {
         Self::new(
             config.pane.default_command.clone(),
             config.pane.workdir.clone(),
@@ -1211,7 +1211,7 @@ impl Backend for LocalBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::core::config::Config;
     use crate::protocol::model::layout::SplitDir;
 
     fn backend() -> LocalBackend {

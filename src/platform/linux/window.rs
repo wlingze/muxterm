@@ -15,7 +15,7 @@ use gtk4::{
     Align, ApplicationWindow, Box, CssProvider, EventControllerKey, Label, Orientation, Window,
 };
 
-use crate::config::{Action, Config, Theme};
+use crate::core::config::{Action, Config, Theme};
 use crate::platform::linux::ffi_bridge::{tasks, BridgeEvent, CoreBridge};
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;

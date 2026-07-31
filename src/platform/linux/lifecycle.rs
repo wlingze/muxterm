@@ -1,6 +1,6 @@
 //! Pane / tab 生命周期纯决策（不依赖 GTK），便于单测防回归。
 
-use crate::config::{OnLastPaneExit, OnProgramExitAbnormal};
+use crate::core::config::{OnLastPaneExit, OnProgramExitAbnormal};
 
 /// 本地程序退出后对 pane 的处置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

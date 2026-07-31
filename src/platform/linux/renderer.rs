@@ -6,7 +6,7 @@ use gtk4::prelude::*;
 use vte4::prelude::*;
 use vte4::Terminal;
 
-use crate::config::{Rgb, Theme};
+use crate::core::config::{Rgb, Theme};
 
 /// 终端渲染 trait（平台无关接口，便于日后换 GPU 实现）。
 pub trait TerminalRenderer {
