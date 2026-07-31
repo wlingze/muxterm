@@ -6,13 +6,13 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
+use crate::core::types::{PaneId, TabId, WindowId};
 use crate::platform::cli::session::session_socket_path;
 use crate::protocol::model::layout::{LayoutNode, SplitDir};
 use crate::protocol::model::state::StateChange;
 use crate::protocol::model::task::Task;
 use crate::protocol::model::terminal_model::TerminalModel;
 use crate::runtime::{DaemonBackend, LocalBackend, TmuxBackend};
-use crate::types::{PaneId, TabId, WindowId};
 
 use super::callbacks::FfiCallbacks;
 use super::types::{

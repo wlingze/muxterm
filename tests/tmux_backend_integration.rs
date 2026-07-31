@@ -9,12 +9,12 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
+use muxterm::core::types::{PaneId, TabId, WindowId};
 use muxterm::protocol::model::layout::SplitDir;
 use muxterm::protocol::model::state::{BackendStatus, State};
 use muxterm::protocol::model::task::Task;
 use muxterm::protocol::model::TerminalModel;
 use muxterm::runtime::TmuxBackend;
-use muxterm::types::{PaneId, TabId, WindowId};
 use std::process::Command;
 use std::time::{Duration, Instant};
 

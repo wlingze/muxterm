@@ -25,8 +25,9 @@ use async_trait::async_trait;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::mpsc;
 
-use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::config::{expand_config_value, parse_command_argv, program_basename};
+use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 use crate::protocol::model::backend::Backend;
 use crate::protocol::model::layout::{LayoutNode, TabLayout};
 use crate::protocol::model::state::{
@@ -34,7 +35,6 @@ use crate::protocol::model::state::{
 };
 use crate::protocol::model::task::{Task, TaskOutcome};
 use crate::terminal::input::encode;
-use crate::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 默认字符格尺寸。
 const DEFAULT_COLS: u16 = 80;

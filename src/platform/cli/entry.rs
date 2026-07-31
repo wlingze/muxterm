@@ -146,7 +146,7 @@ mod tests {
         let task = cli_command_to_task(
             &CliCommand::SplitPane {
                 horizontal: true,
-                target: Some(crate::types::PaneId(1)),
+                target: Some(crate::core::types::PaneId(1)),
                 size: None,
             },
             model.state(),

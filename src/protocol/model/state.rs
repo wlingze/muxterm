@@ -7,7 +7,7 @@
 //! - 前端只读 `State` 做渲染；状态变更通过 `BackendEvent` 推送（见 `backend.rs`）。
 //! - pane 输出是字节流（`&[u8]`），因为可能含非 UTF-8 的 ANSI 序列。
 //! - 所有方法返回 `Option` / `&` 引用，不 clone，便于高频渲染。
-use crate::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 一个 session 的元信息。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

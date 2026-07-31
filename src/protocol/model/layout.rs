@@ -5,7 +5,7 @@
 //!
 //! 嵌套模型（非平铺）：每次分割只替换当前激活的叶子 pane，不重排其他 pane。
 //! 参考 `ARCHITECTURE.md` §2.4。
-use crate::types::PaneId;
+use crate::core::types::PaneId;
 
 /// 分割方向。
 ///
@@ -157,7 +157,7 @@ pub struct RemoveRootError;
 /// （由 Backend 从 tmux `window_layout` 或本地 vte4 尺寸同步）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TabLayout {
-    pub tab: crate::types::TabId,
+    pub tab: crate::core::types::TabId,
     pub tree: LayoutNode,
     /// 激活 pane。
     pub active: PaneId,
@@ -268,11 +268,11 @@ mod tests {
     fn window_layout_fields() {
         let t = LayoutNode::leaf(p(1));
         let wl = TabLayout {
-            tab: crate::types::TabId(1),
+            tab: crate::core::types::TabId(1),
             tree: t,
             active: p(1),
         };
-        assert_eq!(wl.tab, crate::types::TabId(1));
+        assert_eq!(wl.tab, crate::core::types::TabId(1));
         assert_eq!(wl.active, p(1));
         assert_eq!(wl.tree.leaves(), vec![p(1)]);
     }

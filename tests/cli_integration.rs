@@ -8,11 +8,11 @@
 
 #![cfg(feature = "tui")]
 
+use muxterm::core::types::{PaneId, TabId, WindowId};
 use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 use muxterm::protocol::model::task::Task;
 use muxterm::protocol::model::TerminalModel;
 use muxterm::runtime::LocalBackend;
-use muxterm::types::{PaneId, TabId, WindowId};
 
 fn make_model() -> TerminalModel {
     // cat：阻塞读 stdin、回显 stdout，适合结构测试 + WriteRaw/capture
@@ -753,9 +753,9 @@ fn cli_tmux_backend_send_keys() {
 #[cfg(unix)]
 mod daemon_tests {
     use super::*;
+    use muxterm::core::types::PaneId;
     use muxterm::platform::cli::client::send_command;
     use muxterm::platform::cli::session::session_socket_path;
-    use muxterm::types::PaneId;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 

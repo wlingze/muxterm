@@ -13,10 +13,10 @@
 //! - TerminalModel 不直接改 state，state 由 backend 维护；model 只做编排 + 事件聚合
 //! - 需要当前激活 pane 的 Task（`needs_active_pane()`），model 从 state 查询后填入
 //! - 回调在 `poll_events()` 时同步触发（不在 backend execute 时触发），保证单线程确定性
+use crate::core::types::PaneId;
 use crate::protocol::model::backend::Backend;
 use crate::protocol::model::state::{State, StateChange};
 use crate::protocol::model::task::{Task, TaskOutcome};
-use crate::types::PaneId;
 use std::collections::VecDeque;
 
 /// 状态变更回调类型。
@@ -242,11 +242,11 @@ impl TerminalModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::types::{PaneId, TabId, WindowId};
     use crate::protocol::model::backend::mock::MockBackend;
     use crate::protocol::model::layout::SplitDir;
     use crate::protocol::model::state::BackendStatus;
     use crate::terminal::input::KeyEvent;
-    use crate::types::{PaneId, TabId, WindowId};
 
     use std::sync::{Arc, Mutex};
 

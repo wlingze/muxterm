@@ -10,8 +10,8 @@
 
 use clap::Parser;
 
-mod buffer_cap;
 mod config;
+mod core;
 mod discovery;
 mod platform;
 #[cfg(feature = "ffi")]
@@ -19,7 +19,6 @@ mod protocol;
 mod runtime;
 mod terminal;
 mod transport;
-mod types;
 
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]

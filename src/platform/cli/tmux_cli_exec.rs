@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
+use crate::core::types::{PaneId, TabId, WindowId};
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
@@ -14,7 +15,6 @@ use crate::platform::cli::tmux_cli::{
 use crate::protocol::model::task::Task;
 use crate::protocol::model::TerminalModel;
 use crate::runtime::tmux::TmuxBackend;
-use crate::types::{PaneId, TabId, WindowId};
 
 /// tmux CLI 命令执行超时（硬限制）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15);

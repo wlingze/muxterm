@@ -19,7 +19,7 @@
 use super::command::TmuxCommand;
 use super::protocol::{parse_line, Message, NotificationKind};
 use super::pty::{self, split_master, PtyChild, PtyReader, PtyWriter};
-use crate::buffer_cap::{trim_incomplete_line, MAX_INCOMPLETE_LINE_BYTES};
+use crate::core::buffer_cap::{trim_incomplete_line, MAX_INCOMPLETE_LINE_BYTES};
 use anyhow::{anyhow, Context, Result};
 use std::process::Stdio;
 use tokio::process::{Child, ChildStdout};
