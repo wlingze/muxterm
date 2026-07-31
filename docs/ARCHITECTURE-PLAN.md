@@ -39,7 +39,7 @@
 ### 1.3 FFI 模块设计
 
 ```
-src/protocol/ffi/
+src/core/protocol/ffi/
 ├── mod.rs          # FFI 根模块
 ├── types.rs        # C 友好类型（CStateChange, CTask, CPaneId 等）
 ├── api.rs          # 导出函数（muxterm_connect, muxterm_execute, muxterm_poll_events）
@@ -154,14 +154,14 @@ ffi = []
 ### 1.7 实现步骤
 
 1. 把 `config.rs` 里的 `gtk4::gdk::ModifierType` 转换移到 `src/platform/linux/`
-2. 新建 `src/protocol/ffi/` 模块（已实现）
+2. 新建 `src/core/protocol/ffi/` 模块（已实现）
 3. 定义 C 友好类型（types.rs）
 4. 实现导出函数（api.rs）—— 内部持有 `TerminalModel`，包装同步调用
 5. async fn connect/shutdown 改为同步（内部 tokio runtime block_on）
 6. 添加 `#[cfg(feature = "ffi")]` gate
 7. 测试：C 程序 link staticlib，验证基本流程
 
-> **更新**：上述步骤已部分完成（`src/protocol/ffi/` 已存在并工作）。
+> **更新**：上述步骤已部分完成（`src/core/protocol/ffi/` 已存在并工作）。
 > 后续 FFI 扩展计划见 `TRANSPORT-PROTOCOL-ARCHITECTURE.md` §13（阶段 5）。
 
 ---
@@ -316,7 +316,7 @@ macos/
 
 ### Phase 1a: C ABI 导出（立即开始）
 1. 移除 config/ 的 gtk4 依赖（已完成）
-2. 新建 src/protocol/ffi/ 模块
+2. 新建 src/core/protocol/ffi/ 模块
 3. 定义 C 类型 + 导出函数
 4. Cargo.toml 加 crate-type = ["staticlib", "cdylib"]
 5. 写 C 测试程序验证 FFI

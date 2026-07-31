@@ -104,11 +104,11 @@ muxterm/
 
 ---
 
-## 2. 目标目录结构（proposed，已实现为扁平布局）
+## 2. 目标目录结构（已实现）
 
-> **更新（PR #11）**：以下 `[proposed]` 结构已实现，但采用**扁平顶层布局**而非 `src/core/` 前缀：
-> `protocol/`、`runtime/`、`transport/`、`config/`、`discovery/`、`terminal/`、`types.rs`、`buffer_cap.rs` 直接位于 `src/` 顶层；
-> `ffi/` 归入 `protocol/ffi/`；`tmux/` 归入 `runtime/tmux/`；`SshConfig` 作为纯配置留在 `config/`（`RemoteTmuxClient` 在 `runtime/tmux/`）。
+> **更新（PR #11）**：以下 `[proposed]` 已被 `src/core/` + `src/platform/` 两层结构取代。
+> `src/core/{model,protocol,runtime,transport,config,discovery,types,buffer_cap}`；
+> `protocol/ffi/` 为 C ABI 导出；`terminal/` 归入 `protocol/terminal/`；`SshConfig` 在 `config.rs`；`RemoteTmuxClient` 在 `runtime/tmux/ssh_client.rs`。
 > 以下树保留为历史设计记录。
 
 ```
