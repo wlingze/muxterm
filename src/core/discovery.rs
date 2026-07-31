@@ -90,8 +90,8 @@ pub fn list_ssh_tmux_sessions(
     remote_socket: Option<&str>,
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<TmuxSessionInfo>> {
-    use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-    use crate::transport::{PtySize, Transport, TransportSignal};
+    use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
+    use crate::core::transport::{PtySize, Transport, TransportSignal};
     use std::sync::mpsc as std_mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -213,8 +213,8 @@ pub fn list_ssh_tmux_panes(
     session: &str,
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<SshPaneInfo>> {
-    use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-    use crate::transport::{PtySize, Transport, TransportSignal};
+    use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
+    use crate::core::transport::{PtySize, Transport, TransportSignal};
     use std::sync::mpsc as std_mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
