@@ -5,5 +5,6 @@ pub mod config;
 pub mod discovery;
 pub mod model;
 pub mod protocol;
+pub mod runtime;
 pub mod transport;
 pub mod types;

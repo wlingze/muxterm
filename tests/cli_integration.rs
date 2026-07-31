@@ -10,9 +10,9 @@
 
 use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
+use muxterm::core::runtime::LocalBackend;
 use muxterm::core::types::{PaneId, TabId, WindowId};
 use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
-use muxterm::runtime::LocalBackend;
 
 fn make_model() -> TerminalModel {
     // cat：阻塞读 stdin、回显 stdout，适合结构测试 + WriteRaw/capture
@@ -609,7 +609,7 @@ fn cli_parse_send_keys_with_text() {
 
 #[test]
 fn cli_tmux_backend_connect_and_list() {
-    use muxterm::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -647,7 +647,7 @@ fn cli_tmux_backend_connect_and_list() {
 
 #[test]
 fn cli_tmux_backend_new_window() {
-    use muxterm::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -697,7 +697,7 @@ fn cli_tmux_backend_new_window() {
 
 #[test]
 fn cli_tmux_backend_send_keys() {
-    use muxterm::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(

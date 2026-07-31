@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use gtk4::prelude::*;
 use gtk4::{Label, Notebook, Orientation, Paned, PositionType, Widget};
 
+use crate::core::runtime::tmux::protocol::{PaneId, WindowId};
 use crate::platform::linux::pane_view::PaneView;
-use crate::runtime::tmux::protocol::{PaneId, WindowId};
 
 /// 我们 app 的 Tab 标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

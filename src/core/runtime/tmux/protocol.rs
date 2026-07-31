@@ -1470,7 +1470,7 @@ mod tests {
 
     #[test]
     fn real_sample_new_session_lines() {
-        let raw = include_str!("../../../tests/samples/new-session.txt");
+        let raw = include_str!("../../../../tests/samples/new-session.txt");
         // 样本第一行可能是 DCS 包装（P1000p%begin ...），parse_line 只认 % 开头，
         // DCS 前缀的行会被当成非通知返回 None（client 层负责剥 DCS）。
         let mut msgs = Vec::new();
@@ -1494,7 +1494,7 @@ mod tests {
 
     #[test]
     fn real_sample_cmd_response() {
-        let raw = include_str!("../../../tests/samples/cmd-response.txt");
+        let raw = include_str!("../../../../tests/samples/cmd-response.txt");
         let mut begins = 0;
         let mut ends = 0;
         let mut outputs = 0;
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn real_sample_output_decodes_ansi() {
-        let raw = include_str!("../../../tests/samples/new-session.txt");
+        let raw = include_str!("../../../../tests/samples/new-session.txt");
         for line in raw.lines() {
             let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
             if let Some(Message::Output { content, .. }) = parse_line(stripped) {
@@ -1544,7 +1544,7 @@ mod tests {
     /// 验证能逐行解析出所有关键通知。
     #[test]
     fn real_sample_2tab_3pane_cc() {
-        let raw = include_str!("../../../tests/samples/2tab-3pane-cc.txt");
+        let raw = include_str!("../../../../tests/samples/2tab-3pane-cc.txt");
         let mut msgs = Vec::new();
         for line in raw.lines() {
             let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
@@ -1600,7 +1600,7 @@ mod tests {
     /// 验证 %session-changed + list-windows/list-panes 响应行能正确分离。
     #[test]
     fn real_sample_attach_cc() {
-        let raw = include_str!("../../../tests/samples/attach-cc.txt");
+        let raw = include_str!("../../../../tests/samples/attach-cc.txt");
         let mut notifications = Vec::new();
         let mut response_lines = Vec::new();
         let mut in_response = false;
@@ -1656,7 +1656,7 @@ mod tests {
     /// 真实样例：attach 样例里的 window_layout 树字符串解析。
     #[test]
     fn real_sample_attach_layout_tree() {
-        let raw = include_str!("../../../tests/samples/attach-cc.txt");
+        let raw = include_str!("../../../../tests/samples/attach-cc.txt");
         // 找到 list-windows 响应行里的 layout 字符串
         for line in raw.lines() {
             if line.contains("1268,140x30,0,0{") {

@@ -30,12 +30,14 @@ use crate::core::model::state::{
     BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };
 use crate::core::model::task::{Task, TaskOutcome};
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
-use crate::runtime::tmux::client::{
+use crate::core::runtime::tmux::client::{
     ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent,
 };
-use crate::runtime::tmux::command as cmd;
-use crate::runtime::tmux::protocol::{parse_layout_tree, LayoutTree, Message, NotificationKind};
+use crate::core::runtime::tmux::command as cmd;
+use crate::core::runtime::tmux::protocol::{
+    parse_layout_tree, LayoutTree, Message, NotificationKind,
+};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
 #[derive(Debug, Clone)]
@@ -1578,7 +1580,7 @@ mod tests {
     #[test]
     fn pane_output_accumulation_is_capped() {
         use crate::core::buffer_cap::MAX_PANE_OUTPUT_BYTES;
-        use crate::runtime::tmux::protocol::Message;
+        use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxBackend::new(None);
         let pane = PaneId(42);
@@ -1613,7 +1615,7 @@ mod tests {
                 return;
             }
             // 人为塞一点输出缓冲
-            b.handle_message(crate::runtime::tmux::protocol::Message::Output {
+            b.handle_message(crate::core::runtime::tmux::protocol::Message::Output {
                 pane: PaneId(1),
                 content: vec![b'z'; 1024],
                 raw_content: String::new(),

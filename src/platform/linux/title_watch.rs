@@ -7,7 +7,7 @@
 use std::process::Command;
 
 use crate::core::protocol::terminal::process::{basename_command, foreground_process_name};
-use crate::runtime::tmux::protocol::PaneId;
+use crate::core::runtime::tmux::protocol::PaneId;
 
 /// 本地 pane：根据 vte 子进程 pid 推断当前应显示的程序名。
 pub fn local_foreground_name(pid: i32) -> Option<String> {

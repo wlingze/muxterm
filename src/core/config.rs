@@ -686,7 +686,7 @@ fn dirs_themes() -> Option<PathBuf> {
 
 // Re-export SSH config types (defined in runtime::tmux::ssh_client)
 #[allow(unused_imports)]
-pub use crate::runtime::tmux::ssh_client::{
+pub use crate::core::runtime::tmux::ssh_client::{
     parse_ssh_connect_line, parse_ssh_target, SshAuth, SshConfig, SshError,
 };
 

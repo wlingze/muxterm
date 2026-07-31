@@ -12,7 +12,6 @@ use clap::Parser;
 
 mod core;
 mod platform;
-mod runtime;
 
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]
@@ -195,8 +194,8 @@ fn cli_mode_tmux(
     format: crate::platform::cli::OutputFormat,
 ) -> anyhow::Result<()> {
     use crate::core::model::TerminalModel;
+    use crate::core::runtime::tmux::TmuxBackend;
     use crate::platform::cli::format_output;
-    use crate::runtime::tmux::TmuxBackend;
 
     // 根据命令选择连接模式
     let backend: Box<dyn crate::core::model::Backend> = match cmd {
@@ -416,8 +415,8 @@ fn cli_mode_ephemeral(
     format: crate::platform::cli::OutputFormat,
 ) -> anyhow::Result<()> {
     use crate::core::model::TerminalModel;
+    use crate::core::runtime::shell::LocalBackend;
     use crate::platform::cli::format_output;
-    use crate::runtime::shell::LocalBackend;
 
     let backend = LocalBackend::new("$SHELL", "");
     let mut model = TerminalModel::new(Box::new(backend));
