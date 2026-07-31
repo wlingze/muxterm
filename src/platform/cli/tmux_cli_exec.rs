@@ -9,12 +9,12 @@ use anyhow::Context;
 
 use crate::core::model::task::Task;
 use crate::core::model::TerminalModel;
+use crate::core::runtime::tmux::TmuxBackend;
 use crate::core::types::{PaneId, TabId, WindowId};
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
 };
-use crate::runtime::tmux::TmuxBackend;
 
 /// tmux CLI 命令执行超时（硬限制）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15);

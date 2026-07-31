@@ -40,7 +40,7 @@ fn kill_server(socket: &str) {
 /// 不能把 "Enter" 拼成字面文本 "echo MARKEREnter"。
 #[test]
 fn send_keys_mixed_literal_and_special_produces_separate_commands() {
-    use muxterm::runtime::tmux::command::{send_keys, Key, PaneId};
+    use muxterm::core::runtime::tmux::command::{send_keys, Key, PaneId};
 
     let keys = vec![
         Key::Literal("echo MARKER".to_string()),
@@ -77,7 +77,7 @@ fn send_keys_mixed_literal_and_special_produces_separate_commands() {
 /// ── Test 1b: pure literal only produces single -l command ──
 #[test]
 fn send_keys_pure_literal_produces_single_l_command() {
-    use muxterm::runtime::tmux::command::{send_keys, Key, PaneId};
+    use muxterm::core::runtime::tmux::command::{send_keys, Key, PaneId};
 
     let keys = vec![Key::Literal("echo hello".to_string())];
     let cmd = send_keys(PaneId(0), &keys);
@@ -97,7 +97,7 @@ fn send_keys_pure_literal_produces_single_l_command() {
 /// ── Test 1c: pure special only produces single special-key command ──
 #[test]
 fn send_keys_pure_special_produces_single_special_command() {
-    use muxterm::runtime::tmux::command::{send_keys, Key, PaneId};
+    use muxterm::core::runtime::tmux::command::{send_keys, Key, PaneId};
 
     let keys = vec![Key::Special("Enter")];
     let cmd = send_keys(PaneId(0), &keys);
@@ -119,7 +119,7 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
     use muxterm::core::model::task::Task;
     use muxterm::core::model::TerminalModel;
     use muxterm::core::protocol::terminal::input::KeyEvent;
-    use muxterm::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
 
     let socket = unique_socket("backend-sk");
     let session = format!("sk-test-{}", rand_suffix());

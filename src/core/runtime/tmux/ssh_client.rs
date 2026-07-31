@@ -7,8 +7,8 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::runtime::tmux::client::{process_line, TmuxEvent};
-use crate::runtime::tmux::command::TmuxCommand;
+use crate::core::runtime::tmux::client::{process_line, TmuxEvent};
+use crate::core::runtime::tmux::command::TmuxCommand;
 
 /// SSH 连接配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,7 +287,7 @@ impl CommandStream {
     }
 }
 
-/// 远程 `tmux -CC` 客户端（接口对齐 [`crate::runtime::tmux::TmuxClientHandle`]）。
+/// 远程 `tmux -CC` 客户端（接口对齐 [`crate::core::runtime::tmux::TmuxClientHandle`]）。
 pub struct RemoteTmuxClient {
     stdin_tx: mpsc::Sender<Vec<u8>>,
     parse_join: Option<JoinHandle<()>>,

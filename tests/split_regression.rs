@@ -328,7 +328,7 @@ fn split_cli_parse_produces_correct_command() {
 /// ── Layer 3: command builder split-window 正确 target ──
 #[test]
 fn split_window_command_uses_correct_target() {
-    use muxterm::runtime::tmux::command::{split_window, SplitDirection, WindowId};
+    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, WindowId};
 
     // WindowId(0) → @0 in tmux (first window)
     let cmd = split_window(WindowId(0), SplitDirection::Horizontal, None);
@@ -346,7 +346,7 @@ fn split_window_command_uses_correct_target() {
 /// 用真实 tmux 验证 #{window_id} 是 @N 格式（不是 window_index）。
 #[test]
 fn paneid_to_tabid_to_windowid_mapping_matches_tmux_window_id() {
-    use muxterm::runtime::tmux::command::{split_window, SplitDirection, WindowId};
+    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, WindowId};
 
     let socket = unique_socket("layer3b");
     let session = format!("map-test-{}", rand_suffix());
@@ -405,7 +405,7 @@ fn backend_split_actually_creates_pane_in_tmux() {
     use muxterm::core::model::layout::SplitDir;
     use muxterm::core::model::task::Task;
     use muxterm::core::model::TerminalModel;
-    use muxterm::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxBackend;
 
     let socket = unique_socket("layer4");
     let session = format!("backend-split-{}", rand_suffix());

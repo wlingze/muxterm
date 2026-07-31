@@ -1,6 +1,6 @@
 //! 全平台共享类型（tmux pane / window / session id）。
 //!
-//! `parse` 实现留在 [`crate::runtime::tmux::protocol`]，以便复用 `ProtocolError`、
+//! `parse` 实现留在 [`crate::core::runtime::tmux::protocol`]，以便复用 `ProtocolError`、
 //! 避免 types ↔ protocol 循环依赖。
 
 /// %output / %extended-output / %pane-mode-changed 里的 pane id（`@N`）。
