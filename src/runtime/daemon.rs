@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
+use crate::core::protocol::terminal::input::encode;
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 use crate::platform::cli::client::send_command;
 use crate::platform::cli::{CliCommand, OutputFormat, StateSnapshot};
@@ -21,7 +22,6 @@ use crate::protocol::model::state::{
     BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
 };
 use crate::protocol::model::task::{Task, TaskOutcome};
-use crate::terminal::input::encode;
 
 /// 通过 unix socket 连接本地 daemon 的 Backend。
 pub struct DaemonBackend {
@@ -345,7 +345,7 @@ impl Backend for DaemonBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::input::KeyEvent;
+    use crate::core::protocol::terminal::input::KeyEvent;
 
     #[test]
     fn task_send_keys_maps_to_write_raw() {

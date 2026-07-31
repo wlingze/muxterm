@@ -476,7 +476,7 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                 Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
                     wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
-                    use crate::terminal::input::KeyEvent;
+                    use crate::core::protocol::terminal::input::KeyEvent;
                     // 发送文本 + Enter（让 shell 执行命令）
                     let mut keys: Vec<KeyEvent> = text.chars().map(KeyEvent::Char).collect();
                     keys.push(KeyEvent::Enter);

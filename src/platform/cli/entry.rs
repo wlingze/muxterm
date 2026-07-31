@@ -14,8 +14,8 @@ pub fn cli_command_to_task(
     cmd: &CliCommand,
     state: &dyn crate::protocol::model::state::State,
 ) -> Option<Task> {
+    use crate::core::protocol::terminal::input::KeyEvent;
     use crate::protocol::model::task::Task;
-    use crate::terminal::input::KeyEvent;
     use CliCommand::*;
 
     match cmd {

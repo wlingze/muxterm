@@ -20,9 +20,9 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, queue};
 
+use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::render::{render_frame, RenderOpts};
-use crate::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 
 /// TUI 启动参数。
 ///

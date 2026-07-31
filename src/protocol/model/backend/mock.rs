@@ -436,7 +436,7 @@ impl Backend for MockBackend {
                         reason: format!("pane {target} 不存在"),
                     });
                 }
-                use crate::terminal::input::encode;
+                use crate::core::protocol::terminal::input::encode;
                 let mut buf = Vec::new();
                 for k in keys {
                     buf.extend_from_slice(&encode(k));
