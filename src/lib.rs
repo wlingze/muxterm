@@ -5,12 +5,11 @@
 #![allow(clippy::while_let_loop)]
 #![allow(clippy::needless_pass_by_value)]
 //! Muxterm library root.
-pub mod buffer_cap;
 pub mod config;
+pub mod core;
 pub mod discovery;
 pub mod platform;
 pub mod protocol;
 pub mod runtime;
 pub mod terminal;
 pub mod transport;
-pub mod types;

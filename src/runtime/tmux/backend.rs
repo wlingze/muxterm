@@ -23,7 +23,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
+use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
+use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 use crate::protocol::model::backend::Backend;
 use crate::protocol::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::protocol::model::state::{
@@ -35,7 +36,6 @@ use crate::runtime::tmux::client::{
 };
 use crate::runtime::tmux::command as cmd;
 use crate::runtime::tmux::protocol::{parse_layout_tree, LayoutTree, Message, NotificationKind};
-use crate::types::{PaneId, SessionId, TabId, WindowId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
 #[derive(Debug, Clone)]
@@ -1583,7 +1583,7 @@ mod tests {
     /// 回归：大量 %output 不得把 outputs/events 撑到数 GB（曾观测挂起时 ~20GB）。
     #[test]
     fn pane_output_accumulation_is_capped() {
-        use crate::buffer_cap::MAX_PANE_OUTPUT_BYTES;
+        use crate::core::buffer_cap::MAX_PANE_OUTPUT_BYTES;
         use crate::runtime::tmux::protocol::Message;
 
         let mut b = TmuxBackend::new(None);
@@ -1603,7 +1603,7 @@ mod tests {
             "outputs 应有界，实际 {stored} > {MAX_PANE_OUTPUT_BYTES}"
         );
         assert!(
-            b.events.len() <= crate::buffer_cap::MAX_STATE_EVENTS,
+            b.events.len() <= crate::core::buffer_cap::MAX_STATE_EVENTS,
             "events 应有界，实际 {}",
             b.events.len()
         );

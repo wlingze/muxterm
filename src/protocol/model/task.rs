@@ -6,9 +6,9 @@
 //!
 //! Task 是 `Copy`/`Clone` 友好的纯数据，可序列化、可记入历史（undo/redo）。
 //! 所有 Task 都针对「当前激活的 pane/window/session」，除非显式指定 target。
+use crate::core::types::{PaneId, TabId, WindowId};
 use crate::protocol::model::layout::SplitDir;
 use crate::terminal::input::KeyEvent;
-use crate::types::{PaneId, TabId, WindowId};
 
 /// 所有终端操作任务。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,10 +79,12 @@ pub enum Task {
 
     // ── Session 操作 ──────────────────────────────────────
     /// 切换激活 session。
-    SwitchSession { target: crate::types::SessionId },
+    SwitchSession {
+        target: crate::core::types::SessionId,
+    },
     /// 重命名 session。
     RenameSession {
-        target: crate::types::SessionId,
+        target: crate::core::types::SessionId,
         name: String,
     },
 

@@ -2,8 +2,8 @@
 //!
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
+use crate::core::types::{PaneId, TabId, WindowId};
 use crate::protocol::model::state::State;
-use crate::types::{PaneId, TabId, WindowId};
 
 /// 输出格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -397,9 +397,9 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::types::PaneId;
     use crate::platform::cli::command::CliCommand;
     use crate::protocol::model::backend::mock::MockBackend;
-    use crate::types::PaneId;
 
     fn mock_with_pane() -> MockBackend {
         MockBackend::with_single_pane()

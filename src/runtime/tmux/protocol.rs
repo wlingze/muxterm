@@ -22,8 +22,8 @@
 use std::str::FromStr;
 use thiserror::Error;
 
+pub use crate::core::types::{PaneId, SessionId, WindowId};
 use crate::protocol::model::layout::SplitDir;
-pub use crate::types::{PaneId, SessionId, WindowId};
 
 /// 协议解析错误（库层）。
 #[derive(Debug, Error, PartialEq, Eq)]

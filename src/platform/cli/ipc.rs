@@ -46,7 +46,7 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::PaneId;
+    use crate::core::types::PaneId;
 
     #[test]
     fn request_serializes_command() {
