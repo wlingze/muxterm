@@ -112,8 +112,8 @@ impl TmuxClient {
     pub async fn spawn_ssh(
         config: TmuxClientConfig,
     ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
-        use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-        use crate::transport::Transport;
+        use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
+        use crate::core::transport::Transport;
 
         let alias = config
             .ssh_alias
@@ -126,7 +126,7 @@ impl TmuxClient {
         let (program, ssh_args) = build_ssh_command(alias, &remote_tmux, None);
         let arg_refs: Vec<&str> = ssh_args.iter().map(|s| s.as_str()).collect();
 
-        let pty_size = crate::transport::PtySize::new(
+        let pty_size = crate::core::transport::PtySize::new(
             config.cols.unwrap_or(80) as u16,
             config.rows.unwrap_or(24) as u16,
         );

@@ -15,7 +15,6 @@ mod platform;
 #[cfg(feature = "ffi")]
 mod protocol;
 mod runtime;
-mod transport;
 
 /// Muxterm 命令行参数
 #[derive(Parser, Debug)]
