@@ -202,6 +202,7 @@ jobs:
     env:
       FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -229,7 +230,7 @@ jobs:
           test -f "$APP/Contents/Info.plist"
           plutil -lint "$APP/Contents/Info.plist"
           file "$BIN" | grep -E 'Mach-O 64-bit.*arm64'
-          DEPS="$(otool -L "$BIN")"
+          DEPS="$(otool -L "$BIN" | tail -n +2)"
           printf '%s\n' "$DEPS"
           if [[ "$DEPS" == *libmuxterm.dylib* ]]; then
             echo "ERROR: release app links libmuxterm.dylib instead of the static archive" >&2

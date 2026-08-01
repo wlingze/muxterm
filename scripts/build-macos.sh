@@ -5,6 +5,8 @@
 #           DEVELOPER_DIR (默认 /Applications/Xcode.app/Contents/Developer)
 set -euo pipefail
 
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACOS_DIR="$ROOT/src/platform/macos"
 OUT_DIR="$ROOT/build/macos"
@@ -32,7 +34,7 @@ cd "$MACOS_DIR"
 swift build -c release
 
 BIN="$(swift build -c release --show-bin-path)/MuxtermApp"
-DEPS="$(otool -L "$BIN")"
+DEPS="$(otool -L "$BIN" | tail -n +2)"
 printf '%s\n' "$DEPS"
 if [[ "$DEPS" == *libmuxterm.dylib* ]]; then
   echo "ERROR: macOS app links libmuxterm.dylib; expected the bundled static archive" >&2
