@@ -1,0 +1,91 @@
+name: Linux / platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/platform/linux/**'
+      - 'src/core/**'
+      - 'src/platform/cli/**'
+      - 'src/platform/mod.rs'
+      - 'src/lib.rs'
+      - 'src/main.rs'
+      - 'tests/linux_gtk_integration.rs'
+      - 'tests/support/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'scripts/build-linux.sh'
+      - 'scripts/ci/**'
+      - '.github/workflows/linux.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/platform/linux/**'
+      - 'src/core/**'
+      - 'src/platform/cli/**'
+      - 'src/platform/mod.rs'
+      - 'src/lib.rs'
+      - 'src/main.rs'
+      - 'tests/linux_gtk_integration.rs'
+      - 'tests/support/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'scripts/build-linux.sh'
+      - 'scripts/ci/**'
+      - '.github/workflows/linux.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
+
+jobs:
+  linux_checks:
+    name: linux / required
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GTK / VTE / tmux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            tmux \
+            xvfb \
+            libgtk-4-dev \
+            libvte-2.91-gtk4-dev \
+            libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-linux-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy GTK
+        run: cargo clippy --features gtk -- -D warnings
+
+      - name: cargo check GTK
+        run: cargo check --features gtk
+
+      - name: Linux GTK integration tests
+        run: xvfb-run -a cargo test --features gtk --test linux_gtk_integration -- --test-threads=1
