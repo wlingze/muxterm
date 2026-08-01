@@ -1,18 +1,67 @@
-name: CI
+name: Core / shared
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/core/**'
+      - 'src/platform/cli/**'
+      - 'src/platform/tui/**'
+      - 'src/platform/mod.rs'
+      - 'src/lib.rs'
+      - 'src/main.rs'
+      - 'tests/cli_integration.rs'
+      - 'tests/four_mode_integration.rs'
+      - 'tests/sendkeys_regression.rs'
+      - 'tests/split_regression.rs'
+      - 'tests/ssh_no_fallback.rs'
+      - 'tests/ssh_transport_unit.rs'
+      - 'tests/tmux_backend_integration.rs'
+      - 'tests/tui_integration.rs'
+      - 'tests/support/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'scripts/build-cli.sh'
+      - 'scripts/build-tui.sh'
+      - 'scripts/ci/**'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'src/core/**'
+      - 'src/platform/cli/**'
+      - 'src/platform/tui/**'
+      - 'src/platform/mod.rs'
+      - 'src/lib.rs'
+      - 'src/main.rs'
+      - 'tests/cli_integration.rs'
+      - 'tests/four_mode_integration.rs'
+      - 'tests/sendkeys_regression.rs'
+      - 'tests/split_regression.rs'
+      - 'tests/ssh_no_fallback.rs'
+      - 'tests/ssh_transport_unit.rs'
+      - 'tests/tmux_backend_integration.rs'
+      - 'tests/tui_integration.rs'
+      - 'tests/support/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'scripts/build-cli.sh'
+      - 'scripts/build-tui.sh'
+      - 'scripts/ci/**'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
 
 jobs:
-  # Ubuntu：core / TUI（fmt + clippy + test）
-  ci:
-    name: check / fmt / clippy / test
+  core_tests:
+    name: core / tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -39,11 +88,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-core-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -52,151 +100,137 @@ jobs:
         run: cargo clippy --no-default-features --features tui -- -D warnings
 
       - name: Setup shared loopback sshd
-        run: |
-          MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup-sshd.sh
+        run: MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup-sshd.sh
 
-      - name: cargo test
-        run: cargo test --no-default-features --features tui
-        timeout-minutes: 15
-        env:
-          MUXTERM_TEST_SSH_KEY: ${{ env.MUXTERM_TEST_SSH_KEY }}
+      - name: Core unit tests
+        run: cargo test --no-default-features --features tui --lib --bins
+
+      - name: CLI integration tests
+        run: cargo test --no-default-features --features tui --test cli_integration -- --test-threads=1
+
+      - name: Sendkeys regression tests
+        run: cargo test --no-default-features --features ffi --test sendkeys_regression -- --test-threads=1
+
+      - name: Split regression tests
+        run: cargo test --no-default-features --features ffi --test split_regression -- --test-threads=1
+
+      - name: SSH no-fallback tests
+        run: cargo test --no-default-features --features ffi --test ssh_no_fallback -- --test-threads=1
+
+      - name: SSH transport tests
+        run: cargo test --no-default-features --features ffi --test ssh_transport_unit -- --test-threads=1
+
+      - name: Tmux backend integration tests
+        run: cargo test --no-default-features --features tui --test tmux_backend_integration -- --test-threads=1
+
+      - name: TUI integration tests
+        run: cargo test --no-default-features --features tui --test tui_integration -- --test-threads=1
 
       - name: Cleanup sshd
         if: always()
         run: |
-          if [ -n "${{ env.MUXTERM_SSHD_TMP_DIR }}" ] && [ -f "${{ env.MUXTERM_SSHD_TMP_DIR }}/sshd.pid" ]; then
-            kill "$(cat ${{ env.MUXTERM_SSHD_TMP_DIR }}/sshd.pid)" 2>/dev/null || true
-            rm -rf "${{ env.MUXTERM_SSHD_TMP_DIR }}"
+          if [ -n "${MUXTERM_SSHD_TMP_DIR:-}" ] && [ -f "$MUXTERM_SSHD_TMP_DIR/sshd.pid" ]; then
+            kill "$(cat "$MUXTERM_SSHD_TMP_DIR/sshd.pid")" 2>/dev/null || true
+            rm -rf "$MUXTERM_SSHD_TMP_DIR"
           fi
 
-      - name: Install GTK4 deps
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-4-dev \
-            libvte-2.91-gtk4-dev \
-            libssl-dev
-
-      - name: cargo check gtk
-        # 只编译检查：CI runner 无显示器，不跑 GTK UI 测试
-        run: cargo check --features gtk
-
-  # 路径过滤（workflow 级 paths 无法按 job 过滤，用 dorny/paths-filter）
-  changes:
-    name: path filter
+  four_mode:
+    name: four-mode / ${{ matrix.case }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      linux: ${{ steps.filter.outputs.linux }}
-    steps:
-      # push 事件用 git 比对，需 checkout；PR 事件走 REST API，可不 checkout
-      - uses: actions/checkout@v4
-        if: github.event_name != 'pull_request'
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            linux:
-              - 'src/platform/linux/**'
-
-  # Linux GTK 集成测试（仅 src/platform/linux/ 变动时跑）
-  linux-gtk:
-    name: linux-gtk
-    needs: changes
-    if: needs.changes.outputs.linux == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      # 覆盖仓库 .cargo/config.toml 的 ../muxterm-target，避免 CI 写到 workspace 外
-      CARGO_TARGET_DIR: target
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: local-shell
+            filter: local_shell_cli
+            ssh: false
+          - case: local-tmux
+            filter: local_tmux_cli
+            ssh: false
+          - case: ssh-shell
+            filter: ssh_shell_cli
+            ssh: true
+          - case: ssh-tmux
+            filter: ssh_tmux_cli
+            ssh: true
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK / VTE / xvfb
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config tmux xvfb \
-            libgtk-4-dev libvte-2.91-gtk4-dev libssl-dev
+            build-essential \
+            pkg-config \
+            tmux \
+            openssh-server \
+            openssh-client
+
+      - name: Setup shared loopback sshd
+        if: matrix.ssh == true
+        run: |
+          set -euo pipefail
+          MUXTERM_ENV_FILE="$RUNNER_TEMP/muxterm-sshd.env" bash scripts/ci/setup-sshd.sh
+          cat "$RUNNER_TEMP/muxterm-sshd.env" >> "$GITHUB_ENV"
+        timeout-minutes: 5
+
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: linux-gtk-${{ hashFiles('**/Cargo.toml') }}
-      - run: cargo clippy --features gtk -- -D warnings
-      - name: GTK integration tests (only linux_gtk_integration)
-        run: xvfb-run -a cargo test --features gtk --test linux_gtk_integration -- --test-threads=1
-
-  # macOS：FFI release 构建 → macos_integration → XCUITest
-  # macos-latest 现为 macos-26（核对时间 2026-07-24，
-  # https://github.com/actions/runner-images/issues/14167 ）
-  macos:
-    name: macos / ffi / XCUITest
-    runs-on: macos-latest
-    timeout-minutes: 45
-    env:
-      # 与 .cargo/config.toml 的 ../muxterm-target 对齐（相对仓库根）
-      CARGO_TARGET_DIR: ${{ github.workspace }}/../muxterm-target
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Show Xcode
-        run: |
-          xcodebuild -version
-          swift --version
-          /usr/bin/automationmodetool || true
-
-      - name: Install tools
-        run: |
-          brew list tmux >/dev/null 2>&1 || brew install tmux
-          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
-          tmux -V
-          xcodegen --version
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ${{ github.workspace }}/../muxterm-target
-          key: ${{ runner.os }}-macos-cargo-${{ hashFiles('**/Cargo.toml', '**/Package.resolved') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-four-mode-${{ matrix.case }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
 
-      - name: cargo build ffi (release)
-        run: cargo build --release --no-default-features --features ffi
+      - name: Build FFI binary
+        run: cargo build --no-default-features --features ffi
 
-      - name: cargo test macos_integration
-        # 与 release 构建同 feature 集；勿拉默认 gtk
-        run: cargo test --no-default-features --features ffi --test macos_integration
-        timeout-minutes: 15
+      - name: Run local Four-Mode case
+        if: matrix.ssh == false
+        run: timeout 120 cargo test --no-default-features --features ffi --test four_mode_integration -- ${{ matrix.filter }} --nocapture
 
-      - name: Generate Xcode project
-        working-directory: src/platform/macos
+      - name: Run SSH Four-Mode case
+        if: matrix.ssh == true
+        run: timeout 120 cargo test --no-default-features --features ffi --test four_mode_integration -- ${{ matrix.filter }} --nocapture --ignored
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Upload sshd logs on failure
+        if: failure() && matrix.ssh == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: sshd-logs-${{ matrix.case }}
+          path: ${{ env.MUXTERM_SSHD_TMP_DIR }}
+          retention-days: 7
+
+      - name: Cleanup sshd
+        if: always() && matrix.ssh == true
         run: |
-          mkdir -p Vendor
-          ln -sfn ../../../../../muxterm-target/release/libmuxterm.a Vendor/libmuxterm.a
-          xcodegen generate
+          if [ -n "${MUXTERM_SSHD_TMP_DIR:-}" ] && [ -f "$MUXTERM_SSHD_TMP_DIR/sshd.pid" ]; then
+            kill "$(cat "$MUXTERM_SSHD_TMP_DIR/sshd.pid")" 2>/dev/null || true
+            rm -rf "$MUXTERM_SSHD_TMP_DIR"
+          fi
 
-      - name: XCUITest
-        working-directory: src/platform/macos
+  four_mode_aggregate:
+    name: four-mode / aggregate
+    if: always()
+    needs: [four_mode]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all Four-Mode cases
+        run: test "${{ needs.four_mode.result }}" = success
+
+  core_required:
+    name: core / required
+    if: always()
+    needs: [core_tests, four_mode_aggregate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require core and Four-Mode aggregates
         run: |
-          set -o pipefail
-          xcodebuild test \
-            -project Muxterm.xcodeproj \
-            -scheme MuxtermApp \
-            -destination 'platform=macOS,arch=arm64' \
-            -only-testing:MuxtermAppUITests \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGN_IDENTITY=- \
-            ENABLE_DEBUG_DYLIB=NO \
-            | xcbeautify --renderer github-actions
+          test "${{ needs.core_tests.result }}" = success
+          test "${{ needs.four_mode_aggregate.result }}" = success

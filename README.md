@@ -236,7 +236,14 @@ cargo check --no-default-features --features ffi
 - 增量提交：`feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `ci:` / `chore:`
 - 不要在 commit message 里加 `Co-authored-by`
 
-CI（push / PR 到 `main`）会跑 check、fmt、clippy、test；详见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
+CI 按职责和路径分流（仅 `main` push / 到 `main` 的 PR，避免 feature branch 的 push + PR 重复运行）：
+
+- 核心共享检查：[`ci.yml`](.github/workflows/ci.yml)，包含现有 core/common tests 与 Four-Mode local/SSH × shell/tmux 矩阵。
+- Linux 平台检查：[`linux.yml`](.github/workflows/linux.yml)，仅覆盖 Linux GTK/VTE。
+- macOS 平台检查：[`macos.yml`](.github/workflows/macos.yml)，仅覆盖 macOS FFI/XCUITest。
+- Release workflow [`release.yml`](.github/workflows/release.yml) 保持 tag / 手动触发，独立于 PR CI。
+
+稳定 aggregate check 名称：`core / required`、`four-mode / aggregate`、`linux / required`、`macos / required`。由于 Linux/macOS workflow 使用路径触发器，主分支保护应按仓库的路径规则集/required workflow 能力配置平台检查；不要把未触发路径的 `linux / required` 或 `macos / required` 当作所有 PR 都必须出现的单一全局 status。
 
 ## 许可证
 
