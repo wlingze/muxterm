@@ -78,8 +78,6 @@ let package = Package(
             ],
             linkerSettings: [
                 .unsafeFlags([
-                    // Link the Rust static archive explicitly. Using -lmuxterm can
-                    // select the cdylib first, leaving a build-machine path behind.
                     "-Xlinker",
                     "-force_load",
                     "-Xlinker",
