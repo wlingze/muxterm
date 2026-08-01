@@ -4,7 +4,7 @@ Linux 桌面端的 **tmux control mode (`-CC`) 原生 UI 终端**。
 
 用 Rust + GTK4 把本地或远程 tmux 的 session / window / pane 渲染成原生 tab 与分割布局，而不是「黑框终端 + `Ctrl+B`」。体验上接近 iTerm2 的 tmux 集成，但面向 Linux。
 
-> 状态：Phase 1 开发中（Linux）。详见 [`PRODUCT.md`](PRODUCT.md)。
+> 跨平台终端：Linux (GTK4 + TUI) / macOS (SwiftUI) / Windows (TUI-CLI)。详见 [PRODUCT.md](PRODUCT.md)。
 
 ## 功能概览
 
@@ -56,19 +56,41 @@ sudo apt-get install -y build-essential pkg-config \
 
 ## 安装
 
-目前以源码构建为主。三种前端 / 产物：
+### 从 Release 下载
 
-| 命令 | 产物 |
+GitHub Release 自动构建四种产物（打 tag `v*.*.*` 触发，或手动 dispatch）：
+
+| 产物 | 平台 | 类型 | 运行时依赖 |
+|------|------|------|-----------|
+| `muxterm-cli-linux-x86_64-*` | Linux x86_64 | CLI/TUI 命令行工具 | glibc (ubuntu-latest), tmux for tmux ops |
+| `muxterm-gtk-linux-x86_64-*` | Linux x86_64 | GTK4 GUI 应用 | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
+| `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app 包 | macOS 13+ |
+| `muxterm-cli-windows-x86_64-*.exe` | Windows x86_64 | CLI/TUI（无 GUI） | tmux-dependent ops require usable tmux env |
+
+每个产物附带 `.sha256` 校验文件。
+
+> **Windows 限制**：当前 Windows 构建仅支持 TUI/CLI 模式（crossterm），尚无 GUI 前端。
+
+### 版本命名
+
+- 打 tag `v1.2.3` → Release 版本 `v1.2.3`（正式发布）
+- 手动 dispatch → `最近 v* tag-dev.短SHA`；无可达 tag → `短SHA`（预发布）
+
+### 从源码构建
+
+| 脚本 | 产物 |
 |------|------|
-| `scripts/build-linux.sh`（默认 feature `gtk`） | GTK4 桌面前端 |
-| `scripts/build-tui.sh` | 纯终端 TUI（CI / 无头） |
-| `scripts/build-cli.sh` | C ABI：`libmuxterm.a` + `libmuxterm.so` |
+| `scripts/build-linux.sh [--release]` | Linux GTK4 桌面前端 |
+| `scripts/build-tui.sh [--release]` | 纯终端 TUI（CI / 无头 / Windows 兼容） |
+| `scripts/build-cli.sh [--release]` | C ABI 库 + CLI 二进制 |
 | `scripts/build-macos.sh` | macOS SwiftUI app（libmuxterm.a + SwiftPM） |
+
+`--release` 参数或 `PROFILE=release` 环境变量控制 release/debug 构建。
 
 ```bash
 git clone https://github.com/wlingze/muxterm.git
 cd muxterm
-cargo build --release
+./scripts/build-tui.sh --release
 ./target/release/muxterm
 ```
 
@@ -88,8 +110,6 @@ cargo run --no-default-features --features tui -- --tui
 ```bash
 cargo install --path .
 ```
-
-发布版二进制也可通过打 tag（`v*.*.*`）触发 GitHub Actions Release 工作流生成 tarball（见 [`.github/workflows/release.yml`](.github/workflows/release.yml)）。
 
 ## 配置
 
