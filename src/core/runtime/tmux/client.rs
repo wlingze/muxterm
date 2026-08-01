@@ -355,12 +355,12 @@ impl TmuxClientHandle {
     /// 不先 `detach`：pty 写可能阻塞，导致 sender task / `shutdown` 永远等不到。
     pub async fn kill(&mut self) -> Result<()> {
         self.close_writer();
-        if let Some(child) = &mut self.child {
+        if let Some(mut child) = self.child.take() {
             let _ = child.kill().await;
+            let _ = child.wait().await;
         }
-        if let Some(pty_child) = &mut self.pty_child {
-            let _ = pty_child.child.kill();
-            let _ = pty_child.child.try_wait();
+        if let Some(mut pty_child) = self.pty_child.take() {
+            pty_child.kill_and_wait();
         }
         Ok(())
     }
@@ -663,13 +663,9 @@ mod tests {
             rows: Some(24),
             ..Default::default()
         };
-        let (mut handle, mut rx) = match TmuxClient::spawn(config).await {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("skip end_to_end_real_tmux: {e}");
-                return;
-            }
-        };
+        let (mut handle, mut rx) = TmuxClient::spawn(config)
+            .await
+            .expect("end_to_end_real_tmux 应能启动 tmux");
 
         let mut got_window_add = false;
         let mut got_session_changed = false;
@@ -737,13 +733,9 @@ mod tests {
             rows: Some(24),
             ..Default::default()
         };
-        let (mut handle, mut rx) = match TmuxClient::spawn(config).await {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("skip end_to_end_multi_line_response: {e}");
-                return;
-            }
-        };
+        let (mut handle, mut rx) = TmuxClient::spawn(config)
+            .await
+            .expect("end_to_end_multi_line_response 应能启动 tmux");
 
         // 等启动
         let mut started = false;
@@ -758,11 +750,7 @@ mod tests {
                 }
             }
         }
-        if !started {
-            eprintln!("skip: 未启动");
-            let _ = handle.kill().await;
-            return;
-        }
+        assert!(started, "end_to_end_multi_line_response 应收到 window-add");
 
         // 创建第二个窗口，再 list-windows，应得到 2 行响应
         handle
