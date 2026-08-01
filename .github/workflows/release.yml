@@ -28,6 +28,7 @@ jobs:
       fs_version: ${{ steps.version.outputs.fs_version }}
       is_tag: ${{ steps.version.outputs.is_tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,6 +44,7 @@ jobs:
             echo "fs_version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "source_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           else
             # Manual dispatch (always prerelease): nearest reachable v* tag + short SHA, or short SHA
             NEAREST=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
@@ -58,6 +60,7 @@ jobs:
             echo "fs_version=$FS_VERSION" >> "$GITHUB_OUTPUT"
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
             echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+            echo "source_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
           echo "Resolved version: $VERSION (fs: $FS_VERSION)"
 
@@ -266,6 +269,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve-version.outputs.version }}
+          target_commitish: ${{ needs.resolve-version.outputs.source_sha }}
           name: muxterm ${{ needs.resolve-version.outputs.version }}
           prerelease: ${{ needs.resolve-version.outputs.prerelease }}
           generate_release_notes: true
@@ -280,3 +284,5 @@ jobs:
             | `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app bundle | macOS 13+ |
 
             Each artifact has a corresponding `.sha256` checksum file.
+
+            **Source commit:** `${{ needs.resolve-version.outputs.source_sha }}`
