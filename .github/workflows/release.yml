@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       prerelease:
@@ -13,7 +17,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -259,7 +263,10 @@ jobs:
   # ── Publish release (single job, no race) ──────────────────
   publish:
     name: Publish release
+    if: github.event_name != 'pull_request'
     needs: [resolve-version, build-linux-cli, build-linux-gtk, build-macos]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

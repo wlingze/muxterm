@@ -16,7 +16,7 @@ on:
       - '.cargo/**'
       - 'scripts/build-macos.sh'
       - 'scripts/ci/**'
-      - '.github/workflows/macos.yml'
+      - '.github/workflows/**'
 
 permissions:
   contents: read

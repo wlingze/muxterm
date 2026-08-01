@@ -17,7 +17,7 @@ on:
       - '.cargo/**'
       - 'scripts/build-linux.sh'
       - 'scripts/ci/**'
-      - '.github/workflows/linux.yml'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
