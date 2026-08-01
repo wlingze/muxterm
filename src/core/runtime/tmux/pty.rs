@@ -11,8 +11,9 @@
 
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// 已 spawn 的 tmux pty 子进程。
@@ -90,13 +91,18 @@ impl PtyReader {
             .spawn(move || {
                 let mut buf = [0u8; 4096];
                 loop {
+                    if tx.is_closed() {
+                        break;
+                    }
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
                             if tx.blocking_send(Ok(buf[..n].to_vec())).is_err() {
-                                // 接收端关闭，退出
                                 break;
                             }
+                        }
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
                         }
                         Err(e) => {
                             let _ = tx.blocking_send(Err(e));
@@ -134,7 +140,30 @@ impl PtyWriter {
         let inner = self.inner.clone();
         let write_fut = tokio::task::spawn_blocking(move || {
             let mut w = inner.lock().unwrap();
-            w.write_all(&data)
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut written = 0;
+            while written < data.len() {
+                match w.write(&data[written..]) {
+                    Ok(0) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "pty writer returned zero bytes",
+                        ));
+                    }
+                    Ok(n) => written += n,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "pty write timeout (2s)",
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
         });
         match tokio::time::timeout(std::time::Duration::from_secs(2), write_fut).await {
             Ok(Ok(r)) => r,
@@ -154,6 +183,7 @@ impl PtyWriter {
 pub fn split_master(
     master: &mut Box<dyn portable_pty::MasterPty + Send>,
 ) -> Result<(PtyReader, PtyWriter)> {
+    set_nonblocking(&**master)?;
     let reader = master.try_clone_reader().context("try_clone_reader 失败")?;
     let writer = master.take_writer().context("take_writer 失败")?;
     Ok((PtyReader::new(reader), PtyWriter::new(writer)))
@@ -163,8 +193,28 @@ pub fn split_master(
 #[allow(dead_code)]
 #[allow(clippy::borrowed_box)]
 pub fn reader_only(master: &Box<dyn portable_pty::MasterPty + Send>) -> Result<PtyReader> {
+    set_nonblocking(&**master)?;
     let reader = master.try_clone_reader().context("try_clone_reader 失败")?;
     Ok(PtyReader::new(reader))
+}
+
+fn set_nonblocking(master: &(dyn portable_pty::MasterPty + Send)) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let Some(fd) = master.as_raw_fd() else {
+            return Ok(());
+        };
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error()).context("读取 pty flags 失败");
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error()).context("设置 pty 非阻塞失败");
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = master;
+    Ok(())
 }
 
 #[cfg(test)]
