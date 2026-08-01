@@ -32,6 +32,16 @@ cd "$MACOS_DIR"
 swift build -c release
 
 BIN="$(swift build -c release --show-bin-path)/MuxtermApp"
+DEPS="$(otool -L "$BIN")"
+printf '%s\n' "$DEPS"
+if [[ "$DEPS" == *libmuxterm.dylib* ]]; then
+  echo "ERROR: macOS app links libmuxterm.dylib; expected the bundled static archive" >&2
+  exit 1
+fi
+if [[ "$DEPS" == *"/Users/runner"* || "$DEPS" == *"/home/runner"* || "$DEPS" == *muxterm-target* ]]; then
+  echo "ERROR: macOS app contains a build-machine dependency path" >&2
+  exit 1
+fi
 cp -f "$BIN" "$OUT_DIR/muxterm"
 chmod +x "$OUT_DIR/muxterm"
 

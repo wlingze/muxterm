@@ -220,13 +220,25 @@ jobs:
       - name: Build macOS app
         run: ./scripts/build-macos.sh
 
-      - name: Verify binary
+      - name: Verify binary and app dependencies
         run: |
-          if [ ! -f build/macos/muxterm ]; then
-            echo "ERROR: No macOS binary produced" >&2
+          set -euo pipefail
+          APP=build/macos/Muxterm.app
+          BIN="$APP/Contents/MacOS/Muxterm"
+          test -x "$BIN"
+          test -f "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          file "$BIN" | grep -E 'Mach-O 64-bit.*arm64'
+          DEPS="$(otool -L "$BIN")"
+          printf '%s\n' "$DEPS"
+          if [[ "$DEPS" == *libmuxterm.dylib* ]]; then
+            echo "ERROR: release app links libmuxterm.dylib instead of the static archive" >&2
             exit 1
           fi
-          file build/macos/muxterm
+          if [[ "$DEPS" == *"/Users/runner"* || "$DEPS" == *"/home/runner"* || "$DEPS" == *muxterm-target* ]]; then
+            echo "ERROR: release app contains a build-machine dependency path" >&2
+            exit 1
+          fi
 
       - name: Package
         run: |
