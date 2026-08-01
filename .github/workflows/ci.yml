@@ -25,7 +25,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             pkg-config \
-            tmux
+            tmux \
+            openssh-server \
+            openssh-client \
+            python3
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -48,9 +51,23 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --no-default-features --features tui -- -D warnings
 
+      - name: Setup shared loopback sshd
+        run: |
+          MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup-sshd.sh
+
       - name: cargo test
         run: cargo test --no-default-features --features tui
         timeout-minutes: 15
+        env:
+          MUXTERM_TEST_SSH_KEY: ${{ env.MUXTERM_TEST_SSH_KEY }}
+
+      - name: Cleanup sshd
+        if: always()
+        run: |
+          if [ -n "${{ env.MUXTERM_SSHD_TMP_DIR }}" ] && [ -f "${{ env.MUXTERM_SSHD_TMP_DIR }}/sshd.pid" ]; then
+            kill "$(cat ${{ env.MUXTERM_SSHD_TMP_DIR }}/sshd.pid)" 2>/dev/null || true
+            rm -rf "${{ env.MUXTERM_SSHD_TMP_DIR }}"
+          fi
 
       - name: Install GTK4 deps
         run: |
