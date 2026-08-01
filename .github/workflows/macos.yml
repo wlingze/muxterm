@@ -1,22 +1,6 @@
 name: macOS / platform
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/platform/macos/**'
-      - 'src/core/**'
-      - 'src/platform/cli/**'
-      - 'src/platform/mod.rs'
-      - 'src/lib.rs'
-      - 'tests/macos_integration.rs'
-      - 'tests/support/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/**'
-      - 'scripts/build-macos.sh'
-      - 'scripts/ci/**'
-      - '.github/workflows/macos.yml'
   pull_request:
     branches: [main]
     paths:

@@ -1,23 +1,6 @@
 name: Linux / platform
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/platform/linux/**'
-      - 'src/core/**'
-      - 'src/platform/cli/**'
-      - 'src/platform/mod.rs'
-      - 'src/lib.rs'
-      - 'src/main.rs'
-      - 'tests/linux_gtk_integration.rs'
-      - 'tests/support/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/**'
-      - 'scripts/build-linux.sh'
-      - 'scripts/ci/**'
-      - '.github/workflows/linux.yml'
   pull_request:
     branches: [main]
     paths:

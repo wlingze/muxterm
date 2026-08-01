@@ -1,31 +1,6 @@
 name: Core / shared
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/core/**'
-      - 'src/platform/cli/**'
-      - 'src/platform/tui/**'
-      - 'src/platform/mod.rs'
-      - 'src/lib.rs'
-      - 'src/main.rs'
-      - 'tests/cli_integration.rs'
-      - 'tests/four_mode_integration.rs'
-      - 'tests/sendkeys_regression.rs'
-      - 'tests/split_regression.rs'
-      - 'tests/ssh_no_fallback.rs'
-      - 'tests/ssh_transport_unit.rs'
-      - 'tests/tmux_backend_integration.rs'
-      - 'tests/tui_integration.rs'
-      - 'tests/support/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/**'
-      - 'scripts/build-cli.sh'
-      - 'scripts/build-tui.sh'
-      - 'scripts/ci/**'
-      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
     paths:
