@@ -25,7 +25,7 @@ on:
       - 'scripts/build-cli.sh'
       - 'scripts/build-tui.sh'
       - 'scripts/ci/**'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
