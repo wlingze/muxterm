@@ -18,6 +18,8 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -216,9 +218,27 @@ impl TmuxBackend {
             }
         }
         if let Some(s) = socket {
-            let _ = std::process::Command::new(self.config.tmux_bin.as_deref().unwrap_or("tmux"))
+            let Ok(mut child) = Command::new(self.config.tmux_bin.as_deref().unwrap_or("tmux"))
                 .args(["-L", s, "kill-server"])
-                .output();
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            else {
+                return;
+            };
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) if Instant::now() >= deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
         }
     }
 

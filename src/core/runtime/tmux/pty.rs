@@ -23,6 +23,25 @@ pub struct PtyChild {
     pub child: Box<dyn portable_pty::Child + Send>,
 }
 
+impl PtyChild {
+    pub fn kill_and_wait(&mut self) {
+        if self.child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        if self.child.kill().is_ok() {
+            let _ = self.child.wait();
+        }
+    }
+}
+
+impl Drop for PtyChild {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+        }
+    }
+}
+
 /// spawn 一个命令到一对 pty。
 pub fn spawn_pty(bin: &str, args: &[&str], cols: u16, rows: u16) -> Result<PtyChild> {
     let pty_system = NativePtySystem::default();
