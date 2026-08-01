@@ -97,9 +97,9 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p artifacts
-          cp target/release/muxterm "artifacts/muxterm-cli-linux-x86_64-${FS_VERSION}"
-          cat > artifacts/README.txt <<'EOF'
+          mkdir -p staging
+          cp target/release/muxterm "staging/muxterm"
+          cat > staging/README.txt <<'EOF'
           muxterm CLI (TUI) for Linux x86_64
 
           Runtime dependencies:
@@ -107,13 +107,15 @@ jobs:
             - tmux (for tmux control mode operations)
 
           Usage:
-            ./muxterm-cli-linux-x86_64-<version> --help
-            ./muxterm-cli-linux-x86_64-<version> --tui -L <socket>
+            ./muxterm --help
+            ./muxterm --tui -L <socket>
 
-          Checksums: see .sha256 file alongside this binary.
+          Checksums: see .sha256 file alongside this archive.
           EOF
+          mkdir -p artifacts
+          tar czf "artifacts/muxterm-cli-linux-x86_64-${FS_VERSION}.tar.gz" -C staging .
           cd artifacts
-          sha256sum "muxterm-cli-linux-x86_64-${FS_VERSION}" > "muxterm-cli-linux-x86_64-${FS_VERSION}.sha256"
+          sha256sum "muxterm-cli-linux-x86_64-${FS_VERSION}.tar.gz" > "muxterm-cli-linux-x86_64-${FS_VERSION}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -161,9 +163,9 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p artifacts
-          cp target/release/muxterm "artifacts/muxterm-gtk-linux-x86_64-${FS_VERSION}"
-          cat > artifacts/README.txt <<'EOF'
+          mkdir -p staging
+          cp target/release/muxterm "staging/muxterm"
+          cat > staging/README.txt <<'EOF'
           muxterm GTK4 for Linux x86_64
 
           Runtime dependencies:
@@ -172,13 +174,15 @@ jobs:
             - tmux (for tmux control mode operations)
 
           Usage:
-            ./muxterm-gtk-linux-x86_64-<version>
-            ./muxterm-gtk-linux-x86_64-<version> -L <socket>
+            ./muxterm
+            ./muxterm -L <socket>
 
-          Checksums: see .sha256 file alongside this binary.
+          Checksums: see .sha256 file alongside this archive.
           EOF
+          mkdir -p artifacts
+          tar czf "artifacts/muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz" -C staging .
           cd artifacts
-          sha256sum "muxterm-gtk-linux-x86_64-${FS_VERSION}" > "muxterm-gtk-linux-x86_64-${FS_VERSION}.sha256"
+          sha256sum "muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz" > "muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -236,62 +240,10 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
-  # ── Windows CLI (TUI) ───────────────────────────────────────
-  build-windows:
-    name: Windows CLI (TUI)
-    needs: resolve-version
-    runs-on: windows-latest
-    timeout-minutes: 30
-    env:
-      CARGO_TARGET_DIR: target
-      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/
-            target
-          key: release-windows-${{ hashFiles('**/Cargo.toml') }}
-
-      - name: Build TUI (Windows, release)
-        shell: bash
-        run: ./scripts/build-tui.sh --release
-
-      - name: Verify binary
-        shell: bash
-        run: |
-          if [ ! -f target/release/muxterm.exe ]; then
-            echo "ERROR: No Windows binary produced" >&2
-            exit 1
-          fi
-          file target/release/muxterm.exe
-
-      - name: Validate --version
-        shell: bash
-        run: target/release/muxterm.exe --version || target/release/muxterm.exe --help || true
-
-      - name: Package
-        shell: bash
-        run: |
-          mkdir -p artifacts
-          cp target/release/muxterm.exe "artifacts/muxterm-cli-windows-x86_64-${FS_VERSION}.exe"
-          cd artifacts
-          sha256sum "muxterm-cli-windows-x86_64-${FS_VERSION}.exe" > "muxterm-cli-windows-x86_64-${FS_VERSION}.exe.sha256"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-cli
-          path: artifacts/*
-          if-no-files-found: error
-
   # ── Publish release (single job, no race) ──────────────────
   publish:
     name: Publish release
-    needs: [resolve-version, build-linux-cli, build-linux-gtk, build-macos, build-windows]
+    needs: [resolve-version, build-linux-cli, build-linux-gtk, build-macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -323,15 +275,8 @@ jobs:
 
             | Artifact | Platform | Type | Runtime deps |
             |----------|----------|------|-------------|
-            | `muxterm-cli-linux-x86_64-*` | Linux x86_64 | CLI/TUI command-line tool | glibc (ubuntu-latest), tmux for tmux ops |
-            | `muxterm-gtk-linux-x86_64-*` | Linux x86_64 | GTK4 GUI app | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
+            | `muxterm-cli-linux-x86_64-*.tar.gz` | Linux x86_64 | CLI/TUI command-line tool | glibc (ubuntu-latest), tmux for tmux ops |
+            | `muxterm-gtk-linux-x86_64-*.tar.gz` | Linux x86_64 | GTK4 GUI app | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
             | `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app bundle | macOS 13+ |
-            | `muxterm-cli-windows-x86_64-*.exe` | Windows x86_64 | CLI/TUI (no GUI) | tmux-dependent ops require usable tmux env |
 
             Each artifact has a corresponding `.sha256` checksum file.
-
-            ### Windows limitation
-
-            The Windows build is CLI/TUI only (crossterm). There is no Windows GUI frontend.
-            tmux-dependent operations (attach, split, etc.) require a usable tmux environment;
-            `--version` and `--help` work without tmux.
