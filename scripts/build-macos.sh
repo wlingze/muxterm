@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # 编译 macOS 客户端 → build/macos/muxterm（及 Muxterm.app 供 XCUITest）
+# 用法: ./scripts/build-macos.sh
+# 环境变量: CARGO_TARGET_DIR (默认 ../muxterm-target)
+#           DEVELOPER_DIR (默认 /Applications/Xcode.app/Contents/Developer)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,9 +16,15 @@ echo "==> cargo build ffi release"
 cd "$ROOT"
 cargo build --no-default-features --features ffi --release
 
-# Vendor 软链（若缺失）
+# Vendor 软链（指向实际 target dir）
 mkdir -p "$MACOS_DIR/Vendor"
-ln -sfn ../../../../../muxterm-target/release/libmuxterm.a "$MACOS_DIR/Vendor/libmuxterm.a"
+# 计算从 Vendor/ 到 target_dir/release/libmuxterm.a 的相对路径
+LIBMUXTERM="$TARGET_DIR/release/libmuxterm.a"
+if [[ ! -f "$LIBMUXTERM" ]]; then
+  echo "ERROR: $LIBMUXTERM not found after cargo build" >&2
+  exit 1
+fi
+ln -sfn "$(cd "$(dirname "$LIBMUXTERM")" && pwd)/libmuxterm.a" "$MACOS_DIR/Vendor/libmuxterm.a"
 
 echo "==> swift build -c release"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"

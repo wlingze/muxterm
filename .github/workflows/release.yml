@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Mark as prerelease (manual dispatch only)'
+        required: false
+        default: 'true'
+        type: boolean
 
 permissions:
   contents: write
@@ -12,66 +19,319 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Linux CLI 二进制 —— 纯 TUI，单文件，零依赖 ──
-  release-linux:
-    name: Linux CLI (TUI)
+  # ── Resolve version ──────────────────────────────────────────
+  resolve-version:
+    name: Resolve version
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      fs_version: ${{ steps.version.outputs.fs_version }}
+      is_tag: ${{ steps.version.outputs.is_tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          # Tag trigger: exact v* tag → formal release
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "fs_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            # Manual dispatch (always prerelease): nearest reachable v* tag + short SHA, or short SHA
+            NEAREST=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            if [[ -n "$NEAREST" ]]; then
+              VERSION="${NEAREST}-dev.${SHORT_SHA}"
+            else
+              VERSION="${SHORT_SHA}"
+            fi
+            # Filesystem-safe version for artifact naming
+            FS_VERSION=$(echo "$VERSION" | sed 's/[^a-zA-Z0-9._-]/-/g')
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "fs_version=$FS_VERSION" >> "$GITHUB_OUTPUT"
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+            echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved version: $VERSION (fs: $FS_VERSION)"
+
+  # ── Linux CLI (TUI) — command-line tool ─────────────────────
+  build-linux-cli:
+    name: Linux CLI (TUI)
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: target
+      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
-          path: ~/.cargo/
-          key: release-linux-${{ hashFiles('**/Cargo.toml') }}
-      - run: cargo build --release --no-default-features --features tui
-      - run: cargo test --release --no-default-features --features tui
-      - run: |
-          mkdir -p dist
-          cp target/release/muxterm dist/muxterm-linux-x86_64
-          cd dist && sha256sum muxterm-linux-x86_64 > muxterm-linux-x86_64.sha256
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
+          path: |
+            ~/.cargo/
+            target
+          key: release-linux-cli-${{ hashFiles('**/Cargo.toml') }}
 
-  # ── macOS .app 客户端 ──
-  release-macos:
-    name: macOS Client (.app)
-    runs-on: macos-latest
+      - name: Build TUI (release)
+        run: ./scripts/build-tui.sh --release
+
+      - name: Verify binary
+        run: |
+          if [ ! -f target/release/muxterm ]; then
+            echo "ERROR: No Linux CLI binary produced" >&2
+            exit 1
+          fi
+          file target/release/muxterm
+          target/release/muxterm --version || true
+
+      - name: Package
+        run: |
+          mkdir -p artifacts
+          cp target/release/muxterm "artifacts/muxterm-cli-linux-x86_64-${FS_VERSION}"
+          cat > artifacts/README.txt <<'EOF'
+          muxterm CLI (TUI) for Linux x86_64
+
+          Runtime dependencies:
+            - glibc (built on ubuntu-latest, requires compatible glibc)
+            - tmux (for tmux control mode operations)
+
+          Usage:
+            ./muxterm-cli-linux-x86_64-<version> --help
+            ./muxterm-cli-linux-x86_64-<version> --tui -L <socket>
+
+          Checksums: see .sha256 file alongside this binary.
+          EOF
+          cd artifacts
+          sha256sum "muxterm-cli-linux-x86_64-${FS_VERSION}" > "muxterm-cli-linux-x86_64-${FS_VERSION}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-cli
+          path: artifacts/*
+          if-no-files-found: error
+
+  # ── Linux GTK4 app ──────────────────────────────────────────
+  build-linux-gtk:
+    name: Linux GTK4
+    needs: resolve-version
+    runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: target
+      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
     steps:
       - uses: actions/checkout@v4
-      - run: brew install tmux xcodegen
+        with:
+          fetch-depth: 0
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config tmux \
+            libgtk-4-dev libvte-2.91-gtk4-dev libssl-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
-          path: ~/.cargo/
-          key: release-macos-${{ hashFiles('**/Cargo.toml') }}
-      - name: Build Rust FFI + macOS client
+          path: |
+            ~/.cargo/
+            target
+          key: release-linux-gtk-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Build Linux GTK4 (release)
+        run: ./scripts/build-linux.sh --release
+
+      - name: Verify binary
         run: |
-          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-          cargo build --release --no-default-features --features ffi
-          ./scripts/build-macos.sh
-      - name: Package .app
+          if [ ! -f target/release/muxterm ]; then
+            echo "ERROR: No Linux GTK4 binary produced" >&2
+            exit 1
+          fi
+          file target/release/muxterm
+          target/release/muxterm --version || true
+
+      - name: Package
+        run: |
+          mkdir -p artifacts
+          cp target/release/muxterm "artifacts/muxterm-gtk-linux-x86_64-${FS_VERSION}"
+          cat > artifacts/README.txt <<'EOF'
+          muxterm GTK4 for Linux x86_64
+
+          Runtime dependencies:
+            - glibc (built on ubuntu-latest, requires compatible glibc)
+            - libgtk-4-1, libvte-2.91-gtk4, libssl3
+            - tmux (for tmux control mode operations)
+
+          Usage:
+            ./muxterm-gtk-linux-x86_64-<version>
+            ./muxterm-gtk-linux-x86_64-<version> -L <socket>
+
+          Checksums: see .sha256 file alongside this binary.
+          EOF
+          cd artifacts
+          sha256sum "muxterm-gtk-linux-x86_64-${FS_VERSION}" > "muxterm-gtk-linux-x86_64-${FS_VERSION}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-gtk
+          path: artifacts/*
+          if-no-files-found: error
+
+  # ── macOS ARM app ───────────────────────────────────────────
+  build-macos:
+    name: macOS ARM
+    needs: resolve-version
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          brew list tmux >/dev/null 2>&1 || brew install tmux
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/
+            ${{ github.workspace }}/../muxterm-target
+          key: release-macos-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Build macOS app
+        run: ./scripts/build-macos.sh
+
+      - name: Verify binary
+        run: |
+          if [ ! -f build/macos/muxterm ]; then
+            echo "ERROR: No macOS binary produced" >&2
+            exit 1
+          fi
+          file build/macos/muxterm
+
+      - name: Package
+        run: |
+          mkdir -p artifacts
+          cd build/macos
+          zip -r "../../artifacts/muxterm-macos-arm64-${FS_VERSION}.zip" Muxterm.app/
+          cd ../..
+          cd artifacts
+          shasum -a 256 "muxterm-macos-arm64-${FS_VERSION}.zip" > "muxterm-macos-arm64-${FS_VERSION}.zip.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: artifacts/*
+          if-no-files-found: error
+
+  # ── Windows CLI (TUI) ───────────────────────────────────────
+  build-windows:
+    name: Windows CLI (TUI)
+    needs: resolve-version
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: target
+      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/
+            target
+          key: release-windows-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Build TUI (Windows, release)
+        shell: bash
+        run: ./scripts/build-tui.sh --release
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          if [ ! -f target/release/muxterm.exe ]; then
+            echo "ERROR: No Windows binary produced" >&2
+            exit 1
+          fi
+          file target/release/muxterm.exe
+
+      - name: Validate --version
+        shell: bash
+        run: target/release/muxterm.exe --version || target/release/muxterm.exe --help || true
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp target/release/muxterm.exe "artifacts/muxterm-cli-windows-x86_64-${FS_VERSION}.exe"
+          cd artifacts
+          sha256sum "muxterm-cli-windows-x86_64-${FS_VERSION}.exe" > "muxterm-cli-windows-x86_64-${FS_VERSION}.exe.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-cli
+          path: artifacts/*
+          if-no-files-found: error
+
+  # ── Publish release (single job, no race) ──────────────────
+  publish:
+    name: Publish release
+    needs: [resolve-version, build-linux-cli, build-linux-gtk, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Flatten artifacts
         run: |
           mkdir -p dist
-          cp -r build/macos/Muxterm.app dist/
-          cd dist && zip -r muxterm-macos-arm64.zip Muxterm.app/
-          sha256sum muxterm-macos-arm64.zip > muxterm-macos-arm64.zip.sha256
-      - uses: softprops/action-gh-release@v2
+          find release-assets -type f -exec cp {} dist/ \;
+          ls -la dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.resolve-version.outputs.version }}
+          name: muxterm ${{ needs.resolve-version.outputs.version }}
+          prerelease: ${{ needs.resolve-version.outputs.prerelease }}
+          generate_release_notes: true
           files: dist/*
+          body: |
+            ## Release artifacts
 
-  # ── Linux GTK 客户端（预留，待 GTK4 前端完善）──
-  # release-linux-gtk:
-  #   name: Linux Client (GTK4)
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 30
-  #   ...
+            | Artifact | Platform | Type | Runtime deps |
+            |----------|----------|------|-------------|
+            | `muxterm-cli-linux-x86_64-*` | Linux x86_64 | CLI/TUI command-line tool | glibc (ubuntu-latest), tmux for tmux ops |
+            | `muxterm-gtk-linux-x86_64-*` | Linux x86_64 | GTK4 GUI app | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
+            | `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app bundle | macOS 13+ |
+            | `muxterm-cli-windows-x86_64-*.exe` | Windows x86_64 | CLI/TUI (no GUI) | tmux-dependent ops require usable tmux env |
 
-  # ── Windows 客户端（预留，待 WinUI 前端完成）──
-  # release-windows:
-  #   name: Windows Client
-  #   runs-on: windows-latest
-  #   ...
+            Each artifact has a corresponding `.sha256` checksum file.
+
+            ### Windows limitation
+
+            The Windows build is CLI/TUI only (crossterm). There is no Windows GUI frontend.
+            tmux-dependent operations (attach, split, etc.) require a usable tmux environment;
+            `--version` and `--help` work without tmux.
