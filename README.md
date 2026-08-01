@@ -1,10 +1,8 @@
 # Muxterm
 
-Linux 桌面端的 **tmux control mode (`-CC`) 原生 UI 终端**。
+跨平台 **tmux control mode (`-CC`) 原生 UI 终端**：Linux（GTK4 桌面 / TUI）与 macOS（SwiftUI）。
 
-用 Rust + GTK4 把本地或远程 tmux 的 session / window / pane 渲染成原生 tab 与分割布局，而不是「黑框终端 + `Ctrl+B`」。体验上接近 iTerm2 的 tmux 集成，但面向 Linux。
-
-> 跨平台终端：Linux (GTK4 + TUI) / macOS (SwiftUI)。详见 [PRODUCT.md](PRODUCT.md)。
+用共享 Rust 核心把本地或远程 tmux 的 session / window / pane 渲染成原生 tab 与分割布局，而不是「黑框终端 + `Ctrl+B`」。体验接近 iTerm2 的 tmux 集成。详见 [PRODUCT.md](PRODUCT.md)。
 
 ## 功能概览
 
@@ -58,7 +56,7 @@ sudo apt-get install -y build-essential pkg-config \
 
 ### 从 Release 下载
 
-GitHub Release 自动构建四种产物（打 tag `v*.*.*` 触发，或手动 dispatch）：
+GitHub Release 自动构建三种产物（打 tag `v*.*.*` 触发，或手动 dispatch）：
 
 | 产物 | 平台 | 类型 | 运行时依赖 |
 |------|------|------|-----------|
@@ -67,7 +65,6 @@ GitHub Release 自动构建四种产物（打 tag `v*.*.*` 触发，或手动 di
 | `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app 包 | macOS 13+ |
 
 每个产物附带 `.sha256` 校验文件。
-
 
 ### 版本命名
 
@@ -89,8 +86,10 @@ GitHub Release 自动构建四种产物（打 tag `v*.*.*` 触发，或手动 di
 git clone https://github.com/wlingze/muxterm.git
 cd muxterm
 ./scripts/build-tui.sh --release
-./target/release/muxterm
+../muxterm-target/release/muxterm
 ```
+
+仓库 `.cargo/config.toml` 默认 `target-dir = "../muxterm-target"`（即本地默认的 `CARGO_TARGET_DIR`），多 worktree 共享同一编译缓存；可用环境变量 `CARGO_TARGET_DIR` 覆盖。
 
 调试运行：
 
