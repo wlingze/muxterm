@@ -1,4 +1,4 @@
-name: Linux / platform
+name: "CI: linux"
 
 on:
   pull_request:

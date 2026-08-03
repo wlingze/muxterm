@@ -15,6 +15,16 @@ on:
         required: false
         default: 'true'
         type: boolean
+      platform:
+        description: 'Which platform to build (all, linux-cli, linux-gtk, macos)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - linux-cli
+          - linux-gtk
+          - macos
 
 permissions:
   contents: read
@@ -71,6 +81,7 @@ jobs:
   # ── Linux CLI (TUI) — command-line tool ─────────────────────
   build-linux-cli:
     name: Linux CLI (TUI)
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-cli'
     needs: resolve-version
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -133,6 +144,7 @@ jobs:
   # ── Linux GTK4 app ──────────────────────────────────────────
   build-linux-gtk:
     name: Linux GTK4
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gtk'
     needs: resolve-version
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -200,6 +212,7 @@ jobs:
   # ── macOS ARM app ───────────────────────────────────────────
   build-macos:
     name: macOS ARM
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
     needs: resolve-version
     runs-on: macos-latest
     timeout-minutes: 45
@@ -232,7 +245,9 @@ jobs:
           BIN="$APP/Contents/MacOS/Muxterm"
           test -x "$BIN"
           test -f "$APP/Contents/Info.plist"
+          test -d "$APP/Contents/_CodeSignature"
           plutil -lint "$APP/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=4 "$APP"
           file "$BIN" | grep -E 'Mach-O 64-bit.*arm64'
           DEPS="$(otool -L "$BIN" | tail -n +2)"
           printf '%s\n' "$DEPS"
@@ -245,14 +260,34 @@ jobs:
             exit 1
           fi
 
-      - name: Package
+      - name: Package DMG
         run: |
-          mkdir -p artifacts
-          cd build/macos
-          zip -r "../../artifacts/muxterm-macos-arm64-${FS_VERSION}.zip" Muxterm.app/
-          cd ../..
-          cd artifacts
-          shasum -a 256 "muxterm-macos-arm64-${FS_VERSION}.zip" > "muxterm-macos-arm64-${FS_VERSION}.zip.sha256"
+          set -euo pipefail
+          mkdir -p artifacts build/macos/dmg-root
+          rm -rf build/macos/dmg-root/Muxterm.app
+          cp -R build/macos/Muxterm.app build/macos/dmg-root/Muxterm.app
+          DMG="artifacts/muxterm-macos-arm64-${FS_VERSION}.dmg"
+          hdiutil create \
+            -volname Muxterm \
+            -srcfolder build/macos/dmg-root \
+            -ov \
+            -format UDZO \
+            "$DMG"
+          hdiutil verify "$DMG"
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+
+      - name: Verify DMG contents
+        run: |
+          set -euo pipefail
+          DMG="artifacts/muxterm-macos-arm64-${FS_VERSION}.dmg"
+          MOUNT="$RUNNER_TEMP/muxterm-dmg"
+          mkdir -p "$MOUNT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"
+          trap 'hdiutil detach "$MOUNT" || true' EXIT
+          test -d "$MOUNT/Muxterm.app"
+          test -x "$MOUNT/Muxterm.app/Contents/MacOS/Muxterm"
+          codesign --verify --deep --strict --verbose=4 "$MOUNT/Muxterm.app"
+          test "$(find "$MOUNT" -mindepth 1 -maxdepth 1 -name 'Muxterm.app' | wc -l | tr -d ' ')" = 1
 
       - uses: actions/upload-artifact@v4
         with:
@@ -263,7 +298,10 @@ jobs:
   # ── Publish release (single job, no race) ──────────────────
   publish:
     name: Publish release
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' &&
+        (needs.build-linux-cli.result == 'success' ||
+         needs.build-linux-gtk.result == 'success' ||
+         needs.build-macos.result == 'success')
     needs: [resolve-version, build-linux-cli, build-linux-gtk, build-macos]
     permissions:
       contents: write
@@ -301,7 +339,7 @@ jobs:
             |----------|----------|------|-------------|
             | `muxterm-cli-linux-x86_64-*.tar.gz` | Linux x86_64 | CLI/TUI command-line tool | glibc (ubuntu-latest), tmux for tmux ops |
             | `muxterm-gtk-linux-x86_64-*.tar.gz` | Linux x86_64 | GTK4 GUI app | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
-            | `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app bundle | macOS 13+ |
+            | `muxterm-macos-arm64-*.dmg` | macOS ARM64 | DMG containing `Muxterm.app` | macOS 13+ |
 
             Each artifact has a corresponding `.sha256` checksum file.
 
