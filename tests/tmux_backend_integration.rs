@@ -2570,3 +2570,115 @@ fn bug7_edge_attach_send_keys() {
     let _ = model.shutdown();
     cleanup(&socket);
 }
+
+// ============================================================================
+// P0：detach → re-attach 布局保持
+// ============================================================================
+
+#[test]
+fn detach_reattach_layout_persists() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 用原生 tmux 创建带多个 pane 的 detached session
+    let rc = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "reattach",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status();
+    if rc.is_err() || !rc.unwrap().success() {
+        eprintln!("skip: 无法创建 tmux session");
+        cleanup(&socket);
+        return;
+    }
+    // 水平分割 + 垂直分割 → 3 panes
+    Command::new("tmux")
+        .args(["-L", &socket, "split-window", "-h"])
+        .status()
+        .unwrap();
+    Command::new("tmux")
+        .args(["-L", &socket, "split-window", "-v"])
+        .status()
+        .unwrap();
+
+    // ── 第一次 attach ──
+    let mut model = {
+        let backend = TmuxBackend::new_with_attach(Some(&socket), "reattach");
+        let mut m = TerminalModel::new(Box::new(backend));
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .build()
+            .unwrap();
+        rt.block_on(m.connect()).unwrap();
+        let _ = m.poll_events();
+        std::mem::forget(rt);
+        m
+    };
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+
+    // 等待布局建好（至少 3 个 pane）
+    let ok = wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_tab()
+            .map(|t| s.panes(&t.id).len() >= 3)
+            .unwrap_or(false)
+    });
+    assert!(ok, "首次 attach 后应有至少 3 个 pane");
+
+    let first_count = model
+        .state()
+        .active_tab()
+        .map(|t| model.state().panes(&t.id).len())
+        .unwrap_or(0);
+
+    // ── detach（shutdown 发 detach-client，session 仍在 socket 上存活）──
+    let _ = model.shutdown();
+
+    // ── 第二次 attach，验证布局保持 ──
+    let mut model2 = {
+        let backend = TmuxBackend::new_with_attach(Some(&socket), "reattach");
+        let mut m = TerminalModel::new(Box::new(backend));
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .build()
+            .unwrap();
+        rt.block_on(m.connect()).unwrap();
+        let _ = m.poll_events();
+        std::mem::forget(rt);
+        m
+    };
+    assert_eq!(model2.state().status(), BackendStatus::Connected);
+
+    let ok2 = wait_for(&mut model2, Duration::from_secs(10), |s| {
+        s.active_tab()
+            .map(|t| s.panes(&t.id).len() >= 3)
+            .unwrap_or(false)
+    });
+    assert!(ok2, "re-attach 后布局应保持（至少 3 个 pane）");
+
+    let second_count = model2
+        .state()
+        .active_tab()
+        .map(|t| model2.state().panes(&t.id).len())
+        .unwrap_or(0);
+    assert_eq!(
+        first_count, second_count,
+        "detach/re-attach 后 pane 数应保持一致: first={first_count} second={second_count}"
+    );
+
+    let _ = model2.shutdown();
+    cleanup(&socket);
+}
