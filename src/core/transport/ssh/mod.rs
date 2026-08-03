@@ -537,4 +537,31 @@ mod tests {
         let mut t = SshProcessTransport::new();
         assert!(t.try_wait().unwrap().is_some()); // None child → Some(0)
     }
+
+    /// EOF：reader channel 关闭（远端进程退出）时，`read()` 应返回 Err（EOF），
+    /// 而不是卡死或无限返回 None。这是「连接断开」路径的健壮性保障。
+    #[test]
+    fn ssh_transport_read_returns_eof_on_channel_close() {
+        let launcher = FakeLauncher::new();
+        let mut transport = SshProcessTransport::with_launcher(Box::new(launcher));
+
+        let (program, args) = build_ssh_command("test-alias", "echo hello", None);
+        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        transport
+            .spawn_exec(&program, &args_ref, super::super::PtySize::new(80, 24))
+            .expect("spawn");
+
+        // FakeLauncher 的 reader channel tx 立即 drop → read() 应返回 Err(EOF)
+        let result = transport.read();
+        assert!(
+            result.is_err(),
+            "channel 关闭后 read() 应返回 Err(EOF)，实际 {result:?}"
+        );
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::UnexpectedEof,
+            "应为 EOF 错误"
+        );
+    }
 }
