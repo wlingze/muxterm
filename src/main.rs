@@ -2,27 +2,27 @@
 #![allow(dead_code)]
 // Muxterm 主入口（thin entry）。
 //
-// 子命令：
-//   `muxterm <command> [options]` → CLI 命令模式（platform::cli::routing）
-//   `muxterm gui [...]`            → GUI 前端（Linux=GTK4，macOS=Swift .app）
-//   `muxterm tui [...]`            → TUI 前端（crossterm）
+// 子命令模型：
+//   `muxterm <cli-command> [...]` → CLI 命令模式（如 new-session / split-pane / list-tabs）
+//   `muxterm gui [...]`           → GUI 前端（Linux=GTK4，macOS=Swift .app）
+//   `muxterm tui [...]`           → TUI 前端（crossterm）
+//   `muxterm tmux ...`            → tmux 结构化 CLI（session/tab/pane）
 // 向后兼容 flag：`muxterm --tui` / `muxterm --gtk` 仍可用。
+//
+// 所有 CLI 命令都是 clap subcommand，`muxterm --help` 会列出全部命令；
+// 各 subcommand 用 `muxterm help <cmd>` 查看自身用法。
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 mod core;
 mod platform;
 
-/// Muxterm 命令行参数（交互模式用）。
+/// Muxterm 顶层参数（全局 flag + 子命令）。
 #[derive(Parser, Debug)]
 #[command(
     name = "muxterm",
     version,
-    about = "Native UI terminal for tmux control mode",
-    after_help = "子命令：
-  muxterm <command>        CLI 命令（new-session / split-pane / list-tabs 等）
-  muxterm gui [-L <socket>]  启动 GUI 前端
-  muxterm tui [-s <session>] 启动 TUI 前端"
+    about = "Native UI terminal for tmux control mode"
 )]
 struct Cli {
     #[arg(short, long)]
@@ -43,35 +43,244 @@ struct Cli {
     /// 使用 GTK4 前端（向后兼容 flag）
     #[arg(long = "gtk", default_value_t = false)]
     gtk: bool,
+
+    #[command(subcommand)]
+    cmd: Option<CliSubcommand>,
+}
+
+/// 所有子命令。
+///
+/// CLI 命令的原始参数用 `trailing_var_arg` + `allow_hyphen_values` 透传给
+/// `platform::cli::routing::run_cli`（复用既有手工解析），因此 `split-pane -h`
+/// 等短 flag 不会被 clap 吞掉；`disable_help_flag` 避免 `-h` 与帮助冲突，
+/// 子命令帮助用 `muxterm help <cmd>` 查看。
+#[derive(Subcommand, Debug)]
+enum CliSubcommand {
+    /// 新建 session
+    #[command(alias = "new", disable_help_flag = true)]
+    NewSession {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 结束 session
+    #[command(disable_help_flag = true)]
+    KillSession {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 列出 sessions
+    #[command(alias = "ls", disable_help_flag = true)]
+    ListSessions {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 附加到 session
+    #[command(alias = "attach", disable_help_flag = true)]
+    AttachSession {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 分离
+    #[command(disable_help_flag = true)]
+    Detach {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 重命名 session
+    #[command(disable_help_flag = true)]
+    RenameSession {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 新建 window
+    #[command(alias = "neww", disable_help_flag = true)]
+    NewWindow {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 结束 window
+    #[command(alias = "killw", disable_help_flag = true)]
+    KillWindow {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 列出 windows
+    #[command(alias = "lsw", disable_help_flag = true)]
+    ListWindows {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 选择 window
+    #[command(alias = "selectw", disable_help_flag = true)]
+    SelectWindow {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 重命名 window
+    #[command(alias = "renamew", disable_help_flag = true)]
+    RenameWindow {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 新建 tab
+    #[command(disable_help_flag = true)]
+    NewTab {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 结束 tab
+    #[command(disable_help_flag = true)]
+    KillTab {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 列出 tabs
+    #[command(alias = "lst", disable_help_flag = true)]
+    ListTabs {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 选择 tab
+    #[command(disable_help_flag = true)]
+    SelectTab {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 重命名 tab
+    #[command(disable_help_flag = true)]
+    RenameTab {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 分割 pane（-h 水平 / -v 竖直）
+    #[command(alias = "splitp", disable_help_flag = true)]
+    SplitPane {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 结束 pane
+    #[command(alias = "killp", disable_help_flag = true)]
+    KillPane {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 列出 panes
+    #[command(alias = "lsp", disable_help_flag = true)]
+    ListPanes {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 选择 pane
+    #[command(alias = "selectp", disable_help_flag = true)]
+    SelectPane {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 调整 pane 大小
+    #[command(alias = "resizep", disable_help_flag = true)]
+    ResizePane {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 发送按键
+    #[command(alias = "send", disable_help_flag = true)]
+    SendKeys {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 写入原始字节
+    #[command(disable_help_flag = true)]
+    WriteRaw {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 抓取 pane 屏幕
+    #[command(alias = "capturep", disable_help_flag = true)]
+    CapturePane {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 列出布局
+    #[command(disable_help_flag = true)]
+    ListLayout {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 显示消息
+    #[command(disable_help_flag = true)]
+    DisplayMessage {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 导出状态快照
+    #[command(disable_help_flag = true)]
+    DumpState {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// tmux 结构化 CLI（session/tab/pane）
+    #[command(disable_help_flag = true)]
+    Tmux {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 启动 TUI 前端
+    #[command(disable_help_flag = true)]
+    Tui {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 启动 GUI 前端
+    #[command(disable_help_flag = true)]
+    Gui {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut raw: Vec<String> = std::env::args().collect();
-    if !raw.is_empty() {
-        raw.remove(0); // 程序名
-    }
-
-    // 子命令：muxterm gui / muxterm tui
-    if let Some(sub) = raw.first() {
-        match sub.as_str() {
-            "gui" => return run_gui(&raw[1..]),
-            "tui" => return run_tui(&raw[1..]),
-            _ => {}
-        }
-    }
-
-    // CLI 命令模式：第一个参数不以 `-` 开头（含 `tmux`、`new-session`、`split-pane` 等）
-    if let Some(first) = raw.first() {
-        if !first.starts_with('-') && !first.is_empty() {
-            return platform::cli::routing::run_cli(&raw[..]);
-        }
-    }
-
-    // 交互模式（向后兼容 `--tui` / `--gtk` flag）
-    let cli = Cli::parse_from(std::iter::once("muxterm".to_string()).chain(raw.iter().cloned()));
+    let cli = Cli::parse();
     init_tracing(cli.verbose);
     log_socket(&cli);
 
+    // 子命令分派
+    if let Some(cmd) = &cli.cmd {
+        return match cmd {
+            // CLI 命令模式：把 canonical 命令名 + 原始参数交给既有 run_cli。
+            CliSubcommand::NewSession { args } => dispatch_cli("new-session", args),
+            CliSubcommand::KillSession { args } => dispatch_cli("kill-session", args),
+            CliSubcommand::ListSessions { args } => dispatch_cli("list-sessions", args),
+            CliSubcommand::AttachSession { args } => dispatch_cli("attach-session", args),
+            CliSubcommand::Detach { args } => dispatch_cli("detach", args),
+            CliSubcommand::RenameSession { args } => dispatch_cli("rename-session", args),
+            CliSubcommand::NewWindow { args } => dispatch_cli("new-window", args),
+            CliSubcommand::KillWindow { args } => dispatch_cli("kill-window", args),
+            CliSubcommand::ListWindows { args } => dispatch_cli("list-windows", args),
+            CliSubcommand::SelectWindow { args } => dispatch_cli("select-window", args),
+            CliSubcommand::RenameWindow { args } => dispatch_cli("rename-window", args),
+            CliSubcommand::NewTab { args } => dispatch_cli("new-tab", args),
+            CliSubcommand::KillTab { args } => dispatch_cli("kill-tab", args),
+            CliSubcommand::ListTabs { args } => dispatch_cli("list-tabs", args),
+            CliSubcommand::SelectTab { args } => dispatch_cli("select-tab", args),
+            CliSubcommand::RenameTab { args } => dispatch_cli("rename-tab", args),
+            CliSubcommand::SplitPane { args } => dispatch_cli("split-pane", args),
+            CliSubcommand::KillPane { args } => dispatch_cli("kill-pane", args),
+            CliSubcommand::ListPanes { args } => dispatch_cli("list-panes", args),
+            CliSubcommand::SelectPane { args } => dispatch_cli("select-pane", args),
+            CliSubcommand::ResizePane { args } => dispatch_cli("resize-pane", args),
+            CliSubcommand::SendKeys { args } => dispatch_cli("send-keys", args),
+            CliSubcommand::WriteRaw { args } => dispatch_cli("write-raw", args),
+            CliSubcommand::CapturePane { args } => dispatch_cli("capture-pane", args),
+            CliSubcommand::ListLayout { args } => dispatch_cli("list-layout", args),
+            CliSubcommand::DisplayMessage { args } => dispatch_cli("display-message", args),
+            CliSubcommand::DumpState { args } => dispatch_cli("dump-state", args),
+            CliSubcommand::Tmux { args } => dispatch_cli("tmux", args),
+            CliSubcommand::Tui { args } => run_tui(args),
+            CliSubcommand::Gui { args } => run_gui(args),
+        };
+    }
+
+    // 无子命令：向后兼容 `--tui` / `--gtk` flag。
     let want_tui = cli.tui || (!cli.gtk && cfg!(not(feature = "gtk")) && cfg!(feature = "tui"));
     let want_gtk = !want_tui && cfg!(feature = "gtk");
 
@@ -84,19 +293,22 @@ fn main() -> anyhow::Result<()> {
     anyhow::bail!("没有可用的前端（启用 `gtk` 或 `tui` feature）")
 }
 
+/// 组装 canonical 命令名 + 原始参数，交给既有 CLI 路由。
+fn dispatch_cli(name: &str, args: &[String]) -> anyhow::Result<()> {
+    let mut full = vec![name.to_string()];
+    full.extend_from_slice(args);
+    platform::cli::routing::run_cli(&full)
+}
+
 /// `muxterm gui [...]`：启动 GUI 前端。
 fn run_gui(args: &[String]) -> anyhow::Result<()> {
     let cli = Cli::parse_from(std::iter::once("muxterm".to_string()).chain(args.iter().cloned()));
-    init_tracing(cli.verbose);
-    log_socket(&cli);
     run_gui_inner(cli.socket, cli.session)
 }
 
 /// `muxterm tui [...]`：启动 TUI 前端。
 fn run_tui(args: &[String]) -> anyhow::Result<()> {
     let cli = Cli::parse_from(std::iter::once("muxterm".to_string()).chain(args.iter().cloned()));
-    init_tracing(cli.verbose);
-    log_socket(&cli);
     run_tui_inner(cli.socket, cli.session)
 }
 
@@ -213,5 +425,74 @@ mod tests {
         let cli = Cli::try_parse_from(["muxterm", "--gtk"]).unwrap();
         assert!(cli.gtk);
         assert!(!cli.tui);
+    }
+
+    #[test]
+    fn subcommand_new_session_captures_args() {
+        let cli =
+            Cli::try_parse_from(["muxterm", "new-session", "-n", "dev", "-s", "sock"]).unwrap();
+        match cli.cmd {
+            Some(CliSubcommand::NewSession { args }) => {
+                assert_eq!(
+                    args,
+                    vec![
+                        "-n".to_string(),
+                        "dev".to_string(),
+                        "-s".to_string(),
+                        "sock".to_string()
+                    ]
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subcommand_split_pane_hyphen_passthrough() {
+        // `-h` 是水平分屏，不能被 clap 当成帮助 flag 吞掉
+        let cli = Cli::try_parse_from(["muxterm", "split-pane", "-h", "-t", "@1"]).unwrap();
+        match cli.cmd {
+            Some(CliSubcommand::SplitPane { args }) => {
+                assert_eq!(
+                    args,
+                    vec!["-h".to_string(), "-t".to_string(), "@1".to_string()]
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subcommand_tui_captures_args() {
+        let cli = Cli::try_parse_from(["muxterm", "tui", "-s", "demo"]).unwrap();
+        match cli.cmd {
+            Some(CliSubcommand::Tui { args }) => {
+                assert_eq!(args, vec!["-s".to_string(), "demo".to_string()]);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subcommand_gui_parses() {
+        let cli = Cli::try_parse_from(["muxterm", "gui", "-L", "sock"]).unwrap();
+        match cli.cmd {
+            Some(CliSubcommand::Gui { args }) => {
+                assert_eq!(args, vec!["-L".to_string(), "sock".to_string()]);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subcommand_alias_new_maps_to_new_session() {
+        let cli = Cli::try_parse_from(["muxterm", "new", "-n", "test"]).unwrap();
+        assert!(matches!(cli.cmd, Some(CliSubcommand::NewSession { .. })));
+    }
+
+    #[test]
+    fn subcommand_alias_ls_maps_to_list_sessions() {
+        let cli = Cli::try_parse_from(["muxterm", "ls"]).unwrap();
+        assert!(matches!(cli.cmd, Some(CliSubcommand::ListSessions { .. })));
     }
 }
