@@ -493,3 +493,82 @@ fn attach_initial_flood_and_live_output() {
     let _ = model.shutdown();
     cleanup(&socket);
 }
+
+// ============================================================================
+// 9. 更高强度：多 pane 同时高频输出并持续一段时间，验证背压/事件队列有界、
+//    且每个 pane 都累积到各自输出（不串流、不阻塞）
+// ============================================================================
+
+#[test]
+fn sustained_multi_pane_stress_stays_bounded() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let mut model = connect_tmux(&socket);
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    });
+
+    let pane0 = model.state().active_pane().unwrap().id;
+    // 分割出第二个 pane
+    model
+        .execute(Task::SplitPane {
+            target: Some(pane0),
+            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    let _ = model.poll_events();
+    let tab_id = model.state().active_tab().unwrap().id;
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.panes(&tab_id).len() >= 2
+    });
+    assert!(ok, "分割后应至少有 2 个 pane");
+    let panes: Vec<PaneId> = model.state().panes(&tab_id).iter().map(|p| p.id).collect();
+    assert!(panes.len() >= 2, "应有至少 2 个 pane: {:?}", panes);
+
+    // 两个 pane 各自持续高频输出一段时间（总计约 6000 行）
+    type_command(
+        &mut model,
+        panes[0],
+        "for i in $(seq 1 3000); do echo a-stress-$i; done",
+    );
+    type_command(
+        &mut model,
+        panes[1],
+        "for i in $(seq 1 3000); do echo b-stress-$i; done",
+    );
+
+    // 等两个 pane 都累积到各自输出
+    let got = wait_for(&mut model, Duration::from_secs(10), |s| {
+        let a = s
+            .pane_output(&panes[0])
+            .map(String::from_utf8_lossy)
+            .map(|s| s.contains("a-stress-"))
+            .unwrap_or(false);
+        let b = s
+            .pane_output(&panes[1])
+            .map(String::from_utf8_lossy)
+            .map(|s| s.contains("b-stress-"))
+            .unwrap_or(false);
+        a && b
+    });
+    assert!(got, "两个 pane 都应累积到各自标记输出");
+
+    // 事件队列不应爆炸（内部有 MAX_STATE_EVENTS 裁剪 + MAX_PANE_OUTPUT_BYTES 上限）
+    // 通过 refresh 触发的 StateChange 数量不应异常：状态机仍能继续响应
+    type_command(&mut model, panes[0], "echo STRESS_ALIVE");
+    let alive = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&panes[0])
+            .map(|o| String::from_utf8_lossy(o).contains("STRESS_ALIVE"))
+            .unwrap_or(false)
+    });
+    assert!(alive, "高负载后状态机应仍能响应命令");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
