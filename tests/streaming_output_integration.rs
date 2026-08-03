@@ -347,3 +347,149 @@ fn multi_pane_concurrent_output() {
     let _ = model.shutdown();
     cleanup(&socket);
 }
+
+// ============================================================================
+// 7. resize 期间 pane 正在输出：resize → SIGWINCH → 重绘洪峰与 %layout-change 交织
+// ============================================================================
+
+#[test]
+fn resize_during_active_output() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let mut model = connect_tmux(&socket);
+    wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    });
+    let pane = model.state().active_pane().unwrap().id;
+
+    // 先启动一个持续输出循环（后台，跑 5 秒）
+    type_command(
+        &mut model,
+        pane,
+        "for i in $(seq 1 50); do echo \"resize-out-$i\"; sleep 0.1; done",
+    );
+
+    // 等开始输出
+    let started = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&pane)
+            .map(|o| {
+                let t = String::from_utf8_lossy(o);
+                t.contains("resize-out-")
+            })
+            .unwrap_or(false)
+    });
+    assert!(started, "resize 前应已有输出");
+
+    // 在输出进行中多次 resize（放大 + 缩小）
+    for (cols, rows) in [(100, 30), (40, 15), (120, 40), (80, 24)] {
+        model
+            .execute(Task::ResizePane {
+                target: pane,
+                cols,
+                rows,
+            })
+            .unwrap();
+        let _ = model.poll_events();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // resize 后状态机仍正常：能继续发命令并收到输出
+    type_command(&mut model, pane, "echo RESIZE_OK");
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&pane)
+            .map(|o| String::from_utf8_lossy(o).contains("RESIZE_OK"))
+            .unwrap_or(false)
+    });
+    assert!(ok, "resize 期间输出后状态机应仍响应命令");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// 8. attach 已有 session 的初始消息洪峰：session/window/pane 状态 + 每 pane 初始
+//    输出 + 多条 begin/end + 后续异步 output 交织
+// ============================================================================
+
+#[test]
+fn attach_initial_flood_and_live_output() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+
+    // 用原生 tmux 建一个带多个 pane + 历史输出的 session
+    let rc = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "flood",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status();
+    if rc.is_err() || !rc.unwrap().success() {
+        eprintln!("skip: 无法创建 tmux session");
+        cleanup(&socket);
+        return;
+    }
+    // 在 pane 0 生成一些输出
+    Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "send-keys",
+            "-t",
+            "flood:0",
+            "echo attach-initial-output; seq 1 50",
+            "Enter",
+        ])
+        .status()
+        .unwrap();
+
+    // attach 到该 session（attach 模式会收到大量初始状态 + 历史输出）
+    let backend = TmuxBackend::new_with_attach(Some(&socket), "flood");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    let _ = model.poll_events();
+    std::mem::forget(rt);
+
+    assert_eq!(model.state().status(), BackendStatus::Connected);
+    assert!(
+        !model.state().sessions().is_empty(),
+        "attach 后应有 session"
+    );
+
+    // 等待初始状态完全建好（tab + pane）
+    let ready = wait_for(&mut model, Duration::from_secs(10), |s| {
+        s.active_pane().is_some() && s.active_window().is_some()
+    });
+    assert!(ready, "attach 初始状态应建好");
+
+    // attach 后仍能继续交互：发新命令收到新输出（证明初始洪峰没破坏状态机）
+    let pane = model.state().active_pane().unwrap().id;
+    type_command(&mut model, pane, "echo FLOOD_OK");
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.pane_output(&pane)
+            .map(|o| String::from_utf8_lossy(o).contains("FLOOD_OK"))
+            .unwrap_or(false)
+    });
+    assert!(ok, "attach 洪峰后状态机应仍能响应命令");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
