@@ -9,6 +9,8 @@ pub mod input;
 pub mod process;
 pub mod scrollback;
 
+#[allow(unused_imports)] // 供平台层选用
+pub use emulate::TerminalState;
 #[allow(unused_imports)] // 供平台层与后续模块选用
 pub use input::{encode, ArrowDir, KeyEvent};
 #[allow(unused_imports)]
@@ -17,8 +19,6 @@ pub use process::{
 };
 #[allow(unused_imports)]
 pub use scrollback::ScrollbackBuffer;
-#[allow(unused_imports)] // 供平台层选用
-pub use emulate::TerminalState;
 
 /// 终端大小（字符格 + 像素 cell）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
