@@ -1666,6 +1666,36 @@ mod tests {
         assert_eq!(out_events, 3, "应有 3 个 PaneOutput 事件");
     }
 
+    /// %extended-output（hyperlink 等）被安全忽略，不破坏 %output 累积或状态机。
+    #[test]
+    fn extended_output_safely_ignored() {
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let pane = PaneId(9);
+
+        b.handle_message(Message::Output {
+            pane,
+            content: b"x".to_vec(),
+            raw_content: String::new(),
+        });
+        // 穿插一个 hyperlink 类的 %extended-output
+        b.handle_message(Message::ExtendedOutput {
+            pane,
+            output_type: "hyperlink".into(),
+            args: "file:///tmp".into(),
+        });
+        b.handle_message(Message::Output {
+            pane,
+            content: b"y".to_vec(),
+            raw_content: String::new(),
+        });
+
+        // output 仍完整累积（xy），extended-output 不打断
+        let out = b.outputs.get(&pane).cloned().unwrap_or_default();
+        assert_eq!(out, b"xy", "%extended-output 不应破坏 %output 累积");
+    }
+
     /// 布局变化与 %output 交织：%layout-change 不应重置已累积的 pane 输出。
     #[test]
     fn layout_change_does_not_reset_pane_output() {
