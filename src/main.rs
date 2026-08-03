@@ -318,6 +318,8 @@ fn init_tracing(verbose: bool) {
         .with_env_filter(filter)
         .with_target(false)
         .compact()
+        // 日志走 stderr，避免污染 stdout 上的 CLI JSON 输出。
+        .with_writer(std::io::stderr)
         .init();
 }
 

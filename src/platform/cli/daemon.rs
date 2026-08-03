@@ -139,7 +139,11 @@ fn handle_connection(
 
     let mut should_kill = false;
     for line in reader.lines() {
-        let line = line.context("读取请求行")?;
+        // 客户端发完一个请求后即关闭连接；连接关闭导致的读错误不应让 daemon 退出。
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
         if line.is_empty() {
             continue;
         }
