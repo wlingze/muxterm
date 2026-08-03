@@ -141,6 +141,8 @@ pub struct TerminalState {
     pub palette: [Rgb; 16],
     /// G0-G3 字符集指定（DEC charset designation）。
     pub charsets: [StandardCharset; 4],
+    /// scrollback：从屏幕顶部滚出的行（字符串），有上限。
+    pub scrollback: Vec<String>,
     /// 当前激活字符集（SI/SO 切换）。
     pub active_charset: CharsetIndex,
     processor: Processor,
@@ -237,6 +239,7 @@ impl TerminalState {
             palette: default_palette(),
             charsets: [StandardCharset::default(); 4],
             active_charset: CharsetIndex::G0,
+            scrollback: Vec::new(),
             processor: Processor::default(),
         }
     }
@@ -347,6 +350,14 @@ impl TerminalState {
             self.cursor_row += 1;
         } else {
             let top = self.scroll_top;
+            if top == 0 && self.rows() > 0 {
+                // 整屏上滚：滚出顶行的内容进入 scrollback
+                if let Some(evicted) = self.grid.first() {
+                    let s: String = evicted.iter().map(|c| c.ch).collect();
+                    // 去掉行尾空白，保持 scrollback 可读
+                    self.push_scrollback(s.trim_end().to_string());
+                }
+            }
             if top < self.rows() {
                 self.grid.remove(top);
                 self.grid.push(vec![Cell::blank(); self.cols()]);
@@ -356,6 +367,24 @@ impl TerminalState {
 
     fn carriage_return(&mut self) {
         self.cursor_col = 0;
+    }
+
+    /// 把一行推入 scrollback（有上限）。
+    fn push_scrollback(&mut self, line: String) {
+        if self.scrollback.len() >= SCROLLBACK_MAX_LINES {
+            self.scrollback.remove(0);
+        }
+        self.scrollback.push(line);
+    }
+
+    /// scrollback 行数。
+    pub fn scrollback_lines(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// 取第 idx 行 scrollback（0 = 最早）。
+    pub fn scrollback_line(&self, idx: usize) -> Option<&str> {
+        self.scrollback.get(idx).map(|s| s.as_str())
     }
 
     fn scroll_up_n(&mut self, n: usize) {
@@ -507,6 +536,9 @@ impl TerminalState {
         }
     }
 }
+
+/// scrollback 最大保留行数（有上限，避免无界增长）。
+pub const SCROLLBACK_MAX_LINES: usize = 1000;
 
 /// 是否零宽组合字符（附着到前一个字符）。
 fn is_combining(c: char) -> bool {
@@ -1411,5 +1443,51 @@ mod widechar_tests {
         t.feed("a中b".as_bytes());
         // a(col0) 中(col1,2) b(col3)
         assert_eq!(t.cursor_col(), 4);
+    }
+}
+
+#[cfg(test)]
+mod scrollback_tests {
+    use super::*;
+
+    fn snap(t: &TerminalState) -> Vec<String> {
+        t.snapshot_trimmed()
+    }
+
+    /// 持续输出导致整屏上滚时，顶部行进入 scrollback。
+    #[test]
+    fn overflow_accumulates_scrollback() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"line1\r\nline2\r\nline3");
+        assert_eq!(t.scrollback_lines(), 0, "未超屏前无 scrollback");
+        t.feed(b"\r\nline4");
+        // 超屏：line1 滚出屏幕进入 scrollback
+        assert_eq!(t.scrollback_lines(), 1);
+        assert_eq!(t.scrollback_line(0), Some("line1"));
+        assert_eq!(snap(&t), vec!["line2", "line3", "line4"]);
+    }
+
+    /// scrollback 有上限（不无界增长）。
+    #[test]
+    fn scrollback_is_bounded() {
+        let mut t = TerminalState::new(10, 2);
+        for i in 0..(SCROLLBACK_MAX_LINES + 50) {
+            t.feed(format!("row{i}\r\n").as_bytes());
+        }
+        assert!(
+            t.scrollback_lines() <= SCROLLBACK_MAX_LINES,
+            "scrollback 应有界"
+        );
+    }
+
+    /// 清屏不应污染 scrollback（ESC[2J 只清当前屏）。
+    #[test]
+    fn clear_screen_does_not_pollute_scrollback() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"a\r\nb\r\nc");
+        let before = t.scrollback_lines();
+        t.feed(b"\x1b[2J"); // clear all
+        assert_eq!(t.scrollback_lines(), before, "清屏不应改动 scrollback");
+        assert_eq!(snap(&t), Vec::<String>::new());
     }
 }
