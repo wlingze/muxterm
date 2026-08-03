@@ -1666,6 +1666,64 @@ mod tests {
         assert_eq!(out_events, 3, "应有 3 个 PaneOutput 事件");
     }
 
+    /// %window-pane-changed：切换某 window 的 active pane，应触发 ActivePaneChanged。
+    #[test]
+    fn window_pane_changed_updates_active_pane() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        // 预置一个 window + 两个 pane 在同一 tab
+        let win = crate::core::types::WindowId(0);
+        let tab = crate::core::types::TabId(0);
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: tab,
+            name: "t0".into(),
+            window: crate::core::runtime::tmux::backend::TmuxBackend::VIRTUAL_WINDOW_ID,
+            active: true,
+        });
+        b.panes.push(crate::core::model::state::PaneInfo {
+            id: crate::core::types::PaneId(1),
+            tab,
+            cols: 40,
+            rows: 24,
+            active: true,
+            title: "p1".into(),
+        });
+        b.panes.push(crate::core::model::state::PaneInfo {
+            id: crate::core::types::PaneId(2),
+            tab,
+            cols: 40,
+            rows: 24,
+            active: false,
+            title: "p2".into(),
+        });
+
+        b.handle_message(Message::WindowPaneChanged {
+            window: win,
+            pane: crate::core::types::PaneId(2),
+        });
+
+        // pane 2 应变为 active
+        let p2 = b
+            .panes
+            .iter()
+            .find(|p| p.id == crate::core::types::PaneId(2))
+            .unwrap();
+        assert!(p2.active, "window-pane-changed 后 pane2 应 active");
+        let p1 = b
+            .panes
+            .iter()
+            .find(|p| p.id == crate::core::types::PaneId(1))
+            .unwrap();
+        assert!(!p1.active, "pane1 应不再 active");
+        // 应有 ActivePaneChanged 事件
+        assert!(
+            b.events.iter().any(|e| matches!(e, StateChange::ActivePaneChanged { pane, .. } if *pane == crate::core::types::PaneId(2))),
+            "应有 ActivePaneChanged(pane2)"
+        );
+    }
+
     /// %extended-output（hyperlink 等）被安全忽略，不破坏 %output 累积或状态机。
     #[test]
     fn extended_output_safely_ignored() {
