@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
         return run_tui_inner(cli.socket, cli.session);
     }
     if want_gtk {
-        return run_gui_inner(cli.socket);
+        return run_gui_inner(cli.socket, cli.session);
     }
     anyhow::bail!("没有可用的前端（启用 `gtk` 或 `tui` feature）")
 }
@@ -85,7 +85,7 @@ fn run_gui(args: &[String]) -> anyhow::Result<()> {
     let cli = Cli::parse_from(std::iter::once("muxterm".to_string()).chain(args.iter().cloned()));
     init_tracing(cli.verbose);
     log_socket(&cli);
-    run_gui_inner(cli.socket)
+    run_gui_inner(cli.socket, cli.session)
 }
 
 /// `muxterm tui [...]`：启动 TUI 前端。
@@ -112,13 +112,18 @@ fn log_socket(cli: &Cli) {
 }
 
 #[cfg_attr(not(feature = "gtk"), allow(unused_variables))]
-fn run_gui_inner(socket: Option<String>) -> anyhow::Result<()> {
+#[allow(clippy::needless_return)]
+fn run_gui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        return platform::macos::launch_app_bundle(socket.as_deref(), session.as_deref());
+    }
     #[cfg(feature = "gtk")]
     {
         tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI）");
         platform::linux::app::run(socket)
     }
-    #[cfg(not(feature = "gtk"))]
+    #[cfg(all(not(target_os = "macos"), not(feature = "gtk")))]
     {
         anyhow::bail!("GUI 前端未编译（需要 --features gtk）")
     }
