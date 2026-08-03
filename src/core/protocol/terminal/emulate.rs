@@ -12,8 +12,8 @@
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
 use vte::ansi::{
-    Attr, ClearMode, Color, CursorShape, Handler, LineClearMode, NamedPrivateMode, PrivateMode,
-    Processor, Rgb,
+    Attr, ClearMode, Color, CursorShape, Handler, KeyboardModes, KeyboardModesApplyBehavior,
+    LineClearMode, ModifyOtherKeys, NamedPrivateMode, PrivateMode, Processor, Rgb,
 };
 
 /// 一个屏幕单元格：字符 + 前景/背景色 + 样式位 + hyperlink URI。
@@ -132,6 +132,10 @@ pub struct TerminalState {
     pub cursor_shape: CursorShape,
     /// 光标闪烁（DECSCUSR）。
     pub cursor_blinking: bool,
+    /// kitty keyboard protocol 模式（CSI > u / CSI = u）。
+    pub keyboard_mode: KeyboardModes,
+    /// XTMODKEYS modifyOtherKeys 状态（CSI > 4 m）。
+    pub modify_other_keys: ModifyOtherKeys,
     /// 调色板索引（OSC 4 / 10-12 可重定义，ANSI 8 + bright 8 = 16）。
     pub palette: [Rgb; 16],
     processor: Processor,
@@ -220,6 +224,8 @@ impl TerminalState {
             title_stack: Vec::new(),
             cursor_shape: CursorShape::Block,
             cursor_blinking: false,
+            keyboard_mode: KeyboardModes::default(),
+            modify_other_keys: ModifyOtherKeys::Reset,
             bracketed_paste: false,
             mouse_reporting: false,
             focus_reporting: false,
@@ -688,6 +694,20 @@ impl Handler for TerminalState {
                 self.cursor_blinking = false;
             }
         }
+    }
+
+    /// kitty keyboard protocol（CSI ? u / = u）：按行为合并/替换模式位。
+    fn set_keyboard_mode(&mut self, mode: KeyboardModes, behavior: KeyboardModesApplyBehavior) {
+        self.keyboard_mode = match behavior {
+            KeyboardModesApplyBehavior::Replace => mode,
+            KeyboardModesApplyBehavior::Union => self.keyboard_mode | mode,
+            KeyboardModesApplyBehavior::Difference => self.keyboard_mode & !mode,
+        };
+    }
+
+    /// XTMODKEYS（CSI > 4 m）：modifyOtherKeys 状态。
+    fn set_modify_other_keys(&mut self, mode: ModifyOtherKeys) {
+        self.modify_other_keys = mode;
     }
 
     /// OSC 8 hyperlink：记录当前生效的 link（OSC 8 ; ; URI ST），
@@ -1201,5 +1221,51 @@ mod title_cursor_tests {
         assert_eq!(t.cursor_shape, CursorShape::Beam);
         t.feed(b"\x1b]50;CursorShape=2\x07"); // underline
         assert_eq!(t.cursor_shape, CursorShape::Underline);
+    }
+}
+
+#[cfg(test)]
+mod keyboard_protocol_tests {
+    use super::*;
+
+    /// kitty keyboard protocol（CSI ? u / = u）模式位合并。
+    #[test]
+    fn kitty_keyboard_mode() {
+        let mut t = TerminalState::new(40, 5);
+        // 默认无模式
+        assert_eq!(t.keyboard_mode, KeyboardModes::default());
+        // CSI = 1 u：设置 DISAMBIGUATE_ESC_CODES
+        t.feed(b"\x1b[=1u");
+        assert!(t
+            .keyboard_mode
+            .contains(KeyboardModes::DISAMBIGUATE_ESC_CODES));
+        // CSI = 2 u：设置 REPORT_EVENT_TYPES
+        t.feed(b"\x1b[=2u");
+        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_EVENT_TYPES));
+    }
+
+    /// XTMODKEYS modifyOtherKeys（CSI > 4 ; m）。
+    #[test]
+    fn modify_other_keys() {
+        let mut t = TerminalState::new(40, 5);
+        assert_eq!(t.modify_other_keys, ModifyOtherKeys::Reset);
+        t.feed(b"\x1b[>4;1m"); // enable except well-defined
+        assert_eq!(
+            t.modify_other_keys,
+            ModifyOtherKeys::EnableExceptWellDefined
+        );
+        t.feed(b"\x1b[>4;2m"); // enable all
+        assert_eq!(t.modify_other_keys, ModifyOtherKeys::EnableAll);
+        t.feed(b"\x1b[>4;0m"); // reset
+        assert_eq!(t.modify_other_keys, ModifyOtherKeys::Reset);
+    }
+
+    /// keyboard 协议状态不应影响文本渲染。
+    #[test]
+    fn keyboard_protocol_does_not_affect_text() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b[>1u\x1b[>4;1m");
+        t.feed(b"text");
+        assert_eq!(t.snapshot_trimmed(), vec!["text"]);
     }
 }
