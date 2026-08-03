@@ -775,3 +775,79 @@ mod tests {
         assert_eq!(snap(&t), vec!["line1", "line2"]);
     }
 }
+
+#[cfg(test)]
+mod tui_redraw_tests {
+    use super::*;
+
+    fn snap(t: &TerminalState) -> Vec<String> {
+        t.snapshot_trimmed()
+    }
+
+    /// TUI 局部重绘：移动光标覆盖旧内容，而不是追加新行。
+    #[test]
+    fn tui_cursor_overwrite_local_region() {
+        let mut t = TerminalState::new(20, 5);
+        // 第一行打印 "status: idle"
+        t.feed(b"status: idle");
+        // 光标回到行首，覆盖同一行 -> 应替换旧内容而非换行
+        t.feed(b"\x1b[1;1H"); // goto (0,0)
+        t.feed(b"status: busy");
+        assert_eq!(snap(&t), vec!["status: busy"]);
+        // 光标列应停在覆盖文本末尾（"status: busy" = 12 字符）
+        assert_eq!(t.cursor_col(), 12);
+    }
+
+    /// TUI 局部重绘：在中间某行覆盖一个子区域。
+    #[test]
+    fn tui_partial_line_overwrite() {
+        let mut t = TerminalState::new(30, 5);
+        t.feed(b"line0\r\nline1\r\nline2\r\nline3\r\nline4");
+        // 光标到第 3 行第 0 列，覆盖整行内容
+        t.feed(b"\x1b[3;1H");
+        t.feed(b"REPLACED");
+        assert_eq!(
+            snap(&t),
+            vec!["line0", "line1", "REPLACED", "line3", "line4"]
+        );
+    }
+
+    /// TUI 清屏后重绘：ESC[2J 清屏，然后从 (1,1) 开始画。
+    #[test]
+    fn tui_clear_then_redraw_from_top() {
+        let mut t = TerminalState::new(20, 5);
+        t.feed(b"stale content that should be gone\r\nmore stale");
+        t.feed(b"\x1b[2J"); // clear all
+        assert_eq!(snap(&t), Vec::<String>::new(), "清屏后应为空");
+        t.feed(b"\x1b[1;1H"); // 光标回左上
+        t.feed(b"fresh frame");
+        assert_eq!(snap(&t), vec!["fresh frame"]);
+    }
+
+    /// 光标显隐 + 位置，验证 TUI 状态（不只是最终文本）。
+    #[test]
+    fn tui_cursor_position_and_visibility() {
+        let mut t = TerminalState::new(20, 5);
+        assert!(t.show_cursor);
+        t.feed(b"\x1b[?25l"); // hide
+        assert!(!t.show_cursor);
+        t.feed(b"\x1b[?25h"); // show
+        assert!(t.show_cursor);
+        // 光标移到 (2,5) 即第 3 行第 6 列
+        t.feed(b"\x1b[3;6H");
+        assert_eq!((t.cursor_row(), t.cursor_col()), (2, 5));
+    }
+
+    /// 滚动区域：在区域内打印，触发上滚时只滚动区域内的行。
+    #[test]
+    fn tui_scroll_region_isolated_scroll() {
+        let mut t = TerminalState::new(10, 5);
+        // 设滚动区域第 2..4 行（1 基）
+        t.feed(b"\x1b[2;4r");
+        t.feed(b"\x1b[2;1H");
+        // 打印 3 行到区域内，最后一行应滚动掉区域顶
+        t.feed(b"1\r\n2\r\n3");
+        // 区域外第 1 行保持空
+        assert_eq!(snap(&t), vec!["", "1", "2", "3"]);
+    }
+}
