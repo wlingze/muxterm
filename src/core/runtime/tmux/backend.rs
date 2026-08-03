@@ -1666,6 +1666,45 @@ mod tests {
         assert_eq!(out_events, 3, "应有 3 个 PaneOutput 事件");
     }
 
+    /// 布局变化与 %output 交织：%layout-change 不应重置已累积的 pane 输出。
+    #[test]
+    fn layout_change_does_not_reset_pane_output() {
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let pane = PaneId(3);
+
+        // 先灌入一些输出
+        b.handle_message(Message::Output {
+            pane,
+            content: b"before-layout".to_vec(),
+            raw_content: String::new(),
+        });
+
+        // 插入 %layout-change（带合法 layout 字符串）
+        b.handle_message(Message::LayoutChange {
+            window: crate::core::types::WindowId(0),
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse("80x24,0,0,0")
+                .unwrap(),
+            visible_layout: None,
+        });
+
+        // 布局变化后再来输出
+        b.handle_message(Message::Output {
+            pane,
+            content: b"-after-layout".to_vec(),
+            raw_content: String::new(),
+        });
+
+        // 输出累积应完整（前 + 后），布局变化不重置
+        let out = b.outputs.get(&pane).cloned().unwrap_or_default();
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "before-layout-after-layout",
+            "layout-change 不应重置 pane 输出累积"
+        );
+    }
+
     /// 回归：shutdown 必须在有限时间内返回（含清理 outputs）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn shutdown_completes_and_clears_buffers() {
