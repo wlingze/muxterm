@@ -63,6 +63,14 @@ cp -f "$MACOS_DIR/Info.plist" "$APP/Contents/Info.plist"
 chmod +x "$APP/Contents/MacOS/Muxterm"
 chmod 755 "$APP" "$APP/Contents" "$APP/Contents/MacOS"
 
+# SwiftPM only linker-signs the executable. Sign the complete bundle so
+# Info.plist and sealed resources are bound into Contents/_CodeSignature.
+# CI uses ad-hoc signing; a future Developer ID identity can override it.
+CODESIGN_IDENTITY="${MUXTERM_CODESIGN_IDENTITY:--}"
+codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP"
+codesign --verify --deep --strict --verbose=4 "$APP"
+test -d "$APP/Contents/_CodeSignature"
+
 echo "==> done"
 echo "    binary: $OUT_DIR/muxterm"
 echo "    app:    $APP"

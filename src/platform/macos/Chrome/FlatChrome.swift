@@ -37,3 +37,42 @@ public enum FlatChrome {
         "\(status)  tabs: \(tabCount)  panes: \(paneCount)  pane: @\(activePane)"
     }
 }
+
+
+/// Tracks how much cumulative pane output has already been rendered.
+///
+/// The first PaneOutput event can arrive before the view exists. Creating the
+/// view reads the cumulative snapshot, which already includes that event; using
+/// the cursor's unseen suffix prevents feeding the same bytes a second time.
+public struct PaneOutputCursor {
+    private var fedLength = 0
+
+    public init() {}
+
+    public mutating func initial(snapshot: Data) -> Data {
+        guard snapshot.count > fedLength else { return Data() }
+        let unseen = snapshot.dropFirst(fedLength)
+        fedLength = snapshot.count
+        return Data(unseen)
+    }
+
+    public mutating func incremental(event: Data, snapshot: Data) -> Data {
+        if snapshot.count > fedLength {
+            let unseen = snapshot.dropFirst(fedLength)
+            fedLength = snapshot.count
+            return Data(unseen)
+        }
+        // The Rust core appends every PaneOutput event to the cumulative
+        // snapshot BEFORE dispatching it, so the snapshot is authoritative.
+        // If it shrank (bounded buffer trimmed its head), reset and re-feed
+        // the current tail rather than silently dropping it.
+        if snapshot.count < fedLength {
+            fedLength = 0
+            return initial(snapshot: snapshot)
+        }
+        // snapshot.count == fedLength: this tick's bytes were already
+        // consumed by a prior initial()/incremental(). Never re-feed the
+        // raw event — that is what caused the prompt/echo to double.
+        return Data()
+    }
+}

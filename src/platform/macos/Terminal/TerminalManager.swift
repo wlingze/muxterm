@@ -1,11 +1,12 @@
 import AppKit
+import MuxtermChrome
 
 /// 管理多个 pane 对应的 `MuxTerminalView`，并把输出/输入接到 CoreBridge。
 final class TerminalManager: TerminalInputHandler {
     private weak var bridge: CoreBridge?
     private var views: [UInt32: MuxTerminalView] = [:]
     /// 已喂给终端的累计输出长度（按 pane），避免 snapshot 全量重复 feed。
-    private var fedLengths: [UInt32: Int] = [:]
+    private var outputCursors: [UInt32: PaneOutputCursor] = [:]
     /// 最近喂给终端的 UTF-8 片段（供 UITest / 状态栏无障碍查询）。
     private(set) var recentOutputSnippet: String = ""
     /// 上次成功同步到 PTY 的行列，避免无意义重复 resize。
@@ -27,10 +28,14 @@ final class TerminalManager: TerminalInputHandler {
         view.inputHandler = self
         views[paneId] = view
         // 首次创建时拉取历史输出
-        if let data = bridge?.getPaneOutput(paneId: paneId), !data.isEmpty {
-            view.feedOutput(data)
-            fedLengths[paneId] = data.count
-            appendSnippet(data)
+        if let snapshot = bridge?.getPaneOutput(paneId: paneId), !snapshot.isEmpty {
+            var cursor = outputCursors[paneId] ?? PaneOutputCursor()
+            let unseen = cursor.initial(snapshot: snapshot)
+            outputCursors[paneId] = cursor
+            if !unseen.isEmpty {
+                view.feedOutput(unseen)
+                appendSnippet(unseen)
+            }
         }
         return view
     }
@@ -39,9 +44,13 @@ final class TerminalManager: TerminalInputHandler {
     func handleOutput(paneId: UInt32, data: Data) {
         guard !data.isEmpty else { return }
         let view = view(for: paneId)
-        view.feedOutput(data)
-        fedLengths[paneId, default: 0] += data.count
-        appendSnippet(data)
+        let snapshot = bridge?.getPaneOutput(paneId: paneId) ?? Data()
+        var cursor = outputCursors[paneId] ?? PaneOutputCursor()
+        let unseen = cursor.incremental(event: data, snapshot: snapshot)
+        outputCursors[paneId] = cursor
+        guard !unseen.isEmpty else { return }
+        view.feedOutput(unseen)
+        appendSnippet(unseen)
     }
 
     /// 丢弃已关闭 pane 的视图。
@@ -50,7 +59,7 @@ final class TerminalManager: TerminalInputHandler {
         for id in obsolete {
             views[id]?.removeFromSuperview()
             views.removeValue(forKey: id)
-            fedLengths.removeValue(forKey: id)
+            outputCursors.removeValue(forKey: id)
             lastPtySize.removeValue(forKey: id)
         }
     }

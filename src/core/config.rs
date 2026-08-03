@@ -345,6 +345,20 @@ pub fn parse_command_argv(command: &str) -> Vec<String> {
     }
 }
 
+/// macOS GUI applications start with a minimal environment. Launch the user's
+/// default zsh/bash as a login shell so /etc/zprofile and ~/.zprofile establish
+/// the same Homebrew PATH as Terminal.app. Explicit command arguments are kept.
+pub fn prepare_pane_argv_for_platform(mut argv: Vec<String>, is_macos: bool) -> Vec<String> {
+    if !is_macos || argv.len() != 1 {
+        return argv;
+    }
+    let shell = program_basename(&argv[0]);
+    if matches!(shell.as_str(), "zsh" | "bash") {
+        argv.push("-l".into());
+    }
+    argv
+}
+
 /// argv[0] 的 basename，用作 pane 默认显示名。
 pub fn program_basename(argv0: &str) -> String {
     Path::new(argv0)
@@ -1132,6 +1146,22 @@ action = "new_tab"
         assert_eq!(program_basename("/usr/local/bin/opencode"), "opencode");
         assert_eq!(program_basename("python3"), "python3");
         assert_eq!(program_basename(""), "");
+    }
+
+    #[test]
+    fn macos_default_shell_uses_login_mode() {
+        assert_eq!(
+            prepare_pane_argv_for_platform(vec!["/bin/zsh".into()], true),
+            vec!["/bin/zsh".to_string(), "-l".to_string()]
+        );
+    }
+
+    #[test]
+    fn explicit_shell_arguments_are_preserved() {
+        assert_eq!(
+            prepare_pane_argv_for_platform(vec!["/bin/zsh".into(), "-f".into()], true),
+            vec!["/bin/zsh".to_string(), "-f".to_string()]
+        );
     }
 
     #[test]
