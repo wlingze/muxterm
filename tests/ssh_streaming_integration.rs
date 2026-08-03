@@ -227,3 +227,85 @@ fn ssh_remote_high_freq_and_long_line() {
         let _ = env.remote_tmux("kill-server");
     });
 }
+
+// ── 3. SSH detach → re-attach：tmux session 在远端存活，断开后重新 attach ──
+
+#[test]
+#[ignore = "requires sshd + SSH key setup"]
+fn ssh_remote_detach_reattach() {
+    run_with_timeout(Duration::from_secs(60), "ssh-reattach", || {
+        assert!(sshd_available(), "需要共享 sshd");
+        assert!(tmux_available(), "需要 tmux");
+        let env = ssh_env("ssh-reattach");
+
+        // 用 raw ssh 在远端创建一个 detached tmux session（测试基础设施）
+        let session = format!("re-{}", std::process::id());
+        let (ok, _, stderr) = env.remote_tmux(&format!("new-session -d -s {session} -x 80 -y 24"));
+        assert!(ok, "远端创建 detached session 失败: {stderr}");
+
+        // attach 到该 session（经 spawn_ssh）
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .build()
+            .unwrap();
+        let (first, second) = rt.block_on(async {
+            // 第一次 attach
+            let cfg1 = TmuxClientConfig {
+                mode: Some(ConnectMode::Attach {
+                    target: Some(session.clone()),
+                }),
+                extra_args: vec!["-L".into(), env.remote_tmux_socket.clone()],
+                cols: Some(80),
+                rows: Some(24),
+                event_buffer: 4096,
+                tmux_bin: None,
+                ssh_alias: Some(env.alias.clone()),
+            };
+            let (mut h1, mut rx1) = TmuxClient::spawn(cfg1).await.expect("SSH attach 应成功");
+            // 等收到 session-changed 确认 attach 成功
+            let got1 = tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+                while let Some(ev) = rx1.recv().await {
+                    if matches!(ev, TmuxEvent::Message(Message::SessionChanged { .. })) {
+                        return true;
+                    }
+                }
+                false
+            })
+            .await
+            .unwrap_or(false);
+            let _ = h1.kill().await; // 断开（detach）
+
+            // 第二次 attach（重新连接）
+            let cfg2 = TmuxClientConfig {
+                mode: Some(ConnectMode::Attach {
+                    target: Some(session.clone()),
+                }),
+                extra_args: vec!["-L".into(), env.remote_tmux_socket.clone()],
+                cols: Some(80),
+                rows: Some(24),
+                event_buffer: 4096,
+                tmux_bin: None,
+                ssh_alias: Some(env.alias.clone()),
+            };
+            let (mut h2, mut rx2) = TmuxClient::spawn(cfg2).await.expect("SSH re-attach 应成功");
+            let got2 = tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+                while let Some(ev) = rx2.recv().await {
+                    if matches!(ev, TmuxEvent::Message(Message::SessionChanged { .. })) {
+                        return true;
+                    }
+                }
+                false
+            })
+            .await
+            .unwrap_or(false);
+            let _ = h2.kill().await;
+            (got1, got2)
+        });
+
+        assert!(first, "第一次 SSH attach 应收到 session-changed");
+        assert!(second, "断开后重新 SSH attach 应收到 session-changed");
+
+        let _ = env.remote_tmux("kill-server");
+    });
+}
