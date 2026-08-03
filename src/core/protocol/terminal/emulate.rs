@@ -12,7 +12,7 @@
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
 use vte::ansi::{
-    Attr, ClearMode, Color, Handler, LineClearMode, NamedPrivateMode, PrivateMode, Processor,
+    Attr, ClearMode, Color, Handler, LineClearMode, NamedPrivateMode, PrivateMode, Processor, Rgb,
 };
 
 /// 一个屏幕单元格：字符 + 前景/背景色 + 样式位 + hyperlink URI。
@@ -119,7 +119,67 @@ pub struct TerminalState {
     pub show_cursor: bool,
     /// 窗口标题（OSC 0/2）。
     pub title: Option<String>,
+    /// 调色板索引（OSC 4 / 10-12 可重定义，ANSI 8 + bright 8 = 16）。
+    pub palette: [Rgb; 16],
     processor: Processor,
+}
+
+/// 标准 16 色终端调色板（ANSI + bright）。
+fn default_palette() -> [Rgb; 16] {
+    [
+        Rgb { r: 0, g: 0, b: 0 },   // 0 black
+        Rgb { r: 205, g: 0, b: 0 }, // 1 red
+        Rgb { r: 0, g: 205, b: 0 }, // 2 green
+        Rgb {
+            r: 205,
+            g: 205,
+            b: 0,
+        }, // 3 yellow
+        Rgb { r: 0, g: 0, b: 205 }, // 4 blue
+        Rgb {
+            r: 205,
+            g: 0,
+            b: 205,
+        }, // 5 magenta
+        Rgb {
+            r: 0,
+            g: 205,
+            b: 205,
+        }, // 6 cyan
+        Rgb {
+            r: 229,
+            g: 229,
+            b: 229,
+        }, // 7 white
+        Rgb {
+            r: 127,
+            g: 127,
+            b: 127,
+        }, // 8 bright black
+        Rgb { r: 255, g: 0, b: 0 }, // 9 bright red
+        Rgb { r: 0, g: 255, b: 0 }, // 10 bright green
+        Rgb {
+            r: 255,
+            g: 255,
+            b: 0,
+        }, // 11 bright yellow
+        Rgb { r: 0, g: 0, b: 255 }, // 12 bright blue
+        Rgb {
+            r: 255,
+            g: 0,
+            b: 255,
+        }, // 13 bright magenta
+        Rgb {
+            r: 0,
+            g: 255,
+            b: 255,
+        }, // 14 bright cyan
+        Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        }, // 15 bright white
+    ]
 }
 
 impl Default for TerminalState {
@@ -144,6 +204,7 @@ impl TerminalState {
             line_wrap: true,
             show_cursor: true,
             title: None,
+            palette: default_palette(),
             processor: Processor::default(),
         }
     }
@@ -568,6 +629,20 @@ impl Handler for TerminalState {
     fn set_hyperlink(&mut self, link: Option<vte::ansi::Hyperlink>) {
         self.attr.link = link.map(|h| h.uri);
     }
+
+    /// OSC 4 / 10-12：重定义调色板索引颜色。
+    fn set_color(&mut self, index: usize, color: Rgb) {
+        if index < self.palette.len() {
+            self.palette[index] = color;
+        }
+    }
+
+    /// OSC 104 / 110-112：重置调色板索引颜色为默认值。
+    fn reset_color(&mut self, index: usize) {
+        if index < self.palette.len() {
+            self.palette[index] = default_palette()[index];
+        }
+    }
 }
 
 #[cfg(test)]
@@ -903,5 +978,61 @@ mod hyperlink_tests {
         // 清行：应把 link 也清掉（blank 单元格无 link）
         t.feed(b"\x1b[1;1H\x1b[K");
         assert_eq!(snap(&t), Vec::<String>::new());
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn snap(t: &TerminalState) -> Vec<String> {
+        t.snapshot_trimmed()
+    }
+
+    /// 调色板默认值 + OSC 4 重定义 + OSC 104 重置。
+    #[test]
+    fn osc4_palette_override_and_reset() {
+        let mut t = TerminalState::new(40, 5);
+        // 默认红色
+        assert_eq!(t.palette[1], Rgb { r: 205, g: 0, b: 0 });
+
+        // OSC 4 ; 1 ; rgb:ff/00/00 ST  （xterm 颜色格式）
+        t.feed(b"\x1b]4;1;rgb:ff/00/00\x1b\\");
+        assert_eq!(t.palette[1], Rgb { r: 255, g: 0, b: 0 });
+
+        // OSC 104 ; 1 ST  重置
+        t.feed(b"\x1b]104;1\x1b\\");
+        assert_eq!(t.palette[1], Rgb { r: 205, g: 0, b: 0 });
+    }
+
+    /// 重定义调色板后，用该索引着色的字符应反映新颜色（经 Indexed 颜色引用）。
+    #[test]
+    fn palette_override_affects_indexed_foreground() {
+        let mut t = TerminalState::new(40, 5);
+        // 重定义红色为紫色
+        t.feed(b"\x1b]4;1;rgb:ff/00/ff\x1b\\");
+        // 用 38;5;1 着色字符 X
+        t.feed(b"\x1b[38;5;1mX");
+        let c = t.cell(0, 0).unwrap();
+        assert_eq!(c.fg, Some(Color::Indexed(1)));
+        // 通过 palette 解析，Indexed(1) 现在应是新颜色
+        assert_eq!(
+            t.palette[1],
+            Rgb {
+                r: 255,
+                g: 0,
+                b: 255
+            }
+        );
+    }
+
+    /// OSC 4 对 16 色范围外索引的修改应安全忽略（不越界、不 panic）。
+    #[test]
+    fn osc4_out_of_range_ignored() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b]4;999;rgb:ff/00/00\x1b\\"); // 越界
+        t.feed(b"ok");
+        assert_eq!(snap(&t), vec!["ok"]);
+        assert_eq!(t.palette.len(), 16, "调色板应保持 16 项");
     }
 }
