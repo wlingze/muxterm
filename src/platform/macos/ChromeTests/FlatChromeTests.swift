@@ -67,3 +67,34 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(KeyBindings.action(for: KeyChord(control: true, key: "d")), .closePane)
     }
 }
+
+
+final class PaneOutputCursorTests: XCTestCase {
+    func testInitialSnapshotAlreadyContainingEventDoesNotFeedEventTwice() {
+        var cursor = PaneOutputCursor()
+        let snapshot = Data("prompt% ls\r\n".utf8)
+        let event = Data("prompt% ls\r\n".utf8)
+
+        XCTAssertEqual(cursor.initial(snapshot: snapshot), snapshot)
+        XCTAssertEqual(cursor.incremental(event: event, snapshot: snapshot), Data())
+    }
+
+    func testLaterIncrementalEventIsFedExactlyOnce() {
+        var cursor = PaneOutputCursor()
+        let snapshot = Data("prompt% ".utf8)
+        let event = Data("echo UNIQUE_INPUT\r\nUNIQUE_INPUT\r\n".utf8)
+
+        XCTAssertEqual(cursor.initial(snapshot: snapshot), snapshot)
+        XCTAssertEqual(cursor.incremental(event: event, snapshot: snapshot + event), event)
+    }
+
+    func testBoundedBufferTrimResetsCursorAndRefeedsTail() {
+        var cursor = PaneOutputCursor()
+        let old = Data(String(repeating: "x", count: 100).utf8)
+        XCTAssertEqual(cursor.initial(snapshot: old), old)
+
+        // 有界缓冲被裁剪后，snapshot 变短：应重置并重放当前尾部，而不是丢弃。
+        let trimmed = Data(String(repeating: "y", count: 20).utf8)
+        XCTAssertEqual(cursor.incremental(event: trimmed, snapshot: trimmed), trimmed)
+    }
+}

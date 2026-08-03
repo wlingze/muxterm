@@ -1,4 +1,4 @@
-name: CI: macos
+name: "CI: macos"
 
 on:
   pull_request:
@@ -67,6 +67,12 @@ jobs:
       - name: cargo test macos integration
         run: cargo test --no-default-features --features ffi --test macos_integration
         timeout-minutes: 15
+
+      # 无 GUI 的 Swift 单测（ChromeTests）：快捷键/pane 切换/PaneOutputCursor 纯逻辑。
+      # 相比 XCUITest 不占桌面/大量磁盘，任何 PR 都会跑，守护快捷键回归。
+      - name: Swift unit tests (headless)
+        working-directory: src/platform/macos
+        run: swift test --disable-swift-testing
 
       - name: Generate Xcode project
         working-directory: src/platform/macos

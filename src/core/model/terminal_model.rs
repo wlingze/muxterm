@@ -458,6 +458,60 @@ mod tests {
         assert_eq!(m.prev_pane_id(), Some(PaneId(1)));
     }
 
+    /// Cmd+] / Cmd+[（NextPane/PrevPane）在 3-pane 布局下必须循环切换且焦点跟随。
+    /// 回归：早期只覆盖 2-pane 或直接 SwitchPane，3-pane 的循环 wrap 曾漏测。
+    #[test]
+    fn three_pane_next_prev_cycles_focus() {
+        let mut m = make_model();
+        // split1 → [1, 2], active=2；在 pane1 上再 split → [1, 3, 2], active=3
+        m.execute(Task::SplitPane {
+            target: None,
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        let _ = m.poll_events();
+        m.execute(Task::SwitchPane { target: PaneId(1) }).unwrap();
+        let _ = m.poll_events();
+        m.execute(Task::SplitPane {
+            target: Some(PaneId(1)),
+            dir: SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        let _ = m.poll_events();
+
+        let leaves = m.pane_ids_in_active_tab();
+        assert_eq!(leaves.len(), 3, "应为 3 pane，实际 {leaves:?}");
+        assert_eq!(leaves, vec![PaneId(1), PaneId(3), PaneId(2)]);
+        let start = m.active_pane_id().unwrap();
+        let start_idx = leaves.iter().position(|p| *p == start).unwrap();
+
+        // NextPane 沿叶子序列循环：presses 次后应推进 presses 个位置（取模 3）。
+        for presses in 1..=leaves.len() {
+            m.execute(Task::NextPane).unwrap();
+            let _ = m.poll_events();
+            let expect = leaves[(start_idx + presses) % leaves.len()];
+            assert_eq!(
+                m.active_pane_id(),
+                Some(expect),
+                "NextPane 第 {presses} 次应到 {expect:?}"
+            );
+        }
+        // 完整循环 3 次后回到 start。
+        assert_eq!(m.active_pane_id(), Some(start));
+
+        // PrevPane 反向移动一位。
+        m.execute(Task::PrevPane).unwrap();
+        let _ = m.poll_events();
+        assert_eq!(
+            m.active_pane_id(),
+            Some(leaves[(start_idx + leaves.len() - 1) % leaves.len()])
+        );
+    }
+
     #[test]
     fn pane_ids_in_active_window() {
         let mut m = make_model();
