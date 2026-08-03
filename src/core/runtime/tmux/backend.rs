@@ -1627,6 +1627,45 @@ mod tests {
         );
     }
 
+    /// 流控：%pause / %continue 被安全忽略，不阻塞后续 %output 累积与状态机。
+    #[test]
+    fn flow_control_pause_continue_safely_ignored() {
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let pane = PaneId(7);
+
+        // 在 %output 之间穿插 %pause / %continue，验证不破坏输出累积
+        b.handle_message(Message::Output {
+            pane,
+            content: b"a".to_vec(),
+            raw_content: String::new(),
+        });
+        b.handle_message(Message::Pause { args: "100".into() });
+        b.handle_message(Message::Output {
+            pane,
+            content: b"b".to_vec(),
+            raw_content: String::new(),
+        });
+        b.handle_message(Message::Continue { args: "100".into() });
+        b.handle_message(Message::Output {
+            pane,
+            content: b"c".to_vec(),
+            raw_content: String::new(),
+        });
+
+        // 三条 output 都应累积，未被 pause/continue 截断或丢弃
+        let out = b.outputs.get(&pane).cloned().unwrap_or_default();
+        assert_eq!(out, b"abc", "pause/continue 不应破坏 %output 累积");
+        // 事件队列里应有对应数量的 PaneOutput
+        let out_events = b
+            .events
+            .iter()
+            .filter(|e| matches!(e, crate::core::model::state::StateChange::PaneOutput { .. }))
+            .count();
+        assert_eq!(out_events, 3, "应有 3 个 PaneOutput 事件");
+    }
+
     /// 回归：shutdown 必须在有限时间内返回（含清理 outputs）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn shutdown_completes_and_clears_buffers() {
