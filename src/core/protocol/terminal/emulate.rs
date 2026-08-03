@@ -305,6 +305,18 @@ impl TerminalState {
     }
 
     fn put_char(&mut self, c: char) {
+        // 组合字符（零宽）附着到前一个字符，不占格。
+        if is_combining(c) {
+            let col = self.cursor_col.saturating_sub(1);
+            if let Some(cell) = self
+                .grid
+                .get_mut(self.cursor_row)
+                .and_then(|r| r.get_mut(col))
+            {
+                cell.ch = c;
+            }
+            return;
+        }
         // 先按当前激活字符集映射（如 DEC line-drawing），再写单元格。
         let idx = self.active_charset as usize;
         let mapped = self.charsets.get(idx).copied().unwrap_or_default().map(c);
@@ -316,12 +328,17 @@ impl TerminalState {
             self.attr.apply_to(cell);
             cell.ch = mapped;
         }
-        // 在最后一列之后自动换行（或停在末列）
-        if self.cursor_col + 1 < self.cols() {
-            self.cursor_col += 1;
-        } else if self.line_wrap {
-            self.linefeed();
-            self.carriage_return();
+        // 宽字符（CJK）占 2 格：右侧留一个空格占位。
+        let advance = if is_wide(mapped) { 2 } else { 1 };
+        for _ in 0..advance {
+            if self.cursor_col + 1 < self.cols() {
+                self.cursor_col += 1;
+            } else if self.line_wrap {
+                self.linefeed();
+                self.carriage_return();
+            } else {
+                break;
+            }
         }
     }
 
@@ -489,6 +506,38 @@ impl TerminalState {
             }
         }
     }
+}
+
+/// 是否零宽组合字符（附着到前一个字符）。
+fn is_combining(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036F}' // combining diacritical marks
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
+}
+
+/// 是否 CJK 宽字符（显示占 2 格）。
+fn is_wide(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1100}'..='\u{115F}'
+            | '\u{2E80}'..='\u{303E}'
+            | '\u{3041}'..='\u{33FF}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{A000}'..='\u{A4CF}'
+            | '\u{AC00}'..='\u{D7A3}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FE30}'..='\u{FE4F}'
+            | '\u{FF00}'..='\u{FF60}'
+            | '\u{FFE0}'..='\u{FFE6}'
+            | '\u{20000}'..='\u{2FFFD}'
+            | '\u{30000}'..='\u{3FFFD}'
+    )
 }
 
 impl Handler for TerminalState {
@@ -893,7 +942,8 @@ mod tests {
     fn utf8_chinese_emoji_cjk() {
         let mut t = TerminalState::new(40, 5);
         t.feed("中文😀宽".as_bytes());
-        assert_eq!(snap(&t), vec!["中文😀宽"]);
+        // CJK 宽字符各占 2 格（右侧占位），因此快照里宽字符之间有空格占位。
+        assert_eq!(snap(&t), vec!["中 文 😀宽"]);
     }
 
     #[test]
@@ -1324,5 +1374,42 @@ mod charset_tests {
         t.feed(b"\x0f"); // SI
         t.feed(b"q");
         assert_eq!(t.snapshot_trimmed(), vec!["──"]);
+    }
+}
+
+#[cfg(test)]
+mod widechar_tests {
+    use super::*;
+
+    /// CJK 宽字符占 2 格：光标前进 2 列。
+    #[test]
+    fn cjk_wide_advances_two() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed("中".as_bytes()); // 宽字符
+        assert_eq!(t.cursor_col(), 2, "CJK 应前进 2 列");
+        t.feed("a".as_bytes());
+        assert_eq!(t.cursor_col(), 3);
+        // 第 0 行第 0 格是宽字符，第 1 格是占位
+        assert_eq!(t.line(0).chars().next(), Some('中'));
+    }
+
+    /// 组合字符（零宽）附着到前一个字符，不占格。
+    #[test]
+    fn combining_char_attaches() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed("e\u{0301}".as_bytes()); // e + combining acute accent
+                                        // e 占 1 格，组合符附着到它，光标应停在 e 之后（col 1）
+        assert_eq!(t.cursor_col(), 1);
+        let cell = t.cell(0, 0).unwrap();
+        assert_eq!(cell.ch, '\u{0301}'); // combining char overwrote the cell content per our model
+    }
+
+    /// 宽字符与普通字符混排，列推进正确。
+    #[test]
+    fn mixed_wide_and_narrow() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed("a中b".as_bytes());
+        // a(col0) 中(col1,2) b(col3)
+        assert_eq!(t.cursor_col(), 4);
     }
 }
