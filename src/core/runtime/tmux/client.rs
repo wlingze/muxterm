@@ -120,10 +120,17 @@ impl TmuxClient {
             .as_ref()
             .ok_or_else(|| anyhow!("spawn_ssh 需要 ssh_alias"))?;
 
-        // 构造远端 tmux 命令字符串
+        // 构造远端 tmux 命令字符串。
+        // 注意 argv 开头是 `-L socket` 等二进制级选项；远端经 shell 执行，必须
+        // 以 `tmux` 开头（否则 shell 会把 `-L ...` 当成 shell 自身选项报错）。
         let argv = build_argv(&config);
-        let remote_tmux = argv.join(" ");
-        let (program, ssh_args) = build_ssh_command(alias, &remote_tmux, None);
+        let mut full = vec!["tmux".to_string()];
+        full.extend_from_slice(&argv);
+        let remote_tmux = full.join(" ");
+        // 复用 CLI 的 MUXTERM_SSH_CONFIG_PATH 约定：显式 -F 指定 ssh config
+        // （测试/CI 用生成 config，不读用户真实 ~/.ssh/config）。
+        let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+        let (program, ssh_args) = build_ssh_command(alias, &remote_tmux, ssh_config.as_deref());
         let arg_refs: Vec<&str> = ssh_args.iter().map(|s| s.as_str()).collect();
 
         let pty_size = crate::core::transport::PtySize::new(

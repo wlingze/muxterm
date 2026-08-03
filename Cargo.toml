@@ -78,3 +78,9 @@ path = "tests/sendkeys_regression.rs"
 name = "streaming_output_integration"
 path = "tests/streaming_output_integration.rs"
 required-features = ["tui"]
+
+[[test]]
+name = "ssh_streaming_integration"
+path = "tests/ssh_streaming_integration.rs"
+required-features = ["ffi"]
+
