@@ -731,6 +731,55 @@ mod tests {
         let _ = got_session_changed;
     }
 
+    /// 端到端（P0）：detach 后 tmux 应输出 `%exit`，验证程序退出 → %exit 顺序。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn end_to_end_detach_yields_exit_event() {
+        let socket = format!("muxterm-exit-{}", std::process::id());
+        let config = TmuxClientConfig {
+            mode: Some(ConnectMode::NewSession {
+                name: Some("mexit".into()),
+            }),
+            extra_args: vec!["-L".into(), socket.clone()],
+            cols: Some(80),
+            rows: Some(24),
+            ..Default::default()
+        };
+        let (mut handle, mut rx) = TmuxClient::spawn(config).await.expect("应能启动 tmux");
+
+        // 等 tmux 就绪（window-add）
+        let ready = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+            while let Some(ev) = rx.recv().await {
+                if matches!(ev, TmuxEvent::Message(Message::WindowAdd { .. })) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        assert!(ready, "应收到 window-add 表示就绪");
+
+        // detach → tmux 输出 %exit 后进程退出
+        let _ = handle.detach().await;
+        let got_exit = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+            while let Some(ev) = rx.recv().await {
+                if matches!(ev, TmuxEvent::Exit { .. }) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        assert!(got_exit, "detach 后应收到 %exit 事件");
+
+        let _ = handle.kill().await;
+        let _ = tokio::process::Command::new("tmux")
+            .args(["-L", &socket, "kill-server"])
+            .output()
+            .await;
+    }
+
     /// 端到端：验证半行 buffer 正确拼包——发一个会被 tmux 分多次输出的命令
     /// （list-windows 的多行响应），确认所有响应行都被收到。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
