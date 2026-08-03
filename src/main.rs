@@ -115,7 +115,7 @@ fn log_socket(cli: &Cli) {
     }
 }
 
-#[cfg_attr(not(feature = "gtk"), allow(unused_variables))]
+#[allow(unused_variables)]
 #[allow(clippy::needless_return)]
 fn run_gui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
