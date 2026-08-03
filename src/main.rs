@@ -345,6 +345,7 @@ fn run_gui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Res
     }
 }
 
+#[allow(unused_variables)]
 fn run_tui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     {
