@@ -99,6 +99,28 @@ final class MuxtermAppUITests: XCTestCase {
         app = nil
     }
 
+    // MARK: - 输入去重 + login shell 环境
+
+    func testTypedCommandIsEchoedAndPrintedExactlyOnce() throws {
+        let window = waitMainWindow()
+        window.click()
+        waitStatusContains(statusBar(), "connected", timeout: 5)
+
+        let marker = "MUXTERM_SINGLE_INPUT_74291"
+        app.typeText("printf '\(marker)\\n'\r")
+        let terminal = terminalElements().firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        waitValueContains(terminal, marker, timeout: 10)
+
+        let value = (terminal.value as? String) ?? ""
+        let count = value.components(separatedBy: marker).count - 1
+        XCTAssertEqual(
+            count,
+            2,
+            "marker 应仅出现于命令回显和 printf 输出，各一次；实际=\(count)，内容=\(value)"
+        )
+    }
+
     // MARK: - Split + 渲染
 
     /// Cmd+D 后 `echo SPLIT_OK` 必须可见（黑屏则失败）。
