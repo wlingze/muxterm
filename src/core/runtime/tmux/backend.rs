@@ -437,11 +437,13 @@ impl TmuxBackend {
                 });
             }
             Message::ExtendedOutput { .. }
+            | Message::Pause { .. }
+            | Message::Continue { .. }
             | Message::UnlinkedWindowAdd { .. }
             | Message::UnlinkedWindowClose { .. }
             | Message::ResponseBoundary(_)
             | Message::Unknown { .. } => {
-                // 暂不处理
+                // 暂不处理（第一版只识别 %pause/%continue，安全忽略，不阻塞状态机）
             }
         }
     }
