@@ -22,7 +22,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 # 核心依赖（始终需要，无系统 GUI 依赖）
-vte = "0.13"
+vte = { version = "0.13", features = ["ansi"] }
 toml = "0.8"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
