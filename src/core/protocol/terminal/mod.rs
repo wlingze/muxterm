@@ -4,6 +4,7 @@
 //! - [`scrollback`]：纯环形行缓冲（不解析 ANSI）
 //! - [`input`]：键盘事件 → pty 字节流
 
+pub mod emulate;
 pub mod input;
 pub mod process;
 pub mod scrollback;
@@ -16,6 +17,8 @@ pub use process::{
 };
 #[allow(unused_imports)]
 pub use scrollback::ScrollbackBuffer;
+#[allow(unused_imports)] // 供平台层选用
+pub use emulate::TerminalState;
 
 /// 终端大小（字符格 + 像素 cell）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
