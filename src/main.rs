@@ -18,7 +18,11 @@ mod platform;
 #[command(
     name = "muxterm",
     version,
-    about = "Native UI terminal for tmux control mode"
+    about = "Native UI terminal for tmux control mode",
+    after_help = "子命令：
+  muxterm <command>        CLI 命令（new-session / split-pane / list-tabs 等）
+  muxterm gui [-L <socket>]  启动 GUI 前端
+  muxterm tui [-s <session>] 启动 TUI 前端"
 )]
 struct Cli {
     #[arg(short, long)]
