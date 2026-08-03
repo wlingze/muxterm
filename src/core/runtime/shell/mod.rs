@@ -26,7 +26,9 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
-use crate::core::config::{expand_config_value, parse_command_argv, program_basename};
+use crate::core::config::{
+    expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
+};
 use crate::core::model::backend::Backend;
 use crate::core::model::layout::{LayoutNode, TabLayout};
 use crate::core::model::state::{
@@ -418,6 +420,7 @@ impl LocalBackend {
         let argv = command
             .map(|c| c.to_vec())
             .unwrap_or_else(|| parse_command_argv(&self.default_command));
+        let argv = prepare_pane_argv_for_platform(argv, cfg!(target_os = "macos"));
         if argv.is_empty() {
             anyhow::bail!("启动命令为空");
         }
