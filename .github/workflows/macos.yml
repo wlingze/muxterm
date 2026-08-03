@@ -44,9 +44,7 @@ jobs:
       - name: Install tools
         run: |
           brew list tmux >/dev/null 2>&1 || brew install tmux
-          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
           tmux -V
-          xcodegen --version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -68,29 +66,11 @@ jobs:
         run: cargo test --no-default-features --features ffi --test macos_integration
         timeout-minutes: 15
 
-      # 无 GUI 的 Swift 单测（ChromeTests）：快捷键/pane 切换/PaneOutputCursor 纯逻辑。
-      # 相比 XCUITest 不占桌面/大量磁盘，任何 PR 都会跑，守护快捷键回归。
+      # Headless Swift unit tests (ChromeTests): keyboard bindings / pane switching /
+      # PaneOutputCursor are pure logic and need no GUI. Runs on every PR, guarding
+      # against regressions without consuming desktop/disk like XCUITest would.
+      # CI mirrors local headless testing (see AGENTS.md); desktop XCUITests are
+      # intentionally not run here.
       - name: Swift unit tests (headless)
         working-directory: src/platform/macos
         run: swift test --disable-swift-testing
-
-      - name: Generate Xcode project
-        working-directory: src/platform/macos
-        run: |
-          mkdir -p Vendor
-          ln -sfn ../../../../../muxterm-target/release/libmuxterm.a Vendor/libmuxterm.a
-          xcodegen generate
-
-      - name: XCUITest
-        working-directory: src/platform/macos
-        run: |
-          set -o pipefail
-          xcodebuild test \
-            -project Muxterm.xcodeproj \
-            -scheme MuxtermApp \
-            -destination 'platform=macOS,arch=arm64' \
-            -only-testing:MuxtermAppUITests \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGN_IDENTITY=- \
-            ENABLE_DEBUG_DYLIB=NO \
-            | xcbeautify --renderer github-actions
