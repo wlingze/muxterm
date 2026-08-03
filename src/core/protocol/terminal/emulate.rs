@@ -15,7 +15,7 @@ use vte::ansi::{
     Attr, ClearMode, Color, Handler, LineClearMode, NamedPrivateMode, PrivateMode, Processor,
 };
 
-/// 一个屏幕单元格：字符 + 前景/背景色 + 样式位。
+/// 一个屏幕单元格：字符 + 前景/背景色 + 样式位 + hyperlink URI。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Cell {
     pub ch: char,
@@ -27,6 +27,8 @@ pub struct Cell {
     pub reverse: bool,
     pub strike: bool,
     pub hidden: bool,
+    /// OSC 8 hyperlink URI（若有）。
+    pub link: Option<String>,
 }
 
 impl Cell {
@@ -49,6 +51,7 @@ struct AttrState {
     reverse: bool,
     strike: bool,
     hidden: bool,
+    link: Option<String>,
 }
 
 impl AttrState {
@@ -96,6 +99,7 @@ impl AttrState {
         cell.reverse = self.reverse;
         cell.strike = self.strike;
         cell.hidden = self.hidden;
+        cell.link = self.link.clone();
     }
 }
 
@@ -558,6 +562,12 @@ impl Handler for TerminalState {
     fn set_title(&mut self, title: Option<String>) {
         self.title = title;
     }
+
+    /// OSC 8 hyperlink：记录当前生效的 link（OSC 8 ; ; URI ST），
+    /// 之后的字符单元格都会带上该 link；`None` 清除。
+    fn set_hyperlink(&mut self, link: Option<vte::ansi::Hyperlink>) {
+        self.attr.link = link.map(|h| h.uri);
+    }
 }
 
 #[cfg(test)]
@@ -849,5 +859,49 @@ mod tui_redraw_tests {
         t.feed(b"1\r\n2\r\n3");
         // 区域外第 1 行保持空
         assert_eq!(snap(&t), vec!["", "1", "2", "3"]);
+    }
+}
+
+#[cfg(test)]
+mod hyperlink_tests {
+    use super::*;
+
+    fn snap(t: &TerminalState) -> Vec<String> {
+        t.snapshot_trimmed()
+    }
+
+    /// OSC 8 hyperlink：链接 URI 应附着在之后的单元格上。
+    #[test]
+    fn osc8_hyperlink_attaches_to_cells() {
+        let mut t = TerminalState::new(40, 5);
+        // OSC 8 ; ; https://example.com ST  clickable  OSC 8 ; ; ST
+        t.feed(b"\x1b]8;;https://example.com\x1b\\");
+        t.feed(b"clickable");
+        t.feed(b"\x1b]8;;\x1b\\"); // 结束 hyperlink
+        t.feed(b" plain");
+
+        assert_eq!(snap(&t), vec!["clickable plain"]);
+        // clickable 各字符带 link
+        for col in 0..9 {
+            let c = t.cell(0, col).unwrap();
+            assert_eq!(
+                c.link.as_deref(),
+                Some("https://example.com"),
+                "col {col} 应有 link"
+            );
+        }
+        // 结束后的字符无 link
+        let plain = t.cell(0, 10).unwrap();
+        assert!(plain.link.is_none(), "结束 hyperlink 后字符不应有 link");
+    }
+
+    /// OSC 8 hyperlink 在清屏/覆盖后仍正确（link 是单元格属性，随格走）。
+    #[test]
+    fn osc8_hyperlink_cleared_on_blank() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b]8;;https://example.com\x1b\\abc");
+        // 清行：应把 link 也清掉（blank 单元格无 link）
+        t.feed(b"\x1b[1;1H\x1b[K");
+        assert_eq!(snap(&t), Vec::<String>::new());
     }
 }
