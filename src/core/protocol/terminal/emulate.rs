@@ -12,7 +12,8 @@
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
 use vte::ansi::{
-    Attr, ClearMode, Color, Handler, LineClearMode, NamedPrivateMode, PrivateMode, Processor, Rgb,
+    Attr, ClearMode, Color, CursorShape, Handler, LineClearMode, NamedPrivateMode, PrivateMode,
+    Processor, Rgb,
 };
 
 /// 一个屏幕单元格：字符 + 前景/背景色 + 样式位 + hyperlink URI。
@@ -125,6 +126,12 @@ pub struct TerminalState {
     pub focus_reporting: bool,
     /// 窗口标题（OSC 0/2）。
     pub title: Option<String>,
+    /// 标题栈（OSC 22 push / 23 pop）。
+    pub title_stack: Vec<String>,
+    /// 光标形状（DECSCUSR / OSC 50）。
+    pub cursor_shape: CursorShape,
+    /// 光标闪烁（DECSCUSR）。
+    pub cursor_blinking: bool,
     /// 调色板索引（OSC 4 / 10-12 可重定义，ANSI 8 + bright 8 = 16）。
     pub palette: [Rgb; 16],
     processor: Processor,
@@ -210,6 +217,9 @@ impl TerminalState {
             line_wrap: true,
             show_cursor: true,
             title: None,
+            title_stack: Vec::new(),
+            cursor_shape: CursorShape::Block,
+            cursor_blinking: false,
             bracketed_paste: false,
             mouse_reporting: false,
             focus_reporting: false,
@@ -645,6 +655,39 @@ impl Handler for TerminalState {
 
     fn set_title(&mut self, title: Option<String>) {
         self.title = title;
+    }
+
+    /// OSC 22：把当前标题压栈。
+    fn push_title(&mut self) {
+        if let Some(t) = &self.title {
+            self.title_stack.push(t.clone());
+        }
+    }
+
+    /// OSC 23：从标题栈弹出一个标题（若栈空则忽略）。
+    fn pop_title(&mut self) {
+        if let Some(t) = self.title_stack.pop() {
+            self.title = Some(t);
+        }
+    }
+
+    /// DECSCUSR / OSC 50：设置光标形状。
+    fn set_cursor_shape(&mut self, shape: CursorShape) {
+        self.cursor_shape = shape;
+    }
+
+    /// DECSCUSR（CSI Ps SP q）：设置光标形状 + 闪烁。
+    fn set_cursor_style(&mut self, style: Option<vte::ansi::CursorStyle>) {
+        match style {
+            Some(s) => {
+                self.cursor_shape = s.shape;
+                self.cursor_blinking = s.blinking;
+            }
+            None => {
+                self.cursor_shape = CursorShape::Block;
+                self.cursor_blinking = false;
+            }
+        }
     }
 
     /// OSC 8 hyperlink：记录当前生效的 link（OSC 8 ; ; URI ST），
@@ -1107,5 +1150,56 @@ mod input_mode_tests {
         t.feed(b"\x1b[?2004h\x1b[?1000h\x1b[?1004h");
         t.feed(b"text");
         assert_eq!(t.snapshot_trimmed(), vec!["text"]);
+    }
+}
+
+#[cfg(test)]
+mod title_cursor_tests {
+    use super::*;
+
+    /// OSC 22 push / OSC 23 pop 标题栈。
+    #[test]
+    fn title_stack_push_pop() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b]2;initial\x07");
+        assert_eq!(t.title.as_deref(), Some("initial"));
+        // CSI 22 t 压栈（保存当前标题），然后设置新标题
+        t.feed(b"\x1b[22t"); // push title
+        t.feed(b"\x1b]2;new\x07");
+        assert_eq!(t.title.as_deref(), Some("new"));
+        assert_eq!(t.title_stack, vec!["initial".to_string()]);
+        // CSI 23 t 弹栈（恢复保存的标题）
+        t.feed(b"\x1b[23t"); // pop title
+        assert_eq!(t.title.as_deref(), Some("initial"));
+        assert!(t.title_stack.is_empty());
+    }
+
+    /// DECSCUSR 设置光标形状（块/下划线/竖条）+ 闪烁。
+    #[test]
+    fn decscur_cursor_shape() {
+        let mut t = TerminalState::new(40, 5);
+        assert_eq!(t.cursor_shape, CursorShape::Block);
+        // CSI 3 SP q = 下划线 + 闪烁
+        t.feed(b"\x1b[3 q");
+        assert_eq!(t.cursor_shape, CursorShape::Underline);
+        assert!(t.cursor_blinking);
+        // CSI 5 SP q = 竖条 + 闪烁
+        t.feed(b"\x1b[5 q");
+        assert_eq!(t.cursor_shape, CursorShape::Beam);
+        assert!(t.cursor_blinking);
+        // CSI 0 SP q = 复位
+        t.feed(b"\x1b[0 q");
+        assert_eq!(t.cursor_shape, CursorShape::Block);
+        assert!(!t.cursor_blinking);
+    }
+
+    /// OSC 50 CursorShape= 设置光标形状。
+    #[test]
+    fn osc50_cursor_shape() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b]50;CursorShape=1\x07"); // beam
+        assert_eq!(t.cursor_shape, CursorShape::Beam);
+        t.feed(b"\x1b]50;CursorShape=2\x07"); // underline
+        assert_eq!(t.cursor_shape, CursorShape::Underline);
     }
 }
