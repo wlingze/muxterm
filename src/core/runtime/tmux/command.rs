@@ -616,3 +616,69 @@ mod tests {
         assert_eq!(q, r#""\x01\x7F""#);
     }
 }
+
+// ── Phase 5：输入边界 ──────────────────────────────────────────
+// 验证原始终端输入序列（bracketed paste / mouse reporting / focus /
+// 方向键 / 特殊控制）经 quote_c_string 编码后，能用 ControlEscapeDecoder
+// 无损还原。这是 send-keys -l 写入 PTY 的字节保真核心。
+
+fn roundtrip_bytes(bytes: &[u8]) -> Vec<u8> {
+    // 先按 UTF-8 lossy 转成 str（WriteRaw 路径就是这么做的），再 quote 编码
+    let s = String::from_utf8_lossy(bytes).into_owned();
+    let quoted = quote_c_string(&s);
+    // 去掉两端引号，交给 ControlEscapeDecoder 解码
+    let inner = quoted.trim_start_matches('"').trim_end_matches('"');
+    ControlEscapeDecoder::new().decode(inner).expect("应能解码")
+}
+
+#[test]
+fn input_roundtrip_bracketed_paste() {
+    // bracketed paste 序列：ESC[200~ ... ESC[201~
+    let seq = b"\x1b[200~pasted text\x1b[201~";
+    assert_eq!(roundtrip_bytes(seq), seq);
+}
+
+#[test]
+fn input_roundtrip_mouse_reporting() {
+    // SGR mouse 上报序列
+    let seq = b"\x1b[<0;12;34M";
+    assert_eq!(roundtrip_bytes(seq), seq);
+    let seq2 = b"\x1b[<64;5;6m";
+    assert_eq!(roundtrip_bytes(seq2), seq2);
+}
+
+#[test]
+fn input_roundtrip_focus_in_out() {
+    assert_eq!(roundtrip_bytes(b"\x1b[I"), b"\x1b[I");
+    assert_eq!(roundtrip_bytes(b"\x1b[O"), b"\x1b[O");
+}
+
+#[test]
+fn input_roundtrip_arrow_and_modifier_keys() {
+    assert_eq!(roundtrip_bytes(b"\x1b[A"), b"\x1b[A");
+    assert_eq!(roundtrip_bytes(b"\x1b[1;5A"), b"\x1b[1;5A");
+    assert_eq!(roundtrip_bytes(b"\x1b[15~"), b"\x1b[15~");
+}
+
+#[test]
+fn input_roundtrip_ctrl_and_alt() {
+    assert_eq!(roundtrip_bytes(b"\x03"), b"\x03"); // Ctrl-C
+    assert_eq!(roundtrip_bytes(b"\x1bn"), b"\x1bn"); // Alt-n
+    assert_eq!(roundtrip_bytes(b"\x1a"), b"\x1a"); // Ctrl-Z
+    assert_eq!(roundtrip_bytes(b"\x7f"), b"\x7f"); // DEL
+}
+
+#[test]
+fn input_roundtrip_utf8_survives() {
+    // 多字节 UTF-8 文本在 send-keys -l 路径应保持字节不变
+    let s = "中文 emoji😀";
+    let bytes = s.as_bytes();
+    assert_eq!(roundtrip_bytes(bytes), bytes);
+}
+
+#[test]
+fn input_roundtrip_dcs_passthrough() {
+    // tmux passthrough / kitty keyboard：ESC P ... ESC \ 不应被破坏
+    let seq = b"\x1bPtmux;\x1b\x1b]1337;SetUserVar=X=\x07\x1b\\";
+    assert_eq!(roundtrip_bytes(seq), seq);
+}
