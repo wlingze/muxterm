@@ -1551,6 +1551,44 @@ mod tests {
         let _ = b.pane_output(&pane);
     }
 
+    /// 直接写入 PTY 的原始字节：用 `cat` 作命令（回显 stdin），
+    /// WriteRaw 的字节应通过 pty 往返出现在 pane_output 里，验证字节保真。
+    #[tokio::test]
+    async fn write_raw_bytes_roundtrip_to_pty() {
+        // cat 会回显 stdin；这里不关它（Ctrl-D 才退出），避免中途 Exit
+        let mut b = LocalBackend::new("cat", "/");
+        b.connect().await.unwrap();
+        let pane = b.active_pane_id().expect("应有 active pane");
+
+        // 写一段含特殊字节的原始序列（模拟 bracketed paste / mouse 上报）
+        let seq = b"\x1b[200~pasted\x1b[201~\n";
+        let out = b.execute(&Task::WriteRaw {
+            target: pane,
+            data: seq.to_vec(),
+        });
+        assert!(matches!(out, Ok(TaskOutcome::Done)), "WriteRaw 应成功");
+
+        // 轮询 take_events，直到 pane_output 含回显字节
+        let got = wait_events(&mut b, std::time::Duration::from_secs(3), |events| {
+            events.iter().any(|e| {
+                matches!(e, crate::core::model::state::StateChange::PaneOutput { data, .. }
+                    if String::from_utf8_lossy(data).contains("pasted"))
+            })
+        })
+        .await;
+        assert!(
+            !got.is_empty(),
+            "WriteRaw 的原始字节应被 cat 回显并经 pane_output 送达"
+        );
+
+        let out = b.pane_output(&pane).map(|o| o.to_vec()).unwrap_or_default();
+        assert!(
+            String::from_utf8_lossy(&out).contains("pasted"),
+            "pane_output 应含写入的原始文本: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+
     /// 辅助：从 LocalBackend 取 active pane id。
     trait ActivePane {
         fn active_pane_id(&self) -> Option<PaneId>;
