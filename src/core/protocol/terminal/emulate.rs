@@ -117,6 +117,12 @@ pub struct TerminalState {
     pub line_wrap: bool,
     /// 是否显示光标。
     pub show_cursor: bool,
+    /// bracketed paste 模式（DECSET 2004）。
+    pub bracketed_paste: bool,
+    /// mouse reporting 模式（1000/1002/1003/1005/1006）。
+    pub mouse_reporting: bool,
+    /// focus in/out 上报模式（1004）。
+    pub focus_reporting: bool,
     /// 窗口标题（OSC 0/2）。
     pub title: Option<String>,
     /// 调色板索引（OSC 4 / 10-12 可重定义，ANSI 8 + bright 8 = 16）。
@@ -204,6 +210,9 @@ impl TerminalState {
             line_wrap: true,
             show_cursor: true,
             title: None,
+            bracketed_paste: false,
+            mouse_reporting: false,
+            focus_reporting: false,
             palette: default_palette(),
             processor: Processor::default(),
         }
@@ -585,6 +594,13 @@ impl Handler for TerminalState {
                 NamedPrivateMode::SwapScreenAndSetRestoreCursor => self.alternate_screen = true,
                 NamedPrivateMode::LineWrap => self.line_wrap = true,
                 NamedPrivateMode::ShowCursor => self.show_cursor = true,
+                NamedPrivateMode::BracketedPaste => self.bracketed_paste = true,
+                NamedPrivateMode::ReportMouseClicks
+                | NamedPrivateMode::ReportCellMouseMotion
+                | NamedPrivateMode::ReportAllMouseMotion
+                | NamedPrivateMode::Utf8Mouse
+                | NamedPrivateMode::SgrMouse => self.mouse_reporting = true,
+                NamedPrivateMode::ReportFocusInOut => self.focus_reporting = true,
                 _ => {}
             },
             PrivateMode::Unknown(_) => {}
@@ -597,6 +613,13 @@ impl Handler for TerminalState {
                 NamedPrivateMode::SwapScreenAndSetRestoreCursor => self.alternate_screen = false,
                 NamedPrivateMode::LineWrap => self.line_wrap = false,
                 NamedPrivateMode::ShowCursor => self.show_cursor = false,
+                NamedPrivateMode::BracketedPaste => self.bracketed_paste = false,
+                NamedPrivateMode::ReportMouseClicks
+                | NamedPrivateMode::ReportCellMouseMotion
+                | NamedPrivateMode::ReportAllMouseMotion
+                | NamedPrivateMode::Utf8Mouse
+                | NamedPrivateMode::SgrMouse => self.mouse_reporting = false,
+                NamedPrivateMode::ReportFocusInOut => self.focus_reporting = false,
                 _ => {}
             },
             PrivateMode::Unknown(_) => {}
@@ -1034,5 +1057,55 @@ mod palette_tests {
         t.feed(b"ok");
         assert_eq!(snap(&t), vec!["ok"]);
         assert_eq!(t.palette.len(), 16, "调色板应保持 16 项");
+    }
+}
+
+#[cfg(test)]
+mod input_mode_tests {
+    use super::*;
+
+    /// bracketed paste（DECSET 2004）开启/关闭。
+    #[test]
+    fn bracketed_paste_mode() {
+        let mut t = TerminalState::new(40, 5);
+        assert!(!t.bracketed_paste);
+        t.feed(b"\x1b[?2004h");
+        assert!(t.bracketed_paste, "CSI ? 2004 h 应开启 bracketed paste");
+        t.feed(b"\x1b[?2004l");
+        assert!(!t.bracketed_paste, "CSI ? 2004 l 应关闭");
+    }
+
+    /// mouse reporting（1000/1002/1003/1006）开启/关闭。
+    #[test]
+    fn mouse_reporting_mode() {
+        let mut t = TerminalState::new(40, 5);
+        assert!(!t.mouse_reporting);
+        t.feed(b"\x1b[?1000h");
+        assert!(t.mouse_reporting, "CSI ? 1000 h 应开启 mouse reporting");
+        t.feed(b"\x1b[?1000l");
+        assert!(!t.mouse_reporting, "CSI ? 1000 l 应关闭");
+        // SGR mouse (1006)
+        t.feed(b"\x1b[?1006h");
+        assert!(t.mouse_reporting);
+    }
+
+    /// focus in/out（1004）开启/关闭。
+    #[test]
+    fn focus_reporting_mode() {
+        let mut t = TerminalState::new(40, 5);
+        assert!(!t.focus_reporting);
+        t.feed(b"\x1b[?1004h");
+        assert!(t.focus_reporting, "CSI ? 1004 h 应开启 focus reporting");
+        t.feed(b"\x1b[?1004l");
+        assert!(!t.focus_reporting, "CSI ? 1004 l 应关闭");
+    }
+
+    /// 这些输入模式不应影响文本渲染。
+    #[test]
+    fn input_modes_do_not_affect_text() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b[?2004h\x1b[?1000h\x1b[?1004h");
+        t.feed(b"text");
+        assert_eq!(t.snapshot_trimmed(), vec!["text"]);
     }
 }
