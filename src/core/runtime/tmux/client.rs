@@ -397,6 +397,41 @@ impl TmuxClientHandle {
 /// `%begin` 包起来。我们识别并剥离它。
 const DCS_PREFIX: &[u8] = b"\x1bP1000p";
 
+/// 从 pty/stdout 读到的字节块中提取「完整行」。
+///
+/// 这是 read loop 的核心纯逻辑，抽出来便于单元测试（分包/拼包/长行/UTF-8 边界）。
+/// 它把 `chunk` 追加进 `buf`，按**真换行** `\n` 切出完整行（去掉行尾 `\n` 与
+/// `\r`，并剥离 DCS 前缀），返回提取出的行；未闭合的尾段留在 `buf` 等下次。
+/// 若 `buf` 过长仍无换行，会丢弃最旧前缀（见 [`trim_incomplete_line`]）。
+///
+/// 注意：`%output` content 里的 `\n` 是 C 转义后的两个字符（`\\` + `n`），
+/// 不是真换行符，所以这里只按真 `\n` 字节切，不会把 content 内部切碎。
+fn feed_bytes_to_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+    if chunk.is_empty() {
+        return Vec::new();
+    }
+    buf.extend_from_slice(chunk);
+    trim_incomplete_line(buf, MAX_INCOMPLETE_LINE_BYTES);
+    let mut lines = Vec::new();
+    loop {
+        let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
+            break;
+        };
+        let mut line_bytes: Vec<u8> = buf.drain(..=nl).collect();
+        if line_bytes.last() == Some(&b'\n') {
+            line_bytes.pop();
+        }
+        if line_bytes.last() == Some(&b'\r') {
+            line_bytes.pop();
+        }
+        if line_bytes.starts_with(DCS_PREFIX) {
+            line_bytes.drain(..DCS_PREFIX.len());
+        }
+        lines.push(String::from_utf8_lossy(&line_bytes).into_owned());
+    }
+    lines
+}
+
 /// pty 模式读循环：用 `PtyReader::read_chunk` 异步取字节块，按真换行切行。
 async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -415,24 +450,7 @@ async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
         if chunk.is_empty() {
             continue;
         }
-        buf.extend_from_slice(&chunk);
-        trim_incomplete_line(&mut buf, MAX_INCOMPLETE_LINE_BYTES);
-        // 按真换行切行
-        loop {
-            let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
-                break;
-            };
-            let mut line_bytes: Vec<u8> = buf.drain(..=nl).collect();
-            if line_bytes.last() == Some(&b'\n') {
-                line_bytes.pop();
-            }
-            if line_bytes.last() == Some(&b'\r') {
-                line_bytes.pop();
-            }
-            if line_bytes.starts_with(DCS_PREFIX) {
-                line_bytes.drain(..DCS_PREFIX.len());
-            }
-            let line = String::from_utf8_lossy(&line_bytes).into_owned();
+        for line in feed_bytes_to_lines(&mut buf, &chunk) {
             process_line(
                 &line,
                 &tx,
@@ -461,20 +479,7 @@ async fn read_stream_loop(stdout: ChildStdout, tx: mpsc::Sender<TmuxEvent>) {
         match reader.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                trim_incomplete_line(&mut buf, MAX_INCOMPLETE_LINE_BYTES);
-                loop {
-                    let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
-                        break;
-                    };
-                    let mut line_bytes: Vec<u8> = buf.drain(..=nl).collect();
-                    if line_bytes.last() == Some(&b'\r') {
-                        line_bytes.pop();
-                    }
-                    if line_bytes.starts_with(DCS_PREFIX) {
-                        line_bytes.drain(..DCS_PREFIX.len());
-                    }
-                    let line = String::from_utf8_lossy(&line_bytes).into_owned();
+                for line in feed_bytes_to_lines(&mut buf, &chunk[..n]) {
                     process_line(
                         &line,
                         &tx,
@@ -810,5 +815,107 @@ mod tests {
             ConnectMode::default(),
             ConnectMode::NewSession { name: None }
         );
+    }
+
+    // ---------- feed_bytes_to_lines：分包/拼包/长行/UTF-8 边界 ----------
+
+    #[test]
+    fn feed_bytes_one_full_line() {
+        let mut buf = Vec::new();
+        let lines = feed_bytes_to_lines(&mut buf, b"%window-add @0\r\n");
+        assert_eq!(lines, vec!["%window-add @0"]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_split_across_chunks() {
+        // 一条 %output 被多次 read 拆开
+        let mut buf = Vec::new();
+        // 三次 read 才拼出完整一行：前两段是半行，第三段带换行收尾
+        assert_eq!(
+            feed_bytes_to_lines(&mut buf, b"%output %0 \"ab"),
+            Vec::<String>::new()
+        );
+        assert_eq!(feed_bytes_to_lines(&mut buf, b"cd\""), Vec::<String>::new());
+        assert_eq!(
+            feed_bytes_to_lines(&mut buf, b"\r\n"),
+            vec![r#"%output %0 "abcd""#]
+        );
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_many_lines_in_one_chunk() {
+        // 一次 read 含多条 %output
+        let mut buf = Vec::new();
+        let lines = feed_bytes_to_lines(
+            &mut buf,
+            b"%output %0 a\r\n%output %1 b\r\n%window-add @1\n",
+        );
+        assert_eq!(
+            lines,
+            vec![r#"%output %0 a"#, r#"%output %1 b"#, "%window-add @1"]
+        );
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_long_line_across_buffers() {
+        // 单条很长的 %output 跨多个内部 buffer 拼起来
+        let mut buf = Vec::new();
+        let long = format!("%output %0 \"{}x\"\r\n", "a".repeat(8192));
+        let bytes = long.as_bytes();
+        let mut got = Vec::new();
+        for chunk in bytes.chunks(1000) {
+            got.extend(feed_bytes_to_lines(&mut buf, chunk));
+        }
+        assert_eq!(got.len(), 1);
+        assert!(got[0].starts_with("%output %0"));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_incomplete_utf8_kept_in_buf() {
+        // 非完整 UTF-8 chunk：多字节字符被拆在两个 chunk 里
+        let mut buf = Vec::new();
+        assert_eq!(
+            feed_bytes_to_lines(&mut buf, "中文".as_bytes()[..3].to_vec().as_slice()),
+            Vec::<String>::new()
+        );
+        let lines = feed_bytes_to_lines(&mut buf, &"中文".as_bytes()[3..]);
+        // 无换行时不产出行
+        assert_eq!(lines, Vec::<String>::new());
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_incomplete_utf8_flushed_on_newline() {
+        let mut buf = Vec::new();
+        assert_eq!(
+            feed_bytes_to_lines(&mut buf, "中文".as_bytes()[..3].to_vec().as_slice()),
+            Vec::<String>::new()
+        );
+        let lines = feed_bytes_to_lines(&mut buf, format!("文\r\n").as_bytes());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "中文");
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_dcs_prefix_stripped() {
+        let mut buf = Vec::new();
+        let dcs = b"\x1bP1000p%begin 123 1 0\r\n";
+        let lines = feed_bytes_to_lines(&mut buf, dcs);
+        assert_eq!(lines, vec!["%begin 123 1 0"]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_crlf_and_lf() {
+        let mut buf = Vec::new();
+        // 同时处理 CRLF 与 LF
+        let lines = feed_bytes_to_lines(&mut buf, b"%begin 1 2 0\r\n%end 1 2 0\n");
+        assert_eq!(lines, vec!["%begin 1 2 0", "%end 1 2 0"]);
+        assert!(buf.is_empty());
     }
 }

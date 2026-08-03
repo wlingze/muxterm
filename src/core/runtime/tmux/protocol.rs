@@ -422,6 +422,11 @@ pub enum Message {
         output_type: String,
         args: String,
     },
+    /// `%pause <flags...>`（tmux 3.3+ 流控）：pane 输出被暂停（`pause-after`）。
+    /// 第一版只「识别并安全忽略」，不阻塞状态机；内容保留以便后续实现背压。
+    Pause { args: String },
+    /// `%continue <flags...>`（tmux 3.3+ 流控）：pane 输出恢复。
+    Continue { args: String },
     /// 命令响应边界 `%begin` / `%end` / `%error`。
     ResponseBoundary(ResponseBoundary),
     /// 未识别的 `%` 消息，保留原始行（去掉行尾 \r\n）。
@@ -447,6 +452,8 @@ impl Message {
             Message::WindowPaneChanged { .. } => "window-pane-changed",
             Message::SessionWindowChanged { .. } => "session-window-changed",
             Message::ExtendedOutput { .. } => "extended-output",
+            Message::Pause { .. } => "pause",
+            Message::Continue { .. } => "continue",
             Message::ResponseBoundary(b) => match b.kind {
                 NotificationKind::Begin => "begin",
                 NotificationKind::End => "end",
@@ -509,6 +516,12 @@ pub fn parse_line(line: &str) -> Option<Message> {
             },
         }),
         "extended-output" => parse_extended_output(rest),
+        "pause" => Ok(Message::Pause {
+            args: rest.trim().to_string(),
+        }),
+        "continue" => Ok(Message::Continue {
+            args: rest.trim().to_string(),
+        }),
         "begin" => parse_boundary(rest, NotificationKind::Begin).map(Message::ResponseBoundary),
         "end" => parse_boundary(rest, NotificationKind::End).map(Message::ResponseBoundary),
         "error" => parse_boundary(rest, NotificationKind::Error).map(Message::ResponseBoundary),
@@ -1416,6 +1429,85 @@ mod tests {
                 args: "file:///tmp".into(),
             }
         );
+    }
+
+    #[test]
+    fn parse_pause_continue() {
+        // %pause / %continue 是 tmux 3.3+ 流控消息，第一版只识别并安全忽略
+        let m = parse_line("%pause 100").unwrap();
+        assert_eq!(m, Message::Pause { args: "100".into() });
+
+        let m = parse_line("%continue 100").unwrap();
+        assert_eq!(m, Message::Continue { args: "100".into() });
+
+        // 空参数也应识别
+        assert!(matches!(parse_line("%pause"), Some(Message::Pause { .. })));
+        assert!(matches!(
+            parse_line("%continue"),
+            Some(Message::Continue { .. })
+        ));
+
+        // keyword 返回正确的类型名
+        assert_eq!(
+            Message::Pause {
+                args: String::new()
+            }
+            .keyword(),
+            "pause"
+        );
+        assert_eq!(
+            Message::Continue {
+                args: String::new()
+            }
+            .keyword(),
+            "continue"
+        );
+    }
+
+    #[test]
+    fn parse_output_then_exit_ordering() {
+        // 程序退出：先 %output 后 %exit，顺序应保持（pane 内容不丢）
+        let raw = "%output %0 hello\r\n%exit pane died\r\n";
+        let mut msgs = Vec::new();
+        for line in raw.lines() {
+            if let Some(m) = parse_line(line) {
+                msgs.push(m);
+            }
+        }
+        assert_eq!(msgs.len(), 2);
+        assert!(matches!(&msgs[0], Message::Output { content, .. } if content == b"hello"));
+        assert!(
+            matches!(&msgs[1], Message::Exit { reason } if reason.as_deref() == Some("pane died"))
+        );
+    }
+
+    #[test]
+    fn parse_output_interleaved_with_begin_end() {
+        // %output 与 %begin/%end 交织，解析不丢消息
+        let raw =
+            "%output %0 a\r\n%begin 1 2 0\r\nplain response\r\n%end 1 2 0\r\n%output %1 b\r\n";
+        let mut msgs = Vec::new();
+        let mut response_lines = Vec::new();
+        let mut in_response = false;
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(m) = parse_line(stripped) {
+                if let Message::ResponseBoundary(b) = &m {
+                    in_response = matches!(b.kind, NotificationKind::Begin);
+                } else if !in_response {
+                    msgs.push(m);
+                }
+            } else if in_response {
+                response_lines.push(line.to_string());
+            }
+        }
+        // 两条 output 应都在（一条在 begin 前，一条在 end 后）
+        let outputs: Vec<_> = msgs
+            .iter()
+            .filter(|m| matches!(m, Message::Output { .. }))
+            .collect();
+        assert_eq!(outputs.len(), 2, "两条 %output 都应被解析");
+        assert!(response_lines.contains(&"plain response".to_string()));
     }
 
     #[test]
