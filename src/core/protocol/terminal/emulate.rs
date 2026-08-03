@@ -12,8 +12,9 @@
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
 use vte::ansi::{
-    Attr, ClearMode, Color, CursorShape, Handler, KeyboardModes, KeyboardModesApplyBehavior,
-    LineClearMode, ModifyOtherKeys, NamedPrivateMode, PrivateMode, Processor, Rgb,
+    Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
+    KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedPrivateMode, PrivateMode,
+    Processor, Rgb, StandardCharset,
 };
 
 /// 一个屏幕单元格：字符 + 前景/背景色 + 样式位 + hyperlink URI。
@@ -138,6 +139,10 @@ pub struct TerminalState {
     pub modify_other_keys: ModifyOtherKeys,
     /// 调色板索引（OSC 4 / 10-12 可重定义，ANSI 8 + bright 8 = 16）。
     pub palette: [Rgb; 16],
+    /// G0-G3 字符集指定（DEC charset designation）。
+    pub charsets: [StandardCharset; 4],
+    /// 当前激活字符集（SI/SO 切换）。
+    pub active_charset: CharsetIndex,
     processor: Processor,
 }
 
@@ -230,6 +235,8 @@ impl TerminalState {
             mouse_reporting: false,
             focus_reporting: false,
             palette: default_palette(),
+            charsets: [StandardCharset::default(); 4],
+            active_charset: CharsetIndex::G0,
             processor: Processor::default(),
         }
     }
@@ -298,13 +305,16 @@ impl TerminalState {
     }
 
     fn put_char(&mut self, c: char) {
+        // 先按当前激活字符集映射（如 DEC line-drawing），再写单元格。
+        let idx = self.active_charset as usize;
+        let mapped = self.charsets.get(idx).copied().unwrap_or_default().map(c);
         let cell = self
             .grid
             .get_mut(self.cursor_row)
             .and_then(|r| r.get_mut(self.cursor_col));
         if let Some(cell) = cell {
             self.attr.apply_to(cell);
-            cell.ch = c;
+            cell.ch = mapped;
         }
         // 在最后一列之后自动换行（或停在末列）
         if self.cursor_col + 1 < self.cols() {
@@ -703,6 +713,19 @@ impl Handler for TerminalState {
             KeyboardModesApplyBehavior::Union => self.keyboard_mode | mode,
             KeyboardModesApplyBehavior::Difference => self.keyboard_mode & !mode,
         };
+    }
+
+    /// SI / SO：切换激活的 G0 / G1 字符集。
+    fn set_active_charset(&mut self, index: CharsetIndex) {
+        self.active_charset = index;
+    }
+
+    /// ESC ( / ) / * / + <charset>：指定 G0-G3 字符集。
+    fn configure_charset(&mut self, index: CharsetIndex, charset: StandardCharset) {
+        let i = index as usize;
+        if i < self.charsets.len() {
+            self.charsets[i] = charset;
+        }
     }
 
     /// XTMODKEYS（CSI > 4 m）：modifyOtherKeys 状态。
@@ -1267,5 +1290,39 @@ mod keyboard_protocol_tests {
         t.feed(b"\x1b[>1u\x1b[>4;1m");
         t.feed(b"text");
         assert_eq!(t.snapshot_trimmed(), vec!["text"]);
+    }
+}
+
+#[cfg(test)]
+mod charset_tests {
+    use super::*;
+
+    /// DEC line-drawing：ESC ( 0 指定 G0 为 special charset，之后打印映射为框线字符。
+    #[test]
+    fn dec_line_drawing_boxes() {
+        let mut t = TerminalState::new(40, 5);
+        // ESC ( 0 指定 G0 = special charset，然后打印 'q'（横线）'x'（竖线）
+        t.feed(b"\x1b(0q x");
+        assert_eq!(t.snapshot_trimmed(), vec!["─ │"]);
+        // 回到 ASCII：ESC ( B
+        t.feed(b"\x1b(B");
+        t.feed(b" plain");
+        assert_eq!(t.snapshot_trimmed(), vec!["─ │ plain"]);
+    }
+
+    /// SI/SO 切换 G0/G1。
+    #[test]
+    fn si_so_switch_charset() {
+        let mut t = TerminalState::new(40, 5);
+        // G0 = special, G1 = ASCII（默认）
+        t.feed(b"\x1b(0"); // G0 = line drawing
+        t.feed(b"\x1b)0"); // G1 = line drawing
+                           // SO 切到 G1，打印 'q' → 横线
+        t.feed(b"\x0e"); // SO
+        t.feed(b"q");
+        // SI 切回 G0，打印 'q' → 仍是横线（G0 也是 line drawing）
+        t.feed(b"\x0f"); // SI
+        t.feed(b"q");
+        assert_eq!(t.snapshot_trimmed(), vec!["──"]);
     }
 }
