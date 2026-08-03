@@ -170,10 +170,11 @@ impl Default for SshProcessTransport {
 ///
 /// 返回 `(program, args)`：
 /// - program = "ssh"
-/// - args = ["-T", alias, "--", remote_command...]
+/// - args = ["-tt", alias, "--", remote_command...]
 ///
-/// `-T` 禁用 ssh 的伪终端分配（muxterm 自己通过 PTY 转发）；
-/// 实际上 muxterm 在本地 pty 中 spawn ssh 进程，ssh 负责远端 pty 转发。
+/// 用 `-tt` 强制分配远端 pty。远端 `tmux -CC` 的 stdout 必须是 tty
+/// （否则 `tcgetattr failed`），所以必须让 ssh 在远端分配 pty；本地
+/// spawn ssh 的 pty 用于交互/信号，两者配合使远端 tmux -CC 正常工作。
 pub fn build_ssh_command(
     alias: &str,
     remote_command: &str,
@@ -186,8 +187,8 @@ pub fn build_ssh_command(
         args.push("-F".to_string());
         args.push(path.to_string());
     }
-    // -T: 禁用 ssh 自身 pty 分配
-    args.push("-T".to_string());
+    // -tt: 强制分配远端 pty（tmux -CC 需要远端 stdout 是 tty，否则 tcgetattr failed）
+    args.push("-tt".to_string());
     // -o BatchMode=yes: 禁用密码交互
     args.push("-o".to_string());
     args.push("BatchMode=yes".to_string());
@@ -349,7 +350,7 @@ mod tests {
     fn build_ssh_command_basic() {
         let (program, args) = build_ssh_command("myserver", "tmux -CC new-session", None);
         assert_eq!(program, "ssh");
-        assert!(args.contains(&"-T".to_string()));
+        assert!(args.contains(&"-tt".to_string()));
         assert!(args.contains(&"myserver".to_string()));
         assert!(args.contains(&"--".to_string()));
         assert!(args.contains(&"tmux -CC new-session".to_string()));
