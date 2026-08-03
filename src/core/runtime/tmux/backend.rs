@@ -1724,6 +1724,54 @@ mod tests {
         );
     }
 
+    /// %session-window-changed：切换 session 的 active window → active tab 切换。
+    #[test]
+    fn session_window_changed_updates_active_tab() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let session = crate::core::types::SessionId(0);
+        b.sessions.push(crate::core::model::state::SessionInfo {
+            id: session,
+            name: "s0".into(),
+            active_window: None,
+        });
+        // 预置两个 tab（对应两个 tmux window @0 @1）
+        for (id, active) in [(0u32, true), (1, false)] {
+            b.tabs.push(crate::core::model::state::TabInfo {
+                id: crate::core::types::TabId(id),
+                name: format!("t{id}"),
+                window: crate::core::runtime::tmux::backend::TmuxBackend::VIRTUAL_WINDOW_ID,
+                active,
+            });
+        }
+
+        b.handle_message(Message::SessionWindowChanged {
+            session,
+            window: crate::core::types::WindowId(1),
+        });
+
+        // tab1 应变为 active，tab0 不再 active
+        let t1 = b
+            .tabs
+            .iter()
+            .find(|t| t.id == crate::core::types::TabId(1))
+            .unwrap();
+        assert!(t1.active, "session-window-changed 后 tab1 应 active");
+        let t0 = b
+            .tabs
+            .iter()
+            .find(|t| t.id == crate::core::types::TabId(0))
+            .unwrap();
+        assert!(!t0.active, "tab0 应不再 active");
+        // 应有 ActiveTabChanged 事件
+        assert!(
+            b.events.iter().any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == crate::core::types::TabId(1))),
+            "应有 ActiveTabChanged(tab1)"
+        );
+    }
+
     /// %extended-output（hyperlink 等）被安全忽略，不破坏 %output 累积或状态机。
     #[test]
     fn extended_output_safely_ignored() {
