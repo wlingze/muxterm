@@ -73,3 +73,8 @@ path = "tests/split_regression.rs"
 [[test]]
 name = "sendkeys_regression"
 path = "tests/sendkeys_regression.rs"
+
+[[test]]
+name = "streaming_output_integration"
+path = "tests/streaming_output_integration.rs"
+required-features = ["tui"]
