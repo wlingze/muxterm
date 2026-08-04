@@ -286,44 +286,14 @@ impl TmuxBackend {
             Message::LayoutChange {
                 window,
                 layout,
-                visible_layout,
+                visible_layout: _,
             } => {
-                // layout 变化可能意味着 pane 增减，重新查询 pane 列表
+                // `%layout-change` 携带的是最新完整布局。先保存它，再查询 pane
+                // 几何；list-panes 返回后 rebuild_layout 会用这棵最新树建模。
+                // 旧实现只发查询、不更新 window_layouts，导致随后仍用旧树或
+                // fallback 平铺树渲染，尤其在 attach 后再次 split 时会暴露。
+                self.window_layouts.insert(window, layout.raw.clone());
                 self.query_list_panes(window);
-                // 从 layout 几何更新 pane 尺寸（如果有对应 pane）
-                let cols = layout.cols as u16;
-                let rows = layout.rows as u16;
-                // 找该 window 的 active pane 更新尺寸（简化：更新所有该 window 的 pane）
-                let pane_ids: Vec<PaneId> = self
-                    .panes
-                    .iter()
-                    .filter(|p| p.tab == TabId(window.0))
-                    .map(|p| p.id)
-                    .collect();
-                for pid in pane_ids {
-                    if let Some(p) = self.panes.iter_mut().find(|p| p.id == pid) {
-                        if p.cols != cols || p.rows != rows {
-                            p.cols = cols;
-                            p.rows = rows;
-                            self.events.push_back(StateChange::PaneResized {
-                                pane: pid,
-                                cols,
-                                rows,
-                            });
-                        }
-                    }
-                }
-                let tab_id = TabId(window.0);
-                if let Some(tl) = self.layouts.get_mut(&tab_id) {
-                    tl.tab = tab_id;
-                    let _ = visible_layout;
-                }
-                if let Some(wl) = self.layouts.get(&tab_id) {
-                    self.events.push_back(StateChange::LayoutChanged {
-                        tab: tab_id,
-                        layout: wl.clone(),
-                    });
-                }
             }
             Message::WindowAdd { window } => {
                 // tmux window → muxterm Tab（不是 Window！）
@@ -1135,8 +1105,7 @@ impl Backend for TmuxBackend {
                 TaskOutcome::Done
             }
             Task::WriteRaw { target, data } => {
-                let text = String::from_utf8_lossy(data).into_owned();
-                let c = cmd::send_keys(*target, &[cmd::Key::Literal(text)]);
+                let c = cmd::send_keys_bytes(*target, data);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
@@ -1346,12 +1315,29 @@ fn layout_tree_to_node_inner(
             let second = layout_tree_to_node_inner(b, mapping)?;
             Some(LayoutNode::Split {
                 dir: tree.dir,
-                ratio: 500,
+                ratio: layout_split_ratio(tree, a, b),
                 first: Box::new(first),
                 second: Box::new(second),
             })
         }
     }
+}
+
+/// 从 tmux 子节点几何计算 first 的布局比例（0..=1000）。
+///
+/// tmux 的 layout 几何包含分隔线两侧的 pane 尺寸，因此用两个子节点在
+/// 当前分割轴上的尺寸计算比例即可得到稳定的近似值；不能固定写成 500，
+/// 否则 attach 后的非对称布局会被 GUI 重新均分。
+fn layout_split_ratio(tree: &LayoutTree, first: &LayoutTree, second: &LayoutTree) -> u16 {
+    let (first_size, second_size) = match tree.dir {
+        SplitDir::Horizontal => (first.cols, second.cols),
+        SplitDir::Vertical => (first.rows, second.rows),
+    };
+    let total = first_size.saturating_add(second_size);
+    if total == 0 {
+        return 500;
+    }
+    ((first_size.saturating_mul(1000) / total).clamp(50, 950)) as u16
 }
 
 /// 从默认格式的 list-panes 行提取 pane id。
@@ -1451,6 +1437,63 @@ mod tests {
     fn parse_list_windows_line_rejects_short() {
         assert!(parse_list_windows_line("@1,name").is_none());
         assert!(parse_list_windows_line("").is_none());
+    }
+
+    #[test]
+    fn layout_change_rebuilds_from_latest_nested_tmux_tree() {
+        let mut b = TmuxBackend::new(None);
+        let window = WindowId(0);
+        let latest = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
+
+        b.handle_message(Message::LayoutChange {
+            window,
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(latest).unwrap(),
+            visible_layout: None,
+        });
+
+        // 没有命令通道的单元测试里 query_list_panes 会被跳过，但最新 raw
+        // 仍必须保留下来，随后 list-panes 响应才能按新树建模。
+        assert_eq!(
+            b.window_layouts.get(&window).map(String::as_str),
+            Some(latest)
+        );
+
+        b.handle_list_panes_response(
+            window,
+            vec![
+                "0: [70x30] %0 (active)".into(),
+                "1: [69x15] %1".into(),
+                "2: [69x14] %2".into(),
+            ],
+        );
+
+        let tree = &b.layouts[&TabId(0)].tree;
+        let LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: root_ratio,
+            first,
+            second,
+        } = tree
+        else {
+            panic!("根节点应为左右 split: {tree:?}");
+        };
+        assert!((500..=510).contains(root_ratio));
+        assert!(matches!(first.as_ref(), LayoutNode::Leaf(PaneId(0))));
+        let LayoutNode::Split {
+            dir: SplitDir::Vertical,
+            ratio: nested_ratio,
+            first: nested_first,
+            second: nested_second,
+        } = second.as_ref()
+        else {
+            panic!("右子树应为上下 split: {second:?}");
+        };
+        assert!((510..=525).contains(nested_ratio));
+        assert!(matches!(nested_first.as_ref(), LayoutNode::Leaf(PaneId(1))));
+        assert!(matches!(
+            nested_second.as_ref(),
+            LayoutNode::Leaf(PaneId(2))
+        ));
     }
 
     fn unique_socket() -> String {

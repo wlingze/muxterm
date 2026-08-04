@@ -125,19 +125,19 @@ impl Key {
 // 内部辅助：C 转义 + 引号包裹
 // ============================================================================
 
-/// 把任意文本编码为 tmux 可接受的 C 转义双引号字符串。
+/// 把任意字节编码为 tmux 可接受的 C 转义双引号字符串。
 ///
 /// 规则（与 tmux `cmd_queue`/`format` 解析一致）：
 /// - `\` → `\\`
 /// - `"` → `\"`
 /// - 0x1B (ESC) → `\e`
 /// - `\n` → `\n`, `\r` → `\r`, `\t` → `\t`
-/// - 其他控制字符 → `\xNN`
+/// - 其他非打印字节 → 三位八进制 `\ooo`
 /// - 普通可打印字符原样
-fn quote_c_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
+fn quote_c_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
     out.push('"');
-    for &b in s.as_bytes() {
+    for &b in bytes {
         match b {
             b'\\' => out.push_str(r"\\"),
             b'"' => out.push_str(r#"\""#),
@@ -147,12 +147,17 @@ fn quote_c_string(s: &str) -> String {
             b'\t' => out.push_str(r"\t"),
             0x20..=0x7E => out.push(b as char),
             other => {
-                let _ = write!(out, r"\x{:02X}", other);
+                // tmux 控制模式按反斜杠后的最多三位八进制解码。
+                let _ = write!(out, r"\{:03o}", other);
             }
         }
     }
     out.push('"');
     out
+}
+
+fn quote_c_string(s: &str) -> String {
+    quote_c_bytes(s.as_bytes())
 }
 
 /// 把一个 key 渲染为 send-keys 的单个 token。
@@ -240,6 +245,14 @@ pub fn send_keys(pane: PaneId, keys: &[Key]) -> TmuxCommand {
         // 两条命令用换行连接（TmuxCommand::to_line 已自带末尾换行）
         TmuxCommand::from_raw(format!("{}\n{}", lit_cmd.as_str(), special_cmd.as_str()))
     }
+}
+
+/// 发送原始字节，不经过 UTF-8 转换；用于终端控制字节和任意粘贴数据。
+pub fn send_keys_bytes(pane: PaneId, bytes: &[u8]) -> TmuxCommand {
+    build(
+        &[pane_target(pane), "-l".to_string(), quote_c_bytes(bytes)],
+        "send-keys",
+    )
 }
 
 /// 发送前缀键（`prefix` 表里的键）。
@@ -611,9 +624,15 @@ mod tests {
 
     #[test]
     fn quote_c_string_control_chars() {
-        // 0x01 → \x01, 0x7F → \x7F
-        let q = quote_c_string("\u{1}\u{7F}");
-        assert_eq!(q, r#""\x01\x7F""#);
+        // tmux 控制模式要求使用八进制；固定三位避免和后续数字粘连。
+        let q = quote_c_string("\u{1}\u{5}\u{10}\u{0e}\u{12}\u{7F}");
+        assert_eq!(q, r#""\001\005\020\016\022\177""#);
+    }
+
+    #[test]
+    fn send_keys_bytes_preserves_control_and_non_utf8_bytes() {
+        let command = send_keys_bytes(PaneId(1), &[0x03, 0x0c, 0xff]);
+        assert_eq!(command.as_str(), "send-keys -t %1 -l \"\\003\\014\\377\"");
     }
 }
 
@@ -623,9 +642,7 @@ mod tests {
 // 无损还原。这是 send-keys -l 写入 PTY 的字节保真核心。
 
 fn roundtrip_bytes(bytes: &[u8]) -> Vec<u8> {
-    // 先按 UTF-8 lossy 转成 str（WriteRaw 路径就是这么做的），再 quote 编码
-    let s = String::from_utf8_lossy(bytes).into_owned();
-    let quoted = quote_c_string(&s);
+    let quoted = quote_c_bytes(bytes);
     // 去掉两端引号，交给 ControlEscapeDecoder 解码
     let inner = quoted.trim_start_matches('"').trim_end_matches('"');
     ControlEscapeDecoder::new().decode(inner).expect("应能解码")
@@ -662,7 +679,9 @@ fn input_roundtrip_arrow_and_modifier_keys() {
 
 #[test]
 fn input_roundtrip_ctrl_and_alt() {
-    assert_eq!(roundtrip_bytes(b"\x03"), b"\x03"); // Ctrl-C
+    for byte in [0x01, 0x03, 0x05, 0x0c, 0x0e, 0x10, 0x12] {
+        assert_eq!(roundtrip_bytes(&[byte]), [byte]);
+    }
     assert_eq!(roundtrip_bytes(b"\x1bn"), b"\x1bn"); // Alt-n
     assert_eq!(roundtrip_bytes(b"\x1a"), b"\x1a"); // Ctrl-Z
     assert_eq!(roundtrip_bytes(b"\x7f"), b"\x7f"); // DEL
