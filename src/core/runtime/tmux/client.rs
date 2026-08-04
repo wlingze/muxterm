@@ -29,14 +29,21 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectMode {
     /// `tmux -CC new-session`（创建新 session）。
-    NewSession { name: Option<String> },
+    NewSession {
+        name: Option<String>,
+        /// 起始工作目录（`-c <dir>`）；None 用 tmux 默认（当前目录）。
+        start_directory: Option<String>,
+    },
     /// `tmux -CC attach -t <target>`（附加已有 session）。
     Attach { target: Option<String> },
 }
 
 impl Default for ConnectMode {
     fn default() -> Self {
-        ConnectMode::NewSession { name: None }
+        ConnectMode::NewSession {
+            name: None,
+            start_directory: None,
+        }
     }
 }
 
@@ -295,11 +302,18 @@ pub(crate) fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
     }
     argv.push("-CC".into());
     match config.mode.clone().unwrap_or_default() {
-        ConnectMode::NewSession { name } => {
+        ConnectMode::NewSession {
+            name,
+            start_directory,
+        } => {
             argv.push("new-session".into());
             if let Some(n) = &name {
                 argv.push("-s".into());
                 argv.push(n.clone());
+            }
+            if let Some(dir) = &start_directory {
+                argv.push("-c".into());
+                argv.push(dir.clone());
             }
             if let Some(x) = config.cols {
                 argv.push("-x".into());
@@ -763,6 +777,7 @@ mod tests {
                 let config = TmuxClientConfig {
                     mode: Some(ConnectMode::NewSession {
                         name: Some("mxtest".into()),
+                        start_directory: None,
                     }),
                     extra_args: vec!["-L".into(), socket.clone()],
                     cols: Some(80),
@@ -841,6 +856,7 @@ mod tests {
                 let config = TmuxClientConfig {
                     mode: Some(ConnectMode::NewSession {
                         name: Some("mexit".into()),
+                        start_directory: None,
                     }),
                     extra_args: vec!["-L".into(), socket.clone()],
                     cols: Some(80),
@@ -902,6 +918,7 @@ mod tests {
                 let config = TmuxClientConfig {
                     mode: Some(ConnectMode::NewSession {
                         name: Some("mxml".into()),
+                        start_directory: None,
                     }),
                     extra_args: vec!["-L".into(), socket.clone()],
                     cols: Some(80),
@@ -1036,7 +1053,10 @@ mod tests {
         let _c = TmuxClientConfig::default();
         assert_eq!(
             ConnectMode::default(),
-            ConnectMode::NewSession { name: None }
+            ConnectMode::NewSession {
+                name: None,
+                start_directory: None,
+            }
         );
     }
 
