@@ -276,6 +276,44 @@ final class MuxtermAppUITests: XCTestCase {
         XCTAssertFalse(output.contains("x0c"), "Ctrl-L 不应显示成字面 x0c")
     }
 
+    /// Backspace 必须真的进入 shell 的行编辑器；只做 Swift 侧字节映射
+    /// 测试不够，因为 SwiftTerm/AppKit 可能在窗口事件层吞掉 Delete。
+    func testBackspaceDeletesCharacterInShell() throws {
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 5)
+
+        let marker = "BACKSPACE_REAL_74291"
+        // 先输入 BAD，再用真实 Delete 删除最后三个字符，最后补 OK。
+        app.typeText("printf '\(marker)_BAD")
+        for _ in 0..<3 {
+            app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: [])
+        }
+        app.typeText("OK\\n'")
+        app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
+
+        assertAnyTerminalContains("\(marker)_OK", timeout: 10)
+    }
+
+    /// 真实 GUI 操作延迟预算：Cmd+D / Cmd+T 都应在 2 秒内反映到状态栏。
+    func testSplitAndNewTabFeedbackLatencyBudget() throws {
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 5)
+
+        let splitStarted = Date()
+        app.typeKey("d", modifierFlags: .command)
+        waitStatusContains(status, "panes: 2", timeout: 2)
+        XCTAssertLessThan(Date().timeIntervalSince(splitStarted), 2.0)
+
+        let tabStarted = Date()
+        app.typeKey("t", modifierFlags: .command)
+        waitStatusContains(status, "tabs: 2", timeout: 2)
+        XCTAssertLessThan(Date().timeIntervalSince(tabStarted), 2.0)
+    }
+
     // MARK: - Ctrl+D
 
     func testCtrlDSingleTabClosesWindow() throws {
