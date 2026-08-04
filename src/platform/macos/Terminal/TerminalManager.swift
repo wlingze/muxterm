@@ -19,6 +19,19 @@ final class TerminalManager: TerminalInputHandler {
         self.bridge = bridge
     }
 
+    /// 连接面板切换 local / SSH session 后更新桥接对象。
+    func updateBridge(_ bridge: CoreBridge) {
+        self.bridge = bridge
+        for view in views.values {
+            view.removeFromSuperview()
+        }
+        views.removeAll()
+        outputCursors.removeAll()
+        lastPtySize.removeAll()
+        recentOutputSnippet = ""
+        onOutputSnippetChanged?(recentOutputSnippet)
+    }
+
     /// 获取或创建指定 pane 的终端视图。
     func view(for paneId: UInt32) -> MuxTerminalView {
         if let existing = views[paneId] {

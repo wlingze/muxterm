@@ -70,6 +70,8 @@ let package = Package(
                 "App/AppDelegate.swift",
                 "App/MainWindow.swift",
                 "App/ContentView.swift",
+                "App/CommandPalette.swift",
+                "App/ConnectionDiscovery.swift",
                 "Terminal/TerminalView.swift",
                 "Terminal/TerminalManager.swift",
                 "UI/TabBar.swift",

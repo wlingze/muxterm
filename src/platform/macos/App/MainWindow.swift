@@ -3,9 +3,11 @@ import MuxtermChrome
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
 final class MainWindowController: NSWindowController, NSWindowDelegate {
-    private let bridge: CoreBridge
+    private var bridge: CoreBridge
     private let terminalManager: TerminalManager
     private let content: ContentView
+    private let discovery = ConnectionDiscovery()
+    private var commandPalette: CommandPaletteController!
     private var pollTimer: Timer?
     private var lastSnapshot = FrameSnapshot()
     private var needsLayoutReload = true
@@ -31,6 +33,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: window)
         window.delegate = self
+
+        commandPalette = CommandPaletteController(ownerWindow: window)
+        commandPalette.onSelect = { [weak self] item in
+            self?.handlePaletteSelection(item)
+        }
 
         content.tabBar.onSelectTab = { [weak self] tabId in
             self?.bridge.execute(task: MuxTask.switchTab(tabId))
@@ -139,6 +146,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         movePane(offset: -1)
     }
 
+    @objc func openCommandPalette() {
+        guard let commandPalette else { return }
+        if commandPalette.window?.isKeyWindow == true {
+            commandPalette.dismiss()
+        } else {
+            commandPalette.present(items: Self.rootPaletteItems())
+        }
+    }
+
     private func focusActiveTerminal() {
         let snap = bridge.snapshot()
         guard snap.activePane != 0 else { return }
@@ -186,6 +202,288 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = true
         refreshUI()
         focusActiveTerminal()
+    }
+
+    // MARK: - 命令面板
+
+    private static func rootPaletteItems() -> [PaletteItem] {
+        [
+            PaletteItem(
+                title: "Local",
+                detail: "选择本机 tmux session",
+                keywords: "local tmux attach new",
+                kind: .command(.local)
+            ),
+            PaletteItem(
+                title: "SSH",
+                detail: "选择 SSH 主机，再选择远程 tmux session",
+                keywords: "ssh remote host tmux attach new",
+                kind: .command(.ssh)
+            ),
+            PaletteItem(
+                title: "New Tab",
+                detail: "新建本地 tab",
+                keywords: "new tab",
+                kind: .command(.newTab)
+            ),
+            PaletteItem(
+                title: "Split Pane Horizontally",
+                detail: "水平分割当前 pane",
+                keywords: "split pane horizontal",
+                kind: .command(.splitHorizontal)
+            ),
+            PaletteItem(
+                title: "Split Pane Vertically",
+                detail: "竖直分割当前 pane",
+                keywords: "split pane vertical",
+                kind: .command(.splitVertical)
+            ),
+            PaletteItem(
+                title: "Next Pane",
+                detail: "切换到当前 tab 的下一个 pane",
+                keywords: "pane next cmd bracket",
+                kind: .command(.nextPane)
+            ),
+            PaletteItem(
+                title: "Previous Pane",
+                detail: "切换到当前 tab 的上一个 pane",
+                keywords: "pane previous prev cmd bracket",
+                kind: .command(.prevPane)
+            ),
+            PaletteItem(
+                title: "Close Pane",
+                detail: "关闭当前 pane",
+                keywords: "close pane",
+                kind: .command(.closePane)
+            ),
+            PaletteItem(
+                title: "Close Tab",
+                detail: "关闭当前 tab",
+                keywords: "close tab",
+                kind: .command(.closeTab)
+            ),
+            PaletteItem(
+                title: "Close Window",
+                detail: "关闭当前窗口",
+                keywords: "close window",
+                kind: .command(.closeWindow)
+            ),
+            PaletteItem(
+                title: "Quit Muxterm",
+                detail: "退出应用",
+                keywords: "quit exit",
+                kind: .command(.quit)
+            ),
+        ]
+    }
+
+    private func handlePaletteSelection(_ item: PaletteItem) {
+        switch item.kind {
+        case .command(.local):
+            showSessions(for: .local)
+        case .command(.ssh):
+            showSSHHosts()
+        case .command(.newTab):
+            commandPalette.dismiss()
+            newTab()
+        case .command(.splitHorizontal):
+            commandPalette.dismiss()
+            splitHorizontal()
+        case .command(.splitVertical):
+            commandPalette.dismiss()
+            splitVertical()
+        case .command(.nextPane):
+            commandPalette.dismiss()
+            nextPane()
+        case .command(.prevPane):
+            commandPalette.dismiss()
+            prevPane()
+        case .command(.closePane):
+            commandPalette.dismiss()
+            closeActivePane()
+        case .command(.closeTab):
+            commandPalette.dismiss()
+            closeActiveTab()
+        case .command(.closeWindow):
+            commandPalette.dismiss()
+            closeActiveWindow()
+        case .command(.quit):
+            commandPalette.dismiss()
+            NSApp.terminate(nil)
+        case .command:
+            break
+        case .host(let host):
+            showSessions(for: .ssh(host))
+        case .session(let target, let name):
+            attach(target: target, session: name)
+        case .newSession(let target):
+            commandPalette.dismiss()
+            chooseDirectory(for: target)
+        }
+    }
+
+    private func showSSHHosts() {
+        switch discovery.sshHosts() {
+        case .success(let hosts):
+            commandPalette.update(
+                items: hosts.map { host in
+                    PaletteItem(
+                        title: host.alias,
+                        detail: "\(host.user.map { "\($0)@" } ?? "")\(host.hostname)\(host.port.map { ":\($0)" } ?? "")",
+                        keywords: "ssh host machine remote",
+                        kind: .host(host)
+                    )
+                },
+                placeholder: "选择 SSH 主机…"
+            )
+        case .failure(let error):
+            commandPalette.dismiss()
+            showError(error)
+        }
+    }
+
+    private func showSessions(for target: ConnectionTarget) {
+        commandPalette.update(
+            items: [PaletteItem(
+                title: "New",
+                detail: "选择目录，创建 tmux session 并 attach",
+                keywords: "new create tmux directory folder",
+                kind: .newSession(target: target)
+            )],
+            placeholder: "选择 tmux session…"
+        )
+
+        let finish: (Result<[TmuxSessionInfo], Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let sessions):
+                let items = [PaletteItem(
+                    title: "New",
+                    detail: "选择目录，创建 tmux session 并 attach",
+                    keywords: "new create tmux directory folder",
+                    kind: .newSession(target: target)
+                )] + sessions.map { session in
+                    PaletteItem(
+                        title: session.name,
+                        detail: "\(session.windowCount) 个 window\(session.attached ? " · 已连接" : "")",
+                        keywords: "tmux session attach",
+                        kind: .session(target: target, name: session.name)
+                    )
+                }
+                self.commandPalette.update(items: items, placeholder: "选择 tmux session…")
+            case .failure(let error):
+                self.commandPalette.dismiss()
+                self.showError(error)
+            }
+        }
+
+        switch target {
+        case .local:
+            discovery.listLocalSessions(completion: finish)
+        case .ssh(let host):
+            discovery.listRemoteSessions(host: host, completion: finish)
+        }
+    }
+
+    private func chooseDirectory(for target: ConnectionTarget) {
+        switch target {
+        case .local:
+            let panel = NSOpenPanel()
+            panel.title = "选择新 tmux session 的工作目录"
+            panel.message = "选择目录后，Muxterm 会创建 tmux session 并 attach。"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.beginSheetModal(for: window!) { [weak self] response in
+                guard response == .OK, let directory = panel.url?.path else { return }
+                self?.createSession(target: target, directory: directory)
+            }
+        case .ssh(let host):
+            let alert = NSAlert()
+            alert.messageText = "选择远程工作目录"
+            alert.informativeText = "输入 \(host.alias) 上新 tmux session 的目录。"
+            let field = NSTextField(string: "~")
+            field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+            alert.accessoryView = field
+            alert.addButton(withTitle: "创建并连接")
+            alert.addButton(withTitle: "取消")
+            alert.beginSheetModal(for: window!) { [weak self] response in
+                guard response == .alertFirstButtonReturn else { return }
+                let directory = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !directory.isEmpty else { return }
+                self?.createSession(target: target, directory: directory)
+            }
+        }
+    }
+
+    private func createSession(target: ConnectionTarget, directory: String) {
+        discovery.createSession(target: target, directory: directory) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let session):
+                self.attach(target: target, session: session)
+            case .failure(let error):
+                self.showError(error)
+            }
+        }
+    }
+
+    private func attach(target: ConnectionTarget, session: String) {
+        commandPalette.dismiss()
+        let backend: String
+        let socket: String?
+        switch target {
+        case .local:
+            backend = "tmux"
+            socket = nil
+        case .ssh(let host):
+            backend = "ssh"
+            socket = host.alias
+        }
+
+        // CoreBridge 的 connect 可能等待远端 tmux 初始化，放到后台线程。
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let nextBridge = try CoreBridge(
+                    backendType: backend,
+                    socket: socket,
+                    session: session
+                )
+                DispatchQueue.main.async {
+                    guard let self else {
+                        nextBridge.shutdown()
+                        return
+                    }
+                    self.bridge.shutdown()
+                    self.bridge = nextBridge
+                    self.terminalManager.updateBridge(nextBridge)
+                    self.lastSnapshot = FrameSnapshot()
+                    self.needsLayoutReload = true
+                    self.refreshUI()
+                    self.focusActiveTerminal()
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.showError(error)
+                }
+            }
+        }
+    }
+
+    private func closeActiveTab() {
+        guard lastSnapshot.activeTab != 0 else { return }
+        bridge.execute(task: MuxTask.closeTab(lastSnapshot.activeTab))
+        needsLayoutReload = true
+        refreshUI()
+        maybeCloseIfSessionEnded()
+    }
+
+    private func showError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "命令面板操作失败"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window!)
     }
 
     // MARK: - 事件循环
@@ -305,6 +603,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             nextPane()
         case .prevPane:
             prevPane()
+        case .commandPalette:
+            openCommandPalette()
         case .quit:
             NSApp.terminate(nil)
         }

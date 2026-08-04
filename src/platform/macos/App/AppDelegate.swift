@@ -156,6 +156,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prevPane.target = windowController
         viewMenu.addItem(prevPane)
 
+        let commandPalette = NSMenuItem(
+            title: "命令面板",
+            action: #selector(MainWindowController.openCommandPalette),
+            keyEquivalent: "p"
+        )
+        commandPalette.keyEquivalentModifierMask = [.command, .shift]
+        commandPalette.target = windowController
+        viewMenu.addItem(commandPalette)
+
         viewMenu.addItem(NSMenuItem.separator())
 
         let tabTop = NSMenuItem(

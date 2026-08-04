@@ -65,6 +65,10 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "w")), .closeWindow)
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "2")), .switchTab(2))
         XCTAssertEqual(KeyBindings.action(for: KeyChord(control: true, key: "d")), .closePane)
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "p")),
+            .commandPalette
+        )
     }
 }
 

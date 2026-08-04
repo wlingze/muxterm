@@ -10,6 +10,7 @@ public enum KeyAction: Equatable, Sendable {
     case switchTab(Int) // 1-based
     case nextPane
     case prevPane
+    case commandPalette
     case quit
 }
 
@@ -65,6 +66,11 @@ public enum KeyBindings {
         }
         if chord.command, !chord.shift, !chord.option, key == "]" {
             return .nextPane
+        }
+
+        // Cmd+Shift+P：VSCode 风格命令面板。
+        if chord.command, chord.shift, !chord.option, key == "p" {
+            return .commandPalette
         }
 
         // Alt+T / Alt+S / Alt+V / Alt+[ / Alt+] / Alt+1..9（兼容 TUI）
