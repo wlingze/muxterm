@@ -578,10 +578,11 @@ impl LocalBackend {
 
     /// 设置某 window 下某 pane 为 active（取消其他）。
     fn set_active_pane(&mut self, tab: TabId, pane: PaneId) {
+        // 全后端只允许「一个 active pane」。旧实现只取消同一 tab 内的 active，
+        // 导致 NewTab/SwitchTab 后多个 tab 的 pane 同时 active，State::active_pane()
+        // 的全局 find 返回旧 tab 的 pane，cmd+[ / cmd+] 切到了错误 tab 的布局。
         for p in self.panes.iter_mut() {
-            if p.info.tab == tab {
-                p.info.active = p.info.id == pane;
-            }
+            p.info.active = p.info.id == pane && p.info.tab == tab;
         }
         if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab) {
             tl.layout.active = pane;
@@ -598,12 +599,18 @@ impl LocalBackend {
         for w in self.windows.iter_mut() {
             w.info.active = w.info.id == window;
         }
-        // 同时激活该 window 下第一个 tab
+        // 同时激活该 window 下第一个 tab，并把激活 pane 切到该 tab 的 active pane
         if let Some(t) = self.tabs.iter().find(|t| t.info.window == window) {
             let tid = t.info.id;
             for t in self.tabs.iter_mut() {
                 if t.info.window == window {
                     t.info.active = t.info.id == tid;
+                }
+            }
+            if let Some(tl) = self.tabs.iter().find(|t| t.info.id == tid) {
+                let active_pane = tl.layout.active;
+                for p in self.panes.iter_mut() {
+                    p.info.active = p.info.id == active_pane && p.info.tab == tid;
                 }
             }
         }
@@ -1099,6 +1106,10 @@ impl Backend for LocalBackend {
                     DEFAULT_ROWS,
                     true,
                 )?;
+                // 全后端只保留一个 active pane：新 tab 的 pane 激活，其余全部取消。
+                for p in self.panes.iter_mut() {
+                    p.info.active = p.info.id == pane_id;
+                }
                 self.tabs.push(LocalTab {
                     info: TabInfo {
                         id: tab_id,
@@ -1157,6 +1168,19 @@ impl Backend for LocalBackend {
                     if t.info.window == win_id {
                         t.info.active = t.info.id == *target;
                     }
+                }
+                // 切 tab 时把激活 pane 切到目标 tab 的 active pane，并取消其他 tab
+                // 的 active pane（旧实现漏了这一步，导致 cmd+[ / cmd+] 用全局 find
+                // 找到旧 tab 的 pane，切到了错误 tab 的布局）。
+                if let Some(tl) = self.tabs.iter().find(|t| t.info.id == *target) {
+                    let active_pane = tl.layout.active;
+                    for p in self.panes.iter_mut() {
+                        p.info.active = p.info.id == active_pane && p.info.tab == *target;
+                    }
+                    self.events.push_back(StateChange::ActivePaneChanged {
+                        tab: *target,
+                        pane: active_pane,
+                    });
                 }
                 self.events.push_back(StateChange::ActiveTabChanged {
                     window: win_id,
@@ -1589,6 +1613,149 @@ mod tests {
             String::from_utf8_lossy(&out).contains("pasted"),
             "pane_output 应含写入的原始文本: {:?}",
             String::from_utf8_lossy(&out)
+        );
+    }
+
+    #[tokio::test]
+    async fn next_prev_pane_cycle_within_active_tab() {
+        // 回归：cmd+[ / cmd+] 切 pane 必须只在「当前激活 tab」的布局内循环。
+        // 旧实现用全局 find(p.info.active) 找 active pane，且 NewTab/SwitchTab
+        // 只切 tab 的 active 标志、不清其他 tab 的 pane active 标志，导致两个 tab
+        // 的 pane 同时 active，find 返回旧 tab 的 pane，next/prev 循环到了错误 tab。
+        let mut b = backend();
+        b.connect().await.unwrap();
+        let _ = b.take_events();
+        let win = b.active_window().map(|w| w.id).unwrap();
+
+        // tab1（首个）：split 出一个 pane，得到 pane1/pane2 两个 pane
+        let tab1_first = b.active_pane_id().unwrap();
+        b.execute(&Task::SplitPane {
+            target: Some(tab1_first),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        let _ = b.take_events();
+        assert_eq!(b.panes.len(), 2);
+
+        // 新建 tab2：tab2 的第一个 pane 应是当前 active pane
+        b.execute(&Task::NewTab {
+            window: win,
+            name: None,
+            command: Some(vec!["sleep".into(), "60".into()]),
+            workdir: None,
+        })
+        .unwrap();
+        let _ = b.take_events();
+        assert_eq!(b.tabs.len(), 2, "应有 2 tabs");
+        let tab2 = b.active_tab().map(|t| t.id).unwrap();
+        let tab2_panes: Vec<PaneId> = b.layout(&tab2).map(|tl| tl.tree.leaves()).unwrap();
+        assert_eq!(tab2_panes.len(), 1, "tab2 初始应有 1 pane");
+        let tab2_first = tab2_panes[0];
+        // 激活 tab 应为 tab2，active pane 应为 tab2 的 pane（旧实现这里是 tab1 的 pane）
+        assert_eq!(
+            b.active_pane().map(|p| p.id),
+            Some(tab2_first),
+            "NewTab 后 active pane 应为新 tab 的 pane（当前激活 tab）"
+        );
+
+        // 在 tab2 里 split：得到 tab2 的第二个 pane，active 应切到新 pane
+        b.execute(&Task::SplitPane {
+            target: Some(tab2_first),
+            dir: SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        let _ = b.take_events();
+        let tab2_second = b.active_pane().map(|p| p.id).unwrap();
+        assert_ne!(
+            tab2_second, tab2_first,
+            "split 后 tab2 active 应切到新 pane"
+        );
+        let leaves2: Vec<PaneId> = b.layout(&tab2).map(|tl| tl.tree.leaves()).unwrap();
+        assert!(leaves2.contains(&tab2_second) && leaves2.contains(&tab2_first));
+
+        // cmd+] 从 tab2_second 出发，下一个应回到 tab2 内的 tab2_first（循环），
+        // 绝不能跳到 tab1 的 pane。prev 同理。
+        b.execute(&Task::NextPane).unwrap();
+        let _ = b.take_events();
+        let after_next = b.active_pane().map(|p| p.id).unwrap();
+        assert_eq!(
+            after_next, tab2_first,
+            "cmd+] 应在 tab2 内循环到 {tab2_first}, 实际 {after_next}"
+        );
+
+        b.execute(&Task::PrevPane).unwrap();
+        let _ = b.take_events();
+        let after_prev = b.active_pane().map(|p| p.id).unwrap();
+        assert_eq!(
+            after_prev, tab2_second,
+            "cmd+[ 应在 tab2 内循环到 {tab2_second}, 实际 {after_prev}"
+        );
+
+        // 再确认 tab2 仍是激活 tab，且 active pane 属于 tab2
+        assert_eq!(b.active_tab().map(|t| t.id), Some(tab2));
+        assert_eq!(b.tab_of_pane(after_prev), Some(tab2));
+    }
+
+    #[tokio::test]
+    async fn switch_tab_re_activates_correct_pane() {
+        // 回归：Cmd+[ / Cmd+] 切 pane 只应在「当前激活 tab」内循环。
+        // 在 tab2 split 出两个 pane、切回 tab1 再切回 tab2 后，active pane
+        // 必须是 tab2 的 pane（旧实现切 tab 不清其他 tab 的 pane active 标志，
+        // 导致全局 find 返回 tab1 的 pane，next/prev 切到错误 tab）。
+        let mut b = backend();
+        b.connect().await.unwrap();
+        let _ = b.take_events();
+        let win = b.active_window().map(|w| w.id).unwrap();
+
+        // tab2：新建并 split，得到两个 pane
+        b.execute(&Task::NewTab {
+            window: win,
+            name: None,
+            command: Some(vec!["sleep".into(), "60".into()]),
+            workdir: None,
+        })
+        .unwrap();
+        let _ = b.take_events();
+        let tab2 = b.active_tab().map(|t| t.id).unwrap();
+        let tab2_first = b.active_pane().map(|p| p.id).unwrap();
+        b.execute(&Task::SplitPane {
+            target: Some(tab2_first),
+            dir: SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        let _ = b.take_events();
+        let tab2_second = b.active_pane().map(|p| p.id).unwrap();
+        let leaves2: Vec<PaneId> = b.layout(&tab2).map(|tl| tl.tree.leaves()).unwrap();
+        assert!(leaves2.contains(&tab2_second) && leaves2.contains(&tab2_first));
+
+        // 切回 tab1
+        b.execute(&Task::SwitchTab { target: TabId(1) }).unwrap();
+        let _ = b.take_events();
+        assert_eq!(b.active_tab().map(|t| t.id), Some(TabId(1)));
+
+        // 再切回 tab2
+        b.execute(&Task::SwitchTab { target: tab2 }).unwrap();
+        let _ = b.take_events();
+        assert_eq!(b.active_tab().map(|t| t.id), Some(tab2));
+        let active = b.active_pane().map(|p| p.id).unwrap();
+        assert!(
+            leaves2.contains(&active),
+            "切回 tab2 后 active pane 应为 tab2 的 pane, 实际 {active}"
+        );
+
+        // cmd+] 循环应留在 tab2 内
+        b.execute(&Task::NextPane).unwrap();
+        let _ = b.take_events();
+        let after_next = b.active_pane().map(|p| p.id).unwrap();
+        assert!(
+            leaves2.contains(&after_next),
+            "cmd+] 应留在 tab2 内, 实际 {after_next}"
         );
     }
 
