@@ -183,6 +183,12 @@ enum CliSubcommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Resize the tmux control client (`-x COLS -y ROWS`)
+    #[command(alias = "resizec", disable_help_flag = true)]
+    ResizeClient {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Send keystrokes
     #[command(alias = "send", disable_help_flag = true)]
     SendKeys {
@@ -252,36 +258,40 @@ fn main() -> anyhow::Result<()> {
 
     // 子命令分派
     if let Some(cmd) = &cli.cmd {
+        let dispatch = |name: &str, args: &Vec<String>| {
+            dispatch_cli(name, args, cli.socket.as_deref(), cli.session.as_deref())
+        };
         return match cmd {
             // CLI 命令模式：把 canonical 命令名 + 原始参数交给既有 run_cli。
-            CliSubcommand::NewSession { args } => dispatch_cli("new-session", args),
-            CliSubcommand::KillSession { args } => dispatch_cli("kill-session", args),
-            CliSubcommand::ListSessions { args } => dispatch_cli("list-sessions", args),
-            CliSubcommand::AttachSession { args } => dispatch_cli("attach-session", args),
-            CliSubcommand::Detach { args } => dispatch_cli("detach", args),
-            CliSubcommand::RenameSession { args } => dispatch_cli("rename-session", args),
-            CliSubcommand::NewWindow { args } => dispatch_cli("new-window", args),
-            CliSubcommand::KillWindow { args } => dispatch_cli("kill-window", args),
-            CliSubcommand::ListWindows { args } => dispatch_cli("list-windows", args),
-            CliSubcommand::SelectWindow { args } => dispatch_cli("select-window", args),
-            CliSubcommand::RenameWindow { args } => dispatch_cli("rename-window", args),
-            CliSubcommand::NewTab { args } => dispatch_cli("new-tab", args),
-            CliSubcommand::KillTab { args } => dispatch_cli("kill-tab", args),
-            CliSubcommand::ListTabs { args } => dispatch_cli("list-tabs", args),
-            CliSubcommand::SelectTab { args } => dispatch_cli("select-tab", args),
-            CliSubcommand::RenameTab { args } => dispatch_cli("rename-tab", args),
-            CliSubcommand::SplitPane { args } => dispatch_cli("split-pane", args),
-            CliSubcommand::KillPane { args } => dispatch_cli("kill-pane", args),
-            CliSubcommand::ListPanes { args } => dispatch_cli("list-panes", args),
-            CliSubcommand::SelectPane { args } => dispatch_cli("select-pane", args),
-            CliSubcommand::ResizePane { args } => dispatch_cli("resize-pane", args),
-            CliSubcommand::SendKeys { args } => dispatch_cli("send-keys", args),
-            CliSubcommand::WriteRaw { args } => dispatch_cli("write-raw", args),
-            CliSubcommand::CapturePane { args } => dispatch_cli("capture-pane", args),
-            CliSubcommand::ListLayout { args } => dispatch_cli("list-layout", args),
-            CliSubcommand::DisplayMessage { args } => dispatch_cli("display-message", args),
-            CliSubcommand::DumpState { args } => dispatch_cli("dump-state", args),
-            CliSubcommand::Tmux { args } => dispatch_cli("tmux", args),
+            CliSubcommand::NewSession { args } => dispatch("new-session", args),
+            CliSubcommand::KillSession { args } => dispatch("kill-session", args),
+            CliSubcommand::ListSessions { args } => dispatch("list-sessions", args),
+            CliSubcommand::AttachSession { args } => dispatch("attach-session", args),
+            CliSubcommand::Detach { args } => dispatch("detach", args),
+            CliSubcommand::RenameSession { args } => dispatch("rename-session", args),
+            CliSubcommand::NewWindow { args } => dispatch("new-window", args),
+            CliSubcommand::KillWindow { args } => dispatch("kill-window", args),
+            CliSubcommand::ListWindows { args } => dispatch("list-windows", args),
+            CliSubcommand::SelectWindow { args } => dispatch("select-window", args),
+            CliSubcommand::RenameWindow { args } => dispatch("rename-window", args),
+            CliSubcommand::NewTab { args } => dispatch("new-tab", args),
+            CliSubcommand::KillTab { args } => dispatch("kill-tab", args),
+            CliSubcommand::ListTabs { args } => dispatch("list-tabs", args),
+            CliSubcommand::SelectTab { args } => dispatch("select-tab", args),
+            CliSubcommand::RenameTab { args } => dispatch("rename-tab", args),
+            CliSubcommand::SplitPane { args } => dispatch("split-pane", args),
+            CliSubcommand::KillPane { args } => dispatch("kill-pane", args),
+            CliSubcommand::ListPanes { args } => dispatch("list-panes", args),
+            CliSubcommand::SelectPane { args } => dispatch("select-pane", args),
+            CliSubcommand::ResizePane { args } => dispatch("resize-pane", args),
+            CliSubcommand::ResizeClient { args } => dispatch("resize-client", args),
+            CliSubcommand::SendKeys { args } => dispatch("send-keys", args),
+            CliSubcommand::WriteRaw { args } => dispatch("write-raw", args),
+            CliSubcommand::CapturePane { args } => dispatch("capture-pane", args),
+            CliSubcommand::ListLayout { args } => dispatch("list-layout", args),
+            CliSubcommand::DisplayMessage { args } => dispatch("display-message", args),
+            CliSubcommand::DumpState { args } => dispatch("dump-state", args),
+            CliSubcommand::Tmux { args } => dispatch("tmux", args),
             CliSubcommand::Tui { socket, session } => {
                 run_tui_inner(socket.clone(), session.clone())
             }
@@ -305,8 +315,19 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// 组装 canonical 命令名 + 原始参数，交给既有 CLI 路由。
-fn dispatch_cli(name: &str, args: &[String]) -> anyhow::Result<()> {
+fn dispatch_cli(
+    name: &str,
+    args: &[String],
+    socket: Option<&str>,
+    session: Option<&str>,
+) -> anyhow::Result<()> {
     let mut full = vec![name.to_string()];
+    if let Some(socket) = socket {
+        full.extend(["-L".to_string(), socket.to_string()]);
+    }
+    if let Some(session) = session {
+        full.extend(["-s".to_string(), session.to_string()]);
+    }
     full.extend_from_slice(args);
     platform::cli::routing::run_cli(&full)
 }

@@ -12,6 +12,7 @@ use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
 use muxterm::core::runtime::LocalBackend;
 use muxterm::core::types::{PaneId, TabId, WindowId};
+use muxterm::platform::cli::entry::cli_command_to_task;
 use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 
 fn make_model() -> TerminalModel {
@@ -322,6 +323,25 @@ fn cli_resize_pane() {
     let p = model.state().pane(&pane).unwrap();
     assert_eq!(p.cols, 120);
     assert_eq!(p.rows, 40);
+}
+
+#[test]
+fn cli_resize_pane_single_axis_updates_only_requested_dimension() {
+    let mut model = make_model();
+    let pane = model.state().active_pane().unwrap().id;
+    let (command, _) = parse_cli_command(&[
+        "resize-pane".into(),
+        "-t".into(),
+        format!("@{}", pane.0),
+        "-x".into(),
+        "60".into(),
+    ])
+    .unwrap();
+    let task = cli_command_to_task(&command, model.state()).expect("CLI resize 应映射到 task");
+    exec_and_drain(&mut model, task);
+    let resized = model.state().pane(&pane).unwrap();
+    assert_eq!(resized.cols, 60);
+    assert_eq!(resized.rows, 24, "单轴 resize 不应改动另一轴");
 }
 
 // ── 输入输出测试 ──────────────────────────────────────────

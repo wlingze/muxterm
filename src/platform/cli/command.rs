@@ -103,6 +103,11 @@ pub enum CliCommand {
         width: Option<u16>,
         height: Option<u16>,
     },
+    /// 调整 tmux 控制 client 的整体字符格尺寸。
+    ResizeClient {
+        width: u16,
+        height: u16,
+    },
 
     // 输入输出
     SendKeys {
@@ -240,13 +245,23 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
                 .and_then(|s| parse_pane_id(&s))
                 .ok_or_else(|| CliError::MissingArg("-t pane".into()))?,
         },
-        "resize-pane" | "resizep" => CliCommand::ResizePane {
-            target: get_req_arg(rest, "-t")
+        "resize-pane" | "resizep" => {
+            let target = get_req_arg(rest, "-t")
                 .and_then(|s| parse_pane_id(&s))
-                .ok_or_else(|| CliError::MissingArg("-t pane".into()))?,
-            width: get_opt_arg(rest, "-x").and_then(|s| s.parse().ok()),
-            height: get_opt_arg(rest, "-y").and_then(|s| s.parse().ok()),
-        },
+                .ok_or_else(|| CliError::MissingArg("-t pane".into()))?;
+            let (width, height) = parse_resize_dimensions(rest, false)?;
+            CliCommand::ResizePane {
+                target,
+                width,
+                height,
+            }
+        }
+        "resize-client" | "resizec" => {
+            let (Some(width), Some(height)) = parse_resize_dimensions(rest, true)? else {
+                return Err(CliError::MissingArg("-x cols 与 -y rows".into()));
+            };
+            CliCommand::ResizeClient { width, height }
+        }
 
         // 输入输出
         "send-keys" | "send" => CliCommand::SendKeys {
@@ -299,6 +314,43 @@ fn get_opt_arg(args: &[String], flag: &str) -> Option<String> {
 /// 获取 `-X value` 形式的必选参数。
 fn get_req_arg(args: &[String], flag: &str) -> Option<String> {
     get_opt_arg(args, flag)
+}
+
+/// 解析 resize 的字符格尺寸。
+///
+/// `resize-pane` 允许只指定一个轴，交给 core 的 `ResizePaneAxis`；
+/// `resize-client` 则要求同时指定宽和高。所有无效尺寸在 CLI 层报告，
+/// 不把它们静默变成默认的 80x24。
+fn parse_resize_dimensions(
+    args: &[String],
+    require_both: bool,
+) -> Result<(Option<u16>, Option<u16>), CliError> {
+    let width = parse_resize_dimension(args, "-x", "cols")?;
+    let height = parse_resize_dimension(args, "-y", "rows")?;
+    if require_both && (width.is_none() || height.is_none()) {
+        return Err(CliError::MissingArg("-x cols 与 -y rows".into()));
+    }
+    if !require_both && width.is_none() && height.is_none() {
+        return Err(CliError::MissingArg("-x cols 或 -y rows".into()));
+    }
+    Ok((width, height))
+}
+
+fn parse_resize_dimension(
+    args: &[String],
+    flag: &str,
+    label: &str,
+) -> Result<Option<u16>, CliError> {
+    if args.iter().any(|arg| arg == flag) && get_opt_arg(args, flag).is_none() {
+        return Err(CliError::MissingArg(format!("{flag} {label}")));
+    }
+    get_opt_arg(args, flag)
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| CliError::InvalidArg(format!("{flag} 需要 1..65535 的整数")))
+        })
+        .transpose()
 }
 
 /// 获取 send-keys 的文本参数（最后的引号包裹或不带引号的文本）。
@@ -446,6 +498,44 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn parse_resize_pane_single_axis() {
+        let (cmd, _) = parse_cli_command(&args("resize-pane", &["-t", "@1", "-x", "60"])).unwrap();
+        assert!(matches!(
+            cmd,
+            CliCommand::ResizePane {
+                target: PaneId(1),
+                width: Some(60),
+                height: None
+            }
+        ));
+
+        let (cmd, _) = parse_cli_command(&args("resizep", &["-t", "@2", "-y", "18"])).unwrap();
+        assert!(matches!(
+            cmd,
+            CliCommand::ResizePane {
+                target: PaneId(2),
+                width: None,
+                height: Some(18)
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_resize_client_requires_both_axes() {
+        let (cmd, _) =
+            parse_cli_command(&args("resize-client", &["-x", "120", "-y", "36"])).unwrap();
+        assert!(matches!(
+            cmd,
+            CliCommand::ResizeClient {
+                width: 120,
+                height: 36
+            }
+        ));
+        assert!(parse_cli_command(&args("resize-client", &["-x", "120"])).is_err());
+        assert!(parse_cli_command(&args("resize-pane", &["-t", "@1"])).is_err());
     }
 
     #[test]

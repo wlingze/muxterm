@@ -222,7 +222,15 @@ impl DaemonBackend {
                 width: Some(*cols),
                 height: Some(*rows),
             }),
-            Task::ResizeClient { .. } | Task::ResizePaneAxis { .. } => None,
+            Task::ResizeClient { cols, rows } => Some(CliCommand::ResizeClient {
+                width: *cols,
+                height: *rows,
+            }),
+            Task::ResizePaneAxis { target, dir, size } => Some(CliCommand::ResizePane {
+                target: *target,
+                width: matches!(dir, SplitDir::Horizontal).then_some(*size),
+                height: matches!(dir, SplitDir::Vertical).then_some(*size),
+            }),
             Task::Shutdown => None, // detach：不 kill daemon
             Task::NextPane
             | Task::PrevPane
