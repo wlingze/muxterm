@@ -61,7 +61,7 @@ final class ContentView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     func applyTabBarPosition(_ position: TabBarPosition) {

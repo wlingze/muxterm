@@ -71,7 +71,7 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     deinit {
@@ -285,6 +285,6 @@ private final class PaletteCellView: NSTableCellView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 }

@@ -28,7 +28,7 @@ final class MuxTerminalView: TerminalView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
@@ -73,6 +73,7 @@ final class MuxTerminalView: TerminalView {
         }
         displayIfNeeded()
     }
+
 }
 
 /// 键盘/输入回传协议。

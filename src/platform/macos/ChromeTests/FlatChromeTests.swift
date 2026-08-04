@@ -102,3 +102,53 @@ final class PaneOutputCursorTests: XCTestCase {
         XCTAssertEqual(cursor.incremental(event: trimmed, snapshot: trimmed), trimmed)
     }
 }
+
+final class PaneLayoutProjectionTests: XCTestCase {
+    func testLayoutMustContainExactlyCurrentTabPanes() {
+        XCTAssertTrue(
+            PaneLayoutProjection.accepts(treePaneIDs: [11, 13, 12], paneIDs: [11, 12, 13])
+        )
+        XCTAssertFalse(
+            PaneLayoutProjection.accepts(treePaneIDs: [11, 12, 13], paneIDs: [21])
+        )
+        XCTAssertFalse(
+            PaneLayoutProjection.accepts(treePaneIDs: [11, 12], paneIDs: [11, 12, 13])
+        )
+        XCTAssertFalse(PaneLayoutProjection.accepts(treePaneIDs: [0], paneIDs: [11]))
+        XCTAssertTrue(PaneLayoutProjection.accepts(treePaneIDs: [0], paneIDs: [0]))
+    }
+
+    func testOnlyStructuralEventsRebuildLayout() {
+        for type: UInt32 in [1, 2, 3, 4, 5, 6] {
+            XCTAssertTrue(StateEventPolicy.requiresLayoutReload(type), "event=\(type)")
+        }
+        for type: UInt32 in [0, 7, 8, 9, 10, 99] {
+            XCTAssertFalse(StateEventPolicy.requiresLayoutReload(type), "event=\(type)")
+        }
+        XCTAssertTrue(StateEventPolicy.changesActivePane(7))
+        XCTAssertFalse(StateEventPolicy.changesActivePane(3))
+    }
+}
+
+final class TerminalInputEncodingTests: XCTestCase {
+    func testCtrlLettersBecomeTerminalControlBytes() {
+        let expected: [(String, UInt8)] = [
+            ("a", 0x01), ("c", 0x03), ("e", 0x05),
+            ("l", 0x0c), ("n", 0x0e), ("p", 0x10), ("r", 0x12),
+        ]
+        for (key, byte) in expected {
+            XCTAssertEqual(TerminalInputEncoding.controlByte(for: key), byte, "Ctrl+\(key)")
+        }
+    }
+
+    func testControlPunctuationAndAlreadyEncodedBytes() {
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: " "), 0x00)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "["), 0x1b)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "\\"), 0x1c)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "]"), 0x1d)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "?"), 0x7f)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "\u{03}"), 0x03)
+        XCTAssertEqual(TerminalInputEncoding.backspaceByte, 0x7f)
+        XCTAssertNil(TerminalInputEncoding.controlByte(for: "中"))
+    }
+}
