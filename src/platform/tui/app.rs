@@ -20,7 +20,6 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::core::protocol::ffi::types::STATE_PANE_OUTPUT;
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::palette::{
@@ -72,9 +71,8 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
     loop {
-        // 每轮先 drain 状态变更：把增量输出 feed 进对应 pane 的终端
-        let events = bridge.poll_events();
-        feed_events(&mut term_mgr, &events);
+        // 每轮先 drain 状态变更，再基于累计输出做 delta 同步
+        let _events = bridge.poll_events();
         let snap = bridge.snapshot();
         sync_term_sizes(&mut term_mgr, &snap);
         draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
@@ -115,40 +113,20 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     Ok(())
 }
 
-/// 把 incremental 事件 feed 进对应 pane 的终端。
-fn feed_events(
-    term_mgr: &mut TerminalManager,
-    events: &[crate::platform::tui::ffi_bridge::BridgeEvent],
-) {
-    for ev in events {
-        if ev.type_ == STATE_PANE_OUTPUT {
-            let (cols, rows) = term_mgr.size(ev.pane_id).unwrap_or((80, 24));
-            term_mgr.feed(ev.pane_id, cols, rows, &ev.data);
-        }
-    }
-}
-
 /// 根据快照里的 pane 尺寸同步/补齐各 pane 终端，并清理已删除 pane。
 ///
-/// 首次创建或尺寸变化时，用 pane 的**累计输出**播种终端状态（否则只有增量，
-/// 首屏会是空的）。
+/// 用每个 pane 的**累计输出**做增量同步（GTK 同款 delta 方案）：每次只 feed
+/// 比上次已 feed 长度更新的部分，覆盖首屏播种 + 持续增量 + 输出截断重置。
 fn sync_term_sizes(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) {
     let mut ids: Vec<u32> = Vec::new();
     for p in &snap.panes {
         ids.push(p.id);
         let cols = p.cols.max(1);
         let rows = p.rows.max(1);
-        let existed = term_mgr.size(p.id).is_some();
-        term_mgr.ensure(p.id, cols, rows);
-        let resized = term_mgr
-            .size(p.id)
-            .map(|(c, r)| c != cols || r != rows)
-            .unwrap_or(false);
-        if !existed || resized {
-            // 新 pane 或尺寸变化：用累计输出播种
-            let seed = snap.outputs.get(&p.id).cloned().unwrap_or_default();
-            term_mgr.feed(p.id, cols, rows, &seed);
-        }
+        // 每次用累计输出做增量同步（GTK 同款 delta 方案），
+        // 覆盖首屏播种 + 持续增量 + 输出截断重置。
+        let full = snap.outputs.get(&p.id).cloned().unwrap_or_default();
+        term_mgr.sync_output(p.id, cols, rows, &full);
     }
     term_mgr.retain(&ids);
 }
