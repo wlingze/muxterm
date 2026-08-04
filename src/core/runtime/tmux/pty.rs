@@ -326,9 +326,11 @@ mod tests {
         let reader = child.master.try_clone_reader().expect("try_clone_reader");
         let mut reader = PtyReader::new(reader);
 
-        // 收集所有块直到 EOF 或超时
+        // 收集所有块直到 EOF 或超时。
+        // 默认并行下多个测试同时 spawn 子进程，进程调度/pty 投递可能变慢；
+        // 用宽松的有界超时（10s）避免 flaky，同时保证不会无限等待。
         let mut all = Vec::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => break,
@@ -346,7 +348,11 @@ mod tests {
             out.contains("stream-test"),
             "PtyReader 应流式投递输出, 实际: {out:?}"
         );
+        // 兜底回收子进程，避免残留 echo 进程占用资源
         let _ = child.child.try_wait();
+        if child.child.try_wait().ok().flatten().is_none() {
+            let _ = child.child.kill();
+        }
     }
 
     #[tokio::test]
