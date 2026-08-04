@@ -7,4 +7,5 @@ pub mod app;
 pub mod ffi_bridge;
 pub mod palette;
 pub mod render;
+pub mod terminal;
 pub mod theme;
