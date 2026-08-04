@@ -11,10 +11,12 @@
 
 use muxterm::core::model::layout::SplitDir;
 use muxterm::core::model::state::{BackendStatus, State};
-use muxterm::core::model::task::Task;
+use muxterm::core::model::task::{Task, TaskOutcome};
 use muxterm::core::model::TerminalModel;
 use muxterm::core::runtime::TmuxBackend;
 use muxterm::core::types::{PaneId, TabId, WindowId};
+use muxterm::platform::cli::entry::cli_command_to_task;
+use muxterm::platform::cli::parse_cli_command;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,30 @@ fn cleanup(socket: &str) {
     let _ = Command::new("tmux")
         .args(["-L", socket, "kill-server"])
         .output();
+}
+
+fn native_pane_size(socket: &str, pane: PaneId) -> Option<(u16, u16)> {
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            socket,
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{pane_width} #{pane_height}",
+        ])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let id = fields.next()?;
+            if id != format!("%{}", pane.0) {
+                return None;
+            }
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
 }
 
 /// 检查 tmux 是否可用。
@@ -202,6 +228,104 @@ fn scenario2_modify_via_muxterm_verify_tmux() {
         "原生 tmux 应看到至少 2 个 pane: {}",
         pane_count
     );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+/// CLI 命令解析 → core Task → TmuxBackend → 原生 tmux：覆盖 client resize、
+/// pane 横向/纵向单轴 resize，以及 send-keys 的实际回显。
+#[test]
+fn cli_resize_client_and_pane_axes_reach_tmux() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let mut model = connect_tmux(&socket);
+    if !wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    }) {
+        eprintln!("skip: 初始 pane 未建立");
+        let _ = model.shutdown();
+        cleanup(&socket);
+        return;
+    }
+
+    let command = |args: &[&str]| {
+        let values = args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>();
+        parse_cli_command(&values).unwrap().0
+    };
+    let client = command(&["resize-client", "-x", "120", "-y", "36"]);
+    let client_task = cli_command_to_task(&client, model.state()).unwrap();
+    assert_eq!(model.execute(client_task).unwrap(), TaskOutcome::Done);
+
+    let first = model.state().active_pane().unwrap().id;
+    let split = command(&["split-pane", "-h", "-t", &format!("@{}", first.0)]);
+    let split_task = cli_command_to_task(&split, model.state()).unwrap();
+    assert_eq!(model.execute(split_task).unwrap(), TaskOutcome::Done);
+    assert!(wait_for(&mut model, Duration::from_secs(4), |s| {
+        s.active_tab()
+            .map(|tab| s.panes(&tab.id).len() >= 2)
+            .unwrap_or(false)
+    }));
+
+    let tab = model.state().active_tab().unwrap().id;
+    let second = model
+        .state()
+        .panes(&tab)
+        .iter()
+        .find(|pane| pane.id != first)
+        .map(|pane| pane.id)
+        .unwrap();
+    let horizontal = command(&["resize-pane", "-t", &format!("@{}", first.0), "-x", "60"]);
+    let horizontal_task = cli_command_to_task(&horizontal, model.state()).unwrap();
+    assert!(matches!(horizontal_task, Task::ResizePaneAxis { .. }));
+    assert_eq!(model.execute(horizontal_task).unwrap(), TaskOutcome::Done);
+    assert!(wait_for(&mut model, Duration::from_secs(4), |s| {
+        native_pane_size(&socket, first)
+            .map(|(cols, _)| cols == 60)
+            .unwrap_or(false)
+    }));
+
+    let vertical_split = command(&["split-pane", "-v", "-t", &format!("@{}", second.0)]);
+    let vertical_split_task = cli_command_to_task(&vertical_split, model.state()).unwrap();
+    assert_eq!(
+        model.execute(vertical_split_task).unwrap(),
+        TaskOutcome::Done
+    );
+    assert!(wait_for(&mut model, Duration::from_secs(4), |s| {
+        s.active_tab()
+            .map(|tab| s.panes(&tab.id).len() >= 3)
+            .unwrap_or(false)
+    }));
+    let vertical = command(&["resize-pane", "-t", &format!("@{}", second.0), "-y", "12"]);
+    let vertical_task = cli_command_to_task(&vertical, model.state()).unwrap();
+    assert!(matches!(vertical_task, Task::ResizePaneAxis { .. }));
+    assert_eq!(model.execute(vertical_task).unwrap(), TaskOutcome::Done);
+    assert!(wait_for(&mut model, Duration::from_secs(4), |s| {
+        native_pane_size(&socket, second)
+            .map(|(_, rows)| rows == 12)
+            .unwrap_or(false)
+    }));
+
+    let marker = "CLI_RESIZE_IO_OK";
+    let input = command(&[
+        "send-keys",
+        "-t",
+        &format!("@{}", first.0),
+        &format!("printf '{}\\n'", marker),
+    ]);
+    let input_task = cli_command_to_task(&input, model.state()).unwrap();
+    assert_eq!(model.execute(input_task).unwrap(), TaskOutcome::Done);
+    assert!(wait_for(&mut model, Duration::from_secs(4), |s| {
+        s.pane_output(&first)
+            .map(|data| String::from_utf8_lossy(data).contains(marker))
+            .unwrap_or(false)
+    }));
 
     let _ = model.shutdown();
     cleanup(&socket);

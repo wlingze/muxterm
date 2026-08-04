@@ -94,15 +94,28 @@ pub fn cli_command_to_task(
             target,
             width,
             height,
-        } => {
-            let cols = width.unwrap_or(80);
-            let rows = height.unwrap_or(24);
-            Some(Task::ResizePane {
+        } => match (width, height) {
+            (Some(cols), Some(rows)) => Some(Task::ResizePane {
                 target: *target,
-                cols,
-                rows,
-            })
-        }
+                cols: *cols,
+                rows: *rows,
+            }),
+            (Some(size), None) => Some(Task::ResizePaneAxis {
+                target: *target,
+                dir: SplitDir::Horizontal,
+                size: *size,
+            }),
+            (None, Some(size)) => Some(Task::ResizePaneAxis {
+                target: *target,
+                dir: SplitDir::Vertical,
+                size: *size,
+            }),
+            (None, None) => None,
+        },
+        ResizeClient { width, height } => Some(Task::ResizeClient {
+            cols: *width,
+            rows: *height,
+        }),
 
         // 输入输出
         SendKeys { target, text } => {
@@ -165,5 +178,62 @@ mod tests {
         let model = make_model();
         let task = cli_command_to_task(&CliCommand::ListSessions, model.state());
         assert!(task.is_none());
+    }
+
+    #[test]
+    fn resize_pane_single_axis_maps_to_axis_task() {
+        let model = make_model();
+        let horizontal = cli_command_to_task(
+            &CliCommand::ResizePane {
+                target: crate::core::types::PaneId(1),
+                width: Some(60),
+                height: None,
+            },
+            model.state(),
+        );
+        assert!(matches!(
+            horizontal,
+            Some(Task::ResizePaneAxis {
+                dir: SplitDir::Horizontal,
+                size: 60,
+                ..
+            })
+        ));
+
+        let vertical = cli_command_to_task(
+            &CliCommand::ResizePane {
+                target: crate::core::types::PaneId(1),
+                width: None,
+                height: Some(18),
+            },
+            model.state(),
+        );
+        assert!(matches!(
+            vertical,
+            Some(Task::ResizePaneAxis {
+                dir: SplitDir::Vertical,
+                size: 18,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn resize_client_maps_to_task() {
+        let model = make_model();
+        let task = cli_command_to_task(
+            &CliCommand::ResizeClient {
+                width: 120,
+                height: 36,
+            },
+            model.state(),
+        );
+        assert_eq!(
+            task,
+            Some(Task::ResizeClient {
+                cols: 120,
+                rows: 36,
+            })
+        );
     }
 }
