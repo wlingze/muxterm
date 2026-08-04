@@ -26,6 +26,9 @@
 6. **不碰无关代码**：不要重构没要求改的模块。
 7. **中文注释优先**，代码标识符用英文。
 8. **不要**在 commit message 里加 `Co-authored-by` 尾注。
+9. **绝不杀用户 tmux 会话**：`tmux kill-server` / `kill-session` / `kill-pane` 等任何
+   破坏性命令，**一律禁止**直接对默认 server 执行。任何需要 tmux 的测试/验证，
+   **必须**用独立隔离 socket（`-L <唯一名>`），且清理时也**必须**带同一个 `-L`。
 
 ## 技术约定
 
@@ -37,6 +40,19 @@
 - 协议解析是**纯函数**，输入 `&str`/`&[u8]` 输出 `Message` enum，方便单元测试
 
 ## tmux 控制协议实现要点（关键）
+
+### ⚠️ tmux 会话安全（最高优先级，违反=严重事故）
+
+- **永远不要**对默认 server 执行 `tmux kill-server`、`kill-session`、`kill-pane`。
+  这会杀掉用户全部真实 tmux 会话/窗口/pane，造成不可逆数据丢失。
+- 任何需要真实 tmux 的测试/复现/验证，**必须**使用**独立隔离 socket**：
+  - 建：`tmux -L muxterm-test-<唯一后缀> new-session -d -s <name>`
+  - 查/操作：每一步都带同一个 `-L muxterm-test-<唯一后缀>`
+  - 清理：`tmux -L muxterm-test-<唯一后缀> kill-server`（**必须带 -L**，只杀自己的测试 server）
+- 默认 server（不带 `-L`）只允许**只读**命令：`tmux ls` / `list-sessions` / `list-windows`
+  / `list-panes` / `has-session`，且仅用于查看，绝不写、绝不杀。
+- 拿不准某条命令会不会破坏会话时，先停下来，把命令写给用户确认，再执行。
+- 本条规则对测试脚本、集成测试、复现 bug 的临时命令**同样适用**。
 
 - 消息行格式：`%<keyword> <args...>`，行尾可能有 `\r\n`
 - `%output @1 "content\r\n"` 的 content 是 C 语言风格转义字符串（`\e` = ESC, `\n`, `\r`, `\\`, `\"`, `\t`, `\0xx` 八进制等）
