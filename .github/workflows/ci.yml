@@ -23,6 +23,7 @@ on:
       - 'Cargo.lock'
       - '.cargo/**'
       - 'scripts/build-cli.sh'
+      - 'scripts/build-common.sh'
       - 'scripts/build-tui.sh'
       - 'scripts/ci/**'
       - '.github/workflows/**'
