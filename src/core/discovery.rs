@@ -142,10 +142,6 @@ pub fn list_ssh_tmux_sessions(
                 let mut t = transport.lock().unwrap();
                 if let Ok(Some(_)) = t.try_wait() {
                     drop(t);
-                    // drain 剩余
-                    while let Ok(data) = rx.try_recv() {
-                        all_output.extend_from_slice(&data);
-                    }
                     break;
                 }
             }
@@ -153,12 +149,17 @@ pub fn list_ssh_tmux_sessions(
         }
     }
 
-    // kill 子进程
+    // kill 子进程，等读线程结束（会把剩余 pty 输出投递到 channel），再一次性收尾。
     {
         let mut t = transport.lock().unwrap();
         let _ = t.kill(TransportSignal::Term);
     }
     let _ = read_handle.join();
+    // 读线程已退出并关闭 channel：此刻的 rx.try_recv 能取到「最后一块」输出，
+    // 避免旧实现只 try_recv 一次就 break 而丢掉尾部数据（CI 负载下偶发空列表）。
+    while let Ok(data) = rx.try_recv() {
+        all_output.extend_from_slice(&data);
+    }
 
     // Check child exit code: nonzero = SSH or remote command failed
     let exit_code = {
@@ -273,9 +274,6 @@ pub fn list_ssh_tmux_panes(
                         ));
                     }
                     drop(t);
-                    while let Ok(d) = rx.try_recv() {
-                        all_output.extend_from_slice(&d);
-                    }
                     break;
                 }
             }
@@ -288,6 +286,10 @@ pub fn list_ssh_tmux_panes(
         let _ = t.kill(TransportSignal::Term);
     }
     let _ = read_handle.join();
+    // 读线程结束后再 drain 尾部数据（见 list_ssh_tmux_sessions 的说明）。
+    while let Ok(d) = rx.try_recv() {
+        all_output.extend_from_slice(&d);
+    }
 
     // Check child exit code: nonzero (except 1 = tmux no server) = error
     let exit_code = {
