@@ -518,7 +518,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 事件循环
 
     private func startPolling() {
-        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: FlatChrome.eventPollInterval, repeats: true) { [weak self] _ in
             self?.pollOnce()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -624,6 +624,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 返回 true 表示已消费事件。
     private func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // macOS 的 Delete/Backspace 可能在 SwiftTerm 的 NSTextInputClient 路径
+        // 中被吞掉；明确转成 DEL，保证 shell 和 tmux 收到基础编辑键。
+        if event.keyCode == 51,
+           !flags.contains(.command),
+           !flags.contains(.option),
+           let view = window?.firstResponder as? MuxTerminalView
+        {
+            terminalManager.sendRawInput(to: view, byte: TerminalInputEncoding.backspaceByte)
+            return true
+        }
         guard let raw = event.charactersIgnoringModifiers, let key = raw.first.map(String.init) else {
             return false
         }
