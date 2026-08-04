@@ -10,6 +10,8 @@ public typealias CGFloat = Double
 ///
 /// 纯数值与格式化，无 AppKit 依赖，便于 `swift test` 回归。
 public enum FlatChrome {
+    /// Core 事件轮询间隔；约 60Hz，避免分割/tab/输入在 100ms 定时器下产生明显滞后。
+    public static let eventPollInterval: TimeInterval = 1.0 / 60.0
     /// Tab 栏高度（ARCHITECTURE：≤ 24px）
     public static let tabBarHeight: CGFloat = 24
     /// 状态栏高度（一行小字，不抢终端空间）

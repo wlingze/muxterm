@@ -3,6 +3,7 @@ import XCTest
 
 final class FlatChromeTests: XCTestCase {
     func testFlatMetricsMatchArchitectureBudget() {
+        XCTAssertLessThanOrEqual(FlatChrome.eventPollInterval, 0.02)
         XCTAssertLessThanOrEqual(FlatChrome.tabBarHeight, 24)
         XCTAssertLessThanOrEqual(FlatChrome.statusBarHeight, 20)
         XCTAssertEqual(FlatChrome.splitDividerThickness, 1)
