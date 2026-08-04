@@ -51,6 +51,42 @@ impl Default for RenderOpts {
     }
 }
 
+/// 去除 ANSI 转义序列（颜色 / 光标 / 样式），返回纯文本。
+///
+/// pane 输出包含 tmux/shell 的颜色与光标控制码（如 `\x1b[31m`、`\x1b[38;5;242m`），
+/// 直接渲染会变成乱码。渲染前必须剥掉这些转义。
+pub fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // ESC 开头的 CSI/OSC 序列，剥到停止符
+            if chars.peek() == Some(&'[') {
+                chars.next(); // [
+                              // 读到最终字节（@-~ 或 0x40-0x7e）
+                for cc in chars.by_ref() {
+                    if ('@'..='~').contains(&cc) {
+                        break;
+                    }
+                }
+            } else if chars.peek() == Some(&']') {
+                chars.next(); // ]
+                for cc in chars.by_ref() {
+                    if cc == '\x07' || cc == '\x1b' {
+                        break;
+                    }
+                }
+            } else if chars.peek() == Some(&'(') || chars.peek() == Some(&')') {
+                chars.next();
+                let _ = chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// 渲染入口：把快照画进 `buf`。
 pub fn render_frame(
     buf: &mut Buffer,
@@ -244,7 +280,9 @@ fn draw_leaf(buf: &mut Buffer, area: Rect, pane_id: u32, snap: &FrameSnapshot, t
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
     let text = String::from_utf8_lossy(out);
-    let all_lines: Vec<&str> = text.lines().collect();
+    // 剥掉 ANSI 转义序列，避免乱码
+    let clean = strip_ansi(&text);
+    let all_lines: Vec<&str> = clean.lines().collect();
     let avail = inner.height as usize;
     let start = all_lines.len().saturating_sub(avail);
     let visible = &all_lines[start..];
@@ -582,6 +620,19 @@ mod tests {
         );
         let s = buf_to_string(&buf);
         assert!(s.contains("new") && s.contains("dev") && s.contains("prod"));
+    }
+
+    #[test]
+    fn strip_ansi_removes_escape_codes() {
+        assert_eq!(strip_ansi("plain"), "plain");
+        assert_eq!(strip_ansi("\u{1b}[31mRED\u{1b}[39m"), "RED");
+        assert_eq!(strip_ansi("a\u{1b}[38;5;242mb\u{1b}[39m c"), "ab c");
+        assert_eq!(strip_ansi("\u{1b}[0mreset\u{1b}[0m"), "reset");
+        assert!(strip_ansi("\u{1b}[31mRED\u{1b}[0m").contains("RED"));
+        // 不应含任何 ESC 或 '[' 颜色码残留
+        let out = strip_ansi("x\u{1b}[32mY\u{1b}[0m z");
+        assert!(!out.contains('\u{1b}'));
+        assert!(!out.contains("[3"));
     }
 
     #[test]
