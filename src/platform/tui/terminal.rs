@@ -1,0 +1,108 @@
+//! TUI 终端渲染层：每个 pane 用一个无头 [`TerminalState`] 模拟终端屏幕。
+//!
+//! GTK 前端用 VTE（真实终端模拟器）渲染，TUI 没有 VTE，但项目自带
+//! `core::protocol::terminal::emulate::TerminalState`（基于 vte crate）能正确
+//! 跟踪光标移动 / 覆盖写 / 清屏 / 换行，生成真实的屏幕网格。
+//!
+//! 之前 TUI 把 pane 的**累计原始输出**当作纯文本行直接打印，导致：
+//! - 回显字符双写（`ls` 变 `ls ls`）
+//! - 光标覆盖写 / 清屏不生效，内容错位乱码
+//!
+//! 这里改为：把增量输出 feed 进 TerminalState，用它的屏幕快照渲染。
+
+use std::collections::HashMap;
+
+use crate::core::protocol::terminal::emulate::TerminalState;
+
+/// 每 pane 的终端状态 + 尺寸。
+pub struct PaneTerminal {
+    state: TerminalState,
+    cols: u16,
+    rows: u16,
+}
+
+impl PaneTerminal {
+    pub fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            state: TerminalState::new(cols as usize, rows as usize),
+            cols,
+            rows,
+        }
+    }
+
+    /// 把增量输出喂进模拟器。
+    pub fn feed(&mut self, data: &[u8]) {
+        self.state.feed(data);
+    }
+
+    /// 重建/调整尺寸（清空重来）。
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        if cols == self.cols && rows == self.rows {
+            return;
+        }
+        self.cols = cols.max(1);
+        self.rows = rows.max(1);
+        self.state = TerminalState::new(self.cols as usize, self.rows as usize);
+    }
+
+    /// 当前屏幕快照（每行一个字符串，含空白），按行数补齐。
+    pub fn screen(&self) -> Vec<String> {
+        self.state.snapshot()
+    }
+
+    pub fn cols(&self) -> u16 {
+        self.cols
+    }
+    pub fn rows(&self) -> u16 {
+        self.rows
+    }
+}
+
+/// 管理所有 pane 的终端状态。
+#[derive(Default)]
+pub struct TerminalManager {
+    panes: HashMap<u32, PaneTerminal>,
+}
+
+impl TerminalManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 确保 pane 有终端状态（懒创建）。
+    pub fn ensure(&mut self, pane_id: u32, cols: u16, rows: u16) {
+        self.panes
+            .entry(pane_id)
+            .or_insert_with(|| PaneTerminal::new(cols.max(1), rows.max(1)));
+    }
+
+    /// 把某 pane 的增量输出 feed 进其终端。
+    pub fn feed(&mut self, pane_id: u32, cols: u16, rows: u16, data: &[u8]) {
+        let pt = self
+            .panes
+            .entry(pane_id)
+            .or_insert_with(|| PaneTerminal::new(cols.max(1), rows.max(1)));
+        pt.resize(cols, rows);
+        pt.feed(data);
+    }
+
+    /// 取某 pane 的屏幕快照；不存在返回空。
+    pub fn screen(&self, pane_id: u32) -> Option<Vec<String>> {
+        self.panes.get(&pane_id).map(|p| p.screen())
+    }
+
+    /// 取某 pane 的尺寸。
+    pub fn size(&self, pane_id: u32) -> Option<(u16, u16)> {
+        self.panes.get(&pane_id).map(|p| (p.cols, p.rows))
+    }
+
+    /// 删除不再存在的 pane。
+    pub fn retain(&mut self, ids: &[u32]) {
+        self.panes.retain(|id, _| ids.contains(id));
+    }
+
+    /// 清空所有（重连时用）。
+    pub fn clear(&mut self) {
+        self.panes.clear();
+    }
+}

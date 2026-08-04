@@ -661,7 +661,8 @@ fn parse_pane_id_lenient(s: &str) -> Result<PaneId, ProtocolError> {
 ///
 /// 输入可能形如 `"abc\ndef"`，也可能因为某种原因没有引号（容错）。
 fn strip_c_string(s: &str) -> Result<&str, ProtocolError> {
-    let s = s.trim();
+    // 注意：不能先 trim()！`%output @0 " "` 这类「只含一个空格」的 echo 会因此
+    // 丢失空格（空格在引号内，是真实内容）。只剥掉引号，保留引号内的原始空白。
     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         Ok(&s[1..s.len() - 1])
     } else if s.starts_with('"') {
