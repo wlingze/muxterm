@@ -20,12 +20,14 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::core::protocol::ffi::types::STATE_PANE_OUTPUT;
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
 };
 use crate::platform::tui::render::{render_frame, RenderOpts};
+use crate::platform::tui::terminal::TerminalManager;
 
 /// TUI 启动参数。
 pub struct TuiOpts {
@@ -61,19 +63,21 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     let mut palette = PaletteState::new();
     palette.socket = opts.socket.clone();
     let mut palette_open = false;
+    // 终端渲染状态：每个 pane 一个 TerminalState
+    let mut term_mgr = TerminalManager::new();
 
     // 首帧：立即渲染一次（不依赖事件）
-    draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
+    let snap = bridge.snapshot();
+    sync_term_sizes(&mut term_mgr, &snap);
+    draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
     loop {
-        // 每轮先 drain 状态变更并重绘（保证输出持续刷新，而非只在按键后）
+        // 每轮先 drain 状态变更：把增量输出 feed 进对应 pane 的终端
         let events = bridge.poll_events();
-        if !events.is_empty() {
-            draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
-        } else {
-            // 即便无新事件也周期性重绘一次，保证首屏与 resize 后立即生效
-            draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
-        }
+        feed_events(&mut term_mgr, &events);
+        let snap = bridge.snapshot();
+        sync_term_sizes(&mut term_mgr, &snap);
+        draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
         if poll(Duration::from_millis(50)).context("poll event")? {
             let ev = read().context("read event")?;
@@ -82,19 +86,25 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     if palette_open {
                         // 向导：可能触发重连（重建 bridge）
                         if handle_palette_key(&mut palette, &key, &mut bridge, &mut palette_open)? {
-                            draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
+                            let snap = bridge.snapshot();
+                            sync_term_sizes(&mut term_mgr, &snap);
+                            draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
                         }
                     } else if is_quit(&key) {
                         break;
                     } else {
                         let snap = bridge.snapshot();
                         if handle_key(&mut bridge, &key, &snap, &mut palette_open, &mut palette) {
-                            draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
+                            let snap = bridge.snapshot();
+                            sync_term_sizes(&mut term_mgr, &snap);
+                            draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
                         }
                     }
                 }
                 Event::Resize(_, _) => {
-                    draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
+                    let snap = bridge.snapshot();
+                    sync_term_sizes(&mut term_mgr, &snap);
+                    draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
                 }
                 _ => {}
             }
@@ -105,12 +115,58 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     Ok(())
 }
 
+/// 把 incremental 事件 feed 进对应 pane 的终端。
+fn feed_events(
+    term_mgr: &mut TerminalManager,
+    events: &[crate::platform::tui::ffi_bridge::BridgeEvent],
+) {
+    for ev in events {
+        if ev.type_ == STATE_PANE_OUTPUT {
+            let (cols, rows) = term_mgr.size(ev.pane_id).unwrap_or((80, 24));
+            term_mgr.feed(ev.pane_id, cols, rows, &ev.data);
+        }
+    }
+}
+
+/// 根据快照里的 pane 尺寸同步/补齐各 pane 终端，并清理已删除 pane。
+///
+/// 首次创建或尺寸变化时，用 pane 的**累计输出**播种终端状态（否则只有增量，
+/// 首屏会是空的）。
+fn sync_term_sizes(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) {
+    let mut ids: Vec<u32> = Vec::new();
+    for p in &snap.panes {
+        ids.push(p.id);
+        let cols = p.cols.max(1);
+        let rows = p.rows.max(1);
+        let existed = term_mgr.size(p.id).is_some();
+        term_mgr.ensure(p.id, cols, rows);
+        let resized = term_mgr
+            .size(p.id)
+            .map(|(c, r)| c != cols || r != rows)
+            .unwrap_or(false);
+        if !existed || resized {
+            // 新 pane 或尺寸变化：用累计输出播种
+            let seed = snap.outputs.get(&p.id).cloned().unwrap_or_default();
+            term_mgr.feed(p.id, cols, rows, &seed);
+        }
+    }
+    term_mgr.retain(&ids);
+}
+
 fn draw<W: std::io::Write>(
     terminal: &mut Terminal<CrosstermBackend<&mut W>>,
     snap: &FrameSnapshot,
+    term_mgr: &TerminalManager,
     palette: &PaletteState,
     palette_open: bool,
 ) -> Result<()> {
+    // 收集每个 pane 的屏幕网格
+    let mut screens = std::collections::HashMap::new();
+    for p in &snap.panes {
+        if let Some(sc) = term_mgr.screen(p.id) {
+            screens.insert(p.id, sc);
+        }
+    }
     terminal.draw(|f| {
         let area = f.area();
         let opts = RenderOpts {
@@ -120,7 +176,7 @@ fn draw<W: std::io::Write>(
             palette_open,
         };
         let buf = f.buffer_mut();
-        render_frame(buf, snap, Some(palette), opts);
+        render_frame(buf, snap, &screens, Some(palette), opts);
     })?;
     Ok(())
 }

@@ -88,9 +88,13 @@ pub fn strip_ansi(input: &str) -> String {
 }
 
 /// 渲染入口：把快照画进 `buf`。
+///
+/// `screens`：pane_id → 该 pane 的终端屏幕网格（由 `TerminalState` 生成）。
+/// 用它渲染 pane 内容，而不是直接打印累计原始输出。
 pub fn render_frame(
     buf: &mut Buffer,
     snap: &FrameSnapshot,
+    screens: &std::collections::HashMap<u32, Vec<String>>,
     palette: Option<&PaletteState>,
     opts: RenderOpts,
 ) {
@@ -115,7 +119,7 @@ pub fn render_frame(
 
     draw_title_bar(buf, chunks[0], snap, &theme);
     draw_tab_bar(buf, chunks[1], &snap.tabs, &theme);
-    draw_content(buf, chunks[2], snap, &theme);
+    draw_content(buf, chunks[2], snap, screens, &theme);
     draw_status_bar(buf, chunks[3], snap, &theme);
 
     if opts.palette_open {
@@ -164,14 +168,20 @@ fn draw_tab_bar(
     Paragraph::new(Line::from(spans)).render(area, buf);
 }
 
-fn draw_content(buf: &mut Buffer, area: Rect, snap: &FrameSnapshot, theme: &Theme) {
+fn draw_content(
+    buf: &mut Buffer,
+    area: Rect,
+    snap: &FrameSnapshot,
+    screens: &std::collections::HashMap<u32, Vec<String>>,
+    theme: &Theme,
+) {
     let Some(layout) = snap.layout.as_ref() else {
         Paragraph::new("(no pane)")
             .style(theme.dim_style())
             .render(area, buf);
         return;
     };
-    draw_layout_node(buf, area, layout, snap, theme);
+    draw_layout_node(buf, area, layout, snap, screens, theme);
 }
 
 fn draw_layout_node(
@@ -179,10 +189,11 @@ fn draw_layout_node(
     area: Rect,
     node: &BridgeLayout,
     snap: &FrameSnapshot,
+    screens: &std::collections::HashMap<u32, Vec<String>>,
     theme: &Theme,
 ) {
     match node {
-        BridgeLayout::Leaf { pane_id } => draw_leaf(buf, area, *pane_id, snap, theme),
+        BridgeLayout::Leaf { pane_id } => draw_leaf(buf, area, *pane_id, snap, screens, theme),
         BridgeLayout::Split {
             horizontal,
             ratio,
@@ -192,7 +203,7 @@ fn draw_layout_node(
             if *horizontal {
                 let total = area.width;
                 if total < 3 {
-                    draw_layout_node(buf, area, first, snap, theme);
+                    draw_layout_node(buf, area, first, snap, screens, theme);
                     return;
                 }
                 let usable = total - 1;
@@ -207,18 +218,18 @@ fn draw_layout_node(
                     width: area.width - left.width - 1,
                     ..area
                 };
-                draw_layout_node(buf, left, first, snap, theme);
+                draw_layout_node(buf, left, first, snap, screens, theme);
                 for y in area.y..area.y + area.height {
                     if let Some(cell) = buf.cell_mut((area.x + left.width, y)) {
                         cell.set_symbol("│");
                         cell.set_fg(theme.dim);
                     }
                 }
-                draw_layout_node(buf, right, second, snap, theme);
+                draw_layout_node(buf, right, second, snap, screens, theme);
             } else {
                 let total = area.height;
                 if total < 3 {
-                    draw_layout_node(buf, area, first, snap, theme);
+                    draw_layout_node(buf, area, first, snap, screens, theme);
                     return;
                 }
                 let usable = total - 1;
@@ -233,20 +244,27 @@ fn draw_layout_node(
                     height: area.height - top.height - 1,
                     ..area
                 };
-                draw_layout_node(buf, top, first, snap, theme);
+                draw_layout_node(buf, top, first, snap, screens, theme);
                 for x in area.x..area.x + area.width {
                     if let Some(cell) = buf.cell_mut((x, area.y + top.height)) {
                         cell.set_symbol("─");
                         cell.set_fg(theme.dim);
                     }
                 }
-                draw_layout_node(buf, bottom, second, snap, theme);
+                draw_layout_node(buf, bottom, second, snap, screens, theme);
             }
         }
     }
 }
 
-fn draw_leaf(buf: &mut Buffer, area: Rect, pane_id: u32, snap: &FrameSnapshot, theme: &Theme) {
+fn draw_leaf(
+    buf: &mut Buffer,
+    area: Rect,
+    pane_id: u32,
+    snap: &FrameSnapshot,
+    screens: &std::collections::HashMap<u32, Vec<String>>,
+    theme: &Theme,
+) {
     let is_active = snap.active_pane == pane_id;
     let p = snap.panes.iter().find(|p| p.id == pane_id);
     let (title, cols, rows) = match p {
@@ -274,23 +292,18 @@ fn draw_leaf(buf: &mut Buffer, area: Rect, pane_id: u32, snap: &FrameSnapshot, t
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let out = snap
-        .outputs
-        .get(&pane_id)
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
-    let text = String::from_utf8_lossy(out);
-    // 剥掉 ANSI 转义序列，避免乱码
-    let clean = strip_ansi(&text);
-    let all_lines: Vec<&str> = clean.lines().collect();
-    let avail = inner.height as usize;
-    let start = all_lines.len().saturating_sub(avail);
-    let visible = &all_lines[start..];
+    // 用终端模拟器的屏幕网格渲染（不再打印累计原始输出）
+    //
+    // `TerminalState.snapshot()` 返回的是「当前视口」网格（行数 = 终端行数），
+    // 内容在顶部，不是 scrollback。因此直接取前 inner.height 行渲染。
+    let screen = screens.get(&pane_id).cloned().unwrap_or_default();
     let content_style = if is_active {
         Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.fg)
     };
+    let avail = inner.height as usize;
+    let visible: Vec<String> = screen.iter().take(avail).cloned().collect();
     Paragraph::new(visible.join("\n"))
         .style(content_style)
         .render(inner, buf);
@@ -513,8 +526,15 @@ mod tests {
     }
 
     fn render(snap: &FrameSnapshot, palette: Option<&PaletteState>, opts: RenderOpts) -> Buffer {
+        // 测试用：从 outputs 构造简单的 screens（按行切分）
+        let mut screens = HashMap::new();
+        for (pid, data) in &snap.outputs {
+            let text = String::from_utf8_lossy(data);
+            let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+            screens.insert(*pid, lines);
+        }
         let mut buf = Buffer::empty(Rect::new(0, 0, opts.cols.max(1), opts.rows.max(1)));
-        render_frame(&mut buf, snap, palette, opts);
+        render_frame(&mut buf, snap, &screens, palette, opts);
         buf
     }
 
