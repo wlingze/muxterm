@@ -12,8 +12,8 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use muxterm::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_panes,
-    muxterm_get_tabs, muxterm_new, muxterm_poll_events,
+    muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
+    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events,
 };
 use muxterm::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, TASK_SPLIT_PANE,
@@ -182,6 +182,64 @@ fn tui_ffi_split_horizontal_increases_panes_and_layout() {
         "tmux 实际 pane 数应 >=2，实际 {tmux_count}"
     );
 
+    kill_server(&socket);
+}
+
+#[test]
+fn pane_zero_id_is_distinct_from_active_after_split() {
+    // 回归：tmux pane id 是 0 基的，%0 / %1 是真实 pane。
+    // 旧 bug：get_pane_output 把 pane_id==0 当“active”哨兵，分割后取 %0 输出
+    // 会错误返回 active pane 的输出，导致两个 pane 显示相同内容。
+    let socket = unique_socket("p0");
+    create_session(&socket);
+    let out = std::process::Command::new("tmux")
+        .args(["-L", &socket, "split-window", "-h", "-t", "ffi"])
+        .output()
+        .expect("split-window 失败");
+    assert!(out.status.success());
+    std::thread::sleep(Duration::from_millis(400));
+
+    let bt = CString::new("tmux").unwrap();
+    let sock = CString::new(socket.as_str()).unwrap();
+    let sess = CString::new("ffi").unwrap();
+    let h = muxterm_new(bt.as_ptr(), sock.as_ptr(), sess.as_ptr());
+    assert!(!h.is_null());
+    unsafe {
+        assert_eq!(muxterm_connect(h), 0, "connect 失败");
+        let mut buf = [CStateChange::default(); 64];
+        // 等 pane 列表出现（分割已发生，需等 backend 刷新）
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut np = 0;
+        let mut panes = [CPane {
+            id: 0,
+            cols: 0,
+            rows: 0,
+            is_active: 0,
+        }; 16];
+        while Instant::now() < deadline {
+            let _ = muxterm_poll_events(h, buf.as_mut_ptr(), 64);
+            np = muxterm_get_panes(h, 0, panes.as_mut_ptr(), 16);
+            if np >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(np >= 2, "应有 >=2 pane，实际 {np}");
+        // 核心回归：第一个 pane 的 id 必须是 0（0 基），第二个是 1。
+        // 若 FFI 把 0 当“active”哨兵，这里会取到错误的 pane。
+        let p0 = panes[0].id;
+        let p1 = panes[1].id;
+        assert_eq!(p0, 0, "tmux 第一个 pane id 应为 0（0 基），实际 {p0}");
+        assert_eq!(p1, 1, "tmux 第二个 pane id 应为 1（0 基），实际 {p1}");
+        // 两个 pane 都能独立取到输出（不因 0 哨兵冲突而返回相同/错误数据）
+        let mut b0 = [0u8; 256];
+        let mut b1 = [0u8; 256];
+        let n0 = muxterm_get_pane_output(h, p0, b0.as_mut_ptr(), b0.len());
+        let n1 = muxterm_get_pane_output(h, p1, b1.as_mut_ptr(), b1.len());
+        assert!(n0 >= 0, "pane %0 读取输出不应报错，n0={n0}");
+        assert!(n1 >= 0, "pane %1 读取输出不应报错，n1={n1}");
+        muxterm_free(h);
+    }
     kill_server(&socket);
 }
 
