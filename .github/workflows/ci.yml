@@ -14,6 +14,8 @@ on:
       - 'tests/four_mode_integration.rs'
       - 'tests/sendkeys_regression.rs'
       - 'tests/split_regression.rs'
+      - 'tests/tui_split_ffi_regression.rs'
+      - 'tests/tui_wizard_ffi_regression.rs'
       - 'tests/ssh_no_fallback.rs'
       - 'tests/ssh_transport_unit.rs'
       - 'tests/tmux_backend_integration.rs'
@@ -89,6 +91,9 @@ jobs:
 
       - name: Split regression tests
         run: cargo test --no-default-features --features ffi --test split_regression -- --test-threads=1
+
+      - name: TUI wizard FFI regression tests
+        run: cargo test --no-default-features --features ffi --test tui_split_ffi_regression --test tui_wizard_ffi_regression -- --test-threads=1
 
       - name: SSH no-fallback tests
         run: cargo test --no-default-features --features ffi --test ssh_no_fallback -- --test-threads=1
