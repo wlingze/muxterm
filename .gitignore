@@ -17,7 +17,7 @@ Cargo.lock
 .codex-*.md
 REFACTOR-PLAN.md
 migration-plan.md
-build/macos/
+build/
 .build-target/
 .build-tmp/
 src/platform/macos/Vendor/libmuxterm.a
