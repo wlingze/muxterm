@@ -76,9 +76,13 @@ GitHub Release 自动构建三种产物（打 tag `v*.*.*` 触发，或手动 di
 | 脚本 | 产物 |
 |------|------|
 | `scripts/build-linux.sh [--release]` | Linux GTK4 桌面前端 |
-| `scripts/build-tui.sh [--release]` | 纯终端 TUI（CI / 无头） |
+| `scripts/build-tui.sh [--release]` | 纯终端 TUI（CI / 无头，跨平台） |
 | `scripts/build-cli.sh [--release]` | C ABI 库 + CLI 二进制 |
-| `scripts/build-macos.sh` | macOS SwiftUI app（libmuxterm.a + SwiftPM） |
+| `scripts/build-macos.sh [--release]` | macOS SwiftUI app（libmuxterm.a + SwiftPM） |
+
+产物统一输出到 `./build/<os>/`（`os` = `linux` / `macos` / `windows`），
+二进制统一命名 `muxterm`（Windows 为 `muxterm.exe`）；macOS 额外产出 `Muxterm.app`。
+这样各系统本地构建与 CI 打包结果一致。
 
 `--release` 参数或 `PROFILE=release` 环境变量控制 release/debug 构建。
 
@@ -86,8 +90,10 @@ GitHub Release 自动构建三种产物（打 tag `v*.*.*` 触发，或手动 di
 git clone https://github.com/wlingze/muxterm.git
 cd muxterm
 ./scripts/build-tui.sh --release
-../muxterm-target/release/muxterm
+./build/linux/muxterm        # macOS 上是 ./build/macos/muxterm
 ```
+
+仓库 `.cargo/config.toml` 默认 `target-dir = "../muxterm-target"`（即本地默认的 `CARGO_TARGET_DIR`），多 worktree 共享同一编译缓存；可用环境变量 `CARGO_TARGET_DIR` 覆盖。
 
 仓库 `.cargo/config.toml` 默认 `target-dir = "../muxterm-target"`（即本地默认的 `CARGO_TARGET_DIR`），多 worktree 共享同一编译缓存；可用环境变量 `CARGO_TARGET_DIR` 覆盖。
 

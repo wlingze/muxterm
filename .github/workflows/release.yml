@@ -106,17 +106,17 @@ jobs:
 
       - name: Verify binary
         run: |
-          if [ ! -f target/release/muxterm ]; then
-            echo "ERROR: No Linux CLI binary produced" >&2
+          if [ ! -f build/linux/muxterm ]; then
+            echo "ERROR: No Linux CLI binary produced (build/linux/muxterm)" >&2
             exit 1
           fi
-          file target/release/muxterm
-          target/release/muxterm --version || true
+          file build/linux/muxterm
+          build/linux/muxterm --version || true
 
       - name: Package
         run: |
           mkdir -p staging
-          cp target/release/muxterm "staging/muxterm"
+          cp build/linux/muxterm "staging/muxterm"
           cat > staging/README.txt <<'EOF'
           muxterm CLI (TUI) for Linux x86_64
 
@@ -173,17 +173,17 @@ jobs:
 
       - name: Verify binary
         run: |
-          if [ ! -f target/release/muxterm ]; then
-            echo "ERROR: No Linux GTK4 binary produced" >&2
+          if [ ! -f build/linux/muxterm ]; then
+            echo "ERROR: No Linux GTK4 binary produced (build/linux/muxterm)" >&2
             exit 1
           fi
-          file target/release/muxterm
-          target/release/muxterm --version || true
+          file build/linux/muxterm
+          build/linux/muxterm --version || true
 
       - name: Package
         run: |
           mkdir -p staging
-          cp target/release/muxterm "staging/muxterm"
+          cp build/linux/muxterm "staging/muxterm"
           cat > staging/README.txt <<'EOF'
           muxterm GTK4 for Linux x86_64
 

@@ -15,6 +15,7 @@ on:
       - 'Cargo.lock'
       - '.cargo/**'
       - 'scripts/build-macos.sh'
+      - 'scripts/build-common.sh'
       - 'scripts/ci/**'
       - '.github/workflows/**'
 
