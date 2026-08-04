@@ -482,6 +482,24 @@ impl Backend for MockBackend {
                 });
                 TaskOutcome::Done
             }
+            Task::ResizeClient { .. } => TaskOutcome::Done,
+            Task::ResizePaneAxis { target, dir, size } => {
+                let Some(pane) = self.panes.iter_mut().find(|p| p.id == *target) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                };
+                match dir {
+                    SplitDir::Horizontal => pane.cols = *size,
+                    SplitDir::Vertical => pane.rows = *size,
+                }
+                self.events.push(StateChange::PaneResized {
+                    pane: *target,
+                    cols: pane.cols,
+                    rows: pane.rows,
+                });
+                TaskOutcome::Done
+            }
             Task::ResizePaneStep { target, .. } => {
                 if !self.panes.iter().any(|p| p.id == *target) {
                     return Ok(TaskOutcome::Rejected {

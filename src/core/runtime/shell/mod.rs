@@ -1070,6 +1070,38 @@ impl Backend for LocalBackend {
                 TaskOutcome::Done
             }
 
+            Task::ResizeClient { .. } => TaskOutcome::Rejected {
+                reason: "LocalBackend 不支持 client resize".into(),
+            },
+
+            Task::ResizePaneAxis { target, dir, size } => {
+                let Some((cols, rows)) = self
+                    .panes
+                    .iter()
+                    .find(|p| p.info.id == *target)
+                    .map(|p| (p.info.cols, p.info.rows))
+                else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                };
+                let (cols, rows) = match dir {
+                    crate::core::model::layout::SplitDir::Horizontal => (*size, rows),
+                    crate::core::model::layout::SplitDir::Vertical => (cols, *size),
+                };
+                if !self.resize_pane(*target, cols, rows) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("resize pane {target} 失败"),
+                    });
+                }
+                self.events.push_back(StateChange::PaneResized {
+                    pane: *target,
+                    cols,
+                    rows,
+                });
+                TaskOutcome::Done
+            }
+
             Task::ResizePaneStep { target, .. } => {
                 // 步进 resize：简化为 Done（真实实现需要当前尺寸 + 方向计算）
                 if !self.panes.iter().any(|p| p.info.id == *target) {

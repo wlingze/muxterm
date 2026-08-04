@@ -1069,7 +1069,7 @@ mod tests {
             feed_bytes_to_lines(&mut buf, "中文".as_bytes()[..3].to_vec().as_slice()),
             Vec::<String>::new()
         );
-        let lines = feed_bytes_to_lines(&mut buf, format!("文\r\n").as_bytes());
+        let lines = feed_bytes_to_lines(&mut buf, "文\r\n".as_bytes());
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0], "中文");
         assert!(buf.is_empty());

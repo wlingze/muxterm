@@ -87,6 +87,8 @@ int muxterm_shutdown(struct MuxtermHandle* h);
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
 int muxterm_send_input(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
 int muxterm_resize_pane(struct MuxtermHandle* h, uint32_t pane_id, uint16_t cols, uint16_t rows);
+int muxterm_resize_client(struct MuxtermHandle* h, uint16_t cols, uint16_t rows);
+int muxterm_resize_pane_axis(struct MuxtermHandle* h, uint32_t pane_id, uint32_t axis, uint16_t size);
 
 // ── 事件轮询 ──
 int muxterm_poll_events(struct MuxtermHandle* h, struct CStateChange* out, int max_count);

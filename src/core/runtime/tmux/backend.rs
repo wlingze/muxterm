@@ -1122,6 +1122,27 @@ impl Backend for TmuxBackend {
                 }
                 TaskOutcome::Done
             }
+            Task::ResizeClient { cols, rows } => {
+                let c = cmd::refresh_client_size(*cols as u32, *rows as u32);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送 client resize 命令失败".into(),
+                    });
+                }
+                TaskOutcome::Done
+            }
+            Task::ResizePaneAxis { target, dir, size } => {
+                let c = match dir {
+                    SplitDir::Horizontal => cmd::resize_pane(*target, Some(*size as u32), None),
+                    SplitDir::Vertical => cmd::resize_pane(*target, None, Some(*size as u32)),
+                };
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送 pane 轴向 resize 命令失败".into(),
+                    });
+                }
+                TaskOutcome::Done
+            }
             Task::ResizePaneStep { target, dir, delta } => {
                 let flag = match dir {
                     SplitDir::Horizontal => 'W',

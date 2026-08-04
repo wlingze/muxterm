@@ -222,6 +222,7 @@ impl DaemonBackend {
                 width: Some(*cols),
                 height: Some(*rows),
             }),
+            Task::ResizeClient { .. } | Task::ResizePaneAxis { .. } => None,
             Task::Shutdown => None, // detach：不 kill daemon
             Task::NextPane
             | Task::PrevPane
