@@ -160,10 +160,12 @@ fn draw<W: std::io::Write>(
     palette: &PaletteState,
     palette_open: bool,
 ) -> Result<()> {
-    // 收集每个 pane 的屏幕网格
+    // 收集每个 pane 的屏幕网格（含光标行，用于视口定位）
     let mut screens = std::collections::HashMap::new();
+    let mut cursors = std::collections::HashMap::new();
     for p in &snap.panes {
-        if let Some(sc) = term_mgr.screen(p.id) {
+        if let Some((sc, cur)) = term_mgr.screen_with_cursor(p.id) {
+            cursors.insert(p.id, cur);
             screens.insert(p.id, sc);
         }
     }
@@ -176,7 +178,7 @@ fn draw<W: std::io::Write>(
             palette_open,
         };
         let buf = f.buffer_mut();
-        render_frame(buf, snap, &screens, Some(palette), opts);
+        render_frame(buf, snap, &screens, &cursors, Some(palette), opts);
     })?;
     Ok(())
 }

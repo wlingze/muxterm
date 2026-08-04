@@ -95,6 +95,7 @@ pub fn render_frame(
     buf: &mut Buffer,
     snap: &FrameSnapshot,
     screens: &std::collections::HashMap<u32, Vec<String>>,
+    cursors: &std::collections::HashMap<u32, usize>,
     palette: Option<&PaletteState>,
     opts: RenderOpts,
 ) {
@@ -119,7 +120,7 @@ pub fn render_frame(
 
     draw_title_bar(buf, chunks[0], snap, &theme);
     draw_tab_bar(buf, chunks[1], &snap.tabs, &theme);
-    draw_content(buf, chunks[2], snap, screens, &theme);
+    draw_content(buf, chunks[2], snap, screens, cursors, &theme);
     draw_status_bar(buf, chunks[3], snap, &theme);
 
     if opts.palette_open {
@@ -173,6 +174,7 @@ fn draw_content(
     area: Rect,
     snap: &FrameSnapshot,
     screens: &std::collections::HashMap<u32, Vec<String>>,
+    cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
     let Some(layout) = snap.layout.as_ref() else {
@@ -181,7 +183,7 @@ fn draw_content(
             .render(area, buf);
         return;
     };
-    draw_layout_node(buf, area, layout, snap, screens, theme);
+    draw_layout_node(buf, area, layout, snap, screens, cursors, theme);
 }
 
 fn draw_layout_node(
@@ -190,10 +192,13 @@ fn draw_layout_node(
     node: &BridgeLayout,
     snap: &FrameSnapshot,
     screens: &std::collections::HashMap<u32, Vec<String>>,
+    cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
     match node {
-        BridgeLayout::Leaf { pane_id } => draw_leaf(buf, area, *pane_id, snap, screens, theme),
+        BridgeLayout::Leaf { pane_id } => {
+            draw_leaf(buf, area, *pane_id, snap, screens, cursors, theme)
+        }
         BridgeLayout::Split {
             horizontal,
             ratio,
@@ -203,7 +208,7 @@ fn draw_layout_node(
             if *horizontal {
                 let total = area.width;
                 if total < 3 {
-                    draw_layout_node(buf, area, first, snap, screens, theme);
+                    draw_layout_node(buf, area, first, snap, screens, cursors, theme);
                     return;
                 }
                 let usable = total - 1;
@@ -218,18 +223,18 @@ fn draw_layout_node(
                     width: area.width - left.width - 1,
                     ..area
                 };
-                draw_layout_node(buf, left, first, snap, screens, theme);
+                draw_layout_node(buf, left, first, snap, screens, cursors, theme);
                 for y in area.y..area.y + area.height {
                     if let Some(cell) = buf.cell_mut((area.x + left.width, y)) {
                         cell.set_symbol("│");
                         cell.set_fg(theme.dim);
                     }
                 }
-                draw_layout_node(buf, right, second, snap, screens, theme);
+                draw_layout_node(buf, right, second, snap, screens, cursors, theme);
             } else {
                 let total = area.height;
                 if total < 3 {
-                    draw_layout_node(buf, area, first, snap, screens, theme);
+                    draw_layout_node(buf, area, first, snap, screens, cursors, theme);
                     return;
                 }
                 let usable = total - 1;
@@ -244,14 +249,14 @@ fn draw_layout_node(
                     height: area.height - top.height - 1,
                     ..area
                 };
-                draw_layout_node(buf, top, first, snap, screens, theme);
+                draw_layout_node(buf, top, first, snap, screens, cursors, theme);
                 for x in area.x..area.x + area.width {
                     if let Some(cell) = buf.cell_mut((x, area.y + top.height)) {
                         cell.set_symbol("─");
                         cell.set_fg(theme.dim);
                     }
                 }
-                draw_layout_node(buf, bottom, second, snap, screens, theme);
+                draw_layout_node(buf, bottom, second, snap, screens, cursors, theme);
             }
         }
     }
@@ -263,6 +268,7 @@ fn draw_leaf(
     pane_id: u32,
     snap: &FrameSnapshot,
     screens: &std::collections::HashMap<u32, Vec<String>>,
+    cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
     let is_active = snap.active_pane == pane_id;
@@ -292,20 +298,27 @@ fn draw_leaf(
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    // 用终端模拟器的屏幕网格渲染（不再打印累计原始输出）
+    // 用终端模拟器的屏幕网格渲染（不再打印累计原始输出）。
     //
-    // `TerminalState.snapshot()` 返回整个 pane 网格（行数 = tmux pane 行数，可能
-    // 比当前可视区高）。当前提示符/最新输出在网格底部，因此取**底部** avail 行
-    // 作为可视视口（即“看当前屏幕底部”），而不是顶部（那会是旧内容）。
+    // 视口定位以光标行为锚：把光标行放在可视区**底部**（最后一行是当前提示符）。
+    // - 短输出：光标靠上，视口从顶部开始，能看到提示符与最近输出
+    // - 长输出（滚动后）：光标在底部，视口显示网格底部，等同真实终端
     let screen = screens.get(&pane_id).cloned().unwrap_or_default();
+    let cursor = cursors.get(&pane_id).copied().unwrap_or(0);
     let content_style = if is_active {
         Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.fg)
     };
     let avail = inner.height as usize;
-    let start = screen.len().saturating_sub(avail);
-    let visible: Vec<String> = screen[start..].to_vec();
+    if screen.is_empty() {
+        Paragraph::new("").render(inner, buf);
+        return;
+    }
+    // 光标行作为视口底部参考；若光标行本身 >= avail，从光标行向上取 avail 行。
+    let view_end = (cursor + 1).min(screen.len());
+    let start = view_end.saturating_sub(avail);
+    let visible: Vec<String> = screen[start..view_end].to_vec();
     Paragraph::new(visible.join("\n"))
         .style(content_style)
         .render(inner, buf);
@@ -535,8 +548,9 @@ mod tests {
             let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
             screens.insert(*pid, lines);
         }
+        let cursors = std::collections::HashMap::new();
         let mut buf = Buffer::empty(Rect::new(0, 0, opts.cols.max(1), opts.rows.max(1)));
-        render_frame(&mut buf, snap, &screens, palette, opts);
+        render_frame(&mut buf, snap, &screens, &cursors, palette, opts);
         buf
     }
 
