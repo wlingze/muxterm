@@ -321,8 +321,11 @@ mod tests {
 
     #[tokio::test]
     async fn pty_reader_streams_chunks() {
-        // echo 输出后退出；PtyReader 把字节块通过 mpsc 异步投递
-        let mut child = spawn_pty("echo", &["stream-test"], 40, 12).expect("spawn echo");
+        // 让 slave 短暂保持打开，避免 macOS 在子进程退出与 reader 线程
+        // 尚未开始读取之间把最后一个 PTY 缓冲块表现为 EIO，导致测试偶发
+        // 读到空串；真实 tmux 连接本身是长生命周期的。
+        let mut child =
+            spawn_pty("sh", &["-c", "printf stream-test; sleep 0.1"], 40, 12).expect("spawn shell");
         let reader = child.master.try_clone_reader().expect("try_clone_reader");
         let mut reader = PtyReader::new(reader);
 
