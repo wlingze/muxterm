@@ -68,6 +68,11 @@ path = "tests/four_mode_integration.rs"
 required-features = ["ffi"]
 
 [[test]]
+name = "tui_wizard_ffi_regression"
+path = "tests/tui_wizard_ffi_regression.rs"
+required-features = ["ffi"]
+
+[[test]]
 name = "tui_split_ffi_regression"
 path = "tests/tui_split_ffi_regression.rs"
 required-features = ["ffi"]
