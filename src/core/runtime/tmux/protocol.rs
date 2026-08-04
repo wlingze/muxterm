@@ -1260,6 +1260,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_output_preserves_spaces_inside_quotes() {
+        // 关键回归：%output 引号内的空格是真实内容，不能因 trim 丢失。
+        // 例如回显一个空格 `%output @0 " "`，必须解析出 content = " "。
+        let m = parse_line(r#"%output @0 " ""#).unwrap();
+        if let Message::Output { content, .. } = m {
+            assert_eq!(content, b" ");
+        } else {
+            panic!();
+        }
+        // 中间空格也不能丢
+        let m = parse_line(r#"%output @0 "git status""#).unwrap();
+        if let Message::Output { content, .. } = m {
+            assert_eq!(content, b"git status");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
     fn parse_output_with_at_prefix() {
         // %output @1 "hello\n"
         let m = parse_line(r#"%output @1 "hello\n""#).unwrap();
