@@ -10,8 +10,8 @@ license = "MIT"
 default = ["gtk"]
 # GTK4 原生前端：依赖 gtk4 / vte4，并通过 ffi 调用核心。
 gtk = ["dep:gtk4", "dep:vte4", "ffi"]
-# TUI 前端：纯 crossterm，经 ffi 调用核心（CI / 无头）。
-tui = ["dep:crossterm", "ffi"]
+# TUI 前端：纯 crossterm + ratatui，经 ffi 调用核心（CI / 无头，跨平台）。
+tui = ["dep:crossterm", "dep:ratatui", "ffi"]
 # C ABI 导出（不依赖任何 GUI）。
 ffi = []
 
@@ -44,6 +44,7 @@ vte4 = { version = "0.8", optional = true, features = ["v0_76"] }
 
 # 可选：TUI 前端
 crossterm = { version = "0.28", optional = true }
+ratatui = { version = "0.29", optional = true }
 
 [target."cfg(unix)".dependencies]
 # 仅 Unix: 为 tmux -CC 子进程分配 pty
@@ -64,6 +65,11 @@ required-features = ["gtk"]
 [[test]]
 name = "four_mode_integration"
 path = "tests/four_mode_integration.rs"
+required-features = ["ffi"]
+
+[[test]]
+name = "tui_split_ffi_regression"
+path = "tests/tui_split_ffi_regression.rs"
 required-features = ["ffi"]
 
 [[test]]
