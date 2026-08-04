@@ -541,6 +541,50 @@ fn cli_exec_waits_for_command_completion_before_shutdown() {
     kill_server(&socket);
 }
 
+/// CLI attach 与 macOS FFI 使用同一 TmuxBackend；attach 响应必须能观察到
+/// attach 前已经存在的 shell 画面，而不是只返回 tab 数量。
+#[test]
+fn cli_attach_reports_existing_screen_output() {
+    let socket = unique_socket("attach-screen");
+    let session = format!("attach-screen-{}", rand_suffix());
+    let marker = format!("CLI_ATTACH_SCREEN_{}", rand_suffix());
+    create_session(&socket, &session);
+
+    let seeded = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "send-keys",
+            "-t",
+            &session,
+            &format!("printf '{marker}\\n'"),
+            "Enter",
+        ])
+        .status()
+        .expect("预置 attach shell 画面失败");
+    assert!(seeded.success());
+
+    let output = Command::new(muxterm_bin())
+        .args([
+            "tmux", "session", "attach", "--target", "local", "--socket", &socket, "--name",
+            &session,
+        ])
+        .output()
+        .expect("CLI attach 执行失败");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "CLI attach 应成功: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains(&marker),
+        "CLI attach 应报告已有 shell 画面 marker={marker}: {stdout}"
+    );
+
+    kill_server(&socket);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Layer 5: deep nested splits (3 levels: H → V → H) via CLI binary
 // ═══════════════════════════════════════════════════════════════
