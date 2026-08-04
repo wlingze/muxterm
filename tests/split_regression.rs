@@ -5,7 +5,7 @@
 #![cfg(feature = "ffi")]
 
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn muxterm_bin() -> std::path::PathBuf {
     let target =
@@ -231,6 +231,7 @@ fn split_real_binary_increases_pane_count() {
     let bin = muxterm_bin();
     assert!(bin.exists(), "muxterm binary 不存在");
 
+    let started = Instant::now();
     let output = Command::new(&bin)
         .args([
             "tmux",
@@ -249,6 +250,11 @@ fn split_real_binary_increases_pane_count() {
         ])
         .output()
         .expect("muxterm split 执行失败");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "CLI split 状态反馈过慢: {elapsed:?}"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
