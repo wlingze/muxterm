@@ -54,6 +54,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.reportStatusError("切换 pane @\(paneId) 失败")
             }
         }
+        content.paneLayout.onResizeDivider = { [weak self] paneId, horizontal, size in
+            guard let self, self.terminalManager.usesClientResize else { return }
+            _ = self.terminalManager.resizePaneAxis(
+                paneId: paneId,
+                horizontal: horizontal,
+                size: size
+            )
+        }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
         }

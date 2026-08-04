@@ -9,7 +9,12 @@ final class PaneLayoutView: NSView {
     private var rootView: NSView?
     private var rootConstraints: [NSLayoutConstraint] = []
     private var hostByPane: [UInt32: PaneHostView] = [:]
+    private var currentPaneIds = Set<UInt32>()
+    private var geometrySyncScheduled = false
+    private var pendingGeometryPaneIds: Set<UInt32>?
     var onActivatePane: ((UInt32) -> Void)?
+    /// 分隔条释放后提交：pane、横向（宽度）/纵向（高度）、字符格尺寸。
+    var onResizeDivider: ((UInt32, Bool, UInt16) -> Void)?
 
     init(terminalManager: TerminalManager) {
         self.terminalManager = terminalManager
@@ -56,6 +61,8 @@ final class PaneLayoutView: NSView {
         }
         rootView = nil
         hostByPane.removeAll()
+        currentPaneIds.removeAll()
+        pendingGeometryPaneIds = nil
 
         guard let tree else {
             terminalManager.retainOnly(paneIds: [])
@@ -75,15 +82,14 @@ final class PaneLayoutView: NSView {
         rootView = built
 
         let ids = Set(collectPaneIds(tree))
+        currentPaneIds = ids
         terminalManager.retainOnly(paneIds: ids)
 
         let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
         markActivePane(active)
 
         needsLayout = true
-        DispatchQueue.main.async { [weak self] in
-            self?.finalizeAfterLayout(paneIds: ids, attempt: 0)
-        }
+        scheduleGeometrySync(paneIds: ids)
         return true
     }
 
@@ -95,6 +101,7 @@ final class PaneLayoutView: NSView {
     }
 
     private func finalizeAfterLayout(paneIds: Set<UInt32>, attempt: Int) {
+        guard paneIds == currentPaneIds else { return }
         layoutSubtreeIfNeeded()
         if (bounds.width < 8 || bounds.height < 8), attempt < 10 {
             DispatchQueue.main.async { [weak self] in
@@ -105,8 +112,29 @@ final class PaneLayoutView: NSView {
         for host in hostByPane.values {
             host.publishGeometry()
         }
-        terminalManager.syncAllVisibleSizes(paneIds: paneIds)
+        terminalManager.syncAllVisibleSizes(paneIds: paneIds, container: self)
         terminalManager.forceRedraw(paneIds: paneIds)
+    }
+
+    override func layout() {
+        super.layout()
+        guard !currentPaneIds.isEmpty else { return }
+        // 窗口尺寸变化时没有 tmux event，仍需把新的根容器尺寸同步给 client。
+        scheduleGeometrySync(paneIds: currentPaneIds)
+    }
+
+    private func scheduleGeometrySync(paneIds: Set<UInt32>) {
+        guard paneIds == currentPaneIds else { return }
+        pendingGeometryPaneIds = paneIds
+        guard !geometrySyncScheduled else { return }
+        geometrySyncScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.geometrySyncScheduled = false
+            let latestPaneIds = self.pendingGeometryPaneIds ?? self.currentPaneIds
+            self.pendingGeometryPaneIds = nil
+            self.finalizeAfterLayout(paneIds: latestPaneIds, attempt: 0)
+        }
     }
 
     private func build(node: LayoutNode) -> NSView {
@@ -121,13 +149,46 @@ final class PaneLayoutView: NSView {
             return wrap
 
         case .split(let horizontal, let ratio, let first, let second):
+            let firstPaneID = edgePaneID(in: first)
             return SplitContainerView(
                 horizontal: horizontal,
                 ratio: CGFloat(ratio) / 1000.0,
                 first: build(node: first),
-                second: build(node: second)
+                second: build(node: second),
+                firstPaneID: firstPaneID,
+                onResize: { [weak self] paneID, isHorizontal, extent in
+                    self?.commitDividerResize(
+                        paneID: paneID,
+                        horizontal: isHorizontal,
+                        firstExtent: extent
+                    )
+                }
             )
         }
+    }
+
+    /// 返回 first 子树靠近当前 split 外侧分隔线的叶子 pane。
+    private func edgePaneID(in node: LayoutNode) -> UInt32 {
+        switch node {
+        case .leaf(let paneId):
+            return paneId
+        case .split(_, _, _, let second):
+            // first 在横向布局的右边界、纵向布局的下边界与外部分隔线相邻。
+            return edgePaneID(in: second)
+        }
+    }
+
+    private func commitDividerResize(paneID: UInt32, horizontal: Bool, firstExtent: CGFloat) {
+        guard let cell = terminalManager.cellSizeInPixels(paneIds: currentPaneIds) else { return }
+        let backing = convertToBacking(
+            NSRect(x: 0, y: 0, width: firstExtent, height: firstExtent)
+        )
+        let pixels = horizontal ? backing.width : backing.height
+        let cellPixels = horizontal ? cell.width : cell.height
+        guard let size = PaneResizeMath.characterCount(
+            pixelLength: Double(pixels), cellPixels: cellPixels
+        ) else { return }
+        onResizeDivider?(paneID, horizontal, size)
     }
 
     private func collectPaneIds(_ node: LayoutNode) -> [UInt32] {
@@ -206,18 +267,43 @@ final class PaneHostView: NSView {
     }
 }
 
-/// 二分容器：纯 Auto Layout，按 ratio 分配 first/second；1px 分隔线。
+/// 二分容器：纯 Auto Layout，按 ratio 分配 first/second；分隔线同时是可拖动手柄。
 private final class SplitContainerView: NSView {
-    init(horizontal: Bool, ratio: CGFloat, first: NSView, second: NSView) {
+    private let horizontal: Bool
+    private let dividerLength: CGFloat
+    private let first: NSView
+    private let second: NSView
+    private var currentRatio: CGFloat
+    private var ratioConstraint: NSLayoutConstraint!
+    private var dragStartPosition: CGFloat = 0
+    private var dragStartRatio: CGFloat = 0.5
+    private let firstPaneID: UInt32
+    private let onResize: (UInt32, Bool, CGFloat) -> Void
+
+    init(
+        horizontal: Bool,
+        ratio: CGFloat,
+        first: NSView,
+        second: NSView,
+        firstPaneID: UInt32,
+        onResize: @escaping (UInt32, Bool, CGFloat) -> Void
+    ) {
+        self.horizontal = horizontal
+        self.first = first
+        self.second = second
+        self.currentRatio = CGFloat(PaneResizeMath.clampedRatio(Double(ratio)))
+        self.dividerLength = 6
+        self.firstPaneID = firstPaneID
+        self.onResize = onResize
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
 
-        let r = min(max(ratio, 0.05), 0.95)
-        let divider = NSView()
+        let divider = DividerHandleView(horizontal: horizontal)
         divider.translatesAutoresizingMaskIntoConstraints = false
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        divider.onMouseDown = { [weak self] event in self?.beginDrag(event) }
+        divider.onMouseDragged = { [weak self] event in self?.drag(event) }
+        divider.onMouseUp = { [weak self] _ in self?.endDrag() }
 
         first.translatesAutoresizingMaskIntoConstraints = false
         second.translatesAutoresizingMaskIntoConstraints = false
@@ -226,8 +312,11 @@ private final class SplitContainerView: NSView {
         addSubview(divider)
         addSubview(second)
 
-        let divThickness = FlatChrome.splitDividerThickness
-        let multiplier = r / (1.0 - r)
+        // 6pt 的命中区域保证鼠标容易抓住，视觉仍只画 1pt 分隔线。
+        let multiplier = currentRatio / (1.0 - currentRatio)
+        divider.setAccessibilityIdentifier("muxterm.divider.\(firstPaneID)")
+        divider.setAccessibilityElement(true)
+        divider.setAccessibilityRole(.splitter)
 
         if horizontal {
             NSLayoutConstraint.activate([
@@ -238,16 +327,17 @@ private final class SplitContainerView: NSView {
                 divider.leadingAnchor.constraint(equalTo: first.trailingAnchor),
                 divider.topAnchor.constraint(equalTo: topAnchor),
                 divider.bottomAnchor.constraint(equalTo: bottomAnchor),
-                divider.widthAnchor.constraint(equalToConstant: divThickness),
+                divider.widthAnchor.constraint(equalToConstant: dividerLength),
 
                 second.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
                 second.trailingAnchor.constraint(equalTo: trailingAnchor),
                 second.topAnchor.constraint(equalTo: topAnchor),
                 second.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-                first.widthAnchor.constraint(equalTo: second.widthAnchor, multiplier: multiplier)
-                    .withPriority(.defaultHigh),
             ])
+            ratioConstraint = first.widthAnchor
+                .constraint(equalTo: second.widthAnchor, multiplier: multiplier)
+                .withPriority(.defaultHigh)
         } else {
             NSLayoutConstraint.activate([
                 first.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -257,22 +347,101 @@ private final class SplitContainerView: NSView {
                 divider.leadingAnchor.constraint(equalTo: leadingAnchor),
                 divider.trailingAnchor.constraint(equalTo: trailingAnchor),
                 divider.topAnchor.constraint(equalTo: first.bottomAnchor),
-                divider.heightAnchor.constraint(equalToConstant: divThickness),
+                divider.heightAnchor.constraint(equalToConstant: dividerLength),
 
                 second.leadingAnchor.constraint(equalTo: leadingAnchor),
                 second.trailingAnchor.constraint(equalTo: trailingAnchor),
                 second.topAnchor.constraint(equalTo: divider.bottomAnchor),
                 second.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-                first.heightAnchor.constraint(equalTo: second.heightAnchor, multiplier: multiplier)
-                    .withPriority(.defaultHigh),
             ])
+            ratioConstraint = first.heightAnchor
+                .constraint(equalTo: second.heightAnchor, multiplier: multiplier)
+                .withPriority(.defaultHigh)
         }
+        NSLayoutConstraint.activate([ratioConstraint])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         return nil
+    }
+
+    private func beginDrag(_ event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        dragStartPosition = horizontal ? point.x : point.y
+        dragStartRatio = currentRatio
+    }
+
+    private func drag(_ event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let position = horizontal ? point.x : point.y
+        let total = horizontal ? bounds.width : bounds.height
+        let next = PaneResizeMath.ratioAfterDrag(
+            startRatio: Double(dragStartRatio),
+            delta: Double(position - dragStartPosition),
+            totalLength: Double(total),
+            dividerLength: Double(dividerLength)
+        )
+        currentRatio = CGFloat(next)
+        NSLayoutConstraint.deactivate([ratioConstraint])
+        let multiplier = currentRatio / (1 - currentRatio)
+        ratioConstraint = (horizontal
+            ? first.widthAnchor.constraint(equalTo: second.widthAnchor, multiplier: multiplier)
+            : first.heightAnchor.constraint(equalTo: second.heightAnchor, multiplier: multiplier)
+        ).withPriority(.defaultHigh)
+        NSLayoutConstraint.activate([ratioConstraint])
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
+    private func endDrag() {
+        let extent = horizontal ? first.bounds.width : first.bounds.height
+        onResize(firstPaneID, horizontal, extent)
+    }
+}
+
+/// 分隔条的宽命中区域；mouseDown/dragged 都交给父 split。
+private final class DividerHandleView: NSView {
+    var onMouseDown: ((NSEvent) -> Void)?
+    var onMouseDragged: ((NSEvent) -> Void)?
+    var onMouseUp: ((NSEvent) -> Void)?
+
+    init(horizontal: Bool) {
+        self.horizontal = horizontal
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+    }
+
+    private let horizontal: Bool
+
+    override init(frame frameRect: NSRect) {
+        self.horizontal = true
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: horizontal ? .resizeLeftRight : .resizeUpDown)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?(event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        onMouseDragged?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onMouseUp?(event)
     }
 }
 
