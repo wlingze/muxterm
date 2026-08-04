@@ -62,14 +62,20 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     palette.socket = opts.socket.clone();
     let mut palette_open = false;
 
+    // 首帧：立即渲染一次（不依赖事件）
+    draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
+
     loop {
-        // drain 状态变更
+        // 每轮先 drain 状态变更并重绘（保证输出持续刷新，而非只在按键后）
         let events = bridge.poll_events();
         if !events.is_empty() {
             draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
+        } else {
+            // 即便无新事件也周期性重绘一次，保证首屏与 resize 后立即生效
+            draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
         }
 
-        if poll(Duration::from_millis(100)).context("poll event")? {
+        if poll(Duration::from_millis(50)).context("poll event")? {
             let ev = read().context("read event")?;
             match ev {
                 Event::Key(key) => {
