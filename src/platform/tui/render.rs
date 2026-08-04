@@ -294,8 +294,9 @@ fn draw_leaf(
     }
     // 用终端模拟器的屏幕网格渲染（不再打印累计原始输出）
     //
-    // `TerminalState.snapshot()` 返回的是「当前视口」网格（行数 = 终端行数），
-    // 内容在顶部，不是 scrollback。因此直接取前 inner.height 行渲染。
+    // `TerminalState.snapshot()` 返回整个 pane 网格（行数 = tmux pane 行数，可能
+    // 比当前可视区高）。当前提示符/最新输出在网格底部，因此取**底部** avail 行
+    // 作为可视视口（即“看当前屏幕底部”），而不是顶部（那会是旧内容）。
     let screen = screens.get(&pane_id).cloned().unwrap_or_default();
     let content_style = if is_active {
         Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
@@ -303,7 +304,8 @@ fn draw_leaf(
         Style::default().fg(theme.fg)
     };
     let avail = inner.height as usize;
-    let visible: Vec<String> = screen.iter().take(avail).cloned().collect();
+    let start = screen.len().saturating_sub(avail);
+    let visible: Vec<String> = screen[start..].to_vec();
     Paragraph::new(visible.join("\n"))
         .style(content_style)
         .render(inner, buf);
