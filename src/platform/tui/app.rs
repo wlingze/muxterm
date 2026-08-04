@@ -214,9 +214,14 @@ fn handle_palette_key(
             Ok(true)
         }
         KeyCode::Backspace => {
-            // 返回上一步
-            palette.back();
-            load_step_data(palette);
+            if !palette.query.is_empty() {
+                // 有过滤输入时，先删过滤字符
+                palette.pop_query();
+            } else {
+                // 返回上一步
+                palette.back();
+                load_step_data(palette);
+            }
             Ok(true)
         }
         KeyCode::Char(' ') => {
@@ -229,6 +234,16 @@ fn handle_palette_key(
                         load_step_data(palette);
                     }
                 }
+            } else {
+                // 其它 step：空格作为过滤字符输入
+                palette.push_query(' ');
+            }
+            Ok(true)
+        }
+        KeyCode::Char(c) => {
+            // 普通字符：过滤输入（opencode 风格）
+            if !c.is_control() {
+                palette.push_query(c);
             }
             Ok(true)
         }
@@ -238,6 +253,8 @@ fn handle_palette_key(
 
 /// 按当前 step 加载数据到 palette。
 fn load_step_data(palette: &mut PaletteState) {
+    // 进入新 step 时重置过滤输入，避免旧查询污染
+    palette.query.clear();
     match palette.step {
         WizardStep::Source => {
             palette.set_items(vec![

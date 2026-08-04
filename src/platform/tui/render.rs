@@ -390,9 +390,26 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
         buf,
     );
 
+    // 过滤输入行（opencode 风格）
+    let query_h = 1u16;
+    Paragraph::new(format!("> {}", palette.query))
+        .style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .render(
+            Rect {
+                y: inner.y + info_h,
+                height: query_h,
+                ..inner
+            },
+            buf,
+        );
+
     let list_area = Rect {
-        y: inner.y + info_h,
-        height: inner.height.saturating_sub(info_h),
+        y: inner.y + info_h + query_h,
+        height: inner.height.saturating_sub(info_h + query_h),
         ..inner
     };
 

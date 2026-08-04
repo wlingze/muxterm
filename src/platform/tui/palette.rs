@@ -115,6 +115,10 @@ pub struct PaletteState {
     pub socket: Option<String>,
     /// 当前 step 的列表项。
     pub items: Vec<WizardItem>,
+    /// 完整列表（未过滤）。
+    pub all_items: Vec<WizardItem>,
+    /// 顶部过滤输入（opencode 风格，逐字符过滤当前列表）。
+    pub query: String,
     pub list: ListState,
     /// 是否完成（拿到动作后置 true）。
     pub done: bool,
@@ -142,6 +146,11 @@ impl PaletteState {
                 WizardItem::plain("local（本机 tmux）", "local"),
                 WizardItem::plain("ssh（远程机器）", "ssh"),
             ],
+            all_items: vec![
+                WizardItem::plain("local（本机 tmux）", "local"),
+                WizardItem::plain("ssh（远程机器）", "ssh"),
+            ],
+            query: String::new(),
             list,
             done: false,
             action: None,
@@ -150,8 +159,26 @@ impl PaletteState {
 
     /// 设置当前 step 的列表项并重置选中。
     pub fn set_items(&mut self, items: Vec<WizardItem>) {
-        self.items = items;
+        self.all_items = items;
+        self.apply_query();
+    }
+
+    /// 按 query 过滤 all_items 到 items，并重置选中。
+    pub fn apply_query(&mut self) {
+        self.items = filter_items(&self.all_items, &self.query);
         self.list.select(Some(0));
+    }
+
+    /// 追加字符到过滤输入并重过滤。
+    pub fn push_query(&mut self, c: char) {
+        self.query.push(c);
+        self.apply_query();
+    }
+
+    /// 删除过滤输入最后一个字符并重过滤。
+    pub fn pop_query(&mut self) {
+        self.query.pop();
+        self.apply_query();
     }
 
     /// 当前选中项。
@@ -366,6 +393,35 @@ mod tests {
         assert_eq!(p.step, WizardStep::Action);
         p.back();
         assert_eq!(p.step, WizardStep::Host);
+    }
+
+    #[test]
+    fn query_filters_items_and_backspace_pops() {
+        let mut p = PaletteState::new();
+        // action step with sessions
+        p.advance(); // source->action (local)
+        p.set_items(vec![
+            WizardItem::new_item(),
+            WizardItem::plain("dev session", "dev"),
+            WizardItem::plain("prod session", "prod"),
+            WizardItem::plain("staging session", "staging"),
+        ]);
+        assert_eq!(p.items.len(), 4);
+        // type "prod"
+        p.push_query('p');
+        p.push_query('r');
+        p.push_query('o');
+        p.push_query('d');
+        assert!(p.items.iter().any(|i| i.value == "prod"));
+        assert!(p.items.iter().all(|i| i.value != "dev"));
+        // backspace removes last char "d" -> "pro" still matches prod+prod
+        p.pop_query();
+        assert!(p.items.iter().any(|i| i.value == "prod"));
+        // clear via backspaces
+        p.pop_query();
+        p.pop_query();
+        p.pop_query();
+        assert_eq!(p.items.len(), 4);
     }
 
     #[test]
