@@ -20,6 +20,8 @@
 
 1. 先读 `PRODUCT.md`（产品规划）、`ARCHITECTURE.md`（架构与交互规范），再动代码。
 2. **增量提交**：每个可独立验证的逻辑单元一个 commit。commit 信息 `feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `ci:` / `chore:`。
+2b. **commit 用中文写**：subject 用 `类型(scope): 中文描述` 格式（如 `feat(tui): 用 ratatui 重写 TUI`），
+    body 用中文逐条列出改动。类型前缀保持英文（feat/fix/test/refactor/docs/ci/chore），描述与细节一律中文。
 3. **TDD 优先**：协议解析这种纯逻辑模块，先写单元测试（`#[cfg(test)] mod tests`），再写实现。实现要能 `cargo test` 通过。
 4. **不要跳步**：每次只做当前任务清单里的内容，做完汇报，等下一轮指令。
 5. **验证**：改完必须 `cargo build`（或 `cargo check`）通过。新增依赖要在 `Cargo.toml` 里加，不要假设依赖存在。
