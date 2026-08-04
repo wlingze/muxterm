@@ -586,14 +586,8 @@ pub unsafe extern "C" fn muxterm_get_panes(
         return -1;
     }
     let handle = &*h;
-    let tid = if tab_id == 0 {
-        match handle.model.state().active_tab() {
-            Some(t) => t.id,
-            None => return 0,
-        }
-    } else {
-        TabId(tab_id)
-    };
+    // tmux window index 也是 0 基的，tab_id==0 是真实 tab，不能当作“active”哨兵。
+    let tid = TabId(tab_id);
     let panes = handle.model.state().panes(&tid);
     let n = panes.len().min(max_count as usize);
     let slice = std::slice::from_raw_parts_mut(out, n);
@@ -623,14 +617,10 @@ pub unsafe extern "C" fn muxterm_get_pane_output(
         return -1;
     }
     let handle = &*h;
-    let pane = if pane_id == 0 {
-        match handle.model.active_pane_id() {
-            Some(p) => p,
-            None => return -1,
-        }
-    } else {
-        PaneId(pane_id)
-    };
+    // 关键：tmux pane id 是 0 基的（真实存在 %0 / %1），pane_id==0 不能当作
+    // “active pane”哨兵，否则分割后取 %0 的输出会错误返回 active pane 的输出，
+    // 导致两个 pane 显示相同内容。这里一律按字面 pane id 处理。
+    let pane = PaneId(pane_id);
     let Some(out) = handle.model.state().pane_output(&pane) else {
         return 0;
     };
@@ -656,14 +646,8 @@ pub unsafe extern "C" fn muxterm_get_layout(
     }
     let handle = &mut *h;
     handle.layout_nodes.clear();
-    let tid = if tab_id == 0 {
-        match handle.model.state().active_tab() {
-            Some(t) => t.id,
-            None => return -1,
-        }
-    } else {
-        TabId(tab_id)
-    };
+    // tmux window index 0 基，tab_id==0 是真实 tab。
+    let tid = TabId(tab_id);
     let Some(tl) = handle.model.state().layout(&tid) else {
         return -1;
     };
