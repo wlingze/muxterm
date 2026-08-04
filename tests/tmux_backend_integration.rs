@@ -338,6 +338,65 @@ fn scenario4_send_keys_and_output() {
     cleanup(&socket);
 }
 
+// 回归 macOS SwiftTerm → FFI WriteRaw → tmux -CC：Ctrl-C 必须是 0x03，
+// 不能变成 send-keys 参数中的字面 "x03"。
+#[test]
+fn scenario4_raw_control_byte_reaches_tmux_pty() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let mut model = connect_tmux(&socket);
+    if !wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    }) {
+        eprintln!("skip: 初始 pane 未建立");
+        let _ = model.shutdown();
+        cleanup(&socket);
+        return;
+    }
+    let pane = model.state().active_pane().unwrap().id;
+
+    let mut keys = "cat"
+        .chars()
+        .map(muxterm::core::protocol::terminal::input::KeyEvent::Char)
+        .collect::<Vec<_>>();
+    keys.push(muxterm::core::protocol::terminal::input::KeyEvent::Enter);
+    model
+        .execute(Task::SendKeys { target: pane, keys })
+        .unwrap();
+    let _ = wait_for(&mut model, Duration::from_secs(2), |s| {
+        s.pane_output(&pane)
+            .map(|o| String::from_utf8_lossy(o).contains("cat"))
+            .unwrap_or(false)
+    });
+
+    model
+        .execute(Task::WriteRaw {
+            target: pane,
+            data: vec![0x03],
+        })
+        .unwrap();
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        let text = s
+            .pane_output(&pane)
+            .map(String::from_utf8_lossy)
+            .unwrap_or_default();
+        text.contains("^C")
+    });
+    let text = model
+        .state()
+        .pane_output(&pane)
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
+    assert!(ok, "Ctrl-C 应中断 cat 并回显 ^C，实际输出={text:?}");
+    assert!(!text.contains("x03"), "控制字节不能变成字面 x03: {text:?}");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
 // ============================================================================
 // Bug 1 测试：pane 按 tab 过滤（2 tab 3 pane 不混在一起）
 // ============================================================================
