@@ -2,6 +2,7 @@
 //!
 //! 内部持有 [`TerminalModel`] + tokio runtime，对外全部同步。
 
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -37,6 +38,9 @@ pub struct MuxtermHandle {
     tab_names: Vec<CString>,
     /// `get_layout` 节点池（连续存储，指针稳定至下次 get_layout）。
     layout_nodes: Vec<CLayoutNode>,
+    /// `muxterm_poll_events` 的 C 缓冲可能小于一次 refresh 的事件数；
+    /// 这里保留未返回的事件，避免 GUI 轮询 64 个事件时丢掉布局或输出。
+    deferred_events: VecDeque<StateChange>,
 }
 
 impl MuxtermHandle {
@@ -145,6 +149,7 @@ pub extern "C" fn muxterm_new(
         event_names: Vec::new(),
         tab_names: Vec::new(),
         layout_nodes: Vec::new(),
+        deferred_events: VecDeque::new(),
     };
     Box::into_raw(Box::new(handle))
 }
@@ -386,10 +391,11 @@ pub unsafe extern "C" fn muxterm_poll_events(
         }
         let handle = &mut *h;
         handle.clear_event_bufs();
-        let events = handle.model.refresh();
-        let n = events.len().min(max_count as usize);
+        handle.deferred_events.extend(handle.model.refresh());
+        let n = handle.deferred_events.len().min(max_count as usize);
         let slice = std::slice::from_raw_parts_mut(out, n);
-        for (i, ev) in events.iter().take(n).enumerate() {
+        let ready: Vec<StateChange> = handle.deferred_events.drain(..n).collect();
+        for (i, ev) in ready.iter().enumerate() {
             let c = state_change_to_c(handle, ev);
             // 回调
             if let StateChange::PaneOutput { pane, data } = ev {
@@ -427,13 +433,10 @@ pub unsafe extern "C" fn muxterm_send_input(
         let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
             return -1;
         };
-        match handle.model.execute(Task::WriteRaw {
+        task_result_code(handle.model.execute(Task::WriteRaw {
             target: pane,
             data: bytes,
-        }) {
-            Ok(_) => 0,
-            Err(_) => -1,
-        }
+        }))
     }))
     .unwrap_or(-1)
 }
@@ -809,6 +812,61 @@ mod tests {
                 CALLS.load(Ordering::SeqCst) > 0 || n == 0,
                 "有事件时应触发回调"
             );
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_poll_small_buffer_preserves_all_state_events() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            assert_eq!(muxterm_connect(h), 0);
+            let mut initial = [CStateChange::default(); 64];
+            let _ = muxterm_poll_events(h, initial.as_mut_ptr(), 64);
+
+            let task = CTask {
+                type_: TASK_SPLIT_PANE,
+                target_pane: 0,
+                target_tab: 0,
+                dir: DIR_HORIZONTAL,
+                name: ptr::null(),
+            };
+            assert_eq!(muxterm_execute(h, &task), 0);
+
+            let mut one = [CStateChange::default(); 1];
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut saw_added = false;
+            let mut saw_layout = false;
+            while std::time::Instant::now() < deadline && !(saw_added && saw_layout) {
+                let n = muxterm_poll_events(h, one.as_mut_ptr(), 1);
+                assert!(n >= 0);
+                if n == 1 {
+                    saw_added |= one[0].type_ == STATE_PANE_ADDED;
+                    saw_layout |= one[0].type_ == STATE_LAYOUT_CHANGED;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(saw_added, "小 C 缓冲不能丢失 PaneAdded 事件");
+            assert!(saw_layout, "小 C 缓冲不能丢失 LayoutChanged 事件");
+
+            let _ = muxterm_shutdown(h);
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_send_input_rejects_unknown_pane_instead_of_reporting_success() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            assert_eq!(muxterm_connect(h), 0);
+            let data = b"should-fail";
+            assert_eq!(
+                muxterm_send_input(h, u32::MAX, data.as_ptr(), data.len()),
+                -1
+            );
+            let _ = muxterm_shutdown(h);
             muxterm_free(h);
         }
     }
