@@ -246,15 +246,60 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
             match target {
                 Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |model| {
                     wait_ready(model, READY_POLL_DURATION);
+                    // attach 的已有屏幕由后台 capture-pane 查询回流；在构造
+                    // CLI 响应前等待一次，确保 CLI 与 GUI 观察到同一份快照。
+                    let restore_deadline = Instant::now() + Duration::from_secs(2);
+                    while Instant::now() < restore_deadline {
+                        let _ = model.refresh();
+                        let restored = model
+                            .state()
+                            .active_tab()
+                            .map(|tab| {
+                                model.state().panes(&tab.id).iter().any(|pane| {
+                                    model
+                                        .state()
+                                        .pane_output(&pane.id)
+                                        .is_some_and(|output| !output.is_empty())
+                                })
+                            })
+                            .unwrap_or(false);
+                        if restored {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     let tabs = model
                         .state()
                         .active_window()
                         .map(|w| model.state().tabs(&w.id).len() as u32)
                         .unwrap_or(0);
+                    let panes: Vec<serde_json::Value> = model
+                        .state()
+                        .active_tab()
+                        .map(|tab| {
+                            model
+                                .state()
+                                .panes(&tab.id)
+                                .iter()
+                                .map(|pane| {
+                                    let output = model
+                                        .state()
+                                        .pane_output(&pane.id)
+                                        .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                                        .unwrap_or_default();
+                                    serde_json::json!({
+                                        "id": pane.id.0,
+                                        "output": output,
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     Ok(serde_json::json!({
                         "session": name,
                         "attached": true,
                         "tabs": tabs,
+                        "panes": panes,
                     }))
                 }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
