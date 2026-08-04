@@ -8,6 +8,7 @@ final class PaneLayoutView: NSView {
     private let terminalManager: TerminalManager
     private var rootView: NSView?
     private var rootConstraints: [NSLayoutConstraint] = []
+    private var currentLayout: LayoutNode?
     private var hostByPane: [UInt32: PaneHostView] = [:]
     private var currentPaneIds = Set<UInt32>()
     private var geometrySyncScheduled = false
@@ -54,12 +55,23 @@ final class PaneLayoutView: NSView {
             return false
         }
 
+        // 只有 pane 拓扑或 tmux 保存的比例真正变化时才重建 AppKit 树。
+        // 窗口 resize 产生的重复 layout-change 只需重新同步几何；反复
+        // unparent/重建 SwiftTerm 会造成 tab 闪烁和 Metal 层短暂黑屏。
+        if tree == currentLayout, Set(expectedPaneIDs) == currentPaneIds {
+            let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
+            markActivePane(active)
+            scheduleGeometrySync(paneIds: currentPaneIds)
+            return true
+        }
+
         if let rootView {
             NSLayoutConstraint.deactivate(rootConstraints)
             rootConstraints = []
             rootView.removeFromSuperview()
         }
         rootView = nil
+        currentLayout = nil
         hostByPane.removeAll()
         currentPaneIds.removeAll()
         pendingGeometryPaneIds = nil
@@ -69,6 +81,7 @@ final class PaneLayoutView: NSView {
             return true
         }
 
+        currentLayout = tree
         let built = build(node: tree)
         built.translatesAutoresizingMaskIntoConstraints = false
         addSubview(built)
@@ -369,13 +382,15 @@ private final class SplitContainerView: NSView {
 
     private func beginDrag(_ event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        dragStartPosition = horizontal ? point.x : point.y
+        // AppKit 默认坐标原点在左下角；布局树的 vertical 轴从上到下
+        // 计算，所以先把 y 转成“距顶部”的坐标，拖动方向才与视觉一致。
+        dragStartPosition = horizontal ? point.x : bounds.height - point.y
         dragStartRatio = currentRatio
     }
 
     private func drag(_ event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let position = horizontal ? point.x : point.y
+        let position = horizontal ? point.x : bounds.height - point.y
         let total = horizontal ? bounds.width : bounds.height
         let next = PaneResizeMath.ratioAfterDrag(
             startRatio: Double(dragStartRatio),
@@ -434,6 +449,31 @@ private final class DividerHandleView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         onMouseDown?(event)
+
+        // AppKit 通常会把 mouseDragged 继续发给当前 view，但在嵌套
+        // Auto Layout + live window resize 时，vertical divider 偶尔会丢掉
+        // 后续事件。这里在 mouseDown 内显式抓取 left-drag/up，保证上下、
+        // 左右分隔条走同一条可靠路径。
+        guard let window else { return }
+        while true {
+            guard let next = window.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp],
+                until: .distantFuture,
+                inMode: .eventTracking,
+                dequeue: true
+            ) else {
+                return
+            }
+            switch next.type {
+            case .leftMouseDragged:
+                onMouseDragged?(next)
+            case .leftMouseUp:
+                onMouseUp?(next)
+                return
+            default:
+                continue
+            }
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {

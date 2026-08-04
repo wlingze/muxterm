@@ -213,6 +213,69 @@ final class MuxtermAppUITests: XCTestCase {
         assertTerminal(paneA, contains: "PANE_A2_OK")
     }
 
+    /// 上下 pane 的分隔条必须可拖动；拖动后仍保持 3 个非零 pane，随后
+    /// 终端输入/输出也必须继续工作，防止 divider 事件导致视图树失焦。
+    func testVerticalDividerCanBeDraggedWithoutBreakingLayout() throws {
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 5)
+
+        app.typeKey("d", modifierFlags: .command)
+        waitStatusContains(status, "panes: 2", timeout: 8)
+        app.typeKey("d", modifierFlags: [.command, .shift])
+        waitStatusContains(status, "panes: 3", timeout: 8)
+        settle(window)
+
+        let dividers = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "muxterm.divider.")
+        )
+        var verticalDivider: XCUIElement?
+        for i in 0..<dividers.count {
+            let candidate = dividers.element(boundBy: i)
+            let frame = candidate.frame
+            // 上下 pane 的 divider 是横线：宽远大于高。
+            if frame.width > frame.height * 2, frame.width > 40, frame.height > 0 {
+                verticalDivider = candidate
+                break
+            }
+        }
+        guard let verticalDivider else {
+            XCTFail("应找到上下 pane 的横向 divider")
+            return
+        }
+
+        let start = verticalDivider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = verticalDivider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        settle(window)
+
+        waitStatusContains(status, "panes: 3", timeout: 5)
+        assertThreePaneLayoutReasonable()
+        echoAndVerifyVisible("VERTICAL_DRAG_IO_OK")
+    }
+
+    /// Ctrl-C / Ctrl-L 走真实终端控制字节，不应变成字面 x03/x0c，也不能
+    /// 让 GUI 失去连接；这是 shell 基础输入回归。
+    func testControlKeysReachShellWithoutLiteralEscapes() throws {
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 5)
+
+        app.typeText("cat\r")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        app.typeKey("c", modifierFlags: .control)
+        assertAnyTerminalContains("^C", timeout: 8)
+
+        app.typeKey("l", modifierFlags: .control)
+        waitStatusContains(status, "connected", timeout: 5)
+        echoAndVerifyVisible("CONTROL_KEYS_OK")
+        let output = (app.descendants(matching: .any)["muxterm.outputSnippet"].value as? String) ?? ""
+        XCTAssertFalse(output.contains("x03"), "Ctrl-C 不应显示成字面 x03")
+        XCTAssertFalse(output.contains("x0c"), "Ctrl-L 不应显示成字面 x0c")
+    }
+
     // MARK: - Ctrl+D
 
     func testCtrlDSingleTabClosesWindow() throws {
