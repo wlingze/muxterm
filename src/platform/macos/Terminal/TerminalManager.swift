@@ -13,6 +13,9 @@ final class TerminalManager: TerminalInputHandler {
     private var lastPtySize: [UInt32: (UInt16, UInt16)] = [:]
     /// 上次发送给 tmux control client 的整体尺寸。
     private var lastClientSize: (UInt16, UInt16)?
+    /// 已排队但尚未发送的整体尺寸；窗口 live resize 期间只保留最后一帧。
+    private var pendingClientSize: (UInt16, UInt16)?
+    private var clientResizeWorkItem: DispatchWorkItem?
     /// 同一 pane 的 resize 失败只报告一次，避免轮询/重绘时刷屏。
     private var reportedResizeFailures = Set<UInt32>()
     private var reportedClientResizeFailure = false
@@ -20,6 +23,10 @@ final class TerminalManager: TerminalInputHandler {
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
     var onError: ((String) -> Void)?
+
+    deinit {
+        clientResizeWorkItem?.cancel()
+    }
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
@@ -35,6 +42,9 @@ final class TerminalManager: TerminalInputHandler {
         outputCursors.removeAll()
         lastPtySize.removeAll()
         lastClientSize = nil
+        pendingClientSize = nil
+        clientResizeWorkItem?.cancel()
+        clientResizeWorkItem = nil
         reportedResizeFailures.removeAll()
         reportedClientResizeFailure = false
         recentOutputSnippet = ""
@@ -118,12 +128,37 @@ final class TerminalManager: TerminalInputHandler {
         let cols = Int(floor(pixelSize.width / CGFloat(cell.width)))
         let rows = Int(floor(pixelSize.height / CGFloat(cell.height)))
         guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
-        let c = UInt16(cols)
-        let r = UInt16(rows)
-        guard lastClientSize?.0 != c || lastClientSize?.1 != r else { return }
+        let size = (UInt16(cols), UInt16(rows))
+        guard lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1 else { return }
+        guard pendingClientSize?.0 != size.0 || pendingClientSize?.1 != size.1 else { return }
+
+        pendingClientSize = size
+        clientResizeWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self, weak container] in
+            guard let self, let container else { return }
+            self.pendingClientSize = nil
+            self.clientResizeWorkItem = nil
+            self.sendClientResize(container: container, paneIds: paneIds)
+        }
+        clientResizeWorkItem = work
+        // live resize 每个像素都会触发 layout；延迟一个短帧，只把最终
+        // 字符格尺寸写给 tmux，避免 refresh-client/layout-change 互相追赶。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: work)
+    }
+
+    private func sendClientResize(container: NSView, paneIds: Set<UInt32>) {
+        guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
+            return
+        }
+        let pixelSize = container.convertToBacking(container.bounds).size
+        let cols = Int(floor(pixelSize.width / CGFloat(cell.width)))
+        let rows = Int(floor(pixelSize.height / CGFloat(cell.height)))
+        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
+        let size = (UInt16(cols), UInt16(rows))
+        guard lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1 else { return }
         guard let bridge else { return }
-        if bridge.resizeClient(cols: c, rows: r) == 0 {
-            lastClientSize = (c, r)
+        if bridge.resizeClient(cols: size.0, rows: size.1) == 0 {
+            lastClientSize = size
             reportedClientResizeFailure = false
         } else if !reportedClientResizeFailure {
             reportedClientResizeFailure = true

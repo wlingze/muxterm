@@ -666,3 +666,87 @@ fn macos_ffi_tmux_client_resize_is_stable_and_pane_axis_resize_persists() {
         .args(["-L", &backend, "kill-server"])
         .status();
 }
+
+/// 窗口 live resize 回归：client 尺寸变化不应把 active tab、其它 tab 或
+/// 嵌套分割方向混在一起。每次 resize 后切回两个 tab，验证 layout 叶子和
+/// H/V 拓扑仍与 attach 时一致。
+#[test]
+fn macos_ffi_window_resize_preserves_tab_layouts_and_directions() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+
+    let backend = format!("mac-window-resize-{}-{}", std::process::id(), rand_suffix());
+    setup_tmux_backend_2tab3pane(&backend);
+    let bt = CString::new("tmux").unwrap();
+    let sock = CString::new(backend.as_str()).unwrap();
+    let sess = CString::new("demo").unwrap();
+    let h = muxterm_new(bt.as_ptr(), sock.as_ptr(), sess.as_ptr());
+    assert!(!h.is_null(), "muxterm_new 失败");
+
+    unsafe {
+        assert_eq!(muxterm_connect(h), 0);
+        let mut ev = [CStateChange::default(); 128];
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(80));
+            let _ = muxterm_poll_events(h, ev.as_mut_ptr(), ev.len() as i32);
+        }
+
+        let mut tabs = [CTab {
+            id: 0,
+            name: ptr::null(),
+            is_active: 0,
+        }; 8];
+        let ntabs = muxterm_get_tabs(h, tabs.as_mut_ptr(), tabs.len() as i32);
+        assert_eq!(ntabs, 2);
+        let ids: Vec<u32> = tabs[..ntabs as usize].iter().map(|tab| tab.id).collect();
+        let three_tab = ids
+            .iter()
+            .copied()
+            .find(|id| tab_layout_shape(h, *id).0.len() == 3)
+            .unwrap();
+        let one_tab = ids
+            .iter()
+            .copied()
+            .find(|id| tab_layout_shape(h, *id).0.len() == 1)
+            .unwrap();
+
+        let (_, three_shape) = tab_layout_shape(h, three_tab);
+        let (_, one_shape) = tab_layout_shape(h, one_tab);
+        assert!(matches!(
+            &three_shape,
+            LayoutShape::Split {
+                type_: LAYOUT_SPLIT_H,
+                second,
+                ..
+            } if matches!(second.as_ref(), LayoutShape::Split { type_: LAYOUT_SPLIT_V, .. })
+        ));
+        assert!(matches!(&one_shape, LayoutShape::Leaf(_)));
+
+        for (cols, rows) in [(120, 36), (90, 24), (140, 40), (100, 30)] {
+            assert_eq!(muxterm_resize_client(h, cols, rows), 0);
+            for _ in 0..8 {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = muxterm_poll_events(h, ev.as_mut_ptr(), ev.len() as i32);
+            }
+
+            switch_tab(h, three_tab);
+            let (three_ids, shape_after_resize) = tab_layout_shape(h, three_tab);
+            assert_eq!(three_ids.len(), 3);
+            assert_eq!(shape_after_resize, three_shape);
+
+            switch_tab(h, one_tab);
+            let (one_ids, one_shape_after_resize) = tab_layout_shape(h, one_tab);
+            assert_eq!(one_ids.len(), 1);
+            assert_eq!(one_shape_after_resize, one_shape);
+        }
+
+        assert_eq!(muxterm_shutdown(h), 0);
+        muxterm_free(h);
+    }
+
+    let _ = Command::new("tmux")
+        .args(["-L", &backend, "kill-server"])
+        .status();
+}
