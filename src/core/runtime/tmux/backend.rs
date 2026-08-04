@@ -16,8 +16,7 @@
 //! 与 LocalBackend 不同：状态变化由 tmux 推送的事件驱动，execute 只发命令，
 //! 不立即改 state（tmux 会回推 LayoutChange/PaneModeChanged 等通知）。
 
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -45,6 +44,8 @@ use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum PendingQuery {
+    /// 非查询命令的响应占位；避免 split/send-keys 的 `%end` 消耗后续查询。
+    Ignore,
     /// list-panes -t <window> -F '...'：解析所有 pane（pane_id, window_id, active, cols, rows）。
     ListPanes { window: WindowId },
     /// list-windows -t <session> -F '...'：解析所有 window（window_id, name, active, layout, panes）。
@@ -64,10 +65,12 @@ pub struct TmuxBackend {
     event_rx: Option<mpsc::Receiver<TmuxEvent>>,
     /// 命令发送 channel：execute 把 TmuxCommand 字符串塞进来，
     /// 后台 sender task 异步 send_command。
-    cmd_tx: Option<mpsc::Sender<String>>,
+    cmd_tx: Option<mpsc::UnboundedSender<String>>,
     /// 后台事件回流 task 的 join handle（用于 shutdown 时 abort）。
     _pump_handle: Option<tokio::task::JoinHandle<()>>,
     _sender_handle: Option<tokio::task::JoinHandle<()>>,
+    /// sender task 的异步写错误；由前端轮询成可见状态事件。
+    command_error_rx: Option<mpsc::UnboundedReceiver<String>>,
 
     // ── 内部 state ──────────────────────────────────────────
     sessions: Vec<SessionInfo>,
@@ -90,6 +93,11 @@ pub struct TmuxBackend {
     window_layouts: HashMap<WindowId, String>,
     /// 每个 window 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
     expected_panes_per_window: HashMap<WindowId, usize>,
+    /// attach 初始快照查询中的 pane。初始 `%output` 不能先喂给前端，
+    /// 否则随后 capture-pane 只能追加，已有屏幕内容会重复或缺失。
+    initial_capture_pending: HashSet<PaneId>,
+    /// 已完成 attach 初始快照的 pane；之后的 `%output` 才是实时增量。
+    initial_capture_done: HashSet<PaneId>,
 }
 
 impl TmuxBackend {
@@ -136,6 +144,7 @@ impl TmuxBackend {
             cmd_tx: None,
             _pump_handle: None,
             _sender_handle: None,
+            command_error_rx: None,
             sessions: vec![],
             active_session: None,
             windows: vec![],
@@ -149,6 +158,8 @@ impl TmuxBackend {
             pending_queries: VecDeque::new(),
             window_layouts: HashMap::new(),
             expected_panes_per_window: HashMap::new(),
+            initial_capture_pending: HashSet::new(),
+            initial_capture_done: HashSet::new(),
         }
     }
 
@@ -283,10 +294,20 @@ impl TmuxBackend {
         }
     }
 
+    fn is_attach_mode(&self) -> bool {
+        matches!(self.config.mode.as_ref(), Some(ConnectMode::Attach { .. }))
+    }
+
     /// 处理一条 tmux Message，更新内部 state 并产生 StateChange。
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Output { pane, content, .. } => {
+                // attach 的初始控制流可能先发一个 prompt，再由 list-panes
+                // 查询完整屏幕。先抑制这段不完整输出，capture-pane 返回后
+                // 以完整快照初始化；实时输出随后正常走增量路径。
+                if self.is_attach_mode() && !self.initial_capture_done.contains(&pane) {
+                    return;
+                }
                 append_capped(
                     self.outputs.entry(pane).or_default(),
                     &content,
@@ -452,6 +473,19 @@ impl TmuxBackend {
 
     /// drain event_rx 的 TmuxEvent，更新 state。
     fn pump_events(&mut self) {
+        let mut command_errors = Vec::new();
+        if let Some(rx) = self.command_error_rx.as_mut() {
+            while let Ok(message) = rx.try_recv() {
+                command_errors.push(message);
+            }
+        }
+        for message in command_errors {
+            tracing::error!(target: "muxterm::tmux", "发送 tmux 命令失败: {message}");
+            self.status = BackendStatus::Error;
+            self.events
+                .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
+        }
+
         // 先把所有 TmuxEvent drain 到本地 vec，避免与 self 的可变借用冲突。
         let mut pending = Vec::new();
         if let Some(rx) = self.event_rx.as_mut() {
@@ -479,12 +513,28 @@ impl TmuxBackend {
                                     self.response_accum.remove(&b.number).unwrap_or_default();
 
                                 if let Some(q) = self.pending_queries.pop_front() {
-                                    tracing::warn!(
-                                        target: "muxterm::tmux",
-                                        "tmux 命令 {} 出错（丢弃查询 {:?}）",
-                                        b.number,
-                                        q
-                                    );
+                                    match q {
+                                        PendingQuery::CapturePane { pane } => {
+                                            // capture 失败时不能永久抑制该 pane 的
+                                            // 后续输出；让实时流继续恢复渲染。
+                                            self.initial_capture_pending.remove(&pane);
+                                            self.initial_capture_done.insert(pane);
+                                            tracing::warn!(
+                                                target: "muxterm::tmux",
+                                                "tmux 命令 {} 的 pane @{} 屏幕恢复失败",
+                                                b.number,
+                                                pane.0
+                                            );
+                                        }
+                                        other => {
+                                            tracing::warn!(
+                                                target: "muxterm::tmux",
+                                                "tmux 命令 {} 出错（丢弃查询 {:?}）",
+                                                b.number,
+                                                other
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -515,6 +565,7 @@ impl TmuxBackend {
         // 简化：按 FIFO 弹出 pending_queries；tmux 命令是串行的，顺序匹配。
         if let Some(query) = self.pending_queries.pop_front() {
             match query {
+                PendingQuery::Ignore => {}
                 PendingQuery::ListPanes { window } => {
                     self.handle_list_panes_response(window, lines);
                 }
@@ -536,28 +587,43 @@ impl TmuxBackend {
                 }
                 PendingQuery::CapturePane { pane } => {
                     // capture-pane -p 按行返回当前可见屏幕；拼回 CRLF 后喂给
-                    // terminal emulator。只有累计输出为空时才使用快照，避免把
-                    // tmux 已经主动推送的初始 %output 再喂一遍造成重复渲染。
-                    if lines.is_empty()
-                        || self
-                            .outputs
-                            .get(&pane)
-                            .is_some_and(|output| !output.is_empty())
-                    {
-                        return;
-                    }
+                    // terminal emulator。attach 初始阶段必须以快照替换此前
+                    // 被抑制的 `%output`，不能因为已有 prompt 就跳过恢复。
                     let mut data = lines.join("\r\n").into_bytes();
                     if !data.is_empty() {
                         data.extend_from_slice(b"\r\n");
                     }
-                    append_capped(
-                        self.outputs.entry(pane).or_default(),
-                        &data,
-                        MAX_PANE_OUTPUT_BYTES,
-                    );
-                    self.events
-                        .push_back(StateChange::PaneOutput { pane, data });
-                    self.trim_event_queue();
+                    if self.is_attach_mode() {
+                        self.initial_capture_pending.remove(&pane);
+                        self.initial_capture_done.insert(pane);
+                        let snapshot = if data.len() > MAX_PANE_OUTPUT_BYTES {
+                            data[data.len() - MAX_PANE_OUTPUT_BYTES..].to_vec()
+                        } else {
+                            data
+                        };
+                        self.outputs.insert(pane, snapshot.clone());
+                        if !snapshot.is_empty() {
+                            self.events.push_back(StateChange::PaneOutput {
+                                pane,
+                                data: snapshot,
+                            });
+                            self.trim_event_queue();
+                        }
+                    } else if !data.is_empty()
+                        && self
+                            .outputs
+                            .get(&pane)
+                            .is_none_or(|output| output.is_empty())
+                    {
+                        append_capped(
+                            self.outputs.entry(pane).or_default(),
+                            &data,
+                            MAX_PANE_OUTPUT_BYTES,
+                        );
+                        self.events
+                            .push_back(StateChange::PaneOutput { pane, data });
+                        self.trim_event_queue();
+                    }
                 }
                 PendingQuery::ListSessions => {
                     // list-sessions 默认格式: "demo: 1 windows (created ...)"
@@ -741,26 +807,25 @@ impl TmuxBackend {
         }
         let line = format!("list-panes -t @{}\n", window.0);
         if self.dispatch_command(line).is_ok() {
-            self.pending_queries
-                .push_back(PendingQuery::ListPanes { window });
+            self.replace_last_pending(PendingQuery::ListPanes { window });
         }
     }
 
     /// 查询 pane 当前可见屏幕，用于 attach 初始渲染恢复。
     fn query_capture_pane(&mut self, pane: PaneId) {
+        if !self.is_attach_mode() {
+            return;
+        }
         if self.pending_queries.iter().any(
             |query| matches!(query, PendingQuery::CapturePane { pane: pending } if *pending == pane),
-        ) || self
-            .outputs
-            .get(&pane)
-            .is_some_and(|output| !output.is_empty())
+        ) || self.initial_capture_done.contains(&pane)
         {
             return;
         }
         let line = format!("capture-pane -e -p -t %{}\n", pane.0);
         if self.dispatch_command(line).is_ok() {
-            self.pending_queries
-                .push_back(PendingQuery::CapturePane { pane });
+            self.initial_capture_pending.insert(pane);
+            self.replace_last_pending(PendingQuery::CapturePane { pane });
         }
     }
 
@@ -768,7 +833,7 @@ impl TmuxBackend {
     fn query_list_sessions(&mut self) {
         let line = "list-sessions\n".to_string();
         if self.dispatch_command(line).is_ok() {
-            self.pending_queries.push_back(PendingQuery::ListSessions);
+            self.replace_last_pending(PendingQuery::ListSessions);
         }
     }
 
@@ -781,7 +846,7 @@ impl TmuxBackend {
         );
 
         if self.dispatch_command(line).is_ok() {
-            self.pending_queries.push_back(PendingQuery::ListWindows);
+            self.replace_last_pending(PendingQuery::ListWindows);
         }
     }
 
@@ -859,21 +924,35 @@ impl TmuxBackend {
 
     /// 把一个命令异步发送给 tmux（通过 channel）。
     /// execute 是同步 fn，命令发送走后台 task。
-    fn dispatch_command(&self, line: String) -> std::io::Result<()> {
+    fn replace_last_pending(&mut self, query: PendingQuery) {
+        if let Some(last) = self.pending_queries.back_mut() {
+            *last = query;
+        }
+    }
+
+    fn dispatch_command(&mut self, line: String) -> std::io::Result<()> {
         let Some(tx) = self.cmd_tx.as_ref() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "tmux 命令通道未建立",
             ));
         };
-        // 用 try_send 非阻塞塞入 channel
-        tx.try_send(line).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::WouldBlock, format!("命令通道满: {e}"))
-        })
+        // UnboundedSender 只会在 sender task 已退出时失败，不会在快速键入/粘贴
+        // 时返回 WouldBlock 丢掉 shell 输入；实际写入仍由后台 task 串行化。
+        tx.send(line).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                format!("命令通道已关闭: {e}"),
+            )
+        })?;
+        // 所有 control-mode 命令都按 FIFO 占一个响应槽；查询调用方会
+        // 立即把最后一个占位替换成具体 PendingQuery。
+        self.pending_queries.push_back(PendingQuery::Ignore);
+        Ok(())
     }
 
     /// 便捷：发送一个 TmuxCommand。
-    fn dispatch_tmux_command(&self, command: &cmd::TmuxCommand) -> std::io::Result<()> {
+    fn dispatch_tmux_command(&mut self, command: &cmd::TmuxCommand) -> std::io::Result<()> {
         self.dispatch_command(command.to_line())
     }
 }
@@ -953,11 +1032,15 @@ impl Backend for TmuxBackend {
         // execute 同步 dispatch 命令到 cmd_tx；sender task 异步 send_command。
         // shutdown 时 drop cmd_tx 让 sender task 结束；handle 在 sender task 里，
         // shutdown 用 detach + 让 tmux 退出（kill 由 tmux 自然退出完成）。
-        let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(256);
+        // 命令（尤其是逐字输入）必须按 FIFO 无损排队。bounded + try_send
+        // 会在快速键入/粘贴时返回 WouldBlock，直接丢掉 shell 输入。
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<String>();
+        let (command_error_tx, command_error_rx) = mpsc::unbounded_channel::<String>();
         let mut sender_handle = handle;
         let sender_join = tokio::spawn(async move {
             while let Some(line) = cmd_rx.recv().await {
-                if sender_handle.send_raw(&line).await.is_err() {
+                if let Err(error) = sender_handle.send_raw(&line).await {
+                    let _ = command_error_tx.send(error.to_string());
                     break;
                 }
             }
@@ -967,6 +1050,7 @@ impl Backend for TmuxBackend {
 
         self.event_rx = Some(rx);
         self.cmd_tx = Some(cmd_tx);
+        self.command_error_rx = Some(command_error_rx);
         self._sender_handle = Some(sender_join);
         self.handle = None; // handle 已 move 进 sender task
 
@@ -1543,6 +1627,47 @@ mod tests {
     }
 
     #[test]
+    fn command_queue_accepts_high_frequency_input_without_would_block() {
+        let mut backend = TmuxBackend::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        backend.cmd_tx = Some(tx);
+        backend.status = BackendStatus::Connected;
+
+        let burst = 4_096;
+        for _ in 0..burst {
+            let outcome = backend
+                .execute(&Task::WriteRaw {
+                    target: PaneId(1),
+                    data: b"x".to_vec(),
+                })
+                .unwrap();
+            assert_eq!(outcome, TaskOutcome::Done);
+        }
+
+        let mut received = 0;
+        while rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, burst, "高频输入不能因队列满而丢失");
+    }
+
+    #[test]
+    fn asynchronous_command_error_becomes_backend_status_instead_of_panic() {
+        let mut backend = TmuxBackend::new(None);
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        backend.command_error_rx = Some(rx);
+        tx.send("pty 已关闭".into()).unwrap();
+
+        backend.pump_events();
+
+        assert_eq!(backend.status, BackendStatus::Error);
+        assert!(backend.events.iter().any(|event| matches!(
+            event,
+            StateChange::BackendStatusChanged(BackendStatus::Error)
+        )));
+    }
+
+    #[test]
     fn layout_change_rebuilds_from_latest_nested_tmux_tree() {
         let mut b = TmuxBackend::new(None);
         let window = WindowId(0);
@@ -1614,7 +1739,7 @@ mod tests {
             window,
             vec!["0: [70x30] %0 (active)".into(), "1: [69x15] %1".into()],
         );
-        assert!(b.layouts.get(&TabId(0)).is_none());
+        assert!(!b.layouts.contains_key(&TabId(0)));
         assert!(b.panes.is_empty());
     }
 
@@ -1682,6 +1807,52 @@ mod tests {
             b.outputs.get(&pane).unwrap(),
             b"\x1b[32mrestored shell\r\nprompt$\r\n"
         );
+    }
+
+    #[test]
+    fn attach_initial_output_waits_for_full_capture_snapshot() {
+        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let pane = PaneId(3);
+
+        // attach 初始流里的 prompt 不是完整屏幕，不能先暴露给 GUI。
+        b.handle_message(Message::Output {
+            pane,
+            content: b"prompt$ ".to_vec(),
+            raw_content: "prompt$ ".into(),
+        });
+        assert!(!b.outputs.contains_key(&pane));
+        assert!(b.events.is_empty());
+
+        b.pending_queries
+            .push_back(PendingQuery::CapturePane { pane });
+        b.dispatch_response(1, vec!["old command".into(), "prompt$ ".into()]);
+        assert_eq!(
+            b.outputs.get(&pane).unwrap(),
+            b"old command\r\nprompt$ \r\n"
+        );
+
+        // 快照完成后，后续输出恢复为普通增量。
+        b.handle_message(Message::Output {
+            pane,
+            content: b"live\r\n".to_vec(),
+            raw_content: "live\\r\\n".into(),
+        });
+        assert!(b.outputs.get(&pane).unwrap().ends_with(b"live\r\n"));
+    }
+
+    #[test]
+    fn command_response_placeholder_does_not_consume_capture_query() {
+        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let pane = PaneId(4);
+        b.pending_queries.push_back(PendingQuery::Ignore);
+        b.pending_queries
+            .push_back(PendingQuery::CapturePane { pane });
+
+        // split/send-keys 等普通命令的响应先到，不能把 capture 查询错配掉。
+        b.dispatch_response(1, vec!["ignored".into()]);
+        b.dispatch_response(2, vec!["restored".into()]);
+
+        assert_eq!(b.outputs.get(&pane).unwrap(), b"restored\r\n");
     }
 
     fn unique_socket() -> String {
