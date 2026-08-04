@@ -9,7 +9,7 @@ use std::ptr;
 
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::StateChange;
-use crate::core::model::task::Task;
+use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
 use crate::core::runtime::{DaemonBackend, LocalBackend, TmuxBackend};
 use crate::core::types::{PaneId, TabId, WindowId};
@@ -17,12 +17,12 @@ use crate::platform::cli::session::session_socket_path;
 
 use super::callbacks::FfiCallbacks;
 use super::types::{
-    CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
-    LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
-    STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT,
-    STATE_PANE_RESIZED, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED, TASK_CLOSE_PANE,
-    TASK_CLOSE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE,
-    TASK_SWITCH_PANE, TASK_SWITCH_TAB,
+    CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF,
+    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED,
+    STATE_BACKEND_STATUS, STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED,
+    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED,
+    TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SHUTDOWN,
+    TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
 };
 
 /// FFI 句柄：TerminalModel + runtime + 供 C 侧借用的缓冲。
@@ -70,6 +70,13 @@ fn cstr_opt(p: *const c_char) -> Option<String> {
         .to_str()
         .ok()
         .map(|s| s.to_string())
+}
+
+fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
+    match result {
+        Ok(TaskOutcome::Done) => 0,
+        Ok(TaskOutcome::Rejected { .. }) | Err(_) => -1,
+    }
 }
 
 /// 创建 handle。
@@ -273,10 +280,7 @@ pub unsafe extern "C" fn muxterm_execute(h: *mut MuxtermHandle, task: *const CTa
         let Some(rust_task) = ctask_to_task(ctask, &handle.model) else {
             return -1;
         };
-        match handle.model.execute(rust_task) {
-            Ok(_) => 0,
-            Err(_) => -1,
-        }
+        task_result_code(handle.model.execute(rust_task))
     }))
     .unwrap_or(-1)
 }
@@ -463,14 +467,61 @@ pub unsafe extern "C" fn muxterm_resize_pane(
         let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
             return -1;
         };
-        match handle.model.execute(Task::ResizePane {
+        task_result_code(handle.model.execute(Task::ResizePane {
             target: pane,
             cols,
             rows,
-        }) {
-            Ok(_) => 0,
-            Err(_) => -1,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// 调整 tmux 控制 client 的字符格尺寸。0=ok，-1=err。
+///
+/// # Safety
+/// `h` 有效。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_resize_client(h: *mut MuxtermHandle, cols: u16, rows: u16) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || cols == 0 || rows == 0 {
+            return -1;
         }
+        let handle = &mut *h;
+        task_result_code(handle.model.execute(Task::ResizeClient { cols, rows }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// 调整分割条相邻 pane 的单一轴尺寸。0=ok，-1=err。
+///
+/// `axis` 使用 `DIR_HORIZONTAL`（宽度）或 `DIR_VERTICAL`（高度）。
+/// # Safety
+/// `h` 有效。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_resize_pane_axis(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    axis: u32,
+    size: u16,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || size == 0 || (axis != DIR_HORIZONTAL && axis != DIR_VERTICAL) {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+            return -1;
+        };
+        let dir = if axis == DIR_VERTICAL {
+            SplitDir::Vertical
+        } else {
+            SplitDir::Horizontal
+        };
+        task_result_code(handle.model.execute(Task::ResizePaneAxis {
+            target: pane,
+            dir,
+            size,
+        }))
     }))
     .unwrap_or(-1)
 }

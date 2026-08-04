@@ -23,11 +23,12 @@ use std::time::Duration;
 
 use muxterm::core::protocol::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_panes,
-    muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_shutdown,
+    muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_resize_client,
+    muxterm_resize_pane_axis, muxterm_shutdown,
 };
 use muxterm::core::protocol::ffi::types::{
-    CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
-    LAYOUT_SPLIT_V, TASK_NEW_TAB, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
+    CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF,
+    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, TASK_NEW_TAB, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
 };
 
 fn tmux_available() -> bool {
@@ -138,6 +139,31 @@ fn count_layout_leaves(node: &CLayoutNode) -> usize {
 
 fn layout_has_split(node: &CLayoutNode) -> bool {
     matches!(node.type_, LAYOUT_SPLIT_H | LAYOUT_SPLIT_V)
+}
+
+fn tmux_pane_sizes(backend_sock: &str) -> Vec<(String, u16, u16)> {
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            backend_sock,
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{pane_width} #{pane_height}",
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            Some((
+                parts.next()?.to_string(),
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+            ))
+        })
+        .collect()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -522,6 +548,115 @@ fn macos_ffi_layout_stays_isolated_after_split_and_new_tabs() {
                 assert_eq!(shape, LayoutShape::Leaf(ids[0]));
             }
         }
+
+        assert_eq!(muxterm_shutdown(h), 0);
+        muxterm_free(h);
+    }
+
+    let _ = Command::new("tmux")
+        .args(["-L", &backend, "kill-server"])
+        .status();
+}
+
+/// 回归尺寸反馈环：client resize 后布局叶子数和 pane 尺寸应稳定，
+/// 连续收到 layout-change 不能把一个 pane 越推越大、其他 pane 压成零。
+#[test]
+fn macos_ffi_tmux_client_resize_is_stable_and_pane_axis_resize_persists() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+
+    let backend = format!("mac-resize-{}-{}", std::process::id(), rand_suffix());
+    setup_tmux_backend_2tab3pane(&backend);
+    let bt = CString::new("tmux").unwrap();
+    let sock = CString::new(backend.as_str()).unwrap();
+    let sess = CString::new("demo").unwrap();
+    let h = muxterm_new(bt.as_ptr(), sock.as_ptr(), sess.as_ptr());
+    assert!(!h.is_null(), "muxterm_new 失败");
+
+    unsafe {
+        assert_eq!(muxterm_connect(h), 0);
+        let mut ev = [CStateChange::default(); 128];
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(80));
+            let _ = muxterm_poll_events(h, ev.as_mut_ptr(), ev.len() as i32);
+        }
+
+        let before = tmux_pane_sizes(&backend);
+        assert_eq!(before.len(), 4, "测试窗口应有 4 个 pane: {before:?}");
+        let mut tabs = [CTab {
+            id: 0,
+            name: ptr::null(),
+            is_active: 0,
+        }; 8];
+        let ntabs = muxterm_get_tabs(h, tabs.as_mut_ptr(), tabs.len() as i32);
+        assert_eq!(ntabs, 2);
+        let three_tab = (0..ntabs as usize)
+            .map(|i| tabs[i].id)
+            .find(|id| tab_layout_shape(h, *id).0.len() == 3)
+            .expect("应找到 3-pane active tab");
+        switch_tab(h, three_tab);
+        let root_before = active_layout_root(h);
+        assert_eq!(
+            count_layout_leaves(&root_before),
+            3,
+            "active tab 应为 3 pane"
+        );
+
+        for _ in 0..3 {
+            assert_eq!(muxterm_resize_client(h, 120, 36), 0);
+            std::thread::sleep(Duration::from_millis(120));
+            let _ = muxterm_poll_events(h, ev.as_mut_ptr(), ev.len() as i32);
+        }
+        let after = tmux_pane_sizes(&backend);
+        assert_eq!(after.len(), before.len());
+        assert!(after
+            .iter()
+            .all(|(_, cols, rows)| *cols >= 10 && *rows >= 5));
+        assert!(after
+            .iter()
+            .all(|(_, cols, rows)| *cols <= 120 && *rows <= 36));
+        assert_eq!(count_layout_leaves(&active_layout_root(h)), 3);
+
+        // 第一 pane 是初始横向 split 左侧的边界 pane，单轴 resize 后应保存到 tmux layout。
+        let mut panes = [CPane {
+            id: 0,
+            cols: 0,
+            rows: 0,
+            is_active: 0,
+        }; 16];
+        let n = muxterm_get_panes(h, three_tab, panes.as_mut_ptr(), panes.len() as i32);
+        assert_eq!(n, 3);
+        let target = panes[0].id;
+        assert_eq!(muxterm_resize_pane_axis(h, target, DIR_HORIZONTAL, 60), 0);
+        std::thread::sleep(Duration::from_millis(180));
+        let _ = muxterm_poll_events(h, ev.as_mut_ptr(), ev.len() as i32);
+        let persisted = tmux_pane_sizes(&backend);
+        let target_size = persisted
+            .iter()
+            .find(|(id, _, _)| id == &format!("%{target}"))
+            .expect("axis resize 的目标 pane 应仍存在");
+        assert_eq!(target_size.1, 60, "横向分隔条尺寸应保存到 tmux");
+        assert!(persisted
+            .iter()
+            .all(|(_, cols, rows)| *cols >= 10 && *rows >= 5));
+        assert_eq!(count_layout_leaves(&active_layout_root(h)), 3);
+
+        // 第二个 layout 叶子位于内层纵向 split，验证上下分隔条也能持久化。
+        let vertical_target = panes[1].id;
+        assert_eq!(
+            muxterm_resize_pane_axis(h, vertical_target, DIR_VERTICAL, 18),
+            0
+        );
+        std::thread::sleep(Duration::from_millis(180));
+        let _ = muxterm_poll_events(h, ev.as_mut_ptr(), ev.len() as i32);
+        let persisted_vertical = tmux_pane_sizes(&backend);
+        let vertical_size = persisted_vertical
+            .iter()
+            .find(|(id, _, _)| id == &format!("%{vertical_target}"))
+            .expect("vertical axis resize 的目标 pane 应仍存在");
+        assert_eq!(vertical_size.2, 18, "纵向分隔条尺寸应保存到 tmux");
 
         assert_eq!(muxterm_shutdown(h), 0);
         muxterm_free(h);
