@@ -117,7 +117,7 @@ final class CoreBridge {
 
     /// 创建 handle 并 connect。
     /// - Parameters:
-    ///   - backendType: `"local"` / `"tmux"` / `"daemon"`
+    ///   - backendType: `"local"` / `"tmux"` / `"ssh"` / `"daemon"`
     ///   - socket: tmux `-L` socket 名（可选）
     ///   - session: session 名（可选）
     init(backendType: String = "local", socket: String? = nil, session: String? = nil) throws {
