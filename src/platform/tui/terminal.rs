@@ -50,6 +50,11 @@ impl PaneTerminal {
         self.state.snapshot()
     }
 
+    /// 当前光标所在行（0 基）。
+    pub fn cursor_row(&self) -> usize {
+        self.state.cursor_row()
+    }
+
     pub fn cols(&self) -> u16 {
         self.cols
     }
@@ -89,6 +94,13 @@ impl TerminalManager {
     /// 取某 pane 的屏幕快照；不存在返回空。
     pub fn screen(&self, pane_id: u32) -> Option<Vec<String>> {
         self.panes.get(&pane_id).map(|p| p.screen())
+    }
+
+    /// 取某 pane 的屏幕快照 + 光标行；不存在返回 None。
+    pub fn screen_with_cursor(&self, pane_id: u32) -> Option<(Vec<String>, usize)> {
+        self.panes
+            .get(&pane_id)
+            .map(|p| (p.screen(), p.cursor_row()))
     }
 
     /// 取某 pane 的尺寸。
