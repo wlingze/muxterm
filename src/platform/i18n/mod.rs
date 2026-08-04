@@ -93,6 +93,8 @@ define_text_keys! {
     ErrorTmuxSessionCreation => "error_tmux_session_creation",
     ErrorTmuxSessionDiscovery => "error_tmux_session_discovery",
     FreeformUseTypedTarget => "freeform_use_typed_target",
+    HintPalette => "hint_palette",
+    HintPane => "hint_pane",
     HintNewTab => "hint_new_tab",
     HintQuit => "hint_quit",
     HintSplit => "hint_split",

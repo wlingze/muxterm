@@ -47,6 +47,8 @@
   "panes": "面板",
   "pane": "面板",
   "pane_accessibility": "面板 @{{id}}",
+  "hint_palette": "命令面板",
+  "hint_pane": "面板",
   "hint_new_tab": "新建标签页",
   "hint_split": "水平分割",
   "hint_vertical_split": "竖直分割",
