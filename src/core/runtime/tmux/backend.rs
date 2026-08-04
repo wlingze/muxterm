@@ -166,6 +166,35 @@ impl TmuxBackend {
         let mut backend = Self::new(socket);
         backend.config.mode = Some(ConnectMode::NewSession {
             name: Some(name.to_string()),
+            start_directory: None,
+        });
+        backend
+    }
+
+    /// 通过 SSH alias 在远端启动 tmux -CC（new-session 模式）。
+    ///
+    /// `ssh_alias` 是 `~/.ssh/config` 里的 Host 名；`socket` 是远端 tmux 的 `-L` socket 名（可选）。
+    pub fn new_ssh(ssh_alias: &str, socket: Option<&str>) -> Self {
+        let mut backend = Self::new(socket);
+        backend.config.ssh_alias = Some(ssh_alias.to_string());
+        backend
+    }
+
+    /// 通过 SSH alias 在远端 attach 已有 session。
+    pub fn new_ssh_attach(ssh_alias: &str, socket: Option<&str>, target: &str) -> Self {
+        let mut backend = Self::new_ssh(ssh_alias, socket);
+        backend.config.mode = Some(ConnectMode::Attach {
+            target: Some(target.to_string()),
+        });
+        backend
+    }
+
+    /// 创建新 session，并指定起始工作目录（session 名由 tmux 自动生成）。
+    pub fn new_with_cwd(socket: Option<&str>, start_directory: Option<&str>) -> Self {
+        let mut backend = Self::new(socket);
+        backend.config.mode = Some(ConnectMode::NewSession {
+            name: None,
+            start_directory: start_directory.map(|s| s.to_string()),
         });
         backend
     }

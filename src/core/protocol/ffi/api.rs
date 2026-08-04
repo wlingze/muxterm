@@ -132,6 +132,93 @@ pub extern "C" fn muxterm_new(
     Box::into_raw(Box::new(handle))
 }
 
+/// 创建 handle 并直接连接（支持 SSH / attach / 起始目录）。
+///
+/// 相比 [`muxterm_new`]（+ [`muxterm_connect`] 两步），此函数一步完成建连。
+///
+/// - `backend_type`：`"local"` / `"tmux"` / `"daemon"` / `"tmux-ssh"`
+/// - `socket`：tmux 的 `-L` socket 名（本地 tmux），SSH 模式为远端 socket（可选）
+/// - `session`：attach 的目标 session 名（非空 → attach 模式；空 → new-session）
+/// - `ssh_alias`：SSH 模式下的 `~/.ssh/config` Host 名（仅 `tmux-ssh` 用）
+/// - `start_directory`：new-session 的起始工作目录（可选）
+///
+/// 失败返回 null。
+#[no_mangle]
+pub extern "C" fn muxterm_new_connect(
+    backend_type: *const c_char,
+    socket: *const c_char,
+    session: *const c_char,
+    ssh_alias: *const c_char,
+    start_directory: *const c_char,
+) -> *mut MuxtermHandle {
+    let kind = cstr_opt(backend_type)
+        .unwrap_or_else(|| "local".into())
+        .to_ascii_lowercase();
+    let sock = cstr_opt(socket);
+    let sess = cstr_opt(session);
+    let alias = cstr_opt(ssh_alias);
+    let start_dir = cstr_opt(start_directory);
+
+    let backend: Box<dyn crate::core::model::Backend> = match kind.as_str() {
+        "tmux-ssh" => {
+            let sock_ref = sock.as_deref();
+            let Some(alias) = alias.as_deref() else {
+                return ptr::null_mut();
+            };
+            if let Some(name) = sess.as_deref() {
+                Box::new(TmuxBackend::new_ssh_attach(alias, sock_ref, name))
+            } else {
+                Box::new(TmuxBackend::new_ssh(alias, sock_ref))
+            }
+        }
+        "tmux" => {
+            let sock_ref = sock.as_deref();
+            if let Some(name) = sess.as_deref() {
+                Box::new(TmuxBackend::new_with_attach(sock_ref, name))
+            } else if let Some(dir) = start_dir.as_deref() {
+                Box::new(TmuxBackend::new_with_cwd(sock_ref, Some(dir)))
+            } else {
+                Box::new(TmuxBackend::new(sock_ref))
+            }
+        }
+        "daemon" => {
+            let name = sess.unwrap_or_else(|| "default".into());
+            let path = sock
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| session_socket_path(&name));
+            Box::new(DaemonBackend::new(path, name))
+        }
+        _ => Box::new(LocalBackend::new("$SHELL", "")),
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let mut handle = MuxtermHandle {
+        model: TerminalModel::new(backend),
+        rt,
+        callbacks: FfiCallbacks::default(),
+        event_data: Vec::new(),
+        event_names: Vec::new(),
+        tab_names: Vec::new(),
+        layout_nodes: Vec::new(),
+    };
+    // 建连失败则 free 并返回 null
+    match handle.rt.block_on(handle.model.connect()) {
+        Ok(()) => Box::into_raw(Box::new(handle)),
+        Err(_) => {
+            let _ = handle.rt.block_on(handle.model.shutdown());
+            ptr::null_mut()
+        }
+    }
+}
+
 /// 释放 handle。
 ///
 /// # Safety

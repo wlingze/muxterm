@@ -331,6 +331,66 @@ pub fn list_ssh_tmux_panes(
     Ok(panes)
 }
 
+/// 列出本地 SSH 配置里的 Host alias（从 `~/.ssh/config` 读取）。
+///
+/// 只解析 `Host` 条目，忽略通配符 `Host *`（不作为可选机器）。不做 DNS/认证。
+/// 解析失败（无配置 / 无法读取）返回空列表而非错误。
+pub fn list_local_ssh_hosts(ssh_config_path: Option<&str>) -> Vec<String> {
+    let path = ssh_config_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
+                .join(".ssh")
+                .join("config")
+        });
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+
+    let mut hosts = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("Match ") {
+            continue;
+        }
+        if line.len() < 5 || !line[..5].eq_ignore_ascii_case("Host ") {
+            continue;
+        }
+        let rest = line[5..].trim();
+        if rest.is_empty() || rest == "*" {
+            continue;
+        }
+        for alias in rest.split_whitespace() {
+            hosts.push(alias.to_string());
+        }
+    }
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+/// 列出本地目录条目（名字 + 是否目录），用于「创建新 session 时选目录」。
+///
+/// 非目录 / 无权限返回空列表。
+pub fn list_local_dir(path: &std::path::Path) -> Vec<FsEntry> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        out.push(FsEntry {
+            name,
+            is_dir,
+            size: 0,
+            modified: 0,
+        });
+    }
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

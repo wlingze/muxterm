@@ -3,11 +3,12 @@
 //! `run()` 进入 crossterm raw mode + alternate screen，经 `CoreBridge` 调用
 //! `muxterm_*` C ABI（不直接持有 TerminalModel / Backend）。
 //! 轮询键盘 → execute / send_input；轮询 poll_events → 重绘。
-//! Ctrl-Q 退出，Alt+T 新建 tab，Alt+S / Alt+V 分割 pane，Alt+P 命令面板。
+//! Ctrl-Q 退出，Alt+T 新建 tab，Alt+S / Alt+V 分割 pane，Alt+P 连接向导。
 //!
 //! 用 ratatui 渲染，跨平台（Windows/Linux/macOS 均有 crossterm 后端）。
 
 use std::io::stdout;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -21,7 +22,9 @@ use ratatui::Terminal;
 
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
-use crate::platform::tui::palette::PaletteState;
+use crate::platform::tui::palette::{
+    ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
+};
 use crate::platform::tui::render::{render_frame, RenderOpts};
 
 /// TUI 启动参数。
@@ -56,7 +59,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     let mut terminal = Terminal::new(backend).context("ratatui Terminal::new")?;
 
     let mut palette = PaletteState::new();
-    palette.refresh();
+    palette.socket = opts.socket.clone();
     let mut palette_open = false;
 
     loop {
@@ -71,7 +74,8 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
             match ev {
                 Event::Key(key) => {
                     if palette_open {
-                        if handle_palette_key(&mut palette, &key, &mut bridge, &mut palette_open) {
+                        // 向导：可能触发重连（重建 bridge）
+                        if handle_palette_key(&mut palette, &key, &mut bridge, &mut palette_open)? {
                             draw(&mut terminal, &bridge.snapshot(), &palette, palette_open)?;
                         }
                     } else if is_quit(&key) {
@@ -159,63 +163,200 @@ fn is_quit(key: &KeyEvent) -> bool {
         )
 }
 
-/// 命令面板按键：返回是否触发 UI 动作（需要重绘）。
+/// 向导按键。返回 `Ok(true)` 表示需要重绘。
+///
+/// 在进入某一步时自动加载对应的数据（hosts / sessions / 目录），
+/// 完成后触发重连（重建 `CoreBridge`）。
 fn handle_palette_key(
     palette: &mut PaletteState,
     key: &KeyEvent,
     bridge: &mut CoreBridge,
     palette_open: &mut bool,
-) -> bool {
+) -> Result<bool> {
     match key.code {
         KeyCode::Esc => {
             *palette_open = false;
-            true
+            Ok(true)
         }
         KeyCode::Enter => {
-            if let Some(cmd) = palette.selected() {
-                let _ = run_palette_command(bridge, cmd.id);
-                *palette_open = false;
-                return true;
+            match palette.advance() {
+                Some(action) => {
+                    // 向导完成 → 重连（用当前 socket）
+                    let sock = palette.socket.clone();
+                    reconnect(bridge, &action, sock.as_deref())?;
+                    *palette_open = false;
+                    Ok(true)
+                }
+                None => {
+                    // 进入下一步：加载对应数据
+                    load_step_data(palette);
+                    Ok(true)
+                }
             }
-            false
         }
         KeyCode::Up => {
             palette.list.select_previous();
-            true
+            Ok(true)
         }
         KeyCode::Down => {
             palette.list.select_next();
-            true
-        }
-        KeyCode::Char(c) => {
-            palette.input.push(c);
-            palette.refresh();
-            true
+            Ok(true)
         }
         KeyCode::Backspace => {
-            palette.input.pop();
-            palette.refresh();
-            true
+            // 返回上一步
+            palette.back();
+            load_step_data(palette);
+            Ok(true)
         }
-        _ => false,
+        KeyCode::Char(' ') => {
+            // 空格：目录 step 进入子目录
+            if palette.step == WizardStep::Directory {
+                if let Some(item) = palette.selected() {
+                    if item.is_dir {
+                        let new_dir = join_dir(&item.value, &palette.dir);
+                        palette.dir = Some(new_dir);
+                        load_step_data(palette);
+                    }
+                }
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
     }
 }
 
-/// 执行面板命令。返回是否成功执行。
-fn run_palette_command(bridge: &CoreBridge, id: &str) -> i32 {
-    match id {
-        "new_tab" => bridge.execute(tasks::new_tab()),
-        "new_pane_h" => bridge.execute(tasks::split_h(0)),
-        "new_pane_v" => bridge.execute(tasks::split_v(0)),
-        "close_pane" => bridge.execute(tasks::close_pane(0)),
-        "close_tab" => bridge.execute(tasks::close_tab(0)),
-        "switch_pane_next" => bridge.execute(tasks::next_pane()),
-        "switch_pane_prev" => bridge.execute(tasks::prev_pane()),
-        _ => {
-            // 其余命令（session/ssh/settings/cli）在本阶段是占位，直接返回成功（不崩溃）。
-            0
+/// 按当前 step 加载数据到 palette。
+fn load_step_data(palette: &mut PaletteState) {
+    match palette.step {
+        WizardStep::Source => {
+            palette.set_items(vec![
+                WizardItem::plain("local（本机 tmux）", "local"),
+                WizardItem::plain("ssh（远程机器）", "ssh"),
+            ]);
+        }
+        WizardStep::Host => {
+            let hosts = crate::core::discovery::list_local_ssh_hosts(None);
+            let items: Vec<WizardItem> = if hosts.is_empty() {
+                vec![WizardItem::plain("（未配置 ~/.ssh/config Host）", "")]
+            } else {
+                hosts
+                    .into_iter()
+                    .map(|h| WizardItem::plain(&h, &h))
+                    .collect()
+            };
+            palette.set_items(items);
+        }
+        WizardStep::Action => {
+            // 顶部默认 new + 已存在 session 列表
+            let sessions = match palette.source {
+                ConnectSource::Local => {
+                    crate::core::discovery::list_local_tmux_sessions(palette.socket.as_deref())
+                }
+                ConnectSource::Ssh => {
+                    let host = palette.host.clone().unwrap_or_default();
+                    let timeout = Duration::from_secs(5);
+                    let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+                    crate::core::discovery::list_ssh_tmux_sessions(
+                        &host,
+                        ssh_config.as_deref(),
+                        None,
+                        timeout,
+                    )
+                    .unwrap_or_default()
+                }
+            };
+            let mut items = vec![WizardItem::new_item()];
+            for s in &sessions {
+                let label = if s.attached {
+                    format!("{} (attached, {} win)", s.name, s.windows)
+                } else {
+                    format!("{} ({} win)", s.name, s.windows)
+                };
+                items.push(WizardItem::plain(label, &s.name));
+            }
+            palette.set_items(items);
+        }
+        WizardStep::Directory => {
+            let dir = palette.dir.clone().unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| ".".into())
+            });
+            palette.dir = Some(dir.clone());
+            let entries = crate::core::discovery::list_local_dir(&PathBuf::from(&dir));
+            let mut items = vec![WizardItem::dir("..（返回上级）", "..")];
+            for e in entries {
+                if e.is_dir {
+                    let full = join_dir(&e.name, &palette.dir);
+                    items.push(WizardItem::dir(&e.name, &full));
+                }
+            }
+            palette.set_items(items);
         }
     }
+}
+
+/// 连接动作 → 重建 CoreBridge。
+fn reconnect(bridge: &mut CoreBridge, action: &ConnectAction, socket: Option<&str>) -> Result<()> {
+    let sock = socket.map(|s| s.to_string());
+    let (backend_type, socket, session, ssh_alias, start_dir) = match action {
+        ConnectAction::Attach {
+            source,
+            host,
+            session,
+        } => match source {
+            ConnectSource::Local => ("tmux", sock.clone(), Some(session.clone()), None, None),
+            ConnectSource::Ssh => (
+                "tmux-ssh",
+                sock.clone(),
+                Some(session.clone()),
+                host.clone(),
+                None,
+            ),
+        },
+        ConnectAction::New {
+            source,
+            host,
+            directory,
+        } => match source {
+            ConnectSource::Local => ("tmux", sock.clone(), None, None, directory.clone()),
+            ConnectSource::Ssh => (
+                "tmux-ssh",
+                sock.clone(),
+                None,
+                host.clone(),
+                directory.clone(),
+            ),
+        },
+    };
+
+    let new_bridge = CoreBridge::new_connect(
+        backend_type,
+        socket.as_deref(),
+        session.as_deref(),
+        ssh_alias.as_deref(),
+        start_dir.as_deref(),
+    )?;
+    *bridge = new_bridge;
+    // 等初始状态
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = bridge.poll_events();
+    Ok(())
+}
+
+/// 目录 step 拼接路径（支持 .. / 相对）。
+fn join_dir(name: &str, base: &Option<String>) -> String {
+    let base = base.clone().unwrap_or_else(|| ".".to_string());
+    if name == ".." {
+        // 返回上级
+        let p = PathBuf::from(&base);
+        return p
+            .parent()
+            .map(|x| x.to_string_lossy().into_owned())
+            .unwrap_or_else(|| base.clone());
+    }
+    let p = PathBuf::from(&base).join(name);
+    p.to_string_lossy().into_owned()
 }
 
 /// 处理按键：结构命令走 execute，字符输入走 encode + send_input。
@@ -242,7 +383,7 @@ fn handle_key(
                     return true;
                 }
                 'p' => {
-                    palette.refresh();
+                    load_step_data(palette);
                     *palette_open = true;
                     return true;
                 }

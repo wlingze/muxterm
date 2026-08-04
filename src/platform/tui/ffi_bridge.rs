@@ -10,8 +10,8 @@ use std::ptr;
 
 use crate::core::protocol::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
-    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
-    muxterm_shutdown, MuxtermHandle,
+    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_new_connect, muxterm_poll_events,
+    muxterm_send_input, muxterm_shutdown, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -103,6 +103,34 @@ impl CoreBridge {
         if rc != 0 {
             unsafe { muxterm_free(handle) };
             anyhow::bail!("muxterm_connect 失败: {rc}");
+        }
+        Ok(Self {
+            handle,
+            last_status: 2, // Connected
+        })
+    }
+
+    /// 用 `muxterm_new_connect` 一步建连（支持 SSH / attach / 起始目录）。
+    pub fn new_connect(
+        backend_type: &str,
+        socket: Option<&str>,
+        session: Option<&str>,
+        ssh_alias: Option<&str>,
+        start_directory: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let bt = CString::new(backend_type).unwrap_or_default();
+        let sock_c = socket.and_then(|s| CString::new(s).ok());
+        let sess_c = session.and_then(|s| CString::new(s).ok());
+        let alias_c = ssh_alias.and_then(|s| CString::new(s).ok());
+        let dir_c = start_directory.and_then(|s| CString::new(s).ok());
+        let sock_ptr = sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+        let sess_ptr = sess_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+        let alias_ptr = alias_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+        let dir_ptr = dir_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+
+        let handle = muxterm_new_connect(bt.as_ptr(), sock_ptr, sess_ptr, alias_ptr, dir_ptr);
+        if handle.is_null() {
+            anyhow::bail!("muxterm_new_connect 失败");
         }
         Ok(Self {
             handle,

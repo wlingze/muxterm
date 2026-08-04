@@ -302,42 +302,68 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
     };
     Clear.render(pal_rect, buf);
 
+    let title = format!(" {} · {} ", "Connection", palette.step.title());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.accent_style())
-        .title(" Command Palette ");
+        .title(title);
     let inner = block.inner(pal_rect);
     block.render(pal_rect, buf);
 
-    let input_h = 1u16;
+    // 顶部信息行：来源 + 主机 + 当前目录
+    let info_h = 1u16;
+    let source_str = match palette.source {
+        crate::platform::tui::palette::ConnectSource::Local => "local",
+        crate::platform::tui::palette::ConnectSource::Ssh => "ssh",
+    };
+    let host_str = palette.host.as_deref().unwrap_or("");
+    let dir_str = palette.dir.as_deref().unwrap_or("");
+    let info = format!(
+        " {}{}{}",
+        source_str,
+        if host_str.is_empty() {
+            String::new()
+        } else {
+            format!("@{host_str}")
+        },
+        if dir_str.is_empty() {
+            String::new()
+        } else {
+            format!("  cwd:{dir_str}")
+        },
+    );
+    Paragraph::new(info).style(theme.dim_style()).render(
+        Rect {
+            height: info_h,
+            ..inner
+        },
+        buf,
+    );
+
     let list_area = Rect {
-        y: inner.y + input_h,
-        height: inner.height.saturating_sub(input_h),
+        y: inner.y + info_h,
+        height: inner.height.saturating_sub(info_h),
         ..inner
     };
-
-    Paragraph::new(format!("> {}", palette.input))
-        .style(
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .render(
-            Rect {
-                height: input_h,
-                ..inner
-            },
-            buf,
-        );
 
     let items: Vec<ListItem> = palette
         .items
         .iter()
-        .map(|c| {
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {:10} ", c.group), theme.dim_style()),
-                Span::raw(c.label.to_string()),
-            ]))
+        .map(|i| {
+            let (label, _style) = if i.is_new {
+                (
+                    Span::styled(format!(" {}", i.label), theme.success_style()),
+                    theme.success_style(),
+                )
+            } else if i.is_dir {
+                (
+                    Span::styled(format!(" {} {}", "📁", i.label), theme.accent_style()),
+                    theme.accent_style(),
+                )
+            } else {
+                (Span::raw(format!(" {}", i.label)), theme.text())
+            };
+            ListItem::new(Line::from(vec![label]))
         })
         .collect();
     let list = List::new(items)
@@ -488,10 +514,9 @@ mod tests {
     }
 
     #[test]
-    fn render_palette_overlay_shows_commands() {
-        let mut p = PaletteState::new();
-        p.input = "split".into();
-        p.refresh();
+    fn render_palette_overlay_shows_wizard() {
+        let p = PaletteState::new();
+        // Source step: local/ssh
         let buf = render(
             &snap_single_pane(),
             Some(&p),
@@ -501,8 +526,29 @@ mod tests {
             },
         );
         let s = buf_to_string(&buf);
-        assert!(s.contains("Command Palette"));
-        assert!(s.contains("Split pane horizontal") || s.contains("Split pane vertical"));
+        assert!(s.contains("Connection"));
+        assert!(s.contains("local") && s.contains("ssh"));
+    }
+
+    #[test]
+    fn render_palette_action_step_shows_sessions() {
+        let mut p = PaletteState::new();
+        p.advance(); // source->action (local)
+        p.set_items(vec![
+            crate::platform::tui::palette::WizardItem::new_item(),
+            crate::platform::tui::palette::WizardItem::plain("dev", "dev"),
+            crate::platform::tui::palette::WizardItem::plain("prod", "prod"),
+        ]);
+        let buf = render(
+            &snap_single_pane(),
+            Some(&p),
+            RenderOpts {
+                palette_open: true,
+                ..RenderOpts::default()
+            },
+        );
+        let s = buf_to_string(&buf);
+        assert!(s.contains("new") && s.contains("dev") && s.contains("prod"));
     }
 
     #[test]

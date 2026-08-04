@@ -1,55 +1,256 @@
-//! 命令面板（opencode 风格悬浮框）。
+//! 连接向导（opencode 风格悬浮面板）。
 //!
-//! 顶部输入框 + 下方模糊匹配命令列表。命令来源覆盖：
-//! - 页面操作（split/new tab/close/switch）
-//! - tmux 会话操作（attach / new）
-//! - SSH 操作
-//! - settings / CLI 全部命令
+//! 多步流程：
+//!   1. 选来源：local / ssh
+//!   2. （ssh）选机器（`~/.ssh/config` 的 Host alias）
+//!   3. 选动作：顶部默认「new（创建新会话）」，下面是已存在的 tmux session 可直接 attach
+//!   4. （new）选起始目录
 //!
-//! 纯逻辑模块：命令定义 + 模糊过滤 + 选中状态。渲染在 `render.rs` 完成。
+//! 结束时返回一个 [`ConnectAction`]，由 `app.rs` 据此重连 / 创建。
+//!
+//! 纯逻辑模块（不碰 FFI / IO），目录与主机列表由外部注入，方便单元测试。
 
 use ratatui::widgets::ListState;
 
-/// 面板命令（id + 分组 + 展示 label + 匹配关键词）。
+/// 连接来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectSource {
+    Local,
+    Ssh,
+}
+
+/// 向导步骤。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WizardStep {
+    /// 选来源（local / ssh）。
+    Source,
+    /// 选机器（仅 ssh）。
+    Host,
+    /// 选动作：new 或 attach 某 session。
+    Action,
+    /// 选起始目录（仅 new）。
+    Directory,
+}
+
+impl WizardStep {
+    pub fn title(&self) -> &'static str {
+        match self {
+            WizardStep::Source => "选择来源",
+            WizardStep::Host => "选择 SSH 机器",
+            WizardStep::Action => "选择会话（new 创建 / 选中 attach）",
+            WizardStep::Directory => "选择起始目录",
+        }
+    }
+}
+
+/// 向导最终动作。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaletteCommand {
-    /// 稳定 id，用于分发到具体动作。
-    pub id: &'static str,
-    /// 分组名（attach / new / ssh / settings / session / window / tab / pane / cli）。
-    pub group: &'static str,
-    /// 展示文本（用于模糊匹配 + 显示）。
-    pub label: &'static str,
-    /// 额外关键词（别名，便于搜索）。
-    pub keywords: &'static str,
+pub enum ConnectAction {
+    /// attach 到已存在会话。
+    Attach {
+        source: ConnectSource,
+        /// ssh 主机 alias（source==Ssh 时有值）。
+        host: Option<String>,
+        session: String,
+    },
+    /// 创建新会话并 attach。
+    New {
+        source: ConnectSource,
+        host: Option<String>,
+        /// 起始目录（None = 用默认 / 当前目录）。
+        directory: Option<String>,
+    },
 }
 
-impl PaletteCommand {
-    fn cmd(
-        id: &'static str,
-        group: &'static str,
-        label: &'static str,
-        keywords: &'static str,
-    ) -> Self {
+/// 向导可选项（每个 step 的列表项）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WizardItem {
+    /// 显示文本。
+    pub label: String,
+    /// 是否「目录项」（Directory step 里可进入 / 回到上级）。
+    pub is_dir: bool,
+    /// 该条目对应的原始值（session 名 / host alias / 目录路径）。
+    pub value: String,
+    /// 是否为「new（创建）」特殊项（仅 Action step 顶部）。
+    pub is_new: bool,
+}
+
+impl WizardItem {
+    pub fn plain(label: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
-            id,
-            group,
-            label,
-            keywords,
+            label: label.into(),
+            value: value.into(),
+            is_dir: false,
+            is_new: false,
         }
     }
-
-    /// 是否匹配查询（大小写不敏感，label 或 keywords 子串 / 子序列）。
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
+    pub fn dir(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            is_dir: true,
+            is_new: false,
         }
-        let q = query.to_lowercase();
-        let hay = format!("{} {}", self.label, self.keywords).to_lowercase();
-        fuzzy_match(&q, &hay)
+    }
+    pub fn new_item() -> Self {
+        Self {
+            label: "new（创建新会话）".into(),
+            value: String::new(),
+            is_dir: false,
+            is_new: true,
+        }
     }
 }
 
-/// 模糊匹配：子串或字符子序列（顺序保持）。
+/// 向导状态。
+#[derive(Debug, Clone)]
+pub struct PaletteState {
+    pub step: WizardStep,
+    pub source: ConnectSource,
+    /// 选中的 ssh host。
+    pub host: Option<String>,
+    /// 当前目录路径（Directory step 的起点）。
+    pub dir: Option<String>,
+    /// 当前 tmux socket（`-L`），None = 默认 socket。
+    pub socket: Option<String>,
+    /// 当前 step 的列表项。
+    pub items: Vec<WizardItem>,
+    pub list: ListState,
+    /// 是否完成（拿到动作后置 true）。
+    pub done: bool,
+    /// 完成时产生的动作。
+    pub action: Option<ConnectAction>,
+}
+
+impl Default for PaletteState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PaletteState {
+    pub fn new() -> Self {
+        let mut list = ListState::default();
+        list.select(Some(0));
+        Self {
+            step: WizardStep::Source,
+            source: ConnectSource::Local,
+            host: None,
+            dir: None,
+            socket: None,
+            items: vec![
+                WizardItem::plain("local（本机 tmux）", "local"),
+                WizardItem::plain("ssh（远程机器）", "ssh"),
+            ],
+            list,
+            done: false,
+            action: None,
+        }
+    }
+
+    /// 设置当前 step 的列表项并重置选中。
+    pub fn set_items(&mut self, items: Vec<WizardItem>) {
+        self.items = items;
+        self.list.select(Some(0));
+    }
+
+    /// 当前选中项。
+    pub fn selected(&self) -> Option<&WizardItem> {
+        self.items.get(self.list.selected().unwrap_or(0))
+    }
+
+    /// 按当前 step 处理 Enter。
+    ///
+    /// 返回 `Some(())` 表示完成了向导（拿到动作）。
+    pub fn advance(&mut self) -> Option<ConnectAction> {
+        if self.done {
+            return self.action.clone();
+        }
+        let item = self.selected()?.clone();
+        match self.step {
+            WizardStep::Source => {
+                self.source = if item.value == "ssh" {
+                    ConnectSource::Ssh
+                } else {
+                    ConnectSource::Local
+                };
+                if self.source == ConnectSource::Ssh {
+                    // 进入选机器
+                    self.step = WizardStep::Host;
+                    self.set_items(vec![]);
+                } else {
+                    // local：直接进入选动作
+                    self.step = WizardStep::Action;
+                }
+            }
+            WizardStep::Host => {
+                self.host = Some(item.value);
+                self.step = WizardStep::Action;
+            }
+            WizardStep::Action => {
+                if item.is_new {
+                    // 进入选目录
+                    self.step = WizardStep::Directory;
+                } else {
+                    // attach
+                    let action = ConnectAction::Attach {
+                        source: self.source,
+                        host: self.host.clone(),
+                        session: item.value,
+                    };
+                    self.finish(action);
+                }
+            }
+            WizardStep::Directory => {
+                // 选中的是目录 → new 会话
+                let action = ConnectAction::New {
+                    source: self.source,
+                    host: self.host.clone(),
+                    directory: Some(item.value),
+                };
+                self.finish(action);
+            }
+        }
+        if self.done {
+            self.action.clone()
+        } else {
+            None
+        }
+    }
+
+    /// 返回上一步。
+    pub fn back(&mut self) {
+        self.done = false;
+        self.action = None;
+        match self.step {
+            WizardStep::Source => { /* 已是最上 */ }
+            WizardStep::Host => {
+                self.step = WizardStep::Source;
+                self.set_items(vec![
+                    WizardItem::plain("local（本机 tmux）", "local"),
+                    WizardItem::plain("ssh（远程机器）", "ssh"),
+                ]);
+            }
+            WizardStep::Action => {
+                if self.source == ConnectSource::Ssh {
+                    self.step = WizardStep::Host;
+                } else {
+                    self.step = WizardStep::Source;
+                }
+            }
+            WizardStep::Directory => {
+                self.step = WizardStep::Action;
+            }
+        }
+    }
+
+    fn finish(&mut self, action: ConnectAction) {
+        self.done = true;
+        self.action = Some(action);
+    }
+}
+
+/// 模糊匹配（子串或子序列，大小写不敏感）。
 pub fn fuzzy_match(query: &str, target: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -72,252 +273,16 @@ pub fn fuzzy_match(query: &str, target: &str) -> bool {
     true
 }
 
-/// 全部命令清单。
-pub fn all_commands() -> Vec<PaletteCommand> {
-    vec![
-        PaletteCommand::cmd("new_tab", "window", "New tab (window)", "neww window"),
-        PaletteCommand::cmd(
-            "new_pane_h",
-            "pane",
-            "Split pane horizontal",
-            "split h left right",
-        ),
-        PaletteCommand::cmd(
-            "new_pane_v",
-            "pane",
-            "Split pane vertical",
-            "split v top bottom",
-        ),
-        PaletteCommand::cmd("close_pane", "pane", "Close active pane", "kill killp"),
-        PaletteCommand::cmd(
-            "close_tab",
-            "window",
-            "Close active tab",
-            "killw kill window",
-        ),
-        PaletteCommand::cmd("switch_pane_next", "pane", "Switch to next pane", "next"),
-        PaletteCommand::cmd(
-            "switch_pane_prev",
-            "pane",
-            "Switch to previous pane",
-            "prev",
-        ),
-        PaletteCommand::cmd(
-            "switch_tab_next",
-            "window",
-            "Switch to next tab",
-            "window next",
-        ),
-        PaletteCommand::cmd(
-            "switch_tab_prev",
-            "window",
-            "Switch to previous tab",
-            "window prev",
-        ),
-        PaletteCommand::cmd(
-            "session_attach",
-            "session",
-            "Attach to tmux session",
-            "attach",
-        ),
-        PaletteCommand::cmd(
-            "session_new",
-            "session",
-            "Create new tmux session",
-            "new session new-session",
-        ),
-        PaletteCommand::cmd(
-            "session_list",
-            "session",
-            "List tmux sessions",
-            "ls list-session",
-        ),
-        PaletteCommand::cmd("session_detach", "session", "Detach current", "detach"),
-        PaletteCommand::cmd(
-            "ssh_connect",
-            "ssh",
-            "Connect over SSH",
-            "ssh connect remote",
-        ),
-        PaletteCommand::cmd("ssh_disconnect", "ssh", "Disconnect SSH", "ssh disconnect"),
-        PaletteCommand::cmd(
-            "open_config",
-            "settings",
-            "Open configuration file",
-            "config settings",
-        ),
-        PaletteCommand::cmd(
-            "reload_config",
-            "settings",
-            "Reload configuration",
-            "config reload",
-        ),
-        PaletteCommand::cmd("preferences", "settings", "Preferences", "settings"),
-        PaletteCommand::cmd(
-            "cli_new_session",
-            "cli",
-            "CLI: new-session <name>",
-            "cli new session new",
-        ),
-        PaletteCommand::cmd(
-            "cli_kill_session",
-            "cli",
-            "CLI: kill-session <target>",
-            "cli kill session kill-session",
-        ),
-        PaletteCommand::cmd(
-            "cli_list_sessions",
-            "cli",
-            "CLI: list-sessions",
-            "cli ls list-sessions",
-        ),
-        PaletteCommand::cmd(
-            "cli_attach_session",
-            "cli",
-            "CLI: attach-session <target>",
-            "cli attach attach-session",
-        ),
-        PaletteCommand::cmd("cli_detach", "cli", "CLI: detach", "cli detach"),
-        PaletteCommand::cmd(
-            "cli_new_window",
-            "cli",
-            "CLI: new-window [-n name]",
-            "cli neww new-window window",
-        ),
-        PaletteCommand::cmd(
-            "cli_kill_window",
-            "cli",
-            "CLI: kill-window <target>",
-            "cli killw kill-window",
-        ),
-        PaletteCommand::cmd(
-            "cli_list_windows",
-            "cli",
-            "CLI: list-windows",
-            "cli lsw list-windows",
-        ),
-        PaletteCommand::cmd(
-            "cli_select_window",
-            "cli",
-            "CLI: select-window <target>",
-            "cli selectw select-window",
-        ),
-        PaletteCommand::cmd(
-            "cli_new_tab",
-            "cli",
-            "CLI: new-tab [-n name]",
-            "cli new-tab tab",
-        ),
-        PaletteCommand::cmd(
-            "cli_kill_tab",
-            "cli",
-            "CLI: kill-tab <target>",
-            "cli kill-tab",
-        ),
-        PaletteCommand::cmd(
-            "cli_list_tabs",
-            "cli",
-            "CLI: list-tabs",
-            "cli lst list-tabs",
-        ),
-        PaletteCommand::cmd(
-            "cli_select_tab",
-            "cli",
-            "CLI: select-tab <target>",
-            "cli select-tab",
-        ),
-        PaletteCommand::cmd(
-            "cli_split_pane",
-            "cli",
-            "CLI: split-pane [-h|-v]",
-            "cli splitp split-pane",
-        ),
-        PaletteCommand::cmd(
-            "cli_kill_pane",
-            "cli",
-            "CLI: kill-pane <target>",
-            "cli killp kill-pane",
-        ),
-        PaletteCommand::cmd(
-            "cli_list_panes",
-            "cli",
-            "CLI: list-panes",
-            "cli lsp list-panes",
-        ),
-        PaletteCommand::cmd(
-            "cli_select_pane",
-            "cli",
-            "CLI: select-pane <target>",
-            "cli selectp select-pane",
-        ),
-        PaletteCommand::cmd(
-            "cli_resize_pane",
-            "cli",
-            "CLI: resize-pane <target> [-x w] [-y h]",
-            "cli resizep resize-pane",
-        ),
-        PaletteCommand::cmd(
-            "cli_send_keys",
-            "cli",
-            "CLI: send-keys <text>",
-            "cli send send-keys",
-        ),
-        PaletteCommand::cmd(
-            "cli_capture_pane",
-            "cli",
-            "CLI: capture-pane <target>",
-            "cli capturep capture-pane",
-        ),
-        PaletteCommand::cmd("cli_list_layout", "cli", "CLI: list-layout", "cli layout"),
-        PaletteCommand::cmd(
-            "cli_display_message",
-            "cli",
-            "CLI: display-message <target>",
-            "cli display-message",
-        ),
-    ]
-}
-/// 面板状态（输入框 + 选中项）。
-#[derive(Debug, Clone, Default)]
-pub struct PaletteState {
-    /// 输入框内容。
-    pub input: String,
-    /// 当前展示的命令（过滤后）。
-    pub items: Vec<PaletteCommand>,
-    /// 全部命令（缓存）。
-    pub all: Vec<PaletteCommand>,
-    /// 选中下标（相对 items）。
-    pub list: ListState,
-}
-
-impl PaletteState {
-    pub fn new() -> Self {
-        let all = all_commands();
-        let mut list = ListState::default();
-        list.select(Some(0));
-        Self {
-            all,
-            items: Vec::new(),
-            input: String::new(),
-            list,
-        }
+/// 按查询过滤列表项。
+pub fn filter_items(items: &[WizardItem], query: &str) -> Vec<WizardItem> {
+    if query.is_empty() {
+        return items.to_vec();
     }
-
-    /// 根据输入重新过滤。
-    pub fn refresh(&mut self) {
-        let q = self.input.clone();
-        let filtered: Vec<PaletteCommand> =
-            self.all.iter().filter(|c| c.matches(&q)).cloned().collect();
-        let n = filtered.len();
-        self.items = filtered;
-        self.list.select(Some(0));
-        let _ = n;
-    }
-
-    /// 当前选中命令。
-    pub fn selected(&self) -> Option<&PaletteCommand> {
-        self.items.get(self.list.selected().unwrap_or(0))
-    }
+    items
+        .iter()
+        .filter(|i| fuzzy_match(query, &i.label))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -325,50 +290,92 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_commands_nonempty_unique_ids() {
-        let cmds = all_commands();
-        assert!(cmds.len() >= 20, "命令数 {}", cmds.len());
-        let mut ids = std::collections::HashSet::new();
-        for c in &cmds {
-            assert!(!c.label.is_empty());
-            assert!(ids.insert(c.id), "重复 id {}", c.id);
-        }
-    }
-
-    #[test]
-    fn palette_has_attach_new_ssh_settings() {
-        let cmds = all_commands();
-        let ids: Vec<_> = cmds.iter().map(|c| c.id).collect();
-        for need in [
-            "session_attach",
-            "session_new",
-            "ssh_connect",
-            "open_config",
-        ] {
-            assert!(ids.contains(&need), "缺少 {need}");
-        }
-        let groups: std::collections::HashSet<_> = cmds.iter().map(|c| c.group).collect();
-        for g in ["session", "ssh", "settings", "pane", "cli"] {
-            assert!(groups.contains(g), "缺少分组 {g}");
-        }
-    }
-
-    #[test]
-    fn fuzzy_match_works() {
-        assert!(fuzzy_match("attach", "Attach to tmux session"));
-        assert!(fuzzy_match("ssh", "Connect over SSH"));
-        assert!(fuzzy_match("spv", "Split pane vertical"));
-        assert!(!fuzzy_match("zzz", "Split pane"));
-    }
-
-    #[test]
-    fn refresh_filters_by_query() {
+    fn local_wizard_attach() {
         let mut p = PaletteState::new();
-        p.refresh();
-        assert_eq!(p.items.len(), p.all.len());
-        p.input = "split".into();
-        p.refresh();
-        assert!(p.items.iter().any(|c| c.id == "new_pane_h"));
-        assert!(!p.items.iter().any(|c| c.id == "open_config"));
+        // step Source: select local (index 0) + Enter
+        p.advance();
+        assert_eq!(p.step, WizardStep::Action);
+        // inject sessions
+        p.set_items(vec![
+            WizardItem::new_item(),
+            WizardItem::plain("dev", "dev"),
+            WizardItem::plain("prod", "prod"),
+        ]);
+        // select "prod" (index 2) + Enter
+        p.list.select(Some(2));
+        let action = p.advance();
+        assert_eq!(
+            action,
+            Some(ConnectAction::Attach {
+                source: ConnectSource::Local,
+                host: None,
+                session: "prod".into(),
+            })
+        );
+        assert!(p.done);
+    }
+
+    #[test]
+    fn ssh_wizard_new_with_dir() {
+        let mut p = PaletteState::new();
+        // Source: ssh
+        p.list.select(Some(1));
+        p.advance();
+        assert_eq!(p.step, WizardStep::Host);
+        // inject hosts
+        p.set_items(vec![
+            WizardItem::plain("server-a", "server-a"),
+            WizardItem::plain("server-b", "server-b"),
+        ]);
+        p.list.select(Some(0));
+        p.advance();
+        assert_eq!(p.step, WizardStep::Action);
+        // Action: new
+        p.set_items(vec![
+            WizardItem::new_item(),
+            WizardItem::plain("existing", "existing"),
+        ]);
+        p.list.select(Some(0)); // new
+        p.advance();
+        assert_eq!(p.step, WizardStep::Directory);
+        // Directory: pick a dir
+        p.set_items(vec![
+            WizardItem::dir("..", ".."),
+            WizardItem::dir("~/work", "/home/u/work"),
+        ]);
+        p.list.select(Some(1));
+        let action = p.advance();
+        assert_eq!(
+            action,
+            Some(ConnectAction::New {
+                source: ConnectSource::Ssh,
+                host: Some("server-a".into()),
+                directory: Some("/home/u/work".into()),
+            })
+        );
+        assert!(p.done);
+    }
+
+    #[test]
+    fn back_from_action_goes_to_host_for_ssh() {
+        let mut p = PaletteState::new();
+        p.list.select(Some(1)); // ssh
+        p.advance();
+        p.set_items(vec![WizardItem::plain("host-a", "host-a")]);
+        p.advance();
+        assert_eq!(p.step, WizardStep::Action);
+        p.back();
+        assert_eq!(p.step, WizardStep::Host);
+    }
+
+    #[test]
+    fn filter_items_matches_subsequence() {
+        let items = vec![
+            WizardItem::plain("dev session", "dev"),
+            WizardItem::plain("prod session", "prod"),
+        ];
+        assert_eq!(filter_items(&items, "dvs").len(), 1);
+        assert_eq!(filter_items(&items, "prod").len(), 1);
+        assert!(filter_items(&items, "").len() == 2);
     }
 }
