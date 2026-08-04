@@ -99,6 +99,15 @@ pub extern "C" fn muxterm_new(
                 Box::new(TmuxBackend::new(sock_ref))
             }
         }
+        "ssh" => {
+            let Some(alias) = sock.as_deref().filter(|value| !value.trim().is_empty()) else {
+                return ptr::null_mut();
+            };
+            let Some(name) = sess.as_deref().filter(|value| !value.trim().is_empty()) else {
+                return ptr::null_mut();
+            };
+            Box::new(TmuxBackend::new_with_ssh_attach(alias, name))
+        }
         "daemon" => {
             // TUI × local：连已有 daemon（unix socket IPC）
             let name = sess.unwrap_or_else(|| "default".into());

@@ -161,6 +161,19 @@ impl TmuxBackend {
         backend
     }
 
+    /// 创建远程 SSH tmux 后端并 attach 到已有 session。
+    ///
+    /// SSH 的读写、pty 和 tmux -CC 参数仍由 `TmuxClient::spawn_ssh` 统一处理，
+    /// 这里仅把 alias 写入客户端配置，避免平台前端自行解析控制协议。
+    pub fn new_with_ssh_attach(alias: &str, target: &str) -> Self {
+        let mut backend = Self::new(None);
+        backend.config.ssh_alias = Some(alias.to_string());
+        backend.config.mode = Some(ConnectMode::Attach {
+            target: Some(target.to_string()),
+        });
+        backend
+    }
+
     /// 创建后端并指定 new-session 模式 + session 名。
     pub fn new_with_session_name(socket: Option<&str>, name: &str) -> Self {
         let mut backend = Self::new(socket);
