@@ -132,17 +132,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func nextPane() {
-        bridge.execute(task: MuxTask.nextPane())
-        needsLayoutReload = true
-        refreshUI()
-        focusActiveTerminal()
+        movePane(offset: 1)
     }
 
     @objc func prevPane() {
-        bridge.execute(task: MuxTask.prevPane())
-        needsLayoutReload = true
-        refreshUI()
-        focusActiveTerminal()
+        movePane(offset: -1)
     }
 
     private func focusActiveTerminal() {
@@ -172,6 +166,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 view.forceRedraw()
             }
         }
+    }
+
+    /// 在当前 tab 的布局叶子中循环切换 pane。
+    ///
+    /// 这里显式发送目标 pane，而不是发送 NextPane/PrevPane 让核心再次
+    /// 从全局 active 状态推断。这样 tab 切换后 Cmd+[ / Cmd+] 的行为只
+    /// 依赖当前 tab 快照，不会因为旧 staticlib 或焦点事件顺序回到首 tab。
+    private func movePane(offset: Int) {
+        let snap = bridge.snapshot()
+        let paneIDs = snap.layout?.leafPaneIDs() ?? snap.panes.map(\.id)
+        guard let target = PaneNavigation.target(
+            paneIDs: paneIDs,
+            activePaneID: snap.activePane,
+            offset: offset
+        ) else { return }
+
+        bridge.execute(task: MuxTask.switchPane(target))
+        needsLayoutReload = true
+        refreshUI()
+        focusActiveTerminal()
     }
 
     // MARK: - 事件循环

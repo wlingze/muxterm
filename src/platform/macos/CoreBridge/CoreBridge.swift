@@ -22,6 +22,16 @@ struct Pane: Equatable {
 indirect enum LayoutNode: Equatable {
     case leaf(paneId: UInt32)
     case split(horizontal: Bool, ratio: UInt32, first: LayoutNode, second: LayoutNode)
+
+    /// 按布局树顺序返回当前 tab 的 pane 叶子。
+    func leafPaneIDs() -> [UInt32] {
+        switch self {
+        case .leaf(let paneId):
+            return paneId == 0 ? [] : [paneId]
+        case .split(_, _, let first, let second):
+            return first.leafPaneIDs() + second.leafPaneIDs()
+        }
+    }
 }
 
 /// 从 FFI 拷贝出的状态变更事件。
