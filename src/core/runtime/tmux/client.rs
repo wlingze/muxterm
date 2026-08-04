@@ -567,6 +567,51 @@ pub(crate) async fn process_line(
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// 每次调用递增的全局计数器，保证同一进程内并行线程拿到的测试 socket 名唯一。
+    /// 旧实现只用了 `std::process::id()`，在默认并行下多个真实 tmux E2E 会共用
+    /// 同一个 `-L` socket，互相 kill-server 导致 CI 卡死（end_to_end_real_tmux 30m 超时）。
+    static TEST_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_socket(prefix: &str) -> String {
+        let n = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}-{}-{n}", std::process::id())
+    }
+
+    /// 清理指定 tmux server；与测试体解耦，保证即使测试体在 15s 超时被取消，
+    /// 残留的 tmux server 也能被回收，避免污染下一次 CI 运行。
+    /// 接收 owned `String`，使返回的 future 拥有其数据，可被 `Fn` 闭包安全返回。
+    async fn kill_tmux_server(socket: String) {
+        let _ = tokio::process::Command::new("tmux")
+            .args(["-L", &socket, "kill-server"])
+            .output()
+            .await;
+    }
+
+    /// 在一个 15s 有界 tokio timeout 内运行闭包；无论闭包成功、panic 还是超时，
+    /// 返回前都会调用 cleanup 清理资源。用于把 `spawn/send/kill` 包进有界窗口，
+    /// 防止 `handle.kill().await` 在 Linux PTY 上无限阻塞导致整个测试挂死。
+    /// `BodyFut` 与 `CleanupFut` 是独立泛型，避免二者 future 类型耦合。
+    async fn run_bounded<B, Cleanup, BodyFut, CleanupFut, T>(
+        timeout_s: u64,
+        fut: B,
+        cleanup: &Cleanup,
+    ) -> std::result::Result<T, ()>
+    where
+        B: FnOnce() -> BodyFut,
+        BodyFut: std::future::Future<Output = T>,
+        Cleanup: Fn() -> CleanupFut,
+        CleanupFut: std::future::Future<Output = ()>,
+    {
+        let res =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(timeout_s), fut()).await {
+                Ok(t) => Ok(t),
+                Err(_) => Err(()),
+            };
+        cleanup().await;
+        res
+    }
 
     #[tokio::test]
     async fn process_line_dcs_and_response() {
@@ -663,72 +708,85 @@ mod tests {
     }
 
     /// 端到端：真实 spawn tmux -CC（pty），收事件，发命令，验证响应。
+    ///
+    /// 隔离回归：socket 名用 PID+Atomic 计数器保证唯一（旧实现只用 PID，
+    /// 默认并行下两个真实 tmux E2E 共用同一 `-L` socket，互相 kill-server
+    /// 会卡死 CI——end_to_end_real_tmux 曾 30 分钟超时）。整个测试体包在
+    /// 15s 有界 timeout 内；无论成功/panic/超时，timeout 之外都执行
+    /// `tmux -L <socket> kill-server` 回收残留，杜绝 `handle.kill().await`
+    /// 在 Linux PTY 上无限阻塞导致 kill-server 永远执行不到。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn end_to_end_real_tmux() {
-        let socket = format!("muxterm-test-{}", std::process::id());
-        let config = TmuxClientConfig {
-            mode: Some(ConnectMode::NewSession {
-                name: Some("mxtest".into()),
-            }),
-            extra_args: vec!["-L".into(), socket.clone()],
-            cols: Some(80),
-            rows: Some(24),
-            ..Default::default()
-        };
-        let (mut handle, mut rx) = TmuxClient::spawn(config)
-            .await
-            .expect("end_to_end_real_tmux 应能启动 tmux");
+        let socket = unique_test_socket("muxterm-test");
+        let cleanup_socket = socket.clone();
+        let result = run_bounded(
+            15,
+            || async {
+                let config = TmuxClientConfig {
+                    mode: Some(ConnectMode::NewSession {
+                        name: Some("mxtest".into()),
+                    }),
+                    extra_args: vec!["-L".into(), socket.clone()],
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                };
+                let (mut handle, mut rx) = TmuxClient::spawn(config)
+                    .await
+                    .expect("end_to_end_real_tmux 应能启动 tmux");
 
-        let mut got_window_add = false;
-        let mut got_session_changed = false;
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(4);
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => break,
-                ev = rx.recv() => match ev {
-                    Some(TmuxEvent::Message(m)) => match &m {
-                        Message::WindowAdd { .. } => got_window_add = true,
-                        Message::SessionChanged { .. } => got_session_changed = true,
-                        _ => {}
-                    },
-                    Some(TmuxEvent::Exit { .. }) | None => break,
-                    _ => {}
-                }
-            }
-            if got_window_add && got_session_changed {
-                break;
-            }
-        }
-        assert!(got_window_add, "应收到 window-add");
-
-        let cmd = super::super::command::display_message(
-            super::super::command::PaneId(0),
-            "#{session_name}",
-        );
-        handle.send_command(&cmd).await.unwrap();
-
-        let mut got_response = false;
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => break,
-                ev = rx.recv() => match ev {
-                    Some(TmuxEvent::ResponseLine { line, .. }) => {
-                        if line.trim() == "mxtest" { got_response = true; break; }
+                let mut got_window_add = false;
+                let mut got_session_changed = false;
+                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(4);
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        ev = rx.recv() => match ev {
+                            Some(TmuxEvent::Message(m)) => match &m {
+                                Message::WindowAdd { .. } => got_window_add = true,
+                                Message::SessionChanged { .. } => got_session_changed = true,
+                                _ => {}
+                            },
+                            Some(TmuxEvent::Exit { .. }) | None => break,
+                            _ => {}
+                        }
                     }
-                    Some(TmuxEvent::Exit { .. }) | None => break,
-                    _ => {}
+                    if got_window_add && got_session_changed {
+                        break;
+                    }
                 }
-            }
-        }
-        assert!(got_response, "display-message 应返回 mxtest");
+                assert!(got_window_add, "应收到 window-add");
 
-        let _ = handle.kill().await;
-        let _ = tokio::process::Command::new("tmux")
-            .args(["-L", &socket, "kill-server"])
-            .output()
-            .await;
-        let _ = got_session_changed;
+                let cmd = super::super::command::display_message(
+                    super::super::command::PaneId(0),
+                    "#{session_name}",
+                );
+                handle.send_command(&cmd).await.unwrap();
+
+                let mut got_response = false;
+                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        ev = rx.recv() => match ev {
+                            Some(TmuxEvent::ResponseLine { line, .. }) => {
+                                if line.trim() == "mxtest" { got_response = true; break; }
+                            }
+                            Some(TmuxEvent::Exit { .. }) | None => break,
+                            _ => {}
+                        }
+                    }
+                }
+                assert!(got_response, "display-message 应返回 mxtest");
+
+                let _ = handle.kill().await;
+                let _ = got_session_changed;
+            },
+            &move || kill_tmux_server(cleanup_socket.clone()),
+        )
+        .await;
+        // 无论成功或超时，都已完成 kill-server 清理。
+        assert!(result.is_ok(), "end_to_end_real_tmux 应在 15s 内完成");
     }
 
     /// 端到端（P0）：detach 后 tmux 应输出 `%exit`，验证程序退出 → %exit 顺序。
@@ -782,86 +840,146 @@ mod tests {
 
     /// 端到端：验证半行 buffer 正确拼包——发一个会被 tmux 分多次输出的命令
     /// （list-windows 的多行响应），确认所有响应行都被收到。
+    ///
+    /// 隔离回归：与 end_to_end_real_tmux 相同，使用唯一 socket + 15s 有界
+    /// timeout + timeout 之外 kill-server，防止并行 socket 冲突与 PTY kill 阻塞。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn end_to_end_multi_line_response() {
-        let socket = format!("muxterm-ml-{}", std::process::id());
-        let config = TmuxClientConfig {
-            mode: Some(ConnectMode::NewSession {
-                name: Some("mxml".into()),
-            }),
-            extra_args: vec!["-L".into(), socket.clone()],
-            cols: Some(80),
-            rows: Some(24),
-            ..Default::default()
-        };
-        let (mut handle, mut rx) = TmuxClient::spawn(config)
-            .await
-            .expect("end_to_end_multi_line_response 应能启动 tmux");
+        let socket = unique_test_socket("muxterm-ml");
+        let cleanup_socket = socket.clone();
+        let result = run_bounded(
+            15,
+            || async {
+                let config = TmuxClientConfig {
+                    mode: Some(ConnectMode::NewSession {
+                        name: Some("mxml".into()),
+                    }),
+                    extra_args: vec!["-L".into(), socket.clone()],
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                };
+                let (mut handle, mut rx) = TmuxClient::spawn(config)
+                    .await
+                    .expect("end_to_end_multi_line_response 应能启动 tmux");
 
-        // 等启动
-        let mut started = false;
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
-        while !started {
-            tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => break,
-                ev = rx.recv() => match ev {
-                    Some(TmuxEvent::Message(Message::WindowAdd { .. })) => started = true,
-                    Some(TmuxEvent::Exit { .. }) | None => break,
-                    _ => {}
+                // 等启动
+                let mut started = false;
+                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+                while !started {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        ev = rx.recv() => match ev {
+                            Some(TmuxEvent::Message(Message::WindowAdd { .. })) => started = true,
+                            Some(TmuxEvent::Exit { .. }) | None => break,
+                            _ => {}
+                        }
+                    }
                 }
-            }
-        }
-        assert!(started, "end_to_end_multi_line_response 应收到 window-add");
+                assert!(started, "end_to_end_multi_line_response 应收到 window-add");
 
-        // 创建第二个窗口，再 list-windows，应得到 2 行响应
-        handle
-            .send_command(&super::super::command::new_window(
-                super::super::command::SessionId(0),
-                Some("second"),
-            ))
-            .await
-            .unwrap();
-        // 给一点时间让 window-add 到达
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                // 创建第二个窗口，再 list-windows，应得到 2 行响应
+                handle
+                    .send_command(&super::super::command::new_window(
+                        super::super::command::SessionId(0),
+                        Some("second"),
+                    ))
+                    .await
+                    .unwrap();
+                // 给一点时间让 window-add 到达
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        handle
-            .send_command(&super::super::command::list_windows(
-                super::super::command::SessionId(0),
-            ))
-            .await
-            .unwrap();
+                handle
+                    .send_command(&super::super::command::list_windows(
+                        super::super::command::SessionId(0),
+                    ))
+                    .await
+                    .unwrap();
 
-        let mut lines = Vec::new();
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => break,
-                ev = rx.recv() => match ev {
-                    Some(TmuxEvent::ResponseLine { line, .. }) => lines.push(line),
-                    Some(TmuxEvent::Exit { .. }) | None => break,
-                    _ => {}
+                let mut lines = Vec::new();
+                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        ev = rx.recv() => match ev {
+                            Some(TmuxEvent::ResponseLine { line, .. }) => lines.push(line),
+                            Some(TmuxEvent::Exit { .. }) | None => break,
+                            _ => {}
+                        }
+                    }
+                    if lines.len() >= 2 {
+                        break;
+                    }
                 }
-            }
-            if lines.len() >= 2 {
-                break;
-            }
-        }
-        assert!(lines.len() >= 2, "list-windows 应返回至少 2 行: {lines:?}");
-        // 每行应是 `<n>: ...` 形式的窗口列表行。窗口序号受 tmux `base-index`
-        // 全局设置影响（用户 `~/.tmux.conf` 可能设为 1），所以不硬编码 0/1，
-        // 只校验至少出现两个**不同**的窗口序号。
-        let window_idxs: Vec<&str> = lines.iter().filter_map(|l| l.split(':').next()).collect();
-        let distinct: std::collections::HashSet<&str> = window_idxs.iter().copied().collect();
+                assert!(lines.len() >= 2, "list-windows 应返回至少 2 行: {lines:?}");
+                // 每行应是 `<n>: ...` 形式的窗口列表行。窗口序号受 tmux `base-index`
+                // 全局设置影响（用户 `~/.tmux.conf` 可能设为 1），所以不硬编码 0/1，
+                // 只校验至少出现两个**不同**的窗口序号。
+                let window_idxs: Vec<&str> =
+                    lines.iter().filter_map(|l| l.split(':').next()).collect();
+                let distinct: std::collections::HashSet<&str> =
+                    window_idxs.iter().copied().collect();
+                assert!(
+                    distinct.len() >= 2,
+                    "应至少出现 2 个不同窗口序号: {lines:?}"
+                );
+
+                let _ = handle.kill().await;
+            },
+            &move || kill_tmux_server(cleanup_socket.clone()),
+        )
+        .await;
         assert!(
-            distinct.len() >= 2,
-            "应至少出现 2 个不同窗口序号: {lines:?}"
+            result.is_ok(),
+            "end_to_end_multi_line_response 应在 15s 内完成"
         );
+    }
 
-        let _ = handle.kill().await;
-        let _ = tokio::process::Command::new("tmux")
-            .args(["-L", &socket, "kill-server"])
-            .output()
-            .await;
+    #[test]
+    fn unique_test_socket_is_unique_within_process() {
+        let a = unique_test_socket("muxterm-test");
+        let b = unique_test_socket("muxterm-test");
+        let c = unique_test_socket("muxterm-ml");
+        // 同一进程内每次调用必须唯一，且不同前缀不冲突。
+        assert_ne!(a, b, "同一前缀两次调用应不同");
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+        // 都含进程 id 且不为空。
+        assert!(!a.is_empty());
+        assert!(a.starts_with("muxterm-test-"));
+    }
+
+    #[tokio::test]
+    async fn run_bounded_cleans_up_on_success() {
+        let cleaned = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = cleaned.clone();
+        let res = run_bounded(2, || async { 42u32 }, &move || {
+            flag.set(true);
+            std::future::ready(())
+        })
+        .await;
+        assert_eq!(res, Ok(42));
+        assert!(cleaned.get(), "cleanup 应在成功后执行");
+    }
+
+    #[tokio::test]
+    async fn run_bounded_times_out_and_still_cleans_up() {
+        let cleaned = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = cleaned.clone();
+        let res = run_bounded(
+            1,
+            || async {
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                0u32
+            },
+            &move || {
+                flag.set(true);
+                std::future::ready(())
+            },
+        )
+        .await;
+        assert!(res.is_err(), "应超时返回 Err");
+        assert!(cleaned.get(), "超时后 cleanup 也应执行");
     }
 
     #[test]
