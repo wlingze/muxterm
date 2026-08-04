@@ -21,11 +21,34 @@ final class PaneLayoutView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     /// 根据布局树重建子视图，并在布局完成后同步 PTY 尺寸 + 强制重绘。
-    func apply(layout: LayoutNode?, panes: [Pane]) {
+    ///
+    /// 返回 false 表示 layout 与当前 tab 的 pane 快照不一致；调用方应保留
+    /// reload 标记等待后端的下一帧，不能把旧 tab 的 pane 树套到新 tab 上。
+    @discardableResult
+    func apply(layout: LayoutNode?, panes: [Pane]) -> Bool {
+        let expectedPaneIDs = panes.map(\.id)
+        let tree: LayoutNode?
+        if panes.isEmpty {
+            tree = nil
+        } else if let layout {
+            let treePaneIDs = layout.leafPaneIDs()
+            guard PaneLayoutProjection.accepts(
+                treePaneIDs: treePaneIDs,
+                paneIDs: expectedPaneIDs
+            ) else {
+                return false
+            }
+            tree = layout
+        } else if panes.count == 1 {
+            tree = .leaf(paneId: panes[0].id)
+        } else {
+            return false
+        }
+
         if let rootView {
             NSLayoutConstraint.deactivate(rootConstraints)
             rootConstraints = []
@@ -34,8 +57,10 @@ final class PaneLayoutView: NSView {
         rootView = nil
         hostByPane.removeAll()
 
-        let tree = layout ?? panes.first.map { .leaf(paneId: $0.id) }
-        guard let tree else { return }
+        guard let tree else {
+            terminalManager.retainOnly(paneIds: [])
+            return true
+        }
 
         let built = build(node: tree)
         built.translatesAutoresizingMaskIntoConstraints = false
@@ -59,6 +84,7 @@ final class PaneLayoutView: NSView {
         DispatchQueue.main.async { [weak self] in
             self?.finalizeAfterLayout(paneIds: ids, attempt: 0)
         }
+        return true
     }
 
     /// 更新活跃 pane 高亮与 AX（供 Cmd+[ / ] 焦点跟随断言）。
@@ -149,7 +175,7 @@ final class PaneHostView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     func setActive(_ active: Bool) {
@@ -246,7 +272,7 @@ private final class SplitContainerView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 }
 

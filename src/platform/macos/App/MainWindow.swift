@@ -1,4 +1,5 @@
 import AppKit
+import CMuxterm
 import MuxtermChrome
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
@@ -11,6 +12,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var pollTimer: Timer?
     private var lastSnapshot = FrameSnapshot()
     private var needsLayoutReload = true
+    /// tmux tab 切换命令异步完成前，禁止用旧 active tab 快照重建布局。
+    private var pendingActiveTab: UInt32?
     private var isClosing = false
 
     init(bridge: CoreBridge) {
@@ -40,21 +43,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         content.tabBar.onSelectTab = { [weak self] tabId in
-            self?.bridge.execute(task: MuxTask.switchTab(tabId))
-            self?.needsLayoutReload = true
-            self?.refreshUI()
+            self?.requestSwitchTab(tabId)
         }
         content.tabBar.onNewTab = { [weak self] in
             self?.newTab()
         }
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
-            self.bridge.execute(task: MuxTask.switchPane(paneId))
-            self.refreshUI()
-            self.focusActiveTerminal()
+            if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
+                self.reportStatusError("切换 pane @\(paneId) 失败")
+            }
         }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
+        }
+        terminalManager.onError = { [weak self] message in
+            self?.reportStatusError(message)
         }
 
         installKeyEquivalents()
@@ -66,7 +70,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     deinit {
@@ -79,19 +83,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 公开动作（菜单 / 快捷键）
 
     @objc func newTab() {
-        bridge.execute(task: MuxTask.newTab())
+        guard bridge.execute(task: MuxTask.newTab()) == 0 else {
+            reportStatusError("新建 tab 失败")
+            return
+        }
         needsLayoutReload = true
-        refreshUI()
     }
 
     @objc func closeActivePane() {
-        let pane = lastSnapshot.activePane
-        guard pane != 0 else { return }
+        guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
+            return
+        }
         // 唯一 pane 时关 pane 会触发后端关 window；UI 侧随后收到 Exited 再关窗口。
-        bridge.execute(task: MuxTask.closePane(pane))
+        guard bridge.execute(task: MuxTask.closePane(pane)) == 0 else {
+            reportStatusError("关闭 pane @\(pane) 失败")
+            return
+        }
         needsLayoutReload = true
-        refreshUI()
-        maybeCloseIfSessionEnded()
     }
 
     @objc func closeActiveWindow() {
@@ -115,9 +123,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func switchToTabIndex(_ oneBased: Int) {
         guard oneBased >= 1, oneBased <= lastSnapshot.tabs.count else { return }
         let tabId = lastSnapshot.tabs[oneBased - 1].id
-        bridge.execute(task: MuxTask.switchTab(tabId))
-        needsLayoutReload = true
-        refreshUI()
+        requestSwitchTab(tabId)
     }
 
     @objc func splitHorizontal() {
@@ -157,31 +163,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func focusActiveTerminal() {
         let snap = bridge.snapshot()
-        guard snap.activePane != 0 else { return }
-        let view = terminalManager.view(for: snap.activePane)
+        guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
+            return
+        }
+        let view = terminalManager.view(for: activePane)
         terminalManager.focusTarget = view
         window?.makeFirstResponder(view)
-        content.paneLayout.markActivePane(snap.activePane)
+        content.paneLayout.markActivePane(activePane)
+    }
+
+    private func requestSwitchTab(_ tabId: UInt32) {
+        guard tabId != lastSnapshot.activeTab else { return }
+        pendingActiveTab = tabId
+        needsLayoutReload = true
+        guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
+            pendingActiveTab = nil
+            reportStatusError("切换 tab @\(tabId) 失败")
+            return
+        }
+        // 等 STATE_ACTIVE_TAB_CHANGED 到达后再 refreshUI；此时 snapshot 的
+        // panes/layout 才保证属于同一个 active tab。
     }
 
     private func splitActivePane(horizontal: Bool) {
-        let pane = lastSnapshot.activePane
-        guard pane != 0 else { return }
-        bridge.execute(task: MuxTask.splitPane(targetPane: pane, horizontal: horizontal))
-        needsLayoutReload = true
-        refreshUI()
-        // 分割后立刻把焦点交回活跃终端，避免「看起来黑且键入无响应」
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let snap = self.bridge.snapshot()
-            if snap.activePane != 0 {
-                let view = self.terminalManager.view(for: snap.activePane)
-                self.window?.makeFirstResponder(view)
-                self.terminalManager.focusTarget = view
-                _ = view.syncSizeToPty()
-                view.forceRedraw()
-            }
+        guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
+            return
         }
+        guard bridge.execute(task: MuxTask.splitPane(targetPane: pane, horizontal: horizontal)) == 0 else {
+            reportStatusError("分割 pane @\(pane) 失败")
+            return
+        }
+        needsLayoutReload = true
     }
 
     /// 在当前 tab 的布局叶子中循环切换 pane。
@@ -198,10 +210,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             offset: offset
         ) else { return }
 
-        bridge.execute(task: MuxTask.switchPane(target))
-        needsLayoutReload = true
-        refreshUI()
-        focusActiveTerminal()
+        guard bridge.execute(task: MuxTask.switchPane(target)) == 0 else {
+            reportStatusError("切换 pane @\(target) 失败")
+            return
+        }
     }
 
     // MARK: - 命令面板
@@ -386,6 +398,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func chooseDirectory(for target: ConnectionTarget) {
+        guard let ownerWindow = window else {
+            reportStatusError("无法打开目录选择器：主窗口不可用")
+            return
+        }
         switch target {
         case .local:
             let panel = NSOpenPanel()
@@ -394,7 +410,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             panel.canChooseFiles = false
             panel.canChooseDirectories = true
             panel.allowsMultipleSelection = false
-            panel.beginSheetModal(for: window!) { [weak self] response in
+            panel.beginSheetModal(for: ownerWindow) { [weak self] response in
                 guard response == .OK, let directory = panel.url?.path else { return }
                 self?.createSession(target: target, directory: directory)
             }
@@ -407,7 +423,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             alert.accessoryView = field
             alert.addButton(withTitle: "创建并连接")
             alert.addButton(withTitle: "取消")
-            alert.beginSheetModal(for: window!) { [weak self] response in
+            alert.beginSheetModal(for: ownerWindow) { [weak self] response in
                 guard response == .alertFirstButtonReturn else { return }
                 let directory = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !directory.isEmpty else { return }
@@ -458,6 +474,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     self.bridge = nextBridge
                     self.terminalManager.updateBridge(nextBridge)
                     self.lastSnapshot = FrameSnapshot()
+                    self.pendingActiveTab = nil
                     self.needsLayoutReload = true
                     self.refreshUI()
                     self.focusActiveTerminal()
@@ -471,19 +488,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func closeActiveTab() {
-        guard lastSnapshot.activeTab != 0 else { return }
-        bridge.execute(task: MuxTask.closeTab(lastSnapshot.activeTab))
+        guard lastSnapshot.tabs.contains(where: { $0.id == lastSnapshot.activeTab }) else { return }
+        let tabID = lastSnapshot.activeTab
+        guard bridge.execute(task: MuxTask.closeTab(tabID)) == 0 else {
+            reportStatusError("关闭 tab @\(tabID) 失败")
+            return
+        }
         needsLayoutReload = true
-        refreshUI()
-        maybeCloseIfSessionEnded()
     }
 
     private func showError(_ error: Error) {
+        reportStatusError(error.localizedDescription)
+        guard let ownerWindow = window else { return }
         let alert = NSAlert()
         alert.messageText = "命令面板操作失败"
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .warning
-        alert.beginSheetModal(for: window!)
+        alert.beginSheetModal(for: ownerWindow)
     }
 
     // MARK: - 事件循环
@@ -498,28 +519,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func pollOnce() {
         let events = bridge.pollEvents()
+        if let error = bridge.takeError() {
+            reportStatusError(error)
+        }
         var outputSeen = false
-        var structureChanged = false
+        var uiStateChanged = false
         for ev in events {
             if ev.isPaneOutput {
                 terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
                 outputSeen = true
-            } else {
-                structureChanged = true
+            } else if StateEventPolicy.requiresLayoutReload(ev.type) {
+                uiStateChanged = true
                 needsLayoutReload = true
+                if ev.type == STATE_ACTIVE_TAB_CHANGED, pendingActiveTab == ev.tabId {
+                    pendingActiveTab = nil
+                }
+            } else if StateEventPolicy.changesActivePane(ev.type) {
+                uiStateChanged = true
+            } else if ev.isBackendStatus {
+                uiStateChanged = true
+            } else if ev.type == STATE_TAB_RENAMED || ev.type == STATE_PANE_RESIZED {
+                // 标题/字符格尺寸会改变状态栏或焦点，但不会改变布局树。
+                uiStateChanged = true
             }
             if ev.isBackendStatus, ev.paneId == 4 {
                 // pane_id 复用状态码：4 = exited
                 closeSessionWindow()
                 return
             }
-            if ev.isPaneClosed || ev.isTabClosed {
-                structureChanged = true
-            }
         }
-        if needsLayoutReload || structureChanged {
+        if needsLayoutReload || uiStateChanged {
             refreshUI()
-            maybeCloseIfSessionEnded()
+            if uiStateChanged {
+                maybeCloseIfSessionEnded()
+            }
         } else if outputSeen {
             content.statusBar.update(snapshot: lastSnapshot)
         }
@@ -529,17 +562,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let snap = bridge.snapshot()
         lastSnapshot = snap
         content.tabBar.update(tabs: snap.tabs)
-        if needsLayoutReload {
-            content.paneLayout.apply(layout: snap.layout, panes: snap.panes)
-            needsLayoutReload = false
+        if needsLayoutReload, pendingActiveTab == nil {
+            if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
+                needsLayoutReload = false
+                content.statusBar.clearLayoutSyncError()
+            } else {
+                content.statusBar.showLayoutSyncing()
+            }
         }
         content.statusBar.update(snapshot: snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
 
-        if snap.activePane != 0 {
-            let view = terminalManager.view(for: snap.activePane)
+        if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
+            let view = terminalManager.view(for: activePane)
             terminalManager.focusTarget = view
-            content.paneLayout.markActivePane(snap.activePane)
+            content.paneLayout.markActivePane(activePane)
             if window?.firstResponder !== view {
                 window?.makeFirstResponder(view)
             }
@@ -552,6 +589,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if snap.tabs.isEmpty && snap.panes.isEmpty {
             closeSessionWindow()
         }
+    }
+
+    private func reportStatusError(_ message: String) {
+        content.statusBar.showError(message)
     }
 
     private func closeSessionWindow() {
@@ -585,7 +626,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             control: flags.contains(.control),
             key: key
         )
-        guard let action = KeyBindings.action(for: chord) else { return false }
+        guard let action = KeyBindings.action(for: chord) else {
+            // Ctrl+C/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
+            // 把它们送成真实控制字节。这样不依赖 SwiftTerm 的 NSText
+            // interpretation，也不会把 tmux 的 WriteRaw 内容变成字面文本。
+            if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),
+               let view = window?.firstResponder as? MuxTerminalView,
+               let byte = TerminalInputEncoding.controlByte(for: key)
+            {
+                terminalManager.sendRawInput(to: view, byte: byte)
+                return true
+            }
+            return false
+        }
         switch action {
         case .newTab:
             newTab()

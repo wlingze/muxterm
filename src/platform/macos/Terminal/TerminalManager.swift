@@ -11,9 +11,12 @@ final class TerminalManager: TerminalInputHandler {
     private(set) var recentOutputSnippet: String = ""
     /// 上次成功同步到 PTY 的行列，避免无意义重复 resize。
     private var lastPtySize: [UInt32: (UInt16, UInt16)] = [:]
+    /// 同一 pane 的 resize 失败只报告一次，避免轮询/重绘时刷屏。
+    private var reportedResizeFailures = Set<UInt32>()
 
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
+    var onError: ((String) -> Void)?
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
@@ -28,6 +31,7 @@ final class TerminalManager: TerminalInputHandler {
         views.removeAll()
         outputCursors.removeAll()
         lastPtySize.removeAll()
+        reportedResizeFailures.removeAll()
         recentOutputSnippet = ""
         onOutputSnippetChanged?(recentOutputSnippet)
     }
@@ -97,7 +101,16 @@ final class TerminalManager: TerminalInputHandler {
 
     func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
         // 仅转发到 FFI；显示只走 pty 回显的 PaneOutput（修双写）。
-        bridge?.sendInput(paneId: view.paneId, data: Data(data))
+        if bridge?.sendInput(paneId: view.paneId, data: Data(data)) != 0 {
+            onError?("pane @\(view.paneId) 输入发送失败")
+        }
+    }
+
+    /// 给窗口级快捷键监视器发送已经编码好的终端控制字节。
+    func sendRawInput(to view: MuxTerminalView, byte: UInt8) {
+        if bridge?.sendInput(paneId: view.paneId, data: Data([byte])) != 0 {
+            onError?("pane @\(view.paneId) 控制键发送失败")
+        }
     }
 
     func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {
@@ -108,7 +121,12 @@ final class TerminalManager: TerminalInputHandler {
             return
         }
         lastPtySize[view.paneId] = (c, r)
-        bridge?.resizePane(paneId: view.paneId, cols: c, rows: r)
+        guard let bridge else { return }
+        if bridge.resizePane(paneId: view.paneId, cols: c, rows: r) != 0,
+           reportedResizeFailures.insert(view.paneId).inserted
+        {
+            onError?("pane @\(view.paneId) 尺寸同步失败")
+        }
     }
 
     private func appendSnippet(_ data: Data) {

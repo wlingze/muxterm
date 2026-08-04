@@ -6,6 +6,9 @@ final class StatusBarView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let outputProbe = NSTextField(labelWithString: "")
     private let edgeLine = CALayer()
+    private var baseText = ""
+    private var errorText: String?
+    private let layoutSyncMessage = "GUI 布局同步中：等待当前 tab 的 pane 布局"
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -57,7 +60,7 @@ final class StatusBarView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     override func layout() {
@@ -66,18 +69,42 @@ final class StatusBarView: NSView {
     }
 
     func update(snapshot: FrameSnapshot) {
-        let text = FlatChrome.statusText(
+        baseText = FlatChrome.statusText(
             status: snapshot.status,
             tabCount: snapshot.tabs.count,
             paneCount: snapshot.panes.count,
             activePane: snapshot.activePane
         )
-        label.stringValue = text
-        label.setAccessibilityValue(text)
+        renderText()
+    }
+
+    /// 将运行时错误显示在 GUI 状态栏，不让 UI 因异步快照问题崩溃。
+    func showError(_ message: String) {
+        errorText = message
+        renderText()
+    }
+
+    /// 布局过渡态独立清理；不能清掉输入/连接等仍需用户看到的错误。
+    func showLayoutSyncing() {
+        errorText = layoutSyncMessage
+        renderText()
+    }
+
+    func clearLayoutSyncError() {
+        guard errorText == layoutSyncMessage else { return }
+        errorText = nil
+        renderText()
     }
 
     func updateOutputSnippet(_ snippet: String) {
         outputProbe.stringValue = snippet
         outputProbe.setAccessibilityValue(snippet)
+    }
+
+    private func renderText() {
+        let text = errorText ?? baseText
+        label.stringValue = text
+        label.setAccessibilityValue(text)
+        label.textColor = errorText == nil ? NSColor.tertiaryLabelColor : NSColor.systemRed
     }
 }

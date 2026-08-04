@@ -27,7 +27,8 @@ indirect enum LayoutNode: Equatable {
     func leafPaneIDs() -> [UInt32] {
         switch self {
         case .leaf(let paneId):
-            return paneId == 0 ? [] : [paneId]
+            // tmux 合法的第一个 pane id 就是 0；不能把它当成空值。
+            return [paneId]
         case .split(_, _, let first, let second):
             return first.leafPaneIDs() + second.leafPaneIDs()
         }
@@ -114,6 +115,8 @@ final class CoreBridge {
     private var handle: OpaquePointer?
     /// 最近一次 BackendStatus（pane_id 字段复用状态码）。
     private(set) var lastStatus: UInt32 = 2 // Connected
+    private var pendingError: String?
+    private var pollFailureReported = false
 
     /// 创建 handle 并 connect。
     /// - Parameters:
@@ -157,6 +160,13 @@ final class CoreBridge {
         guard let handle else { return [] }
         var buf = Array(repeating: CStateChange(), count: 64)
         let n = muxterm_poll_events(handle, &buf, Int32(buf.count))
+        if n < 0 {
+            if !pollFailureReported {
+                pendingError = "核心事件轮询失败，GUI 状态可能暂时无法同步"
+                pollFailureReported = true
+            }
+            return []
+        }
         guard n > 0 else { return [] }
 
         return buf.prefix(Int(n)).map { c in
@@ -178,6 +188,12 @@ final class CoreBridge {
                 name: Self.string(from: c.name)
             )
         }
+    }
+
+    /// 取出一次待显示的核心错误。
+    func takeError() -> String? {
+        defer { pendingError = nil }
+        return pendingError
     }
 
     /// 向指定 pane 发送原始输入字节。

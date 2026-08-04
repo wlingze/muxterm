@@ -83,7 +83,7 @@ final class TabBarView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     /// `edgeAtBottom == true` 时画底部分隔线（tab 在上）；否则画顶部分隔线（tab 在下）。
@@ -171,7 +171,7 @@ private final class TabCellButton: NSButton {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     override func layout() {
