@@ -11,8 +11,11 @@ final class TerminalManager: TerminalInputHandler {
     private(set) var recentOutputSnippet: String = ""
     /// 上次成功同步到 PTY 的行列，避免无意义重复 resize。
     private var lastPtySize: [UInt32: (UInt16, UInt16)] = [:]
+    /// 上次发送给 tmux control client 的整体尺寸。
+    private var lastClientSize: (UInt16, UInt16)?
     /// 同一 pane 的 resize 失败只报告一次，避免轮询/重绘时刷屏。
     private var reportedResizeFailures = Set<UInt32>()
+    private var reportedClientResizeFailure = false
 
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
@@ -31,7 +34,9 @@ final class TerminalManager: TerminalInputHandler {
         views.removeAll()
         outputCursors.removeAll()
         lastPtySize.removeAll()
+        lastClientSize = nil
         reportedResizeFailures.removeAll()
+        reportedClientResizeFailure = false
         recentOutputSnippet = ""
         onOutputSnippetChanged?(recentOutputSnippet)
     }
@@ -81,13 +86,60 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
-    /// 布局完成后：对所有可见 pane 同步像素→行列→PTY。
-    func syncAllVisibleSizes(paneIds: Set<UInt32>) {
+    /// 当前连接是否由 tmux 控制 client 管理尺寸。
+    var usesClientResize: Bool {
+        bridge?.backendType == "tmux" || bridge?.backendType == "ssh"
+    }
+
+    /// 布局完成后：先更新各个 SwiftTerm 的本地渲染尺寸，再按后端类型同步尺寸。
+    /// tmux 模式只发送一次整体 client resize，避免 pane resize 逐个触发布局反馈。
+    func syncAllVisibleSizes(paneIds: Set<UInt32>, container: NSView? = nil) {
         for id in paneIds {
             guard let view = views[id] else { continue }
             view.layoutSubtreeIfNeeded()
-            _ = view.syncSizeToPty()
+            _ = view.syncSizeToPty(notifyResize: !usesClientResize)
         }
+        if usesClientResize, let container {
+            syncClientSize(container: container, paneIds: paneIds)
+        }
+    }
+
+    /// 取任一可见终端的字符格 backing pixel 尺寸；同一窗口字体统一。
+    func cellSizeInPixels(paneIds: Set<UInt32>) -> (width: Int, height: Int)? {
+        paneIds.lazy.compactMap { self.views[$0]?.terminalCellSizeInPixels() }.first
+    }
+
+    /// 把 GUI 根容器的 backing pixels 映射为 tmux client 字符格。
+    private func syncClientSize(container: NSView, paneIds: Set<UInt32>) {
+        guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
+            return
+        }
+        let pixelSize = container.convertToBacking(container.bounds).size
+        let cols = Int(floor(pixelSize.width / CGFloat(cell.width)))
+        let rows = Int(floor(pixelSize.height / CGFloat(cell.height)))
+        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
+        let c = UInt16(cols)
+        let r = UInt16(rows)
+        guard lastClientSize?.0 != c || lastClientSize?.1 != r else { return }
+        guard let bridge else { return }
+        if bridge.resizeClient(cols: c, rows: r) == 0 {
+            lastClientSize = (c, r)
+            reportedClientResizeFailure = false
+        } else if !reportedClientResizeFailure {
+            reportedClientResizeFailure = true
+            onError?("tmux client 尺寸同步失败")
+        }
+    }
+
+    /// 提交鼠标拖动后的单轴 pane 尺寸；tmux 会把结果保存到其窗口 layout。
+    @discardableResult
+    func resizePaneAxis(paneId: UInt32, horizontal: Bool, size: UInt16) -> Int32 {
+        guard usesClientResize, let bridge else { return -1 }
+        let rc = bridge.resizePaneAxis(paneId: paneId, horizontal: horizontal, size: size)
+        if rc != 0 {
+            onError?("pane @\(paneId) 分隔条尺寸同步失败")
+        }
+        return rc
     }
 
     /// 强制重绘（分割后 Metal/layer 偶发留黑）。
@@ -115,6 +167,9 @@ final class TerminalManager: TerminalInputHandler {
 
     func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {
         guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
+        // tmux pane 的真实尺寸由 refresh-client -C 和 tmux layout 决定；
+        // 这里不能把每个 SwiftTerm view 的尺寸再写回 tmux。
+        guard !usesClientResize else { return }
         let c = UInt16(cols)
         let r = UInt16(rows)
         if let prev = lastPtySize[view.paneId], prev.0 == c, prev.1 == r {

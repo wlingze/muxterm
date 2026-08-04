@@ -113,6 +113,8 @@ struct FrameSnapshot {
 /// 与 TUI `src/platform/tui/ffi_bridge.rs` 逻辑同构。
 final class CoreBridge {
     private var handle: OpaquePointer?
+    /// 当前连接的后端类型；tmux/ssh 都通过控制 client 同步整体尺寸。
+    let backendType: String
     /// 最近一次 BackendStatus（pane_id 字段复用状态码）。
     private(set) var lastStatus: UInt32 = 2 // Connected
     private var pendingError: String?
@@ -124,7 +126,9 @@ final class CoreBridge {
     ///   - socket: tmux `-L` socket 名（可选）
     ///   - session: session 名（可选）
     init(backendType: String = "local", socket: String? = nil, session: String? = nil) throws {
-        let handle = backendType.withCString { btPtr in
+        let normalizedBackendType = backendType.lowercased()
+        self.backendType = normalizedBackendType
+        let handle = normalizedBackendType.withCString { btPtr in
             Self.withOptionalCString(socket) { sockPtr in
                 Self.withOptionalCString(session) { sessPtr in
                     muxterm_new(btPtr, sockPtr, sessPtr)
@@ -211,6 +215,21 @@ final class CoreBridge {
     func resizePane(paneId: UInt32, cols: UInt16, rows: UInt16) -> Int32 {
         guard let handle, cols > 0, rows > 0 else { return -1 }
         return muxterm_resize_pane(handle, paneId, cols, rows)
+    }
+
+    /// 同步 tmux 控制 client 的整体字符格尺寸，避免对每个 pane 逐个 resize 造成反馈环。
+    @discardableResult
+    func resizeClient(cols: UInt16, rows: UInt16) -> Int32 {
+        guard let handle, cols > 0, rows > 0 else { return -1 }
+        return muxterm_resize_client(handle, cols, rows)
+    }
+
+    /// 调整鼠标拖动对应的 pane 单一轴尺寸。
+    @discardableResult
+    func resizePaneAxis(paneId: UInt32, horizontal: Bool, size: UInt16) -> Int32 {
+        guard let handle, size > 0 else { return -1 }
+        let axis = horizontal ? DIR_HORIZONTAL : DIR_VERTICAL
+        return muxterm_resize_pane_axis(handle, paneId, axis, size)
     }
 
     func getTabs() -> [Tab] {

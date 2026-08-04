@@ -130,6 +130,29 @@ final class PaneLayoutProjectionTests: XCTestCase {
     }
 }
 
+final class PaneResizeMathTests: XCTestCase {
+    func testRatioIsBounded() {
+        XCTAssertEqual(PaneResizeMath.clampedRatio(-1), 0.05, accuracy: 0.0001)
+        XCTAssertEqual(PaneResizeMath.clampedRatio(2), 0.95, accuracy: 0.0001)
+    }
+
+    func testDragKeepsDividerLengthOutOfCollapsedRange() {
+        let left = PaneResizeMath.ratioAfterDrag(
+            startRatio: 0.5, delta: -10_000, totalLength: 1_000, dividerLength: 6
+        )
+        let right = PaneResizeMath.ratioAfterDrag(
+            startRatio: 0.5, delta: 10_000, totalLength: 1_000, dividerLength: 6
+        )
+        XCTAssertEqual(left, 0.05, accuracy: 0.0001)
+        XCTAssertEqual(right, 0.95, accuracy: 0.0001)
+    }
+
+    func testPixelLengthMapsToCharacterCells() {
+        XCTAssertEqual(PaneResizeMath.characterCount(pixelLength: 480, cellPixels: 8), 60)
+        XCTAssertNil(PaneResizeMath.characterCount(pixelLength: 8, cellPixels: 8))
+    }
+}
+
 final class TerminalInputEncodingTests: XCTestCase {
     func testCtrlLettersBecomeTerminalControlBytes() {
         let expected: [(String, UInt8)] = [

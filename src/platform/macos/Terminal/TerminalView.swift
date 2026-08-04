@@ -46,21 +46,29 @@ final class MuxTerminalView: TerminalView {
         needsDisplay = true
     }
 
-    /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列，并通知 PTY resize。
+    /// 当前 SwiftTerm 字符格的 backing pixel 尺寸。
+    func terminalCellSizeInPixels() -> (width: Int, height: Int)? {
+        cellSizeInPixels(source: getTerminal())
+    }
+
+    /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列。
     /// 返回是否成功同步到合法行列（≥2×1）。
     @discardableResult
-    func syncSizeToPty() -> Bool {
+    func syncSizeToPty(notifyResize: Bool = true) -> Bool {
         layoutSubtreeIfNeeded()
         let size = bounds.size
         guard size.width >= 40, size.height >= 24 else { return false }
 
-        // 走 SwiftTerm setFrameSize → processSizeChange（会 callback sizeChanged）
-        setFrameSize(NSSize(width: size.width + 0.5, height: size.height))
-        setFrameSize(size)
+        // SwiftTerm setFrameSize 会 processSizeChange；这里只调用一次，避免重复回调。
+        if frame.size != size {
+            setFrameSize(size)
+        }
 
         let term = getTerminal()
         guard term.cols >= 2, term.rows >= 1 else { return false }
-        inputHandler?.terminal(self, sizeChanged: term.cols, rows: term.rows)
+        if notifyResize {
+            inputHandler?.terminal(self, sizeChanged: term.cols, rows: term.rows)
+        }
         needsDisplay = true
         return true
     }
