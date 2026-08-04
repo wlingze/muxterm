@@ -220,6 +220,19 @@ impl TmuxBackend {
         }
     }
 
+    /// 合并同一 tab 尚未交给前端的布局事件。
+    ///
+    /// 窗口 resize 会让 tmux 连续发送 layout-change；前端只需要最新完整
+    /// layout。保留中间快照会让 GUI 反复重建 pane 树，表现为闪烁和比例跳动。
+    fn push_layout_changed(&mut self, layout: TabLayout) {
+        let tab = layout.tab;
+        self.events.retain(
+            |event| !matches!(event, StateChange::LayoutChanged { tab: old, .. } if *old == tab),
+        );
+        self.events
+            .push_back(StateChange::LayoutChanged { tab, layout });
+    }
+
     /// abort/卡死路径：按 `-L socket` 强制 kill-server，回收残留 tmux。
     fn force_cleanup_tmux_server(&self) {
         let mut socket: Option<&str> = None;
@@ -293,6 +306,10 @@ impl TmuxBackend {
                 // 旧实现只发查询、不更新 window_layouts，导致随后仍用旧树或
                 // fallback 平铺树渲染，尤其在 attach 后再次 split 时会暴露。
                 self.window_layouts.insert(window, layout.raw.clone());
+                if let Ok(tree) = parse_layout_tree(&layout.raw) {
+                    self.expected_panes_per_window
+                        .insert(window, collect_layout_leaves(&tree).len());
+                }
                 self.query_list_panes(window);
             }
             Message::WindowAdd { window } => {
@@ -577,6 +594,24 @@ impl TmuxBackend {
                 rows,
             });
         }
+        if let Some(expected) = self
+            .expected_panes_per_window
+            .get(&window)
+            .copied()
+            .filter(|count| *count > 0)
+        {
+            if new_panes.len() != expected {
+                tracing::debug!(
+                    target: "muxterm::tmux",
+                    "忽略 window=@{} 的不完整 pane 快照: got={}, expected={}",
+                    window.0,
+                    new_panes.len(),
+                    expected
+                );
+                self.query_list_panes(window);
+                return;
+            }
+        }
         let mut changed = false;
         for np in &new_panes {
             if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
@@ -666,6 +701,11 @@ impl TmuxBackend {
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
     fn query_list_panes(&mut self, window: WindowId) {
         // 用 list-panes -t @N 查询单个 window 的 pane（默认格式不含 window_id）。
+        if self.pending_queries.iter().any(|query| {
+            matches!(query, PendingQuery::ListPanes { window: pending } if *pending == window)
+        }) {
+            return;
+        }
         let line = format!("list-panes -t @{}\n", window.0);
         if self.dispatch_command(line).is_ok() {
             self.pending_queries
@@ -715,10 +755,7 @@ impl TmuxBackend {
                 active,
             };
             self.layouts.insert(tab_id, layout.clone());
-            self.events.push_back(StateChange::LayoutChanged {
-                tab: tab_id,
-                layout,
-            });
+            self.push_layout_changed(layout);
             return;
         }
         let layout_str = match self.window_layouts.get(&window) {
@@ -749,10 +786,7 @@ impl TmuxBackend {
             active,
         };
         self.layouts.insert(tab_id, layout.clone());
-        self.events.push_back(StateChange::LayoutChanged {
-            tab: tab_id,
-            layout,
-        });
+        self.push_layout_changed(layout);
     }
 
     /// 朴素兜底布局：按顺序水平排列 pane。
@@ -769,10 +803,7 @@ impl TmuxBackend {
             active,
         };
         self.layouts.insert(tab_id, layout.clone());
-        self.events.push_back(StateChange::LayoutChanged {
-            tab: tab_id,
-            layout,
-        });
+        self.push_layout_changed(layout);
     }
 
     /// 把一个命令异步发送给 tmux（通过 channel）。
@@ -1515,6 +1546,63 @@ mod tests {
             nested_second.as_ref(),
             LayoutNode::Leaf(PaneId(2))
         ));
+    }
+
+    #[test]
+    fn incomplete_pane_snapshot_does_not_collapse_layout() {
+        let mut b = TmuxBackend::new(None);
+        let window = WindowId(0);
+        let layout = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
+        b.handle_message(Message::LayoutChange {
+            window,
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(layout).unwrap(),
+            visible_layout: None,
+        });
+
+        b.handle_list_panes_response(
+            window,
+            vec!["0: [70x30] %0 (active)".into(), "1: [69x15] %1".into()],
+        );
+        assert!(b.layouts.get(&TabId(0)).is_none());
+        assert!(b.panes.is_empty());
+    }
+
+    #[test]
+    fn pending_layout_events_are_coalesced_per_tab() {
+        let mut b = TmuxBackend::new(None);
+        let window = WindowId(0);
+        let layout = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
+        let message = || Message::LayoutChange {
+            window,
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(layout).unwrap(),
+            visible_layout: None,
+        };
+        b.handle_message(message());
+        b.handle_list_panes_response(
+            window,
+            vec![
+                "0: [70x30] %0 (active)".into(),
+                "1: [69x15] %1".into(),
+                "2: [69x14] %2".into(),
+            ],
+        );
+        b.handle_message(message());
+        b.handle_list_panes_response(
+            window,
+            vec![
+                "0: [70x30] %0 (active)".into(),
+                "1: [69x15] %1".into(),
+                "2: [69x14] %2".into(),
+            ],
+        );
+        let count = b
+            .events
+            .iter()
+            .filter(
+                |event| matches!(event, StateChange::LayoutChanged { tab, .. } if *tab == TabId(0)),
+            )
+            .count();
+        assert_eq!(count, 1);
     }
 
     fn unique_socket() -> String {
