@@ -19,6 +19,8 @@ pub struct PaneTerminal {
     state: TerminalState,
     cols: u16,
     rows: u16,
+    /// 已 feed 到 state 的累计输出长度（用于增量同步）。
+    fed_len: usize,
 }
 
 impl PaneTerminal {
@@ -27,6 +29,7 @@ impl PaneTerminal {
             state: TerminalState::new(cols as usize, rows as usize),
             cols,
             rows,
+            fed_len: 0,
         }
     }
 
@@ -43,6 +46,22 @@ impl PaneTerminal {
         self.cols = cols.max(1);
         self.rows = rows.max(1);
         self.state = TerminalState::new(self.cols as usize, self.rows as usize);
+        self.fed_len = 0;
+    }
+
+    /// 用累计输出做增量同步（GTK 同款）：只 feed 比已 feed 长度更新的部分。
+    /// 输出被截断时重置并全量重放。
+    pub fn sync_from_output(&mut self, full: &[u8]) {
+        if full.len() > self.fed_len {
+            let delta = &full[self.fed_len..];
+            self.feed(delta);
+            self.fed_len = full.len();
+        } else if full.len() < self.fed_len {
+            // 输出被重置/截断：清空重放
+            self.state = TerminalState::new(self.cols as usize, self.rows as usize);
+            self.feed(full);
+            self.fed_len = full.len();
+        }
     }
 
     /// 当前屏幕快照（每行一个字符串，含空白），按行数补齐。
@@ -94,6 +113,16 @@ impl TerminalManager {
     /// 取某 pane 的屏幕快照；不存在返回空。
     pub fn screen(&self, pane_id: u32) -> Option<Vec<String>> {
         self.panes.get(&pane_id).map(|p| p.screen())
+    }
+
+    /// 用累计输出做增量同步（GTK 同款 delta 方案）。
+    pub fn sync_output(&mut self, pane_id: u32, cols: u16, rows: u16, full: &[u8]) {
+        let pt = self
+            .panes
+            .entry(pane_id)
+            .or_insert_with(|| PaneTerminal::new(cols.max(1), rows.max(1)));
+        pt.resize(cols, rows);
+        pt.sync_from_output(full);
     }
 
     /// 取某 pane 的屏幕快照 + 光标行；不存在返回 None。
