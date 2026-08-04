@@ -494,6 +494,83 @@ fn attach_initial_flood_and_live_output() {
     cleanup(&socket);
 }
 
+/// attach 前已经存在的 shell 画面必须进入 core 累计输出，供 GUI 首次创建
+/// terminal view 时回放；不能只验证 attach 后新发的 echo。
+#[test]
+fn attach_restores_existing_shell_screen_output() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let marker = "ATTACH_RESTORE_SCREEN_74291";
+    let created = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "new-session",
+            "-d",
+            "-s",
+            "restore",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !created {
+        cleanup(&socket);
+        eprintln!("skip: 无法创建 tmux session");
+        return;
+    }
+    let command = format!("printf '{marker}\\n'");
+    let sent = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "send-keys",
+            "-t",
+            "restore",
+            &command,
+            "Enter",
+        ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    assert!(sent, "预置 attach 屏幕内容失败");
+    std::thread::sleep(Duration::from_millis(150));
+
+    let backend = TmuxBackend::new_with_attach(Some(&socket), "restore");
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    std::mem::forget(rt);
+
+    let ready = wait_for(&mut model, Duration::from_secs(5), |state| {
+        state
+            .active_pane()
+            .and_then(|pane| state.pane_output(&pane.id))
+            .map(|output| String::from_utf8_lossy(output).contains(marker))
+            .unwrap_or(false)
+    });
+    let output = model
+        .state()
+        .active_pane()
+        .and_then(|pane| model.state().pane_output(&pane.id))
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
+    assert!(ready, "attach 后应恢复已有 shell 画面，实际输出={output:?}");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
 // ============================================================================
 // 9. 更高强度：多 pane 同时高频输出并持续一段时间，验证背压/事件队列有界、
 //    且每个 pane 都累积到各自输出（不串流、不阻塞）

@@ -19,11 +19,11 @@
 use std::ffi::CString;
 use std::process::Command;
 use std::ptr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use muxterm::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_panes,
-    muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_resize_client,
+    muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
+    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_resize_client,
     muxterm_resize_pane_axis, muxterm_shutdown,
 };
 use muxterm::core::protocol::ffi::types::{
@@ -391,6 +391,219 @@ fn macos_ffi_attach_2tab3pane_layout() {
         muxterm_free(h);
     }
 
+    let _ = Command::new("tmux")
+        .args(["-L", &backend, "kill-server"])
+        .status();
+}
+
+/// macOS FFI 回归：attach 前已经存在的 shell 画面必须可从累计输出读取，
+/// 这样 SwiftTerm 首次创建 pane view 时才能恢复，而不是只有后续输入可见。
+#[test]
+fn macos_ffi_attach_restores_existing_shell_screen_output() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+
+    let backend = format!("mac-restore-{}-{}", std::process::id(), rand_suffix());
+    let marker = "MAC_ATTACH_RESTORE_74291";
+    let created = Command::new("tmux")
+        .args([
+            "-L",
+            &backend,
+            "new-session",
+            "-d",
+            "-s",
+            "restore",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !created {
+        eprintln!("skip: 无法创建 tmux session");
+        let _ = Command::new("tmux")
+            .args(["-L", &backend, "kill-server"])
+            .status();
+        return;
+    }
+    let command = format!("printf '{marker}\\n'");
+    assert!(
+        Command::new("tmux")
+            .args([
+                "-L",
+                &backend,
+                "send-keys",
+                "-t",
+                "restore",
+                &command,
+                "Enter"
+            ])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false),
+        "预置 tmux shell 画面失败"
+    );
+    std::thread::sleep(Duration::from_millis(150));
+
+    let bt = CString::new("tmux").unwrap();
+    let sock = CString::new(backend.as_str()).unwrap();
+    let sess = CString::new("restore").unwrap();
+    let h = muxterm_new(bt.as_ptr(), sock.as_ptr(), sess.as_ptr());
+    assert!(!h.is_null(), "muxterm_new 失败");
+
+    unsafe {
+        assert_eq!(muxterm_connect(h), 0, "muxterm_connect 失败");
+        let mut events = [CStateChange::default(); 64];
+        let mut restored = false;
+        for _ in 0..60 {
+            let _ = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
+            let mut panes = [CPane {
+                id: 0,
+                cols: 0,
+                rows: 0,
+                is_active: 0,
+            }; 16];
+            let count = muxterm_get_panes(h, 0, panes.as_mut_ptr(), panes.len() as i32);
+            for pane in panes.iter().take(count.max(0) as usize) {
+                let mut output = vec![0u8; 256 * 1024];
+                let n = muxterm_get_pane_output(h, pane.id, output.as_mut_ptr(), output.len());
+                if n > 0 && String::from_utf8_lossy(&output[..n as usize]).contains(marker) {
+                    restored = true;
+                    break;
+                }
+            }
+            if restored {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            restored,
+            "attach 后 FFI 应恢复已有 shell 画面 marker={marker}"
+        );
+        let _ = muxterm_shutdown(h);
+        muxterm_free(h);
+    }
+
+    let _ = Command::new("tmux")
+        .args(["-L", &backend, "kill-server"])
+        .status();
+}
+
+/// macOS FFI 性能回归：split/new-tab 不能因为事件轮询或 tmux 布局查询
+/// 长时间没有反馈。阈值是用户可感知延迟的上限，不是微基准。
+#[test]
+fn macos_ffi_split_and_new_tab_complete_within_latency_budget() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+
+    let backend = format!("mac-latency-{}-{}", std::process::id(), rand_suffix());
+    let created = Command::new("tmux")
+        .args([
+            "-L",
+            &backend,
+            "new-session",
+            "-d",
+            "-s",
+            "latency",
+            "-x",
+            "100",
+            "-y",
+            "30",
+        ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !created {
+        eprintln!("skip: 无法创建 tmux session");
+        return;
+    }
+
+    let bt = CString::new("tmux").unwrap();
+    let sock = CString::new(backend.as_str()).unwrap();
+    let sess = CString::new("latency").unwrap();
+    let h = muxterm_new(bt.as_ptr(), sock.as_ptr(), sess.as_ptr());
+    assert!(!h.is_null(), "muxterm_new 失败");
+
+    unsafe {
+        assert_eq!(muxterm_connect(h), 0, "muxterm_connect 失败");
+        let mut events = [CStateChange::default(); 128];
+        for _ in 0..50 {
+            let _ = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
+            let mut panes = [CPane {
+                id: 0,
+                cols: 0,
+                rows: 0,
+                is_active: 0,
+            }; 8];
+            if muxterm_get_panes(h, 0, panes.as_mut_ptr(), 8) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let split_task = CTask {
+            type_: TASK_SPLIT_PANE,
+            target_pane: 0,
+            target_tab: 0,
+            dir: DIR_HORIZONTAL,
+            name: ptr::null(),
+        };
+        let split_started = Instant::now();
+        assert_eq!(muxterm_execute(h, &split_task), 0);
+        let mut split_elapsed = None;
+        for _ in 0..200 {
+            let _ = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
+            if active_pane_count(h) >= 2 {
+                split_elapsed = Some(split_started.elapsed());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let split_elapsed = split_elapsed.expect("split 应在 2 秒内反映到 FFI state");
+        assert!(
+            split_elapsed < Duration::from_secs(1),
+            "split 状态反馈过慢: {split_elapsed:?}"
+        );
+
+        let new_tab = CTask {
+            type_: TASK_NEW_TAB,
+            target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: ptr::null(),
+        };
+        let tab_started = Instant::now();
+        assert_eq!(muxterm_execute(h, &new_tab), 0);
+        let mut tab_elapsed = None;
+        for _ in 0..200 {
+            let _ = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
+            let mut tabs = [CTab {
+                id: 0,
+                name: ptr::null(),
+                is_active: 0,
+            }; 8];
+            if muxterm_get_tabs(h, tabs.as_mut_ptr(), 8) >= 2 {
+                tab_elapsed = Some(tab_started.elapsed());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let tab_elapsed = tab_elapsed.expect("new-tab 应在 2 秒内反映到 FFI state");
+        assert!(
+            tab_elapsed < Duration::from_secs(1),
+            "new-tab 状态反馈过慢: {tab_elapsed:?}"
+        );
+
+        let _ = muxterm_shutdown(h);
+        muxterm_free(h);
+    }
     let _ = Command::new("tmux")
         .args(["-L", &backend, "kill-server"])
         .status();

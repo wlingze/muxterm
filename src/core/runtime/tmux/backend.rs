@@ -51,6 +51,8 @@ enum PendingQuery {
     ListWindows,
     /// display-message -p -t <pane> '<format>'：取单行响应。
     DisplayMessage { pane: PaneId },
+    /// capture-pane -e -p -t <pane>：恢复 attach 时 tmux 已存在的可见屏幕。
+    CapturePane { pane: PaneId },
     /// list-sessions：列出 tmux server 上所有 session。
     ListSessions,
 }
@@ -532,6 +534,31 @@ impl TmuxBackend {
                         }
                     }
                 }
+                PendingQuery::CapturePane { pane } => {
+                    // capture-pane -p 按行返回当前可见屏幕；拼回 CRLF 后喂给
+                    // terminal emulator。只有累计输出为空时才使用快照，避免把
+                    // tmux 已经主动推送的初始 %output 再喂一遍造成重复渲染。
+                    if lines.is_empty()
+                        || self
+                            .outputs
+                            .get(&pane)
+                            .is_some_and(|output| !output.is_empty())
+                    {
+                        return;
+                    }
+                    let mut data = lines.join("\r\n").into_bytes();
+                    if !data.is_empty() {
+                        data.extend_from_slice(b"\r\n");
+                    }
+                    append_capped(
+                        self.outputs.entry(pane).or_default(),
+                        &data,
+                        MAX_PANE_OUTPUT_BYTES,
+                    );
+                    self.events
+                        .push_back(StateChange::PaneOutput { pane, data });
+                    self.trim_event_queue();
+                }
                 PendingQuery::ListSessions => {
                     // list-sessions 默认格式: "demo: 1 windows (created ...)"
                     for line in &lines {
@@ -652,6 +679,12 @@ impl TmuxBackend {
         if changed || !new_panes.is_empty() {
             self.rebuild_layout(tab_id, window, &new_panes);
         }
+        // attach 的控制模式不一定会把当前屏幕历史作为 %output 推送；对尚无
+        // 累计输出的 pane 查询一次可见屏幕。查询结果通过同一个事件队列回流，
+        // 不阻塞 pane/layout 状态机。
+        for pane in new_panes {
+            self.query_capture_pane(pane.id);
+        }
     }
 
     /// 解析 `list-windows -t <session> -F '#{window_id},#{window_name},#{window_active},#{window_layout},#{window_panes}'` 的响应。
@@ -710,6 +743,24 @@ impl TmuxBackend {
         if self.dispatch_command(line).is_ok() {
             self.pending_queries
                 .push_back(PendingQuery::ListPanes { window });
+        }
+    }
+
+    /// 查询 pane 当前可见屏幕，用于 attach 初始渲染恢复。
+    fn query_capture_pane(&mut self, pane: PaneId) {
+        if self.pending_queries.iter().any(
+            |query| matches!(query, PendingQuery::CapturePane { pane: pending } if *pending == pane),
+        ) || self
+            .outputs
+            .get(&pane)
+            .is_some_and(|output| !output.is_empty())
+        {
+            return;
+        }
+        let line = format!("capture-pane -e -p -t %{}\n", pane.0);
+        if self.dispatch_command(line).is_ok() {
+            self.pending_queries
+                .push_back(PendingQuery::CapturePane { pane });
         }
     }
 
@@ -1603,6 +1654,34 @@ mod tests {
             )
             .count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn capture_pane_response_restores_existing_screen_without_double_feed() {
+        let mut b = TmuxBackend::new(None);
+        let pane = PaneId(7);
+        b.pending_queries
+            .push_back(PendingQuery::CapturePane { pane });
+
+        b.dispatch_response(1, vec!["\u{1b}[32mrestored shell".into(), "prompt$".into()]);
+        assert_eq!(
+            b.outputs.get(&pane).unwrap(),
+            b"\x1b[32mrestored shell\r\nprompt$\r\n"
+        );
+        assert!(b.events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneOutput { pane: event_pane, data }
+                if *event_pane == pane && data.starts_with(b"\x1b[32mrestored")
+        )));
+
+        // 若 tmux 已经主动推送了 %output，capture 快照不能再次追加。
+        b.pending_queries
+            .push_back(PendingQuery::CapturePane { pane });
+        b.dispatch_response(2, vec!["duplicate".into()]);
+        assert_eq!(
+            b.outputs.get(&pane).unwrap(),
+            b"\x1b[32mrestored shell\r\nprompt$\r\n"
+        );
     }
 
     fn unique_socket() -> String {
