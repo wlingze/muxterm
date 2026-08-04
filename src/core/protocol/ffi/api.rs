@@ -4,6 +4,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use crate::core::model::layout::{LayoutNode, SplitDir};
@@ -150,8 +151,10 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
     if h.is_null() {
         return;
     }
-    let mut handle = Box::from_raw(h);
-    let _ = handle.rt.block_on(handle.model.shutdown());
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let mut handle = Box::from_raw(h);
+        let _ = handle.rt.block_on(handle.model.shutdown());
+    }));
 }
 
 /// 连接后端。0=ok，-1=err。
@@ -160,14 +163,17 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
 /// `h` 有效且未 free。
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_connect(h: *mut MuxtermHandle) -> i32 {
-    if h.is_null() {
-        return -1;
-    }
-    let handle = &mut *h;
-    match handle.rt.block_on(handle.model.connect()) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        match handle.rt.block_on(handle.model.connect()) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 /// 关闭后端。0=ok，-1=err。
@@ -176,14 +182,17 @@ pub unsafe extern "C" fn muxterm_connect(h: *mut MuxtermHandle) -> i32 {
 /// `h` 有效且未 free。
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_shutdown(h: *mut MuxtermHandle) -> i32 {
-    if h.is_null() {
-        return -1;
-    }
-    let handle = &mut *h;
-    match handle.rt.block_on(handle.model.shutdown()) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        match handle.rt.block_on(handle.model.shutdown()) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
@@ -195,11 +204,7 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
             } else {
                 SplitDir::Horizontal
             };
-            let target = if task.target_pane == 0 {
-                None
-            } else {
-                Some(PaneId(task.target_pane))
-            };
+            let target = Some(resolve_c_task_pane(task.target_pane, model));
             Some(Task::SplitPane {
                 target,
                 dir,
@@ -224,11 +229,7 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
             target: TabId(task.target_tab),
         }),
         TASK_CLOSE_PANE => {
-            let pane = if task.target_pane == 0 {
-                model.active_pane_id()?
-            } else {
-                PaneId(task.target_pane)
-            };
+            let pane = resolve_c_task_pane(task.target_pane, model);
             Some(Task::ClosePane { target: pane })
         }
         TASK_CLOSE_TAB => Some(Task::CloseTab {
@@ -237,15 +238,23 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
         TASK_NEXT_PANE => Some(Task::NextPane),
         TASK_PREV_PANE => Some(Task::PrevPane),
         TASK_SWITCH_PANE => {
-            let pane = if task.target_pane == 0 {
-                model.active_pane_id()?
-            } else {
-                PaneId(task.target_pane)
-            };
+            let pane = resolve_c_task_pane(task.target_pane, model);
             Some(Task::SwitchPane { target: pane })
         }
         TASK_SHUTDOWN => Some(Task::Shutdown),
         _ => None,
+    }
+}
+
+/// CTask 的 pane id 需要兼容 tmux 合法的 PaneId(0)。
+///
+/// macOS 会把可见 pane 的真实 id（包括 0）传进来；若当前后端没有
+/// PaneId(0)，才把 0 解释为“当前 active pane”的旧兼容语义。
+fn resolve_c_task_pane(raw: u32, model: &TerminalModel) -> PaneId {
+    if raw == 0 && model.state().pane(&PaneId(0)).is_none() {
+        model.active_pane_id().unwrap_or(PaneId(0))
+    } else {
+        PaneId(raw)
     }
 }
 
@@ -255,18 +264,21 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
 /// `h` / `task` 有效。
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_execute(h: *mut MuxtermHandle, task: *const CTask) -> i32 {
-    if h.is_null() || task.is_null() {
-        return -1;
-    }
-    let handle = &mut *h;
-    let ctask = &*task;
-    let Some(rust_task) = ctask_to_task(ctask, &handle.model) else {
-        return -1;
-    };
-    match handle.model.execute(rust_task) {
-        Ok(_) => 0,
-        Err(_) => -1,
-    }
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || task.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let ctask = &*task;
+        let Some(rust_task) = ctask_to_task(ctask, &handle.model) else {
+            return -1;
+        };
+        match handle.model.execute(rust_task) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChange {
@@ -364,28 +376,31 @@ pub unsafe extern "C" fn muxterm_poll_events(
     out: *mut CStateChange,
     max_count: i32,
 ) -> i32 {
-    if h.is_null() || out.is_null() || max_count <= 0 {
-        return -1;
-    }
-    let handle = &mut *h;
-    handle.clear_event_bufs();
-    let events = handle.model.refresh();
-    let n = events.len().min(max_count as usize);
-    let slice = std::slice::from_raw_parts_mut(out, n);
-    for (i, ev) in events.iter().take(n).enumerate() {
-        let c = state_change_to_c(handle, ev);
-        // 回调
-        if let StateChange::PaneOutput { pane, data } = ev {
-            if let Some(cb) = handle.callbacks.on_output {
-                cb(pane.0, data.as_ptr(), data.len());
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || out.is_null() || max_count <= 0 {
+            return -1;
+        }
+        let handle = &mut *h;
+        handle.clear_event_bufs();
+        let events = handle.model.refresh();
+        let n = events.len().min(max_count as usize);
+        let slice = std::slice::from_raw_parts_mut(out, n);
+        for (i, ev) in events.iter().take(n).enumerate() {
+            let c = state_change_to_c(handle, ev);
+            // 回调
+            if let StateChange::PaneOutput { pane, data } = ev {
+                if let Some(cb) = handle.callbacks.on_output {
+                    cb(pane.0, data.as_ptr(), data.len());
+                }
             }
+            if let Some(cb) = handle.callbacks.on_state_change {
+                cb(&c);
+            }
+            slice[i] = c;
         }
-        if let Some(cb) = handle.callbacks.on_state_change {
-            cb(&c);
-        }
-        slice[i] = c;
-    }
-    n as i32
+        n as i32
+    }))
+    .unwrap_or(-1)
 }
 
 /// 向 pane 写入原始字节。0=ok，-1=err。
@@ -399,25 +414,33 @@ pub unsafe extern "C" fn muxterm_send_input(
     data: *const u8,
     len: usize,
 ) -> i32 {
-    if h.is_null() || data.is_null() {
-        return -1;
-    }
-    let handle = &mut *h;
-    let bytes = std::slice::from_raw_parts(data, len).to_vec();
-    let pane = if pane_id == 0 {
-        match handle.model.active_pane_id() {
-            Some(p) => p,
-            None => return -1,
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || data.is_null() {
+            return -1;
         }
+        let handle = &mut *h;
+        let bytes = std::slice::from_raw_parts(data, len).to_vec();
+        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+            return -1;
+        };
+        match handle.model.execute(Task::WriteRaw {
+            target: pane,
+            data: bytes,
+        }) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+/// C ABI 中 `0` 既是历史上的 active-pane 哨兵，也可能是真实的 tmux pane id。
+/// 只有当前状态不存在 PaneId(0) 时才使用旧哨兵语义。
+fn resolve_c_io_pane(raw: u32, model: &TerminalModel) -> Option<PaneId> {
+    if raw == 0 && model.state().pane(&PaneId(0)).is_none() {
+        model.active_pane_id()
     } else {
-        PaneId(pane_id)
-    };
-    match handle.model.execute(Task::WriteRaw {
-        target: pane,
-        data: bytes,
-    }) {
-        Ok(_) => 0,
-        Err(_) => -1,
+        Some(PaneId(raw))
     }
 }
 
@@ -432,26 +455,24 @@ pub unsafe extern "C" fn muxterm_resize_pane(
     cols: u16,
     rows: u16,
 ) -> i32 {
-    if h.is_null() || cols == 0 || rows == 0 {
-        return -1;
-    }
-    let handle = &mut *h;
-    let pane = if pane_id == 0 {
-        match handle.model.active_pane_id() {
-            Some(p) => p,
-            None => return -1,
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || cols == 0 || rows == 0 {
+            return -1;
         }
-    } else {
-        PaneId(pane_id)
-    };
-    match handle.model.execute(Task::ResizePane {
-        target: pane,
-        cols,
-        rows,
-    }) {
-        Ok(_) => 0,
-        Err(_) => -1,
-    }
+        let handle = &mut *h;
+        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+            return -1;
+        };
+        match handle.model.execute(Task::ResizePane {
+            target: pane,
+            cols,
+            rows,
+        }) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 /// 列出 tabs，返回写入数量。
@@ -541,24 +562,22 @@ pub unsafe extern "C" fn muxterm_get_pane_output(
     buf: *mut u8,
     buf_len: usize,
 ) -> i32 {
-    if h.is_null() || buf.is_null() {
-        return -1;
-    }
-    let handle = &*h;
-    let pane = if pane_id == 0 {
-        match handle.model.active_pane_id() {
-            Some(p) => p,
-            None => return -1,
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || buf.is_null() {
+            return -1;
         }
-    } else {
-        PaneId(pane_id)
-    };
-    let Some(out) = handle.model.state().pane_output(&pane) else {
-        return 0;
-    };
-    let n = out.len().min(buf_len);
-    std::ptr::copy_nonoverlapping(out.as_ptr(), buf, n);
-    n as i32
+        let handle = &*h;
+        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+            return -1;
+        };
+        let Some(out) = handle.model.state().pane_output(&pane) else {
+            return 0;
+        };
+        let n = out.len().min(buf_len);
+        std::ptr::copy_nonoverlapping(out.as_ptr(), buf, n);
+        n as i32
+    }))
+    .unwrap_or(-1)
 }
 
 /// 导出 tab 布局树到 `out`（根节点写到 *out，子节点在 handle 内部池）。
