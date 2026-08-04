@@ -780,10 +780,10 @@ pub fn parse_layout_tree(s: &str) -> Result<LayoutTree, ProtocolError> {
         chars: s.chars().peekable(),
     };
     let tree = parser.parse_node()?;
-    // 跳过可能剩余空白
-    while parser.chars.peek().is_some() {
-        // 容忍尾随字符
-        let _ = parser.chars.next();
+    if parser.chars.peek().is_some() {
+        return Err(ProtocolError::MalformedField(format!(
+            "layout 存在未解析尾部: {s}"
+        )));
     }
     Ok(tree)
 }
@@ -831,27 +831,18 @@ impl<'a> LayoutParser<'a> {
                 flags = 0;
             }
         }
-        // 子节点
+        // 子节点。tmux 可以在同一个 `{}` / `[]` 组内放两个以上的
+        // child（例如一个 pane 再接三个上下 pane），不能只读取前两个。
         let dir;
         let children;
         match self.chars.peek() {
             Some('{') => {
-                self.chars.next();
                 dir = SplitDir::Horizontal;
-                let first = self.parse_node()?;
-                self.expect_char(',')?;
-                let second = self.parse_node()?;
-                self.expect_char('}')?;
-                children = Some((Box::new(first), Box::new(second)));
+                children = Some(self.parse_group('}')?);
             }
             Some('[') => {
-                self.chars.next();
                 dir = SplitDir::Vertical;
-                let first = self.parse_node()?;
-                self.expect_char(',')?;
-                let second = self.parse_node()?;
-                self.expect_char(']')?;
-                children = Some((Box::new(first), Box::new(second)));
+                children = Some(self.parse_group(']')?);
             }
             _ => {
                 dir = SplitDir::Horizontal;
@@ -865,9 +856,46 @@ impl<'a> LayoutParser<'a> {
             y,
             flags,
             tree_id,
-            children,
+            children: match children {
+                Some(group) => Some(fold_layout_children(group, dir)?),
+                None => None,
+            },
             dir,
         })
+    }
+
+    /// 解析一个 `{}` / `[]` 子节点组，返回组内全部 child。
+    fn parse_group(&mut self, close: char) -> Result<Vec<LayoutTree>, ProtocolError> {
+        self.chars.next(); // opening `{` or `[`
+        let mut children = Vec::new();
+        loop {
+            children.push(self.parse_node()?);
+            match self.chars.peek() {
+                Some(',') => {
+                    self.chars.next();
+                }
+                Some(c) if *c == close => {
+                    self.chars.next();
+                    break;
+                }
+                Some(c) => {
+                    return Err(ProtocolError::MalformedField(format!(
+                        "layout 子节点组期待 ',' 或 '{close}'，得到 '{c}'"
+                    )));
+                }
+                None => {
+                    return Err(ProtocolError::MalformedField(format!(
+                        "layout 子节点组缺少 '{close}'"
+                    )));
+                }
+            }
+        }
+        if children.len() < 2 {
+            return Err(ProtocolError::MalformedField(
+                "layout 子节点组至少需要两个 child".into(),
+            ));
+        }
+        Ok(children)
     }
 
     /// Peek 到第一个 ',' 为止（不消费字符），用于判断是否有 tree_id 前缀。
@@ -925,6 +953,52 @@ impl<'a> LayoutParser<'a> {
         }
         u32::from_str(&s)
             .map_err(|_| ProtocolError::MalformedField(format!("layout 数字溢出: {s}")))
+    }
+}
+
+/// 把 tmux 同向的 n-ary 子节点组折叠成 core 使用的二叉树。
+///
+/// 采用右折叠：`[A,B,C]` → `Split(A, Split(B,C))`，这样叶子顺序与 tmux
+/// 的几何顺序一致；合成节点的几何由两个子节点和一个分隔线推导，供
+/// backend 计算稳定的布局比例。
+fn fold_layout_children(
+    mut children: Vec<LayoutTree>,
+    dir: SplitDir,
+) -> Result<(Box<LayoutTree>, Box<LayoutTree>), ProtocolError> {
+    let second = children
+        .pop()
+        .ok_or_else(|| ProtocolError::MalformedField("layout 子节点组缺少 second child".into()))?;
+    let mut right = second;
+    while children.len() > 1 {
+        let left = children.pop().ok_or_else(|| {
+            ProtocolError::MalformedField("layout 子节点组折叠缺少 left child".into())
+        })?;
+        right = combine_layout_nodes(left, right, dir);
+    }
+    let first = children
+        .pop()
+        .ok_or_else(|| ProtocolError::MalformedField("layout 子节点组缺少 first child".into()))?;
+    Ok((Box::new(first), Box::new(right)))
+}
+
+fn combine_layout_nodes(first: LayoutTree, second: LayoutTree, dir: SplitDir) -> LayoutTree {
+    let cols = match dir {
+        SplitDir::Horizontal => first.cols.saturating_add(second.cols).saturating_add(1),
+        SplitDir::Vertical => first.cols.max(second.cols),
+    };
+    let rows = match dir {
+        SplitDir::Horizontal => first.rows.max(second.rows),
+        SplitDir::Vertical => first.rows.saturating_add(second.rows).saturating_add(1),
+    };
+    LayoutTree {
+        cols,
+        rows,
+        x: first.x.min(second.x),
+        y: first.y.min(second.y),
+        flags: 0,
+        tree_id: String::new(),
+        children: Some((Box::new(first), Box::new(second))),
+        dir,
     }
 }
 
@@ -1756,7 +1830,13 @@ mod tests {
                 if let Some(start) = line.find("1268,") {
                     let rest = &line[start..];
                     // layout 字符串到行尾或空格
-                    let layout_str = rest.split_whitespace().next().unwrap_or(rest);
+                    // 这里取的是人类可读的 `[layout ...]` 字段，末尾的 `]` 不属于
+                    // window_layout；机器可读的 list-windows 响应不会带这个括号。
+                    let layout_str = rest
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or(rest)
+                        .trim_end_matches(']');
                     let tree = parse_layout_tree(layout_str).expect("layout tree 解析");
                     assert_eq!(tree.cols, 140);
                     assert_eq!(tree.rows, 30);
@@ -1945,6 +2025,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_layout_tree_nary_group_keeps_all_children() {
+        // tmux 在连续同向分割时可能把 4 个 pane 直接放进一个 [] 组；
+        // core 使用二叉树，因此解析后应右折叠，但不能丢掉第三、第四个 pane。
+        let t = parse_layout_tree("nary,20x19,0,0[20x4,0,0,1,20x4,0,5,2,20x4,0,10,3,20x4,0,15,4]")
+            .unwrap();
+        assert_eq!(collect_layout_tree_leaves(&t).len(), 4);
+        let (first, rest) = t.children.as_ref().unwrap();
+        assert_eq!(first.flags, 1);
+        let (_, rest) = rest.children.as_ref().unwrap();
+        let (_, last) = rest.children.as_ref().unwrap();
+        assert_eq!((last.flags, last.y), (4, 15));
+    }
+
+    #[test]
     fn parse_layout_tree_missing_flags() {
         // 缺 flags（如 abc,80x24,0,0）应容错为 flags=0
         let t = parse_layout_tree("abc,80x24,0,0").unwrap();
@@ -1956,5 +2050,16 @@ mod tests {
     fn parse_layout_tree_bad() {
         assert!(parse_layout_tree("nope").is_err());
         assert!(parse_layout_tree("").is_err());
+    }
+
+    fn collect_layout_tree_leaves(tree: &LayoutTree) -> Vec<&LayoutTree> {
+        match &tree.children {
+            None => vec![tree],
+            Some((a, b)) => {
+                let mut leaves = collect_layout_tree_leaves(a);
+                leaves.extend(collect_layout_tree_leaves(b));
+                leaves
+            }
+        }
     }
 }
