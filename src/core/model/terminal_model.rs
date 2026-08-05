@@ -738,6 +738,39 @@ mod tests {
     }
 
     #[test]
+    fn write_raw_preserves_cjk_and_osc_bytes() {
+        // 用户实测：git lg 输出 OSC 动态颜色 + CJK，若被 from_utf8_lossy 替换成
+        // \u{fffd} 或在协议层丢引导字节就会乱码/被 shell 当普通文本执行。
+        let mut m = make_model();
+        let data = b"T1(\xe7\xbc\x96\xe8\xaf\x91/\xe5\x8d\x95\xe6\xb5\x8b/lint)\x1b]10;rgb:0000/0000/0000\x07\x1b[?65;4;1;2;6;21;22;17;28c";
+        m.execute(Task::WriteRaw {
+            target: PaneId(1),
+            data: data.to_vec(),
+        })
+        .unwrap();
+        let _ = m.poll_events();
+        let out = m.state().pane_output(&PaneId(1)).unwrap();
+        // 必须逐字节保留：不出现 replacement char (0xEF 0xBF 0xBD) 且尾部字节完整。
+        assert!(
+            !out.windows(3).any(|w| w == b"\xef\xbf\xbd"),
+            "不应出现 UTF-8 replacement char"
+        );
+        assert!(
+            out.ends_with(b"\x1b[?65;4;1;2;6;21;22;17;28c"),
+            "尾部 CSI 字节必须完整"
+        );
+        // 中文子串逐字节存在
+        assert!(
+            out.windows(6).any(|w| w == b"\xe7\xbc\x96\xe8\xaf\x91"),
+            "中文 '编译' 字节必须保留"
+        );
+        assert!(
+            out.windows(4).any(|w| w == b"\x1b]10"),
+            "OSC 引导字节必须保留"
+        );
+    }
+
+    #[test]
     fn close_pane_rejects_missing_target() {
         let mut m = make_model();
         let outcome = m.execute(Task::ClosePane { target: PaneId(99) }).unwrap();
@@ -762,6 +795,18 @@ mod tests {
             .iter()
             .any(|e| matches!(e, StateChange::BackendStatusChanged(BackendStatus::Exited))));
         assert_eq!(m.backend_status(), BackendStatus::Exited);
+    }
+
+    #[test]
+    fn detach_task_pushes_disconnected_event_without_shutdown_status() {
+        let mut m = make_model();
+        m.execute(Task::Detach).unwrap();
+        let events = m.poll_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StateChange::BackendStatusChanged(BackendStatus::Disconnected)
+        )));
+        assert_eq!(m.backend_status(), BackendStatus::Disconnected);
     }
 
     #[test]

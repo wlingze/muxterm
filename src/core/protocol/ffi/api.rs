@@ -8,6 +8,7 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
+use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::StateChange;
 use crate::core::model::task::{Task, TaskOutcome};
@@ -22,8 +23,8 @@ use super::types::{
     LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED,
     STATE_BACKEND_STATUS, STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED,
     STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED,
-    TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SHUTDOWN,
-    TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
+    TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
+    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
 };
 
 /// FFI 句柄：TerminalModel + runtime + 供 C 侧借用的缓冲。
@@ -92,6 +93,24 @@ fn json_error(error: impl std::fmt::Display) -> *mut c_char {
 
 fn discovery_timeout(timeout_ms: u32) -> std::time::Duration {
     std::time::Duration::from_millis(u64::from(timeout_ms.clamp(100, 60_000)))
+}
+
+/// 初始化核心日志（macOS .app 由 Swift 在创建 CoreBridge 前调用）。
+///
+/// `level` 取 `trace` / `debug` / `info` / `warn` / `error`；`log_file` 为
+/// `NULL` 时写 stderr。重复调用（AlreadyInitialized）视为成功，不会 panic。
+/// 返回 0=ok，-1=err。
+#[no_mangle]
+pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_char) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let level = cstr_opt(level).unwrap_or_else(|| "info".into());
+        let file = cstr_opt(log_file).map(std::path::PathBuf::from);
+        match init_logging(LoggingConfig { level, file }) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 /// 发现用户现有 SSH 配置中的 Host alias。
@@ -362,6 +381,25 @@ pub unsafe extern "C" fn muxterm_shutdown(h: *mut MuxtermHandle) -> i32 {
     .unwrap_or(-1)
 }
 
+/// 分离当前 control client，但保留 tmux session / daemon。
+///
+/// 这是一个独立于 `muxterm_shutdown` 的前端动作；调用方随后仍应释放
+/// handle。所有异常都转成 -1，不能让 FFI 边界 panic 到 GUI 进程。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_detach(h: *mut MuxtermHandle) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        task_result_code(handle.model.execute(Task::Detach))
+    }))
+    .unwrap_or(-1)
+}
+
 fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
     let name = cstr_opt(task.name);
     match task.type_ {
@@ -409,6 +447,7 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
             Some(Task::SwitchPane { target: pane })
         }
         TASK_SHUTDOWN => Some(Task::Shutdown),
+        TASK_DETACH => Some(Task::Detach),
         _ => None,
     }
 }
@@ -440,6 +479,7 @@ pub unsafe extern "C" fn muxterm_execute(h: *mut MuxtermHandle, task: *const CTa
         let Some(rust_task) = ctask_to_task(ctask, &handle.model) else {
             return -1;
         };
+        tracing::debug!(target: "muxterm::ffi", task = ?rust_task, "execute task");
         task_result_code(handle.model.execute(rust_task))
     }))
     .unwrap_or(-1)
@@ -949,6 +989,25 @@ mod tests {
     }
 
     #[test]
+    fn ffi_detach_is_a_distinct_task_and_local_backend_rejects_it() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            assert_eq!(muxterm_connect(h), 0);
+            let task = CTask {
+                type_: TASK_DETACH,
+                target_pane: 0,
+                target_tab: 0,
+                dir: 0,
+                name: ptr::null(),
+            };
+            assert_eq!(muxterm_execute(h, &task), -1);
+            assert_eq!(muxterm_detach(h), -1);
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
     fn ffi_callbacks_fire_on_poll() {
         static CALLS: AtomicUsize = AtomicUsize::new(0);
         extern "C" fn on_state(_ev: *const CStateChange) {
@@ -1031,6 +1090,7 @@ mod tests {
         unsafe {
             assert_eq!(muxterm_connect(ptr::null_mut()), -1);
             assert_eq!(muxterm_shutdown(ptr::null_mut()), -1);
+            assert_eq!(muxterm_detach(ptr::null_mut()), -1);
             assert_eq!(muxterm_execute(ptr::null_mut(), ptr::null()), -1);
             assert_eq!(muxterm_poll_events(ptr::null_mut(), ptr::null_mut(), 1), -1);
             muxterm_free(ptr::null_mut());
