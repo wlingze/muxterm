@@ -9,9 +9,9 @@ use std::os::raw::c_char;
 use std::ptr;
 
 use crate::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
-    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
-    muxterm_shutdown, MuxtermHandle,
+    muxterm_connect, muxterm_detach, muxterm_execute, muxterm_free, muxterm_get_layout,
+    muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events,
+    muxterm_send_input, muxterm_shutdown, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -117,6 +117,11 @@ impl CoreBridge {
 
     pub fn execute(&self, task: CTask) -> i32 {
         unsafe { muxterm_execute(self.handle, &task) }
+    }
+
+    /// 显式分离 tmux/daemon client；不终止 tmux session 或 local daemon。
+    pub fn detach(&self) -> i32 {
+        unsafe { muxterm_detach(self.handle) }
     }
 
     pub fn poll_events(&mut self) -> Vec<BridgeEvent> {

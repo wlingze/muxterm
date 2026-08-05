@@ -98,7 +98,11 @@ fn run_inner(out: &mut impl Write, opts: TuiOpts) -> Result<()> {
         }
     }
 
-    // Drop 会 shutdown + free
+    // tmux/daemon 用显式 detach；local shell 没有 tmux client，直接由 Drop
+    // 做普通 shutdown。FFI detach 失败时仍让 Drop 兜底，不能 panic。
+    if matches!(backend_type, "tmux" | "daemon") {
+        let _ = bridge.detach();
+    }
     drop(bridge);
     Ok(())
 }
