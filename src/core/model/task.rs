@@ -103,7 +103,9 @@ pub enum Task {
     WriteRaw { target: PaneId, data: Vec<u8> },
 
     // ── 生命周期 ──────────────────────────────────────────
-    /// 关闭整个后端（detach / kill session / 关所有 pane）。
+    /// 分离当前控制 client，但保留 tmux session / daemon 继续运行。
+    Detach,
+    /// 关闭整个后端并释放资源（tmux 后端会清理 control client）。
     Shutdown,
 }
 
@@ -240,6 +242,12 @@ mod tests {
     #[test]
     fn shutdown_is_not_readonly() {
         assert!(!Task::Shutdown.is_readonly());
+    }
+
+    #[test]
+    fn detach_is_not_shutdown() {
+        assert_ne!(Task::Detach, Task::Shutdown);
+        assert!(!Task::Detach.is_readonly());
     }
 
     #[test]

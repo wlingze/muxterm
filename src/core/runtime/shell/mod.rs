@@ -1237,6 +1237,10 @@ impl Backend for LocalBackend {
                 TaskOutcome::Done
             }
 
+            Task::Detach => TaskOutcome::Rejected {
+                reason: "本地 shell 不支持 tmux detach".into(),
+            },
+
             Task::Shutdown => {
                 // kill 所有 pane
                 let all: Vec<PaneId> = self.panes.iter().map(|p| p.info.id).collect();

@@ -21,7 +21,7 @@ use async_trait::async_trait;
 /// 1. `connect()` — 建立 connection / spawn tmux -CC / 初始化本地 shell
 /// 2. `execute(Task)` — 反复执行任务
 /// 3. `poll_events()` / `take_events()` — 取状态变更事件
-/// 4. `shutdown()` — detach / kill / 关闭所有子进程
+/// 4. `shutdown()` — 释放 backend 资源；tmux 会清理 control client
 #[async_trait]
 pub trait Backend: State {
     /// 建立连接（spawn tmux / 启动本地 shell）。
@@ -42,7 +42,7 @@ pub trait Backend: State {
         self.status()
     }
 
-    /// 关闭后端：detach（tmux）/ kill 所有子进程（local）。
+    /// 关闭后端并释放资源；显式 tmux 分离请使用 `Task::Detach`。
     /// 关闭后 `status()` 应为 `Exited` 或 `Disconnected`。
     async fn shutdown(&mut self) -> anyhow::Result<()>;
 }
