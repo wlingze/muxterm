@@ -70,42 +70,39 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     sync_term_sizes(&mut term_mgr, &snap);
     draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
+    // 每 50ms 事件轮询；仅当有实际状态变更时（事件非空 / 按键 / resize）才重绘，
+    // 避免空轮询也做昂贵 snapshot+draw（拉取全部 pane 输出 + 全屏渲染）。
     loop {
-        // 每轮先 drain 状态变更，再基于累计输出做 delta 同步
-        let _events = bridge.poll_events();
-        let snap = bridge.snapshot();
-        sync_term_sizes(&mut term_mgr, &snap);
-        draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
+        let events = bridge.poll_events();
+        let mut needs_redraw = !events.is_empty();
 
         if poll(Duration::from_millis(50)).context("poll event")? {
             let ev = read().context("read event")?;
             match ev {
                 Event::Key(key) => {
                     if palette_open {
-                        // 向导：可能触发重连（重建 bridge）
                         if handle_palette_key(&mut palette, &key, &mut bridge, &mut palette_open)? {
-                            let snap = bridge.snapshot();
-                            sync_term_sizes(&mut term_mgr, &snap);
-                            draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
+                            needs_redraw = true;
                         }
                     } else if is_quit(&key) {
                         break;
                     } else {
                         let snap = bridge.snapshot();
                         if handle_key(&mut bridge, &key, &snap, &mut palette_open, &mut palette) {
-                            let snap = bridge.snapshot();
-                            sync_term_sizes(&mut term_mgr, &snap);
-                            draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
+                            needs_redraw = true;
                         }
                     }
                 }
-                Event::Resize(_, _) => {
-                    let snap = bridge.snapshot();
-                    sync_term_sizes(&mut term_mgr, &snap);
-                    draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
-                }
+                Event::Resize(_, _) => needs_redraw = true,
                 _ => {}
             }
+        }
+
+        // 仅在确有变化时重绘
+        if needs_redraw {
+            let snap = bridge.snapshot();
+            sync_term_sizes(&mut term_mgr, &snap);
+            draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
         }
     }
 
