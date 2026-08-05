@@ -99,4 +99,25 @@ int muxterm_get_panes(struct MuxtermHandle* h, uint32_t tab_id, struct CPane* ou
 int muxterm_get_pane_output(struct MuxtermHandle* h, uint32_t pane_id, uint8_t* buf, size_t buf_len);
 int muxterm_get_layout(struct MuxtermHandle* h, uint32_t tab_id, struct CLayoutNode* out);
 
+// ── 无状态 discovery（由 core 读取 SSH config / 查询 tmux）──
+// 返回 malloc 风格的 JSON 字符串，调用 muxterm_free_string 释放。
+char* muxterm_discover_ssh_hosts_json(const char* config_path);
+char* muxterm_discover_tmux_sessions_json(
+    const char* backend_type,
+    const char* target,
+    const char* socket,
+    const char* config_path,
+    uint32_t timeout_ms
+);
+char* muxterm_create_tmux_session_json(
+    const char* backend_type,
+    const char* target,
+    const char* socket,
+    const char* config_path,
+    const char* session,
+    const char* directory,
+    uint32_t timeout_ms
+);
+void muxterm_free_string(char* value);
+
 #endif /* muxterm_h */

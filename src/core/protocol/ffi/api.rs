@@ -76,6 +76,161 @@ fn cstr_opt(p: *const c_char) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn json_string(value: serde_json::Value) -> *mut c_char {
+    let text = value.to_string();
+    CString::new(text)
+        .map(CString::into_raw)
+        .unwrap_or(ptr::null_mut())
+}
+
+fn json_error(error: impl std::fmt::Display) -> *mut c_char {
+    json_string(serde_json::json!({
+        "ok": false,
+        "error": error.to_string(),
+    }))
+}
+
+fn discovery_timeout(timeout_ms: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(u64::from(timeout_ms.clamp(100, 60_000)))
+}
+
+/// 发现用户现有 SSH 配置中的 Host alias。
+///
+/// 返回的 JSON 字符串由 [`muxterm_free_string`] 释放；函数本身不会把 SSH
+/// 配置复制到 Muxterm，也不会触发连接或认证。
+#[no_mangle]
+pub extern "C" fn muxterm_discover_ssh_hosts_json(config_path: *const c_char) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let path = cstr_opt(config_path);
+        match crate::core::discovery::list_ssh_hosts(path.as_deref().map(std::path::Path::new)) {
+            Ok(hosts) => json_string(serde_json::json!({
+                "ok": true,
+                "hosts": hosts,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("SSH host discovery panic"))
+}
+
+/// 通过 core 发现 local 或 SSH tmux session。
+///
+/// `backend_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
+/// 中的 alias。所有连接选项仍由系统 `ssh` 读取，`config_path` 仅供测试或显式
+/// 配置使用。返回的 JSON 字符串由 [`muxterm_free_string`] 释放。
+#[no_mangle]
+pub extern "C" fn muxterm_discover_tmux_sessions_json(
+    backend_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    config_path: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let backend = cstr_opt(backend_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let target = cstr_opt(target);
+        let socket = cstr_opt(socket);
+        let config_path = cstr_opt(config_path);
+        let result = match backend.as_str() {
+            "local" => Ok(crate::core::discovery::list_local_tmux_sessions(
+                socket.as_deref(),
+            )),
+            "ssh" => {
+                let Some(alias) = target.as_deref().filter(|value| !value.trim().is_empty()) else {
+                    return json_error("SSH discovery requires a host alias");
+                };
+                crate::core::discovery::list_ssh_tmux_sessions(
+                    alias,
+                    config_path.as_deref(),
+                    socket.as_deref(),
+                    discovery_timeout(timeout_ms),
+                )
+            }
+            _ => return json_error(format!("unsupported discovery backend: {backend}")),
+        };
+        match result {
+            Ok(sessions) => json_string(serde_json::json!({
+                "ok": true,
+                "sessions": sessions,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("tmux session discovery panic"))
+}
+
+/// 通过 core 创建 detached tmux session，随后由调用方使用同一 alias/session
+/// 进入控制模式。返回 `{"ok":true,"session":"..."}`，字符串由
+/// [`muxterm_free_string`] 释放。
+#[no_mangle]
+pub extern "C" fn muxterm_create_tmux_session_json(
+    backend_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    config_path: *const c_char,
+    session: *const c_char,
+    directory: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let backend = cstr_opt(backend_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let target = cstr_opt(target);
+        let socket = cstr_opt(socket);
+        let config_path = cstr_opt(config_path);
+        let Some(session) = cstr_opt(session).filter(|value| !value.trim().is_empty()) else {
+            return json_error("tmux session name is required");
+        };
+        let Some(directory) = cstr_opt(directory).filter(|value| !value.trim().is_empty()) else {
+            return json_error("tmux working directory is required");
+        };
+
+        let result = match backend.as_str() {
+            "local" => crate::core::discovery::create_local_tmux_session(
+                socket.as_deref(),
+                &session,
+                &directory,
+            ),
+            "ssh" => {
+                let Some(alias) = target.as_deref().filter(|value| !value.trim().is_empty()) else {
+                    return json_error("SSH session creation requires a host alias");
+                };
+                crate::core::discovery::create_ssh_tmux_session(
+                    alias,
+                    config_path.as_deref(),
+                    socket.as_deref(),
+                    &session,
+                    &directory,
+                    discovery_timeout(timeout_ms),
+                )
+            }
+            _ => return json_error(format!("unsupported session backend: {backend}")),
+        };
+        match result {
+            Ok(()) => json_string(serde_json::json!({
+                "ok": true,
+                "session": session,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("tmux session creation panic"))
+}
+
+/// 释放 discovery API 返回的 JSON 字符串。
+///
+/// # Safety
+/// `value` 必须是本库返回且尚未释放的指针。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
+    if !value.is_null() {
+        drop(CString::from_raw(value));
+    }
+}
+
 fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     match result {
         Ok(TaskOutcome::Done) => 0,
@@ -880,5 +1035,30 @@ mod tests {
             assert_eq!(muxterm_poll_events(ptr::null_mut(), ptr::null_mut(), 1), -1);
             muxterm_free(ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn ffi_discovery_returns_owned_json_and_can_be_freed() {
+        let path =
+            std::env::temp_dir().join(format!("muxterm-ffi-ssh-config-{}", std::process::id()));
+        std::fs::write(
+            &path,
+            "Host testbox\n  HostName test.example\n  User alice\n  Port 2201\n",
+        )
+        .unwrap();
+        let path_c = CString::new(path.to_str().unwrap()).unwrap();
+
+        let raw = muxterm_discover_ssh_hosts_json(path_c.as_ptr());
+        assert!(!raw.is_null());
+        let json = unsafe {
+            let value = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            muxterm_free_string(raw);
+            serde_json::from_str::<serde_json::Value>(&value).unwrap()
+        };
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["hosts"][0]["alias"], "testbox");
+        assert_eq!(json["hosts"][0]["port"], 2201);
+
+        let _ = std::fs::remove_file(path);
     }
 }
