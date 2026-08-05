@@ -30,6 +30,8 @@ pub struct AppWindow {
 
 struct UiState {
     bridge: CoreBridge,
+    /// 当前窗口是否持有 tmux/SSH control client；local shell 不支持 detach。
+    uses_tmux: bool,
     tabs: TabBar,
     layout: LayoutHost,
     status: Label,
@@ -86,14 +88,19 @@ impl AppWindow {
             }
         };
 
-        let bridge = match CoreBridge::new(backend, socket.as_deref(), session.as_deref()) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!(target = "muxterm::linux", "启动核心失败: {e}");
-                // 回退 local
-                CoreBridge::new("local", None, None).expect("local backend 必须可用")
-            }
-        };
+        let requested_tmux = socket.is_some();
+        let (bridge, uses_tmux) =
+            match CoreBridge::new(backend, socket.as_deref(), session.as_deref()) {
+                Ok(b) => (b, requested_tmux),
+                Err(e) => {
+                    tracing::error!(target = "muxterm::linux", "启动核心失败: {e}");
+                    // 回退 local；回退后不能展示 tmux detach。
+                    (
+                        CoreBridge::new("local", None, None).expect("local backend 必须可用"),
+                        false,
+                    )
+                }
+            };
 
         let root = Box::builder()
             .orientation(Orientation::Vertical)
@@ -126,6 +133,7 @@ impl AppWindow {
         let keymap = KeyMap::from_bindings(&cfg.keybindings);
         let state = Rc::new(RefCell::new(UiState {
             bridge,
+            uses_tmux,
             tabs,
             layout,
             status,
@@ -154,7 +162,7 @@ impl AppWindow {
             controller.connect_key_pressed(move |_c, keyval, _keycode, mods| {
                 let mut s = st.borrow_mut();
                 if let Some(action) = s.keymap.lookup(keyval, mods) {
-                    handle_action(&mut s, action, &window_for_palette);
+                    handle_action(&mut s, action, &window_for_palette, &st);
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -251,7 +259,7 @@ impl AppWindow {
     }
 }
 
-fn handle_action(s: &mut UiState, action: Action, window: &Window) {
+fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<RefCell<UiState>>) {
     match action {
         Action::NewTab | Action::NewWindow => {
             s.bridge.execute(tasks::new_tab());
@@ -289,21 +297,45 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window) {
             // 后续所有新建控件都会直接使用新语言。
             let parent = window.clone();
             let callback_parent = parent.clone();
+            let callback_window = parent.clone();
+            let callback_state = state.clone();
             let status = s.status.clone();
             let pane_count = s.bridge.get_panes(s.active_tab).len();
-            crate::platform::linux::command_palette::show(&parent, move |id| {
-                if id == "language" {
-                    let language_parent = callback_parent.clone();
-                    let status = status.clone();
-                    crate::platform::linux::command_palette::show_language(
-                        &language_parent,
-                        move |language| {
-                            crate::platform::i18n::set_language(language);
-                            set_status_summary(&status, pane_count);
-                        },
-                    );
-                }
-            });
+            let uses_tmux = s.uses_tmux;
+            crate::platform::linux::command_palette::show_for_backend(
+                &parent,
+                uses_tmux,
+                move |id| {
+                    if id == "language" {
+                        let language_parent = callback_parent.clone();
+                        let status = status.clone();
+                        crate::platform::linux::command_palette::show_language(
+                            &language_parent,
+                            move |language| {
+                                crate::platform::i18n::set_language(language);
+                                set_status_summary(&status, pane_count);
+                            },
+                        );
+                    } else if id == crate::platform::linux::command_palette::TMUX_DETACH_COMMAND
+                        && uses_tmux
+                    {
+                        let rc = callback_state.borrow().bridge.detach();
+                        if rc == 0 {
+                            // Task::Detach 已经由 core 发送 detach-client；关闭
+                            // GTK client 只负责回收窗口和 bridge handle。
+                            callback_window.close();
+                        } else {
+                            status.set_label(&format!(
+                                "{}: {}",
+                                crate::platform::i18n::tr(crate::platform::i18n::Key::StatusError),
+                                crate::platform::i18n::tr(
+                                    crate::platform::i18n::Key::ErrorCommandFailed
+                                )
+                            ));
+                        }
+                    }
+                },
+            );
             return;
         }
         Action::Search | Action::Unknown => {}

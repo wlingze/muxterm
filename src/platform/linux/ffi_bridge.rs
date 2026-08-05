@@ -10,9 +10,9 @@ use std::ptr;
 use gtk4::glib;
 
 use crate::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
-    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
-    MuxtermHandle,
+    muxterm_connect, muxterm_detach, muxterm_execute, muxterm_free, muxterm_get_layout,
+    muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events,
+    muxterm_send_input, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -132,6 +132,11 @@ impl CoreBridge {
 
     pub fn execute(&self, task: CTask) -> i32 {
         unsafe { muxterm_execute(self.handle, &task) }
+    }
+
+    /// 显式分离 tmux/SSH control client；session 由 tmux server 保留。
+    pub fn detach(&self) -> i32 {
+        unsafe { muxterm_detach(self.handle) }
     }
 
     /// 轮询事件；立刻拷贝 data/name，避免下次 poll 失效。
@@ -293,7 +298,7 @@ unsafe fn clone_layout(node: &CLayoutNode) -> BridgeLayout {
 pub mod tasks {
     use super::*;
     use crate::core::protocol::ffi::types::{
-        DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_NEW_TAB,
+        DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB,
         TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
     };
 
@@ -370,6 +375,16 @@ pub mod tasks {
     pub fn prev_pane() -> CTask {
         CTask {
             type_: TASK_PREV_PANE,
+            target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: ptr::null(),
+        }
+    }
+
+    pub fn detach() -> CTask {
+        CTask {
+            type_: TASK_DETACH,
             target_pane: 0,
             target_tab: 0,
             dir: 0,

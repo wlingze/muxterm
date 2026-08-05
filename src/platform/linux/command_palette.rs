@@ -8,6 +8,8 @@ use gtk4::Window;
 
 use crate::platform::linux::quick_pick::{self, fuzzy_match, QuickPickItem};
 
+pub const TMUX_DETACH_COMMAND: &str = "tmux_detach";
+
 /// 一条核心命令。
 #[derive(Debug, Clone)]
 pub struct PaletteCommand {
@@ -27,7 +29,7 @@ pub fn core_commands() -> Vec<PaletteCommand> {
             label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxNew),
         },
         PaletteCommand {
-            id: "tmux_detach",
+            id: TMUX_DETACH_COMMAND,
             label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxDetach),
         },
         PaletteCommand {
@@ -160,6 +162,19 @@ pub fn core_commands() -> Vec<PaletteCommand> {
     ]
 }
 
+/// 根据 backend 筛选用户可执行的命令。
+///
+/// local shell 没有 tmux control client，不能展示或执行 detach；tmux/SSH
+/// 模式则保留完整命令集。`core_commands` 仍保留完整清单，方便静态命令
+/// 目录和纯逻辑测试覆盖所有命令。
+pub fn commands_for_backend(uses_tmux: bool) -> Vec<PaletteCommand> {
+    let mut commands = core_commands();
+    if !uses_tmux {
+        commands.retain(|command| command.id != TMUX_DETACH_COMMAND);
+    }
+    commands
+}
+
 /// 按查询过滤核心命令（纯逻辑，供单测与 UI 共用）。
 pub fn filter_commands(query: &str) -> Vec<PaletteCommand> {
     core_commands()
@@ -175,7 +190,15 @@ pub fn show<F>(parent: &impl IsA<Window>, on_run: F)
 where
     F: Fn(&str) + 'static,
 {
-    let items: Vec<QuickPickItem> = core_commands()
+    show_for_backend(parent, true, on_run);
+}
+
+/// 弹出与 backend 能力匹配的命令面板。
+pub fn show_for_backend<F>(parent: &impl IsA<Window>, uses_tmux: bool, on_run: F)
+where
+    F: Fn(&str) + 'static,
+{
+    let items: Vec<QuickPickItem> = commands_for_backend(uses_tmux)
         .into_iter()
         .map(|c| QuickPickItem {
             id: c.id.into(),
@@ -302,6 +325,7 @@ mod tests {
         }
         assert!(ids.contains("tmux_attach"));
         assert!(ids.contains("tmux_new"));
+        assert!(ids.contains(TMUX_DETACH_COMMAND));
         assert!(ids.contains("new_tab"));
         assert!(ids.contains("new_pane"));
         assert!(ids.contains("close_pane"));
@@ -312,6 +336,24 @@ mod tests {
         assert!(ids.contains("close_window"));
         assert!(ids.contains("open_config"));
         assert!(ids.contains("preferences"));
+    }
+
+    #[test]
+    fn local_command_palette_hides_tmux_detach() {
+        let ids: HashSet<_> = commands_for_backend(false)
+            .iter()
+            .map(|command| command.id)
+            .collect();
+        assert!(!ids.contains(TMUX_DETACH_COMMAND));
+    }
+
+    #[test]
+    fn tmux_command_palette_contains_detach() {
+        let ids: HashSet<_> = commands_for_backend(true)
+            .iter()
+            .map(|command| command.id)
+            .collect();
+        assert!(ids.contains(TMUX_DETACH_COMMAND));
     }
 
     /// 对应：输入 "t" 过滤出 tmux 相关。
