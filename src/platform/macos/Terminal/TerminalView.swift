@@ -22,7 +22,9 @@ final class MuxTerminalView: TerminalView {
         setAccessibilityIdentifier("muxterm.terminal.\(paneId)")
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
-        setAccessibilityLabel("Terminal Pane \(paneId)")
+        setAccessibilityLabel(
+            MuxtermI18n.shared.tr(.terminalPane, arguments: ["id": "\(paneId)"])
+        )
         setAccessibilityValue("")
     }
 

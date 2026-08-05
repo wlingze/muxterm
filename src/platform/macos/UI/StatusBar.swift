@@ -8,11 +8,12 @@ final class StatusBarView: NSView {
     private let edgeLine = CALayer()
     private var baseText = ""
     private var errorText: String?
-    private let layoutSyncMessage = "GUI 布局同步中：等待当前 tab 的 pane 布局"
+    private var layoutSyncMessage = ""
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        layoutSyncMessage = MuxtermI18n.shared.tr(.layoutSyncing)
         // 与窗口同色，不做独立面板底
         layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         setAccessibilityElement(false)
@@ -36,7 +37,7 @@ final class StatusBarView: NSView {
         outputProbe.drawsBackground = false
         outputProbe.setAccessibilityElement(true)
         outputProbe.setAccessibilityIdentifier("muxterm.outputSnippet")
-        outputProbe.setAccessibilityLabel("Terminal Output Snippet")
+        outputProbe.setAccessibilityLabel(MuxtermI18n.shared.tr(.terminalOutputSnippet))
         outputProbe.translatesAutoresizingMaskIntoConstraints = false
         addSubview(outputProbe)
 
@@ -70,10 +71,13 @@ final class StatusBarView: NSView {
 
     func update(snapshot: FrameSnapshot) {
         baseText = FlatChrome.statusText(
-            status: snapshot.status,
+            status: localizedStatus(snapshot.status),
             tabCount: snapshot.tabs.count,
             paneCount: snapshot.panes.count,
-            activePane: snapshot.activePane
+            activePane: snapshot.activePane,
+            tabsLabel: MuxtermI18n.shared.tr(.tabs),
+            panesLabel: MuxtermI18n.shared.tr(.panes),
+            paneLabel: MuxtermI18n.shared.tr(.pane)
         )
         renderText()
     }
@@ -101,10 +105,33 @@ final class StatusBarView: NSView {
         outputProbe.setAccessibilityValue(snippet)
     }
 
+    func refreshLocalization() {
+        let wasShowingLayoutSync = errorText == layoutSyncMessage
+        layoutSyncMessage = MuxtermI18n.shared.tr(.layoutSyncing)
+        outputProbe.setAccessibilityLabel(MuxtermI18n.shared.tr(.terminalOutputSnippet))
+        if wasShowingLayoutSync {
+            errorText = layoutSyncMessage
+        }
+        renderText()
+    }
+
     private func renderText() {
         let text = errorText ?? baseText
         label.stringValue = text
         label.setAccessibilityValue(text)
         label.textColor = errorText == nil ? NSColor.tertiaryLabelColor : NSColor.systemRed
+    }
+
+    private func localizedStatus(_ status: String) -> String {
+        let key: MuxtermTextKey
+        switch status {
+        case "connected": key = .statusConnected
+        case "connecting": key = .statusConnecting
+        case "disconnected": key = .statusDisconnected
+        case "error": key = .statusError
+        case "exited": key = .statusExited
+        default: key = .statusUnknown
+        }
+        return MuxtermI18n.shared.tr(key)
     }
 }

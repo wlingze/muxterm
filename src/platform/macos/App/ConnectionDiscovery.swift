@@ -39,9 +39,9 @@ enum ConnectionDiscoveryError: Error, LocalizedError {
         case .commandFailed(let detail):
             return detail
         case .sshConfigUnreadable:
-            return "无法读取 ~/.ssh/config"
+            return MuxtermI18n.shared.tr(.errorSshConfig)
         case .noSSHHosts:
-            return "~/.ssh/config 中没有可用的 Host"
+            return MuxtermI18n.shared.tr(.errorNoSshHosts)
         }
     }
 }

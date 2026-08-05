@@ -86,12 +86,17 @@ impl CoreBridge {
 
         let handle = muxterm_new(bt.as_ptr(), sock_ptr, sess_ptr);
         if handle.is_null() {
-            anyhow::bail!("muxterm_new 失败");
+            anyhow::bail!(crate::platform::i18n::tr(
+                crate::platform::i18n::Key::ErrorBridgeCreate
+            ));
         }
         let rc = unsafe { muxterm_connect(handle) };
         if rc != 0 {
             unsafe { muxterm_free(handle) };
-            anyhow::bail!("muxterm_connect 失败: {rc}");
+            anyhow::bail!(crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::ErrorBridgeConnect,
+                &[("code", &rc.to_string())],
+            ));
         }
         Ok(Self {
             handle,

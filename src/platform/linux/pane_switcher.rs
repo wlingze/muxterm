@@ -35,7 +35,8 @@ where
         .collect();
 
     let panes = std::rc::Rc::new(panes);
-    quick_pick::show(parent, "Search panes by name…", items, move |picked| {
+    let placeholder = crate::platform::i18n::tr(crate::platform::i18n::Key::PaneSearchPlaceholder);
+    quick_pick::show(parent, &placeholder, items, move |picked| {
         if let Some(item) = picked {
             if let Ok(i) = item.id.parse::<usize>() {
                 if let Some(entry) = panes.get(i).cloned() {
@@ -52,12 +53,20 @@ where
     F: Fn(String) + 'static,
 {
     let dlg = Dialog::with_buttons(
-        Some("Rename pane"),
+        Some(&crate::platform::i18n::tr(
+            crate::platform::i18n::Key::PaneRenameTitle,
+        )),
         Some(parent),
         gtk4::DialogFlags::MODAL,
         &[
-            ("Cancel", gtk4::ResponseType::Cancel),
-            ("Rename", gtk4::ResponseType::Accept),
+            (
+                &crate::platform::i18n::tr(crate::platform::i18n::Key::PaneRenameCancel),
+                gtk4::ResponseType::Cancel,
+            ),
+            (
+                &crate::platform::i18n::tr(crate::platform::i18n::Key::PaneRenameAction),
+                gtk4::ResponseType::Accept,
+            ),
         ],
     );
     dlg.set_default_size(360, 100);
@@ -69,7 +78,9 @@ where
     content.set_margin_bottom(8);
 
     let hint = Label::builder()
-        .label("New pane name:")
+        .label(crate::platform::i18n::tr(
+            crate::platform::i18n::Key::PaneRenameHint,
+        ))
         .halign(Align::Start)
         .build();
     content.append(&hint);

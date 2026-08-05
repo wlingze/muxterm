@@ -15,6 +15,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// tmux tab 切换命令异步完成前，禁止用旧 active tab 快照重建布局。
     private var pendingActiveTab: UInt32?
     private var isClosing = false
+    private var languageObserver: NSObjectProtocol?
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
@@ -41,6 +42,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandPalette.onSelect = { [weak self] item in
             self?.handlePaletteSelection(item)
         }
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: .muxtermLanguageChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshLocalizedUI()
+        }
 
         content.tabBar.onSelectTab = { [weak self] tabId in
             self?.requestSwitchTab(tabId)
@@ -51,7 +59,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
             if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
-                self.reportStatusError("切换 pane @\(paneId) 失败")
+                self.reportStatusError(
+                    MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
+                )
             }
         }
         content.paneLayout.onResizeDivider = { [weak self] paneId, horizontal, size in
@@ -83,6 +93,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     deinit {
         pollTimer?.invalidate()
+        if let languageObserver {
+            NotificationCenter.default.removeObserver(languageObserver)
+        }
         if !isClosing {
             bridge.shutdown()
         }
@@ -92,7 +105,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func newTab() {
         guard bridge.execute(task: MuxTask.newTab()) == 0 else {
-            reportStatusError("新建 tab 失败")
+            reportStatusError(MuxtermI18n.shared.tr(.errorNewTab))
             return
         }
         needsLayoutReload = true
@@ -104,7 +117,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         // 唯一 pane 时关 pane 会触发后端关 window；UI 侧随后收到 Exited 再关窗口。
         guard bridge.execute(task: MuxTask.closePane(pane)) == 0 else {
-            reportStatusError("关闭 pane @\(pane) 失败")
+            reportStatusError(MuxtermI18n.shared.tr(.errorClosePane, arguments: ["id": "\(pane)"]))
             return
         }
         needsLayoutReload = true
@@ -186,7 +199,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = true
         guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
             pendingActiveTab = nil
-            reportStatusError("切换 tab @\(tabId) 失败")
+            reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
         // 等 STATE_ACTIVE_TAB_CHANGED 到达后再 refreshUI；此时 snapshot 的
@@ -198,7 +211,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         guard bridge.execute(task: MuxTask.splitPane(targetPane: pane, horizontal: horizontal)) == 0 else {
-            reportStatusError("分割 pane @\(pane) 失败")
+            reportStatusError(MuxtermI18n.shared.tr(.errorSplitPane, arguments: ["id": "\(pane)"]))
             return
         }
         needsLayoutReload = true
@@ -219,7 +232,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ) else { return }
 
         guard bridge.execute(task: MuxTask.switchPane(target)) == 0 else {
-            reportStatusError("切换 pane @\(target) 失败")
+            reportStatusError(MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(target)"]))
             return
         }
     }
@@ -227,71 +240,78 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 命令面板
 
     private static func rootPaletteItems() -> [PaletteItem] {
-        [
+        let i18n = MuxtermI18n.shared
+        return [
             PaletteItem(
-                title: "Local",
-                detail: "选择本机 tmux session",
-                keywords: "local tmux attach new",
+                title: i18n.tr(.local),
+                detail: i18n.tr(.localTmuxSessions),
+                keywords: "local tmux attach new 本地",
                 kind: .command(.local)
             ),
             PaletteItem(
-                title: "SSH",
-                detail: "选择 SSH 主机，再选择远程 tmux session",
-                keywords: "ssh remote host tmux attach new",
+                title: i18n.tr(.ssh),
+                detail: i18n.tr(.sshHosts),
+                keywords: "ssh remote host tmux attach new 主机",
                 kind: .command(.ssh)
             ),
             PaletteItem(
-                title: "New Tab",
-                detail: "新建本地 tab",
-                keywords: "new tab",
+                title: i18n.tr(.newTab),
+                detail: i18n.tr(.newTabDetail),
+                keywords: "new tab 新建 标签页",
                 kind: .command(.newTab)
             ),
             PaletteItem(
-                title: "Split Pane Horizontally",
-                detail: "水平分割当前 pane",
-                keywords: "split pane horizontal",
+                title: i18n.tr(.splitPaneHorizontal),
+                detail: i18n.tr(.splitPaneHorizontalDetail),
+                keywords: "split pane horizontal 水平 分割",
                 kind: .command(.splitHorizontal)
             ),
             PaletteItem(
-                title: "Split Pane Vertically",
-                detail: "竖直分割当前 pane",
-                keywords: "split pane vertical",
+                title: i18n.tr(.splitPaneVertical),
+                detail: i18n.tr(.splitPaneVerticalDetail),
+                keywords: "split pane vertical 竖直 上下",
                 kind: .command(.splitVertical)
             ),
             PaletteItem(
-                title: "Next Pane",
-                detail: "切换到当前 tab 的下一个 pane",
-                keywords: "pane next cmd bracket",
+                title: i18n.tr(.nextPane),
+                detail: i18n.tr(.nextPaneDetail),
+                keywords: "pane next cmd bracket 下一个",
                 kind: .command(.nextPane)
             ),
             PaletteItem(
-                title: "Previous Pane",
-                detail: "切换到当前 tab 的上一个 pane",
-                keywords: "pane previous prev cmd bracket",
+                title: i18n.tr(.previousPane),
+                detail: i18n.tr(.previousPaneDetail),
+                keywords: "pane previous prev cmd bracket 上一个",
                 kind: .command(.prevPane)
             ),
             PaletteItem(
-                title: "Close Pane",
-                detail: "关闭当前 pane",
-                keywords: "close pane",
+                title: i18n.tr(.closePane),
+                detail: i18n.tr(.closePaneDetail),
+                keywords: "close pane 关闭",
                 kind: .command(.closePane)
             ),
             PaletteItem(
-                title: "Close Tab",
-                detail: "关闭当前 tab",
-                keywords: "close tab",
+                title: i18n.tr(.closeTab),
+                detail: i18n.tr(.closeTabDetail),
+                keywords: "close tab 关闭 标签页",
                 kind: .command(.closeTab)
             ),
             PaletteItem(
-                title: "Close Window",
-                detail: "关闭当前窗口",
-                keywords: "close window",
+                title: i18n.tr(.closeWindow),
+                detail: i18n.tr(.closeWindowDetail),
+                keywords: "close window 关闭",
                 kind: .command(.closeWindow)
             ),
             PaletteItem(
-                title: "Quit Muxterm",
-                detail: "退出应用",
-                keywords: "quit exit",
+                title: i18n.tr(.language),
+                detail: i18n.tr(.languageDetail),
+                keywords: "language locale 语言",
+                kind: .command(.language)
+            ),
+            PaletteItem(
+                title: i18n.tr(.quitMuxterm),
+                detail: i18n.tr(.quitMuxtermDetail),
+                keywords: "quit exit 退出",
                 kind: .command(.quit)
             ),
         ]
@@ -327,6 +347,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.closeWindow):
             commandPalette.dismiss()
             closeActiveWindow()
+        case .command(.language):
+            showLanguageOptions()
+        case .language(let language):
+            _ = MuxtermI18n.shared.setLanguage(language)
+            commandPalette.present(items: Self.rootPaletteItems())
         case .command(.quit):
             commandPalette.dismiss()
             NSApp.terminate(nil)
@@ -342,6 +367,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func showLanguageOptions() {
+        let i18n = MuxtermI18n.shared
+        let items = MuxtermLanguage.allCases.map { language in
+            let current = i18n.language == language ? " · \(i18n.tr(.languageCurrent))" : ""
+            return PaletteItem(
+                title: i18n.tr(language.displayNameKey),
+                detail: current.isEmpty ? "" : current,
+                keywords: "language locale 语言 \(language.rawValue)",
+                kind: .language(language)
+            )
+        }
+        commandPalette.update(
+            items: items,
+            placeholder: i18n.tr(.language)
+        )
+    }
+
     private func showSSHHosts() {
         switch discovery.sshHosts() {
         case .success(let hosts):
@@ -354,7 +396,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         kind: .host(host)
                     )
                 },
-                placeholder: "选择 SSH 主机…"
+                placeholder: MuxtermI18n.shared.tr(.chooseSshHost)
             )
         case .failure(let error):
             commandPalette.dismiss()
@@ -365,12 +407,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func showSessions(for target: ConnectionTarget) {
         commandPalette.update(
             items: [PaletteItem(
-                title: "New",
-                detail: "选择目录，创建 tmux session 并 attach",
+                title: MuxtermI18n.shared.tr(.newSession),
+                detail: MuxtermI18n.shared.tr(.newSessionDetail),
                 keywords: "new create tmux directory folder",
                 kind: .newSession(target: target)
             )],
-            placeholder: "选择 tmux session…"
+            placeholder: MuxtermI18n.shared.tr(.chooseTmuxSession)
         )
 
         let finish: (Result<[TmuxSessionInfo], Error>) -> Void = { [weak self] result in
@@ -378,19 +420,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             switch result {
             case .success(let sessions):
                 let items = [PaletteItem(
-                    title: "New",
-                    detail: "选择目录，创建 tmux session 并 attach",
+                    title: MuxtermI18n.shared.tr(.newSession),
+                    detail: MuxtermI18n.shared.tr(.newSessionDetail),
                     keywords: "new create tmux directory folder",
                     kind: .newSession(target: target)
                 )] + sessions.map { session in
                     PaletteItem(
                         title: session.name,
-                        detail: "\(session.windowCount) 个 window\(session.attached ? " · 已连接" : "")",
+                        detail: MuxtermI18n.shared.tr(
+                            .tmuxWindows,
+                            arguments: ["count": "\(session.windowCount)"]
+                        ) + (session.attached ? " · \(MuxtermI18n.shared.tr(.tmuxAttached))" : ""),
                         keywords: "tmux session attach",
                         kind: .session(target: target, name: session.name)
                     )
                 }
-                self.commandPalette.update(items: items, placeholder: "选择 tmux session…")
+                self.commandPalette.update(
+                    items: items,
+                    placeholder: MuxtermI18n.shared.tr(.chooseTmuxSession)
+                )
             case .failure(let error):
                 self.commandPalette.dismiss()
                 self.showError(error)
@@ -407,14 +455,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func chooseDirectory(for target: ConnectionTarget) {
         guard let ownerWindow = window else {
-            reportStatusError("无法打开目录选择器：主窗口不可用")
+            reportStatusError(MuxtermI18n.shared.tr(.errorMainWindowUnavailable))
             return
         }
         switch target {
         case .local:
             let panel = NSOpenPanel()
-            panel.title = "选择新 tmux session 的工作目录"
-            panel.message = "选择目录后，Muxterm 会创建 tmux session 并 attach。"
+            panel.title = MuxtermI18n.shared.tr(.chooseTmuxDirectory)
+            panel.message = MuxtermI18n.shared.tr(.chooseDirectoryMessage)
             panel.canChooseFiles = false
             panel.canChooseDirectories = true
             panel.allowsMultipleSelection = false
@@ -424,13 +472,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         case .ssh(let host):
             let alert = NSAlert()
-            alert.messageText = "选择远程工作目录"
-            alert.informativeText = "输入 \(host.alias) 上新 tmux session 的目录。"
+            alert.messageText = MuxtermI18n.shared.tr(.chooseRemoteDirectory)
+            alert.informativeText = MuxtermI18n.shared.tr(
+                .remoteDirectoryMessage,
+                arguments: ["host": host.alias]
+            )
             let field = NSTextField(string: "~")
             field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
             alert.accessoryView = field
-            alert.addButton(withTitle: "创建并连接")
-            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: MuxtermI18n.shared.tr(.createAndAttach))
+            alert.addButton(withTitle: MuxtermI18n.shared.tr(.cancel))
             alert.beginSheetModal(for: ownerWindow) { [weak self] response in
                 guard response == .alertFirstButtonReturn else { return }
                 let directory = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -499,7 +550,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard lastSnapshot.tabs.contains(where: { $0.id == lastSnapshot.activeTab }) else { return }
         let tabID = lastSnapshot.activeTab
         guard bridge.execute(task: MuxTask.closeTab(tabID)) == 0 else {
-            reportStatusError("关闭 tab @\(tabID) 失败")
+            reportStatusError(MuxtermI18n.shared.tr(.errorCloseTab, arguments: ["id": "\(tabID)"]))
             return
         }
         needsLayoutReload = true
@@ -509,7 +560,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         reportStatusError(error.localizedDescription)
         guard let ownerWindow = window else { return }
         let alert = NSAlert()
-        alert.messageText = "命令面板操作失败"
+        alert.messageText = MuxtermI18n.shared.tr(.errorPaletteFailed)
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .warning
         alert.beginSheetModal(for: ownerWindow)
@@ -589,6 +640,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 window?.makeFirstResponder(view)
             }
         }
+    }
+
+    private func refreshLocalizedUI() {
+        commandPalette.refreshLocalization()
+        content.refreshLocalization()
+        refreshUI()
     }
 
     /// session/window 已空时关闭 NSWindow。

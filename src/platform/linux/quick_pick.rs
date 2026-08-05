@@ -284,7 +284,9 @@ pub fn freeform_filter(presets: &[QuickPickItem], query: &str) -> Vec<QuickPickI
         next.push(QuickPickItem {
             id: FREEFORM_ID.into(),
             label: qtrim.to_string(),
-            detail: Some("use typed target".into()),
+            detail: Some(crate::platform::i18n::tr(
+                crate::platform::i18n::Key::FreeformUseTypedTarget,
+            )),
         });
     }
     for it in presets {
@@ -493,7 +495,9 @@ pub fn show_freeform<F>(
                         finish(Some(QuickPickItem {
                             id: FREEFORM_ID.into(),
                             label: t,
-                            detail: Some("use typed target".into()),
+                            detail: Some(crate::platform::i18n::tr(
+                                crate::platform::i18n::Key::FreeformUseTypedTarget,
+                            )),
                         }));
                     }
                 }

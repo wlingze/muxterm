@@ -104,7 +104,9 @@ impl AppWindow {
         let tabs = TabBar::new(cfg.ui.tab_bar_height);
         let layout = LayoutHost::new(theme);
         let status = Label::builder()
-            .label("connected")
+            .label(crate::platform::i18n::tr(
+                crate::platform::i18n::Key::StatusConnected,
+            ))
             .halign(Align::Start)
             .hexpand(true)
             .build();
@@ -148,10 +150,11 @@ impl AppWindow {
             let st = state.clone();
             let controller = EventControllerKey::new();
             controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+            let window_for_palette = window.clone();
             controller.connect_key_pressed(move |_c, keyval, _keycode, mods| {
                 let mut s = st.borrow_mut();
                 if let Some(action) = s.keymap.lookup(keyval, mods) {
-                    handle_action(&mut s, action);
+                    handle_action(&mut s, action, &window_for_palette);
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -248,7 +251,7 @@ impl AppWindow {
     }
 }
 
-fn handle_action(s: &mut UiState, action: Action) {
+fn handle_action(s: &mut UiState, action: Action, window: &Window) {
     match action {
         Action::NewTab | Action::NewWindow => {
             s.bridge.execute(tasks::new_tab());
@@ -281,7 +284,29 @@ fn handle_action(s: &mut UiState, action: Action) {
         Action::SwitchPanePrev => {
             s.bridge.execute(tasks::prev_pane());
         }
-        Action::Search | Action::CommandPalette | Action::Unknown => {}
+        Action::CommandPalette => {
+            // 命令面板回调在 GTK 主线程执行；语言选择会更新当前进程 catalog，
+            // 后续所有新建控件都会直接使用新语言。
+            let parent = window.clone();
+            let callback_parent = parent.clone();
+            let status = s.status.clone();
+            let pane_count = s.bridge.get_panes(s.active_tab).len();
+            crate::platform::linux::command_palette::show(&parent, move |id| {
+                if id == "language" {
+                    let language_parent = callback_parent.clone();
+                    let status = status.clone();
+                    crate::platform::linux::command_palette::show_language(
+                        &language_parent,
+                        move |language| {
+                            crate::platform::i18n::set_language(language);
+                            set_status_summary(&status, pane_count);
+                        },
+                    );
+                }
+            });
+            return;
+        }
+        Action::Search | Action::Unknown => {}
     }
     refresh_ui(s);
 }
@@ -315,13 +340,13 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
         }
         STATE_BACKEND_STATUS => {
             let msg = match ev.pane_id {
-                2 => "connected",
-                3 => "error",
-                4 => "exited",
-                1 => "connecting",
-                _ => "disconnected",
+                2 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusConnected),
+                3 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusError),
+                4 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusExited),
+                1 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusConnecting),
+                _ => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusDisconnected),
             };
-            s.status.set_label(msg);
+            s.status.set_label(&msg);
         }
         _ => {}
     }
@@ -359,8 +384,14 @@ fn refresh_ui(s: &mut UiState) {
     }
 
     let npanes = s.bridge.get_panes(s.active_tab).len();
-    s.status
-        .set_label(&format!("connected | {npanes} panes | Ctrl-Q 由 WM 关闭"));
+    set_status_summary(&s.status, npanes);
+}
+
+fn set_status_summary(status: &Label, npanes: usize) {
+    let connected = crate::platform::i18n::tr(crate::platform::i18n::Key::StatusConnected);
+    let panes = crate::platform::i18n::tr(crate::platform::i18n::Key::Panes);
+    let close_hint = crate::platform::i18n::tr(crate::platform::i18n::Key::WindowCloseHint);
+    status.set_label(&format!("{connected} | {panes}: {npanes} | {close_hint}"));
 }
 
 fn sync_pane_outputs(s: &mut UiState) {

@@ -229,7 +229,9 @@ final class PaneHostView: NSView {
         setAccessibilityIdentifier("muxterm.pane.\(paneId)")
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Pane \(paneId)")
+        setAccessibilityLabel(
+            MuxtermI18n.shared.tr(.paneAccessibility, arguments: ["id": "\(paneId)"])
+        )
 
         terminal.translatesAutoresizingMaskIntoConstraints = false
         if terminal.superview !== self {

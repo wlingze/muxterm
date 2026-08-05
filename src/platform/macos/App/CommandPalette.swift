@@ -11,6 +11,7 @@ enum PaletteCommand: Equatable {
     case closePane
     case closeTab
     case closeWindow
+    case language
     case quit
 }
 
@@ -19,6 +20,7 @@ enum PaletteItemKind: Equatable {
     case session(target: ConnectionTarget, name: String)
     case host(SSHHostInfo)
     case newSession(target: ConnectionTarget)
+    case language(MuxtermLanguage)
 }
 
 struct PaletteItem: Equatable {
@@ -55,7 +57,7 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
             backing: .buffered,
             defer: false
         )
-        panel.title = "命令面板"
+        panel.title = MuxtermI18n.shared.tr(.commandPalette)
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
@@ -80,9 +82,9 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
-    func present(items: [PaletteItem], placeholder: String = "输入命令或搜索…") {
+    func present(items: [PaletteItem], placeholder: String? = nil) {
         allItems = items
-        input.placeholderString = placeholder
+        input.placeholderString = placeholder ?? MuxtermI18n.shared.tr(.commandPalettePlaceholder)
         input.stringValue = ""
         applyFilter()
 
@@ -112,6 +114,14 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
         window?.makeFirstResponder(input)
     }
 
+    /// 更新面板自身的可见 chrome；命令项由 MainWindow 在切换语言后重建。
+    func refreshLocalization() {
+        window?.title = MuxtermI18n.shared.tr(.commandPalette)
+        if allItems.isEmpty {
+            input.placeholderString = MuxtermI18n.shared.tr(.commandPalettePlaceholder)
+        }
+    }
+
     func dismiss() {
         window?.orderOut(nil)
         ownerWindow?.makeKeyAndOrderFront(nil)
@@ -133,7 +143,7 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
 
         input.translatesAutoresizingMaskIntoConstraints = false
         input.font = NSFont.systemFont(ofSize: 18)
-        input.placeholderString = "输入命令或搜索…"
+        input.placeholderString = MuxtermI18n.shared.tr(.commandPalettePlaceholder)
         input.focusRingType = .none
         input.delegate = self
         input.setAccessibilityIdentifier("muxterm.commandPalette.input")

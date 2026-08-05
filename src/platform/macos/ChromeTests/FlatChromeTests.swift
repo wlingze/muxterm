@@ -16,7 +16,10 @@ final class FlatChromeTests: XCTestCase {
             status: "connected",
             tabCount: 2,
             paneCount: 3,
-            activePane: 12
+            activePane: 12,
+            tabsLabel: "tabs",
+            panesLabel: "panes",
+            paneLabel: "pane"
         )
         XCTAssertTrue(text.contains("connected"))
         XCTAssertTrue(text.contains("tabs: 2"))

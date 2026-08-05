@@ -3,6 +3,7 @@ import AppKit
 /// NSApplication 入口：解析启动参数、创建 CoreBridge、打开主窗口。
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindow: MainWindowController?
+    private var languageObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -17,6 +18,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let wc = MainWindowController(bridge: bridge)
             mainWindow = wc
             buildMenu(windowController: wc)
+            languageObserver = NotificationCenter.default.addObserver(
+                forName: .muxtermLanguageChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.buildMenu(windowController: self.mainWindow)
+            }
             Self.bringToForeground(windowController: wc)
             // UITest：多抢几次前台（macOS 对 focus-steal 更严，且 XCUITest 依赖 runningForeground）
             if ProcessInfo.processInfo.environment["MUXTERM_UITEST"] == "1" {
@@ -29,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             buildMenu(windowController: nil)
             let alert = NSAlert()
-            alert.messageText = "无法连接 Muxterm 核心"
+            alert.messageText = MuxtermI18n.shared.tr(.errorCoreUnavailable)
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .critical
             alert.runModal()
@@ -51,24 +60,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
         appMenu.addItem(
-            withTitle: "关于 Muxterm",
+            withTitle: MuxtermI18n.shared.tr(.menuAbout),
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(
-            withTitle: "退出 Muxterm",
+            withTitle: MuxtermI18n.shared.tr(.menuQuit),
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
 
         let fileMenuItem = NSMenuItem()
         mainMenu.addItem(fileMenuItem)
-        let fileMenu = NSMenu(title: "文件")
+        let fileMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuFile))
         fileMenuItem.submenu = fileMenu
 
         let newTab = NSMenuItem(
-            title: "新建标签页",
+            title: MuxtermI18n.shared.tr(.menuNewTab),
             action: #selector(MainWindowController.newTab),
             keyEquivalent: "t"
         )
@@ -76,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(newTab)
 
         let closePane = NSMenuItem(
-            title: "关闭 Pane",
+            title: MuxtermI18n.shared.tr(.menuClosePane),
             action: #selector(MainWindowController.closeActivePane),
             keyEquivalent: ""
         )
@@ -84,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(closePane)
 
         let closeWindow = NSMenuItem(
-            title: "关闭窗口",
+            title: MuxtermI18n.shared.tr(.menuCloseWindow),
             action: #selector(MainWindowController.closeActiveWindow),
             keyEquivalent: "w"
         )
@@ -94,11 +103,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Window 菜单：Cmd+1..9 切 tab（避免落到 SwiftTerm noop:）
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)
-        let windowMenu = NSMenu(title: "窗口")
+        let windowMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuWindow))
         windowMenuItem.submenu = windowMenu
         for i in 1...9 {
             let item = NSMenuItem(
-                title: "切换到标签页 \(i)",
+                title: MuxtermI18n.shared.tr(.menuSwitchTab, arguments: ["number": "\(i)"]),
                 action: #selector(MainWindowController.switchTabByNumber(_:)),
                 keyEquivalent: "\(i)"
             )
@@ -110,19 +119,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
-        let editMenu = NSMenu(title: "编辑")
+        let editMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuEdit))
         editMenuItem.submenu = editMenu
-        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: MuxtermI18n.shared.tr(.menuCopy), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: MuxtermI18n.shared.tr(.menuPaste), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: MuxtermI18n.shared.tr(.menuSelectAll), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
-        let viewMenu = NSMenu(title: "视图")
+        let viewMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuView))
         viewMenuItem.submenu = viewMenu
 
         let splitH = NSMenuItem(
-            title: "水平分割",
+            title: MuxtermI18n.shared.tr(.menuSplitHorizontal),
             action: #selector(MainWindowController.splitHorizontal),
             keyEquivalent: "d"
         )
@@ -131,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(splitH)
 
         let splitV = NSMenuItem(
-            title: "竖直分割",
+            title: MuxtermI18n.shared.tr(.menuSplitVertical),
             action: #selector(MainWindowController.splitVertical),
             keyEquivalent: "d"
         )
@@ -140,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(splitV)
 
         let nextPane = NSMenuItem(
-            title: "下一个 Pane",
+            title: MuxtermI18n.shared.tr(.menuNextPane),
             action: #selector(MainWindowController.nextPane),
             keyEquivalent: "]"
         )
@@ -148,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(nextPane)
 
         let prevPane = NSMenuItem(
-            title: "上一个 Pane",
+            title: MuxtermI18n.shared.tr(.menuPreviousPane),
             action: #selector(MainWindowController.prevPane),
             keyEquivalent: "["
         )
@@ -156,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(prevPane)
 
         let commandPalette = NSMenuItem(
-            title: "命令面板",
+            title: MuxtermI18n.shared.tr(.menuCommandPalette),
             action: #selector(MainWindowController.openCommandPalette),
             keyEquivalent: "p"
         )
@@ -167,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(NSMenuItem.separator())
 
         let tabTop = NSMenuItem(
-            title: "标签栏在顶部",
+            title: MuxtermI18n.shared.tr(.menuTabBarTop),
             action: #selector(MainWindowController.setTabBarTop(_:)),
             keyEquivalent: ""
         )
@@ -175,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(tabTop)
 
         let tabBottom = NSMenuItem(
-            title: "标签栏在底部",
+            title: MuxtermI18n.shared.tr(.menuTabBarBottom),
             action: #selector(MainWindowController.setTabBarBottom(_:)),
             keyEquivalent: ""
         )
