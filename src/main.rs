@@ -13,6 +13,7 @@
 // and each subcommand prints its own usage via `muxterm <cmd> --help`.
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 mod core;
 mod platform;
@@ -27,6 +28,14 @@ mod platform;
 struct Cli {
     #[arg(short, long)]
     verbose: bool,
+
+    /// 开启 debug 日志（tmux 协议/状态/任务全部落盘）
+    #[arg(long)]
+    debug: bool,
+
+    /// 把日志写入文件而不是 stderr（macOS .app 推荐使用）
+    #[arg(long = "log-file", value_name = "PATH")]
+    log_file: Option<PathBuf>,
 
     /// tmux socket name (`-L`)
     #[arg(short = 'L', long = "socket", value_name = "SOCKET")]
@@ -253,7 +262,14 @@ enum CliSubcommand {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
+    // 级别解析：--verbose/--debug 升到 debug；CLI 未给时由环境变量兜底。
+    let cli_level = if cli.verbose || cli.debug {
+        Some("debug".to_string())
+    } else {
+        None
+    };
+    let cfg = crate::core::logging::resolve_config(cli_level, cli.log_file.clone());
+    crate::core::logging::init_logging(cfg)?;
     log_socket(&cli);
 
     // 子命令分派
@@ -295,9 +311,12 @@ fn main() -> anyhow::Result<()> {
             CliSubcommand::Tui { socket, session } => {
                 run_tui_inner(socket.clone(), session.clone())
             }
-            CliSubcommand::Gui { socket, session } => {
-                run_gui_inner(socket.clone(), session.clone())
-            }
+            CliSubcommand::Gui { socket, session } => run_gui_inner(
+                socket.clone(),
+                session.clone(),
+                cli.debug,
+                cli.log_file.clone(),
+            ),
         };
     }
 
@@ -309,7 +328,7 @@ fn main() -> anyhow::Result<()> {
         return run_tui_inner(cli.socket, cli.session);
     }
     if want_gtk {
-        return run_gui_inner(cli.socket, cli.session);
+        return run_gui_inner(cli.socket, cli.session, cli.debug, cli.log_file);
     }
     anyhow::bail!("没有可用的前端（启用 `gtk` 或 `tui` feature）")
 }
@@ -332,17 +351,6 @@ fn dispatch_cli(
     platform::cli::routing::run_cli(&full)
 }
 
-fn init_tracing(verbose: bool) {
-    let filter = if verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .compact()
-        // 日志走 stderr，避免污染 stdout 上的 CLI JSON 输出。
-        .with_writer(std::io::stderr)
-        .init();
-}
-
 fn log_socket(cli: &Cli) {
     if let Some(ref sock) = cli.socket {
         tracing::info!(target = "muxterm", socket = %sock, "使用独立 tmux socket (-L)");
@@ -351,10 +359,20 @@ fn log_socket(cli: &Cli) {
 
 #[allow(unused_variables)]
 #[allow(clippy::needless_return)]
-fn run_gui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
+fn run_gui_inner(
+    socket: Option<String>,
+    session: Option<String>,
+    debug: bool,
+    log_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        return platform::macos::launch_app_bundle(socket.as_deref(), session.as_deref());
+        return platform::macos::launch_app_bundle(
+            socket.as_deref(),
+            session.as_deref(),
+            debug,
+            log_file.as_deref().and_then(|p| p.to_str()),
+        );
     }
     #[cfg(feature = "gtk")]
     {
