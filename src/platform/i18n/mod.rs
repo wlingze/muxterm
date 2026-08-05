@@ -177,6 +177,7 @@ define_text_keys! {
 }
 
 /// 简写别名：平台模块可以使用 `Key::CommandPalette`，不暴露 JSON 字符串。
+#[allow(unused_imports)]
 pub use TextKey as Key;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

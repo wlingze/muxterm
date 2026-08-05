@@ -23,7 +23,7 @@ pub fn cli_command_to_task(
         NewSession { .. } => None,
         KillSession { .. } => Some(Task::Shutdown),
         AttachSession { .. } => None,
-        Detach { .. } => None,
+        Detach { .. } => Some(Task::Detach),
         RenameSession { .. } => None,
 
         // Window
@@ -178,6 +178,13 @@ mod tests {
         let model = make_model();
         let task = cli_command_to_task(&CliCommand::ListSessions, model.state());
         assert!(task.is_none());
+    }
+
+    #[test]
+    fn detach_maps_to_explicit_core_task() {
+        let model = make_model();
+        let task = cli_command_to_task(&CliCommand::Detach { target: None }, model.state());
+        assert_eq!(task, Some(Task::Detach));
     }
 
     #[test]
