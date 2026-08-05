@@ -9,6 +9,8 @@
 //!
 //! v1：先建立最小 facade，不阻塞 local CLI。
 
+use std::path::{Path, PathBuf};
+
 /// SSH Host 条目（从 `~/.ssh/config` 读取）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SshHostEntry {
@@ -40,6 +42,321 @@ pub struct FsEntry {
     pub modified: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SshConfigBlock {
+    patterns: Vec<String>,
+    options: Vec<(String, String)>,
+}
+
+/// 解析 OpenSSH config 中用于连接发现的字段。
+///
+/// 这里只解析 Host/HostName/User/Port。认证、ProxyJump、Include 等连接行为
+/// 仍然完全交给系统 `ssh`，因此 Muxterm 不会复制或替换用户的 SSH 配置。
+pub fn parse_ssh_config(text: &str) -> Vec<SshHostEntry> {
+    let mut global = SshConfigBlock::default();
+    let mut blocks = Vec::new();
+    let mut current: Option<SshConfigBlock> = None;
+
+    for raw_line in text.lines() {
+        let line = strip_config_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, raw_value)) = split_config_line(line) else {
+            continue;
+        };
+        let key = key.to_ascii_lowercase();
+        if key == "host" {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            }
+            current = Some(SshConfigBlock {
+                patterns: split_config_words(raw_value),
+                options: Vec::new(),
+            });
+        } else if let Some(block) = current.as_mut() {
+            block.options.push((key, unquote_config_value(raw_value)));
+        } else {
+            global.options.push((key, unquote_config_value(raw_value)));
+        }
+    }
+    if let Some(block) = current {
+        blocks.push(block);
+    }
+
+    let mut aliases = Vec::new();
+    for block in &blocks {
+        for pattern in &block.patterns {
+            if !pattern.starts_with('!') && !has_glob(pattern) && !aliases.contains(pattern) {
+                aliases.push(pattern.clone());
+            }
+        }
+    }
+
+    aliases
+        .into_iter()
+        .map(|alias| {
+            let hostname = ssh_config_value(&alias, "hostname", &global, &blocks)
+                .unwrap_or_else(|| alias.clone());
+            let user = ssh_config_value(&alias, "user", &global, &blocks).unwrap_or_default();
+            let port = ssh_config_value(&alias, "port", &global, &blocks)
+                .and_then(|value| value.parse().ok())
+                .filter(|port: &u16| *port > 0)
+                .unwrap_or(22);
+            SshHostEntry {
+                alias,
+                hostname,
+                port,
+                user,
+            }
+        })
+        .collect()
+}
+
+/// 列出用户现有 SSH 配置中的 Host alias。
+///
+/// `path` 仅用于测试或显式配置；未传入时优先使用 `MUXTERM_SSH_CONFIG_PATH`，
+/// 否则读取默认的 `~/.ssh/config`。不存在配置文件视为没有可发现的主机。
+pub fn list_ssh_hosts(path: Option<&Path>) -> anyhow::Result<Vec<SshHostEntry>> {
+    let path = path
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(PathBuf::from))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".ssh").join("config"))
+        });
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let mut visited = Vec::new();
+    match load_ssh_config(&path, &mut visited) {
+        Ok(text) => Ok(parse_ssh_config(&text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn load_ssh_config(path: &Path, visited: &mut Vec<PathBuf>) -> std::io::Result<String> {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if visited.contains(&path) {
+        return Ok(String::new());
+    }
+    visited.push(path.clone());
+
+    let text = std::fs::read_to_string(&path)?;
+    let mut expanded = String::new();
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    for raw_line in text.lines() {
+        let line = strip_config_comment(raw_line).trim();
+        let is_include =
+            split_config_line(line).is_some_and(|(key, _)| key.eq_ignore_ascii_case("include"));
+        if !is_include {
+            expanded.push_str(raw_line);
+            expanded.push('\n');
+            continue;
+        }
+
+        let Some((_, raw_patterns)) = split_config_line(line) else {
+            continue;
+        };
+        for pattern in split_config_words(raw_patterns) {
+            for include_path in expand_include_pattern(&pattern, base_dir) {
+                match load_ssh_config(&include_path, visited) {
+                    Ok(included) => expanded.push_str(&included),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    Ok(expanded)
+}
+
+fn expand_include_pattern(pattern: &str, base_dir: &Path) -> Vec<PathBuf> {
+    let expanded = if let Some(rest) = pattern.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(pattern))
+    } else {
+        let path = PathBuf::from(pattern);
+        if path.is_absolute() {
+            path
+        } else {
+            base_dir.join(path)
+        }
+    };
+    if !has_glob(&expanded.to_string_lossy()) {
+        return if expanded.is_file() {
+            vec![expanded]
+        } else {
+            Vec::new()
+        };
+    }
+
+    let Some(parent) = expanded.parent() else {
+        return Vec::new();
+    };
+    let Some(file_pattern) = expanded.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = match std::fs::read_dir(parent) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| glob_matches(file_pattern, name))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    paths.sort();
+    paths
+}
+
+fn split_config_line(line: &str) -> Option<(&str, &str)> {
+    let mut fields = line.splitn(2, char::is_whitespace);
+    let key = fields.next()?.trim();
+    let value = fields.next()?.trim();
+    (!key.is_empty() && !value.is_empty()).then_some((key, value))
+}
+
+fn strip_config_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' | '"' => {
+                if quote == Some(ch) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(ch);
+                }
+            }
+            '#' if quote.is_none()
+                && line[..index]
+                    .chars()
+                    .next_back()
+                    .is_none_or(char::is_whitespace) =>
+            {
+                return &line[..index];
+            }
+            _ => {}
+        }
+    }
+    line
+}
+
+fn split_config_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in value.chars() {
+        if escaped {
+            word.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' | '"' if quote == Some(ch) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(ch),
+            c if c.is_whitespace() && quote.is_none() => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            c => word.push(c),
+        }
+    }
+    if escaped {
+        word.push('\\');
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+fn unquote_config_value(value: &str) -> String {
+    split_config_words(value).join(" ")
+}
+
+fn ssh_config_value(
+    alias: &str,
+    key: &str,
+    global: &SshConfigBlock,
+    blocks: &[SshConfigBlock],
+) -> Option<String> {
+    global
+        .options
+        .iter()
+        .find(|(option, _)| option == key)
+        .map(|(_, value)| value.clone())
+        .or_else(|| {
+            blocks
+                .iter()
+                .filter(|block| ssh_block_matches(alias, &block.patterns))
+                .flat_map(|block| block.options.iter())
+                .find(|(option, _)| option == key)
+                .map(|(_, value)| value.clone())
+        })
+}
+
+fn ssh_block_matches(alias: &str, patterns: &[String]) -> bool {
+    let mut has_positive = false;
+    let mut positive_match = false;
+    for pattern in patterns {
+        if let Some(pattern) = pattern.strip_prefix('!') {
+            if glob_matches(pattern, alias) {
+                return false;
+            }
+        } else {
+            has_positive = true;
+            positive_match |= glob_matches(pattern, alias);
+        }
+    }
+    !has_positive || positive_match
+}
+
+fn has_glob(value: &str) -> bool {
+    value.contains(['*', '?'])
+}
+
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let value: Vec<char> = value.chars().collect();
+    let mut dp = vec![vec![false; value.len() + 1]; pattern.len() + 1];
+    dp[0][0] = true;
+    for i in 0..pattern.len() {
+        for j in 0..=value.len() {
+            if !dp[i][j] {
+                continue;
+            }
+            if pattern[i] == '*' {
+                dp[i + 1][j] = true;
+                if j < value.len() {
+                    dp[i][j + 1] = true;
+                }
+            } else if j < value.len() && (pattern[i] == '?' || pattern[i] == value[j]) {
+                dp[i + 1][j + 1] = true;
+            }
+        }
+    }
+    dp[pattern.len()][value.len()]
+}
+
 /// 列出本地 tmux server 的 session。
 ///
 /// 执行 `tmux -L <socket> list-sessions -F '...'`，解析 TSV 输出。
@@ -62,10 +379,64 @@ pub fn list_local_tmux_sessions(socket: Option<&str>) -> Vec<TmuxSessionInfo> {
         _ => return Vec::new(),
     };
 
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
+    parse_tmux_session_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// 在本地 tmux server 中创建 detached session。
+pub fn create_local_tmux_session(
+    socket: Option<&str>,
+    session: &str,
+    directory: &str,
+) -> anyhow::Result<()> {
+    let mut cmd = std::process::Command::new("tmux");
+    if let Some(socket) = socket {
+        cmd.args(["-L", socket]);
+    }
+    cmd.args(["new-session", "-d", "-s", session, "-c", directory]);
+    let output = cmd.output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "创建本地 tmux session 失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+/// 通过系统 SSH 在远端创建 detached tmux session。
+pub fn create_ssh_tmux_session(
+    alias: &str,
+    ssh_config_path: Option<&str>,
+    remote_socket: Option<&str>,
+    session: &str,
+    directory: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<()> {
+    let socket_args = remote_socket
+        .map(|socket| format!("-L {} ", shell_quote(socket)))
+        .unwrap_or_default();
+    let remote_command = format!(
+        "tmux {socket_args}new-session -d -s {} -c {}",
+        shell_quote(session),
+        shell_quote(directory)
+    );
+    let (program, args) = build_ssh_command_for_discovery(alias, &remote_command, ssh_config_path);
+    let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
+    if exit_code == 0 {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "创建远端 tmux session 失败 (exit {exit_code}): {}",
+            output.trim()
+        ))
+    }
+}
+
+fn parse_tmux_session_output(text: &str) -> Vec<TmuxSessionInfo> {
+    text.lines()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.split(',').collect();
+            let parts: Vec<&str> = line.trim_end_matches('\r').split(',').collect();
             if parts.len() != 4 {
                 return None;
             }
@@ -77,6 +448,88 @@ pub fn list_local_tmux_sessions(socket: Option<&str>) -> Vec<TmuxSessionInfo> {
             })
         })
         .collect()
+}
+
+fn build_ssh_command_for_discovery(
+    alias: &str,
+    remote_command: &str,
+    ssh_config_path: Option<&str>,
+) -> (String, Vec<String>) {
+    crate::core::transport::ssh::build_ssh_command(alias, remote_command, ssh_config_path)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn run_ssh_discovery_command(
+    program: &str,
+    args: &[String],
+    timeout: std::time::Duration,
+) -> anyhow::Result<(i32, String)> {
+    use crate::core::transport::ssh::SshProcessTransport;
+    use crate::core::transport::{PtySize, Transport, TransportSignal};
+    use std::sync::mpsc as std_mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut transport = SshProcessTransport::new();
+    transport.spawn_exec(program, &arg_refs, PtySize::new(80, 24))?;
+    let transport = Arc::new(Mutex::new(transport));
+    let (tx, rx) = std_mpsc::channel::<Vec<u8>>();
+    let reader_transport = Arc::clone(&transport);
+    let reader = std::thread::spawn(move || loop {
+        let mut transport = reader_transport.lock().unwrap();
+        match transport.read() {
+            Ok(Some(data)) => {
+                drop(transport);
+                if tx.send(data).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                drop(transport);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut output = Vec::new();
+    let mut exit_code = None;
+    while Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(data) => output.extend_from_slice(&data),
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                let mut transport = transport.lock().unwrap();
+                if let Some(code) = transport.try_wait()? {
+                    exit_code = Some(code as i32);
+                    break;
+                }
+            }
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    if exit_code.is_none() {
+        let mut transport = transport.lock().unwrap();
+        let _ = transport.kill(TransportSignal::Term);
+    }
+    let _ = reader.join();
+    while let Ok(data) = rx.try_recv() {
+        output.extend_from_slice(&data);
+    }
+    if exit_code.is_none() {
+        let mut transport = transport.lock().unwrap();
+        exit_code = transport.try_wait()?.map(|code| code as i32);
+    }
+
+    Ok((
+        exit_code.unwrap_or(124),
+        String::from_utf8_lossy(&output).into_owned(),
+    ))
 }
 
 /// 通过 SSH transport 在远端执行 `tmux list-sessions`，解析结果。
@@ -181,24 +634,9 @@ pub fn list_ssh_tmux_sessions(
         }
     }
 
-    let text = String::from_utf8_lossy(&all_output);
-    let sessions: Vec<TmuxSessionInfo> = text
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 4 {
-                return None;
-            }
-            Some(TmuxSessionInfo {
-                name: parts[0].to_string(),
-                windows: parts[1].parse().unwrap_or(0),
-                attached: parts[2] == "1",
-                created: parts[3].parse().unwrap_or(0),
-            })
-        })
-        .collect();
-
-    Ok(sessions)
+    Ok(parse_tmux_session_output(&String::from_utf8_lossy(
+        &all_output,
+    )))
 }
 
 /// 通过 SSH transport 在远端执行 `tmux list-panes`，解析结果。
@@ -315,7 +753,7 @@ pub fn list_ssh_tmux_panes(
     let panes: Vec<SshPaneInfo> = text
         .lines()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.split(',').collect();
+            let parts: Vec<&str> = line.trim_end_matches('\r').split(',').collect();
             if parts.len() < 5 {
                 return None;
             }
@@ -323,7 +761,7 @@ pub fn list_ssh_tmux_panes(
             let active = parts[1] == "1";
             let cols: u16 = parts[2].parse().unwrap_or(80);
             let rows: u16 = parts[3].parse().unwrap_or(24);
-            let title = parts[4].to_string();
+            let title = parts[4..].join(",");
             Some((pane_id, active, cols, rows, title))
         })
         .collect();
@@ -347,6 +785,102 @@ mod tests {
         assert!(json.contains("\"alias\":\"myserver\""));
         let back: SshHostEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn parse_ssh_config_resolves_aliases_and_defaults() {
+        let config = r#"
+            Host *
+                User shared
+                Port 2200
+
+            Host archmini work
+                HostName 192.168.5.17
+                User wlz
+                IdentityFile "~/.ssh/id_ed25519"
+
+            Host *.internal !blocked.internal
+                HostName internal.example
+
+            Host blocked.internal
+                HostName blocked.example
+        "#;
+
+        assert_eq!(
+            parse_ssh_config(config),
+            vec![
+                SshHostEntry {
+                    alias: "archmini".into(),
+                    hostname: "192.168.5.17".into(),
+                    port: 2200,
+                    user: "shared".into(),
+                },
+                SshHostEntry {
+                    alias: "work".into(),
+                    hostname: "192.168.5.17".into(),
+                    port: 2200,
+                    user: "shared".into(),
+                },
+                SshHostEntry {
+                    alias: "blocked.internal".into(),
+                    hostname: "blocked.example".into(),
+                    port: 2200,
+                    user: "shared".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_ssh_config_alias_options_come_from_first_matching_block() {
+        let config = "Host *\n User global\n\nHost dev\n User specific\n HostName dev.example\n";
+        let hosts = parse_ssh_config(config);
+        assert_eq!(hosts[0].user, "global");
+        assert_eq!(hosts[0].hostname, "dev.example");
+    }
+
+    #[test]
+    fn parse_ssh_config_ignores_wildcard_only_hosts() {
+        let hosts = parse_ssh_config("Host *\n  ServerAliveInterval 30\n");
+        assert!(hosts.is_empty());
+    }
+
+    #[test]
+    fn list_ssh_hosts_expands_include_and_tilde() {
+        let root =
+            std::env::temp_dir().join(format!("muxterm-discovery-include-{}", std::process::id()));
+        let include_dir = root.join("included");
+        std::fs::create_dir_all(&include_dir).unwrap();
+        std::fs::write(
+            include_dir.join("hosts.conf"),
+            "Host included\n  HostName included.example\n",
+        )
+        .unwrap();
+        let main = root.join("config");
+        std::fs::write(
+            &main,
+            "Include included/*.conf\nHost local\n  HostName local.example\n",
+        )
+        .unwrap();
+
+        let hosts = list_ssh_hosts(Some(&main)).unwrap();
+        assert_eq!(
+            hosts
+                .iter()
+                .map(|host| host.alias.as_str())
+                .collect::<Vec<_>>(),
+            ["included", "local"]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parse_tmux_session_output_handles_crlf() {
+        let sessions = parse_tmux_session_output("dev,2,1,123\r\nwork,1,0,456\n");
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions[0].attached);
+        assert_eq!(sessions[1].name, "work");
     }
 
     #[test]

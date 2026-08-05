@@ -50,6 +50,40 @@ struct StateChange: Equatable {
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }
 }
 
+/// core SSH discovery 返回的 owned 条目。
+struct CoreSSHHost: Decodable, Equatable {
+    let alias: String
+    let hostname: String
+    let port: UInt16
+    let user: String
+}
+
+/// core tmux discovery 返回的 owned session 摘要。
+struct CoreTmuxSession: Decodable, Equatable {
+    let name: String
+    let windows: UInt32
+    let attached: Bool
+    let created: UInt64
+}
+
+private struct SSHHostsResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let hosts: [CoreSSHHost]?
+}
+
+private struct TmuxSessionsResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let sessions: [CoreTmuxSession]?
+}
+
+private struct CreatedSessionResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let session: String?
+}
+
 /// 平台 → 核心的任务（避免与 Swift Concurrency `Task` 重名）。
 struct MuxTask {
     let type: UInt32
@@ -119,6 +153,88 @@ final class CoreBridge {
     private(set) var lastStatus: UInt32 = 2 // Connected
     private var pendingError: String?
     private var pollFailureReported = false
+
+    // MARK: - Core discovery
+
+    /// 读取 core 解析出的用户 SSH alias，不在 macOS 侧读取或解释 ssh config。
+    static func discoverSSHHosts(configPath: String? = nil) throws -> [CoreSSHHost] {
+        let pointer = withOptionalCString(configPath) { path in
+            muxterm_discover_ssh_hosts_json(path)
+        }
+        let response: SSHHostsResponse = try decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error ?? "SSH host discovery failed")
+        }
+        return response.hosts ?? []
+    }
+
+    /// 通过 core 查询 local 或 SSH tmux session。
+    static func discoverTmuxSessions(
+        backendType: String,
+        target: String? = nil,
+        socket: String? = nil,
+        configPath: String? = nil,
+        timeoutMs: UInt32 = 10_000
+    ) throws -> [CoreTmuxSession] {
+        let pointer = backendType.withCString { backend in
+            withOptionalCString(target) { target in
+                withOptionalCString(socket) { socket in
+                    withOptionalCString(configPath) { path in
+                        muxterm_discover_tmux_sessions_json(
+                            backend,
+                            target,
+                            socket,
+                            path,
+                            timeoutMs
+                        )
+                    }
+                }
+            }
+        }
+        let response: TmuxSessionsResponse = try decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error ?? "tmux session discovery failed")
+        }
+        return response.sessions ?? []
+    }
+
+    /// 通过 core 创建 detached tmux session。
+    static func createTmuxSession(
+        backendType: String,
+        target: String? = nil,
+        socket: String? = nil,
+        configPath: String? = nil,
+        session: String,
+        directory: String,
+        timeoutMs: UInt32 = 10_000
+    ) throws -> String {
+        let pointer = backendType.withCString { backend in
+            withOptionalCString(target) { target in
+                withOptionalCString(socket) { socket in
+                    withOptionalCString(configPath) { path in
+                        session.withCString { session in
+                            directory.withCString { directory in
+                                muxterm_create_tmux_session_json(
+                                    backend,
+                                    target,
+                                    socket,
+                                    path,
+                                    session,
+                                    directory,
+                                    timeoutMs
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let response: CreatedSessionResponse = try decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error ?? "tmux session creation failed")
+        }
+        return response.session ?? session
+    }
 
     /// 创建 handle 并 connect。
     /// - Parameters:
@@ -330,6 +446,24 @@ final class CoreBridge {
         return value.withCString { body($0) }
     }
 
+    private static func decodeDiscoveryJSON<T: Decodable>(
+        _ pointer: UnsafeMutablePointer<CChar>?
+    ) throws -> T {
+        guard let pointer else {
+            throw CoreBridgeDiscoveryError.message("core discovery returned no response")
+        }
+        let text = String(cString: UnsafePointer(pointer))
+        muxterm_free_string(pointer)
+        guard let data = text.data(using: .utf8) else {
+            throw CoreBridgeDiscoveryError.message("core discovery returned invalid UTF-8")
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw CoreBridgeDiscoveryError.message("core discovery returned invalid JSON: \(error)")
+        }
+    }
+
     private static func string(from ptr: UnsafePointer<CChar>?) -> String {
         guard let ptr else { return "" }
         return String(cString: ptr)
@@ -369,6 +503,17 @@ final class CoreBridge {
         case 3: return "error"
         case 4: return "exited"
         default: return "unknown"
+        }
+    }
+}
+
+enum CoreBridgeDiscoveryError: Error, LocalizedError {
+    case message(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .message(let message):
+            return message
         }
     }
 }
