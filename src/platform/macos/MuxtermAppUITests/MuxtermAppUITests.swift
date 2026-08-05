@@ -385,6 +385,111 @@ final class MuxtermAppUITests: XCTestCase {
 
     // MARK: - 冒烟
 
+    /// Cmd+Shift+P 必须打开 VSCode 风格命令面板；local shell 不应伪造
+    /// tmux detach 命令，避免用户误以为当前 local pane 可被分离。
+    func testCommandPaletteOpensAndLocalHidesTmuxDetach() throws {
+        let window = waitMainWindow()
+        window.click()
+        waitStatusContains(statusBar(), "connected", timeout: 5)
+
+        app.typeKey("p", modifierFlags: [.command, .shift])
+        // SearchField 的 accessibility tree 还会把内部 Search 按钮暴露成
+        // 同一个 identifier；限定类型，避免 `descendants(.any)` 产生多匹配。
+        let input = app.dialogs["command_palette"].searchFields["muxterm.commandPalette.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.typeText("detach")
+
+        let list = app.descendants(matching: .any)["muxterm.commandPalette.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertEqual(list.cells.count, 0, "local 模式不应显示 tmux detach")
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+    }
+
+    /// 真实 tmux control-client 场景：
+    ///
+    /// 1. attach 到预先创建的 2-tab（首 tab 2-pane）session；
+    /// 2. 命令面板搜索并执行 detach；
+    /// 3. GUI 窗口退出，但 session、tab/pane 拓扑和 shell 输出仍在；
+    /// 4. 再次启动 GUI attach，验证布局和历史画面恢复。
+    ///
+    /// 这个用例覆盖 local 冒烟测试覆盖不到的完整链路：Swift 命令面板 →
+    /// CoreBridge FFI → Task::Detach → tmux detach-client → 再 attach/render。
+    func testTmuxCommandPaletteDetachKeepsLayoutAndReattaches() throws {
+        try XCTSkipUnless(tmuxAvailable(), "tmux 不可用，跳过真实 tmux UI 测试")
+
+        let suffix = "\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970))"
+        let socket = "muxterm-ui-detach-\(suffix)"
+        let session = "ui_detach"
+        let marker = "UI_DETACH_REATTACH_74291"
+        try createTmuxScenario(socket: socket, session: session, marker: marker)
+        defer { _ = runTmux(socket: socket, args: ["kill-server"]) }
+
+        // setUp 已启动 local shell；切换到明确的 tmux -L/-s 启动参数。
+        app.terminate()
+        app = makeApplication()
+        app.launchArguments = ["-L", socket, "-s", session]
+        app.launchEnvironment["MUXTERM_UITEST"] = "1"
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 8)
+        waitStatusContains(status, "tabs: 2", timeout: 8)
+
+        // Cmd+1 回到预置的双 pane tab，验证 attach 后不只显示 active 的单 pane tab。
+        app.typeKey("1", modifierFlags: .command)
+        waitStatusContains(status, "panes: 2", timeout: 8)
+        assertAnyTerminalContains(marker, timeout: 10)
+
+        app.typeKey("p", modifierFlags: [.command, .shift])
+        let palette = app.dialogs["command_palette"]
+        let input = palette.searchFields["muxterm.commandPalette.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.typeText("detach")
+        let list = palette.tables["muxterm.commandPalette.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertEqual(list.cells.count, 1, "tmux 模式搜索 detach 应恰好命中一个命令")
+        app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
+
+        let disappeared = NSPredicate(format: "exists == false")
+        let closed = XCTNSPredicateExpectation(predicate: disappeared, object: window)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 8), .completed)
+
+        // detach 只能断开 GUI control client；原生 tmux 仍必须可见同一个布局和 marker。
+        XCTAssertTrue(
+            waitUntil(timeout: 5) {
+                self.tmuxHasSession(socket: socket, session: session)
+                    && self.tmuxPaneCount(
+                        socket: socket,
+                        target: self.tmuxFirstWindowTarget(socket: socket, session: session)
+                    ) == 2
+                    && self.tmuxCapture(
+                        socket: socket,
+                        target: self.tmuxFirstWindowTarget(socket: socket, session: session)
+                    ).contains(marker)
+            },
+            "detach 后 tmux session/layout/shell 输出必须保留"
+        )
+
+        // 第二次启动是真实 re-attach，不依赖旧 GUI 的内存快照。
+        app = makeApplication()
+        app.launchArguments = ["-L", socket, "-s", session]
+        app.launchEnvironment["MUXTERM_UITEST"] = "1"
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+        let reattachedWindow = waitMainWindow()
+        let reattachedStatus = statusBar()
+        reattachedWindow.click()
+        waitStatusContains(reattachedStatus, "connected", timeout: 8)
+        app.typeKey("1", modifierFlags: .command)
+        waitStatusContains(reattachedStatus, "panes: 2", timeout: 8)
+        assertAnyTerminalContains(marker, timeout: 10)
+    }
+
     func testLaunchShowsMainWindow() throws {
         _ = waitMainWindow()
     }
@@ -558,6 +663,111 @@ final class MuxtermAppUITests: XCTestCase {
             XCTAssertGreaterThan(share, 0.12, "pane[\(i)] 面积占比过小 \(share)，疑似布局塌陷")
             XCTAssertLessThan(share, 0.65, "pane[\(i)] 面积占比过大 \(share)，疑似未真正分割")
         }
+    }
+
+    // MARK: - 真实 tmux UI 场景辅助
+
+    private func tmuxAvailable() -> Bool {
+        runProcess(executable: tmuxExecutable(), arguments: ["-V"]).status == 0
+    }
+
+    @discardableResult
+    private func runTmux(socket: String, args: [String]) -> ProcessResult {
+        runProcess(executable: tmuxExecutable(), arguments: ["-L", socket] + args)
+    }
+
+    private func tmuxExecutable() -> String {
+        let candidates = [
+            "/opt/homebrew/bin/tmux",
+            "/usr/local/bin/tmux",
+            "/usr/bin/tmux",
+        ]
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) ?? "tmux"
+    }
+
+    private func createTmuxScenario(socket: String, session: String, marker: String) throws {
+        let created = runTmux(
+            socket: socket,
+            args: ["new-session", "-d", "-s", session, "-x", "100", "-y", "30"]
+        )
+        guard created.status == 0 else {
+            throw XCTSkip("无法创建独立 tmux session: \(created.output)")
+        }
+        let split = runTmux(socket: socket, args: ["split-window", "-h", "-t", session])
+        XCTAssertEqual(split.status, 0, "预置 tmux 首 tab 双 pane 失败: \(split.output)")
+        let output = runTmux(
+            socket: socket,
+            args: [
+                "send-keys",
+                "-t",
+                session,
+                "printf '\(marker)\\n'",
+                "Enter",
+            ]
+        )
+        XCTAssertEqual(output.status, 0, "预置 shell 输出失败: \(output.output)")
+        let newWindow = runTmux(socket: socket, args: ["new-window", "-t", session])
+        XCTAssertEqual(newWindow.status, 0, "预置第二个 tab 失败: \(newWindow.output)")
+    }
+
+    private func tmuxHasSession(socket: String, session: String) -> Bool {
+        runTmux(socket: socket, args: ["has-session", "-t", session]).status == 0
+    }
+
+    private func tmuxFirstWindowTarget(socket: String, session: String) -> String {
+        let result = runTmux(
+            socket: socket,
+            args: ["list-windows", "-t", session, "-F", "#{window_id}"]
+        )
+        return result.output.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+    }
+
+    private func tmuxPaneCount(socket: String, target: String) -> Int {
+        guard !target.isEmpty else { return 0 }
+        let result = runTmux(
+            socket: socket,
+            args: ["list-panes", "-t", target, "-F", "#{pane_id}"]
+        )
+        guard result.status == 0 else { return 0 }
+        return result.output.split(whereSeparator: \.isNewline).count
+    }
+
+    private func tmuxCapture(socket: String, target: String) -> String {
+        runTmux(socket: socket, args: ["capture-pane", "-p", "-t", target]).output
+    }
+
+    private func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        }
+        return condition()
+    }
+
+    private struct ProcessResult {
+        let status: Int32
+        let output: String
+    }
+
+    private func runProcess(executable: String, arguments: [String]) -> ProcessResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return ProcessResult(status: -1, output: error.localizedDescription)
+        }
+        let output = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        return ProcessResult(status: process.terminationStatus, output: output)
     }
 
     private func makeApplication() -> XCUIApplication {

@@ -178,7 +178,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if commandPalette.window?.isKeyWindow == true {
             commandPalette.dismiss()
         } else {
-            commandPalette.present(items: Self.rootPaletteItems())
+            commandPalette.present(items: rootPaletteItems())
         }
     }
 
@@ -239,9 +239,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 命令面板
 
-    private static func rootPaletteItems() -> [PaletteItem] {
+    private func rootPaletteItems() -> [PaletteItem] {
         let i18n = MuxtermI18n.shared
-        return [
+        var items = [
             PaletteItem(
                 title: i18n.tr(.local),
                 detail: i18n.tr(.localTmuxSessions),
@@ -315,6 +315,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.quit)
             ),
         ]
+
+        // detach 只对 tmux/SSH 控制 client 有意义；local shell 不能显示这个命令。
+        // 关闭窗口时 CoreBridge.shutdown() 会发送 detach-client，保留 tmux session。
+        if terminalManager.usesClientResize {
+            items.insert(
+                PaletteItem(
+                    title: i18n.tr(.detach),
+                    detail: i18n.tr(.detachDetail),
+                    keywords: "detach tmux session 分离连接",
+                    kind: .command(.detach)
+                ),
+                at: 2
+            )
+        }
+        return items
     }
 
     private func handlePaletteSelection(_ item: PaletteItem) {
@@ -347,11 +362,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.closeWindow):
             commandPalette.dismiss()
             closeActiveWindow()
+        case .command(.detach):
+            commandPalette.dismiss()
+            detachSessionWindow()
         case .command(.language):
             showLanguageOptions()
         case .language(let language):
             _ = MuxtermI18n.shared.setLanguage(language)
-            commandPalette.present(items: Self.rootPaletteItems())
+            commandPalette.present(items: rootPaletteItems())
         case .command(.quit):
             commandPalette.dismiss()
             NSApp.terminate(nil)
@@ -665,6 +683,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         isClosing = true
         pollTimer?.invalidate()
         pollTimer = nil
+        bridge.shutdown()
+        window?.close()
+    }
+
+    /// 通过 core 的独立 detach FFI 关闭控制 client，保留 tmux session。
+    private func detachSessionWindow() {
+        guard terminalManager.usesClientResize else { return }
+        guard !isClosing else { return }
+        guard bridge.detach() == 0 else {
+            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+            return
+        }
+        isClosing = true
+        pollTimer?.invalidate()
+        pollTimer = nil
+        // Task::Detach 已关闭 control channel；这里仅回收 core handle，
+        // 不会再次发送 detach-client 或杀 tmux session。
         bridge.shutdown()
         window?.close()
     }

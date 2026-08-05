@@ -11,6 +11,7 @@ enum PaletteCommand: Equatable {
     case closePane
     case closeTab
     case closeWindow
+    case detach
     case language
     case quit
 }

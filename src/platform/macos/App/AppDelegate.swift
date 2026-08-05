@@ -9,7 +9,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
 
         do {
-            let (backend, socket, session) = Self.resolveBackend(from: CommandLine.arguments)
+            let options = Self.resolveBackend(from: CommandLine.arguments)
+            if options.debug || options.logFile != nil {
+                let rc = muxterm_init_logging(
+                    options.logFile?.withCString { $0 },
+                    options.debug ? "debug".withCString { $0 } : nil
+                )
+                if rc != 0 {
+                    NSLog("muxterm: 初始化日志失败")
+                }
+            }
+            let (backend, socket, session) = (
+                options.backend,
+                options.socket,
+                options.session,
+            )
             let bridge = try CoreBridge(backendType: backend, socket: socket, session: session)
             if socket != nil {
                 Thread.sleep(forTimeInterval: 0.3)
@@ -209,10 +223,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 启动参数：后端类型 + 调试日志选项。
+    struct LaunchOptions {
+        let backend: String
+        let socket: String?
+        let session: String?
+        let debug: Bool
+        let logFile: String?
+    }
+
     /// 解析 CLI：`-L sock` → tmux；`-s name`（无 -L）→ daemon；都无 → local。
-    static func resolveBackend(from args: [String]) -> (String, String?, String?) {
+    /// 同时识别 `--debug` / `--log-file`（调试日志选项）。
+    static func resolveBackend(from args: [String]) -> LaunchOptions {
         var socket: String?
         var session: String?
+        var debug = false
+        var logFile: String?
         var i = 1
         while i < args.count {
             let a = args[i]
@@ -226,14 +252,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 i += 2
                 continue
             }
+            if a == "--debug" {
+                debug = true
+                i += 1
+                continue
+            }
+            if a == "--log-file", i + 1 < args.count {
+                logFile = args[i + 1]
+                i += 2
+                continue
+            }
             i += 1
         }
         if socket != nil {
-            return ("tmux", socket, session)
+            return LaunchOptions(
+                backend: "tmux",
+                socket: socket,
+                session: session,
+                debug: debug,
+                logFile: logFile
+            )
+        } else if session != nil {
+            return LaunchOptions(
+                backend: "daemon",
+                socket: nil,
+                session: session,
+                debug: debug,
+                logFile: logFile
+            )
         }
-        if session != nil {
-            return ("daemon", nil, session)
-        }
-        return ("local", nil, nil)
+        return LaunchOptions(
+            backend: "local",
+            socket: nil,
+            session: nil,
+            debug: debug,
+            logFile: logFile
+        )
     }
 }

@@ -126,6 +126,10 @@ struct MuxTask {
         MuxTask(type: TASK_PREV_PANE, targetPane: 0, targetTab: 0, dir: 0, name: nil)
     }
 
+    static func detach() -> MuxTask {
+        MuxTask(type: TASK_DETACH, targetPane: 0, targetTab: 0, dir: 0, name: nil)
+    }
+
     static func switchPane(_ paneId: UInt32) -> MuxTask {
         MuxTask(type: TASK_SWITCH_PANE, targetPane: paneId, targetTab: 0, dir: 0, name: nil)
     }
@@ -409,6 +413,13 @@ final class CoreBridge {
 
     func shutdown() {
         shutdownAndFree()
+    }
+
+    /// 显式分离 tmux/daemon client；成功后由调用方关闭窗口并清理 bridge。
+    @discardableResult
+    func detach() -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_detach(handle)
     }
 
     // MARK: - Private
