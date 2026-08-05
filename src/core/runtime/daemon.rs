@@ -231,7 +231,7 @@ impl DaemonBackend {
                 width: matches!(dir, SplitDir::Horizontal).then_some(*size),
                 height: matches!(dir, SplitDir::Vertical).then_some(*size),
             }),
-            Task::Shutdown => None, // detach：不 kill daemon
+            Task::Detach | Task::Shutdown => None, // detach：不向 daemon 发 KillSession
             Task::NextPane
             | Task::PrevPane
             | Task::SwitchSession { .. }
@@ -319,7 +319,7 @@ impl Backend for DaemonBackend {
     }
 
     fn execute(&mut self, task: &Task) -> Result<TaskOutcome> {
-        if matches!(task, Task::Shutdown) {
+        if matches!(task, Task::Detach | Task::Shutdown) {
             // detach：不向 daemon 发 KillSession
             self.status = BackendStatus::Disconnected;
             self.events.push_back(StateChange::BackendStatusChanged(
@@ -374,5 +374,10 @@ mod tests {
     #[test]
     fn task_shutdown_maps_to_none() {
         assert!(DaemonBackend::task_to_cli(&Task::Shutdown).is_none());
+    }
+
+    #[test]
+    fn task_detach_maps_to_none() {
+        assert!(DaemonBackend::task_to_cli(&Task::Detach).is_none());
     }
 }

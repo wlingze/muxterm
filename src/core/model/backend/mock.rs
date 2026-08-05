@@ -600,6 +600,13 @@ impl Backend for MockBackend {
                 });
                 TaskOutcome::Done
             }
+            Task::Detach => {
+                self.status = BackendStatus::Disconnected;
+                self.events.push(StateChange::BackendStatusChanged(
+                    BackendStatus::Disconnected,
+                ));
+                TaskOutcome::Done
+            }
             Task::Shutdown => {
                 self.status = BackendStatus::Exited;
                 self.events
