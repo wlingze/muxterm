@@ -2826,7 +2826,14 @@ fn detach_reattach_layout_persists() {
         .map(|t| model.state().panes(&t.id).len())
         .unwrap_or(0);
 
-    // ── detach（shutdown 发 detach-client，session 仍在 socket 上存活）──
+    // ── 显式 detach（Task::Detach 发 detach-client，session 仍在 socket 上存活）──
+    model.execute(Task::Detach).unwrap();
+    let detach_events = model.poll_events();
+    assert_eq!(model.backend_status(), BackendStatus::Disconnected);
+    assert!(detach_events.iter().any(|event| matches!(
+        event,
+        muxterm::core::model::state::StateChange::BackendStatusChanged(BackendStatus::Disconnected)
+    )));
     let _ = model.shutdown();
 
     // ── 第二次 attach，验证布局保持 ──
