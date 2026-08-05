@@ -645,7 +645,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             key: key
         )
         guard let action = KeyBindings.action(for: chord) else {
-            // Ctrl+C/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
+            // Ctrl+C/D/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
             // 把它们送成真实控制字节。这样不依赖 SwiftTerm 的 NSText
             // interpretation，也不会把 tmux 的 WriteRaw 内容变成字面文本。
             if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),

@@ -9,7 +9,7 @@ import XCTest
 /// 4. 分割后不黑屏 — echo 后 snippet + terminal AX 均可见输出
 ///
 /// ## 快捷键
-/// Cmd+T tab；Cmd+D / Cmd+Shift+D 分屏；Cmd+[ / ] 切 pane；Ctrl+D 关闭；Cmd+1..9 切 tab
+/// Cmd+T tab；Cmd+D / Cmd+Shift+D 分屏；Cmd+[ / ] 切 pane；Ctrl+D 发送 EOF；Cmd+1..9 切 tab
 final class MuxtermAppUITests: XCTestCase {
     var app: XCUIApplication!
 
@@ -314,7 +314,27 @@ final class MuxtermAppUITests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(tabStarted), 2.0)
     }
 
-    // MARK: - Ctrl+D
+    // MARK: - Ctrl+D / EOF
+
+    /// Ctrl+D 只能结束当前前台程序，不能直接 kill pane。cat 收到 EOF
+    /// 后退出，但同一个 shell 仍在，因此 pane 数和后续 shell I/O 都应保持。
+    func testCtrlDExitsForegroundProcessButKeepsPaneAlive() throws {
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 5)
+
+        app.typeKey("d", modifierFlags: .command)
+        waitStatusContains(status, "panes: 2", timeout: 8)
+        settle(window)
+
+        app.typeText("cat\r")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        app.typeKey("d", modifierFlags: .control)
+
+        waitStatusContains(status, "panes: 2", timeout: 5)
+        echoAndVerifyVisible("FOREGROUND_EOF_SHELL_ALIVE")
+    }
 
     func testCtrlDSingleTabClosesWindow() throws {
         let window = waitMainWindow()
