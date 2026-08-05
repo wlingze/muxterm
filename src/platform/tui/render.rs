@@ -23,6 +23,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, StatefulWidget, Widget};
 
+use crate::core::protocol::terminal::emulate::Cell as TermCell;
 use crate::platform::tui::ffi_bridge::{BridgeLayout, FrameSnapshot};
 use crate::platform::tui::palette::PaletteState;
 use crate::platform::tui::theme::Theme;
@@ -94,7 +95,10 @@ pub fn strip_ansi(input: &str) -> String {
 pub fn render_frame(
     buf: &mut Buffer,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<u32, Vec<String>>,
+    screens: &std::collections::HashMap<
+        u32,
+        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
+    >,
     cursors: &std::collections::HashMap<u32, usize>,
     palette: Option<&PaletteState>,
     opts: RenderOpts,
@@ -125,6 +129,15 @@ pub fn render_frame(
 
     if opts.palette_open {
         if let Some(p) = palette {
+            // 整屏清空（opencode 风格 modal）：盖住底层 pane 内容
+            Clear.render(Rect::new(0, 0, buf.area.width, buf.area.height), buf);
+            for cy in 0..buf.area.height {
+                for cx in 0..buf.area.width {
+                    if let Some(cell) = buf.cell_mut((cx, cy)) {
+                        cell.set_bg(Color::Black);
+                    }
+                }
+            }
             draw_palette(buf, p, &theme);
         }
     }
@@ -173,7 +186,10 @@ fn draw_content(
     buf: &mut Buffer,
     area: Rect,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<u32, Vec<String>>,
+    screens: &std::collections::HashMap<
+        u32,
+        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
+    >,
     cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
@@ -191,7 +207,10 @@ fn draw_layout_node(
     area: Rect,
     node: &BridgeLayout,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<u32, Vec<String>>,
+    screens: &std::collections::HashMap<
+        u32,
+        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
+    >,
     cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
@@ -267,7 +286,10 @@ fn draw_leaf(
     area: Rect,
     pane_id: u32,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<u32, Vec<String>>,
+    screens: &std::collections::HashMap<
+        u32,
+        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
+    >,
     cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
@@ -298,18 +320,11 @@ fn draw_leaf(
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    // 用终端模拟器的屏幕网格渲染（不再打印累计原始输出）。
+    // 用终端模拟器的带样式屏幕网格渲染，保留每格颜色/样式。
     //
     // 视口定位以光标行为锚：把光标行放在可视区**底部**（最后一行是当前提示符）。
-    // - 短输出：光标靠上，视口从顶部开始，能看到提示符与最近输出
-    // - 长输出（滚动后）：光标在底部，视口显示网格底部，等同真实终端
     let screen = screens.get(&pane_id).cloned().unwrap_or_default();
     let cursor = cursors.get(&pane_id).copied().unwrap_or(0);
-    let content_style = if is_active {
-        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg)
-    };
     let avail = inner.height as usize;
     if screen.is_empty() {
         Paragraph::new("").render(inner, buf);
@@ -318,10 +333,91 @@ fn draw_leaf(
     // 光标行作为视口底部参考；若光标行本身 >= avail，从光标行向上取 avail 行。
     let view_end = (cursor + 1).min(screen.len());
     let start = view_end.saturating_sub(avail);
-    let visible: Vec<String> = screen[start..view_end].to_vec();
-    Paragraph::new(visible.join("\n"))
-        .style(content_style)
-        .render(inner, buf);
+    let visible = &screen[start..view_end];
+    // 把每行单元格转成带样式的 Span，按 fg/bg/bold/underline/reverse 渲染
+    let lines: Vec<Line> = visible
+        .iter()
+        .map(|row| {
+            let mut spans = Vec::with_capacity(row.len());
+            let mut pending = String::new();
+            let mut pending_style: Option<Style> = None;
+            for cell in row {
+                let st = cell_style(cell);
+                if pending_style.as_ref() == Some(&st) {
+                    pending.push(cell.ch);
+                } else {
+                    if !pending.is_empty() {
+                        let style = pending_style.take().unwrap_or_default();
+                        spans.push(Span::styled(std::mem::take(&mut pending), style));
+                    }
+                    pending = cell.ch.to_string();
+                    pending_style = Some(st);
+                }
+            }
+            if !pending.is_empty() {
+                let style = pending_style.take().unwrap_or_default();
+                spans.push(Span::styled(pending, style));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    Paragraph::new(lines).render(inner, buf);
+}
+
+/// 把 vte 的 Cell 映射成 ratatui Style（颜色/样式）。
+fn cell_style(cell: &TermCell) -> Style {
+    let mut style = Style::default();
+    if let Some(fg) = cell.fg {
+        if let Some(c) = term_color_to_ratatui(fg) {
+            style = style.fg(c);
+        }
+    }
+    if let Some(bg) = cell.bg {
+        if let Some(c) = term_color_to_ratatui(bg) {
+            style = style.bg(c);
+        }
+    }
+    if cell.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.dim {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if cell.underline {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if cell.reverse {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
+}
+
+/// vte Color → ratatui Color（Named / Indexed / Spec(RGB)）。
+fn term_color_to_ratatui(c: vte::ansi::Color) -> Option<Color> {
+    match c {
+        vte::ansi::Color::Spec(rgb) => Some(Color::Rgb(rgb.r, rgb.g, rgb.b)),
+        vte::ansi::Color::Indexed(n) => Some(Color::Indexed(n)),
+        vte::ansi::Color::Named(n) => Some(match n {
+            vte::ansi::NamedColor::Black => Color::Black,
+            vte::ansi::NamedColor::Red => Color::Red,
+            vte::ansi::NamedColor::Green => Color::Green,
+            vte::ansi::NamedColor::Yellow => Color::Yellow,
+            vte::ansi::NamedColor::Blue => Color::Blue,
+            vte::ansi::NamedColor::Magenta => Color::Magenta,
+            vte::ansi::NamedColor::Cyan => Color::Cyan,
+            vte::ansi::NamedColor::White => Color::Gray,
+            vte::ansi::NamedColor::BrightBlack => Color::DarkGray,
+            vte::ansi::NamedColor::BrightRed => Color::LightRed,
+            vte::ansi::NamedColor::BrightGreen => Color::LightGreen,
+            vte::ansi::NamedColor::BrightYellow => Color::LightYellow,
+            vte::ansi::NamedColor::BrightBlue => Color::LightBlue,
+            vte::ansi::NamedColor::BrightMagenta => Color::LightMagenta,
+            vte::ansi::NamedColor::BrightCyan => Color::LightCyan,
+            vte::ansi::NamedColor::BrightWhite => Color::White,
+            // 这些是语义色（默认前景/背景/光标），映射为默认（不强制颜色）
+            _ => return None,
+        }),
+    }
 }
 
 fn draw_status_bar(buf: &mut Buffer, area: Rect, snap: &FrameSnapshot, theme: &Theme) {
@@ -378,7 +474,17 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
         width: w,
         height: h,
     };
+    // 先整块清空（不透明遮罩），避免底层 pane 内容透出来
     Clear.render(pal_rect, buf);
+    // 给面板铺一个深色背景，形成不透明悬浮层
+    let bg_style = Style::default().bg(Color::Black);
+    for cy in pal_rect.y..pal_rect.y + pal_rect.height {
+        for cx in pal_rect.x..pal_rect.x + pal_rect.width {
+            if let Some(cell) = buf.cell_mut((cx, cy)) {
+                cell.set_style(bg_style);
+            }
+        }
+    }
 
     let title = format!(" {} · {} ", "Connection", palette.step.title());
     let block = Block::default()
@@ -553,11 +659,21 @@ mod tests {
     }
 
     fn render(snap: &FrameSnapshot, palette: Option<&PaletteState>, opts: RenderOpts) -> Buffer {
-        // 测试用：从 outputs 构造简单的 screens（按行切分）
-        let mut screens = HashMap::new();
+        // 测试用：从 outputs 构造带样式 screens（默认无颜色）
+        let mut screens: HashMap<u32, Vec<Vec<TermCell>>> = HashMap::new();
         for (pid, data) in &snap.outputs {
             let text = String::from_utf8_lossy(data);
-            let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+            let lines: Vec<Vec<TermCell>> = text
+                .lines()
+                .map(|l| {
+                    l.chars()
+                        .map(|ch| TermCell {
+                            ch,
+                            ..Default::default()
+                        })
+                        .collect()
+                })
+                .collect();
             screens.insert(*pid, lines);
         }
         let cursors = std::collections::HashMap::new();
@@ -686,6 +802,72 @@ mod tests {
         let out = strip_ansi("x\u{1b}[32mY\u{1b}[0m z");
         assert!(!out.contains('\u{1b}'));
         assert!(!out.contains("[3"));
+    }
+
+    #[test]
+    fn colored_cells_reach_buffer() {
+        use crate::core::protocol::terminal::emulate::TerminalState;
+        // 用 ANSI 红字喂进终端模拟器
+        let mut ts = TerminalState::new(80, 24);
+        ts.feed(b"\x1b[31mRED\x1b[0m\n");
+        let grid = ts.styled_screen();
+        // 第一个非空行是 "RED"，且带红色
+        let row = grid
+            .iter()
+            .find(|r| !r.is_empty() && r[0].ch != ' ')
+            .unwrap();
+        let cell = &row[0];
+        assert_eq!(cell.ch, 'R');
+        assert!(
+            cell.fg.is_some(),
+            "RED 单元格应有前景色，实际: {:?}",
+            cell.fg
+        );
+        // 映射成 ratatui style 应含红色 fg
+        let style = cell_style(cell);
+        assert_eq!(style.fg, Some(ratatui::style::Color::Red));
+    }
+
+    #[test]
+    fn render_frame_writes_cell_colors_to_buffer() {
+        // 构造一个带颜色的屏幕：第一行 "RED" 全红
+        let mut cells: Vec<Vec<TermCell>> = Vec::new();
+        let red_row: Vec<TermCell> = "RED"
+            .chars()
+            .map(|ch| TermCell {
+                ch,
+                fg: Some(vte::ansi::Color::Named(vte::ansi::NamedColor::Red)),
+                ..Default::default()
+            })
+            .collect();
+        cells.push(red_row);
+        let mut screens = HashMap::new();
+        screens.insert(1, cells);
+        let cursors = HashMap::new();
+
+        let snap = snap_single_pane();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+        render_frame(
+            &mut buf,
+            &snap,
+            &screens,
+            &cursors,
+            None,
+            RenderOpts {
+                palette_open: false,
+                ..RenderOpts::default()
+            },
+        );
+        // 找到内容区的 "R" 单元格，应带红色 fg
+        // 内容区从第 4 行开始（top/tab/mid/titles 后），取内容区第一行第一列附近
+        let mut found = false;
+        for cell in buf.content() {
+            if cell.symbol() == "R" && cell.style().fg == Some(Color::Red) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "buffer 里应有红色 R 单元格");
     }
 
     #[test]

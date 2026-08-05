@@ -143,11 +143,14 @@ fn draw<W: std::io::Write>(
     palette: &PaletteState,
     palette_open: bool,
 ) -> Result<()> {
-    // 收集每个 pane 的屏幕网格（含光标行，用于视口定位）
-    let mut screens = std::collections::HashMap::new();
+    // 收集每个 pane 的带样式屏幕网格（含光标行，用于视口定位）
+    let mut screens: std::collections::HashMap<
+        u32,
+        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
+    > = std::collections::HashMap::new();
     let mut cursors = std::collections::HashMap::new();
     for p in &snap.panes {
-        if let Some((sc, cur)) = term_mgr.screen_with_cursor(p.id) {
+        if let Some((sc, cur)) = term_mgr.styled_screen_with_cursor(p.id) {
             cursors.insert(p.id, cur);
             screens.insert(p.id, sc);
         }
