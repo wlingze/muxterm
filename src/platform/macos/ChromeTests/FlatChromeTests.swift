@@ -65,7 +65,10 @@ final class KeyBindingsTests: XCTestCase {
         )
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "w")), .closeWindow)
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "2")), .switchTab(2))
-        XCTAssertEqual(KeyBindings.action(for: KeyChord(control: true, key: "d")), .closePane)
+        XCTAssertNil(
+            KeyBindings.action(for: KeyChord(control: true, key: "d")),
+            "Ctrl+D 必须留给当前 pane 的前台进程处理 EOF"
+        )
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "p")),
             .commandPalette

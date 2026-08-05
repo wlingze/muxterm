@@ -78,9 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let closePane = NSMenuItem(
             title: "关闭 Pane",
             action: #selector(MainWindowController.closeActivePane),
-            keyEquivalent: "d"
+            keyEquivalent: ""
         )
-        closePane.keyEquivalentModifierMask = .control
         closePane.target = windowController
         fileMenu.addItem(closePane)
 

@@ -1396,6 +1396,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn eof_exits_foreground_child_without_closing_shell_pane() {
+        // cat 是前台子进程；收到 EOF 后退出，外层 shell 继续运行 sleep。
+        // 这验证 Ctrl+D/0x04 不能被 GUI 直接转换成 ClosePane。
+        let mut b = backend();
+        let win = b.active_window();
+        assert!(win.is_none(), "connect 前不应有 window");
+        b.connect().await.unwrap();
+        let window = b.active_window().map(|w| w.id).unwrap();
+        b.execute(&Task::NewTab {
+            window,
+            name: None,
+            command: Some(vec!["sh".into(), "-c".into(), "cat; sleep 60".into()]),
+            workdir: None,
+        })
+        .unwrap();
+        let pane = b.active_pane_id().unwrap();
+        let _ = b.take_events();
+
+        assert!(matches!(
+            b.execute(&Task::WriteRaw {
+                target: pane,
+                data: vec![0x04],
+            }),
+            Ok(TaskOutcome::Done)
+        ));
+
+        let events = wait_events(&mut b, std::time::Duration::from_millis(500), |_| false).await;
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                StateChange::PaneClosed { pane: p } if *p == pane
+            )),
+            "前台 cat 收到 EOF 后不应关闭 pane: {events:?}"
+        );
+        assert_eq!(b.panes.len(), 2, "外层 shell 仍在，两个 pane 都应存在");
+        assert_eq!(b.status(), BackendStatus::Connected);
+    }
+
+    #[tokio::test]
     async fn multi_tab_pane_exit_closes_only_that_tab() {
         // 复现：多 tab 时某一 tab 的 shell Exit 应只关该 tab，不关整个 window。
         let mut b = backend();

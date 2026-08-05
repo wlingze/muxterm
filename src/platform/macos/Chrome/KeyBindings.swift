@@ -85,10 +85,10 @@ public enum KeyBindings {
             }
         }
 
-        // Ctrl+Q 退出 / Ctrl+D 关 pane
+        // Ctrl+Q 退出。Ctrl+D 不属于窗口快捷键：它必须作为 EOF
+        // 发送给当前 pane 的前台进程，由 shell/程序决定是否退出。
         if chord.control, !chord.command {
             if key == "q" { return .quit }
-            if key == "d" { return .closePane }
         }
 
         return nil
