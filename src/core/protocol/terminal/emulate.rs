@@ -307,6 +307,11 @@ impl TerminalState {
         self.grid.get(row).and_then(|r| r.get(col))
     }
 
+    /// 返回整屏的带样式单元格（每行 Vec<Cell>），供 TUI 按颜色/样式渲染。
+    pub fn styled_screen(&self) -> Vec<Vec<Cell>> {
+        self.grid.clone()
+    }
+
     fn put_char(&mut self, c: char) {
         // 组合字符（零宽）附着到前一个字符，不占格。
         if is_combining(c) {

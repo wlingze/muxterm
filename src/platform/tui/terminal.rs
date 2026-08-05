@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::protocol::terminal::emulate::TerminalState;
+use crate::core::protocol::terminal::emulate::{Cell, TerminalState};
 
 /// 每 pane 的终端状态 + 尺寸。
 pub struct PaneTerminal {
@@ -74,6 +74,11 @@ impl PaneTerminal {
         self.state.cursor_row()
     }
 
+    /// 当前屏幕带样式单元格网格（每行 Vec<Cell>），保留颜色/样式。
+    pub fn styled_screen(&self) -> Vec<Vec<Cell>> {
+        self.state.styled_screen()
+    }
+
     pub fn cols(&self) -> u16 {
         self.cols
     }
@@ -113,6 +118,13 @@ impl TerminalManager {
     /// 取某 pane 的屏幕快照；不存在返回空。
     pub fn screen(&self, pane_id: u32) -> Option<Vec<String>> {
         self.panes.get(&pane_id).map(|p| p.screen())
+    }
+
+    /// 取某 pane 的带样式屏幕网格 + 光标行；不存在返回 None。
+    pub fn styled_screen_with_cursor(&self, pane_id: u32) -> Option<(Vec<Vec<Cell>>, usize)> {
+        self.panes
+            .get(&pane_id)
+            .map(|p| (p.styled_screen(), p.cursor_row()))
     }
 
     /// 用累计输出做增量同步（GTK 同款 delta 方案）。
