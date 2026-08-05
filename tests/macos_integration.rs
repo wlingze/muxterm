@@ -22,14 +22,71 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use muxterm::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
-    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_resize_client,
-    muxterm_resize_pane_axis, muxterm_shutdown,
+    muxterm_connect, muxterm_detach, muxterm_execute, muxterm_free, muxterm_get_layout,
+    muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events,
+    muxterm_resize_client, muxterm_resize_pane_axis, muxterm_shutdown,
 };
 use muxterm::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF,
     LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, TASK_NEW_TAB, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
 };
+
+#[test]
+fn macos_ffi_detach_keeps_tmux_session_alive() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let backend = format!("mac-detach-{}-{}", std::process::id(), rand_suffix());
+    let created = Command::new("tmux")
+        .args([
+            "-L",
+            &backend,
+            "new-session",
+            "-d",
+            "-s",
+            "detach-test",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !created {
+        eprintln!("skip: 无法创建 tmux session");
+        return;
+    }
+
+    let bt = CString::new("tmux").unwrap();
+    let sock = CString::new(backend.as_str()).unwrap();
+    let sess = CString::new("detach-test").unwrap();
+    let h = muxterm_new(bt.as_ptr(), sock.as_ptr(), sess.as_ptr());
+    assert!(!h.is_null(), "muxterm_new 失败");
+
+    unsafe {
+        assert_eq!(muxterm_connect(h), 0, "muxterm_connect 失败");
+        let mut events = [CStateChange::default(); 64];
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(50));
+            let _ = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
+        }
+
+        assert_eq!(muxterm_detach(h), 0, "显式 FFI detach 应成功");
+        let still_alive = Command::new("tmux")
+            .args(["-L", &backend, "has-session", "-t", "detach-test"])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        assert!(still_alive, "detach 不得杀掉 tmux session");
+        muxterm_free(h);
+    }
+
+    let _ = Command::new("tmux")
+        .args(["-L", &backend, "kill-server"])
+        .status();
+}
 
 fn tmux_available() -> bool {
     Command::new("tmux")
