@@ -400,6 +400,37 @@ impl TmuxClientHandle {
 // 读循环
 // ============================================================================
 
+/// 把字节块渲染成可读的 debug 字符串：可打印 ASCII/UTF-8 保留，控制字节转义。
+///
+/// 用于 debug 模式把 tmux 原始收发数据落盘，方便排查渲染/输入问题；内容过大时
+/// 截断，避免日志刷屏。
+fn hex_debug(bytes: &[u8]) -> String {
+    const MAX: usize = 1024;
+    let show = if bytes.len() > MAX {
+        &bytes[..MAX]
+    } else {
+        bytes
+    };
+    let mut out = String::with_capacity(show.len() + 16);
+    for &b in show {
+        match b {
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x1b => out.push_str("\\e"),
+            0x20..=0x7e => out.push(b as char),
+            other => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\x{other:02x}");
+            }
+        }
+    }
+    if bytes.len() > MAX {
+        out.push_str("...(truncated)");
+    }
+    out
+}
+
 /// DCS passthrough 前缀：tmux 3.3+ 在 CC 模式下用 `ESC P 1 0 0 0 p` 把第一条
 /// `%begin` 包起来。我们识别并剥离它。
 const DCS_PREFIX: &[u8] = b"\x1bP1000p";
@@ -457,7 +488,14 @@ async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
         if chunk.is_empty() {
             continue;
         }
+        tracing::debug!(
+            target = "muxterm::client",
+            len = chunk.len(),
+            hex = %hex_debug(&chunk),
+            "recv tmux chunk"
+        );
         for line in feed_bytes_to_lines(&mut buf, &chunk) {
+            tracing::debug!(target = "muxterm::client", line = %line, "recv line");
             process_line(
                 &line,
                 &tx,

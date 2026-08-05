@@ -701,6 +701,45 @@ fn input_roundtrip_ctrl_and_alt() {
 }
 
 #[test]
+fn input_roundtrip_osc_dynamic_colors_and_csi_query() {
+    // 用户实测：git lg 会输出 OSC 动态颜色 + CSI 查询序列，若引导字节丢失会被
+    // shell 当普通文本执行（"10;rgb:... zsh: command not found"）。
+    // OSC 10 前景色、OSC 11 背景色（以 BEL/ST 结尾）
+    let osc_fg = b"\x1b]10;rgb:0000/0000/0000\x07";
+    assert_eq!(roundtrip_bytes(osc_fg), osc_fg);
+    let osc_bg = b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\";
+    assert_eq!(roundtrip_bytes(osc_bg), osc_bg);
+    // CSI 设备属性/光标查询
+    let csi = b"\x1b[?65;4;1;2;6;21;22;17;28c";
+    assert_eq!(roundtrip_bytes(csi), csi);
+    let csi_b = b"\x1b[65;1;2c";
+    assert_eq!(roundtrip_bytes(csi_b), csi_b);
+}
+
+#[test]
+fn input_roundtrip_cjk_bytes_are_not_mangled() {
+    // 中文 + 全角标点：必须逐字节还原，不能被 from_utf8_lossy 替换成 �
+    let cjk = "编译测试 单测 lint".as_bytes();
+    assert_eq!(roundtrip_bytes(cjk), cjk);
+    let mixed = "T1(编译/单测/lint)".as_bytes();
+    assert_eq!(roundtrip_bytes(mixed), mixed);
+    // 混合：ESC + CJK + OSC
+    let mut combined = vec![0x1b, b'['];
+    combined.extend_from_slice("编译".as_bytes());
+    combined.extend_from_slice(b"]10;rgb:0000/0000/0000\x07");
+    combined.extend_from_slice("测试".as_bytes());
+    assert_eq!(roundtrip_bytes(&combined), combined);
+}
+
+#[test]
+fn input_roundtrip_tab_split_key_sequence() {
+    // Alt-d 创建新 pane 等组合：ESC d、ESC w 等
+    assert_eq!(roundtrip_bytes(b"\x1bd"), b"\x1bd");
+    assert_eq!(roundtrip_bytes(b"\x1bw"), b"\x1bw");
+    assert_eq!(roundtrip_bytes(b"\x1bt"), b"\x1bt");
+}
+
+#[test]
 fn input_roundtrip_utf8_survives() {
     // 多字节 UTF-8 文本在 send-keys -l 路径应保持字节不变
     let s = "中文 emoji😀";
