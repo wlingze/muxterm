@@ -17,7 +17,7 @@ struct CStateChange {
 };
 
 struct CTask {
-    uint32_t type_;        // 0=SplitPane, 1=NewTab, 2=SwitchTab, ...
+    uint32_t type_;        // 0=SplitPane, 1=NewTab, 2=SwitchTab, ... 9=Detach
     uint32_t target_pane;
     uint32_t target_tab;
     uint32_t dir;          // 0=horizontal, 1=vertical
@@ -68,6 +68,7 @@ struct CLayoutNode {
 #define TASK_PREV_PANE   6u
 #define TASK_SHUTDOWN    7u
 #define TASK_SWITCH_PANE 8u
+#define TASK_DETACH      9u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u
@@ -82,6 +83,8 @@ struct MuxtermHandle* muxterm_new(const char* backend_type, const char* socket, 
 void muxterm_free(struct MuxtermHandle* h);
 int muxterm_connect(struct MuxtermHandle* h);
 int muxterm_shutdown(struct MuxtermHandle* h);
+int muxterm_detach(struct MuxtermHandle* h);
+int muxterm_init_logging(const char* log_file, const char* level);
 
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);

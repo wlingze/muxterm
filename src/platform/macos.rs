@@ -1,8 +1,8 @@
 //! macOS GUI 启动器。
 //!
 //! macOS 的 GUI 前端是 Swift 写的 `Muxterm.app` bundle（Rust 侧只编核心静态库）。
-//! `muxterm gui` 从这里定位并 `open` 该 bundle，并把 `-L/--socket`、`-s/--session`
-//! 转发给 Swift 端（`AppDelegate.resolveBackend` 会解析这些参数）。
+//! `muxterm gui` 从这里定位并 `open` 该 bundle，并把 `-L/--socket`、`-s/--session`、
+//! `--debug`、`--log-file` 转发给 Swift 端（`AppDelegate.resolveBackend` 会解析这些参数）。
 
 use std::path::PathBuf;
 
@@ -13,8 +13,14 @@ use std::path::PathBuf;
 /// 2. 与当前可执行文件同目录下的 `Muxterm.app`
 /// 3. 系统 `open -a Muxterm`
 ///
-/// `socket`/`session` 非空时作为 `open --args -L <socket> [-s <session>]` 转发。
-pub fn launch_app_bundle(socket: Option<&str>, session: Option<&str>) -> anyhow::Result<()> {
+/// `socket`/`session` 非空时作为 `open --args -L <socket> [-s <session>]` 转发；
+/// `debug` / `log_file` 也会以 `--debug` / `--log-file` 形式传给 Swift 侧。
+pub fn launch_app_bundle(
+    socket: Option<&str>,
+    session: Option<&str>,
+    debug: bool,
+    log_file: Option<&str>,
+) -> anyhow::Result<()> {
     let app_path = resolve_app_path();
 
     let mut cmd = std::process::Command::new("/usr/bin/open");
@@ -26,13 +32,19 @@ pub fn launch_app_bundle(socket: Option<&str>, session: Option<&str>) -> anyhow:
             cmd.arg("-a").arg("Muxterm");
         }
     }
-    if socket.is_some() || session.is_some() {
+    if socket.is_some() || session.is_some() || debug || log_file.is_some() {
         cmd.arg("--args");
         if let Some(sock) = socket {
             cmd.arg("-L").arg(sock);
         }
         if let Some(sess) = session {
             cmd.arg("-s").arg(sess);
+        }
+        if debug {
+            cmd.arg("--debug");
+        }
+        if let Some(path) = log_file {
+            cmd.arg("--log-file").arg(path);
         }
     }
     let status = cmd
