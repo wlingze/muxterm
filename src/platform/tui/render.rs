@@ -321,14 +321,23 @@ fn render_node(
 
 /// 渲染状态栏。
 fn render_status_bar(snap: &FrameSnapshot) -> String {
-    let status = if snap.status.is_empty() {
-        "unknown"
-    } else {
-        snap.status.as_str()
+    let status_key = match snap.status.as_str() {
+        "connected" => crate::platform::i18n::Key::StatusConnected,
+        "connecting" => crate::platform::i18n::Key::StatusConnecting,
+        "disconnected" => crate::platform::i18n::Key::StatusDisconnected,
+        "error" => crate::platform::i18n::Key::StatusError,
+        "exited" => crate::platform::i18n::Key::StatusExited,
+        _ => crate::platform::i18n::Key::StatusUnknown,
     };
+    let status = crate::platform::i18n::tr(status_key);
     let n_panes = snap.panes.len();
+    let panes = crate::platform::i18n::tr(crate::platform::i18n::Key::Panes);
+    let new_tab = crate::platform::i18n::tr(crate::platform::i18n::Key::HintNewTab);
+    let split = crate::platform::i18n::tr(crate::platform::i18n::Key::HintSplit);
+    let vertical_split = crate::platform::i18n::tr(crate::platform::i18n::Key::HintVerticalSplit);
+    let quit = crate::platform::i18n::tr(crate::platform::i18n::Key::HintQuit);
     format!(
-        " {status} | {n_panes} panes | Alt+T new tab | Alt+S split | Alt+V vsplit | Ctrl-Q quit "
+        " {status} | {n_panes} {panes} | Alt+T {new_tab} | Alt+S {split} | Alt+V {vertical_split} | Ctrl-Q {quit} "
     )
 }
 
@@ -522,7 +531,9 @@ mod tests {
     fn render_status_bar_shows_connected() {
         let lines = render_frame(&snap_single_pane(), RenderOpts::default());
         let status_line = &lines[lines.len() - 2];
-        assert!(status_line.contains("connected"));
+        assert!(status_line.contains(&crate::platform::i18n::tr(
+            crate::platform::i18n::Key::StatusConnected
+        )));
         assert!(status_line.contains("Ctrl-Q"));
     }
 
@@ -648,7 +659,9 @@ mod tests {
         snap.status = "exited".into();
         let lines = render_frame(&snap, RenderOpts::default());
         let status_line = &lines[lines.len() - 2];
-        assert!(status_line.contains("exited"));
+        assert!(status_line.contains(&crate::platform::i18n::tr(
+            crate::platform::i18n::Key::StatusExited
+        )));
     }
 
     #[test]

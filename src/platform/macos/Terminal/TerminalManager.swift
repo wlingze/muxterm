@@ -162,7 +162,7 @@ final class TerminalManager: TerminalInputHandler {
             reportedClientResizeFailure = false
         } else if !reportedClientResizeFailure {
             reportedClientResizeFailure = true
-            onError?("tmux client 尺寸同步失败")
+            onError?(MuxtermI18n.shared.tr(.errorResizeClient))
         }
     }
 
@@ -172,7 +172,7 @@ final class TerminalManager: TerminalInputHandler {
         guard usesClientResize, let bridge else { return -1 }
         let rc = bridge.resizePaneAxis(paneId: paneId, horizontal: horizontal, size: size)
         if rc != 0 {
-            onError?("pane @\(paneId) 分隔条尺寸同步失败")
+            onError?(MuxtermI18n.shared.tr(.errorResizeDivider, arguments: ["id": "\(paneId)"]))
         }
         return rc
     }
@@ -189,14 +189,14 @@ final class TerminalManager: TerminalInputHandler {
     func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
         // 仅转发到 FFI；显示只走 pty 回显的 PaneOutput（修双写）。
         if bridge?.sendInput(paneId: view.paneId, data: Data(data)) != 0 {
-            onError?("pane @\(view.paneId) 输入发送失败")
+            onError?(MuxtermI18n.shared.tr(.errorSendInput, arguments: ["id": "\(view.paneId)"]))
         }
     }
 
     /// 给窗口级快捷键监视器发送已经编码好的终端控制字节。
     func sendRawInput(to view: MuxTerminalView, byte: UInt8) {
         if bridge?.sendInput(paneId: view.paneId, data: Data([byte])) != 0 {
-            onError?("pane @\(view.paneId) 控制键发送失败")
+            onError?(MuxtermI18n.shared.tr(.errorSendControl, arguments: ["id": "\(view.paneId)"]))
         }
     }
 
@@ -215,7 +215,7 @@ final class TerminalManager: TerminalInputHandler {
         if bridge.resizePane(paneId: view.paneId, cols: c, rows: r) != 0,
            reportedResizeFailures.insert(view.paneId).inserted
         {
-            onError?("pane @\(view.paneId) 尺寸同步失败")
+            onError?(MuxtermI18n.shared.tr(.errorResizePane, arguments: ["id": "\(view.paneId)"]))
         }
     }
 

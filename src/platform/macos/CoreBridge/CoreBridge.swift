@@ -163,7 +163,9 @@ final class CoreBridge {
         }
         let response: SSHHostsResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
-            throw CoreBridgeDiscoveryError.message(response.error ?? "SSH host discovery failed")
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorSshHostDiscovery)
+            )
         }
         return response.hosts ?? []
     }
@@ -193,7 +195,9 @@ final class CoreBridge {
         }
         let response: TmuxSessionsResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
-            throw CoreBridgeDiscoveryError.message(response.error ?? "tmux session discovery failed")
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorTmuxSessionDiscovery)
+            )
         }
         return response.sessions ?? []
     }
@@ -231,7 +235,9 @@ final class CoreBridge {
         }
         let response: CreatedSessionResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
-            throw CoreBridgeDiscoveryError.message(response.error ?? "tmux session creation failed")
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorTmuxSessionCreation)
+            )
         }
         return response.session ?? session
     }
@@ -282,7 +288,7 @@ final class CoreBridge {
         let n = muxterm_poll_events(handle, &buf, Int32(buf.count))
         if n < 0 {
             if !pollFailureReported {
-                pendingError = "核心事件轮询失败，GUI 状态可能暂时无法同步"
+                pendingError = MuxtermI18n.shared.tr(.errorCorePoll)
                 pollFailureReported = true
             }
             return []
@@ -450,17 +456,26 @@ final class CoreBridge {
         _ pointer: UnsafeMutablePointer<CChar>?
     ) throws -> T {
         guard let pointer else {
-            throw CoreBridgeDiscoveryError.message("core discovery returned no response")
+            throw CoreBridgeDiscoveryError.message(
+                MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+            )
         }
         let text = String(cString: UnsafePointer(pointer))
         muxterm_free_string(pointer)
         guard let data = text.data(using: .utf8) else {
-            throw CoreBridgeDiscoveryError.message("core discovery returned invalid UTF-8")
+            throw CoreBridgeDiscoveryError.message(
+                MuxtermI18n.shared.tr(.errorCoreDiscoveryInvalidUtf8)
+            )
         }
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw CoreBridgeDiscoveryError.message("core discovery returned invalid JSON: \(error)")
+            throw CoreBridgeDiscoveryError.message(
+                MuxtermI18n.shared.tr(
+                    .errorCoreDiscoveryInvalidJson,
+                    arguments: ["error": "\(error)"]
+                )
+            )
         }
     }
 
@@ -525,9 +540,9 @@ enum BridgeError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .createFailed:
-            return "muxterm_new 失败"
+            return MuxtermI18n.shared.tr(.errorBridgeCreate)
         case .connectFailed(let code):
-            return "muxterm_connect 失败: \(code)"
+            return MuxtermI18n.shared.tr(.errorBridgeConnect, arguments: ["code": "\(code)"])
         }
     }
 }

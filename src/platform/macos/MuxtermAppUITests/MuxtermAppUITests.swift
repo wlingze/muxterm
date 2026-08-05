@@ -433,7 +433,9 @@ final class MuxtermAppUITests: XCTestCase {
         var last = ""
         while Date() < deadline {
             last = (status.value as? String) ?? status.label
-            if last.localizedCaseInsensitiveContains(text) { return }
+            let matches = last.localizedCaseInsensitiveContains(text)
+                || (text == "connected" && last.contains("已连接"))
+            if matches { return }
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         }
         XCTFail("状态栏应包含 \(text)，实际=\(last)")

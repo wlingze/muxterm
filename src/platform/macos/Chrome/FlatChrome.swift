@@ -34,9 +34,12 @@ public enum FlatChrome {
         status: String,
         tabCount: Int,
         paneCount: Int,
-        activePane: UInt32
+        activePane: UInt32,
+        tabsLabel: String,
+        panesLabel: String,
+        paneLabel: String
     ) -> String {
-        "\(status)  tabs: \(tabCount)  panes: \(paneCount)  pane: @\(activePane)"
+        "\(status)  \(tabsLabel): \(tabCount)  \(panesLabel): \(paneCount)  \(paneLabel): @\(activePane)"
     }
 }
 

@@ -45,6 +45,8 @@ targets:
       - path: CoreBridge/CoreBridge.swift
       - path: CoreBridge/shim.c
         compilerFlags: []
+    resources:
+      - path: Resources
     settings:
       base:
         PRODUCT_NAME: Muxterm

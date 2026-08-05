@@ -68,6 +68,7 @@ let package = Package(
                 "main.swift",
                 "CoreBridge/CoreBridge.swift",
                 "App/AppDelegate.swift",
+                "App/I18n.swift",
                 "App/MainWindow.swift",
                 "App/ContentView.swift",
                 "App/CommandPalette.swift",
@@ -77,6 +78,9 @@ let package = Package(
                 "UI/TabBar.swift",
                 "UI/PaneLayout.swift",
                 "UI/StatusBar.swift",
+            ],
+            resources: [
+                .process("Resources"),
             ],
             linkerSettings: [
                 .unsafeFlags([

@@ -78,4 +78,9 @@ final class ContentView: NSView {
         }
         needsLayout = true
     }
+
+    func refreshLocalization() {
+        tabBar.refreshLocalization()
+        statusBar.refreshLocalization()
+    }
 }

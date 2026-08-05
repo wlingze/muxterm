@@ -9,10 +9,10 @@ use gtk4::Window;
 use crate::platform::linux::quick_pick::{self, fuzzy_match, QuickPickItem};
 
 /// 一条核心命令。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PaletteCommand {
     pub id: &'static str,
-    pub label: &'static str,
+    pub label: String,
 }
 
 /// 硬编码核心命令清单。
@@ -20,111 +20,142 @@ pub fn core_commands() -> Vec<PaletteCommand> {
     vec![
         PaletteCommand {
             id: "tmux_attach",
-            label: "tmux: attach to session",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxAttach),
         },
         PaletteCommand {
             id: "tmux_new",
-            label: "tmux: create new session",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxNew),
         },
         PaletteCommand {
             id: "tmux_detach",
-            label: "tmux: detach current",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxDetach),
         },
         PaletteCommand {
             id: "ssh_connect",
-            label: "ssh: connect",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSshConnect),
         },
         PaletteCommand {
             id: "ssh_disconnect",
-            label: "ssh: disconnect",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSshDisconnect),
         },
         PaletteCommand {
             id: "new_tab",
-            label: "new tab",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::NewTab),
         },
         PaletteCommand {
             id: "new_pane",
-            label: "new pane (horizontal)",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdNewPane),
         },
         PaletteCommand {
             id: "new_pane_vertical",
-            label: "new pane (vertical)",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdNewPaneVertical),
         },
         PaletteCommand {
             id: "close_pane",
-            label: "close pane",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::ClosePane),
         },
         PaletteCommand {
             id: "close_tab",
-            label: "close tab",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CloseTab),
         },
         PaletteCommand {
             id: "close_window",
-            label: "close window",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CloseWindow),
         },
         PaletteCommand {
             id: "switch_tab_1",
-            label: "switch to tab 1",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "1")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_2",
-            label: "switch to tab 2",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "2")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_3",
-            label: "switch to tab 3",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "3")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_4",
-            label: "switch to tab 4",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "4")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_5",
-            label: "switch to tab 5",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "5")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_6",
-            label: "switch to tab 6",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "6")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_7",
-            label: "switch to tab 7",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "7")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_8",
-            label: "switch to tab 8",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "8")],
+            ),
         },
         PaletteCommand {
             id: "switch_tab_9",
-            label: "switch to tab 9",
+            label: crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::CmdSwitchTab,
+                &[("number", "9")],
+            ),
         },
         PaletteCommand {
             id: "switch_pane_prev",
-            label: "switch pane prev",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSwitchPanePrevious),
         },
         PaletteCommand {
             id: "switch_pane_next",
-            label: "switch pane next",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSwitchPaneNext),
         },
         PaletteCommand {
             id: "search_panes",
-            label: "search panes",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSearchPanes),
         },
         PaletteCommand {
             id: "rename_pane",
-            label: "rename pane",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdRenamePane),
         },
         PaletteCommand {
             id: "reload_config",
-            label: "reload config",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdReloadConfig),
         },
         PaletteCommand {
             id: "open_config",
-            label: "open config file",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdOpenConfig),
         },
         PaletteCommand {
             id: "preferences",
-            label: "preferences",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdPreferences),
+        },
+        PaletteCommand {
+            id: "language",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::Language),
         },
     ]
 }
@@ -133,7 +164,9 @@ pub fn core_commands() -> Vec<PaletteCommand> {
 pub fn filter_commands(query: &str) -> Vec<PaletteCommand> {
     core_commands()
         .into_iter()
-        .filter(|c| fuzzy_match(query, c.label))
+        // id 保持稳定的英文搜索词；这样切到中文后，`attach`、`split` 等
+        // CLI/快捷键常用词仍然可以找到对应命令。
+        .filter(|c| fuzzy_match(query, &c.label) || fuzzy_match(query, c.id))
         .collect()
 }
 
@@ -146,16 +179,63 @@ where
         .into_iter()
         .map(|c| QuickPickItem {
             id: c.id.into(),
-            label: c.label.into(),
+            label: c.label,
             detail: None,
         })
         .collect();
 
-    quick_pick::show(parent, "Type a command…", items, move |picked| {
+    let placeholder =
+        crate::platform::i18n::tr(crate::platform::i18n::Key::CommandPalettePlaceholder);
+    quick_pick::show(parent, &placeholder, items, move |picked| {
         if let Some(item) = picked {
             on_run(&item.id);
         }
     });
+}
+
+/// 弹出语言选择器。语言切换由调用方设置 core 的当前语言并刷新窗口。
+pub fn show_language<F>(parent: &impl IsA<Window>, on_run: F)
+where
+    F: Fn(crate::platform::i18n::Language) + 'static,
+{
+    let current = crate::platform::i18n::current_language();
+    let items: Vec<QuickPickItem> = crate::platform::i18n::Language::ALL
+        .into_iter()
+        .map(|language| QuickPickItem {
+            id: language.tag().into(),
+            label: match language {
+                crate::platform::i18n::Language::System => crate::platform::i18n::tr_in(
+                    language,
+                    crate::platform::i18n::Key::LanguageSystem,
+                ),
+                crate::platform::i18n::Language::English => crate::platform::i18n::tr_in(
+                    language,
+                    crate::platform::i18n::Key::LanguageEnglish,
+                ),
+                crate::platform::i18n::Language::SimplifiedChinese => crate::platform::i18n::tr_in(
+                    language,
+                    crate::platform::i18n::Key::LanguageSimplifiedChinese,
+                ),
+            },
+            detail: (current == language)
+                .then(|| crate::platform::i18n::tr(crate::platform::i18n::Key::LanguageCurrent)),
+        })
+        .collect();
+    quick_pick::show(
+        parent,
+        &crate::platform::i18n::tr(crate::platform::i18n::Key::Language),
+        items,
+        move |picked| {
+            if let Some(item) = picked {
+                let language = match item.id.as_str() {
+                    "system" => crate::platform::i18n::Language::System,
+                    "zh-CN" => crate::platform::i18n::Language::SimplifiedChinese,
+                    _ => crate::platform::i18n::Language::English,
+                };
+                on_run(language);
+            }
+        },
+    );
 }
 
 #[cfg(test)]

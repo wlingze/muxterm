@@ -38,7 +38,7 @@ final class TabBarView: NSView {
         setAccessibilityIdentifier("muxterm.tabBar")
         setAccessibilityElement(true)
         setAccessibilityRole(.tabGroup)
-        setAccessibilityLabel("Tabs")
+        setAccessibilityLabel(MuxtermI18n.shared.tr(.tabsAccessibility))
 
         edgeLine.backgroundColor = NSColor.separatorColor.cgColor
         layer?.addSublayer(edgeLine)
@@ -57,7 +57,7 @@ final class TabBarView: NSView {
         newTabButton.contentTintColor = NSColor.secondaryLabelColor
         newTabButton.target = self
         newTabButton.action = #selector(newTabClicked)
-        newTabButton.toolTip = "新建 Tab（Cmd+T）"
+        newTabButton.toolTip = MuxtermI18n.shared.tr(.newTabTooltip)
         newTabButton.setAccessibilityIdentifier("muxterm.newTabButton")
         newTabButton.translatesAutoresizingMaskIntoConstraints = false
         newTabButton.wantsLayer = true
@@ -118,6 +118,11 @@ final class TabBarView: NSView {
             tabsStack.addArrangedSubview(cell)
         }
         needsDisplay = true
+    }
+
+    func refreshLocalization() {
+        setAccessibilityLabel(MuxtermI18n.shared.tr(.tabsAccessibility))
+        newTabButton.toolTip = MuxtermI18n.shared.tr(.newTabTooltip)
     }
 
     private func applyVisibility(_ visible: Bool, notify: Bool) {

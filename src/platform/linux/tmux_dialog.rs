@@ -36,8 +36,10 @@ where
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
         id: CREATE_ID.into(),
-        label: "+ Create new session".into(),
-        detail: Some("tmux new-session -d -s <name> then attach".into()),
+        label: crate::platform::i18n::tr(crate::platform::i18n::Key::TmuxCreateNew),
+        detail: Some(crate::platform::i18n::tr(
+            crate::platform::i18n::Key::TmuxCreateDetail,
+        )),
     });
     for s in &sessions {
         items.push(QuickPickItem {
@@ -53,7 +55,7 @@ where
 
     quick_pick::show(
         &parent_win,
-        "Attach to tmux session…",
+        &crate::platform::i18n::tr(crate::platform::i18n::Key::TmuxAttachPlaceholder),
         items,
         move |picked| {
             let Some(item) = picked else {
@@ -122,13 +124,37 @@ pub fn list_tmux_sessions_detailed(socket_args: &[String]) -> Vec<SessionInfo> {
 fn format_session_detail(s: &SessionInfo) -> String {
     let age = s
         .created
-        .map(|ts| format!("created {}", relative_age(ts, now_secs())))
-        .unwrap_or_else(|| "created ?".into());
+        .map(|ts| relative_age_label(ts, now_secs()))
+        .unwrap_or_else(|| crate::platform::i18n::tr(crate::platform::i18n::Key::TmuxUnknown));
     let wins = s
         .windows
-        .map(|n| format!("{n} windows"))
-        .unwrap_or_else(|| "? windows".into());
-    format!("{age}, {wins}")
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| crate::platform::i18n::tr(crate::platform::i18n::Key::TmuxUnknown));
+    crate::platform::i18n::tr_args(
+        crate::platform::i18n::Key::TmuxSessionDetail,
+        &[("age", &age), ("count", &wins)],
+    )
+}
+
+fn relative_age_label(created_secs: u64, now: u64) -> String {
+    let ago = now.saturating_sub(created_secs);
+    let (key, count) = if ago < 60 {
+        (crate::platform::i18n::Key::TmuxSecondsAgo, ago)
+    } else {
+        let mins = ago / 60;
+        if mins < 60 {
+            (crate::platform::i18n::Key::TmuxMinutesAgo, mins)
+        } else {
+            let hours = mins / 60;
+            if hours < 48 {
+                (crate::platform::i18n::Key::TmuxHoursAgo, hours)
+            } else {
+                (crate::platform::i18n::Key::TmuxDaysAgo, hours / 24)
+            }
+        }
+    };
+    let count = count.to_string();
+    crate::platform::i18n::tr_args(key, &[("count", &count)])
 }
 
 fn default_new_session_name() -> String {
@@ -182,7 +208,11 @@ mod tests {
             windows: Some(3),
         };
         let d = format_session_detail(&s);
-        assert!(d.contains("3 windows"), "{d}");
-        assert!(d.contains("ago"), "{d}");
+        assert!(d.contains("3"), "{d}");
+        let age = crate::platform::i18n::tr_args(
+            crate::platform::i18n::Key::TmuxHoursAgo,
+            &[("count", "2")],
+        );
+        assert!(d.contains(&age), "{d}");
     }
 }
