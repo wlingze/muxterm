@@ -1379,6 +1379,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_output_cjk_bytes_are_preserved() {
+        // 实测 tmux 3.7b：%output 的 CJK 以原始 UTF-8 字节内嵌，不能被
+        // from_utf8_lossy 替换成 \u{fffd}。这里用真实样本的 octal + 原始字节。
+        let line =
+            r#"%output %0 \015\012\033M\033[34m/tmp\033[39m\015\012\033[35m編譯測試\033[39m"#;
+        let m = parse_line(line).unwrap();
+        if let Message::Output { content, .. } = m {
+            let expected = b"\x0d\x0a\x1bM\x1b[34m/tmp\x1b[39m\x0d\x0a\x1b[35m\xe7\xb7\xa8\xe8\xad\xaf\xe6\xb8\xac\xe8\xa9\xa6\x1b[39m";
+            assert_eq!(&content, expected);
+        } else {
+            panic!("not an Output message");
+        }
+    }
+
+    #[test]
+    fn parse_output_osc_dynamic_colors_keep_esc_and_bel() {
+        // git lg 的 OSC 动态颜色序列（ESC]10;rgb:... BEL / ESC\）
+        let line = r#"%output %0 \033]10;rgb:0000/0000/0000\007"#;
+        if let Message::Output { content, .. } = parse_line(line).unwrap() {
+            assert_eq!(&content, b"\x1b]10;rgb:0000/0000/0000\x07");
+        } else {
+            panic!();
+        }
+        let line2 = r#"%output %0 \033]11;rgb:ffff/ffff/ffff\033\\"#;
+        if let Message::Output { content, .. } = parse_line(line2).unwrap() {
+            assert_eq!(&content, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn parse_output_csi_device_attribute_query() {
+        // 用户实测 `10;rgb:... zsh: command not found` —— CSI 引导字节若丢失
+        // 就会被 shell 当普通文本执行。这里验证 ESC[? 序列解码后引导字节完整。
+        let line = r#"%output %0 \033[?65;4;1;2;6;21;22;17;28c"#;
+        if let Message::Output { content, .. } = parse_line(line).unwrap() {
+            assert_eq!(&content, b"\x1b[?65;4;1;2;6;21;22;17;28c");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
     fn parse_output_with_inner_ansi() {
         // content 内含 ANSI 颜色转义（ESC[?2004h 等）原样保留
         let line = r#"%output @2 \033[?2004h\033]133;P;k=i\007prompt$ \033]133;B\007"#;

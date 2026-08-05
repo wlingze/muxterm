@@ -89,6 +89,11 @@ pub struct TmuxBackend {
     response_accum: HashMap<i64, Vec<String>>,
     /// 等待响应的命令回调（number → 处理函数）。简化为存命令类型标记。
     pending_queries: VecDeque<PendingQuery>,
+    /// `%begin <number>` 到达时从 pending_queries 队首取出的查询，按 number 登记。
+    ///
+    /// tmux 控制模式是串行的，但高输出下 `%begin/%end` 仍可能与多个在途查询
+    /// 交叠。按 number 匹配能避免用简单的 FIFO `pop_front` 错配查询。
+    pending_by_number: HashMap<i64, PendingQuery>,
     /// 缓存每个 window 的 layout 字符串（从 list-windows 响应获取），用于重建 LayoutNode。
     window_layouts: HashMap<WindowId, String>,
     /// 每个 window 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
@@ -98,6 +103,13 @@ pub struct TmuxBackend {
     initial_capture_pending: HashSet<PaneId>,
     /// 已完成 attach 初始快照的 pane；之后的 `%output` 才是实时增量。
     initial_capture_done: HashSet<PaneId>,
+    /// attach 初始快照查询进行期间到达的实时 `%output` 缓冲。
+    ///
+    /// capture-pane 返回的是查询瞬间的完整屏幕；在「发出 capture-pane」到「收到
+    /// 响应」之间的窗口里 shell 若产生输出，tmux 会继续发 `%output`，这些增量如果
+    /// 直接丢弃会丢数据。这里暂存它们，快照返回后拼接到快照尾部，从而既保留完整
+    /// 屏幕又不错过查询期间的实时增量。
+    initial_capture_buf: HashMap<PaneId, Vec<u8>>,
 }
 
 impl TmuxBackend {
@@ -156,10 +168,12 @@ impl TmuxBackend {
             events: VecDeque::new(),
             response_accum: HashMap::new(),
             pending_queries: VecDeque::new(),
+            pending_by_number: HashMap::new(),
             window_layouts: HashMap::new(),
             expected_panes_per_window: HashMap::new(),
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
+            initial_capture_buf: HashMap::new(),
         }
     }
 
@@ -303,11 +317,37 @@ impl TmuxBackend {
         match msg {
             Message::Output { pane, content, .. } => {
                 // attach 的初始控制流可能先发一个 prompt，再由 list-panes
-                // 查询完整屏幕。先抑制这段不完整输出，capture-pane 返回后
-                // 以完整快照初始化；实时输出随后正常走增量路径。
+                // 查询完整屏幕。先暂存这段不完整输出（而不是直接丢弃），
+                // capture-pane 返回后以完整快照初始化，并把暂存的实时增量
+                // 拼到快照尾部；这样既保留完整屏幕又不丢查询期间的输出。
                 if self.is_attach_mode() && !self.initial_capture_done.contains(&pane) {
+                    // 若尚未发起 capture 查询（pending 未建立），说明此时
+                    // 只是启动期提示；等 query_capture_pane 真正发出查询后再
+                    // 开始缓冲，避免把启动 prompt 与屏幕内容混在一起。
+                    if self.initial_capture_pending.contains(&pane) {
+                        let buf = self.initial_capture_buf.entry(pane).or_default();
+                        append_capped(buf, &content, MAX_PANE_OUTPUT_BYTES);
+                        tracing::debug!(
+                            target: "muxterm::tmux",
+                            pane = pane.0,
+                            len = content.len(),
+                            "attach 快照查询期间暂存实时 %output"
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "muxterm::tmux",
+                            pane = pane.0,
+                            "attach 启动 prompt 已忽略（等待 capture 快照）"
+                        );
+                    }
                     return;
                 }
+                tracing::debug!(
+                    target: "muxterm::tmux",
+                    pane = pane.0,
+                    len = content.len(),
+                    "实时 %output 交付"
+                );
                 append_capped(
                     self.outputs.entry(pane).or_default(),
                     &content,
@@ -328,6 +368,12 @@ impl TmuxBackend {
                 // 几何；list-panes 返回后 rebuild_layout 会用这棵最新树建模。
                 // 旧实现只发查询、不更新 window_layouts，导致随后仍用旧树或
                 // fallback 平铺树渲染，尤其在 attach 后再次 split 时会暴露。
+                tracing::debug!(
+                    target: "muxterm::tmux",
+                    window = window.0,
+                    layout = %layout.raw,
+                    "%layout-change 已保存并重新查询 pane"
+                );
                 self.window_layouts.insert(window, layout.raw.clone());
                 if let Ok(tree) = parse_layout_tree(&layout.raw) {
                     self.expected_panes_per_window
@@ -501,41 +547,20 @@ impl TmuxBackend {
                         match b.kind {
                             NotificationKind::Begin => {
                                 self.response_accum.insert(b.number, Vec::new());
+                                // tmux 串行执行命令：`%begin <n>` 到达时，队首查询即
+                                // 该命令的响应槽。按 number 登记，end/error 时精确匹配，
+                                // 避免高输出下 FIFO pop 错配。
+                                if let Some(q) = self.pending_queries.pop_front() {
+                                    self.pending_by_number.insert(b.number, q);
+                                }
                             }
                             NotificationKind::End => {
                                 let lines =
                                     self.response_accum.remove(&b.number).unwrap_or_default();
-
                                 self.dispatch_response(b.number, lines);
                             }
                             NotificationKind::Error => {
-                                let _err_lines =
-                                    self.response_accum.remove(&b.number).unwrap_or_default();
-
-                                if let Some(q) = self.pending_queries.pop_front() {
-                                    match q {
-                                        PendingQuery::CapturePane { pane } => {
-                                            // capture 失败时不能永久抑制该 pane 的
-                                            // 后续输出；让实时流继续恢复渲染。
-                                            self.initial_capture_pending.remove(&pane);
-                                            self.initial_capture_done.insert(pane);
-                                            tracing::warn!(
-                                                target: "muxterm::tmux",
-                                                "tmux 命令 {} 的 pane @{} 屏幕恢复失败",
-                                                b.number,
-                                                pane.0
-                                            );
-                                        }
-                                        other => {
-                                            tracing::warn!(
-                                                target: "muxterm::tmux",
-                                                "tmux 命令 {} 出错（丢弃查询 {:?}）",
-                                                b.number,
-                                                other
-                                            );
-                                        }
-                                    }
-                                }
+                                self.handle_response_error(b.number);
                             }
                         }
                     }
@@ -561,9 +586,8 @@ impl TmuxBackend {
     /// 处理一条命令的完整响应（%begin..%end 之间的行）。
     ///
     /// 从 pending_queries 弹出最早的一个查询，按类型解析响应行。
-    fn dispatch_response(&mut self, _number: i64, lines: Vec<String>) {
-        // 简化：按 FIFO 弹出 pending_queries；tmux 命令是串行的，顺序匹配。
-        if let Some(query) = self.pending_queries.pop_front() {
+    fn dispatch_response(&mut self, number: i64, lines: Vec<String>) {
+        if let Some(query) = self.pending_by_number.remove(&number) {
             match query {
                 PendingQuery::Ignore => {}
                 PendingQuery::ListPanes { window } => {
@@ -596,6 +620,14 @@ impl TmuxBackend {
                     if self.is_attach_mode() {
                         self.initial_capture_pending.remove(&pane);
                         self.initial_capture_done.insert(pane);
+                        // 把查询期间暂存的实时增量拼到快照尾部：快照是查询瞬间
+                        // 的完整屏幕，实时增量是其后到达的追加输出，二者按序拼接
+                        // 才不会丢数据、也不会把屏幕内容错位。
+                        if let Some(live) = self.initial_capture_buf.remove(&pane) {
+                            if !live.is_empty() {
+                                data.extend_from_slice(&live);
+                            }
+                        }
                         let snapshot = if data.len() > MAX_PANE_OUTPUT_BYTES {
                             data[data.len() - MAX_PANE_OUTPUT_BYTES..].to_vec()
                         } else {
@@ -651,6 +683,37 @@ impl TmuxBackend {
                         }
                     }
                     self.events.push_back(StateChange::SessionsChanged);
+                }
+            }
+        }
+    }
+
+    /// 处理一条命令响应的 `%error` 边界。
+    ///
+    /// 出错时移除按 number 登记的查询，并确保 attach 的 capture 失败不会永久
+    /// 抑制该 pane 的实时输出（否则会黑屏）。实时输出缓冲也随之清空。
+    fn handle_response_error(&mut self, number: i64) {
+        let _err_lines = self.response_accum.remove(&number).unwrap_or_default();
+        if let Some(q) = self.pending_by_number.remove(&number) {
+            match q {
+                PendingQuery::CapturePane { pane } => {
+                    // capture 失败时不能永久抑制该 pane 的后续输出；让实时流
+                    // 继续恢复渲染。已暂存的实时增量在 `%output` 缓冲里，这里
+                    // 直接丢弃（避免与后续 live 输出重复拼接）。
+                    self.initial_capture_pending.remove(&pane);
+                    self.initial_capture_done.insert(pane);
+                    self.initial_capture_buf.remove(&pane);
+                    tracing::warn!(
+                        target: "muxterm::tmux",
+                        "tmux 命令 {number} 的 pane @{} 屏幕恢复失败",
+                        pane.0
+                    );
+                }
+                other => {
+                    tracing::warn!(
+                        target: "muxterm::tmux",
+                        "tmux 命令 {number} 出错（丢弃查询 {other:?}）",
+                    );
                 }
             }
         }
@@ -1378,8 +1441,28 @@ impl Backend for TmuxBackend {
                 TaskOutcome::Done
             }
 
+            Task::Detach => {
+                // 显式 detach 只关闭当前 control client，不杀 tmux server/session。
+                let sess = self.active_session.unwrap_or(SessionId(0));
+                let c = cmd::detach_client(sess);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送 detach-client 失败".into(),
+                    });
+                }
+                // 关闭发送 channel：sender 会先写完已排队的 detach-client，
+                // 然后只回收 `tmux -CC` control client，不触碰 session。
+                self.cmd_tx.take();
+                self.status = BackendStatus::Disconnected;
+                self.events.push_back(StateChange::BackendStatusChanged(
+                    BackendStatus::Disconnected,
+                ));
+                TaskOutcome::Done
+            }
+
             Task::Shutdown => {
-                // detach + kill
+                // 生命周期清理仍使用独立的 shutdown 状态；正常的 tmux
+                // shutdown 也先 detach control client，再回收本地进程句柄。
                 let sess = self.active_session.unwrap_or(SessionId(0));
                 let c = cmd::detach_client(sess);
                 let _ = self.dispatch_tmux_command(&c);
@@ -1398,8 +1481,10 @@ impl Backend for TmuxBackend {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        // 先 detach（让 tmux 退出）
-        self.execute(&Task::Shutdown)?;
+        // 已经由显式 Task::Detach 关闭 channel 时，不再重复发送命令。
+        if self.cmd_tx.is_some() {
+            self.execute(&Task::Shutdown)?;
+        }
         // 关闭命令通道，sender task 收到 None 后会 kill tmux 子进程并退出
         self.cmd_tx.take();
         // 等待 sender task 结束；pty 写卡死时 abort，避免测试/CI 无限挂起
@@ -1785,8 +1870,8 @@ mod tests {
     fn capture_pane_response_restores_existing_screen_without_double_feed() {
         let mut b = TmuxBackend::new(None);
         let pane = PaneId(7);
-        b.pending_queries
-            .push_back(PendingQuery::CapturePane { pane });
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
 
         b.dispatch_response(1, vec!["\u{1b}[32mrestored shell".into(), "prompt$".into()]);
         assert_eq!(
@@ -1800,8 +1885,8 @@ mod tests {
         )));
 
         // 若 tmux 已经主动推送了 %output，capture 快照不能再次追加。
-        b.pending_queries
-            .push_back(PendingQuery::CapturePane { pane });
+        b.pending_by_number
+            .insert(2, PendingQuery::CapturePane { pane });
         b.dispatch_response(2, vec!["duplicate".into()]);
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
@@ -1823,8 +1908,8 @@ mod tests {
         assert!(!b.outputs.contains_key(&pane));
         assert!(b.events.is_empty());
 
-        b.pending_queries
-            .push_back(PendingQuery::CapturePane { pane });
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
         b.dispatch_response(1, vec!["old command".into(), "prompt$ ".into()]);
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
@@ -1844,15 +1929,104 @@ mod tests {
     fn command_response_placeholder_does_not_consume_capture_query() {
         let mut b = TmuxBackend::new_with_attach(None, "existing");
         let pane = PaneId(4);
-        b.pending_queries.push_back(PendingQuery::Ignore);
-        b.pending_queries
-            .push_back(PendingQuery::CapturePane { pane });
+        b.pending_by_number.insert(1, PendingQuery::Ignore);
+        b.pending_by_number
+            .insert(2, PendingQuery::CapturePane { pane });
 
         // split/send-keys 等普通命令的响应先到，不能把 capture 查询错配掉。
         b.dispatch_response(1, vec!["ignored".into()]);
         b.dispatch_response(2, vec!["restored".into()]);
 
         assert_eq!(b.outputs.get(&pane).unwrap(), b"restored\r\n");
+    }
+
+    #[test]
+    fn attach_live_output_during_capture_is_appended_after_snapshot() {
+        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let pane = PaneId(5);
+
+        // 发起 capture 查询后，查询期间到达的实时输出先暂存，不直接暴露。
+        b.initial_capture_pending.insert(pane);
+        b.handle_message(Message::Output {
+            pane,
+            content: b"live-during-capture\r\n".to_vec(),
+            raw_content: "live-during-capture\\r\\n".into(),
+        });
+        assert!(!b.outputs.contains_key(&pane));
+        assert!(b.events.is_empty());
+
+        // capture 快照返回：完整屏幕 + 查询期间的实时增量拼接。
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+        b.dispatch_response(1, vec!["screen line".into()]);
+        assert_eq!(
+            b.outputs.get(&pane).unwrap(),
+            b"screen line\r\nlive-during-capture\r\n"
+        );
+
+        // 之后 %output 恢复为普通增量。
+        b.handle_message(Message::Output {
+            pane,
+            content: b"after-capture\r\n".to_vec(),
+            raw_content: "after-capture\\r\\n".into(),
+        });
+        assert!(b
+            .outputs
+            .get(&pane)
+            .unwrap()
+            .ends_with(b"after-capture\r\n"));
+    }
+
+    #[test]
+    fn attach_capture_failure_recovers_live_output_without_black_screen() {
+        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let pane = PaneId(6);
+
+        b.initial_capture_pending.insert(pane);
+        // %error 而不是 %end：capture 失败。
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+        b.dispatch_response(1, vec!["error".into()]);
+        b.handle_response_error(1);
+
+        // 失败后不能永久抑制 pane 输出：后续实时输出必须照常渲染。
+        assert!(b.initial_capture_done.contains(&pane));
+        b.handle_message(Message::Output {
+            pane,
+            content: b"live-after-error\r\n".to_vec(),
+            raw_content: "live-after-error\\r\\n".into(),
+        });
+        assert!(b
+            .outputs
+            .get(&pane)
+            .unwrap()
+            .ends_with(b"live-after-error\r\n"));
+        assert!(b.events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneOutput { pane: ep, data }
+                if *ep == pane && data.ends_with(b"live-after-error\r\n")
+        )));
+    }
+
+    #[test]
+    fn response_number_matching_does_not_misassign_interleaved_queries() {
+        // 高输出下多个 %begin/%end 交叠时，必须按 number 精确匹配，而不是 FIFO。
+        let mut b = TmuxBackend::new(None);
+        let p1 = PaneId(10);
+        let p2 = PaneId(11);
+
+        // begin 1（CapturePane p1）、begin 2（CapturePane p2）
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane: p1 });
+        b.pending_by_number
+            .insert(2, PendingQuery::CapturePane { pane: p2 });
+
+        // 响应乱序返回：end 2 先到，end 1 后到。
+        b.dispatch_response(2, vec!["second screen".into()]);
+        b.dispatch_response(1, vec!["first screen".into()]);
+
+        assert_eq!(b.outputs.get(&p2).unwrap(), b"second screen\r\n");
+        assert_eq!(b.outputs.get(&p1).unwrap(), b"first screen\r\n");
     }
 
     fn unique_socket() -> String {
