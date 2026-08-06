@@ -679,4 +679,131 @@ mod tests {
     fn truncate_long_cut() {
         assert_eq!(truncate("abcdefgh", 4), "abcd");
     }
+
+    // ── 真实 a.log 字节流保真渲染 ────────────────────────────
+    //
+    // 这些字节来自用户 SSH session 的 a.log（tmux %output 解码后），
+    // 验证 TUI 渲染端不会把空格/UTF-8 弄丢或产生 replacement char。
+    // 渲染用 from_utf8_lossy：合法 UTF-8 必须逐字节保留，空格不被吞。
+
+    /// 去掉 ANSI CSI 颜色序列（\x1b[...m）和光标定位，便于对纯文本断言。
+    /// 按 char 迭代，保留多字节 UTF-8（不逐字节拆开）。
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                // CSI：ESC '[' ... 最终字节（0x40..=0x7e）
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for nxt in chars.by_ref() {
+                        let b = nxt as u32;
+                        if (0x40..=0x7e).contains(&b) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                // 其他 ESC 序列（如 \x1b= 应用模式、\x1b\ ST）整体跳过
+                continue;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    fn snap_with_output(pane_id: u32, title: &str, out: Vec<u8>) -> FrameSnapshot {
+        let mut outputs = HashMap::new();
+        outputs.insert(pane_id, out);
+        FrameSnapshot {
+            tabs: vec![BridgeTab {
+                id: 1,
+                name: "t1".into(),
+                is_active: true,
+            }],
+            panes: vec![BridgePane {
+                id: pane_id,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: title.into(),
+            }],
+            layout: Some(BridgeLayout::Leaf { pane_id }),
+            outputs,
+            status: "connected".into(),
+            active_tab: 1,
+            active_pane: pane_id,
+        }
+    }
+
+    /// 真实 `ls -la` 回显（a.log）：`\x08 l s ... 空格 ... \x1b[19D`。
+    /// 空格必须保留（不能渲染成 `ls-la`），且不产生 replacement char。
+    #[test]
+    fn render_real_ls_la_preserves_spaces_and_utf8() {
+        let out: Vec<u8> = b"\x08l\x1b[39ms\x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[39m \x1b[19D\x0d\x0a".to_vec();
+        let snap = snap_with_output(1, "zsh", out);
+        let lines = render_frame(&snap, RenderOpts::default());
+        let joined = lines.join("\n");
+        assert!(!joined.contains('\u{fffd}'), "不应出现 replacement char");
+        let clean = strip_ansi(&joined);
+        // 回显里有 l,s, 以及 19 个空格分隔 + 光标回退；空格必须逐字节保留
+        assert!(clean.contains("ls "), "ls 后的空格必须保留: {clean:?}");
+        assert!(
+            clean.matches(' ').count() >= 19,
+            "应保留约 19 个空格分隔: {clean:?}"
+        );
+    }
+
+    /// 真实 codex 提示符（a.log）：UTF-8 的 ❯ 符号、zsh 路径、颜色码。
+    /// 渲染后 UTF-8 字符（❯ / @ / ~ / 中文）不能变 replacement char。
+    #[test]
+    fn render_real_codex_prompt_keeps_utf8_and_path() {
+        // wlz@ryzen ~/Developer/work/legion feature/codescan-support-pprof
+        let out: Vec<u8> = b"\x1b[0m\x1b[27m\x1b[24m\x1b[J\x1b[38;5;242mwlz\x1b[39m\x1b[38;5;242m@ryzen\x1b[39m \x1b[34m~/Developer/work/legion\x1b[39m \x1b[38;5;242mfeature/codescan-support-pprof\x1b[38;5;218m*\x1b[39m\x0d\x0a\x0d\x1b[35m\xe2\x9d\xaf\x1b[39m \x1b[K\x1b[?2004h\x0d\x0a".to_vec();
+        let snap = snap_with_output(1, "zsh", out);
+        let lines = render_frame(
+            &snap,
+            RenderOpts {
+                cols: 200,
+                rows: 24,
+                max_output_lines: 20,
+            },
+        );
+        let joined = lines.join("\n");
+        assert!(!joined.contains('\u{fffd}'), "不应出现 replacement char");
+        let clean = strip_ansi(&joined);
+        assert!(clean.contains("wlz@ryzen"), "应保留 user@host: {clean:?}");
+        assert!(
+            clean.contains("~/Developer/work/legion"),
+            "应保留路径: {clean:?}"
+        );
+    }
+
+    /// 真实 htop 片段（a.log，含 \x0f SO 字符集切换 + 光标定位）。
+    /// 这些控制字节在 TUI 文本渲染里会保留为原样字节，但绝不能把合法 UTF-8
+    /// 变成 replacement char。
+    #[test]
+    fn render_real_htop_no_replacement_char() {
+        // htop 输出含大量 \x0f(SO)/\x1b 光标定位；取一段带 UTF-8 的
+        let out: Vec<u8> = b"\x1b[2;8H\x1b[32m|\x1b[31m|\x1b[0;1m\x0f\x1b[90m 6.4\x1b[21G    0.0\x1b[34G\x1b[0m\x0f\x1b[31m|\x0f\x1b[90m\xe7\xbc\x96\xe8\xaf\x91\xe6\xb5\x8b\xe8\xaf\x95\x1b[39m\x0d\x0a".to_vec();
+        let snap = snap_with_output(1, "htop", out);
+        let lines = render_frame(
+            &snap,
+            RenderOpts {
+                cols: 200,
+                rows: 24,
+                max_output_lines: 20,
+            },
+        );
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains('\u{fffd}'),
+            "htop 不应出现 replacement char: {joined:?}"
+        );
+        let clean = strip_ansi(&joined);
+        assert!(
+            clean.contains("编译测试"),
+            "htop 中的 UTF-8 中文应保留: {clean:?}"
+        );
+    }
 }
