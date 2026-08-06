@@ -110,6 +110,51 @@ final class PaneOutputCursorTests: XCTestCase {
     }
 }
 
+final class PaneOutputCursorRealLogTests: XCTestCase {
+    /// 真实 `ls -la` 回显（a.log 提取）：空格必须逐字节通过增量游标，
+    /// 不能变成 `ls-la`；backspace(0x08)、ESC 光标回退也要保留。
+    func testLsLaSpacesSurviveIncrementalCursor() {
+        var cursor = PaneOutputCursor()
+        // 真实回显内容： l s 空格... 空格 [19D
+        let snapshot = Data([
+            0x08, 0x6c, 0x1b, 0x5b, 0x33, 0x39, 0x6d, 0x73,  // l ESC[39m s
+            0x1b, 0x5b, 0x33, 0x39, 0x6d, 0x20,               // ESC[39m ' '
+        ])
+        let event = Data([0x20, 0x20, 0x20, 0x1b, 0x5b, 0x31, 0x39, 0x44]) // spaces + ESC[19D
+
+        let initial = cursor.initial(snapshot: snapshot)
+        XCTAssertEqual(initial, snapshot)
+        let inc = cursor.incremental(event: event, snapshot: snapshot + event)
+        XCTAssertEqual(inc, event, "增量回显必须逐字节透传，空格不能丢")
+        XCTAssertTrue(inc.contains(0x20))
+    }
+
+    /// 真实 codex 提示符（a.log 提取）：UTF-8 的 ❯ 符号 + 模式切换 ESC 必须保留，
+    /// 不产生 replacement 字符（UTF-8 三字节序列不被 cursor 截断）。
+    func testCodexUtf8PromptSurvivesCursorAcrossChunkBoundary() {
+        var cursor = PaneOutputCursor()
+        // ❯ = 0xE2 0x9D 0xAF；故意把一个多字节 UTF-8 字符拆在两个事件中间
+        let first = Data([0x1b, 0x5b, 0x33, 0x35, 0x6d, 0xe2, 0x9d]) // ESC[35m + ❯ 前两字节
+        let second = Data([0xaf, 0x1b, 0x5b, 0x39, 0x6d])          // ❯ 末字节 + ESC[39m
+
+        let snapshot = first + second
+        let initial = cursor.initial(snapshot: snapshot)
+        XCTAssertEqual(initial, snapshot, "initial 必须把整个 snapshot 逐字节透传")
+        // 验证 ❯ 的 UTF-8 三字节 (0xE2 0x9D 0xAF) 在透传结果中连续出现，未被截断
+        let utf8Triple = Data([0xe2, 0x9d, 0xaf])
+        var found = false
+        if initial.count >= 3 {
+            for i in 0...(initial.count - 3) {
+                if initial.subdata(in: i..<(i + 3)) == utf8Triple {
+                    found = true
+                    break
+                }
+            }
+        }
+        XCTAssertTrue(found, "❯ 的 UTF-8 三字节必须完整透传")
+    }
+}
+
 final class PaneLayoutProjectionTests: XCTestCase {
     func testLayoutMustContainExactlyCurrentTabPanes() {
         XCTAssertTrue(
