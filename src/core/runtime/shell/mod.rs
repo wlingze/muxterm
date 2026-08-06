@@ -169,6 +169,12 @@ impl LocalBackend {
             }
         }
         for (pane, data) in outputs {
+            tracing::debug!(
+                target = "muxterm::shell",
+                pane = pane.0,
+                len = data.len(),
+                "pty output"
+            );
             if let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) {
                 append_capped(&mut p.output, &data, MAX_PANE_OUTPUT_BYTES);
             }
@@ -1030,6 +1036,12 @@ impl Backend for LocalBackend {
                 for k in keys {
                     buf.extend_from_slice(&encode(k));
                 }
+                tracing::debug!(
+                    target = "muxterm::shell",
+                    pane = target.0,
+                    len = buf.len(),
+                    "send-keys encode"
+                );
                 if self.write_to_pane(*target, &buf) {
                     TaskOutcome::Done
                 } else {
@@ -1046,6 +1058,12 @@ impl Backend for LocalBackend {
                     });
                 }
                 // 只写入 pty；显示依赖 shell 回显（drain_pty_output），避免双写。
+                tracing::debug!(
+                    target = "muxterm::shell",
+                    pane = target.0,
+                    len = data.len(),
+                    "write-raw bytes"
+                );
                 let written = self.write_to_pane(*target, data);
                 if written {
                     TaskOutcome::Done

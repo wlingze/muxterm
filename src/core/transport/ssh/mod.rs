@@ -18,6 +18,35 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
 use super::{Transport, TransportError, TransportSignal};
 
+/// 把字节块渲染成可读的 debug 字符串（可打印字符保留，控制字节转义）。
+/// 用于 debug 模式把 SSH 原始收发数据落盘，方便排查远端 tmux 渲染/输入问题。
+fn hex_debug(bytes: &[u8]) -> String {
+    const MAX: usize = 1024;
+    let show = if bytes.len() > MAX {
+        &bytes[..MAX]
+    } else {
+        bytes
+    };
+    let mut out = String::with_capacity(show.len() + 16);
+    for &b in show {
+        match b {
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x1b => out.push_str("\\e"),
+            0x20..=0x7e => out.push(b as char),
+            other => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\x{other:02x}");
+            }
+        }
+    }
+    if bytes.len() > MAX {
+        out.push_str("...(truncated)");
+    }
+    out
+}
+
 /// 进程启动器抽象：让 spawn 可被测试注入。
 ///
 /// 生产用 [`SystemLauncher`]（真正 spawn 进程到 PTY）；
@@ -225,6 +254,12 @@ impl Transport for SshProcessTransport {
         self.last_program = Some(program.to_string());
         self.last_args = Some(args_owned.clone());
 
+        tracing::debug!(
+            target = "muxterm::ssh",
+            program = %program,
+            args = ?args,
+            "spawn ssh transport"
+        );
         let launched = self
             .launcher
             .launch(program, args, pty_size)
@@ -242,7 +277,15 @@ impl Transport for SshProcessTransport {
             return Ok(None);
         };
         match rx.try_recv() {
-            Ok(data) => Ok(Some(data)),
+            Ok(data) => {
+                tracing::debug!(
+                    target = "muxterm::ssh",
+                    len = data.len(),
+                    hex = %hex_debug(&data),
+                    "recv ssh chunk"
+                );
+                Ok(Some(data))
+            }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 // Channel closed = reader thread exited = EOF
@@ -265,6 +308,12 @@ impl Transport for SshProcessTransport {
         let mut writer = master
             .take_writer()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
+        tracing::debug!(
+            target = "muxterm::ssh",
+            len = data.len(),
+            hex = %hex_debug(data),
+            "send ssh bytes"
+        );
         writer.write_all(data)?;
         writer.flush()?;
         Ok(data.len())
