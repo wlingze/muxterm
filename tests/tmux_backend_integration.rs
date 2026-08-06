@@ -521,6 +521,81 @@ fn scenario4_raw_control_byte_reaches_tmux_pty() {
     cleanup(&socket);
 }
 
+/// P0（用户实测 a.log/b.log）：git lg 输出 OSC/CSI 终端查询
+/// （`ESC]10;rgb:0000/0000/0000 ESC\`、`ESC]11;...`、`ESC[?65;...c`），
+/// 终端回复这些查询时必须把 ESC 引导字节完整送回 shell（WriteRaw 路径），
+/// 不能把 `\e` 变成字面文本，否则 shell 会把 `10;rgb:...` 当命令执行
+/// （`zsh: command not found: 10`）。
+#[test]
+fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let mut model = connect_tmux(&socket);
+    if !wait_for(&mut model, Duration::from_secs(5), |s| s.active_pane().is_some()) {
+        eprintln!("skip: 初始 pane 未建立");
+        let _ = model.shutdown();
+        cleanup(&socket);
+        return;
+    }
+    let pane = model.state().active_pane().unwrap().id;
+
+    // 启动 cat，让写入字节原样回显，便于 capture 精确比对。
+    let mut keys = "cat"
+        .chars()
+        .map(muxterm::core::protocol::terminal::input::KeyEvent::Char)
+        .collect::<Vec<_>>();
+    keys.push(muxterm::core::protocol::terminal::input::KeyEvent::Enter);
+    model.execute(Task::SendKeys { target: pane, keys }).unwrap();
+    let _ = wait_for(&mut model, Duration::from_secs(2), |s| {
+        s.pane_output(&pane)
+            .map(|o| String::from_utf8_lossy(o).contains("cat"))
+            .unwrap_or(false)
+    });
+
+    // 终端对 OSC 10/11 颜色查询 + CSI DA 的回复（原样字节）。
+    let reply: Vec<u8> = vec![
+        0x1b, b']', b'1', b'0', b';', b'r', b'g', b'b', b':', b'0', b'0', b'0', b'0', b'/',
+        b'0', b'0', b'0', b'0', b'/', b'0', b'0', b'0', b'0', 0x1b, b'\\',
+        0x1b, b']', b'1', b'1', b';', b'r', b'g', b'b', b':', b'f', b'f', b'f', b'f', b'/',
+        b'f', b'f', b'f', b'f', b'/', b'f', b'f', b'f', b'f', 0x1b, b'\\',
+        0x1b, b'[', b'?', b'6', b'5', b';', b'4', b';', b'1', b';', b'2', b';', b'6',
+        b';', b'2', b'1', b';', b'2', b'2', b';', b'1', b'7', b';', b'2', b'8', b'c',
+    ];
+    model.execute(Task::WriteRaw { target: pane, data: reply.clone() }).unwrap();
+
+    // 追加一个可辨认的 MARKER，确保 capture 覆盖到回复之后。
+    model
+        .execute(Task::WriteRaw {
+            target: pane,
+            data: b"MARKER".to_vec(),
+        })
+        .unwrap();
+
+    // 原生 tmux capture-pane 应显示：回复字节（ESC 完整）+ MARKER。
+    let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
+        let text = s.pane_output(&pane).map(String::from_utf8_lossy).unwrap_or_default();
+        text.contains("MARKER")
+    });
+    let text = model.state().pane_output(&pane).map(String::from_utf8_lossy).unwrap_or_default();
+    assert!(ok, "MARKER 应回显，实际={text:?}");
+
+    // 关键断言：回复里的 ESC (0x1b) 必须保留，不能变成字面文本。
+    // 若被破坏，shell 会出现 "command not found: 10" 等，这里用 cat 回显直接验证字节。
+    let has_esc = reply.contains(&0x1b);
+    assert!(has_esc, "测试数据本身应含 ESC");
+    // 至少一个 ESC (0x1b) 出现在 pane 输出的原始字节里（cat 原样回显 ESC 引导序列）。
+    let raw = model.state().pane_output(&pane).unwrap_or(&[]);
+    assert!(raw.contains(&0x1b), "回复的 ESC 引导字节应保留（cat 回显），raw={raw:?}");
+    // 不能出现字面 "command not found: 10" 或 "rgb:0000" 作为命令被解释的残留。
+    assert!(!text.contains("command not found: 10"), "ESC 丢失导致 shell 解释垃圾: {text:?}");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
 // ============================================================================
 // Bug 1 测试：pane 按 tab 过滤（2 tab 3 pane 不混在一起）
 // ============================================================================
