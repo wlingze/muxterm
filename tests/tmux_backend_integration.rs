@@ -534,7 +534,9 @@ fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
     }
     let socket = unique_socket();
     let mut model = connect_tmux(&socket);
-    if !wait_for(&mut model, Duration::from_secs(5), |s| s.active_pane().is_some()) {
+    if !wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    }) {
         eprintln!("skip: 初始 pane 未建立");
         let _ = model.shutdown();
         cleanup(&socket);
@@ -548,7 +550,9 @@ fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
         .map(muxterm::core::protocol::terminal::input::KeyEvent::Char)
         .collect::<Vec<_>>();
     keys.push(muxterm::core::protocol::terminal::input::KeyEvent::Enter);
-    model.execute(Task::SendKeys { target: pane, keys }).unwrap();
+    model
+        .execute(Task::SendKeys { target: pane, keys })
+        .unwrap();
     let _ = wait_for(&mut model, Duration::from_secs(2), |s| {
         s.pane_output(&pane)
             .map(|o| String::from_utf8_lossy(o).contains("cat"))
@@ -557,14 +561,19 @@ fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
 
     // 终端对 OSC 10/11 颜色查询 + CSI DA 的回复（原样字节）。
     let reply: Vec<u8> = vec![
-        0x1b, b']', b'1', b'0', b';', b'r', b'g', b'b', b':', b'0', b'0', b'0', b'0', b'/',
-        b'0', b'0', b'0', b'0', b'/', b'0', b'0', b'0', b'0', 0x1b, b'\\',
-        0x1b, b']', b'1', b'1', b';', b'r', b'g', b'b', b':', b'f', b'f', b'f', b'f', b'/',
-        b'f', b'f', b'f', b'f', b'/', b'f', b'f', b'f', b'f', 0x1b, b'\\',
-        0x1b, b'[', b'?', b'6', b'5', b';', b'4', b';', b'1', b';', b'2', b';', b'6',
-        b';', b'2', b'1', b';', b'2', b'2', b';', b'1', b'7', b';', b'2', b'8', b'c',
+        0x1b, b']', b'1', b'0', b';', b'r', b'g', b'b', b':', b'0', b'0', b'0', b'0', b'/', b'0',
+        b'0', b'0', b'0', b'/', b'0', b'0', b'0', b'0', 0x1b, b'\\', 0x1b, b']', b'1', b'1', b';',
+        b'r', b'g', b'b', b':', b'f', b'f', b'f', b'f', b'/', b'f', b'f', b'f', b'f', b'/', b'f',
+        b'f', b'f', b'f', 0x1b, b'\\', 0x1b, b'[', b'?', b'6', b'5', b';', b'4', b';', b'1', b';',
+        b'2', b';', b'6', b';', b'2', b'1', b';', b'2', b'2', b';', b'1', b'7', b';', b'2', b'8',
+        b'c',
     ];
-    model.execute(Task::WriteRaw { target: pane, data: reply.clone() }).unwrap();
+    model
+        .execute(Task::WriteRaw {
+            target: pane,
+            data: reply.clone(),
+        })
+        .unwrap();
 
     // 追加一个可辨认的 MARKER，确保 capture 覆盖到回复之后。
     model
@@ -576,10 +585,17 @@ fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
 
     // 原生 tmux capture-pane 应显示：回复字节（ESC 完整）+ MARKER。
     let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
-        let text = s.pane_output(&pane).map(String::from_utf8_lossy).unwrap_or_default();
+        let text = s
+            .pane_output(&pane)
+            .map(String::from_utf8_lossy)
+            .unwrap_or_default();
         text.contains("MARKER")
     });
-    let text = model.state().pane_output(&pane).map(String::from_utf8_lossy).unwrap_or_default();
+    let text = model
+        .state()
+        .pane_output(&pane)
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
     assert!(ok, "MARKER 应回显，实际={text:?}");
 
     // 关键断言：回复里的 ESC (0x1b) 必须保留，不能变成字面文本。
@@ -588,9 +604,15 @@ fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
     assert!(has_esc, "测试数据本身应含 ESC");
     // 至少一个 ESC (0x1b) 出现在 pane 输出的原始字节里（cat 原样回显 ESC 引导序列）。
     let raw = model.state().pane_output(&pane).unwrap_or(&[]);
-    assert!(raw.contains(&0x1b), "回复的 ESC 引导字节应保留（cat 回显），raw={raw:?}");
+    assert!(
+        raw.contains(&0x1b),
+        "回复的 ESC 引导字节应保留（cat 回显），raw={raw:?}"
+    );
     // 不能出现字面 "command not found: 10" 或 "rgb:0000" 作为命令被解释的残留。
-    assert!(!text.contains("command not found: 10"), "ESC 丢失导致 shell 解释垃圾: {text:?}");
+    assert!(
+        !text.contains("command not found: 10"),
+        "ESC 丢失导致 shell 解释垃圾: {text:?}"
+    );
 
     let _ = model.shutdown();
     cleanup(&socket);
