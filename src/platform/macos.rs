@@ -23,6 +23,44 @@ pub fn launch_app_bundle(
 ) -> anyhow::Result<()> {
     let app_path = resolve_app_path();
 
+    // 指定 --debug / --log-file 时改为前台直接运行 app 二进制（继承终端 stdout）：
+    // 1) 不会复用已运行的旧实例（open 只会切焦点，新参数不会生效）
+    // 2) CLI 不立即退出，调试日志会持续刷到终端/文件，符合用户预期
+    // 3) 能拿到 app 自身的退出码，方便排查
+    // 普通 `muxterm gui`（无 debug）仍走 open，不打扰已有 GUI 会话。
+    if debug || log_file.is_some() {
+        let Some(app) = &app_path else {
+            anyhow::bail!("未找到 Muxterm.app（无法前台运行）");
+        };
+        let binary = app.join("Contents/MacOS/Muxterm");
+        if !binary.exists() {
+            anyhow::bail!("Muxterm.app 缺少可执行文件: {}", binary.display());
+        }
+        let mut cmd = std::process::Command::new(&binary);
+        if debug {
+            cmd.arg("--debug");
+        }
+        if let Some(path) = log_file {
+            cmd.arg("--log-file").arg(path);
+        }
+        // 仅 --debug 时 app 写 stderr，前台继承终端可见（持续刷新）。
+        if let Some(sock) = socket {
+            cmd.arg("-L").arg(sock);
+        }
+        if let Some(sess) = session {
+            cmd.arg("-s").arg(sess);
+        }
+        // 前台阻塞运行：CLI 一直等到 app 退出，日志持续可见。
+        let status = cmd
+            .status()
+            .map_err(|e| anyhow::anyhow!("运行 Muxterm.app 失败: {e}"))?;
+        if !status.success() {
+            let code = status.code().unwrap_or(-1);
+            anyhow::bail!("Muxterm.app 退出码 {code}");
+        }
+        return Ok(());
+    }
+
     let mut cmd = std::process::Command::new("/usr/bin/open");
     match &app_path {
         Some(p) => {
@@ -32,19 +70,13 @@ pub fn launch_app_bundle(
             cmd.arg("-a").arg("Muxterm");
         }
     }
-    if socket.is_some() || session.is_some() || debug || log_file.is_some() {
+    if socket.is_some() || session.is_some() {
         cmd.arg("--args");
         if let Some(sock) = socket {
             cmd.arg("-L").arg(sock);
         }
         if let Some(sess) = session {
             cmd.arg("-s").arg(sess);
-        }
-        if debug {
-            cmd.arg("--debug");
-        }
-        if let Some(path) = log_file {
-            cmd.arg("--log-file").arg(path);
         }
     }
     let status = cmd
