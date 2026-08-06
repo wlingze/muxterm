@@ -1832,6 +1832,34 @@ mod tests {
         }
     }
 
+    /// 真实样例（b.log，alacritty recording 式回归）：git lg 输出末尾带终端查询
+    /// `ESC]10;rgb:0000/0000/0000 ESC\`、`ESC]11;rgb:ffff/ffff/ffff ESC\`、
+    /// `ESC[?65;4;1;2;6;21;22;17;28c`（OSC 颜色查询 + CSI 设备属性查询）。
+    /// 解析后这些引导字节（ESC、OSC、CSI、ST `ESC\`）必须逐字节保留，
+    /// 否则 shell 会把 `10;rgb:...` 当命令执行（`zsh: command not found: 10`）。
+    #[test]
+    fn real_sample_git_lg_osc_csi_query_preserves_esc_leaders() {
+        let raw = include_str!("../../../../tests/samples/real-gitlg-osc-query.txt");
+        let mut saw_osc10 = false;
+        let mut saw_osc11 = false;
+        let mut saw_csi_da = false;
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(Message::Output { content, .. }) = parse_line(stripped) {
+                assert!(!content.windows(3).any(|w| w == b"\xef\xbf\xbd"));
+                // ESC ] 10 ; ... ESC \   (OSC 10 foreground query reply)
+                saw_osc10 |= content.windows(4).any(|w| w == b"\x1b]10");
+                // ESC ] 11 ; ... ESC \   (OSC 11 background query reply)
+                saw_osc11 |= content.windows(4).any(|w| w == b"\x1b]11");
+                // ESC [ ? 65 ; ... c   (CSI Device Attributes query)
+                saw_csi_da |= content.windows(4).any(|w| w == b"\x1b[?6");
+            }
+        }
+        assert!(saw_osc10, "git lg 的 OSC 10 颜色查询引导字节必须保留");
+        assert!(saw_osc11, "git lg 的 OSC 11 颜色查询引导字节必须保留");
+        assert!(saw_csi_da, "git lg 的 CSI ?65 设备属性查询引导字节必须保留");
+    }
+
     /// 真实样例：new-session + split-window + new-window 的完整 CC 消息流。
     /// 验证能逐行解析出所有关键通知。
     #[test]
