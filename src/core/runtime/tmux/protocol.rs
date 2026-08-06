@@ -1750,6 +1750,88 @@ mod tests {
         }
     }
 
+    /// 真实样例（取自用户 SSH session 的 a.log）：htop 全屏 TUI。
+    /// 关键点：含大量 `\017` (SO) 字符集切换 + `\033[row;colH` 光标定位，
+    /// 解析后必须逐字节保留（不丢、不替换成 replacement char）。
+    #[test]
+    fn real_sample_htop_so_and_cursor_positioning() {
+        let raw = include_str!("../../../../tests/samples/real-htop.txt");
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(Message::Output { content, .. }) = parse_line(stripped) {
+                // 不能出现 UTF-8 replacement char (0xEF 0xBF 0xBD)
+                assert!(!content.windows(3).any(|w| w == b"\xef\xbf\xbd"));
+                // SO (0x0F) 必须保留
+                assert!(content.contains(&0x0F), "htop 的 SO 字符集切换不能丢");
+                // ESC (0x1B) 必须保留（光标定位/颜色）
+                assert!(content.contains(&0x1B));
+            }
+        }
+    }
+
+    /// 真实样例：git lg 长文本。关键点：`\010` (backspace) 修剪换行文本 +
+    /// `\015\012` CRLF。解析后这些控制字节必须逐字节保留，不产生 replacement。
+    #[test]
+    fn real_sample_git_lg_backspace_and_crlf() {
+        let raw = include_str!("../../../../tests/samples/real-git_lg.txt");
+        let mut saw_backspace = false;
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(Message::Output { content, .. }) = parse_line(stripped) {
+                assert!(!content.windows(3).any(|w| w == b"\xef\xbf\xbd"));
+                assert!(content.contains(&0x1B), "git lg 的 ANSI 颜色不能丢");
+                if content.contains(&0x08) {
+                    saw_backspace = true;
+                    // 回退字节后的下一个字符必须是合法的颜色码/文本（无 replacement）
+                    let idx = content.iter().position(|&b| b == 0x08).unwrap();
+                    assert!(idx + 1 < content.len());
+                }
+            }
+        }
+        assert!(saw_backspace, "git lg 样例应含 backspace 修剪");
+    }
+
+    /// 真实样例：`ls -la` 输入回显。关键点：空格必须保留（不能变成 `ls-la`），
+    /// 以及末尾 `\033[19D` 光标回退。
+    #[test]
+    fn real_sample_ls_la_preserves_spaces_and_cursor_back() {
+        let raw = include_str!("../../../../tests/samples/real-ls_la.txt");
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(Message::Output { content, .. }) = parse_line(stripped) {
+                // 回显内容必须包含至少一个空格（ls -la 的分隔空格不能被吞掉）
+                assert!(
+                    content.contains(&b' '),
+                    "ls -la 回显应保留空格: {:?}",
+                    content
+                );
+                // 末尾光标回退 ESC[...D 必须保留
+                assert!(content.contains(&0x1B));
+            }
+        }
+    }
+
+    /// 真实样例：codex 交互提示符。关键点：UTF-8 的 ❯ 符号 (0xE2 0x9D 0xAF)、
+    /// bracketed-paste 开关 `?2004h`、CR 都必须逐字节保留。
+    #[test]
+    fn real_sample_codex_prompt_utf8_and_mode_switches() {
+        let raw = include_str!("../../../../tests/samples/real-codex.txt");
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if let Some(Message::Output { content, .. }) = parse_line(stripped) {
+                // 不能有 replacement char
+                assert!(!content.windows(3).any(|w| w == b"\xef\xbf\xbd"));
+                // ❯ 的 UTF-8 字节序列必须保留
+                assert!(
+                    content.windows(3).any(|w| w == b"\xe2\x9d\xaf"),
+                    "codex 提示符的 ❯ 符号字节必须保留"
+                );
+                // 模式切换序列中的 ESC 必须保留
+                assert!(content.contains(&0x1B));
+            }
+        }
+    }
+
     /// 真实样例：new-session + split-window + new-window 的完整 CC 消息流。
     /// 验证能逐行解析出所有关键通知。
     #[test]

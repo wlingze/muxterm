@@ -1130,4 +1130,60 @@ mod tests {
         assert_eq!(lines, vec!["%begin 1 2 0", "%end 1 2 0"]);
         assert!(buf.is_empty());
     }
+
+    /// 真实样例（用户 SSH a.log）：把 htop / git-lg 的 `%output` 行按小 chunk 喂给
+    /// `feed_bytes_to_lines`（模拟 pty 分包），再 `parse_line`，验证控制字节
+    /// （SO \017、backspace \010、CRLF、UTF-8）在分包 + 拼接 + 解析全程不丢、不产生
+    /// replacement char。这覆盖渲染前的字节保真。
+    #[test]
+    fn feed_real_samples_byte_fidelity_across_chunks() {
+        use crate::core::runtime::tmux::protocol::parse_line;
+        for name in ["real-htop", "real-git_lg", "real-ls_la", "real-codex"] {
+            // 逐文件读取
+            let content = std::fs::read_to_string(format!("tests/samples/{name}.txt"))
+                .unwrap_or_else(|e| panic!("读取样例 {name} 失败: {e}"));
+            let mut buf: Vec<u8> = Vec::new();
+            let mut parsed_outputs = 0usize;
+            // 每 16 字节切一次 chunk，强制跨 UTF-8/转义边界分包
+            let bytes = content.as_bytes();
+            let mut pos = 0;
+            while pos < bytes.len() {
+                let end = (pos + 16).min(bytes.len());
+                let lines = feed_bytes_to_lines(&mut buf, &bytes[pos..end]);
+                for line in lines {
+                    let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(&line);
+                    if let Some(crate::core::runtime::tmux::protocol::Message::Output {
+                        content,
+                        ..
+                    }) = parse_line(stripped)
+                    {
+                        assert!(
+                            !content.windows(3).any(|w| w == b"\xef\xbf\xbd"),
+                            "{name}: 出现 replacement char"
+                        );
+                        parsed_outputs += 1;
+                    }
+                }
+                pos = end;
+            }
+            // flush 末尾未换行的残段（样例可能无尾换行）
+            if !buf.is_empty() {
+                let tail = std::mem::take(&mut buf);
+                let line = String::from_utf8_lossy(&tail).into_owned();
+                let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(&line);
+                if let Some(crate::core::runtime::tmux::protocol::Message::Output {
+                    content, ..
+                }) = parse_line(stripped)
+                {
+                    assert!(
+                        !content.windows(3).any(|w| w == b"\xef\xbf\xbd"),
+                        "{name}: 残段出现 replacement char"
+                    );
+                    parsed_outputs += 1;
+                }
+            }
+            // 至少解析出 1 个 %output
+            assert!(parsed_outputs >= 1, "{name}: 应解析出 %output");
+        }
+    }
 }

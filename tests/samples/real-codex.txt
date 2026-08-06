@@ -1,0 +1,1 @@
+%output %28 \033[0m\033[27m\033[24m\033[J\033[38;5;242mwlz\033[39m\033[38;5;242m@ryzen\033[39m \033[34m~/Developer/work/legion\033[39m \033[38;5;242mfeature/codescan-support-pprof\033[38;5;218m*\033[39m\015\012\015\033[35m\xe2\x9d\xaf\033[39m \033[K\033[?2004h\r\n
