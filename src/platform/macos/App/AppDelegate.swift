@@ -9,16 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
 
         do {
+            // 调试日志由 CLI 侧 `muxterm gui --debug --log-file` 转发并初始化
+            // （见 platform/macos.rs 与 main.rs）。.app 内不再重复初始化，避免
+            // 依赖 CMuxterm 头文件暴露 muxterm_init_logging。
             let options = Self.resolveBackend(from: CommandLine.arguments)
-            if options.debug || options.logFile != nil {
-                let rc = muxterm_init_logging(
-                    options.logFile?.withCString { $0 },
-                    options.debug ? "debug".withCString { $0 } : nil
-                )
-                if rc != 0 {
-                    NSLog("muxterm: 初始化日志失败")
-                }
-            }
             let (backend, socket, session) = (
                 options.backend,
                 options.socket,
