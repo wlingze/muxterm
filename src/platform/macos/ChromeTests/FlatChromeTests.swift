@@ -227,3 +227,41 @@ final class TerminalInputEncodingTests: XCTestCase {
         XCTAssertNil(TerminalInputEncoding.controlByte(for: "中"))
     }
 }
+
+final class TerminalQueryReplyTests: XCTestCase {
+    /// OSC 10 前景色查询回复必须是 `ESC ] 10 ; rgb:RRRR/GGGG/BBBB ESC \`。
+    /// 引导字节（ESC 0x1b、ST ESC\）必须逐字节保留，否则 shell 把 `10;rgb:` 当命令。
+    func testOscDynamicColorForeground() {
+        let bytes = TerminalQueryReply.oscDynamicColor(code: 10, hex: "000000")
+        XCTAssertEqual(
+            bytes,
+            [0x1b, 0x5d, 0x31, 0x30, 0x3b, 0x72, 0x67, 0x62, 0x3a,
+             0x30, 0x30, 0x30, 0x30, 0x2f, 0x30, 0x30, 0x30, 0x30, 0x2f,
+             0x30, 0x30, 0x30, 0x30,
+             0x1b, 0x5c] // ESC \
+        )
+    }
+
+    /// OSC 11 背景色查询回复。
+    func testOscDynamicColorBackground() {
+        let bytes = TerminalQueryReply.oscDynamicColor(code: 11, hex: "ffffff")
+        let s = String(bytes: Data(bytes), encoding: .utf8)
+        XCTAssertTrue(s?.hasPrefix("\u{1b}]11;rgb:") ?? false, "OSC 11 应以 ESC]11;rgb: 开头: \(String(describing: s))")
+        XCTAssertTrue(s?.hasSuffix("\u{1b}\\") ?? false, "应以 ESC\\ (ST) 结尾")
+    }
+
+    /// CSI 设备属性（Primary DA）查询回复：`ESC [ ? 65 ; ... c`。
+    func testCsiDeviceAttributes() {
+        let bytes = TerminalQueryReply.csiDeviceAttributes(attrs: [65, 4, 1, 2, 6, 21, 22, 17, 28])
+        let s = String(bytes: Data(bytes), encoding: .utf8)
+        XCTAssertTrue(s?.hasPrefix("\u{1b}[?65;4;1;2;6;21;22;17;28c") ?? false,
+                      "DA 回复应为 ESC[?65;...c: \(String(describing: s))")
+    }
+
+    /// xterm rgb 转换：6 位 hex → RRRR/GGGG/BBBB（每分量 4 位）。
+    func testXtermRgbExpandsTo4DigitComponents() {
+        XCTAssertEqual(TerminalQueryReply.xtermRgb(fromHex: "000000"), "0000/0000/0000")
+        XCTAssertEqual(TerminalQueryReply.xtermRgb(fromHex: "ff0000"), "ffff/0000/0000")
+        XCTAssertEqual(TerminalQueryReply.xtermRgb(fromHex: "ffffff"), "ffff/ffff/ffff")
+    }
+}
