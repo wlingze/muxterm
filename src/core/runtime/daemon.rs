@@ -303,7 +303,14 @@ impl State for DaemonBackend {
 impl Backend for DaemonBackend {
     async fn connect(&mut self) -> Result<()> {
         self.status = BackendStatus::Connecting;
+        tracing::debug!(
+            target = "muxterm::daemon",
+            session = %self.session_name,
+            socket = %self.socket_path.display(),
+            "daemon connect"
+        );
         if !Path::new(&self.socket_path).exists() {
+            tracing::debug!(target = "muxterm::daemon", "daemon socket 不存在");
             bail!(
                 "session '{}' 不存在（socket: {}）。用 `muxterm new-session -s {}` 创建。",
                 self.session_name,
@@ -332,6 +339,7 @@ impl Backend for DaemonBackend {
                 reason: format!("DaemonBackend 不支持任务: {task:?}"),
             });
         };
+        tracing::debug!(target = "muxterm::daemon", task = ?task, cli = ?cmd, "daemon execute");
         self.send_cli(cmd)?;
         Ok(TaskOutcome::Done)
     }

@@ -10,6 +10,35 @@ use tokio::task::JoinHandle;
 use crate::core::runtime::tmux::client::{process_line, TmuxEvent};
 use crate::core::runtime::tmux::command::TmuxCommand;
 
+/// 把字节块渲染成可读的 debug 字符串（可打印字符保留，控制字节转义）。
+/// 用于 debug 模式把 SSH 远端 tmux 的原始收发数据落盘。
+fn hex_debug(bytes: &[u8]) -> String {
+    const MAX: usize = 1024;
+    let show = if bytes.len() > MAX {
+        &bytes[..MAX]
+    } else {
+        bytes
+    };
+    let mut out = String::with_capacity(show.len() + 16);
+    for &b in show {
+        match b {
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x1b => out.push_str("\\e"),
+            0x20..=0x7e => out.push(b as char),
+            other => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\x{other:02x}");
+            }
+        }
+    }
+    if bytes.len() > MAX {
+        out.push_str("...(truncated)");
+    }
+    out
+}
+
 /// SSH 连接配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshConfig {
@@ -187,6 +216,12 @@ impl SshSession {
                 if chunk.is_empty() {
                     continue;
                 }
+                tracing::debug!(
+                    target = "muxterm::ssh",
+                    len = chunk.len(),
+                    hex = %hex_debug(&chunk),
+                    "recv remote tmux chunk"
+                );
                 buf.extend_from_slice(&chunk);
                 loop {
                     let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
