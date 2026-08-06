@@ -257,18 +257,40 @@ enum CliSubcommand {
         /// session name (`-s`)
         #[arg(short = 's', long = "session", value_name = "NAME")]
         session: Option<String>,
+        /// 开启 debug 日志（tmux 协议/状态/任务全部落盘）
+        #[arg(long)]
+        debug: bool,
+        /// 把日志写入文件而不是 stderr
+        #[arg(long = "log-file", value_name = "PATH")]
+        log_file: Option<PathBuf>,
     },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     // 级别解析：--verbose/--debug 升到 debug；CLI 未给时由环境变量兜底。
-    let cli_level = if cli.verbose || cli.debug {
-        Some("debug".to_string())
-    } else {
-        None
+    // `gui` 子命令也接受 --debug/--log-file，优先取子命令上的值。
+    let (cli_level, cli_log_file) = match &cli.cmd {
+        Some(CliSubcommand::Gui {
+            debug, log_file, ..
+        }) => (
+            if *debug {
+                Some("debug".to_string())
+            } else {
+                None
+            },
+            log_file.clone(),
+        ),
+        _ => (
+            if cli.verbose || cli.debug {
+                Some("debug".to_string())
+            } else {
+                None
+            },
+            cli.log_file.clone(),
+        ),
     };
-    let cfg = crate::core::logging::resolve_config(cli_level, cli.log_file.clone());
+    let cfg = crate::core::logging::resolve_config(cli_level, cli_log_file);
     crate::core::logging::init_logging(cfg)?;
     log_socket(&cli);
 
@@ -311,12 +333,12 @@ fn main() -> anyhow::Result<()> {
             CliSubcommand::Tui { socket, session } => {
                 run_tui_inner(socket.clone(), session.clone())
             }
-            CliSubcommand::Gui { socket, session } => run_gui_inner(
-                socket.clone(),
-                session.clone(),
-                cli.debug,
-                cli.log_file.clone(),
-            ),
+            CliSubcommand::Gui {
+                socket,
+                session,
+                debug,
+                log_file,
+            } => run_gui_inner(socket.clone(), session.clone(), *debug, log_file.clone()),
         };
     }
 
@@ -521,6 +543,21 @@ mod tests {
         match cli.cmd {
             Some(CliSubcommand::Gui { socket, .. }) => {
                 assert_eq!(socket.as_deref(), Some("sock"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subcommand_gui_parses_debug_and_log_file() {
+        let cli =
+            Cli::try_parse_from(["muxterm", "gui", "--debug", "--log-file", "a.log"]).unwrap();
+        match cli.cmd {
+            Some(CliSubcommand::Gui {
+                debug, log_file, ..
+            }) => {
+                assert!(debug);
+                assert_eq!(log_file.as_deref(), Some(std::path::Path::new("a.log")));
             }
             other => panic!("unexpected: {other:?}"),
         }

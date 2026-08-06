@@ -158,6 +158,19 @@ final class CoreBridge {
     private var pendingError: String?
     private var pollFailureReported = false
 
+    // MARK: - 日志
+
+    /// 初始化 core 的 tracing 日志（debug 级别 + 可选文件）。
+    /// 由 CLI `muxterm gui --debug --log-file` 转发参数后调用；返回 0=成功。
+    static func initLogging(debug: Bool, logFile: String?) -> Int32 {
+        let level = debug ? "debug" : "info"
+        return withOptionalCString(logFile) { filePtr in
+            level.withCString { levelPtr in
+                muxterm_init_logging(filePtr, levelPtr)
+            }
+        }
+    }
+
     // MARK: - Core discovery
 
     /// 读取 core 解析出的用户 SSH alias，不在 macOS 侧读取或解释 ssh config。
