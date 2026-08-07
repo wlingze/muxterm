@@ -504,11 +504,15 @@ mod tests {
 
     #[tokio::test]
     async fn reader_only_streams_output() {
-        let child = spawn_pty("echo", &["only-reader"], 40, 12).expect("spawn echo");
+        // 让 slave 短暂保持打开，避免子进程在 reader 线程开始读取前就退出，
+        // 把最后一个 PTY 缓冲块表现为 EIO/空读（默认并行下偶发
+        // `reader_only 应能读到输出, 实际: ""`）。与 pty_reader_streams_chunks 同模式。
+        let mut child =
+            spawn_pty("sh", &["-c", "printf only-reader; sleep 0.1"], 40, 12).expect("spawn shell");
         let mut reader = reader_only(&child.master).expect("reader_only");
 
         let mut all = Vec::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => break,
@@ -526,6 +530,8 @@ mod tests {
             out.contains("only-reader"),
             "reader_only 应能读到输出, 实际: {out:?}"
         );
+        // 兜底回收子进程，避免残留 shell 占用资源。
+        let _ = child.child.try_wait();
     }
 
     /// 阻塞写必须在时限内失败返回，避免 sender/shutdown 永久挂起。
