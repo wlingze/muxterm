@@ -647,6 +647,37 @@ mod tests {
         let command = send_keys_bytes(PaneId(1), &[0x03, 0x0c, 0xff]);
         assert_eq!(command.as_str(), "send-keys -t %1 -l \"\\003\\014\\377\"");
     }
+
+    /// send-keys -l 走 C 转义而不是 shell，因此 $、`、; 都不能被展开。
+    #[test]
+    fn send_keys_literal_does_not_shell_expand() {
+        let c = send_keys(PaneId(1), &[Key::literal("$HOME `id` ; echo hi")]);
+        assert_eq!(
+            c.as_str(),
+            r#"send-keys -t %1 -l "$HOME `id` ; echo hi""#
+        );
+    }
+
+    /// 窗口名里的换行/ESC/控制字节必须编码成 C 转义。
+    #[test]
+    fn rename_window_escapes_control_and_newline() {
+        let c = rename_window(WindowId(0), "a\nb\x1b");
+        assert_eq!(c.as_str(), r#"rename-window -t @0 "a\nb\e""#);
+    }
+
+    /// display-message 的 format 里的反斜杠/引号/换行都要转义。
+    #[test]
+    fn display_message_escapes_backslash_quote_newline() {
+        let c = display_message(PaneId(0), "a\\b\"c\nd");
+        assert_eq!(c.as_str(), r##"display-message -p -t %0 "a\\b\"c\nd""##);
+    }
+
+    /// 分割窗口的名字带引号/反斜杠时也要转义。
+    #[test]
+    fn split_window_escapes_name() {
+        let c = split_window(WindowId(0), SplitDirection::Horizontal, Some("a\"b\\c"));
+        assert_eq!(c.as_str(), r#"split-window -t @0 -h -n "a\"b\\c""#);
+    }
 }
 
 // ── Phase 5：输入边界 ──────────────────────────────────────────
