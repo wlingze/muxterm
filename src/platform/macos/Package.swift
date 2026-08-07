@@ -31,7 +31,10 @@ let package = Package(
         ),
         .testTarget(
             name: "MuxtermChromeTests",
-            dependencies: ["MuxtermChrome"],
+            dependencies: [
+                "MuxtermChrome",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ],
             path: "ChromeTests"
             // XCTest only（Swift Testing 在此包无 @Test，勿依赖其 0-test runner 输出）。
             // 跑：swift test --disable-swift-testing --filter FlatChromeTests
