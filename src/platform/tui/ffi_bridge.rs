@@ -11,8 +11,8 @@ use std::ptr;
 use crate::core::protocol::ffi::api::{
     muxterm_connect, muxterm_detach, muxterm_execute, muxterm_free, muxterm_get_layout,
     muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_new_connect,
-    muxterm_poll_events,
-    muxterm_send_input, muxterm_shutdown, MuxtermHandle,
+    muxterm_poll_events, muxterm_resize_client, muxterm_resize_pane, muxterm_send_input,
+    muxterm_shutdown, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -81,6 +81,8 @@ pub struct CoreBridge {
     handle: *mut MuxtermHandle,
     /// 最近一次 BackendStatus（pane_id 字段复用状态码）。
     last_status: u32,
+    /// 当前后端类型（local / tmux / tmux-ssh / daemon），供前端判断 resize 策略。
+    backend_type: String,
 }
 
 impl CoreBridge {
@@ -113,6 +115,7 @@ impl CoreBridge {
         Ok(Self {
             handle,
             last_status: 2, // Connected
+            backend_type: backend_type.to_string(),
         })
     }
 
@@ -141,6 +144,7 @@ impl CoreBridge {
         Ok(Self {
             handle,
             last_status: 2, // Connected
+            backend_type: backend_type.to_string(),
         })
     }
 
@@ -151,6 +155,11 @@ impl CoreBridge {
     /// 显式分离 tmux/daemon client；不终止 tmux session 或 local daemon。
     pub fn detach(&self) -> i32 {
         unsafe { muxterm_detach(self.handle) }
+    }
+
+    /// 当前后端类型。
+    pub fn backend(&self) -> &str {
+        &self.backend_type
     }
 
     pub fn poll_events(&mut self) -> Vec<BridgeEvent> {
@@ -187,6 +196,16 @@ impl CoreBridge {
             return 0;
         }
         unsafe { muxterm_send_input(self.handle, pane_id, data.as_ptr(), data.len()) }
+    }
+
+    /// 同步 tmux/daemon control client 的整体字符格尺寸。
+    pub fn resize_client(&self, cols: u16, rows: u16) -> i32 {
+        unsafe { muxterm_resize_client(self.handle, cols, rows) }
+    }
+
+    /// 同步本地 pane 的 pty 字符格尺寸。
+    pub fn resize_pane(&self, pane_id: u32, cols: u16, rows: u16) -> i32 {
+        unsafe { muxterm_resize_pane(self.handle, pane_id, cols, rows) }
     }
 
     pub fn get_tabs(&self) -> Vec<BridgeTab> {

@@ -38,15 +38,23 @@ impl PaneTerminal {
         self.state.feed(data);
     }
 
-    /// 重建/调整尺寸（清空重来）。
+    /// 运行时调整尺寸：保留屏幕 / 光标 / 滚动区域，不清空重放。
+    ///
+    /// 之前这里重建 `TerminalState` 并把 `fed_len` 清零，下次同步会从头
+    /// 重放被截断的累计输出，ANSI 流从中间开始解析，导致 codex/htop
+    /// 调整大小后内容错乱。
     pub fn resize(&mut self, cols: u16, rows: u16) {
         if cols == self.cols && rows == self.rows {
             return;
         }
         self.cols = cols.max(1);
         self.rows = rows.max(1);
-        self.state = TerminalState::new(self.cols as usize, self.rows as usize);
-        self.fed_len = 0;
+        self.state.resize(self.cols as usize, self.rows as usize);
+    }
+
+    /// 取出终端生成的查询应答（OSC 颜色 / CSI DA / DSR），原样回写 shell。
+    pub fn take_reply(&mut self) -> Vec<u8> {
+        self.state.take_reply()
     }
 
     /// 用累计输出做增量同步（GTK 同款）：只 feed 比已 feed 长度更新的部分。
@@ -147,6 +155,18 @@ impl TerminalManager {
     /// 取某 pane 的尺寸。
     pub fn size(&self, pane_id: u32) -> Option<(u16, u16)> {
         self.panes.get(&pane_id).map(|p| (p.cols, p.rows))
+    }
+
+    /// 取出所有 pane 的查询应答，供前端统一 `send_input` 回写。
+    pub fn drain_replies(&mut self) -> Vec<(u32, Vec<u8>)> {
+        let mut out = Vec::new();
+        for (id, pt) in &mut self.panes {
+            let reply = pt.take_reply();
+            if !reply.is_empty() {
+                out.push((*id, reply));
+            }
+        }
+        out
     }
 
     /// 删除不再存在的 pane。

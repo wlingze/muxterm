@@ -67,7 +67,8 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
 
     // 首帧：立即渲染一次（不依赖事件）
     let snap = bridge.snapshot();
-    sync_term_sizes(&mut term_mgr, &snap);
+    let replies = sync_term_sizes(&mut term_mgr, &snap);
+    send_replies(&bridge, replies);
     draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
     // 每 50ms 事件轮询；仅当有实际状态变更时（事件非空 / 按键 / resize）才重绘，
@@ -93,7 +94,19 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                         }
                     }
                 }
-                Event::Resize(_, _) => needs_redraw = true,
+                Event::Resize(c, r) => {
+                    // 渲染器在内容区外占用左右边框 2 列、顶部/状态/边框等 8 行，
+                    // tmux client 尺寸必须等于内容区，否则 htop/codex 按全屏
+                    // 重绘后被裁切/错位。
+                    let cols = c.saturating_sub(2).max(20);
+                    let rows = r.saturating_sub(8).max(8);
+                    if bridge.backend() != "local" {
+                        let _ = bridge.resize_client(cols, rows);
+                    } else if let Some(pane) = active_pane_id(&bridge.snapshot()) {
+                        let _ = bridge.resize_pane(pane, cols, rows);
+                    }
+                    needs_redraw = true;
+                }
                 _ => {}
             }
         }
@@ -101,7 +114,8 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
         // 仅在确有变化时重绘
         if needs_redraw {
             let snap = bridge.snapshot();
-            sync_term_sizes(&mut term_mgr, &snap);
+            let replies = sync_term_sizes(&mut term_mgr, &snap);
+            send_replies(&bridge, replies);
             draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
         }
     }
@@ -119,7 +133,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
 ///
 /// 用每个 pane 的**累计输出**做增量同步（GTK 同款 delta 方案）：每次只 feed
 /// 比上次已 feed 长度更新的部分，覆盖首屏播种 + 持续增量 + 输出截断重置。
-fn sync_term_sizes(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) {
+fn sync_term_sizes(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(u32, Vec<u8>)> {
     let mut ids: Vec<u32> = Vec::new();
     for p in &snap.panes {
         ids.push(p.id);
@@ -131,6 +145,25 @@ fn sync_term_sizes(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) {
         term_mgr.sync_output(p.id, cols, rows, &full);
     }
     term_mgr.retain(&ids);
+    term_mgr.drain_replies()
+}
+
+/// 把终端生成的查询应答（OSC 10/11、CSI DA 等）原样写回 shell/pty。
+///
+/// 不做这一步时，`git lg` 的 `10;rgb:...` / `65;...c` 会泄漏成字面文本。
+fn send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
+    for (pane_id, data) in replies {
+        let _ = bridge.send_input(pane_id, &data);
+    }
+}
+
+/// 当前激活 pane；快照里没有标记时退回第一个。
+fn active_pane_id(snap: &FrameSnapshot) -> Option<u32> {
+    if snap.active_pane != 0 {
+        Some(snap.active_pane)
+    } else {
+        snap.panes.first().map(|p| p.id)
+    }
 }
 
 fn draw<W: std::io::Write>(
