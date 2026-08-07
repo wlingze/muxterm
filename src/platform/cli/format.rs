@@ -527,7 +527,10 @@ mod tests {
             OutputFormat::Json,
         );
         assert!(out.starts_with('['));
-        assert!(out.contains(r#""tree":"@1""#), "layout JSON 应含 pane 叶子: {out}");
+        assert!(
+            out.contains(r#""tree":"@1""#),
+            "layout JSON 应含 pane 叶子: {out}"
+        );
     }
 
     #[test]

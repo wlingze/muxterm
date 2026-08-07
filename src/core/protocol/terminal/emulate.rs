@@ -12,9 +12,9 @@
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
 use vte::ansi::{
-    Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes, NamedColor,
-    KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedPrivateMode, PrivateMode,
-    Processor, Rgb, StandardCharset,
+    Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
+    KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
+    PrivateMode, Processor, Rgb, StandardCharset,
 };
 
 /// 一个屏幕单元格：字符 + 前景/背景色 + 样式位 + hyperlink URI。
@@ -1384,11 +1384,17 @@ mod keyboard_protocol_tests {
             .keyboard_mode
             .contains(KeyboardModes::DISAMBIGUATE_ESC_CODES));
         assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_EVENT_TYPES));
-        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_ALTERNATE_KEYS));
-        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_ALL_KEYS_AS_ESC));
+        assert!(t
+            .keyboard_mode
+            .contains(KeyboardModes::REPORT_ALTERNATE_KEYS));
+        assert!(t
+            .keyboard_mode
+            .contains(KeyboardModes::REPORT_ALL_KEYS_AS_ESC));
         // 16：REPORT_ASSOCIATED_TEXT
         t.feed(b"\x1b[=16;2u");
-        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_ASSOCIATED_TEXT));
+        assert!(t
+            .keyboard_mode
+            .contains(KeyboardModes::REPORT_ASSOCIATED_TEXT));
     }
 
     /// XTMODKEYS modifyOtherKeys（CSI > 4 ; m）。
@@ -1676,12 +1682,18 @@ mod xterm_conformance_tests {
     fn sgr_reset_to_defaults() {
         let mut fg = TerminalState::new(20, 3);
         fg.feed(b"\x1b[38;2;1;2;3mX\x1b[39mY");
-        assert_eq!(fg.cell(0, 0).unwrap().fg, Some(Color::Spec(Rgb { r: 1, g: 2, b: 3 })));
+        assert_eq!(
+            fg.cell(0, 0).unwrap().fg,
+            Some(Color::Spec(Rgb { r: 1, g: 2, b: 3 }))
+        );
         assert_eq!(fg.cell(0, 1).unwrap().fg, None);
 
         let mut bg = TerminalState::new(20, 3);
         bg.feed(b"\x1b[48;2;1;2;3mX\x1b[49mY");
-        assert_eq!(bg.cell(0, 0).unwrap().bg, Some(Color::Spec(Rgb { r: 1, g: 2, b: 3 })));
+        assert_eq!(
+            bg.cell(0, 0).unwrap().bg,
+            Some(Color::Spec(Rgb { r: 1, g: 2, b: 3 }))
+        );
         assert_eq!(bg.cell(0, 1).unwrap().bg, None);
     }
 
@@ -1690,7 +1702,10 @@ mod xterm_conformance_tests {
     fn sgr_bright_colors() {
         let mut t = TerminalState::new(20, 3);
         t.feed(b"\x1b[91mA\x1b[107mB");
-        assert_eq!(t.cell(0, 0).unwrap().fg, Some(Color::Named(NamedColor::BrightRed)));
+        assert_eq!(
+            t.cell(0, 0).unwrap().fg,
+            Some(Color::Named(NamedColor::BrightRed))
+        );
         assert_eq!(
             t.cell(0, 1).unwrap().bg,
             Some(Color::Named(NamedColor::BrightWhite))
