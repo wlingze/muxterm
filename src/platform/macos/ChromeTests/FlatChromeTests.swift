@@ -108,6 +108,17 @@ final class PaneOutputCursorTests: XCTestCase {
         let trimmed = Data(String(repeating: "y", count: 20).utf8)
         XCTAssertEqual(cursor.incremental(event: trimmed, snapshot: trimmed), trimmed)
     }
+
+    /// 空事件 / 空快照必须稳定返回空 Data，不产生重复 feed。
+    func testZeroLengthEventAndEmptySnapshotAreNoops() {
+        var cursor = PaneOutputCursor()
+        XCTAssertEqual(cursor.initial(snapshot: Data()), Data())
+        XCTAssertEqual(cursor.incremental(event: Data(), snapshot: Data()), Data())
+
+        let snap = Data("abc".utf8)
+        XCTAssertEqual(cursor.initial(snapshot: snap), snap)
+        XCTAssertEqual(cursor.incremental(event: Data(), snapshot: snap), Data())
+    }
 }
 
 final class PaneOutputCursorRealLogTests: XCTestCase {
@@ -203,6 +214,13 @@ final class PaneResizeMathTests: XCTestCase {
         XCTAssertEqual(PaneResizeMath.characterCount(pixelLength: 480, cellPixels: 8), 60)
         XCTAssertNil(PaneResizeMath.characterCount(pixelLength: 8, cellPixels: 8))
     }
+
+    /// 非法 cell 尺寸或超界像素应返回 nil，而不是溢出。
+    func testCharacterCountRejectsInvalidInput() {
+        XCTAssertNil(PaneResizeMath.characterCount(pixelLength: 100, cellPixels: 0))
+        XCTAssertNil(PaneResizeMath.characterCount(pixelLength: 100_000_000, cellPixels: 8))
+        XCTAssertNil(PaneResizeMath.characterCount(pixelLength: 8, cellPixels: 8))
+    }
 }
 
 final class TerminalInputEncodingTests: XCTestCase {
@@ -221,10 +239,26 @@ final class TerminalInputEncodingTests: XCTestCase {
         XCTAssertEqual(TerminalInputEncoding.controlByte(for: "["), 0x1b)
         XCTAssertEqual(TerminalInputEncoding.controlByte(for: "\\"), 0x1c)
         XCTAssertEqual(TerminalInputEncoding.controlByte(for: "]"), 0x1d)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "^"), 0x1e)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "~"), 0x1e)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "_"), 0x1f)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "/"), 0x1f)
+        XCTAssertEqual(TerminalInputEncoding.controlByte(for: "`"), 0x00)
         XCTAssertEqual(TerminalInputEncoding.controlByte(for: "?"), 0x7f)
         XCTAssertEqual(TerminalInputEncoding.controlByte(for: "\u{03}"), 0x03)
         XCTAssertEqual(TerminalInputEncoding.backspaceByte, 0x7f)
         XCTAssertNil(TerminalInputEncoding.controlByte(for: "中"))
+    }
+
+    /// xterm C0 别名：Ctrl+2..8 对应 NUL/ESC/FS/GS/RS/US/DEL。
+    func testCtrlDigitsMatchXtermC0Aliases() {
+        let expected: [(String, UInt8)] = [
+            ("2", 0x00), ("3", 0x1b), ("4", 0x1c), ("5", 0x1d),
+            ("6", 0x1e), ("7", 0x1f), ("8", 0x7f),
+        ]
+        for (key, byte) in expected {
+            XCTAssertEqual(TerminalInputEncoding.controlByte(for: key), byte, "Ctrl+\(key)")
+        }
     }
 }
 
@@ -263,5 +297,18 @@ final class TerminalQueryReplyTests: XCTestCase {
         XCTAssertEqual(TerminalQueryReply.xtermRgb(fromHex: "000000"), "0000/0000/0000")
         XCTAssertEqual(TerminalQueryReply.xtermRgb(fromHex: "ff0000"), "ffff/0000/0000")
         XCTAssertEqual(TerminalQueryReply.xtermRgb(fromHex: "ffffff"), "ffff/ffff/ffff")
+    }
+
+    /// OSC 12 光标色 + #rgb 简写也要按同一格式展开。
+    func testOscDynamicColorCursorAndShorthand() {
+        let bytes = TerminalQueryReply.oscDynamicColor(code: 12, hex: "#f00")
+        let s = String(bytes: Data(bytes), encoding: .utf8)
+        XCTAssertEqual(s, "\u{1b}]12;rgb:ffff/0000/0000\u{1b}\\")
+    }
+
+    /// data() 应保持字节数组逐字节不变，供 sendInput 直接使用。
+    func testDataPreservesReplyBytes() {
+        let bytes = TerminalQueryReply.oscDynamicColor(code: 10, hex: "123456")
+        XCTAssertEqual(TerminalQueryReply.data(bytes), Data(bytes))
     }
 }
