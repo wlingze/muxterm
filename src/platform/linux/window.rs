@@ -14,6 +14,7 @@ use gtk4::prelude::*;
 use gtk4::{
     Align, ApplicationWindow, Box, CssProvider, EventControllerKey, Label, Orientation, Window,
 };
+use vte4::prelude::*;
 
 use crate::core::config::{Action, Config, Theme};
 use crate::platform::linux::ffi_bridge::{tasks, BridgeEvent, CoreBridge};
@@ -38,6 +39,8 @@ struct UiState {
     keymap: KeyMap,
     active_tab: u32,
     active_pane: u32,
+    /// 最近一次同步给后端/PTY 的字符格尺寸，避免 16ms 轮询重复 resize。
+    last_client_size: Option<(u16, u16)>,
 }
 
 impl AppWindow {
@@ -140,6 +143,7 @@ impl AppWindow {
             keymap,
             active_tab: 0,
             active_pane: 0,
+            last_client_size: None,
         }));
 
         // tab 点击
@@ -204,6 +208,7 @@ impl AppWindow {
                     dispatch_event(&mut s, &ev);
                 }
                 sync_pane_outputs(&mut s);
+                sync_window_size(&mut s);
                 true
             });
         }
@@ -357,6 +362,10 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
         STATE_PANE_OUTPUT => {
             if let Some(view) = s.layout.pane(ev.pane_id) {
                 view.feed_output(&ev.data);
+                let replies = view.take_replies();
+                if !replies.is_empty() {
+                    let _ = s.bridge.send_input(ev.pane_id, &replies);
+                }
             }
         }
         STATE_ACTIVE_TAB_CHANGED => {
@@ -407,6 +416,10 @@ fn refresh_ui(s: &mut UiState) {
             if let Some(view) = s.layout.pane(pane.id) {
                 let out = s.bridge.get_pane_output(pane.id);
                 view.sync_full_output(&out);
+                let replies = view.take_replies();
+                if !replies.is_empty() {
+                    let _ = s.bridge.send_input(pane.id, &replies);
+                }
                 if pane.is_active {
                     s.active_pane = pane.id;
                     view.grab_focus();
@@ -431,7 +444,43 @@ fn sync_pane_outputs(s: &mut UiState) {
         if let Some(view) = s.layout.pane(pane.id) {
             let out = s.bridge.get_pane_output(pane.id);
             view.sync_full_output(&out);
+            let replies = view.take_replies();
+            if !replies.is_empty() {
+                let _ = s.bridge.send_input(pane.id, &replies);
+            }
         }
+    }
+}
+
+/// 把窗口内容区的新字符格尺寸同步给后端。
+///
+/// tmux/SSH 模式只发一次 client resize（`refresh-client -C`），避免逐个
+/// pane 触发布局反馈；local 模式 resize 当前激活 pane 的 pty。
+fn sync_window_size(s: &mut UiState) {
+    let Some(view) = s.layout.pane(s.active_pane) else {
+        return;
+    };
+    let term = view.terminal();
+    let cw = term.char_width();
+    let ch = term.char_height();
+    if cw <= 0 || ch <= 0 {
+        return;
+    }
+    let root_w = s.layout.root_box.width().max(0) as u64;
+    let root_h = s.layout.root_box.height().max(0) as u64;
+    if root_w == 0 || root_h == 0 {
+        return;
+    }
+    let cols = (root_w / cw as u64).clamp(2, u16::MAX as u64) as u16;
+    let rows = (root_h / ch as u64).clamp(1, u16::MAX as u64) as u16;
+    if s.last_client_size == Some((cols, rows)) {
+        return;
+    }
+    s.last_client_size = Some((cols, rows));
+    if s.uses_tmux {
+        let _ = s.bridge.resize_client(cols, rows);
+    } else {
+        let _ = s.bridge.resize_pane(s.active_pane, cols, rows);
     }
 }
 
