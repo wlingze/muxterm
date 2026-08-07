@@ -20,19 +20,19 @@ public enum TerminalInputEncoding {
             return byte &- 0x40
         case 0x61...0x7a:
             return byte &- 0x60
-        case 0x00, 0x20:
+        case 0x00, 0x20, 0x32, 0x60: // NUL / Ctrl+2 / Ctrl+`
             return 0x00
-        case 0x5b:
+        case 0x5b, 0x33: // ESC / Ctrl+3
             return 0x1b
-        case 0x5c:
+        case 0x5c, 0x34: // FS / Ctrl+4
             return 0x1c
-        case 0x5d:
+        case 0x5d, 0x35: // GS / Ctrl+5
             return 0x1d
-        case 0x5e, 0x36:
+        case 0x5e, 0x7e, 0x36: // RS / Ctrl+6 / Ctrl+~
             return 0x1e
-        case 0x5f:
+        case 0x5f, 0x2f, 0x37: // US / Ctrl+/ / Ctrl+7
             return 0x1f
-        case 0x3f:
+        case 0x3f, 0x38: // DEL / Ctrl+?
             return backspaceByte
         default:
             return nil
