@@ -1493,3 +1493,217 @@ mod scrollback_tests {
         assert_eq!(snap(&t), Vec::<String>::new());
     }
 }
+
+/// xterm ctlseqs / Alacritty / VTE 行为一致性测试。
+///
+/// 序列语义参考 xterm 控制序列文档
+/// （https://invisible-island.net/xterm/ctlseqs/ctlseqs.html）以及
+/// Alacritty 的终端模拟器行为（https://github.com/alacritty/alacritty）。
+/// 目的是把「知名终端项目都会正确处理」的序列固化成本项目的状态模型测试。
+#[cfg(test)]
+mod xterm_conformance_tests {
+    use super::*;
+    use vte::ansi::NamedColor;
+
+    fn snap(t: &TerminalState) -> Vec<String> {
+        t.snapshot_trimmed()
+    }
+
+    /// CSI A/B/C/D：相对光标移动，并在屏幕边缘收敛（不越界）。
+    #[test]
+    fn cursor_relative_moves_clamp_at_edges() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"\x1b[3;6H"); // (2,5)
+        t.feed(b"\x1b[2A"); // up 2 -> (0,5)
+        assert_eq!((t.cursor_row(), t.cursor_col()), (0, 5));
+        t.feed(b"\x1b[5A"); // 已在顶行，不动
+        assert_eq!((t.cursor_row(), t.cursor_col()), (0, 5));
+        t.feed(b"\x1b[2B"); // down 2 -> (2,5)
+        assert_eq!((t.cursor_row(), t.cursor_col()), (2, 5));
+        t.feed(b"\x1b[5B"); // 已在底行，不动
+        assert_eq!((t.cursor_row(), t.cursor_col()), (2, 5));
+        t.feed(b"\x1b[2C"); // right 2 -> col 7
+        assert_eq!((t.cursor_row(), t.cursor_col()), (2, 7));
+        t.feed(b"\x1b[5C"); // 到最右列
+        assert_eq!(t.cursor_col(), 9);
+        t.feed(b"\x1b[2D"); // left 2
+        assert_eq!(t.cursor_col(), 7);
+        t.feed(b"\x1b[9D"); // 回到最左列
+        assert_eq!(t.cursor_col(), 0);
+    }
+
+    /// CSI H/f、CSI d、CSI G、CSI `：绝对定位。
+    #[test]
+    fn cursor_absolute_positioning() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[2;3H"); // CUP (1,2)
+        assert_eq!((t.cursor_row(), t.cursor_col()), (1, 2));
+        t.feed(b"\x1b[4d"); // VPA 第 4 行
+        assert_eq!(t.cursor_row(), 3);
+        t.feed(b"\x1b[7G"); // CHA 第 7 列
+        assert_eq!(t.cursor_col(), 6);
+        t.feed(b"\x1b[2;1H");
+        assert_eq!((t.cursor_row(), t.cursor_col()), (1, 0));
+        t.feed(b"\x1b[5`"); // HPA 第 5 列
+        assert_eq!(t.cursor_col(), 4);
+        t.feed(b"\x1b[3;5f"); // HVP = CUP
+        assert_eq!((t.cursor_row(), t.cursor_col()), (2, 4));
+    }
+
+    /// CSI E/F：下一行/上一行并回到行首。
+    #[test]
+    fn cursor_line_ops_with_cr() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[2;4H");
+        t.feed(b"\x1b[1E"); // 下一行 + CR
+        assert_eq!((t.cursor_row(), t.cursor_col()), (2, 0));
+        t.feed(b"\x1b[1F"); // 上一行 + CR
+        assert_eq!((t.cursor_row(), t.cursor_col()), (1, 0));
+    }
+
+    /// CSI K 的三种模式：清行尾 / 清行首 / 清整行。
+    #[test]
+    fn erase_line_modes() {
+        let mut right = TerminalState::new(10, 3);
+        right.feed(b"abcdef");
+        right.feed(b"\x1b[1;4H");
+        right.feed(b"\x1b[K"); // 0：清行尾（从光标列起）
+        assert_eq!(snap(&right), vec!["abc"]);
+
+        let mut left = TerminalState::new(10, 3);
+        left.feed(b"abcdef");
+        left.feed(b"\x1b[1;4H");
+        left.feed(b"\x1b[1K"); // 1：清行首（含光标格）
+        assert_eq!(snap(&left), vec!["    ef"]);
+
+        let mut all = TerminalState::new(10, 3);
+        all.feed(b"abcdef");
+        all.feed(b"\x1b[1;4H");
+        all.feed(b"\x1b[2K"); // 2：清整行
+        assert_eq!(snap(&all), Vec::<String>::new());
+    }
+
+    /// CSI J 的四种模式：清屏下方 / 上方 / 全部 / saved 区。
+    #[test]
+    fn erase_display_modes() {
+        let mut below = TerminalState::new(10, 3);
+        below.feed(b"abcdef\r\nghijkl\r\nmnopqr");
+        below.feed(b"\x1b[2;4H");
+        below.feed(b"\x1b[0J"); // 清光标以下
+        assert_eq!(snap(&below), vec!["abcdef", "ghi"]);
+
+        let mut above = TerminalState::new(10, 3);
+        above.feed(b"abcdef\r\nghijkl\r\nmnopqr");
+        above.feed(b"\x1b[2;4H");
+        above.feed(b"\x1b[1J"); // 清光标以上（含光标行左侧）
+        assert_eq!(snap(&above), vec!["", "    kl", "mnopqr"]);
+
+        let mut all = TerminalState::new(10, 3);
+        all.feed(b"abcdef\r\nghijkl\r\nmnopqr");
+        all.feed(b"\x1b[2J");
+        assert_eq!(snap(&all), Vec::<String>::new());
+
+        let mut saved = TerminalState::new(10, 3);
+        saved.feed(b"abcdef\r\nghijkl\r\nmnopqr");
+        saved.feed(b"\x1b[3J"); // ED 3：清 saved 区
+        assert_eq!(snap(&saved), Vec::<String>::new());
+    }
+
+    /// CSI X：擦除光标起 n 个字符（不移动光标）。
+    #[test]
+    fn erase_chars_keeps_cursor() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"abcdef");
+        t.feed(b"\x1b[1;3H");
+        t.feed(b"\x1b[2X");
+        assert_eq!(snap(&t), vec!["ab  ef"]);
+        assert_eq!(t.cursor_col(), 2);
+    }
+
+    /// CSI S/T：整屏上滚/下滚（Alacritty/VTE 行为）。
+    #[test]
+    fn scroll_up_down_moves_screen() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+        t.feed(b"\x1b[2S"); // SU 2：顶部 2 行滚出，底部补空
+        assert_eq!(snap(&t), vec!["3", "4", "5"]);
+        t.feed(b"\x1b[2T"); // SD 2：顶部补空
+        assert_eq!(snap(&t), vec!["", "", "3", "4", "5"]);
+    }
+
+    /// SGR 39/49：前景/背景恢复默认（None）。
+    #[test]
+    fn sgr_reset_to_defaults() {
+        let mut fg = TerminalState::new(20, 3);
+        fg.feed(b"\x1b[38;2;1;2;3mX\x1b[39mY");
+        assert_eq!(fg.cell(0, 0).unwrap().fg, Some(Color::Spec(Rgb { r: 1, g: 2, b: 3 })));
+        assert_eq!(fg.cell(0, 1).unwrap().fg, None);
+
+        let mut bg = TerminalState::new(20, 3);
+        bg.feed(b"\x1b[48;2;1;2;3mX\x1b[49mY");
+        assert_eq!(bg.cell(0, 0).unwrap().bg, Some(Color::Spec(Rgb { r: 1, g: 2, b: 3 })));
+        assert_eq!(bg.cell(0, 1).unwrap().bg, None);
+    }
+
+    /// SGR 90-97 / 100-107：亮色前景/背景。
+    #[test]
+    fn sgr_bright_colors() {
+        let mut t = TerminalState::new(20, 3);
+        t.feed(b"\x1b[91mA\x1b[107mB");
+        assert_eq!(t.cell(0, 0).unwrap().fg, Some(Color::Named(NamedColor::BrightRed)));
+        assert_eq!(
+            t.cell(0, 1).unwrap().bg,
+            Some(Color::Named(NamedColor::BrightWhite))
+        );
+    }
+
+    /// SGR 24/27/29：取消下划线/反显/删除线。
+    #[test]
+    fn sgr_style_cancels() {
+        let mut t = TerminalState::new(20, 3);
+        t.feed(b"\x1b[4mU\x1b[24mX");
+        assert!(t.cell(0, 0).unwrap().underline);
+        assert!(!t.cell(0, 1).unwrap().underline);
+        t.feed(b"\x1b[7mR\x1b[27mY");
+        assert!(t.cell(0, 2).unwrap().reverse);
+        assert!(!t.cell(0, 3).unwrap().reverse);
+        t.feed(b"\x1b[9mS\x1b[29mZ");
+        assert!(t.cell(0, 4).unwrap().strike);
+        assert!(!t.cell(0, 5).unwrap().strike);
+    }
+
+    /// DECAWM（CSI ? 7 l）：关闭自动换行后，最后一个字符格被覆盖而不是换行。
+    #[test]
+    fn autowrap_disabled_overwrites_last_col() {
+        let mut t = TerminalState::new(4, 3);
+        t.feed(b"abc");
+        // 此时光标在最后一列；关闭自动换行后打印会覆盖而不是换行
+        t.feed(b"\x1b[?7l");
+        t.feed(b"d");
+        assert_eq!(snap(&t), vec!["abcd"]);
+        assert_eq!(t.cursor_col(), 3);
+        t.feed(b"E"); // 覆盖最后一格
+        assert_eq!(snap(&t), vec!["abcE"]);
+    }
+
+    /// DEC Special Character and Line Drawing Set（ESC ( 0）完整框线映射。
+    #[test]
+    fn dec_line_drawing_full_set() {
+        let mut t = TerminalState::new(40, 3);
+        t.feed(b"\x1b(0qxjklmntuvw");
+        assert_eq!(t.snapshot_trimmed(), vec!["─│┘┐┌└┼├┤┴┬"]);
+        t.feed(b"\x1b(B");
+        t.feed(b" plain");
+        assert_eq!(t.snapshot_trimmed(), vec!["─│┘┐┌└┼├┤┴┬ plain"]);
+    }
+
+    /// 宽字符行滚入 scrollback 后仍保留（含内部占位空格）。
+    #[test]
+    fn scrollback_wide_line_preserved() {
+        let mut t = TerminalState::new(6, 2);
+        t.feed("中文\r\nok".as_bytes());
+        t.feed(b"\r\nnext");
+        assert_eq!(t.scrollback_line(0), Some("中 文"));
+        assert_eq!(snap(&t), vec!["ok", "next"]);
+    }
+}
