@@ -12,7 +12,7 @@
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
 use vte::ansi::{
-    Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
+    Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes, NamedColor,
     KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedPrivateMode, PrivateMode,
     Processor, Rgb, StandardCharset,
 };
@@ -86,6 +86,8 @@ impl AttrState {
             Attr::CancelHidden => self.hidden = false,
             Attr::CancelStrike => self.strike = false,
             Attr::Italic | Attr::BlinkSlow | Attr::BlinkFast => {}
+            Attr::Foreground(Color::Named(NamedColor::Foreground)) => self.fg = None,
+            Attr::Background(Color::Named(NamedColor::Background)) => self.bg = None,
             Attr::Foreground(c) => self.fg = Some(*c),
             Attr::Background(c) => self.bg = Some(*c),
             Attr::UnderlineColor(_) => {}
