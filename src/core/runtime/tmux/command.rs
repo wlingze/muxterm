@@ -507,6 +507,12 @@ mod tests {
     }
 
     #[test]
+    fn refresh_client_size_formats_control_mode_size() {
+        let c = refresh_client_size(120, 40);
+        assert_eq!(c.as_str(), "refresh-client -C 120x40");
+    }
+
+    #[test]
     fn list_windows_cmd() {
         assert_eq!(list_windows(SessionId(0)).as_str(), "list-windows -t $0");
     }
