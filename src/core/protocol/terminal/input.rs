@@ -56,6 +56,10 @@ pub fn encode(event: &KeyEvent) -> Vec<u8> {
                 vec![0x1f]
             } else if *c == '?' {
                 vec![0x7f]
+            } else if *c == '/' {
+                // xterm/常见终端约定：Ctrl+/ 与 Ctrl+_ 一样发 US (0x1f)，
+                // 而不是按 ASCII 掩码落成 SI (0x0f)。
+                vec![0x1f]
             } else {
                 // 非标准 Ctrl 组合：尽量按 ASCII 控制位处理
                 vec![(*c as u8) & 0x1f]
