@@ -130,9 +130,31 @@ mod tests {
         assert_eq!(encode(&KeyEvent::Ctrl('C')), b"\x03");
     }
 
+    /// xterm 控制位对照表：Ctrl+标点/空格/字母都必须落到对应 C0 控制位。
+    /// 参考 xterm ctlseqs 的键盘编码约定。
+    #[test]
+    fn encode_ctrl_punctuation_matches_xterm_c0() {
+        let cases: &[(char, u8)] = &[
+            ('@', 0x00),
+            (' ', 0x00),
+            ('[', 0x1b),
+            ('\\', 0x1c),
+            (']', 0x1d),
+            ('^', 0x1e),
+            ('_', 0x1f),
+            ('?', 0x7f),
+            ('/', 0x1f), // Ctrl-/ 也按 ASCII 控制位编码
+        ];
+        for (key, byte) in cases {
+            assert_eq!(encode(&KeyEvent::Ctrl(*key)), vec![*byte], "Ctrl+{key}");
+        }
+    }
+
     #[test]
     fn encode_alt_char() {
         assert_eq!(encode(&KeyEvent::Alt('n')), b"\x1bn");
+        // Alt+非 ASCII：ESC 前缀 + UTF-8 原文
+        assert_eq!(encode(&KeyEvent::Alt('中')), "\x1b中".as_bytes());
     }
 
     #[test]
@@ -145,9 +167,19 @@ mod tests {
 
     #[test]
     fn encode_function_keys() {
-        assert_eq!(encode(&KeyEvent::Function(1)), b"\x1bOP");
-        assert_eq!(encode(&KeyEvent::Function(5)), b"\x1b[15~");
-        assert_eq!(encode(&KeyEvent::Function(12)), b"\x1b[24~");
+        // xterm 默认功能键表：F1-F4 用 SS3，F5-F12 用 CSI ~
+        let expected: &[&[u8]] = &[
+            b"\x1bOP", b"\x1bOQ", b"\x1bOR", b"\x1bOS", b"\x1b[15~", b"\x1b[17~",
+            b"\x1b[18~", b"\x1b[19~", b"\x1b[20~", b"\x1b[21~", b"\x1b[23~", b"\x1b[24~",
+        ];
+        for (i, exp) in expected.iter().enumerate() {
+            assert_eq!(
+                encode(&KeyEvent::Function((i + 1) as u8)),
+                *exp,
+                "F{}",
+                i + 1
+            );
+        }
         assert!(encode(&KeyEvent::Function(0)).is_empty());
         assert!(encode(&KeyEvent::Function(13)).is_empty());
     }

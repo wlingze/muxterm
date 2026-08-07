@@ -1351,6 +1351,46 @@ mod keyboard_protocol_tests {
         assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_EVENT_TYPES));
     }
 
+    /// kitty 键盘协议 `CSI = Ps ; 2 u`（并集）与 `CSI = Ps ; 3 u`（差集）。
+    #[test]
+    fn kitty_keyboard_mode_union_and_difference() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b[=1;2u"); // union DISAMBIGUATE_ESC_CODES
+        assert!(t
+            .keyboard_mode
+            .contains(KeyboardModes::DISAMBIGUATE_ESC_CODES));
+        t.feed(b"\x1b[=2;2u"); // union REPORT_EVENT_TYPES
+        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_EVENT_TYPES));
+        assert!(t
+            .keyboard_mode
+            .contains(KeyboardModes::DISAMBIGUATE_ESC_CODES));
+
+        t.feed(b"\x1b[=1;3u"); // difference：移除 DISAMBIGUATE_ESC_CODES
+        assert!(!t
+            .keyboard_mode
+            .contains(KeyboardModes::DISAMBIGUATE_ESC_CODES));
+        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_EVENT_TYPES));
+
+        t.feed(b"\x1b[=0u"); // replace：清空
+        assert_eq!(t.keyboard_mode, KeyboardModes::default());
+    }
+
+    /// kitty 键盘协议全部模式位都能独立设置。
+    #[test]
+    fn kitty_keyboard_all_flags_settable() {
+        let mut t = TerminalState::new(40, 5);
+        t.feed(b"\x1b[=15;2u"); // 1|2|4|8 = 15：union 前四档
+        assert!(t
+            .keyboard_mode
+            .contains(KeyboardModes::DISAMBIGUATE_ESC_CODES));
+        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_EVENT_TYPES));
+        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_ALTERNATE_KEYS));
+        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_ALL_KEYS_AS_ESC));
+        // 16：REPORT_ASSOCIATED_TEXT
+        t.feed(b"\x1b[=16;2u");
+        assert!(t.keyboard_mode.contains(KeyboardModes::REPORT_ASSOCIATED_TEXT));
+    }
+
     /// XTMODKEYS modifyOtherKeys（CSI > 4 ; m）。
     #[test]
     fn modify_other_keys() {
