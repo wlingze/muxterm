@@ -699,4 +699,44 @@ mod tests {
     fn parse_empty_args() {
         assert!(parse_cli_command(&[]).is_err());
     }
+
+    /// write-raw 的 data 必须按原始字节保留（含 ESC/OSC 引导字节）。
+    #[test]
+    fn parse_write_raw_preserves_bytes() {
+        let payload = "\u{1b}]10;rgb:0000/0000/0000\u{1b}\\";
+        let (cmd, _) = parse_cli_command(&args("write-raw", &["-t", "@1", payload])).unwrap();
+        match cmd {
+            CliCommand::WriteRaw {
+                target: Some(PaneId(1)),
+                data,
+            } => {
+                assert_eq!(data, payload.as_bytes());
+            }
+            _ => panic!("应为 WriteRaw"),
+        }
+    }
+
+    /// display-message 支持 tmux 风格 -F format。
+    #[test]
+    fn parse_display_message_format_flag() {
+        let (cmd, _) = parse_cli_command(&args(
+            "display-message",
+            &["-t", "@0", "-F", "#{pane_current_command}"],
+        ))
+        .unwrap();
+        assert!(matches!(
+            cmd,
+            CliCommand::DisplayMessage {
+                target: PaneId(0),
+                ref format
+            } if format == "#{pane_current_command}"
+        ));
+    }
+
+    /// dump-state 导出完整快照（TUI/daemon 同步用）。
+    #[test]
+    fn parse_dump_state() {
+        let (cmd, _) = parse_cli_command(&args("dump-state", &[])).unwrap();
+        assert!(matches!(cmd, CliCommand::DumpState));
+    }
 }

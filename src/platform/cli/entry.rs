@@ -243,4 +243,25 @@ mod tests {
             })
         );
     }
+
+    /// write-raw 的原始字节必须原样进入 Task::WriteRaw。
+    #[test]
+    fn write_raw_maps_to_task_with_bytes() {
+        let model = make_model();
+        let data = b"\x1b]10;rgb:0000/0000/0000\x1b\\".to_vec();
+        let task = cli_command_to_task(
+            &CliCommand::WriteRaw {
+                target: Some(crate::core::types::PaneId(1)),
+                data: data.clone(),
+            },
+            model.state(),
+        );
+        assert_eq!(
+            task,
+            Some(Task::WriteRaw {
+                target: crate::core::types::PaneId(1),
+                data,
+            })
+        );
+    }
 }

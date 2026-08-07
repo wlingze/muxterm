@@ -503,6 +503,33 @@ mod tests {
         assert!(out.contains("w1"));
     }
 
+    /// JSON 输出要能被下游（TUI/daemon）稳定消费。
+    #[test]
+    fn format_windows_json() {
+        let b = mock_with_pane();
+        let out = format_output(
+            &b,
+            &CliCommand::ListWindows { session: None },
+            OutputFormat::Json,
+        );
+        assert!(out.starts_with('['));
+        assert!(out.contains(r#""id":"w1""#));
+        assert!(out.contains(r#""session":"$"#));
+        assert!(out.contains(r#""tabs":1"#));
+    }
+
+    #[test]
+    fn format_layout_json() {
+        let b = mock_with_pane();
+        let out = format_output(
+            &b,
+            &CliCommand::ListLayout { window: None },
+            OutputFormat::Json,
+        );
+        assert!(out.starts_with('['));
+        assert!(out.contains(r#""tree":"@1""#), "layout JSON 应含 pane 叶子: {out}");
+    }
+
     #[test]
     fn format_display_message() {
         let b = mock_with_pane();
