@@ -11,8 +11,8 @@ use gtk4::glib;
 
 use crate::core::protocol::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
-    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_send_input,
-    MuxtermHandle,
+    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_resize_client,
+    muxterm_resize_pane, muxterm_send_input, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -230,6 +230,16 @@ impl CoreBridge {
             return 0;
         }
         unsafe { muxterm_send_input(self.handle, pane_id, data.as_ptr(), data.len()) }
+    }
+
+    /// 同步 tmux/SSH control client 的整体字符格尺寸。
+    pub fn resize_client(&self, cols: u16, rows: u16) -> i32 {
+        unsafe { muxterm_resize_client(self.handle, cols, rows) }
+    }
+
+    /// 同步本地 pane 的 pty 字符格尺寸。
+    pub fn resize_pane(&self, pane_id: u32, cols: u16, rows: u16) -> i32 {
+        unsafe { muxterm_resize_pane(self.handle, pane_id, cols, rows) }
     }
 
     pub fn is_pane_output(ev: &BridgeEvent) -> bool {
