@@ -155,9 +155,18 @@ mod tests {
             ('\\', 0x1c),
             (']', 0x1d),
             ('^', 0x1e),
+            ('~', 0x1e),
             ('_', 0x1f),
+            ('`', 0x00),
             ('?', 0x7f),
-            ('/', 0x1f), // Ctrl-/ 也按 ASCII 控制位编码
+            ('/', 0x1f), // Ctrl-/ 等同 Ctrl+_
+            ('2', 0x00),
+            ('3', 0x1b),
+            ('4', 0x1c),
+            ('5', 0x1d),
+            ('6', 0x1e),
+            ('7', 0x1f),
+            ('8', 0x7f),
         ];
         for (key, byte) in cases {
             assert_eq!(encode(&KeyEvent::Ctrl(*key)), vec![*byte], "Ctrl+{key}");
