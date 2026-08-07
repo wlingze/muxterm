@@ -13,9 +13,14 @@
 
 use vte::ansi::{
     Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
-    KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedPrivateMode, PrivateMode,
-    Processor, Rgb, StandardCharset,
+    KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
+    PrivateMode, Processor, Rgb, StandardCharset,
 };
+
+/// vte 用 `NamedColor` 索引表示 OSC 10-12 动态颜色。
+const OSC_FOREGROUND_INDEX: usize = NamedColor::Foreground as usize;
+const OSC_BACKGROUND_INDEX: usize = NamedColor::Background as usize;
+const OSC_CURSOR_INDEX: usize = NamedColor::Cursor as usize;
 
 /// 一个屏幕单元格：字符 + 前景/背景色 + 样式位 + hyperlink URI。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -111,6 +116,14 @@ pub struct TerminalState {
     cursor_row: usize,
     cursor_col: usize,
     attr: AttrState,
+    /// 待回写回 shell/pty 的查询应答字节（OSC 颜色 / CSI DA / DSR）。
+    pending_reply: Vec<u8>,
+    /// OSC 10 前景色（动态颜色查询用）。
+    fg_color: Rgb,
+    /// OSC 11 背景色。
+    bg_color: Rgb,
+    /// OSC 12 光标色。
+    cursor_color: Rgb,
     /// 是否处于 alternate screen（`CSI ? 1049 h`）。
     pub alternate_screen: bool,
     scroll_top: usize,
@@ -222,6 +235,14 @@ impl TerminalState {
             cursor_row: 0,
             cursor_col: 0,
             attr: AttrState::default(),
+            pending_reply: Vec::new(),
+            fg_color: Rgb { r: 0, g: 0, b: 0 },
+            bg_color: Rgb {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff,
+            },
+            cursor_color: Rgb { r: 0, g: 0, b: 0 },
             alternate_screen: false,
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -260,6 +281,92 @@ impl TerminalState {
     /// 当前光标列（0 基）。
     pub fn cursor_col(&self) -> usize {
         self.cursor_col
+    }
+
+    /// 取出待回写回 shell/pty 的查询应答字节，并清空内部队列。
+    ///
+    /// 前端在 `feed()` 输出后调用它，把返回字节经 `send_input` / WriteRaw
+    /// 原样写回，否则 `git lg` 的 OSC 10/11 颜色查询与 CSI DA 会泄漏成
+    /// 字面文本。
+    pub fn take_reply(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending_reply)
+    }
+
+    /// 运行时 resize：保留屏幕内容 / 光标 / 滚动区域，只调整行列。
+    ///
+    /// 不要在这里重建状态并重放累计输出——被截断的 ANSI 流从中间开始
+    /// 解析会让 TUI 内容错乱。
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let old_rows = self.rows();
+        let old_cols = self.cols();
+        if cols == old_cols && rows == old_rows {
+            return;
+        }
+
+        // 先调整每行列数（截断或补空白，保留原单元格属性）。
+        for row in &mut self.grid {
+            if row.len() > cols {
+                row.truncate(cols);
+            } else if row.len() < cols {
+                row.resize(cols, Cell::blank());
+            }
+        }
+
+        if rows > old_rows {
+            self.grid.resize(rows, vec![Cell::blank(); cols]);
+        } else if rows < old_rows {
+            if self.cursor_row >= old_rows.saturating_sub(1) {
+                // 光标在底行：保留屏幕底部（多数终端 resize 行为）。
+                let start = old_rows - rows;
+                self.grid.drain(..start);
+                self.cursor_row = rows - 1;
+            } else {
+                self.grid.truncate(rows);
+            }
+        }
+
+        // 滚动区域：整屏区域随高度伸缩；部分区域收缩到底部后复位为整屏。
+        self.scroll_top = self.scroll_top.min(rows - 1);
+        if self.scroll_bottom >= rows || (rows > old_rows && self.scroll_bottom == old_rows - 1) {
+            self.scroll_bottom = rows - 1;
+        }
+        if self.scroll_bottom < self.scroll_top {
+            self.scroll_top = 0;
+            self.scroll_bottom = rows - 1;
+        }
+
+        self.cursor_row = self.cursor_row.min(rows - 1);
+        self.cursor_col = self.cursor_col.min(cols - 1);
+    }
+
+    /// 追加待回写的应答字节。
+    fn push_reply(&mut self, bytes: &[u8]) {
+        self.pending_reply.extend_from_slice(bytes);
+    }
+
+    /// OSC 颜色查询应答（OSC 4 / 10-12 的 `?` 形式）。
+    ///
+    /// 格式参考 xterm / wezterm：
+    /// `ESC ] <prefix> ; rgb:RRRR/GGGG/BBBB ESC \`
+    fn osc_color_reply(&mut self, prefix: &str, index: usize) {
+        let color = if prefix.starts_with("4;") {
+            // OSC 4 查询的是调色板索引（ANSI 16 + 256 色）。
+            self.palette.get(index).copied().unwrap_or_default()
+        } else {
+            // OSC 10/11/12 查询动态前景/背景/光标色。
+            match index {
+                OSC_FOREGROUND_INDEX => self.fg_color,
+                OSC_BACKGROUND_INDEX => self.bg_color,
+                OSC_CURSOR_INDEX => self.cursor_color,
+                _ => Rgb { r: 0, g: 0, b: 0 },
+            }
+        };
+        let body = format!("{};rgb:{}", prefix, xterm_rgb(color));
+        self.push_reply(b"\x1b]");
+        self.push_reply(body.as_bytes());
+        self.push_reply(b"\x1b\\");
     }
 
     /// 把原始字节喂给解析器。
@@ -582,6 +689,38 @@ impl Handler for TerminalState {
         self.put_char(c);
     }
 
+    /// CSI DA / DECID：识别终端。
+    fn identify_terminal(&mut self, intermediate: Option<char>) {
+        match intermediate {
+            None | Some('?') => {
+                // Primary DA：VT525 兼容标识 + 常用属性（同 macOS 侧实现）。
+                self.push_reply(b"\x1b[?65;4;1;2;6;21;22;17;28c");
+            }
+            Some('>') => {
+                // Secondary DA：VT525 + PC 键盘。
+                self.push_reply(b"\x1b[>65;20;1c");
+            }
+            _ => {}
+        }
+    }
+
+    /// DSR：设备状态 / 光标位置报告。
+    fn device_status(&mut self, code: usize) {
+        match code {
+            5 => self.push_reply(b"\x1b[0n"),
+            6 => {
+                let pos = format!("\x1b[{};{}R", self.cursor_row + 1, self.cursor_col + 1);
+                self.push_reply(pos.as_bytes());
+            }
+            _ => {}
+        }
+    }
+
+    /// OSC 颜色查询（`OSC 4 ; n ; ?` / `OSC 10..12 ; ?`）。
+    fn dynamic_color_sequence(&mut self, prefix: String, index: usize, _terminator: &str) {
+        self.osc_color_reply(&prefix, index);
+    }
+
     fn goto(&mut self, line: i32, col: usize) {
         self.cursor_row = line.clamp(0, self.rows() as i32 - 1) as usize;
         self.cursor_col = col.min(self.cols().saturating_sub(1));
@@ -838,6 +977,15 @@ impl Handler for TerminalState {
             self.palette[index] = default_palette()[index];
         }
     }
+}
+
+/// Rgb → xterm 的 `RRRR/GGGG/BBBB` 形式。
+///
+/// vte 的 Rgb 是 8 位分量；xterm rgb: 格式按惯例把每分量复制成 4 位
+/// （ff → ffff），与 macOS `TerminalQueryReply` 的 RRRR/GGGG/BBBB 一致。
+fn xterm_rgb(color: Rgb) -> String {
+    let dup = |v: u8| format!("{v:02x}{v:02x}");
+    format!("{}/{}/{}", dup(color.r), dup(color.g), dup(color.b))
 }
 
 #[cfg(test)]
