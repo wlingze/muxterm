@@ -2217,3 +2217,160 @@ mod tests {
         }
     }
 }
+
+/// iTerm2 tmux integration / tmux 控制协议一致性测试。
+///
+/// 参考 iTerm2 的 tmux integration 文档与 tmux `control.c`：
+/// - pane/window 激活切换消息（window-pane-changed / session-window-changed）
+/// - unlinked window 生命周期
+/// - 流控（pause/continue）与扩展输出（extended-output）
+/// - 命令响应边界（begin/end/error）
+#[cfg(test)]
+mod iterm2_protocol_conformance_tests {
+    use super::*;
+
+    /// %output 的 pane id 同时接受 `@N`、`%N`、裸数字 N（tmux 3.3+ 变体）。
+    #[test]
+    fn output_accepts_at_percent_and_bare_pane_ids() {
+        let at = parse_line("%output @7 \"hi\"").unwrap();
+        assert!(matches!(at, Message::Output { pane: PaneId(7), .. }));
+        let percent = parse_line("%output %7 \"hi\"").unwrap();
+        assert!(matches!(percent, Message::Output { pane: PaneId(7), .. }));
+        let bare = parse_line("%output 7 \"hi\"").unwrap();
+        assert!(matches!(bare, Message::Output { pane: PaneId(7), .. }));
+    }
+
+    /// unlinked window 的 add/close 生命周期（iTerm2 集成会忽略未链接窗口）。
+    #[test]
+    fn unlinked_window_lifecycle() {
+        let add = parse_line("%unlinked-window-add @12").unwrap();
+        assert!(matches!(add, Message::UnlinkedWindowAdd { window: WindowId(12) }));
+        let close = parse_line("%unlinked-window-close @12").unwrap();
+        assert!(matches!(
+            close,
+            Message::UnlinkedWindowClose { window: WindowId(12) }
+        ));
+    }
+
+    /// 激活 pane/window 切换事件。
+    #[test]
+    fn active_pane_and_window_change_events() {
+        let pane = parse_line("%window-pane-changed @3 @9").unwrap();
+        assert!(matches!(
+            pane,
+            Message::WindowPaneChanged {
+                window: WindowId(3),
+                pane: PaneId(9)
+            }
+        ));
+        let window = parse_line("%session-window-changed $1 @4").unwrap();
+        assert!(matches!(
+            window,
+            Message::SessionWindowChanged {
+                session: SessionId(1),
+                window: WindowId(4)
+            }
+        ));
+    }
+
+    /// pane 模式切换与退出原因。
+    #[test]
+    fn pane_mode_and_exit_reason() {
+        let mode = parse_line("%pane-mode-changed @2 copy-mode").unwrap();
+        assert!(matches!(
+            mode,
+            Message::PaneModeChanged {
+                pane: PaneId(2),
+                ref mode
+            } if mode == "copy-mode"
+        ));
+        let exit = parse_line("%exit server exited").unwrap();
+        assert!(matches!(
+            exit,
+            Message::Exit {
+                reason: Some(ref r)
+            } if r == "server exited"
+        ));
+        let bare = parse_line("%exit").unwrap();
+        assert!(matches!(bare, Message::Exit { reason: None }));
+    }
+
+    /// 流控消息保留 flags（tmux 3.3+ pause-after）。
+    #[test]
+    fn flow_control_pause_continue() {
+        let pause = parse_line("%pause -U 1 2").unwrap();
+        assert!(matches!(pause, Message::Pause { ref args } if args == "-U 1 2"));
+        let cont = parse_line("%continue 3").unwrap();
+        assert!(matches!(cont, Message::Continue { ref args } if args == "3"));
+    }
+
+    /// extended-output 的 type 与 args 原样保留。
+    #[test]
+    fn extended_output_preserves_type_and_args() {
+        let msg = parse_line("%extended-output @5 hyperlink 8;;https://example.com").unwrap();
+        assert!(matches!(
+            msg,
+            Message::ExtendedOutput {
+                pane: PaneId(5),
+                ref output_type,
+                ref args
+            } if output_type == "hyperlink" && args == "8;;https://example.com"
+        ));
+    }
+
+    /// %error 边界保留 flags，供上层识别命令失败。
+    #[test]
+    fn boundary_error_keeps_flags() {
+        let msg = parse_line("%error 123 7 0").unwrap();
+        match msg {
+            Message::ResponseBoundary(b) => {
+                assert_eq!(b.kind, NotificationKind::Error);
+                assert_eq!(b.time, 123);
+                assert_eq!(b.number, 7);
+                assert_eq!(b.flags, 0);
+            }
+            _ => panic!("应为 error 边界"),
+        }
+    }
+
+    /// layout-change 的可见布局参数若不是合法 layout，应安全忽略。
+    #[test]
+    fn layout_change_ignores_non_layout_visible_flag() {
+        let msg = parse_line("%layout-change @0 80x24,0,0 *").unwrap();
+        assert!(matches!(
+            msg,
+            Message::LayoutChange {
+                window: WindowId(0),
+                visible_layout: None,
+                ..
+            }
+        ));
+    }
+
+    /// C 转义解码：八进制、十六进制、ESC/ST、SO/backspace 都要逐字节还原。
+    #[test]
+    fn c_string_decoder_handles_octal_hex_and_control_bytes() {
+        let bytes = ControlEscapeDecoder::new()
+            .decode(r##"\033[31m\017\010\x41\012\\\"\e"##)
+            .unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x1b, b'[', b'3', b'1', b'm', 0x0f, 0x08, b'A', b'\n', b'\\', b'"', 0x1b
+            ]
+        );
+    }
+
+    /// 未知消息保留 keyword 与原始内容，方便上层告警而不是崩溃。
+    #[test]
+    fn unknown_message_preserves_keyword_and_raw() {
+        let msg = parse_line("%no-such-thing a b c").unwrap();
+        assert!(matches!(
+            msg,
+            Message::Unknown {
+                ref keyword,
+                ref raw
+            } if keyword == "no-such-thing" && raw == "a b c"
+        ));
+    }
+}
