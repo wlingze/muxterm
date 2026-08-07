@@ -1496,3 +1496,180 @@ mod scrollback_tests {
         assert_eq!(snap(&t), Vec::<String>::new());
     }
 }
+
+/// 终端查询应答回归测试。
+///
+/// 参考 xterm 控制序列文档
+/// （https://invisible-island.net/xterm/ctlseqs/ctlseqs.html）与 wezterm
+/// `set_or_query!`（term/src/terminalstate/performer.rs）：
+/// - OSC 10/11/12 颜色查询回复 `ESC ] <code> ; rgb:RRRR/GGGG/BBBB ESC \`
+/// - CSI DA（设备属性）查询回复 `ESC [ ? 65 ; ... c`
+///
+/// 这些字节必须经 `take_reply()` 原样交回 shell/pty，否则 `git lg` 里
+/// `10;rgb:...` / `11;rgb:...` / `65;...c` 会泄漏成普通文本命令。
+#[cfg(test)]
+mod query_reply_tests {
+    use super::*;
+
+    fn reply(t: &mut TerminalState, data: &[u8]) -> Vec<u8> {
+        t.feed(data);
+        t.take_reply()
+    }
+
+    #[test]
+    fn osc10_foreground_query_returns_xterm_rgb() {
+        let mut t = TerminalState::new(80, 24);
+        let r = reply(&mut t, b"\x1b]10;?\x1b\\");
+        assert_eq!(r, b"\x1b]10;rgb:0000/0000/0000\x1b\\");
+    }
+
+    #[test]
+    fn osc11_background_query_returns_xterm_rgb() {
+        let mut t = TerminalState::new(80, 24);
+        let r = reply(&mut t, b"\x1b]11;?\x07");
+        assert_eq!(r, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\");
+    }
+
+    #[test]
+    fn osc12_cursor_query_returns_xterm_rgb() {
+        let mut t = TerminalState::new(80, 24);
+        let r = reply(&mut t, b"\x1b]12;?\x1b\\");
+        assert_eq!(r, b"\x1b]12;rgb:0000/0000/0000\x1b\\");
+    }
+
+    #[test]
+    fn osc4_palette_query_returns_xterm_rgb() {
+        let mut t = TerminalState::new(80, 24);
+        let r = reply(&mut t, b"\x1b]4;1;?\x1b\\");
+        assert_eq!(r, b"\x1b]4;1;rgb:cdcd/0000/0000\x1b\\");
+    }
+
+    #[test]
+    fn primary_da_query_returns_vt525_identity() {
+        let mut t = TerminalState::new(80, 24);
+        // CSI c / CSI ? c / ESC Z 都是 Primary DA 查询
+        let r1 = reply(&mut t, b"\x1b[c");
+        assert_eq!(r1, b"\x1b[?65;4;1;2;6;21;22;17;28c");
+        let r2 = reply(&mut t, b"\x1b[?c");
+        assert_eq!(r2, b"\x1b[?65;4;1;2;6;21;22;17;28c");
+        let r3 = reply(&mut t, b"\x1bZ");
+        assert_eq!(r3, b"\x1b[?65;4;1;2;6;21;22;17;28c");
+    }
+
+    #[test]
+    fn secondary_da_query_returns_secondary_identity() {
+        let mut t = TerminalState::new(80, 24);
+        let r = reply(&mut t, b"\x1b[>c");
+        assert_eq!(r, b"\x1b[>65;20;1c");
+    }
+
+    #[test]
+    fn dsr_status_and_cursor_position_reply() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b[3;5H");
+        let r1 = reply(&mut t, b"\x1b[5n");
+        assert_eq!(r1, b"\x1b[0n");
+        let r2 = reply(&mut t, b"\x1b[6n");
+        assert_eq!(r2, b"\x1b[3;5R");
+    }
+
+    #[test]
+    fn query_reply_does_not_enter_screen_grid() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]10;?\x1b\\\x1b[?c");
+        let reply_bytes = t.take_reply();
+        assert!(!reply_bytes.is_empty());
+        assert_eq!(t.snapshot_trimmed(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn query_split_across_feed_calls_still_replies() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]10");
+        assert!(t.take_reply().is_empty());
+        t.feed(b";?\x1b\\");
+        let r = t.take_reply();
+        assert_eq!(r, b"\x1b]10;rgb:0000/0000/0000\x1b\\");
+    }
+}
+
+/// 运行时 resize 回归测试。
+///
+/// 之前 TUI 在 resize 时直接重建 `TerminalState` 并从头重放被截断的
+/// 累计输出，导致 ANSI 流从中间开始解析、屏幕内容错乱。真实 resize
+/// 必须保留屏幕/光标/滚动区域，只调整行列。
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+
+    fn snap(t: &TerminalState) -> Vec<String> {
+        t.snapshot_trimmed()
+    }
+
+    #[test]
+    fn resize_grows_keeps_content_and_cursor() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"abc");
+        t.feed(b"\x1b[2;2H");
+        t.resize(20, 5);
+        assert_eq!(t.cols(), 20);
+        assert_eq!(t.rows(), 5);
+        assert_eq!(snap(&t), vec!["abc"]);
+        assert_eq!((t.cursor_row(), t.cursor_col()), (1, 1));
+        // resize 后继续输出仍落在原光标位置
+        t.feed(b"X");
+        assert_eq!(t.cell(1, 1).unwrap().ch, 'X');
+    }
+
+    #[test]
+    fn resize_shrinks_keeps_bottom_when_cursor_at_bottom() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+        t.resize(10, 3);
+        assert_eq!(t.rows(), 3);
+        assert_eq!(snap(&t), vec!["3", "4", "5"]);
+        assert_eq!(t.cursor_row(), 2);
+    }
+
+    #[test]
+    fn resize_shrinks_truncates_when_cursor_not_at_bottom() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+        t.feed(b"\x1b[2;1H");
+        t.resize(10, 3);
+        assert_eq!(snap(&t), vec!["1", "2", "3"]);
+        assert_eq!(t.cursor_row(), 1);
+    }
+
+    #[test]
+    fn resize_clamps_cursor_and_scroll_region() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[2;4r");
+        t.feed(b"\x1b[5;10H");
+        t.resize(6, 3);
+        assert_eq!(t.cursor_row(), 2);
+        assert_eq!(t.cursor_col(), 5);
+        assert_eq!(t.scroll_top, 1);
+        assert_eq!(t.scroll_bottom, 2);
+    }
+
+    #[test]
+    fn resize_same_size_is_noop() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"abc");
+        let before = t.snapshot();
+        t.resize(10, 3);
+        assert_eq!(t.snapshot(), before);
+        assert_eq!(t.scroll_top, 0);
+        assert_eq!(t.scroll_bottom, 2);
+    }
+
+    #[test]
+    fn resize_expands_extends_scroll_region_to_new_height() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"x");
+        t.resize(10, 6);
+        assert_eq!(t.scroll_bottom, 5);
+        assert_eq!(snap(&t), vec!["x"]);
+    }
+}
