@@ -652,10 +652,7 @@ mod tests {
     #[test]
     fn send_keys_literal_does_not_shell_expand() {
         let c = send_keys(PaneId(1), &[Key::literal("$HOME `id` ; echo hi")]);
-        assert_eq!(
-            c.as_str(),
-            r#"send-keys -t %1 -l "$HOME `id` ; echo hi""#
-        );
+        assert_eq!(c.as_str(), r#"send-keys -t %1 -l "$HOME `id` ; echo hi""#);
     }
 
     /// 窗口名里的换行/ESC/控制字节必须编码成 C 转义。

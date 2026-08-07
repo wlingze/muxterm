@@ -2233,22 +2233,47 @@ mod iterm2_protocol_conformance_tests {
     #[test]
     fn output_accepts_at_percent_and_bare_pane_ids() {
         let at = parse_line("%output @7 \"hi\"").unwrap();
-        assert!(matches!(at, Message::Output { pane: PaneId(7), .. }));
+        assert!(matches!(
+            at,
+            Message::Output {
+                pane: PaneId(7),
+                ..
+            }
+        ));
         let percent = parse_line("%output %7 \"hi\"").unwrap();
-        assert!(matches!(percent, Message::Output { pane: PaneId(7), .. }));
+        assert!(matches!(
+            percent,
+            Message::Output {
+                pane: PaneId(7),
+                ..
+            }
+        ));
         let bare = parse_line("%output 7 \"hi\"").unwrap();
-        assert!(matches!(bare, Message::Output { pane: PaneId(7), .. }));
+        assert!(matches!(
+            bare,
+            Message::Output {
+                pane: PaneId(7),
+                ..
+            }
+        ));
     }
 
     /// unlinked window 的 add/close 生命周期（iTerm2 集成会忽略未链接窗口）。
     #[test]
     fn unlinked_window_lifecycle() {
         let add = parse_line("%unlinked-window-add @12").unwrap();
-        assert!(matches!(add, Message::UnlinkedWindowAdd { window: WindowId(12) }));
+        assert!(matches!(
+            add,
+            Message::UnlinkedWindowAdd {
+                window: WindowId(12)
+            }
+        ));
         let close = parse_line("%unlinked-window-close @12").unwrap();
         assert!(matches!(
             close,
-            Message::UnlinkedWindowClose { window: WindowId(12) }
+            Message::UnlinkedWindowClose {
+                window: WindowId(12)
+            }
         ));
     }
 
@@ -2355,9 +2380,7 @@ mod iterm2_protocol_conformance_tests {
             .unwrap();
         assert_eq!(
             bytes,
-            vec![
-                0x1b, b'[', b'3', b'1', b'm', 0x0f, 0x08, b'A', b'\n', b'\\', b'"', 0x1b
-            ]
+            vec![0x1b, b'[', b'3', b'1', b'm', 0x0f, 0x08, b'A', b'\n', b'\\', b'"', 0x1b]
         );
     }
 

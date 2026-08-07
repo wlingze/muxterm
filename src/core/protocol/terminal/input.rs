@@ -192,8 +192,18 @@ mod tests {
     fn encode_function_keys() {
         // xterm 默认功能键表：F1-F4 用 SS3，F5-F12 用 CSI ~
         let expected: &[&[u8]] = &[
-            b"\x1bOP", b"\x1bOQ", b"\x1bOR", b"\x1bOS", b"\x1b[15~", b"\x1b[17~",
-            b"\x1b[18~", b"\x1b[19~", b"\x1b[20~", b"\x1b[21~", b"\x1b[23~", b"\x1b[24~",
+            b"\x1bOP",
+            b"\x1bOQ",
+            b"\x1bOR",
+            b"\x1bOS",
+            b"\x1b[15~",
+            b"\x1b[17~",
+            b"\x1b[18~",
+            b"\x1b[19~",
+            b"\x1b[20~",
+            b"\x1b[21~",
+            b"\x1b[23~",
+            b"\x1b[24~",
         ];
         for (i, exp) in expected.iter().enumerate() {
             assert_eq!(
