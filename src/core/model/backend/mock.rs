@@ -482,6 +482,7 @@ impl Backend for MockBackend {
                 });
                 TaskOutcome::Done
             }
+            Task::ResizeClient { .. } => TaskOutcome::Done,
             Task::ResizePaneStep { target, .. } => {
                 if !self.panes.iter().any(|p| p.id == *target) {
                     return Ok(TaskOutcome::Rejected {

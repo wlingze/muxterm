@@ -222,6 +222,9 @@ impl DaemonBackend {
                 width: Some(*cols),
                 height: Some(*rows),
             }),
+            // daemon 侧由本地 shell pty 管理尺寸；TUI 的 client resize
+            // 只对 tmux control client 有意义。
+            Task::ResizeClient { .. } => None,
             Task::Shutdown => None, // detach：不 kill daemon
             Task::NextPane
             | Task::PrevPane

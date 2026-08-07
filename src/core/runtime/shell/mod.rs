@@ -1070,6 +1070,10 @@ impl Backend for LocalBackend {
                 TaskOutcome::Done
             }
 
+            Task::ResizeClient { .. } => TaskOutcome::Rejected {
+                reason: "LocalBackend 不支持 client resize".into(),
+            },
+
             Task::ResizePaneStep { target, .. } => {
                 // 步进 resize：简化为 Done（真实实现需要当前尺寸 + 方向计算）
                 if !self.panes.iter().any(|p| p.info.id == *target) {

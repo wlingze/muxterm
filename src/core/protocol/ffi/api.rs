@@ -532,6 +532,22 @@ pub unsafe extern "C" fn muxterm_resize_pane(
     }
 }
 
+/// 调整 tmux 控制 client 的字符格尺寸。0=ok，-1=err。
+///
+/// # Safety
+/// `h` 有效。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_resize_client(h: *mut MuxtermHandle, cols: u16, rows: u16) -> i32 {
+    if h.is_null() || cols == 0 || rows == 0 {
+        return -1;
+    }
+    let handle = &mut *h;
+    match handle.model.execute(Task::ResizeClient { cols, rows }) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
 /// 列出 tabs，返回写入数量。
 ///
 /// # Safety

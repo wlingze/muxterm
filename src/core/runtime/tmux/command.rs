@@ -259,6 +259,11 @@ pub fn resize_pane(pane: PaneId, width: Option<u32>, height: Option<u32>) -> Tmu
     build(&args, "resize-pane")
 }
 
+/// 调整 tmux 控制模式 client 的字符格尺寸。
+pub fn refresh_client_size(cols: u32, rows: u32) -> TmuxCommand {
+    build(&[format!("-C {cols}x{rows}")], "refresh-client")
+}
+
 /// list-windows -t <session>。
 pub fn list_windows(session: SessionId) -> TmuxCommand {
     build(&[session_target(session)], "list-windows")

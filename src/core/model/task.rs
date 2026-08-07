@@ -31,6 +31,8 @@ pub enum Task {
         cols: u16,
         rows: u16,
     },
+    /// resize tmux 控制 client；与 pane resize 分开，避免前端逐 pane 触发布局反馈。
+    ResizeClient { cols: u16, rows: u16 },
     /// resize pane 的某一方向（增量，正=变大，负=变小），用于拖拽分割条。
     ResizePaneStep {
         target: PaneId,
