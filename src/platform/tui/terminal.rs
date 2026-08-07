@@ -159,3 +159,49 @@ impl TerminalManager {
         self.panes.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// resize 不再重建状态：屏幕内容和光标被保留，增量输出继续正确。
+    #[test]
+    fn pane_resize_preserves_screen_and_continues_delta() {
+        let mut pt = PaneTerminal::new(10, 5);
+        pt.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+        pt.resize(10, 3);
+        assert_eq!(pt.rows(), 3);
+        let trimmed = |s: &str| s.trim_end().to_string();
+        assert_eq!(
+            pt.screen().iter().map(|s| trimmed(s)).collect::<Vec<_>>(),
+            vec!["3", "4", "5"]
+        );
+        // 增量同步：resize 后新输出只喂增量，不重放历史
+        pt.feed(b"\r\n6");
+        assert_eq!(
+            pt.screen().iter().map(|s| trimmed(s)).collect::<Vec<_>>(),
+            vec!["4", "5", "6"]
+        );
+    }
+
+    /// 查询应答从 TerminalState 冒泡出来，供前端回写 shell。
+    #[test]
+    fn pane_take_reply_returns_query_response() {
+        let mut pt = PaneTerminal::new(80, 24);
+        pt.feed(b"\x1b]10;?\x1b\\");
+        assert_eq!(pt.take_reply(), b"\x1b]10;rgb:0000/0000/0000\x1b\\");
+        assert!(pt.take_reply().is_empty());
+    }
+
+    /// TerminalManager 可以统一收集所有 pane 的应答。
+    #[test]
+    fn manager_drains_replies_for_all_panes() {
+        let mut mgr = TerminalManager::new();
+        mgr.feed(1, 80, 24, b"\x1b]10;?\x1b\\");
+        mgr.feed(2, 80, 24, b"\x1b[c");
+        let replies = mgr.drain_replies();
+        assert_eq!(replies.len(), 2);
+        assert!(replies.iter().any(|(id, _)| *id == 1));
+        assert!(replies.iter().any(|(id, _)| *id == 2));
+    }
+}
