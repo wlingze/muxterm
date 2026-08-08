@@ -171,12 +171,17 @@ fn draw_tab_bar(
     }
     let mut spans: Vec<Span> = Vec::new();
     for (i, t) in tabs.iter().enumerate() {
-        let label = format!(" {}:{} ", i + 1, t.name);
-        if t.is_active {
-            spans.push(Span::styled(label, theme.active_bg()));
+        let label = if t.is_active {
+            format!(" {}:{}* ", i + 1, t.name)
         } else {
-            spans.push(Span::styled(label, theme.dim_style()));
-        }
+            format!(" {}:{} ", i + 1, t.name)
+        };
+        let style = if t.is_active {
+            theme.active_bg()
+        } else {
+            theme.dim_style()
+        };
+        spans.push(Span::styled(label, style));
         spans.push(Span::raw(" "));
     }
     Paragraph::new(Line::from(spans)).render(area, buf);
@@ -707,6 +712,13 @@ mod tests {
         let buf = render(&snap_single_pane(), None, RenderOpts::default());
         let s = buf_to_string(&buf);
         assert!(s.contains("1:") && s.contains("t1"));
+    }
+
+    #[test]
+    fn render_tab_bar_marks_active_tab() {
+        let buf = render(&snap_single_pane(), None, RenderOpts::default());
+        let s = buf_to_string(&buf);
+        assert!(s.contains("1:t1*"), "激活 tab 应有 * 标记: {s:?}");
     }
 
     #[test]
