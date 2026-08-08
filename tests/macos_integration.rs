@@ -350,19 +350,22 @@ unsafe fn switch_tab(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle, t
     panic!("切换到 tab {tab_id} 超时");
 }
 
-unsafe fn active_pane_count(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle) -> i32 {
+unsafe fn tab_pane_count(
+    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    tab_id: u32,
+) -> i32 {
     let mut panes = [CPane {
         id: 0,
         cols: 0,
         rows: 0,
         is_active: 0,
     }; 16];
-    // tab_id=0 → 当前 active tab（FFI 约定）
-    muxterm_get_panes(h, 0, panes.as_mut_ptr(), 16)
+    muxterm_get_panes(h, tab_id, panes.as_mut_ptr(), 16)
 }
 
-unsafe fn active_layout_root(
+unsafe fn tab_layout_root(
     h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    tab_id: u32,
 ) -> CLayoutNode {
     let mut root = CLayoutNode {
         type_: LAYOUT_LEAF,
@@ -371,7 +374,7 @@ unsafe fn active_layout_root(
         first: ptr::null(),
         second: ptr::null(),
     };
-    assert_eq!(muxterm_get_layout(h, 0, &mut root), 0);
+    assert_eq!(muxterm_get_layout(h, tab_id, &mut root), 0);
     root
 }
 
@@ -412,8 +415,8 @@ fn macos_ffi_attach_2tab3pane_layout() {
 
         for tid in &tab_ids {
             switch_tab(h, *tid);
-            let np = active_pane_count(h);
-            let root = active_layout_root(h);
+            let np = tab_pane_count(h, *tid);
+            let root = tab_layout_root(h, *tid);
             let leaves = count_layout_leaves(&root);
             assert_eq!(
                 leaves, np as usize,
@@ -442,7 +445,11 @@ fn macos_ffi_attach_2tab3pane_layout() {
             .map(|(id, _)| *id)
             .unwrap();
         switch_tab(h, three_tab);
-        assert_eq!(active_pane_count(h), 3, "切换后 3-pane tab 仍应有 3 panes");
+        assert_eq!(
+            tab_pane_count(h, three_tab),
+            3,
+            "切换后 3-pane tab 仍应有 3 panes"
+        );
 
         let _ = muxterm_shutdown(h);
         muxterm_free(h);
@@ -617,7 +624,7 @@ fn macos_ffi_split_and_new_tab_complete_within_latency_budget() {
         let mut split_elapsed = None;
         for _ in 0..200 {
             let _ = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
-            if active_pane_count(h) >= 2 {
+            if tab_pane_count(h, 0) >= 2 {
                 split_elapsed = Some(split_started.elapsed());
                 break;
             }
@@ -867,7 +874,7 @@ fn macos_ffi_tmux_client_resize_is_stable_and_pane_axis_resize_persists() {
             .find(|id| tab_layout_shape(h, *id).0.len() == 3)
             .expect("应找到 3-pane active tab");
         switch_tab(h, three_tab);
-        let root_before = active_layout_root(h);
+        let root_before = tab_layout_root(h, three_tab);
         assert_eq!(
             count_layout_leaves(&root_before),
             3,
@@ -887,7 +894,7 @@ fn macos_ffi_tmux_client_resize_is_stable_and_pane_axis_resize_persists() {
         assert!(after
             .iter()
             .all(|(_, cols, rows)| *cols <= 120 && *rows <= 36));
-        assert_eq!(count_layout_leaves(&active_layout_root(h)), 3);
+        assert_eq!(count_layout_leaves(&tab_layout_root(h, three_tab)), 3);
 
         // 第一 pane 是初始横向 split 左侧的边界 pane，单轴 resize 后应保存到 tmux layout。
         let mut panes = [CPane {
@@ -911,7 +918,7 @@ fn macos_ffi_tmux_client_resize_is_stable_and_pane_axis_resize_persists() {
         assert!(persisted
             .iter()
             .all(|(_, cols, rows)| *cols >= 10 && *rows >= 5));
-        assert_eq!(count_layout_leaves(&active_layout_root(h)), 3);
+        assert_eq!(count_layout_leaves(&tab_layout_root(h, three_tab)), 3);
 
         // 第二个 layout 叶子位于内层纵向 split，验证上下分隔条也能持久化。
         let vertical_target = panes[1].id;
