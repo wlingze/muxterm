@@ -446,6 +446,13 @@ impl TmuxBackend {
             Message::WindowClose { window } => {
                 // tmux window 关闭 → muxterm Tab 关闭（虚拟 Window 不动）
                 let tab_id = TabId(window.0);
+                // 先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
+                // 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在
+                // PaneClosed 时移除）。
+                for p in self.panes.iter().filter(|p| p.tab == tab_id) {
+                    self.events
+                        .push_back(StateChange::PaneClosed { pane: p.id });
+                }
                 self.panes.retain(|p| p.tab != tab_id);
                 self.layouts.remove(&tab_id);
                 self.tabs.retain(|t| t.id != tab_id);
@@ -2339,6 +2346,55 @@ mod tests {
         assert!(
             b.events.iter().any(|e| matches!(e, StateChange::ActivePaneChanged { pane, .. } if *pane == crate::core::types::PaneId(2))),
             "应有 ActivePaneChanged(pane2)"
+        );
+    }
+
+    /// %window-close：除 TabClosed 外，还必须为每个 pane 发 PaneClosed，
+    /// 前端才能回收保留的终端视图（macOS SwiftTerm 视图只在 PaneClosed 时移除）。
+    #[test]
+    fn window_close_emits_pane_closed_for_each_pane() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let win = crate::core::types::WindowId(2);
+        let tab = crate::core::types::TabId(2);
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: tab,
+            name: "t2".into(),
+            window: TmuxBackend::VIRTUAL_WINDOW_ID,
+            active: false,
+        });
+        for id in [5u32, 6] {
+            b.panes.push(crate::core::model::state::PaneInfo {
+                id: crate::core::types::PaneId(id),
+                tab,
+                cols: 40,
+                rows: 24,
+                active: false,
+                title: format!("p{id}"),
+            });
+        }
+
+        b.handle_message(Message::WindowClose { window: win });
+
+        assert!(
+            b.events
+                .iter()
+                .any(|e| matches!(e, StateChange::TabClosed { tab: t } if *t == tab)),
+            "应有 TabClosed"
+        );
+        for id in [5u32, 6] {
+            assert!(
+                b.events
+                    .iter()
+                    .any(|e| matches!(e, StateChange::PaneClosed { pane: p } if p.0 == id)),
+                "应有 PaneClosed(pane {id})"
+            );
+        }
+        assert!(
+            b.panes.iter().all(|p| p.tab != tab),
+            "window 关闭后 pane 应全部移除"
         );
     }
 
