@@ -36,6 +36,7 @@ async fn connect_remote(
     let config = TmuxClientConfig {
         mode: Some(ConnectMode::NewSession {
             name: Some(name.into()),
+            start_directory: None,
         }),
         extra_args: vec!["-L".into(), env.remote_tmux_socket.clone()],
         cols: Some(80),

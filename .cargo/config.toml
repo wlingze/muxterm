@@ -1,5 +1,2 @@
-# 所有 worktree 共享同一编译缓存（相对本仓库根目录的上一级）。
-# 主仓库 ~/Project/muxterm 与 ~/Project/muxterm-<name> worktree
-# 都会解析到 ~/Project/muxterm-target。
-[build]
-target-dir = "../muxterm-target"
+# 使用仓库本地默认 target 目录（./target），不跨 worktree 共享编译缓存。
+# 可用环境变量 CARGO_TARGET_DIR 覆盖。

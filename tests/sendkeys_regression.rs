@@ -219,7 +219,7 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
 #[cfg(feature = "tui")]
 fn daemon_local_shell_cli_exact_marker_in_capture() {
     let bin = std::path::PathBuf::from(
-        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "../muxterm-target".to_string()),
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string()),
     )
     .join("debug")
     .join("muxterm");

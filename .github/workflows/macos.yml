@@ -30,8 +30,6 @@ jobs:
     name: macos / required
     runs-on: macos-latest
     timeout-minutes: 45
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/../muxterm-target
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,7 +55,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ${{ github.workspace }}/../muxterm-target
+            target
           key: ${{ runner.os }}-macos-${{ hashFiles('Cargo.toml', 'Cargo.lock', '**/Package.resolved') }}
 
       - name: cargo build ffi (release)
@@ -66,6 +64,12 @@ jobs:
       - name: cargo test macos integration
         run: cargo test --no-default-features --features ffi --test macos_integration
         timeout-minutes: 15
+
+      - name: Link libmuxterm.a into Vendor (Swift links local ./target)
+        run: |
+          set -euo pipefail
+          mkdir -p src/platform/macos/Vendor
+          ln -sfn "$PWD/target/release/libmuxterm.a" src/platform/macos/Vendor/libmuxterm.a
 
       # Headless Swift unit tests (ChromeTests): keyboard bindings / pane switching /
       # PaneOutputCursor are pure logic and need no GUI. Runs on every PR, guarding
