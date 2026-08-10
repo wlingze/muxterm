@@ -602,7 +602,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var outputSeen = false
         var uiStateChanged = false
         for ev in events {
-            if ev.isPaneOutput {
+            if ev.isPaneClosed {
+                // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
+                terminalManager.removePane(ev.paneId)
+            } else if ev.isPaneOutput {
                 terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
                 outputSeen = true
             } else if StateEventPolicy.requiresLayoutReload(ev.type) {

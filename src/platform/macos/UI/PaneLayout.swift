@@ -77,7 +77,8 @@ final class PaneLayoutView: NSView {
         pendingGeometryPaneIds = nil
 
         guard let tree else {
-            terminalManager.retainOnly(paneIds: [])
+            // 不销毁任何 pane 视图：tab 切换 / 布局重建必须保留 SwiftTerm
+            // 状态，只有 STATE_PANE_CLOSED 才移除视图。
             return true
         }
 
@@ -96,7 +97,6 @@ final class PaneLayoutView: NSView {
 
         let ids = Set(collectPaneIds(tree))
         currentPaneIds = ids
-        terminalManager.retainOnly(paneIds: ids)
 
         let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
         markActivePane(active)
