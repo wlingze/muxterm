@@ -20,6 +20,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::core::protocol::ffi::types::{STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED};
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::palette::{
@@ -64,11 +65,15 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     let mut palette_open = false;
     // 终端渲染状态：每个 pane 一个 TerminalState
     let mut term_mgr = TerminalManager::new();
+    // tmux 控制模式（tmux / tmux-ssh）拥有 pane 的 PTY 与协议，前端只是渲染
+    // 镜像：解析出的查询应答必须丢弃，不能经 send-keys 回写，否则 `git lg`
+    // 的 `10;rgb:...` / `65;...c` 会泄漏成 shell 里的字面命令。
+    term_mgr.forward_replies = !is_tmux_control(bridge.backend());
 
     // 首帧：立即渲染一次（不依赖事件）
     let snap = bridge.snapshot();
-    let replies = sync_term_sizes(&mut term_mgr, &snap);
-    send_replies(&bridge, replies);
+    let replies = sync_terminals(&mut term_mgr, &snap);
+    maybe_send_replies(&bridge, replies);
     draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
     // 每 50ms 事件轮询；仅当有实际状态变更时（事件非空 / 按键 / resize）才重绘，
@@ -76,13 +81,41 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     loop {
         let events = bridge.poll_events();
         let mut needs_redraw = !events.is_empty();
+        // 事件驱动喂增量：后端 `%output` 的字节顺序天然正确，即使累计缓冲因
+        // 2MB 上限被截断，事件流也从不跳段，终端模拟器不会从 ANSI 序列中间
+        // 开始解析。绝不在这里用累计输出重放历史（重放会重新生成旧查询应答，
+        // 泄漏进 shell，也会在 tab 切换后把截断尾部渲染成乱码）。
+        for ev in &events {
+            match ev.type_ {
+                STATE_PANE_OUTPUT => {
+                    term_mgr.feed_event(ev.pane_id, &ev.data);
+                }
+                STATE_PANE_CLOSED => {
+                    // 只有 pane 真正关闭才移除状态；切 tab 不调用 retain。
+                    term_mgr.remove(ev.pane_id);
+                }
+                STATE_PANE_RESIZED if ev.data.len() >= 4 => {
+                    // data 携带 cols/rows（各 2 字节小端）
+                    let cols = u16::from_le_bytes([ev.data[0], ev.data[1]]);
+                    let rows = u16::from_le_bytes([ev.data[2], ev.data[3]]);
+                    term_mgr.resize_pane(ev.pane_id, cols, rows);
+                }
+                _ => {}
+            }
+        }
 
         if poll(Duration::from_millis(50)).context("poll event")? {
             let ev = read().context("read event")?;
             match ev {
                 Event::Key(key) => {
                     if palette_open {
-                        if handle_palette_key(&mut palette, &key, &mut bridge, &mut palette_open)? {
+                        if handle_palette_key(
+                            &mut palette,
+                            &key,
+                            &mut bridge,
+                            &mut term_mgr,
+                            &mut palette_open,
+                        )? {
                             needs_redraw = true;
                         }
                     } else if is_quit(&key) {
@@ -114,8 +147,8 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
         // 仅在确有变化时重绘
         if needs_redraw {
             let snap = bridge.snapshot();
-            let replies = sync_term_sizes(&mut term_mgr, &snap);
-            send_replies(&bridge, replies);
+            let replies = sync_terminals(&mut term_mgr, &snap);
+            maybe_send_replies(&bridge, replies);
             draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
         }
     }
@@ -129,32 +162,45 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     Ok(())
 }
 
-/// 根据快照里的 pane 尺寸同步/补齐各 pane 终端，并清理已删除 pane。
-///
-/// 用每个 pane 的**累计输出**做增量同步（GTK 同款 delta 方案）：每次只 feed
-/// 比上次已 feed 长度更新的部分，覆盖首屏播种 + 持续增量 + 输出截断重置。
-fn sync_term_sizes(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(u32, Vec<u8>)> {
-    let mut ids: Vec<u32> = Vec::new();
+/// 根据快照同步各 pane 终端：
+/// - 已有状态的 pane 只调整尺寸 + 正向增量补齐（恢复被事件队列丢弃的输出）；
+/// - 首次见到的 pane 才用累计输出播种；
+/// - **不**按激活 tab 清理状态（切 tab 不丢屏幕），也不重放截断的历史。
+fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(u32, Vec<u8>)> {
     for p in &snap.panes {
-        ids.push(p.id);
         let cols = p.cols.max(1);
         let rows = p.rows.max(1);
-        // 每次用累计输出做增量同步（GTK 同款 delta 方案），
-        // 覆盖首屏播种 + 持续增量 + 输出截断重置。
         let full = snap.outputs.get(&p.id).cloned().unwrap_or_default();
-        term_mgr.sync_output(p.id, cols, rows, &full);
+        if term_mgr.has(p.id) {
+            term_mgr.resize_pane(p.id, cols, rows);
+            term_mgr.sync_output(p.id, cols, rows, &full);
+        } else {
+            term_mgr.seed(p.id, cols, rows, &full);
+        }
     }
-    term_mgr.retain(&ids);
     term_mgr.drain_replies()
 }
 
 /// 把终端生成的查询应答（OSC 10/11、CSI DA 等）原样写回 shell/pty。
 ///
-/// 不做这一步时，`git lg` 的 `10;rgb:...` / `65;...c` 会泄漏成字面文本。
+/// 仅本地 / daemon 后端需要（前端是该 PTY 的终端模拟器，写回 pty 是正确行为）。
+/// tmux 控制模式下应答经 `send-keys -l` 回写会被 pane 回显并执行，造成
+/// `git lg` 的 `10;rgb:...` / `65;...c` 泄漏，因此必须丢弃。
+fn maybe_send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
+    if !is_tmux_control(bridge.backend()) {
+        send_replies(bridge, replies);
+    }
+}
+
 fn send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
     for (pane_id, data) in replies {
         let _ = bridge.send_input(pane_id, &data);
     }
+}
+
+/// 是否为 tmux 控制模式（tmux 拥有 pane PTY 与终端协议，前端只渲染/编码输入）。
+fn is_tmux_control(backend: &str) -> bool {
+    matches!(backend, "tmux" | "tmux-ssh")
 }
 
 /// 当前激活 pane；快照里没有标记时退回第一个。
@@ -251,6 +297,7 @@ fn handle_palette_key(
     palette: &mut PaletteState,
     key: &KeyEvent,
     bridge: &mut CoreBridge,
+    term_mgr: &mut TerminalManager,
     palette_open: &mut bool,
 ) -> Result<bool> {
     match key.code {
@@ -264,6 +311,9 @@ fn handle_palette_key(
                     // 向导完成 → 重连（用当前 socket）
                     let sock = palette.socket.clone();
                     reconnect(bridge, &action, sock.as_deref())?;
+                    // 重连后旧 pane 状态全部失效：清空并按新后端重设应答策略。
+                    term_mgr.clear();
+                    term_mgr.forward_replies = !is_tmux_control(bridge.backend());
                     *palette_open = false;
                     Ok(true)
                 }
