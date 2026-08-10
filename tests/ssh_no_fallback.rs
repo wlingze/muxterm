@@ -9,8 +9,7 @@
 use std::process::Command;
 
 fn muxterm_bin() -> std::path::PathBuf {
-    let target =
-        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "../muxterm-target".to_string());
+    let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
     let p = std::path::PathBuf::from(&target)
         .join("debug")
         .join("muxterm");

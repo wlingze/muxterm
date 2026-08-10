@@ -55,7 +55,7 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         HEADER_SEARCH_PATHS: "$(SRCROOT)/CoreBridge/include"
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CoreBridge/include"
-        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../../../../muxterm-target/release $(SRCROOT)/Vendor"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor"
         OTHER_LDFLAGS: "-lmuxterm -liconv -lresolv"
         OTHER_SWIFT_FLAGS: "-Xcc -fmodule-map-file=$(SRCROOT)/CoreBridge/include/module.modulemap"
         SWIFT_OBJC_BRIDGING_HEADER: ""

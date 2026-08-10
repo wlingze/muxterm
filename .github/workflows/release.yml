@@ -232,7 +232,7 @@ jobs:
         with:
           path: |
             ~/.cargo/
-            ${{ github.workspace }}/../muxterm-target
+            target
           key: release-macos-${{ hashFiles('**/Cargo.toml') }}
 
       - name: Build macOS app

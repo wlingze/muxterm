@@ -93,9 +93,8 @@ cd muxterm
 ./build/linux/muxterm        # macOS 上是 ./build/macos/muxterm
 ```
 
-仓库 `.cargo/config.toml` 默认 `target-dir = "../muxterm-target"`（即本地默认的 `CARGO_TARGET_DIR`），多 worktree 共享同一编译缓存；可用环境变量 `CARGO_TARGET_DIR` 覆盖。
-
-仓库 `.cargo/config.toml` 默认 `target-dir = "../muxterm-target"`（即本地默认的 `CARGO_TARGET_DIR`），多 worktree 共享同一编译缓存；可用环境变量 `CARGO_TARGET_DIR` 覆盖。
+每个仓库/ worktree 使用**本地**编译缓存（`.cargo/config.toml` 不设置 `target-dir`，
+cargo 默认 `./target`）与本地产物目录 `./build/<os>/`，不跨 worktree 共享；可用环境变量 `CARGO_TARGET_DIR` 覆盖。
 
 调试运行：
 

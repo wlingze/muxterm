@@ -65,8 +65,13 @@ cargo_target_dir() {
   local td
   td="$(printf '%s\n' "$cfg" | sed -n 's/^target-dir[[:space:]]*=[[:space:]]*["'"'"']\(.*\)["'"'"']/\1/p' | head -1)"
   if [[ -n "$td" ]]; then
-    # 相对路径以仓库根为基准（可能含 ../），用 cd + pwd 求绝对路径
-    (cd "$root" && cd "$td" && pwd)
+    # 相对路径以仓库根为基准（可能含 ../）。若目录尚不存在（例如 CI 首次 clone
+    # 时共享 target 未创建），回退到仓库本地 ./target，避免构建中断。
+    if (cd "$root" && cd "$td" 2>/dev/null); then
+      (cd "$root" && cd "$td" && pwd)
+    else
+      echo "$root/target"
+    fi
   else
     echo "$root/target"
   fi

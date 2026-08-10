@@ -103,19 +103,14 @@ If network access/tools are unavailable or the user explicitly forbids browsing:
 
 ## Worktree 开发工作流
 
-多特性并行开发时，用 git worktree 隔离工作区，但共享同一 Cargo 编译缓存（类似 Go 的模块缓存习惯）。
+多特性并行开发时，用 git worktree 隔离工作区。每个仓库/ worktree 使用**本地**
+编译缓存与产物目录（`./target` 与 `./build`），不跨 worktree 共享 target。
 
-### 共享 target
+### 本地 target
 
-- 仓库内 `.cargo/config.toml` 设置 `target-dir = "../muxterm-target"`
-- 实际路径：`/home/wlz/Project/muxterm-target`（在 git 仓库外，不进版本库）
-- 主仓 `~/Project/muxterm` 与任意 `~/Project/muxterm-<name>` worktree 都会写到同一目录
-
-首次或换机时确保目录存在：
-
-```bash
-mkdir -p /home/wlz/Project/muxterm-target
-```
+- `.cargo/config.toml` 不再设置 `target-dir`，cargo 使用仓库本地默认 `./target`
+- 产物统一输出到 `./build/<os>/`（见 `scripts/build-common.sh`）
+- 可用环境变量 `CARGO_TARGET_DIR` 覆盖
 
 ### 新建 worktree
 
@@ -129,10 +124,10 @@ mkdir -p /home/wlz/Project/muxterm-target
 
 - 路径：`/home/wlz/Project/muxterm-<feature-name>`
 - 分支：`feat/<feature-name>`（基于 `main`）
-- 编译产物进入共享 `muxterm-target`
+- 编译产物进入该 worktree 本地 `./build` 与 `./target`
 
 ### Agent 注意
 
 - 改代码前确认当前 worktree 路径与分支（`pwd` / `git status`）
-- 不要把 `/home/wlz/Project/muxterm-target` 提交进仓库
+- 不要把 `./target`、`./build` 提交进仓库（已在 `.gitignore` 中）
 - 清理 worktree：`git worktree remove /home/wlz/Project/muxterm-<name>`（必要时再删本地分支）

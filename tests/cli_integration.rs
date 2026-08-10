@@ -840,11 +840,7 @@ mod daemon_tests {
     /// 查找 muxterm 二进制路径。
     fn find_muxterm_bin() -> PathBuf {
         // CARGO_TARGET_DIR 或默认
-        let candidates = [
-            PathBuf::from("../muxterm-target/debug/muxterm"),
-            PathBuf::from("../../muxterm-target/debug/muxterm"),
-            PathBuf::from("target/debug/muxterm"),
-        ];
+        let candidates = [PathBuf::from("target/debug/muxterm")];
         for c in &candidates {
             if c.exists() {
                 return c.clone();

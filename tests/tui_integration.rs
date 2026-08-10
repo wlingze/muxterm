@@ -18,8 +18,7 @@ use std::time::Duration;
 
 /// 找到 muxterm 二进制路径（cargo test 会编译到 target-dir/debug/）。
 fn muxterm_bin() -> PathBuf {
-    let target =
-        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "../muxterm-target".to_string());
+    let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
     let p = PathBuf::from(&target).join("debug").join("muxterm");
     if p.exists() {
         return p;
