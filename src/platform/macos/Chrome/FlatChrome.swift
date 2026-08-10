@@ -43,6 +43,24 @@ public enum FlatChrome {
     }
 }
 
+/// tmux 控制模式的终端应答策略。
+///
+/// tmux 拥有 pane 的 PTY 与终端协议，前端只是渲染镜像：SwiftTerm 在 feed
+/// 远端 pane 输出期间生成的查询应答（OSC 10/11/12、CSI DA/DSR、DCS 等）
+/// 必须丢弃，否则经 `send-keys -l` 回写会被 pane 回显并执行，泄漏成
+/// `git lg` 的 `10;rgb:...` / `65;...c` 字面命令。
+///
+/// 用户输入（键盘/kitty/粘贴）与鼠标上报不在 feed 窗口内，不受影响；
+/// 本地 / daemon 模式（非镜像）保持转发（前端就是该 PTY 的终端模拟器）。
+public enum TerminalMirrorPolicy {
+    public static func shouldForwardParserResponse(
+        duringRemoteOutputFeed: Bool,
+        isTmuxMirror: Bool
+    ) -> Bool {
+        !(isTmuxMirror && duringRemoteOutputFeed)
+    }
+}
+
 
 /// Tracks how much cumulative pane output has already been rendered.
 ///
@@ -69,11 +87,17 @@ public struct PaneOutputCursor {
         }
         // The Rust core appends every PaneOutput event to the cumulative
         // snapshot BEFORE dispatching it, so the snapshot is authoritative.
-        // If it shrank (bounded buffer trimmed its head), reset and re-feed
-        // the current tail rather than silently dropping it.
+        // If it shrank (the 2MB bounded buffer trimmed its head), do NOT reset
+        // and replay the tail: the tail starts in the middle of an ANSI stream,
+        // so re-feeding it corrupts the screen (exactly the "stale/blank pane
+        // that only slowly recovers as new output arrives" bug). The local
+        // terminal already holds a more complete screen than the trimmed
+        // buffer; keep it. Advance the cursor to the trimmed buffer's end so
+        // subsequent deltas continue rendering instead of starving until the
+        // buffer regrows past the old cursor.
         if snapshot.count < fedLength {
-            fedLength = 0
-            return initial(snapshot: snapshot)
+            fedLength = snapshot.count
+            return Data()
         }
         // snapshot.count == fedLength: this tick's bytes were already
         // consumed by a prior initial()/incremental(). Never re-feed the

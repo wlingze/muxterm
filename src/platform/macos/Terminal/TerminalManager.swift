@@ -58,6 +58,9 @@ final class TerminalManager: TerminalInputHandler {
         }
         let view = MuxTerminalView(paneId: paneId)
         view.inputHandler = self
+        // tmux 控制模式（local tmux / SSH tmux）下禁止把 SwiftTerm 解析 pane
+        // 输出时生成的查询应答回写 pane；本地 / daemon 模式保持转发。
+        view.suppressOutputDrivenResponses = usesClientResize
         views[paneId] = view
         // 首次创建时拉取历史输出
         if let snapshot = bridge?.getPaneOutput(paneId: paneId), !snapshot.isEmpty {
@@ -85,15 +88,14 @@ final class TerminalManager: TerminalInputHandler {
         appendSnippet(unseen)
     }
 
-    /// 丢弃已关闭 pane 的视图。
-    func retainOnly(paneIds: Set<UInt32>) {
-        let obsolete = views.keys.filter { !paneIds.contains($0) }
-        for id in obsolete {
-            views[id]?.removeFromSuperview()
-            views.removeValue(forKey: id)
-            outputCursors.removeValue(forKey: id)
-            lastPtySize.removeValue(forKey: id)
-        }
+    /// 移除已关闭 pane 的视图（只在 STATE_PANE_CLOSED 时调用；
+    /// 切 tab / 布局重建不得丢视图，否则 SwiftTerm 状态被清掉，
+    /// 切回来重放被截断的累计输出会乱码 / 黑屏）。
+    func removePane(_ paneId: UInt32) {
+        views[paneId]?.removeFromSuperview()
+        views.removeValue(forKey: paneId)
+        outputCursors.removeValue(forKey: paneId)
+        lastPtySize.removeValue(forKey: paneId)
     }
 
     /// 当前连接是否由 tmux 控制 client 管理尺寸。

@@ -99,14 +99,21 @@ final class PaneOutputCursorTests: XCTestCase {
         XCTAssertEqual(cursor.incremental(event: event, snapshot: snapshot + event), event)
     }
 
-    func testBoundedBufferTrimResetsCursorAndRefeedsTail() {
+    /// 回归：后端 2MB 有界缓冲被裁剪后，绝不能重置并重放截断尾部。
+    /// 重放从 ANSI 序列中间开始的尾部会让 SwiftTerm 乱码 / 黑屏，只能等
+    /// 新输出慢慢恢复；正确行为是保留本地已渲染的完整屏幕。
+    func testBoundedBufferTrimDoesNotResetOrReplayTail() {
         var cursor = PaneOutputCursor()
         let old = Data(String(repeating: "x", count: 100).utf8)
         XCTAssertEqual(cursor.initial(snapshot: old), old)
 
-        // 有界缓冲被裁剪后，snapshot 变短：应重置并重放当前尾部，而不是丢弃。
+        // 有界缓冲被裁剪后，snapshot 变短：保持已 feed 的屏幕，不重放尾部。
         let trimmed = Data(String(repeating: "y", count: 20).utf8)
-        XCTAssertEqual(cursor.incremental(event: trimmed, snapshot: trimmed), trimmed)
+        XCTAssertEqual(cursor.incremental(event: trimmed, snapshot: trimmed), Data())
+
+        // 裁剪后继续有正常增量时，只 feed 新增部分，不会把旧内容再喂一遍。
+        let after = Data("line1\r\n".utf8)
+        XCTAssertEqual(cursor.incremental(event: after, snapshot: trimmed + after), after)
     }
 
     /// 空事件 / 空快照必须稳定返回空 Data，不产生重复 feed。
@@ -118,6 +125,36 @@ final class PaneOutputCursorTests: XCTestCase {
         let snap = Data("abc".utf8)
         XCTAssertEqual(cursor.initial(snapshot: snap), snap)
         XCTAssertEqual(cursor.incremental(event: Data(), snapshot: snap), Data())
+    }
+}
+
+final class TerminalMirrorPolicyTests: XCTestCase {
+    /// tmux 镜像在 feed 远端输出期间生成应答：丢弃（git lg 泄漏根因）。
+    func testTmuxMirrorDropsParserResponseDuringFeed() {
+        XCTAssertFalse(TerminalMirrorPolicy.shouldForwardParserResponse(
+            duringRemoteOutputFeed: true,
+            isTmuxMirror: true
+        ))
+    }
+
+    /// tmux 镜像在 feed 之外（鼠标 / 焦点等用户驱动事件）：保持转发。
+    func testTmuxMirrorForwardsOutsideFeed() {
+        XCTAssertTrue(TerminalMirrorPolicy.shouldForwardParserResponse(
+            duringRemoteOutputFeed: false,
+            isTmuxMirror: true
+        ))
+    }
+
+    /// 本地 / daemon 模式（非镜像）：查询应答必须写回 pty，始终转发。
+    func testLocalTerminalAlwaysForwardsResponses() {
+        XCTAssertTrue(TerminalMirrorPolicy.shouldForwardParserResponse(
+            duringRemoteOutputFeed: true,
+            isTmuxMirror: false
+        ))
+        XCTAssertTrue(TerminalMirrorPolicy.shouldForwardParserResponse(
+            duringRemoteOutputFeed: false,
+            isTmuxMirror: false
+        ))
     }
 }
 

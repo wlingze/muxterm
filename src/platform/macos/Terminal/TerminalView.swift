@@ -1,4 +1,5 @@
 import AppKit
+import MuxtermChrome
 import SwiftTerm
 
 /// 单个 pane 的 SwiftTerm 终端视图；输入经 delegate 回传到 FFI。
@@ -9,6 +10,16 @@ final class MuxTerminalView: TerminalView {
     /// 对应 muxterm pane id。
     let paneId: UInt32
     weak var inputHandler: TerminalInputHandler?
+    /// tmux 控制模式下，SwiftTerm 解析 pane 输出时生成的查询应答（OSC 10/11、
+    /// CSI DA/DSR、DCS 等）必须丢弃：tmux 拥有 pane 的 PTY 与终端协议，应答
+    /// 经 `send-keys -l` 回写会被 pane 回显并执行，造成 `git lg` 的
+    /// `10;rgb:...` / `65;...c` 泄漏成 shell 字面命令。
+    ///
+    /// 本地 / daemon 模式下保持转发（前端就是该 PTY 的终端模拟器，写回 pty
+    /// 是正确行为）。
+    var suppressOutputDrivenResponses = false
+    /// 正在 feed 远端 pane 输出（解析器应答只在这个窗口内产生）。
+    private var isFeedingRemoteOutput = false
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
 
@@ -37,7 +48,12 @@ final class MuxTerminalView: TerminalView {
     func feedOutput(_ data: Data) {
         guard !data.isEmpty else { return }
         let bytes = [UInt8](data)
+        // SwiftTerm 同步解析输出：查询应答经 `Terminal.sendResponse` 在 feed
+        // 调用栈内同步发出。用这个标记把「解析 pane 输出产生的应答」与
+        // 「用户输入 / 鼠标上报」区分开，tmux 镜像只丢弃前者。
+        isFeedingRemoteOutput = true
         feed(byteArray: bytes[...])
+        isFeedingRemoteOutput = false
         if let text = String(data: data, encoding: .utf8), !text.isEmpty {
             accessibilityOutput += text
             if accessibilityOutput.count > 800 {
@@ -84,6 +100,17 @@ final class MuxTerminalView: TerminalView {
         displayIfNeeded()
     }
 
+    /// 覆写 SwiftTerm 模拟器输出通道：只有 `Terminal.sendResponse` /
+    /// `sendFocusReport` 等模拟器生成的事件走这里（`source: Terminal`）；
+    /// 键盘/粘贴/kitty 用户输入走 `TerminalViewDelegate.send(source: TerminalView)`
+    /// 的 `send(data:)` 路径，不受影响。
+    override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        guard TerminalMirrorPolicy.shouldForwardParserResponse(
+            duringRemoteOutputFeed: isFeedingRemoteOutput,
+            isTmuxMirror: suppressOutputDrivenResponses
+        ) else { return }
+        super.send(source: source, data: data)
+    }
 }
 
 /// 键盘/输入回传协议。
