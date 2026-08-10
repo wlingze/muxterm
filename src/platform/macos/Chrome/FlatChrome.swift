@@ -45,13 +45,13 @@ public enum FlatChrome {
 
 /// tmux 控制模式的终端应答策略。
 ///
-/// tmux 拥有 pane 的 PTY 与终端协议，前端只是渲染镜像：SwiftTerm 在 feed
-/// 远端 pane 输出期间生成的查询应答（OSC 10/11/12、CSI DA/DSR、DCS 等）
-/// 必须丢弃，否则经 `send-keys -l` 回写会被 pane 回显并执行，泄漏成
-/// `git lg` 的 `10;rgb:...` / `65;...c` 字面命令。
+/// tmux / daemon 代理拥有 pane 的 PTY 与终端协议，前端只是渲染镜像：
+/// SwiftTerm 在 feed 远端 pane 输出期间生成的查询应答（OSC 10/11/12、
+/// CSI DA/DSR、DCS 等）必须丢弃，否则经 `send-keys -l` 回写会被 pane
+/// 回显并执行，泄漏成 `git lg` 的 `10;rgb:...` / `65;...c` 字面命令。
 ///
 /// 用户输入（键盘/kitty/粘贴）与鼠标上报不在 feed 窗口内，不受影响；
-/// 本地 / daemon 模式（非镜像）保持转发（前端就是该 PTY 的终端模拟器）。
+/// 仅 local 模式（前端就是该 PTY 的终端模拟器）保持转发。
 public enum TerminalMirrorPolicy {
     public static func shouldForwardParserResponse(
         duringRemoteOutputFeed: Bool,

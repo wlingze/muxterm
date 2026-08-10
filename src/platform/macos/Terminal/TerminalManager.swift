@@ -58,9 +58,9 @@ final class TerminalManager: TerminalInputHandler {
         }
         let view = MuxTerminalView(paneId: paneId)
         view.inputHandler = self
-        // tmux 控制模式（local tmux / SSH tmux）下禁止把 SwiftTerm 解析 pane
-        // 输出时生成的查询应答回写 pane；本地 / daemon 模式保持转发。
-        view.suppressOutputDrivenResponses = usesClientResize
+        // 非直接 PTY 终端模拟器（tmux 控制模式 / daemon 代理）下禁止把
+        // SwiftTerm 解析 pane 输出时生成的查询应答回写 pane。
+        view.suppressOutputDrivenResponses = !isDirectPtyTerminal
         views[paneId] = view
         // 首次创建时拉取历史输出
         if let snapshot = bridge?.getPaneOutput(paneId: paneId), !snapshot.isEmpty {
@@ -101,6 +101,16 @@ final class TerminalManager: TerminalInputHandler {
     /// 当前连接是否由 tmux 控制 client 管理尺寸。
     var usesClientResize: Bool {
         bridge?.backendType == "tmux" || bridge?.backendType == "ssh"
+    }
+
+    /// 前端是否为 pane PTY 的直接终端模拟器。
+    ///
+    /// 仅 `local` 模式是：SwiftTerm 就是该 PTY 的终端模拟器，查询应答写回
+    /// pty 是正确行为。tmux 控制模式（`tmux` / `ssh`）以及 daemon 代理
+    /// （daemon 可能代理 tmux，client 侧无法分辨）都不是，解析器应答
+    /// 必须丢弃，否则经 send-keys 注入会泄漏成 shell 字面命令。
+    var isDirectPtyTerminal: Bool {
+        bridge?.backendType == "local"
     }
 
     /// 布局完成后：先更新各个 SwiftTerm 的本地渲染尺寸，再按后端类型同步尺寸。

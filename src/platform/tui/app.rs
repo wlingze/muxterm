@@ -68,7 +68,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     // tmux 控制模式（tmux / tmux-ssh）拥有 pane 的 PTY 与协议，前端只是渲染
     // 镜像：解析出的查询应答必须丢弃，不能经 send-keys 回写，否则 `git lg`
     // 的 `10;rgb:...` / `65;...c` 会泄漏成 shell 里的字面命令。
-    term_mgr.forward_replies = !is_tmux_control(bridge.backend());
+    term_mgr.forward_replies = is_direct_pty_terminal(bridge.backend());
 
     // 首帧：立即渲染一次（不依赖事件）
     let snap = bridge.snapshot();
@@ -187,7 +187,7 @@ fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(
 /// tmux 控制模式下应答经 `send-keys -l` 回写会被 pane 回显并执行，造成
 /// `git lg` 的 `10;rgb:...` / `65;...c` 泄漏，因此必须丢弃。
 fn maybe_send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
-    if !is_tmux_control(bridge.backend()) {
+    if is_direct_pty_terminal(bridge.backend()) {
         send_replies(bridge, replies);
     }
 }
@@ -198,9 +198,14 @@ fn send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
     }
 }
 
-/// 是否为 tmux 控制模式（tmux 拥有 pane PTY 与终端协议，前端只渲染/编码输入）。
-fn is_tmux_control(backend: &str) -> bool {
-    matches!(backend, "tmux" | "tmux-ssh")
+/// 前端是否为 pane PTY 的直接终端模拟器。
+///
+/// 仅 `local` 模式是：查询应答写回 pty 是正确行为。tmux 控制模式
+/// （`tmux` / `tmux-ssh`）以及 daemon 代理（daemon 可能代理 tmux，client
+/// 侧无法分辨）都不是，解析器应答必须丢弃，否则经 send-keys 注入会泄漏成
+/// shell 字面命令。
+fn is_direct_pty_terminal(backend: &str) -> bool {
+    backend == "local"
 }
 
 /// 当前激活 pane；快照里没有标记时退回第一个。
@@ -313,7 +318,7 @@ fn handle_palette_key(
                     reconnect(bridge, &action, sock.as_deref())?;
                     // 重连后旧 pane 状态全部失效：清空并按新后端重设应答策略。
                     term_mgr.clear();
-                    term_mgr.forward_replies = !is_tmux_control(bridge.backend());
+                    term_mgr.forward_replies = is_direct_pty_terminal(bridge.backend());
                     *palette_open = false;
                     Ok(true)
                 }
