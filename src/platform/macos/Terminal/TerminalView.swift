@@ -25,6 +25,9 @@ final class MuxTerminalView: TerminalView {
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
     private var lastAccessibilityUpdate = Date.distantPast
     private static let accessibilityUpdateInterval: TimeInterval = 1.0
+    /// 上一次按像素驱动后的模型行列，用于检测窗口 resize 这一瞬间。
+    private var lastModelCols = 0
+    private var lastModelRows = 0
 
     init(paneId: UInt32, frame: NSRect = .zero) {
         self.paneId = paneId
@@ -88,21 +91,6 @@ final class MuxTerminalView: TerminalView {
         cellSizeInPixels(source: getTerminal())
     }
 
-    /// 用 tmux 报告的 pane 行列强制设置终端模型尺寸。
-    ///
-    /// resize 后 SwiftTerm 视图像素自适应可能与 tmux 实际 pane 行列不同步
-    /// （cell 尺寸取整、布局比例差一行等），agent 这类用相对定位（向上
-    /// 擦除重绘）的应用会逐帧错位堆叠，htop 下半部分会空白。以 tmux 的
-    /// 权威尺寸为准，保证模型行列与 pane 完全一致。
-    func setTerminalSize(cols: Int, rows: Int) {
-        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
-        let term = getTerminal()
-        if term.cols != cols || term.rows != rows {
-            term.resize(cols: cols, rows: rows)
-            needsDisplay = true
-        }
-    }
-
     /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列。
     /// 返回是否成功同步到合法行列（≥2×1）。
     @discardableResult
@@ -118,6 +106,17 @@ final class MuxTerminalView: TerminalView {
 
         let term = getTerminal()
         guard term.cols >= 2, term.rows >= 1 else { return false }
+        // 窗口 resize 时 SwiftTerm 缩小模型会保留旧屏幕 + 光标位置，agent/htop
+        // 会按新尺寸重绘，旧行残留在屏幕上造成堆叠/下半空白。这里只在模型行列
+        // 真正变化（resize 瞬间）做一次全屏重绘清掉残留；不逐 feed、不强制同步
+        // displayIfNeeded，避免高频输出时刷屏。
+        if term.cols != lastModelCols || term.rows != lastModelRows {
+            lastModelCols = term.cols
+            lastModelRows = term.rows
+            getTerminal().updateFullScreen()
+            setNeedsDisplay(bounds)
+            if let layer { layer.setNeedsDisplay() }
+        }
         if notifyResize {
             inputHandler?.terminal(self, sizeChanged: term.cols, rows: term.rows)
         }

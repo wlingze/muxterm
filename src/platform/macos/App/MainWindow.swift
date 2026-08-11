@@ -14,6 +14,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var needsLayoutReload = true
     /// tmux tab 切换命令异步完成前，禁止用旧 active tab 快照重建布局。
     private var pendingActiveTab: UInt32?
+    /// pendingActiveTab 设置时刻：若 tmux 迟迟不确认切换（`%session-window-
+    /// changed` 被输出洪峰淹没等），超时后放行 refreshUI，避免 UI 永久卡死。
+    private var pendingActiveTabSince: Date?
+    /// 等待切 tab 确认的最长时长；超过则视为 tmux 未回执，直接放行刷新
+    /// （PaneLayout.apply 的 layout/pane 一致性校验已保证不会用错 tab 布局）。
+    private let pendingActiveTabTimeout: TimeInterval = 1.5
     private var isClosing = false
     private var languageObserver: NSObjectProtocol?
 
@@ -196,6 +202,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func requestSwitchTab(_ tabId: UInt32) {
         guard tabId != lastSnapshot.activeTab else { return }
         pendingActiveTab = tabId
+        pendingActiveTabSince = Date()
         needsLayoutReload = true
         guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
             pendingActiveTab = nil
@@ -552,6 +559,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     self.terminalManager.updateBridge(nextBridge)
                     self.lastSnapshot = FrameSnapshot()
                     self.pendingActiveTab = nil
+                    self.pendingActiveTabSince = nil
                     self.needsLayoutReload = true
                     self.refreshUI()
                     self.focusActiveTerminal()
@@ -615,6 +623,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 needsLayoutReload = true
                 if ev.type == STATE_ACTIVE_TAB_CHANGED, pendingActiveTab == ev.tabId {
                     pendingActiveTab = nil
+                    pendingActiveTabSince = nil
                 }
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
@@ -624,13 +633,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // 标题会改变状态栏或焦点，但不会改变布局树。
                 uiStateChanged = true
             } else if ev.type == STATE_PANE_RESIZED {
-                // data 携带 cols/rows（各 2 字节小端）：立即同步终端模型尺寸，
-                // 不等下一帧 refreshUI，避免 resize 后 agent/htop 短暂错位。
-                if ev.data.count >= 4 {
-                    let cols = UInt16(ev.data[0]) | (UInt16(ev.data[1]) << 8)
-                    let rows = UInt16(ev.data[2]) | (UInt16(ev.data[3]) << 8)
-                    terminalManager.syncPaneSizes(panes: [(ev.paneId, cols, rows)])
-                }
+                // 标题/字符格尺寸改变只影响状态栏/焦点，不改变布局树。
+                // 模型尺寸跟随 SwiftTerm 视图像素自适应（syncSizeToPty），
+                // 不能用 tmux 报告的 PaneInfo 强制设置——resize 时 tmux 对
+                // 后台窗口的尺寸滞后，强制设置会造成模型与视图错位（黑框）。
                 uiStateChanged = true
             }
             if ev.isBackendStatus, ev.paneId == 4 {
@@ -649,11 +655,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// 等待切 tab 确认是否已超时。超时视为 tmux 未回执，放行刷新。
+    private var pendingActiveTabExpired: Bool {
+        guard let since = pendingActiveTabSince else { return false }
+        return Date().timeIntervalSince(since) > pendingActiveTabTimeout
+    }
+
     private func refreshUI() {
         let snap = bridge.snapshot()
         lastSnapshot = snap
         content.tabBar.update(tabs: snap.tabs)
-        if needsLayoutReload, pendingActiveTab == nil {
+        if needsLayoutReload, pendingActiveTab == nil || pendingActiveTabExpired {
             if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
                 needsLayoutReload = false
                 content.statusBar.clearLayoutSyncError()
@@ -661,11 +673,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 content.statusBar.showLayoutSyncing()
             }
         }
-        // 以 tmux 报告的 pane 行列为准同步终端模型尺寸（resize 后像素
-        // 自适应可能与 pane 实际行列不一致，导致 agent 输入堆叠/htop 下半白）。
-        terminalManager.syncPaneSizes(
-            panes: snap.panes.map { ($0.id, $0.cols, $0.rows) }
-        )
         content.statusBar.update(snapshot: snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
 
