@@ -5,8 +5,13 @@ import MuxtermChrome
 final class TerminalManager: TerminalInputHandler {
     private weak var bridge: CoreBridge?
     private var views: [UInt32: MuxTerminalView] = [:]
-    /// 已喂给终端的累计输出长度（按 pane），避免 snapshot 全量重复 feed。
-    private var outputCursors: [UInt32: PaneOutputCursor] = [:]
+    /// 本轮 poll 批次内新建的视图：播种快照已覆盖该批次所有已入队的
+    /// PaneOutput 事件，本批次剩余事件必须跳过，否则同一批字节会双写。
+    private var viewsCreatedThisBatch = Set<UInt32>()
+    /// 两次 poll 之间（批次外）新建的视图：其播种快照覆盖了队列里尚未派发的
+    /// 事件，下一批开始时要把它们结转到 `viewsCreatedThisBatch` 继续抑制。
+    private var pendingSeedPanes = Set<UInt32>()
+    private var inEventBatch = false
     /// 最近喂给终端的 UTF-8 片段（供 UITest / 状态栏无障碍查询）。
     private(set) var recentOutputSnippet: String = ""
     /// 上次成功同步到 PTY 的行列，避免无意义重复 resize。
@@ -39,7 +44,9 @@ final class TerminalManager: TerminalInputHandler {
             view.removeFromSuperview()
         }
         views.removeAll()
-        outputCursors.removeAll()
+        viewsCreatedThisBatch.removeAll()
+        pendingSeedPanes.removeAll()
+        inEventBatch = false
         lastPtySize.removeAll()
         lastClientSize = nil
         pendingClientSize = nil
@@ -62,14 +69,16 @@ final class TerminalManager: TerminalInputHandler {
         // SwiftTerm 解析 pane 输出时生成的查询应答回写 pane。
         view.suppressOutputDrivenResponses = !isDirectPtyTerminal
         views[paneId] = view
-        // 首次创建时拉取历史输出
-        if let snapshot = bridge?.getPaneOutput(paneId: paneId), !snapshot.isEmpty {
-            var cursor = outputCursors[paneId] ?? PaneOutputCursor()
-            let unseen = cursor.initial(snapshot: snapshot)
-            outputCursors[paneId] = cursor
-            if !unseen.isEmpty {
-                view.feedOutput(unseen)
-                appendSnippet(unseen)
+        // 首次创建时用最近快照播种（FFI 返回最近 256KB）。播种覆盖了后端已
+        // 入队但尚未派发的事件，这些事件必须在接下来的批次里跳过。
+        let snapshot = bridge?.getPaneOutput(paneId: paneId) ?? Data()
+        if !snapshot.isEmpty {
+            view.feedOutput(snapshot)
+            appendSnippet(snapshot)
+            if inEventBatch {
+                viewsCreatedThisBatch.insert(paneId)
+            } else {
+                pendingSeedPanes.insert(paneId)
             }
         }
         return view
@@ -78,14 +87,39 @@ final class TerminalManager: TerminalInputHandler {
     /// 处理 PaneOutput 增量事件。
     func handleOutput(paneId: UInt32, data: Data) {
         guard !data.isEmpty else { return }
+        // 事件字节就是真实增量（后端先 append 到累计缓冲、再入队事件）。
+        // 不再拿累计缓冲快照做增量对账：前端缓冲（256KB）小于 pane 累计
+        // 输出后，快照只是滑动窗口，按 fed_len 切片会追着陈旧头部，导致
+        // codex/htop/agent 这类长运行 pane 冻结或乱码。
+        if viewsCreatedThisBatch.contains(paneId) {
+            // 本批次刚创建视图：播种快照已包含本批次所有已入队事件。
+            return
+        }
+        let existed = views[paneId] != nil
         let view = view(for: paneId)
-        let snapshot = bridge?.getPaneOutput(paneId: paneId) ?? Data()
-        var cursor = outputCursors[paneId] ?? PaneOutputCursor()
-        let unseen = cursor.incremental(event: data, snapshot: snapshot)
-        outputCursors[paneId] = cursor
-        guard !unseen.isEmpty else { return }
-        view.feedOutput(unseen)
-        appendSnippet(unseen)
+        if PaneOutputFeedPolicy.shouldFeedEvent(
+            viewExistedBeforeEvent: existed,
+            seedCoveredEvent: viewsCreatedThisBatch.contains(paneId)
+        ) {
+            // 视图早已存在：事件就是增量；或视图刚创建但快照为空（新 pane
+            // 首批字节，种子没有覆盖任何事件），必须原样喂入。
+            view.feedOutput(data)
+            appendSnippet(data)
+        }
+    }
+
+    /// 每轮 poll 事件处理前调用，标记批次边界。
+    func beginEventBatch() {
+        inEventBatch = true
+        // 批次外新建的视图：队列里已入队的事件都被其播种快照覆盖，本批抑制。
+        viewsCreatedThisBatch = pendingSeedPanes
+        pendingSeedPanes.removeAll()
+    }
+
+    /// 本轮 poll 事件处理完毕。
+    func endEventBatch() {
+        viewsCreatedThisBatch.removeAll()
+        inEventBatch = false
     }
 
     /// 移除已关闭 pane 的视图（只在 STATE_PANE_CLOSED 时调用；
@@ -94,7 +128,8 @@ final class TerminalManager: TerminalInputHandler {
     func removePane(_ paneId: UInt32) {
         views[paneId]?.removeFromSuperview()
         views.removeValue(forKey: paneId)
-        outputCursors.removeValue(forKey: paneId)
+        viewsCreatedThisBatch.remove(paneId)
+        pendingSeedPanes.remove(paneId)
         lastPtySize.removeValue(forKey: paneId)
     }
 

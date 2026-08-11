@@ -62,46 +62,18 @@ public enum TerminalMirrorPolicy {
 }
 
 
-/// Tracks how much cumulative pane output has already been rendered.
+/// PaneOutput 事件的喂入策略。
 ///
-/// The first PaneOutput event can arrive before the view exists. Creating the
-/// view reads the cumulative snapshot, which already includes that event; using
-/// the cursor's unseen suffix prevents feeding the same bytes a second time.
-public struct PaneOutputCursor {
-    private var fedLength = 0
-
-    public init() {}
-
-    public mutating func initial(snapshot: Data) -> Data {
-        guard snapshot.count > fedLength else { return Data() }
-        let unseen = snapshot.dropFirst(fedLength)
-        fedLength = snapshot.count
-        return Data(unseen)
-    }
-
-    public mutating func incremental(event: Data, snapshot: Data) -> Data {
-        if snapshot.count > fedLength {
-            let unseen = snapshot.dropFirst(fedLength)
-            fedLength = snapshot.count
-            return Data(unseen)
-        }
-        // The Rust core appends every PaneOutput event to the cumulative
-        // snapshot BEFORE dispatching it, so the snapshot is authoritative.
-        // If it shrank (the 2MB bounded buffer trimmed its head), do NOT reset
-        // and replay the tail: the tail starts in the middle of an ANSI stream,
-        // so re-feeding it corrupts the screen (exactly the "stale/blank pane
-        // that only slowly recovers as new output arrives" bug). The local
-        // terminal already holds a more complete screen than the trimmed
-        // buffer; keep it. Advance the cursor to the trimmed buffer's end so
-        // subsequent deltas continue rendering instead of starving until the
-        // buffer regrows past the old cursor.
-        if snapshot.count < fedLength {
-            fedLength = snapshot.count
-            return Data()
-        }
-        // snapshot.count == fedLength: this tick's bytes were already
-        // consumed by a prior initial()/incremental(). Never re-feed the
-        // raw event — that is what caused the prompt/echo to double.
-        return Data()
+/// 参考成熟终端设计：后端 `%output` 事件流是权威增量，累计快照只用于
+/// 新建视图的播种。视图首次创建时，播种快照（后端最近 256KB）已覆盖
+/// 后端已入队但尚未派发的事件；这些事件必须跳过，否则同一批字节会双写
+/// （输入/回显重复）。快照为空（新 pane 首批字节）时没有任何覆盖，事件
+/// 必须原样喂入。视图已存在时事件就是纯增量，直接喂入。
+public enum PaneOutputFeedPolicy {
+    public static func shouldFeedEvent(
+        viewExistedBeforeEvent: Bool,
+        seedCoveredEvent: Bool
+    ) -> Bool {
+        viewExistedBeforeEvent || !seedCoveredEvent
     }
 }

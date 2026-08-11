@@ -80,54 +80,6 @@ final class KeyBindingsTests: XCTestCase {
 }
 
 
-final class PaneOutputCursorTests: XCTestCase {
-    func testInitialSnapshotAlreadyContainingEventDoesNotFeedEventTwice() {
-        var cursor = PaneOutputCursor()
-        let snapshot = Data("prompt% ls\r\n".utf8)
-        let event = Data("prompt% ls\r\n".utf8)
-
-        XCTAssertEqual(cursor.initial(snapshot: snapshot), snapshot)
-        XCTAssertEqual(cursor.incremental(event: event, snapshot: snapshot), Data())
-    }
-
-    func testLaterIncrementalEventIsFedExactlyOnce() {
-        var cursor = PaneOutputCursor()
-        let snapshot = Data("prompt% ".utf8)
-        let event = Data("echo UNIQUE_INPUT\r\nUNIQUE_INPUT\r\n".utf8)
-
-        XCTAssertEqual(cursor.initial(snapshot: snapshot), snapshot)
-        XCTAssertEqual(cursor.incremental(event: event, snapshot: snapshot + event), event)
-    }
-
-    /// 回归：后端 2MB 有界缓冲被裁剪后，绝不能重置并重放截断尾部。
-    /// 重放从 ANSI 序列中间开始的尾部会让 SwiftTerm 乱码 / 黑屏，只能等
-    /// 新输出慢慢恢复；正确行为是保留本地已渲染的完整屏幕。
-    func testBoundedBufferTrimDoesNotResetOrReplayTail() {
-        var cursor = PaneOutputCursor()
-        let old = Data(String(repeating: "x", count: 100).utf8)
-        XCTAssertEqual(cursor.initial(snapshot: old), old)
-
-        // 有界缓冲被裁剪后，snapshot 变短：保持已 feed 的屏幕，不重放尾部。
-        let trimmed = Data(String(repeating: "y", count: 20).utf8)
-        XCTAssertEqual(cursor.incremental(event: trimmed, snapshot: trimmed), Data())
-
-        // 裁剪后继续有正常增量时，只 feed 新增部分，不会把旧内容再喂一遍。
-        let after = Data("line1\r\n".utf8)
-        XCTAssertEqual(cursor.incremental(event: after, snapshot: trimmed + after), after)
-    }
-
-    /// 空事件 / 空快照必须稳定返回空 Data，不产生重复 feed。
-    func testZeroLengthEventAndEmptySnapshotAreNoops() {
-        var cursor = PaneOutputCursor()
-        XCTAssertEqual(cursor.initial(snapshot: Data()), Data())
-        XCTAssertEqual(cursor.incremental(event: Data(), snapshot: Data()), Data())
-
-        let snap = Data("abc".utf8)
-        XCTAssertEqual(cursor.initial(snapshot: snap), snap)
-        XCTAssertEqual(cursor.incremental(event: Data(), snapshot: snap), Data())
-    }
-}
-
 final class TerminalMirrorPolicyTests: XCTestCase {
     /// tmux 镜像在 feed 远端输出期间生成应答：丢弃（git lg 泄漏根因）。
     func testTmuxMirrorDropsParserResponseDuringFeed() {
@@ -158,48 +110,34 @@ final class TerminalMirrorPolicyTests: XCTestCase {
     }
 }
 
-final class PaneOutputCursorRealLogTests: XCTestCase {
-    /// 真实 `ls -la` 回显（a.log 提取）：空格必须逐字节通过增量游标，
-    /// 不能变成 `ls-la`；backspace(0x08)、ESC 光标回退也要保留。
-    func testLsLaSpacesSurviveIncrementalCursor() {
-        var cursor = PaneOutputCursor()
-        // 真实回显内容： l s 空格... 空格 [19D
-        let snapshot = Data([
-            0x08, 0x6c, 0x1b, 0x5b, 0x33, 0x39, 0x6d, 0x73,  // l ESC[39m s
-            0x1b, 0x5b, 0x33, 0x39, 0x6d, 0x20,               // ESC[39m ' '
-        ])
-        let event = Data([0x20, 0x20, 0x20, 0x1b, 0x5b, 0x31, 0x39, 0x44]) // spaces + ESC[19D
-
-        let initial = cursor.initial(snapshot: snapshot)
-        XCTAssertEqual(initial, snapshot)
-        let inc = cursor.incremental(event: event, snapshot: snapshot + event)
-        XCTAssertEqual(inc, event, "增量回显必须逐字节透传，空格不能丢")
-        XCTAssertTrue(inc.contains(0x20))
+final class PaneOutputFeedPolicyTests: XCTestCase {
+    /// 视图早已存在：事件就是纯增量，必须喂入（与快照窗口无关）。
+    func testExistingViewAlwaysFeedsEvent() {
+        XCTAssertTrue(PaneOutputFeedPolicy.shouldFeedEvent(
+            viewExistedBeforeEvent: true,
+            seedCoveredEvent: true
+        ))
+        XCTAssertTrue(PaneOutputFeedPolicy.shouldFeedEvent(
+            viewExistedBeforeEvent: true,
+            seedCoveredEvent: false
+        ))
     }
 
-    /// 真实 codex 提示符（a.log 提取）：UTF-8 的 ❯ 符号 + 模式切换 ESC 必须保留，
-    /// 不产生 replacement 字符（UTF-8 三字节序列不被 cursor 截断）。
-    func testCodexUtf8PromptSurvivesCursorAcrossChunkBoundary() {
-        var cursor = PaneOutputCursor()
-        // ❯ = 0xE2 0x9D 0xAF；故意把一个多字节 UTF-8 字符拆在两个事件中间
-        let first = Data([0x1b, 0x5b, 0x33, 0x35, 0x6d, 0xe2, 0x9d]) // ESC[35m + ❯ 前两字节
-        let second = Data([0xaf, 0x1b, 0x5b, 0x39, 0x6d])          // ❯ 末字节 + ESC[39m
+    /// 回归：视图刚创建且播种快照非空（覆盖了后端已入队事件）时，事件必须
+    /// 跳过，否则同一批字节双写（输入/回显重复、状态区堆叠）。
+    func testNewViewWithSeedSkipsAlreadyCoveredEvents() {
+        XCTAssertFalse(PaneOutputFeedPolicy.shouldFeedEvent(
+            viewExistedBeforeEvent: false,
+            seedCoveredEvent: true
+        ))
+    }
 
-        let snapshot = first + second
-        let initial = cursor.initial(snapshot: snapshot)
-        XCTAssertEqual(initial, snapshot, "initial 必须把整个 snapshot 逐字节透传")
-        // 验证 ❯ 的 UTF-8 三字节 (0xE2 0x9D 0xAF) 在透传结果中连续出现，未被截断
-        let utf8Triple = Data([0xe2, 0x9d, 0xaf])
-        var found = false
-        if initial.count >= 3 {
-            for i in 0...(initial.count - 3) {
-                if initial.subdata(in: i..<(i + 3)) == utf8Triple {
-                    found = true
-                    break
-                }
-            }
-        }
-        XCTAssertTrue(found, "❯ 的 UTF-8 三字节必须完整透传")
+    /// 新 pane 首批字节：快照为空，没有任何覆盖，事件必须原样喂入。
+    func testNewViewWithoutSeedFeedsFirstBytes() {
+        XCTAssertTrue(PaneOutputFeedPolicy.shouldFeedEvent(
+            viewExistedBeforeEvent: false,
+            seedCoveredEvent: false
+        ))
     }
 }
 

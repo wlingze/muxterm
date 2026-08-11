@@ -595,6 +595,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func pollOnce() {
+        terminalManager.beginEventBatch()
+        defer { terminalManager.endEventBatch() }
         let events = bridge.pollEvents()
         if let error = bridge.takeError() {
             reportStatusError(error)
