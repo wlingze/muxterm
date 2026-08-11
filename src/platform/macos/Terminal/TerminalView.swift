@@ -22,6 +22,9 @@ final class MuxTerminalView: TerminalView {
     private var isFeedingRemoteOutput = false
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
+    /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
+    private var lastAccessibilityUpdate = Date.distantPast
+    private static let accessibilityUpdateInterval: TimeInterval = 0.15
 
     init(paneId: UInt32, frame: NSRect = .zero) {
         self.paneId = paneId
@@ -54,14 +57,32 @@ final class MuxTerminalView: TerminalView {
         isFeedingRemoteOutput = true
         feed(byteArray: bytes[...])
         isFeedingRemoteOutput = false
-        if let text = String(data: data, encoding: .utf8), !text.isEmpty {
-            accessibilityOutput += text
-            if accessibilityOutput.count > 800 {
-                accessibilityOutput = String(accessibilityOutput.suffix(800))
-            }
-            setAccessibilityValue(accessibilityOutput)
+        // AX 反映「当前屏幕」而不是 feed 历史：之前累积所有 feed 文本，
+        // 输入/状态区的每一帧中间状态都会留在 AX 值里，看起来像逐帧堆叠。
+        let now = Date()
+        if now.timeIntervalSince(lastAccessibilityUpdate) >= Self.accessibilityUpdateInterval {
+            lastAccessibilityUpdate = now
+            updateAccessibilityOutput()
         }
-        needsDisplay = true
+        // SwiftTerm 默认按 Terminal.refreshStart/End 局部重绘；cursor agent
+        // 这类「擦除 + 上移 + 原地重绘」的局部更新可能不在局部重绘范围内，
+        // 旧帧像素残留在屏幕上。把 refresh 范围扩到全屏并标记整视图重绘
+        // （不强制同步 displayIfNeeded：高频 feed 时同步重绘会与 SwiftTerm
+        // 自身的 16.7ms 绘制节流竞争，导致 htop 全屏重写时闪烁/错乱）。
+        getTerminal().updateFullScreen()
+        setNeedsDisplay(bounds)
+    }
+
+    private func updateAccessibilityOutput() {
+        let term = getTerminal()
+        let dims = term.getDims()
+        let lines = ScreenText.lines(
+            cols: dims.cols,
+            rows: dims.rows,
+            characterAt: { term.getCharacter(col: $0, row: $1) ?? " " }
+        )
+        accessibilityOutput = lines.joined(separator: "\n")
+        setAccessibilityValue(accessibilityOutput)
     }
 
     /// 当前 SwiftTerm 字符格的 backing pixel 尺寸。

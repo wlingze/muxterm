@@ -77,3 +77,34 @@ public enum PaneOutputFeedPolicy {
         viewExistedBeforeEvent || !seedCoveredEvent
     }
 }
+
+/// 从终端模型生成「当前屏幕文本」（AX / UI 测试用）。
+///
+/// 之前把每次 feed 的原始字节累积成 AX 文本，输入/状态区的每一帧中间状态
+/// 都会留在里面，看起来像逐帧堆叠的历史；正确做法是只反映当前屏幕。
+public enum ScreenText {
+    /// 按行列读取器生成屏幕行：逐格取字符、行尾去空白、去掉末尾空行。
+    /// `characterAt` 的列/行均为 0 基。
+    public static func lines(
+        cols: Int,
+        rows: Int,
+        characterAt: (Int, Int) -> Character
+    ) -> [String] {
+        guard cols > 0, rows > 0 else { return [] }
+        var out: [String] = []
+        out.reserveCapacity(rows)
+        for y in 0..<rows {
+            var line = ""
+            line.reserveCapacity(cols)
+            for x in 0..<cols {
+                line.append(characterAt(x, y))
+            }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            out.append(trimmed)
+        }
+        while out.last?.isEmpty == true {
+            out.removeLast()
+        }
+        return out
+    }
+}

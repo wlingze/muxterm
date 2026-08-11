@@ -141,6 +141,35 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
     }
 }
 
+final class ScreenTextTests: XCTestCase {
+    /// AX 文本必须只反映当前屏幕：行尾去空白、去掉末尾空行，
+    /// 不能累积 feed 历史（输入/状态区的中间帧会像堆叠一样残留）。
+    func testScreenTextReflectsCurrentScreenOnly() {
+        var grid: [[Character]] = [
+            ["A", " ", "B", " "],
+            [" ", " ", " ", " "],
+            ["C", "D", " ", " "],
+            [" ", " ", " ", " "],
+        ]
+        let lines = ScreenText.lines(cols: 4, rows: 4) { x, y in
+            grid[y][x]
+        }
+        XCTAssertEqual(lines, ["A B", "", "CD"])
+        // 修改屏幕后重新提取：只反映新屏幕
+        grid[0] = ["X", "Y", "Z", " "]
+        let lines2 = ScreenText.lines(cols: 4, rows: 4) { x, y in
+            grid[y][x]
+        }
+        XCTAssertEqual(lines2, ["XYZ", "", "CD"])
+        XCTAssertFalse(lines2.contains { $0.contains("A B") }, "旧屏幕不得残留")
+    }
+
+    func testScreenTextHandlesZeroDims() {
+        XCTAssertEqual(ScreenText.lines(cols: 0, rows: 10) { _, _ in " " }, [])
+        XCTAssertEqual(ScreenText.lines(cols: 10, rows: 0) { _, _ in " " }, [])
+    }
+}
+
 final class PaneLayoutProjectionTests: XCTestCase {
     func testLayoutMustContainExactlyCurrentTabPanes() {
         XCTAssertTrue(
