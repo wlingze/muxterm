@@ -24,7 +24,7 @@ final class MuxTerminalView: TerminalView {
     private(set) var accessibilityOutput: String = ""
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
     private var lastAccessibilityUpdate = Date.distantPast
-    private static let accessibilityUpdateInterval: TimeInterval = 0.15
+    private static let accessibilityUpdateInterval: TimeInterval = 1.0
 
     init(paneId: UInt32, frame: NSRect = .zero) {
         self.paneId = paneId
@@ -64,13 +64,11 @@ final class MuxTerminalView: TerminalView {
             lastAccessibilityUpdate = now
             updateAccessibilityOutput()
         }
-        // SwiftTerm 默认按 Terminal.refreshStart/End 局部重绘；cursor agent
-        // 这类「擦除 + 上移 + 原地重绘」的局部更新可能不在局部重绘范围内，
-        // 旧帧像素残留在屏幕上。把 refresh 范围扩到全屏并标记整视图重绘
-        // （不强制同步 displayIfNeeded：高频 feed 时同步重绘会与 SwiftTerm
-        // 自身的 16.7ms 绘制节流竞争，导致 htop 全屏重写时闪烁/错乱）。
-        getTerminal().updateFullScreen()
-        setNeedsDisplay(bounds)
+        // 只做普通标记：SwiftTerm 会按自己的 refresh 范围节流绘制。
+        // 不要在每次 feed 后强制全屏重绘或同步 displayIfNeeded——agent 在
+        // resize 后会发出一连串纯擦除序列（每事件 1KB），逐事件全屏重绘
+        // 会占满主线程（tab 快捷键失效、IMK mach port 报错）。
+        needsDisplay = true
     }
 
     private func updateAccessibilityOutput() {
@@ -88,6 +86,21 @@ final class MuxTerminalView: TerminalView {
     /// 当前 SwiftTerm 字符格的 backing pixel 尺寸。
     func terminalCellSizeInPixels() -> (width: Int, height: Int)? {
         cellSizeInPixels(source: getTerminal())
+    }
+
+    /// 用 tmux 报告的 pane 行列强制设置终端模型尺寸。
+    ///
+    /// resize 后 SwiftTerm 视图像素自适应可能与 tmux 实际 pane 行列不同步
+    /// （cell 尺寸取整、布局比例差一行等），agent 这类用相对定位（向上
+    /// 擦除重绘）的应用会逐帧错位堆叠，htop 下半部分会空白。以 tmux 的
+    /// 权威尺寸为准，保证模型行列与 pane 完全一致。
+    func setTerminalSize(cols: Int, rows: Int) {
+        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
+        let term = getTerminal()
+        if term.cols != cols || term.rows != rows {
+            term.resize(cols: cols, rows: rows)
+            needsDisplay = true
+        }
     }
 
     /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列。

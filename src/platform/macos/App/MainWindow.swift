@@ -620,8 +620,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 uiStateChanged = true
             } else if ev.isBackendStatus {
                 uiStateChanged = true
-            } else if ev.type == STATE_TAB_RENAMED || ev.type == STATE_PANE_RESIZED {
-                // 标题/字符格尺寸会改变状态栏或焦点，但不会改变布局树。
+            } else if ev.type == STATE_TAB_RENAMED {
+                // 标题会改变状态栏或焦点，但不会改变布局树。
+                uiStateChanged = true
+            } else if ev.type == STATE_PANE_RESIZED {
+                // data 携带 cols/rows（各 2 字节小端）：立即同步终端模型尺寸，
+                // 不等下一帧 refreshUI，避免 resize 后 agent/htop 短暂错位。
+                if ev.data.count >= 4 {
+                    let cols = UInt16(ev.data[0]) | (UInt16(ev.data[1]) << 8)
+                    let rows = UInt16(ev.data[2]) | (UInt16(ev.data[3]) << 8)
+                    terminalManager.syncPaneSizes(panes: [(ev.paneId, cols, rows)])
+                }
                 uiStateChanged = true
             }
             if ev.isBackendStatus, ev.paneId == 4 {
@@ -652,6 +661,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 content.statusBar.showLayoutSyncing()
             }
         }
+        // 以 tmux 报告的 pane 行列为准同步终端模型尺寸（resize 后像素
+        // 自适应可能与 pane 实际行列不一致，导致 agent 输入堆叠/htop 下半白）。
+        terminalManager.syncPaneSizes(
+            panes: snap.panes.map { ($0.id, $0.cols, $0.rows) }
+        )
         content.statusBar.update(snapshot: snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
 

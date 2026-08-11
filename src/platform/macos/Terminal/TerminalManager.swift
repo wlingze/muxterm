@@ -161,6 +161,17 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    /// 用 tmux 报告的 pane 行列同步各视图的终端模型尺寸。
+    ///
+    /// resize 后 tmux 会按 `refresh-client -C` 重排 pane，模型行列必须以
+    /// tmux 的 `PaneInfo.cols/rows` 为准，否则像素自适应产生的行列与 pane
+    /// 实际不一致，agent 输入区逐帧堆叠、htop 下半部空白。
+    func syncPaneSizes(panes: [(id: UInt32, cols: UInt16, rows: UInt16)]) {
+        for p in panes {
+            views[p.id]?.setTerminalSize(cols: Int(p.cols), rows: Int(p.rows))
+        }
+    }
+
     /// 取任一可见终端的字符格 backing pixel 尺寸；同一窗口字体统一。
     func cellSizeInPixels(paneIds: Set<UInt32>) -> (width: Int, height: Int)? {
         paneIds.lazy.compactMap { self.views[$0]?.terminalCellSizeInPixels() }.first
