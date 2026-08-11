@@ -59,14 +59,19 @@ impl PaneTerminal {
 
     /// 用累计输出做增量同步（GTK 同款）：只 feed 比已 feed 长度更新的部分。
     ///
-    /// 输出被后端截断（`full.len() < fed_len`）时**什么都不做**：本地终端已经
+    /// 输出被后端截断（`full.len() < fed_len`）时**不重放**：本地终端已经
     /// 持有比累计缓冲更完整的屏幕，重置并从截断的尾部重放只会让 ANSI 流从
     /// 中间开始解析，产生乱码 / 黑屏。真实终端的做法是保留完整屏幕模型，
     /// 只在缺失时用全帧快照重建，而不是重放有损字节流。
+    ///
+    /// 但要把游标推进到截断后缓冲的末尾：否则要等缓冲重新长过旧游标
+    /// （最多 2MB）才有增量可 feed，期间 pane 内容完全不刷新。
     pub fn sync_from_output(&mut self, full: &[u8]) {
         if full.len() > self.fed_len {
             let delta = &full[self.fed_len..];
             self.feed(delta);
+            self.fed_len = full.len();
+        } else if full.len() < self.fed_len {
             self.fed_len = full.len();
         }
     }
@@ -412,6 +417,19 @@ mod tests {
         assert!(
             !screen.contains("line9"),
             "后端截断丢掉的旧内容不应被重放补齐，实际: {screen:?}"
+        );
+
+        // 截断后继续有正常增量时，必须只 feed 新增部分（游标已推进到截断
+        // 末尾），不会饿死到缓冲重新长过旧游标，也不会把旧内容再喂一遍。
+        mgr.feed_event(1, b"\r\nline3");
+        let screen2 = rows(&mgr).join("|");
+        assert!(
+            screen2.contains("line2") && screen2.contains("line3"),
+            "截断后增量应继续渲染，实际: {screen2:?}"
+        );
+        assert!(
+            !screen2.contains("line9"),
+            "截断后也不得重放旧尾部，实际: {screen2:?}"
         );
     }
 }
