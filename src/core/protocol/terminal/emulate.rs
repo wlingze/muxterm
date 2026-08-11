@@ -464,17 +464,21 @@ impl TerminalState {
             self.cursor_row += 1;
         } else {
             let top = self.scroll_top;
-            if top == 0 && self.rows() > 0 {
+            let bottom = self.scroll_bottom;
+            if top == 0 && bottom == self.rows() - 1 {
                 // 整屏上滚：滚出顶行的内容进入 scrollback
                 if let Some(evicted) = self.grid.first() {
                     let s: String = evicted.iter().map(|c| c.ch).collect();
                     // 去掉行尾空白，保持 scrollback 可读
                     self.push_scrollback(s.trim_end().to_string());
                 }
-            }
-            if top < self.rows() {
-                self.grid.remove(top);
+                self.grid.remove(0);
                 self.grid.push(vec![Cell::blank(); self.cols()]);
+            } else if top < self.rows() && bottom < self.rows() {
+                // 部分滚动区域（DECSTBM）：区域顶行滚出、区域底行补空，
+                // 区域外的行不能动。htop 正是靠这个固定表头/表尾只滚动正文。
+                self.grid.remove(top);
+                self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
             }
         }
     }
@@ -643,9 +647,10 @@ impl TerminalState {
     fn delete_lines(&mut self, n: usize) {
         let n = n.min(self.rows());
         for _ in 0..n {
-            if self.scroll_top < self.rows() {
+            if self.scroll_top < self.rows() && self.scroll_bottom < self.rows() {
                 self.grid.remove(self.scroll_top);
-                self.grid.push(vec![Cell::blank(); self.cols()]);
+                self.grid
+                    .insert(self.scroll_bottom, vec![Cell::blank(); self.cols()]);
             }
         }
     }
@@ -2090,5 +2095,85 @@ mod resize_tests {
         t.resize(10, 6);
         assert_eq!(t.scroll_bottom, 5);
         assert_eq!(snap(&t), vec!["x"]);
+    }
+}
+
+/// 回归：cursor agent 输入区/状态区的「擦除 + 上移 + 重绘」必须原地覆盖，
+/// 不能每帧向下/向上堆叠（用户看到 y/yo/you… 一帧一行、Working/Running
+/// 一帧一行的根因）。
+#[cfg(test)]
+mod inplace_redraw_tests {
+    use super::*;
+
+    fn grid_rows(t: &TerminalState) -> Vec<String> {
+        t.snapshot()
+            .into_iter()
+            .map(|r| r.trim_end_matches([' ', '\0']).to_string())
+            .collect()
+    }
+
+    fn count_lines(rows: &[String], needle: &str) -> usize {
+        rows.iter().filter(|r| r.contains(needle)).count()
+    }
+
+    /// 两帧连续重绘：第二帧必须完全覆盖第一帧（同一批行内更新）。
+    #[test]
+    fn consecutive_redraw_overwrites_in_place() {
+        let mut t = TerminalState::new(80, 24);
+        // 与真实 cursor agent 一致：每帧向上擦除 9 行（覆盖首帧 6 行内容后
+        // clamp 到第 0 行），再原地重绘 6 行。
+        let erase9 = "\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[G";
+        let frame_a = format!("{erase9}STATUS-A\r\nTIP-A\r\n\r\nBOX-A\r\n\r\nFOOTER-A\r\n");
+        let frame_b = format!("{erase9}STATUS-B\r\nTIP-B\r\n\r\nBOX-B\r\n\r\nFOOTER-B\r\n");
+        t.feed(b"\x1b[H\x1b[2J");
+        t.feed(frame_a.as_bytes());
+        let after_a = grid_rows(&t);
+        assert_eq!(count_lines(&after_a, "STATUS-A"), 1, "第一帧应恰好一行");
+
+        t.feed(frame_b.as_bytes());
+        let after_b = grid_rows(&t);
+        assert_eq!(count_lines(&after_b, "STATUS-B"), 1, "第二帧应恰好一行");
+        assert_eq!(
+            count_lines(&after_b, "STATUS-A"),
+            0,
+            "第二帧必须原地覆盖第一帧"
+        );
+        assert_eq!(count_lines(&after_b, "FOOTER-A"), 0, "旧 footer 也不得残留");
+        // 每帧后光标行应稳定，下一次重绘仍覆盖同一区域
+        let after_cursor = (t.cursor_row(), t.cursor_col());
+        t.feed(format!("{erase9}STATUS-C\r\nTIP-C\r\n\r\nBOX-C\r\n\r\nFOOTER-C\r\n").as_bytes());
+        let after_c = grid_rows(&t);
+        assert_eq!(count_lines(&after_c, "STATUS-C"), 1);
+        assert_eq!(count_lines(&after_c, "STATUS-B"), 0, "第三帧仍原地覆盖");
+        assert_eq!(
+            t.cursor_row(),
+            after_cursor.0,
+            "每帧结束后光标行应稳定，不能逐帧漂移"
+        );
+    }
+
+    /// htop 类全屏程序：DECSTBM 部分滚动区域 + 区域底行 LF，只能滚动区域
+    /// 内部，表头/表尾和区域外的行必须原样保留。
+    #[test]
+    fn partial_scroll_region_linefeed_scrolls_only_region() {
+        let mut t = TerminalState::new(20, 10);
+        for r in 0..10 {
+            t.feed(format!("\x1b[{};1Hrow{r}", r + 1).as_bytes());
+        }
+        // 区域 = 1 基 4..7（0 基 3..6）；光标移到区域底行后 LF 触发区域内滚动
+        t.feed(b"\x1b[4;7r\x1b[7;1H\n");
+
+        let rows = t.snapshot();
+        let line = |i: usize| rows[i].trim_end_matches([' ', '\0']).to_string();
+        assert_eq!(line(0), "row0", "区域上方不得滚动");
+        assert_eq!(line(1), "row1");
+        assert_eq!(line(2), "row2");
+        assert_eq!(line(3), "row4", "区域顶行 row3 应滚出");
+        assert_eq!(line(4), "row5");
+        assert_eq!(line(5), "row6");
+        assert_eq!(line(6), "", "区域底行应补空");
+        assert_eq!(line(7), "row7", "区域下方不得滚动");
+        assert_eq!(line(8), "row8");
+        assert_eq!(line(9), "row9");
     }
 }
