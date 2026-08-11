@@ -884,6 +884,11 @@ pub unsafe extern "C" fn muxterm_get_panes(
 
 /// 读取 pane 累计输出到 `buf`，返回写入字节数（截断到 buf_len），-1=err。
 ///
+/// 当累计输出超过 `buf_len` 时，拷贝**最近**的 `buf_len` 字节（尾部），而不是
+/// 最旧的头部：前端拿到的快照必须代表「当前屏幕附近」的内容，否则持续输出的
+/// pane（htop/codex/agent）超过前端缓冲后，增量对账会永远对着一段陈旧头部，
+/// 导致渲染冻结或乱码。
+///
 /// # Safety
 /// `buf` 至少 `buf_len` 字节。
 #[no_mangle]
@@ -905,7 +910,8 @@ pub unsafe extern "C" fn muxterm_get_pane_output(
             return 0;
         };
         let n = out.len().min(buf_len);
-        std::ptr::copy_nonoverlapping(out.as_ptr(), buf, n);
+        let start = out.len() - n;
+        std::ptr::copy_nonoverlapping(out.as_ptr().add(start), buf, n);
         n as i32
     }))
     .unwrap_or(-1)
@@ -1079,6 +1085,41 @@ mod tests {
             };
             assert_eq!(muxterm_execute(h, &task), -1);
             assert_eq!(muxterm_detach(h), -1);
+            muxterm_free(h);
+        }
+    }
+
+    /// 回归：长运行 pane 的累计输出超过前端缓冲后，`muxterm_get_pane_output`
+    /// 必须返回**最近**的字节（尾部），而不是最旧头部。否则 macOS/TUI 的
+    /// 快照会永远停在陈旧头部，htop/codex/agent 这类 pane 一旦超过前端
+    /// 缓冲（256KB）就冻结或乱码。
+    #[test]
+    fn ffi_get_pane_output_returns_recent_tail() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            assert_eq!(muxterm_connect(h), 0);
+            let mut buf = [CStateChange::default(); 32];
+            let _ = muxterm_poll_events(h, buf.as_mut_ptr(), 32);
+
+            // 写入远超过 256 字节的输出，尾部带唯一标记
+            let msg = b"yes A | head -c 600; echo ZZZEND\n";
+            assert_eq!(muxterm_send_input(h, 1, msg.as_ptr(), msg.len()), 0);
+
+            // 轮询直到输出到达
+            let mut out = [0u8; 256];
+            let mut found = false;
+            for _ in 0..100 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let n = muxterm_get_pane_output(h, 1, out.as_mut_ptr(), out.len());
+                if n > 0 && out[..n as usize].windows(6).any(|w| w == b"ZZZEND") {
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found, "应读到尾部标记 ZZZEND（而不是陈旧头部）");
+
+            assert_eq!(muxterm_shutdown(h), 0);
             muxterm_free(h);
         }
     }
