@@ -2183,6 +2183,84 @@ mod tests {
         }
     }
 
+    /// 回归：`%output` 事件拼接后必须与 pane 的真实字节流完全一致。
+    /// cursor agent 的「擦除 + 上移 + 原地重绘」帧之间若被协议/解析层插入
+    /// 多余换行，SwiftTerm/TerminalState 会把每帧画到下一行，造成输入框和
+    /// 状态区逐帧堆叠。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pane_output_events_preserve_exact_frame_bytes() {
+        let socket = unique_socket();
+        let run = async {
+            let mut b = TmuxBackend::new(Some(&socket));
+            if b.connect().await.is_err() {
+                return;
+            }
+            let _ = b.take_events();
+            let pane = b.active_pane().map(|p| p.id).unwrap_or(PaneId(0));
+
+            // 在 pane 里用 python 输出两帧：与 cursor agent 相同的
+            // 「擦除 + 上移 + 重绘」模式，帧间仅 sleep（无任何换行）。
+            let script = "python3 -c 'import sys,time; f=\"\\x1b[2K\\x1b[1A\\x1b[2K\\x1b[1A\\x1b[GSTATUS-A\\r\\nTIP\\r\\n\\r\\nBOX\\r\\n\\r\\nFOOTER-A\\r\\n\"; sys.stdout.write(f); time.sleep(0.3); sys.stdout.write(f.replace(\"STATUS-A\",\"STATUS-B\").replace(\"FOOTER-A\",\"FOOTER-B\"))'\n";
+            let _ = std::process::Command::new("tmux")
+                .args([
+                    "-L",
+                    &socket,
+                    "send-keys",
+                    "-t",
+                    &format!("%{}", pane.0),
+                    script,
+                ])
+                .status();
+
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(6);
+            let mut collected: Vec<u8> = Vec::new();
+            loop {
+                for ev in b.take_events() {
+                    if let StateChange::PaneOutput { data, .. } = ev {
+                        collected.extend_from_slice(&data);
+                    }
+                }
+                if collected.windows(9).any(|w| w == b"FOOTER-B") {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+
+            assert!(
+                collected
+                    .windows(b"FOOTER-B".len())
+                    .any(|w| w == b"FOOTER-B"),
+                "第二帧必须到达: {:?}",
+                String::from_utf8_lossy(&collected)
+            );
+            // 关键：两帧之间不得出现「CRLF + 空行」——即 FOOTER-A 之后到下一帧
+            // ESC 之间不能有连续两个 LF（本地 shell 的 ONLCR 可能把 \n 变 \r\n，
+            // 但协议/解析层绝不能额外插入换行）。
+            let marker = collected
+                .windows(b"FOOTER-A".len())
+                .position(|w| w == b"FOOTER-A")
+                .expect("第一帧必须到达");
+            let after = &collected[marker + b"FOOTER-A".len()..];
+            let next_esc = after.iter().position(|&b| b == 0x1b).unwrap_or(after.len());
+            let between = &after[..next_esc];
+            let lf_count = between.iter().filter(|&&b| b == b'\n').count();
+            assert!(
+                lf_count <= 1,
+                "帧间不得出现多余换行（实际 {lf_count} 个 LF）: {:?}",
+                String::from_utf8_lossy(between)
+            );
+            let _ = b.shutdown().await;
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
+        cleanup(&socket);
+        if timed.is_err() {
+            panic!("pane_output_events_preserve_exact_frame_bytes 超时");
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn split_pane_dispatched() {
         let socket = unique_socket();
