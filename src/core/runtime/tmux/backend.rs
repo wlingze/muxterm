@@ -259,7 +259,15 @@ impl TmuxBackend {
     }
 
     /// 事件队列过长时丢弃最旧的 PaneOutput，避免挂起轮询时涨到数 GB。
+    ///
+    /// 结构性事件（ActiveTabChanged / TabClosed / PaneClosed / PaneAdded /
+    /// TabAdded / WindowClosed）**绝不丢弃**：它们驱动 UI 切 tab / 关闭 /
+    /// 布局重建，被裁掉会让前端永远等不到确认而卡死（例如 `%session-window-
+    /// changed` 在输出洪峰下被硬裁，macOS 的切 tab 门禁就再也不会放行）。
+    /// 只丢 PaneOutput；仍超限时丢可重建的 LayoutChanged（push_layout_changed
+    /// 本就会合并同一 tab 的旧布局）。
     fn trim_event_queue(&mut self) {
+        // 第一优先：丢弃最旧的 PaneOutput（体积大、可丢弃、不影响状态机）。
         while self.events.len() > MAX_STATE_EVENTS {
             let Some(idx) = self
                 .events
@@ -270,10 +278,19 @@ impl TmuxBackend {
             };
             self.events.remove(idx);
         }
-        // 若仍超限（几乎全是结构事件），硬裁最旧
+        // 仍超限：丢弃最旧的 LayoutChanged（可重建，前端只要最新布局）。
         while self.events.len() > MAX_STATE_EVENTS {
-            self.events.pop_front();
+            let Some(idx) = self
+                .events
+                .iter()
+                .position(|e| matches!(e, StateChange::LayoutChanged { .. }))
+            else {
+                break;
+            };
+            self.events.remove(idx);
         }
+        // 极端情况仍超限（几乎全是关键结构事件）：宁可让队列暂时超一点，
+        // 也绝不硬裁结构性事件——否则切 tab / 关闭会永久卡死。
     }
 
     /// 合并同一 tab 尚未交给前端的布局事件。
@@ -2328,6 +2345,41 @@ mod tests {
             "events 应有界，实际 {}",
             b.events.len()
         );
+    }
+
+    /// 回归：输出洪峰下结构性事件（ActiveTabChanged 等）绝不能被 trim 丢弃，
+    /// 否则前端永远等不到切 tab 确认而卡死。
+    #[test]
+    fn output_flood_does_not_drop_structural_events() {
+        use crate::core::buffer_cap::MAX_PANE_OUTPUT_BYTES;
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let pane = PaneId(1);
+        // 先放一个 ActiveTabChanged（切 tab 的确认事件）
+        b.events.push_back(StateChange::ActiveTabChanged {
+            window: crate::core::types::WindowId(1),
+            tab: crate::core::types::TabId(14),
+        });
+        // 灌入远超上限的 PaneOutput
+        let chunk = vec![b'x'; 64 * 1024];
+        for _ in 0..200 {
+            b.handle_message(Message::Output {
+                pane,
+                content: chunk.clone(),
+                raw_content: String::new(),
+            });
+        }
+        // ActiveTabChanged 必须仍在队列里（前端靠它放行切 tab）
+        assert!(
+            b.events.iter().any(|e| matches!(
+                e,
+                StateChange::ActiveTabChanged { tab: t, .. } if t.0 == 14
+            )),
+            "输出洪峰后 ActiveTabChanged 不得被丢弃"
+        );
+        let _ = MAX_PANE_OUTPUT_BYTES; // 引用以保持编译
     }
 
     /// 流控：%pause / %continue 被安全忽略，不阻塞后续 %output 累积与状态机。
