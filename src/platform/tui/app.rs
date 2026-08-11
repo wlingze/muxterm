@@ -163,8 +163,10 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
 }
 
 /// 根据快照同步各 pane 终端：
-/// - 已有状态的 pane 只调整尺寸 + 正向增量补齐（恢复被事件队列丢弃的输出）；
-/// - 首次见到的 pane 才用累计输出播种；
+/// - 已有状态的 pane 只调整尺寸（增量一律走 `%output` 事件，不用累计快照
+///   切片：前端快照缓冲小于长运行 pane 的累计输出后只是滑动窗口，按已喂
+///   长度切片会追着陈旧字节，导致冻结/乱码）；
+/// - 首次见到的 pane 才用累计快照（最近字节）播种；
 /// - **不**按激活 tab 清理状态（切 tab 不丢屏幕），也不重放截断的历史。
 fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(u32, Vec<u8>)> {
     for p in &snap.panes {
@@ -173,7 +175,6 @@ fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(
         let full = snap.outputs.get(&p.id).cloned().unwrap_or_default();
         if term_mgr.has(p.id) {
             term_mgr.resize_pane(p.id, cols, rows);
-            term_mgr.sync_output(p.id, cols, rows, &full);
         } else {
             term_mgr.seed(p.id, cols, rows, &full);
         }
