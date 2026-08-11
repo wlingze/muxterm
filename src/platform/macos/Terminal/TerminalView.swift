@@ -61,7 +61,15 @@ final class MuxTerminalView: TerminalView {
             }
             setAccessibilityValue(accessibilityOutput)
         }
+        // SwiftTerm 默认按 Terminal.refreshStart/End 局部重绘；cursor agent
+        // 这类「擦除 + 上移 + 原地重绘」的局部更新，局部重绘可能不清除被
+        // 擦除行的旧像素（stale glyphs），表现为输入/状态区逐帧堆叠。
+        // 强制全屏刷新：把 refresh 范围扩到全屏，并显式标记/立即执行重绘，
+        // 让被擦除的行真正变空白。htop 等全屏重写应用不受影响。
+        getTerminal().updateFullScreen()
         needsDisplay = true
+        setNeedsDisplay(bounds)
+        displayIfNeeded()
     }
 
     /// 当前 SwiftTerm 字符格的 backing pixel 尺寸。
