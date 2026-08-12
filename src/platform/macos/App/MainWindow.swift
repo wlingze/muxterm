@@ -4,6 +4,16 @@ import MuxtermChrome
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
 final class MainWindowController: NSWindowController, NSWindowDelegate {
+    /// Project 连接流程的引用包装：异步回调需要可变状态；用
+    /// `activeProjectFlow` 身份比较防止旧连接的回调覆盖新连接。
+    private final class ProjectConnectFlowBox {
+        var flow: ProjectConnectFlow
+
+        init(flow: ProjectConnectFlow) {
+            self.flow = flow
+        }
+    }
+
     private var bridge: CoreBridge
     private let terminalManager: TerminalManager
     private let content: ContentView
@@ -26,6 +36,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let pendingActiveTabTimeout: TimeInterval = 1.5
     private var isClosing = false
     private var languageObserver: NSObjectProtocol?
+    private var activeProjectFlow: ProjectConnectFlowBox?
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
@@ -228,46 +239,99 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         quickConnectStore.recordRecent(config)
         switch config.runtime {
         case .tmux:
-            if config.name.isEmpty {
-                // 无 name → 创建 tmux session（用 path 最小目录做名字）
-                let sessionName = QuickConnect.defaultName(for: config.path)
-                createTmuxSession(config: config, session: sessionName)
-            } else {
-                attachTmux(config: config, session: config.name)
-            }
+            connectProject(config: config)
         case .shell:
-            startShell(config: config)
-        }
-    }
-
-    private func createTmuxSession(config: TargetConfig, session: String) {
-        let backend: String
-        let alias: String?
-        switch config.transport {
-        case .local:
-            backend = "local"
-            alias = nil
-        case .ssh(let name):
-            backend = "ssh"
-            alias = name
-        }
-        discovery.createSession(
-            target: config.transport.isSSH
-                ? .ssh(SSHHostInfo(alias: alias ?? "", hostname: "", user: nil, port: nil))
-                : .local,
-            directory: config.path
-        ) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let created):
-                self.attachTmux(config: config, session: created)
-            case .failure(let error):
-                self.showError(error)
+            switch config.transport {
+            case .local:
+                startShell(config: config)
+            case .ssh:
+                // 远程 shell 没有独立裸 shell 后端：按 Project 语义走
+                // attach 已有 tmux session → 失败创建 → attach。
+                connectProject(config: config)
             }
         }
     }
 
-    private func attachTmux(config: TargetConfig, session: String) {
+    /// Project 连接流程：先 attach 已有 session；明确失败后创建 detached
+    /// session（twork 语义：session 名 = 显式 name / path basename），
+    /// 创建成功后再 attach 同一 session。local / ssh 共用同一状态机。
+    private func connectProject(config: TargetConfig) {
+        let box = ProjectConnectFlowBox(flow: ProjectConnectFlow(config: config))
+        activeProjectFlow = box
+        runProjectFlow(box, config: config)
+    }
+
+    private func runProjectFlow(_ box: ProjectConnectFlowBox, config: TargetConfig) {
+        switch box.flow.state {
+        case .attachExisting:
+            attachTmux(config: config, session: box.flow.session) { [weak self] result in
+                guard let self, self.activeProjectFlow === box else { return }
+                switch result {
+                case .success(let bridge):
+                    box.flow.attachExistingSucceeded()
+                    self.activeProjectFlow = nil
+                    self.swapBridge(bridge)
+                case .failure(let error):
+                    box.flow.attachExistingFailed(message: error.localizedDescription)
+                    self.runProjectFlow(box, config: config)
+                }
+            }
+        case .createDetached:
+            let target: ConnectionTarget
+            switch config.transport {
+            case .local:
+                target = .local
+            case .ssh(let name):
+                target = .ssh(SSHHostInfo(alias: name, hostname: "", user: nil, port: nil))
+            }
+            discovery.createSession(
+                named: box.flow.session,
+                target: target,
+                directory: box.flow.directory
+            ) { [weak self] result in
+                guard let self, self.activeProjectFlow === box else { return }
+                switch result {
+                case .success:
+                    box.flow.createSucceeded()
+                    self.runProjectFlow(box, config: config)
+                case .failure(let error):
+                    box.flow.createFailed(message: error.localizedDescription)
+                    self.activeProjectFlow = nil
+                    self.showError(error, prefix: "create session failed")
+                }
+            }
+        case .attachCreated:
+            attachTmux(config: config, session: box.flow.session) { [weak self] result in
+                guard let self, self.activeProjectFlow === box else { return }
+                switch result {
+                case .success(let bridge):
+                    box.flow.attachCreatedSucceeded()
+                    self.activeProjectFlow = nil
+                    self.swapBridge(bridge)
+                case .failure(let error):
+                    box.flow.attachCreatedFailed(message: error.localizedDescription)
+                    self.activeProjectFlow = nil
+                    self.showError(error, prefix: "attach created session failed")
+                }
+            }
+        case .done:
+            break
+        case .failed(let failure):
+            let prefix: String
+            switch failure.stage {
+            case .attachExisting: prefix = "attach existing session failed"
+            case .create: prefix = "create session failed"
+            case .attachCreated: prefix = "attach created session failed"
+            }
+            reportStatusError("\(prefix): \(failure.detail)")
+        }
+    }
+
+    private func attachTmux(
+        config: TargetConfig,
+        session: String,
+        completion: @escaping (Result<CoreBridge, Error>) -> Void
+    ) {
         let backend: String
         let socket: String?
         switch config.transport {
@@ -286,15 +350,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     session: session
                 )
                 DispatchQueue.main.async {
-                    guard let self else {
+                    if self == nil {
                         nextBridge.shutdown()
                         return
                     }
-                    self.swapBridge(nextBridge)
+                    completion(.success(nextBridge))
                 }
             } catch {
-                DispatchQueue.main.async { [weak self] in
-                    self?.showError(error)
+                DispatchQueue.main.async {
+                    completion(.failure(error))
                 }
             }
         }
@@ -302,7 +366,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func startShell(config: TargetConfig) {
         // 本地 shell 用指定目录启动（muxterm_new_connect 的 local 分支带 workdir）。
-        // SSH 没有独立的裸远程 shell 后端：一律走远程 tmux（创建或 attach）。
         switch config.transport {
         case .local:
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -324,13 +387,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     }
                 }
             }
-        case .ssh(let name):
-            // 远程 shell → 用 tmux 创建会话（name 作会话名；无 name 用 path 最小目录）。
-            let sessionName = config.name.isEmpty
-                ? QuickConnect.defaultName(for: config.path)
-                : config.name
-            createTmuxSession(config: config, session: sessionName)
-            _ = name
+        case .ssh:
+            break // 已在 connect(config:) 中走 connectProject
         }
     }
 
@@ -768,12 +826,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = true
     }
 
-    private func showError(_ error: Error) {
-        reportStatusError(error.localizedDescription)
+    private func showError(_ error: Error, prefix: String? = nil) {
+        let detail = prefix.map { "\($0): \(error.localizedDescription)" }
+            ?? error.localizedDescription
+        reportStatusError(detail)
         guard let ownerWindow = window else { return }
         let alert = NSAlert()
         alert.messageText = MuxtermI18n.shared.tr(.errorPaletteFailed)
-        alert.informativeText = error.localizedDescription
+        alert.informativeText = detail
         alert.alertStyle = .warning
         alert.beginSheetModal(for: ownerWindow)
     }

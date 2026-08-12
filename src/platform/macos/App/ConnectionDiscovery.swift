@@ -96,6 +96,17 @@ final class ConnectionDiscovery {
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         let sessionName = Self.makeSessionName(directory: directory)
+        createSession(named: sessionName, target: target, directory: directory, completion: completion)
+    }
+
+    /// 以显式 session 名创建 detached tmux session（Project fallback 用，
+    /// 与 twork 的 basename/显式 name 语义一致，不生成随机后缀）。
+    func createSession(
+        named session: String,
+        target: ConnectionTarget,
+        directory: String,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
         let backend: String
         let alias: String?
         switch target {
@@ -111,7 +122,7 @@ final class ConnectionDiscovery {
             try CoreBridge.createTmuxSession(
                 backendType: backend,
                 target: alias,
-                session: sessionName,
+                session: session,
                 directory: directory
             )
         }, completion: completion)

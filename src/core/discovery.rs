@@ -1015,4 +1015,43 @@ mod tests {
         let sessions = list_local_tmux_sessions(Some("muxterm-test-nonexistent-xyz"));
         assert!(sessions.is_empty(), "不存在的 socket 应返回空列表");
     }
+
+    #[test]
+    fn create_local_tmux_session_uses_detached_isolated_socket() {
+        // 安全要求：任何真实 tmux 测试必须用独立 socket，且清理也带同一个 -L。
+        let socket = format!(
+            "muxterm-test-create-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        );
+        let dir = std::env::temp_dir();
+        let dir = dir.to_str().unwrap_or("/tmp");
+
+        // tmux 不可用（CI/无 head）时跳过，不破坏默认 server。
+        if create_local_tmux_session(Some(&socket), "proj", dir).is_err() {
+            let _ = std::process::Command::new("tmux")
+                .args(["-L", &socket, "kill-server"])
+                .output();
+            return;
+        }
+
+        let sessions = list_local_tmux_sessions(Some(&socket));
+        assert!(
+            sessions.iter().any(|s| s.name == "proj"),
+            "isolated socket 必须能看到刚创建的 session"
+        );
+        assert!(
+            sessions.iter().all(|s| !s.attached),
+            "new-session -d 必须是 detached，不能抢用户已 attach 的会话"
+        );
+
+        // 清理：只杀自己的测试 server。
+        let cleanup = std::process::Command::new("tmux")
+            .args(["-L", &socket, "kill-server"])
+            .output();
+        assert!(cleanup.is_ok(), "清理测试 socket 必须成功");
+    }
 }
