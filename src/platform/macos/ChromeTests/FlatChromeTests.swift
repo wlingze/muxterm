@@ -94,6 +94,25 @@ final class TerminalMirrorPolicyTests: XCTestCase {
         ))
     }
 
+    /// 本次 feed 明确包含终端查询（OSC 10/11、CSI DA 等）：应答必须放行，
+    /// 否则 codex 收不到颜色/能力信息会退化成黑底黑字。
+    func testTmuxMirrorForwardsParserResponseWhenFeedContainsQuery() {
+        XCTAssertTrue(TerminalMirrorPolicy.shouldForwardParserResponse(
+            duringRemoteOutputFeed: true,
+            isTmuxMirror: true,
+            feedContainsQuery: true
+        ))
+    }
+
+    /// 无查询的普通输出 feed 仍然丢弃解析器应答，避免 git lg 泄漏。
+    func testTmuxMirrorStillDropsWhenFeedHasNoQuery() {
+        XCTAssertFalse(TerminalMirrorPolicy.shouldForwardParserResponse(
+            duringRemoteOutputFeed: true,
+            isTmuxMirror: true,
+            feedContainsQuery: false
+        ))
+    }
+
     /// tmux 镜像在 feed 之外（鼠标 / 焦点等用户驱动事件）：保持转发。
     func testTmuxMirrorForwardsOutsideFeed() {
         XCTAssertTrue(TerminalMirrorPolicy.shouldForwardParserResponse(
@@ -112,6 +131,62 @@ final class TerminalMirrorPolicyTests: XCTestCase {
             duringRemoteOutputFeed: false,
             isTmuxMirror: false
         ))
+    }
+}
+
+final class TerminalQueryDetectorTests: XCTestCase {
+    private func bytes(_ s: String) -> [UInt8] {
+        Array(s.utf8)
+    }
+
+    func testDetectsOSCDynamicColorQueries() {
+        // codex 启动查询：ESC ] 10 ; ? BEL ESC ] 11 ; ? BEL
+        let raw = "\u{1b}]10;?\u{7}\u{1b}]11;?\u{7}"
+        let kinds = TerminalQueryDetector.queries(in: bytes(raw))
+        XCTAssertEqual(kinds, [.oscDynamicColor(10), .oscDynamicColor(11)])
+        XCTAssertTrue(TerminalQueryDetector.containsQuery(in: bytes(raw)))
+    }
+
+    func testDetectsOSCQueryWithSTTerminator() {
+        let raw = "\u{1b}]12;?\u{1b}\\"
+        XCTAssertEqual(
+            TerminalQueryDetector.queries(in: bytes(raw)),
+            [.oscDynamicColor(12)]
+        )
+    }
+
+    func testDetectsCSIDeviceAttributes() {
+        // ESC [ c 和 ESC [ ? 65 ; ... c（codex 的 DA 查询）
+        let raw = "\u{1b}[c\u{1b}[?65;4;1;2;6;21;22;17;28c"
+        let kinds = TerminalQueryDetector.queries(in: bytes(raw))
+        XCTAssertTrue(kinds.contains(.csiDeviceAttributes))
+    }
+
+    func testDetectsCSIDeviceStatus() {
+        XCTAssertEqual(
+            TerminalQueryDetector.queries(in: bytes("\u{1b}[6n")),
+            [.csiDeviceStatus]
+        )
+    }
+
+    func testDetectsKittyKeyboardQueries() {
+        // kitty keyboard：CSI ? u 与 CSI > 4 ; 0 u（codex 的扩展键盘查询）
+        let q = "\u{1b}[?u"
+        let greater = "\u{1b}[>4;0u"
+        XCTAssertTrue(TerminalQueryDetector.containsQuery(in: bytes(q)))
+        XCTAssertTrue(TerminalQueryDetector.containsQuery(in: bytes(greater)))
+    }
+
+    func testIgnoresPlainOutputWithoutQueries() {
+        let raw = "hello world\r\n\u{1b}[31mred\u{1b}[0m"
+        XCTAssertFalse(TerminalQueryDetector.containsQuery(in: bytes(raw)))
+        XCTAssertTrue(TerminalQueryDetector.queries(in: bytes(raw)).isEmpty)
+    }
+
+    func testIgnoresOSCColorSetNotQuery() {
+        // OSC 10/11 设置颜色（不是查询）：不触发应答放行
+        let raw = "\u{1b}]10;#ffffff\u{7}\u{1b}]11;#000000\u{7}"
+        XCTAssertFalse(TerminalQueryDetector.containsQuery(in: bytes(raw)))
     }
 }
 
@@ -383,6 +458,35 @@ final class QuickConnectModelTests: XCTestCase {
 
         let ssh = TargetConfig(name: "m", runtime: .tmux, transport: .ssh(name: "ryzen"), path: "/x")
         XCTAssertEqual(QuickConnect.badges(for: config, recents: [ssh], projects: []), [])
+    }
+
+    func testEntriesRecentLimitAndProjectFill() {
+        let recents = (0..<8).map { i in
+            TargetConfig(name: "r\(i)", runtime: .tmux, transport: .local, path: "/x/r\(i)")
+        }
+        let projects = [
+            TargetConfig(name: "p1", runtime: .tmux, transport: .local, path: "/x/p1"),
+            TargetConfig(name: "r0", runtime: .tmux, transport: .local, path: "/x/r0"),
+        ]
+        let entries = QuickConnect.entries(recents: recents, projects: projects)
+
+        // 只取前 5 条 recent（r0..r4），再补 project 独有的 p1。
+        XCTAssertEqual(entries.map { $0.config.name }, ["r0", "r1", "r2", "r3", "r4", "p1"])
+        // r0 同时在 recent + project → 两个标记。
+        XCTAssertEqual(entries[0].badges, [.recent, .project])
+        // p1 只 project。
+        XCTAssertEqual(entries[5].badges, [.project])
+    }
+
+    func testEntriesDedupesByUniqueIDAcrossTransports() {
+        let recents = [
+            TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x/l"),
+            TargetConfig(name: "m", runtime: .tmux, transport: .ssh(name: "ryzen"), path: "/x/r"),
+        ]
+        let projects: [TargetConfig] = []
+        let entries = QuickConnect.entries(recents: recents, projects: projects)
+        XCTAssertEqual(entries.count, 2) // local 与 ryzen 是不同目标
+        XCTAssertEqual(entries.map { $0.config.transport.label }, ["local", "ryzen"])
     }
 }
 

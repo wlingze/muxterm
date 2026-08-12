@@ -55,9 +55,151 @@ public enum FlatChrome {
 public enum TerminalMirrorPolicy {
     public static func shouldForwardParserResponse(
         duringRemoteOutputFeed: Bool,
-        isTmuxMirror: Bool
+        isTmuxMirror: Bool,
+        feedContainsQuery: Bool = false
     ) -> Bool {
-        !(isTmuxMirror && duringRemoteOutputFeed)
+        // tmux 镜像在 feed 远端输出期间，解析器应答默认丢弃，避免 git lg 等
+        // 查询泄漏成 shell 字面命令。但若本次 feed 真的包含终端查询
+        // （OSC 10/11/12、CSI DA/DSR、kitty 等），必须把应答回给 pane——
+        // 否则 codex 等应用收不到颜色/能力信息，会回退成黑底黑字。
+        !isTmuxMirror || !duringRemoteOutputFeed || feedContainsQuery
+    }
+}
+
+/// 检测一段 pane 输出里是否包含「终端查询」序列。
+///
+/// tmux 控制模式下，远端应用（codex/htop/git lg）发出的查询会以 `%output`
+/// 原样转发给前端；只有检测到真实查询，解析器产生的应答才允许回写 pane。
+public enum TerminalQueryDetector {
+    /// 支持的前缀。
+    public enum QueryKind: Equatable {
+        case oscDynamicColor(Int)   // OSC 10/11/12 ?
+        case csiDeviceAttributes    // CSI c / CSI ? ... c
+        case csiDeviceStatus        // CSI n / CSI 5 n / CSI 6 n
+        case kittyKeyboard          // CSI ? u / CSI > 4;... u
+    }
+
+    /// 扫描字节流，返回找到的查询类型（去重，保序）。
+    public static func queries(in bytes: [UInt8]) -> [QueryKind] {
+        guard !bytes.isEmpty else { return [] }
+        var found: [QueryKind] = []
+        var i = 0
+        while i < bytes.count {
+            guard bytes[i] == 0x1b else {
+                i += 1
+                continue
+            }
+            guard i + 1 < bytes.count else { break }
+            let next = bytes[i + 1]
+            if next == UInt8(ascii: "]") {
+                // OSC：ESC ] <code> ; ? <ST|BEL>
+                if let (kind, consumed) = parseOSCQuery(bytes, from: i) {
+                    if !found.contains(where: { label($0) == label(kind) }) {
+                        found.append(kind)
+                    }
+                    i += consumed
+                    continue
+                }
+            } else if next == UInt8(ascii: "[") {
+                // CSI
+                if let (kind, consumed) = parseCSIQuery(bytes, from: i) {
+                    if !found.contains(where: { label($0) == label(kind) }) {
+                        found.append(kind)
+                    }
+                    i += consumed
+                    continue
+                }
+            }
+            i += 2
+        }
+        return found
+    }
+
+    /// 是否存在任意查询（供 feed 门禁用）。
+    public static func containsQuery(in bytes: [UInt8]) -> Bool {
+        !queries(in: bytes).isEmpty
+    }
+
+    private static func label(_ kind: QueryKind) -> String {
+        switch kind {
+        case .oscDynamicColor(let code): return "osc\(code)"
+        case .csiDeviceAttributes: return "da"
+        case .csiDeviceStatus: return "dsr"
+        case .kittyKeyboard: return "kitty"
+        }
+    }
+
+    /// 解析 OSC 查询：ESC ] 10 ; ? 或 ESC ] 11;?，以 BEL/ST 结尾。
+    private static func parseOSCQuery(_ bytes: [UInt8], from start: Int) -> (QueryKind, Int)? {
+        var i = start + 2
+        // 数字 code（10/11/12）
+        let codeStart = i
+        while i < bytes.count, bytes[i].isASCIIDigit {
+            i += 1
+        }
+        guard i > codeStart, i < bytes.count else { return nil }
+        let code = Int(String(bytes: Array(bytes[codeStart..<i]), encoding: .ascii) ?? "")
+        guard let code, code == 10 || code == 11 || code == 12 else { return nil }
+        // 允许可选空格
+        while i < bytes.count, bytes[i] == UInt8(ascii: " ") { i += 1 }
+        guard i < bytes.count, bytes[i] == UInt8(ascii: ";") else { return nil }
+        i += 1
+        while i < bytes.count, bytes[i] == UInt8(ascii: " ") { i += 1 }
+        guard i < bytes.count, bytes[i] == UInt8(ascii: "?") else { return nil }
+        i += 1
+        // 跳过直到 BEL / ST
+        while i < bytes.count, bytes[i] != 0x07 {
+            if bytes[i] == 0x1b, i + 1 < bytes.count, bytes[i + 1] == UInt8(ascii: "\\") {
+                i += 2
+                return (.oscDynamicColor(code), i - start)
+            }
+            i += 1
+        }
+        guard i < bytes.count else { return nil }
+        return (.oscDynamicColor(code), i - start + 1)
+    }
+
+    /// 解析 CSI 查询：ESC [ c / ESC [ ? ... c / ESC [ n / ESC [ ? ... u。
+    private static func parseCSIQuery(_ bytes: [UInt8], from start: Int) -> (QueryKind, Int)? {
+        var i = start + 2
+        var sawQuestion = false
+        if i < bytes.count, bytes[i] == UInt8(ascii: "?") {
+            sawQuestion = true
+            i += 1
+        }
+        // kitty 能力查询形如 `CSI > 4;0 u`：`>` 后跟数字/分号。
+        var sawGreater = false
+        if i < bytes.count, bytes[i] == UInt8(ascii: ">") {
+            sawGreater = true
+            i += 1
+        }
+        let paramsStart = i
+        while i < bytes.count, bytes[i].isASCIIDigit || bytes[i] == UInt8(ascii: ";") {
+            i += 1
+        }
+        guard i < bytes.count else { return nil }
+        let final = bytes[i]
+        let params = Array(bytes[paramsStart..<i])
+        switch final {
+        case UInt8(ascii: "c"):
+            return (.csiDeviceAttributes, i - start + 1)
+        case UInt8(ascii: "n"):
+            return (.csiDeviceStatus, i - start + 1)
+        case UInt8(ascii: "u"):
+            // kitty keyboard 查询：CSI ? u 或 CSI > 4;... u
+            if sawQuestion || sawGreater {
+                return (.kittyKeyboard, i - start + 1)
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+}
+
+private extension UInt8 {
+    var isASCIIDigit: Bool {
+        self >= UInt8(ascii: "0") && self <= UInt8(ascii: "9")
     }
 }
 

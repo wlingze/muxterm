@@ -20,6 +20,9 @@ final class MuxTerminalView: TerminalView {
     var suppressOutputDrivenResponses = false
     /// 正在 feed 远端 pane 输出（解析器应答只在这个窗口内产生）。
     private var isFeedingRemoteOutput = false
+    /// 本次 feed 字节里是否包含终端查询（OSC 10/11/12、CSI DA/DSR、kitty）。
+    /// tmux 镜像只放行「确实有查询」的应答，避免 git lg 等泄漏成 shell 字面命令。
+    private var feedContainsQuery = false
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
@@ -57,15 +60,18 @@ final class MuxTerminalView: TerminalView {
     }
 
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
-    func feedOutput(_ data: Data) {
+    func feedOutput(_ data: Data, isSnapshot: Bool = false) {
         guard !data.isEmpty else { return }
         let bytes = [UInt8](data)
         // SwiftTerm 同步解析输出：查询应答经 `Terminal.sendResponse` 在 feed
         // 调用栈内同步发出。用这个标记把「解析 pane 输出产生的应答」与
-        // 「用户输入 / 鼠标上报」区分开，tmux 镜像只丢弃前者。
+        // 「用户输入 / 鼠标上报」区分开；tmux 镜像只放行本次确有查询的应答，
+        // 其余丢弃（否则 codex 收不到颜色/能力查询应答会退化成黑底黑字）。
         isFeedingRemoteOutput = true
+        feedContainsQuery = !isSnapshot && TerminalQueryDetector.containsQuery(in: bytes)
         feed(byteArray: bytes[...])
         isFeedingRemoteOutput = false
+        feedContainsQuery = false
         // AX 反映「当前屏幕」而不是 feed 历史：之前累积所有 feed 文本，
         // 输入/状态区的每一帧中间状态都会留在 AX 值里，看起来像逐帧堆叠。
         let now = Date()
@@ -146,7 +152,8 @@ final class MuxTerminalView: TerminalView {
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
         guard TerminalMirrorPolicy.shouldForwardParserResponse(
             duringRemoteOutputFeed: isFeedingRemoteOutput,
-            isTmuxMirror: suppressOutputDrivenResponses
+            isTmuxMirror: suppressOutputDrivenResponses,
+            feedContainsQuery: feedContainsQuery
         ) else { return }
         super.send(source: source, data: data)
     }

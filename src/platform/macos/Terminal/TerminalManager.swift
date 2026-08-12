@@ -73,7 +73,7 @@ final class TerminalManager: TerminalInputHandler {
         // 入队但尚未派发的事件，这些事件必须在接下来的批次里跳过。
         let snapshot = bridge?.getPaneOutput(paneId: paneId) ?? Data()
         if !snapshot.isEmpty {
-            view.feedOutput(snapshot)
+            view.feedOutput(snapshot, isSnapshot: true)
             appendSnippet(snapshot)
             if inEventBatch {
                 viewsCreatedThisBatch.insert(paneId)
