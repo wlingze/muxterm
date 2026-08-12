@@ -132,6 +132,67 @@ pub extern "C" fn muxterm_discover_ssh_hosts_json(config_path: *const c_char) ->
     .unwrap_or_else(|_| json_error("SSH host discovery panic"))
 }
 
+/// 列出本地或远端目录条目（`name` + `is_dir`），供「选起始目录」UI 逐步浏览。
+///
+/// `backend_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
+/// 中的 alias。返回 `{"ok":true,"entries":[...]}`，字符串由
+/// [`muxterm_free_string`] 释放。`path` 为空时：本地取 HOME，SSH 取 `~`。
+#[no_mangle]
+pub extern "C" fn muxterm_list_dir_json(
+    backend_type: *const c_char,
+    target: *const c_char,
+    config_path: *const c_char,
+    path: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let backend = cstr_opt(backend_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let target = cstr_opt(target);
+        let config_path = cstr_opt(config_path);
+        let path = cstr_opt(path).unwrap_or_else(|| {
+            if backend == "ssh" {
+                "~".to_string()
+            } else {
+                ".".to_string()
+            }
+        });
+        let result = match backend.as_str() {
+            "local" => {
+                let expanded = if path == "~" {
+                    std::env::var("HOME").unwrap_or_else(|_| ".".into())
+                } else {
+                    path
+                };
+                Ok(crate::core::discovery::list_local_dir(
+                    std::path::Path::new(&expanded),
+                ))
+            }
+            "ssh" => {
+                let Some(alias) = target.as_deref().filter(|value| !value.trim().is_empty()) else {
+                    return json_error("SSH directory listing requires a host alias");
+                };
+                crate::core::discovery::list_remote_dir(
+                    alias,
+                    &path,
+                    config_path.as_deref(),
+                    discovery_timeout(timeout_ms),
+                )
+            }
+            _ => return json_error(format!("unsupported directory backend: {backend}")),
+        };
+        match result {
+            Ok(entries) => json_string(serde_json::json!({
+                "ok": true,
+                "entries": entries,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("directory listing panic"))
+}
+
 /// 通过 core 发现 local 或 SSH tmux session。
 ///
 /// `backend_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
@@ -1240,5 +1301,45 @@ mod tests {
         assert_eq!(json["hosts"][0]["port"], 2201);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn ffi_list_dir_local_returns_entries_json() {
+        let dir = std::env::temp_dir().join(format!("muxterm-ffi-listdir-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("file.txt"), b"x").unwrap();
+        let path_c = CString::new(dir.to_str().unwrap()).unwrap();
+
+        let raw = muxterm_list_dir_json(
+            c"local".as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            path_c.as_ptr(),
+            1000,
+        );
+        assert!(!raw.is_null());
+        let json = unsafe {
+            let value = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            muxterm_free_string(raw);
+            serde_json::from_str::<serde_json::Value>(&value).unwrap()
+        };
+        assert_eq!(json["ok"], true);
+        let names: Vec<&str> = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"sub"));
+        assert!(names.contains(&"file.txt"));
+        let sub = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "sub")
+            .unwrap();
+        assert_eq!(sub["is_dir"], true);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

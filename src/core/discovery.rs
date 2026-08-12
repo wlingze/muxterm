@@ -829,6 +829,48 @@ pub fn list_local_dir(path: &std::path::Path) -> Vec<FsEntry> {
     out
 }
 
+/// 列出远端目录条目（名字 + 是否目录），用于「SSH 创建新 session 时选目录」。
+///
+/// 通过系统 `ssh <alias> -- ls -1p <path>` 执行；`-p` 让目录名带 `/` 后缀，
+/// 便于区分文件与目录且不依赖 GNU find 的 `-printf`（远端可能是 macOS/BSD）。
+/// 失败（SSH 连接失败 / 目录不存在）返回错误。
+pub fn list_remote_dir(
+    alias: &str,
+    path: &str,
+    ssh_config_path: Option<&str>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Vec<FsEntry>> {
+    let remote_command = format!("ls -1p {}", shell_quote(path));
+    let (program, args) = build_ssh_command_for_discovery(alias, &remote_command, ssh_config_path);
+    let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
+    if exit_code != 0 {
+        return Err(anyhow::anyhow!(
+            "SSH 目录列表失败 (exit {exit_code}): {}",
+            output.trim()
+        ));
+    }
+    let mut out = Vec::new();
+    for raw in output.lines() {
+        let line = raw.trim_end_matches('\r');
+        if line.is_empty() || line == "." || line == ".." {
+            continue;
+        }
+        let is_dir = line.ends_with('/');
+        let name = line.trim_end_matches('/');
+        if name.is_empty() {
+            continue;
+        }
+        out.push(FsEntry {
+            name: name.to_string(),
+            is_dir,
+            size: 0,
+            modified: 0,
+        });
+    }
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

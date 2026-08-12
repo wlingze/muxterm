@@ -109,6 +109,13 @@ int muxterm_get_layout(struct MuxtermHandle* h, uint32_t tab_id, struct CLayoutN
 // ── 无状态 discovery（由 core 读取 SSH config / 查询 tmux）──
 // 返回 malloc 风格的 JSON 字符串，调用 muxterm_free_string 释放。
 char* muxterm_discover_ssh_hosts_json(const char* config_path);
+char* muxterm_list_dir_json(
+    const char* backend_type,
+    const char* target,
+    const char* config_path,
+    const char* path,
+    uint32_t timeout_ms
+);
 char* muxterm_discover_tmux_sessions_json(
     const char* backend_type,
     const char* target,
