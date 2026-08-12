@@ -5,7 +5,7 @@ import MuxtermChrome
 ///
 /// 全程 Auto Layout，避免 frame/AL 混用导致子视图 bounds=0 → SwiftTerm 黑屏。
 final class PaneLayoutView: NSView {
-    private let terminalManager: TerminalManager
+    private var terminalManager: TerminalManager
     private var rootView: NSView?
     private var rootConstraints: [NSLayoutConstraint] = []
     private var currentLayout: LayoutNode?
@@ -23,6 +23,25 @@ final class PaneLayoutView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         setAccessibilityIdentifier("muxterm.paneLayout")
+    }
+
+    /// 切换 warm slot 时替换 TerminalManager，并重建 pane 树。
+    /// 旧 slot 的 TerminalManager 及其 SwiftTerm 视图保留在 slot 内，
+    /// 不在这里销毁；当前窗口只显示新 slot 的视图。
+    func replaceTerminalManager(_ newManager: TerminalManager) {
+        guard newManager !== terminalManager else { return }
+        if let rootView {
+            NSLayoutConstraint.deactivate(rootConstraints)
+            rootConstraints = []
+            rootView.removeFromSuperview()
+        }
+        rootView = nil
+        currentLayout = nil
+        hostByPane.removeAll()
+        currentPaneIds.removeAll()
+        pendingGeometryPaneIds = nil
+        terminalManager = newManager
+        needsLayout = true
     }
 
     @available(*, unavailable)

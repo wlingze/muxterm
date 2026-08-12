@@ -15,7 +15,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var bridge: CoreBridge
-    private let terminalManager: TerminalManager
+    private var terminalManager: TerminalManager
     private let content: ContentView
     private let discovery = ConnectionDiscovery()
     private var commandPalette: CommandPaletteController!
@@ -37,6 +37,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var isClosing = false
     private var languageObserver: NSObjectProtocol?
     private var activeProjectFlow: ProjectConnectFlowBox?
+    /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
+    /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
+    private let connectionPool = ConnectionPool<WarmConnectionSlot>(
+        policy: ConnectionPoolPolicy(maxSlots: 3)
+    )
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
@@ -138,6 +143,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             NotificationCenter.default.removeObserver(languageObserver)
         }
         if !isClosing {
+            connectionPool.shutdownAll()
             bridge.shutdown()
         }
     }
@@ -267,10 +273,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             attachTmux(config: config, session: box.flow.session) { [weak self] result in
                 guard let self, self.activeProjectFlow === box else { return }
                 switch result {
-                case .success(let bridge):
+                case .success:
                     box.flow.attachExistingSucceeded()
                     self.activeProjectFlow = nil
-                    self.swapBridge(bridge)
+                    // attachTmux 内部已通过 connectionPool 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachExistingFailed(message: error.localizedDescription)
                     self.runProjectFlow(box, config: config)
@@ -304,10 +310,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             attachTmux(config: config, session: box.flow.session) { [weak self] result in
                 guard let self, self.activeProjectFlow === box else { return }
                 switch result {
-                case .success(let bridge):
+                case .success:
                     box.flow.attachCreatedSucceeded()
                     self.activeProjectFlow = nil
-                    self.swapBridge(bridge)
+                    // attachTmux 内部已通过 connectionPool 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachCreatedFailed(message: error.localizedDescription)
                     self.activeProjectFlow = nil
@@ -332,6 +338,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         session: String,
         completion: @escaping (Result<CoreBridge, Error>) -> Void
     ) {
+        let key = Self.connectionKey(config: config, session: session)
+        // 先尝试复用 warm slot：命中则直接切换渲染，不重复建连。
+        if let slot = connectionPool.slots[key], slot.lifecycle != .evicting {
+            activate(slot: slot)
+            completion(.success(slot.bridge))
+            return
+        }
+
         let backend: String
         let socket: String?
         switch config.transport {
@@ -350,10 +364,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     session: session
                 )
                 DispatchQueue.main.async {
-                    if self == nil {
+                    guard let self else {
                         nextBridge.shutdown()
                         return
                     }
+                    let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
+                    self.activate(slot: slot)
                     completion(.success(nextBridge))
                 }
             } catch {
@@ -368,6 +384,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 本地 shell 用指定目录启动（muxterm_new_connect 的 local 分支带 workdir）。
         switch config.transport {
         case .local:
+            let sessionName = QuickConnect.defaultName(for: config.path)
+            let key = ConnectionKey(
+                transport: "local",
+                alias: nil,
+                session: sessionName,
+                runtime: "shell",
+                path: config.path
+            )
+            if let slot = connectionPool.slots[key], slot.lifecycle != .evicting {
+                activate(slot: slot)
+                return
+            }
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 do {
                     let nextBridge = try CoreBridge.connect(
@@ -379,7 +407,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             nextBridge.shutdown()
                             return
                         }
-                        self.swapBridge(nextBridge)
+                        let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
+                        self.activate(slot: slot)
                     }
                 } catch {
                     DispatchQueue.main.async { [weak self] in
@@ -392,23 +421,47 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 用新 bridge 替换当前连接并刷新 UI。
-    private func swapBridge(_ nextBridge: CoreBridge) {
-        // 旧 CoreBridge.shutdown() 内部 `rt.block_on(model.shutdown())` 可能
-        // 等待 sender task 最长数秒。若在主线程同步执行，Cmd-P 切换后会出现
-        // 明显卡顿。先把新连接/UI 切好，旧 handle 用局部强引用捕获到后台
-        // 线程再 shutdown，避免后台访问已替换的 shared state。
+    /// 从 TargetConfig + session 构造 pool key（连接身份）。
+    private static func connectionKey(
+        config: TargetConfig,
+        session: String
+    ) -> ConnectionKey {
+        let alias: String?
+        if case .ssh(let name) = config.transport {
+            alias = name
+        } else {
+            alias = nil
+        }
+        return ConnectionKey(
+            transport: config.transport.isSSH ? "ssh" : "local",
+            alias: alias,
+            session: session,
+            runtime: config.runtime.rawValue,
+            path: config.path
+        )
+    }
+
+    /// 激活一个 warm slot：替换 bridge / TerminalManager / PaneLayout 的渲染源。
+    /// 旧 slot 由 ConnectionPool.acquire 自动降为 background，不 shutdown。
+    private func activate(slot: WarmConnectionSlot) {
         let oldBridge = bridge
-        bridge = nextBridge
-        terminalManager.updateBridge(nextBridge)
-        lastSnapshot = FrameSnapshot()
+        connectionPool.acquire(key: slot.key) { _ in slot }
+        bridge = slot.bridge
+        terminalManager = slot.terminalManager
+        content.paneLayout.replaceTerminalManager(slot.terminalManager)
+        lastSnapshot = slot.lastSnapshot
         pendingActiveTab = nil
         pendingActiveTabSince = nil
         needsLayoutReload = true
         refreshUI()
         focusActiveTerminal()
-        DispatchQueue.global(qos: .utility).async {
-            oldBridge.shutdown()
+        // 若旧 bridge 不在 pool（初始连接或非 pool 路径），切走后直接回收；
+        // pool 内的旧 slot 由 acquire 降为 background，保持 warm。
+        let oldIsPooled = connectionPool.slots.values.contains { $0.bridge === oldBridge }
+        if !oldIsPooled, oldBridge !== slot.bridge {
+            DispatchQueue.global(qos: .utility).async {
+                oldBridge.shutdown()
+            }
         }
     }
 
@@ -784,13 +837,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandPalette.dismiss()
         let backend: String
         let socket: String?
+        let alias: String?
         switch target {
         case .local:
             backend = "tmux"
             socket = nil
+            alias = nil
         case .ssh(let host):
             backend = "ssh"
             socket = host.alias
+            alias = host.alias
+        }
+        let key = ConnectionKey(
+            transport: alias == nil ? "local" : "ssh",
+            alias: alias,
+            session: session,
+            runtime: "tmux",
+            path: ""
+        )
+        if let slot = connectionPool.slots[key], slot.lifecycle != .evicting {
+            activate(slot: slot)
+            return
         }
 
         // CoreBridge 的 connect 可能等待远端 tmux 初始化，放到后台线程。
@@ -806,7 +873,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         nextBridge.shutdown()
                         return
                     }
-                    self.swapBridge(nextBridge)
+                    let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
+                    self.activate(slot: slot)
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
@@ -851,6 +919,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func pollOnce() {
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
+        connectionPool.pollBackgroundSlots()
         let events = bridge.pollEvents()
         if let error = bridge.takeError() {
             reportStatusError(error)
@@ -955,6 +1024,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         isClosing = true
         pollTimer?.invalidate()
         pollTimer = nil
+        connectionPool.shutdownAll()
         bridge.shutdown()
         window?.close()
     }

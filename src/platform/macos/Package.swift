@@ -76,6 +76,7 @@ let package = Package(
                 "App/ContentView.swift",
                 "App/CommandPalette.swift",
                 "App/ConnectionDiscovery.swift",
+                "App/WarmConnectionSlot.swift",
                 "App/QuickConnectController.swift",
                 "App/TargetConfigWindow.swift",
                 "Terminal/TerminalView.swift",

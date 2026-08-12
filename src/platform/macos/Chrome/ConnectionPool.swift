@@ -48,6 +48,8 @@ public protocol ConnectionSlotProtocol: AnyObject {
     func pollBackground()
     /// 淘汰：tmux 用 detach 保留 session；local shell 按实现策略处理。
     func evict(reason: ConnectionEvictionReason)
+    /// 窗口/应用关闭：直接回收 handle，不再保留后台连接。
+    func shutdown()
 }
 
 public struct ConnectionPoolPolicy: Sendable {
@@ -156,6 +158,15 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
         for slot in slots.values where slot.lifecycle == .background {
             slot.pollBackground()
         }
+    }
+
+    /// 窗口/应用关闭：回收全部连接（不保留后台）。
+    public func shutdownAll() {
+        for slot in slots.values {
+            slot.shutdown()
+        }
+        slots.removeAll()
+        activeKey = nil
     }
 
     private func evict(_ slot: Slot, reason: ConnectionEvictionReason) {

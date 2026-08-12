@@ -23,6 +23,10 @@ private final class FakeSlot: ConnectionSlotProtocol {
         lifecycle = .evicting
         evictReasons.append(reason)
     }
+
+    func shutdown() {
+        lifecycle = .evicting
+    }
 }
 
 // MARK: - ConnectionKey
