@@ -3,8 +3,9 @@ import MuxtermChrome
 
 /// QuickConnect 面板：Recent + Project 快速连接。
 ///
-/// 两行 cell：主行 name，副行 `runtime @ transport`（ssh 显示名字），
-/// path 在第二行。上下选择，回车连接。Cmd-P 打开。
+/// 每个目标一行，主行 name + 小标记（Recent / Project，可同时显示），
+/// 副行 `runtime @ transport`（ssh 显示名字），path 在第二行。
+/// 上下选择，回车连接；双击 project 行编辑。Cmd-P 打开。
 final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     NSTableViewDataSource, NSTableViewDelegate
 {
@@ -83,18 +84,24 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func reload() {
+        // 合并 Recent + Project：按唯一 ID 去重，同一条同时打上两个标记。
+        // 顺序：Recent 在前（最新在前），再补 Project 中未出现的。
+        var seen = Set<String>()
         var items: [QuickConnectItem] = []
-        // Recent 段
-        if !store.recents.isEmpty {
-            items.append(.section("Recent"))
-            items += store.recents.map { .target($0) }
+        for config in store.recents {
+            let id = QuickConnect.uniqueID(for: config)
+            guard seen.insert(id).inserted else { continue }
+            items.append(.target(config, badges: QuickConnect.badges(
+                for: config, recents: store.recents, projects: store.projects
+            )))
         }
-        // Project 段
-        if !store.projects.isEmpty {
-            items.append(.section("Project"))
-            items += store.projects.map { .target($0) }
+        for config in store.projects {
+            let id = QuickConnect.uniqueID(for: config)
+            guard seen.insert(id).inserted else { continue }
+            items.append(.target(config, badges: QuickConnect.badges(
+                for: config, recents: store.recents, projects: store.projects
+            )))
         }
-        // 新建 project 入口
         items.append(.newProject)
         allItems = items
         applyFilter()
@@ -185,8 +192,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
             ? allItems
             : allItems.filter { item in
                 switch item {
-                case .section: return false
-                case .target(let c): return QuickConnect.searchText(for: c).contains(query)
+                case .target(let c, _): return QuickConnect.searchText(for: c).contains(query)
                 case .newProject: return "new project 新建".contains(query)
                 }
             }
@@ -209,12 +215,10 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     private func activateSelected() {
         guard table.selectedRow >= 0, table.selectedRow < visibleItems.count else { return }
         switch visibleItems[table.selectedRow] {
-        case .target(let config):
+        case .target(let config, _):
             onConnect?(config)
         case .newProject:
             onNewProject?()
-        case .section:
-            break
         }
     }
 
@@ -233,20 +237,12 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = visibleItems[row]
         switch item {
-        case .section(let title):
-            let id = NSUserInterfaceItemIdentifier("QuickSection")
-            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTextField
-                ?? NSTextField(labelWithString: "")
-            cell.identifier = id
-            cell.stringValue = title
-            cell.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-            cell.textColor = .secondaryLabelColor
-            return cell
-        case .target(let config):
+        case .target(let config, let badges):
             let id = NSUserInterfaceItemIdentifier("QuickTarget")
             let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                 ?? QuickTargetCellView(identifier: id)
             cell.config = config
+            cell.badges = badges
             return cell
         case .newProject:
             let id = NSUserInterfaceItemIdentifier("QuickNew")
@@ -263,12 +259,12 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
         activateSelected()
     }
 
-    /// 双击 project 行 → 打开配置窗口编辑；Recent 行双击仍连接。
+    /// 双击目标行 → 打开配置窗口编辑；新建入口双击仍新建。
     @objc private func tableDoubleActivated() {
         let row = table.clickedRow
         guard row >= 0, row < visibleItems.count else { return }
         switch visibleItems[row] {
-        case .target(let config):
+        case .target(let config, _):
             onEditProject?(config)
         default:
             activateSelected()
@@ -276,21 +272,25 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     }
 }
 
-/// 面板条目：段标题 / 目标 / 新建入口。
+/// 面板条目：目标（带标记）/ 新建入口。
 private enum QuickConnectItem {
-    case section(String)
-    case target(TargetConfig)
+    case target(TargetConfig, badges: [QuickBadge])
     case newProject
 }
 
-/// 两行目标 cell：主行 name，副行 `runtime @ transport`，path 第二行。
+/// 两行目标 cell：主行 name + 小标记，副行 `runtime @ transport`，path 第二行。
 private final class QuickTargetCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
+    private let badgeStack = NSStackView()
 
     var config: TargetConfig? {
-        didSet { update() }
+        didSet { updateLayout() }
+    }
+
+    var badges: [QuickBadge] = [] {
+        didSet { updateLayout() }
     }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -298,20 +298,28 @@ private final class QuickTargetCellView: NSTableCellView {
         self.identifier = identifier
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         subtitleLabel.font = NSFont.systemFont(ofSize: 11)
         subtitleLabel.textColor = .secondaryLabelColor
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
         pathLabel.font = NSFont.systemFont(ofSize: 11)
         pathLabel.textColor = .tertiaryLabelColor
+        badgeStack.translatesAutoresizingMaskIntoConstraints = false
+        badgeStack.orientation = .horizontal
+        badgeStack.alignment = .centerY
+        badgeStack.spacing = 4
         addSubview(titleLabel)
         addSubview(subtitleLabel)
         addSubview(pathLabel)
+        addSubview(badgeStack)
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -18),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 8),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -9),
+            badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
+            badgeStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -18),
+            badgeStack.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            subtitleLabel.leadingAnchor.constraint(equalTo: badgeStack.trailingAnchor, constant: 8),
             subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -18),
             subtitleLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
             pathLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
@@ -326,10 +334,32 @@ private final class QuickTargetCellView: NSTableCellView {
         return nil
     }
 
-    private func update() {
+    private func updateLayout() {
         guard let config else { return }
         titleLabel.stringValue = config.name
         subtitleLabel.stringValue = QuickConnect.subtitle(for: config)
         pathLabel.stringValue = config.path
+
+        badgeStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for badge in badges {
+            let label = NSTextField(labelWithString: badge.label.uppercased())
+            label.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            label.textColor = .white
+            label.alignment = .center
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.wantsLayer = true
+            label.layer?.cornerRadius = 4
+            label.layer?.masksToBounds = true
+            switch badge {
+            case .recent:
+                label.layer?.backgroundColor = NSColor.systemBlue.cgColor
+            case .project:
+                label.layer?.backgroundColor = NSColor.systemGreen.cgColor
+            }
+            label.setContentHuggingPriority(.required, for: .horizontal)
+            label.heightAnchor.constraint(equalToConstant: 16).isActive = true
+            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+            badgeStack.addArrangedSubview(label)
+        }
     }
 }

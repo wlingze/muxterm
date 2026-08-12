@@ -26,6 +26,21 @@ public enum TargetTransport: Equatable, Sendable {
     }
 }
 
+/// 快速连接条目上的小标记：标识该目标同时是 Recent 和/或 Project。
+/// 一个目标可以同时命中两者（此时两个标记都显示）。
+public enum QuickBadge: Equatable, Sendable, CaseIterable {
+    case recent
+    case project
+
+    /// 标记的展示文本（本地化友好的短标签）。
+    public var label: String {
+        switch self {
+        case .recent: return "Recent"
+        case .project: return "Project"
+        }
+    }
+}
+
 /// 一个可快速连接的目标（Recent / Project 共用）。
 public struct TargetConfig: Equatable, Sendable {
     public var name: String
@@ -67,5 +82,30 @@ public enum QuickConnect {
     /// 展示文本（搜索用）：name + 副标题 + path。
     public static func searchText(for config: TargetConfig) -> String {
         "\(config.name) \(subtitle(for: config)) \(config.path)".lowercased()
+    }
+
+    /// 目标的唯一 ID：`name @ transport`。
+    /// 同一个机器上同名的目标视为同一个，Recent 与 Project 共用该 ID 去重。
+    public static func uniqueID(for config: TargetConfig) -> String {
+        "\(config.name)@\(config.transport.label)"
+    }
+
+    /// 计算目标应显示哪些标记。
+    /// - recents / projects: 现有记录（按唯一 ID 匹配）。
+    /// 返回顺序固定：Recent 在前、Project 在后（若都有则都返回）。
+    public static func badges(
+        for config: TargetConfig,
+        recents: [TargetConfig],
+        projects: [TargetConfig]
+    ) -> [QuickBadge] {
+        let id = uniqueID(for: config)
+        var result: [QuickBadge] = []
+        if recents.contains(where: { uniqueID(for: $0) == id }) {
+            result.append(.recent)
+        }
+        if projects.contains(where: { uniqueID(for: $0) == id }) {
+            result.append(.project)
+        }
+        return result
     }
 }

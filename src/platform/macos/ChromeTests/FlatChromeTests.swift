@@ -350,6 +350,40 @@ final class QuickConnectModelTests: XCTestCase {
         let shell = TargetConfig(name: "sess", runtime: .shell, transport: .local, path: "/x")
         XCTAssertFalse(QuickConnect.shouldAttach(existingName: "sess", config: shell))
     }
+
+    func testUniqueIDUsesNameAndTransport() {
+        let local = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
+        XCTAssertEqual(QuickConnect.uniqueID(for: local), "m@local")
+
+        let ssh = TargetConfig(name: "m", runtime: .tmux, transport: .ssh(name: "ryzen"), path: "/x")
+        XCTAssertEqual(QuickConnect.uniqueID(for: ssh), "m@ryzen")
+    }
+
+    func testBadgesShowRecentAndProjectIndependently() {
+        let config = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
+        let recent = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
+        let project = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
+
+        // 只 recent
+        XCTAssertEqual(QuickConnect.badges(for: config, recents: [recent], projects: []), [.recent])
+        // 只 project
+        XCTAssertEqual(QuickConnect.badges(for: config, recents: [], projects: [project]), [.project])
+        // 两者都有
+        XCTAssertEqual(
+            QuickConnect.badges(for: config, recents: [recent], projects: [project]),
+            [.recent, .project]
+        )
+    }
+
+    func testBadgesMatchByUniqueIDNotFullEquality() {
+        // transport 相同但 name 不同的不匹配；transport 不同也不匹配。
+        let config = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
+        let otherPath = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/other")
+        XCTAssertEqual(QuickConnect.badges(for: config, recents: [otherPath], projects: []), [.recent])
+
+        let ssh = TargetConfig(name: "m", runtime: .tmux, transport: .ssh(name: "ryzen"), path: "/x")
+        XCTAssertEqual(QuickConnect.badges(for: config, recents: [ssh], projects: []), [])
+    }
 }
 
 final class QuickConnectStoreTests: XCTestCase {
@@ -363,6 +397,17 @@ final class QuickConnectStoreTests: XCTestCase {
         store.recordRecent(cfg("a", "/x/a"))
         store.recordRecent(cfg("b", "/x/b")) // 去重，b 移到最前
         XCTAssertEqual(store.recents.map { $0.name }, ["b", "a"])
+    }
+
+    func testRecordRecentDedupesByUniqueIDNotPath() {
+        let store = QuickConnectStore()
+        store.recordRecent(cfg("m", "/x/one"))
+        store.recordRecent(cfg("m", "/x/two")) // 同名同 transport：按 ID 去重，保留最新 path
+        XCTAssertEqual(store.recents.count, 1)
+        XCTAssertEqual(store.recents.first?.path, "/x/two")
+
+        store.recordRecent(cfg("m", "/x/three", transport: .ssh(name: "ryzen")))
+        XCTAssertEqual(store.recents.count, 2) // 不同 transport：不同 ID，都保留
     }
 
     func testRecentsBounded() {
@@ -381,6 +426,13 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertFalse(store.upsertProject(cfg("proj", "/x/proj2"))) // 同名更新
         XCTAssertEqual(store.projects.count, 1)
         XCTAssertEqual(store.projects.first?.path, "/x/proj2")
+    }
+
+    func testUpsertProjectKeepsSeparateTransports() {
+        let store = QuickConnectStore()
+        XCTAssertTrue(store.upsertProject(cfg("m", "/x/local")))
+        XCTAssertTrue(store.upsertProject(cfg("m", "/x/remote", transport: .ssh(name: "ryzen"))))
+        XCTAssertEqual(store.projects.count, 2)
     }
 
     func testEncodeDecodeRoundTrip() {

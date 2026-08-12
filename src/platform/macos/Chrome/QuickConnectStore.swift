@@ -24,9 +24,10 @@ public final class QuickConnectStore {
         }
     }
 
-    /// 记录一次连接：把目标放进 recents 最前，并去重（相同 name+runtime+transport+path）。
+    /// 记录一次连接：把目标放进 recents 最前，并按唯一 ID（name+transport）去重。
     public func recordRecent(_ config: TargetConfig) {
-        recents.removeAll { $0 == config }
+        let id = QuickConnect.uniqueID(for: config)
+        recents.removeAll { QuickConnect.uniqueID(for: $0) == id }
         recents.insert(config, at: 0)
         if recents.count > Self.maxRecent {
             recents.removeLast(recents.count - Self.maxRecent)
@@ -34,10 +35,11 @@ public final class QuickConnectStore {
         persist()
     }
 
-    /// 新增或更新一个 project（按 name 匹配）。返回是否新增。
+    /// 新增或更新一个 project（按唯一 ID name+transport 匹配）。返回是否新增。
     @discardableResult
     public func upsertProject(_ config: TargetConfig) -> Bool {
-        if let idx = projects.firstIndex(where: { $0.name == config.name }) {
+        let id = QuickConnect.uniqueID(for: config)
+        if let idx = projects.firstIndex(where: { QuickConnect.uniqueID(for: $0) == id }) {
             projects[idx] = config
             persist()
             return false
@@ -47,9 +49,10 @@ public final class QuickConnectStore {
         return true
     }
 
-    /// 删除 project（按 name）。
-    public func removeProject(named name: String) {
-        projects.removeAll { $0.name == name }
+    /// 删除 project（按唯一 ID name+transport）。
+    public func removeProject(config: TargetConfig) {
+        let id = QuickConnect.uniqueID(for: config)
+        projects.removeAll { QuickConnect.uniqueID(for: $0) == id }
         persist()
     }
 
