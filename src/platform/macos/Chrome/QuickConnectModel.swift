@@ -41,6 +41,17 @@ public enum QuickBadge: Equatable, Sendable, CaseIterable {
     }
 }
 
+/// 面板中的一行：目标 + 其应显示的标记（Recent / Project 可同时出现）。
+public struct QuickConnectEntry: Equatable, Sendable {
+    public let config: TargetConfig
+    public let badges: [QuickBadge]
+
+    public init(config: TargetConfig, badges: [QuickBadge]) {
+        self.config = config
+        self.badges = badges
+    }
+}
+
 /// 一个可快速连接的目标（Recent / Project 共用）。
 public struct TargetConfig: Equatable, Sendable {
     public var name: String
@@ -105,6 +116,34 @@ public enum QuickConnect {
         }
         if projects.contains(where: { uniqueID(for: $0) == id }) {
             result.append(.project)
+        }
+        return result
+    }
+
+    /// 面板条目：先展示最近的前 `recentLimit` 条（最新在前），
+    /// 再补 Project 中未出现的目标。按唯一 ID（name+transport）去重。
+    public static func entries(
+        recents: [TargetConfig],
+        projects: [TargetConfig],
+        recentLimit: Int = 5
+    ) -> [QuickConnectEntry] {
+        var seen = Set<String>()
+        var result: [QuickConnectEntry] = []
+        for config in recents.prefix(recentLimit) {
+            let id = uniqueID(for: config)
+            guard seen.insert(id).inserted else { continue }
+            result.append(QuickConnectEntry(
+                config: config,
+                badges: badges(for: config, recents: recents, projects: projects)
+            ))
+        }
+        for config in projects {
+            let id = uniqueID(for: config)
+            guard seen.insert(id).inserted else { continue }
+            result.append(QuickConnectEntry(
+                config: config,
+                badges: badges(for: config, recents: recents, projects: projects)
+            ))
         }
         return result
     }

@@ -84,24 +84,11 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func reload() {
-        // 合并 Recent + Project：按唯一 ID 去重，同一条同时打上两个标记。
-        // 顺序：Recent 在前（最新在前），再补 Project 中未出现的。
-        var seen = Set<String>()
-        var items: [QuickConnectItem] = []
-        for config in store.recents {
-            let id = QuickConnect.uniqueID(for: config)
-            guard seen.insert(id).inserted else { continue }
-            items.append(.target(config, badges: QuickConnect.badges(
-                for: config, recents: store.recents, projects: store.projects
-            )))
-        }
-        for config in store.projects {
-            let id = QuickConnect.uniqueID(for: config)
-            guard seen.insert(id).inserted else { continue }
-            items.append(.target(config, badges: QuickConnect.badges(
-                for: config, recents: store.recents, projects: store.projects
-            )))
-        }
+        // 前 5 条 Recent（最新在前），再补 Project 独有的；按唯一 ID 去重。
+        var items: [QuickConnectItem] = QuickConnect.entries(
+            recents: store.recents,
+            projects: store.projects
+        ).map { .target($0.config, badges: $0.badges) }
         items.append(.newProject)
         allItems = items
         applyFilter()
