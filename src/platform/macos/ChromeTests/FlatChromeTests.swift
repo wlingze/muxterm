@@ -219,6 +219,76 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
             seedCoveredEvent: false
         ))
     }
+
+    /// Snapshot seed 覆盖的是同一批已经入队的事件；逐事件判断时必须全部跳过，
+    /// 不能把同一批终端字节再次喂给 SwiftTerm。
+    func testSeededBatchDoesNotReplayAnyEvent() {
+        let events: [[UInt8]] = [
+            [0x1b, 0x5b, 0x32, 0x30, 0x32, 0x36, 0x68], // CSI ?2026h 的片段
+            [0x0f, 0x08, 0x0d], // SO / BS / CR
+        ]
+        var fed = [[UInt8]]()
+        for event in events {
+            if PaneOutputFeedPolicy.shouldFeedEvent(
+                viewExistedBeforeEvent: false,
+                seedCoveredEvent: true
+            ) {
+                fed.append(event)
+            }
+        }
+        XCTAssertTrue(fed.isEmpty)
+    }
+
+    /// 空 snapshot 时首个事件建立 view 后，后续事件仍是增量；批次结束后下一批
+    /// 也不能把旧 seed 状态带过去。
+    func testEmptySeedAndBatchBoundaryKeepIncrementalEvents() {
+        let firstBatch = [
+            [UInt8]("first".utf8),
+            [0x1b, 0x5b, 0x32, 0x4b, 0x0d],
+        ]
+        var viewExisted = false
+        var fed = [[UInt8]]()
+        for event in firstBatch {
+            if PaneOutputFeedPolicy.shouldFeedEvent(
+                viewExistedBeforeEvent: viewExisted,
+                seedCoveredEvent: false
+            ) {
+                fed.append(event)
+            }
+            viewExisted = true
+        }
+
+        // New poll batch: the view remains alive, so this is a pure increment.
+        let secondBatch = [UInt8]("second".utf8)
+        XCTAssertTrue(PaneOutputFeedPolicy.shouldFeedEvent(
+            viewExistedBeforeEvent: true,
+            seedCoveredEvent: false
+        ))
+        fed.append(secondBatch)
+
+        XCTAssertEqual(
+            fed.flatMap { $0 },
+            firstBatch.flatMap { $0 } + secondBatch
+        )
+    }
+
+    /// policy 只决定事件是否喂入，不解释终端控制序列；CR/CSI/SO/ESC 的顺序和
+    /// 每个字节都必须原样穿过 policy 层。
+    func testPolicyDoesNotMergeOrDropTerminalFrameBytes() {
+        let frame: [[UInt8]] = [
+            [0x1b, 0x5b, 0x32, 0x4b], // CSI 2K
+            [0x0f, 0x1b, 0x5b, 0x31, 0x41], // SO + CSI 1A
+            [0x0d, 0x0a, 0x68, 0x74, 0x6f, 0x70], // CRLF + text
+        ]
+        let fed = frame.filter { _ in
+            PaneOutputFeedPolicy.shouldFeedEvent(
+                viewExistedBeforeEvent: true,
+                seedCoveredEvent: true
+            )
+        }
+        XCTAssertEqual(fed, frame)
+        XCTAssertEqual(fed.flatMap { $0 }, frame.flatMap { $0 })
+    }
 }
 
 final class ScreenTextTests: XCTestCase {

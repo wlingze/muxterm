@@ -57,4 +57,39 @@ final class PerEventModelRegressionTests: XCTestCase {
         }
         XCTAssertTrue(last.contains("好"), "最终输入应显示在屏幕上")
     }
+
+    /// SwiftTerm 入口接收的是 [UInt8]，而不是先转成 String；把一个包含
+    /// htop 常见 CSI/SO/CR 控制序列的 frame 按不同边界拆开，模型仍应完成
+    /// 同一帧的定位和重绘。这里断言的是模型状态，不臆测 Metal 绘制结果。
+    func testHtopLikeFramePreservesByteFeedAcrossChunkBoundaries() {
+        let esc: [UInt8] = [0x1b]
+        let prefix = esc + Array("[2J[H".utf8)
+        var frame = prefix
+        frame += Array("htop".utf8)
+        frame.append(0x0f)
+        frame += esc
+        frame += Array("[2K".utf8)
+        frame.append(0x0d)
+        frame += esc
+        frame += Array("[1A".utf8)
+        frame += Array("CPU".utf8)
+
+        for chunkSize in [1, 2, 3, 7, 16] {
+            let terminal = Terminal(delegate: SilentDelegate())
+            terminal.resize(cols: 40, rows: 8)
+            for chunk in stride(from: 0, to: frame.count, by: chunkSize) {
+                let end = min(chunk + chunkSize, frame.count)
+                terminal.feed(byteArray: Array(frame[chunk..<end]))
+            }
+
+            var visible = ""
+            for y in 0..<terminal.rows {
+                for x in 0..<terminal.cols {
+                    visible.append(terminal.getCharacter(col: x, row: y) ?? " ")
+                }
+            }
+            XCTAssertTrue(visible.contains("CPU"), "chunkSize=\(chunkSize)")
+            XCTAssertFalse(visible.contains("\u{fffd}"), "chunkSize=\(chunkSize)")
+        }
+    }
 }
