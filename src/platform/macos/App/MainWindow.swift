@@ -336,7 +336,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 用新 bridge 替换当前连接并刷新 UI。
     private func swapBridge(_ nextBridge: CoreBridge) {
-        bridge.shutdown()
+        // 旧 CoreBridge.shutdown() 内部 `rt.block_on(model.shutdown())` 可能
+        // 等待 sender task 最长数秒。若在主线程同步执行，Cmd-P 切换后会出现
+        // 明显卡顿。先把新连接/UI 切好，旧 handle 用局部强引用捕获到后台
+        // 线程再 shutdown，避免后台访问已替换的 shared state。
+        let oldBridge = bridge
         bridge = nextBridge
         terminalManager.updateBridge(nextBridge)
         lastSnapshot = FrameSnapshot()
@@ -345,6 +349,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = true
         refreshUI()
         focusActiveTerminal()
+        DispatchQueue.global(qos: .utility).async {
+            oldBridge.shutdown()
+        }
     }
 
     /// 打开/编辑 project 配置窗口。
@@ -741,15 +748,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         nextBridge.shutdown()
                         return
                     }
-                    self.bridge.shutdown()
-                    self.bridge = nextBridge
-                    self.terminalManager.updateBridge(nextBridge)
-                    self.lastSnapshot = FrameSnapshot()
-                    self.pendingActiveTab = nil
-                    self.pendingActiveTabSince = nil
-                    self.needsLayoutReload = true
-                    self.refreshUI()
-                    self.focusActiveTerminal()
+                    self.swapBridge(nextBridge)
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in

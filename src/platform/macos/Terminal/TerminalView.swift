@@ -142,7 +142,6 @@ final class MuxTerminalView: TerminalView {
         if let layer {
             layer.setNeedsDisplay()
         }
-        displayIfNeeded()
     }
 
     /// 覆写 SwiftTerm 模拟器输出通道：只有 `Terminal.sendResponse` /
