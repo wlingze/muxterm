@@ -66,6 +66,12 @@ struct CoreTmuxSession: Decodable, Equatable {
     let created: UInt64
 }
 
+/// core 目录列表返回的条目（名字 + 是否目录）。
+struct CoreFsEntry: Decodable, Equatable {
+    let name: String
+    let is_dir: Bool
+}
+
 private struct SSHHostsResponse: Decodable {
     let ok: Bool
     let error: String?
@@ -82,6 +88,12 @@ private struct CreatedSessionResponse: Decodable {
     let ok: Bool
     let error: String?
     let session: String?
+}
+
+private struct ListDirResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let entries: [CoreFsEntry]?
 }
 
 /// 平台 → 核心的任务（避免与 Swift Concurrency `Task` 重名）。
@@ -185,6 +197,34 @@ final class CoreBridge {
             )
         }
         return response.hosts ?? []
+    }
+
+    /// 列出本地或 SSH 远端目录条目，供 QuickConnect 配置逐步选目录。
+    /// - `backendType`: `local` / `ssh`；ssh 时 `target` 为 ~/.ssh/config alias。
+    /// - `path`: 起始路径；空/`~` 时分别取本地 HOME 或远端 `~`。
+    static func listDir(
+        backendType: String,
+        target: String? = nil,
+        configPath: String? = nil,
+        path: String,
+        timeoutMs: UInt32 = 10_000
+    ) throws -> [CoreFsEntry] {
+        let pointer = backendType.withCString { backend in
+            withOptionalCString(target) { target in
+                withOptionalCString(configPath) { pathPtr in
+                    path.withCString { path in
+                        muxterm_list_dir_json(backend, target, pathPtr, path, timeoutMs)
+                    }
+                }
+            }
+        }
+        let response: ListDirResponse = try decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+            )
+        }
+        return response.entries ?? []
     }
 
     /// 通过 core 查询 local 或 SSH tmux session。
