@@ -336,7 +336,7 @@ fn split_window_command_uses_correct_target() {
     use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, WindowId};
 
     // WindowId(0) → @0 in tmux (first window)
-    let cmd = split_window(WindowId(0), SplitDirection::Horizontal, None);
+    let cmd = split_window(WindowId(0), SplitDirection::Horizontal, None, None);
     let line = cmd.to_line();
     assert!(
         line.contains("split-window"),
@@ -379,7 +379,7 @@ fn paneid_to_tabid_to_windowid_mapping_matches_tmux_window_id() {
     let win_num: u32 = tmux_window_id[1..].parse().expect("window_id 数字");
 
     // 验证 split_window(WindowId(win_num), ...) 生成的命令 target 是正确的 @N
-    let cmd = split_window(WindowId(win_num), SplitDirection::Horizontal, None);
+    let cmd = split_window(WindowId(win_num), SplitDirection::Horizontal, None, None);
     let line = cmd.to_line();
     assert!(
         line.contains(&tmux_window_id),
