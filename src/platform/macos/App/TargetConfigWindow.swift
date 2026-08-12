@@ -27,9 +27,8 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     private var isSaving = false
     /// 用户是否手动改过 name；手动改过后 path 变化不再覆盖。
     private var nameManuallyEdited = false
-
-    private var runtime: TargetRuntime = .tmux
-    private var transport: TargetTransport = .local
+    /// runtime / transport 单选卡的纯状态模型。
+    private var selection = TargetOptionSelection()
     /// 当前浏览路径（SSH 用远端路径，local 用本机路径）。
     private var currentPath: String = "~"
 
@@ -197,13 +196,16 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     private func optionCard(title: String, subtitle: String) -> NSButton {
         let button = NSButton(title: title, target: nil, action: nil)
         button.setButtonType(.toggle)
-        button.bezelStyle = .rounded
+        button.isBordered = false
         button.controlSize = .large
-        button.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 6
+        button.layer?.borderWidth = 1
+        button.layer?.masksToBounds = true
         button.toolTip = subtitle
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
         return button
     }
 
@@ -211,14 +213,15 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
 
     private func load(_ config: TargetConfig?) {
         if let config {
-            runtime = config.runtime
-            transport = config.transport
+            selection = TargetOptionSelection(
+                runtime: config.runtime,
+                transport: config.transport
+            )
             currentPath = config.path.isEmpty ? "~" : config.path
             nameCombo.stringValue = config.name
             nameManuallyEdited = true
         } else {
-            runtime = .tmux
-            transport = .local
+            selection = TargetOptionSelection()
             currentPath = "~"
             nameCombo.stringValue = ""
             nameManuallyEdited = false
@@ -235,7 +238,15 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         for view in runtimeStack.arrangedSubviews {
             guard let button = view as? NSButton else { continue }
             let isTMUX = button.tag == 0
-            button.state = (runtime == .tmux) == isTMUX ? .on : .off
+            let selected = selection.isSelected(runtime: isTMUX ? .tmux : .shell)
+            button.state = selected ? .on : .off
+            applyOptionCardStyle(
+                button,
+                selected: selected,
+                kind: "runtime",
+                option: isTMUX ? "tmux" : "shell",
+                subtitle: isTMUX ? "attach/create tmux" : "plain shell"
+            )
         }
     }
 
@@ -243,15 +254,68 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         for view in transportStack.arrangedSubviews {
             guard let button = view as? NSButton else { continue }
             let isSSH = button.tag == 1
-            let selectedIsSSH: Bool
-            if case .ssh = transport { selectedIsSSH = true } else { selectedIsSSH = false }
-            button.state = selectedIsSSH == isSSH ? .on : .off
+            let candidate: TargetTransport = isSSH ? .ssh(name: "") : .local
+            let selected = selection.isSelected(transport: candidate)
+            button.state = selected ? .on : .off
+            applyOptionCardStyle(
+                button,
+                selected: selected,
+                kind: "transport",
+                option: isSSH ? "ssh" : "local",
+                subtitle: isSSH ? "SSH 远程" : "本机"
+            )
         }
+    }
+
+    /// 卡片显式高亮：背景 / 边框 / 文字 / 勾选，深浅色均可读。
+    private func applyOptionCardStyle(
+        _ button: NSButton,
+        selected: Bool,
+        kind: String,
+        option: String,
+        subtitle: String
+    ) {
+        let accent = NSColor.controlAccentColor
+        let background = selected
+            ? accent.withAlphaComponent(0.18)
+            : NSColor.controlBackgroundColor
+        button.layer?.backgroundColor = background.cgColor
+        button.layer?.borderColor = (selected ? accent : NSColor.separatorColor).cgColor
+        button.layer?.borderWidth = selected ? 2 : 1
+
+        let title = (selected ? "✓ " : "") + option
+        let titleColor = selected ? NSColor.labelColor : NSColor.secondaryLabelColor
+        let attributed = NSMutableAttributedString()
+        attributed.append(NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: titleColor,
+            ]
+        ))
+        attributed.append(NSAttributedString(
+            string: "\n" + subtitle,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        ))
+        button.attributedTitle = attributed
+        button.alignment = .center
+        button.setAccessibilityRole(.radioButton)
+        button.setAccessibilityIdentifier(
+            TargetOptionAccessibility.identifier(
+                kind: kind,
+                option: option,
+                selected: selected
+            )
+        )
+        button.setAccessibilityValue(selected ? "selected" : "unselected")
     }
 
     private func updateSSHVisibility() {
         let isSSH: Bool
-        if case .ssh = transport { isSSH = true } else { isSSH = false }
+        if case .ssh = selection.transport { isSSH = true } else { isSSH = false }
         sshNameCombo.isHidden = !isSSH
         if isSSH {
             // SSH 浏览从远端 home 开始
@@ -274,7 +338,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     }
 
     private var currentSSHAlias: String? {
-        if case .ssh(let name) = transport {
+        if case .ssh(let name) = selection.transport {
             let trimmed = name.trimmingCharacters(in: .whitespaces)
             return trimmed.isEmpty ? nil : trimmed
         }
@@ -357,15 +421,15 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     // MARK: - Actions
 
     @objc private func runtimeSelected(_ sender: NSButton) {
-        runtime = sender.tag == 0 ? .tmux : .shell
+        selection.selectRuntime(sender.tag == 0 ? .tmux : .shell)
         updateRuntimeCards()
     }
 
     @objc private func transportSelected(_ sender: NSButton) {
         if sender.tag == 0 {
-            transport = .local
+            selection.selectTransport(.local)
         } else {
-            transport = .ssh(name: sshNameCombo.stringValue)
+            selection.selectTransport(.ssh(name: sshNameCombo.stringValue))
         }
         updateTransportCards()
         updateSSHVisibility()
@@ -404,7 +468,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
             } else if combo === nameCombo {
                 nameManuallyEdited = true
             } else if combo === sshNameCombo {
-                transport = .ssh(name: combo.stringValue)
+                selection.selectTransport(.ssh(name: combo.stringValue))
             }
         }
     }
@@ -414,7 +478,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         if combo === pathCombo {
             pathComboSelected()
         } else if combo === sshNameCombo {
-            transport = .ssh(name: combo.stringValue)
+            selection.selectTransport(.ssh(name: combo.stringValue))
             updateSSHVisibility()
         }
     }
@@ -423,7 +487,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
 
     @objc private func saveTapped() {
         let transportValue: TargetTransport
-        if case .ssh = transport {
+        if case .ssh = selection.transport {
             let name = sshNameCombo.stringValue.trimmingCharacters(in: .whitespaces)
             transportValue = .ssh(name: name)
         } else {
@@ -437,7 +501,12 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         if name.isEmpty {
             name = QuickConnect.defaultName(for: path)
         }
-        let config = TargetConfig(name: name, runtime: runtime, transport: transportValue, path: path)
+        let config = TargetConfig(
+            name: name,
+            runtime: selection.runtime,
+            transport: transportValue,
+            path: path
+        )
         isSaving = true
         onSave?(config)
         close()
