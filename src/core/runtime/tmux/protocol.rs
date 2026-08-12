@@ -79,9 +79,11 @@ impl ControlEscapeDecoder {
         Self
     }
 
-    /// 解码转义字符串，返回原始字节。
-    pub fn decode(&self, s: &str) -> Result<Vec<u8>, ControlEscapeError> {
-        let bytes = s.as_bytes();
+    /// 解码 C 风格转义字节串，返回原始字节。
+    ///
+    /// 与 [`decode`](Self::decode) 的区别：输入是原始字节，非转义的高位字节
+    /// （包括非法 UTF-8）会原样保留，不会被 `from_utf8_lossy` 替换。
+    pub fn decode_bytes(&self, bytes: &[u8]) -> Result<Vec<u8>, ControlEscapeError> {
         let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut i = 0;
         while i < bytes.len() {
@@ -155,25 +157,23 @@ impl ControlEscapeDecoder {
                     out.push(val as u8);
                 }
                 b'x' => {
-                    // 十六进制：tmux 用 \xNN 形式
+                    // 十六进制：tmux 用 \xNN 形式，必须恰好有两位。
                     i += 1;
-                    let mut digits = 0u8;
-                    let mut val: u32 = 0;
-                    while i < bytes.len() && digits < 2 {
-                        let c = bytes[i];
-                        match c {
-                            b'0'..=b'9' => val = val * 16 + (c - b'0') as u32,
-                            b'a'..=b'f' => val = val * 16 + (c - b'a' + 10) as u32,
-                            b'A'..=b'F' => val = val * 16 + (c - b'A' + 10) as u32,
-                            _ => break,
-                        }
-                        digits += 1;
-                        i += 1;
-                    }
-                    if digits == 0 {
-                        return Err(ControlEscapeError::InvalidHex('\0'));
-                    }
-                    out.push(val as u8);
+                    let Some(&first) = bytes.get(i) else {
+                        return Err(ControlEscapeError::Truncated);
+                    };
+                    let Some(first) = hex_value(first) else {
+                        return Err(ControlEscapeError::InvalidHex(first as char));
+                    };
+                    i += 1;
+                    let Some(&second) = bytes.get(i) else {
+                        return Err(ControlEscapeError::Truncated);
+                    };
+                    let Some(second) = hex_value(second) else {
+                        return Err(ControlEscapeError::InvalidHex(second as char));
+                    };
+                    i += 1;
+                    out.push((first << 4 | second) as u8);
                 }
                 other => {
                     return Err(ControlEscapeError::UnknownEscape(other as char));
@@ -183,12 +183,26 @@ impl ControlEscapeDecoder {
         Ok(out)
     }
 
+    /// 解码转义字符串，返回原始字节。
+    pub fn decode(&self, s: &str) -> Result<Vec<u8>, ControlEscapeError> {
+        self.decode_bytes(s.as_bytes())
+    }
+
     /// 解码并尝试转成 UTF-8 字符串（用 lossy 回退）。
     pub fn decode_lossy(&self, s: &str) -> String {
         match self.decode(s) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(_) => s.to_string(),
         }
+    }
+}
+
+fn hex_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some((byte - b'0') as u32),
+        b'a'..=b'f' => Some((byte - b'a' + 10) as u32),
+        b'A'..=b'F' => Some((byte - b'A' + 10) as u32),
+        _ => None,
     }
 }
 
@@ -485,17 +499,61 @@ pub fn parse_line(line: &str) -> Option<Message> {
     if line.is_empty() {
         return None;
     }
-    // tmux CC 通知以 % 开头。注意 tmux 有时会在 % 前面带 DCS 包装（P1000p ... ），
-    // 这里只处理以 % 开头的行；DCS 前缀由 client 层在拼包时清理。
-    let line = line.strip_prefix('%')?;
+    parse_line_inner(line.as_bytes(), line)
+}
+
+/// 解析单行 tmux 输出的字节版本。
+///
+/// tmux 的 `%output` content 可能内嵌原始非 UTF-8 字节（htop/codex 的
+/// 8-bit 字符、控制序列等）。`parse_line` 以 `&str` 为输入时这些字节已被
+/// `from_utf8_lossy` 替换，必须用本函数在字节层面解析 `%output`。
+pub fn parse_line_bytes(line: &[u8]) -> Option<Message> {
+    // 剥离行尾 \r\n / \n 与 DCS 前缀（client 层通常已剥，这里再兜底）
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let line = line.strip_prefix(b"\x1bP1000p").unwrap_or(line);
+    if line.is_empty() {
+        return None;
+    }
+    let Ok(utf8) = std::str::from_utf8(line) else {
+        // 非 UTF-8 行只可能是 %output（协议关键字与 pane id 都是 ASCII）；
+        // 其它通知若出现非法字节，按 Unknown/忽略处理。
+        return parse_output_line_bytes(line);
+    };
+    parse_line_inner(line, utf8)
+}
+
+fn parse_line_inner(line: &[u8], line_str: &str) -> Option<Message> {
+    let line = line.strip_prefix(b"%")?;
     // 关键字 = 第一个 token（直到第一个空格）
+    let (keyword, rest) = match line.iter().position(|&b| b == b' ') {
+        Some(i) => (&line[..i], &line[i + 1..]),
+        None => (line, &[][..]),
+    };
+
+    match keyword {
+        b"output" => parse_output_bytes(rest).map(Some),
+        _ => {
+            // 其它通知的字段都是 ASCII/UTF-8，复用原有字符串解析
+            parse_line_known_keyword(line_str)
+        }
+    }
+    .map_err(|e: ProtocolError| {
+        tracing::warn!(target = "muxterm::protocol", "解析失败: {e}");
+        e
+    })
+    .ok()
+    .flatten()
+}
+
+/// 非 output 通知的原有字符串解析路径。
+fn parse_line_known_keyword(line_str: &str) -> Result<Option<Message>, ProtocolError> {
+    let line = line_str.strip_prefix('%').unwrap_or(line_str);
     let (keyword, rest) = match line.split_once(' ') {
         Some((kw, r)) => (kw, r),
         None => (line, ""),
     };
-
-    match keyword {
-        "output" => parse_output(rest),
+    Ok(Some(match keyword {
         "layout-change" => parse_layout_change(rest),
         "window-add" => parse_window_id_only(rest, WindowKind::NormalAdd),
         "window-close" => parse_window_id_only(rest, WindowKind::NormalClose),
@@ -529,12 +587,26 @@ pub fn parse_line(line: &str) -> Option<Message> {
             keyword: keyword.to_string(),
             raw: rest.to_string(),
         }),
+    }?))
+}
+
+/// 非 UTF-8 行：只尝试解析 `%output`，其它关键字无法在字节层安全解析。
+fn parse_output_line_bytes(line: &[u8]) -> Option<Message> {
+    let line = line.strip_prefix(b"%")?;
+    let (keyword, rest) = match line.iter().position(|&b| b == b' ') {
+        Some(i) => (&line[..i], &line[i + 1..]),
+        None => (line, &[][..]),
+    };
+    if keyword != b"output" {
+        return None;
     }
-    .map_err(|e: ProtocolError| {
-        tracing::warn!(target = "muxterm::protocol", "解析失败: {e}");
-        e
-    })
-    .ok()
+    match parse_output_bytes(rest) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            tracing::warn!(target = "muxterm::protocol", "解析失败: {e}");
+            None
+        }
+    }
 }
 
 // 辅助枚举：window-add / window-close / unlinked-window-add / unlinked-window-close
@@ -620,20 +692,31 @@ fn parse_extended_output(rest: &str) -> Result<Message, ProtocolError> {
 }
 
 fn parse_output(rest: &str) -> Result<Message, ProtocolError> {
+    parse_output_bytes(rest.as_bytes())
+}
+
+fn parse_output_bytes(rest: &[u8]) -> Result<Message, ProtocolError> {
     // %output @N "content"
     // 注意：真实 tmux 3.3+ 用 %0/%1 形式的 pane id（不带 @ 前缀！见样本）。
     // 兼容两种：@N 或纯数字 N。
-    let rest = rest.trim_start();
+    let rest = trim_ascii_start(rest);
     // 找第一个空格分隔 pane id 和 content
-    let (pid_str, content_part) = rest
-        .split_once(' ')
+    let space = rest
+        .iter()
+        .position(|&b| b == b' ')
         .ok_or_else(|| ProtocolError::MalformedField("output 缺 content".into()))?;
+    let (pid_bytes, content_part) = (&rest[..space], &rest[space + 1..]);
+    if content_part.is_empty() {
+        return Err(ProtocolError::MalformedField("output 缺 content".into()));
+    }
+    let pid_str = std::str::from_utf8(pid_bytes)
+        .map_err(|_| ProtocolError::MalformedField("output pane id 非 ASCII".into()))?;
     let pane = parse_pane_id_lenient(pid_str)?;
     // content 必须是双引号包裹的 C 转义字符串
-    let inner = strip_c_string(content_part)?;
-    let raw_content = inner.to_string();
+    let inner = strip_c_string_bytes(content_part)?;
+    let raw_content = String::from_utf8_lossy(inner).into_owned();
     let content = ControlEscapeDecoder::new()
-        .decode(inner)
+        .decode_bytes(inner)
         .map_err(ProtocolError::EscapeError)?;
     Ok(Message::Output {
         pane,
@@ -672,6 +755,29 @@ fn strip_c_string(s: &str) -> Result<&str, ProtocolError> {
         // 无引号，原样返回（容错）
         Ok(s)
     }
+}
+
+/// 字节版剥引号：与 [`strip_c_string`] 语义一致，但保留原始字节。
+fn strip_c_string_bytes(s: &[u8]) -> Result<&[u8], ProtocolError> {
+    if s.starts_with(b"\"") && s.ends_with(b"\"") && s.len() >= 2 {
+        Ok(&s[1..s.len() - 1])
+    } else if s.starts_with(b"\"") {
+        Ok(&s[1..])
+    } else {
+        Ok(s)
+    }
+}
+
+/// 去掉字节串前导空格。
+fn trim_ascii_start(mut s: &[u8]) -> &[u8] {
+    while let Some((&b, rest)) = s.split_first() {
+        if b == b' ' || b == b'\t' {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    s
 }
 
 fn parse_layout_change(rest: &str) -> Result<Message, ProtocolError> {
@@ -1086,6 +1192,49 @@ mod tests {
     }
 
     #[test]
+    fn escape_bytes_preserve_high_bit_and_continue_after_escapes() {
+        let input = b"ascii\xff\x80\\e\\033\\0\\x41tail";
+        let expected = vec![
+            b'a', b's', b'c', b'i', b'i', 0xff, 0x80, 0x1b, 0x1b, 0x00, b'A', b't', b'a', b'i',
+            b'l',
+        ];
+        assert_eq!(
+            ControlEscapeDecoder::new().decode_bytes(input).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn escape_truncated_and_unknown_sequences_are_reported_without_swallowing_text() {
+        let decoder = ControlEscapeDecoder::new();
+        assert_eq!(
+            decoder.decode_bytes(b"tail\\"),
+            Err(ControlEscapeError::BareBackslash)
+        );
+        assert_eq!(
+            decoder.decode_bytes(b"tail\\x"),
+            Err(ControlEscapeError::Truncated)
+        );
+        assert_eq!(
+            decoder.decode_bytes(b"tail\\xA"),
+            Err(ControlEscapeError::Truncated)
+        );
+        assert_eq!(
+            decoder.decode_bytes(b"tail\\xG"),
+            Err(ControlEscapeError::InvalidHex('G'))
+        );
+        assert_eq!(
+            decoder.decode_bytes(b"tail\\qafter"),
+            Err(ControlEscapeError::UnknownEscape('q'))
+        );
+        // A valid escape after ordinary text must not make the following text disappear.
+        assert_eq!(
+            decoder.decode_bytes(b"before\\eafter"),
+            Ok(b"before\x1bafter".to_vec())
+        );
+    }
+
+    #[test]
     fn escape_ansi_sample() {
         // 真实样本里的一行 %output content（剥引号后）
         let raw = r"\033]133;A;cl=m;aid=1073424\007";
@@ -1368,6 +1517,104 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn parse_line_bytes_preserves_invalid_utf8_output_and_line_endings() {
+        let m = parse_line_bytes(b"\x1bP1000p%output @42 \"\x94\x80\"\r\n").unwrap();
+        match m {
+            Message::Output { pane, content, .. } => {
+                assert_eq!(pane, PaneId(42));
+                assert_eq!(content, b"\x94\x80");
+                assert!(!content.windows(3).any(|w| w == b"\xef\xbf\xbd"));
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_line_bytes_handles_empty_and_space_only_output() {
+        let empty = parse_line_bytes(b"%output @3 \"\"").unwrap();
+        assert!(
+            matches!(empty, Message::Output { pane: PaneId(3), content, .. } if content.is_empty())
+        );
+
+        let spaces = parse_line_bytes(br#"%output @3 "   ""#).unwrap();
+        assert!(
+            matches!(spaces, Message::Output { pane: PaneId(3), content, .. } if content == b"   ")
+        );
+    }
+
+    #[test]
+    fn parse_line_bytes_accepts_all_supported_pane_id_forms() {
+        for line in [
+            b"%output @7 hi".as_slice(),
+            b"%output %7 hi".as_slice(),
+            b"%output 7 hi".as_slice(),
+        ] {
+            assert!(matches!(
+                parse_line_bytes(line),
+                Some(Message::Output { pane: PaneId(7), content, .. }) if content == b"hi"
+            ));
+        }
+    }
+
+    #[test]
+    fn parse_line_bytes_rejects_missing_content_and_bad_pane_ids() {
+        for line in [
+            b"%output @1".as_slice(),
+            b"%output @1 ".as_slice(),
+            b"%output @x hi".as_slice(),
+            b"%output %x hi".as_slice(),
+        ] {
+            assert_eq!(parse_line_bytes(line), None, "line={line:?}");
+        }
+    }
+
+    #[test]
+    fn parse_line_bytes_keeps_non_output_utf8_and_rejects_invalid_safely() {
+        let renamed = parse_line_bytes("%window-renamed @2 编译".as_bytes()).unwrap();
+        assert!(matches!(
+            renamed,
+            Message::WindowRenamed { window: WindowId(2), name } if name == "编译"
+        ));
+
+        // 非 output 消息的字段不能安全地进入 String；应安全忽略，不得 panic 或生成替换符。
+        assert_eq!(parse_line_bytes(b"%window-renamed @2 \xff"), None);
+        assert_eq!(parse_line_bytes(b"%sessions-changed\xff"), None);
+    }
+
+    #[test]
+    fn parse_output_preserves_terminal_control_bytes_and_following_text() {
+        let mut line = b"%output %8 \"".to_vec();
+        line.extend_from_slice(
+            br"A\033[?2026hB\033[?1049hC\033[?1049l\033]0;title\033\\D\007E\017F\010G\015\012H",
+        );
+        line.push(b'"');
+
+        let expected = [
+            b"A".as_slice(),
+            b"\x1b[?2026hB",
+            b"\x1b[?1049hC",
+            b"\x1b[?1049l",
+            b"\x1b]0;title\x1b\\D\x07E\x0fF\x08G\x0d\x0aH",
+        ]
+        .concat();
+        match parse_line_bytes(&line).unwrap() {
+            Message::Output { content, .. } => assert_eq!(content, expected),
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_output_bad_escape_does_not_hide_a_following_line() {
+        // The malformed line is rejected, but line framing remains byte-oriented: the
+        // next complete output line is still available to the caller.
+        assert_eq!(parse_line_bytes(br#"%output %1 "bad\qtail""#), None);
+        assert!(matches!(
+            parse_line_bytes(br#"%output %1 "after""#),
+            Some(Message::Output { content, .. }) if content == b"after"
+        ));
     }
 
     #[test]
@@ -2078,7 +2325,7 @@ mod tests {
         let d = ControlEscapeDecoder::new();
         assert!(matches!(
             d.decode(r"\x"),
-            Err(ControlEscapeError::InvalidHex(_))
+            Err(ControlEscapeError::Truncated)
         ));
         assert!(matches!(
             d.decode(r"\xGG"),

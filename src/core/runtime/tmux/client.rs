@@ -7,7 +7,7 @@
 //!   仍需要 tty，否则 `tcgetattr failed` 立即退出）。
 //! - 后台 task 读 pty master 端，按**真换行**切行（`%output` content 里的 `\n`
 //!   是 C 转义后的两个字符，不是真换行），逐行喂给
-//!   [`parse_line`](super::protocol::parse_line)，产出 `Message` 事件流。
+//!   [`parse_line_bytes`](super::protocol::parse_line_bytes)，产出 `Message` 事件流。
 //! - [`TmuxClientHandle::send_command`]：把命令字符串写到 tmux stdin（pty）。
 //! - 通过 [`tokio::sync::mpsc`] 输出 `TmuxEvent` 事件，命令响应正文行（夹在
 //!   `%begin`/`%end` 之间的普通行）以 `ResponseLine` 形式分发。
@@ -17,7 +17,7 @@
 //! （`\n`，tmux 实际用 `\r\n`）切包，把不完整的尾段留到下次。
 
 use super::command::TmuxCommand;
-use super::protocol::{parse_line, Message, NotificationKind};
+use super::protocol::{parse_line_bytes, Message, NotificationKind};
 use super::pty::{self, split_master, PtyChild, PtyReader, PtyWriter};
 use crate::core::buffer_cap::{trim_incomplete_line, MAX_INCOMPLETE_LINE_BYTES};
 use anyhow::{anyhow, Context, Result};
@@ -447,7 +447,7 @@ fn hex_debug(bytes: &[u8]) -> String {
 
 /// DCS passthrough 前缀：tmux 3.3+ 在 CC 模式下用 `ESC P 1 0 0 0 p` 把第一条
 /// `%begin` 包起来。我们识别并剥离它。
-const DCS_PREFIX: &[u8] = b"\x1bP1000p";
+pub(crate) const DCS_PREFIX: &[u8] = b"\x1bP1000p";
 
 /// 从 pty/stdout 读到的字节块中提取「完整行」。
 ///
@@ -458,15 +458,17 @@ const DCS_PREFIX: &[u8] = b"\x1bP1000p";
 ///
 /// 注意：`%output` content 里的 `\n` 是 C 转义后的两个字符（`\\` + `n`），
 /// 不是真换行符，所以这里只按真 `\n` 字节切，不会把 content 内部切碎。
-fn feed_bytes_to_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+pub(crate) fn feed_bytes_to_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
     if chunk.is_empty() {
         return Vec::new();
     }
     buf.extend_from_slice(chunk);
-    trim_incomplete_line(buf, MAX_INCOMPLETE_LINE_BYTES);
     let mut lines = Vec::new();
     loop {
         let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
+            // 只限制仍未闭合的尾段；同一 chunk 中已经闭合的完整行不能被
+            // 大小限制提前丢掉。
+            trim_incomplete_line(buf, MAX_INCOMPLETE_LINE_BYTES);
             break;
         };
         let mut line_bytes: Vec<u8> = buf.drain(..=nl).collect();
@@ -476,10 +478,16 @@ fn feed_bytes_to_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
         if line_bytes.last() == Some(&b'\r') {
             line_bytes.pop();
         }
+        // 完整行也不能让单次输入绕过上限；保留最近的字节，明确表示这是一条
+        // 被截断的行（通常会因此无法作为协议通知解析），但不会无限增长。
+        if line_bytes.len() > MAX_INCOMPLETE_LINE_BYTES {
+            let start = line_bytes.len() - MAX_INCOMPLETE_LINE_BYTES;
+            line_bytes.drain(..start);
+        }
         if line_bytes.starts_with(DCS_PREFIX) {
             line_bytes.drain(..DCS_PREFIX.len());
         }
-        lines.push(String::from_utf8_lossy(&line_bytes).into_owned());
+        lines.push(line_bytes);
     }
     lines
 }
@@ -509,7 +517,11 @@ async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
             "recv tmux chunk"
         );
         for line in feed_bytes_to_lines(&mut buf, &chunk) {
-            tracing::debug!(target = "muxterm::client", line = %line, "recv line");
+            tracing::debug!(
+                target = "muxterm::client",
+                line = %String::from_utf8_lossy(&line),
+                "recv line"
+            );
             process_line(
                 &line,
                 &tx,
@@ -563,14 +575,29 @@ async fn read_stream_loop(stdout: ChildStdout, tx: mpsc::Sender<TmuxEvent>) {
 ///
 /// `pub(crate)`：SSH 远程 client 复用同一套行状态机。
 pub(crate) async fn process_line(
-    line: &str,
+    line: &[u8],
     tx: &mpsc::Sender<TmuxEvent>,
     in_response: &mut bool,
     current_number: &mut i64,
     current_is_error: &mut bool,
 ) {
-    let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
-    if let Some(msg) = parse_line(stripped) {
+    if let Some(Message::Unknown { .. }) = parse_line_bytes(line) {
+        // 命令响应正文可以合法地以 `%` 开头（例如 list-panes 的 `%0 @0 0`），
+        // 只有在响应边界内才把这种未知通知形状还原为 ResponseLine。
+        if *in_response {
+            let line = String::from_utf8_lossy(line).into_owned();
+            let _ = tx
+                .send(TmuxEvent::ResponseLine {
+                    number: *current_number,
+                    is_error: *current_is_error,
+                    line,
+                })
+                .await;
+            return;
+        }
+    }
+
+    if let Some(msg) = parse_line_bytes(line) {
         if let Message::ResponseBoundary(b) = &msg {
             match b.kind {
                 NotificationKind::Begin => {
@@ -599,15 +626,20 @@ pub(crate) async fn process_line(
                 .await;
         }
     } else if *in_response {
+        let line = String::from_utf8_lossy(line).into_owned();
         let _ = tx
             .send(TmuxEvent::ResponseLine {
                 number: *current_number,
                 is_error: *current_is_error,
-                line: line.to_string(),
+                line,
             })
             .await;
     } else {
-        tracing::trace!(target = "muxterm::client", "响应外普通行被忽略: {line}");
+        tracing::trace!(
+            target = "muxterm::client",
+            line = %String::from_utf8_lossy(line),
+            "响应外普通行被忽略"
+        );
     }
 }
 
@@ -673,7 +705,7 @@ mod tests {
         let mut is_err = false;
 
         process_line(
-            "\u{1b}P1000p%begin 1784356613 286 1",
+            b"\x1bP1000p%begin 1784356613 286 1",
             &tx,
             &mut in_resp,
             &mut num,
@@ -684,7 +716,7 @@ mod tests {
         assert_eq!(num, 286);
 
         process_line(
-            "cmd: 1 windows (created ...)",
+            b"cmd: 1 windows (created ...)",
             &tx,
             &mut in_resp,
             &mut num,
@@ -692,7 +724,7 @@ mod tests {
         )
         .await;
         process_line(
-            "%end 1784356613 286 1",
+            b"%end 1784356613 286 1",
             &tx,
             &mut in_resp,
             &mut num,
@@ -723,7 +755,7 @@ mod tests {
         let mut num = 0;
         let mut is_err = false;
         process_line(
-            r#"%output %0 a\nb"#,
+            br#"%output %0 a\nb"#,
             &tx,
             &mut in_resp,
             &mut num,
@@ -745,10 +777,10 @@ mod tests {
         let mut in_resp = false;
         let mut num = 0;
         let mut is_err = false;
-        process_line("%begin 1 5 0", &tx, &mut in_resp, &mut num, &mut is_err).await;
+        process_line(b"%begin 1 5 0", &tx, &mut in_resp, &mut num, &mut is_err).await;
         assert!(in_resp);
-        process_line("some error text", &tx, &mut in_resp, &mut num, &mut is_err).await;
-        process_line("%error 1 5 0", &tx, &mut in_resp, &mut num, &mut is_err).await;
+        process_line(b"some error text", &tx, &mut in_resp, &mut num, &mut is_err).await;
+        process_line(b"%error 1 5 0", &tx, &mut in_resp, &mut num, &mut is_err).await;
         assert!(!in_resp);
         let mut any_lines = Vec::new();
         while let Ok(ev) = rx.try_recv() {
@@ -757,6 +789,29 @@ mod tests {
             }
         }
         assert!(any_lines.contains(&"some error text".to_string()));
+    }
+
+    #[tokio::test]
+    async fn process_line_keeps_percent_prefixed_response_rows_as_response_lines() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut in_resp = false;
+        let mut number = 0;
+        let mut is_err = false;
+
+        process_line(b"%begin 1 7 0", &tx, &mut in_resp, &mut number, &mut is_err).await;
+        process_line(b"%0 @0 0", &tx, &mut in_resp, &mut number, &mut is_err).await;
+        process_line(b"%end 1 7 0", &tx, &mut in_resp, &mut number, &mut is_err).await;
+
+        let mut response_rows = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let TmuxEvent::ResponseLine {
+                number: 7, line, ..
+            } = event
+            {
+                response_rows.push(line);
+            }
+        }
+        assert_eq!(response_rows, vec!["%0 @0 0"]);
     }
 
     /// 端到端：真实 spawn tmux -CC（pty），收事件，发命令，验证响应。
@@ -1066,7 +1121,7 @@ mod tests {
     fn feed_bytes_one_full_line() {
         let mut buf = Vec::new();
         let lines = feed_bytes_to_lines(&mut buf, b"%window-add @0\r\n");
-        assert_eq!(lines, vec!["%window-add @0"]);
+        assert_eq!(lines, vec![b"%window-add @0".to_vec()]);
         assert!(buf.is_empty());
     }
 
@@ -1077,12 +1132,15 @@ mod tests {
         // 三次 read 才拼出完整一行：前两段是半行，第三段带换行收尾
         assert_eq!(
             feed_bytes_to_lines(&mut buf, b"%output %0 \"ab"),
-            Vec::<String>::new()
+            Vec::<Vec<u8>>::new()
         );
-        assert_eq!(feed_bytes_to_lines(&mut buf, b"cd\""), Vec::<String>::new());
+        assert_eq!(
+            feed_bytes_to_lines(&mut buf, b"cd\""),
+            Vec::<Vec<u8>>::new()
+        );
         assert_eq!(
             feed_bytes_to_lines(&mut buf, b"\r\n"),
-            vec![r#"%output %0 "abcd""#]
+            vec![br#"%output %0 "abcd""#.to_vec()]
         );
         assert!(buf.is_empty());
     }
@@ -1097,7 +1155,11 @@ mod tests {
         );
         assert_eq!(
             lines,
-            vec![r#"%output %0 a"#, r#"%output %1 b"#, "%window-add @1"]
+            vec![
+                br#"%output %0 a"#.to_vec(),
+                br#"%output %1 b"#.to_vec(),
+                b"%window-add @1".to_vec(),
+            ]
         );
         assert!(buf.is_empty());
     }
@@ -1113,7 +1175,7 @@ mod tests {
             got.extend(feed_bytes_to_lines(&mut buf, chunk));
         }
         assert_eq!(got.len(), 1);
-        assert!(got[0].starts_with("%output %0"));
+        assert!(got[0].starts_with(b"%output %0".as_slice()));
         assert!(buf.is_empty());
     }
 
@@ -1123,11 +1185,11 @@ mod tests {
         let mut buf = Vec::new();
         assert_eq!(
             feed_bytes_to_lines(&mut buf, "中文".as_bytes()[..3].to_vec().as_slice()),
-            Vec::<String>::new()
+            Vec::<Vec<u8>>::new()
         );
         let lines = feed_bytes_to_lines(&mut buf, &"中文".as_bytes()[3..]);
         // 无换行时不产出行
-        assert_eq!(lines, Vec::<String>::new());
+        assert_eq!(lines, Vec::<Vec<u8>>::new());
         assert!(!buf.is_empty());
     }
 
@@ -1136,11 +1198,11 @@ mod tests {
         let mut buf = Vec::new();
         assert_eq!(
             feed_bytes_to_lines(&mut buf, "中文".as_bytes()[..3].to_vec().as_slice()),
-            Vec::<String>::new()
+            Vec::<Vec<u8>>::new()
         );
         let lines = feed_bytes_to_lines(&mut buf, "文\r\n".as_bytes());
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0], "中文");
+        assert_eq!(lines[0], "中文".as_bytes().to_vec());
         assert!(buf.is_empty());
     }
 
@@ -1149,7 +1211,7 @@ mod tests {
         let mut buf = Vec::new();
         let dcs = b"\x1bP1000p%begin 123 1 0\r\n";
         let lines = feed_bytes_to_lines(&mut buf, dcs);
-        assert_eq!(lines, vec!["%begin 123 1 0"]);
+        assert_eq!(lines, vec![b"%begin 123 1 0".to_vec()]);
         assert!(buf.is_empty());
     }
 
@@ -1158,63 +1220,196 @@ mod tests {
         let mut buf = Vec::new();
         // 同时处理 CRLF 与 LF
         let lines = feed_bytes_to_lines(&mut buf, b"%begin 1 2 0\r\n%end 1 2 0\n");
-        assert_eq!(lines, vec!["%begin 1 2 0", "%end 1 2 0"]);
+        assert_eq!(
+            lines,
+            vec![b"%begin 1 2 0".to_vec(), b"%end 1 2 0".to_vec()]
+        );
+        assert!(buf.is_empty());
+    }
+
+    /// RED 回归（来自 b.log 真实 chunk）：`%output` 的 content 可能含原始
+    /// 非 UTF-8 字节（如 0x94 0x80），行切分必须逐字节保留，不能先经过
+    /// `String::from_utf8_lossy` 替换成 U+FFFD（0xEF 0xBF 0xBD）。
+    #[test]
+    fn feed_bytes_preserves_raw_non_utf8_output_content() {
+        let mut buf = Vec::new();
+        // b.log 中真实出现的字节序列：%output content 以原始字节内嵌，
+        // 不是 C 转义文本 `\x94\x80`。
+        let chunk: &[u8] = b"%output %25 \x94\x80\r\n";
+        let lines = feed_bytes_to_lines(&mut buf, chunk);
+        assert_eq!(lines.len(), 1, "应切出 1 行");
+        assert_eq!(lines[0], b"%output %25 \x94\x80".to_vec());
+        assert!(
+            !lines[0].windows(3).any(|w| w == b"\xef\xbf\xbd"),
+            "行切分不得提前用 lossy 替换非 UTF-8 字节: {:?}",
+            lines[0]
+        );
         assert!(buf.is_empty());
     }
 
     /// 真实样例（用户 SSH a.log）：把 htop / git-lg 的 `%output` 行按小 chunk 喂给
-    /// `feed_bytes_to_lines`（模拟 pty 分包），再 `parse_line`，验证控制字节
+    /// `feed_bytes_to_lines`（模拟 pty 分包），再 `parse_line_bytes`，验证控制字节
     /// （SO \017、backspace \010、CRLF、UTF-8）在分包 + 拼接 + 解析全程不丢、不产生
     /// replacement char。这覆盖渲染前的字节保真。
     #[test]
     fn feed_real_samples_byte_fidelity_across_chunks() {
-        use crate::core::runtime::tmux::protocol::parse_line;
+        let chunk_sizes = [1usize, 2, 3, 7, 16, 31, 64, 256];
         for name in ["real-htop", "real-git_lg", "real-ls_la", "real-codex"] {
-            // 逐文件读取
-            let content = std::fs::read_to_string(format!("tests/samples/{name}.txt"))
+            let bytes = std::fs::read(format!("tests/samples/{name}.txt"))
                 .unwrap_or_else(|e| panic!("读取样例 {name} 失败: {e}"));
-            let mut buf: Vec<u8> = Vec::new();
-            let mut parsed_outputs = 0usize;
-            // 每 16 字节切一次 chunk，强制跨 UTF-8/转义边界分包
-            let bytes = content.as_bytes();
-            let mut pos = 0;
-            while pos < bytes.len() {
-                let end = (pos + 16).min(bytes.len());
-                let lines = feed_bytes_to_lines(&mut buf, &bytes[pos..end]);
-                for line in lines {
-                    let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(&line);
+            let mut baseline = None;
+            for chunk_size in chunk_sizes {
+                let mut buf: Vec<u8> = Vec::new();
+                let mut outputs = Vec::new();
+                for chunk in bytes.chunks(chunk_size) {
+                    for line in feed_bytes_to_lines(&mut buf, chunk) {
+                        if let Some(crate::core::runtime::tmux::protocol::Message::Output {
+                            content,
+                            ..
+                        }) = parse_line_bytes(&line)
+                        {
+                            outputs.push(content);
+                        }
+                    }
+                }
+                if !buf.is_empty() {
+                    let tail = std::mem::take(&mut buf);
                     if let Some(crate::core::runtime::tmux::protocol::Message::Output {
                         content,
                         ..
-                    }) = parse_line(stripped)
+                    }) = parse_line_bytes(&tail)
                     {
-                        assert!(
-                            !content.windows(3).any(|w| w == b"\xef\xbf\xbd"),
-                            "{name}: 出现 replacement char"
-                        );
-                        parsed_outputs += 1;
+                        outputs.push(content);
                     }
                 }
-                pos = end;
-            }
-            // flush 末尾未换行的残段（样例可能无尾换行）
-            if !buf.is_empty() {
-                let tail = std::mem::take(&mut buf);
-                let line = String::from_utf8_lossy(&tail).into_owned();
-                let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(&line);
-                if let Some(crate::core::runtime::tmux::protocol::Message::Output {
-                    content, ..
-                }) = parse_line(stripped)
-                {
-                    assert!(
-                        !content.windows(3).any(|w| w == b"\xef\xbf\xbd"),
-                        "{name}: 残段出现 replacement char"
+                assert!(
+                    !outputs.is_empty(),
+                    "{name} chunk_size={chunk_size}: no outputs"
+                );
+                let combined: Vec<u8> = outputs.into_iter().flatten().collect();
+                assert!(
+                    !combined.windows(3).any(|w| w == b"\xef\xbf\xbd"),
+                    "{name} chunk_size={chunk_size}: replacement char"
+                );
+                if let Some(expected) = &baseline {
+                    assert_eq!(
+                        &combined, expected,
+                        "{name} chunk_size={chunk_size}: chunking changed output bytes"
                     );
-                    parsed_outputs += 1;
+                } else {
+                    baseline = Some(combined.clone());
+                }
+                assert!(
+                    combined.contains(&0x1b),
+                    "{name} chunk_size={chunk_size}: ESC was lost"
+                );
+                match name {
+                    "real-htop" => assert!(
+                        combined.contains(&0x0f),
+                        "{name} chunk_size={chunk_size}: SO was lost"
+                    ),
+                    "real-git_lg" => assert!(
+                        combined.contains(&0x0d),
+                        "{name} chunk_size={chunk_size}: CR was lost"
+                    ),
+                    "real-codex" => assert!(
+                        combined.windows(3).any(|w| w == b"\xe2\x9d\xaf"),
+                        "{name} chunk_size={chunk_size}: UTF-8 prompt was lost"
+                    ),
+                    _ => {}
                 }
             }
-            // 至少解析出 1 个 %output
-            assert!(parsed_outputs >= 1, "{name}: 应解析出 %output");
         }
+    }
+
+    #[test]
+    fn feed_bytes_incomplete_line_is_capped_at_maximum() {
+        let mut buf = Vec::new();
+        let prefix = vec![b'a'; MAX_INCOMPLETE_LINE_BYTES];
+        assert!(feed_bytes_to_lines(&mut buf, &prefix).is_empty());
+        assert_eq!(buf.len(), MAX_INCOMPLETE_LINE_BYTES);
+
+        assert!(feed_bytes_to_lines(&mut buf, b"b").is_empty());
+        assert_eq!(buf.len(), MAX_INCOMPLETE_LINE_BYTES);
+        assert_eq!(buf.last(), Some(&b'b'));
+
+        let mut with_newline = vec![b'c'; MAX_INCOMPLETE_LINE_BYTES];
+        with_newline.push(b'\n');
+        let lines = feed_bytes_to_lines(&mut buf, &with_newline);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), MAX_INCOMPLETE_LINE_BYTES);
+        assert!(lines[0].iter().all(|&b| b == b'c'));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn feed_bytes_preserves_empty_lines_and_truncated_tail() {
+        let mut buf = Vec::new();
+        let lines = feed_bytes_to_lines(&mut buf, b"\r\n\n%output %1 \"tail");
+        assert_eq!(lines, vec![Vec::<u8>::new(), Vec::<u8>::new()]);
+        assert_eq!(buf, br#"%output %1 "tail"#.to_vec());
+
+        let lines = feed_bytes_to_lines(&mut buf, b"\"\r\n");
+        assert_eq!(lines, vec![br#"%output %1 "tail""#.to_vec()]);
+        assert!(buf.is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_line_preserves_raw_output_and_response_boundary() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut in_resp = false;
+        let mut number = 0;
+        let mut is_error = false;
+
+        process_line(
+            b"%begin 10 99 0",
+            &tx,
+            &mut in_resp,
+            &mut number,
+            &mut is_error,
+        )
+        .await;
+        process_line(
+            b"response \xff",
+            &tx,
+            &mut in_resp,
+            &mut number,
+            &mut is_error,
+        )
+        .await;
+        process_line(
+            b"%output %9 \"\x94\x80\"",
+            &tx,
+            &mut in_resp,
+            &mut number,
+            &mut is_error,
+        )
+        .await;
+        process_line(
+            b"%end 10 99 0",
+            &tx,
+            &mut in_resp,
+            &mut number,
+            &mut is_error,
+        )
+        .await;
+
+        assert!(!in_resp);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TmuxEvent::Message(Message::Output {
+                pane: crate::core::types::PaneId(9),
+                content,
+                ..
+            }) if content == b"\x94\x80"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TmuxEvent::ResponseLine { number: 99, line, .. } if line.contains('\u{fffd}')
+        )));
     }
 }

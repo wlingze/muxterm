@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::core::runtime::tmux::client::{process_line, TmuxEvent};
+use crate::core::runtime::tmux::client::{feed_bytes_to_lines, process_line, TmuxEvent};
 use crate::core::runtime::tmux::command::TmuxCommand;
 
 /// 把字节块渲染成可读的 debug 字符串（可打印字符保留，控制字节转义）。
@@ -210,8 +210,6 @@ impl SshSession {
             let mut in_response = false;
             let mut current_number: i64 = 0;
             let mut current_is_error = false;
-            const DCS_PREFIX: &[u8] = b"\x1bP1000p";
-
             while let Some(chunk) = stdout_rx.recv().await {
                 if chunk.is_empty() {
                     continue;
@@ -222,24 +220,9 @@ impl SshSession {
                     hex = %hex_debug(&chunk),
                     "recv remote tmux chunk"
                 );
-                buf.extend_from_slice(&chunk);
-                loop {
-                    let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
-                        break;
-                    };
-                    let mut line_bytes: Vec<u8> = buf.drain(..=nl).collect();
-                    if line_bytes.last() == Some(&b'\n') {
-                        line_bytes.pop();
-                    }
-                    if line_bytes.last() == Some(&b'\r') {
-                        line_bytes.pop();
-                    }
-                    if line_bytes.starts_with(DCS_PREFIX) {
-                        line_bytes.drain(..DCS_PREFIX.len());
-                    }
-                    let line = String::from_utf8_lossy(&line_bytes).into_owned();
+                for line_bytes in feed_bytes_to_lines(&mut buf, &chunk) {
                     process_line(
-                        &line,
+                        &line_bytes,
                         &parse_tx,
                         &mut in_response,
                         &mut current_number,
@@ -569,5 +552,50 @@ mod tests {
     async fn connect_empty_host_errors() {
         let err = SshSession::connect(SshConfig::default()).await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn ssh_parser_uses_shared_byte_framer_and_preserves_output_bytes() {
+        let wire =
+            b"\x1bP1000p%begin 10 9 0\r\nresponse\xff\r\n%output %7 \x94\x80\r\n%end 10 9 0\n";
+        let (tx, mut rx) = mpsc::channel(32);
+        let mut buf = Vec::new();
+        let mut in_response = false;
+        let mut number = 0;
+        let mut is_error = false;
+
+        for chunk in wire.chunks(1) {
+            for line in feed_bytes_to_lines(&mut buf, chunk) {
+                process_line(&line, &tx, &mut in_response, &mut number, &mut is_error).await;
+            }
+        }
+        assert!(buf.is_empty());
+        assert!(!in_response);
+
+        let mut saw_output = false;
+        let mut saw_response = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                TmuxEvent::Message(crate::core::runtime::tmux::protocol::Message::Output {
+                    content,
+                    ..
+                }) => {
+                    assert_eq!(content, b"\x94\x80");
+                    saw_output = true;
+                }
+                TmuxEvent::ResponseLine {
+                    number: 9, line, ..
+                } => {
+                    assert!(line.contains('\u{fffd}'));
+                    saw_response = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_output, "SSH byte path must emit raw Output content");
+        assert!(
+            saw_response,
+            "ordinary response text may use lossy String conversion"
+        );
     }
 }
