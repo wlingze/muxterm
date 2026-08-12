@@ -396,3 +396,74 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertEqual(store2.projects.first?.runtime, .shell)
     }
 }
+
+final class KeyBindingsConfigTests: XCTestCase {
+    func testParseBasicBinding() {
+        let toml = """
+        [[keybindings]]
+        key = "d"
+        mods = ["command"]
+        action = "new_pane_vertical"
+        """
+        let map = KeyBindingsConfig.parse(toml: toml)
+        XCTAssertEqual(map[KeyChord(command: true, key: "d")], .splitVertical)
+    }
+
+    func testParseMultiModAndSuperAlias() {
+        let toml = """
+        [[keybindings]]
+        key = "D"
+        mods = ["super", "shift"]
+        action = "new_pane"
+        """
+        let map = KeyBindingsConfig.parse(toml: toml)
+        XCTAssertEqual(map[KeyChord(command: true, shift: true, key: "d")], .splitHorizontal)
+    }
+
+    func testParseSwitchTabAndQuickConnect() {
+        let toml = """
+        [[keybindings]]
+        key = "1"
+        mods = ["command"]
+        action = "switch_tab_3"
+
+        [[keybindings]]
+        key = "p"
+        mods = ["command"]
+        action = "quick_connect"
+        """
+        let map = KeyBindingsConfig.parse(toml: toml)
+        XCTAssertEqual(map[KeyChord(command: true, key: "1")], .switchTab(3))
+        XCTAssertEqual(map[KeyChord(command: true, key: "p")], .quickConnect)
+    }
+
+    func testUnknownActionIgnored() {
+        let toml = """
+        [[keybindings]]
+        key = "x"
+        mods = ["command"]
+        action = "nonsense"
+        """
+        XCTAssertTrue(KeyBindingsConfig.parse(toml: toml).isEmpty)
+    }
+
+    func testCustomTakesPrecedenceOverDefault() {
+        let toml = """
+        [[keybindings]]
+        key = "d"
+        mods = ["command"]
+        action = "new_pane"
+        """
+        let custom = KeyBindingsConfig.parse(toml: toml)
+        // 默认 Cmd-D = splitVertical；自定义覆盖为 splitHorizontal
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "d"), custom: custom),
+            .splitHorizontal
+        )
+        // 未覆盖的键仍走默认
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "t"), custom: custom),
+            .newTab
+        )
+    }
+}

@@ -16,7 +16,7 @@ public enum KeyAction: Equatable, Sendable {
 }
 
 /// 修饰键 + 主键（大小写无关）的纯数据描述。
-public struct KeyChord: Equatable, Sendable {
+public struct KeyChord: Equatable, Hashable, Sendable {
     public var command: Bool
     public var shift: Bool
     public var option: Bool
@@ -40,6 +40,15 @@ public struct KeyChord: Equatable, Sendable {
 
 /// 快捷键 → 动作 纯函数表。Cmd+[ / Cmd+] 切 pane 必须保持不变。
 public enum KeyBindings {
+    /// 解析键位；`custom` 来自 `~/.config/muxterm/config.toml` 的 `[[keybindings]]`，
+    /// 命中时优先于内置默认。
+    public static func action(for chord: KeyChord, custom: [KeyChord: KeyAction]? = nil) -> KeyAction? {
+        if let custom, let action = custom[chord] {
+            return action
+        }
+        return action(for: chord)
+    }
+
     public static func action(for chord: KeyChord) -> KeyAction? {
         let key = chord.key
 

@@ -10,6 +10,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let discovery = ConnectionDiscovery()
     private var commandPalette: CommandPaletteController!
     private var quickConnect: QuickConnectController!
+    /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
+    private var customKeybindings: [KeyChord: KeyAction] = [:]
     private let quickConnectStore: QuickConnectStore
     private var pollTimer: Timer?
     private var lastSnapshot = FrameSnapshot()
@@ -49,6 +51,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         quickConnectStore = QuickConnectStore(
             fileURL: configDir.appendingPathComponent("quickconnect.json")
         )
+        // 自定义快捷键：~/.config/muxterm/config.toml 的 [[keybindings]]
+        if let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8) {
+            customKeybindings = KeyBindingsConfig.parse(toml: toml)
+        }
         super.init(window: window)
         window.delegate = self
 
@@ -924,7 +930,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             control: flags.contains(.control),
             key: key
         )
-        guard let action = KeyBindings.action(for: chord) else {
+        guard let action = KeyBindings.action(for: chord, custom: customKeybindings) else {
             // Ctrl+C/D/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
             // 把它们送成真实控制字节。这样不依赖 SwiftTerm 的 NSText
             // interpretation，也不会把 tmux 的 WriteRaw 内容变成字面文本。
