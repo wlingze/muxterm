@@ -318,11 +318,12 @@ pub fn kill_pane(pane: PaneId) -> TmuxCommand {
     build(&[pane_target(pane)], "kill-pane")
 }
 
-/// split-window -t <window> [-h|-v] [-n name]。
+/// split-window -t <window> [-h|-v] [-n name] [-c start_dir]。
 pub fn split_window(
     window: WindowId,
     direction: SplitDirection,
     name: Option<&str>,
+    start_dir: Option<&str>,
 ) -> TmuxCommand {
     let mut args = vec![window_target(window)];
     match direction {
@@ -331,6 +332,9 @@ pub fn split_window(
     }
     if let Some(n) = name {
         args.push(format!("-n {}", quote_c_string(n)));
+    }
+    if let Some(d) = start_dir {
+        args.push(format!("-c {}", quote_c_string(d)));
     }
     build(&args, "split-window")
 }
@@ -580,14 +584,32 @@ mod tests {
 
     #[test]
     fn split_window_horizontal() {
-        let c = split_window(WindowId(0), SplitDirection::Horizontal, Some("log"));
+        let c = split_window(WindowId(0), SplitDirection::Horizontal, Some("log"), None);
         assert_eq!(c.as_str(), r#"split-window -t @0 -h -n "log""#);
     }
 
     #[test]
     fn split_window_vertical_no_name() {
-        let c = split_window(WindowId(1), SplitDirection::Vertical, None);
+        let c = split_window(WindowId(1), SplitDirection::Vertical, None, None);
         assert_eq!(c.as_str(), "split-window -t @1 -v");
+    }
+
+    /// split 携带起始目录：`-c <path>`（用于继承当前 pane 目录）。
+    #[test]
+    fn split_window_with_start_dir() {
+        let c = split_window(
+            WindowId(0),
+            SplitDirection::Horizontal,
+            None,
+            Some("/home/user/project/sub"),
+        );
+        assert_eq!(
+            c.as_str(),
+            r#"split-window -t @0 -h -c "/home/user/project/sub""#
+        );
+        // 目录中的引号要转义
+        let c = split_window(WindowId(0), SplitDirection::Vertical, None, Some("a\"b\\c"));
+        assert_eq!(c.as_str(), r#"split-window -t @0 -v -c "a\"b\\c""#);
     }
 
     #[test]
@@ -672,7 +694,12 @@ mod tests {
     /// 分割窗口的名字带引号/反斜杠时也要转义。
     #[test]
     fn split_window_escapes_name() {
-        let c = split_window(WindowId(0), SplitDirection::Horizontal, Some("a\"b\\c"));
+        let c = split_window(
+            WindowId(0),
+            SplitDirection::Horizontal,
+            Some("a\"b\\c"),
+            None,
+        );
         assert_eq!(c.as_str(), r#"split-window -t @0 -h -n "a\"b\\c""#);
     }
 }

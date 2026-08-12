@@ -54,6 +54,12 @@ enum PendingQuery {
     DisplayMessage { pane: PaneId },
     /// capture-pane -e -p -t <pane>：恢复 attach 时 tmux 已存在的可见屏幕。
     CapturePane { pane: PaneId },
+    /// display-message 查询 pane 当前路径后，用该路径执行 split-window -c。
+    SplitPaneInCurrentDir {
+        pane: PaneId,
+        dir: SplitDir,
+        command: Option<Vec<String>>,
+    },
     /// list-sessions：列出 tmux server 上所有 session。
     ListSessions,
 }
@@ -659,6 +665,23 @@ impl TmuxBackend {
                                 self.events
                                     .push_back(StateChange::PaneTitleChanged { pane, title });
                             }
+                        }
+                    }
+                }
+                PendingQuery::SplitPaneInCurrentDir { pane, dir, command } => {
+                    // 单行响应即当前 pane 路径；用它作为新 pane 的起始目录，
+                    // 实现「split 到当前目录（a/b）而不是窗口根目录（a）」。
+                    if let Some(path) = lines.first().map(|s| s.trim().to_string()) {
+                        if !path.is_empty() {
+                            let tab_id = self.pane(&pane).map(|p| p.tab).unwrap_or(TabId(0));
+                            let tmux_win = WindowId(tab_id.0);
+                            let direction = match dir {
+                                SplitDir::Horizontal => cmd::SplitDirection::Horizontal,
+                                SplitDir::Vertical => cmd::SplitDirection::Vertical,
+                            };
+                            let name = command.as_ref().and_then(|c| c.first()).map(|s| s.as_str());
+                            let c = cmd::split_window(tmux_win, direction, name, Some(&path));
+                            let _ = self.dispatch_tmux_command(&c);
                         }
                     }
                 }
@@ -1272,12 +1295,31 @@ impl Backend for TmuxBackend {
                     SplitDir::Vertical => cmd::SplitDirection::Vertical,
                 };
                 let name = command.as_ref().and_then(|c| c.first()).map(|s| s.as_str());
-                let _ = workdir;
-                let c = cmd::split_window(tmux_win, direction, name);
-                if self.dispatch_tmux_command(&c).is_err() {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: "发送命令失败".into(),
-                    });
+                match workdir {
+                    Some(dir) => {
+                        // 显式指定目录：直接 split -c。
+                        let c = cmd::split_window(tmux_win, direction, name, Some(dir));
+                        if self.dispatch_tmux_command(&c).is_err() {
+                            return Ok(TaskOutcome::Rejected {
+                                reason: "发送命令失败".into(),
+                            });
+                        }
+                    }
+                    None => {
+                        // 未指定目录：先查当前 pane 路径，再以该路径 split。
+                        // 保证从 a/b 切分出来的新 pane 也在 a/b，而不是窗口根目录 a。
+                        let q = cmd::display_message(target, "#{pane_current_path}");
+                        if self.dispatch_tmux_command(&q).is_err() {
+                            return Ok(TaskOutcome::Rejected {
+                                reason: "发送命令失败".into(),
+                            });
+                        }
+                        self.replace_last_pending(PendingQuery::SplitPaneInCurrentDir {
+                            pane: target,
+                            dir: *dir,
+                            command: command.clone(),
+                        });
+                    }
                 }
                 TaskOutcome::Done
             }
@@ -2525,6 +2567,63 @@ mod tests {
         assert!(
             b.panes.iter().all(|p| p.tab != tab),
             "window 关闭后 pane 应全部移除"
+        );
+    }
+
+    /// 回归：未指定 workdir 的 split 先查当前 pane 路径，再用该路径 split -c，
+    /// 保证从 a/b 切分出来的新 pane 也在 a/b 而不是窗口根目录 a。
+    #[test]
+    fn split_inherits_current_pane_directory() {
+        use crate::core::model::layout::SplitDir;
+        use crate::core::model::task::Task;
+        use tokio::sync::mpsc;
+
+        let mut b = TmuxBackend::new(None);
+        // 预置 pane 所在 tab/window
+        b.panes.push(crate::core::model::state::PaneInfo {
+            id: crate::core::types::PaneId(3),
+            tab: crate::core::types::TabId(7),
+            cols: 80,
+            rows: 24,
+            active: true,
+            title: "p3".into(),
+        });
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: crate::core::types::TabId(7),
+            name: "t7".into(),
+            window: TmuxBackend::VIRTUAL_WINDOW_ID,
+            active: true,
+        });
+        // 建立命令通道，捕获后续 dispatch 的命令
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = crate::core::model::state::BackendStatus::Connected;
+
+        // execute SplitPane（workdir=None）→ 应发送 display-message 查询
+        let outcome = b
+            .execute(&Task::SplitPane {
+                target: Some(crate::core::types::PaneId(3)),
+                dir: SplitDir::Horizontal,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        assert_eq!(outcome, crate::core::model::task::TaskOutcome::Done);
+        let sent = rx.try_recv().expect("应发送 display-message");
+        assert!(
+            sent.contains("display-message") && sent.contains("#{pane_current_path}"),
+            "应查询当前 pane 路径: {sent}"
+        );
+
+        // 模拟 %begin：把 pending 查询按 number 登记，再响应 display-message
+        let pending = b.pending_queries.pop_front().expect("应有 pending 查询");
+        b.pending_by_number.insert(1, pending);
+        b.dispatch_response(1, vec!["/home/user/project/sub".into()]);
+        let split = rx.try_recv().expect("应发送 split-window");
+        assert!(
+            split.starts_with("split-window -t @7 -h")
+                && split.contains(r#"-c "/home/user/project/sub""#),
+            "split 应带当前目录 -c: {split}"
         );
     }
 
