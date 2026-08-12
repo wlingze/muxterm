@@ -264,6 +264,36 @@ impl TmuxBackend {
         }
     }
 
+    /// 把指定 tab 标记为 active，并发出 ActiveTabChanged 事件。
+    fn mark_tab_active(&mut self, tab_id: TabId) {
+        if !self.tabs.iter().any(|t| t.id == tab_id) {
+            return;
+        }
+        let current_active = self.tabs.iter().find(|t| t.active).map(|t| t.id);
+        for t in self.tabs.iter_mut() {
+            t.active = t.id == tab_id;
+        }
+        if current_active != Some(tab_id) {
+            self.events.push_back(StateChange::ActiveTabChanged {
+                window: Self::VIRTUAL_WINDOW_ID,
+                tab: tab_id,
+            });
+        }
+    }
+
+    /// 目标 tab 的 pane 数据为空时重新查询（兜底）。
+    fn query_panes_if_empty(&mut self, tab_id: TabId, window: WindowId) {
+        let pane_count = self.panes.iter().filter(|p| p.tab == tab_id).count();
+        if pane_count == 0 {
+            tracing::debug!(
+                target: "muxterm::tmux",
+                "切 tab 到 @{} 但 pane 为空，重新查询",
+                window.0
+            );
+            self.query_list_panes(window);
+        }
+    }
+
     /// 事件队列过长时丢弃最旧的 PaneOutput，避免挂起轮询时涨到数 GB。
     ///
     /// 结构性事件（ActiveTabChanged / TabClosed / PaneClosed / PaneAdded /
@@ -547,22 +577,11 @@ impl TmuxBackend {
                 // tmux session 的 active window 切换 → muxterm active tab 切换
                 // 虚拟 Window 不动（永远 1 个）
                 let tab_id = TabId(window.0);
-                for t in self.tabs.iter_mut() {
-                    t.active = t.id == tab_id;
-                }
+                self.mark_tab_active(tab_id);
                 if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session) {
                     sess.active_window = Some(Self::VIRTUAL_WINDOW_ID);
                 }
-                // 如果目标 tab 的 pane 数据为空，重新查询（兜底）
-                let pane_count = self.panes.iter().filter(|p| p.tab == tab_id).count();
-                if pane_count == 0 {
-                    tracing::debug!(target: "muxterm::tmux", "切 tab 到 @{} 但 pane 为空，重新查询", window.0);
-                    self.query_list_panes(window);
-                }
-                self.events.push_back(StateChange::ActiveTabChanged {
-                    window: Self::VIRTUAL_WINDOW_ID,
-                    tab: tab_id,
-                });
+                self.query_panes_if_empty(tab_id, window);
             }
             Message::ExtendedOutput { .. }
             | Message::Pause { .. }
@@ -1522,6 +1541,11 @@ impl Backend for TmuxBackend {
                         reason: "发送命令失败".into(),
                     });
                 }
+                // 乐观更新 active tab：tmux 在输出洪峰下可能延迟回
+                // %session-window-changed，前端等太久会以为切 tab 不生效。
+                // 真正的通知到达后 mark_tab_active 幂等，不会重复切换。
+                self.mark_tab_active(TabId(target.0));
+                self.query_panes_if_empty(TabId(target.0), win_id);
                 TaskOutcome::Done
             }
 
@@ -2673,6 +2697,62 @@ mod tests {
             b.events.iter().any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == crate::core::types::TabId(1))),
             "应有 ActiveTabChanged(tab1)"
         );
+    }
+
+    /// Task::SwitchTab 应乐观更新 active tab：即使 %session-window-changed
+    /// 在输出洪峰下延迟到达，前端也能立刻切 tab；通知到达后不重复发事件。
+    #[test]
+    fn switch_tab_optimistically_marks_active_tab() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = crate::core::model::state::BackendStatus::Connected;
+        let session = crate::core::types::SessionId(0);
+        b.sessions.push(crate::core::model::state::SessionInfo {
+            id: session,
+            name: "s0".into(),
+            active_window: None,
+        });
+        for (id, active) in [(0u32, true), (1, false), (2, false)] {
+            b.tabs.push(crate::core::model::state::TabInfo {
+                id: crate::core::types::TabId(id),
+                name: format!("t{id}"),
+                window: crate::core::runtime::tmux::backend::TmuxBackend::VIRTUAL_WINDOW_ID,
+                active,
+            });
+        }
+
+        // 切到 tab2：命令发出 + 乐观事件
+        let outcome = b.execute(&Task::SwitchTab {
+            target: crate::core::types::TabId(2),
+        });
+        assert!(matches!(outcome, Ok(TaskOutcome::Done)));
+        let sent = rx.try_recv().expect("应发送 select-window");
+        assert!(sent.starts_with("select-window -t @2"), "命令: {sent}");
+        assert!(
+            b.events
+                .iter()
+                .any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == crate::core::types::TabId(2))),
+            "乐观切换应立即产生 ActiveTabChanged(tab2)"
+        );
+        let t2 = b
+            .tabs
+            .iter()
+            .find(|t| t.id == crate::core::types::TabId(2))
+            .unwrap();
+        assert!(t2.active);
+
+        // tmux 通知到达：状态一致，不应重复发 ActiveTabChanged(tab2)
+        let before = b.events.len();
+        b.handle_message(Message::SessionWindowChanged {
+            session,
+            window: crate::core::types::WindowId(2),
+        });
+        let after = b.events.len();
+        assert_eq!(after, before, "幂等通知不应重复产生 ActiveTabChanged");
     }
 
     /// %extended-output（hyperlink 等）被安全忽略，不破坏 %output 累积或状态机。
