@@ -29,8 +29,10 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     private var nameManuallyEdited = false
     /// runtime / transport 单选卡的纯状态模型。
     private var selection = TargetOptionSelection()
-    /// 当前浏览路径（SSH 用远端路径，local 用本机路径）。
-    private var currentPath: String = "~"
+    /// 目录输入 / 候选选择 / 异步请求 generation 的纯状态模型。
+    private var pathController = DirectorySuggestionController(path: "~")
+    /// 目录列表请求防抖（文本变化不立即发请求）。
+    private var pathDebounce: DispatchWorkItem?
 
     init(
         editing config: TargetConfig? = nil,
@@ -124,7 +126,9 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         // Path（可编辑下拉 + 逐步浏览）
         let pathLabel = sectionLabel("Path")
         pathCombo.placeholderString = "~/... 或输入完整路径"
-        pathCombo.completes = true
+        // 禁用 NSComboBox 默认文本补全：它会把完整路径当 basename 拼接。
+        // 候选完全由 DirectorySuggestionController 管理，选择候选=进入目录。
+        pathCombo.completes = false
         pathCombo.usesDataSource = false
         pathCombo.delegate = self
         pathCombo.target = self
@@ -217,19 +221,24 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
                 runtime: config.runtime,
                 transport: config.transport
             )
-            currentPath = config.path.isEmpty ? "~" : config.path
+            pathController = DirectorySuggestionController(
+                path: config.path.isEmpty ? "~" : config.path
+            )
             nameCombo.stringValue = config.name
             nameManuallyEdited = true
         } else {
             selection = TargetOptionSelection()
-            currentPath = "~"
+            pathController = DirectorySuggestionController(path: "~")
             nameCombo.stringValue = ""
             nameManuallyEdited = false
+        }
+        if case .ssh(let alias) = selection.transport {
+            _ = pathController.setTransport(isSSH: true, alias: alias)
         }
         updateRuntimeCards()
         updateTransportCards()
         updateSSHVisibility()
-        pathCombo.stringValue = currentPath
+        pathCombo.stringValue = pathController.text
         refreshPathSuggestions()
         updateNameHint()
     }
@@ -319,38 +328,60 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         sshNameCombo.isHidden = !isSSH
         if isSSH {
             // SSH 浏览从远端 home 开始
-            if currentPath == "~" || currentPath.isEmpty {
+            if pathController.text == "~" || pathController.text.isEmpty {
+                _ = pathController.updateInput("~")
                 pathCombo.stringValue = "~"
-                currentPath = "~"
             }
+            let alias = sshNameCombo.stringValue
+                .trimmingCharacters(in: .whitespaces)
+            _ = pathController.setTransport(isSSH: true, alias: alias.isEmpty ? nil : alias)
+            refreshPathSuggestions()
+        } else {
+            _ = pathController.setTransport(isSSH: false)
             refreshPathSuggestions()
         }
     }
 
     private func updateNameHint() {
-        nameHint.stringValue = "默认: \(QuickConnect.defaultName(for: currentPath))"
+        nameHint.stringValue = "默认: \(QuickConnect.defaultName(for: pathController.text))"
     }
 
     private func autoUpdateNameIfNeeded() {
         guard !nameManuallyEdited else { return }
-        nameCombo.stringValue = QuickConnect.defaultName(for: currentPath)
+        nameCombo.stringValue = QuickConnect.defaultName(for: pathController.text)
         updateNameHint()
-    }
-
-    private var currentSSHAlias: String? {
-        if case .ssh(let name) = selection.transport {
-            let trimmed = name.trimmingCharacters(in: .whitespaces)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        return nil
     }
 
     // MARK: - Directory browsing
 
-    private func refreshPathSuggestions() {
-        guard !currentPath.isEmpty else { return }
-        let isSSH = currentSSHAlias != nil
-        let alias = currentSSHAlias
+    private func refreshPathSuggestions(debounce: Bool = false) {
+        let request = pathController.request
+        let isSSH = request.isSSH
+        let alias = request.alias
+        let listPath = request.path
+        // SSH 已选中但 alias 为空：不能退回本地列表，也不发无效请求。
+        if isSSH && alias == nil {
+            pathCombo.removeAllItems()
+            return
+        }
+        if debounce {
+            pathDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.startPathListing(request: request, isSSH: isSSH, alias: alias, path: listPath)
+            }
+            pathDebounce = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+            return
+        }
+        startPathListing(request: request, isSSH: isSSH, alias: alias, path: listPath)
+    }
+
+    private func startPathListing(
+        request: DirectoryListingRequest,
+        isSSH: Bool,
+        alias: String?,
+        path: String
+    ) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             do {
@@ -359,23 +390,31 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
                     entries = try CoreBridge.listDir(
                         backendType: "ssh",
                         target: alias,
-                        path: self.currentPath
+                        path: path
                     )
                 } else {
                     entries = try CoreBridge.listDir(
                         backendType: "local",
-                        path: self.currentPath
+                        path: path
                     )
                 }
                 let dirs = entries.filter { $0.is_dir }.map { $0.name }.sorted()
                 DispatchQueue.main.async {
-                    guard self.currentSSHAlias == (isSSH ? alias : nil) else { return }
+                    let response = DirectoryListingResponse(
+                        request: request,
+                        directories: dirs
+                    )
+                    guard self.pathController.apply(response) else { return }
                     self.pathCombo.removeAllItems()
-                    self.pathCombo.addItems(withObjectValues: dirs)
+                    self.pathCombo.addItems(withObjectValues: self.pathController.candidates)
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self.pathCombo.removeAllItems()
+                    // 只有当前请求仍是最新的才清空，旧响应不得覆盖新输入。
+                    let response = DirectoryListingResponse(request: request, directories: [])
+                    if self.pathController.apply(response) {
+                        self.pathCombo.removeAllItems()
+                    }
                 }
             }
         }
@@ -384,36 +423,49 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     @objc private func pathComboSelected() {
         let selected = pathCombo.stringValue.trimmingCharacters(in: .whitespaces)
         guard !selected.isEmpty else { return }
-        let joined: String
-        if currentPath == "~" || currentPath == "/" {
-            joined = currentPath == "/" ? "/" + selected : "~/\(selected)"
-        } else {
-            joined = "\(currentPath)/\(selected)"
+        applyPathSelection(candidate: selected)
+    }
+
+    /// 选择候选 = 进入该目录。action 与 selectionDidChange 可能都触发，
+    /// 已进入同一目录时保持幂等，避免重复拼接。
+    private func applyPathSelection(candidate: String) {
+        // 用户输入完整路径（含 /）按回车：直接采用该路径并重新列表，
+        // 绝不把它当 basename 拼到当前目录。
+        guard !candidate.contains("/") else {
+            _ = pathController.updateInput(candidate)
+            pathCombo.stringValue = pathController.text
+            autoUpdateNameIfNeeded()
+            refreshPathSuggestions()
+            return
         }
-        currentPath = joined
-        pathCombo.stringValue = joined
+        // action 与 selectionDidChange 会成对触发：当前文本最后一段已等于
+        // 候选（且已进入该目录）时保持幂等，不重复拼接。
+        if lastComponent(of: pathController.text) == candidate {
+            refreshPathSuggestions()
+            return
+        }
+        _ = pathController.select(candidate: candidate)
+        pathCombo.stringValue = pathController.text
         autoUpdateNameIfNeeded()
         refreshPathSuggestions()
     }
 
+    private func lastComponent(of raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed == "~" || trimmed == "/" || trimmed.isEmpty { return "" }
+        var withoutTrailing = trimmed
+        while withoutTrailing.hasSuffix("/") {
+            withoutTrailing.removeLast()
+        }
+        if withoutTrailing == "~" { return "" }
+        return withoutTrailing.split(separator: "/").last.map(String.init) ?? ""
+    }
+
     @objc private func goUp() {
-        let trimmed = currentPath.trimmingCharacters(in: .whitespaces)
-        if trimmed == "~" || trimmed == "/" || trimmed.isEmpty {
-            return
-        }
-        let parent: String
-        if trimmed == "~" {
-            parent = "~"
-        } else if trimmed.hasPrefix("~/") {
-            let rest = String(trimmed.dropFirst(2))
-            let parts = rest.split(separator: "/", omittingEmptySubsequences: true)
-            parent = parts.count <= 1 ? "~" : "~/" + parts.dropLast().joined(separator: "/")
-        } else {
-            let url = URL(fileURLWithPath: trimmed).deletingLastPathComponent()
-            parent = url.path
-        }
-        currentPath = parent
-        pathCombo.stringValue = parent
+        let before = pathController.text
+        _ = pathController.goUp()
+        guard pathController.text != before else { return }
+        pathCombo.stringValue = pathController.text
         autoUpdateNameIfNeeded()
         refreshPathSuggestions()
     }
@@ -463,12 +515,18 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     func controlTextDidChange(_ obj: Notification) {
         if let combo = obj.object as? NSComboBox {
             if combo === pathCombo {
-                currentPath = combo.stringValue.trimmingCharacters(in: .whitespaces)
+                _ = pathController.updateInput(combo.stringValue)
                 autoUpdateNameIfNeeded()
+                refreshPathSuggestions(debounce: true)
             } else if combo === nameCombo {
                 nameManuallyEdited = true
             } else if combo === sshNameCombo {
-                selection.selectTransport(.ssh(name: combo.stringValue))
+                if case .ssh = selection.transport {
+                    let alias = combo.stringValue.trimmingCharacters(in: .whitespaces)
+                    selection.selectTransport(.ssh(name: alias))
+                    _ = pathController.setTransport(isSSH: true, alias: alias.isEmpty ? nil : alias)
+                    refreshPathSuggestions()
+                }
             }
         }
     }
@@ -476,7 +534,11 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     func comboBoxSelectionDidChange(_ notification: Notification) {
         guard let combo = notification.object as? NSComboBox else { return }
         if combo === pathCombo {
-            pathComboSelected()
+            let index = combo.indexOfSelectedItem
+            if index >= 0, index < combo.numberOfItems {
+                let candidate = combo.itemObjectValue(at: index) as? String ?? ""
+                applyPathSelection(candidate: candidate)
+            }
         } else if combo === sshNameCombo {
             selection.selectTransport(.ssh(name: combo.stringValue))
             updateSSHVisibility()
@@ -493,10 +555,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         } else {
             transportValue = .local
         }
-        var path = currentPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if path.isEmpty {
-            path = "~"
-        }
+        let path = DirectoryPathModel.resolvedPath(for: pathController.text)
         var name = nameCombo.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty {
             name = QuickConnect.defaultName(for: path)
