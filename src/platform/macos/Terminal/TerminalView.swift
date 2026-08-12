@@ -36,6 +36,12 @@ final class MuxTerminalView: TerminalView {
         wantsLayer = true
         nativeForegroundColor = NSColor.textColor
         nativeBackgroundColor = NSColor.textBackgroundColor
+        // 关闭 SwiftTerm 的 mouse reporting 转发，保证鼠标点击/拖拽优先做文本
+        // 选择（选中复制）。codex/htop 等应用启用 mouse 协议后，SwiftTerm 默认
+        // 会把点击/拖拽当 mouse 序列发给程序，导致「选不中、一直闪烁」。需要
+        // 向应用发送鼠标事件时仍可用 Shift+拖拽（SwiftTerm 的
+        // shiftBypassesMouseReporting 兜底）。
+        allowMouseReporting = false
         setAccessibilityIdentifier("muxterm.terminal.\(paneId)")
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
