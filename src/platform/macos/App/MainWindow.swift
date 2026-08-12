@@ -9,6 +9,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let content: ContentView
     private let discovery = ConnectionDiscovery()
     private var commandPalette: CommandPaletteController!
+    private var quickConnect: QuickConnectController!
+    private let quickConnectStore: QuickConnectStore
     private var pollTimer: Timer?
     private var lastSnapshot = FrameSnapshot()
     private var needsLayoutReload = true
@@ -41,12 +43,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = content
         window.setAccessibilityIdentifier("muxterm.mainWindow")
 
+        // QuickConnect 持久化：存到 ~/.config/muxterm/quickconnect.json
+        let configDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/muxterm", isDirectory: true)
+        quickConnectStore = QuickConnectStore(
+            fileURL: configDir.appendingPathComponent("quickconnect.json")
+        )
         super.init(window: window)
         window.delegate = self
 
         commandPalette = CommandPaletteController(ownerWindow: window)
         commandPalette.onSelect = { [weak self] item in
             self?.handlePaletteSelection(item)
+        }
+        quickConnect = QuickConnectController(store: quickConnectStore, ownerWindow: window)
+        quickConnect.onConnect = { [weak self] config in
+            self?.connect(config: config)
+        }
+        quickConnect.onNewProject = { [weak self] in
+            self?.editProject(nil)
+        }
+        quickConnect.onEditProject = { [weak self] config in
+            self?.editProject(config)
         }
         languageObserver = NotificationCenter.default.addObserver(
             forName: .muxtermLanguageChanged,
@@ -185,6 +203,150 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             commandPalette.dismiss()
         } else {
             commandPalette.present(items: rootPaletteItems())
+        }
+    }
+
+    @objc func openQuickConnect() {
+        guard let quickConnect else { return }
+        if quickConnect.window?.isKeyWindow == true {
+            quickConnect.dismiss()
+        } else {
+            quickConnect.present()
+        }
+    }
+
+    /// 按 QuickConnect 目标连接：tmux 有 name → attach，无 name → 创建；
+    /// shell runtime → 本地/远程 shell 在 path 启动。
+    private func connect(config: TargetConfig) {
+        quickConnect.dismiss()
+        quickConnectStore.recordRecent(config)
+        switch config.runtime {
+        case .tmux:
+            if config.name.isEmpty {
+                // 无 name → 创建 tmux session（用 path 最小目录做名字）
+                let sessionName = QuickConnect.defaultName(for: config.path)
+                createTmuxSession(config: config, session: sessionName)
+            } else {
+                attachTmux(config: config, session: config.name)
+            }
+        case .shell:
+            startShell(config: config)
+        }
+    }
+
+    private func createTmuxSession(config: TargetConfig, session: String) {
+        let backend: String
+        let alias: String?
+        switch config.transport {
+        case .local:
+            backend = "local"
+            alias = nil
+        case .ssh(let name):
+            backend = "ssh"
+            alias = name
+        }
+        discovery.createSession(
+            target: config.transport.isSSH
+                ? .ssh(SSHHostInfo(alias: alias ?? "", hostname: "", user: nil, port: nil))
+                : .local,
+            directory: config.path
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let created):
+                self.attachTmux(config: config, session: created)
+            case .failure(let error):
+                self.showError(error)
+            }
+        }
+    }
+
+    private func attachTmux(config: TargetConfig, session: String) {
+        let backend: String
+        let socket: String?
+        switch config.transport {
+        case .local:
+            backend = "tmux"
+            socket = nil
+        case .ssh(let name):
+            backend = "ssh"
+            socket = name
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let nextBridge = try CoreBridge(
+                    backendType: backend,
+                    socket: socket,
+                    session: session
+                )
+                DispatchQueue.main.async {
+                    guard let self else {
+                        nextBridge.shutdown()
+                        return
+                    }
+                    self.swapBridge(nextBridge)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.showError(error)
+                }
+            }
+        }
+    }
+
+    private func startShell(config: TargetConfig) {
+        // 本地 shell 用指定目录启动（muxterm_new_connect 的 local 分支带 workdir）。
+        // SSH 没有独立的裸远程 shell 后端：一律走远程 tmux（创建或 attach）。
+        switch config.transport {
+        case .local:
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                do {
+                    let nextBridge = try CoreBridge.connect(
+                        backendType: "local",
+                        startDirectory: config.path
+                    )
+                    DispatchQueue.main.async {
+                        guard let self else {
+                            nextBridge.shutdown()
+                            return
+                        }
+                        self.swapBridge(nextBridge)
+                    }
+                } catch {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.showError(error)
+                    }
+                }
+            }
+        case .ssh(let name):
+            // 远程 shell → 用 tmux 创建会话（name 作会话名；无 name 用 path 最小目录）。
+            let sessionName = config.name.isEmpty
+                ? QuickConnect.defaultName(for: config.path)
+                : config.name
+            createTmuxSession(config: config, session: sessionName)
+            _ = name
+        }
+    }
+
+    /// 用新 bridge 替换当前连接并刷新 UI。
+    private func swapBridge(_ nextBridge: CoreBridge) {
+        bridge.shutdown()
+        bridge = nextBridge
+        terminalManager.updateBridge(nextBridge)
+        lastSnapshot = FrameSnapshot()
+        pendingActiveTab = nil
+        pendingActiveTabSince = nil
+        needsLayoutReload = true
+        refreshUI()
+        focusActiveTerminal()
+    }
+
+    /// 打开/编辑 project 配置窗口。
+    private func editProject(_ config: TargetConfig?) {
+        let win = TargetConfigWindow(editing: config, owner: window)
+        win.onSave = { [weak self] saved in
+            self?.quickConnectStore.upsertProject(saved)
+            self?.quickConnect.present()
         }
     }
 
@@ -794,6 +956,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             prevPane()
         case .commandPalette:
             openCommandPalette()
+        case .quickConnect:
+            openQuickConnect()
         case .quit:
             NSApp.terminate(nil)
         }

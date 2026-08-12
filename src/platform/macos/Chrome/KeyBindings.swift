@@ -11,6 +11,7 @@ public enum KeyAction: Equatable, Sendable {
     case nextPane
     case prevPane
     case commandPalette
+    case quickConnect
     case quit
 }
 
@@ -68,7 +69,11 @@ public enum KeyBindings {
             return .nextPane
         }
 
-        // Cmd+Shift+P：VSCode 风格命令面板。
+        // Cmd+P：QuickConnect 面板（Recent + Project）。
+        if chord.command, !chord.shift, !chord.option, key == "p" {
+            return .quickConnect
+        }
+        // Cmd+Shift+P：旧命令面板（保留）。
         if chord.command, chord.shift, !chord.option, key == "p" {
             return .commandPalette
         }

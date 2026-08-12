@@ -384,7 +384,10 @@ pub extern "C" fn muxterm_new_connect(
                 .unwrap_or_else(|| session_socket_path(&name));
             Box::new(DaemonBackend::new(path, name))
         }
-        _ => Box::new(LocalBackend::new("$SHELL", "")),
+        _ => Box::new(LocalBackend::new(
+            "$SHELL",
+            start_dir.as_deref().unwrap_or(""),
+        )),
     };
 
     let rt = match tokio::runtime::Builder::new_multi_thread()

@@ -76,6 +76,8 @@ let package = Package(
                 "App/ContentView.swift",
                 "App/CommandPalette.swift",
                 "App/ConnectionDiscovery.swift",
+                "App/QuickConnectController.swift",
+                "App/TargetConfigWindow.swift",
                 "Terminal/TerminalView.swift",
                 "Terminal/TerminalManager.swift",
                 "UI/TabBar.swift",

@@ -285,6 +285,44 @@ final class CoreBridge {
         self.handle = handle
     }
 
+    /// 一步建连：支持指定起始目录（本地/远程 shell）与 tmux-ssh alias。
+    /// - `backendType`: `"local"` / `"tmux"` / `"tmux-ssh"` / `"daemon"`
+    /// - `socket`: tmux `-L` socket 名（可选）
+    /// - `session`: session 名（可选；tmux 有 name → attach，无 → 新建）
+    /// - `sshAlias`: tmux-ssh 的 `~/.ssh/config` Host 名（可选）
+    /// - `startDirectory`: 起始工作目录（本地 shell / tmux 新建用）
+    static func connect(
+        backendType: String,
+        socket: String? = nil,
+        session: String? = nil,
+        sshAlias: String? = nil,
+        startDirectory: String? = nil
+    ) throws -> CoreBridge {
+        let normalized = backendType.lowercased()
+        let handle = normalized.withCString { btPtr in
+            Self.withOptionalCString(socket) { sockPtr in
+                Self.withOptionalCString(session) { sessPtr in
+                    Self.withOptionalCString(sshAlias) { aliasPtr in
+                        Self.withOptionalCString(startDirectory) { dirPtr in
+                            muxterm_new_connect(btPtr, sockPtr, sessPtr, aliasPtr, dirPtr)
+                        }
+                    }
+                }
+            }
+        }
+        guard let handle else {
+            throw BridgeError.createFailed
+        }
+        let rc = muxterm_connect(handle)
+        guard rc == 0 else {
+            muxterm_free(handle)
+            throw BridgeError.connectFailed(rc)
+        }
+        let bridge = try CoreBridge()
+        bridge.handle = handle
+        return bridge
+    }
+
     deinit {
         shutdownAndFree()
     }

@@ -80,6 +80,10 @@ struct CLayoutNode {
 // ── 生命周期 ──
 struct MuxtermHandle;
 struct MuxtermHandle* muxterm_new(const char* backend_type, const char* socket, const char* session);
+// 一步建连：支持 tmux-ssh（需要 alias）与本地/远程 shell 指定起始目录。
+struct MuxtermHandle* muxterm_new_connect(
+    const char* backend_type, const char* socket, const char* session,
+    const char* ssh_alias, const char* start_directory);
 void muxterm_free(struct MuxtermHandle* h);
 int muxterm_connect(struct MuxtermHandle* h);
 int muxterm_shutdown(struct MuxtermHandle* h);

@@ -177,6 +177,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prevPane.target = windowController
         viewMenu.addItem(prevPane)
 
+        let quickConnectItem = NSMenuItem(
+            title: "Quick Connect",
+            action: #selector(MainWindowController.openQuickConnect),
+            keyEquivalent: "p"
+        )
+        quickConnectItem.keyEquivalentModifierMask = .command
+        quickConnectItem.target = windowController
+        viewMenu.addItem(quickConnectItem)
+
         let commandPalette = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuCommandPalette),
             action: #selector(MainWindowController.openCommandPalette),

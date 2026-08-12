@@ -76,6 +76,11 @@ final class KeyBindingsTests: XCTestCase {
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "p")),
             .commandPalette
         )
+        // Cmd-P → QuickConnect（Recent + Project 面板）。
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "p")),
+            .quickConnect
+        )
     }
 }
 
@@ -314,5 +319,80 @@ final class TerminalQueryReplyTests: XCTestCase {
     func testDataPreservesReplyBytes() {
         let bytes = TerminalQueryReply.oscDynamicColor(code: 10, hex: "123456")
         XCTAssertEqual(TerminalQueryReply.data(bytes), Data(bytes))
+    }
+}
+
+final class QuickConnectModelTests: XCTestCase {
+    func testDefaultNameUsesPathBasename() {
+        XCTAssertEqual(QuickConnect.defaultName(for: "/home/wlz/Developer/self/muxterm"), "muxterm")
+        XCTAssertEqual(QuickConnect.defaultName(for: "/Users/me/project"), "project")
+    }
+
+    func testDefaultNameFallbackForEmptyOrRoot() {
+        XCTAssertEqual(QuickConnect.defaultName(for: ""), "workspace")
+        XCTAssertEqual(QuickConnect.defaultName(for: "  "), "workspace")
+        XCTAssertEqual(QuickConnect.defaultName(for: "/"), "workspace")
+    }
+
+    func testSubtitleShowsRuntimeAtTransport() {
+        let local = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
+        XCTAssertEqual(QuickConnect.subtitle(for: local), "tmux @ local")
+
+        let ssh = TargetConfig(name: "m", runtime: .shell, transport: .ssh(name: "ryzen"), path: "/x")
+        XCTAssertEqual(QuickConnect.subtitle(for: ssh), "shell @ ryzen")
+    }
+
+    func testShouldAttachTmuxWithNameOnly() {
+        let tmux = TargetConfig(name: "sess", runtime: .tmux, transport: .local, path: "/x")
+        XCTAssertTrue(QuickConnect.shouldAttach(existingName: "sess", config: tmux))
+
+        // shell runtime 不应 attach（由程序决定）
+        let shell = TargetConfig(name: "sess", runtime: .shell, transport: .local, path: "/x")
+        XCTAssertFalse(QuickConnect.shouldAttach(existingName: "sess", config: shell))
+    }
+}
+
+final class QuickConnectStoreTests: XCTestCase {
+    private func cfg(_ name: String, _ path: String, runtime: TargetRuntime = .tmux, transport: TargetTransport = .local) -> TargetConfig {
+        TargetConfig(name: name, runtime: runtime, transport: transport, path: path)
+    }
+
+    func testRecordRecentDedupesAndMovesToFront() {
+        let store = QuickConnectStore()
+        store.recordRecent(cfg("b", "/x/b"))
+        store.recordRecent(cfg("a", "/x/a"))
+        store.recordRecent(cfg("b", "/x/b")) // 去重，b 移到最前
+        XCTAssertEqual(store.recents.map { $0.name }, ["b", "a"])
+    }
+
+    func testRecentsBounded() {
+        let store = QuickConnectStore()
+        for i in 0..<(QuickConnectStore.maxRecent + 10) {
+            store.recordRecent(cfg("p\(i)", "/x/p\(i)"))
+        }
+        XCTAssertEqual(store.recents.count, QuickConnectStore.maxRecent)
+        // 最新在最前
+        XCTAssertEqual(store.recents.first?.name, "p\(QuickConnectStore.maxRecent + 9)")
+    }
+
+    func testUpsertProjectByUniqueName() {
+        let store = QuickConnectStore()
+        XCTAssertTrue(store.upsertProject(cfg("proj", "/x/proj")))
+        XCTAssertFalse(store.upsertProject(cfg("proj", "/x/proj2"))) // 同名更新
+        XCTAssertEqual(store.projects.count, 1)
+        XCTAssertEqual(store.projects.first?.path, "/x/proj2")
+    }
+
+    func testEncodeDecodeRoundTrip() {
+        let store = QuickConnectStore()
+        store.recordRecent(cfg("recent", "/x/r", transport: .ssh(name: "ryzen")))
+        store.upsertProject(cfg("proj", "/x/p", runtime: .shell))
+        let data = store.encode()
+        let store2 = QuickConnectStore()
+        store2.decode(data)
+        XCTAssertEqual(store2.recents, store.recents)
+        XCTAssertEqual(store2.projects, store.projects)
+        XCTAssertEqual(store2.recents.first?.transport, .ssh(name: "ryzen"))
+        XCTAssertEqual(store2.projects.first?.runtime, .shell)
     }
 }

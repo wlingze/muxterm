@@ -1,0 +1,71 @@
+import Foundation
+
+/// 快速连接目标的运行时（shell / tmux）。
+public enum TargetRuntime: String, Equatable, Sendable, CaseIterable {
+    case shell
+    case tmux
+
+    public var label: String { rawValue }
+}
+
+/// 连接传输（ssh 需要 name；local 不需要）。
+public enum TargetTransport: Equatable, Sendable {
+    case local
+    case ssh(name: String)
+
+    public var label: String {
+        switch self {
+        case .local: return "local"
+        case .ssh(let name): return name
+        }
+    }
+
+    public var isSSH: Bool {
+        if case .ssh = self { return true }
+        return false
+    }
+}
+
+/// 一个可快速连接的目标（Recent / Project 共用）。
+public struct TargetConfig: Equatable, Sendable {
+    public var name: String
+    public var runtime: TargetRuntime
+    public var transport: TargetTransport
+    public var path: String
+
+    public init(name: String, runtime: TargetRuntime, transport: TargetTransport, path: String) {
+        self.name = name
+        self.runtime = runtime
+        self.transport = transport
+        self.path = path
+    }
+}
+
+/// 快速连接目标的展示与派生逻辑（纯函数，便于单测）。
+public enum QuickConnect {
+    /// 从 path 派生默认 name：取路径最后一段目录名（最小目录）。
+    /// 根目录 / 空路径回退到 "workspace"。
+    public static func defaultName(for path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "workspace" }
+        let last = URL(fileURLWithPath: trimmed).lastPathComponent
+        // "/" 的 lastPathComponent 返回 "/"（根目录），也视为无最小目录。
+        if last.isEmpty || last == "/" { return "workspace" }
+        return last
+    }
+
+    /// 面板副标题（小字）：`runtime @ transport`。ssh transport 显示为名字。
+    public static func subtitle(for config: TargetConfig) -> String {
+        "\(config.runtime.label) @ \(config.transport.label)"
+    }
+
+    /// 判断该目标是否需要 tmux 按 name attach（tmux 且 name 非空）。
+    public static func shouldAttach(existingName: String?, config: TargetConfig) -> Bool {
+        config.runtime == .tmux && !config.name.isEmpty
+    }
+
+    /// 展示文本（搜索用）：name + 副标题 + path。
+    public static func searchText(for config: TargetConfig) -> String {
+        "\(config.name) \(subtitle(for: config)) \(config.path)".lowercased()
+    }
+}
