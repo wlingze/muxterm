@@ -349,9 +349,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 打开/编辑 project 配置窗口。
     private func editProject(_ config: TargetConfig?) {
-        let win = TargetConfigWindow(editing: config, owner: window)
+        // 配置窗口以 sheet 形式出现，先收起 Cmd-P 面板，避免遮盖。
+        quickConnect.dismiss()
+        let hosts: [SSHHostInfo]
+        switch discovery.sshHosts() {
+        case .success(let value):
+            hosts = value
+        case .failure:
+            hosts = []
+        }
+        let win = TargetConfigWindow(
+            editing: config,
+            owner: window,
+            store: quickConnectStore,
+            sshHosts: hosts
+        )
         win.onSave = { [weak self] saved in
             self?.quickConnectStore.upsertProject(saved)
+            // 保存后重新打开面板，方便继续连接/编辑。
+            self?.quickConnect.present()
+        }
+        win.onCancel = { [weak self] in
+            // 取消/关闭后恢复面板。
             self?.quickConnect.present()
         }
     }

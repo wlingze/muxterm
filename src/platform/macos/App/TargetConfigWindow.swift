@@ -3,33 +3,57 @@ import MuxtermChrome
 
 /// 目标配置窗口：runtime / transport / path / name。
 ///
-/// - runtime: shell / tmux（NSPopUpButton）
-/// - transport: local / ssh(name)（NSPopUpButton，ssh 时显示 name 输入框）
-/// - path: 起始目录（可 Browse）
-/// - name: 默认取 path 最小目录，可修改
-final class TargetConfigWindow: NSWindow {
+/// - runtime / transport：两个并列「卡片」单选，选中项高亮。
+/// - SSH name：可编辑下拉，选项来自 ~/.ssh/config Host alias。
+/// - path：可编辑下拉 + 逐步浏览；选择子目录后自动更新 name。
+/// - name：可编辑下拉（已有 project 名），path 变化时自动填充。
+final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     var onSave: ((TargetConfig) -> Void)?
+    /// 关闭时回调（用于重新显示 QuickConnect 面板）。
+    var onCancel: (() -> Void)?
 
-    private let runtimePopup = NSPopUpButton()
-    private let transportPopup = NSPopUpButton()
-    private let sshNameField = NSTextField()
-    private let pathField = NSTextField()
-    private let nameField = NSTextField()
+    private let store: QuickConnectStore
+    private let sshHosts: [SSHHostInfo]
+
+    private let runtimeStack = NSStackView()
+    private let transportStack = NSStackView()
+    private let sshNameCombo = NSComboBox()
+    private let pathCombo = NSComboBox()
+    private let upButton = NSButton(title: "↑ 上级", target: nil, action: nil)
+    private let nameCombo = NSComboBox()
     private let nameHint = NSTextField(labelWithString: "")
     private var editing: TargetConfig?
+    private var keyMonitor: Any?
+    private var isSaving = false
+    /// 用户是否手动改过 name；手动改过后 path 变化不再覆盖。
+    private var nameManuallyEdited = false
 
-    init(editing config: TargetConfig? = nil, owner: NSWindow?) {
+    private var runtime: TargetRuntime = .tmux
+    private var transport: TargetTransport = .local
+    /// 当前浏览路径（SSH 用远端路径，local 用本机路径）。
+    private var currentPath: String = "~"
+
+    init(
+        editing config: TargetConfig? = nil,
+        owner: NSWindow?,
+        store: QuickConnectStore,
+        sshHosts: [SSHHostInfo]
+    ) {
         self.editing = config
+        self.store = store
+        self.sshHosts = sshHosts
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         title = config == nil ? "New Project" : "Edit Project"
         isReleasedWhenClosed = false
+        delegate = self
         build()
         load(config)
+        installKeyMonitor()
         if let owner {
             owner.beginSheet(self)
         } else {
@@ -43,131 +67,378 @@ final class TargetConfigWindow: NSWindow {
         return nil
     }
 
+    deinit {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+    }
+
+    // MARK: - Build
+
     private func build() {
         guard let content = contentView else { return }
-        let root = NSGridView(views: [])
+
+        let root = NSStackView()
         root.translatesAutoresizingMaskIntoConstraints = false
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 14
+        root.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 16, right: 20)
 
-        let runtimeLabel = NSTextField(labelWithString: "Runtime")
-        runtimePopup.addItems(withTitles: TargetRuntime.allCases.map { $0.rawValue })
-        let runtimeRow = [runtimeLabel, runtimePopup]
+        // Runtime 并列选项
+        let runtimeLabel = sectionLabel("Runtime")
+        runtimeStack.orientation = .horizontal
+        runtimeStack.spacing = 10
+        for r in TargetRuntime.allCases {
+            let card = optionCard(title: r.rawValue, subtitle: r == .tmux ? "attach/create tmux" : "plain shell")
+            card.tag = r == .tmux ? 0 : 1
+            card.target = self
+            card.action = #selector(runtimeSelected(_:))
+            runtimeStack.addArrangedSubview(card)
+        }
 
-        let transportLabel = NSTextField(labelWithString: "Transport")
-        transportPopup.addItems(withTitles: ["local", "ssh"])
-        transportPopup.target = self
-        transportPopup.action = #selector(transportChanged)
-        let transportRow = [transportLabel, transportPopup]
+        // Transport 并列选项
+        let transportLabel = sectionLabel("Transport")
+        transportStack.orientation = .horizontal
+        transportStack.spacing = 10
+        let localCard = optionCard(title: "local", subtitle: "本机")
+        localCard.tag = 0
+        localCard.target = self
+        localCard.action = #selector(transportSelected(_:))
+        transportStack.addArrangedSubview(localCard)
+        let sshCard = optionCard(title: "ssh", subtitle: "SSH 远程")
+        sshCard.tag = 1
+        sshCard.target = self
+        sshCard.action = #selector(transportSelected(_:))
+        transportStack.addArrangedSubview(sshCard)
 
-        let sshLabel = NSTextField(labelWithString: "SSH name")
-        let sshRow = [sshLabel, sshNameField]
+        // SSH name（可编辑下拉）
+        let sshLabel = sectionLabel("SSH name")
+        sshNameCombo.placeholderString = "选择或输入 SSH Host"
+        sshNameCombo.completes = true
+        sshNameCombo.usesDataSource = false
+        sshNameCombo.addItems(withObjectValues: sshHosts.map { $0.alias })
+        sshNameCombo.delegate = self
+        sshNameCombo.isHidden = true
+        sshNameCombo.translatesAutoresizingMaskIntoConstraints = false
 
-        let pathLabel = NSTextField(labelWithString: "Path")
-        let browse = NSButton(title: "Browse…", target: self, action: #selector(browsePath))
-        let pathRow = [pathLabel, pathField, browse]
+        // Path（可编辑下拉 + 逐步浏览）
+        let pathLabel = sectionLabel("Path")
+        pathCombo.placeholderString = "~/... 或输入完整路径"
+        pathCombo.completes = true
+        pathCombo.usesDataSource = false
+        pathCombo.delegate = self
+        pathCombo.target = self
+        pathCombo.action = #selector(pathComboSelected)
+        pathCombo.translatesAutoresizingMaskIntoConstraints = false
 
-        let nameLabel = NSTextField(labelWithString: "Name")
+        upButton.target = self
+        upButton.action = #selector(goUp)
+        upButton.bezelStyle = .rounded
+
+        let pathRow = NSStackView(views: [pathCombo, upButton])
+        pathRow.orientation = .horizontal
+        pathRow.spacing = 8
+        pathRow.translatesAutoresizingMaskIntoConstraints = false
+
+        // Name（可编辑下拉）
+        let nameLabel = sectionLabel("Name")
+        nameCombo.placeholderString = "目标名"
+        nameCombo.completes = true
+        nameCombo.usesDataSource = false
+        nameCombo.addItems(withObjectValues: store.projects.map { $0.name })
+        nameCombo.delegate = self
+        nameCombo.translatesAutoresizingMaskIntoConstraints = false
         nameHint.font = NSFont.systemFont(ofSize: 10)
         nameHint.textColor = .secondaryLabelColor
-        let nameRow = [nameLabel, nameField]
+        nameHint.translatesAutoresizingMaskIntoConstraints = false
 
-        root.addRow(with: runtimeRow)
-        root.addRow(with: transportRow)
-        root.addRow(with: sshRow)
-        root.addRow(with: pathRow)
-        root.addRow(with: nameRow)
-        root.rowSpacing = 12
-        root.columnSpacing = 10
-
-        content.addSubview(root)
-        NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            root.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-        ])
+        root.addArrangedSubview(runtimeLabel)
+        root.addArrangedSubview(runtimeStack)
+        root.addArrangedSubview(transportLabel)
+        root.addArrangedSubview(transportStack)
+        root.addArrangedSubview(sshLabel)
+        root.addArrangedSubview(sshNameCombo)
+        root.addArrangedSubview(pathLabel)
+        root.addArrangedSubview(pathRow)
+        root.addArrangedSubview(nameLabel)
+        root.addArrangedSubview(nameCombo)
+        root.addArrangedSubview(nameHint)
 
         // 底部按钮
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelTapped))
         let save = NSButton(title: "Save", target: self, action: #selector(saveTapped))
         save.keyEquivalent = "\r"
         let buttonRow = NSStackView(views: [cancel, save])
-        buttonRow.translatesAutoresizingMaskIntoConstraints = false
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 10
-        content.addSubview(buttonRow)
+
+        root.addArrangedSubview(buttonRow)
+        content.addSubview(root)
         NSLayoutConstraint.activate([
-            buttonRow.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            buttonRow.topAnchor.constraint(equalTo: root.bottomAnchor, constant: 24),
+            root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            root.topAnchor.constraint(equalTo: content.topAnchor),
+            root.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+
+            sshNameCombo.widthAnchor.constraint(equalToConstant: 300),
+            pathCombo.widthAnchor.constraint(equalToConstant: 300),
+            nameCombo.widthAnchor.constraint(equalToConstant: 300),
         ])
     }
 
+    private func sectionLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    private func optionCard(title: String, subtitle: String) -> NSButton {
+        let button = NSButton(title: title, target: nil, action: nil)
+        button.setButtonType(.toggle)
+        button.bezelStyle = .rounded
+        button.controlSize = .large
+        button.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        button.toolTip = subtitle
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        return button
+    }
+
+    // MARK: - Load / state
+
     private func load(_ config: TargetConfig?) {
-        guard let config else {
-            // 默认 runtime=tmux, transport=local
-            runtimePopup.selectItem(withTitle: TargetRuntime.tmux.rawValue)
-            transportPopup.selectItem(withTitle: "local")
-            sshNameField.isHidden = true
-            updateNameHint()
-            return
+        if let config {
+            runtime = config.runtime
+            transport = config.transport
+            currentPath = config.path.isEmpty ? "~" : config.path
+            nameCombo.stringValue = config.name
+            nameManuallyEdited = true
+        } else {
+            runtime = .tmux
+            transport = .local
+            currentPath = "~"
+            nameCombo.stringValue = ""
+            nameManuallyEdited = false
         }
-        runtimePopup.selectItem(withTitle: config.runtime.rawValue)
-        switch config.transport {
-        case .local:
-            transportPopup.selectItem(withTitle: "local")
-            sshNameField.isHidden = true
-        case .ssh(let name):
-            transportPopup.selectItem(withTitle: "ssh")
-            sshNameField.stringValue = name
-            sshNameField.isHidden = false
-        }
-        pathField.stringValue = config.path
-        nameField.stringValue = config.name
+        updateRuntimeCards()
+        updateTransportCards()
+        updateSSHVisibility()
+        pathCombo.stringValue = currentPath
+        refreshPathSuggestions()
         updateNameHint()
     }
 
-    @objc private func transportChanged() {
-        let isSSH = transportPopup.titleOfSelectedItem == "ssh"
-        sshNameField.isHidden = !isSSH
+    private func updateRuntimeCards() {
+        for view in runtimeStack.arrangedSubviews {
+            guard let button = view as? NSButton else { continue }
+            let isTMUX = button.tag == 0
+            button.state = (runtime == .tmux) == isTMUX ? .on : .off
+        }
     }
 
-    @objc private func browsePath() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            self?.pathField.stringValue = url.path
-            // 默认 name = path 最小目录（若用户还没手改过）
-            if self?.nameField.stringValue.isEmpty == true
-                || self?.nameField.stringValue == QuickConnect.defaultName(for: self?.pathField.stringValue ?? "") {
-                self?.nameField.stringValue = QuickConnect.defaultName(for: url.path)
+    private func updateTransportCards() {
+        for view in transportStack.arrangedSubviews {
+            guard let button = view as? NSButton else { continue }
+            let isSSH = button.tag == 1
+            let selectedIsSSH: Bool
+            if case .ssh = transport { selectedIsSSH = true } else { selectedIsSSH = false }
+            button.state = selectedIsSSH == isSSH ? .on : .off
+        }
+    }
+
+    private func updateSSHVisibility() {
+        let isSSH: Bool
+        if case .ssh = transport { isSSH = true } else { isSSH = false }
+        sshNameCombo.isHidden = !isSSH
+        if isSSH {
+            // SSH 浏览从远端 home 开始
+            if currentPath == "~" || currentPath.isEmpty {
+                pathCombo.stringValue = "~"
+                currentPath = "~"
             }
-            self?.updateNameHint()
+            refreshPathSuggestions()
         }
     }
 
     private func updateNameHint() {
-        nameHint.stringValue = "默认: \(QuickConnect.defaultName(for: pathField.stringValue))"
+        nameHint.stringValue = "默认: \(QuickConnect.defaultName(for: currentPath))"
+    }
+
+    private func autoUpdateNameIfNeeded() {
+        guard !nameManuallyEdited else { return }
+        nameCombo.stringValue = QuickConnect.defaultName(for: currentPath)
+        updateNameHint()
+    }
+
+    private var currentSSHAlias: String? {
+        if case .ssh(let name) = transport {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return nil
+    }
+
+    // MARK: - Directory browsing
+
+    private func refreshPathSuggestions() {
+        guard !currentPath.isEmpty else { return }
+        let isSSH = currentSSHAlias != nil
+        let alias = currentSSHAlias
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                let entries: [CoreFsEntry]
+                if isSSH, let alias {
+                    entries = try CoreBridge.listDir(
+                        backendType: "ssh",
+                        target: alias,
+                        path: self.currentPath
+                    )
+                } else {
+                    entries = try CoreBridge.listDir(
+                        backendType: "local",
+                        path: self.currentPath
+                    )
+                }
+                let dirs = entries.filter { $0.is_dir }.map { $0.name }.sorted()
+                DispatchQueue.main.async {
+                    guard self.currentSSHAlias == (isSSH ? alias : nil) else { return }
+                    self.pathCombo.removeAllItems()
+                    self.pathCombo.addItems(withObjectValues: dirs)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.pathCombo.removeAllItems()
+                }
+            }
+        }
+    }
+
+    @objc private func pathComboSelected() {
+        let selected = pathCombo.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !selected.isEmpty else { return }
+        let joined: String
+        if currentPath == "~" || currentPath == "/" {
+            joined = currentPath == "/" ? "/" + selected : "~/\(selected)"
+        } else {
+            joined = "\(currentPath)/\(selected)"
+        }
+        currentPath = joined
+        pathCombo.stringValue = joined
+        autoUpdateNameIfNeeded()
+        refreshPathSuggestions()
+    }
+
+    @objc private func goUp() {
+        let trimmed = currentPath.trimmingCharacters(in: .whitespaces)
+        if trimmed == "~" || trimmed == "/" || trimmed.isEmpty {
+            return
+        }
+        let parent: String
+        if trimmed == "~" {
+            parent = "~"
+        } else if trimmed.hasPrefix("~/") {
+            let rest = String(trimmed.dropFirst(2))
+            let parts = rest.split(separator: "/", omittingEmptySubsequences: true)
+            parent = parts.count <= 1 ? "~" : "~/" + parts.dropLast().joined(separator: "/")
+        } else {
+            let url = URL(fileURLWithPath: trimmed).deletingLastPathComponent()
+            parent = url.path
+        }
+        currentPath = parent
+        pathCombo.stringValue = parent
+        autoUpdateNameIfNeeded()
+        refreshPathSuggestions()
+    }
+
+    // MARK: - Actions
+
+    @objc private func runtimeSelected(_ sender: NSButton) {
+        runtime = sender.tag == 0 ? .tmux : .shell
+        updateRuntimeCards()
+    }
+
+    @objc private func transportSelected(_ sender: NSButton) {
+        if sender.tag == 0 {
+            transport = .local
+        } else {
+            transport = .ssh(name: sshNameCombo.stringValue)
+        }
+        updateTransportCards()
+        updateSSHVisibility()
+        // transport 变化后默认 name 保持 path 派生
+        autoUpdateNameIfNeeded()
     }
 
     @objc private func cancelTapped() {
         close()
     }
 
-    @objc private func saveTapped() {
-        let runtime = TargetRuntime(rawValue: runtimePopup.titleOfSelectedItem ?? "tmux") ?? .tmux
-        let transport: TargetTransport
-        if transportPopup.titleOfSelectedItem == "ssh" {
-            transport = .ssh(name: sshNameField.stringValue.trimmingCharacters(in: .whitespaces))
-        } else {
-            transport = .local
+    func windowWillClose(_ notification: Notification) {
+        if !isSaving {
+            onCancel?()
         }
-        let path = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        var name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.isKeyWindow else { return event }
+            if event.keyCode == 53 { // Escape
+                self.close()
+                return nil
+            }
+            return event
+        }
+    }
+
+    // MARK: - NSComboBoxDelegate
+
+    func controlTextDidChange(_ obj: Notification) {
+        if let combo = obj.object as? NSComboBox {
+            if combo === pathCombo {
+                currentPath = combo.stringValue.trimmingCharacters(in: .whitespaces)
+                autoUpdateNameIfNeeded()
+            } else if combo === nameCombo {
+                nameManuallyEdited = true
+            } else if combo === sshNameCombo {
+                transport = .ssh(name: combo.stringValue)
+            }
+        }
+    }
+
+    func comboBoxSelectionDidChange(_ notification: Notification) {
+        guard let combo = notification.object as? NSComboBox else { return }
+        if combo === pathCombo {
+            pathComboSelected()
+        } else if combo === sshNameCombo {
+            transport = .ssh(name: combo.stringValue)
+            updateSSHVisibility()
+        }
+    }
+
+    // MARK: - Save
+
+    @objc private func saveTapped() {
+        let transportValue: TargetTransport
+        if case .ssh = transport {
+            let name = sshNameCombo.stringValue.trimmingCharacters(in: .whitespaces)
+            transportValue = .ssh(name: name)
+        } else {
+            transportValue = .local
+        }
+        var path = currentPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if path.isEmpty {
+            path = "~"
+        }
+        var name = nameCombo.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty {
             name = QuickConnect.defaultName(for: path)
         }
-        let config = TargetConfig(name: name, runtime: runtime, transport: transport, path: path)
+        let config = TargetConfig(name: name, runtime: runtime, transport: transportValue, path: path)
+        isSaving = true
         onSave?(config)
         close()
     }
