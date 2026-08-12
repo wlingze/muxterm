@@ -143,23 +143,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuView))
         viewMenuItem.submenu = viewMenu
 
-        let splitH = NSMenuItem(
-            title: MuxtermI18n.shared.tr(.menuSplitHorizontal),
-            action: #selector(MainWindowController.splitHorizontal),
-            keyEquivalent: "d"
-        )
-        splitH.keyEquivalentModifierMask = .command
-        splitH.target = windowController
-        viewMenu.addItem(splitH)
-
+        // Cmd+D = 上下（竖直），Cmd+Shift+D = 水平。
         let splitV = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuSplitVertical),
             action: #selector(MainWindowController.splitVertical),
             keyEquivalent: "d"
         )
-        splitV.keyEquivalentModifierMask = [.command, .shift]
+        splitV.keyEquivalentModifierMask = .command
         splitV.target = windowController
         viewMenu.addItem(splitV)
+
+        let splitH = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuSplitHorizontal),
+            action: #selector(MainWindowController.splitHorizontal),
+            keyEquivalent: "d"
+        )
+        splitH.keyEquivalentModifierMask = [.command, .shift]
+        splitH.target = windowController
+        viewMenu.addItem(splitH)
 
         let nextPane = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuNextPane),

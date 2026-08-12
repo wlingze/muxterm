@@ -47,9 +47,9 @@ public enum KeyBindings {
         if chord.command, !chord.shift, !chord.option, key == "t" {
             return .newTab
         }
-        // Cmd+D 水平 / Cmd+Shift+D 竖直
+        // Cmd+D 上下（竖直）/ Cmd+Shift+D 水平
         if chord.command, !chord.option, key == "d" {
-            return chord.shift ? .splitVertical : .splitHorizontal
+            return chord.shift ? .splitHorizontal : .splitVertical
         }
         // Cmd+W 关窗口
         if chord.command, !chord.shift, !chord.option, key == "w" {

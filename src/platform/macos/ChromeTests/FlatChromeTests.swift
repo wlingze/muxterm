@@ -61,10 +61,10 @@ final class KeyBindingsTests: XCTestCase {
 
     func testCommonCmdShortcutsUnchanged() {
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "t")), .newTab)
-        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "d")), .splitHorizontal)
+        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "d")), .splitVertical)
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "d")),
-            .splitVertical
+            .splitHorizontal
         )
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "w")), .closeWindow)
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "2")), .switchTab(2))
