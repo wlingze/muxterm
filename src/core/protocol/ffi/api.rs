@@ -1166,16 +1166,36 @@ mod tests {
             let mut buf = [CStateChange::default(); 32];
             let _ = muxterm_poll_events(h, buf.as_mut_ptr(), 32);
 
+            // 等初始 pane 就绪并取真实 pane id（不能硬编码 1：并发跑时
+            // local backend 的 pane id 不保证是 1）。
+            let mut tabs = [CTab {
+                id: 0,
+                name: ptr::null(),
+                is_active: 0,
+            }; 8];
+            let ntabs = muxterm_get_tabs(h, tabs.as_mut_ptr(), 8);
+            assert!(ntabs >= 1, "应有至少 1 个 tab: {ntabs}");
+            let tab_id = tabs[0].id;
+            let mut panes = [CPane {
+                id: 0,
+                cols: 0,
+                rows: 0,
+                is_active: 0,
+            }; 8];
+            let npanes = muxterm_get_panes(h, tab_id, panes.as_mut_ptr(), 8);
+            assert!(npanes >= 1, "应有 pane: {npanes}");
+            let pane = panes[0].id;
+
             // 写入远超过 256 字节的输出，尾部带唯一标记
             let msg = b"yes A | head -c 600; echo ZZZEND\n";
-            assert_eq!(muxterm_send_input(h, 1, msg.as_ptr(), msg.len()), 0);
+            assert_eq!(muxterm_send_input(h, pane, msg.as_ptr(), msg.len()), 0);
 
             // 轮询直到输出到达
             let mut out = [0u8; 256];
             let mut found = false;
-            for _ in 0..100 {
+            for _ in 0..250 {
                 std::thread::sleep(std::time::Duration::from_millis(20));
-                let n = muxterm_get_pane_output(h, 1, out.as_mut_ptr(), out.len());
+                let n = muxterm_get_pane_output(h, pane, out.as_mut_ptr(), out.len());
                 if n > 0 && out[..n as usize].windows(6).any(|w| w == b"ZZZEND") {
                     found = true;
                     break;
