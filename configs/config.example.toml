@@ -1,5 +1,9 @@
 # Muxterm 配置示例（Alacritty 风格）
 # 复制到 ~/.config/muxterm/config.toml 即可生效。
+#
+# QuickConnect 的 projects 单独存于同目录 quickconnect.toml
+# （格式见 configs/quickconnect.example.toml），应用自动读写。
+# recents 不落盘：由连接池在运行时派生（最近打开的 warm 连接）。
 
 # 字体
 [font]

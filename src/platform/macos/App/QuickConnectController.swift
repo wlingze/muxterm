@@ -4,6 +4,7 @@ import MuxtermChrome
 /// QuickConnect 面板：Recent + Project 快速连接。
 ///
 /// 每个目标一行，主行 name + 小标记（Recent / Project，可同时显示），
+/// 当前连接所在行用颜色高亮（不额外加 tag）。
 /// 副行 `runtime @ transport`（ssh 显示名字），path 在第二行。
 /// 上下选择，回车连接；双击 project 行编辑。Cmd-P 打开。
 final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
@@ -12,6 +13,8 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     var onConnect: ((TargetConfig) -> Void)?
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
+    /// 当前前台连接的目标；所在行会用颜色高亮。
+    var currentConfig: TargetConfig?
 
     private let store: QuickConnectStore
     private let input = NSSearchField()
@@ -85,10 +88,17 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
 
     private func reload() {
         // 前 5 条 Recent（最新在前），再补 Project 独有的；按唯一 ID 去重。
+        let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
         var items: [QuickConnectItem] = QuickConnect.entries(
             recents: store.recents,
             projects: store.projects
-        ).map { .target($0.config, badges: $0.badges) }
+        ).map { entry in
+            .target(
+                entry.config,
+                badges: entry.badges,
+                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config)
+            )
+        }
         items.append(.newProject)
         allItems = items
         applyFilter()
@@ -179,7 +189,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
             ? allItems
             : allItems.filter { item in
                 switch item {
-                case .target(let c, _): return QuickConnect.searchText(for: c).contains(query)
+                case .target(let c, _, _): return QuickConnect.searchText(for: c).contains(query)
                 case .newProject: return "new project 新建".contains(query)
                 }
             }
@@ -202,7 +212,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     private func activateSelected() {
         guard table.selectedRow >= 0, table.selectedRow < visibleItems.count else { return }
         switch visibleItems[table.selectedRow] {
-        case .target(let config, _):
+        case .target(let config, _, _):
             onConnect?(config)
         case .newProject:
             onNewProject?()
@@ -224,12 +234,13 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = visibleItems[row]
         switch item {
-        case .target(let config, let badges):
+        case .target(let config, let badges, let isCurrent):
             let id = NSUserInterfaceItemIdentifier("QuickTarget")
             let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                 ?? QuickTargetCellView(identifier: id)
             cell.config = config
             cell.badges = badges
+            cell.isCurrent = isCurrent
             return cell
         case .newProject:
             let id = NSUserInterfaceItemIdentifier("QuickNew")
@@ -251,7 +262,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
         let row = table.clickedRow
         guard row >= 0, row < visibleItems.count else { return }
         switch visibleItems[row] {
-        case .target(let config, _):
+        case .target(let config, _, _):
             onEditProject?(config)
         default:
             activateSelected()
@@ -261,7 +272,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
 
 /// 面板条目：目标（带标记）/ 新建入口。
 private enum QuickConnectItem {
-    case target(TargetConfig, badges: [QuickBadge])
+    case target(TargetConfig, badges: [QuickBadge], isCurrent: Bool)
     case newProject
 }
 
@@ -278,6 +289,11 @@ private final class QuickTargetCellView: NSTableCellView {
 
     var badges: [QuickBadge] = [] {
         didSet { updateLayout() }
+    }
+
+    /// 当前连接：整行用主题色淡底高亮。
+    var isCurrent = false {
+        didSet { updateHighlight() }
     }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -348,5 +364,13 @@ private final class QuickTargetCellView: NSTableCellView {
             label.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
             badgeStack.addArrangedSubview(label)
         }
+        updateHighlight()
+    }
+
+    private func updateHighlight() {
+        wantsLayer = true
+        layer?.backgroundColor = isCurrent
+            ? NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+            : NSColor.clear.cgColor
     }
 }

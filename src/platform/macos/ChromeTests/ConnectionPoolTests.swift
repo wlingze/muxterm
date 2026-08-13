@@ -255,4 +255,51 @@ final class ConnectionPoolTests: XCTestCase {
         XCTAssertEqual(slotA.pollCount, 1)
         XCTAssertEqual(slotB.pollCount, 1)
     }
+
+    func testRecentTargetConfigsFromPoolSortedByLastUsed() {
+        let pool = makePool(maxSlots: 5)
+        now = 100
+        let keyA = makeKey(session: "a", path: "/x/a", runtime: "shell")
+        _ = pool.acquire(key: keyA) { [self] _ in createSlot(keyA) }
+        pool.release(key: keyA)
+
+        now = 200
+        let keyB = makeKey(
+            session: "b", path: "/x/b", transport: "ssh", alias: "ryzen", runtime: "tmux"
+        )
+        _ = pool.acquire(key: keyB) { [self] _ in createSlot(keyB) }
+
+        let recents = pool.recentTargetConfigs(limit: 10)
+        XCTAssertEqual(recents.map(\.name), ["b", "a"])
+        XCTAssertEqual(recents.first?.runtime, .tmux)
+        XCTAssertEqual(recents.first?.transport, .ssh(name: "ryzen"))
+        XCTAssertEqual(recents.last?.runtime, .shell)
+        XCTAssertEqual(recents.last?.path, "/x/a")
+    }
+
+    func testCurrentTargetConfigMapsActiveKey() {
+        let pool = makePool(maxSlots: 3)
+        let key = makeKey(
+            session: "yak", path: "/x/yak", transport: "ssh", alias: "ryzen", runtime: "tmux"
+        )
+        _ = pool.acquire(key: key) { [self] _ in createSlot(key) }
+        XCTAssertEqual(pool.currentTargetConfig?.name, "yak")
+        XCTAssertEqual(pool.currentTargetConfig?.transport, .ssh(name: "ryzen"))
+
+        pool.release(key: key)
+        XCTAssertNil(pool.currentTargetConfig)
+    }
+
+    func testConnectionKeyTargetConfigUsesSessionNameOrPathBasename() {
+        let tmux = makeKey(session: "sess", path: "/x/y", transport: "ssh", alias: "ryzen")
+        let cfg = tmux.targetConfig
+        XCTAssertEqual(cfg.name, "sess")
+        XCTAssertEqual(cfg.runtime, .tmux)
+        XCTAssertEqual(cfg.transport, .ssh(name: "ryzen"))
+
+        let shell = makeKey(session: "", path: "/home/me/proj", runtime: "shell")
+        XCTAssertEqual(shell.targetConfig.name, "proj")
+        XCTAssertEqual(shell.targetConfig.runtime, .shell)
+        XCTAssertEqual(shell.targetConfig.transport, .local)
+    }
 }

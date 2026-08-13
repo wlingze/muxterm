@@ -27,6 +27,21 @@ public struct ConnectionKey: Hashable, Sendable {
     }
 }
 
+/// 连接池 key → QuickConnect 目标：tmux 用 session 名，shell 用路径目录名。
+public extension ConnectionKey {
+    var targetConfig: TargetConfig {
+        let name = session.isEmpty ? QuickConnect.defaultName(for: path) : session
+        let runtime = TargetRuntime(rawValue: runtime) ?? .tmux
+        let transport: TargetTransport
+        if self.transport == "ssh", let alias {
+            transport = .ssh(name: alias)
+        } else {
+            transport = .local
+        }
+        return TargetConfig(name: name, runtime: runtime, transport: transport, path: path)
+    }
+}
+
 public enum ConnectionLifecycle: Equatable, Sendable {
     case active
     case background
@@ -77,6 +92,20 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
     }
 
     public var slotCount: Int { slots.count }
+
+    /// 最近打开的目标（按 lastUsedAt 倒序），供 QuickConnect 的 Recent 列表。
+    public func recentTargetConfigs(limit: Int = 5) -> [TargetConfig] {
+        slots.values
+            .filter { $0.lifecycle != .evicting }
+            .sorted { $0.lastUsedAt > $1.lastUsedAt }
+            .prefix(limit)
+            .map { $0.key.targetConfig }
+    }
+
+    /// 当前前台连接对应的目标（用于 QuickConnect 行高亮）。
+    public var currentTargetConfig: TargetConfig? {
+        activeKey?.targetConfig
+    }
 
     /// 获取目标连接：已存在则复用并提升为 active；不存在则用 `create` 新建。
     /// 切换时旧 active 自动降为 background，不立即 shutdown。

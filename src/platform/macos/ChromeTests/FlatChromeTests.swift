@@ -616,10 +616,60 @@ final class QuickConnectStoreTests: XCTestCase {
         let data = store.encode()
         let store2 = QuickConnectStore()
         store2.decode(data)
-        XCTAssertEqual(store2.recents, store.recents)
+        // recents 不落盘：decode 后为空，运行时由连接池 replaceRecents 注入。
+        XCTAssertTrue(store2.recents.isEmpty)
         XCTAssertEqual(store2.projects, store.projects)
-        XCTAssertEqual(store2.recents.first?.transport, .ssh(name: "ryzen"))
         XCTAssertEqual(store2.projects.first?.runtime, .shell)
+    }
+
+    func testEncodePersistsProjectsOnly() {
+        let store = QuickConnectStore()
+        store.recordRecent(cfg("recent", "/x/r", transport: .ssh(name: "ryzen")))
+        store.upsertProject(cfg("proj", "/x/p", runtime: .shell, transport: .ssh(name: "ryzen")))
+        let text = String(data: store.encode(), encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("[[projects]]"))
+        XCTAssertFalse(text.contains("[[recents]]"))
+        XCTAssertTrue(text.contains("transport_name = \"ryzen\""))
+        XCTAssertFalse(text.contains("{"))
+    }
+
+    func testDecodeHandWrittenToml() {
+        let toml = """
+        # 手写示例
+        [[projects]]
+        name = "local"
+        runtime = "shell"
+        transport = "local"
+        path = "/tmp/project"
+        """
+        let store = QuickConnectStore()
+        store.decode(Data(toml.utf8))
+        XCTAssertTrue(store.recents.isEmpty)
+        XCTAssertEqual(store.projects.count, 1)
+        XCTAssertEqual(store.projects.first?.runtime, .shell)
+        XCTAssertEqual(store.projects.first?.path, "/tmp/project")
+    }
+
+    func testReplaceRecentsStaysInMemoryOnly() {
+        let store = QuickConnectStore()
+        store.replaceRecents([
+            cfg("a", "/x/a"),
+            cfg("b", "/x/b"),
+        ])
+        XCTAssertEqual(store.recents.map(\.name), ["a", "b"])
+        let text = String(data: store.encode(), encoding: .utf8) ?? ""
+        XCTAssertFalse(text.contains("[[recents]]"))
+    }
+
+    func testTomlEscapesQuotesAndBackslashes() {
+        let store = QuickConnectStore()
+        store.upsertProject(cfg("a\"b\\c", "/x/pa\"th\\n", transport: .ssh(name: "r\"y")))
+        let data = store.encode()
+        let store2 = QuickConnectStore()
+        store2.decode(data)
+        XCTAssertEqual(store2.projects, store.projects)
+        XCTAssertEqual(store2.projects.first?.name, "a\"b\\c")
+        XCTAssertEqual(store2.projects.first?.path, "/x/pa\"th\\n")
     }
 }
 

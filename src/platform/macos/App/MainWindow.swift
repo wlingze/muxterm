@@ -61,11 +61,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = content
         window.setAccessibilityIdentifier("muxterm.mainWindow")
 
-        // QuickConnect 持久化：存到 ~/.config/muxterm/quickconnect.json
+        // QuickConnect 持久化：存到 ~/.config/muxterm/quickconnect.toml（TOML，
+        // 与主 config.toml 同一目录，方便用户手改/备份）。
         let configDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/muxterm", isDirectory: true)
         quickConnectStore = QuickConnectStore(
-            fileURL: configDir.appendingPathComponent("quickconnect.json")
+            fileURL: configDir.appendingPathComponent("quickconnect.toml")
         )
         // 自定义快捷键：~/.config/muxterm/config.toml 的 [[keybindings]]
         if let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8) {
@@ -231,6 +232,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func openQuickConnect() {
         guard let quickConnect else { return }
+        // Recent 由连接池派生（最近打开且仍 warm 的连接）；当前连接用于行高亮。
+        quickConnect.currentConfig = connectionPool.currentTargetConfig
+        quickConnectStore.replaceRecents(connectionPool.recentTargetConfigs())
         if quickConnect.window?.isKeyWindow == true {
             quickConnect.dismiss()
         } else {
@@ -242,7 +246,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// shell runtime → 本地/远程 shell 在 path 启动。
     private func connect(config: TargetConfig) {
         quickConnect.dismiss()
-        quickConnectStore.recordRecent(config)
+        // recents 由连接池派生：连接成功后 pool.acquire 会更新最近列表。
         switch config.runtime {
         case .tmux:
             connectProject(config: config)

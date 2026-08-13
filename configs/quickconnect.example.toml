@@ -1,0 +1,18 @@
+# Muxterm QuickConnect 配置示例
+# 实际文件：~/.config/muxterm/quickconnect.toml（应用会自动读写）
+# recents 不落盘：由连接池（ConnectionPool）在运行时派生，显示最近打开的
+# warm 连接；这里只配置 projects（QuickConnect 面板「Edit Project」管理）。
+# projects：预设目标（QuickConnect 面板「Edit Project」管理）
+
+[[projects]]
+name = "muxterm"
+runtime = "shell"
+transport = "local"
+path = "~/Developer/self/muxterm"
+
+[[projects]]
+name = "server"
+runtime = "tmux"
+transport = "ssh"
+transport_name = "ryzen"
+path = "~/work"
