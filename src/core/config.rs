@@ -674,10 +674,9 @@ pub fn parse_theme_toml(raw: &str) -> Result<Theme> {
 }
 
 pub fn parse_hex(s: &str) -> Result<Rgb> {
-    let s = s
-        .trim()
-        .strip_prefix('#')
-        .ok_or_else(|| anyhow::anyhow!("颜色缺少 # 前缀: {s}"))?;
+    // 兼容 `#rrggbb` 与 `rrggbb` 两种写法：FFI 上报 `refresh-client -r` 时
+    // 传的是不带 `#` 的 hex，此前强制要求 `#` 导致上报静默失败。
+    let s = s.trim().strip_prefix('#').unwrap_or(s.trim());
     if s.len() != 6 {
         anyhow::bail!("颜色应为 6 位十六进制: {s}");
     }
@@ -903,7 +902,9 @@ key_path = "~/.ssh/id_rsa"
     fn parse_hex_valid_and_invalid() {
         assert_eq!(parse_hex("#000000").unwrap(), Rgb(0, 0, 0));
         assert_eq!(parse_hex("#ffffff").unwrap(), Rgb(255, 255, 255));
-        assert!(parse_hex("000000").is_err());
+        // FFI 上报颜色时可能不带 `#`，两种写法都接受。
+        assert_eq!(parse_hex("000000").unwrap(), Rgb(0, 0, 0));
+        assert_eq!(parse_hex("cdd6f4").unwrap(), Rgb(0xcd, 0xd6, 0xf4));
         assert!(parse_hex("#fff").is_err());
         assert!(parse_hex("#zz0000").is_err());
     }

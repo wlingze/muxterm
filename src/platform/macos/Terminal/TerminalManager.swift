@@ -171,6 +171,8 @@ final class TerminalManager: TerminalInputHandler {
         views.values.first?.themeHexColors()
     }
 
+    /// 强制把 SwiftTerm 模型行列同步成 tmux 报告的 pane 尺寸。
+    ///
     /// 把 GUI 根容器的 backing pixels 映射为 tmux client 字符格。
     private func syncClientSize(container: NSView, paneIds: Set<UInt32>) {
         guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {

@@ -125,6 +125,39 @@ final class TerminalMirrorPolicyTests: XCTestCase {
     }
 }
 
+final class MuxtermTerminalColorsTests: XCTestCase {
+    func testDefaultTerminalColorsAreLightOnDark() {
+        let fg = Int(MuxtermTerminalColors.foregroundHex, radix: 16) ?? 0
+        let bg = Int(MuxtermTerminalColors.backgroundHex, radix: 16) ?? 0
+        let fgLuminance = ((fg >> 16) & 0xff) + ((fg >> 8) & 0xff) + (fg & 0xff)
+        let bgLuminance = ((bg >> 16) & 0xff) + ((bg >> 8) & 0xff) + (bg & 0xff)
+        // 前景必须是浅色、背景是深色，否则 agent/codex 的深色输入框里
+        // 默认前景文字会黑字黑框看不见。
+        XCTAssertGreaterThan(fgLuminance, bgLuminance)
+        XCTAssertGreaterThan(fgLuminance, 300)
+        XCTAssertLessThan(bgLuminance, 200)
+    }
+
+    func testThemePaletteAndConfigParsing() {
+        XCTAssertEqual(
+            MuxtermTerminalColors.palette(forThemeName: nil).fg,
+            MuxtermTerminalColors.foregroundHex
+        )
+        let light = MuxtermTerminalColors.palette(forThemeName: "light")
+        XCTAssertEqual(light.fg, "000000")
+        XCTAssertEqual(light.bg, "ffffff")
+        let toml = """
+        [theme]
+        name = "light"
+
+        [[keybindings]]
+        key = "p"
+        """
+        XCTAssertEqual(MuxtermTerminalColors.themeName(from: toml), "light")
+        XCTAssertNil(MuxtermTerminalColors.themeName(from: "[[keybindings]]\nkey = \"p\""))
+    }
+}
+
 final class TerminalQueryDetectorTests: XCTestCase {
     private func bytes(_ s: String) -> [UInt8] {
         Array(s.utf8)

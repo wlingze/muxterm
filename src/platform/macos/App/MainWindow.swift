@@ -74,6 +74,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 自定义快捷键：~/.config/muxterm/config.toml 的 [[keybindings]]
         if let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8) {
             customKeybindings = KeyBindingsConfig.parse(toml: toml)
+            // 终端调色板跟随 [theme] name（默认深色，保证 agent/codex 深色
+            // 输入框里的默认前景文字可见）。
+            MuxtermTerminalColors.activePalette = MuxtermTerminalColors.palette(
+                forThemeName: MuxtermTerminalColors.themeName(from: toml)
+            )
         }
         super.init(window: window)
         window.delegate = self
@@ -934,12 +939,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         var outputSeen = false
         var uiStateChanged = false
+        var pendingOutputs: [(paneId: UInt32, data: Data)] = []
         for ev in events {
             if ev.isPaneClosed {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
                 terminalManager.removePane(ev.paneId)
             } else if ev.isPaneOutput {
-                terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
+                // 先收集，等布局/尺寸同步完再喂：直接拖窗口大小时，htop 的
+                // 新尺寸重绘帧可能和 %layout-change 同批到达，如果先喂帧、
+                // 后 resize 模型，画面会乱。
+                pendingOutputs.append((paneId: ev.paneId, data: ev.data))
                 outputSeen = true
             } else if StateEventPolicy.requiresLayoutReload(ev.type) {
                 uiStateChanged = true
@@ -979,6 +988,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         } else if outputSeen {
             content.statusBar.update(snapshot: lastSnapshot)
+            // 颜色上报只依赖 refreshUI 时，attach 后没有结构事件就永远不会
+            // 触发（日志里没有 refresh-client -r 的原因）。纯输出也要补报。
+            reportPaneColoursIfNeeded(lastSnapshot.panes)
+        }
+        // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
+        for item in pendingOutputs {
+            terminalManager.handleOutput(paneId: item.paneId, data: item.data)
         }
     }
 

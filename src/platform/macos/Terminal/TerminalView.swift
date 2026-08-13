@@ -25,6 +25,18 @@ final class MuxTerminalView: TerminalView {
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
     private var lastAccessibilityUpdate = Date.distantPast
     private static let accessibilityUpdateInterval: TimeInterval = 1.0
+    /// 渲染诊断输出：设置 `MUXTERM_DEBUG_RENDER=1` 后，把每帧 feed 的长度、
+    /// ESC/CR/LF 计数、模型尺寸与光标前后位置追加到
+    /// `~/.config/muxterm/ui-render.log`，用于定位 agent 输入框逐行堆叠。
+    private static let renderDebugURL: URL? = {
+        guard ProcessInfo.processInfo.environment["MUXTERM_DEBUG_RENDER"] != nil else {
+            return nil
+        }
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/muxterm", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("ui-render.log")
+    }()
     /// 上一次按像素驱动后的模型行列，用于检测窗口 resize 这一瞬间。
     private var lastModelCols = 0
     private var lastModelRows = 0
@@ -34,8 +46,10 @@ final class MuxTerminalView: TerminalView {
         super.init(frame: frame)
         terminalDelegate = self
         wantsLayer = true
-        nativeForegroundColor = NSColor.textColor
-        nativeBackgroundColor = NSColor.textBackgroundColor
+        // 固定深色主题：codex/cursor 的输入框是深色，默认前景必须是浅色，
+        // 否则黑字黑框看不见；同时也作为 OSC 10/11 上报给 tmux 的颜色。
+        nativeForegroundColor = Self.color(hex: MuxtermTerminalColors.activePalette.fg)
+        nativeBackgroundColor = Self.color(hex: MuxtermTerminalColors.activePalette.bg)
         // 关闭 SwiftTerm 的 mouse reporting 转发，保证鼠标点击/拖拽优先做文本
         // 选择（选中复制）。codex/htop 等应用启用 mouse 协议后，SwiftTerm 默认
         // 会把点击/拖拽当 mouse 序列发给程序，导致「选不中、一直闪烁」。需要
@@ -59,6 +73,7 @@ final class MuxTerminalView: TerminalView {
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
     func feedOutput(_ data: Data, isSnapshot: Bool = false) {
         guard !data.isEmpty else { return }
+        let cursorBefore = getTerminal().getCursorLocation()
         let bytes = [UInt8](data)
         // SwiftTerm 同步解析输出：查询应答经 `Terminal.sendResponse` 在 feed
         // 调用栈内同步发出。用这个标记把「解析 pane 输出产生的应答」与
@@ -67,6 +82,18 @@ final class MuxTerminalView: TerminalView {
         isFeedingRemoteOutput = true
         feed(byteArray: bytes[...])
         isFeedingRemoteOutput = false
+        if Self.renderDebugURL != nil {
+            let after = getTerminal().getCursorLocation()
+            let dims = getTerminal().getDims()
+            appendRenderDebug(
+                "pane=\(paneId) snapshot=\(isSnapshot) len=\(data.count) "
+                    + "esc=\(bytes.filter { $0 == 0x1b }.count) "
+                    + "cr=\(bytes.filter { $0 == 0x0d }.count) "
+                    + "lf=\(bytes.filter { $0 == 0x0a }.count) "
+                    + "dims=\(dims.cols)x\(dims.rows) "
+                    + "cursor=\(cursorBefore.x),\(cursorBefore.y)->\(after.x),\(after.y)"
+            )
+        }
         // AX 反映「当前屏幕」而不是 feed 历史：之前累积所有 feed 文本，
         // 输入/状态区的每一帧中间状态都会留在 AX 值里，看起来像逐帧堆叠。
         let now = Date()
@@ -79,6 +106,17 @@ final class MuxTerminalView: TerminalView {
         // resize 后会发出一连串纯擦除序列（每事件 1KB），逐事件全屏重绘
         // 会占满主线程（tab 快捷键失效、IMK mach port 报错）。
         needsDisplay = true
+    }
+
+    private func appendRenderDebug(_ line: String) {
+        guard let url = Self.renderDebugURL else { return }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        handle.seekToEndOfFile()
+        handle.write(Data((line + "\n").utf8))
+        try? handle.close()
     }
 
     private func updateAccessibilityOutput() {
@@ -110,6 +148,21 @@ final class MuxTerminalView: TerminalView {
         let g = Int((c.greenComponent * 255.0).rounded())
         let b = Int((c.blueComponent * 255.0).rounded())
         return String(format: "%02x%02x%02x", r, g, b)
+    }
+
+    private static func color(hex: String) -> NSColor {
+        let value = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard value.count == 6,
+              let rgb = UInt32(value, radix: 16)
+        else {
+            return NSColor.textColor
+        }
+        return NSColor(
+            srgbRed: CGFloat((rgb >> 16) & 0xff) / 255.0,
+            green: CGFloat((rgb >> 8) & 0xff) / 255.0,
+            blue: CGFloat(rgb & 0xff) / 255.0,
+            alpha: 1.0
+        )
     }
 
     /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列。

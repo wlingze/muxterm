@@ -43,6 +43,50 @@ public enum FlatChrome {
     }
 }
 
+/// Muxterm 终端默认外观颜色（深色主题，与 configs/themes/dark.toml 一致）。
+///
+/// codex / cursor agent 的输入框固定用深色背景，并把输入文字画成「默认前景色」；
+/// 终端必须上报浅色前景，文字才能在灰/黑输入框上清晰可见（与 iTerm 深色下的
+/// 渲染一致）。这套颜色同时作为 OSC 10/11 上报给 tmux 代答。
+public enum MuxtermTerminalColors {
+    /// 前景（默认文字）`#cdd6f4`。
+    public static let foregroundHex = "cdd6f4"
+    /// 背景 `#1e1e2e`。
+    public static let backgroundHex = "1e1e2e"
+    /// 当前生效调色板（默认深色；可在 config.toml `[theme] name` 切换）。
+    public static var activePalette: (fg: String, bg: String) = (foregroundHex, backgroundHex)
+
+    /// 根据 `[theme] name` 返回调色板；light 用黑字白底，其它/缺省用深色。
+    public static func palette(forThemeName name: String?) -> (fg: String, bg: String) {
+        switch name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "light":
+            return ("000000", "ffffff")
+        default:
+            return (foregroundHex, backgroundHex)
+        }
+    }
+
+    /// 从 config.toml 文本中读取 `[theme]` 下的 `name = "..."`。
+    public static func themeName(from toml: String) -> String? {
+        var inTheme = false
+        for rawLine in toml.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                inTheme = line == "[theme]"
+                continue
+            }
+            guard inTheme, let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            guard key == "name" else { continue }
+            let value = line[line.index(after: eq)...]
+                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            return value
+        }
+        return nil
+    }
+}
+
 /// tmux 控制模式的终端应答策略。
 ///
 /// tmux / daemon 代理拥有 pane 的 PTY 与终端协议，且 tmux 自己会代答

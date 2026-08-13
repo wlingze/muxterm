@@ -19,12 +19,26 @@ pub fn append_capped(buf: &mut Vec<u8>, data: &[u8], max: usize) {
     if data.len() >= max {
         buf.clear();
         buf.extend_from_slice(&data[data.len() - max..]);
+        align_to_line_start(buf);
         return;
     }
     buf.extend_from_slice(data);
     if buf.len() > max {
         let drop_n = buf.len() - max;
         buf.drain(..drop_n);
+        align_to_line_start(buf);
+    }
+}
+
+/// 丢弃前缀后，把缓冲起点推进到下一个完整换行之后。
+///
+/// `getPaneOutput` 拿到的「最近尾部」会作为前端终端的新快照；如果它从一条
+/// 输出行 / 转义序列中间开始，SwiftTerm 可能吞掉后续 `ESC[2K` / `ESC[1A` /
+/// SGR，表现为 agent 输入框逐行堆叠、颜色失效。从行边界开始能让快照尽可能
+/// 落在可解析的位置。缓冲内没有换行时保持原样（单行超长，无法更安全）。
+fn align_to_line_start(buf: &mut Vec<u8>) {
+    if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+        buf.drain(..=pos);
     }
 }
 
@@ -70,6 +84,35 @@ mod tests {
         assert_eq!(buf.len(), 5_000);
         // 尾部应是较新的字节
         assert_eq!(*buf.last().unwrap(), 99);
+    }
+
+    #[test]
+    fn append_capped_tail_starts_at_line_boundary() {
+        let mut buf = Vec::new();
+        // 先塞满无换行数据，再补一行完整输出，触发截断落在行中间。
+        for _ in 0..60 {
+            append_capped(&mut buf, b"0123456789", 100);
+        }
+        // 再追加一行以 \n 结尾的数据。
+        append_capped(&mut buf, b"tail-line\n", 100);
+        // 尾部保留；截断/对齐后不能超过 max+一行。
+        assert!(buf.len() <= 101, "len={}", buf.len());
+        // 起点要么是空，要么紧跟在某个换行之后（即不是半行中间）。
+        if !buf.is_empty() {
+            assert_eq!(buf[0], b't', "起点应落在完整行开头");
+        }
+    }
+
+    #[test]
+    fn append_capped_large_chunk_starts_at_line_boundary() {
+        let mut buf = Vec::new();
+        let mut chunk = Vec::new();
+        for i in 0..300 {
+            chunk.extend_from_slice(format!("line {i}\n").as_bytes());
+        }
+        append_capped(&mut buf, &chunk, 100);
+        assert!(buf.ends_with(b"line 299\n"), "应保留最新一行");
+        assert!(buf.len() <= 101, "允许略超一行但不应失控: {}", buf.len());
     }
 
     #[test]
