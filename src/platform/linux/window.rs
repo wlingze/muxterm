@@ -391,10 +391,7 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                         .unwrap_or((80, 24));
                     view.seed_snapshot(&out, cols, rows);
                 }
-                let replies = view.take_replies();
-                if !replies.is_empty() {
-                    let _ = s.bridge.send_input(ev.pane_id, &replies);
-                }
+                forward_parser_replies(s, ev.pane_id, view.as_ref());
             }
         }
         STATE_ACTIVE_TAB_CHANGED => {
@@ -446,10 +443,7 @@ fn refresh_ui(s: &mut UiState) {
                 if !view.is_seeded() {
                     let out = s.bridge.get_pane_output(pane.id);
                     view.seed_snapshot(&out, pane.cols, pane.rows);
-                    let replies = view.take_replies();
-                    if !replies.is_empty() {
-                        let _ = s.bridge.send_input(pane.id, &replies);
-                    }
+                    forward_parser_replies(s, pane.id, view.as_ref());
                 }
                 if pane.is_active {
                     s.active_pane = pane.id;
@@ -479,11 +473,25 @@ fn sync_pane_outputs(s: &mut UiState) {
             }
             let out = s.bridge.get_pane_output(pane.id);
             view.seed_snapshot(&out, pane.cols, pane.rows);
-            let replies = view.take_replies();
-            if !replies.is_empty() {
-                let _ = s.bridge.send_input(pane.id, &replies);
-            }
+            forward_parser_replies(s, pane.id, view.as_ref());
         }
+    }
+}
+
+fn forward_parser_replies(
+    s: &mut UiState,
+    pane_id: u32,
+    view: &crate::platform::linux::pane_view::PaneView,
+) {
+    // tmux/SSH 镜像模式由 refresh-client -r 代答 OSC/DA，不能把 VTE 解析器
+    // 应答写回 PTY，否则 `git lg` 一类查询会把 ESC 字面泄漏进输出。
+    if view.is_tmux_mirror() || s.uses_tmux {
+        let _ = view.take_replies();
+        return;
+    }
+    let replies = view.take_replies();
+    if !replies.is_empty() {
+        let _ = s.bridge.send_input(pane_id, &replies);
     }
 }
 
