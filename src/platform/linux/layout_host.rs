@@ -122,21 +122,23 @@ impl LayoutHost {
     }
 
     /// 运行期切换主题：所有已有 pane 的 VTE 调色板同步更新。
-    pub fn apply_theme(&self, theme: &Theme) {
+    pub fn apply_theme(&mut self, theme: &Theme) {
+        self.theme = theme.clone();
         for view in self.panes.values() {
             view.apply_theme(theme);
         }
     }
 
-    /// 运行期修改字号（所有已有 pane）。
-    pub fn set_font_size(&self, size: f32) {
-        for view in self.panes.values() {
-            view.set_font_size(size);
-        }
+    /// 运行期修改字号（所有已有 pane，保留 family）。
+    pub fn set_font_size(&mut self, size: f32) {
+        self.font.size = size;
+        let font = self.font.clone();
+        self.set_font(&font);
     }
 
     /// 运行期修改字体 family + size。
-    pub fn set_font(&self, font: &FontSettings) {
+    pub fn set_font(&mut self, font: &FontSettings) {
+        self.font = font.clone();
         for view in self.panes.values() {
             view.set_font(font);
         }
