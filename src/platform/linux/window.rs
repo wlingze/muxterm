@@ -7,20 +7,25 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{
-    Align, ApplicationWindow, Box, CssProvider, EventControllerKey, Label, Orientation, Window,
-};
+use gtk4::{ApplicationWindow, Box, CssProvider, EventControllerKey, Orientation, Window};
 use vte4::prelude::*;
 
 use crate::core::config::{Action, Config, Theme};
+use crate::platform::i18n::{self, Key};
 use crate::platform::linux::ffi_bridge::{tasks, BridgeEvent, CoreBridge};
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
-use crate::platform::linux::quickconnect::font::FontSettings;
+use crate::platform::linux::pane_view::rgb_hex;
+use crate::platform::linux::quickconnect::event_policy::StateEventPolicy;
+use crate::platform::linux::quickconnect::font::{FontSettings, Preferences};
+use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
+use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
+use crate::platform::linux::status_bar::StatusBar;
 use crate::platform::linux::tab_bar::TabBar;
 
 /// 主窗口。
@@ -36,14 +41,23 @@ struct UiState {
     uses_tmux: bool,
     /// 当前终端字体（config + 运行期偏好）。
     font: FontSettings,
+    /// config.toml 的字号，Reset 回到这里。
+    config_font_size: f32,
+    theme: Theme,
+    theme_name: String,
     tabs: TabBar,
     layout: LayoutHost,
-    status: Label,
+    status: StatusBar,
+    status_mode: StatusBarMode,
+    last_status_at: Instant,
+    status_interval: Duration,
     keymap: KeyMap,
     active_tab: u32,
     active_pane: u32,
     /// 最近一次同步给后端/PTY 的字符格尺寸，避免 16ms 轮询重复 resize。
     last_client_size: Option<(u16, u16)>,
+    tab_gate: TabSwitchGate,
+    preferences: Preferences,
 }
 
 impl AppWindow {
@@ -114,29 +128,39 @@ impl AppWindow {
             .build();
         root.add_css_class("muxterm-root");
 
-        let tabs = TabBar::new(cfg.ui.tab_bar_height);
-        let font = FontSettings {
+        let preferences = Preferences::load();
+        let theme_name = preferences
+            .theme
+            .clone()
+            .unwrap_or_else(|| cfg.theme.name.clone());
+        let theme = Theme::load(&theme_name).unwrap_or(theme);
+        let config_font_size = cfg.font.size;
+        let mut font = FontSettings {
             family: cfg.font.family.clone(),
             size: cfg.font.size,
         };
-        let layout = LayoutHost::new(theme, font.clone(), uses_tmux);
-        let status = Label::builder()
-            .label(crate::platform::i18n::tr(
-                crate::platform::i18n::Key::StatusConnected,
-            ))
-            .halign(Align::Start)
-            .hexpand(true)
-            .build();
-        status.add_css_class("status-bar");
+        if let Some(size) = preferences.font_size {
+            font.size = FontSettings::clamp_size(size);
+        }
+        let status_mode = preferences
+            .statusbar_mode
+            .as_deref()
+            .map(|m| StatusBarMode::from_toml(Some(m)))
+            .unwrap_or_else(|| StatusBarMode::from_toml(Some(&cfg.statusbar.mode)));
+
+        let tabs = TabBar::new(cfg.ui.tab_bar_height);
+        let layout = LayoutHost::new(theme.clone(), font.clone(), uses_tmux);
+        let status = StatusBar::new(status_mode, theme.clone());
+        status.container.add_css_class("status-bar");
 
         if cfg.ui.tab_bar_at_bottom() {
             root.append(&layout.root_box);
-            root.append(&status);
+            root.append(&status.container);
             root.append(&tabs.container);
         } else {
             root.append(&tabs.container);
             root.append(&layout.root_box);
-            root.append(&status);
+            root.append(&status.container);
         }
         window.set_child(Some(&root));
 
@@ -145,13 +169,23 @@ impl AppWindow {
             bridge,
             uses_tmux,
             font,
+            config_font_size,
+            theme,
+            theme_name,
             tabs,
             layout,
             status,
+            status_mode,
+            last_status_at: Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap_or_else(Instant::now),
+            status_interval: Duration::from_secs(1),
             keymap,
             active_tab: 0,
             active_pane: 0,
             last_client_size: None,
+            tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
+            preferences,
         }));
 
         // tab 点击
@@ -159,10 +193,20 @@ impl AppWindow {
             let st = state.clone();
             state.borrow().tabs.connect_activate(move |tab_id| {
                 let mut s = st.borrow_mut();
-                s.bridge.execute(tasks::switch_tab(tab_id));
-                s.active_tab = tab_id;
-                refresh_ui(&mut s);
+                request_switch_tab(&mut s, tab_id);
             });
+        }
+
+        // status bar 窗口按钮
+        {
+            let st = state.clone();
+            state
+                .borrow()
+                .status
+                .connect_window_activate(move |tab_id| {
+                    let mut s = st.borrow_mut();
+                    request_switch_tab(&mut s, tab_id);
+                });
         }
 
         // 快捷键
@@ -186,7 +230,6 @@ impl AppWindow {
         {
             let st = state.clone();
             window.connect_close_request(move |_| {
-                // Drop bridge via take
                 let _ = st.borrow_mut();
                 glib::Propagation::Proceed
             });
@@ -197,6 +240,8 @@ impl AppWindow {
             let mut s = state.borrow_mut();
             let _ = s.bridge.poll_events();
             refresh_ui(&mut s);
+            report_all_pane_colours(&s);
+            maybe_refresh_status(&mut s, true);
         }
 
         {
@@ -212,11 +257,16 @@ impl AppWindow {
                 };
                 let mut s = st.borrow_mut();
                 let events = s.bridge.poll_events();
+                let mut structural = false;
                 for ev in events {
+                    if StateEventPolicy::requires_layout_reload(ev.type_) {
+                        structural = true;
+                    }
                     dispatch_event(&mut s, &ev);
                 }
                 sync_pane_outputs(&mut s);
                 sync_window_size(&mut s);
+                maybe_refresh_status(&mut s, structural);
                 true
             });
         }
@@ -258,7 +308,7 @@ impl AppWindow {
 
     /// 测试用：状态栏文案。
     pub fn test_status_text(&self) -> String {
-        self._state.borrow().status.label().to_string()
+        self._state.borrow().status.plain_text()
     }
 
     /// 测试用：手动轮询一次核心事件并刷新输出（不等待 16ms 定时器）。
@@ -269,6 +319,7 @@ impl AppWindow {
             dispatch_event(&mut s, &ev);
         }
         sync_pane_outputs(&mut s);
+        maybe_refresh_status(&mut s, true);
     }
 }
 
@@ -295,8 +346,7 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
         Action::SwitchTabLast => {
             let tabs = s.bridge.get_tabs();
             if let Some(t) = tabs.last() {
-                s.bridge.execute(tasks::switch_tab(t.id));
-                s.active_tab = t.id;
+                request_switch_tab(s, t.id);
             }
         }
         Action::SwitchPaneNext => {
@@ -306,71 +356,209 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
             s.bridge.execute(tasks::prev_pane());
         }
         Action::CommandPalette => {
-            // 命令面板回调在 GTK 主线程执行；语言选择会更新当前进程 catalog，
-            // 后续所有新建控件都会直接使用新语言。
-            let parent = window.clone();
-            let callback_parent = parent.clone();
-            let callback_window = parent.clone();
-            let callback_state = state.clone();
-            let status = s.status.clone();
-            let pane_count = s.bridge.get_panes(s.active_tab).len();
-            let uses_tmux = s.uses_tmux;
-            crate::platform::linux::command_palette::show_for_backend(
-                &parent,
-                uses_tmux,
-                move |id| {
-                    if id == "language" {
-                        let language_parent = callback_parent.clone();
-                        let status = status.clone();
-                        crate::platform::linux::command_palette::show_language(
-                            &language_parent,
-                            move |language| {
-                                crate::platform::i18n::set_language(language);
-                                set_status_summary(&status, pane_count);
-                            },
-                        );
-                    } else if id == crate::platform::linux::command_palette::TMUX_DETACH_COMMAND
-                        && uses_tmux
-                    {
-                        let rc = callback_state.borrow().bridge.detach();
-                        if rc == 0 {
-                            // Task::Detach 已经由 core 发送 detach-client；关闭
-                            // GTK client 只负责回收窗口和 bridge handle。
-                            callback_window.close();
-                        } else {
-                            status.set_label(&format!(
-                                "{}: {}",
-                                crate::platform::i18n::tr(crate::platform::i18n::Key::StatusError),
-                                crate::platform::i18n::tr(
-                                    crate::platform::i18n::Key::ErrorCommandFailed
-                                )
-                            ));
-                        }
-                    }
-                },
-            );
+            open_command_palette(s, window, state);
             return;
         }
         Action::Search | Action::Unknown => {}
-        // 以下动作由后续 QuickConnect/主题/字体/全屏接线处理；先保持编译通过。
-        Action::QuickConnect
-        | Action::Quit
-        | Action::IncreaseFontSize
-        | Action::DecreaseFontSize
-        | Action::ResetFontSize
-        | Action::TogglePaneFullscreen => {
+        Action::QuickConnect => {
+            // B1 接线 QuickConnect 面板。
             return;
         }
+        Action::Quit => {
+            window.close();
+            return;
+        }
+        Action::IncreaseFontSize => adjust_font(s, 1),
+        Action::DecreaseFontSize => adjust_font(s, -1),
+        Action::ResetFontSize => reset_font(s),
+        Action::TogglePaneFullscreen => toggle_fullscreen(s),
     }
     refresh_ui(s);
+}
+
+fn open_command_palette(s: &UiState, window: &Window, state: &Rc<RefCell<UiState>>) {
+    let parent = window.clone();
+    let callback_parent = parent.clone();
+    let callback_window = parent.clone();
+    let callback_state = state.clone();
+    let uses_tmux = s.uses_tmux;
+    crate::platform::linux::command_palette::show_for_backend(&parent, uses_tmux, move |id| {
+        run_palette_command(&callback_state, &callback_window, &callback_parent, id);
+    });
+}
+
+fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &Window, id: &str) {
+    match id {
+        "language" => {
+            let language_parent = parent.clone();
+            let callback_state = state.clone();
+            crate::platform::linux::command_palette::show_language(&language_parent, move |_| {
+                let mut s = callback_state.borrow_mut();
+                maybe_refresh_status(&mut s, true);
+            });
+        }
+        "tmux_detach" => {
+            let rc = state.borrow().bridge.detach();
+            if rc == 0 {
+                window.close();
+            }
+        }
+        "theme" => {
+            let mut s = state.borrow_mut();
+            toggle_theme(&mut s);
+        }
+        "statusbar_mode" => {
+            let mut s = state.borrow_mut();
+            toggle_status_mode(&mut s);
+        }
+        "toggle_pane_fullscreen" => {
+            let mut s = state.borrow_mut();
+            toggle_fullscreen(&mut s);
+            refresh_ui(&mut s);
+        }
+        "increase_font_size" => {
+            let mut s = state.borrow_mut();
+            adjust_font(&mut s, 1);
+        }
+        "decrease_font_size" => {
+            let mut s = state.borrow_mut();
+            adjust_font(&mut s, -1);
+        }
+        "reset_font_size" => {
+            let mut s = state.borrow_mut();
+            reset_font(&mut s);
+        }
+        "quit" => window.close(),
+        "new_tab" | "new_window" => {
+            let mut s = state.borrow_mut();
+            s.bridge.execute(tasks::new_tab());
+            refresh_ui(&mut s);
+        }
+        "new_pane" => {
+            let mut s = state.borrow_mut();
+            s.bridge.execute(tasks::split_h(s.active_pane));
+            refresh_ui(&mut s);
+        }
+        "new_pane_vertical" => {
+            let mut s = state.borrow_mut();
+            s.bridge.execute(tasks::split_v(s.active_pane));
+            refresh_ui(&mut s);
+        }
+        "close_pane" => {
+            let mut s = state.borrow_mut();
+            s.bridge.execute(tasks::close_pane(s.active_pane));
+            refresh_ui(&mut s);
+        }
+        "close_tab" => {
+            let mut s = state.borrow_mut();
+            s.bridge.execute(tasks::close_tab(s.active_tab));
+            refresh_ui(&mut s);
+        }
+        "close_window" => window.close(),
+        "switch_pane_next" => {
+            let mut s = state.borrow_mut();
+            s.bridge.execute(tasks::next_pane());
+            refresh_ui(&mut s);
+        }
+        "switch_pane_prev" => {
+            let mut s = state.borrow_mut();
+            s.bridge.execute(tasks::prev_pane());
+            refresh_ui(&mut s);
+        }
+        id if id.starts_with("switch_tab_") => {
+            if let Ok(n) = id.trim_start_matches("switch_tab_").parse::<usize>() {
+                let mut s = state.borrow_mut();
+                switch_tab_n(&mut s, n);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn toggle_fullscreen(s: &mut UiState) {
+    let pane = s.active_pane;
+    if s.uses_tmux {
+        s.bridge.execute(tasks::toggle_pane_fullscreen(pane));
+    } else {
+        let next = match s.layout.fullscreen_pane() {
+            Some(id) if id == pane => None,
+            _ => Some(pane),
+        };
+        s.layout.set_fullscreen_pane(next);
+    }
+}
+
+fn adjust_font(s: &mut UiState, direction: i32) {
+    let next = FontSettings::zoomed(s.font.size, direction);
+    if (next - s.font.size).abs() < f32::EPSILON {
+        return;
+    }
+    s.font.size = next;
+    s.layout.set_font_size(next);
+    s.preferences.font_size = Some(next);
+    s.preferences.save();
+}
+
+fn reset_font(s: &mut UiState) {
+    s.font.size = s.config_font_size;
+    let font = s.font.clone();
+    s.layout.set_font(&font);
+    s.preferences.font_size = None;
+    s.preferences.save();
+}
+
+fn toggle_theme(s: &mut UiState) {
+    let next_name = if s.theme_name == "dark" {
+        "light"
+    } else {
+        "dark"
+    };
+    let Ok(theme) = Theme::load(next_name) else {
+        return;
+    };
+    s.theme_name = next_name.to_string();
+    s.theme = theme.clone();
+    s.layout.apply_theme(&theme);
+    s.status.apply_theme(&theme);
+    s.preferences.theme = Some(next_name.to_string());
+    s.preferences.save();
+    report_all_pane_colours(s);
+}
+
+fn toggle_status_mode(s: &mut UiState) {
+    let next = match s.status_mode {
+        StatusBarMode::Tmux => StatusBarMode::Theme,
+        StatusBarMode::Theme => StatusBarMode::Tmux,
+    };
+    s.status_mode = next;
+    s.status.set_mode(next);
+    s.preferences.statusbar_mode = Some(next.as_str().to_string());
+    s.preferences.save();
+    maybe_refresh_status(s, true);
+}
+
+fn report_all_pane_colours(s: &UiState) {
+    if !s.uses_tmux {
+        return;
+    }
+    let fg = rgb_hex(s.theme.foreground);
+    let bg = rgb_hex(s.theme.background);
+    let _ = s.bridge.report_all_pane_colours(&fg, &bg);
 }
 
 fn switch_tab_n(s: &mut UiState, n: usize) {
     let tabs = s.bridge.get_tabs();
     if let Some(t) = tabs.get(n.saturating_sub(1)) {
-        s.bridge.execute(tasks::switch_tab(t.id));
-        s.active_tab = t.id;
+        request_switch_tab(s, t.id);
     }
+}
+
+fn request_switch_tab(s: &mut UiState, tab_id: u32) {
+    if tab_id == s.active_tab {
+        return;
+    }
+    s.tab_gate.request(tab_id);
+    s.bridge.execute(tasks::switch_tab(tab_id));
 }
 
 fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
@@ -395,25 +583,28 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
             }
         }
         STATE_ACTIVE_TAB_CHANGED => {
+            s.tab_gate.on_tab_changed(ev.tab_id);
             s.active_tab = ev.tab_id;
             refresh_ui(s);
         }
         STATE_ACTIVE_PANE_CHANGED => {
             s.active_pane = ev.pane_id;
         }
-        STATE_TAB_ADDED | STATE_TAB_CLOSED | STATE_LAYOUT_CHANGED | STATE_PANE_ADDED
-        | STATE_PANE_CLOSED => {
+        STATE_TAB_CLOSED => {
+            s.tab_gate.on_tab_closed(ev.tab_id);
             refresh_ui(s);
         }
+        STATE_TAB_ADDED | STATE_LAYOUT_CHANGED | STATE_PANE_ADDED | STATE_PANE_CLOSED => {
+            if StateEventPolicy::should_reload_ui(ev.type_, ev.tab_id, s.active_tab) {
+                refresh_ui(s);
+            }
+        }
         STATE_BACKEND_STATUS => {
-            let msg = match ev.pane_id {
-                2 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusConnected),
-                3 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusError),
-                4 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusExited),
-                1 => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusConnecting),
-                _ => crate::platform::i18n::tr(crate::platform::i18n::Key::StatusDisconnected),
-            };
-            s.status.set_label(&msg);
+            if ev.pane_id == 4 {
+                // exited
+                tracing::info!(target = "muxterm::linux", "backend exited");
+            }
+            maybe_refresh_status(s, true);
         }
         _ => {}
     }
@@ -422,10 +613,16 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
 fn refresh_ui(s: &mut UiState) {
     let tabs = s.bridge.get_tabs();
     s.tabs.set_tabs(&tabs);
+    let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id).collect();
+    s.tab_gate.on_snapshot(&tab_ids);
     if let Some(active) = tabs.iter().find(|t| t.is_active) {
         s.active_tab = active.id;
     } else if let Some(first) = tabs.first() {
         s.active_tab = first.id;
+    }
+
+    if !s.tab_gate.is_released() {
+        return;
     }
 
     // 重建布局
@@ -453,15 +650,51 @@ fn refresh_ui(s: &mut UiState) {
         }
     }
 
-    let npanes = s.bridge.get_panes(s.active_tab).len();
-    set_status_summary(&s.status, npanes);
+    maybe_refresh_status(s, true);
 }
 
-fn set_status_summary(status: &Label, npanes: usize) {
-    let connected = crate::platform::i18n::tr(crate::platform::i18n::Key::StatusConnected);
-    let panes = crate::platform::i18n::tr(crate::platform::i18n::Key::Panes);
-    let close_hint = crate::platform::i18n::tr(crate::platform::i18n::Key::WindowCloseHint);
-    status.set_label(&format!("{connected} | {panes}: {npanes} | {close_hint}"));
+fn local_status_snapshot(npanes: usize) -> StatusBarSnapshot {
+    let connected = i18n::tr(Key::StatusConnected);
+    let panes = i18n::tr(Key::Panes);
+    let close_hint = i18n::tr(Key::WindowCloseHint);
+    StatusBarSnapshot {
+        enabled: true,
+        position: "bottom".into(),
+        justify: "left".into(),
+        interval: 1,
+        left: format!("{connected} | {npanes} {panes}"),
+        right: close_hint,
+        left_length: 40,
+        right_length: 40,
+        status_style: String::new(),
+        left_style: String::new(),
+        right_style: String::new(),
+        separator: " ".into(),
+        window_format: String::new(),
+        window_current_format: String::new(),
+        window_style: String::new(),
+        window_current_style: String::new(),
+        windows: Vec::new(),
+        error: None,
+    }
+}
+
+fn maybe_refresh_status(s: &mut UiState, force: bool) {
+    if !s.uses_tmux {
+        let npanes = s.bridge.get_panes(s.active_tab).len();
+        s.status.apply(&local_status_snapshot(npanes));
+        return;
+    }
+    let now = Instant::now();
+    if !force && now.duration_since(s.last_status_at) < s.status_interval {
+        return;
+    }
+    s.last_status_at = now;
+    if let Some(snap) = s.bridge.status_snapshot() {
+        let secs = snap.interval.max(1);
+        s.status_interval = Duration::from_secs(secs);
+        s.status.apply(&snap);
+    }
 }
 
 fn sync_pane_outputs(s: &mut UiState) {
@@ -535,6 +768,7 @@ fn apply_css() {
         .tab-button { padding: 4px 12px; border-radius: 0; }
         .tab-button.active { background: #313244; }
         .status-bar { color: #a6adc8; padding: 2px 8px; font-size: 11px; }
+        .muxterm-status-window { padding: 0 6px; min-height: 18px; }
         ",
     );
     if let Some(display) = gdk::Display::default() {

@@ -159,6 +159,38 @@ pub fn core_commands() -> Vec<PaletteCommand> {
             id: "language",
             label: crate::platform::i18n::tr(crate::platform::i18n::Key::Language),
         },
+        PaletteCommand {
+            id: "quick_connect",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdQuickConnect),
+        },
+        PaletteCommand {
+            id: "toggle_pane_fullscreen",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::TogglePaneFullscreen),
+        },
+        PaletteCommand {
+            id: "increase_font_size",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::MenuIncreaseFontSize),
+        },
+        PaletteCommand {
+            id: "decrease_font_size",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::MenuDecreaseFontSize),
+        },
+        PaletteCommand {
+            id: "reset_font_size",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::MenuResetFontSize),
+        },
+        PaletteCommand {
+            id: "theme",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::ThemeSwitchTo),
+        },
+        PaletteCommand {
+            id: "statusbar_mode",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::StatusBarModeSwitchTo),
+        },
+        PaletteCommand {
+            id: "quit",
+            label: crate::platform::i18n::tr(crate::platform::i18n::Key::QuitMuxterm),
+        },
     ]
 }
 
@@ -287,6 +319,11 @@ mod tests {
             "reload_config",
             "open_config",
             "preferences",
+            "quick_connect",
+            "toggle_pane_fullscreen",
+            "theme",
+            "statusbar_mode",
+            "quit",
         ] {
             assert!(ids.contains(need), "缺少命令 {need}");
         }

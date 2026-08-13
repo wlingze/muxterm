@@ -97,6 +97,20 @@ impl StatusBar {
         *self.on_window_activate.borrow_mut() = Some(Box::new(f));
     }
 
+    /// 当前模式（tmux / theme）。
+    pub fn mode(&self) -> StatusBarMode {
+        *self.mode.borrow()
+    }
+
+    /// 最近一次快照的纯文本（测试 / 本地摘要）。
+    pub fn plain_text(&self) -> String {
+        self.last_snapshot
+            .borrow()
+            .as_ref()
+            .map(snapshot_plain_text)
+            .unwrap_or_default()
+    }
+
     /// 应用一份快照；模式/主题变化后调用本函数即可重渲染。
     pub fn apply(&self, snapshot: &StatusBarSnapshot) {
         *self.last_snapshot.borrow_mut() = Some(snapshot.clone());
