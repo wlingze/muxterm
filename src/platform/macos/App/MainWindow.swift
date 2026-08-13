@@ -1219,6 +1219,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
            !flags.contains(.option),
            let view = window?.firstResponder as? MuxTerminalView
         {
+            // 输入法候选态（marked text）：Backspace 必须交给 IME 处理，
+            // 否则会把 DEL 发给终端，误删输入框里已经提交的原文。
+            if view.hasMarkedText() {
+                return false
+            }
             terminalManager.sendRawInput(to: view, byte: TerminalInputEncoding.backspaceByte)
             return true
         }
