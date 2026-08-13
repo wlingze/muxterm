@@ -118,6 +118,20 @@ pub struct TmuxBackend {
     initial_capture_buf: HashMap<PaneId, Vec<u8>>,
 }
 
+/// capture-pane 响应 → 终端字节流。
+///
+/// 按行还原可见屏幕；去掉尾部纯空白行，并且不在最后补 CRLF。否则新创建的
+/// SwiftTerm 从 (0,0) 开始喂入，尾部空白行会被当成换行把光标推到 pane
+/// 最底部（「新 pane 的 shell 在最下面」），而实际 tmux 光标仍在 prompt
+/// 那一行。
+fn capture_pane_bytes(lines: &[String]) -> Vec<u8> {
+    let mut end = lines.len();
+    while end > 0 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    lines[..end].join("\r\n").into_bytes()
+}
+
 impl TmuxBackend {
     // ── 层级映射（docs/LAYER-MAPPING.md 权威定义）──────────
     //
@@ -708,10 +722,7 @@ impl TmuxBackend {
                     // capture-pane -p 按行返回当前可见屏幕；拼回 CRLF 后喂给
                     // terminal emulator。attach 初始阶段必须以快照替换此前
                     // 被抑制的 `%output`，不能因为已有 prompt 就跳过恢复。
-                    let mut data = lines.join("\r\n").into_bytes();
-                    if !data.is_empty() {
-                        data.extend_from_slice(b"\r\n");
-                    }
+                    let mut data = capture_pane_bytes(&lines);
                     if self.is_attach_mode() {
                         self.initial_capture_pending.remove(&pane);
                         self.initial_capture_done.insert(pane);
@@ -2009,7 +2020,7 @@ mod tests {
         b.dispatch_response(1, vec!["\u{1b}[32mrestored shell".into(), "prompt$".into()]);
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
-            b"\x1b[32mrestored shell\r\nprompt$\r\n"
+            b"\x1b[32mrestored shell\r\nprompt$"
         );
         assert!(b.events.iter().any(|event| matches!(
             event,
@@ -2023,7 +2034,7 @@ mod tests {
         b.dispatch_response(2, vec!["duplicate".into()]);
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
-            b"\x1b[32mrestored shell\r\nprompt$\r\n"
+            b"\x1b[32mrestored shell\r\nprompt$"
         );
     }
 
@@ -2044,10 +2055,7 @@ mod tests {
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
         b.dispatch_response(1, vec!["old command".into(), "prompt$ ".into()]);
-        assert_eq!(
-            b.outputs.get(&pane).unwrap(),
-            b"old command\r\nprompt$ \r\n"
-        );
+        assert_eq!(b.outputs.get(&pane).unwrap(), b"old command\r\nprompt$ ");
 
         // 快照完成后，后续输出恢复为普通增量。
         b.handle_message(Message::Output {
@@ -2056,6 +2064,32 @@ mod tests {
             raw_content: "live\\r\\n".into(),
         });
         assert!(b.outputs.get(&pane).unwrap().ends_with(b"live\r\n"));
+    }
+
+    #[test]
+    fn capture_pane_strips_trailing_blank_rows_so_cursor_stays_at_prompt() {
+        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let pane = PaneId(9);
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+
+        // tmux 屏幕：prompt 在第 0..2 行，下方全是空白行；若把空白行也
+        // 喂给新终端，光标会被推到最底部。
+        b.dispatch_response(
+            1,
+            vec![
+                "~/Developer/muxterm".into(),
+                "feature/quickconnect".into(),
+                "❯".into(),
+                "".into(),
+                "".into(),
+                " ".into(),
+            ],
+        );
+        assert_eq!(
+            b.outputs.get(&pane).unwrap(),
+            b"~/Developer/muxterm\r\nfeature/quickconnect\r\n\xE2\x9D\xAF"
+        );
     }
 
     #[test]
@@ -2070,7 +2104,7 @@ mod tests {
         b.dispatch_response(1, vec!["ignored".into()]);
         b.dispatch_response(2, vec!["restored".into()]);
 
-        assert_eq!(b.outputs.get(&pane).unwrap(), b"restored\r\n");
+        assert_eq!(b.outputs.get(&pane).unwrap(), b"restored");
     }
 
     #[test]
@@ -2091,10 +2125,12 @@ mod tests {
         // capture 快照返回：完整屏幕 + 查询期间的实时增量拼接。
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
+        // 快照不补尾随 CRLF：查询期间到达的实时输出是光标位置的延续，
+        // 直接拼接（若程序自己换行，其字节流里会自带 CRLF）。
         b.dispatch_response(1, vec!["screen line".into()]);
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
-            b"screen line\r\nlive-during-capture\r\n"
+            b"screen linelive-during-capture\r\n"
         );
 
         // 之后 %output 恢复为普通增量。
@@ -2158,8 +2194,8 @@ mod tests {
         b.dispatch_response(2, vec!["second screen".into()]);
         b.dispatch_response(1, vec!["first screen".into()]);
 
-        assert_eq!(b.outputs.get(&p2).unwrap(), b"second screen\r\n");
-        assert_eq!(b.outputs.get(&p1).unwrap(), b"first screen\r\n");
+        assert_eq!(b.outputs.get(&p2).unwrap(), b"second screen");
+        assert_eq!(b.outputs.get(&p1).unwrap(), b"first screen");
     }
 
     fn unique_socket() -> String {
