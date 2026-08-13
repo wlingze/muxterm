@@ -23,6 +23,12 @@ final class TerminalManager: TerminalInputHandler {
     /// 已排队但尚未发送的整体尺寸；窗口 live resize 期间只保留最后一帧。
     private var pendingClientSize: (UInt16, UInt16)?
     private var clientResizeWorkItem: DispatchWorkItem?
+    /// 同一 pane 待合并的增量输出：codex/agent 一帧会被拆成多个 PaneOutput
+    /// 事件，分帧喂给 SwiftTerm 会让中间态把输入行逐帧推走（一直换行），
+    /// 也造成高频重绘；合并后一次 feed 保持稳定。
+    private var pendingFeeds: [UInt32: Data] = [:]
+    private var feedFlushWorkItem: DispatchWorkItem?
+    private static let feedFlushInterval: TimeInterval = 0.025
     /// 同一 pane 的 resize 失败只报告一次，避免轮询/重绘时刷屏。
     private var reportedResizeFailures = Set<UInt32>()
     private var reportedClientResizeFailure = false
@@ -60,6 +66,9 @@ final class TerminalManager: TerminalInputHandler {
         pendingClientSize = nil
         clientResizeWorkItem?.cancel()
         clientResizeWorkItem = nil
+        feedFlushWorkItem?.cancel()
+        feedFlushWorkItem = nil
+        pendingFeeds.removeAll()
         reportedResizeFailures.removeAll()
         reportedClientResizeFailure = false
         recentOutputSnippet = ""
@@ -114,9 +123,33 @@ final class TerminalManager: TerminalInputHandler {
             seedCoveredEvent: viewsCreatedThisBatch.contains(paneId)
         ) {
             // 视图早已存在：事件就是增量；或视图刚创建但快照为空（新 pane
-            // 首批字节，种子没有覆盖任何事件），必须原样喂入。
-            view.feedOutput(data)
+            // 首批字节，种子没有覆盖任何事件），必须原样喂入。合并同一
+            // pane 短窗口内的字节，减少 SwiftTerm 中间态漂移与重绘频率。
+            pendingFeeds[paneId, default: Data()].append(data)
             appendSnippet(data)
+            scheduleFeedFlush()
+        }
+    }
+
+    private func scheduleFeedFlush() {
+        guard feedFlushWorkItem == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.feedFlushWorkItem = nil
+            self?.flushPendingFeeds()
+        }
+        feedFlushWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.feedFlushInterval,
+            execute: work
+        )
+    }
+
+    private func flushPendingFeeds() {
+        feedFlushWorkItem = nil
+        let feeds = pendingFeeds
+        pendingFeeds.removeAll()
+        for (paneId, data) in feeds {
+            views[paneId]?.feedOutput(data)
         }
     }
 
@@ -138,6 +171,7 @@ final class TerminalManager: TerminalInputHandler {
     /// 切 tab / 布局重建不得丢视图，否则 SwiftTerm 状态被清掉，
     /// 切回来重放被截断的累计输出会乱码 / 黑屏）。
     func removePane(_ paneId: UInt32) {
+        pendingFeeds.removeValue(forKey: paneId)
         views[paneId]?.removeFromSuperview()
         views.removeValue(forKey: paneId)
         viewsCreatedThisBatch.remove(paneId)

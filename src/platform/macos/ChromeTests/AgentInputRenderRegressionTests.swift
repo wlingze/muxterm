@@ -142,4 +142,73 @@ final class AgentInputRenderRegressionTests: XCTestCase {
         print("partial-escape inputRows=\(inputRows)")
         XCTAssertGreaterThan(inputRows.count, 0)
     }
+
+    /// 复现 test-2026-0813-1721.log：codex 粘贴/输入时每次重绘先
+    /// `ESC[2K ESC[G CR LF` 再写整屏。如果终端模型把 CR LF 当成滚动，
+    /// 输入框会逐帧下移一行（一直换行）。
+    func testPasteRedrawFramesDoNotShiftInputRow() {
+        let terminal = makeTerminal(cols: 93, rows: 50)
+
+        func esc(_ s: String) -> [UInt8] { Array(s.utf8) }
+        var cycle: [UInt8] = []
+        cycle += esc("\u{1b}[H\u{1b}[2J\u{1b}[3J")
+        for _ in 0..<8 { cycle += esc("\u{1b}[2K\u{1b}[1A") }
+        cycle += esc("\u{1b}[G")
+        cycle += esc("\u{1b}[?2004l")
+        cycle += esc("\u{1b}[2K\u{1b}[G\r\n")
+        cycle += redrawContent()
+        // 同一帧重绘会被 tmux 拆成多个 %output 事件；合并成一次 feed 后，
+        // 中间态不会把输入行推走（分帧喂会在 3 次后漂移到 row 2）。
+        terminal.feed(byteArray: cycle)
+
+        var rows: [Int] = []
+        for _ in 0..<3 {
+            var redraw: [UInt8] = []
+            redraw += esc("\u{1b}[2K\u{1b}[G\r\n")
+            redraw += redrawContent()
+            // 分帧喂会漂移；合并喂（muxterm 端 coalesce）应保持稳定。
+            terminal.feed(byteArray: cycle + redraw)
+            rows.append(inputRow(terminal))
+        }
+        XCTAssertEqual(
+            Set(rows).count,
+            1,
+            "paste 重绘不能逐帧下移输入行，实际行号 \(rows)"
+        )
+    }
+
+    private func redrawContent() -> [UInt8] {
+        var out: [UInt8] = []
+        func add(_ s: String) { out.append(contentsOf: Array(s.utf8)) }
+        add("  Cursor Agent\r\n")
+        add("  v2026.08.11-e8db854\r\n")
+        add("  Tip: Use /debug to instrument and debug complex problems.\r\n")
+        add("\r\n\r\n\r\n\r\n")
+        add(" \u{1b}[48;2;242;242;242m")
+        add(String(repeating: " ", count: 90))
+        add("\u{1b}[49m\r\n")
+        add(" \u{1b}[48;2;242;242;242m → [Pasted text #1 +25 lines] 目前遇到问题，")
+        add(String(repeating: " ", count: 50))
+        add("\u{1b}[49m\r\n")
+        add(" \u{1b}[48;2;242;242;242m")
+        add(String(repeating: " ", count: 90))
+        add("\u{1b}[49m\r\n")
+        add("\r\n")
+        add("  Cursor Grok 4.5 High · ctx 0% · feature-syntaxflow\r\n")
+        return out
+    }
+
+    private func inputRow(_ terminal: Terminal) -> Int {
+        let dims = terminal.getDims()
+        for row in 0..<dims.rows {
+            var line = ""
+            for col in 0..<dims.cols {
+                line.append(terminal.getCharacter(col: col, row: row) ?? " ")
+            }
+            if line.contains("→") || line.contains("[Pasted text") {
+                return row
+            }
+        }
+        return -1
+    }
 }
