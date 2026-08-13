@@ -116,6 +116,30 @@ pub struct TmuxBackend {
     /// 直接丢弃会丢数据。这里暂存它们，快照返回后拼接到快照尾部，从而既保留完整
     /// 屏幕又不错过查询期间的实时增量。
     initial_capture_buf: HashMap<PaneId, Vec<u8>>,
+    /// 是否支持 `refresh-client -r`（OSC 10/11 颜色上报；tmux < 3.2 不支持）。
+    colour_report_supported: bool,
+    colour_report_warned: bool,
+}
+
+/// 解析 `tmux -V` 输出（如 `tmux 3.7b` / `tmux 2.9a`）。
+pub fn parse_tmux_version(text: &str) -> Option<(u32, u32)> {
+    let head = text.split_whitespace().nth(1)?;
+    let digits: String = head
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = digits.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// `refresh-client -r`（颜色上报）需要 tmux >= 3.2。
+pub fn supports_colour_report(version: Option<(u32, u32)>) -> bool {
+    match version {
+        None => true, // 版本未知时尝试上报，失败由命令错误自然暴露
+        Some((major, minor)) => major > 3 || (major == 3 && minor >= 2),
+    }
 }
 
 /// capture-pane 响应 → 终端字节流。
@@ -194,6 +218,8 @@ impl TmuxBackend {
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
             initial_capture_buf: HashMap::new(),
+            colour_report_supported: true,
+            colour_report_warned: false,
         }
     }
 
@@ -1006,6 +1032,26 @@ impl TmuxBackend {
         }
     }
 
+    /// 探测 tmux 是否支持 `refresh-client -r`（颜色上报）：不支持时静默跳过，
+    /// 避免老 tmux 每上报一次就打一条 `unknown flag -r` 错误。
+    fn detect_colour_report_support(&mut self) {
+        let socket = self
+            .config
+            .extra_args
+            .iter()
+            .position(|a| a == "-L")
+            .and_then(|i| self.config.extra_args.get(i + 1))
+            .cloned();
+        let cfg = super::status::StatusQueryConfig {
+            socket,
+            ssh_alias: self.config.ssh_alias.clone(),
+            session: String::new(),
+        };
+        if let Ok(version_out) = super::status::run_tmux(&cfg, &["-V"]) {
+            self.colour_report_supported = supports_colour_report(parse_tmux_version(&version_out));
+        }
+    }
+
     /// 发送 list-windows 查询。
     fn query_list_windows(&mut self) {
         let sess = self.active_session.unwrap_or(SessionId(0));
@@ -1294,6 +1340,7 @@ impl Backend for TmuxBackend {
 
         // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
         self.query_list_sessions();
+        self.detect_colour_report_support();
 
         self.status = BackendStatus::Connected;
         self.events
@@ -1468,6 +1515,16 @@ impl Backend for TmuxBackend {
                 TaskOutcome::Done
             }
             Task::ReportPaneColours { target, fg, bg } => {
+                if !self.colour_report_supported {
+                    if !self.colour_report_warned {
+                        self.colour_report_warned = true;
+                        tracing::debug!(
+                            target = "muxterm::tmux",
+                            "tmux 不支持 refresh-client -r，跳过颜色上报"
+                        );
+                    }
+                    return Ok(TaskOutcome::Done);
+                }
                 // tmux 用这两个颜色代答 pane 的 OSC 10/11 查询；必须分两次
                 // 上报（一次 fg、一次 bg），tmux 每次只解析一条 OSC。
                 let fg_cmd = cmd::refresh_client_colour(*target, 10, *fg);
@@ -2205,6 +2262,21 @@ mod tests {
 
         assert_eq!(b.outputs.get(&p2).unwrap(), b"second screen");
         assert_eq!(b.outputs.get(&p1).unwrap(), b"first screen");
+    }
+
+    #[test]
+    fn parse_tmux_version_handles_beta_suffix() {
+        assert_eq!(parse_tmux_version("tmux 3.7b"), Some((3, 7)));
+        assert_eq!(parse_tmux_version("tmux 2.9a"), Some((2, 9)));
+        assert_eq!(parse_tmux_version("garbage"), None);
+    }
+
+    #[test]
+    fn colour_report_requires_tmux_3_2() {
+        assert!(!supports_colour_report(Some((3, 1))));
+        assert!(supports_colour_report(Some((3, 2))));
+        assert!(supports_colour_report(Some((4, 0))));
+        assert!(supports_colour_report(None));
     }
 
     fn unique_socket() -> String {
