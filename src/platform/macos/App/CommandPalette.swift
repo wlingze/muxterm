@@ -13,6 +13,7 @@ enum PaletteCommand: Equatable {
     case closeWindow
     case detach
     case language
+    case theme
     case quit
 }
 

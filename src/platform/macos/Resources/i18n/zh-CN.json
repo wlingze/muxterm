@@ -62,6 +62,8 @@
   "status_unknown": "未知",
   "layout_syncing": "GUI 布局同步中：等待当前 tab 的 pane 布局",
   "terminal_output_snippet": "终端输出片段",
+  "theme_switch_to": "切换到{{theme}}主题",
+  "theme_detail": "当前主题：{{theme}}",
   "terminal_pane": "终端面板 @{{id}}",
   "tabs_accessibility": "标签页",
   "new_tab_tooltip": "新建标签页（Cmd+T）",

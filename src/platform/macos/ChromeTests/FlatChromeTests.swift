@@ -149,35 +149,54 @@ final class TerminalMirrorPolicyTests: XCTestCase {
 }
 
 final class MuxtermTerminalColorsTests: XCTestCase {
-    func testDefaultTerminalColorsAreLightOnDark() {
-        let fg = Int(MuxtermTerminalColors.foregroundHex, radix: 16) ?? 0
-        let bg = Int(MuxtermTerminalColors.backgroundHex, radix: 16) ?? 0
+    func testDefaultTerminalColorsAreDarkOnLight() {
+        let fg = Int(MuxtermTerminalColors.lightForegroundHex, radix: 16) ?? 0
+        let bg = Int(MuxtermTerminalColors.lightBackgroundHex, radix: 16) ?? 0
         let fgLuminance = ((fg >> 16) & 0xff) + ((fg >> 8) & 0xff) + (fg & 0xff)
         let bgLuminance = ((bg >> 16) & 0xff) + ((bg >> 8) & 0xff) + (bg & 0xff)
-        // 前景必须是浅色、背景是深色，否则 agent/codex 的深色输入框里
-        // 默认前景文字会黑字黑框看不见。
-        XCTAssertGreaterThan(fgLuminance, bgLuminance)
-        XCTAssertGreaterThan(fgLuminance, 300)
-        XCTAssertLessThan(bgLuminance, 200)
+        // 默认浅色：背景必须比前景亮。
+        XCTAssertGreaterThan(bgLuminance, fgLuminance)
+        XCTAssertGreaterThan(bgLuminance, 600)
+        XCTAssertLessThan(fgLuminance, 200)
     }
 
     func testThemePaletteAndConfigParsing() {
         XCTAssertEqual(
             MuxtermTerminalColors.palette(forThemeName: nil).fg,
-            MuxtermTerminalColors.foregroundHex
+            MuxtermTerminalColors.lightForegroundHex
         )
-        let light = MuxtermTerminalColors.palette(forThemeName: "light")
-        XCTAssertEqual(light.fg, "000000")
-        XCTAssertEqual(light.bg, "ffffff")
+        let dark = MuxtermTerminalColors.palette(forThemeName: "dark")
+        XCTAssertEqual(dark.fg, MuxtermTerminalColors.foregroundHex)
+        XCTAssertEqual(dark.bg, MuxtermTerminalColors.backgroundHex)
         let toml = """
         [theme]
-        name = "light"
+        name = "dark"
 
         [[keybindings]]
         key = "p"
         """
-        XCTAssertEqual(MuxtermTerminalColors.themeName(from: toml), "light")
+        XCTAssertEqual(MuxtermTerminalColors.themeName(from: toml), "dark")
         XCTAssertNil(MuxtermTerminalColors.themeName(from: "[[keybindings]]\nkey = \"p\""))
+    }
+}
+
+final class MuxtermThemeTests: XCTestCase {
+    func testThemeParsingDefaultsToLight() {
+        XCTAssertEqual(MuxtermTheme.from(name: nil), .light)
+        XCTAssertEqual(MuxtermTheme.from(name: "Light"), .light)
+        XCTAssertEqual(MuxtermTheme.from(name: "dark"), .dark)
+        XCTAssertEqual(MuxtermTheme.from(name: "bogus"), .light)
+    }
+
+    func testLightThemeIsDefaultPalette() {
+        XCTAssertEqual(
+            MuxtermTheme.light.palette.fg,
+            MuxtermTerminalColors.lightForegroundHex
+        )
+        XCTAssertEqual(
+            MuxtermTheme.dark.palette.bg,
+            MuxtermTerminalColors.backgroundHex
+        )
     }
 }
 

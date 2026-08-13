@@ -45,6 +45,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var terminalFontSettings: MuxtermTerminalFont.Settings
     /// Cmd +/- / Cmd 0 的字号持久化键（用户偏好覆盖 config 基础字号）。
     private static let fontSizePreferenceKey = "muxterm.terminalFontSize"
+    /// 运行时主题持久化键（用户偏好覆盖 config `[theme] name`）。
+    private static let themePreferenceKey = "muxterm.theme"
 
     private static func savedTerminalFontSize() -> CGFloat? {
         guard let saved = UserDefaults.standard.object(forKey: fontSizePreferenceKey) as? Double else {
@@ -61,12 +63,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8)
         if let toml {
             customKeybindings = KeyBindingsConfig.parse(toml: toml)
-            // 终端调色板跟随 [theme] name（默认深色，保证 agent/codex 深色
-            // 输入框里的默认前景文字可见）。
-            MuxtermTerminalColors.activePalette = MuxtermTerminalColors.palette(
-                forThemeName: MuxtermTerminalColors.themeName(from: toml)
-            )
         }
+        // 终端调色板跟随 [theme] name（默认浅色；运行期切换会覆盖）。
+        let configTheme = toml.flatMap { MuxtermTerminalColors.themeName(from: $0) }
+        let savedTheme = UserDefaults.standard.string(forKey: Self.themePreferenceKey)
+        MuxtermTerminalColors.activePalette = MuxtermTheme.from(
+            name: savedTheme ?? configTheme
+        ).palette
         let baseFont = MuxtermTerminalFont.settings(from: toml)
         let savedSize = Self.savedTerminalFontSize() ?? baseFont.size
         terminalFontSettings = MuxtermTerminalFont.Settings(
@@ -265,6 +268,41 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             family: terminalFontSettings.family,
             size: next,
             container: content.paneLayout
+        )
+    }
+
+    /// 当前主题：运行期选择优先，其次 config `[theme] name`，缺省浅色。
+    private func currentTheme() -> MuxtermTheme {
+        let saved = UserDefaults.standard.string(forKey: Self.themePreferenceKey)
+        let config = (try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8))
+            .flatMap { MuxtermTerminalColors.themeName(from: $0) }
+        return MuxtermTheme.from(name: saved ?? config)
+    }
+
+    /// 应用主题并持久化：更新终端默认色、重报 tmux 颜色，命令面板标题会
+    /// 在下次打开时显示当前主题。
+    private func applyTheme(_ theme: MuxtermTheme) {
+        UserDefaults.standard.set(theme.rawValue, forKey: Self.themePreferenceKey)
+        MuxtermTerminalColors.activePalette = theme.palette
+        terminalManager.applyTheme(
+            fgHex: theme.palette.fg,
+            bgHex: theme.palette.bg
+        )
+        // 主题色变化后必须重新上报，tmux 才会用新颜色代答 OSC 10/11。
+        reportedColourPanes.removeAll()
+        reportPaneColoursIfNeeded(lastSnapshot.panes)
+        // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
+        if let snapshot = statusBarSnapshot {
+            content.statusBar.apply(snapshot: snapshot)
+        }
+    }
+
+    private func toggleTheme() {
+        let next: MuxtermTheme = currentTheme() == .light ? .dark : .light
+        applyTheme(next)
+        commandPalette.update(
+            items: rootPaletteItems(),
+            placeholder: MuxtermI18n.shared.tr(.commandPalette)
         )
     }
 
@@ -525,7 +563,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             size: currentTerminalFontSize(),
             container: content.paneLayout
         )
+        // warm slot 的视图也要沿用当前主题（浅/深色）。
+        terminalManager.applyTheme(
+            fgHex: MuxtermTerminalColors.activePalette.fg,
+            bgHex: MuxtermTerminalColors.activePalette.bg
+        )
         lastSnapshot = slot.lastSnapshot
+        // 切连接后旧 status bar 属于上一个 tmux：先清掉，等新快照到达再显示。
+        statusBarSnapshot = nil
+        statusRefreshTimer?.invalidate()
+        statusRefreshTimer = nil
+        content.applyStatusBar(nil)
         reportedColourPanes.removeAll()
         tabSwitchGate = TabSwitchGate()
         needsLayoutReload = true
@@ -697,6 +745,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.language)
             ),
             PaletteItem(
+                title: i18n.tr(
+                    .themeSwitchTo,
+                    arguments: ["theme": currentTheme() == .light ? "Dark" : "Light"]
+                ),
+                detail: i18n.tr(.themeDetail, arguments: ["theme": currentTheme().displayName]),
+                keywords: "theme light dark 主题 浅色 深色",
+                kind: .command(.theme)
+            ),
+            PaletteItem(
                 title: i18n.tr(.quitMuxterm),
                 detail: i18n.tr(.quitMuxtermDetail),
                 keywords: "quit exit 退出",
@@ -758,6 +815,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .language(let language):
             _ = MuxtermI18n.shared.setLanguage(language)
             commandPalette.present(items: rootPaletteItems())
+        case .command(.theme):
+            toggleTheme()
         case .command(.quit):
             commandPalette.dismiss()
             NSApp.terminate(nil)

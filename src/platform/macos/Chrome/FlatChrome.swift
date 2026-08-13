@@ -53,16 +53,19 @@ public enum MuxtermTerminalColors {
     public static let foregroundHex = "cdd6f4"
     /// 背景 `#1e1e2e`。
     public static let backgroundHex = "1e1e2e"
-    /// 当前生效调色板（默认深色；可在 config.toml `[theme] name` 切换）。
-    public static var activePalette: (fg: String, bg: String) = (foregroundHex, backgroundHex)
+    /// 浅色主题前景/背景（默认）。
+    public static let lightForegroundHex = "000000"
+    public static let lightBackgroundHex = "ffffff"
+    /// 当前生效调色板（默认浅色；可在 config.toml `[theme] name` 切换）。
+    public static var activePalette: (fg: String, bg: String) = (lightForegroundHex, lightBackgroundHex)
 
-    /// 根据 `[theme] name` 返回调色板；light 用黑字白底，其它/缺省用深色。
+    /// 根据 `[theme] name` 返回调色板；dark 用浅字深底，其它/缺省用黑字白底。
     public static func palette(forThemeName name: String?) -> (fg: String, bg: String) {
         switch name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "light":
-            return ("000000", "ffffff")
-        default:
+        case "dark":
             return (foregroundHex, backgroundHex)
+        default:
+            return (lightForegroundHex, lightBackgroundHex)
         }
     }
 
@@ -84,6 +87,31 @@ public enum MuxtermTerminalColors {
             return value
         }
         return nil
+    }
+}
+
+/// muxterm 主题（纯逻辑，便于单测）：浅色是默认，深色用于 codex/agent。
+public enum MuxtermTheme: String, CaseIterable, Sendable {
+    case light
+    case dark
+
+    public var displayName: String {
+        switch self {
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    public var palette: (fg: String, bg: String) {
+        MuxtermTerminalColors.palette(forThemeName: rawValue)
+    }
+
+    /// 从 config.toml `[theme] name` 或 UserDefaults 值解析；缺省/未知回退浅色。
+    public static func from(name: String?) -> MuxtermTheme {
+        switch name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "dark", "dark.toml": return .dark
+        default: return .light
+        }
     }
 }
 

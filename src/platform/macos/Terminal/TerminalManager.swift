@@ -250,6 +250,13 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    /// 运行期切换主题：更新所有终端视图的默认前景/背景。
+    func applyTheme(fgHex: String, bgHex: String) {
+        for view in views.values {
+            view.setThemeColors(fgHex: fgHex, bgHex: bgHex)
+        }
+    }
+
     /// 运行期调整所有终端视图的字体（Cmd +/- / Cmd 0），
     /// 并立即按新字符格重新同步 PTY / tmux client 尺寸。
     func setFont(family: String? = nil, size: CGFloat, container: NSView?) {

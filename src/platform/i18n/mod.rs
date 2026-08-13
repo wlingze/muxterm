@@ -167,6 +167,8 @@ define_text_keys! {
     TabsAccessibility => "tabs_accessibility",
     TerminalOutputSnippet => "terminal_output_snippet",
     TerminalPane => "terminal_pane",
+    ThemeSwitchTo => "theme_switch_to",
+    ThemeDetail => "theme_detail",
     TmuxAttachPlaceholder => "tmux_attach_placeholder",
     TmuxAttached => "tmux_attached",
     TmuxCreateDetail => "tmux_create_detail",

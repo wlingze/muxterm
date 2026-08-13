@@ -62,6 +62,8 @@
   "status_unknown": "unknown",
   "layout_syncing": "GUI layout syncing: waiting for the current tab pane layout",
   "terminal_output_snippet": "Terminal Output Snippet",
+  "theme_switch_to": "Switch to {{theme}}",
+  "theme_detail": "Current theme: {{theme}}",
   "terminal_pane": "Terminal Pane @{{id}}",
   "tabs_accessibility": "Tabs",
   "new_tab_tooltip": "New Tab (Cmd+T)",

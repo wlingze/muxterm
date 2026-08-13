@@ -216,6 +216,13 @@ final class MuxTerminalView: TerminalView {
         }
     }
 
+    /// 运行期切换主题（浅色/深色）：更新默认前景/背景并重绘。
+    func setThemeColors(fgHex: String, bgHex: String) {
+        nativeForegroundColor = Self.color(hex: fgHex)
+        nativeBackgroundColor = Self.color(hex: bgHex)
+        forceRedraw()
+    }
+
     /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。
     func setFont(family: String? = nil, size: CGFloat? = nil) {
         if let family, !family.isEmpty {
