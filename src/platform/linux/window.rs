@@ -378,7 +378,19 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
     match ev.type_ {
         STATE_PANE_OUTPUT => {
             if let Some(view) = s.layout.pane(ev.pane_id) {
-                view.feed_output(&ev.data);
+                if view.is_seeded() {
+                    view.feed_output(&ev.data);
+                } else {
+                    // 首次输出前先按后端尺寸播种完整快照，避免增量叠在空模型上。
+                    let out = s.bridge.get_pane_output(ev.pane_id);
+                    let panes = s.bridge.get_panes(s.active_tab);
+                    let (cols, rows) = panes
+                        .iter()
+                        .find(|p| p.id == ev.pane_id)
+                        .map(|p| (p.cols, p.rows))
+                        .unwrap_or((80, 24));
+                    view.seed_snapshot(&out, cols, rows);
+                }
                 let replies = view.take_replies();
                 if !replies.is_empty() {
                     let _ = s.bridge.send_input(ev.pane_id, &replies);
@@ -431,11 +443,13 @@ fn refresh_ui(s: &mut UiState) {
 
         for pane in s.bridge.get_panes(s.active_tab) {
             if let Some(view) = s.layout.pane(pane.id) {
-                let out = s.bridge.get_pane_output(pane.id);
-                view.seed_snapshot(&out, pane.cols, pane.rows);
-                let replies = view.take_replies();
-                if !replies.is_empty() {
-                    let _ = s.bridge.send_input(pane.id, &replies);
+                if !view.is_seeded() {
+                    let out = s.bridge.get_pane_output(pane.id);
+                    view.seed_snapshot(&out, pane.cols, pane.rows);
+                    let replies = view.take_replies();
+                    if !replies.is_empty() {
+                        let _ = s.bridge.send_input(pane.id, &replies);
+                    }
                 }
                 if pane.is_active {
                     s.active_pane = pane.id;
@@ -457,8 +471,12 @@ fn set_status_summary(status: &Label, npanes: usize) {
 }
 
 fn sync_pane_outputs(s: &mut UiState) {
+    // 只给尚未播种的 pane 补一次快照；已挂载 pane 的增量走 STATE_PANE_OUTPUT。
     for pane in s.bridge.get_panes(s.active_tab) {
         if let Some(view) = s.layout.pane(pane.id) {
+            if view.is_seeded() {
+                continue;
+            }
             let out = s.bridge.get_pane_output(pane.id);
             view.seed_snapshot(&out, pane.cols, pane.rows);
             let replies = view.take_replies();
