@@ -417,9 +417,24 @@ fn open_command_palette(s: &UiState, window: &Window, state: &Rc<RefCell<UiState
     let callback_window = parent.clone();
     let callback_state = state.clone();
     let uses_tmux = s.uses_tmux;
-    crate::platform::linux::command_palette::show_for_backend(&parent, uses_tmux, move |id| {
-        run_palette_command(&callback_state, &callback_window, &callback_parent, id);
-    });
+    let next_theme = if s.theme_name.eq_ignore_ascii_case("dark") {
+        "Light"
+    } else {
+        "Dark"
+    };
+    let next_status_mode = match s.status_mode {
+        StatusBarMode::Tmux => StatusBarMode::Theme.as_str(),
+        StatusBarMode::Theme => StatusBarMode::Tmux.as_str(),
+    };
+    crate::platform::linux::command_palette::show_for_backend(
+        &parent,
+        uses_tmux,
+        next_theme,
+        next_status_mode,
+        move |id| {
+            run_palette_command(&callback_state, &callback_window, &callback_parent, id);
+        },
+    );
 }
 
 fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &Window, id: &str) {
@@ -915,14 +930,8 @@ fn step_project_flow(
             attach_tmux(state, config, session, flow, true);
         }
         ProjectConnectState::CreateDetached { session, directory } => {
-            let (backend, target) = transport_backend(&config);
-            match CoreBridge::create_tmux_session(
-                backend,
-                target.as_deref(),
-                None,
-                &session,
-                &directory,
-            ) {
+            let (backend, target) = config.transport.create_backend();
+            match CoreBridge::create_tmux_session(backend, target, None, &session, &directory) {
                 Ok(_) => {
                     flow.create_succeeded();
                     step_project_flow(state, config, flow);
@@ -948,15 +957,6 @@ fn step_project_flow(
     }
 }
 
-fn transport_backend(config: &TargetConfig) -> (&'static str, Option<String>) {
-    match &config.transport {
-        crate::platform::linux::quickconnect::model::TargetTransport::Local => ("tmux", None),
-        crate::platform::linux::quickconnect::model::TargetTransport::Ssh { name } => {
-            ("tmux-ssh", Some(name.clone()))
-        }
-    }
-}
-
 fn attach_tmux(
     state: &Rc<RefCell<UiState>>,
     config: TargetConfig,
@@ -977,14 +977,8 @@ fn attach_tmux(
             return;
         }
     }
-    let (backend, alias) = transport_backend(&config);
-    match CoreBridge::connect(
-        backend,
-        None,
-        Some(&session),
-        alias.as_deref(),
-        Some(&config.path),
-    ) {
+    let (backend, alias) = config.transport.attach_backend();
+    match CoreBridge::connect(backend, None, Some(&session), alias, Some(&config.path)) {
         Ok(bridge) => {
             let mut s = state.borrow_mut();
             activate_new(&mut s, key, bridge);

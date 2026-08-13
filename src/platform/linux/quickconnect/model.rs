@@ -47,6 +47,22 @@ impl TargetTransport {
     pub fn is_ssh(&self) -> bool {
         matches!(self, TargetTransport::Ssh { .. })
     }
+
+    /// 创建 detached session 时走 discovery FFI（`local` / `ssh`）。
+    pub fn create_backend(&self) -> (&'static str, Option<&str>) {
+        match self {
+            TargetTransport::Local => ("local", None),
+            TargetTransport::Ssh { name } => ("ssh", Some(name.as_str())),
+        }
+    }
+
+    /// attach 控制模式时走 `tmux` / `tmux-ssh`。
+    pub fn attach_backend(&self) -> (&'static str, Option<&str>) {
+        match self {
+            TargetTransport::Local => ("tmux", None),
+            TargetTransport::Ssh { name } => ("tmux-ssh", Some(name.as_str())),
+        }
+    }
 }
 
 /// 一个可快速连接的目标（Recent / Project 共用）。
@@ -232,6 +248,17 @@ mod tests {
         );
         assert_ne!(QuickConnect::unique_id(&a), QuickConnect::unique_id(&b));
         assert_eq!(QuickConnect::unique_id(&a), "srv@local");
+    }
+
+    #[test]
+    fn transport_backends_split_create_and_attach() {
+        assert_eq!(TargetTransport::Local.create_backend(), ("local", None));
+        assert_eq!(TargetTransport::Local.attach_backend(), ("tmux", None));
+        let ssh = TargetTransport::Ssh {
+            name: "ryzen".into(),
+        };
+        assert_eq!(ssh.create_backend(), ("ssh", Some("ryzen")));
+        assert_eq!(ssh.attach_backend(), ("tmux-ssh", Some("ryzen")));
     }
 
     #[test]
