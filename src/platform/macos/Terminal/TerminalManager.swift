@@ -5,6 +5,8 @@ import MuxtermChrome
 final class TerminalManager: TerminalInputHandler {
     private weak var bridge: CoreBridge?
     private var views: [UInt32: MuxTerminalView] = [:]
+    private var fontFamily: String
+    private var fontSize: CGFloat
     /// 本轮 poll 批次内新建的视图：播种快照已覆盖该批次所有已入队的
     /// PaneOutput 事件，本批次剩余事件必须跳过，否则同一批字节会双写。
     private var viewsCreatedThisBatch = Set<UInt32>()
@@ -33,8 +35,14 @@ final class TerminalManager: TerminalInputHandler {
         clientResizeWorkItem?.cancel()
     }
 
-    init(bridge: CoreBridge) {
+    init(
+        bridge: CoreBridge,
+        fontFamily: String = MuxtermTerminalFont.defaultFamily,
+        fontSize: CGFloat = MuxtermTerminalFont.defaultSize
+    ) {
         self.bridge = bridge
+        self.fontFamily = fontFamily
+        self.fontSize = MuxtermTerminalFont.clamp(fontSize)
     }
 
     /// 连接面板切换 local / SSH session 后更新桥接对象。
@@ -63,7 +71,11 @@ final class TerminalManager: TerminalInputHandler {
         if let existing = views[paneId] {
             return existing
         }
-        let view = MuxTerminalView(paneId: paneId)
+        let view = MuxTerminalView(
+            paneId: paneId,
+            fontFamily: fontFamily,
+            fontSize: fontSize
+        )
         view.inputHandler = self
         // 非直接 PTY 终端模拟器（tmux 控制模式 / daemon 代理）下禁止把
         // SwiftTerm 解析 pane 输出时生成的查询应答回写 pane。
@@ -236,6 +248,30 @@ final class TerminalManager: TerminalInputHandler {
         for id in paneIds {
             views[id]?.forceRedraw()
         }
+    }
+
+    /// 运行期调整所有终端视图的字体（Cmd +/- / Cmd 0），
+    /// 并立即按新字符格重新同步 PTY / tmux client 尺寸。
+    func setFont(family: String? = nil, size: CGFloat, container: NSView?) {
+        if let family, !family.isEmpty {
+            fontFamily = family
+        }
+        fontSize = MuxtermTerminalFont.clamp(size)
+        for view in views.values {
+            view.setFont(family: fontFamily, size: fontSize)
+        }
+        guard !views.isEmpty else { return }
+        let ids = Set(views.keys)
+        if usesClientResize, let container {
+            // tmux/ssh：整体 client 尺寸变化由 syncClientSize 下发。
+            syncClientSize(container: container, paneIds: ids)
+        } else {
+            // local：每个视图按新字符格重算行列并通知 PTY resize。
+            for id in ids {
+                views[id]?.syncSizeToPty(notifyResize: true)
+            }
+        }
+        forceRedraw(paneIds: ids)
     }
 
     // MARK: - TerminalInputHandler

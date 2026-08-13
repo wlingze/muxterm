@@ -13,6 +13,9 @@ public enum KeyAction: Equatable, Sendable {
     case commandPalette
     case quickConnect
     case quit
+    case increaseFontSize
+    case decreaseFontSize
+    case resetFontSize
 }
 
 /// 修饰键 + 主键（大小写无关）的纯数据描述。
@@ -85,6 +88,18 @@ public enum KeyBindings {
         // Cmd+Shift+P：旧命令面板（保留）。
         if chord.command, chord.shift, !chord.option, key == "p" {
             return .commandPalette
+        }
+        // Cmd+= / Cmd++ 增大字体，Cmd+- 减小，Cmd+0 重置。
+        if chord.command, !chord.option {
+            if key == "=" || key == "+" {
+                return .increaseFontSize
+            }
+            if key == "-" {
+                return .decreaseFontSize
+            }
+            if key == "0" {
+                return .resetFontSize
+            }
         }
 
         // Alt+T / Alt+S / Alt+V / Alt+[ / Alt+] / Alt+1..9（兼容 TUI）

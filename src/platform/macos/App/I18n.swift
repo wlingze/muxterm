@@ -80,13 +80,16 @@ enum MuxtermTextKey: CaseIterable {
     case menuCloseWindow
     case menuCommandPalette
     case menuCopy
+    case menuDecreaseFontSize
     case menuEdit
     case menuFile
+    case menuIncreaseFontSize
     case menuNewTab
     case menuNextPane
     case menuPaste
     case menuPreviousPane
     case menuQuit
+    case menuResetFontSize
     case menuSelectAll
     case menuSplitHorizontal
     case menuSplitVertical
@@ -224,13 +227,16 @@ enum MuxtermTextKey: CaseIterable {
         case .menuCloseWindow: return "menu_close_window"
         case .menuCommandPalette: return "menu_command_palette"
         case .menuCopy: return "menu_copy"
+        case .menuDecreaseFontSize: return "menu_decrease_font_size"
         case .menuEdit: return "menu_edit"
         case .menuFile: return "menu_file"
+        case .menuIncreaseFontSize: return "menu_increase_font_size"
         case .menuNewTab: return "menu_new_tab"
         case .menuNextPane: return "menu_next_pane"
         case .menuPaste: return "menu_paste"
         case .menuPreviousPane: return "menu_previous_pane"
         case .menuQuit: return "menu_quit"
+        case .menuResetFontSize: return "menu_reset_font_size"
         case .menuSelectAll: return "menu_select_all"
         case .menuSplitHorizontal: return "menu_split_horizontal"
         case .menuSplitVertical: return "menu_split_vertical"

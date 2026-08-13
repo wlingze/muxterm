@@ -178,6 +178,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prevPane.target = windowController
         viewMenu.addItem(prevPane)
 
+        let increaseFont = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuIncreaseFontSize),
+            action: #selector(MainWindowController.increaseTerminalFontSize(_:)),
+            keyEquivalent: "="
+        )
+        increaseFont.keyEquivalentModifierMask = [.command, .shift]
+        increaseFont.target = windowController
+        viewMenu.addItem(increaseFont)
+
+        let decreaseFont = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuDecreaseFontSize),
+            action: #selector(MainWindowController.decreaseTerminalFontSize(_:)),
+            keyEquivalent: "-"
+        )
+        decreaseFont.keyEquivalentModifierMask = .command
+        decreaseFont.target = windowController
+        viewMenu.addItem(decreaseFont)
+
+        let resetFont = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuResetFontSize),
+            action: #selector(MainWindowController.resetTerminalFontSize(_:)),
+            keyEquivalent: "0"
+        )
+        resetFont.keyEquivalentModifierMask = .command
+        resetFont.target = windowController
+        viewMenu.addItem(resetFont)
+
+        viewMenu.addItem(NSMenuItem.separator())
+
         let quickConnectItem = NSMenuItem(
             title: "Quick Connect",
             action: #selector(MainWindowController.openQuickConnect),

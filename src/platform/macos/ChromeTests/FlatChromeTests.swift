@@ -82,6 +82,29 @@ final class KeyBindingsTests: XCTestCase {
             .quickConnect
         )
     }
+
+    func testCmdFontZoomShortcuts() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "=")),
+            .increaseFontSize
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "=")),
+            .increaseFontSize
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "+")),
+            .increaseFontSize
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "-")),
+            .decreaseFontSize
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            .resetFontSize
+        )
+    }
 }
 
 
@@ -155,6 +178,40 @@ final class MuxtermTerminalColorsTests: XCTestCase {
         """
         XCTAssertEqual(MuxtermTerminalColors.themeName(from: toml), "light")
         XCTAssertNil(MuxtermTerminalColors.themeName(from: "[[keybindings]]\nkey = \"p\""))
+    }
+}
+
+final class MuxtermTerminalFontTests: XCTestCase {
+    func testDefaultsFollowAlacrittyStyle18ptMenlo() {
+        XCTAssertEqual(MuxtermTerminalFont.defaultFamily, "Menlo")
+        XCTAssertEqual(MuxtermTerminalFont.defaultSize, 18)
+    }
+
+    func testParseFontSection() {
+        let toml = """
+        [font]
+        family = "JetBrains Mono"
+        size = 15.5
+        """
+        let s = MuxtermTerminalFont.settings(from: toml)
+        XCTAssertEqual(s.family, "JetBrains Mono")
+        XCTAssertEqual(s.size, 15.5)
+    }
+
+    func testFontSizeClampedAndZoomed() {
+        XCTAssertEqual(MuxtermTerminalFont.zoomed(18, direction: 1), 19)
+        XCTAssertEqual(MuxtermTerminalFont.zoomed(18, direction: -1), 17)
+        XCTAssertEqual(MuxtermTerminalFont.zoomed(MuxtermTerminalFont.maxSize, direction: 1), MuxtermTerminalFont.maxSize)
+        XCTAssertEqual(MuxtermTerminalFont.zoomed(MuxtermTerminalFont.minSize, direction: -1), MuxtermTerminalFont.minSize)
+    }
+}
+
+final class MuxtermConfigTests: XCTestCase {
+    func testPoolMaxSlotsDefaultAndParse() {
+        XCTAssertEqual(MuxtermConfig.poolMaxSlots(from: nil), MuxtermConfig.defaultPoolMaxSlots)
+        XCTAssertEqual(MuxtermConfig.poolMaxSlots(from: "[pool]\nmax_slots = 8\n"), 8)
+        XCTAssertEqual(MuxtermConfig.poolMaxSlots(from: "[pool]\nmax_slots = 0\n"), MuxtermConfig.defaultPoolMaxSlots)
+        XCTAssertEqual(MuxtermConfig.poolMaxSlots(from: "[theme]\nname = \"dark\""), MuxtermConfig.defaultPoolMaxSlots)
     }
 }
 
@@ -807,6 +864,29 @@ final class KeyBindingsConfigTests: XCTestCase {
         let map = KeyBindingsConfig.parse(toml: toml)
         XCTAssertEqual(map[KeyChord(command: true, key: "1")], .switchTab(3))
         XCTAssertEqual(map[KeyChord(command: true, key: "p")], .quickConnect)
+    }
+
+    func testParseFontZoomBindings() {
+        let toml = """
+        [[keybindings]]
+        key = "="
+        mods = ["command"]
+        action = "increase_font_size"
+
+        [[keybindings]]
+        key = "-"
+        mods = ["command"]
+        action = "decrease_font_size"
+
+        [[keybindings]]
+        key = "0"
+        mods = ["command"]
+        action = "reset_font_size"
+        """
+        let map = KeyBindingsConfig.parse(toml: toml)
+        XCTAssertEqual(map[KeyChord(command: true, key: "=")], .increaseFontSize)
+        XCTAssertEqual(map[KeyChord(command: true, key: "-")], .decreaseFontSize)
+        XCTAssertEqual(map[KeyChord(command: true, key: "0")], .resetFontSize)
     }
 
     func testUnknownActionIgnored() {

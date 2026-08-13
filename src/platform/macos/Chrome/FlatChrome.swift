@@ -87,6 +87,104 @@ public enum MuxtermTerminalColors {
     }
 }
 
+/// 终端字体配置与缩放（纯逻辑，便于单测）。
+///
+/// 默认参考 alacritty 配置：Menlo 18pt。`[font]` 段来自
+/// `~/.config/muxterm/config.toml`，Cmd +/- / Cmd 0 在运行期缩放字号。
+public enum MuxtermTerminalFont {
+    public struct Settings: Equatable, Sendable {
+        public var family: String
+        public var size: CGFloat
+
+        public init(family: String = MuxtermTerminalFont.defaultFamily,
+                    size: CGFloat = MuxtermTerminalFont.defaultSize) {
+            self.family = family
+            self.size = size
+        }
+    }
+
+    public static let defaultFamily = "Menlo"
+    public static let defaultSize: CGFloat = 18
+    public static let minSize: CGFloat = 9
+    public static let maxSize: CGFloat = 36
+    public static let zoomStep: CGFloat = 1
+
+    public static func settings(from toml: String?) -> Settings {
+        guard let toml else { return Settings() }
+        var inFont = false
+        var family = defaultFamily
+        var size = defaultSize
+        for rawLine in toml.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                inFont = line == "[font]"
+                continue
+            }
+            guard inFont, let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            let rawValue = line[line.index(after: eq)...]
+                .trimmingCharacters(in: .whitespaces)
+            switch key {
+            case "family":
+                family = unquote(rawValue)
+            case "size":
+                if let v = Double(unquote(rawValue)) {
+                    size = CGFloat(v)
+                }
+            default:
+                break
+            }
+        }
+        return Settings(family: family.isEmpty ? defaultFamily : family, size: clamp(size))
+    }
+
+    /// 从当前字号按方向缩放（+1 增大 / -1 减小），并夹在合法区间。
+    public static func zoomed(_ size: CGFloat, direction: Int) -> CGFloat {
+        clamp(size + CGFloat(direction) * zoomStep)
+    }
+
+    public static func clamp(_ size: CGFloat) -> CGFloat {
+        min(max(size, minSize), maxSize)
+    }
+
+    private static func unquote(_ raw: String) -> String {
+        var v = raw.trimmingCharacters(in: .whitespaces)
+        if v.hasPrefix("\""), v.hasSuffix("\""), v.count >= 2 {
+            v.removeFirst()
+            v.removeLast()
+        }
+        return v
+    }
+}
+
+/// 主配置 `~/.config/muxterm/config.toml` 的轻量读取（纯逻辑，便于单测）。
+public enum MuxtermConfig {
+    /// 连接池 warm slot 上限；与 QuickConnect 的 recent 展示上限对齐。
+    public static let defaultPoolMaxSlots = 5
+
+    /// 读取 `[pool] max_slots`；缺省 / 非法回退默认值。
+    public static func poolMaxSlots(from toml: String?) -> Int {
+        guard let toml else { return defaultPoolMaxSlots }
+        var inPool = false
+        for rawLine in toml.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                inPool = line == "[pool]"
+                continue
+            }
+            guard inPool, let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            guard key == "max_slots" else { continue }
+            let rawValue = line[line.index(after: eq)...]
+                .trimmingCharacters(in: .whitespaces)
+            if let v = Int(rawValue), v >= 1 {
+                return v
+            }
+        }
+        return defaultPoolMaxSlots
+    }
+}
+
 /// tmux 控制模式的终端应答策略。
 ///
 /// tmux / daemon 代理拥有 pane 的 PTY 与终端协议，且 tmux 自己会代答

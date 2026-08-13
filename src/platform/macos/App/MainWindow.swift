@@ -40,14 +40,49 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
-    private let connectionPool = ConnectionPool<WarmConnectionSlot>(
-        policy: ConnectionPoolPolicy(maxSlots: 3)
-    )
+    private let connectionPool: ConnectionPool<WarmConnectionSlot>
+    /// 终端字体配置（config.toml `[font]`；Cmd +/- 缩放时保留 family）。
+    private var terminalFontSettings: MuxtermTerminalFont.Settings
+    /// Cmd +/- / Cmd 0 的字号持久化键（用户偏好覆盖 config 基础字号）。
+    private static let fontSizePreferenceKey = "muxterm.terminalFontSize"
+
+    private static func savedTerminalFontSize() -> CGFloat? {
+        guard let saved = UserDefaults.standard.object(forKey: fontSizePreferenceKey) as? Double else {
+            return nil
+        }
+        return CGFloat(saved)
+    }
+
+    private func currentTerminalFontSize() -> CGFloat {
+        Self.savedTerminalFontSize() ?? terminalFontSettings.size
+    }
 
     init(bridge: CoreBridge) {
+        let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8)
+        if let toml {
+            customKeybindings = KeyBindingsConfig.parse(toml: toml)
+            // 终端调色板跟随 [theme] name（默认深色，保证 agent/codex 深色
+            // 输入框里的默认前景文字可见）。
+            MuxtermTerminalColors.activePalette = MuxtermTerminalColors.palette(
+                forThemeName: MuxtermTerminalColors.themeName(from: toml)
+            )
+        }
+        let baseFont = MuxtermTerminalFont.settings(from: toml)
+        let savedSize = Self.savedTerminalFontSize() ?? baseFont.size
+        terminalFontSettings = MuxtermTerminalFont.Settings(
+            family: baseFont.family,
+            size: MuxtermTerminalFont.clamp(savedSize)
+        )
         self.bridge = bridge
-        self.terminalManager = TerminalManager(bridge: bridge)
+        self.terminalManager = TerminalManager(
+            bridge: bridge,
+            fontFamily: terminalFontSettings.family,
+            fontSize: terminalFontSettings.size
+        )
         self.content = ContentView(terminalManager: terminalManager)
+        connectionPool = ConnectionPool(
+            policy: ConnectionPoolPolicy(maxSlots: MuxtermConfig.poolMaxSlots(from: toml))
+        )
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
@@ -69,15 +104,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         quickConnectStore = QuickConnectStore(
             fileURL: configDir.appendingPathComponent("quickconnect.toml")
         )
-        // 自定义快捷键：~/.config/muxterm/config.toml 的 [[keybindings]]
-        if let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8) {
-            customKeybindings = KeyBindingsConfig.parse(toml: toml)
-            // 终端调色板跟随 [theme] name（默认深色，保证 agent/codex 深色
-            // 输入框里的默认前景文字可见）。
-            MuxtermTerminalColors.activePalette = MuxtermTerminalColors.palette(
-                forThemeName: MuxtermTerminalColors.themeName(from: toml)
-            )
-        }
         super.init(window: window)
         window.delegate = self
 
@@ -211,6 +237,35 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func splitVertical() {
         splitActivePane(horizontal: false)
+    }
+
+    @objc func increaseTerminalFontSize(_ sender: Any?) {
+        adjustTerminalFontSize(delta: 1)
+    }
+
+    @objc func decreaseTerminalFontSize(_ sender: Any?) {
+        adjustTerminalFontSize(delta: -1)
+    }
+
+    @objc func resetTerminalFontSize(_ sender: Any?) {
+        UserDefaults.standard.removeObject(forKey: Self.fontSizePreferenceKey)
+        terminalManager.setFont(
+            family: terminalFontSettings.family,
+            size: terminalFontSettings.size,
+            container: content.paneLayout
+        )
+    }
+
+    private func adjustTerminalFontSize(delta: Int) {
+        let current = currentTerminalFontSize()
+        let next = MuxtermTerminalFont.zoomed(current, direction: delta)
+        guard next != current else { return }
+        UserDefaults.standard.set(Double(next), forKey: Self.fontSizePreferenceKey)
+        terminalManager.setFont(
+            family: terminalFontSettings.family,
+            size: next,
+            container: content.paneLayout
+        )
     }
 
     @objc func setTabBarTop(_ sender: Any?) {
@@ -463,6 +518,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         bridge = slot.bridge
         terminalManager = slot.terminalManager
         content.paneLayout.replaceTerminalManager(slot.terminalManager)
+        // warm slot 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
+        // 避免旧 slot 还是切换前的小字体。
+        terminalManager.setFont(
+            family: terminalFontSettings.family,
+            size: currentTerminalFontSize(),
+            container: content.paneLayout
+        )
         lastSnapshot = slot.lastSnapshot
         reportedColourPanes.removeAll()
         tabSwitchGate = TabSwitchGate()
@@ -1206,6 +1268,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             openQuickConnect()
         case .quit:
             NSApp.terminate(nil)
+        case .increaseFontSize:
+            increaseTerminalFontSize(nil)
+        case .decreaseFontSize:
+            decreaseTerminalFontSize(nil)
+        case .resetFontSize:
+            resetTerminalFontSize(nil)
         }
         return true
     }

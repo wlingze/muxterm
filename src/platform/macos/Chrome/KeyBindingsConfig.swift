@@ -24,6 +24,9 @@ public enum KeyBindingsConfig {
         case "command_palette": return .commandPalette
         case "quick_connect": return .quickConnect
         case "quit": return .quit
+        case "increase_font_size": return .increaseFontSize
+        case "decrease_font_size": return .decreaseFontSize
+        case "reset_font_size": return .resetFontSize
         default:
             // switch_tab_N
             if name.hasPrefix("switch_tab_"),

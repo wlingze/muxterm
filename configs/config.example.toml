@@ -7,8 +7,12 @@
 
 # 字体
 [font]
-family = "JetBrains Mono"
-size = 13.0
+family = "Menlo"
+size = 18.0
+
+# 连接池：warm 连接上限（同时决定 QuickConnect Recent 显示条数上限）
+[pool]
+max_slots = 5
 
 # 主题（对应 configs/themes/<name>.toml）
 [theme]

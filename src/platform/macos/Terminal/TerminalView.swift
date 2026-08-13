@@ -9,6 +9,8 @@ import SwiftTerm
 final class MuxTerminalView: TerminalView {
     /// 对应 muxterm pane id。
     let paneId: UInt32
+    private var fontFamily: String
+    private(set) var fontSize: CGFloat
     weak var inputHandler: TerminalInputHandler?
     /// tmux 控制模式下，SwiftTerm 解析 pane 输出时生成的查询应答（OSC 10/11、
     /// CSI DA/DSR、DCS 等）必须丢弃：tmux 拥有 pane 的 PTY 与终端协议，应答
@@ -41,11 +43,19 @@ final class MuxTerminalView: TerminalView {
     private var lastModelCols = 0
     private var lastModelRows = 0
 
-    init(paneId: UInt32, frame: NSRect = .zero) {
+    init(
+        paneId: UInt32,
+        fontFamily: String = MuxtermTerminalFont.defaultFamily,
+        fontSize: CGFloat = MuxtermTerminalFont.defaultSize,
+        frame: NSRect = .zero
+    ) {
         self.paneId = paneId
+        self.fontFamily = fontFamily
+        self.fontSize = MuxtermTerminalFont.clamp(fontSize)
         super.init(frame: frame)
         terminalDelegate = self
         wantsLayer = true
+        font = Self.makeFont(family: fontFamily, size: self.fontSize)
         // 固定深色主题：codex/cursor 的输入框是深色，默认前景必须是浅色，
         // 否则黑字黑框看不见；同时也作为 OSC 10/11 上报给 tmux 的颜色。
         nativeForegroundColor = Self.color(hex: MuxtermTerminalColors.activePalette.fg)
@@ -204,6 +214,22 @@ final class MuxTerminalView: TerminalView {
         if let layer {
             layer.setNeedsDisplay()
         }
+    }
+
+    /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。
+    func setFont(family: String? = nil, size: CGFloat? = nil) {
+        if let family, !family.isEmpty {
+            fontFamily = family
+        }
+        if let size {
+            fontSize = MuxtermTerminalFont.clamp(size)
+        }
+        font = Self.makeFont(family: fontFamily, size: fontSize)
+    }
+
+    private static func makeFont(family: String, size: CGFloat) -> NSFont {
+        NSFont(name: family, size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     /// 覆写 SwiftTerm 模拟器输出通道：只有 `Terminal.sendResponse` /
