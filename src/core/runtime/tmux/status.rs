@@ -572,4 +572,33 @@ status-justify centre
             .args(["-L", &socket, "kill-server"])
             .output();
     }
+
+    /// SSH 端到端（只读）：验证远端 status 快照能正确取回并合并
+    /// `status-bg/fg`。需要可达的 SSH alias，默认忽略；
+    /// 本地验证：MUXTERM_TEST_SSH_ALIAS=ryzen cargo test ... -- --ignored。
+    #[test]
+    #[ignore = "需要可达的 SSH alias（MUXTERM_TEST_SSH_ALIAS）"]
+    fn fetch_ssh_snapshot_reads_remote_status() {
+        let alias = match std::env::var("MUXTERM_TEST_SSH_ALIAS") {
+            Ok(v) if !v.trim().is_empty() => v,
+            _ => return,
+        };
+        let session = std::env::var("MUXTERM_TEST_SSH_SESSION")
+            .unwrap_or_else(|_| "yaklang-workspace".into());
+        let cfg = StatusQueryConfig {
+            socket: None,
+            ssh_alias: Some(alias),
+            session,
+        };
+        let snap = fetch_snapshot(&cfg).expect("SSH status 快照应可读");
+        assert!(snap.enabled);
+        // 远端全局配置 status-bg colour234；有效 style 必须包含它，
+        // 而不是 tmux 默认 green。
+        assert!(
+            snap.status_style.contains("colour234"),
+            "SSH status 应合并远端 status-bg: {}",
+            snap.status_style
+        );
+        assert!(!snap.windows.is_empty());
+    }
 }
