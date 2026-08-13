@@ -33,6 +33,17 @@ pub struct KeyMap {
     map: HashMap<(String, ModSet), Action>,
 }
 
+/// 特殊键（Return/plus/minus/F 键等）按键名匹配。
+fn is_special_key_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "plus" | "minus" | "return" | "kp_enter" | "escape" | "tab" | "backspace" | "delete"
+            | "up" | "down" | "left" | "right" | "home" | "end" | "insert" | "page_up"
+            | "page_down" | "kp_add" | "kp_subtract"
+    ) || (name.starts_with('F') && name[1..].chars().all(|c| c.is_ascii_digit()))
+        || (name.starts_with("KP_") && name[3..].chars().all(|c| c.is_ascii_digit()))
+}
+
 impl KeyMap {
     pub fn from_bindings(bindings: &[KeyBinding]) -> Self {
         let mut map = HashMap::new();
@@ -46,10 +57,14 @@ impl KeyMap {
 
     /// 查找匹配的 action。
     pub fn lookup(&self, keyval: gdk::Key, mods: gdk::ModifierType) -> Option<Action> {
-        // 优先用 keyval 的 unicode 字符（区分大小写）
-        let key_str = match keyval.to_unicode() {
-            Some(c) => c.to_string(),
-            None => keyval.name()?.to_string().to_lowercase(),
+        // 特殊键（Return/plus/minus/F 键等）按键名匹配（大小写不敏感）；
+        // 普通字符键优先用 unicode（区分大小写），保证 `d` 与 `D` 不同。
+        let key_str = match keyval.name() {
+            Some(name) if is_special_key_name(&name) => name.to_lowercase(),
+            _ => match keyval.to_unicode() {
+                Some(c) => c.to_string(),
+                None => keyval.name()?.to_string().to_lowercase(),
+            },
         };
         let modset = ModSet::from_modifiers(modifiers_from_gdk(mods));
         self.map.get(&(key_str, modset)).copied()
@@ -151,6 +166,29 @@ mod tests {
     fn test_keymap_empty_bindings_lookup_none() {
         let km = KeyMap::from_bindings(&[]);
         assert_eq!(km.lookup_str("n", &["alt"]), None);
+    }
+
+    /// 对应：Alt+Q 快速连接。
+    #[test]
+    fn test_keymap_alt_q_quick_connect() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("q", &["alt"]), Some(Action::QuickConnect));
+    }
+
+    /// 对应：Ctrl+Plus/Minus/0 字体缩放。
+    #[test]
+    fn test_keymap_font_zoom_bindings() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("plus", &["control"]), Some(Action::IncreaseFontSize));
+        assert_eq!(km.lookup_str("minus", &["control"]), Some(Action::DecreaseFontSize));
+        assert_eq!(km.lookup_str("0", &["control"]), Some(Action::ResetFontSize));
+    }
+
+    /// 对应：Ctrl+Return 切换 pane 全屏。
+    #[test]
+    fn test_keymap_ctrl_return_pane_fullscreen() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("return", &["control"]), Some(Action::TogglePaneFullscreen));
     }
 
     #[test]

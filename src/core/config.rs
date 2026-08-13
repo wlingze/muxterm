@@ -3,6 +3,8 @@
 //! 顶层 `~/.config/muxterm/config.toml`：
 //! - `[font]` family / size
 //! - `[theme]` name
+//! - `[statusbar]` mode（tmux / theme）
+//! - `[pool]` max_slots（warm 连接上限）
 //! - `[tmux]` auto_mouse / default_session
 //! - `[ssh]` host / port / user / key_path
 //! - `[scrollback]` lines
@@ -29,6 +31,10 @@ pub struct Config {
     pub font: FontConfig,
     #[serde(default)]
     pub theme: ThemeConfig,
+    #[serde(default)]
+    pub statusbar: StatusbarConfig,
+    #[serde(default)]
+    pub pool: PoolConfig,
     #[serde(default)]
     pub tmux: TmuxConfig,
     #[serde(default)]
@@ -81,6 +87,43 @@ impl Default for ThemeConfig {
     fn default() -> Self {
         ThemeConfig {
             name: default_theme(),
+        }
+    }
+}
+
+/// `[statusbar]`：muxterm 状态栏渲染模式。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatusbarConfig {
+    /// `tmux`（默认）= 有 tmux 就跟 tmux 的 status 配置与颜色一致；
+    /// `theme` = 只用 muxterm 主题黑/白渲染，忽略 tmux 配色。
+    #[serde(default = "default_statusbar_mode")]
+    pub mode: String,
+}
+fn default_statusbar_mode() -> String {
+    "tmux".into()
+}
+impl Default for StatusbarConfig {
+    fn default() -> Self {
+        StatusbarConfig {
+            mode: default_statusbar_mode(),
+        }
+    }
+}
+
+/// `[pool]`：QuickConnect warm connection pool 上限。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PoolConfig {
+    /// 同时保留的 warm 连接数（同时决定 Recent 显示条数上限）。
+    #[serde(default = "default_pool_max_slots")]
+    pub max_slots: u32,
+}
+fn default_pool_max_slots() -> u32 {
+    5
+}
+impl Default for PoolConfig {
+    fn default() -> Self {
+        PoolConfig {
+            max_slots: default_pool_max_slots(),
         }
     }
 }
@@ -306,6 +349,8 @@ impl Default for Config {
         Config {
             font: FontConfig::default(),
             theme: ThemeConfig::default(),
+            statusbar: StatusbarConfig::default(),
+            pool: PoolConfig::default(),
             tmux: TmuxConfig::default(),
             ssh: SshFileConfig::default(),
             scrollback: ScrollbackConfig::default(),
@@ -458,6 +503,12 @@ pub enum Action {
     SwitchPaneNext,
     Search,
     CommandPalette,
+    QuickConnect,
+    Quit,
+    IncreaseFontSize,
+    DecreaseFontSize,
+    ResetFontSize,
+    TogglePaneFullscreen,
     /// 未知动作（保留原始字符串，匹配时忽略）。
     Unknown,
 }
@@ -484,6 +535,12 @@ impl Action {
             "switch_pane_next" => Action::SwitchPaneNext,
             "search" => Action::Search,
             "command_palette" => Action::CommandPalette,
+            "quick_connect" => Action::QuickConnect,
+            "quit" => Action::Quit,
+            "increase_font_size" => Action::IncreaseFontSize,
+            "decrease_font_size" => Action::DecreaseFontSize,
+            "reset_font_size" => Action::ResetFontSize,
+            "toggle_pane_fullscreen" => Action::TogglePaneFullscreen,
             _ => Action::Unknown,
         }
     }
@@ -513,6 +570,11 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         kb("]", &["alt"], "switch_pane_next"),
         kb("r", &["alt"], "search"),
         kb("p", &["alt"], "command_palette"),
+        kb("q", &["alt"], "quick_connect"),
+        kb("plus", &["control"], "increase_font_size"),
+        kb("minus", &["control"], "decrease_font_size"),
+        kb("0", &["control"], "reset_font_size"),
+        kb("return", &["control"], "toggle_pane_fullscreen"),
     ]
 }
 
