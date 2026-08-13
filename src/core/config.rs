@@ -331,6 +331,15 @@ pub fn expand_config_value(raw: &str) -> String {
             return v;
         }
     }
+    // QuickConnect/配置文件里的 `~` / `~/...`：展开成用户主目录，否则
+    // tmux new-session -c / local shell cwd 会拿到字面 `~` 报 ENOENT。
+    if t == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    }
+    if let Some(rest) = t.strip_prefix("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        return format!("{}/{}", home.trim_end_matches('/'), rest);
+    }
     t.to_string()
 }
 
@@ -1037,6 +1046,11 @@ on_program_exit_abnormal = "close"
         assert_eq!(expand_config_value("$SHELL"), shell);
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         assert_eq!(expand_config_value("$HOME"), home);
+        assert_eq!(expand_config_value("~"), home);
+        assert_eq!(
+            expand_config_value("~/Developer/muxterm"),
+            format!("{}/Developer/muxterm", home.trim_end_matches('/'))
+        );
         assert_eq!(expand_config_value("/bin/bash"), "/bin/bash");
         assert_eq!(
             parse_command_argv("/usr/bin/python3 script.py"),

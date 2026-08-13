@@ -3,6 +3,7 @@
 pub mod buffer_cap;
 pub mod config;
 pub mod discovery;
+pub mod executable;
 pub mod logging;
 pub mod model;
 pub mod protocol;

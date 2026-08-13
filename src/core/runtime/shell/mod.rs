@@ -431,7 +431,7 @@ impl LocalBackend {
             anyhow::bail!("启动命令为空");
         }
         let workdir = workdir
-            .map(|s| s.to_string())
+            .map(expand_config_value)
             .unwrap_or_else(|| expand_config_value(&self.default_workdir));
 
         let pty_system = NativePtySystem::default();

@@ -362,7 +362,7 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
 /// 执行 `tmux -L <socket> list-sessions -F '...'`，解析 TSV 输出。
 /// 不建立 tmux -CC 控制连接，只是一次性 exec。
 pub fn list_local_tmux_sessions(socket: Option<&str>) -> Vec<TmuxSessionInfo> {
-    let mut cmd = std::process::Command::new("tmux");
+    let mut cmd = std::process::Command::new(crate::core::executable::resolve_tmux_binary());
     if let Some(s) = socket {
         cmd.args(["-L", s]);
     }
@@ -388,11 +388,13 @@ pub fn create_local_tmux_session(
     session: &str,
     directory: &str,
 ) -> anyhow::Result<()> {
-    let mut cmd = std::process::Command::new("tmux");
+    let mut cmd = std::process::Command::new(crate::core::executable::resolve_tmux_binary());
     if let Some(socket) = socket {
         cmd.args(["-L", socket]);
     }
-    cmd.args(["new-session", "-d", "-s", session, "-c", directory]);
+    // 展开 `~`：QuickConnect 的 path 常写 `~/Developer/...`，tmux 不认字面 ~。
+    let directory = crate::core::config::expand_config_value(directory);
+    cmd.args(["new-session", "-d", "-s", session, "-c", &directory]);
     let output = cmd.output()?;
     if output.status.success() {
         Ok(())

@@ -204,7 +204,10 @@ impl TmuxClient {
     pub async fn spawn_pty(
         config: TmuxClientConfig,
     ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
-        let bin = config.tmux_bin.clone().unwrap_or_else(|| "tmux".into());
+        let bin = config
+            .tmux_bin
+            .clone()
+            .unwrap_or_else(crate::core::executable::resolve_tmux_binary);
         let argv = build_argv(&config);
         let arg_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         let cols = config.cols.unwrap_or(80) as u16;
@@ -235,7 +238,10 @@ impl TmuxClient {
     pub async fn spawn_direct(
         config: TmuxClientConfig,
     ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
-        let bin = config.tmux_bin.clone().unwrap_or_else(|| "tmux".into());
+        let bin = config
+            .tmux_bin
+            .clone()
+            .unwrap_or_else(crate::core::executable::resolve_tmux_binary);
         let mut cmd = tokio::process::Command::new(&bin);
         let argv = build_argv(&config);
         for a in &argv {
