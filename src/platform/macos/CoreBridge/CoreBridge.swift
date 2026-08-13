@@ -165,6 +165,12 @@ final class CoreBridge {
     private var handle: OpaquePointer?
     /// 当前连接的后端类型；tmux/ssh 都通过控制 client 同步整体尺寸。
     let backendType: String
+    /// tmux `-L` socket 名（可选）。
+    var socket: String?
+    /// tmux session 名（可选）。
+    var session: String?
+    /// SSH `~/.ssh/config` alias（可选；用于 status 快照的只读查询）。
+    var sshAlias: String?
     /// 最近一次 BackendStatus（pane_id 字段复用状态码）。
     private(set) var lastStatus: UInt32 = 2 // Connected
     private var pendingError: String?
@@ -307,6 +313,9 @@ final class CoreBridge {
     init(backendType: String = "local", socket: String? = nil, session: String? = nil) throws {
         let normalizedBackendType = backendType.lowercased()
         self.backendType = normalizedBackendType
+        self.socket = socket
+        self.session = session
+        self.sshAlias = nil
         let handle = normalizedBackendType.withCString { btPtr in
             Self.withOptionalCString(socket) { sockPtr in
                 Self.withOptionalCString(session) { sessPtr in
@@ -360,7 +369,28 @@ final class CoreBridge {
         }
         let bridge = try CoreBridge()
         bridge.handle = handle
+        bridge.socket = socket
+        bridge.session = session
+        bridge.sshAlias = sshAlias
         return bridge
+    }
+
+    /// 抓取 status bar 快照（只读查询，tmux 兼容），返回 JSON 文本。
+    func statusBarSnapshotJSON() -> String? {
+        guard let handle else { return nil }
+        return backendType.withCString { bt in
+            Self.withOptionalCString(sshAlias) { alias in
+                Self.withOptionalCString(socket) { sock in
+                    Self.withOptionalCString(session) { sess in
+                        guard let p = muxterm_status_snapshot_json(bt, alias, sock, sess) else {
+                            return nil
+                        }
+                        defer { muxterm_free_string(p) }
+                        return String(cString: p)
+                    }
+                }
+            }
+        }
     }
 
     deinit {

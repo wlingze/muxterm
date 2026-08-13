@@ -83,7 +83,8 @@ let package = Package(
                 "Terminal/TerminalManager.swift",
                 "UI/TabBar.swift",
                 "UI/PaneLayout.swift",
-                "UI/StatusBar.swift",
+                "UI/ConnectionStatusView.swift",
+                "UI/StatusBarView.swift",
             ],
             resources: [
                 .process("Resources"),

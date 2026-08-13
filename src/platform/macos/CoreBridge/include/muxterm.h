@@ -124,6 +124,12 @@ char* muxterm_discover_tmux_sessions_json(
     const char* config_path,
     uint32_t timeout_ms
 );
+char* muxterm_status_snapshot_json(
+    const char* backend_type,
+    const char* target,
+    const char* socket,
+    const char* session
+);
 char* muxterm_create_tmux_session_json(
     const char* backend_type,
     const char* target,

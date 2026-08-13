@@ -1,0 +1,111 @@
+import XCTest
+@testable import MuxtermChrome
+
+final class StatusBarColorTests: XCTestCase {
+    func testNamedAndXtermColors() {
+        XCTAssertEqual(StatusBarStyleParser.color("red"), StatusBarColor(red: 205 / 255, green: 49 / 255, blue: 49 / 255))
+        XCTAssertEqual(StatusBarStyleParser.color("brightwhite"), StatusBarColor(red: 1, green: 1, blue: 1))
+        XCTAssertEqual(StatusBarStyleParser.color("colour0"), StatusBarColor(red: 0, green: 0, blue: 0))
+        // xterm 灰度：colour232=8, colour255=238。
+        XCTAssertEqual(StatusBarStyleParser.color("colour255"), StatusBarColor(red: 238 / 255, green: 238 / 255, blue: 238 / 255))
+        XCTAssertEqual(StatusBarStyleParser.color("colour231"), StatusBarColor(red: 1, green: 1, blue: 1))
+        XCTAssertEqual(StatusBarStyleParser.color("#abc"), StatusBarColor(red: 170 / 255, green: 187 / 255, blue: 204 / 255))
+        XCTAssertNil(StatusBarStyleParser.color("default"))
+        XCTAssertNil(StatusBarStyleParser.color("bogus"))
+    }
+
+    func testXtermCubeAndGray() {
+        XCTAssertEqual(StatusBarStyleParser.xterm256(16), StatusBarColor(red: 0, green: 0, blue: 0))
+        XCTAssertEqual(StatusBarStyleParser.xterm256(231), StatusBarColor(red: 1, green: 1, blue: 1))
+        XCTAssertEqual(StatusBarStyleParser.xterm256(232), StatusBarColor(red: 8 / 255, green: 8 / 255, blue: 8 / 255))
+        XCTAssertNil(StatusBarStyleParser.xterm256(256))
+    }
+}
+
+final class StatusBarStyleParserTests: XCTestCase {
+    func testParseStyleString() {
+        let style = StatusBarStyleParser.parse(style: "bg=green,fg=black,bold")
+        XCTAssertEqual(style.fg, StatusBarStyleParser.color("black"))
+        XCTAssertEqual(style.bg, StatusBarStyleParser.color("green"))
+        XCTAssertTrue(style.bold)
+        XCTAssertFalse(style.reverse)
+    }
+
+    func testParseStyleDefault() {
+        XCTAssertEqual(StatusBarStyleParser.parse(style: "default"), .default)
+        XCTAssertEqual(StatusBarStyleParser.parse(style: ""), .default)
+    }
+
+    func testParseInlineSegments() {
+        let segments = StatusBarStyleParser.parseInline(
+            text: "#[fg=colour233,bg=colour241,bold] 13/08 #[fg=colour233,bg=colour245,nobold] 13:50 ",
+            base: .default
+        )
+        XCTAssertEqual(segments.count, 2)
+        XCTAssertEqual(segments[0].text, " 13/08 ")
+        XCTAssertEqual(segments[0].style.fg, StatusBarStyleParser.color("colour233"))
+        XCTAssertEqual(segments[0].style.bg, StatusBarStyleParser.color("colour241"))
+        XCTAssertTrue(segments[0].style.bold)
+        XCTAssertEqual(segments[1].style.fg, StatusBarStyleParser.color("colour233"))
+        XCTAssertEqual(segments[1].style.bg, StatusBarStyleParser.color("colour245"))
+        XCTAssertFalse(segments[1].style.bold)
+    }
+
+    func testParseInlineDefaultResetsToBase() {
+        let base = StatusBarTextStyle(fg: StatusBarStyleParser.color("white"), bg: StatusBarStyleParser.color("black"), bold: true)
+        let segments = StatusBarStyleParser.parseInline(
+            text: "A#[default]B#[fg=red]C",
+            base: base
+        )
+        XCTAssertEqual(segments.count, 3)
+        XCTAssertEqual(segments[0].style, base)
+        // `#[default]` 回到传入的 base（status-style），而不是无样式。
+        XCTAssertEqual(segments[1].style, base)
+        XCTAssertEqual(segments[2].style.fg, StatusBarStyleParser.color("red"))
+        // 未覆盖的属性（bg）保持 base。
+        XCTAssertEqual(segments[2].style.bg, base.bg)
+    }
+}
+
+final class StatusBarSnapshotDecodingTests: XCTestCase {
+    func testDecodeSnapshotJSON() throws {
+        let json = """
+        {
+          "ok": true,
+          "status": {
+            "enabled": true,
+            "position": "bottom",
+            "justify": "left",
+            "interval": 15,
+            "left": " foo ",
+            "right": "#[fg=colour233,bg=colour241,bold] 13/08 ",
+            "left_length": 20,
+            "right_length": 50,
+            "status_style": "bg=green,fg=black",
+            "left_style": "default",
+            "right_style": "default",
+            "separator": " ",
+            "window_format": " #I#[fg=colour237]:#[fg=colour250]#W#[fg=colour244]#F ",
+            "window_current_format": " #I#[fg=colour250]:#[fg=colour255]#W#[fg=colour50]#F ",
+            "window_style": "default",
+            "window_current_style": "default",
+            "windows": [
+              { "window_id": 0, "index": 1, "name": "sleep", "flags": "*", "current": true, "text": " 1#[fg=colour237]:#[fg=colour250]sleep#[fg=colour244]* " }
+            ],
+            "error": null
+          }
+        }
+        """
+        let response = try JSONDecoder().decode(StatusBarResponse.self, from: Data(json.utf8))
+        XCTAssertTrue(response.ok)
+        let snapshot = try XCTUnwrap(response.status)
+        XCTAssertTrue(snapshot.enabled)
+        XCTAssertEqual(snapshot.position, "bottom")
+        XCTAssertEqual(snapshot.windows.count, 1)
+        XCTAssertEqual(snapshot.windows[0].windowId, 0)
+        XCTAssertEqual(snapshot.windows[0].index, 1)
+        XCTAssertTrue(snapshot.windows[0].current)
+        let segments = StatusBarStyleParser.parseInline(text: snapshot.right)
+        XCTAssertFalse(segments.isEmpty)
+    }
+}

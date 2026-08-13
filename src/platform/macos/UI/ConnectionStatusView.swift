@@ -2,7 +2,9 @@ import AppKit
 import MuxtermChrome
 
 /// 底部一行状态：连接态 + tabs/panes/活跃 pane；输出片段仅供 XCUITest AX。
-final class StatusBarView: NSView {
+/// 一行连接状态（连接状态 / tabs / panes / 最近输出片段）。
+/// 与主 status bar（`StatusBarView`）分开：这是 muxterm 自己的状态摘要行。
+final class ConnectionStatusView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let outputProbe = NSTextField(labelWithString: "")
     private let edgeLine = CALayer()

@@ -33,6 +33,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 已向 tmux 上报过颜色的 pane（`refresh-client -r` 只需每个 pane 一次；
     /// 外观变化时清空重报）。
     private var reportedColourPanes = Set<UInt32>()
+    /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
+    private var statusBarSnapshot: StatusBarSnapshot?
+    private var statusRefreshTimer: Timer?
+    private var lastStatusFetchAt = Date.distantPast
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
@@ -121,8 +125,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 size: size
             )
         }
+        content.statusBar.onSelectWindow = { [weak self] tabId in
+            self?.requestSwitchTab(tabId)
+        }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
-            self?.content.statusBar.updateOutputSnippet(snippet)
+            self?.content.connectionStatus.updateOutputSnippet(snippet)
         }
         terminalManager.onError = { [weak self] message in
             self?.reportStatusError(message)
@@ -149,6 +156,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             connectionPool.shutdownAll()
             bridge.shutdown()
         }
+        statusRefreshTimer?.invalidate()
     }
 
     // MARK: - 公开动作（菜单 / 快捷键）
@@ -461,6 +469,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = true
         refreshUI()
         focusActiveTerminal()
+        refreshStatusBar(force: true)
         // 若旧 bridge 不在 pool（初始连接或非 pool 路径），切走后直接回收；
         // pool 内的旧 slot 由 acquire 降为 background，保持 warm。
         let oldIsPooled = connectionPool.slots.values.contains { $0.bridge === oldBridge }
@@ -984,10 +993,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 maybeCloseIfSessionEnded()
             }
         } else if outputSeen {
-            content.statusBar.update(snapshot: lastSnapshot)
+            content.connectionStatus.update(snapshot: lastSnapshot)
             // 颜色上报只依赖 refreshUI 时，attach 后没有结构事件就永远不会
             // 触发（日志里没有 refresh-client -r 的原因）。纯输出也要补报。
             reportPaneColoursIfNeeded(lastSnapshot.panes)
+        }
+        if needsLayoutReload {
+            // 结构事件（窗口增删/重命名/布局变化）后刷新 status bar。
+            refreshStatusBar(force: false)
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
         for item in pendingOutputs {
@@ -1005,13 +1018,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if needsLayoutReload, tabSwitchGate.isReleased() {
             if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
                 needsLayoutReload = false
-                content.statusBar.clearLayoutSyncError()
+                content.connectionStatus.clearLayoutSyncError()
             } else {
-                content.statusBar.showLayoutSyncing()
+                content.connectionStatus.showLayoutSyncing()
             }
         }
-        content.statusBar.update(snapshot: snap)
-        content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
+        content.connectionStatus.update(snapshot: snap)
+        content.connectionStatus.updateOutputSnippet(terminalManager.recentOutputSnippet)
 
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
             let view = terminalManager.view(for: activePane)
@@ -1040,7 +1053,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func reportStatusError(_ message: String) {
-        content.statusBar.showError(message)
+        content.connectionStatus.showError(message)
     }
 
     /// 新出现的 pane 需要把客户端主题色上报给 tmux，否则 tmux 代答
@@ -1056,11 +1069,51 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// 抓取并应用 tmux status bar 快照（只读查询，后台执行）。
+    private func refreshStatusBar(force: Bool) {
+        guard terminalManager.usesClientResize else { return }
+        if !force, Date().timeIntervalSince(lastStatusFetchAt) < 2 {
+            return
+        }
+        lastStatusFetchAt = Date()
+        let bridge = self.bridge
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let json = bridge.statusBarSnapshotJSON(),
+                  let data = json.data(using: .utf8),
+                  let response = try? JSONDecoder().decode(StatusBarResponse.self, from: data),
+                  response.ok,
+                  let snapshot = response.status
+            else {
+                return
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.statusBarSnapshot = snapshot
+                self.content.applyStatusBar(snapshot)
+                self.scheduleStatusRefresh(snapshot)
+            }
+        }
+    }
+
+    /// 按 tmux `status-interval` 周期刷新（时钟/时间类 right 段需要）。
+    private func scheduleStatusRefresh(_ snapshot: StatusBarSnapshot) {
+        statusRefreshTimer?.invalidate()
+        guard snapshot.enabled else { return }
+        let interval = TimeInterval(max(5, Int(snapshot.interval)))
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.refreshStatusBar(force: true)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        statusRefreshTimer = timer
+    }
+
     private func closeSessionWindow() {
         guard !isClosing else { return }
         isClosing = true
         pollTimer?.invalidate()
         pollTimer = nil
+        statusRefreshTimer?.invalidate()
+        statusRefreshTimer = nil
         connectionPool.shutdownAll()
         bridge.shutdown()
         window?.close()
@@ -1077,6 +1130,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         isClosing = true
         pollTimer?.invalidate()
         pollTimer = nil
+        statusRefreshTimer?.invalidate()
+        statusRefreshTimer = nil
         // Task::Detach 已关闭 control channel；这里仅回收 core handle，
         // 不会再次发送 detach-client 或杀 tmux session。
         bridge.shutdown()

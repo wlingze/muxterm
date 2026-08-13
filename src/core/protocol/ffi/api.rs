@@ -242,6 +242,49 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
     .unwrap_or_else(|_| json_error("tmux session discovery panic"))
 }
 
+/// 抓取 status bar 快照（tmux 兼容：`show -g` / `show -w -g` + `display-message`）。
+///
+/// `backend_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是
+/// `~/.ssh/config` 的 alias。返回 `{"ok":true,"status":{...}}` JSON 字符串，
+/// 由 [`muxterm_free_string`] 释放。只读命令，不干扰控制客户端。
+#[no_mangle]
+pub extern "C" fn muxterm_status_snapshot_json(
+    backend_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    session: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let backend = cstr_opt(backend_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let ssh_alias = if backend == "ssh" {
+            cstr_opt(target)
+        } else {
+            None
+        };
+        let session = match cstr_opt(session) {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => {
+                return json_error("session 为空");
+            }
+        };
+        let cfg = crate::core::runtime::tmux::status::StatusQueryConfig {
+            socket: cstr_opt(socket),
+            ssh_alias,
+            session,
+        };
+        match crate::core::runtime::tmux::status::fetch_snapshot(&cfg) {
+            Ok(status) => json_string(serde_json::json!({
+                "ok": true,
+                "status": status,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("status snapshot panic"))
+}
+
 /// 通过 core 创建 detached tmux session，随后由调用方使用同一 alias/session
 /// 进入控制模式。返回 `{"ok":true,"session":"..."}`，字符串由
 /// [`muxterm_free_string`] 释放。
