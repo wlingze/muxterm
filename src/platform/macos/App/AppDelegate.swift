@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Thread.sleep(forTimeInterval: 0.3)
                 _ = bridge.pollEvents()
             }
-            let wc = MainWindowController(bridge: bridge)
+            let wc = MainWindowController(bridge: bridge, debug: options.debug)
             mainWindow = wc
             buildMenu(windowController: wc)
             languageObserver = NotificationCenter.default.addObserver(

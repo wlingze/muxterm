@@ -63,7 +63,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         Self.savedTerminalFontSize() ?? terminalFontSettings.size
     }
 
-    init(bridge: CoreBridge) {
+    init(bridge: CoreBridge, debug: Bool = false) {
         let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8)
         if let toml {
             customKeybindings = KeyBindingsConfig.parse(toml: toml)
@@ -87,6 +87,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             fontSize: terminalFontSettings.size
         )
         self.content = ContentView(terminalManager: terminalManager)
+        content.connectionStatus.isDebug = debug
         // status bar 配色来源：默认 GUI 黑白；`[statusbar] color_mode = "tmux"`
         // 时完全采用 tmux 样式。
         content.statusBar.colorMode = Self.currentStatusBarMode(
