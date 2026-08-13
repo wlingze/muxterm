@@ -181,17 +181,16 @@ final class AgentInputRenderRegressionTests: XCTestCase {
         var out: [UInt8] = []
         func add(_ s: String) { out.append(contentsOf: Array(s.utf8)) }
         add("  Cursor Agent\r\n")
-        add("  v2026.08.11-e8db854\r\n")
         add("  Tip: Use /debug to instrument and debug complex problems.\r\n")
-        add("\r\n\r\n\r\n\r\n")
+        add("\r\n")
         add(" \u{1b}[48;2;242;242;242m")
-        add(String(repeating: " ", count: 90))
+        add(String(repeating: " ", count: 91))
         add("\u{1b}[49m\r\n")
         add(" \u{1b}[48;2;242;242;242m → [Pasted text #1 +25 lines] 目前遇到问题，")
-        add(String(repeating: " ", count: 50))
+        add(String(repeating: " ", count: 48))
         add("\u{1b}[49m\r\n")
         add(" \u{1b}[48;2;242;242;242m")
-        add(String(repeating: " ", count: 90))
+        add(String(repeating: " ", count: 91))
         add("\u{1b}[49m\r\n")
         add("\r\n")
         add("  Cursor Grok 4.5 High · ctx 0% · feature-syntaxflow\r\n")
@@ -210,5 +209,39 @@ final class AgentInputRenderRegressionTests: XCTestCase {
             }
         }
         return -1
+    }
+
+    /// 1745：codex 的 erase-up 帧按 pane 真实宽度（93 列）生成；如果
+    /// SwiftTerm 模型在喂帧时还是默认宽度（80/120），长行折行、内容高度
+    /// 超过 erase-up 的 8 行，每帧下移一行、最终输入不可见。预先 resize
+    /// 到 pane 宽度再喂帧必须稳定。
+    func testRedrawStableWhenModelWidthMatchesPaneWidth() {
+        func run(initialCols: Int, resizeTo: Int?, frames: Int) -> [Int] {
+            let terminal = makeTerminal(cols: initialCols, rows: 50)
+            if let resizeTo {
+                terminal.resize(cols: resizeTo, rows: 50)
+            }
+            var rows: [Int] = []
+            for _ in 0..<frames {
+                var frame: [UInt8] = []
+                for _ in 0..<8 { frame += Array("\u{1b}[2K\u{1b}[1A".utf8) }
+                frame += Array("\u{1b}[G".utf8)
+                frame += redrawContent()
+                terminal.feed(byteArray: frame)
+                rows.append(inputRow(terminal))
+            }
+            return rows
+        }
+
+        // 默认宽度（80 列）直接喂帧：折行，复现 1745 漂移（记录，不硬断言）。
+        let atDefault = run(initialCols: 80, resizeTo: nil, frames: 3)
+        print("1745 redraw at default width rows=\(atDefault)")
+        // 预先 resize 到 pane 真实宽度 93：同一帧内容不折行 → 必须稳定。
+        let at93 = run(initialCols: 80, resizeTo: 93, frames: 8)
+        XCTAssertEqual(
+            Set(at93).count,
+            1,
+            "先同步模型宽度再喂帧应稳定，实际 \(at93)"
+        )
     }
 }

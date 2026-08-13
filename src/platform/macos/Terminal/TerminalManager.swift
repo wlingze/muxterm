@@ -5,6 +5,10 @@ import MuxtermChrome
 final class TerminalManager: TerminalInputHandler {
     private weak var bridge: CoreBridge?
     private var views: [UInt32: MuxTerminalView] = [:]
+    /// 后端报告的 pane 字符格尺寸：视图创建时先按它 resize SwiftTerm 模型，
+    /// 再喂快照/增量。否则模型默认 80 列，codex 的 93 列帧会折行、erase-up
+    /// 行数对不上，输入内容逐帧滚出屏幕（1745）。
+    private var expectedPaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
     private var fontFamily: String
     private var fontSize: CGFloat
     /// 本轮 poll 批次内新建的视图：播种快照已覆盖该批次所有已入队的
@@ -58,6 +62,7 @@ final class TerminalManager: TerminalInputHandler {
             view.removeFromSuperview()
         }
         views.removeAll()
+        expectedPaneSizes.removeAll()
         viewsCreatedThisBatch.removeAll()
         pendingSeedPanes.removeAll()
         inEventBatch = false
@@ -90,6 +95,11 @@ final class TerminalManager: TerminalInputHandler {
         // SwiftTerm 解析 pane 输出时生成的查询应答回写 pane。
         view.suppressOutputDrivenResponses = !isDirectPtyTerminal
         views[paneId] = view
+        // 先按 pane 真实尺寸 resize 模型：codex/cursor 的 erase-up 重绘按
+        // 实际列数生成，模型宽度不一致会折行导致输入行逐帧漂移。
+        if let size = expectedPaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
+            view.getTerminal().resize(cols: size.cols, rows: size.rows)
+        }
         // 首次创建时用最近快照播种（FFI 返回最近 256KB）。播种覆盖了后端已
         // 入队但尚未派发的事件，这些事件必须在接下来的批次里跳过。
         let snapshot = bridge?.getPaneOutput(paneId: paneId) ?? Data()
@@ -106,6 +116,13 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     /// 处理 PaneOutput 增量事件。
+    /// 记录后端报告的 pane 尺寸（供新视图创建时先 resize 模型再喂帧）。
+    func updatePaneSizes(_ panes: [Pane]) {
+        expectedPaneSizes = Dictionary(
+            uniqueKeysWithValues: panes.map { ($0.id, (Int($0.cols), Int($0.rows))) }
+        )
+    }
+
     func handleOutput(paneId: UInt32, data: Data) {
         guard !data.isEmpty else { return }
         // 事件字节就是真实增量（后端先 append 到累计缓冲、再入队事件）。

@@ -1189,6 +1189,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func refreshUI() {
         let snap = bridge.snapshot()
         lastSnapshot = snap
+        terminalManager.updatePaneSizes(snap.panes)
         // 请求切换的 tab 已不存在（shell 退出/外部关闭）：立即放行门禁。
         tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         reportPaneColoursIfNeeded(snap.panes)
