@@ -406,6 +406,96 @@ fn scenario3_new_window_via_muxterm() {
     cleanup(&socket);
 }
 
+/// pane 全屏端到端：真实 tmux 上执行 zoom，原生验证 `window_zoomed_flag`。
+/// 必须用独立 socket，只操作自己创建的测试 session。
+#[test]
+fn pane_fullscreen_zoom_toggles_real_tmux() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let mut model = connect_tmux(&socket);
+    assert!(
+        wait_for(&mut model, Duration::from_secs(5), |s| {
+            s.active_pane().is_some()
+        }),
+        "初始 pane 应就绪"
+    );
+
+    let pane = model.state().active_pane().unwrap().id;
+    model
+        .execute(Task::SplitPane {
+            target: None,
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+    assert!(
+        wait_for(&mut model, Duration::from_secs(3), |s| {
+            s.panes(&s.active_tab().unwrap().id).len() >= 2
+        }),
+        "split 后应有 2 个 pane"
+    );
+
+    // zoom 当前 pane → tmux 原生 flag 应为 1。
+    model
+        .execute(Task::TogglePaneFullscreen { target: pane })
+        .unwrap();
+    let session = model.state().active_session().unwrap().name.clone();
+    let zoomed = std::time::Instant::now() + Duration::from_secs(3);
+    let mut ok = false;
+    while std::time::Instant::now() < zoomed {
+        let out = Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "display-message",
+                "-t",
+                &session,
+                "-p",
+                "#{window_zoomed_flag}",
+            ])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&out.stdout).trim() == "1" {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(ok, "zoom 后 tmux window_zoomed_flag 应为 1");
+
+    // 再 zoom → 恢复为 0。
+    model
+        .execute(Task::TogglePaneFullscreen { target: pane })
+        .unwrap();
+    let restored = std::time::Instant::now() + Duration::from_secs(3);
+    let mut ok = false;
+    while std::time::Instant::now() < restored {
+        let out = Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "display-message",
+                "-t",
+                &session,
+                "-p",
+                "#{window_zoomed_flag}",
+            ])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&out.stdout).trim() == "0" {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(ok, "再次 zoom 后 window_zoomed_flag 应恢复 0");
+    cleanup(&socket);
+}
+
 // ============================================================================
 // 场景 4: send-keys → pane 有输出
 // ============================================================================
