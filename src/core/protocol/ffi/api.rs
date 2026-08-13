@@ -8,6 +8,7 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
+use crate::core::config::parse_hex;
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::StateChange;
@@ -783,6 +784,41 @@ pub unsafe extern "C" fn muxterm_send_input(
         task_result_code(handle.model.execute(Task::WriteRaw {
             target: pane,
             data: bytes,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// 向 tmux 上报 pane 的前景/背景色（`refresh-client -r`），供 OSC 10/11
+/// 查询代答。颜色为 `#rrggbb` / `rrggbb`。0=ok，-1=err。
+///
+/// # Safety
+/// `fg_hex` / `bg_hex` 必须是 NUL 结尾字符串。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_report_pane_colours(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    fg_hex: *const c_char,
+    bg_hex: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let (Some(fg_hex), Some(bg_hex)) = (cstr_opt(fg_hex), cstr_opt(bg_hex)) else {
+            return -1;
+        };
+        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
+            return -1;
+        };
+        let handle = &mut *h;
+        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+            return -1;
+        };
+        task_result_code(handle.model.execute(Task::ReportPaneColours {
+            target: pane,
+            fg,
+            bg,
         }))
     }))
     .unwrap_or(-1)

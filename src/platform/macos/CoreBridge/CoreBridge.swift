@@ -427,6 +427,17 @@ final class CoreBridge {
         }
     }
 
+    /// 向 tmux 上报 pane 的前景/背景色，供 OSC 10/11 查询代答。
+    @discardableResult
+    func reportPaneColours(paneId: UInt32, fgHex: String, bgHex: String) -> Int32 {
+        guard let handle else { return -1 }
+        return fgHex.withCString { fg in
+            bgHex.withCString { bg in
+                muxterm_report_pane_colours(handle, paneId, fg, bg)
+            }
+        }
+    }
+
     /// 同步 pty 行列（SwiftTerm sizeChanged → LocalBackend resize）。
     @discardableResult
     func resizePane(paneId: UInt32, cols: UInt16, rows: UInt16) -> Int32 {

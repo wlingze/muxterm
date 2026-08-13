@@ -15,14 +15,11 @@ final class MuxTerminalView: TerminalView {
     /// 经 `send-keys -l` 回写会被 pane 回显并执行，造成 `git lg` 的
     /// `10;rgb:...` / `65;...c` 泄漏成 shell 字面命令。
     ///
-    /// 本地 / daemon 模式下保持转发（前端就是该 PTY 的终端模拟器，写回 pty
-    /// 是正确行为）。
+    /// 仅本地模式保持转发（前端就是该 PTY 的终端模拟器，写回 pty 是正确
+    /// 行为）；tmux / daemon 代理一律丢弃。
     var suppressOutputDrivenResponses = false
     /// 正在 feed 远端 pane 输出（解析器应答只在这个窗口内产生）。
     private var isFeedingRemoteOutput = false
-    /// 本次 feed 字节里是否包含终端查询（OSC 10/11/12、CSI DA/DSR、kitty）。
-    /// tmux 镜像只放行「确实有查询」的应答，避免 git lg 等泄漏成 shell 字面命令。
-    private var feedContainsQuery = false
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
@@ -65,13 +62,11 @@ final class MuxTerminalView: TerminalView {
         let bytes = [UInt8](data)
         // SwiftTerm 同步解析输出：查询应答经 `Terminal.sendResponse` 在 feed
         // 调用栈内同步发出。用这个标记把「解析 pane 输出产生的应答」与
-        // 「用户输入 / 鼠标上报」区分开；tmux 镜像只放行本次确有查询的应答，
-        // 其余丢弃（否则 codex 收不到颜色/能力查询应答会退化成黑底黑字）。
+        // 「用户输入 / 鼠标上报」区分开；tmux 镜像下一律丢弃（tmux 自己
+        // 代答查询，前端回写会被 pane 回显成 git lg 字面乱码）。
         isFeedingRemoteOutput = true
-        feedContainsQuery = !isSnapshot && TerminalQueryDetector.containsQuery(in: bytes)
         feed(byteArray: bytes[...])
         isFeedingRemoteOutput = false
-        feedContainsQuery = false
         // AX 反映「当前屏幕」而不是 feed 历史：之前累积所有 feed 文本，
         // 输入/状态区的每一帧中间状态都会留在 AX 值里，看起来像逐帧堆叠。
         let now = Date()
@@ -101,6 +96,20 @@ final class MuxTerminalView: TerminalView {
     /// 当前 SwiftTerm 字符格的 backing pixel 尺寸。
     func terminalCellSizeInPixels() -> (width: Int, height: Int)? {
         cellSizeInPixels(source: getTerminal())
+    }
+
+    /// 当前外观下的前景/背景 hex（`rrggbb`），供 tmux `refresh-client -r`
+    /// 上报，让 tmux 代答 pane 的 OSC 10/11 颜色查询。
+    func themeHexColors() -> (fg: String, bg: String) {
+        (hexString(nativeForegroundColor), hexString(nativeBackgroundColor))
+    }
+
+    private func hexString(_ color: NSColor) -> String {
+        guard let c = color.usingColorSpace(.sRGB) else { return "000000" }
+        let r = Int((c.redComponent * 255.0).rounded())
+        let g = Int((c.greenComponent * 255.0).rounded())
+        let b = Int((c.blueComponent * 255.0).rounded())
+        return String(format: "%02x%02x%02x", r, g, b)
     }
 
     /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列。
@@ -151,8 +160,7 @@ final class MuxTerminalView: TerminalView {
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
         guard TerminalMirrorPolicy.shouldForwardParserResponse(
             duringRemoteOutputFeed: isFeedingRemoteOutput,
-            isTmuxMirror: suppressOutputDrivenResponses,
-            feedContainsQuery: feedContainsQuery
+            isTmuxMirror: suppressOutputDrivenResponses
         ) else { return }
         super.send(source: source, data: data)
     }

@@ -166,6 +166,11 @@ final class TerminalManager: TerminalInputHandler {
         paneIds.lazy.compactMap { self.views[$0]?.terminalCellSizeInPixels() }.first
     }
 
+    /// 取任一可见终端的外观前景/背景 hex，用于 tmux `refresh-client -r`。
+    func themeHexColors() -> (fg: String, bg: String)? {
+        views.values.first?.themeHexColors()
+    }
+
     /// 把 GUI 根容器的 backing pixels 映射为 tmux client 字符格。
     private func syncClientSize(container: NSView, paneIds: Set<UInt32>) {
         guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {

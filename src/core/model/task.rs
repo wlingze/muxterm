@@ -6,6 +6,7 @@
 //!
 //! Task 是 `Copy`/`Clone` 友好的纯数据，可序列化、可记入历史（undo/redo）。
 //! 所有 Task 都针对「当前激活的 pane/window/session」，除非显式指定 target。
+use crate::core::config::Rgb;
 use crate::core::model::layout::SplitDir;
 use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::types::{PaneId, TabId, WindowId};
@@ -101,6 +102,11 @@ pub enum Task {
     SendKeys { target: PaneId, keys: Vec<KeyEvent> },
     /// 向 pane 写入原始字节（不经过按键编码，用于粘贴）。
     WriteRaw { target: PaneId, data: Vec<u8> },
+    /// 向 tmux 控制 client 上报 pane 的前景/背景色（`refresh-client -r`）。
+    ///
+    /// tmux 会用这两个颜色代答 pane 里的 OSC 10/11 查询；前端不能再用
+    /// `send-keys` 回答案，否则应答会被 pane 回显成 `git lg` 的字面乱码。
+    ReportPaneColours { target: PaneId, fg: Rgb, bg: Rgb },
 
     // ── 生命周期 ──────────────────────────────────────────
     /// 分离当前控制 client，但保留 tmux session / daemon 继续运行。

@@ -1074,6 +1074,10 @@ impl Backend for LocalBackend {
                 }
             }
 
+            // 颜色上报只对 tmux 控制 client 有意义；本地 shell 的查询由
+            // SwiftTerm/VTE 直接应答（写回 pty），无需上报。
+            Task::ReportPaneColours { .. } => TaskOutcome::Done,
+
             Task::ResizePane { target, cols, rows } => {
                 if !self.resize_pane(*target, *cols, *rows) {
                     return Ok(TaskOutcome::Rejected {

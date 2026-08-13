@@ -236,7 +236,8 @@ impl DaemonBackend {
             | Task::PrevPane
             | Task::SwitchSession { .. }
             | Task::RenameSession { .. }
-            | Task::ResizePaneStep { .. } => None,
+            | Task::ResizePaneStep { .. }
+            | Task::ReportPaneColours { .. } => None,
         }
     }
 }

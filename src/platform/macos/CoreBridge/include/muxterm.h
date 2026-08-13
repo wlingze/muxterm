@@ -93,6 +93,7 @@ int muxterm_init_logging(const char* log_file, const char* level);
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
 int muxterm_send_input(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
+int muxterm_report_pane_colours(struct MuxtermHandle* h, uint32_t pane_id, const char* fg_hex, const char* bg_hex);
 int muxterm_resize_pane(struct MuxtermHandle* h, uint32_t pane_id, uint16_t cols, uint16_t rows);
 int muxterm_resize_client(struct MuxtermHandle* h, uint16_t cols, uint16_t rows);
 int muxterm_resize_pane_axis(struct MuxtermHandle* h, uint32_t pane_id, uint32_t axis, uint16_t size);

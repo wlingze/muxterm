@@ -1456,6 +1456,20 @@ impl Backend for TmuxBackend {
                 }
                 TaskOutcome::Done
             }
+            Task::ReportPaneColours { target, fg, bg } => {
+                // tmux 用这两个颜色代答 pane 的 OSC 10/11 查询；必须分两次
+                // 上报（一次 fg、一次 bg），tmux 每次只解析一条 OSC。
+                let fg_cmd = cmd::refresh_client_colour(*target, 10, *fg);
+                let bg_cmd = cmd::refresh_client_colour(*target, 11, *bg);
+                if self.dispatch_tmux_command(&fg_cmd).is_err()
+                    || self.dispatch_tmux_command(&bg_cmd).is_err()
+                {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "上报 pane 颜色失败".into(),
+                    });
+                }
+                TaskOutcome::Done
+            }
             Task::ResizePane { target, cols, rows } => {
                 let c = cmd::resize_pane(*target, Some(*cols as u32), Some(*rows as u32));
                 if self.dispatch_tmux_command(&c).is_err() {

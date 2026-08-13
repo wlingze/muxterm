@@ -45,31 +45,30 @@ public enum FlatChrome {
 
 /// tmux 控制模式的终端应答策略。
 ///
-/// tmux / daemon 代理拥有 pane 的 PTY 与终端协议，前端只是渲染镜像：
-/// SwiftTerm 在 feed 远端 pane 输出期间生成的查询应答（OSC 10/11/12、
-/// CSI DA/DSR、DCS 等）必须丢弃，否则经 `send-keys -l` 回写会被 pane
-/// 回显并执行，泄漏成 `git lg` 的 `10;rgb:...` / `65;...c` 字面命令。
+/// tmux / daemon 代理拥有 pane 的 PTY 与终端协议，且 tmux 自己会代答
+/// OSC 10/11/12、CSI DA/DSR 等查询（颜色来自客户端用 `refresh-client -r`
+/// 上报的 `control_fg`/`control_bg`）。前端只是渲染镜像：SwiftTerm 在
+/// feed 远端 pane 输出期间生成的查询应答**一律丢弃**，否则经
+/// `send-keys -l` 回写会被 pane 回显并执行，泄漏成 `git lg` 的
+/// `10;rgb:...` / `65;...c` 字面命令。
 ///
 /// 用户输入（键盘/kitty/粘贴）与鼠标上报不在 feed 窗口内，不受影响；
 /// 仅 local 模式（前端就是该 PTY 的终端模拟器）保持转发。
 public enum TerminalMirrorPolicy {
     public static func shouldForwardParserResponse(
         duringRemoteOutputFeed: Bool,
-        isTmuxMirror: Bool,
-        feedContainsQuery: Bool = false
+        isTmuxMirror: Bool
     ) -> Bool {
-        // tmux 镜像在 feed 远端输出期间，解析器应答默认丢弃，避免 git lg 等
-        // 查询泄漏成 shell 字面命令。但若本次 feed 真的包含终端查询
-        // （OSC 10/11/12、CSI DA/DSR、kitty 等），必须把应答回给 pane——
-        // 否则 codex 等应用收不到颜色/能力信息，会回退成黑底黑字。
-        !isTmuxMirror || !duringRemoteOutputFeed || feedContainsQuery
+        // tmux 镜像在 feed 远端输出期间，解析器应答一律丢弃：tmux 自己
+        // 代答查询，前端回写只会被 pane 回显（git lg 字面乱码）。
+        !isTmuxMirror || !duringRemoteOutputFeed
     }
 }
 
 /// 检测一段 pane 输出里是否包含「终端查询」序列。
 ///
-/// tmux 控制模式下，远端应用（codex/htop/git lg）发出的查询会以 `%output`
-/// 原样转发给前端；只有检测到真实查询，解析器产生的应答才允许回写 pane。
+/// 目前仅用于诊断/测试：tmux 控制模式下查询由 tmux 自己代答，前端不再
+/// 据此放行 SwiftTerm 的解析器应答。
 public enum TerminalQueryDetector {
     /// 支持的前缀。
     public enum QueryKind: Equatable {

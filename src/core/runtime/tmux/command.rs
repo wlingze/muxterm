@@ -11,6 +11,7 @@
 //! 所有构造器返回 [`TmuxCommand`]，调用 `.to_string()` 得到带换行的完整命令行。
 
 use super::protocol::ControlEscapeDecoder;
+use crate::core::config::Rgb;
 use crate::core::types::PaneId as ProtoPaneId;
 use std::fmt::Write;
 
@@ -275,6 +276,30 @@ pub fn resize_pane(pane: PaneId, width: Option<u32>, height: Option<u32>) -> Tmu
 /// 调整 tmux 控制模式 client 的字符格尺寸。
 pub fn refresh_client_size(cols: u32, rows: u32) -> TmuxCommand {
     build(&[format!("-C {cols}x{rows}")], "refresh-client")
+}
+
+/// 上报控制客户端的前景/背景色给 tmux（`refresh-client -r %N:<OSC 应答>`）。
+///
+/// `code` 为 10（前景）或 11（背景）。值必须用 tmux 的 C 转义双引号包裹，
+/// 让 tmux 命令解析器把 `\e` 还原成 ESC；颜色用 xterm 16 位 `rgb:RRRR/GGGG/BBBB`
+/// 格式（与 tmux `input_osc_colour_reply` 的格式一致）。
+pub fn refresh_client_colour(pane: PaneId, code: u8, rgb: Rgb) -> TmuxCommand {
+    let mut bytes = format!("%{}:", pane.0).into_bytes();
+    bytes.push(0x1b);
+    bytes.push(b']');
+    bytes.extend_from_slice(format!("{code};rgb:").as_bytes());
+    bytes.extend_from_slice(xterm_rgb(rgb).as_bytes());
+    bytes.push(0x1b);
+    bytes.push(b'\\');
+    build(&["-r".to_string(), quote_c_bytes(&bytes)], "refresh-client")
+}
+
+/// `Rgb` → xterm 16 位 `RRRR/GGGG/BBBB`（每分量 8 位重复一次）。
+fn xterm_rgb(rgb: Rgb) -> String {
+    format!(
+        "{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}",
+        rgb.0, rgb.0, rgb.1, rgb.1, rgb.2, rgb.2
+    )
 }
 
 /// list-windows -t <session>。
@@ -807,4 +832,18 @@ fn input_roundtrip_dcs_passthrough() {
     // tmux passthrough / kitty keyboard：ESC P ... ESC \ 不应被破坏
     let seq = b"\x1bPtmux;\x1b\x1b]1337;SetUserVar=X=\x07\x1b\\";
     assert_eq!(roundtrip_bytes(seq), seq);
+}
+
+#[test]
+fn refresh_client_colour_uses_xterm_rgb_with_esc() {
+    let fg = refresh_client_colour(PaneId(0), 10, Rgb(0xcd, 0xd6, 0xf4));
+    assert_eq!(
+        fg.as_str(),
+        r##"refresh-client -r "%0:\e]10;rgb:cdcd/d6d6/f4f4\e\\""##
+    );
+    let bg = refresh_client_colour(PaneId(22), 11, Rgb(0x1e, 0x1e, 0x2e));
+    assert_eq!(
+        bg.as_str(),
+        r##"refresh-client -r "%22:\e]11;rgb:1e1e/1e1e/2e2e\e\\""##
+    );
 }

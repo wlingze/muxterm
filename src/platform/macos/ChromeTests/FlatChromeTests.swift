@@ -94,22 +94,13 @@ final class TerminalMirrorPolicyTests: XCTestCase {
         ))
     }
 
-    /// 本次 feed 明确包含终端查询（OSC 10/11、CSI DA 等）：应答必须放行，
-    /// 否则 codex 收不到颜色/能力信息会退化成黑底黑字。
-    func testTmuxMirrorForwardsParserResponseWhenFeedContainsQuery() {
-        XCTAssertTrue(TerminalMirrorPolicy.shouldForwardParserResponse(
-            duringRemoteOutputFeed: true,
-            isTmuxMirror: true,
-            feedContainsQuery: true
-        ))
-    }
-
-    /// 无查询的普通输出 feed 仍然丢弃解析器应答，避免 git lg 泄漏。
-    func testTmuxMirrorStillDropsWhenFeedHasNoQuery() {
+    /// feed 里即使有终端查询（OSC 10/11、CSI DA 等）也一律丢弃：tmux 自己
+    /// 代答查询（颜色来自 `refresh-client -r` 上报），前端回写会被 pane
+    /// 回显成 git lg 字面乱码。
+    func testTmuxMirrorDropsParserResponseEvenWhenFeedContainsQuery() {
         XCTAssertFalse(TerminalMirrorPolicy.shouldForwardParserResponse(
             duringRemoteOutputFeed: true,
-            isTmuxMirror: true,
-            feedContainsQuery: false
+            isTmuxMirror: true
         ))
     }
 

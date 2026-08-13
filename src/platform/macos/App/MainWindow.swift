@@ -36,6 +36,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let pendingActiveTabTimeout: TimeInterval = 1.5
     private var isClosing = false
     private var languageObserver: NSObjectProtocol?
+    /// 已向 tmux 上报过颜色的 pane（`refresh-client -r` 只需每个 pane 一次；
+    /// 外观变化时清空重报）。
+    private var reportedColourPanes = Set<UInt32>()
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
@@ -454,6 +457,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager = slot.terminalManager
         content.paneLayout.replaceTerminalManager(slot.terminalManager)
         lastSnapshot = slot.lastSnapshot
+        reportedColourPanes.removeAll()
         pendingActiveTab = nil
         pendingActiveTabSince = nil
         needsLayoutReload = true
@@ -992,6 +996,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             pendingActiveTab = nil
             pendingActiveTabSince = nil
         }
+        reportPaneColoursIfNeeded(snap.panes)
         content.tabBar.update(tabs: snap.tabs)
         if needsLayoutReload, pendingActiveTab == nil || pendingActiveTabExpired {
             if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
@@ -1032,6 +1037,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func reportStatusError(_ message: String) {
         content.statusBar.showError(message)
+    }
+
+    /// 新出现的 pane 需要把客户端主题色上报给 tmux，否则 tmux 代答
+    /// OSC 10/11 颜色查询时用的是自己的默认色板（codex 黑底黑字/白底白字）。
+    private func reportPaneColoursIfNeeded(_ panes: [Pane]) {
+        guard terminalManager.usesClientResize else { return }
+        let fresh = Set(panes.map(\.id)).subtracting(reportedColourPanes)
+        guard !fresh.isEmpty, let colors = terminalManager.themeHexColors() else { return }
+        for id in fresh {
+            if bridge.reportPaneColours(paneId: id, fgHex: colors.fg, bgHex: colors.bg) == 0 {
+                reportedColourPanes.insert(id)
+            }
+        }
     }
 
     private func closeSessionWindow() {
