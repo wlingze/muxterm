@@ -243,7 +243,7 @@ fn split_real_binary_increases_pane_count() {
             "--session",
             &session,
             "--pane",
-            "1",
+            "0",
             "--direction",
             "horizontal",
         ])
@@ -514,7 +514,7 @@ fn cli_exec_waits_for_command_completion_before_shutdown() {
             "--session",
             &session,
             "--pane",
-            "1",
+            "0",
             "--direction",
             "horizontal",
         ])
@@ -614,6 +614,7 @@ fn deep_nested_splits_three_levels() {
 
     // 3 次 split via muxterm tmux CLI (returns JSON envelope)
     for (i, dir) in ["horizontal", "vertical", "horizontal"].iter().enumerate() {
+        let pane_id = i.to_string();
         let output = Command::new(muxterm_bin())
             .args([
                 "tmux",
@@ -624,7 +625,7 @@ fn deep_nested_splits_three_levels() {
                 "--session",
                 &session,
                 "--pane",
-                "1",
+                &pane_id,
                 "--direction",
                 dir,
             ])
