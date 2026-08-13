@@ -377,7 +377,7 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
     use crate::core::protocol::ffi::types::*;
     match ev.type_ {
         STATE_PANE_OUTPUT => {
-            if let Some(view) = s.layout.pane(ev.pane_id) {
+            if let Some(view) = s.layout.pane(ev.pane_id).cloned() {
                 if view.is_seeded() {
                     view.feed_output(&ev.data);
                 } else {
@@ -391,7 +391,7 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                         .unwrap_or((80, 24));
                     view.seed_snapshot(&out, cols, rows);
                 }
-                forward_parser_replies(s, ev.pane_id, view.as_ref());
+                forward_parser_replies(s, ev.pane_id);
             }
         }
         STATE_ACTIVE_TAB_CHANGED => {
@@ -439,11 +439,11 @@ fn refresh_ui(s: &mut UiState) {
         s.layout.apply_layout(&layout, &input_cb);
 
         for pane in s.bridge.get_panes(s.active_tab) {
-            if let Some(view) = s.layout.pane(pane.id) {
+            if let Some(view) = s.layout.pane(pane.id).cloned() {
                 if !view.is_seeded() {
                     let out = s.bridge.get_pane_output(pane.id);
                     view.seed_snapshot(&out, pane.cols, pane.rows);
-                    forward_parser_replies(s, pane.id, view.as_ref());
+                    forward_parser_replies(s, pane.id);
                 }
                 if pane.is_active {
                     s.active_pane = pane.id;
@@ -467,29 +467,28 @@ fn set_status_summary(status: &Label, npanes: usize) {
 fn sync_pane_outputs(s: &mut UiState) {
     // 只给尚未播种的 pane 补一次快照；已挂载 pane 的增量走 STATE_PANE_OUTPUT。
     for pane in s.bridge.get_panes(s.active_tab) {
-        if let Some(view) = s.layout.pane(pane.id) {
+        if let Some(view) = s.layout.pane(pane.id).cloned() {
             if view.is_seeded() {
                 continue;
             }
             let out = s.bridge.get_pane_output(pane.id);
             view.seed_snapshot(&out, pane.cols, pane.rows);
-            forward_parser_replies(s, pane.id, view.as_ref());
+            forward_parser_replies(s, pane.id);
         }
     }
 }
 
-fn forward_parser_replies(
-    s: &mut UiState,
-    pane_id: u32,
-    view: &crate::platform::linux::pane_view::PaneView,
-) {
+fn forward_parser_replies(s: &UiState, pane_id: u32) {
     // tmux/SSH 镜像模式由 refresh-client -r 代答 OSC/DA，不能把 VTE 解析器
     // 应答写回 PTY，否则 `git lg` 一类查询会把 ESC 字面泄漏进输出。
-    if view.is_tmux_mirror() || s.uses_tmux {
-        let _ = view.take_replies();
-        return;
-    }
-    let replies = view.take_replies();
+    let replies = match s.layout.pane(pane_id) {
+        Some(view) if view.is_tmux_mirror() || s.uses_tmux => {
+            let _ = view.take_replies();
+            Vec::new()
+        }
+        Some(view) => view.take_replies(),
+        None => Vec::new(),
+    };
     if !replies.is_empty() {
         let _ = s.bridge.send_input(pane_id, &replies);
     }
