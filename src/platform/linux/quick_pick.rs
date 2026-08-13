@@ -547,7 +547,7 @@ fn parent_height(parent: &Window) -> i32 {
 }
 
 /// 确保父窗口内容包在 Overlay 里（只包一次）。
-fn ensure_overlay(parent: &Window) -> Overlay {
+pub(crate) fn ensure_overlay(parent: &Window) -> Overlay {
     match parent.child() {
         Some(child) if child.is::<Overlay>() => child.downcast::<Overlay>().expect("Overlay"),
         Some(child) => {
