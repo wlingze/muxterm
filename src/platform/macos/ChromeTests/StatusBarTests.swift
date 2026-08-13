@@ -10,6 +10,7 @@ final class StatusBarColorTests: XCTestCase {
         XCTAssertEqual(StatusBarStyleParser.color("colour255"), StatusBarColor(red: 238 / 255, green: 238 / 255, blue: 238 / 255))
         XCTAssertEqual(StatusBarStyleParser.color("colour231"), StatusBarColor(red: 1, green: 1, blue: 1))
         XCTAssertEqual(StatusBarStyleParser.color("#abc"), StatusBarColor(red: 170 / 255, green: 187 / 255, blue: 204 / 255))
+        XCTAssertEqual(StatusBarStyleParser.color("cdd6f4"), StatusBarColor(red: 205 / 255, green: 214 / 255, blue: 244 / 255))
         XCTAssertNil(StatusBarStyleParser.color("default"))
         XCTAssertNil(StatusBarStyleParser.color("bogus"))
     }
@@ -19,6 +20,29 @@ final class StatusBarColorTests: XCTestCase {
         XCTAssertEqual(StatusBarStyleParser.xterm256(231), StatusBarColor(red: 1, green: 1, blue: 1))
         XCTAssertEqual(StatusBarStyleParser.xterm256(232), StatusBarColor(red: 8 / 255, green: 8 / 255, blue: 8 / 255))
         XCTAssertNil(StatusBarStyleParser.xterm256(256))
+    }
+}
+
+final class StatusBarModeTests: XCTestCase {
+    func testDefaultsToTmux() {
+        XCTAssertEqual(StatusBarMode.from(toml: nil), .tmux)
+        XCTAssertEqual(StatusBarMode.from(toml: "[font]\nsize = 18"), .tmux)
+    }
+
+    func testParsesThemeMode() {
+        let toml = """
+        [statusbar]
+        mode = "theme"
+        """
+        XCTAssertEqual(StatusBarMode.from(toml: toml), .theme)
+    }
+
+    func testParsesLegacyGuiModeAsTheme() {
+        let toml = """
+        [statusbar]
+        color_mode = "gui"
+        """
+        XCTAssertEqual(StatusBarMode.from(toml: toml), .theme)
     }
 }
 

@@ -7,6 +7,9 @@ import MuxtermChrome
 /// 但这是 muxterm 自己的 status bar。
 final class StatusBarView: NSView {
     var onSelectWindow: ((UInt32) -> Void)?
+    /// status bar 模式：tmux = 有 tmux 就跟 tmux 一致（默认）；
+    /// theme = 只用 muxterm 主题黑白。
+    var colorMode: StatusBarMode = .tmux
 
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
@@ -60,19 +63,23 @@ final class StatusBarView: NSView {
     }
 
     func apply(snapshot: StatusBarSnapshot) {
+        let useTmuxColors = colorMode == .tmux
         let base = StatusBarStyleParser.parse(style: snapshot.statusStyle)
-        if let bg = base.bg.map(Self.color) {
+        if useTmuxColors, let bg = base.bg.map(Self.color) {
             layer?.backgroundColor = bg.cgColor
         } else {
-            layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+            layer?.backgroundColor = Self.themeBackground.cgColor
         }
+        let plainForeground = useTmuxColors ? nil : Self.themeForeground
         leftLabel.attributedStringValue = Self.attributed(
             StatusBarStyleParser.parseInline(text: snapshot.left, base: merged(base, snapshot.leftStyle)),
-            font: leftLabel.font ?? NSFont.systemFont(ofSize: 11)
+            font: leftLabel.font ?? NSFont.systemFont(ofSize: 11),
+            plainForeground: plainForeground
         )
         rightLabel.attributedStringValue = Self.attributed(
             StatusBarStyleParser.parseInline(text: snapshot.right, base: merged(base, snapshot.rightStyle)),
-            font: rightLabel.font ?? NSFont.systemFont(ofSize: 11)
+            font: rightLabel.font ?? NSFont.systemFont(ofSize: 11),
+            plainForeground: plainForeground
         )
 
         windowStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -90,8 +97,23 @@ final class StatusBarView: NSView {
             let inlineBase = StatusBarStyleParser.parse(style: styleName)
             button.attributedTitle = Self.attributed(
                 StatusBarStyleParser.parseInline(text: win.text, base: inlineBase),
-                font: button.font ?? NSFont.systemFont(ofSize: 11)
+                font: button.font ?? NSFont.systemFont(ofSize: 11),
+                plainForeground: plainForeground
             )
+            // 当前窗口按 tmux window-status-current-style 的 bg 画整块高亮，
+            // 切 tab 后立刻可辨（不能只靠文字颜色/粗体）。
+            if useTmuxColors, let bg = inlineBase.bg {
+                button.wantsLayer = true
+                button.layer?.cornerRadius = 3
+                button.layer?.backgroundColor = Self.color(bg).cgColor
+            } else if !useTmuxColors, win.current {
+                // GUI 黑白模式：当前窗口用主题色淡底高亮。
+                button.wantsLayer = true
+                button.layer?.cornerRadius = 3
+                button.layer?.backgroundColor = Self.themeAccent.cgColor
+            } else {
+                button.layer?.backgroundColor = nil
+            }
             button.setAccessibilityIdentifier("muxterm.statusWindow.\(win.index)")
             windowStack.addArrangedSubview(button)
         }
@@ -140,7 +162,11 @@ final class StatusBarView: NSView {
         )
     }
 
-    private static func attributed(_ segments: [StatusBarStyledSegment], font: NSFont) -> NSAttributedString {
+    private static func attributed(
+        _ segments: [StatusBarStyledSegment],
+        font: NSFont,
+        plainForeground: NSColor? = nil
+    ) -> NSAttributedString {
         let out = NSMutableAttributedString()
         for segment in segments {
             var attributes: [NSAttributedString.Key: Any] = [.font: font]
@@ -148,9 +174,9 @@ final class StatusBarView: NSView {
             if style.bold {
                 attributes[.font] = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
             }
-            var fg = style.fg.map(color)
-            var bg = style.bg.map(color)
-            if style.reverse {
+            var fg = plainForeground ?? style.fg.map(color)
+            var bg = plainForeground == nil ? style.bg.map(color) : nil
+            if style.reverse, plainForeground == nil {
                 swap(&fg, &bg)
             }
             if let fg { attributes[.foregroundColor] = fg }
@@ -162,5 +188,24 @@ final class StatusBarView: NSView {
 
     private static func color(_ c: StatusBarColor) -> NSColor {
         NSColor(srgbRed: c.red, green: c.green, blue: c.blue, alpha: 1)
+    }
+
+    /// GUI 黑白模式的文字/背景（跟随 muxterm 主题）。
+    private static var themeForeground: NSColor {
+        Self.color(
+            StatusBarStyleParser.color(MuxtermTerminalColors.activePalette.fg)
+                ?? StatusBarColor(red: 0, green: 0, blue: 0)
+        )
+    }
+
+    private static var themeBackground: NSColor {
+        Self.color(
+            StatusBarStyleParser.color(MuxtermTerminalColors.activePalette.bg)
+                ?? StatusBarColor(red: 1, green: 1, blue: 1)
+        )
+    }
+
+    private static var themeAccent: NSColor {
+        Self.themeForeground.withAlphaComponent(0.12)
     }
 }

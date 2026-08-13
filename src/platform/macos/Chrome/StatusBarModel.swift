@@ -1,5 +1,43 @@
 import Foundation
 
+/// status bar 模式。
+///
+/// - `tmux`：连接 tmux 时完全采用 tmux 的 status 配置与颜色（默认，
+///   有 tmux 就跟 tmux 一致）；
+/// - `theme`：只用 muxterm 主题的黑/白默认色，忽略 tmux 的彩色样式。
+public enum StatusBarMode: String, Sendable {
+    case tmux
+    case theme
+
+    /// 从 config.toml 的 `[statusbar] mode = "tmux"|"theme"` 解析；
+    /// 兼容旧名 `color_mode = "gui"`，缺省/未知回退 tmux（有 tmux 就跟 tmux）。
+    public static func from(toml: String?) -> StatusBarMode {
+        guard let toml else { return .tmux }
+        var inStatusBar = false
+        for rawLine in toml.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                inStatusBar = line == "[statusbar]"
+                continue
+            }
+            guard inStatusBar, let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            guard key == "mode" || key == "color_mode" else { continue }
+            let value = line[line.index(after: eq)...]
+                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                .lowercased()
+            switch value {
+            case "theme", "muxterm", "muxterm_theme", "gui":
+                return .theme
+            default:
+                return .tmux
+            }
+        }
+        return .tmux
+    }
+}
+
 /// muxterm status bar 快照（对应 Rust `StatusSnapshot` 的 JSON；连接控制模式
 /// 会话时读取兼容的 status 配置，概念上属于 muxterm 自己的 status bar）。
 public struct StatusBarSnapshot: Equatable, Decodable, Sendable {
@@ -209,6 +247,10 @@ public enum StatusBarStyleParser {
         if v == "default" { return nil }
         if v.hasPrefix("#") {
             return hexColor(String(v.dropFirst()))
+        }
+        // muxterm 主题色是不带 # 的 `rrggbb`。
+        if v.count == 6, UInt32(v, radix: 16) != nil {
+            return hexColor(v)
         }
         if v.hasPrefix("colour"), let n = Int(v.dropFirst("colour".count)) {
             return xterm256(n)

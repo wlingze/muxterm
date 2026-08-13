@@ -143,6 +143,18 @@ pub fn parse_show_output(text: &str) -> HashMap<String, String> {
     out
 }
 
+/// 合并 session 级与 global 级选项：session 显式设置优先，否则用 global。
+pub fn merge_session_global(
+    session: &HashMap<String, String>,
+    global: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut merged = global.clone();
+    for (k, v) in session {
+        merged.insert(k.clone(), v.clone());
+    }
+    merged
+}
+
 /// 去掉 tmux `show` 输出里包裹字符串值的引号，并反转义。
 pub fn unquote_option(value: &str) -> String {
     let v = value.trim();
@@ -199,20 +211,31 @@ pub fn fetch_snapshot(cfg: &StatusQueryConfig) -> Result<StatusSnapshot> {
     if cfg.session.is_empty() {
         bail!("session 为空");
     }
-    let session_out = run_tmux(cfg, &["show", "-g"])?;
-    let opts = parse_show_output(&session_out);
+    // status 选项要读「生效值」：session 级显式设置优先，global 兜底。
+    // 只读 `show -g` 会拿到 tmux 默认绿（bg=green），丢掉 ryzen 这类
+    // 在 session/global 里自定义的黑色 status bar。
+    let session_out = run_tmux(cfg, &["show", "-t", &cfg.session])?;
+    let global_out = run_tmux(cfg, &["show", "-g"])?;
+    let session_opts = parse_show_output(&session_out);
+    let global_opts = parse_show_output(&global_out);
+    let opts = merge_session_global(&session_opts, &global_opts);
 
     let enabled = opts.get("status").map(|s| s == "on").unwrap_or(true);
     let position = opts
         .get("status-position")
         .cloned()
         .unwrap_or_else(|| "bottom".into());
+    // 有 tmux 就跟 tmux 保持一致（status on 就渲染）；GUI 是否用 tmux 颜色
+    // 由前端 `[statusbar] mode` 决定（tmux / muxterm 主题）。
     if !enabled {
         return Ok(StatusSnapshot::disabled(&position));
     }
 
-    let window_out = run_tmux(cfg, &["show", "-w", "-g"])?;
-    let wopts = parse_show_output(&window_out);
+    let wsession_out = run_tmux(cfg, &["show", "-w", "-t", &cfg.session])?;
+    let wglobal_out = run_tmux(cfg, &["show", "-w", "-g"])?;
+    let wsession_opts = parse_show_output(&wsession_out);
+    let wglobal_opts = parse_show_output(&wglobal_out);
+    let wopts = merge_session_global(&wsession_opts, &wglobal_opts);
 
     let left_fmt = opts.get("status-left").cloned().unwrap_or_default();
     let right_fmt = opts.get("status-right").cloned().unwrap_or_default();
@@ -366,6 +389,25 @@ status-justify centre
     }
 
     #[test]
+    fn merge_session_global_prefers_session_values() {
+        let mut global = HashMap::new();
+        global.insert("status-style".into(), "bg=green,fg=black".into());
+        global.insert("status-left".into(), "[#{session_name}] ".into());
+        let mut session = HashMap::new();
+        session.insert("status-style".into(), "bg=black,fg=white".into());
+
+        let merged = merge_session_global(&session, &global);
+        assert_eq!(
+            merged.get("status-style").map(String::as_str),
+            Some("bg=black,fg=white")
+        );
+        assert_eq!(
+            merged.get("status-left").map(String::as_str),
+            Some("[#{session_name}] ")
+        );
+    }
+
+    #[test]
     fn unquote_option_strips_and_unescapes() {
         assert_eq!(unquote_option("\"a b\""), "a b");
         assert_eq!(unquote_option("'x'"), "x");
@@ -416,6 +458,24 @@ status-justify centre
         assert!(snap.enabled);
         assert!(snap.position == "top" || snap.position == "bottom");
         assert!(!snap.windows.is_empty());
+        // session 级自定义颜色必须覆盖 global 默认（green → black）。
+        let _ = Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "set",
+                "-t",
+                "foo",
+                "status-style",
+                "bg=black,fg=white",
+            ])
+            .output();
+        let snap_custom = fetch_snapshot(&cfg).expect("自定义 status 快照应可读");
+        assert!(
+            snap_custom.status_style.contains("black"),
+            "session 级 status-style 应生效: {}",
+            snap_custom.status_style
+        );
         let _ = Command::new("tmux")
             .args(["-L", &socket, "kill-server"])
             .output();

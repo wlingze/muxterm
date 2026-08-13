@@ -37,6 +37,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var statusBarSnapshot: StatusBarSnapshot?
     private var statusRefreshTimer: Timer?
     private var lastStatusFetchAt = Date.distantPast
+    /// 结构事件后的 status bar 刷新（合并同一轮事件，避免 resize 风暴逐帧查询）。
+    private var statusRefreshWorkItem: DispatchWorkItem?
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
@@ -83,6 +85,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             fontSize: terminalFontSettings.size
         )
         self.content = ContentView(terminalManager: terminalManager)
+        // status bar 配色来源：默认 GUI 黑白；`[statusbar] color_mode = "tmux"`
+        // 时完全采用 tmux 样式。
+        content.statusBar.colorMode = StatusBarMode.from(toml: toml)
         connectionPool = ConnectionPool(
             policy: ConnectionPoolPolicy(maxSlots: MuxtermConfig.poolMaxSlots(from: toml))
         )
@@ -1120,8 +1125,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportPaneColoursIfNeeded(lastSnapshot.panes)
         }
         if needsLayoutReload {
-            // 结构事件（窗口增删/重命名/布局变化）后刷新 status bar。
-            refreshStatusBar(force: false)
+            // 结构事件（窗口增删/重命名/布局变化）后刷新 status bar；
+            // 走防抖调度，避免 2s 节流把切 tab 后的高亮更新吞掉。
+            scheduleStatusBarRefresh()
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
         for item in pendingOutputs {
@@ -1209,11 +1215,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             DispatchQueue.main.async {
                 guard let self else { return }
+                // 查询期间用户可能已经切走连接：旧连接的快照不能覆盖新连接。
+                guard self.bridge === bridge else { return }
                 self.statusBarSnapshot = snapshot
                 self.content.applyStatusBar(snapshot)
                 self.scheduleStatusRefresh(snapshot)
             }
         }
+    }
+
+    /// 结构事件（切 tab / 建删窗口 / 布局变化）后防抖刷新 status bar：
+    /// 同一轮事件只触发一次查询，且不受 2s 周期节流限制。
+    private func scheduleStatusBarRefresh() {
+        guard terminalManager.usesClientResize else { return }
+        statusRefreshWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.statusRefreshWorkItem = nil
+            self.refreshStatusBar(force: true)
+        }
+        statusRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     /// 按 tmux `status-interval` 周期刷新（时钟/时间类 right 段需要）。
@@ -1235,6 +1257,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pollTimer = nil
         statusRefreshTimer?.invalidate()
         statusRefreshTimer = nil
+        statusRefreshWorkItem?.cancel()
+        statusRefreshWorkItem = nil
         connectionPool.shutdownAll()
         bridge.shutdown()
         window?.close()
@@ -1253,6 +1277,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pollTimer = nil
         statusRefreshTimer?.invalidate()
         statusRefreshTimer = nil
+        statusRefreshWorkItem?.cancel()
+        statusRefreshWorkItem = nil
         // Task::Detach 已关闭 control channel；这里仅回收 core handle，
         // 不会再次发送 detach-client 或杀 tmux session。
         bridge.shutdown()

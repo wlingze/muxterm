@@ -10,6 +10,11 @@
 family = "Menlo"
 size = 18.0
 
+# status bar 模式：tmux = 有 tmux 就跟 tmux 完全一致（默认）；
+# theme = 用 muxterm 主题黑/白渲染（忽略 tmux 配色）
+[statusbar]
+mode = "tmux"
+
 # 连接池：warm 连接上限（同时决定 QuickConnect Recent 显示条数上限）
 [pool]
 max_slots = 5
