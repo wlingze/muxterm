@@ -12,6 +12,7 @@ pub mod pane_switcher;
 pub mod pane_view;
 pub mod quick_pick;
 pub mod quickconnect;
+pub mod quickconnect_panel;
 pub mod renderer;
 pub mod status_bar;
 pub mod tab_bar;
