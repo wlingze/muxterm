@@ -1,5 +1,26 @@
 import Foundation
 
+/// status 快照查询的目标参数（纯逻辑，便于单测）。
+///
+/// SSH 连接的 alias 必须放在 `sshAlias`：之前它被误存进 `socket`，导致
+/// 查询时执行本地 `tmux -L <alias>` 而不是 `ssh <alias> tmux ...`。
+public struct StatusQueryTarget: Equatable, Sendable {
+    public let socket: String?
+    public let sshAlias: String?
+
+    public static func resolve(
+        backendType: String,
+        socket: String?,
+        sshAlias: String?
+    ) -> StatusQueryTarget {
+        let normalized = backendType.lowercased()
+        if normalized == "ssh" {
+            return StatusQueryTarget(socket: nil, sshAlias: sshAlias ?? socket)
+        }
+        return StatusQueryTarget(socket: socket, sshAlias: sshAlias)
+    }
+}
+
 /// status bar 模式。
 ///
 /// - `tmux`：连接 tmux 时完全采用 tmux 的 status 配置与颜色（默认，

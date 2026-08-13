@@ -867,6 +867,40 @@ pub unsafe extern "C" fn muxterm_report_pane_colours(
     .unwrap_or(-1)
 }
 
+/// 向 tmux 上报**所有** pane 的前景/背景色（`refresh-client -r`）。
+///
+/// 主题切换后必须整段对齐，否则后台 tab 的 codex/agent 输入框会沿用旧
+/// 主题的颜色代答（白/黑输入框与当前主题相反时看不清）。0=ok，-1=err。
+///
+/// # Safety
+/// `fg_hex` / `bg_hex` 必须是 NUL 结尾字符串。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_report_all_pane_colours(
+    h: *mut MuxtermHandle,
+    fg_hex: *const c_char,
+    bg_hex: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let (Some(fg_hex), Some(bg_hex)) = (cstr_opt(fg_hex), cstr_opt(bg_hex)) else {
+            return -1;
+        };
+        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
+            return -1;
+        };
+        let handle = &mut *h;
+        let n = handle.model.report_all_pane_colours(fg, bg);
+        if n > 0 {
+            0
+        } else {
+            -1
+        }
+    }))
+    .unwrap_or(-1)
+}
+
 /// C ABI 中 `0` 既是历史上的 active-pane 哨兵，也可能是真实的 tmux pane id。
 /// 只有当前状态不存在 PaneId(0) 时才使用旧哨兵语义。
 fn resolve_c_io_pane(raw: u32, model: &TerminalModel) -> Option<PaneId> {

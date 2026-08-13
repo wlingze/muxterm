@@ -293,9 +293,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             fgHex: theme.palette.fg,
             bgHex: theme.palette.bg
         )
-        // 主题色变化后必须重新上报，tmux 才会用新颜色代答 OSC 10/11。
+        // 主题色变化后必须给**所有** pane 重新上报，tmux 才会用新颜色代答
+        // OSC 10/11；只报当前 tab 会让后台 tab 的 codex 输入框沿用旧色。
         reportedColourPanes.removeAll()
-        reportPaneColoursIfNeeded(lastSnapshot.panes)
+        _ = bridge.reportAllPaneColours(
+            fgHex: theme.palette.fg,
+            bgHex: theme.palette.bg
+        )
         // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
         if let snapshot = statusBarSnapshot {
             content.statusBar.apply(snapshot: snapshot)
@@ -570,6 +574,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         // warm slot 的视图也要沿用当前主题（浅/深色）。
         terminalManager.applyTheme(
+            fgHex: MuxtermTerminalColors.activePalette.fg,
+            bgHex: MuxtermTerminalColors.activePalette.bg
+        )
+        // 连接建立/切换后给全部 pane 上报一次颜色，避免后台 tab 的 codex
+        // 输入框使用 tmux 默认（或上一个连接）的颜色代答。
+        _ = bridge.reportAllPaneColours(
             fgHex: MuxtermTerminalColors.activePalette.fg,
             bgHex: MuxtermTerminalColors.activePalette.bg
         )

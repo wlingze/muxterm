@@ -46,6 +46,38 @@ final class StatusBarModeTests: XCTestCase {
     }
 }
 
+final class StatusQueryTargetTests: XCTestCase {
+    func testLocalKeepsSocket() {
+        let target = StatusQueryTarget.resolve(
+            backendType: "tmux",
+            socket: "my-socket",
+            sshAlias: nil
+        )
+        XCTAssertEqual(target.socket, "my-socket")
+        XCTAssertNil(target.sshAlias)
+    }
+
+    func testSshMovesAliasOutOfSocket() {
+        let target = StatusQueryTarget.resolve(
+            backendType: "ssh",
+            socket: "ryzen",
+            sshAlias: nil
+        )
+        XCTAssertNil(target.socket)
+        XCTAssertEqual(target.sshAlias, "ryzen")
+    }
+
+    func testSshWithExplicitAliasWins() {
+        let target = StatusQueryTarget.resolve(
+            backendType: "ssh",
+            socket: "ryzen",
+            sshAlias: "other"
+        )
+        XCTAssertNil(target.socket)
+        XCTAssertEqual(target.sshAlias, "other")
+    }
+}
+
 final class StatusBarStyleParserTests: XCTestCase {
     func testParseStyleString() {
         let style = StatusBarStyleParser.parse(style: "bg=green,fg=black,bold")

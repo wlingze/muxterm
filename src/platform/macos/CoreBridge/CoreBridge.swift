@@ -1,5 +1,6 @@
 import Foundation
 import CMuxterm
+import MuxtermChrome
 
 // MARK: - 模型类型（Swift 侧 owned 快照）
 
@@ -316,13 +317,13 @@ final class CoreBridge {
         // SSH 连接：FFI 的 `muxterm_new(socket=alias, session=...)` 把 alias
         // 放在 socket 参数里；这里拆开存储，status 快照查询才能用正确的
         // sshAlias 而不是把它当本地 `tmux -L alias`。
-        if normalizedBackendType == "ssh" {
-            self.socket = nil
-            self.sshAlias = socket
-        } else {
-            self.socket = socket
-            self.sshAlias = nil
-        }
+        let query = StatusQueryTarget.resolve(
+            backendType: normalizedBackendType,
+            socket: socket,
+            sshAlias: nil
+        )
+        self.socket = query.socket
+        self.sshAlias = query.sshAlias
         self.session = session
         let handle = normalizedBackendType.withCString { btPtr in
             Self.withOptionalCString(socket) { sockPtr in
@@ -377,13 +378,13 @@ final class CoreBridge {
         }
         let bridge = try CoreBridge()
         bridge.handle = handle
-        if normalized == "ssh" {
-            bridge.socket = nil
-            bridge.sshAlias = sshAlias ?? socket
-        } else {
-            bridge.socket = socket
-            bridge.sshAlias = sshAlias
-        }
+        let query = StatusQueryTarget.resolve(
+            backendType: normalized,
+            socket: socket,
+            sshAlias: sshAlias
+        )
+        bridge.socket = query.socket
+        bridge.sshAlias = query.sshAlias
         bridge.session = session
         return bridge
     }
@@ -477,6 +478,17 @@ final class CoreBridge {
         return fgHex.withCString { fg in
             bgHex.withCString { bg in
                 muxterm_report_pane_colours(handle, paneId, fg, bg)
+            }
+        }
+    }
+
+    /// 向 tmux 上报**所有** pane 的前景/背景色（主题切换/连接建立后整段对齐）。
+    @discardableResult
+    func reportAllPaneColours(fgHex: String, bgHex: String) -> Int32 {
+        guard let handle else { return -1 }
+        return fgHex.withCString { fg in
+            bgHex.withCString { bg in
+                muxterm_report_all_pane_colours(handle, fg, bg)
             }
         }
     }

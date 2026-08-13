@@ -13,6 +13,7 @@
 //! - TerminalModel 不直接改 state，state 由 backend 维护；model 只做编排 + 事件聚合
 //! - 需要当前激活 pane 的 Task（`needs_active_pane()`），model 从 state 查询后填入
 //! - 回调在 `poll_events()` 时同步触发（不在 backend execute 时触发），保证单线程确定性
+use crate::core::config::Rgb;
 use crate::core::model::backend::Backend;
 use crate::core::model::state::{State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -85,6 +86,33 @@ impl TerminalModel {
         let events = self.backend.take_events();
         self.pending_events.extend(events);
         Ok(outcome)
+    }
+
+    /// 给**所有** tab/pane 上报主题色（`refresh-client -r`）。
+    ///
+    /// 主题切换/连接建立时只报当前 tab 会让后台 tab 的 codex/agent 沿用旧的
+    /// OSC 10/11 代答（例如浅色主题下启动的白色输入框在深色主题里变成
+    /// 白底白字）。这里遍历全部 pane，一次性对齐 tmux 的颜色代答。
+    pub fn report_all_pane_colours(&mut self, fg: Rgb, bg: Rgb) -> usize {
+        let mut targets: Vec<PaneId> = Vec::new();
+        if let Some(w) = self.state().active_window() {
+            for t in self.state().tabs(&w.id) {
+                for p in self.state().panes(&t.id) {
+                    targets.push(p.id);
+                }
+            }
+        }
+        let mut dispatched = 0;
+        for pane in targets {
+            if let Ok(TaskOutcome::Done) = self.execute(Task::ReportPaneColours {
+                target: pane,
+                fg,
+                bg,
+            }) {
+                dispatched += 1;
+            }
+        }
+        dispatched
     }
 
     /// 把需要 active pane 的 task 的 `target: None` 填上当前激活 pane id。
@@ -246,7 +274,7 @@ mod tests {
     use crate::core::model::layout::SplitDir;
     use crate::core::model::state::BackendStatus;
     use crate::core::protocol::terminal::input::KeyEvent;
-    use crate::core::types::{PaneId, TabId, WindowId};
+    use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 
     use std::sync::{Arc, Mutex};
 
@@ -525,6 +553,59 @@ mod tests {
         .unwrap();
         let _ = m.poll_events();
         assert_eq!(m.pane_ids_in_active_tab(), vec![PaneId(1), PaneId(2)]);
+    }
+
+    #[test]
+    fn report_all_pane_colours_covers_every_tab() {
+        use crate::core::config::Rgb;
+        use crate::core::model::layout::{LayoutNode, TabLayout};
+        use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
+
+        let mut backend = MockBackend::new();
+        backend.status = BackendStatus::Connected;
+        backend.sessions.push(SessionInfo {
+            id: SessionId(1),
+            name: "s".into(),
+            active_window: Some(WindowId(1)),
+        });
+        backend.windows.push(WindowInfo {
+            id: WindowId(1),
+            name: "w".into(),
+            session: SessionId(1),
+            active: true,
+        });
+        for (ti, pi) in [(1u32, 1u32), (2u32, 2u32)] {
+            backend.tabs.push(TabInfo {
+                id: TabId(ti),
+                name: format!("t{ti}"),
+                window: WindowId(1),
+                active: ti == 1,
+            });
+            backend.panes.push(PaneInfo {
+                id: PaneId(pi),
+                tab: TabId(ti),
+                active: true,
+                title: "bash".into(),
+                cols: 80,
+                rows: 24,
+            });
+            backend.layouts.push(TabLayout {
+                tab: TabId(ti),
+                tree: LayoutNode::leaf(PaneId(pi)),
+                active: PaneId(pi),
+            });
+        }
+
+        let mut m = TerminalModel::new(Box::new(backend));
+        let n = m.report_all_pane_colours(Rgb(1, 2, 3), Rgb(4, 5, 6));
+        assert_eq!(n, 2, "两个 tab 的 pane 都应上报");
+
+        let reports = m
+            .history
+            .iter()
+            .filter(|t| matches!(t, Task::ReportPaneColours { .. }))
+            .count();
+        assert_eq!(reports, 2);
     }
 
     #[tokio::test]
