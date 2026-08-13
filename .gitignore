@@ -12,6 +12,7 @@ Cargo.lock
 
 # Logs / local
 *.log
+tests/logs/
 .env
 .codex-next-task.md
 .codex-*.md
