@@ -82,23 +82,12 @@ pub struct StatusBarColor {
 }
 
 /// 一段文本的 status bar 样式。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusBarTextStyle {
     pub fg: Option<StatusBarColor>,
     pub bg: Option<StatusBarColor>,
     pub bold: bool,
     pub reverse: bool,
-}
-
-impl Default for StatusBarTextStyle {
-    fn default() -> Self {
-        StatusBarTextStyle {
-            fg: None,
-            bg: None,
-            bold: false,
-            reverse: false,
-        }
-    }
 }
 
 /// 解析后的文本片段：文字 + 样式。
@@ -159,7 +148,9 @@ impl StatusBarStyleParser {
         let mut current = base.clone();
         let mut plain = String::new();
 
-        let flush = |plain: &mut String, current: &StatusBarTextStyle, segments: &mut Vec<StatusBarStyledSegment>| {
+        let flush = |plain: &mut String,
+                     current: &StatusBarTextStyle,
+                     segments: &mut Vec<StatusBarStyledSegment>| {
             if !plain.is_empty() {
                 segments.push(StatusBarStyledSegment {
                     text: std::mem::take(plain),
@@ -188,7 +179,11 @@ impl StatusBarStyleParser {
     }
 
     /// 把 `#[...]` 指令作用到当前样式。
-    pub fn apply(directive: &str, style: &StatusBarTextStyle, base: &StatusBarTextStyle) -> StatusBarTextStyle {
+    pub fn apply(
+        directive: &str,
+        style: &StatusBarTextStyle,
+        base: &StatusBarTextStyle,
+    ) -> StatusBarTextStyle {
         let mut result = style.clone();
         for part in directive.split(',') {
             let token = part.trim();
@@ -290,7 +285,13 @@ impl StatusBarStyleParser {
             let r = (m / 36) % 6;
             let g = (m / 6) % 6;
             let b = m % 6;
-            let level = |x: i32| if x == 0 { 0.0 } else { (40 * x + 55) as f64 / 255.0 };
+            let level = |x: i32| {
+                if x == 0 {
+                    0.0
+                } else {
+                    (40 * x + 55) as f64 / 255.0
+                }
+            };
             return Some(StatusBarColor {
                 red: level(r),
                 green: level(g),
@@ -371,7 +372,10 @@ mod tests {
     #[test]
     fn mode_from_toml() {
         assert_eq!(StatusBarMode::from_toml(Some("tmux")), StatusBarMode::Tmux);
-        assert_eq!(StatusBarMode::from_toml(Some("theme")), StatusBarMode::Theme);
+        assert_eq!(
+            StatusBarMode::from_toml(Some("theme")),
+            StatusBarMode::Theme
+        );
         assert_eq!(StatusBarMode::from_toml(Some("gui")), StatusBarMode::Theme);
         assert_eq!(StatusBarMode::from_toml(None), StatusBarMode::Tmux);
     }
@@ -379,7 +383,7 @@ mod tests {
     #[test]
     fn parse_style_pairs() {
         let s = StatusBarStyleParser::parse("bg=green,fg=black,bold");
-        assert_eq!(s.bold, true);
+        assert!(s.bold);
         assert_eq!(s.bg, StatusBarStyleParser::color("green"));
         assert_eq!(s.fg, StatusBarStyleParser::color("black"));
     }

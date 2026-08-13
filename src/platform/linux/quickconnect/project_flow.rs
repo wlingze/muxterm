@@ -51,13 +51,15 @@ impl ProjectConnectFlow {
             trimmed_name.to_string()
         };
         let trimmed_path = config.path.trim();
-        let directory = if trimmed_path.is_empty() { "~".into() } else { trimmed_path.to_string() };
+        let directory = if trimmed_path.is_empty() {
+            "~".into()
+        } else {
+            trimmed_path.to_string()
+        };
         ProjectConnectFlow {
             session: session.clone(),
             directory,
-            state: ProjectConnectState::AttachExisting {
-                session,
-            },
+            state: ProjectConnectState::AttachExisting { session },
         }
     }
 
@@ -129,9 +131,15 @@ mod tests {
     fn attach_failure_leads_to_create_then_attach() {
         let mut flow = ProjectConnectFlow::new(&cfg("s", "~/x"));
         flow.attach_existing_failed("can't find session: s");
-        assert!(matches!(flow.state, ProjectConnectState::CreateDetached { .. }));
+        assert!(matches!(
+            flow.state,
+            ProjectConnectState::CreateDetached { .. }
+        ));
         flow.create_succeeded();
-        assert!(matches!(flow.state, ProjectConnectState::AttachCreated { .. }));
+        assert!(matches!(
+            flow.state,
+            ProjectConnectState::AttachCreated { .. }
+        ));
         flow.attach_created_succeeded();
         assert_eq!(flow.state, ProjectConnectState::Done);
     }
@@ -141,7 +149,9 @@ mod tests {
         let mut flow = ProjectConnectFlow::new(&cfg("s", "~/x"));
         flow.attach_existing_failed("nope");
         flow.create_failed("already exists");
-        assert!(matches!(flow.state, ProjectConnectState::Failed(f) if f.stage == ProjectConnectStage::Create));
+        assert!(
+            matches!(flow.state, ProjectConnectState::Failed(f) if f.stage == ProjectConnectStage::Create)
+        );
     }
 
     #[test]

@@ -1339,6 +1339,10 @@ mod tests {
             let mut found = false;
             for _ in 0..250 {
                 std::thread::sleep(std::time::Duration::from_millis(20));
+                // PTY 输出要经 refresh()（poll_events）才会 drain 进 model；
+                // 与真实 UI 的 16ms 轮询一致。
+                let mut events = [CStateChange::default(); 32];
+                let _ = muxterm_poll_events(h, events.as_mut_ptr(), 32);
                 let n = muxterm_get_pane_output(h, pane, out.as_mut_ptr(), out.len());
                 if n > 0 && out[..n as usize].windows(6).any(|w| w == b"ZZZEND") {
                     found = true;

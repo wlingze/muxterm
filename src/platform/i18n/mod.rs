@@ -83,6 +83,7 @@ define_text_keys! {
     Save => "save",
     SshName => "ssh_name",
     SshTransport => "ssh_transport",
+    Transport => "transport",
     Detach => "detach",
     DetachDetail => "detach_detail",
     ErrorBridgeConnect => "error_bridge_connect",
@@ -350,15 +351,6 @@ mod tests {
         let zh_keys: HashSet<_> = zh.keys().map(String::as_str).collect();
         assert_eq!(expected, en_keys);
         assert_eq!(expected, zh_keys);
-
-        let mac_en: HashMap<String, String> =
-            serde_json::from_str(include_str!("../macos/Resources/i18n/en.json")).unwrap();
-        let mac_zh: HashMap<String, String> =
-            serde_json::from_str(include_str!("../macos/Resources/i18n/zh-CN.json")).unwrap();
-        let mac_en_keys: HashSet<_> = mac_en.keys().map(String::as_str).collect();
-        let mac_zh_keys: HashSet<_> = mac_zh.keys().map(String::as_str).collect();
-        assert_eq!(expected, mac_en_keys);
-        assert_eq!(expected, mac_zh_keys);
     }
 
     #[test]

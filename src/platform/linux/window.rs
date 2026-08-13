@@ -20,6 +20,7 @@ use crate::core::config::{Action, Config, Theme};
 use crate::platform::linux::ffi_bridge::{tasks, BridgeEvent, CoreBridge};
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
+use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::tab_bar::TabBar;
 
 /// 主窗口。
@@ -33,6 +34,8 @@ struct UiState {
     bridge: CoreBridge,
     /// 当前窗口是否持有 tmux/SSH control client；local shell 不支持 detach。
     uses_tmux: bool,
+    /// 当前终端字体（config + 运行期偏好）。
+    font: FontSettings,
     tabs: TabBar,
     layout: LayoutHost,
     status: Label,
@@ -112,7 +115,11 @@ impl AppWindow {
         root.add_css_class("muxterm-root");
 
         let tabs = TabBar::new(cfg.ui.tab_bar_height);
-        let layout = LayoutHost::new(theme);
+        let font = FontSettings {
+            family: cfg.font.family.clone(),
+            size: cfg.font.size,
+        };
+        let layout = LayoutHost::new(theme, font.clone(), uses_tmux);
         let status = Label::builder()
             .label(crate::platform::i18n::tr(
                 crate::platform::i18n::Key::StatusConnected,
@@ -137,6 +144,7 @@ impl AppWindow {
         let state = Rc::new(RefCell::new(UiState {
             bridge,
             uses_tmux,
+            font,
             tabs,
             layout,
             status,
@@ -345,8 +353,11 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
         }
         Action::Search | Action::Unknown => {}
         // 以下动作由后续 QuickConnect/主题/字体/全屏接线处理；先保持编译通过。
-        Action::QuickConnect | Action::Quit | Action::IncreaseFontSize
-        | Action::DecreaseFontSize | Action::ResetFontSize
+        Action::QuickConnect
+        | Action::Quit
+        | Action::IncreaseFontSize
+        | Action::DecreaseFontSize
+        | Action::ResetFontSize
         | Action::TogglePaneFullscreen => {
             return;
         }
@@ -421,7 +432,7 @@ fn refresh_ui(s: &mut UiState) {
         for pane in s.bridge.get_panes(s.active_tab) {
             if let Some(view) = s.layout.pane(pane.id) {
                 let out = s.bridge.get_pane_output(pane.id);
-                view.sync_full_output(&out);
+                view.seed_snapshot(&out, pane.cols, pane.rows);
                 let replies = view.take_replies();
                 if !replies.is_empty() {
                     let _ = s.bridge.send_input(pane.id, &replies);
@@ -449,7 +460,7 @@ fn sync_pane_outputs(s: &mut UiState) {
     for pane in s.bridge.get_panes(s.active_tab) {
         if let Some(view) = s.layout.pane(pane.id) {
             let out = s.bridge.get_pane_output(pane.id);
-            view.sync_full_output(&out);
+            view.seed_snapshot(&out, pane.cols, pane.rows);
             let replies = view.take_replies();
             if !replies.is_empty() {
                 let _ = s.bridge.send_input(pane.id, &replies);

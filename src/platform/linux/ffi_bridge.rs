@@ -10,12 +10,13 @@ use std::ptr;
 use gtk4::glib;
 
 use crate::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_create_tmux_session_json, muxterm_detach, muxterm_discover_ssh_hosts_json,
-    muxterm_discover_tmux_sessions_json, muxterm_execute, muxterm_free, muxterm_free_string,
-    muxterm_get_layout, muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs,
-    muxterm_list_dir_json, muxterm_new, muxterm_new_connect, muxterm_poll_events,
-    muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
-    muxterm_resize_pane, muxterm_send_input, muxterm_status_snapshot_json, MuxtermHandle,
+    muxterm_connect, muxterm_create_tmux_session_json, muxterm_detach,
+    muxterm_discover_ssh_hosts_json, muxterm_discover_tmux_sessions_json, muxterm_execute,
+    muxterm_free, muxterm_free_string, muxterm_get_layout, muxterm_get_pane_output,
+    muxterm_get_panes, muxterm_get_tabs, muxterm_list_dir_json, muxterm_new, muxterm_new_connect,
+    muxterm_poll_events, muxterm_report_all_pane_colours, muxterm_report_pane_colours,
+    muxterm_resize_client, muxterm_resize_pane, muxterm_send_input, muxterm_status_snapshot_json,
+    MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -142,8 +143,7 @@ impl CoreBridge {
         let alias_ptr = alias_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
         let dir_ptr = dir_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
 
-        let handle =
-            muxterm_new_connect(bt.as_ptr(), sock_ptr, sess_ptr, alias_ptr, dir_ptr);
+        let handle = muxterm_new_connect(bt.as_ptr(), sock_ptr, sess_ptr, alias_ptr, dir_ptr);
         if handle.is_null() {
             anyhow::bail!(crate::platform::i18n::tr(
                 crate::platform::i18n::Key::ErrorBridgeCreate
@@ -177,10 +177,7 @@ impl CoreBridge {
 
     /// 当前连接是否由 tmux/SSH 控制 client 管理尺寸与状态栏。
     pub fn uses_tmux(&self) -> bool {
-        matches!(
-            self.backend_type.as_str(),
-            "tmux" | "ssh" | "tmux-ssh"
-        )
+        matches!(self.backend_type.as_str(), "tmux" | "ssh" | "tmux-ssh")
     }
 
     /// 在 GTK 主循环上启动周期轮询（默认由 window 以 16ms 调用）。
@@ -335,36 +332,42 @@ impl CoreBridge {
     pub fn report_pane_colours(&self, pane_id: u32, fg_hex: &str, bg_hex: &str) -> i32 {
         let fg_c = CString::new(fg_hex).unwrap_or_default();
         let bg_c = CString::new(bg_hex).unwrap_or_default();
-        unsafe {
-            muxterm_report_pane_colours(
-                self.handle,
-                pane_id,
-                fg_c.as_ptr(),
-                bg_c.as_ptr(),
-            )
-        }
+        unsafe { muxterm_report_pane_colours(self.handle, pane_id, fg_c.as_ptr(), bg_c.as_ptr()) }
     }
 
     /// 上报所有 pane 的颜色（主题切换后必须整段对齐）。
     pub fn report_all_pane_colours(&self, fg_hex: &str, bg_hex: &str) -> i32 {
         let fg_c = CString::new(fg_hex).unwrap_or_default();
         let bg_c = CString::new(bg_hex).unwrap_or_default();
-        unsafe {
-            muxterm_report_all_pane_colours(self.handle, fg_c.as_ptr(), bg_c.as_ptr())
-        }
+        unsafe { muxterm_report_all_pane_colours(self.handle, fg_c.as_ptr(), bg_c.as_ptr()) }
     }
 
     /// 抓取 status bar 快照（只读查询，tmux 兼容），返回解析后的快照。
-    pub fn status_snapshot(&self) -> Option<crate::platform::linux::quickconnect::status_style::StatusBarSnapshot> {
+    pub fn status_snapshot(
+        &self,
+    ) -> Option<crate::platform::linux::quickconnect::status_style::StatusBarSnapshot> {
         if !self.uses_tmux() {
             return None;
         }
         // SSH：backend 归一化为 tmux-ssh，FFI 期望 backend_type="ssh"
-        let ffi_backend = if self.backend_type == "tmux-ssh" { "ssh" } else { self.backend_type.as_str() };
+        let ffi_backend = if self.backend_type == "tmux-ssh" {
+            "ssh"
+        } else {
+            self.backend_type.as_str()
+        };
         let bt_c = CString::new(ffi_backend).unwrap_or_default();
-        let alias_c = self.ssh_alias.as_ref().and_then(|s| CString::new(s.clone()).ok());
-        let sock_c = self.socket.as_ref().and_then(|s| CString::new(s.clone()).ok());
-        let sess_c = self.session.as_ref().and_then(|s| CString::new(s.clone()).ok());
+        let alias_c = self
+            .ssh_alias
+            .as_ref()
+            .and_then(|s| CString::new(s.clone()).ok());
+        let sock_c = self
+            .socket
+            .as_ref()
+            .and_then(|s| CString::new(s.clone()).ok());
+        let sess_c = self
+            .session
+            .as_ref()
+            .and_then(|s| CString::new(s.clone()).ok());
         let Some(sess) = &sess_c else {
             return None;
         };
@@ -377,7 +380,9 @@ impl CoreBridge {
         if raw.is_null() {
             return None;
         }
-        let text = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        let text = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
         unsafe { muxterm_free_string(raw) };
         #[derive(serde::Deserialize)]
         struct Response {
@@ -485,7 +490,9 @@ where
             crate::platform::i18n::Key::ErrorCoreDiscoveryNoResponse
         ));
     }
-    let text = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+    let text = unsafe { CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned();
     unsafe { muxterm_free_string(raw) };
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
         anyhow::anyhow!(crate::platform::i18n::tr_args(
@@ -595,7 +602,8 @@ pub mod tasks {
     use super::*;
     use crate::core::protocol::ffi::types::{
         DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB,
-        TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+        TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
+        TASK_TOGGLE_PANE_FULLSCREEN,
     };
 
     pub fn split_h(target_pane: u32) -> CTask {

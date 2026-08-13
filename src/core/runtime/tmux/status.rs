@@ -431,7 +431,7 @@ status-justify centre
             Some("#[fg=colour233,bg=colour241,bold] %d/%m ")
         );
         // 数组选项取基名，先到先得
-        assert!(opts.get("status-format").is_some());
+        assert!(opts.contains_key("status-format"));
         assert_eq!(opts.get("status-interval").map(String::as_str), Some("15"));
         assert_eq!(
             opts.get("status-justify").map(String::as_str),

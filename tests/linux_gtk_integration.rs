@@ -22,6 +22,7 @@ use muxterm::core::config::{Config, Theme};
 use muxterm::platform::linux::ffi_bridge::{BridgeLayout, BridgeTab};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
+use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::tab_bar::TabBar;
 use muxterm::platform::linux::window::AppWindow;
 
@@ -205,7 +206,7 @@ fn assert_tab_bar_renders() {
 }
 
 fn assert_pane_layout_widget() {
-    let mut host = LayoutHost::new(load_theme());
+    let mut host = LayoutHost::new(load_theme(), FontSettings::default(), false);
     let layout = BridgeLayout::Split {
         horizontal: true,
         ratio: 500,

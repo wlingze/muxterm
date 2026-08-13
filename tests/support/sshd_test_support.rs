@@ -11,6 +11,7 @@
 //! - 生成的 ssh config 使用 `-F` 显式指定，绝不读取用户真实 `~/.ssh/config`。
 //! - SshTestEnv 只创建临时 HOME + ssh config + cleanup guard。
 
+use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -69,13 +70,23 @@ impl SshTestEnv {
         fs::create_dir_all(&ssh_dir)?;
         fs::set_permissions(&ssh_dir, PermissionsExt::from_mode(0o700))?;
 
-        // client key：从 env 或自动生成
+        // client key：优先使用显式 env；其次本机现有 key（测试环境 sshd
+        // 通常已授权它）；最后才生成临时 key（需外部 sshd 已预授权）。
         let client_key_path = if let Some(ref k) = key_from_env {
             PathBuf::from(k)
         } else {
-            let k = ssh_dir.join("id_ed25519");
-            run_ssh_keygen(&k)?;
-            k
+            let user_key = env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|h| h.join(".ssh").join("id_ed25519"))
+                .filter(|p| p.exists());
+            match user_key {
+                Some(k) => k,
+                None => {
+                    let k = ssh_dir.join("id_ed25519");
+                    run_ssh_keygen(&k)?;
+                    k
+                }
+            }
         };
 
         // ssh config（显式 -F，不读用户真实 config）

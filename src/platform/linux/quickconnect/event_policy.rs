@@ -10,8 +10,14 @@ pub enum PaneLayoutProjection {}
 impl PaneLayoutProjection {
     pub fn accepts(tree_pane_ids: &[u32], pane_ids: &[u32]) -> bool {
         tree_pane_ids.len() == pane_ids.len()
-            && tree_pane_ids.iter().copied().collect::<std::collections::HashSet<_>>()
-                == pane_ids.iter().copied().collect::<std::collections::HashSet<_>>()
+            && tree_pane_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                == pane_ids
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::HashSet<_>>()
     }
 }
 
@@ -19,7 +25,10 @@ impl PaneLayoutProjection {
 pub enum PaneFullscreenPolicy {}
 
 impl PaneFullscreenPolicy {
-    pub fn resolved_fullscreen_id(fullscreen_pane_id: Option<u32>, pane_ids: &[u32]) -> Option<u32> {
+    pub fn resolved_fullscreen_id(
+        fullscreen_pane_id: Option<u32>,
+        pane_ids: &[u32],
+    ) -> Option<u32> {
         fullscreen_pane_id.filter(|id| pane_ids.contains(id))
     }
 }
@@ -51,7 +60,7 @@ impl StateEventPolicy {
             // tab add/close、active tab changed：总是重建
             1 | 2 | 6 => true,
             // layout / pane add / pane close：只看当前 tab
-            3 | 4 | 5 => tab_id == active_tab_id,
+            3..=5 => tab_id == active_tab_id,
             _ => false,
         }
     }
@@ -86,9 +95,18 @@ mod tests {
 
     #[test]
     fn fullscreen_id_resolves_only_existing() {
-        assert_eq!(PaneFullscreenPolicy::resolved_fullscreen_id(Some(2), &[1, 2]), Some(2));
-        assert_eq!(PaneFullscreenPolicy::resolved_fullscreen_id(Some(9), &[1, 2]), None);
-        assert_eq!(PaneFullscreenPolicy::resolved_fullscreen_id(None, &[1, 2]), None);
+        assert_eq!(
+            PaneFullscreenPolicy::resolved_fullscreen_id(Some(2), &[1, 2]),
+            Some(2)
+        );
+        assert_eq!(
+            PaneFullscreenPolicy::resolved_fullscreen_id(Some(9), &[1, 2]),
+            None
+        );
+        assert_eq!(
+            PaneFullscreenPolicy::resolved_fullscreen_id(None, &[1, 2]),
+            None
+        );
     }
 
     #[test]
@@ -100,7 +118,13 @@ mod tests {
 
     #[test]
     fn structural_event_detection() {
-        assert!(EventBatchPlan::has_structural_event(&[0, 3], StateEventPolicy::requires_layout_reload));
-        assert!(!EventBatchPlan::has_structural_event(&[0, 7, 8], StateEventPolicy::requires_layout_reload));
+        assert!(EventBatchPlan::has_structural_event(
+            &[0, 3],
+            StateEventPolicy::requires_layout_reload
+        ));
+        assert!(!EventBatchPlan::has_structural_event(
+            &[0, 7, 8],
+            StateEventPolicy::requires_layout_reload
+        ));
     }
 }

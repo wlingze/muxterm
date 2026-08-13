@@ -13,6 +13,7 @@ pub mod pane_view;
 pub mod quick_pick;
 pub mod quickconnect;
 pub mod renderer;
+pub mod status_bar;
 pub mod tab_bar;
 pub mod theme;
 pub mod title_watch;

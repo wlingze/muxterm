@@ -132,19 +132,12 @@ impl QuickConnect {
 
     /// 该目标是否需要 tmux 按 name attach（tmux 且 name 非空）。
     pub fn should_attach(existing_name: Option<&str>, config: &TargetConfig) -> bool {
-        config.runtime == TargetRuntime::Tmux
-            && !existing_name.unwrap_or("").trim().is_empty()
+        config.runtime == TargetRuntime::Tmux && !existing_name.unwrap_or("").trim().is_empty()
     }
 
     /// 展示文本（搜索用）：name + 副标题 + path。
     pub fn search_text(config: &TargetConfig) -> String {
-        format!(
-            "{} {} {}",
-            config.name,
-            Self::subtitle(config),
-            config.path
-        )
-        .to_lowercase()
+        format!("{} {} {}", config.name, Self::subtitle(config), config.path).to_lowercase()
     }
 
     /// 目标唯一 ID：`name@transport`。
@@ -206,14 +199,22 @@ impl QuickConnect {
 mod tests {
     use super::*;
 
-    fn cfg(name: &str, runtime: TargetRuntime, transport: TargetTransport, path: &str) -> TargetConfig {
+    fn cfg(
+        name: &str,
+        runtime: TargetRuntime,
+        transport: TargetTransport,
+        path: &str,
+    ) -> TargetConfig {
         TargetConfig::new(name, runtime, transport, path)
     }
 
     #[test]
     fn default_name_from_path() {
         assert_eq!(QuickConnect::default_name("/a/b/c"), "c");
-        assert_eq!(QuickConnect::default_name("~/Developer/self/muxterm"), "muxterm");
+        assert_eq!(
+            QuickConnect::default_name("~/Developer/self/muxterm"),
+            "muxterm"
+        );
         assert_eq!(QuickConnect::default_name(""), "workspace");
         assert_eq!(QuickConnect::default_name("/"), "workspace");
     }
@@ -221,7 +222,14 @@ mod tests {
     #[test]
     fn unique_id_distinguishes_transport() {
         let a = cfg("srv", TargetRuntime::Tmux, TargetTransport::Local, "~/x");
-        let b = cfg("srv", TargetRuntime::Tmux, TargetTransport::Ssh { name: "ryzen".into() }, "~/x");
+        let b = cfg(
+            "srv",
+            TargetRuntime::Tmux,
+            TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+            "~/x",
+        );
         assert_ne!(QuickConnect::unique_id(&a), QuickConnect::unique_id(&b));
         assert_eq!(QuickConnect::unique_id(&a), "srv@local");
     }
@@ -229,7 +237,7 @@ mod tests {
     #[test]
     fn badges_both_recent_and_project() {
         let a = cfg("srv", TargetRuntime::Tmux, TargetTransport::Local, "~/x");
-        let badges = QuickConnect::badges(&a, &[a.clone()], &[a.clone()]);
+        let badges = QuickConnect::badges(&a, std::slice::from_ref(&a), std::slice::from_ref(&a));
         assert_eq!(badges, vec![QuickBadge::Recent, QuickBadge::Project]);
     }
 
@@ -242,6 +250,9 @@ mod tests {
         let entries = QuickConnect::entries(&[r1, r2], &[dup, p1], 5);
         let names: Vec<_> = entries.iter().map(|e| e.config.name.as_str()).collect();
         assert_eq!(names, vec!["r1", "r2", "p1"]);
-        assert_eq!(entries[0].badges, vec![QuickBadge::Recent, QuickBadge::Project]);
+        assert_eq!(
+            entries[0].badges,
+            vec![QuickBadge::Recent, QuickBadge::Project]
+        );
     }
 }

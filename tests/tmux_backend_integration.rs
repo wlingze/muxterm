@@ -61,6 +61,33 @@ fn native_pane_size(socket: &str, pane: PaneId) -> Option<(u16, u16)> {
         })
 }
 
+/// 等待 pane 前台命令变为指定命令（用外部 tmux CLI 查询，不占控制响应槽）。
+fn wait_pane_command(socket: &str, pane: PaneId, command: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let output = Command::new("tmux")
+            .args([
+                "-L",
+                socket,
+                "display-message",
+                "-p",
+                "-t",
+                &format!("%{}", pane.0),
+                "#{pane_current_command}",
+            ])
+            .output()
+            .ok();
+        if let Some(o) = output {
+            let name = String::from_utf8_lossy(&o.stdout);
+            if name.trim() == command {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 /// 检查 tmux 是否可用。
 fn tmux_available() -> bool {
     Command::new("tmux")
@@ -572,7 +599,9 @@ fn scenario4_raw_control_byte_reaches_tmux_pty() {
     }
     let pane = model.state().active_pane().unwrap().id;
 
-    let mut keys = "cat"
+    // 用绝对路径启动 cat：用户的 shell alias（如 cat=bat）会改变
+    // pane_current_command 的实际值，导致前台命令探测失败。
+    let mut keys = "/bin/cat"
         .chars()
         .map(muxterm::core::protocol::terminal::input::KeyEvent::Char)
         .collect::<Vec<_>>();
@@ -580,11 +609,12 @@ fn scenario4_raw_control_byte_reaches_tmux_pty() {
     model
         .execute(Task::SendKeys { target: pane, keys })
         .unwrap();
-    let _ = wait_for(&mut model, Duration::from_secs(2), |s| {
-        s.pane_output(&pane)
-            .map(|o| String::from_utf8_lossy(o).contains("cat"))
-            .unwrap_or(false)
-    });
+    // 必须等 cat 真正在前台运行（不能只看输出回显：高负载时输入回显会
+    // 先出现，reply 字节会落到 shell 提示符而不是 cat）。
+    assert!(
+        wait_pane_command(&socket, pane, "cat", Duration::from_secs(5)),
+        "cat 应已在前台运行"
+    );
 
     model
         .execute(Task::WriteRaw {
@@ -635,7 +665,7 @@ fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
     let pane = model.state().active_pane().unwrap().id;
 
     // 启动 cat，让写入字节原样回显，便于 capture 精确比对。
-    let mut keys = "cat"
+    let mut keys = "/bin/cat"
         .chars()
         .map(muxterm::core::protocol::terminal::input::KeyEvent::Char)
         .collect::<Vec<_>>();
@@ -643,11 +673,10 @@ fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
     model
         .execute(Task::SendKeys { target: pane, keys })
         .unwrap();
-    let _ = wait_for(&mut model, Duration::from_secs(2), |s| {
-        s.pane_output(&pane)
-            .map(|o| String::from_utf8_lossy(o).contains("cat"))
-            .unwrap_or(false)
-    });
+    assert!(
+        wait_pane_command(&socket, pane, "cat", Duration::from_secs(5)),
+        "cat 应已在前台运行"
+    );
 
     // 终端对 OSC 10/11 颜色查询 + CSI DA 的回复（原样字节）。
     let reply: Vec<u8> = vec![
@@ -1008,7 +1037,8 @@ fn edge_single_tab() {
 
 #[test]
 fn negative_connect_nonexistent_socket() {
-    let backend = TmuxBackend::new(Some("muxterm-no-such-socket-xyz-999"));
+    let socket = unique_socket();
+    let backend = TmuxBackend::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1024,7 +1054,7 @@ fn negative_connect_nonexistent_socket() {
     }
     // 清理
     let _ = Command::new("tmux")
-        .args(["-L", "muxterm-no-such-socket-xyz-999", "kill-server"])
+        .args(["-L", &socket, "kill-server"])
         .output();
 }
 

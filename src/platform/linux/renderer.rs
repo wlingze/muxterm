@@ -78,6 +78,17 @@ impl VteRenderer {
         self.terminal.set_colors(Some(&fg), Some(&bg), &refs);
         let _ = cursor;
     }
+
+    /// 应用字体（family + size，size 以 pt 为单位）。
+    pub fn apply_font(&self, font: &crate::platform::linux::quickconnect::font::FontSettings) {
+        use gtk4::pango;
+        let mut desc = pango::FontDescription::new();
+        if !font.family.is_empty() {
+            desc.set_family(&font.family);
+        }
+        desc.set_size((font.size * pango::SCALE as f32) as i32);
+        self.terminal.set_font_desc(Some(&desc));
+    }
 }
 
 fn rgba(c: Rgb) -> gtk4::gdk::RGBA {

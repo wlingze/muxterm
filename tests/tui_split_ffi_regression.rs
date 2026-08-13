@@ -144,7 +144,7 @@ fn run_split(socket: &str, dir: u32) -> (usize, usize) {
             std::thread::sleep(Duration::from_millis(100));
         }
         let tmux_count = count_panes(socket);
-        let _ = muxterm_free(h);
+        muxterm_free(h);
         // 记录最后一次读取到的 pane 数，供断言
         let _ = final_npanes;
         (final_npanes, tmux_count)
