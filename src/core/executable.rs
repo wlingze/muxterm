@@ -40,10 +40,30 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static PATH_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn resolve_tmux_returns_nonempty_path() {
         let bin = resolve_tmux_binary();
         assert!(!bin.is_empty());
+    }
+
+    #[test]
+    fn resolve_tmux_falls_back_when_path_has_no_homebrew() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let old = std::env::var_os("PATH");
+        // 模拟 Finder 启动的 GUI：只有系统目录，没有 /opt/homebrew/bin。
+        std::env::set_var("PATH", "/usr/bin:/bin");
+        let bin = resolve_tmux_binary();
+        match old {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        assert!(
+            bin == "tmux" || bin.starts_with('/'),
+            "缺少 Homebrew PATH 时必须回退到绝对路径或可用 PATH, got {bin:?}"
+        );
     }
 }
