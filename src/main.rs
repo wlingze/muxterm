@@ -291,7 +291,13 @@ fn main() -> anyhow::Result<()> {
         ),
     };
     let cfg = crate::core::logging::resolve_config(cli_level, cli_log_file);
-    crate::core::logging::init_logging(cfg)?;
+    let is_macos_gui_launcher =
+        cfg!(target_os = "macos") && matches!(&cli.cmd, Some(CliSubcommand::Gui { .. }));
+    if !is_macos_gui_launcher {
+        crate::core::logging::init_logging(cfg)?;
+    }
+    // macOS 的 `muxterm gui` 只是启动器：Swift app 进程会自己 init 同一个
+    // log-file；CLI 再 init 会两个进程同时写文件造成日志双写。
     log_socket(&cli);
 
     // 子命令分派
