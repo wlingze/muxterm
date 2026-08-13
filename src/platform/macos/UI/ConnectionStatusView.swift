@@ -8,9 +8,9 @@ final class ConnectionStatusView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let outputProbe = NSTextField(labelWithString: "")
     private let edgeLine = CALayer()
-    private var baseText = ""
     private var errorText: String?
     private var layoutSyncMessage = ""
+    private var heightConstraint: NSLayoutConstraint!
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -19,12 +19,15 @@ final class ConnectionStatusView: NSView {
         // 与窗口同色，不做独立面板底
         layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         setAccessibilityElement(false)
+        // 默认不显示：旧的「connected tabs: N panes: N」状态行已移除，
+        // 只在出现错误/布局同步时临时出现。
+        isHidden = true
 
         edgeLine.backgroundColor = NSColor.separatorColor.cgColor
         layer?.addSublayer(edgeLine)
 
         label.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        label.textColor = NSColor.tertiaryLabelColor
+        label.textColor = NSColor.systemRed
         label.translatesAutoresizingMaskIntoConstraints = false
         label.setAccessibilityIdentifier("muxterm.statusBar")
         label.setAccessibilityElement(true)
@@ -43,6 +46,7 @@ final class ConnectionStatusView: NSView {
         outputProbe.translatesAutoresizingMaskIntoConstraints = false
         addSubview(outputProbe)
 
+        heightConstraint = heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(
                 equalTo: leadingAnchor,
@@ -57,7 +61,7 @@ final class ConnectionStatusView: NSView {
             outputProbe.topAnchor.constraint(equalTo: topAnchor),
             outputProbe.widthAnchor.constraint(equalToConstant: 2),
             outputProbe.heightAnchor.constraint(equalToConstant: 2),
-            heightAnchor.constraint(equalToConstant: FlatChrome.statusBarHeight),
+            heightConstraint,
         ])
     }
 
@@ -72,16 +76,8 @@ final class ConnectionStatusView: NSView {
     }
 
     func update(snapshot: FrameSnapshot) {
-        baseText = FlatChrome.statusText(
-            status: localizedStatus(snapshot.status),
-            tabCount: snapshot.tabs.count,
-            paneCount: snapshot.panes.count,
-            activePane: snapshot.activePane,
-            tabsLabel: MuxtermI18n.shared.tr(.tabs),
-            panesLabel: MuxtermI18n.shared.tr(.panes),
-            paneLabel: MuxtermI18n.shared.tr(.pane)
-        )
-        renderText()
+        // 默认状态行已移除：只保留 AX 输出片段，不再更新可见摘要文本。
+        _ = snapshot
     }
 
     /// 将运行时错误显示在 GUI 状态栏，不让 UI 因异步快照问题崩溃。
@@ -118,22 +114,14 @@ final class ConnectionStatusView: NSView {
     }
 
     private func renderText() {
-        let text = errorText ?? baseText
+        let text = errorText ?? ""
         label.stringValue = text
         label.setAccessibilityValue(text)
-        label.textColor = errorText == nil ? NSColor.tertiaryLabelColor : NSColor.systemRed
+        label.textColor = NSColor.systemRed
+        let showing = !text.isEmpty
+        isHidden = !showing
+        heightConstraint.constant = showing ? FlatChrome.statusBarHeight : 0
+        needsLayout = true
     }
 
-    private func localizedStatus(_ status: String) -> String {
-        let key: MuxtermTextKey
-        switch status {
-        case "connected": key = .statusConnected
-        case "connecting": key = .statusConnecting
-        case "disconnected": key = .statusDisconnected
-        case "error": key = .statusError
-        case "exited": key = .statusExited
-        default: key = .statusUnknown
-        }
-        return MuxtermI18n.shared.tr(key)
-    }
 }

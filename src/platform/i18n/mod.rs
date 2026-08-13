@@ -163,6 +163,8 @@ define_text_keys! {
     StatusError => "status_error",
     StatusExited => "status_exited",
     StatusUnknown => "status_unknown",
+    StatusBarModeSwitchTo => "statusbar_mode_switch_to",
+    StatusBarModeDetail => "statusbar_mode_detail",
     Tabs => "tabs",
     TabsAccessibility => "tabs_accessibility",
     TerminalOutputSnippet => "terminal_output_snippet",

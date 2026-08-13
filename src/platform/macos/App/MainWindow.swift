@@ -49,6 +49,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private static let fontSizePreferenceKey = "muxterm.terminalFontSize"
     /// 运行时主题持久化键（用户偏好覆盖 config `[theme] name`）。
     private static let themePreferenceKey = "muxterm.theme"
+    /// 运行时 status bar 模式持久化键（覆盖 config `[statusbar] mode`）。
+    private static let statusBarModePreferenceKey = "muxterm.statusbarMode"
 
     private static func savedTerminalFontSize() -> CGFloat? {
         guard let saved = UserDefaults.standard.object(forKey: fontSizePreferenceKey) as? Double else {
@@ -87,7 +89,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         self.content = ContentView(terminalManager: terminalManager)
         // status bar 配色来源：默认 GUI 黑白；`[statusbar] color_mode = "tmux"`
         // 时完全采用 tmux 样式。
-        content.statusBar.colorMode = StatusBarMode.from(toml: toml)
+        content.statusBar.colorMode = Self.currentStatusBarMode(
+            configToml: toml
+        )
         connectionPool = ConnectionPool(
             policy: ConnectionPoolPolicy(maxSlots: MuxtermConfig.poolMaxSlots(from: toml))
         )
@@ -309,6 +313,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func toggleTheme() {
         let next: MuxtermTheme = currentTheme() == .light ? .dark : .light
         applyTheme(next)
+        commandPalette.update(
+            items: rootPaletteItems(),
+            placeholder: MuxtermI18n.shared.tr(.commandPalette)
+        )
+    }
+
+    /// 当前 status bar 模式：运行期选择优先，其次 config，缺省 tmux。
+    private static func currentStatusBarMode(configToml: String?) -> StatusBarMode {
+        let saved = UserDefaults.standard.string(forKey: statusBarModePreferenceKey)
+        if let saved, let mode = StatusBarMode(rawValue: saved) {
+            return mode
+        }
+        return StatusBarMode.from(toml: configToml)
+    }
+
+    private func toggleStatusBarMode() {
+        let next: StatusBarMode = content.statusBar.colorMode == .tmux ? .theme : .tmux
+        UserDefaults.standard.set(next.rawValue, forKey: Self.statusBarModePreferenceKey)
+        content.statusBar.colorMode = next
+        if let snapshot = statusBarSnapshot {
+            content.statusBar.apply(snapshot: snapshot)
+        }
         commandPalette.update(
             items: rootPaletteItems(),
             placeholder: MuxtermI18n.shared.tr(.commandPalette)
@@ -769,6 +795,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.theme)
             ),
             PaletteItem(
+                title: i18n.tr(
+                    .statusBarModeSwitchTo,
+                    arguments: ["mode": content.statusBar.colorMode == .tmux ? "Theme" : "Tmux"]
+                ),
+                detail: i18n.tr(
+                    .statusBarModeDetail,
+                    arguments: ["mode": content.statusBar.colorMode == .tmux ? "Tmux" : "Theme"]
+                ),
+                keywords: "statusbar status bar mode tmux theme 状态栏 模式",
+                kind: .command(.statusBarMode)
+            ),
+            PaletteItem(
                 title: i18n.tr(.quitMuxterm),
                 detail: i18n.tr(.quitMuxtermDetail),
                 keywords: "quit exit 退出",
@@ -832,6 +870,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             commandPalette.present(items: rootPaletteItems())
         case .command(.theme):
             toggleTheme()
+        case .command(.statusBarMode):
+            toggleStatusBarMode()
         case .command(.quit):
             commandPalette.dismiss()
             NSApp.terminate(nil)

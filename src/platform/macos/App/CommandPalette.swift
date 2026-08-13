@@ -14,6 +14,7 @@ enum PaletteCommand: Equatable {
     case detach
     case language
     case theme
+    case statusBarMode
     case quit
 }
 

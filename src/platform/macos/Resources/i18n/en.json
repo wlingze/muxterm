@@ -60,6 +60,8 @@
   "status_error": "error",
   "status_exited": "exited",
   "status_unknown": "unknown",
+  "statusbar_mode_switch_to": "Switch status bar to {{mode}}",
+  "statusbar_mode_detail": "Current status bar mode: {{mode}}",
   "layout_syncing": "GUI layout syncing: waiting for the current tab pane layout",
   "terminal_output_snippet": "Terminal Output Snippet",
   "theme_switch_to": "Switch to {{theme}}",
