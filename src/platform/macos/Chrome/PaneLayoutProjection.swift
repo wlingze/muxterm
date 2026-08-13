@@ -26,3 +26,16 @@ public enum StateEventPolicy {
         type == 7
     }
 }
+
+/// 一批事件里是否存在结构/布局类事件。
+///
+/// 存在时，同一批的 PaneOutput 必须延迟到 `refreshUI` 完成模型尺寸同步后
+/// 再喂入，否则 htop/codex 的新尺寸重绘帧会先进旧尺寸模型（拖窗口乱屏）。
+public enum EventBatchPlan {
+    public static func hasStructuralEvent(
+        types: [UInt32],
+        requiresLayoutReload: (UInt32) -> Bool
+    ) -> Bool {
+        types.contains { requiresLayoutReload($0) }
+    }
+}

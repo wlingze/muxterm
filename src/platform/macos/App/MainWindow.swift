@@ -26,14 +26,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var pollTimer: Timer?
     private var lastSnapshot = FrameSnapshot()
     private var needsLayoutReload = true
-    /// tmux tab 切换命令异步完成前，禁止用旧 active tab 快照重建布局。
-    private var pendingActiveTab: UInt32?
-    /// pendingActiveTab 设置时刻：若 tmux 迟迟不确认切换（`%session-window-
-    /// changed` 被输出洪峰淹没等），超时后放行 refreshUI，避免 UI 永久卡死。
-    private var pendingActiveTabSince: Date?
-    /// 等待切 tab 确认的最长时长；超过则视为 tmux 未回执，直接放行刷新
-    /// （PaneLayout.apply 的 layout/pane 一致性校验已保证不会用错 tab 布局）。
-    private let pendingActiveTabTimeout: TimeInterval = 1.5
+    /// tmux tab 切换确认门禁：外部关闭 / 快照缺失 / 超时都会放行。
+    private var tabSwitchGate = TabSwitchGate()
     private var isClosing = false
     private var languageObserver: NSObjectProtocol?
     /// 已向 tmux 上报过颜色的 pane（`refresh-client -r` 只需每个 pane 一次；
@@ -463,8 +457,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.paneLayout.replaceTerminalManager(slot.terminalManager)
         lastSnapshot = slot.lastSnapshot
         reportedColourPanes.removeAll()
-        pendingActiveTab = nil
-        pendingActiveTabSince = nil
+        tabSwitchGate = TabSwitchGate()
         needsLayoutReload = true
         refreshUI()
         focusActiveTerminal()
@@ -519,11 +512,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func requestSwitchTab(_ tabId: UInt32) {
         guard tabId != lastSnapshot.activeTab else { return }
-        pendingActiveTab = tabId
-        pendingActiveTabSince = Date()
+        tabSwitchGate.request(tab: tabId)
         needsLayoutReload = true
         guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
-            pendingActiveTab = nil
+            tabSwitchGate = TabSwitchGate()
             reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
@@ -939,27 +931,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         var outputSeen = false
         var uiStateChanged = false
+        let deferOutputs = EventBatchPlan.hasStructuralEvent(
+            types: events.map(\.type),
+            requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+        )
         var pendingOutputs: [(paneId: UInt32, data: Data)] = []
         for ev in events {
             if ev.isPaneClosed {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
                 terminalManager.removePane(ev.paneId)
             } else if ev.isPaneOutput {
-                // 先收集，等布局/尺寸同步完再喂：直接拖窗口大小时，htop 的
-                // 新尺寸重绘帧可能和 %layout-change 同批到达，如果先喂帧、
-                // 后 resize 模型，画面会乱。
-                pendingOutputs.append((paneId: ev.paneId, data: ev.data))
+                // 同批有结构事件（如窗口 resize 的 %layout-change）时，htop
+                // 的新尺寸重绘帧会先于模型 resize 到达，必须先收集、等布局
+                // 同步完再喂；纯输出批次直接喂，避免额外延迟。
+                if deferOutputs {
+                    pendingOutputs.append((paneId: ev.paneId, data: ev.data))
+                } else {
+                    terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
+                }
                 outputSeen = true
             } else if StateEventPolicy.requiresLayoutReload(ev.type) {
                 uiStateChanged = true
                 needsLayoutReload = true
-                if ev.type == STATE_ACTIVE_TAB_CHANGED, pendingActiveTab == ev.tabId {
-                    pendingActiveTab = nil
-                    pendingActiveTabSince = nil
-                } else if ev.type == STATE_TAB_CLOSED, pendingActiveTab == ev.tabId {
-                    // 正在等待切换的 tab 已被外部关闭：放行布局门禁，不要等超时。
-                    pendingActiveTab = nil
-                    pendingActiveTabSince = nil
+                if ev.type == STATE_ACTIVE_TAB_CHANGED {
+                    tabSwitchGate.onTabChanged(to: ev.tabId)
+                } else if ev.type == STATE_TAB_CLOSED {
+                    tabSwitchGate.onTabClosed(ev.tabId)
                 }
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
@@ -998,23 +995,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 等待切 tab 确认是否已超时。超时视为 tmux 未回执，放行刷新。
-    private var pendingActiveTabExpired: Bool {
-        guard let since = pendingActiveTabSince else { return false }
-        return Date().timeIntervalSince(since) > pendingActiveTabTimeout
-    }
-
     private func refreshUI() {
         let snap = bridge.snapshot()
         lastSnapshot = snap
         // 请求切换的 tab 已不存在（shell 退出/外部关闭）：立即放行门禁。
-        if let pending = pendingActiveTab, !snap.tabs.contains(where: { $0.id == pending }) {
-            pendingActiveTab = nil
-            pendingActiveTabSince = nil
-        }
+        tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         reportPaneColoursIfNeeded(snap.panes)
         content.tabBar.update(tabs: snap.tabs)
-        if needsLayoutReload, pendingActiveTab == nil || pendingActiveTabExpired {
+        if needsLayoutReload, tabSwitchGate.isReleased() {
             if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
                 needsLayoutReload = false
                 content.statusBar.clearLayoutSyncError()

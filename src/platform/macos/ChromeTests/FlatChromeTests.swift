@@ -371,6 +371,78 @@ final class PaneLayoutProjectionTests: XCTestCase {
     }
 }
 
+final class EventBatchPlanTests: XCTestCase {
+    func testStructuralEventDefersOutputs() {
+        // 1 = tab add（结构事件），7 = active pane changed，99 = 普通输出。
+        XCTAssertTrue(EventBatchPlan.hasStructuralEvent(
+            types: [1, 7],
+            requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+        ))
+        XCTAssertTrue(EventBatchPlan.hasStructuralEvent(
+            types: [99, 1, 99],
+            requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+        ))
+    }
+
+    func testOutputOnlyBatchFeedsImmediately() {
+        XCTAssertFalse(EventBatchPlan.hasStructuralEvent(
+            types: [7, 99, 99],
+            requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+        ))
+        XCTAssertFalse(EventBatchPlan.hasStructuralEvent(
+            types: [],
+            requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+        ))
+    }
+}
+
+final class TabSwitchGateTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000)
+
+    func testRequestBlocksUntilConfirmation() {
+        var gate = TabSwitchGate(timeout: 1.5)
+        gate.request(tab: 3, now: t0)
+        XCTAssertEqual(gate.pendingTab, 3)
+        XCTAssertFalse(gate.isReleased(now: t0))
+
+        gate.onTabChanged(to: 3)
+        XCTAssertTrue(gate.isReleased(now: t0))
+        XCTAssertNil(gate.pendingTab)
+    }
+
+    func testTabChangedToDifferentTabKeepsWaiting() {
+        var gate = TabSwitchGate(timeout: 1.5)
+        gate.request(tab: 4, now: t0)
+        gate.onTabChanged(to: 8)
+        XCTAssertFalse(gate.isReleased(now: t0))
+    }
+
+    func testExternalCloseReleasesImmediately() {
+        var gate = TabSwitchGate(timeout: 1.5)
+        gate.request(tab: 2, now: t0)
+        gate.onTabClosed(2)
+        XCTAssertTrue(gate.isReleased(now: t0))
+        XCTAssertNil(gate.pendingTab)
+    }
+
+    func testSnapshotMissingReleases() {
+        var gate = TabSwitchGate(timeout: 1.5)
+        gate.request(tab: 5, now: t0)
+        gate.onSnapshot(tabs: [1, 5])
+        XCTAssertFalse(gate.isReleased(now: t0))
+        gate.onSnapshot(tabs: [1])
+        XCTAssertTrue(gate.isReleased(now: t0))
+        XCTAssertNil(gate.pendingTab)
+    }
+
+    func testTimeoutReleases() {
+        var gate = TabSwitchGate(timeout: 1.5)
+        gate.request(tab: 7, now: t0)
+        XCTAssertFalse(gate.isReleased(now: t0.addingTimeInterval(1.0)))
+        XCTAssertTrue(gate.isReleased(now: t0.addingTimeInterval(1.6)))
+    }
+}
+
 final class PaneResizeMathTests: XCTestCase {
     func testRatioIsBounded() {
         XCTAssertEqual(PaneResizeMath.clampedRatio(-1), 0.05, accuracy: 0.0001)
