@@ -1163,7 +1163,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
                 }
                 outputSeen = true
-            } else if StateEventPolicy.requiresLayoutReload(ev.type) {
+            } else if StateEventPolicy.shouldReloadUI(
+                type: ev.type,
+                tabId: ev.tabId,
+                activeTabId: lastSnapshot.activeTab
+            ) {
                 uiStateChanged = true
                 needsLayoutReload = true
                 if ev.type == STATE_ACTIVE_TAB_CHANGED {

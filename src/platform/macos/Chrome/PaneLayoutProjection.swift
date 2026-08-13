@@ -36,6 +36,26 @@ public enum StateEventPolicy {
         }
     }
 
+    /// 是否需要重建当前 UI 布局。
+    ///
+    /// 后台 tab 的 layout/pane 事件（例如其它 tab 的 codex 刷新引起 tmux
+    /// 对每个 window 发 %layout-change）不应触发当前 tab 重建/forceRedraw，
+    /// 否则前台 htop 会被其它 tab 的刷新反复重绘（闪烁/乱屏）。
+    public static func shouldReloadUI(
+        type: UInt32,
+        tabId: UInt32,
+        activeTabId: UInt32
+    ) -> Bool {
+        switch type {
+        case 1, 2, 6: // tab add/close、active tab changed：总是重建
+            return true
+        case 3, 4, 5: // layout / pane add / pane close：只看当前 tab
+            return tabId == activeTabId
+        default:
+            return false
+        }
+    }
+
     public static func changesActivePane(_ type: UInt32) -> Bool {
         type == 7
     }

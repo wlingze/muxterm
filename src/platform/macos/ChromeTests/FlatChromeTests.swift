@@ -456,6 +456,33 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertTrue(StateEventPolicy.changesActivePane(7))
         XCTAssertFalse(StateEventPolicy.changesActivePane(3))
     }
+
+    func testBackgroundTabEventsDoNotReloadCurrentUI() {
+        // 当前 tab=2：tab2 的 layout/pane 事件应重建。
+        XCTAssertTrue(
+            StateEventPolicy.shouldReloadUI(type: 3, tabId: 2, activeTabId: 2)
+        )
+        XCTAssertTrue(
+            StateEventPolicy.shouldReloadUI(type: 4, tabId: 2, activeTabId: 2)
+        )
+        // 后台 tab=5 的 layout/pane 事件不重建前台（htop 不被其它 tab 刷新干扰）。
+        XCTAssertFalse(
+            StateEventPolicy.shouldReloadUI(type: 3, tabId: 5, activeTabId: 2)
+        )
+        XCTAssertFalse(
+            StateEventPolicy.shouldReloadUI(type: 4, tabId: 5, activeTabId: 2)
+        )
+        XCTAssertFalse(
+            StateEventPolicy.shouldReloadUI(type: 5, tabId: 5, activeTabId: 2)
+        )
+        // tab add/close、active tab changed 无条件重建。
+        XCTAssertTrue(
+            StateEventPolicy.shouldReloadUI(type: 1, tabId: 5, activeTabId: 2)
+        )
+        XCTAssertTrue(
+            StateEventPolicy.shouldReloadUI(type: 6, tabId: 5, activeTabId: 2)
+        )
+    }
 }
 
 final class PaneFullscreenPolicyTests: XCTestCase {
