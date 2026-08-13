@@ -38,6 +38,8 @@ struct PaneViewInner {
     /// 待合并的输出。
     pending_feed: RefCell<Vec<u8>>,
     feed_flush_source: RefCell<Option<glib::SourceId>>,
+    /// 是否已经用完整快照播种过；未播种前不应走增量 feed。
+    seeded: Cell<bool>,
 }
 
 impl PaneView {
@@ -54,8 +56,19 @@ impl PaneView {
                 is_tmux_mirror: Cell::new(is_tmux_mirror),
                 pending_feed: RefCell::new(Vec::new()),
                 feed_flush_source: RefCell::new(None),
+                seeded: Cell::new(false),
             }),
         }
+    }
+
+    /// 是否已经用完整快照播种。
+    pub fn is_seeded(&self) -> bool {
+        self.inner.seeded.get()
+    }
+
+    /// tmux/SSH 镜像模式：解析器查询应答由 tmux `refresh-client -r` 代答。
+    pub fn is_tmux_mirror(&self) -> bool {
+        self.inner.is_tmux_mirror.get()
     }
 
     pub fn pane_id(&self) -> u32 {
@@ -113,17 +126,22 @@ impl PaneView {
 
     /// 用完整快照播种（首次挂载 pane 时）。播种前先按 pane 尺寸 resize。
     pub fn seed_snapshot(&self, data: &[u8], cols: u16, rows: u16) {
+        // 播种会 reset VTE，丢弃尚未 flush 的增量，避免和快照叠在一起。
+        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
+            id.remove();
+        }
+        self.inner.pending_feed.borrow_mut().clear();
         if cols >= 2 || rows >= 1 {
             self.resize_to(cols, rows);
-        }
-        if data.is_empty() {
-            return;
         }
         self.inner.renderer.terminal().reset(true, true);
         *self.inner.reply_state.borrow_mut() =
             TerminalState::new(cols.max(2) as usize, rows.max(1) as usize);
-        self.inner.renderer.terminal().feed(data);
-        feed_reply_state(&self.inner, data);
+        if !data.is_empty() {
+            self.inner.renderer.terminal().feed(data);
+            feed_reply_state(&self.inner, data);
+        }
+        self.inner.seeded.set(true);
     }
 
     /// 取出待回写 shell 的查询应答字节。
@@ -193,12 +211,17 @@ fn feed_reply_state(inner: &PaneViewInner, data: &[u8]) {
     let mut state = inner.reply_state.borrow_mut();
     state.feed(data);
     let replies = state.take_reply();
-    if !replies.is_empty() && !inner.is_tmux_mirror.get() {
+    if should_forward_replies(inner.is_tmux_mirror.get(), &replies) {
         inner
             .pending_replies
             .borrow_mut()
             .extend_from_slice(&replies);
     }
+}
+
+/// 是否把解析器查询应答回写给后端（local shell 才回写）。
+pub fn should_forward_replies(is_tmux_mirror: bool, replies: &[u8]) -> bool {
+    !replies.is_empty() && !is_tmux_mirror
 }
 
 /// 便于在闭包里共享的 PaneView 句柄。
@@ -207,4 +230,21 @@ pub type PaneViewRc = Rc<PaneView>;
 /// 主题色转 hex（`rrggbb`，供 tmux refresh-client -r 上报）。
 pub fn rgb_hex(c: Rgb) -> String {
     format!("{:02x}{:02x}{:02x}", c.0, c.1, c.2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coalesce_window_is_25ms() {
+        assert_eq!(FEED_COALESCE_MS, 25);
+    }
+
+    #[test]
+    fn mirror_mode_drops_parser_query_replies() {
+        assert!(!should_forward_replies(true, b"\x1b]11;?\x07"));
+        assert!(should_forward_replies(false, b"\x1b]11;?\x07"));
+        assert!(!should_forward_replies(false, b""));
+    }
 }
