@@ -97,7 +97,7 @@ impl KeyMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::default_keybindings;
+    use crate::core::config::{default_keybindings, Action, KeyBinding};
 
     #[test]
     fn from_bindings_ignores_unknown_action() {
@@ -217,6 +217,34 @@ mod tests {
             km.lookup_str("return", &["control"]),
             Some(Action::TogglePaneFullscreen)
         );
+    }
+
+    #[test]
+    fn test_keymap_ctrl_q_quit() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("q", &["control"]), Some(Action::Quit));
+    }
+
+    #[test]
+    fn test_keymap_custom_overrides_new_actions() {
+        let mut bs = default_keybindings();
+        bs.push(KeyBinding {
+            key: "q".into(),
+            mods: vec!["alt".into()],
+            action: "quit".into(),
+        });
+        bs.push(KeyBinding {
+            key: "return".into(),
+            mods: vec!["control".into()],
+            action: "command_palette".into(),
+        });
+        let km = KeyMap::from_bindings(&bs);
+        assert_eq!(km.lookup_str("q", &["alt"]), Some(Action::Quit));
+        assert_eq!(
+            km.lookup_str("return", &["control"]),
+            Some(Action::CommandPalette)
+        );
+        assert_eq!(km.lookup_str("q", &["control"]), Some(Action::Quit));
     }
 
     #[test]

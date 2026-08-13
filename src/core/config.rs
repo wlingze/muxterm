@@ -571,6 +571,7 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         kb("r", &["alt"], "search"),
         kb("p", &["alt"], "command_palette"),
         kb("q", &["alt"], "quick_connect"),
+        kb("q", &["control"], "quit"),
         kb("plus", &["control"], "increase_font_size"),
         kb("minus", &["control"], "decrease_font_size"),
         kb("0", &["control"], "reset_font_size"),
@@ -996,6 +997,10 @@ key_path = "~/.ssh/id_rsa"
             "switch_pane_next",
             "search",
             "command_palette",
+            "quick_connect",
+            "quit",
+            "increase_font_size",
+            "toggle_pane_fullscreen",
         ] {
             assert!(actions.contains(a), "缺少默认动作 {a}");
         }
@@ -1016,6 +1021,16 @@ key_path = "~/.ssh/id_rsa"
             Action::NewPaneVertical
         );
         assert_eq!(Action::from_str("switch_tab_last"), Action::SwitchTabLast);
+        assert_eq!(Action::from_str("quick_connect"), Action::QuickConnect);
+        assert_eq!(Action::from_str("quit"), Action::Quit);
+        assert_eq!(
+            Action::from_str("increase_font_size"),
+            Action::IncreaseFontSize
+        );
+        assert_eq!(
+            Action::from_str("toggle_pane_fullscreen"),
+            Action::TogglePaneFullscreen
+        );
         assert_eq!(Action::from_str("nonsense"), Action::Unknown);
     }
 
