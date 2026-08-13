@@ -162,6 +162,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         splitH.target = windowController
         viewMenu.addItem(splitH)
 
+        let fullscreen = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.togglePaneFullscreen),
+            action: #selector(MainWindowController.toggleActivePaneFullscreen),
+            keyEquivalent: "\r"
+        )
+        fullscreen.keyEquivalentModifierMask = .command
+        fullscreen.target = windowController
+        viewMenu.addItem(fullscreen)
+
         let nextPane = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuNextPane),
             action: #selector(MainWindowController.nextPane),

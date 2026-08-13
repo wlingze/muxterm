@@ -878,6 +878,11 @@ impl Backend for LocalBackend {
                 TaskOutcome::Done
             }
 
+            Task::TogglePaneFullscreen { .. } => {
+                // 本地 shell：全屏由前端布局实现，后端只确认成功。
+                TaskOutcome::Done
+            }
+
             Task::ClosePane { target } => {
                 if self.tab_of_pane(*target).is_none() {
                     return Ok(TaskOutcome::Rejected {

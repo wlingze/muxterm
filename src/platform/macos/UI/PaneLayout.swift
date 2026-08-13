@@ -9,6 +9,12 @@ final class PaneLayoutView: NSView {
     private var rootView: NSView?
     private var rootConstraints: [NSLayoutConstraint] = []
     private var currentLayout: LayoutNode?
+    /// 未全屏时的原始布局（全屏恢复用；tmux 模式由 core zoom 驱动）。
+    private var baseLayout: LayoutNode?
+    /// 本地 shell 全屏的目标 pane；tmux 模式保持 nil（core 负责 zoom）。
+    private var fullscreenPaneId: UInt32?
+    private var lastPanes: [Pane] = []
+    private var forceRebuild = false
     private var hostByPane: [UInt32: PaneHostView] = [:]
     private var currentPaneIds = Set<UInt32>()
     private var geometrySyncScheduled = false
@@ -37,6 +43,10 @@ final class PaneLayoutView: NSView {
         }
         rootView = nil
         currentLayout = nil
+        baseLayout = nil
+        fullscreenPaneId = nil
+        lastPanes = []
+        forceRebuild = false
         hostByPane.removeAll()
         currentPaneIds.removeAll()
         pendingGeometryPaneIds = nil
@@ -55,8 +65,12 @@ final class PaneLayoutView: NSView {
     /// reload 标记等待后端的下一帧，不能把旧 tab 的 pane 树套到新 tab 上。
     @discardableResult
     func apply(layout: LayoutNode?, panes: [Pane]) -> Bool {
+        lastPanes = panes
+        if let layout {
+            baseLayout = layout
+        }
         let expectedPaneIDs = panes.map(\.id)
-        let tree: LayoutNode?
+        var tree: LayoutNode?
         if panes.isEmpty {
             tree = nil
         } else if let layout {
@@ -73,16 +87,24 @@ final class PaneLayoutView: NSView {
         } else {
             return false
         }
+        // 全屏（本地 shell）：只渲染目标 pane 的叶子。
+        if let full = PaneFullscreenPolicy.resolvedFullscreenId(
+            fullscreenPaneId: fullscreenPaneId,
+            paneIDs: expectedPaneIDs
+        ) {
+            tree = .leaf(paneId: full)
+        }
 
         // 只有 pane 拓扑或 tmux 保存的比例真正变化时才重建 AppKit 树。
         // 窗口 resize 产生的重复 layout-change 只需重新同步几何；反复
         // unparent/重建 SwiftTerm 会造成 tab 闪烁和 Metal 层短暂黑屏。
-        if tree == currentLayout, Set(expectedPaneIDs) == currentPaneIds {
+        if !forceRebuild, tree == currentLayout, Set(expectedPaneIDs) == currentPaneIds {
             let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
             markActivePane(active)
             scheduleGeometrySync(paneIds: currentPaneIds)
             return true
         }
+        forceRebuild = false
 
         if let rootView {
             NSLayoutConstraint.deactivate(rootConstraints)
@@ -123,6 +145,15 @@ final class PaneLayoutView: NSView {
         needsLayout = true
         scheduleGeometrySync(paneIds: ids)
         return true
+    }
+
+    /// 本地 shell：切换 pane 全屏（再次调用恢复）。tmux 模式走 core zoom，
+    /// 不调用这里。
+    func toggleFullscreen(paneId: UInt32) {
+        guard lastPanes.contains(where: { $0.id == paneId }) else { return }
+        fullscreenPaneId = fullscreenPaneId == paneId ? nil : paneId
+        forceRebuild = true
+        _ = apply(layout: baseLayout, panes: lastPanes)
     }
 
     /// 更新活跃 pane 高亮与 AX（供 Cmd+[ / ] 焦点跟随断言）。

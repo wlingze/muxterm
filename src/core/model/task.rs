@@ -46,6 +46,8 @@ pub enum Task {
         dir: SplitDir,
         delta: i32,
     },
+    /// 切换 pane 全屏（tmux `resize-pane -Z`；本地 shell 由前端布局实现）。
+    TogglePaneFullscreen { target: PaneId },
 
     // ── 焦点切换 ───────────────────────────────────────────
     /// 切换激活 pane（同 window 内）。

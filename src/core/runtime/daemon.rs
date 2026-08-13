@@ -180,6 +180,7 @@ impl DaemonBackend {
                 target: Some(*target),
             }),
             Task::SwitchPane { target } => Some(CliCommand::SelectPane { target: *target }),
+            Task::TogglePaneFullscreen { .. } => None, // daemon CLI 暂不支持 zoom
             Task::NewWindow { name, .. } => Some(CliCommand::NewWindow {
                 name: name.clone(),
                 session: None,

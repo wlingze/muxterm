@@ -273,6 +273,11 @@ pub fn resize_pane(pane: PaneId, width: Option<u32>, height: Option<u32>) -> Tmu
     build(&args, "resize-pane")
 }
 
+/// 切换 pane 全屏（tmux `resize-pane -Z`）。
+pub fn zoom_pane(pane: PaneId) -> TmuxCommand {
+    build(&[format!("-Z {}", pane_target(pane))], "resize-pane")
+}
+
 /// 调整 tmux 控制模式 client 的字符格尺寸。
 pub fn refresh_client_size(cols: u32, rows: u32) -> TmuxCommand {
     build(&[format!("-C {cols}x{rows}")], "refresh-client")
@@ -551,6 +556,12 @@ mod tests {
     fn resize_pane_none() {
         let c = resize_pane(PaneId(2), None, None);
         assert_eq!(c.as_str(), "resize-pane -t %2");
+    }
+
+    #[test]
+    fn zoom_pane_toggles_fullscreen() {
+        let c = zoom_pane(PaneId(1));
+        assert_eq!(c.as_str(), "resize-pane -Z -t %1");
     }
 
     #[test]

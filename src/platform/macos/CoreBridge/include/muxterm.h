@@ -69,6 +69,7 @@ struct CLayoutNode {
 #define TASK_SHUTDOWN    7u
 #define TASK_SWITCH_PANE 8u
 #define TASK_DETACH      9u
+#define TASK_TOGGLE_PANE_FULLSCREEN 10u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u

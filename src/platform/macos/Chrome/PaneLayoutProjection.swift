@@ -11,6 +11,20 @@ public enum PaneLayoutProjection {
     }
 }
 
+/// 当前 pane 全屏的纯布局策略（本地 shell 用；tmux 走 `resize-pane -Z`）。
+public enum PaneFullscreenPolicy {
+    /// 返回应当全屏的 pane id；目标不存在时返回 nil（保持原布局）。
+    public static func resolvedFullscreenId(
+        fullscreenPaneId: UInt32?,
+        paneIDs: [UInt32]
+    ) -> UInt32? {
+        guard let fullscreenPaneId, paneIDs.contains(fullscreenPaneId) else {
+            return nil
+        }
+        return fullscreenPaneId
+    }
+}
+
 /// FFI 状态事件的渲染策略，和 `muxterm.h` 的常量保持一致。
 public enum StateEventPolicy {
     public static func requiresLayoutReload(_ type: UInt32) -> Bool {

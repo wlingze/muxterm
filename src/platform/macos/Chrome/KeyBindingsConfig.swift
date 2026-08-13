@@ -27,6 +27,7 @@ public enum KeyBindingsConfig {
         case "increase_font_size": return .increaseFontSize
         case "decrease_font_size": return .decreaseFontSize
         case "reset_font_size": return .resetFontSize
+        case "toggle_pane_fullscreen": return .togglePaneFullscreen
         default:
             // switch_tab_N
             if name.hasPrefix("switch_tab_"),
@@ -84,7 +85,7 @@ public enum KeyBindingsConfig {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
                 switch name {
                 case "key":
-                    currentKey = value
+                    currentKey = Self.tomlStringValue(value)
                 case "mods":
                     // 形如 ["command", "shift"]
                     currentMods = value
@@ -101,6 +102,36 @@ public enum KeyBindingsConfig {
         }
         flush()
         return result
+    }
+
+    /// 解码 TOML 字符串字面量里的转义（`\r` / `\n` / `\t` / `\\` / `\"`）。
+    private static func tomlStringValue(_ raw: String) -> String {
+        var s = raw
+        if s.hasPrefix("\""), s.hasSuffix("\""), s.count >= 2 {
+            s.removeFirst()
+            s.removeLast()
+        }
+        var out = ""
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            let next = s.index(after: i)
+            if c == "\\", next < s.endIndex {
+                switch s[next] {
+                case "r": out.append("\r")
+                case "n": out.append("\n")
+                case "t": out.append("\t")
+                case "\\": out.append("\\")
+                case "\"": out.append("\"")
+                default: out.append(c)
+                }
+                i = next
+            } else {
+                out.append(c)
+            }
+            i = s.index(after: i)
+        }
+        return out
     }
 
     /// 默认配置文件路径：~/.config/muxterm/config.toml

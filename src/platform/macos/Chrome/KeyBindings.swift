@@ -16,6 +16,7 @@ public enum KeyAction: Equatable, Sendable {
     case increaseFontSize
     case decreaseFontSize
     case resetFontSize
+    case togglePaneFullscreen
 }
 
 /// 修饰键 + 主键（大小写无关）的纯数据描述。
@@ -100,6 +101,10 @@ public enum KeyBindings {
             if key == "0" {
                 return .resetFontSize
             }
+        }
+        // Cmd+Enter：当前 pane 全屏切换（tmux `resize-pane -Z` / 本地布局）。
+        if chord.command, !chord.option, !chord.shift, key == "\r" || key == "\n" {
+            return .togglePaneFullscreen
         }
 
         // Alt+T / Alt+S / Alt+V / Alt+[ / Alt+] / Alt+1..9（兼容 TUI）

@@ -25,7 +25,7 @@ use super::types::{
     STATE_BACKEND_STATUS, STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED,
     STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED,
     TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
-    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
+    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：TerminalModel + runtime + 供 C 侧借用的缓冲。
@@ -644,6 +644,10 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
         }
         TASK_SHUTDOWN => Some(Task::Shutdown),
         TASK_DETACH => Some(Task::Detach),
+        TASK_TOGGLE_PANE_FULLSCREEN => {
+            let pane = resolve_c_task_pane(task.target_pane, model);
+            Some(Task::TogglePaneFullscreen { target: pane })
+        }
         _ => None,
     }
 }

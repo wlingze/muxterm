@@ -67,6 +67,8 @@
   "theme_switch_to": "切换到{{theme}}主题",
   "theme_detail": "当前主题：{{theme}}",
   "terminal_pane": "终端面板 @{{id}}",
+  "toggle_pane_fullscreen": "切换 Pane 全屏",
+  "toggle_pane_fullscreen_detail": "当前 pane 放大到整个窗口（Cmd+Enter）",
   "tabs_accessibility": "标签页",
   "new_tab_tooltip": "新建标签页（Cmd+T）",
   "menu_about": "关于 Muxterm",

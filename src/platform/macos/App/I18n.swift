@@ -136,6 +136,8 @@ enum MuxtermTextKey: CaseIterable {
     case tabsAccessibility
     case terminalOutputSnippet
     case terminalPane
+    case togglePaneFullscreen
+    case togglePaneFullscreenDetail
     case themeSwitchTo
     case themeDetail
     case tmuxAttachPlaceholder
@@ -287,6 +289,8 @@ enum MuxtermTextKey: CaseIterable {
         case .tabsAccessibility: return "tabs_accessibility"
         case .terminalOutputSnippet: return "terminal_output_snippet"
         case .terminalPane: return "terminal_pane"
+        case .togglePaneFullscreen: return "toggle_pane_fullscreen"
+        case .togglePaneFullscreenDetail: return "toggle_pane_fullscreen_detail"
         case .themeSwitchTo: return "theme_switch_to"
         case .themeDetail: return "theme_detail"
         case .tmuxAttachPlaceholder: return "tmux_attach_placeholder"

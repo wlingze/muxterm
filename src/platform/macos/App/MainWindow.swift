@@ -252,6 +252,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         splitActivePane(horizontal: false)
     }
 
+    /// 当前 pane 全屏切换：tmux/ssh 发 `resize-pane -Z`，本地 shell 用布局全屏。
+    @objc func toggleActivePaneFullscreen() {
+        guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
+            ?? lastSnapshot.panes.first?.id
+        else {
+            return
+        }
+        if terminalManager.usesClientResize {
+            if bridge.execute(task: MuxTask.togglePaneFullscreen(pane)) != 0 {
+                reportStatusError(
+                    MuxtermI18n.shared.tr(.errorCommandFailed)
+                )
+            }
+        } else {
+            content.paneLayout.toggleFullscreen(paneId: pane)
+        }
+    }
+
     @objc func increaseTerminalFontSize(_ sender: Any?) {
         adjustTerminalFontSize(delta: 1)
     }
@@ -751,6 +769,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.splitVertical)
             ),
             PaletteItem(
+                title: i18n.tr(.togglePaneFullscreen),
+                detail: i18n.tr(.togglePaneFullscreenDetail),
+                keywords: "pane fullscreen zoom toggle 全屏 放大",
+                kind: .command(.togglePaneFullscreen)
+            ),
+            PaletteItem(
                 title: i18n.tr(.nextPane),
                 detail: i18n.tr(.nextPaneDetail),
                 keywords: "pane next cmd bracket 下一个",
@@ -846,6 +870,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.splitVertical):
             commandPalette.dismiss()
             splitVertical()
+        case .command(.togglePaneFullscreen):
+            commandPalette.dismiss()
+            toggleActivePaneFullscreen()
         case .command(.nextPane):
             commandPalette.dismiss()
             nextPane()
@@ -1416,6 +1443,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             decreaseTerminalFontSize(nil)
         case .resetFontSize:
             resetTerminalFontSize(nil)
+        case .togglePaneFullscreen:
+            toggleActivePaneFullscreen()
         }
         return true
     }

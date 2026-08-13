@@ -466,6 +466,7 @@ impl Backend for MockBackend {
                 TaskOutcome::Done
             }
             Task::ReportPaneColours { .. } => TaskOutcome::Done,
+            Task::TogglePaneFullscreen { .. } => TaskOutcome::Done,
             Task::ResizePane { target, cols, rows } => {
                 if !self.panes.iter().any(|p| p.id == *target) {
                     return Ok(TaskOutcome::Rejected {

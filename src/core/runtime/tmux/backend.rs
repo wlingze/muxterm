@@ -1529,6 +1529,15 @@ impl Backend for TmuxBackend {
                 }
                 TaskOutcome::Done
             }
+            Task::TogglePaneFullscreen { target } => {
+                let c = cmd::zoom_pane(*target);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送命令失败".into(),
+                    });
+                }
+                TaskOutcome::Done
+            }
             Task::NewTab {
                 window: _,
                 name,
@@ -2420,6 +2429,27 @@ mod tests {
         if timed.is_err() {
             panic!("split_pane_dispatched 超时");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn toggle_pane_fullscreen_dispatches_zoom() {
+        let socket = unique_socket();
+        let run = async {
+            let mut b = TmuxBackend::new(Some(&socket));
+            if b.connect().await.is_err() {
+                return;
+            }
+            let _ = b.take_events();
+            let pane = b.active_pane().map(|p| p.id).unwrap_or(PaneId(0));
+            let outcome = b
+                .execute(&Task::TogglePaneFullscreen { target: pane })
+                .unwrap();
+            assert_eq!(outcome, TaskOutcome::Done);
+            let _ = b.shutdown().await;
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
+        cleanup(&socket);
+        assert!(timed.is_ok(), "toggle fullscreen 应派发成功");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

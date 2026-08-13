@@ -67,6 +67,8 @@
   "theme_switch_to": "Switch to {{theme}}",
   "theme_detail": "Current theme: {{theme}}",
   "terminal_pane": "Terminal Pane @{{id}}",
+  "toggle_pane_fullscreen": "Toggle Pane Fullscreen",
+  "toggle_pane_fullscreen_detail": "Zoom the current pane to fill the window (Cmd+Enter)",
   "tabs_accessibility": "Tabs",
   "new_tab_tooltip": "New Tab (Cmd+T)",
   "menu_about": "About Muxterm",

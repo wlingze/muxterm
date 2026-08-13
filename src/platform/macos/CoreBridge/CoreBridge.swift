@@ -146,6 +146,16 @@ struct MuxTask {
     static func switchPane(_ paneId: UInt32) -> MuxTask {
         MuxTask(type: TASK_SWITCH_PANE, targetPane: paneId, targetTab: 0, dir: 0, name: nil)
     }
+
+    static func togglePaneFullscreen(_ paneId: UInt32) -> MuxTask {
+        MuxTask(
+            type: TASK_TOGGLE_PANE_FULLSCREEN,
+            targetPane: paneId,
+            targetTab: 0,
+            dir: 0,
+            name: nil
+        )
+    }
 }
 
 /// 一帧渲染快照。

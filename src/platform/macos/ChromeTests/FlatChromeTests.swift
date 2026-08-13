@@ -105,6 +105,17 @@ final class KeyBindingsTests: XCTestCase {
             .resetFontSize
         )
     }
+
+    func testCmdEnterTogglesPaneFullscreen() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "\r")),
+            .togglePaneFullscreen
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "\n")),
+            .togglePaneFullscreen
+        )
+    }
 }
 
 
@@ -444,6 +455,29 @@ final class PaneLayoutProjectionTests: XCTestCase {
         }
         XCTAssertTrue(StateEventPolicy.changesActivePane(7))
         XCTAssertFalse(StateEventPolicy.changesActivePane(3))
+    }
+}
+
+final class PaneFullscreenPolicyTests: XCTestCase {
+    func testNoFullscreenKeepsNil() {
+        XCTAssertEqual(
+            PaneFullscreenPolicy.resolvedFullscreenId(fullscreenPaneId: nil, paneIDs: [1, 2]),
+            nil
+        )
+    }
+
+    func testFullscreenResolvesTargetPane() {
+        XCTAssertEqual(
+            PaneFullscreenPolicy.resolvedFullscreenId(fullscreenPaneId: 2, paneIDs: [1, 2]),
+            2
+        )
+    }
+
+    func testFullscreenIgnoredWhenPaneMissing() {
+        XCTAssertEqual(
+            PaneFullscreenPolicy.resolvedFullscreenId(fullscreenPaneId: 9, paneIDs: [1]),
+            nil
+        )
     }
 }
 
@@ -906,6 +940,17 @@ final class KeyBindingsConfigTests: XCTestCase {
         XCTAssertEqual(map[KeyChord(command: true, key: "=")], .increaseFontSize)
         XCTAssertEqual(map[KeyChord(command: true, key: "-")], .decreaseFontSize)
         XCTAssertEqual(map[KeyChord(command: true, key: "0")], .resetFontSize)
+    }
+
+    func testParsePaneFullscreenBinding() {
+        let toml = """
+        [[keybindings]]
+        key = "\\r"
+        mods = ["command"]
+        action = "toggle_pane_fullscreen"
+        """
+        let map = KeyBindingsConfig.parse(toml: toml)
+        XCTAssertEqual(map[KeyChord(command: true, key: "\r")], .togglePaneFullscreen)
     }
 
     func testUnknownActionIgnored() {
