@@ -939,6 +939,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 if ev.type == STATE_ACTIVE_TAB_CHANGED, pendingActiveTab == ev.tabId {
                     pendingActiveTab = nil
                     pendingActiveTabSince = nil
+                } else if ev.type == STATE_TAB_CLOSED, pendingActiveTab == ev.tabId {
+                    // 正在等待切换的 tab 已被外部关闭：放行布局门禁，不要等超时。
+                    pendingActiveTab = nil
+                    pendingActiveTabSince = nil
                 }
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
@@ -979,6 +983,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func refreshUI() {
         let snap = bridge.snapshot()
         lastSnapshot = snap
+        // 请求切换的 tab 已不存在（shell 退出/外部关闭）：立即放行门禁。
+        if let pending = pendingActiveTab, !snap.tabs.contains(where: { $0.id == pending }) {
+            pendingActiveTab = nil
+            pendingActiveTabSince = nil
+        }
         content.tabBar.update(tabs: snap.tabs)
         if needsLayoutReload, pendingActiveTab == nil || pendingActiveTabExpired {
             if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
@@ -995,7 +1004,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let view = terminalManager.view(for: activePane)
             terminalManager.focusTarget = view
             content.paneLayout.markActivePane(activePane)
-            if window?.firstResponder !== view {
+            // 只在视图已挂进窗口且焦点确实不同时才切换，避免对未挂载视图
+            // 反复 makeFirstResponder 触发 IMK mach port 报错和切换卡顿。
+            if view.window != nil, window?.firstResponder !== view {
                 window?.makeFirstResponder(view)
             }
         }
