@@ -19,6 +19,33 @@ pub struct PaletteCommand {
 
 /// 硬编码核心命令清单。
 pub fn core_commands() -> Vec<PaletteCommand> {
+    core_commands_with("Light", "theme")
+}
+
+/// 带「切换到」目标的命令清单，供命令面板显示下一主题 / 状态栏模式。
+pub fn core_commands_with(next_theme: &str, next_status_mode: &str) -> Vec<PaletteCommand> {
+    let mut commands = core_command_list();
+    for command in &mut commands {
+        match command.id {
+            "theme" => {
+                command.label = crate::platform::i18n::tr_args(
+                    crate::platform::i18n::Key::ThemeSwitchTo,
+                    &[("theme", next_theme)],
+                );
+            }
+            "statusbar_mode" => {
+                command.label = crate::platform::i18n::tr_args(
+                    crate::platform::i18n::Key::StatusBarModeSwitchTo,
+                    &[("mode", next_status_mode)],
+                );
+            }
+            _ => {}
+        }
+    }
+    commands
+}
+
+fn core_command_list() -> Vec<PaletteCommand> {
     vec![
         PaletteCommand {
             id: "tmux_attach",
@@ -200,7 +227,15 @@ pub fn core_commands() -> Vec<PaletteCommand> {
 /// 模式则保留完整命令集。`core_commands` 仍保留完整清单，方便静态命令
 /// 目录和纯逻辑测试覆盖所有命令。
 pub fn commands_for_backend(uses_tmux: bool) -> Vec<PaletteCommand> {
-    let mut commands = core_commands();
+    commands_for_backend_with(uses_tmux, "Light", "theme")
+}
+
+pub fn commands_for_backend_with(
+    uses_tmux: bool,
+    next_theme: &str,
+    next_status_mode: &str,
+) -> Vec<PaletteCommand> {
+    let mut commands = core_commands_with(next_theme, next_status_mode);
     if !uses_tmux {
         commands.retain(|command| command.id != TMUX_DETACH_COMMAND);
     }
@@ -222,22 +257,28 @@ pub fn show<F>(parent: &impl IsA<Window>, on_run: F)
 where
     F: Fn(&str) + 'static,
 {
-    show_for_backend(parent, true, on_run);
+    show_for_backend(parent, true, "Light", "theme", on_run);
 }
 
 /// 弹出与 backend 能力匹配的命令面板。
-pub fn show_for_backend<F>(parent: &impl IsA<Window>, uses_tmux: bool, on_run: F)
-where
+pub fn show_for_backend<F>(
+    parent: &impl IsA<Window>,
+    uses_tmux: bool,
+    next_theme: &str,
+    next_status_mode: &str,
+    on_run: F,
+) where
     F: Fn(&str) + 'static,
 {
-    let items: Vec<QuickPickItem> = commands_for_backend(uses_tmux)
-        .into_iter()
-        .map(|c| QuickPickItem {
-            id: c.id.into(),
-            label: c.label,
-            detail: None,
-        })
-        .collect();
+    let items: Vec<QuickPickItem> =
+        commands_for_backend_with(uses_tmux, next_theme, next_status_mode)
+            .into_iter()
+            .map(|c| QuickPickItem {
+                id: c.id.into(),
+                label: c.label,
+                detail: None,
+            })
+            .collect();
 
     let placeholder =
         crate::platform::i18n::tr(crate::platform::i18n::Key::CommandPalettePlaceholder);
@@ -428,5 +469,19 @@ mod tests {
         let f = filter_commands("attach");
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].id, "tmux_attach");
+    }
+
+    #[test]
+    fn theme_and_statusbar_labels_interpolate_placeholders() {
+        let cmds = core_commands_with("Dark", "tmux");
+        let theme = cmds.iter().find(|c| c.id == "theme").expect("theme");
+        assert!(!theme.label.contains("{{"));
+        assert!(theme.label.contains("Dark"), "{}", theme.label);
+        let status = cmds
+            .iter()
+            .find(|c| c.id == "statusbar_mode")
+            .expect("statusbar");
+        assert!(!status.label.contains("{{"));
+        assert!(status.label.contains("tmux"), "{}", status.label);
     }
 }

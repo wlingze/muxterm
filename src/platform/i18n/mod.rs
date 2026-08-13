@@ -367,6 +367,11 @@ mod tests {
         );
         set_language(Language::English);
         assert_eq!(tr_args(Key::TmuxWindows, &[("count", "3")]), "3 windows");
+        assert_eq!(
+            tr_args(Key::DefaultNameHint, &[("name", "muxterm")]),
+            "Default: muxterm"
+        );
+        assert!(!tr_args(Key::ThemeSwitchTo, &[("theme", "Dark")]).contains("{{"));
         assert_eq!(Language::System.tag(), "system");
         assert!(!tr(Key::CommandPalette).is_empty());
     }
