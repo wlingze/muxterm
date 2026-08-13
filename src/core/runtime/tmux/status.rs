@@ -95,11 +95,9 @@ pub fn run_tmux(cfg: &StatusQueryConfig, args: &[&str]) -> Result<String> {
         let mut cmd = Command::new("ssh");
         cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
         cmd.arg(alias);
-        cmd.args(["--", "tmux"]);
-        if let Some(sock) = &cfg.socket {
-            cmd.args(["-L", sock]);
-        }
-        cmd.args(args).output()
+        cmd.arg("--");
+        cmd.arg(build_remote_tmux_command(cfg, args));
+        cmd.output()
     } else {
         let mut cmd = Command::new("tmux");
         if let Some(sock) = &cfg.socket {
@@ -118,6 +116,59 @@ pub fn run_tmux(cfg: &StatusQueryConfig, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// 构造 SSH 远端 tmux 命令（单条 shell 字符串）。
+///
+/// ssh 默认把多个参数用空格拼接且不转义，`#{status-left}` 这类格式串会被
+/// 远端 shell 吞掉，导致 `display-message -F` 拿到空参数、status 抓取失败；
+/// 这里对每个参数做 shell 引号转义后拼成一条命令。
+fn build_remote_tmux_command(cfg: &StatusQueryConfig, args: &[&str]) -> String {
+    let mut remote = String::from("tmux");
+    if let Some(sock) = &cfg.socket {
+        remote.push_str(" -L ");
+        remote.push_str(&crate::core::discovery::shell_quote(sock));
+    }
+    for arg in args {
+        remote.push(' ');
+        remote.push_str(&crate::core::discovery::shell_quote(arg));
+    }
+    remote
+}
+
+/// 合并 `status-style` 与旧版 `status-bg` / `status-fg`。
+///
+/// 很多 tmux 配置仍用 `set -g status-bg colour234`：tmux 自己渲染时这些
+/// 值生效，但 `status-style` 还是默认 `bg=green,fg=black`。只读
+/// `status-style` 会把配置的深灰画成绿色。这里把 `status-bg/fg` 覆盖进
+/// 最终 style，行为与 tmux 渲染一致。
+fn effective_status_style(opts: &HashMap<String, String>) -> String {
+    let bg = opts.get("status-bg");
+    let fg = opts.get("status-fg");
+    let style = opts.get("status-style").map(String::as_str).unwrap_or("");
+    let is_default_style = style.is_empty() || style == "default" || style == "bg=green,fg=black";
+    if !is_default_style {
+        // 显式设置了 status-style（现代选项）时以它为准，不再被旧 status-bg 覆盖。
+        return style.to_string();
+    }
+    if bg.is_none() && fg.is_none() {
+        return style.to_string();
+    }
+    let mut parts: Vec<String> = style
+        .split(',')
+        .filter(|p| {
+            let p = p.trim();
+            !(p.starts_with("bg=") || p.starts_with("fg="))
+        })
+        .map(|s| s.trim().to_string())
+        .collect();
+    if let Some(bg) = bg {
+        parts.push(format!("bg={bg}"));
+    }
+    if let Some(fg) = fg {
+        parts.push(format!("fg={fg}"));
+    }
+    parts.join(",")
 }
 
 /// 解析 `show -g` / `show -w -g` 输出为「选项名 → 值」。
@@ -328,7 +379,7 @@ pub fn fetch_snapshot(cfg: &StatusQueryConfig) -> Result<StatusSnapshot> {
             .get("status-right-length")
             .and_then(|v| v.parse().ok())
             .unwrap_or(50),
-        status_style: opts.get("status-style").cloned().unwrap_or_default(),
+        status_style: effective_status_style(&opts),
         left_style: opts
             .get("status-left-style")
             .cloned()
@@ -404,6 +455,47 @@ status-justify centre
         assert_eq!(
             merged.get("status-left").map(String::as_str),
             Some("[#{session_name}] ")
+        );
+    }
+
+    #[test]
+    fn effective_status_style_overrides_default_green_with_status_bg_fg() {
+        let mut opts = HashMap::new();
+        opts.insert("status-style".into(), "bg=green,fg=black".into());
+        opts.insert("status-bg".into(), "colour234".into());
+        opts.insert("status-fg".into(), "colour137".into());
+        assert_eq!(effective_status_style(&opts), "bg=colour234,fg=colour137");
+    }
+
+    #[test]
+    fn effective_status_style_keeps_explicit_modern_style() {
+        let mut opts = HashMap::new();
+        opts.insert("status-style".into(), "bg=black,bold,fg=white".into());
+        opts.insert("status-bg".into(), "black".into());
+        assert_eq!(effective_status_style(&opts), "bg=black,bold,fg=white");
+    }
+
+    #[test]
+    fn remote_tmux_command_shell_quotes_formats() {
+        let cfg = StatusQueryConfig {
+            socket: None,
+            ssh_alias: Some("ryzen".into()),
+            session: "yaklang-workspace".into(),
+        };
+        let cmd = build_remote_tmux_command(
+            &cfg,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                "yaklang-workspace",
+                "-F",
+                "#{status-left}",
+            ],
+        );
+        assert_eq!(
+            cmd,
+            "tmux 'display-message' '-p' '-t' 'yaklang-workspace' '-F' '#{status-left}'"
         );
     }
 

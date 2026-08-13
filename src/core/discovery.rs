@@ -460,7 +460,7 @@ fn build_ssh_command_for_discovery(
     crate::core::transport::ssh::build_ssh_command(alias, remote_command, ssh_config_path)
 }
 
-fn shell_quote(value: &str) -> String {
+pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
@@ -876,6 +876,9 @@ pub fn list_remote_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static PATH_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn ssh_host_entry_serializable() {
@@ -1055,5 +1058,56 @@ mod tests {
             .args(["-L", &socket, "kill-server"])
             .output();
         assert!(cleanup.is_ok(), "清理测试 socket 必须成功");
+    }
+
+    /// GUI app（Finder 启动）PATH 没有 Homebrew：仍要能创建 local tmux
+    /// session，并且 `~/...` 工作目录要展开成真实路径。
+    #[test]
+    fn create_local_tmux_session_works_without_homebrew_in_path() {
+        let _guard = PATH_LOCK.lock().unwrap();
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", "/usr/bin:/bin");
+
+        let socket = format!(
+            "muxterm-test-gui-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        );
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let dir = format!(
+            "{}/muxterm-tilde-{}",
+            home.trim_end_matches('/'),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let tilde_dir = dir.replacen(&home, "~", 1);
+
+        let result = create_local_tmux_session(Some(&socket), "proj", &tilde_dir);
+        match old_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        if result.is_err() {
+            let _ = std::process::Command::new("tmux")
+                .args(["-L", &socket, "kill-server"])
+                .output();
+            return; // 环境无 tmux 时跳过
+        }
+        let sessions = list_local_tmux_sessions(Some(&socket));
+        assert!(
+            sessions.iter().any(|s| s.name == "proj"),
+            "受限 PATH 下仍应能创建 session"
+        );
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &socket, "kill-server"])
+            .output();
     }
 }
