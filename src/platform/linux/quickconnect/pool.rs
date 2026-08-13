@@ -148,6 +148,21 @@ impl<Slot: ConnectionSlotProtocol> ConnectionPool<Slot> {
         self.slots.get(key)
     }
 
+    pub fn get_mut(&mut self, key: &ConnectionKey) -> Option<&mut Slot> {
+        self.slots.get_mut(key)
+    }
+
+    /// 当前前台 slot。
+    pub fn active_slot(&self) -> Option<&Slot> {
+        self.active_key.as_ref().and_then(|k| self.slots.get(k))
+    }
+
+    /// 当前前台 slot（可变）。
+    pub fn active_slot_mut(&mut self) -> Option<&mut Slot> {
+        let key = self.active_key.clone()?;
+        self.slots.get_mut(&key)
+    }
+
     pub fn active_key(&self) -> Option<&ConnectionKey> {
         self.active_key.as_ref()
     }
@@ -441,5 +456,15 @@ mod tests {
         let recents = pool.recent_target_configs(1);
         assert_eq!(recents.len(), 1);
         assert_eq!(recents[0].name, "c");
+    }
+
+    #[test]
+    fn current_target_and_active_slot() {
+        let (mut pool, _, _) = make_pool();
+        let current = pool.current_target_config().expect("应有前台连接");
+        assert_eq!(current.name, "c");
+        assert!(pool.active_slot().is_some());
+        assert!(pool.get_mut(&key("c")).is_some());
+        assert!(pool.get_mut(&key("a")).is_none());
     }
 }
