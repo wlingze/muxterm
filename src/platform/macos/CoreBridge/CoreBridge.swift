@@ -313,9 +313,17 @@ final class CoreBridge {
     init(backendType: String = "local", socket: String? = nil, session: String? = nil) throws {
         let normalizedBackendType = backendType.lowercased()
         self.backendType = normalizedBackendType
-        self.socket = socket
+        // SSH 连接：FFI 的 `muxterm_new(socket=alias, session=...)` 把 alias
+        // 放在 socket 参数里；这里拆开存储，status 快照查询才能用正确的
+        // sshAlias 而不是把它当本地 `tmux -L alias`。
+        if normalizedBackendType == "ssh" {
+            self.socket = nil
+            self.sshAlias = socket
+        } else {
+            self.socket = socket
+            self.sshAlias = nil
+        }
         self.session = session
-        self.sshAlias = nil
         let handle = normalizedBackendType.withCString { btPtr in
             Self.withOptionalCString(socket) { sockPtr in
                 Self.withOptionalCString(session) { sessPtr in
@@ -369,9 +377,14 @@ final class CoreBridge {
         }
         let bridge = try CoreBridge()
         bridge.handle = handle
-        bridge.socket = socket
+        if normalized == "ssh" {
+            bridge.socket = nil
+            bridge.sshAlias = sshAlias ?? socket
+        } else {
+            bridge.socket = socket
+            bridge.sshAlias = sshAlias
+        }
         bridge.session = session
-        bridge.sshAlias = sshAlias
         return bridge
     }
 
