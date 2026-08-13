@@ -17,14 +17,22 @@ use vte4::prelude::*;
 
 use crate::core::config::{Action, Config, Theme};
 use crate::platform::i18n::{self, Key};
+use crate::platform::linux::connection_slot::{
+    connection_key, startup_connection_key, WarmConnectionSlot,
+};
 use crate::platform::linux::ffi_bridge::{tasks, BridgeEvent, CoreBridge};
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::pane_view::rgb_hex;
 use crate::platform::linux::quickconnect::event_policy::StateEventPolicy;
 use crate::platform::linux::quickconnect::font::{FontSettings, Preferences};
+use crate::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime};
+use crate::platform::linux::quickconnect::pool::{ConnectionPool, ConnectionPoolPolicy};
+use crate::platform::linux::quickconnect::project_flow::{ProjectConnectFlow, ProjectConnectState};
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
+use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
+use crate::platform::linux::quickconnect_panel::QuickConnectCallbacks;
 use crate::platform::linux::status_bar::StatusBar;
 use crate::platform::linux::tab_bar::TabBar;
 
@@ -36,7 +44,9 @@ pub struct AppWindow {
 }
 
 struct UiState {
-    bridge: CoreBridge,
+    pool: ConnectionPool<WarmConnectionSlot>,
+    qc_store: QuickConnectStore,
+    poll_source: Option<glib::SourceId>,
     /// 当前窗口是否持有 tmux/SSH control client；local shell 不支持 detach。
     uses_tmux: bool,
     /// 当前终端字体（config + 运行期偏好）。
@@ -60,12 +70,26 @@ struct UiState {
     preferences: Preferences,
 }
 
+impl UiState {
+    fn bridge(&self) -> &CoreBridge {
+        &self.pool.active_slot().expect("必须有前台连接").bridge
+    }
+
+    fn bridge_mut(&mut self) -> &mut CoreBridge {
+        &mut self.pool.active_slot_mut().expect("必须有前台连接").bridge
+    }
+}
+
 impl AppWindow {
     /// 有序关闭：停轮询 → 摘掉子树 → destroy 窗口，避免与 PaneView 持有的 VTE 交叉销毁。
     pub fn shutdown(self) {
         {
             let mut s = self._state.borrow_mut();
-            s.bridge.stop_polling();
+            s.bridge_mut().stop_polling();
+            if let Some(id) = s.poll_source.take() {
+                id.remove();
+            }
+            s.pool.shutdown_all();
             while let Some(child) = s.layout.root_box.first_child() {
                 s.layout.root_box.remove(&child);
             }
@@ -165,8 +189,17 @@ impl AppWindow {
         window.set_child(Some(&root));
 
         let keymap = KeyMap::from_bindings(&cfg.keybindings);
+        let mut pool =
+            ConnectionPool::new(ConnectionPoolPolicy::new(cfg.pool.max_slots.max(1) as usize));
+        let startup_key = startup_connection_key(uses_tmux, session.as_deref());
+        pool.acquire(startup_key.clone(), |k| {
+            WarmConnectionSlot::new(k.clone(), bridge)
+        });
+        let qc_store = QuickConnectStore::new(user_quickconnect_path());
         let state = Rc::new(RefCell::new(UiState {
-            bridge,
+            pool,
+            qc_store,
+            poll_source: None,
             uses_tmux,
             font,
             config_font_size,
@@ -235,10 +268,10 @@ impl AppWindow {
             });
         }
 
-        // 首次刷新 + 由 CoreBridge 托管的 16ms 轮询（GTK 主线程）
+        // 首次刷新 + 窗口级 16ms 轮询（切连接后仍打到当前 active slot）
         {
             let mut s = state.borrow_mut();
-            let _ = s.bridge.poll_events();
+            let _ = s.bridge().poll_events();
             refresh_ui(&mut s);
             report_all_pane_colours(&s);
             maybe_refresh_status(&mut s, true);
@@ -247,16 +280,17 @@ impl AppWindow {
         {
             let st_weak = Rc::downgrade(&state);
             let win_weak = window.downgrade();
-            let mut s = state.borrow_mut();
-            s.bridge.start_polling(16, move || {
+            let id = glib::timeout_add_local(Duration::from_millis(16), move || {
                 if win_weak.upgrade().is_none() {
-                    return false;
+                    return glib::ControlFlow::Break;
                 }
                 let Some(st) = st_weak.upgrade() else {
-                    return false;
+                    return glib::ControlFlow::Break;
                 };
                 let mut s = st.borrow_mut();
-                let events = s.bridge.poll_events();
+                s.pool.poll_background_slots();
+                s.pool.evict_expired();
+                let events = s.bridge().poll_events();
                 let mut structural = false;
                 for ev in events {
                     if StateEventPolicy::requires_layout_reload(ev.type_) {
@@ -267,8 +301,9 @@ impl AppWindow {
                 sync_pane_outputs(&mut s);
                 sync_window_size(&mut s);
                 maybe_refresh_status(&mut s, structural);
-                true
+                glib::ControlFlow::Continue
             });
+            state.borrow_mut().poll_source = Some(id);
         }
 
         Self {
@@ -280,13 +315,13 @@ impl AppWindow {
     /// 测试用：向当前激活 pane 发送原始输入（如 `echo hi\n` / `\x04` Ctrl+D）。
     pub fn test_send_input(&self, data: &[u8]) {
         let s = self._state.borrow();
-        let _ = s.bridge.send_input(s.active_pane, data);
+        let _ = s.bridge().send_input(s.active_pane, data);
     }
 
     /// 测试用：当前激活 pane 的核心输出快照。
     pub fn test_active_pane_output(&self) -> Vec<u8> {
         let s = self._state.borrow();
-        s.bridge.get_pane_output(s.active_pane)
+        s.bridge().get_pane_output(s.active_pane)
     }
 
     /// 测试用：当前激活 pane 的 VTE 可见文本（比核心缓冲更能发现黑屏）。
@@ -301,8 +336,8 @@ impl AppWindow {
     /// 测试用：tab / 当前 tab 的 pane 数量。
     pub fn test_tab_and_pane_counts(&self) -> (usize, usize) {
         let s = self._state.borrow();
-        let n_tabs = s.bridge.get_tabs().len();
-        let n_panes = s.bridge.get_panes(s.active_tab).len();
+        let n_tabs = s.bridge().get_tabs().len();
+        let n_panes = s.bridge().get_panes(s.active_tab).len();
         (n_tabs, n_panes)
     }
 
@@ -314,7 +349,7 @@ impl AppWindow {
     /// 测试用：手动轮询一次核心事件并刷新输出（不等待 16ms 定时器）。
     pub fn test_poll_once(&self) {
         let mut s = self._state.borrow_mut();
-        let events = s.bridge.poll_events();
+        let events = s.bridge().poll_events();
         for ev in events {
             dispatch_event(&mut s, &ev);
         }
@@ -326,13 +361,13 @@ impl AppWindow {
 fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<RefCell<UiState>>) {
     match action {
         Action::NewTab | Action::NewWindow => {
-            s.bridge.execute(tasks::new_tab());
+            s.bridge().execute(tasks::new_tab());
         }
         Action::NewPane => {
-            s.bridge.execute(tasks::split_h(s.active_pane));
+            s.bridge().execute(tasks::split_h(s.active_pane));
         }
         Action::NewPaneVertical => {
-            s.bridge.execute(tasks::split_v(s.active_pane));
+            s.bridge().execute(tasks::split_v(s.active_pane));
         }
         Action::SwitchTab1 => switch_tab_n(s, 1),
         Action::SwitchTab2 => switch_tab_n(s, 2),
@@ -344,16 +379,16 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
         Action::SwitchTab8 => switch_tab_n(s, 8),
         Action::SwitchTab9 => switch_tab_n(s, 9),
         Action::SwitchTabLast => {
-            let tabs = s.bridge.get_tabs();
+            let tabs = s.bridge().get_tabs();
             if let Some(t) = tabs.last() {
                 request_switch_tab(s, t.id);
             }
         }
         Action::SwitchPaneNext => {
-            s.bridge.execute(tasks::next_pane());
+            s.bridge().execute(tasks::next_pane());
         }
         Action::SwitchPanePrev => {
-            s.bridge.execute(tasks::prev_pane());
+            s.bridge().execute(tasks::prev_pane());
         }
         Action::CommandPalette => {
             open_command_palette(s, window, state);
@@ -361,7 +396,7 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
         }
         Action::Search | Action::Unknown => {}
         Action::QuickConnect => {
-            // B1 接线 QuickConnect 面板。
+            open_quick_connect(s, window, state);
             return;
         }
         Action::Quit => {
@@ -398,10 +433,14 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             });
         }
         "tmux_detach" => {
-            let rc = state.borrow().bridge.detach();
+            let rc = state.borrow().bridge().detach();
             if rc == 0 {
                 window.close();
             }
+        }
+        "quick_connect" => {
+            let mut s = state.borrow_mut();
+            open_quick_connect(&mut s, window, state);
         }
         "theme" => {
             let mut s = state.borrow_mut();
@@ -431,38 +470,38 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         "quit" => window.close(),
         "new_tab" | "new_window" => {
             let mut s = state.borrow_mut();
-            s.bridge.execute(tasks::new_tab());
+            s.bridge().execute(tasks::new_tab());
             refresh_ui(&mut s);
         }
         "new_pane" => {
             let mut s = state.borrow_mut();
-            s.bridge.execute(tasks::split_h(s.active_pane));
+            s.bridge().execute(tasks::split_h(s.active_pane));
             refresh_ui(&mut s);
         }
         "new_pane_vertical" => {
             let mut s = state.borrow_mut();
-            s.bridge.execute(tasks::split_v(s.active_pane));
+            s.bridge().execute(tasks::split_v(s.active_pane));
             refresh_ui(&mut s);
         }
         "close_pane" => {
             let mut s = state.borrow_mut();
-            s.bridge.execute(tasks::close_pane(s.active_pane));
+            s.bridge().execute(tasks::close_pane(s.active_pane));
             refresh_ui(&mut s);
         }
         "close_tab" => {
             let mut s = state.borrow_mut();
-            s.bridge.execute(tasks::close_tab(s.active_tab));
+            s.bridge().execute(tasks::close_tab(s.active_tab));
             refresh_ui(&mut s);
         }
         "close_window" => window.close(),
         "switch_pane_next" => {
             let mut s = state.borrow_mut();
-            s.bridge.execute(tasks::next_pane());
+            s.bridge().execute(tasks::next_pane());
             refresh_ui(&mut s);
         }
         "switch_pane_prev" => {
             let mut s = state.borrow_mut();
-            s.bridge.execute(tasks::prev_pane());
+            s.bridge().execute(tasks::prev_pane());
             refresh_ui(&mut s);
         }
         id if id.starts_with("switch_tab_") => {
@@ -478,7 +517,7 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
 fn toggle_fullscreen(s: &mut UiState) {
     let pane = s.active_pane;
     if s.uses_tmux {
-        s.bridge.execute(tasks::toggle_pane_fullscreen(pane));
+        s.bridge().execute(tasks::toggle_pane_fullscreen(pane));
     } else {
         let next = match s.layout.fullscreen_pane() {
             Some(id) if id == pane => None,
@@ -543,11 +582,11 @@ fn report_all_pane_colours(s: &UiState) {
     }
     let fg = rgb_hex(s.theme.foreground);
     let bg = rgb_hex(s.theme.background);
-    let _ = s.bridge.report_all_pane_colours(&fg, &bg);
+    let _ = s.bridge().report_all_pane_colours(&fg, &bg);
 }
 
 fn switch_tab_n(s: &mut UiState, n: usize) {
-    let tabs = s.bridge.get_tabs();
+    let tabs = s.bridge().get_tabs();
     if let Some(t) = tabs.get(n.saturating_sub(1)) {
         request_switch_tab(s, t.id);
     }
@@ -558,7 +597,7 @@ fn request_switch_tab(s: &mut UiState, tab_id: u32) {
         return;
     }
     s.tab_gate.request(tab_id);
-    s.bridge.execute(tasks::switch_tab(tab_id));
+    s.bridge().execute(tasks::switch_tab(tab_id));
 }
 
 fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
@@ -570,8 +609,8 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                     view.feed_output(&ev.data);
                 } else {
                     // 首次输出前先按后端尺寸播种完整快照，避免增量叠在空模型上。
-                    let out = s.bridge.get_pane_output(ev.pane_id);
-                    let panes = s.bridge.get_panes(s.active_tab);
+                    let out = s.bridge().get_pane_output(ev.pane_id);
+                    let panes = s.bridge().get_panes(s.active_tab);
                     let (cols, rows) = panes
                         .iter()
                         .find(|p| p.id == ev.pane_id)
@@ -611,7 +650,7 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
 }
 
 fn refresh_ui(s: &mut UiState) {
-    let tabs = s.bridge.get_tabs();
+    let tabs = s.bridge().get_tabs();
     s.tabs.set_tabs(&tabs);
     let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id).collect();
     s.tab_gate.on_snapshot(&tab_ids);
@@ -626,8 +665,8 @@ fn refresh_ui(s: &mut UiState) {
     }
 
     // 重建布局
-    if let Some(layout) = s.bridge.get_layout(s.active_tab) {
-        let bridge_ptr = &s.bridge as *const CoreBridge;
+    if let Some(layout) = s.bridge().get_layout(s.active_tab) {
+        let bridge_ptr = s.bridge() as *const CoreBridge;
         let input_cb = move |pane_id: u32, data: &[u8]| {
             // Safety: GTK 主线程，bridge 与窗口同寿
             let bridge = unsafe { &*bridge_ptr };
@@ -635,10 +674,10 @@ fn refresh_ui(s: &mut UiState) {
         };
         s.layout.apply_layout(&layout, &input_cb);
 
-        for pane in s.bridge.get_panes(s.active_tab) {
+        for pane in s.bridge().get_panes(s.active_tab) {
             if let Some(view) = s.layout.pane(pane.id).cloned() {
                 if !view.is_seeded() {
-                    let out = s.bridge.get_pane_output(pane.id);
+                    let out = s.bridge().get_pane_output(pane.id);
                     view.seed_snapshot(&out, pane.cols, pane.rows);
                     forward_parser_replies(s, pane.id);
                 }
@@ -681,7 +720,7 @@ fn local_status_snapshot(npanes: usize) -> StatusBarSnapshot {
 
 fn maybe_refresh_status(s: &mut UiState, force: bool) {
     if !s.uses_tmux {
-        let npanes = s.bridge.get_panes(s.active_tab).len();
+        let npanes = s.bridge().get_panes(s.active_tab).len();
         s.status.apply(&local_status_snapshot(npanes));
         return;
     }
@@ -690,7 +729,7 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
         return;
     }
     s.last_status_at = now;
-    if let Some(snap) = s.bridge.status_snapshot() {
+    if let Some(snap) = s.bridge().status_snapshot() {
         let secs = snap.interval.max(1);
         s.status_interval = Duration::from_secs(secs);
         s.status.apply(&snap);
@@ -699,12 +738,12 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
 
 fn sync_pane_outputs(s: &mut UiState) {
     // 只给尚未播种的 pane 补一次快照；已挂载 pane 的增量走 STATE_PANE_OUTPUT。
-    for pane in s.bridge.get_panes(s.active_tab) {
+    for pane in s.bridge().get_panes(s.active_tab) {
         if let Some(view) = s.layout.pane(pane.id).cloned() {
             if view.is_seeded() {
                 continue;
             }
-            let out = s.bridge.get_pane_output(pane.id);
+            let out = s.bridge().get_pane_output(pane.id);
             view.seed_snapshot(&out, pane.cols, pane.rows);
             forward_parser_replies(s, pane.id);
         }
@@ -723,7 +762,7 @@ fn forward_parser_replies(s: &UiState, pane_id: u32) {
         None => Vec::new(),
     };
     if !replies.is_empty() {
-        let _ = s.bridge.send_input(pane_id, &replies);
+        let _ = s.bridge().send_input(pane_id, &replies);
     }
 }
 
@@ -753,10 +792,251 @@ fn sync_window_size(s: &mut UiState) {
     }
     s.last_client_size = Some((cols, rows));
     if s.uses_tmux {
-        let _ = s.bridge.resize_client(cols, rows);
+        let _ = s.bridge().resize_client(cols, rows);
     } else {
-        let _ = s.bridge.resize_pane(s.active_pane, cols, rows);
+        let _ = s.bridge().resize_pane(s.active_pane, cols, rows);
     }
+}
+
+fn open_quick_connect(s: &mut UiState, window: &Window, state: &Rc<RefCell<UiState>>) {
+    s.qc_store.replace_recents(&s.pool.recent_target_configs(5));
+    let current = s.pool.current_target_config();
+    let store = s.qc_store.clone();
+    let win = window.clone();
+    let st = state.clone();
+    crate::platform::linux::quickconnect_panel::show(
+        &win,
+        &store,
+        current,
+        QuickConnectCallbacks {
+            on_connect: {
+                let st = st.clone();
+                std::boxed::Box::new(move |cfg| {
+                    connect_target(&st, cfg);
+                })
+            },
+            on_edit: {
+                let st = st.clone();
+                let win = win.clone();
+                std::boxed::Box::new(move |cfg| {
+                    open_target_config(&st, &win, Some(cfg));
+                })
+            },
+            on_new_project: {
+                let st = st.clone();
+                let win = win.clone();
+                std::boxed::Box::new(move || {
+                    open_target_config(&st, &win, None);
+                })
+            },
+        },
+    );
+}
+
+fn open_target_config(
+    state: &Rc<RefCell<UiState>>,
+    window: &Window,
+    editing: Option<TargetConfig>,
+) {
+    let store = state.borrow().qc_store.clone();
+    let hosts = CoreBridge::discover_ssh_hosts().unwrap_or_default();
+    let st = state.clone();
+    let win = window.clone();
+    crate::platform::linux::target_config_window::show(
+        window,
+        editing,
+        store,
+        hosts,
+        {
+            let st = st.clone();
+            let win = win.clone();
+            move |saved| {
+                let mut s = st.borrow_mut();
+                s.qc_store.upsert_project(&saved);
+                open_quick_connect(&mut s, &win, &st);
+            }
+        },
+        {
+            let st = st.clone();
+            let win = win.clone();
+            move || {
+                let mut s = st.borrow_mut();
+                open_quick_connect(&mut s, &win, &st);
+            }
+        },
+    );
+}
+
+fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+    match config.runtime {
+        TargetRuntime::Tmux => run_project_flow(state, config),
+        TargetRuntime::Shell => {
+            if config.transport.is_ssh() {
+                run_project_flow(state, config);
+            } else {
+                start_local_shell(state, config);
+            }
+        }
+    }
+}
+
+fn start_local_shell(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+    let session =
+        crate::platform::linux::quickconnect::model::QuickConnect::default_name(&config.path);
+    let key = connection_key(&config, &session);
+    {
+        let mut s = state.borrow_mut();
+        if s.pool.get(&key).is_some() {
+            activate_existing(&mut s, key);
+            return;
+        }
+    }
+    match CoreBridge::connect("local", None, None, None, Some(&config.path)) {
+        Ok(bridge) => {
+            let mut s = state.borrow_mut();
+            activate_new(&mut s, key, bridge);
+        }
+        Err(e) => tracing::error!(target = "muxterm::linux", "local shell 连接失败: {e}"),
+    }
+}
+
+fn run_project_flow(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+    let flow = ProjectConnectFlow::new(&config);
+    step_project_flow(state, config, flow);
+}
+
+fn step_project_flow(
+    state: &Rc<RefCell<UiState>>,
+    config: TargetConfig,
+    mut flow: ProjectConnectFlow,
+) {
+    match flow.state.clone() {
+        ProjectConnectState::AttachExisting { session } => {
+            attach_tmux(state, config, session, flow, true);
+        }
+        ProjectConnectState::CreateDetached { session, directory } => {
+            let (backend, target) = transport_backend(&config);
+            match CoreBridge::create_tmux_session(
+                backend,
+                target.as_deref(),
+                None,
+                &session,
+                &directory,
+            ) {
+                Ok(_) => {
+                    flow.create_succeeded();
+                    step_project_flow(state, config, flow);
+                }
+                Err(e) => {
+                    flow.create_failed(&e.to_string());
+                    tracing::error!(target = "muxterm::linux", "create session failed: {e}");
+                }
+            }
+        }
+        ProjectConnectState::AttachCreated { session } => {
+            attach_tmux(state, config, session, flow, false);
+        }
+        ProjectConnectState::Done => {}
+        ProjectConnectState::Failed(failure) => {
+            tracing::error!(
+                target = "muxterm::linux",
+                "project connect failed at {:?}: {}",
+                failure.stage,
+                failure.detail
+            );
+        }
+    }
+}
+
+fn transport_backend(config: &TargetConfig) -> (&'static str, Option<String>) {
+    match &config.transport {
+        crate::platform::linux::quickconnect::model::TargetTransport::Local => ("tmux", None),
+        crate::platform::linux::quickconnect::model::TargetTransport::Ssh { name } => {
+            ("tmux-ssh", Some(name.clone()))
+        }
+    }
+}
+
+fn attach_tmux(
+    state: &Rc<RefCell<UiState>>,
+    config: TargetConfig,
+    session: String,
+    mut flow: ProjectConnectFlow,
+    existing: bool,
+) {
+    let key = connection_key(&config, &session);
+    {
+        let mut s = state.borrow_mut();
+        if s.pool.get(&key).is_some() {
+            activate_existing(&mut s, key);
+            if existing {
+                flow.attach_existing_succeeded();
+            } else {
+                flow.attach_created_succeeded();
+            }
+            return;
+        }
+    }
+    let (backend, alias) = transport_backend(&config);
+    match CoreBridge::connect(
+        backend,
+        None,
+        Some(&session),
+        alias.as_deref(),
+        Some(&config.path),
+    ) {
+        Ok(bridge) => {
+            let mut s = state.borrow_mut();
+            activate_new(&mut s, key, bridge);
+            if existing {
+                flow.attach_existing_succeeded();
+            } else {
+                flow.attach_created_succeeded();
+            }
+        }
+        Err(e) => {
+            if existing {
+                flow.attach_existing_failed(&e.to_string());
+                step_project_flow(state, config, flow);
+            } else {
+                flow.attach_created_failed(&e.to_string());
+                tracing::error!(
+                    target = "muxterm::linux",
+                    "attach created session failed: {e}"
+                );
+            }
+        }
+    }
+}
+
+fn activate_existing(
+    s: &mut UiState,
+    key: crate::platform::linux::quickconnect::pool::ConnectionKey,
+) {
+    s.pool.acquire(key, |_| unreachable!("slot 已存在"));
+    after_activate(s);
+}
+
+fn activate_new(
+    s: &mut UiState,
+    key: crate::platform::linux::quickconnect::pool::ConnectionKey,
+    bridge: CoreBridge,
+) {
+    s.pool
+        .acquire(key.clone(), |_| WarmConnectionSlot::new(key, bridge));
+    after_activate(s);
+}
+
+fn after_activate(s: &mut UiState) {
+    let uses = s.bridge().uses_tmux();
+    s.uses_tmux = uses;
+    s.layout.reset(uses);
+    s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
+    s.last_client_size = None;
+    s.qc_store.replace_recents(&s.pool.recent_target_configs(5));
+    refresh_ui(s);
+    report_all_pane_colours(s);
+    maybe_refresh_status(s, true);
 }
 
 fn apply_css() {
@@ -769,6 +1049,11 @@ fn apply_css() {
         .tab-button.active { background: #313244; }
         .status-bar { color: #a6adc8; padding: 2px 8px; font-size: 11px; }
         .muxterm-status-window { padding: 0 6px; min-height: 18px; }
+        .qc-badge { padding: 0 6px; border-radius: 4px; font-size: 9px; color: #fff; }
+        .qc-badge-recent { background: #1e66f5; }
+        .qc-badge-project { background: #40a02b; }
+        .qc-badge-current { background: #df8e1d; }
+        .qc-current { background: alpha(#89b4fa, 0.18); }
         ",
     );
     if let Some(display) = gdk::Display::default() {
