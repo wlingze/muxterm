@@ -37,9 +37,25 @@ pub struct KeyMap {
 fn is_special_key_name(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "plus" | "minus" | "return" | "kp_enter" | "escape" | "tab" | "backspace" | "delete"
-            | "up" | "down" | "left" | "right" | "home" | "end" | "insert" | "page_up"
-            | "page_down" | "kp_add" | "kp_subtract"
+        "plus"
+            | "minus"
+            | "return"
+            | "kp_enter"
+            | "escape"
+            | "tab"
+            | "backspace"
+            | "delete"
+            | "up"
+            | "down"
+            | "left"
+            | "right"
+            | "home"
+            | "end"
+            | "insert"
+            | "page_up"
+            | "page_down"
+            | "kp_add"
+            | "kp_subtract"
     ) || (name.starts_with('F') && name[1..].chars().all(|c| c.is_ascii_digit()))
         || (name.starts_with("KP_") && name[3..].chars().all(|c| c.is_ascii_digit()))
 }
@@ -179,16 +195,28 @@ mod tests {
     #[test]
     fn test_keymap_font_zoom_bindings() {
         let km = KeyMap::from_bindings(&default_keybindings());
-        assert_eq!(km.lookup_str("plus", &["control"]), Some(Action::IncreaseFontSize));
-        assert_eq!(km.lookup_str("minus", &["control"]), Some(Action::DecreaseFontSize));
-        assert_eq!(km.lookup_str("0", &["control"]), Some(Action::ResetFontSize));
+        assert_eq!(
+            km.lookup_str("plus", &["control"]),
+            Some(Action::IncreaseFontSize)
+        );
+        assert_eq!(
+            km.lookup_str("minus", &["control"]),
+            Some(Action::DecreaseFontSize)
+        );
+        assert_eq!(
+            km.lookup_str("0", &["control"]),
+            Some(Action::ResetFontSize)
+        );
     }
 
     /// 对应：Ctrl+Return 切换 pane 全屏。
     #[test]
     fn test_keymap_ctrl_return_pane_fullscreen() {
         let km = KeyMap::from_bindings(&default_keybindings());
-        assert_eq!(km.lookup_str("return", &["control"]), Some(Action::TogglePaneFullscreen));
+        assert_eq!(
+            km.lookup_str("return", &["control"]),
+            Some(Action::TogglePaneFullscreen)
+        );
     }
 
     #[test]

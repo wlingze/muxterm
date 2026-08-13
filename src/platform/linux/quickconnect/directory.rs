@@ -92,7 +92,11 @@ impl DirectoryPathModel {
         }
         if let Some(rest) = without_trailing.strip_prefix("~/") {
             let parent = parent_path(rest);
-            return if parent.is_empty() { "~/".into() } else { format!("~/{parent}/") };
+            return if parent.is_empty() {
+                "~/".into()
+            } else {
+                format!("~/{parent}/")
+            };
         }
         if without_trailing.starts_with('/') {
             let parent = parent_path(&without_trailing);
@@ -239,7 +243,11 @@ impl DirectorySuggestionController {
             generation: self.generation,
             path: DirectoryPathModel::base_directory(&self.text),
             is_ssh: self.is_ssh,
-            alias: if self.is_ssh { self.alias.clone() } else { None },
+            alias: if self.is_ssh {
+                self.alias.clone()
+            } else {
+                None
+            },
         }
     }
 
@@ -278,7 +286,11 @@ impl DirectorySuggestionController {
     /// transport / SSH alias 变化：作废旧候选，返回新请求。
     pub fn set_transport(&mut self, is_ssh: bool, alias: Option<&str>) -> DirectoryListingRequest {
         self.is_ssh = is_ssh;
-        self.alias = if is_ssh { alias.map(|s| s.to_string()) } else { None };
+        self.alias = if is_ssh {
+            alias.map(|s| s.to_string())
+        } else {
+            None
+        };
         self.invalidate();
         self.request()
     }
@@ -315,8 +327,8 @@ impl DirectorySuggestionController {
             return None;
         }
         without_trailing
-            .split('/')
-            .last()
+            .rsplit('/')
+            .next()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
     }
@@ -329,8 +341,14 @@ mod tests {
     #[test]
     fn base_directory_uses_parent_for_incomplete_input() {
         assert_eq!(DirectoryPathModel::base_directory("~/Devel"), "~");
-        assert_eq!(DirectoryPathModel::base_directory("~/Developer/self"), "~/Developer");
-        assert_eq!(DirectoryPathModel::base_directory("~/Developer/self/"), "~/Developer/self");
+        assert_eq!(
+            DirectoryPathModel::base_directory("~/Developer/self"),
+            "~/Developer"
+        );
+        assert_eq!(
+            DirectoryPathModel::base_directory("~/Developer/self/"),
+            "~/Developer/self"
+        );
         assert_eq!(DirectoryPathModel::base_directory("/usr/li"), "/usr");
         assert_eq!(DirectoryPathModel::base_directory("/"), "/");
         assert_eq!(DirectoryPathModel::base_directory(""), "~");
@@ -345,13 +363,19 @@ mod tests {
 
     #[test]
     fn selection_replaces_input_segment() {
-        assert_eq!(DirectoryPathModel::applying_selection("muxterm", "~/Devel"), "~/muxterm/");
+        assert_eq!(
+            DirectoryPathModel::applying_selection("muxterm", "~/Devel"),
+            "~/muxterm/"
+        );
         assert_eq!(DirectoryPathModel::applying_selection("etc", "/u"), "/etc/");
     }
 
     #[test]
     fn go_up_navigates() {
-        assert_eq!(DirectoryPathModel::applying_go_up("~/Developer/self/muxterm/"), "~/Developer/self/");
+        assert_eq!(
+            DirectoryPathModel::applying_go_up("~/Developer/self/muxterm/"),
+            "~/Developer/self/"
+        );
         assert_eq!(DirectoryPathModel::applying_go_up("~/"), "~");
         assert_eq!(DirectoryPathModel::applying_go_up("/usr"), "/");
     }
@@ -369,7 +393,10 @@ mod tests {
         let mut c = DirectorySuggestionController::new("~/");
         let req1 = c.request();
         c.update_input("~/Devel");
-        let stale = DirectoryListingResponse { request: req1, directories: vec!["old".into()] };
+        let stale = DirectoryListingResponse {
+            request: req1,
+            directories: vec!["old".into()],
+        };
         assert!(!c.apply(&stale));
         assert!(c.candidates.is_empty());
     }

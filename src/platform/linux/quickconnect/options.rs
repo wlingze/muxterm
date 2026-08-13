@@ -51,8 +51,12 @@ mod tests {
         assert!(!sel.is_runtime_selected(TargetRuntime::Shell));
         assert!(sel.is_transport_selected(&TargetTransport::Local));
         sel.select_runtime(TargetRuntime::Shell);
-        sel.select_transport(TargetTransport::Ssh { name: "ryzen".into() });
+        sel.select_transport(TargetTransport::Ssh {
+            name: "ryzen".into(),
+        });
         assert!(sel.is_runtime_selected(TargetRuntime::Shell));
-        assert!(sel.is_transport_selected(&TargetTransport::Ssh { name: "ryzen".into() }));
+        assert!(sel.is_transport_selected(&TargetTransport::Ssh {
+            name: "ryzen".into()
+        }));
     }
 }

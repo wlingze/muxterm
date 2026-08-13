@@ -57,7 +57,11 @@ impl QuickConnectStore {
     /// 新增或更新一个 project（按唯一 ID name+transport 匹配）。返回是否新增。
     pub fn upsert_project(&mut self, config: &TargetConfig) -> bool {
         let id = QuickConnect::unique_id(config);
-        if let Some(idx) = self.projects.iter().position(|p| QuickConnect::unique_id(p) == id) {
+        if let Some(idx) = self
+            .projects
+            .iter()
+            .position(|p| QuickConnect::unique_id(p) == id)
+        {
             self.projects[idx] = config.clone();
             self.persist();
             return false;
@@ -166,7 +170,10 @@ fn encode_section(name: &str, items: &[TargetConfig]) -> String {
     for item in items {
         out.push_str(&format!("[[{name}]]\n"));
         out.push_str(&format!("name = {}\n", toml_string(&item.name)));
-        out.push_str(&format!("runtime = {}\n", toml_string(item.runtime.as_str())));
+        out.push_str(&format!(
+            "runtime = {}\n",
+            toml_string(item.runtime.as_str())
+        ));
         match &item.transport {
             TargetTransport::Local => out.push_str("transport = \"local\"\n"),
             TargetTransport::Ssh { name } => {
@@ -240,15 +247,32 @@ fn config_from_fields(fields: &std::collections::HashMap<String, String>) -> Opt
 mod tests {
     use super::*;
 
-    fn cfg(name: &str, runtime: TargetRuntime, transport: TargetTransport, path: &str) -> TargetConfig {
+    fn cfg(
+        name: &str,
+        runtime: TargetRuntime,
+        transport: TargetTransport,
+        path: &str,
+    ) -> TargetConfig {
         TargetConfig::new(name, runtime, transport, path)
     }
 
     #[test]
     fn encode_decode_roundtrip() {
         let mut store = QuickConnectStore::new(None);
-        store.upsert_project(&cfg("muxterm", TargetRuntime::Shell, TargetTransport::Local, "~/Developer/self/muxterm"));
-        store.upsert_project(&cfg("server", TargetRuntime::Tmux, TargetTransport::Ssh { name: "ryzen".into() }, "~/work"));
+        store.upsert_project(&cfg(
+            "muxterm",
+            TargetRuntime::Shell,
+            TargetTransport::Local,
+            "~/Developer/self/muxterm",
+        ));
+        store.upsert_project(&cfg(
+            "server",
+            TargetRuntime::Tmux,
+            TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+            "~/work",
+        ));
         let text = store.encode();
         let mut back = QuickConnectStore::new(None);
         back.decode(&text);
@@ -259,7 +283,8 @@ mod tests {
     #[test]
     fn decode_ignores_unknown_sections_and_bad_entries() {
         let mut store = QuickConnectStore::new(None);
-        store.decode(r#"
+        store.decode(
+            r#"
 [[other]]
 name = "x"
 [[projects]]
@@ -270,7 +295,8 @@ path = "~/p"
 [[projects]]
 name = "bad"
 runtime = "weird"
-"#);
+"#,
+        );
         assert_eq!(store.projects.len(), 1);
         assert_eq!(store.projects[0].name, "ok");
     }
@@ -279,11 +305,21 @@ runtime = "weird"
     fn record_recent_dedupes_and_limits() {
         let mut store = QuickConnectStore::new(None);
         for i in 0..25 {
-            store.record_recent(&cfg(&format!("p{i}"), TargetRuntime::Shell, TargetTransport::Local, "~/x"));
+            store.record_recent(&cfg(
+                &format!("p{i}"),
+                TargetRuntime::Shell,
+                TargetTransport::Local,
+                "~/x",
+            ));
         }
         assert_eq!(store.recents.len(), MAX_RECENT);
         assert_eq!(store.recents[0].name, "p24");
-        store.record_recent(&cfg("p24", TargetRuntime::Shell, TargetTransport::Local, "~/x"));
+        store.record_recent(&cfg(
+            "p24",
+            TargetRuntime::Shell,
+            TargetTransport::Local,
+            "~/x",
+        ));
         assert_eq!(store.recents.len(), MAX_RECENT);
         assert_eq!(store.recents[0].name, "p24");
     }

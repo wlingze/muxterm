@@ -47,7 +47,9 @@ impl ConnectionKey {
         let runtime = TargetRuntime::from_str(&self.runtime).unwrap_or(TargetRuntime::Tmux);
         let transport = if self.transport == "ssh" {
             if let Some(alias) = &self.alias {
-                TargetTransport::Ssh { name: alias.clone() }
+                TargetTransport::Ssh {
+                    name: alias.clone(),
+                }
             } else {
                 TargetTransport::Local
             }
@@ -157,7 +159,7 @@ impl<Slot: ConnectionSlotProtocol> ConnectionPool<Slot> {
             .values()
             .filter(|s| s.lifecycle() != ConnectionLifecycle::Evicting)
             .collect();
-        slots.sort_by(|a, b| b.last_used_at().cmp(&a.last_used_at()));
+        slots.sort_by_key(|s| std::cmp::Reverse(s.last_used_at()));
         slots
             .iter()
             .take(limit)
@@ -172,7 +174,11 @@ impl<Slot: ConnectionSlotProtocol> ConnectionPool<Slot> {
 
     /// 获取目标连接：已存在则复用并提升为 active；不存在则用 `create` 新建。
     /// 返回 (slot, created)。
-    pub fn acquire(&mut self, key: ConnectionKey, create: impl FnOnce(&ConnectionKey) -> Slot) -> (&mut Slot, bool) {
+    pub fn acquire(
+        &mut self,
+        key: ConnectionKey,
+        create: impl FnOnce(&ConnectionKey) -> Slot,
+    ) -> (&mut Slot, bool) {
         let now = Instant::now();
         let existed = self.slots.contains_key(&key);
 
@@ -323,24 +329,44 @@ mod tests {
     }
 
     impl ConnectionSlotProtocol for FakeSlot {
-        fn key(&self) -> &ConnectionKey { &self.key }
-        fn lifecycle(&self) -> ConnectionLifecycle { self.lifecycle }
-        fn set_lifecycle(&mut self, l: ConnectionLifecycle) { self.lifecycle = l; }
-        fn last_used_at(&self) -> Instant { self.last_used_at }
-        fn set_last_used_at(&mut self, now: Instant) { self.last_used_at = now; }
-        fn poll_background(&mut self) { *self.polled.borrow_mut() += 1; }
+        fn key(&self) -> &ConnectionKey {
+            &self.key
+        }
+        fn lifecycle(&self) -> ConnectionLifecycle {
+            self.lifecycle
+        }
+        fn set_lifecycle(&mut self, l: ConnectionLifecycle) {
+            self.lifecycle = l;
+        }
+        fn last_used_at(&self) -> Instant {
+            self.last_used_at
+        }
+        fn set_last_used_at(&mut self, now: Instant) {
+            self.last_used_at = now;
+        }
+        fn poll_background(&mut self) {
+            *self.polled.borrow_mut() += 1;
+        }
         fn evict(&mut self, reason: ConnectionEvictionReason) {
             self.lifecycle = ConnectionLifecycle::Evicting;
             self.evictions.borrow_mut().push(reason);
         }
-        fn shutdown(&mut self) { self.lifecycle = ConnectionLifecycle::Evicting; }
+        fn shutdown(&mut self) {
+            self.lifecycle = ConnectionLifecycle::Evicting;
+        }
     }
 
     fn key(n: &str) -> ConnectionKey {
         ConnectionKey::new("local", None, n, "tmux", "~/x")
     }
 
-    fn make_pool() -> (ConnectionPool<FakeSlot>, Rc<RefCell<Vec<ConnectionEvictionReason>>>, Rc<RefCell<u32>>) {
+    type PoolTestHarness = (
+        ConnectionPool<FakeSlot>,
+        Rc<RefCell<Vec<ConnectionEvictionReason>>>,
+        Rc<RefCell<u32>>,
+    );
+
+    fn make_pool() -> PoolTestHarness {
         let evictions = Rc::new(RefCell::new(Vec::new()));
         let polled = Rc::new(RefCell::new(0u32));
         let ev = evictions.clone();
@@ -391,7 +417,10 @@ mod tests {
 
     #[test]
     fn ttl_evicts_background() {
-        let mut pool = ConnectionPool::new(ConnectionPoolPolicy { max_slots: 4, ttl: Some(Duration::from_millis(1)) });
+        let mut pool = ConnectionPool::new(ConnectionPoolPolicy {
+            max_slots: 4,
+            ttl: Some(Duration::from_millis(1)),
+        });
         let k = key("a");
         let (slot, _) = pool.acquire(k.clone(), |_| FakeSlot {
             key: k.clone(),
