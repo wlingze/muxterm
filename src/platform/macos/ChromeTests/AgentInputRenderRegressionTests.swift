@@ -244,4 +244,47 @@ final class AgentInputRenderRegressionTests: XCTestCase {
             "先同步模型宽度再喂帧应稳定，实际 \(at93)"
         )
     }
+
+    /// 1740：codex 用 141 列宽的帧重绘（9 行 erase-up），而 pane 实际只有
+    /// 93 列；长输入行折行后 erase-up 高度对不上，持续刷新越画越乱。
+    /// 模型宽度与帧宽度一致时必须稳定。
+    func testRedrawStableWhenFrameWidthMatchesModel1740() {
+        func frame() -> [UInt8] {
+            var out: [UInt8] = []
+            func add(_ s: String) { out.append(contentsOf: Array(s.utf8)) }
+            for _ in 0..<9 { add("\u{1b}[2K\u{1b}[1A") }
+            add("\u{1b}[G")
+            add(" \u{1b}[32m⠰⠳\u{1b}[39m \u{1b}[1mReading\u{1b}[22m \u{1b}[2m 87.1k tokens\u{1b}[22m\r\n")
+            add("   Tip: Use /plan to plan execution and reach the right outcome faster.\r\n")
+            add("\r\n")
+            add(" \u{1b}[48;2;242;242;242m" + String(repeating: " ", count: 139) + "\u{1b}[49m\r\n")
+            add(" \u{1b}[48;2;242;242;242m \u{1b}[2m→ Add a follow-up\u{1b}[22m" + String(repeating: " ", count: 112) + "\u{1b}[49m\r\n")
+            add(" \u{1b}[48;2;242;242;242m" + String(repeating: " ", count: 139) + "\u{1b}[49m\r\n")
+            add("\r\n")
+            add("  \u{1b}[34m1 task\u{1b}[39m\r\n")
+            add("  \u{1b}[90mCursor Grok 4.6 High Fast\u{1b}[39m · ctx 57% · enhance-ssa-scan_perf2\r\n")
+            return out
+        }
+
+        func run(cols: Int) -> [Int] {
+            let terminal = makeTerminal(cols: cols, rows: 50)
+            var rows: [Int] = []
+            for _ in 0..<6 {
+                terminal.feed(byteArray: frame())
+                rows.append(inputRow(terminal))
+            }
+            return rows
+        }
+
+        // 93 列：折行漂移（保留为记录）。
+        let at93 = run(cols: 93)
+        print("1740 redraw at 93 cols rows=\(at93)")
+        // 141 列：与 codex 帧宽度一致 → 必须稳定。
+        let at141 = run(cols: 141)
+        XCTAssertEqual(
+            Set(at141).count,
+            1,
+            "帧宽度与模型一致时重复重绘应稳定，实际 \(at141)"
+        )
+    }
 }
