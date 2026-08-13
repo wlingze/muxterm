@@ -121,6 +121,23 @@ impl LayoutHost {
         true
     }
 
+    /// 切换连接时清空布局树，保留 root_box 在窗口里的位置。
+    pub fn reset(&mut self, is_tmux_mirror: bool) {
+        self.is_tmux_mirror = is_tmux_mirror;
+        self.fullscreen_pane = None;
+        self.last_sig.clear();
+        for view in self.panes.values() {
+            let w = view.widget();
+            if w.parent().is_some() {
+                w.unparent();
+            }
+        }
+        self.panes.clear();
+        while let Some(child) = self.root_box.first_child() {
+            self.root_box.remove(&child);
+        }
+    }
+
     /// 运行期切换主题：所有已有 pane 的 VTE 调色板同步更新。
     pub fn apply_theme(&mut self, theme: &Theme) {
         self.theme = theme.clone();
