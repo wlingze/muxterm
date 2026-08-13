@@ -16,6 +16,7 @@ pub mod quickconnect_panel;
 pub mod renderer;
 pub mod status_bar;
 pub mod tab_bar;
+pub mod target_config_window;
 pub mod theme;
 pub mod title_watch;
 pub mod tmux_dialog;
