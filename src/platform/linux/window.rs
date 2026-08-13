@@ -344,6 +344,12 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
             return;
         }
         Action::Search | Action::Unknown => {}
+        // 以下动作由后续 QuickConnect/主题/字体/全屏接线处理；先保持编译通过。
+        Action::QuickConnect | Action::Quit | Action::IncreaseFontSize
+        | Action::DecreaseFontSize | Action::ResetFontSize
+        | Action::TogglePaneFullscreen => {
+            return;
+        }
     }
     refresh_ui(s);
 }

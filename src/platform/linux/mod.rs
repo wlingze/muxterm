@@ -11,6 +11,7 @@ pub mod notebook;
 pub mod pane_switcher;
 pub mod pane_view;
 pub mod quick_pick;
+pub mod quickconnect;
 pub mod renderer;
 pub mod tab_bar;
 pub mod theme;

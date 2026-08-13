@@ -10,9 +10,12 @@ use std::ptr;
 use gtk4::glib;
 
 use crate::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_detach, muxterm_execute, muxterm_free, muxterm_get_layout,
-    muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events,
-    muxterm_resize_client, muxterm_resize_pane, muxterm_send_input, MuxtermHandle,
+    muxterm_connect, muxterm_create_tmux_session_json, muxterm_detach, muxterm_discover_ssh_hosts_json,
+    muxterm_discover_tmux_sessions_json, muxterm_execute, muxterm_free, muxterm_free_string,
+    muxterm_get_layout, muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs,
+    muxterm_list_dir_json, muxterm_new, muxterm_new_connect, muxterm_poll_events,
+    muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
+    muxterm_resize_pane, muxterm_send_input, muxterm_status_snapshot_json, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -67,6 +70,14 @@ pub struct BridgePane {
 /// 事件轮询用 `glib::timeout_add_local` 挂在 GTK 主循环上（见 [`Self::start_polling`]）。
 pub struct CoreBridge {
     handle: *mut MuxtermHandle,
+    /// 当前连接的后端类型（local / tmux / tmux-ssh / daemon）。
+    pub backend_type: String,
+    /// tmux `-L` socket 名（可选）。
+    pub socket: Option<String>,
+    /// tmux session 名（可选）。
+    pub session: Option<String>,
+    /// SSH `~/.ssh/config` alias（可选；用于 status 快照的只读查询）。
+    pub ssh_alias: Option<String>,
     /// 轮询定时器；`start_polling` 设置，Drop / `stop_polling` 清除。
     poll_source: Option<glib::SourceId>,
 }
@@ -98,10 +109,78 @@ impl CoreBridge {
                 &[("code", &rc.to_string())],
             ));
         }
+        let backend_type = backend_type.to_ascii_lowercase();
         Ok(Self {
             handle,
+            backend_type,
+            socket: socket.map(|s| s.to_string()),
+            session: session.map(|s| s.to_string()),
+            ssh_alias: None,
             poll_source: None,
         })
+    }
+
+    /// 一步建连：支持 SSH（`tmux-ssh` + alias）、attach 与指定起始目录。
+    ///
+    /// 与 macOS `CoreBridge.connect` 语义一致：`muxterm_new_connect` 内部
+    /// 已完成 `connect`；这里再调一次 `muxterm_connect`（幂等）以便统一
+    /// 错误路径。
+    pub fn connect(
+        backend_type: &str,
+        socket: Option<&str>,
+        session: Option<&str>,
+        ssh_alias: Option<&str>,
+        start_directory: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let bt = CString::new(backend_type).unwrap_or_default();
+        let sock_c = socket.and_then(|s| CString::new(s).ok());
+        let sess_c = session.and_then(|s| CString::new(s).ok());
+        let alias_c = ssh_alias.and_then(|s| CString::new(s).ok());
+        let dir_c = start_directory.and_then(|s| CString::new(s).ok());
+        let sock_ptr = sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+        let sess_ptr = sess_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+        let alias_ptr = alias_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+        let dir_ptr = dir_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+
+        let handle =
+            muxterm_new_connect(bt.as_ptr(), sock_ptr, sess_ptr, alias_ptr, dir_ptr);
+        if handle.is_null() {
+            anyhow::bail!(crate::platform::i18n::tr(
+                crate::platform::i18n::Key::ErrorBridgeCreate
+            ));
+        }
+        let rc = unsafe { muxterm_connect(handle) };
+        if rc != 0 {
+            unsafe { muxterm_free(handle) };
+            anyhow::bail!(crate::platform::i18n::tr_args(
+                crate::platform::i18n::Key::ErrorBridgeConnect,
+                &[("code", &rc.to_string())],
+            ));
+        }
+        let normalized = backend_type.to_ascii_lowercase();
+        // QuickConnect 面板统一用 backend_type="tmux-ssh" + alias 建连，
+        // 但旧代码/配置也可能传 "ssh"：这里归一化记录。
+        let (backend_type, ssh_alias) = if normalized == "ssh" {
+            ("tmux-ssh".to_string(), socket.map(|s| s.to_string()))
+        } else {
+            (normalized, ssh_alias.map(|s| s.to_string()))
+        };
+        Ok(Self {
+            handle,
+            backend_type,
+            socket: socket.map(|s| s.to_string()),
+            session: session.map(|s| s.to_string()),
+            ssh_alias,
+            poll_source: None,
+        })
+    }
+
+    /// 当前连接是否由 tmux/SSH 控制 client 管理尺寸与状态栏。
+    pub fn uses_tmux(&self) -> bool {
+        matches!(
+            self.backend_type.as_str(),
+            "tmux" | "ssh" | "tmux-ssh"
+        )
     }
 
     /// 在 GTK 主循环上启动周期轮询（默认由 window 以 16ms 调用）。
@@ -252,6 +331,66 @@ impl CoreBridge {
         unsafe { muxterm_resize_pane(self.handle, pane_id, cols, rows) }
     }
 
+    /// 上报单个 pane 的前景/背景色（`refresh-client -r`），供 tmux 代答 OSC 10/11。
+    pub fn report_pane_colours(&self, pane_id: u32, fg_hex: &str, bg_hex: &str) -> i32 {
+        let fg_c = CString::new(fg_hex).unwrap_or_default();
+        let bg_c = CString::new(bg_hex).unwrap_or_default();
+        unsafe {
+            muxterm_report_pane_colours(
+                self.handle,
+                pane_id,
+                fg_c.as_ptr(),
+                bg_c.as_ptr(),
+            )
+        }
+    }
+
+    /// 上报所有 pane 的颜色（主题切换后必须整段对齐）。
+    pub fn report_all_pane_colours(&self, fg_hex: &str, bg_hex: &str) -> i32 {
+        let fg_c = CString::new(fg_hex).unwrap_or_default();
+        let bg_c = CString::new(bg_hex).unwrap_or_default();
+        unsafe {
+            muxterm_report_all_pane_colours(self.handle, fg_c.as_ptr(), bg_c.as_ptr())
+        }
+    }
+
+    /// 抓取 status bar 快照（只读查询，tmux 兼容），返回解析后的快照。
+    pub fn status_snapshot(&self) -> Option<crate::platform::linux::quickconnect::status_style::StatusBarSnapshot> {
+        if !self.uses_tmux() {
+            return None;
+        }
+        // SSH：backend 归一化为 tmux-ssh，FFI 期望 backend_type="ssh"
+        let ffi_backend = if self.backend_type == "tmux-ssh" { "ssh" } else { self.backend_type.as_str() };
+        let bt_c = CString::new(ffi_backend).unwrap_or_default();
+        let alias_c = self.ssh_alias.as_ref().and_then(|s| CString::new(s.clone()).ok());
+        let sock_c = self.socket.as_ref().and_then(|s| CString::new(s.clone()).ok());
+        let sess_c = self.session.as_ref().and_then(|s| CString::new(s.clone()).ok());
+        let Some(sess) = &sess_c else {
+            return None;
+        };
+        let raw = muxterm_status_snapshot_json(
+            bt_c.as_ptr(),
+            alias_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
+            sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
+            sess.as_ptr(),
+        );
+        if raw.is_null() {
+            return None;
+        }
+        let text = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        unsafe { muxterm_free_string(raw) };
+        #[derive(serde::Deserialize)]
+        struct Response {
+            ok: bool,
+            status: Option<crate::platform::linux::quickconnect::status_style::StatusBarSnapshot>,
+        }
+        let response: Response = serde_json::from_str(&text).ok()?;
+        if !response.ok {
+            return None;
+        }
+        response.status
+    }
+
     pub fn is_pane_output(ev: &BridgeEvent) -> bool {
         ev.type_ == STATE_PANE_OUTPUT
     }
@@ -304,12 +443,159 @@ unsafe fn clone_layout(node: &CLayoutNode) -> BridgeLayout {
     }
 }
 
+// ============================================================================
+// 无状态 discovery（本地 / SSH 目录、tmux session、SSH host）
+// ============================================================================
+
+/// core SSH host discovery 返回的条目。
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct SshHostEntry {
+    pub alias: String,
+    pub hostname: String,
+    pub port: u16,
+    pub user: String,
+}
+
+/// core tmux discovery 返回的 session 摘要。
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct TmuxSessionEntry {
+    pub name: String,
+    pub windows: u32,
+    pub attached: bool,
+    pub created: u64,
+}
+
+/// core 目录列表返回的条目。
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct FsEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// 运行一次返回 JSON 的 discovery FFI，并解析为 serde 值。
+///
+/// 调用方负责在非 GTK 线程执行（SSH 查询可能阻塞数秒）。
+fn discovery_json<F>(call: F) -> anyhow::Result<serde_json::Value>
+where
+    F: FnOnce() -> *mut c_char,
+{
+    let raw = call();
+    if raw.is_null() {
+        anyhow::bail!(crate::platform::i18n::tr(
+            crate::platform::i18n::Key::ErrorCoreDiscoveryNoResponse
+        ));
+    }
+    let text = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+    unsafe { muxterm_free_string(raw) };
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        anyhow::anyhow!(crate::platform::i18n::tr_args(
+            crate::platform::i18n::Key::ErrorCoreDiscoveryInvalidJson,
+            &[("error", &e.to_string())],
+        ))
+    })?;
+    if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        let error = value
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        anyhow::bail!(error.to_string());
+    }
+    Ok(value)
+}
+
+fn cstr_pair(value: Option<&str>) -> Option<CString> {
+    value.and_then(|s| CString::new(s).ok())
+}
+
+impl CoreBridge {
+    /// 发现用户 SSH 配置中的 Host alias。
+    pub fn discover_ssh_hosts() -> anyhow::Result<Vec<SshHostEntry>> {
+        let value = discovery_json(|| muxterm_discover_ssh_hosts_json(ptr::null()))?;
+        let hosts: Vec<SshHostEntry> = serde_json::from_value(value["hosts"].clone())?;
+        Ok(hosts)
+    }
+
+    /// 列出本地或远端目录条目。
+    pub fn list_dir(
+        backend_type: &str,
+        target: Option<&str>,
+        path: &str,
+    ) -> anyhow::Result<Vec<FsEntry>> {
+        let bt_c = CString::new(backend_type).unwrap_or_default();
+        let target_c = cstr_pair(target);
+        let path_c = CString::new(path).unwrap_or_default();
+        let value = discovery_json(|| {
+            muxterm_list_dir_json(
+                bt_c.as_ptr(),
+                target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
+                ptr::null(),
+                path_c.as_ptr(),
+                10_000,
+            )
+        })?;
+        let entries: Vec<FsEntry> = serde_json::from_value(value["entries"].clone())?;
+        Ok(entries)
+    }
+
+    /// 发现本地或 SSH tmux session。
+    pub fn discover_tmux_sessions(
+        backend_type: &str,
+        target: Option<&str>,
+        socket: Option<&str>,
+    ) -> anyhow::Result<Vec<TmuxSessionEntry>> {
+        let bt_c = CString::new(backend_type).unwrap_or_default();
+        let target_c = cstr_pair(target);
+        let sock_c = cstr_pair(socket);
+        let value = discovery_json(|| {
+            muxterm_discover_tmux_sessions_json(
+                bt_c.as_ptr(),
+                target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
+                sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
+                ptr::null(),
+                10_000,
+            )
+        })?;
+        let sessions: Vec<TmuxSessionEntry> = serde_json::from_value(value["sessions"].clone())?;
+        Ok(sessions)
+    }
+
+    /// 创建 detached tmux session（Project attach→create fallback 用）。
+    pub fn create_tmux_session(
+        backend_type: &str,
+        target: Option<&str>,
+        socket: Option<&str>,
+        session: &str,
+        directory: &str,
+    ) -> anyhow::Result<String> {
+        let bt_c = CString::new(backend_type).unwrap_or_default();
+        let target_c = cstr_pair(target);
+        let sock_c = cstr_pair(socket);
+        let sess_c = CString::new(session).unwrap_or_default();
+        let dir_c = CString::new(directory).unwrap_or_default();
+        let value = discovery_json(|| {
+            muxterm_create_tmux_session_json(
+                bt_c.as_ptr(),
+                target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
+                sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
+                ptr::null(),
+                sess_c.as_ptr(),
+                dir_c.as_ptr(),
+                10_000,
+            )
+        })?;
+        Ok(value["session"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| session.to_string()))
+    }
+}
+
 /// 构造常用 CTask 的便捷函数。
 pub mod tasks {
     use super::*;
     use crate::core::protocol::ffi::types::{
         DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB,
-        TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
+        TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
     };
 
     pub fn split_h(target_pane: u32) -> CTask {
@@ -396,6 +682,16 @@ pub mod tasks {
         CTask {
             type_: TASK_DETACH,
             target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: ptr::null(),
+        }
+    }
+
+    pub fn toggle_pane_fullscreen(pane_id: u32) -> CTask {
+        CTask {
+            type_: TASK_TOGGLE_PANE_FULLSCREEN,
+            target_pane: pane_id,
             target_tab: 0,
             dir: 0,
             name: ptr::null(),
