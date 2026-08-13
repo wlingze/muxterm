@@ -1,7 +1,7 @@
 import Foundation
 
-/// muxterm status bar 快照（对应 Rust `StatusSnapshot` 的 JSON；连接 tmux 时
-/// 读取的是 tmux 的 status 配置，但概念上属于 muxterm 自己的 status bar）。
+/// muxterm status bar 快照（对应 Rust `StatusSnapshot` 的 JSON；连接控制模式
+/// 会话时读取兼容的 status 配置，概念上属于 muxterm 自己的 status bar）。
 public struct StatusBarSnapshot: Equatable, Decodable, Sendable {
     public let enabled: Bool
     public let position: String
@@ -73,7 +73,7 @@ public struct StatusBarColor: Equatable, Sendable {
     }
 }
 
-/// 一段文本的 tmux 样式。
+/// 一段文本的 status bar 样式。
 public struct StatusBarTextStyle: Equatable, Sendable {
     public var fg: StatusBarColor?
     public var bg: StatusBarColor?
@@ -101,7 +101,7 @@ public struct StatusBarStyledSegment: Equatable, Sendable {
     }
 }
 
-/// tmux status 样式解析（纯逻辑，便于单测）。
+/// status bar 样式解析（纯逻辑，便于单测）。
 ///
 /// 支持：
 /// - 颜色名：`black`/`red`/…/`white`、`bright*`/`grey`；

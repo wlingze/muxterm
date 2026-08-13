@@ -346,6 +346,7 @@ status-left ''
 status-right \"#[fg=colour233,bg=colour241,bold] %d/%m \"
 status-format[0] \"#[align=left range=left ...]\"
 status-interval 15
+status-justify centre
 ";
         let opts = parse_show_output(text);
         assert_eq!(opts.get("status").map(String::as_str), Some("on"));
@@ -358,6 +359,10 @@ status-interval 15
         // 数组选项取基名，先到先得
         assert!(opts.get("status-format").is_some());
         assert_eq!(opts.get("status-interval").map(String::as_str), Some("15"));
+        assert_eq!(
+            opts.get("status-justify").map(String::as_str),
+            Some("centre")
+        );
     }
 
     #[test]

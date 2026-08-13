@@ -7,7 +7,7 @@ final class ContentView: NSView {
     let paneLayout: PaneLayoutView
     /// muxterm 自己的状态摘要行（连接状态 / tabs / panes / 输出片段）。
     let connectionStatus = ConnectionStatusView()
-    /// muxterm status bar（连接 tmux 时按 tmux 的 status 配置渲染，替换 tab 栏）。
+    /// muxterm status bar（连接控制模式会话时按兼容的 status 配置渲染，替换 tab 栏）。
     let statusBar = StatusBarView()
 
     private var tabTopConstraints: [NSLayoutConstraint] = []

@@ -3,14 +3,15 @@ import MuxtermChrome
 
 /// muxterm status bar：left + 窗口列表 + right。
 ///
-/// 连接 tmux 时渲染的是 tmux 的 status 配置（left/window/right 与样式），
-/// 但这是 muxterm 自己的 status bar，只做 tmux 兼容。
+/// 连接控制模式会话时按兼容的 status 配置渲染（left/window/right 与样式），
+/// 但这是 muxterm 自己的 status bar。
 final class StatusBarView: NSView {
     var onSelectWindow: ((UInt32) -> Void)?
 
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
     private let windowStack = NSStackView()
+    private var justifyConstraints: [NSLayoutConstraint] = []
     private var heightConstraint: NSLayoutConstraint!
 
     override init(frame frameRect: NSRect) {
@@ -37,13 +38,14 @@ final class StatusBarView: NSView {
             addSubview(view)
         }
 
+        // 初始默认：居中。
+        applyJustify("centre")
         NSLayoutConstraint.activate([
             heightConstraint,
             leftLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             leftLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             leftLabel.trailingAnchor.constraint(lessThanOrEqualTo: windowStack.leadingAnchor, constant: -8),
 
-            windowStack.centerXAnchor.constraint(equalTo: centerXAnchor),
             windowStack.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             rightLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
@@ -90,13 +92,42 @@ final class StatusBarView: NSView {
                 StatusBarStyleParser.parseInline(text: win.text, base: inlineBase),
                 font: button.font ?? NSFont.systemFont(ofSize: 11)
             )
-            button.setAccessibilityIdentifier("muxterm.tmuxWindow.\(win.index)")
+            button.setAccessibilityIdentifier("muxterm.statusWindow.\(win.index)")
             windowStack.addArrangedSubview(button)
         }
+        applyJustify(snapshot.justify)
     }
 
     @objc private func windowClicked(_ sender: NSButton) {
         onSelectWindow?(UInt32(sender.tag))
+    }
+
+    /// 按 justify 切换窗口列表的位置：
+    /// left 紧挨 left 文本之后，centre 居中，right 紧挨 right 文本之前，
+    /// absolute-centre 与 centre 相同。
+    private func applyJustify(_ justify: String) {
+        NSLayoutConstraint.deactivate(justifyConstraints)
+        justifyConstraints.removeAll()
+        switch justify {
+        case "left":
+            justifyConstraints = [
+                windowStack.leadingAnchor.constraint(equalTo: leftLabel.trailingAnchor, constant: 8),
+                windowStack.trailingAnchor.constraint(lessThanOrEqualTo: rightLabel.leadingAnchor, constant: -8),
+            ]
+        case "right":
+            justifyConstraints = [
+                windowStack.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
+                windowStack.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor, constant: -8),
+            ]
+        default:
+            justifyConstraints = [
+                windowStack.centerXAnchor.constraint(equalTo: centerXAnchor),
+                windowStack.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
+                windowStack.trailingAnchor.constraint(lessThanOrEqualTo: rightLabel.leadingAnchor, constant: -8),
+            ]
+        }
+        NSLayoutConstraint.activate(justifyConstraints)
+        needsLayout = true
     }
 
     private func merged(_ base: StatusBarTextStyle, _ overrideStyle: String) -> StatusBarTextStyle {
