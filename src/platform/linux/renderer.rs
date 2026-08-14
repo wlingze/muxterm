@@ -122,6 +122,20 @@ fn rgba(c: Rgb) -> gtk4::gdk::RGBA {
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_converts_byte_colors_to_unit_range() {
+        let c = rgba(Rgb(0xaa, 0xbb, 0xcc));
+        assert!((c.red() - 170.0 / 255.0).abs() < 1e-6, "{}", c.red());
+        assert!((c.green() - 187.0 / 255.0).abs() < 1e-6, "{}", c.green());
+        assert!((c.blue() - 204.0 / 255.0).abs() < 1e-6, "{}", c.blue());
+        assert!((c.alpha() - 1.0).abs() < 1e-6, "{}", c.alpha());
+    }
+}
+
 // ── GPU 加速预留（TODO）──────────────────────────────────────
 //
 // /// 参考 alacritty OpenGL renderer：

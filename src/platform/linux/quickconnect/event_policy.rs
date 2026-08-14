@@ -196,6 +196,25 @@ mod tests {
     }
 
     #[test]
+    fn changes_active_pane_detection() {
+        assert!(StateEventPolicy::changes_active_pane(7));
+        assert!(!StateEventPolicy::changes_active_pane(6));
+        assert!(!StateEventPolicy::changes_active_pane(0));
+    }
+
+    #[test]
+    fn client_size_policy_guards_invalid_inputs() {
+        // allocated=false 时走像素推算；root/cell 无效返回 None
+        assert_eq!(ClientSizePolicy::cols(80, false, 0, 10), None);
+        assert_eq!(ClientSizePolicy::cols(80, false, 1280, 0), None);
+        assert_eq!(ClientSizePolicy::rows(0, 10), None);
+        assert_eq!(ClientSizePolicy::rows(100, 0), None);
+        // allocated=true 但 VTE 未实际分配（<=1 列）时退回像素推算
+        assert_eq!(ClientSizePolicy::cols(1, true, 1280, 10), Some(128));
+        assert_eq!(ClientSizePolicy::cols(0, true, 0, 10), None);
+    }
+
+    #[test]
     fn client_cols_prefer_vte_over_pixel_division() {
         // 2310.log：root/字宽算出 128，VTE 已布局时用实际 120，避免 htop 折行。
         assert_eq!(ClientSizePolicy::cols(120, true, 1280, 10), Some(120));

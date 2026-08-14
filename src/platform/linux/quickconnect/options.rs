@@ -45,6 +45,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_selection_keeps_given_values() {
+        let sel = TargetOptionSelection::new(
+            TargetRuntime::Shell,
+            TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+        );
+        assert!(sel.is_runtime_selected(TargetRuntime::Shell));
+        assert!(sel.is_transport_selected(&TargetTransport::Ssh {
+            name: "ryzen".into()
+        }));
+    }
+
+    #[test]
     fn exactly_one_runtime_and_transport_selected() {
         let mut sel = TargetOptionSelection::default();
         assert!(sel.is_runtime_selected(TargetRuntime::Tmux));

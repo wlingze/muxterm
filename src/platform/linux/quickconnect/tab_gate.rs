@@ -99,4 +99,25 @@ mod tests {
         gate.on_snapshot(&[1, 2]);
         assert!(gate.is_released());
     }
+
+    #[test]
+    fn wrong_tab_change_does_not_release() {
+        let mut gate = TabSwitchGate::new(Duration::from_secs(10));
+        gate.request(3);
+        gate.on_tab_changed(4);
+        assert!(!gate.is_released());
+        gate.on_tab_closed(4);
+        assert!(!gate.is_released());
+        gate.on_snapshot(&[3, 4]);
+        assert!(!gate.is_released());
+    }
+
+    #[test]
+    fn timeout_releases_after_deadline() {
+        let mut gate = TabSwitchGate::new(Duration::from_millis(1));
+        gate.request(3);
+        assert!(!gate.is_released());
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(gate.is_released());
+    }
 }

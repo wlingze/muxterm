@@ -127,4 +127,29 @@ mod tests {
         assert_eq!(key.transport, "local");
         assert_eq!(key.runtime, "shell");
     }
+
+    #[test]
+    fn tmux_startup_key_keeps_session() {
+        let key = startup_connection_key(true, Some("legion"));
+        assert_eq!(key.transport, "local");
+        assert_eq!(key.runtime, "tmux");
+        assert_eq!(key.session, "legion");
+        assert_eq!(key.path, "");
+    }
+
+    #[test]
+    fn local_tmux_key_uses_session_and_path() {
+        let cfg = TargetConfig::new(
+            "muxterm",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "~/src/muxterm",
+        );
+        let key = connection_key(&cfg, "muxterm");
+        assert_eq!(key.transport, "local");
+        assert_eq!(key.alias, None);
+        assert_eq!(key.session, "muxterm");
+        assert_eq!(key.runtime, "tmux");
+        assert_eq!(key.path, "~/src/muxterm");
+    }
 }

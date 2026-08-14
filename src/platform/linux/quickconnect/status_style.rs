@@ -494,6 +494,60 @@ mod tests {
     }
 
     #[test]
+    fn color_parses_hex_short_long_and_plain() {
+        assert_eq!(
+            StatusBarStyleParser::color("#abc"),
+            StatusBarStyleParser::color("#aabbcc")
+        );
+        assert_eq!(
+            StatusBarStyleParser::color("aabbcc"),
+            StatusBarStyleParser::color("#aabbcc")
+        );
+        assert_eq!(StatusBarStyleParser::color("default"), None);
+        assert_eq!(StatusBarStyleParser::color("not-a-color"), None);
+    }
+
+    #[test]
+    fn color_parses_named_and_xterm() {
+        assert_eq!(
+            StatusBarStyleParser::color("red"),
+            StatusBarStyleParser::color("colour1")
+        );
+        assert_eq!(
+            StatusBarStyleParser::color("brightwhite"),
+            StatusBarStyleParser::color("colour15")
+        );
+        assert!(StatusBarStyleParser::color("colour256").is_none());
+        assert!(StatusBarStyleParser::color("colour-1").is_none());
+    }
+
+    #[test]
+    fn parse_resets_on_default_and_handles_nobold_noreverse() {
+        let s = StatusBarStyleParser::parse("bold,reverse,default");
+        assert!(!s.bold);
+        assert!(!s.reverse);
+        let s = StatusBarStyleParser::parse("bold,nobold,reverse,noreverse");
+        assert!(!s.bold);
+        assert!(!s.reverse);
+    }
+
+    #[test]
+    fn apply_ignores_layout_directives_and_push_pop() {
+        let base = StatusBarTextStyle::default();
+        let mut style = StatusBarTextStyle {
+            fg: StatusBarStyleParser::color("red"),
+            bg: None,
+            bold: true,
+            reverse: false,
+        };
+        style = StatusBarStyleParser::apply("align=centre,range=1..2,list", &style, &base);
+        assert!(style.bold);
+        assert_eq!(style.fg, StatusBarStyleParser::color("red"));
+        style = StatusBarStyleParser::apply("push-default,pop-default", &style, &base);
+        assert!(style.bold);
+    }
+
+    #[test]
     fn snapshot_from_tabs_keeps_window_order_and_active() {
         let snap = snapshot_from_tabs(
             "yaklang-workspace",
