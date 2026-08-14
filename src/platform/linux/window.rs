@@ -284,8 +284,7 @@ impl AppWindow {
             let st = state.clone();
             let win = window.clone();
             state.borrow().status.connect_attention_activate(move || {
-                let mut s = st.borrow_mut();
-                open_panel(&mut s, &win, &st, PanelTab::Attention);
+                open_panel(&st, &win, PanelTab::Attention);
             });
         }
 
@@ -314,6 +313,11 @@ impl AppWindow {
                 // Ctrl+Q 必须在放下 RefCell 之后再 close：close-request 会再借同一把锁。
                 if action == Action::Quit {
                     window_for_palette.close();
+                    return glib::Propagation::Stop;
+                }
+                // QuickConnect 面板的 rebuild 会同步 borrow state：先放锁再打开。
+                if action == Action::QuickConnect {
+                    open_panel(&st, &window_for_palette, PanelTab::Workspaces);
                     return glib::Propagation::Stop;
                 }
                 let mut s = st.borrow_mut();
@@ -509,6 +513,17 @@ impl AppWindow {
             .unwrap_or(0)
     }
 
+    /// 测试用：以指定 tab 打开面板（0=workspaces / 1=attention / 2=search）。
+    pub fn test_open_panel(&self, tab: u32) {
+        let state = self._state.clone();
+        let tab = match tab {
+            0 => PanelTab::Workspaces,
+            1 => PanelTab::Attention,
+            _ => PanelTab::Search,
+        };
+        open_panel(&state, &self.window, tab);
+    }
+
     /// 测试用：当前 blocked 工作区数（红点 N）。
     pub fn test_attention_blocked_workspaces(&self) -> usize {
         self._state.borrow().attention.blocked_workspace_count()
@@ -577,7 +592,9 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
         }
         Action::Search | Action::Unknown => {}
         Action::QuickConnect => {
-            open_quick_connect(s, window, state);
+            // 调用方（快捷键/命令面板）必须先释放 RefMut 再打开面板；
+            // 这里只做标记，由 handle_action 的调用方处理。
+            let _ = (s, window, state);
             return;
         }
         Action::Quit => {
@@ -653,8 +670,7 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             }
         }
         PaletteAction::QuickConnect => {
-            let mut s = state.borrow_mut();
-            open_quick_connect(&mut s, window, state);
+            open_quick_connect(state, window);
         }
         PaletteAction::ToggleTheme => {
             let mut s = state.borrow_mut();
@@ -1254,30 +1270,33 @@ fn sync_window_size(s: &mut UiState) {
     }
 }
 
-fn open_quick_connect(s: &mut UiState, window: &Window, state: &Rc<RefCell<UiState>>) {
-    open_panel(s, window, state, PanelTab::Workspaces);
+fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
+    open_panel(state, window, PanelTab::Workspaces);
 }
 
 /// 打开三 tab 面板（initial_tab 由入口决定：Alt+Q → Workspaces，红点 → Attention）。
-fn open_panel(
-    s: &mut UiState,
-    window: &Window,
-    state: &Rc<RefCell<UiState>>,
-    initial_tab: PanelTab,
-) {
-    s.qc_store.replace_recents(&s.pool.recent_target_configs(5));
-    let current = s.pool.current_target_config();
-    let store = s.qc_store.clone();
-    let win = window.clone();
-    let st = state.clone();
-    let workspaces = build_items(&store, current.as_ref());
-    let attention: Vec<PaneAttention> = s
-        .attention
-        .snapshot()
-        .into_iter()
-        .flat_map(|w| w.panes)
-        .collect();
-    s.panel_open = Some(initial_tab);
+///
+/// 内部自行 borrow：show() 的 rebuild 会同步触发 peek_text（st.borrow()），
+/// 调用方不能同时持有 RefMut。
+fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
+    let (workspaces, attention, win, st) = {
+        let mut s = state.borrow_mut();
+        let recents = s.pool.recent_target_configs(5);
+        s.qc_store.replace_recents(&recents);
+        let current = s.pool.current_target_config();
+        let store = s.qc_store.clone();
+        let win = window.clone();
+        let st = state.clone();
+        let workspaces = build_items(&store, current.as_ref());
+        let attention: Vec<PaneAttention> = s
+            .attention
+            .snapshot()
+            .into_iter()
+            .flat_map(|w| w.panes)
+            .collect();
+        s.panel_open = Some(initial_tab);
+        (workspaces, attention, win, st)
+    };
     crate::platform::linux::quickconnect_panel::show(
         &win,
         crate::platform::linux::quickconnect_panel::PanelShowArgs {
@@ -1340,15 +1359,10 @@ fn open_panel(
     );
 }
 
-/// 跳到注意力 pane：切到对应工作区连接并激活该 pane。
+/// 跳到注意力 pane：若目标工作区不是当前前台连接，先切连接再激活 pane。
 fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32) {
     let mut s = state.borrow_mut();
-    let key = attention_connection_key(&s, ws);
-    if let Some(key) = key {
-        if s.pool.get(&key).is_some() {
-            activate_existing(&mut s, key);
-        }
-    }
+    activate_attention_workspace(&mut s, ws);
     // 激活 pane（若已在前台连接中）。
     let _ = s.bridge().execute(tasks::switch_pane(pane));
 }
@@ -1356,16 +1370,24 @@ fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32) {
 /// 一行答复：发送 `line + \r` 到目标 pane。
 fn reply_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, line: &str) {
     let mut s = state.borrow_mut();
-    let key = attention_connection_key(&s, ws);
-    if let Some(key) = key {
-        if s.pool.get(&key).is_some() {
-            activate_existing(&mut s, key);
-        }
-    }
+    activate_attention_workspace(&mut s, ws);
     let mut data = line.as_bytes().to_vec();
     data.push(b'\r');
     let _ = s.bridge().send_input(pane, &data);
     s.attention.on_user_input(ws, pane);
+}
+
+/// 目标工作区不是当前前台时切连接；相同则不动（避免无谓的 layout 重建）。
+fn activate_attention_workspace(s: &mut UiState, ws: &str) {
+    if active_workspace_id(s) == ws {
+        return;
+    }
+    let key = attention_connection_key(s, ws);
+    if let Some(key) = key {
+        if s.pool.get(&key).is_some() {
+            activate_existing(s, key);
+        }
+    }
 }
 
 /// 按 workspace_id（name@transport）找连接 key。
@@ -1409,15 +1431,15 @@ fn open_target_config(
             move |saved| {
                 let mut s = st.borrow_mut();
                 s.qc_store.upsert_project(&saved);
-                open_quick_connect(&mut s, &win, &st);
+                drop(s);
+                open_quick_connect(&st, &win);
             }
         },
         {
             let st = st.clone();
             let win = win.clone();
             move || {
-                let mut s = st.borrow_mut();
-                open_quick_connect(&mut s, &win, &st);
+                open_quick_connect(&st, &win);
             }
         },
     );
