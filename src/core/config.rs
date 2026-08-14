@@ -730,7 +730,28 @@ impl Theme {
                 .with_context(|| format!("读取内置主题失败: {}", builtin.display()))?;
             return parse_theme_toml(&raw);
         }
+        if let Some(raw) = Self::embedded(name) {
+            return parse_theme_toml(raw);
+        }
         anyhow::bail!("找不到主题: {name}")
+    }
+
+    /// 编译期嵌入的 light/dark，不依赖 CWD / 安装前缀。
+    pub fn embedded(name: &str) -> Option<&'static str> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "light" => Some(include_str!("../../configs/themes/light.toml")),
+            "dark" => Some(include_str!("../../configs/themes/dark.toml")),
+            _ => None,
+        }
+    }
+
+    /// 主题切换目标：dark ↔ light（大小写不敏感）。未知名当作 light 侧。
+    pub fn toggle_target(current: &str) -> &'static str {
+        if current.trim().eq_ignore_ascii_case("dark") {
+            "light"
+        } else {
+            "dark"
+        }
     }
 }
 
@@ -1100,6 +1121,70 @@ key_path = "~/.ssh/id_rsa"
         let t = parse_theme_toml(&light).unwrap();
         assert_eq!(t.name, "Light");
         assert_eq!(t.colors.len(), 16);
+    }
+
+    #[test]
+    fn embedded_themes_load_without_cwd_files() {
+        let light = parse_theme_toml(Theme::embedded("light").expect("light")).unwrap();
+        let dark = parse_theme_toml(Theme::embedded("DARK").expect("dark")).unwrap();
+        assert_eq!(light.background, parse_hex("#eff1f5").unwrap());
+        assert_eq!(dark.background, parse_hex("#1e1e2e").unwrap());
+        let loaded = Theme::load("light").unwrap();
+        assert_eq!(loaded.background, light.background);
+    }
+
+    #[test]
+    fn toggle_target_is_case_insensitive() {
+        assert_eq!(Theme::toggle_target("dark"), "light");
+        assert_eq!(Theme::toggle_target("Dark"), "light");
+        assert_eq!(Theme::toggle_target("light"), "dark");
+        assert_eq!(Theme::toggle_target("Light"), "dark");
+        assert_eq!(Theme::toggle_target("fallback"), "dark");
+    }
+
+    #[test]
+    fn default_keybindings_alt_p_is_quick_connect() {
+        let kb = default_keybindings();
+        let find = |key: &str, mods: &[&str], action: &str| {
+            kb.iter().any(|b| {
+                b.key == key
+                    && ModSet::from_binding(&b.mods)
+                        == ModSet::from_binding(
+                            &mods.iter().map(|m| m.to_string()).collect::<Vec<_>>(),
+                        )
+                    && b.action == action
+            })
+        };
+        let bound = |key: &str, mods: &[&str]| {
+            kb.iter().any(|b| {
+                b.key == key
+                    && ModSet::from_binding(&b.mods)
+                        == ModSet::from_binding(
+                            &mods.iter().map(|m| m.to_string()).collect::<Vec<_>>(),
+                        )
+            })
+        };
+        assert!(find("p", &["alt"], "quick_connect"));
+        assert!(find("p", &["alt", "shift"], "command_palette"));
+        // Ctrl+P 必须透传给终端（readline 上一个）
+        assert!(!bound("p", &["control"]));
+        assert!(!bound("p", &["control", "shift"]));
+        assert!(!bound("p", &["super"]));
+        assert!(!bound("p", &["super", "shift"]));
+        assert!(find("c", &["control", "shift"], "copy"));
+        assert!(find("v", &["control", "shift"], "paste"));
+        // Ctrl+C / Ctrl+V 必须透传（SIGINT / 程序自己的粘贴）
+        assert!(!bound("c", &["control"]));
+        assert!(!bound("v", &["control"]));
+    }
+
+    #[test]
+    fn modset_alt_shift_matches_from_modifiers() {
+        let binding = ModSet::from_binding(&["alt".into(), "shift".into()]);
+        let mut m = Modifiers::NONE;
+        m.insert(Modifiers::ALT);
+        m.insert(Modifiers::SHIFT);
+        assert_eq!(ModSet::from_modifiers(m), binding);
     }
 
     #[test]
