@@ -517,6 +517,8 @@ pub enum Action {
     DecreaseFontSize,
     ResetFontSize,
     TogglePaneFullscreen,
+    Copy,
+    Paste,
     /// 未知动作（保留原始字符串，匹配时忽略）。
     Unknown,
 }
@@ -549,6 +551,8 @@ impl Action {
             "decrease_font_size" => Action::DecreaseFontSize,
             "reset_font_size" => Action::ResetFontSize,
             "toggle_pane_fullscreen" => Action::TogglePaneFullscreen,
+            "copy" => Action::Copy,
+            "paste" => Action::Paste,
             _ => Action::Unknown,
         }
     }
@@ -563,7 +567,7 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         kb("s", &["alt"], "new_pane"),
         kb("v", &["alt"], "new_pane_vertical"),
         kb("d", &["alt"], "new_pane"),
-        kb("D", &["alt", "shift"], "new_pane_vertical"),
+        kb("d", &["alt", "shift"], "new_pane_vertical"),
         kb("1", &["alt"], "switch_tab_1"),
         kb("2", &["alt"], "switch_tab_2"),
         kb("3", &["alt"], "switch_tab_3"),
@@ -577,13 +581,18 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         kb("[", &["alt"], "switch_pane_prev"),
         kb("]", &["alt"], "switch_pane_next"),
         kb("r", &["alt"], "search"),
-        kb("p", &["alt"], "command_palette"),
+        // Linux Alt+P / macOS Cmd+P：QuickConnect。不绑 Ctrl+P，留给终端「上一个」。
+        kb("p", &["alt"], "quick_connect"),
+        // Linux Alt+Shift+P / macOS Cmd+Shift+P：命令面板
+        kb("p", &["alt", "shift"], "command_palette"),
         kb("q", &["alt"], "quick_connect"),
         kb("q", &["control"], "quit"),
         kb("plus", &["control"], "increase_font_size"),
         kb("minus", &["control"], "decrease_font_size"),
         kb("0", &["control"], "reset_font_size"),
         kb("return", &["control"], "toggle_pane_fullscreen"),
+        kb("c", &["control", "shift"], "copy"),
+        kb("v", &["control", "shift"], "paste"),
     ]
 }
 
@@ -645,6 +654,7 @@ impl ModSet {
         if mods.contains(Modifiers::SUPER) {
             v.push("super".into());
         }
+        v.sort();
         ModSet(v)
     }
 
@@ -1021,6 +1031,8 @@ key_path = "~/.ssh/id_rsa"
             "quit",
             "increase_font_size",
             "toggle_pane_fullscreen",
+            "copy",
+            "paste",
         ] {
             assert!(actions.contains(a), "缺少默认动作 {a}");
         }
@@ -1043,6 +1055,8 @@ key_path = "~/.ssh/id_rsa"
         assert_eq!(Action::from_str("switch_tab_last"), Action::SwitchTabLast);
         assert_eq!(Action::from_str("quick_connect"), Action::QuickConnect);
         assert_eq!(Action::from_str("quit"), Action::Quit);
+        assert_eq!(Action::from_str("copy"), Action::Copy);
+        assert_eq!(Action::from_str("paste"), Action::Paste);
         assert_eq!(
             Action::from_str("increase_font_size"),
             Action::IncreaseFontSize
