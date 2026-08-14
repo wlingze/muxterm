@@ -160,4 +160,32 @@ mod tests {
         flow.attach_existing_succeeded();
         assert_eq!(flow.state, ProjectConnectState::Done);
     }
+
+    #[test]
+    fn attach_created_failure_is_distinct_stage() {
+        let mut flow = ProjectConnectFlow::new(&cfg("s", "~/x"));
+        flow.attach_existing_failed("no session");
+        flow.create_succeeded();
+        flow.attach_created_failed("timeout");
+        assert!(
+            matches!(flow.state, ProjectConnectState::Failed(f) if f.stage == ProjectConnectStage::AttachCreated)
+        );
+    }
+
+    #[test]
+    fn transitions_are_guarded_by_current_state() {
+        let mut flow = ProjectConnectFlow::new(&cfg("s", "~/x"));
+        // 未失败前 create_succeeded 不应跳到 AttachCreated
+        flow.create_succeeded();
+        assert!(matches!(
+            flow.state,
+            ProjectConnectState::AttachExisting { .. }
+        ));
+        // 未创建前 attach_created_succeeded 不应 Done
+        flow.attach_created_succeeded();
+        assert!(matches!(
+            flow.state,
+            ProjectConnectState::AttachExisting { .. }
+        ));
+    }
 }

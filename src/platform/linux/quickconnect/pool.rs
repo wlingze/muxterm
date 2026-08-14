@@ -459,6 +459,50 @@ mod tests {
     }
 
     #[test]
+    fn memory_pressure_evicts_all_background() {
+        let (mut pool, evictions, _) = make_pool();
+        pool.release(&pool.active_key().unwrap().clone());
+        pool.evict_under_memory_pressure();
+        assert_eq!(pool.slot_count(), 0);
+        let reasons = evictions.borrow();
+        // make_pool 先因容量淘汰过 a，剩余 b/c 全部按 memory pressure 淘汰
+        assert_eq!(
+            reasons
+                .iter()
+                .filter(|r| **r == ConnectionEvictionReason::MemoryPressure)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn shutdown_all_clears_active_and_slots() {
+        let (mut pool, _, _) = make_pool();
+        pool.shutdown_all();
+        assert_eq!(pool.slot_count(), 0);
+        assert!(pool.active_key().is_none());
+        assert!(pool.active_slot().is_none());
+    }
+
+    #[test]
+    fn key_target_config_roundtrip() {
+        let key = ConnectionKey::new("ssh", Some("ryzen"), "legion", "tmux", "~/work");
+        let cfg = key.target_config();
+        assert_eq!(cfg.name, "legion");
+        assert_eq!(cfg.runtime, TargetRuntime::Tmux);
+        assert!(cfg.transport.is_ssh());
+        assert_eq!(cfg.path, "~/work");
+        let back = ConnectionKey::new(
+            "ssh",
+            Some("ryzen"),
+            "legion",
+            TargetRuntime::Tmux.as_str(),
+            "~/work",
+        );
+        assert_eq!(back, key);
+    }
+
+    #[test]
     fn current_target_and_active_slot() {
         let (mut pool, _, _) = make_pool();
         let current = pool.current_target_config().expect("应有前台连接");

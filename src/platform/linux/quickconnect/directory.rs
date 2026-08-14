@@ -423,6 +423,33 @@ mod tests {
     }
 
     #[test]
+    fn resolved_path_handles_tilde_absolute_and_relative() {
+        assert_eq!(DirectoryPathModel::resolved_path("~/a/b/"), "~/a/b");
+        assert_eq!(DirectoryPathModel::resolved_path("/a//b/./c"), "/a/b/c");
+        assert_eq!(DirectoryPathModel::resolved_path("a/../b"), "b");
+        assert_eq!(DirectoryPathModel::resolved_path("~/.."), "~");
+        assert_eq!(DirectoryPathModel::resolved_path(".."), "..");
+    }
+
+    #[test]
+    fn go_up_handles_root_and_home() {
+        assert_eq!(DirectoryPathModel::applying_go_up("/"), "/");
+        assert_eq!(DirectoryPathModel::applying_go_up("~"), "~");
+        assert_eq!(DirectoryPathModel::applying_go_up("~/a"), "~/");
+        assert_eq!(DirectoryPathModel::applying_go_up("a"), ".");
+    }
+
+    #[test]
+    fn selection_rejects_slash_and_empty() {
+        let mut c = DirectorySuggestionController::new("~/");
+        let before = c.text.clone();
+        c.select("a/b");
+        assert_eq!(c.text, before);
+        c.select("");
+        assert_eq!(c.text, before);
+    }
+
+    #[test]
     fn set_transport_ssh_without_alias_skips_remote_target() {
         let mut c = DirectorySuggestionController::new("~");
         let req = c.set_transport(true, None);

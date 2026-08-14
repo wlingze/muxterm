@@ -103,4 +103,23 @@ mod tests {
         let back: Preferences = toml::from_str(&raw).unwrap();
         assert_eq!(back, p);
     }
+
+    #[test]
+    fn preferences_default_omits_optional_fields() {
+        let p = Preferences::default();
+        let raw = toml::to_string_pretty(&p).unwrap();
+        assert!(!raw.contains("theme"), "{raw}");
+        assert!(!raw.contains("statusbar_mode"), "{raw}");
+        assert!(!raw.contains("font_size"), "{raw}");
+        let back: Preferences = toml::from_str(&raw).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn font_zoom_steps_by_one_and_clamps() {
+        assert_eq!(FontSettings::zoomed(12.5, 1), 13.5);
+        assert_eq!(FontSettings::zoomed(12.5, -1), 11.5);
+        assert_eq!(FontSettings::clamp_size(8.0), MIN_FONT_SIZE);
+        assert_eq!(FontSettings::clamp_size(99.0), MAX_FONT_SIZE);
+    }
 }
