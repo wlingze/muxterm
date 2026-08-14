@@ -90,6 +90,7 @@ pub struct PanelShowArgs {
     pub on_new_project: Box<dyn Fn()>,
     pub on_jump_pane: Box<dyn Fn(String, u32)>,
     pub on_reply: Box<dyn Fn(String, u32, String)>,
+    pub on_mute: Box<dyn Fn(String, u32)>,
     pub peek_text: Box<dyn Fn(String, u32) -> String>,
 }
 
@@ -201,8 +202,12 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         .build();
     reply_entry.set_widget_name("muxterm-reply-entry");
     reply_entry.set_sensitive(false);
+    let mute_button = gtk4::Button::with_label(&i18n::tr(TextKey::Mute1h));
+    mute_button.set_widget_name("muxterm-mute-1h");
+    mute_button.set_sensitive(false);
     reply_row.append(&reply_target);
     reply_row.append(&reply_entry);
+    reply_row.append(&mute_button);
     reply_row.set_visible(false);
     panel.append(&reply_row);
 
@@ -218,6 +223,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_new_project,
         on_jump_pane,
         on_reply,
+        on_mute,
         peek_text,
     } = args;
     let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
@@ -232,6 +238,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_new_project,
         on_jump_pane,
         on_reply,
+        on_mute,
         peek_text,
     });
     let finished = Rc::new(RefCell::new(false));
@@ -275,6 +282,57 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         map
     };
 
+    // 根据当前选中行刷新 peek/答复（rebuild 与 row-selected 共用）。
+    let update_peek = {
+        let model = model.clone();
+        let attention = attention.clone();
+        let callbacks = callbacks.clone();
+        let peek_view = peek_view.clone();
+        let reply_target = reply_target.clone();
+        let reply_entry = reply_entry.clone();
+        let mute_button = mute_button.clone();
+        let list = list.clone();
+        move || {
+            let tab = model.borrow().tab;
+            if tab != PanelTab::Attention {
+                return;
+            }
+            let Some(row) = list.selected_row() else {
+                set_peek_text(&peek_view, "");
+                reply_target.set_text("");
+                reply_entry.set_sensitive(false);
+                mute_button.set_sensitive(false);
+                return;
+            };
+            let name = row.widget_name();
+            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
+                return;
+            };
+            let Some((ws, pane)) = rest.rsplit_once('-') else {
+                return;
+            };
+            let Ok(pane) = pane.parse::<u32>() else {
+                return;
+            };
+            let ws = ws.to_string();
+            let Some(sel) = attention
+                .iter()
+                .find(|p| p.workspace_id == ws && p.pane_id == pane)
+                .cloned()
+            else {
+                return;
+            };
+            let ws = sel.workspace_id.clone();
+            let pane = sel.pane_id;
+            let process = sel.process_name.as_deref().unwrap_or("?");
+            reply_target.set_text(&format!("{ws} · {process}"));
+            reply_entry.set_sensitive(true);
+            mute_button.set_sensitive(true);
+            let text = (callbacks.peek_text)(ws, pane);
+            set_peek_text(&peek_view, &text);
+        }
+    };
+
     let rebuild = {
         let list = list.clone();
         let model = model.clone();
@@ -287,6 +345,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let tab_attention = tab_attention.clone();
         let tab_search = tab_search.clone();
         let workspace_status = workspace_status.clone();
+        let update_peek = update_peek.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
@@ -426,30 +485,31 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     // 阶段 C 前：占位行（search_status 已显示）。
                 }
             }
+            update_peek();
         }
     };
     rebuild();
 
     // Tab2 选中行 → peek + 答复目标；无选中 → 清空并禁用答复。
     {
+        let update_peek = update_peek.clone();
+        list.connect_row_selected(move |_, _| update_peek());
+    }
+
+    // 静音 1h：按钮或 `m` 键（选中行）。
+    {
         let model = model.clone();
-        let attention = attention.clone();
         let callbacks = callbacks.clone();
-        let peek_view = peek_view.clone();
-        let reply_target = reply_target.clone();
-        let reply_entry = reply_entry.clone();
-        list.connect_row_selected(move |_list, row| {
+        let mute_button = mute_button.clone();
+        let list_closure = list.clone();
+        mute_button.connect_clicked(move |_| {
             let tab = model.borrow().tab;
             if tab != PanelTab::Attention {
                 return;
             }
-            let Some(row) = row else {
-                set_peek_text(&peek_view, "");
-                reply_target.set_text("");
-                reply_entry.set_sensitive(false);
+            let Some(row) = list_closure.selected_row() else {
                 return;
             };
-            // 行 widget_name = muxterm-attention-<ws>-<pane>，避免 count 行偏移。
             let name = row.widget_name();
             let Some(rest) = name.strip_prefix("muxterm-attention-") else {
                 return;
@@ -460,22 +520,39 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             let Ok(pane) = pane.parse::<u32>() else {
                 return;
             };
-            let ws = ws.to_string();
-            let Some(sel) = attention
-                .iter()
-                .find(|p| p.workspace_id == ws && p.pane_id == pane)
-                .cloned()
-            else {
-                return;
-            };
-            let ws = sel.workspace_id.clone();
-            let pane = sel.pane_id;
-            let process = sel.process_name.as_deref().unwrap_or("?");
-            reply_target.set_text(&format!("{ws} · {process}"));
-            reply_entry.set_sensitive(true);
-            let text = (callbacks.peek_text)(ws, pane);
-            set_peek_text(&peek_view, &text);
+            (callbacks.on_mute)(ws.to_string(), pane);
         });
+    }
+    {
+        let model = model.clone();
+        let callbacks = callbacks.clone();
+        let list_closure = list.clone();
+        let controller = EventControllerKey::new();
+        controller.connect_key_pressed(move |_c, key, _code, _mods| {
+            if key != Key::m {
+                return glib::Propagation::Proceed;
+            }
+            let tab = model.borrow().tab;
+            if tab != PanelTab::Attention {
+                return glib::Propagation::Proceed;
+            }
+            let Some(row) = list_closure.selected_row() else {
+                return glib::Propagation::Stop;
+            };
+            let name = row.widget_name();
+            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
+                return glib::Propagation::Stop;
+            };
+            let Some((ws, pane)) = rest.rsplit_once('-') else {
+                return glib::Propagation::Stop;
+            };
+            let Ok(pane) = pane.parse::<u32>() else {
+                return glib::Propagation::Stop;
+            };
+            (callbacks.on_mute)(ws.to_string(), pane);
+            glib::Propagation::Stop
+        });
+        reply_entry.add_controller(controller);
     }
 
     // 一行答复：Enter（无 Shift）发送一行 + \r，不关面板，发完重新 peek。
@@ -487,8 +564,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let reply_entry = reply_entry.clone();
         let list_closure = list.clone();
         let controller = EventControllerKey::new();
-        let reply_entry_closure = reply_entry.clone();
-        controller.connect_key_pressed(move |_c, key, _code, mods| {
+        controller.connect_key_pressed(move |c, key, _code, mods| {
             if key != Key::Return && key != Key::KP_Enter {
                 return glib::Propagation::Proceed;
             }
@@ -499,7 +575,11 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             if tab != PanelTab::Attention {
                 return glib::Propagation::Proceed;
             }
-            let text = reply_entry_closure.text().to_string();
+            // 从 controller 取宿主 Entry，避免闭包自持有造成 GObject 环。
+            let Some(host) = c.widget().and_then(|w| w.downcast::<Entry>().ok()) else {
+                return glib::Propagation::Stop;
+            };
+            let text = host.text().to_string();
             if text.trim().is_empty() {
                 return glib::Propagation::Stop;
             }
@@ -528,7 +608,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             let pane = sel.pane_id;
             let line = text.trim_end_matches('\n').to_string();
             (callbacks.on_reply)(ws.clone(), pane, line.clone());
-            reply_entry_closure.set_text("");
+            host.set_text("");
             let peek = (callbacks.peek_text)(ws, pane);
             set_peek_text(&peek_view, &peek);
             glib::Propagation::Stop

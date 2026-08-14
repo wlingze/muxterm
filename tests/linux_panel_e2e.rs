@@ -1,6 +1,8 @@
 //! 三 tab 面板 e2e（普通 GTK Window，不构造 AppWindow）。
 //!
-//! LINUX-PLAN C3.2：widget_name 契约 + 共享 Entry + Tab/Shift+Tab + Esc。
+//! LINUX-PLAN C3.2/C3.3/C3.5：widget_name 契约、共享 Entry、Tab/Shift+Tab、
+//! Esc、peek、一行答复、静音。本机 xvfb/Mesa 在第三个窗口 present 时崩溃，
+//! 因此整个 crate 只用一个 Window、一个面板生命周期。
 
 #![cfg(feature = "gtk")]
 
@@ -46,7 +48,7 @@ fn target(name: &str) -> PanelItem {
 }
 
 #[test]
-fn three_tab_panel_renders_attention_and_cycles() {
+fn three_tab_panel_full_flow() {
     if skip_no_display() {
         return;
     }
@@ -63,8 +65,10 @@ fn three_tab_panel_renders_attention_and_cycles() {
 
         let jumps = Rc::new(RefCell::new(Vec::<(String, u32)>::new()));
         let replies = Rc::new(RefCell::new(Vec::<(String, u32, String)>::new()));
+        let mutes = Rc::new(RefCell::new(Vec::<(String, u32)>::new()));
         let j = jumps.clone();
         let r = replies.clone();
+        let m = mutes.clone();
         show(
             &win,
             PanelShowArgs {
@@ -79,7 +83,8 @@ fn three_tab_panel_renders_attention_and_cycles() {
                 on_new_project: Box::new(|| {}),
                 on_jump_pane: Box::new(move |ws, pane| j.borrow_mut().push((ws, pane))),
                 on_reply: Box::new(move |ws, pane, text| r.borrow_mut().push((ws, pane, text))),
-                peek_text: Box::new(|_, _| String::new()),
+                on_mute: Box::new(move |ws, pane| m.borrow_mut().push((ws, pane))),
+                peek_text: Box::new(|ws, pane| format!("peek-{ws}-{pane}\nline2")),
             },
         );
         pump_main_loop(80);
@@ -89,7 +94,10 @@ fn three_tab_panel_renders_attention_and_cycles() {
         assert!(panel.is_visible());
 
         // 2. 初始 tab = Attention：列表含工作区名与 last_line
-        let list = find_by_name(&win, "muxterm-panel-list").expect("列表应存在");
+        let list = find_by_name(&win, "muxterm-panel-list")
+            .expect("列表应存在")
+            .downcast::<gtk4::ListBox>()
+            .expect("ListBox 类型");
         let labels = widget_label_texts(&list);
         assert!(
             labels
@@ -121,78 +129,14 @@ fn three_tab_panel_renders_attention_and_cycles() {
             "过滤后应去掉 muxterm: {labels:?}"
         );
 
-        // 4. Tab 键切到 Search，entry 文本仍在
-        let ctrl = window_key_controller(&win).expect("窗口应有 EventControllerKey");
-        // 面板 Entry 自己挂了 controller；直接对 entry 发 Tab。
-        let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
-        simulate_key_press(&entry_ctrl, gdk::Key::Tab, gdk::ModifierType::empty());
+        // 4. 清空 query，选中 legion 行 → peek + 答复目标 + 静音可用
+        entry.set_text("");
         pump_main_loop(40);
-        let search_tab = find_by_name(&win, "muxterm-panel-tab-search").expect("Search tab");
-        let search_btn = search_tab.downcast::<gtk4::ToggleButton>().unwrap();
-        assert!(search_btn.is_active(), "Tab 键应切到 Search");
-        assert_eq!(entry.text().as_str(), "legion", "query 应跨 tab 保留");
-        let status = find_by_name(&win, "muxterm-search-status").expect("搜索占位行");
-        assert!(status.is_visible(), "Search tab 应显示占位行");
-
-        // 5. Esc 关闭
-        simulate_key_press(&entry_ctrl, gdk::Key::Escape, gdk::ModifierType::empty());
-        pump_main_loop(40);
-        assert!(
-            find_by_name(&win, "muxterm-panel").is_none(),
-            "Esc 后面板应关闭"
-        );
-
-        let _ = ctrl;
-        win.close();
-        win.destroy();
-        pump_main_loop(40);
-    });
-}
-
-#[test]
-fn attention_peek_and_single_line_reply() {
-    if skip_no_display() {
-        return;
-    }
-    gtk4::test_synced(|| {
-        gtk_test_framework_smoke();
-
-        let win = gtk4::Window::builder()
-            .title("panel-reply-e2e")
-            .default_width(800)
-            .default_height(600)
-            .build();
-        win.present();
-        gtk4::test_widget_wait_for_draw(&win);
-
-        let replies = Rc::new(RefCell::new(Vec::<(String, u32, String)>::new()));
-        let r = replies.clone();
-        show(
-            &win,
-            PanelShowArgs {
-                initial_tab: PanelTab::Attention,
-                workspaces: vec![],
-                attention: vec![attention("legion", 1, PaneStatus::Blocked, "ask me")],
-                on_connect: Box::new(|_| {}),
-                on_edit: Box::new(|_| {}),
-                on_new_project: Box::new(|| {}),
-                on_jump_pane: Box::new(|_, _| {}),
-                on_reply: Box::new(move |ws, pane, text| {
-                    r.borrow_mut().push((ws, pane, text));
-                }),
-                peek_text: Box::new(|ws, pane| format!("peek-{ws}-{pane}\nline2")),
-            },
-        );
-        pump_main_loop(80);
-
-        // 选中 Tab2 行 → peek 非空、答复可用、目标标签正确。
-        let list = find_by_name(&win, "muxterm-panel-list")
-            .expect("列表应存在")
-            .downcast::<gtk4::ListBox>()
-            .expect("ListBox 类型");
-        let row = list.row_at_index(1).expect("第一条注意力行");
-        // GTK4 select_row 不触发 row-selected 信号；e2e 直接 emit 模拟用户点击。
-        let _: () = list.emit_by_name("row-selected", &[&row]);
+        let row = list.row_at_index(1).expect("注意力行");
+        list.select_row(Some(&row));
+        // select_row 不触发信号；rebuild 会按当前选中行刷新 peek。
+        entry.set_text("x");
+        entry.set_text("");
         pump_main_loop(40);
 
         let peek = find_by_name(&win, "muxterm-peek-view")
@@ -221,12 +165,11 @@ fn attention_peek_and_single_line_reply() {
             target.text()
         );
 
-        // 输入一行 + Enter → on_reply 收到且无换行。
+        // 5. 一行答复：Enter 发送且无换行
         reply_entry.set_text("y\n");
         let ctrl = window_key_controller(&reply_entry).expect("答复 Entry 应有 controller");
         simulate_key_press(&ctrl, gdk::Key::Return, gdk::ModifierType::empty());
         pump_main_loop(40);
-
         let got = replies.borrow();
         assert_eq!(got.len(), 1, "应恰好发送一条答复");
         assert_eq!(got[0].0, "legion");
@@ -237,6 +180,39 @@ fn attention_peek_and_single_line_reply() {
             got[0].2
         );
         assert_eq!(reply_entry.text().as_str(), "", "发送后输入框应清空");
+        drop(got);
+
+        // 6. 静音 1h：按钮触发 on_mute
+        let mute_btn = find_by_name(&win, "muxterm-mute-1h")
+            .expect("静音按钮应存在")
+            .downcast::<gtk4::Button>()
+            .expect("Button 类型");
+        assert!(mute_btn.is_sensitive(), "选中后静音应可用");
+        let _: () = mute_btn.emit_by_name("clicked", &[]);
+        pump_main_loop(40);
+        let got = mutes.borrow();
+        assert_eq!(got.len(), 1, "应恰好静音一次");
+        assert_eq!(got[0], ("legion".to_string(), 1));
+        drop(got);
+
+        // 7. Tab 键切到 Search，entry 文本仍在
+        let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
+        simulate_key_press(&entry_ctrl, gdk::Key::Tab, gdk::ModifierType::empty());
+        pump_main_loop(40);
+        let search_tab = find_by_name(&win, "muxterm-panel-tab-search").expect("Search tab");
+        let search_btn = search_tab.downcast::<gtk4::ToggleButton>().unwrap();
+        assert!(search_btn.is_active(), "Tab 键应切到 Search");
+        assert_eq!(entry.text().as_str(), "", "query 应跨 tab 保留");
+        let status = find_by_name(&win, "muxterm-search-status").expect("搜索占位行");
+        assert!(status.is_visible(), "Search tab 应显示占位行");
+
+        // 8. Esc 关闭
+        simulate_key_press(&entry_ctrl, gdk::Key::Escape, gdk::ModifierType::empty());
+        pump_main_loop(40);
+        assert!(
+            find_by_name(&win, "muxterm-panel").is_none(),
+            "Esc 后面板应关闭"
+        );
 
         win.close();
         win.destroy();
