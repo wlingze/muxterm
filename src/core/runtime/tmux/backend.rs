@@ -106,6 +106,9 @@ pub struct TmuxBackend {
     pending_by_number: HashMap<i64, PendingQuery>,
     /// 缓存每个 window 的 layout 字符串（从 list-windows 响应获取），用于重建 LayoutNode。
     window_layouts: HashMap<WindowId, String>,
+    /// 当前处于 zoom（`resize-pane -Z` / prefix-z）的 window。
+    /// 此时 tmux 的 `window_layout` 仍是完整 split 树，GUI 必须只渲染 active pane。
+    window_zoomed: HashSet<WindowId>,
     /// 每个 window 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
     expected_panes_per_window: HashMap<WindowId, usize>,
     /// attach 初始快照查询中的 pane。初始 `%output` 不能先喂给前端，
@@ -227,6 +230,7 @@ impl TmuxBackend {
             pending_queries: VecDeque::new(),
             pending_by_number: HashMap::new(),
             window_layouts: HashMap::new(),
+            window_zoomed: HashSet::new(),
             expected_panes_per_window: HashMap::new(),
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
@@ -563,19 +567,30 @@ impl TmuxBackend {
             Message::LayoutChange {
                 window,
                 layout,
-                visible_layout: _,
+                visible_layout,
+                flags,
             } => {
-                // `%layout-change` 携带的是最新完整布局。先保存它，再查询 pane
-                // 几何；list-panes 返回后 rebuild_layout 会用这棵最新树建模。
-                // 旧实现只发查询、不更新 window_layouts，导致随后仍用旧树或
-                // fallback 平铺树渲染，尤其在 attach 后再次 split 时会暴露。
+                // `%layout-change` 携带完整树 + 可见树 + window_raw_flags。
+                // zoom 时完整树不变，visible 塌成单叶且 flags 含 Z；必须记下
+                // zoom 态，否则 rebuild_layout 仍按 split 渲染，tmux 已 zoom
+                // 而 muxterm 看起来没变。
                 tracing::debug!(
                     target: "muxterm::tmux",
                     window = window.0,
                     layout = %layout.raw,
+                    flags = flags.as_deref().unwrap_or(""),
                     "%layout-change 已保存并重新查询 pane"
                 );
                 self.window_layouts.insert(window, layout.raw.clone());
+                if window_is_zoomed(
+                    flags.as_deref(),
+                    &layout.raw,
+                    visible_layout.as_ref().map(|v| v.raw.as_str()),
+                ) {
+                    self.window_zoomed.insert(window);
+                } else {
+                    self.window_zoomed.remove(&window);
+                }
                 if let Ok(tree) = parse_layout_tree(&layout.raw) {
                     self.expected_panes_per_window
                         .insert(window, collect_layout_leaves(&tree).len());
@@ -1014,7 +1029,7 @@ impl TmuxBackend {
         }
     }
 
-    /// 解析 `list-windows -t <session> -F '#{window_id},#{window_name},#{window_active},#{window_layout},#{window_panes}'` 的响应。
+    /// 解析 `list-windows -t <session> -F '#{window_id},#{window_name},#{window_active},#{window_layout},#{window_panes},#{window_zoomed_flag}'` 的响应。
     fn handle_list_windows_response(&mut self, lines: Vec<String>) {
         // tmux list-windows 返回所有 tmux window → 每个创建/更新一个 muxterm Tab
         // 虚拟 Window 不动（永远 1 个）
@@ -1025,13 +1040,18 @@ impl TmuxBackend {
                 continue;
             }
             // window_layout 本身含逗号（如 `d67e,80x24,0,0{...}`），不能用 splitn(5)
-            let Some((tmux_window, name, active, layout_str, panes_count)) =
+            let Some((tmux_window, name, active, layout_str, panes_count, zoomed)) =
                 parse_list_windows_line(line)
             else {
                 tracing::warn!(target: "muxterm::tmux", "list-windows 行解析失败: {line}");
                 continue;
             };
             self.window_layouts.insert(tmux_window, layout_str);
+            if zoomed {
+                self.window_zoomed.insert(tmux_window);
+            } else {
+                self.window_zoomed.remove(&tmux_window);
+            }
             self.expected_panes_per_window
                 .insert(tmux_window, panes_count);
 
@@ -1157,7 +1177,7 @@ impl TmuxBackend {
     fn query_list_windows(&mut self) {
         let sess = self.active_session.unwrap_or(SessionId(0));
         let line = format!(
-            "list-windows -t {} -F \"#{{window_id}},#{{window_name}},#{{window_active}},#{{window_layout}},#{{window_panes}}\"\n",
+            "list-windows -t {} -F \"#{{window_id}},#{{window_name}},#{{window_active}},#{{window_layout}},#{{window_panes}},#{{window_zoomed_flag}}\"\n",
             sess
         );
 
@@ -1179,6 +1199,17 @@ impl TmuxBackend {
             .find(|p| p.active)
             .map(|p| p.id)
             .unwrap_or(panes[0].id);
+        // zoom：pane 快照仍有全部 pane，但 GUI 只显示当前 pane（tmux prefix-z）。
+        if self.window_zoomed.contains(&window) {
+            let layout = TabLayout {
+                tab: tab_id,
+                tree: LayoutNode::leaf(active),
+                active,
+            };
+            self.layouts.insert(tab_id, layout.clone());
+            self.push_layout_changed(layout);
+            return;
+        }
         if panes.len() == 1 {
             let tree = LayoutNode::leaf(panes[0].id);
             let layout = TabLayout {
@@ -1835,21 +1866,41 @@ impl Backend for TmuxBackend {
 ///
 /// 格式：`@N,name,active,LAYOUT,panes`
 /// LAYOUT 含逗号，因此前三个字段用 `split_once`，最后一个用 `rsplit_once`。
-fn parse_list_windows_line(line: &str) -> Option<(WindowId, String, bool, String, usize)> {
+fn parse_list_windows_line(line: &str) -> Option<(WindowId, String, bool, String, usize, bool)> {
     let (id_str, rest) = line.split_once(',')?;
     let (name, rest) = rest.split_once(',')?;
     let (active_str, rest) = rest.split_once(',')?;
-    let (layout_str, panes_str) = rest.rsplit_once(',')?;
+    let (layout_and_panes, zoomed_str) = rest.rsplit_once(',')?;
+    let (layout_str, panes_str) = layout_and_panes.rsplit_once(',')?;
     let tmux_window = WindowId::parse(id_str).ok()?;
     let active = active_str == "1";
     let panes_count = panes_str.parse().ok()?;
+    let zoomed = zoomed_str == "1";
     Some((
         tmux_window,
         name.to_string(),
         active,
         layout_str.to_string(),
         panes_count,
+        zoomed,
     ))
+}
+
+/// tmux zoom：`window_raw_flags` 含 `Z`，或 visible 树是单叶而完整树是 split。
+fn window_is_zoomed(flags: Option<&str>, layout_raw: &str, visible_raw: Option<&str>) -> bool {
+    if flags.is_some_and(|f| f.contains('Z')) {
+        return true;
+    }
+    let Some(visible_raw) = visible_raw else {
+        return false;
+    };
+    let Ok(full) = parse_layout_tree(layout_raw) else {
+        return false;
+    };
+    let Ok(visible) = parse_layout_tree(visible_raw) else {
+        return false;
+    };
+    collect_layout_leaves(&full).len() > 1 && collect_layout_leaves(&visible).len() == 1
 }
 
 /// 把 LayoutTree（几何拓扑）转成 LayoutNode（pane id 树），按几何位置匹配。
@@ -2003,8 +2054,9 @@ mod tests {
 
     #[test]
     fn parse_list_windows_line_keeps_full_layout_with_commas() {
-        let line = "@1,zsh,1,d67e,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]},3";
-        let (wid, name, active, layout, panes) = parse_list_windows_line(line).unwrap();
+        let line =
+            "@1,zsh,1,d67e,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]},3,0";
+        let (wid, name, active, layout, panes, zoomed) = parse_list_windows_line(line).unwrap();
         assert_eq!(wid, WindowId(1));
         assert_eq!(name, "zsh");
         assert!(active);
@@ -2013,11 +2065,22 @@ mod tests {
             "d67e,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]}"
         );
         assert_eq!(panes, 3);
+        assert!(!zoomed);
         // 完整 layout 应能解析出嵌套 vertical
         let tree = parse_layout_tree(&layout).unwrap();
         assert_eq!(tree.dir, crate::core::model::layout::SplitDir::Horizontal);
         let right = tree.children.as_ref().unwrap().1.as_ref();
         assert_eq!(right.dir, crate::core::model::layout::SplitDir::Vertical);
+    }
+
+    #[test]
+    fn parse_list_windows_line_reads_zoomed_flag() {
+        let line = "@2,codex,1,bbcd,80x24,0,0,1,1,1";
+        let (_, name, _, layout, panes, zoomed) = parse_list_windows_line(line).unwrap();
+        assert_eq!(name, "codex");
+        assert_eq!(layout, "bbcd,80x24,0,0,1");
+        assert_eq!(panes, 1);
+        assert!(zoomed);
     }
 
     #[test]
@@ -2055,8 +2118,12 @@ mod tests {
     fn unlinked_window_close_closes_tab() {
         let mut b = TmuxBackend::new(None);
         // 先加两个 tab
-        b.handle_message(Message::WindowAdd { window: WindowId(0) });
-        b.handle_message(Message::WindowAdd { window: WindowId(1) });
+        b.handle_message(Message::WindowAdd {
+            window: WindowId(0),
+        });
+        b.handle_message(Message::WindowAdd {
+            window: WindowId(1),
+        });
         assert!(b.tabs.iter().any(|t| t.id == TabId(1)));
 
         // 实测：kill-window 时控制客户端收到 %unlinked-window-close
@@ -2066,13 +2133,18 @@ mod tests {
 
         assert!(!b.tabs.iter().any(|t| t.id == TabId(1)), "tab1 应被关闭");
         assert!(b.tabs.iter().any(|t| t.id == TabId(0)), "tab0 应保留");
-        assert!(b.events.iter().any(|e| matches!(e, StateChange::TabClosed { tab } if *tab == TabId(1))));
+        assert!(b
+            .events
+            .iter()
+            .any(|e| matches!(e, StateChange::TabClosed { tab } if *tab == TabId(1))));
     }
 
     #[test]
     fn unlinked_window_renamed_updates_tab_name() {
         let mut b = TmuxBackend::new(None);
-        b.handle_message(Message::WindowAdd { window: WindowId(0) });
+        b.handle_message(Message::WindowAdd {
+            window: WindowId(0),
+        });
 
         b.handle_message(Message::UnlinkedWindowRenamed {
             window: WindowId(0),
@@ -2170,6 +2242,7 @@ mod tests {
             window,
             layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(latest).unwrap(),
             visible_layout: None,
+            flags: None,
         });
 
         // 没有命令通道的单元测试里 query_list_panes 会被跳过，但最新 raw
@@ -2218,6 +2291,50 @@ mod tests {
     }
 
     #[test]
+    fn layout_change_zoom_collapses_to_active_pane() {
+        let mut b = TmuxBackend::new(None);
+        let window = WindowId(0);
+        let full = "aabd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}";
+        let visible = "bbcd,80x24,0,0,1";
+        b.handle_message(Message::LayoutChange {
+            window,
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(full).unwrap(),
+            visible_layout: Some(
+                crate::core::runtime::tmux::protocol::LayoutChange::parse(visible).unwrap(),
+            ),
+            flags: Some("*Z".into()),
+        });
+        b.handle_list_panes_response(
+            window,
+            vec!["1: [40x24] %1 (active)".into(), "2: [39x24] %2".into()],
+        );
+        let tree = &b.layouts[&TabId(0)].tree;
+        assert!(
+            matches!(tree, LayoutNode::Leaf(PaneId(1))),
+            "zoom 后应只渲染 active pane，实际 {tree:?}"
+        );
+
+        // 取消 zoom：flags 不再含 Z，恢复完整 split。
+        b.handle_message(Message::LayoutChange {
+            window,
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(full).unwrap(),
+            visible_layout: Some(
+                crate::core::runtime::tmux::protocol::LayoutChange::parse(full).unwrap(),
+            ),
+            flags: Some("*".into()),
+        });
+        b.handle_list_panes_response(
+            window,
+            vec!["1: [40x24] %1 (active)".into(), "2: [39x24] %2".into()],
+        );
+        let tree = &b.layouts[&TabId(0)].tree;
+        assert!(
+            matches!(tree, LayoutNode::Split { .. }),
+            "unzoom 后应恢复 split，实际 {tree:?}"
+        );
+    }
+
+    #[test]
     fn incomplete_pane_snapshot_does_not_collapse_layout() {
         let mut b = TmuxBackend::new(None);
         let window = WindowId(0);
@@ -2226,6 +2343,7 @@ mod tests {
             window,
             layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(layout).unwrap(),
             visible_layout: None,
+            flags: None,
         });
 
         b.handle_list_panes_response(
@@ -2245,6 +2363,7 @@ mod tests {
             window,
             layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(layout).unwrap(),
             visible_layout: None,
+            flags: None,
         };
         b.handle_message(message());
         b.handle_list_panes_response(
@@ -3157,6 +3276,7 @@ mod tests {
             layout: crate::core::runtime::tmux::protocol::LayoutChange::parse("80x24,0,0,0")
                 .unwrap(),
             visible_layout: None,
+            flags: None,
         });
 
         // 布局变化后再来输出

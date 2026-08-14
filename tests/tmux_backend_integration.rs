@@ -3075,7 +3075,11 @@ fn scenario4_status_subscription_pushes_left_value_changes() {
         .args(["-L", &socket, "new-session", "-d", "-s", "subtest"])
         .output()
         .expect("创建隔离 tmux server 失败");
-    assert!(create.status.success(), "创建隔离 tmux server 失败: {:?}", create);
+    assert!(
+        create.status.success(),
+        "创建隔离 tmux server 失败: {:?}",
+        create
+    );
 
     let mut model = connect_tmux(&socket);
     // tmux >= 3.2 时连接后应自动启用 status-left/right 订阅。

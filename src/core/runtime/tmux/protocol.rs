@@ -394,11 +394,17 @@ pub enum Message {
         raw_content: String,
     },
     /// `%layout-change <window_id> <layout> [<visible_layout> [<flags>]]`
+    ///
+    /// tmux 控制模式实际模板（`control-notify.c`）：
+    /// `#{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}`。
+    /// zoom 时 `window_raw_flags` 含 `Z`，`window_visible_layout` 是铺满窗口的单叶。
     LayoutChange {
         window: WindowId,
         layout: LayoutChange,
         /// 可见的布局字符串（若 tmux 给了第二个布局参数）。
         visible_layout: Option<LayoutChange>,
+        /// `#{window_raw_flags}`（如 `*` / `*Z`）；缺省为 None。
+        flags: Option<String>,
     },
     /// `%window-add <window_id>`
     WindowAdd { window: WindowId },
@@ -850,17 +856,26 @@ fn parse_layout_change(rest: &str) -> Result<Message, ProtocolError> {
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("layout-change 缺 layout".into()))?;
     let layout = LayoutChange::parse(layout_str)?;
-    // visible_layout 可选，可能是合法的 layout 字符串，也可能是 flags（如 *）。
-    // 如果 parse 失败则忽略（容错），不丢弃整条消息。
-    let visible = parts
-        .next()
-        .map(LayoutChange::parse)
-        .filter(|r| r.is_ok())
-        .map(|r| r.unwrap());
+    // 第三段可能是 visible_layout，也可能是 flags（如 *）。第四段是 window_raw_flags。
+    // visible parse 失败时当作 flags，不丢弃整条消息。
+    let third = parts.next();
+    let fourth = parts.next();
+    let (visible_layout, flags) = match (third, fourth) {
+        (Some(visible), Some(raw_flags)) => (
+            LayoutChange::parse(visible).ok(),
+            Some(raw_flags.to_string()),
+        ),
+        (Some(token), None) => match LayoutChange::parse(token) {
+            Ok(visible) => (Some(visible), None),
+            Err(_) => (None, Some(token.to_string())),
+        },
+        (None, _) => (None, None),
+    };
     Ok(Message::LayoutChange {
         window,
         layout,
-        visible_layout: visible,
+        visible_layout,
+        flags,
     })
 }
 
@@ -1511,10 +1526,9 @@ mod tests {
         assert_eq!(m, Message::SessionsChanged);
 
         // %subscription-changed（tmux ≥3.2 refresh-client -B 推送）
-        let m = parse_line(
-            "%subscription-changed muxterm.status-left $0 - - - : #[fg=red]11:50:23 ",
-        )
-        .unwrap();
+        let m =
+            parse_line("%subscription-changed muxterm.status-left $0 - - - : #[fg=red]11:50:23 ")
+                .unwrap();
         assert_eq!(
             m,
             Message::SubscriptionChanged {
@@ -1524,10 +1538,8 @@ mod tests {
         );
 
         // 展开值本身可以含冒号与空格：只按第一个 " : " 切分。
-        let m = parse_line(
-            "%subscription-changed muxterm.status-right $0 - - - : a : b  c",
-        )
-        .unwrap();
+        let m =
+            parse_line("%subscription-changed muxterm.status-right $0 - - - : a : b  c").unwrap();
         assert_eq!(
             m,
             Message::SubscriptionChanged {
@@ -1811,10 +1823,12 @@ mod tests {
                 window,
                 layout,
                 visible_layout,
+                flags,
             } => {
                 assert_eq!(window, WindowId(0));
                 assert_eq!((layout.cols, layout.rows), (80, 24));
                 assert_eq!(visible_layout, None);
+                assert_eq!(flags, None);
             }
             _ => panic!(),
         }
@@ -1827,14 +1841,37 @@ mod tests {
             window,
             layout,
             visible_layout,
+            flags,
         } = m
         {
             assert_eq!(window, WindowId(1));
             assert_eq!((layout.cols, layout.rows, layout.flags), (100, 30, 1));
             let v = visible_layout.unwrap();
             assert_eq!((v.cols, v.rows), (100, 30));
+            assert_eq!(flags, None);
         } else {
             panic!();
+        }
+    }
+
+    /// zoom：visible 是单叶，flags 含 Z（tmux `window_raw_flags`）。
+    #[test]
+    fn parse_layout_change_zoom_flags() {
+        let m =
+            parse_line("%layout-change @0 aabd,80x24,0,0{40x24,0,0,1,39x24,41,0,2} 80x24,0,0,1 *Z")
+                .unwrap();
+        match m {
+            Message::LayoutChange {
+                window,
+                visible_layout,
+                flags,
+                ..
+            } => {
+                assert_eq!(window, WindowId(0));
+                assert_eq!(visible_layout.unwrap().flags, 1);
+                assert_eq!(flags.as_deref(), Some("*Z"));
+            }
+            _ => panic!("应为 layout-change"),
         }
     }
 
@@ -2690,8 +2727,11 @@ mod iterm2_protocol_conformance_tests {
     /// extended-output 的 value 与 %output 一样按 C 转义解码。
     #[test]
     fn extended_output_decodes_value_like_output() {
-        let msg = parse_line(r#"%extended-output @5 12 : "a
-b""#).unwrap();
+        let msg = parse_line(
+            r#"%extended-output @5 12 : "a
+b""#,
+        )
+        .unwrap();
         assert!(matches!(
             msg,
             Message::ExtendedOutput {
@@ -2699,8 +2739,7 @@ b""#).unwrap();
                 age_ms: 12,
                 ref content,
                 ..
-            } if content == b"a
-b"
+            } if content == b"a\nb"
         ));
     }
 
@@ -2728,8 +2767,9 @@ b"
             Message::LayoutChange {
                 window: WindowId(0),
                 visible_layout: None,
+                flags: Some(ref f),
                 ..
-            }
+            } if f == "*"
         ));
     }
 
