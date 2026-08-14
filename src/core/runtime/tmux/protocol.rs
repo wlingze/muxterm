@@ -455,7 +455,12 @@ pub enum Message {
     /// `%subscription-changed <name> <session-id> <window-id> <window-index>
     /// <pane-id> ... : <value>`（tmux ≥3.2 `refresh-client -B` 订阅推送）。
     /// value 是 format 的展开值（可能含空格、冒号、样式指令）。
-    SubscriptionChanged { name: String, value: String },
+    /// pane 是元数据里的 pane-id（`-` 表示无 pane 上下文，如 status-left/right）。
+    SubscriptionChanged {
+        name: String,
+        value: String,
+        pane: Option<PaneId>,
+    },
     /// 命令响应边界 `%begin` / `%end` / `%error`。
     ResponseBoundary(ResponseBoundary),
     /// 未识别的 `%` 消息，保留原始行（去掉行尾 \r\n）。
@@ -637,16 +642,32 @@ fn parse_subscription_changed(rest: &str) -> Result<Message, ProtocolError> {
         .split_once(" : ")
         .map(|(m, v)| (m.trim(), v))
         .unwrap_or((rest.trim(), ""));
-    let name = meta.split_whitespace().next().unwrap_or("");
+    let mut tokens = meta.split_whitespace();
+    let name = tokens.next().unwrap_or("");
     if name.is_empty() {
         return Err(ProtocolError::MalformedField(
             "subscription-changed 缺少订阅名".into(),
         ));
     }
+    // 元数据：name session-id window-id window-index pane-id ...
+    let pane = tokens.nth(3).and_then(parse_pane_id_token);
     Ok(Message::SubscriptionChanged {
         name: name.to_string(),
         value: value.to_string(),
+        pane,
     })
+}
+
+/// 解析订阅元数据里的 pane-id token（`-` / `%N` / `@N` / `N`）。
+fn parse_pane_id_token(token: &str) -> Option<PaneId> {
+    if token == "-" {
+        return None;
+    }
+    let digits = token
+        .strip_prefix('%')
+        .or_else(|| token.strip_prefix('@'))
+        .unwrap_or(token);
+    digits.parse::<u32>().ok().map(PaneId)
 }
 
 // 辅助枚举：window-add / window-close / unlinked-window-add / unlinked-window-close
@@ -1534,6 +1555,7 @@ mod tests {
             Message::SubscriptionChanged {
                 name: "muxterm.status-left".into(),
                 value: "#[fg=red]11:50:23 ".into(),
+                pane: None,
             }
         );
 
@@ -1545,12 +1567,34 @@ mod tests {
             Message::SubscriptionChanged {
                 name: "muxterm.status-right".into(),
                 value: "a : b  c".into(),
+                pane: None,
             }
         );
 
         // 缺订阅名的畸形行按忽略处理（不 panic、不进状态机）。
         assert_eq!(parse_line("%subscription-changed"), None);
         assert_eq!(parse_line("%subscription-changed   "), None);
+
+        // pane-cmd 订阅带 pane-id（%0）：解析进 Message。
+        let m = parse_line("%subscription-changed muxterm.pane-cmd $0 @0 0 %0 : /bin/cat").unwrap();
+        assert_eq!(
+            m,
+            Message::SubscriptionChanged {
+                name: "muxterm.pane-cmd".into(),
+                value: "/bin/cat".into(),
+                pane: Some(PaneId(0)),
+            }
+        );
+        // 无 pane 上下文用 `-`。
+        let m = parse_line("%subscription-changed muxterm.pane-cmd $0 @0 0 - : zsh").unwrap();
+        assert_eq!(
+            m,
+            Message::SubscriptionChanged {
+                name: "muxterm.pane-cmd".into(),
+                value: "zsh".into(),
+                pane: None,
+            }
+        );
     }
 
     #[test]

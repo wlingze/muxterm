@@ -3131,7 +3131,12 @@ fn scenario4_status_subscription_pushes_left_value_changes() {
     while Instant::now() < deadline {
         // refresh() 先从 backend 拉取事件再派发（poll_events 只排空 pending）。
         for ev in model.refresh() {
-            if let StateChange::StatusBarSubscription { name, value } = ev {
+            if let StateChange::StatusBarSubscription {
+                name,
+                value,
+                pane: _,
+            } = ev
+            {
                 if name == "muxterm.status-left" && value.contains("SUB-LEFT-") {
                     got = true;
                 }
@@ -3143,6 +3148,87 @@ fn scenario4_status_subscription_pushes_left_value_changes() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(got, "应收到 status-left 订阅推送");
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// 场景 5: pane_current_command 订阅（LINUX-PLAN C2.5b）
+// ============================================================================
+
+#[test]
+fn scenario5_pane_cmd_subscription_reports_foreground_command() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let create = Command::new("tmux")
+        .args(["-L", &socket, "new-session", "-d", "-s", "cmdsub"])
+        .output()
+        .expect("创建隔离 tmux server 失败");
+    assert!(
+        create.status.success(),
+        "创建隔离 tmux server 失败: {:?}",
+        create
+    );
+
+    let mut model = connect_tmux(&socket);
+    assert!(
+        model.status_subscriptions_active(),
+        "tmux >= 3.2 应启用 status/pane-cmd 订阅"
+    );
+    let _ = model.poll_events();
+
+    // pane 里跑 /bin/cat（本机 cat 是 bat alias，必须用绝对路径）。
+    let tab = model.state().active_tab().expect("应有 tab").id;
+    let pane = model
+        .state()
+        .panes(&tab)
+        .first()
+        .map(|p| p.id)
+        .expect("应有 pane");
+    let send = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "send-keys",
+            "-t",
+            &format!("%{}", pane.0),
+            "/bin/cat",
+            "Enter",
+        ])
+        .output()
+        .expect("send-keys /bin/cat 失败");
+    assert!(send.status.success(), "send-keys 失败: {:?}", send);
+    assert!(
+        wait_pane_command(&socket, pane, "cat", Duration::from_secs(10)),
+        "pane 前台命令应变为 cat（pane_current_command 是 basename）"
+    );
+
+    // 订阅推送应在 ~1s 内到达（refresh-client -B 至多 1 次/秒）。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut got = false;
+    while Instant::now() < deadline {
+        for ev in model.refresh() {
+            if let StateChange::StatusBarSubscription {
+                name,
+                value,
+                pane: Some(p),
+            } = ev
+            {
+                if name == "muxterm.pane-cmd" && p == pane && value.contains("cat") {
+                    got = true;
+                }
+            }
+        }
+        if got {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(got, "应收到 muxterm.pane-cmd 订阅推送");
 
     let _ = model.shutdown();
     cleanup(&socket);
