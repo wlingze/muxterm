@@ -15,6 +15,8 @@ use gtk4::prelude::*;
 use gtk4::{ApplicationWindow, Box, CssProvider, EventControllerKey, Orientation, Window};
 use vte4::prelude::*;
 
+use crate::core::attention::clock::RealClock;
+use crate::core::attention::engine::AttentionEngine;
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::replica::{apply_output_to_replicas, ReplicaStore};
@@ -85,6 +87,10 @@ struct UiState {
     pending_close: bool,
     /// 跨工作区 pane 副本（前台+后台 %output 都喂这里；VTE 只显示）。
     replicas: ReplicaStore,
+    /// 注意力引擎（信号 → 状态机 → blocked 工作区聚合）。
+    attention: AttentionEngine<RealClock>,
+    /// 本轮进入 blocked 的 workspace 通知日志（C3.4 换 NotificationSink）。
+    notification_log: Vec<String>,
 }
 
 impl UiState {
@@ -239,6 +245,8 @@ impl AppWindow {
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
             replicas: ReplicaStore::new(cfg.scrollback.lines as usize),
+            attention: AttentionEngine::new(cfg.attention.clone(), RealClock),
+            notification_log: Vec::new(),
         }));
 
         // tab 点击
@@ -329,10 +337,29 @@ impl AppWindow {
                     let mut s = st.borrow_mut();
                     for (key, events) in s.pool.poll_background_slots() {
                         let ws = QuickConnect::unique_id(&key.target_config());
-                        let UiState { pool, replicas, .. } = &mut *s;
-                        if let Some(slot) = pool.get(&key) {
-                            for ev in &events {
-                                apply_background_event(replicas, &ws, &slot.bridge, ev);
+                        // 先用该 slot 自己的 bridge 预取 pane 尺寸，避免与 &mut s 冲突。
+                        let dims: std::collections::HashMap<u32, (u16, u16)> = s
+                            .pool
+                            .get(&key)
+                            .map(|slot| {
+                                slot.bridge
+                                    .get_panes(0)
+                                    .iter()
+                                    .map(|p| (p.id, (p.cols, p.rows)))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        for ev in &events {
+                            if ev.type_ == crate::core::protocol::ffi::types::STATE_PANE_OUTPUT {
+                                let (cols, rows) =
+                                    dims.get(&ev.pane_id).copied().unwrap_or((80, 24));
+                                feed_replica_and_engine(
+                                    &mut s, &ws, ev.pane_id, &ev.data, cols, rows,
+                                );
+                            } else if ev.type_
+                                == crate::core::protocol::ffi::types::STATE_PANE_CLOSED
+                            {
+                                s.replicas.drop_pane(&ws, ev.pane_id);
                             }
                         }
                     }
@@ -349,6 +376,8 @@ impl AppWindow {
                         }
                     }
                     dispatch_event_batch(&mut s, events);
+                    let notifications = s.attention.take_new_blocked_notifications();
+                    s.notification_log.extend(notifications);
                     sync_pane_outputs(&mut s);
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);
@@ -376,8 +405,11 @@ impl AppWindow {
 
     /// 测试用：向当前激活 pane 发送原始输入（如 `echo hi\n` / `\x04` Ctrl+D）。
     pub fn test_send_input(&self, data: &[u8]) {
-        let s = self._state.borrow();
-        let _ = s.bridge().send_input(s.active_pane, data);
+        let mut s = self._state.borrow_mut();
+        let ws = active_workspace_id(&s);
+        let pane = s.active_pane;
+        let _ = s.bridge().send_input(pane, data);
+        s.attention.on_user_input(&ws, pane);
     }
 
     /// 测试用：当前激活 pane 的核心输出快照。
@@ -414,6 +446,8 @@ impl AppWindow {
             let mut s = self._state.borrow_mut();
             let events = s.bridge().poll_events();
             dispatch_event_batch(&mut s, events);
+            let notifications = s.attention.take_new_blocked_notifications();
+            s.notification_log.extend(notifications);
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
             let close = s.pending_close;
@@ -442,9 +476,9 @@ impl AppWindow {
         0
     }
 
-    /// 测试用：当前 blocked 工作区数（M2.4 接 AttentionEngine，当前返回 0）。
+    /// 测试用：当前 blocked 工作区数（红点 N）。
     pub fn test_attention_blocked_workspaces(&self) -> usize {
-        0
+        self._state.borrow().attention.blocked_workspace_count()
     }
 
     /// 测试用：窗口标题（M3.4 接红点前缀，当前返回原始标题）。
@@ -462,16 +496,16 @@ impl AppWindow {
         s.replicas.last_n_lines(&ws, pane_id, n)
     }
 
-    /// 测试用：绕过 tmux 直接向 ReplicaStore 注入字节。
+    /// 测试用：绕过 tmux 直接向 ReplicaStore/AttentionEngine 注入字节。
     pub fn test_feed_replica(&self, pane_id: u32, bytes: &[u8]) {
         let mut s = self._state.borrow_mut();
         let ws = active_workspace_id(&s);
-        apply_output_to_replicas(&mut s.replicas, &ws, pane_id, bytes, 80, 24);
+        feed_replica_and_engine(&mut s, &ws, pane_id, bytes, 80, 24);
     }
 
-    /// 测试用：RecordingSink 记录的通知（M3.4 接真逻辑，当前为空）。
+    /// 测试用：本轮进入 blocked 的 workspace 通知记录。
     pub fn test_notifications_recorded(&self) -> Vec<String> {
-        Vec::new()
+        self._state.borrow().notification_log.clone()
     }
 }
 
@@ -803,38 +837,30 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
     }
 }
 
+/// 把一条 pane 输出喂进副本并把注意力信号应用到引擎（前台/后台共用）。
+fn feed_replica_and_engine(
+    s: &mut UiState,
+    ws: &str,
+    pane: u32,
+    bytes: &[u8],
+    cols: u16,
+    rows: u16,
+) {
+    let signals = apply_output_to_replicas(&mut s.replicas, ws, pane, bytes, cols, rows);
+    let (last_line, seq) = s
+        .replicas
+        .get(ws, pane)
+        .map(|t| (t.last_non_empty_line().unwrap_or_default(), t.latest_seq()))
+        .unwrap_or_default();
+    s.attention.apply(ws, pane, &signals, &last_line, seq);
+}
+
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
 fn active_workspace_id(s: &UiState) -> String {
     s.pool
         .active_slot()
         .map(|slot| QuickConnect::unique_id(&slot.key().target_config()))
         .unwrap_or_default()
-}
-
-/// 后台 slot 事件只喂副本/清理副本，不碰前台 widget 树。
-/// 尺寸用该后台 slot 自己的 bridge 查询，不能拿前台 pane 尺寸替代。
-fn apply_background_event(
-    replicas: &mut ReplicaStore,
-    ws: &str,
-    bridge: &CoreBridge,
-    ev: &BridgeEvent,
-) {
-    use crate::core::protocol::ffi::types::*;
-    match ev.type_ {
-        STATE_PANE_OUTPUT => {
-            let panes = bridge.get_panes(0);
-            let (cols, rows) = panes
-                .iter()
-                .find(|p| p.id == ev.pane_id)
-                .map(|p| (p.cols, p.rows))
-                .unwrap_or((80, 24));
-            apply_output_to_replicas(replicas, ws, ev.pane_id, &ev.data, cols, rows);
-        }
-        STATE_PANE_CLOSED => {
-            replicas.drop_pane(ws, ev.pane_id);
-        }
-        _ => {}
-    }
 }
 
 fn dispatch_event_batch(s: &mut UiState, events: Vec<BridgeEvent>) {
@@ -859,7 +885,7 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                 .find(|p| p.id == ev.pane_id)
                 .map(|p| (p.cols, p.rows))
                 .unwrap_or((80, 24));
-            apply_output_to_replicas(&mut s.replicas, &ws, ev.pane_id, &ev.data, cols, rows);
+            feed_replica_and_engine(s, &ws, ev.pane_id, &ev.data, cols, rows);
             if let Some(view) = s.layout.pane(ev.pane_id).cloned() {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
@@ -887,6 +913,8 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
         }
         STATE_ACTIVE_PANE_CHANGED => {
             s.active_pane = ev.pane_id;
+            let ws = active_workspace_id(s);
+            s.attention.on_became_visible(&ws, ev.pane_id);
         }
         STATE_TAB_CLOSED => {
             s.tab_gate.on_tab_closed(ev.tab_id);
