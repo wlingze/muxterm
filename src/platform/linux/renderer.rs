@@ -67,16 +67,38 @@ impl VteRenderer {
         &mut self.terminal
     }
 
-    /// 应用主题色到 VTE。
+    /// tmux/SSH 镜像：VTE 没有 PTY。htop/codex 用 CUP 画全屏，必须关掉
+    /// rewrap、scroll-on-output 和 scrollback，否则表头被卷走、CPU 条折行叠在一起。
+    pub fn apply_mirror_policy(&self, is_tmux_mirror: bool) {
+        if !is_tmux_mirror {
+            return;
+        }
+        self.terminal.set_enable_fallback_scrolling(false);
+        self.terminal.set_scroll_on_output(false);
+        self.terminal.set_scroll_on_insert(false);
+        self.terminal.set_scrollback_lines(0);
+        self.terminal.set_enable_bidi(false);
+        // vte4 0.8 未导出 set_rewrap_on_resize；属性仍在（VTE 3.91）。
+        self.terminal.set_property("rewrap-on-resize", false);
+    }
+
+    /// 应用主题色到 VTE。显式设 default fg/bg/cursor/highlight：
+    /// Codex 浅色输入框用 SGR 39（默认前景）画字，若只靠 GTK CSS，Linux 上
+    /// 字色会跟 48;2;216;216;216 背景糊在一起，选中也看不见。
     pub fn apply_theme(&self, theme: &Theme) {
         let fg = rgba(theme.foreground);
         let bg = rgba(theme.background);
         let cursor = rgba(theme.cursor);
-        self.terminal.set_colors(Some(&fg), Some(&bg), &[]);
         let palette: Vec<gtk4::gdk::RGBA> = theme.colors.iter().map(|c| rgba(*c)).collect();
         let refs: Vec<&gtk4::gdk::RGBA> = palette.iter().collect();
+        self.terminal.set_color_foreground(&fg);
+        self.terminal.set_color_background(&bg);
+        self.terminal.set_color_bold(Some(&fg));
+        self.terminal.set_color_cursor(Some(&cursor));
+        self.terminal.set_color_cursor_foreground(Some(&bg));
+        self.terminal.set_color_highlight(Some(&cursor));
+        self.terminal.set_color_highlight_foreground(Some(&bg));
         self.terminal.set_colors(Some(&fg), Some(&bg), &refs);
-        let _ = cursor;
     }
 
     /// 应用字体（family + size，size 以 pt 为单位）。

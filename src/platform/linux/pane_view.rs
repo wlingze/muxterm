@@ -15,6 +15,9 @@ use vte4::prelude::*;
 
 use crate::core::config::{Rgb, Theme};
 use crate::core::protocol::terminal::emulate::TerminalState;
+use crate::core::protocol::terminal::mirror::{
+    should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
+};
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 
@@ -35,11 +38,16 @@ struct PaneViewInner {
     pending_replies: RefCell<Vec<u8>>,
     /// tmux/SSH 镜像模式：feed 期间解析器应答一律丢弃。
     is_tmux_mirror: Cell<bool>,
+    /// 正在把远端 pane 输出 feed 进 VTE（解析器应答只在这个窗口产生）。
+    is_feeding_remote_output: Cell<bool>,
     /// 待合并的输出。
     pending_feed: RefCell<Vec<u8>>,
     feed_flush_source: RefCell<Option<glib::SourceId>>,
-    /// 是否已经用完整快照播种过；未播种前不应走增量 feed。
+    /// 已播种过；未播种前不应走增量 feed。
     seeded: Cell<bool>,
+    /// VTE / 无头模型当前字符格。Codex CUP 帧必须与此一致。
+    grid_cols: Cell<u16>,
+    grid_rows: Cell<u16>,
 }
 
 impl PaneView {
@@ -47,6 +55,7 @@ impl PaneView {
         let renderer = VteRenderer::new();
         renderer.apply_theme(theme);
         renderer.apply_font(font);
+        renderer.apply_mirror_policy(is_tmux_mirror);
         PaneView {
             inner: Rc::new(PaneViewInner {
                 renderer,
@@ -54,9 +63,12 @@ impl PaneView {
                 reply_state: RefCell::new(TerminalState::new(80, 24)),
                 pending_replies: RefCell::new(Vec::new()),
                 is_tmux_mirror: Cell::new(is_tmux_mirror),
+                is_feeding_remote_output: Cell::new(false),
                 pending_feed: RefCell::new(Vec::new()),
                 feed_flush_source: RefCell::new(None),
                 seeded: Cell::new(false),
+                grid_cols: Cell::new(80),
+                grid_rows: Cell::new(24),
             }),
         }
     }
@@ -89,13 +101,38 @@ impl PaneView {
 
     /// 按后端报告的 pane 字符格尺寸 resize 模型。
     pub fn resize_to(&self, cols: u16, rows: u16) {
-        let cols = cols.max(2) as i64;
-        let rows = rows.max(1) as i64;
-        self.inner.renderer.terminal().set_size(cols, rows);
+        self.ensure_grid_size(cols, rows);
+    }
+
+    /// 网格已是该尺寸则跳过，避免 16ms 轮询里反复 set_size。
+    pub fn ensure_grid_size(&self, cols: u16, rows: u16) {
+        let cols = cols.max(2);
+        let rows = rows.max(1);
+        if self.inner.grid_cols.get() == cols && self.inner.grid_rows.get() == rows {
+            return;
+        }
+        // 先把旧宽度上尚未 flush 的 CUP 画完，再改网格。
+        // 否则 25ms 合并窗口会把 htop 的旧帧喂进新列数（表头叠表）。
+        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
+            id.remove();
+        }
+        flush_pending_feed(&self.inner);
+        self.inner.grid_cols.set(cols);
+        self.inner.grid_rows.set(rows);
         self.inner
-            .reply_state
-            .borrow_mut()
-            .resize(cols as usize, rows as usize);
+            .renderer
+            .terminal()
+            .set_size(cols as i64, rows as i64);
+        if self.inner.is_tmux_mirror.get() && self.inner.seeded.get() {
+            // 对齐 macOS updateFullScreen：关掉 rewrap 后旧 CUP 会留在新网格里。
+            self.inner.renderer.terminal().reset(false, true);
+            *self.inner.reply_state.borrow_mut() = TerminalState::new(cols as usize, rows as usize);
+        } else {
+            self.inner
+                .reply_state
+                .borrow_mut()
+                .resize(cols as usize, rows as usize);
+        }
     }
 
     /// 输出事件入队合并（同一 pane 短窗口内一次 feed）。
@@ -138,8 +175,11 @@ impl PaneView {
         *self.inner.reply_state.borrow_mut() =
             TerminalState::new(cols.max(2) as usize, rows.max(1) as usize);
         if !data.is_empty() {
-            self.inner.renderer.terminal().feed(data);
-            feed_reply_state(&self.inner, data);
+            with_remote_feed(&self.inner, || {
+                self.inner.renderer.terminal().feed(data);
+                feed_reply_state(&self.inner, data);
+                apply_mirror_mouse_policy(&self.inner);
+            });
         }
         self.inner.seeded.set(true);
     }
@@ -150,14 +190,36 @@ impl PaneView {
     }
 
     /// 用户按键 → 回调（由 window 转发到 FFI send_input）。
+    ///
+    /// VTE 无 PTY 时会把 OSC/CSI 应答也走 `commit`。tmux 镜像下必须丢掉，
+    /// 否则 `git lg` 的 `10;rgb:...` 会经 send-keys 泄漏进 shell。
     pub fn connect_input<F: Fn(u32, &[u8]) + 'static>(&self, f: F) {
         let pid = self.inner.pane_id.clone();
+        let feeding = self.inner.is_feeding_remote_output.clone();
+        let mirror = self.inner.is_tmux_mirror.clone();
         self.inner
             .renderer
             .terminal()
             .connect_commit(move |_term, text, _len| {
-                f(pid.get(), text.as_bytes());
+                let data = text.as_bytes();
+                if !should_forward_mixed_input(feeding.get(), mirror.get(), data) {
+                    return;
+                }
+                f(pid.get(), data);
             });
+    }
+
+    pub fn copy_clipboard(&self) {
+        self.inner
+            .renderer
+            .terminal()
+            .copy_clipboard_format(vte4::Format::Text);
+    }
+
+    /// VTE 无 PTY 时 `paste_clipboard` 会走 commit → 空的 `ESC[200~ESC[201~`。
+    /// 由窗口读 GTK 剪贴板再 `send_input`。
+    pub fn bracketed_paste(&self) -> bool {
+        self.inner.reply_state.borrow().bracketed_paste
     }
 
     /// 运行期切换主题（VTE 调色板 + 重绘）。
@@ -200,8 +262,25 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     if data.is_empty() {
         return;
     }
-    inner.renderer.terminal().feed(&data);
-    feed_reply_state(inner, &data);
+    with_remote_feed(inner, || {
+        inner.renderer.terminal().feed(&data);
+        feed_reply_state(inner, &data);
+        apply_mirror_mouse_policy(inner);
+    });
+}
+
+fn apply_mirror_mouse_policy(inner: &PaneViewInner) {
+    if !inner.is_tmux_mirror.get() {
+        return;
+    }
+    inner.renderer.terminal().feed(DISABLE_MOUSE_TRACKING);
+    feed_reply_state(inner, DISABLE_MOUSE_TRACKING);
+}
+
+fn with_remote_feed(inner: &PaneViewInner, f: impl FnOnce()) {
+    inner.is_feeding_remote_output.set(true);
+    f();
+    inner.is_feeding_remote_output.set(false);
 }
 
 fn feed_reply_state(inner: &PaneViewInner, data: &[u8]) {
@@ -211,7 +290,7 @@ fn feed_reply_state(inner: &PaneViewInner, data: &[u8]) {
     let mut state = inner.reply_state.borrow_mut();
     state.feed(data);
     let replies = state.take_reply();
-    if should_forward_replies(inner.is_tmux_mirror.get(), &replies) {
+    if should_forward_parser_response(true, inner.is_tmux_mirror.get()) && !replies.is_empty() {
         inner
             .pending_replies
             .borrow_mut()
@@ -220,8 +299,10 @@ fn feed_reply_state(inner: &PaneViewInner, data: &[u8]) {
 }
 
 /// 是否把解析器查询应答回写给后端（local shell 才回写）。
+///
+/// tmux 镜像在 feed 远端输出期间生成的应答一律丢弃（git lg 泄漏根因）。
 pub fn should_forward_replies(is_tmux_mirror: bool, replies: &[u8]) -> bool {
-    !replies.is_empty() && !is_tmux_mirror
+    !replies.is_empty() && should_forward_parser_response(true, is_tmux_mirror)
 }
 
 /// 便于在闭包里共享的 PaneView 句柄。
@@ -246,5 +327,13 @@ mod tests {
         assert!(!should_forward_replies(true, b"\x1b]11;?\x07"));
         assert!(should_forward_replies(false, b"\x1b]11;?\x07"));
         assert!(!should_forward_replies(false, b""));
+    }
+
+    #[test]
+    fn tmux_commit_drops_gitlg_osc_color_reply() {
+        let leaked = b"\x1b]10;rgb:4c4c/4f4f/6969\x07";
+        assert!(!should_forward_mixed_input(true, true, leaked));
+        assert!(!should_forward_mixed_input(false, true, leaked));
+        assert!(should_forward_mixed_input(false, true, b"ls\n"));
     }
 }

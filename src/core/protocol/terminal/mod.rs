@@ -6,6 +6,7 @@
 
 pub mod emulate;
 pub mod input;
+pub mod mirror;
 pub mod process;
 pub mod scrollback;
 
