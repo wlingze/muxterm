@@ -59,6 +59,16 @@ pub const DISABLE_MOUSE_TRACKING: &[u8] =
 
 /// 把剪贴板文本编码成发给 pane 的字节。空内容不得发空的 bracketed paste
 /// 包装（2310.log 的 `\\e[200~\\e[201~`）。
+/// 剥离粘贴文本中的控制字符（CVE-2026-26982 同类：bracketed 路径也要剥）。
+///
+/// 两种模式都保留 `\n` / `\r` / `\t`，其余 `0x00..=0x1F` 一律去掉；
+/// bracketed 只负责加 `\x1b[200~` 包装，不再提前返回。
+pub fn sanitize_paste(text: &str, _bracketed: bool) -> String {
+    text.chars()
+        .filter(|c| *c == '\n' || *c == '\r' || *c == '\t' || *c >= ' ')
+        .collect()
+}
+
 pub fn encode_clipboard_paste(text: &str, bracketed: bool) -> Vec<u8> {
     if text.is_empty() {
         return Vec::new();
@@ -349,6 +359,25 @@ mod tests {
         let leaked = b"\x1b]10;rgb:0000/0000/0000\x1b\\";
         assert!(looks_like_parser_reply(leaked));
         assert!(!should_forward_mixed_input(true, true, leaked));
+    }
+
+    #[test]
+    fn paste_sanitizes_ctrl_c() {
+        assert_eq!(sanitize_paste("hello\x03world", false), "helloworld");
+        assert_eq!(sanitize_paste("hello\x03world", true), "helloworld");
+    }
+
+    #[test]
+    fn paste_keeps_newlines_tabs() {
+        assert_eq!(sanitize_paste("a\nb\tc\rd", false), "a\nb\tc\rd");
+        assert_eq!(sanitize_paste("a\nb\tc\rd", true), "a\nb\tc\rd");
+    }
+
+    #[test]
+    fn bracketed_paste_keeps_printable_ctrl_except_nul() {
+        // 两种模式都剥 0x00..=0x1F（除 \n\r\t），bracketed 只负责加包装。
+        assert_eq!(sanitize_paste("a\x1b[31mred\x00", true), "a[31mred");
+        assert_eq!(sanitize_paste("a\x1b[31mred\x00", false), "a[31mred");
     }
 
     #[test]
