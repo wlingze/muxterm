@@ -174,5 +174,14 @@
   "current": "当前",
   "local_transport": "本机",
   "ssh_transport": "SSH 远程",
-  "plain_shell": "普通 shell"
+  "plain_shell": "普通 shell",
+  "panel_tab_workspaces": "工作区",
+  "panel_tab_attention": "待处理",
+  "panel_tab_search": "搜索",
+  "attention_count": "待处理 {n}",
+  "attention_empty": "没有待处理的 pane",
+  "peek": "预览",
+  "reply_hint": "答复（Enter）",
+  "mute_1h": "静音 1 小时",
+  "search_placeholder_phase_c": "搜索历史（阶段 C）"
 }
