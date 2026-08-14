@@ -116,6 +116,20 @@ final class KeyBindingsTests: XCTestCase {
             .togglePaneFullscreen
         )
     }
+
+    func testAltEnterTogglesPaneFullscreen() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(option: true, key: "\r")),
+            .togglePaneFullscreen
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(option: true, key: "\n")),
+            .togglePaneFullscreen
+        )
+        XCTAssertNil(
+            KeyBindings.action(for: KeyChord(command: true, option: true, key: "\r"))
+        )
+    }
 }
 
 
@@ -444,6 +458,10 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
         XCTAssertFalse(PaneLayoutProjection.accepts(treePaneIDs: [0], paneIDs: [11]))
         XCTAssertTrue(PaneLayoutProjection.accepts(treePaneIDs: [0], paneIDs: [0]))
+        // zoom：单叶覆盖多 pane 快照。
+        XCTAssertTrue(
+            PaneLayoutProjection.accepts(treePaneIDs: [11], paneIDs: [11, 12, 13])
+        )
     }
 
     func testOnlyStructuralEventsRebuildLayout() {

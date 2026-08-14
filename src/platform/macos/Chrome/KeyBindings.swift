@@ -102,9 +102,14 @@ public enum KeyBindings {
                 return .resetFontSize
             }
         }
-        // Cmd+Enter：当前 pane 全屏切换（tmux `resize-pane -Z` / 本地布局）。
-        if chord.command, !chord.option, !chord.shift, key == "\r" || key == "\n" {
-            return .togglePaneFullscreen
+        // Cmd+Enter / Alt+Enter：当前 pane 全屏切换（tmux `resize-pane -Z` / 本地布局）。
+        if !chord.shift, key == "\r" || key == "\n" {
+            if chord.command, !chord.option {
+                return .togglePaneFullscreen
+            }
+            if chord.option, !chord.command {
+                return .togglePaneFullscreen
+            }
         }
 
         // Alt+T / Alt+S / Alt+V / Alt+[ / Alt+] / Alt+1..9（兼容 TUI）

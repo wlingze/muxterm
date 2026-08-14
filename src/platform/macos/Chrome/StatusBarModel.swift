@@ -103,6 +103,17 @@ public struct StatusBarAttention: Equatable, Sendable {
     public var isActive: Bool { count > 0 }
 }
 
+/// GUI tab 标题（iTerm2 风格：序号 + 名字），不用 tmux `#[fg=…]` 格式串。
+public enum StatusBarTabTitle {
+    public static func display(index: UInt32, name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "\(index)"
+        }
+        return "\(index)  \(trimmed)"
+    }
+}
+
 /// muxterm status bar 快照（对应 Rust `StatusSnapshot` 的 JSON；连接控制模式
 /// 会话时读取兼容的 status 配置，概念上属于 muxterm 自己的 status bar）。
 public struct StatusBarSnapshot: Equatable, Decodable, Sendable {

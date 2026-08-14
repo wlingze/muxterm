@@ -222,6 +222,15 @@ final class StatusBarAttentionTests: XCTestCase {
     }
 }
 
+final class StatusBarTabTitleTests: XCTestCase {
+    func testIndexAndName() {
+        XCTAssertEqual(StatusBarTabTitle.display(index: 1, name: "zsh"), "1  zsh")
+        XCTAssertEqual(StatusBarTabTitle.display(index: 2, name: "  "), "2")
+        XCTAssertEqual(StatusBarTabTitle.display(index: 3, name: ""), "3")
+        XCTAssertFalse(StatusBarTabTitle.display(index: 1, name: "sleep").contains("#["))
+    }
+}
+
 final class StatusBarFrontendSyncTests: XCTestCase {
     /// 解码出的快照 current 标记可变：前端驱动高亮的前提。
     func testDecodedWindowsAreMutable() throws {

@@ -1506,7 +1506,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             terminalManager.sendRawInput(to: view, byte: TerminalInputEncoding.backspaceByte)
             return true
         }
-        guard let raw = event.charactersIgnoringModifiers, let key = raw.first.map(String.init) else {
+        // Return / keypad Enter 在带修饰键时 charactersIgnoringModifiers
+        // 可能为空，不能靠字符匹配，否则 Cmd/Alt+Enter 永远进不了全屏。
+        let key: String
+        if event.keyCode == 36 || event.keyCode == 76 {
+            key = "\r"
+        } else if let raw = event.charactersIgnoringModifiers, let first = raw.first {
+            key = String(first)
+        } else {
             return false
         }
         let chord = KeyChord(

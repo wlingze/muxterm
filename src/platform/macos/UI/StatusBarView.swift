@@ -23,8 +23,7 @@ final class StatusBarView: NSView {
     private let tabStack = NSStackView()
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
-    private let statusDot = NSView()
-    private let statusDotLayer = CALayer()
+    private let statusDot = StatusDotButton()
     private let attentionSlot = NSView()
     private let attentionDot = CALayer()
     private let attentionCountLabel = NSTextField(labelWithString: "")
@@ -69,7 +68,7 @@ final class StatusBarView: NSView {
         // tab 列表
         tabStack.orientation = .horizontal
         tabStack.alignment = .centerY
-        tabStack.spacing = 2
+        tabStack.spacing = 4
         tabStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         tabStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -86,27 +85,11 @@ final class StatusBarView: NSView {
         rightLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         rightLabel.isHidden = true
 
-        // 状态点（绿/黄/红）—— 用 NSButton 保证点击可靠，悬停显示 tooltip。
-        statusDot.wantsLayer = true
-        statusDot.layer?.backgroundColor = NSColor.clear.cgColor
-        statusDot.setAccessibilityIdentifier("muxterm.statusDot")
-        statusDot.setAccessibilityElement(true)
-        statusDot.setAccessibilityRole(.button)
-        statusDot.setAccessibilityLabel("Connection status")
+        // 状态点（绿/黄/红）—— 自身就是 NSButton，保证点击热区 18×18。
+        statusDot.target = self
+        statusDot.action = #selector(statusDotClicked)
         statusDot.toolTip = "Click for connection details"
-        statusDotLayer.frame = CGRect(x: 5, y: 5, width: 8, height: 8)
-        statusDotLayer.cornerRadius = 4
-        statusDotLayer.backgroundColor = NSColor.systemGreen.cgColor
-        statusDot.layer?.addSublayer(statusDotLayer)
-        let dotButton = NSButton()
-        dotButton.isBordered = false
-        dotButton.wantsLayer = true
-        dotButton.layer?.backgroundColor = NSColor.clear.cgColor
-        dotButton.target = self
-        dotButton.action = #selector(statusDotClicked)
-        dotButton.toolTip = "Click for connection details"
-        dotButton.translatesAutoresizingMaskIntoConstraints = false
-        statusDot.addSubview(dotButton)
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
 
         // 通知红点
         attentionSlot.wantsLayer = true
@@ -199,10 +182,6 @@ final class StatusBarView: NSView {
         super.layout()
         let y: CGFloat = edgeAtBottom ? bounds.height - 1 : 0
         edgeLine.frame = CGRect(x: 0, y: y, width: bounds.width, height: 1)
-        statusDotLayer.frame = CGRect(
-            x: statusDot.bounds.midX - 4, y: statusDot.bounds.midY - 4,
-            width: 8, height: 8
-        )
         attentionDot.frame = CGRect(
             x: attentionSlot.bounds.midX - 4, y: attentionSlot.bounds.midY - 4,
             width: 8, height: 8
@@ -248,7 +227,11 @@ final class StatusBarView: NSView {
                 plainForeground: lastPlainForeground
             )
             rebuildTabButtons(snapshot.windows.map { win in
-                TabBarItem(id: win.windowId, title: win.text, active: win.current)
+                TabBarItem(
+                    id: win.windowId,
+                    title: StatusBarTabTitle.display(index: win.index, name: win.name),
+                    active: win.current
+                )
             })
         } else {
             leftLabel.isHidden = true
@@ -320,7 +303,6 @@ final class StatusBarView: NSView {
     private func updateStatusDotColor() {
         let color: NSColor
         if let errorText {
-            _ = errorText
             color = NSColor.systemRed
             statusDot.toolTip = "Error: \(errorText) — click for details"
         } else {
@@ -344,7 +326,7 @@ final class StatusBarView: NSView {
                 color = NSColor.tertiaryLabelColor
             }
         }
-        statusDotLayer.backgroundColor = color.cgColor
+        statusDot.setDotColor(color)
         statusDot.setAccessibilityLabel(statusDotAccessibilityLabel)
     }
 
@@ -394,15 +376,19 @@ final class StatusBarView: NSView {
             field.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
             field.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
             field.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+            container.widthAnchor.constraint(equalToConstant: 320),
         ])
 
         let vc = NSViewController()
         vc.view = container
         popover.contentViewController = vc
-        // 按内容自适应高度。
-        popover.contentSize = NSSize(width: 320, height: 60)
+        container.layoutSubtreeIfNeeded()
+        let fitting = container.fittingSize
+        popover.contentSize = NSSize(width: 320, height: max(48, fitting.height))
 
-        popover.show(relativeTo: statusDot.bounds, of: statusDot, preferredEdge: .minY)
+        // 底栏向上弹，顶栏向下弹，避免 popover 画到屏幕外看起来像「点了没反应」。
+        let edge: NSRectEdge = edgeAtBottom ? .minY : .maxY
+        popover.show(relativeTo: statusDot.bounds, of: statusDot, preferredEdge: edge)
         statusPopover = popover
     }
 
@@ -421,36 +407,20 @@ final class StatusBarView: NSView {
     }
 
     private func tabTitle(_ tab: Tab) -> String {
-        if tab.name.isEmpty { return "\(tab.id)" }
-        return "\(tab.id):\(tab.name)"
+        StatusBarTabTitle.display(index: tab.id, name: tab.name)
     }
 
     private func rebuildTabButtons(_ items: [TabBarItem]) {
         tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for item in items {
-            let button = NSButton(title: item.title, target: self, action: #selector(tabClicked(_:)))
-            button.isBordered = false
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: item.active ? .semibold : .regular)
+            let button = StatusTabButton()
+            button.title = item.title
             button.tag = Int(item.id)
-            button.lineBreakMode = .byTruncatingTail
-            button.cell?.lineBreakMode = .byTruncatingTail
-            button.cell?.truncatesLastVisibleLine = true
-            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            button.contentTintColor = item.active ? NSColor.labelColor : NSColor.secondaryLabelColor
-            button.wantsLayer = true
-            // 活跃 tab：底部下划线指示（与旧 TabBar 风格一致），不用背景色块。
-            if item.active {
-                let underline = CALayer()
-                underline.backgroundColor = NSColor.controlAccentColor.cgColor
-                underline.name = "activeUnderline"
-                button.layer?.addSublayer(underline)
-                button.layer?.backgroundColor = NSColor.clear.cgColor
-            } else {
-                button.layer?.backgroundColor = NSColor.clear.cgColor
-            }
-            button.layer?.cornerRadius = 0
-            // 内边距：文字不紧贴边缘。
+            button.target = self
+            button.action = #selector(tabClicked(_:))
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
+            button.isActiveTab = item.active
+            button.applyStyle()
             tabStack.addArrangedSubview(button)
         }
     }
@@ -474,7 +444,11 @@ final class StatusBarView: NSView {
         lastTmuxSnapshot = updated
         if tmuxStatusEnabled {
             rebuildTabButtons(updated.windows.map { win in
-                TabBarItem(id: win.windowId, title: win.text, active: win.current)
+                TabBarItem(
+                    id: win.windowId,
+                    title: StatusBarTabTitle.display(index: win.index, name: win.name),
+                    active: win.current
+                )
             })
         }
     }
@@ -565,5 +539,108 @@ final class StatusBarView: NSView {
         case "exited": return MuxtermI18n.shared.tr(.statusExited)
         default: return MuxtermI18n.shared.tr(.statusUnknown)
         }
+    }
+}
+
+/// 状态点：固定 18×18 可点击按钮，避免 NSView 高度塌缩导致点不到。
+private final class StatusDotButton: NSButton {
+    private let dotLayer = CALayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        title = ""
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        focusRingType = .none
+        dotLayer.cornerRadius = 4
+        dotLayer.backgroundColor = NSColor.systemGreen.cgColor
+        layer?.addSublayer(dotLayer)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Connection status")
+        setAccessibilityIdentifier("muxterm.statusDot")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 18, height: 18)
+    }
+
+    override func layout() {
+        super.layout()
+        let side: CGFloat = 8
+        dotLayer.frame = CGRect(
+            x: (bounds.width - side) / 2,
+            y: (bounds.height - side) / 2,
+            width: side,
+            height: side
+        )
+    }
+
+    func setDotColor(_ color: NSColor) {
+        dotLayer.backgroundColor = color.cgColor
+        needsDisplay = true
+    }
+}
+
+/// iTerm2 风格 GUI tab：圆角色块 + 系统字体，不用 tmux 格式串。
+private final class StatusTabButton: NSButton {
+    var isActiveTab = false {
+        didSet { applyStyle() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        bezelStyle = .shadowlessSquare
+        isBordered = false
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.masksToBounds = true
+        focusRingType = .none
+        lineBreakMode = .byTruncatingTail
+        cell?.lineBreakMode = .byTruncatingTail
+        cell?.truncatesLastVisibleLine = true
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        setContentHuggingPriority(.defaultHigh, for: .horizontal)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        return NSSize(width: max(36, size.width + 16), height: 18)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyStyle()
+    }
+
+    func applyStyle() {
+        let font = NSFont.systemFont(ofSize: 11, weight: isActiveTab ? .semibold : .regular)
+        let fg = isActiveTab ? NSColor.labelColor : NSColor.secondaryLabelColor
+        self.font = font
+        attributedTitle = NSAttributedString(
+            string: attributedTitle.string.isEmpty ? title : attributedTitle.string,
+            attributes: [
+                .font: font,
+                .foregroundColor: fg,
+            ]
+        )
+        layer?.backgroundColor = (isActiveTab
+            ? NSColor.controlAccentColor.withAlphaComponent(0.22)
+            : NSColor.labelColor.withAlphaComponent(0.06)
+        ).cgColor
     }
 }

@@ -6,8 +6,14 @@ import Foundation
 /// 不同版本。此时不能把旧 tab 的叶子拿来渲染新 tab。
 public enum PaneLayoutProjection {
     public static func accepts(treePaneIDs: [UInt32], paneIDs: [UInt32]) -> Bool {
-        guard treePaneIDs.count == paneIDs.count else { return false }
-        return Set(treePaneIDs) == Set(paneIDs)
+        if treePaneIDs.count == paneIDs.count {
+            return Set(treePaneIDs) == Set(paneIDs)
+        }
+        // tmux zoom（resize-pane -Z）：布局塌成单叶，pane 快照仍保留全部 pane。
+        if treePaneIDs.count == 1, paneIDs.count > 1, let id = treePaneIDs.first, paneIDs.contains(id) {
+            return true
+        }
+        return false
     }
 }
 
