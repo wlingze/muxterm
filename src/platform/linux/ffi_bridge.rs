@@ -16,7 +16,7 @@ use crate::core::protocol::ffi::api::{
     muxterm_get_panes, muxterm_get_tabs, muxterm_list_dir_json, muxterm_new, muxterm_new_connect,
     muxterm_poll_events, muxterm_report_all_pane_colours, muxterm_report_pane_colours,
     muxterm_resize_client, muxterm_resize_pane, muxterm_send_input, muxterm_status_snapshot_json,
-    MuxtermHandle,
+    muxterm_status_subscription_active, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -197,6 +197,11 @@ impl CoreBridge {
                 }
             });
         self.poll_source = Some(id);
+    }
+
+    /// tmux status bar 订阅是否已生效（`%subscription-changed` 推送，无需轮询）。
+    pub fn status_subscription_active(&self) -> bool {
+        unsafe { muxterm_status_subscription_active(self.handle) != 0 }
     }
 
     /// 停止事件轮询定时器。
