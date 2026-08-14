@@ -26,6 +26,33 @@ use crate::platform::linux::quickconnect::model::{
 use crate::platform::linux::quickconnect::options::TargetOptionSelection;
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
+/// 目录补全 debounce：用 generation 作废旧回调。
+///
+/// 不能对已触发的 `glib::SourceId` 再 `remove()`：glib 0.20 会 unwrap
+/// `Failed to remove source`，且发生在 GTK `toggled` trampoline 里无法 unwind，
+/// 表现为点 SSH 卡片直接 abort。
+#[derive(Default)]
+pub(crate) struct ListingDebounce {
+    generation: Cell<u64>,
+}
+
+impl ListingDebounce {
+    pub(crate) fn bump(&self) -> u64 {
+        let next = self.generation.get().wrapping_add(1);
+        self.generation.set(next);
+        next
+    }
+
+    pub(crate) fn is_current(&self, token: u64) -> bool {
+        self.generation.get() == token
+    }
+}
+
+/// SSH 未选 alias 时不要发远程 list_dir。
+pub(crate) fn should_skip_directory_listing(is_ssh: bool, alias: Option<&str>) -> bool {
+    is_ssh && alias.map(str::trim).filter(|s| !s.is_empty()).is_none()
+}
+
 /// 打开新建/编辑 Project 窗口。
 pub fn show(
     parent: &impl IsA<Window>,
@@ -34,7 +61,7 @@ pub fn show(
     ssh_hosts: Vec<SshHostEntry>,
     on_save: impl Fn(TargetConfig) + 'static,
     on_cancel: impl Fn() + 'static,
-) {
+) -> Window {
     let parent = parent.as_ref();
     let win = Window::builder()
         .transient_for(parent)
@@ -192,7 +219,8 @@ pub fn show(
 
     win.set_child(Some(&root));
 
-    let debounce = Rc::new(Cell::new(None::<glib::SourceId>));
+    let debounce = Rc::new(ListingDebounce::default());
+    let alive = Rc::new(Cell::new(true));
 
     let refresh_ssh_visible = {
         let ssh_section = ssh_section.clone();
@@ -207,17 +235,20 @@ pub fn show(
         let state = state.clone();
         let suggest = suggest.clone();
         let debounce = debounce.clone();
+        let alive = alive.clone();
         move || {
-            if let Some(id) = debounce.take() {
-                id.remove();
-            }
+            let token = debounce.bump();
             let state = state.clone();
             let suggest = suggest.clone();
-            let id = glib::timeout_add_local(Duration::from_millis(120), move || {
-                start_listing(&state, &suggest);
+            let debounce = debounce.clone();
+            let alive = alive.clone();
+            glib::timeout_add_local(Duration::from_millis(120), move || {
+                if !alive.get() || !debounce.is_current(token) {
+                    return glib::ControlFlow::Break;
+                }
+                start_listing(&state, &suggest, &alive);
                 glib::ControlFlow::Break
             });
-            debounce.set(Some(id));
         }
     };
 
@@ -402,7 +433,11 @@ pub fn show(
         win.connect_close_request({
             let on_cancel = on_cancel.clone();
             let finished = finished.clone();
+            let debounce = debounce.clone();
+            let alive = alive.clone();
             move |_| {
+                alive.set(false);
+                debounce.bump();
                 if !finished.replace(true) {
                     on_cancel();
                 }
@@ -443,6 +478,7 @@ pub fn show(
 
     schedule_listing();
     win.present();
+    win
 }
 
 struct EditorState {
@@ -500,9 +536,9 @@ fn auto_name(state: &Rc<RefCell<EditorState>>, name_entry: &Entry, hint: &Label)
     }
 }
 
-fn start_listing(state: &Rc<RefCell<EditorState>>, suggest: &ListBox) {
+fn start_listing(state: &Rc<RefCell<EditorState>>, suggest: &ListBox, alive: &Rc<Cell<bool>>) {
     let request = state.borrow().path.request();
-    if request.is_ssh && request.alias.is_none() {
+    if should_skip_directory_listing(request.is_ssh, request.alias.as_deref()) {
         while let Some(c) = suggest.first_child() {
             suggest.remove(&c);
         }
@@ -518,33 +554,39 @@ fn start_listing(state: &Rc<RefCell<EditorState>>, suggest: &ListBox) {
     });
     let state = state.clone();
     let suggest = suggest.clone();
-    glib::timeout_add_local(Duration::from_millis(40), move || match rx.try_recv() {
-        Ok(Ok(entries)) => {
-            let dirs: Vec<String> = entries
-                .into_iter()
-                .filter(|e| e.is_dir)
-                .map(|e| e.name)
-                .collect();
-            let response = DirectoryListingResponse {
-                request: request.clone(),
-                directories: dirs,
-            };
-            if state.borrow_mut().path.apply(&response) {
-                rebuild_suggestions(&suggest, &state.borrow().path.candidates);
+    let alive = alive.clone();
+    glib::timeout_add_local(Duration::from_millis(40), move || {
+        if !alive.get() {
+            return glib::ControlFlow::Break;
+        }
+        match rx.try_recv() {
+            Ok(Ok(entries)) => {
+                let dirs: Vec<String> = entries
+                    .into_iter()
+                    .filter(|e| e.is_dir)
+                    .map(|e| e.name)
+                    .collect();
+                let response = DirectoryListingResponse {
+                    request: request.clone(),
+                    directories: dirs,
+                };
+                if state.borrow_mut().path.apply(&response) {
+                    rebuild_suggestions(&suggest, &state.borrow().path.candidates);
+                }
+                glib::ControlFlow::Break
             }
-            glib::ControlFlow::Break
+            Ok(Err(_)) => {
+                let response = DirectoryListingResponse {
+                    request: request.clone(),
+                    directories: Vec::new(),
+                };
+                let _ = state.borrow_mut().path.apply(&response);
+                rebuild_suggestions(&suggest, &[]);
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
         }
-        Ok(Err(_)) => {
-            let response = DirectoryListingResponse {
-                request: request.clone(),
-                directories: Vec::new(),
-            };
-            let _ = state.borrow_mut().path.apply(&response);
-            rebuild_suggestions(&suggest, &[]);
-            glib::ControlFlow::Break
-        }
-        Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-        Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
     });
 }
 
@@ -558,5 +600,49 @@ fn rebuild_suggestions(suggest: &ListBox, cands: &[String]) {
         label.set_halign(Align::Start);
         row.set_child(Some(&label));
         suggest.append(&row);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn listing_debounce_invalidates_previous_token() {
+        let d = ListingDebounce::default();
+        let first = d.bump();
+        assert!(d.is_current(first));
+        let second = d.bump();
+        assert!(!d.is_current(first), "旧 debounce 回调必须作废");
+        assert!(d.is_current(second));
+        d.bump();
+        assert!(!d.is_current(second));
+    }
+
+    #[test]
+    fn listing_debounce_close_bumps_away_pending() {
+        let d = ListingDebounce::default();
+        let pending = d.bump();
+        d.bump(); // 窗口关闭
+        assert!(!d.is_current(pending));
+    }
+
+    #[test]
+    fn skip_remote_listing_until_ssh_alias_chosen() {
+        assert!(should_skip_directory_listing(true, None));
+        assert!(should_skip_directory_listing(true, Some("")));
+        assert!(should_skip_directory_listing(true, Some("  ")));
+        assert!(!should_skip_directory_listing(true, Some("ryzen")));
+        assert!(!should_skip_directory_listing(false, None));
+    }
+
+    #[test]
+    fn selecting_ssh_keeps_empty_alias_until_combo_changes() {
+        let mut sel = TargetOptionSelection::default();
+        sel.select_transport(TargetTransport::Ssh {
+            name: String::new(),
+        });
+        assert!(sel.transport.is_ssh());
+        assert_eq!(sel.transport.create_backend(), ("ssh", Some("")));
     }
 }
