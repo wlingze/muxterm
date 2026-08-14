@@ -25,6 +25,7 @@ use crate::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
+use crate::platform::linux::scrollback_view::{peek_view, set_peek_text};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
 
@@ -173,6 +174,38 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     search_status.set_visible(false);
     panel.append(&search_status);
 
+    // peek + 一行答复（C3.3）：仅 Attention tab 显示。
+    let (peek_sw, peek_view) = peek_view();
+    peek_sw.set_margin_start(12);
+    peek_sw.set_margin_end(12);
+    peek_sw.set_margin_top(8);
+    peek_sw.set_size_request(panel_w - 24, 120);
+    peek_sw.set_visible(false);
+    panel.append(&peek_sw);
+
+    let reply_row = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(12)
+        .build();
+    let reply_target = Label::new(Some(""));
+    reply_target.set_widget_name("muxterm-reply-target");
+    reply_target.set_halign(Align::Start);
+    reply_target.add_css_class("qc-reply-target");
+    let reply_entry = Entry::builder()
+        .placeholder_text(i18n::tr(TextKey::ReplyHint))
+        .hexpand(true)
+        .build();
+    reply_entry.set_widget_name("muxterm-reply-entry");
+    reply_entry.set_sensitive(false);
+    reply_row.append(&reply_target);
+    reply_row.append(&reply_entry);
+    reply_row.set_visible(false);
+    panel.append(&reply_row);
+
     overlay.add_overlay(&backdrop);
     overlay.add_overlay(&panel);
 
@@ -267,6 +300,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             tab_attention.set_active(tab == PanelTab::Attention);
             tab_search.set_active(tab == PanelTab::Search);
             search_status.set_visible(tab == PanelTab::Search);
+            let show_peek = tab == PanelTab::Attention;
+            peek_sw.set_visible(show_peek);
+            reply_row.set_visible(show_peek);
             match tab {
                 PanelTab::Workspaces => {
                     let rows = filter_workspace_rows(&all, &query, |item| {
@@ -393,6 +429,112 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         }
     };
     rebuild();
+
+    // Tab2 选中行 → peek + 答复目标；无选中 → 清空并禁用答复。
+    {
+        let model = model.clone();
+        let attention = attention.clone();
+        let callbacks = callbacks.clone();
+        let peek_view = peek_view.clone();
+        let reply_target = reply_target.clone();
+        let reply_entry = reply_entry.clone();
+        list.connect_row_selected(move |_list, row| {
+            let tab = model.borrow().tab;
+            if tab != PanelTab::Attention {
+                return;
+            }
+            let Some(row) = row else {
+                set_peek_text(&peek_view, "");
+                reply_target.set_text("");
+                reply_entry.set_sensitive(false);
+                return;
+            };
+            // 行 widget_name = muxterm-attention-<ws>-<pane>，避免 count 行偏移。
+            let name = row.widget_name();
+            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
+                return;
+            };
+            let Some((ws, pane)) = rest.rsplit_once('-') else {
+                return;
+            };
+            let Ok(pane) = pane.parse::<u32>() else {
+                return;
+            };
+            let ws = ws.to_string();
+            let Some(sel) = attention
+                .iter()
+                .find(|p| p.workspace_id == ws && p.pane_id == pane)
+                .cloned()
+            else {
+                return;
+            };
+            let ws = sel.workspace_id.clone();
+            let pane = sel.pane_id;
+            let process = sel.process_name.as_deref().unwrap_or("?");
+            reply_target.set_text(&format!("{ws} · {process}"));
+            reply_entry.set_sensitive(true);
+            let text = (callbacks.peek_text)(ws, pane);
+            set_peek_text(&peek_view, &text);
+        });
+    }
+
+    // 一行答复：Enter（无 Shift）发送一行 + \r，不关面板，发完重新 peek。
+    {
+        let model = model.clone();
+        let attention = attention.clone();
+        let callbacks = callbacks.clone();
+        let peek_view = peek_view.clone();
+        let reply_entry = reply_entry.clone();
+        let list_closure = list.clone();
+        let controller = EventControllerKey::new();
+        let reply_entry_closure = reply_entry.clone();
+        controller.connect_key_pressed(move |_c, key, _code, mods| {
+            if key != Key::Return && key != Key::KP_Enter {
+                return glib::Propagation::Proceed;
+            }
+            if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                return glib::Propagation::Proceed;
+            }
+            let tab = model.borrow().tab;
+            if tab != PanelTab::Attention {
+                return glib::Propagation::Proceed;
+            }
+            let text = reply_entry_closure.text().to_string();
+            if text.trim().is_empty() {
+                return glib::Propagation::Stop;
+            }
+            let Some(row) = list_closure.selected_row() else {
+                return glib::Propagation::Stop;
+            };
+            let name = row.widget_name();
+            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
+                return glib::Propagation::Stop;
+            };
+            let Some((ws, pane)) = rest.rsplit_once('-') else {
+                return glib::Propagation::Stop;
+            };
+            let Ok(pane) = pane.parse::<u32>() else {
+                return glib::Propagation::Stop;
+            };
+            let ws = ws.to_string();
+            let Some(sel) = attention
+                .iter()
+                .find(|p| p.workspace_id == ws && p.pane_id == pane)
+                .cloned()
+            else {
+                return glib::Propagation::Stop;
+            };
+            let ws = sel.workspace_id.clone();
+            let pane = sel.pane_id;
+            let line = text.trim_end_matches('\n').to_string();
+            (callbacks.on_reply)(ws.clone(), pane, line.clone());
+            reply_entry_closure.set_text("");
+            let peek = (callbacks.peek_text)(ws, pane);
+            set_peek_text(&peek_view, &peek);
+            glib::Propagation::Stop
+        });
+        reply_entry.add_controller(controller);
+    }
 
     {
         let model = model.clone();
