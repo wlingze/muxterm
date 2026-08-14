@@ -602,7 +602,7 @@ pub mod tasks {
     use super::*;
     use crate::core::protocol::ffi::types::{
         DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB,
-        TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
+        TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
         TASK_TOGGLE_PANE_FULLSCREEN,
     };
 
@@ -680,6 +680,16 @@ pub mod tasks {
         CTask {
             type_: TASK_PREV_PANE,
             target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: ptr::null(),
+        }
+    }
+
+    pub fn switch_pane(pane_id: u32) -> CTask {
+        CTask {
+            type_: TASK_SWITCH_PANE,
+            target_pane: pane_id,
             target_tab: 0,
             dir: 0,
             name: ptr::null(),

@@ -342,6 +342,9 @@ impl TmuxBackend {
 
     /// 目标 tab 的 pane 数据为空时重新查询（兜底）。
     fn query_panes_if_empty(&mut self, tab_id: TabId, window: WindowId) {
+        if !self.owns_tab(tab_id) {
+            return;
+        }
         let pane_count = self.panes.iter().filter(|p| p.tab == tab_id).count();
         if pane_count == 0 {
             tracing::debug!(
@@ -351,6 +354,18 @@ impl TmuxBackend {
             );
             self.query_list_panes(window);
         }
+    }
+
+    fn owns_tab(&self, tab_id: TabId) -> bool {
+        self.tabs.iter().any(|t| t.id == tab_id)
+    }
+
+    fn should_ignore_foreign_window(&self, window: WindowId) -> bool {
+        !self.tabs.is_empty() && !self.owns_tab(TabId(window.0))
+    }
+
+    fn is_attached_session(&self, session: SessionId) -> bool {
+        self.active_session == Some(session)
     }
 
     /// 事件队列过长时丢弃最旧的 PaneOutput，避免挂起轮询时涨到数 GB。
@@ -570,10 +585,24 @@ impl TmuxBackend {
                 visible_layout,
                 flags,
             } => {
+                // 同一 tmux server 上其它 session 的 layout-change 也会广播；
+                // 不能对未 attach 的 window 发 list-panes，否则 tab/pane 会串台。
+                if self.should_ignore_foreign_window(window) {
+                    tracing::debug!(
+                        target: "muxterm::tmux",
+                        window = window.0,
+                        "忽略非本 session 的 %layout-change"
+                    );
+                    return;
+                }
                 // `%layout-change` 携带完整树 + 可见树 + window_raw_flags。
                 // zoom 时完整树不变，visible 塌成单叶且 flags 含 Z；必须记下
                 // zoom 态，否则 rebuild_layout 仍按 split 渲染，tmux 已 zoom
                 // 而 muxterm 看起来没变。
+                // `%layout-change` 携带的是最新完整布局。先保存它，再查询 pane
+                // 几何；list-panes 返回后 rebuild_layout 会用这棵最新树建模。
+                // 旧实现只发查询、不更新 window_layouts，导致随后仍用旧树或
+                // fallback 平铺树渲染，尤其在 attach 后再次 split 时会暴露。
                 tracing::debug!(
                     target: "muxterm::tmux",
                     window = window.0,
@@ -673,6 +702,17 @@ impl TmuxBackend {
                     .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
             }
             Message::SessionWindowChanged { session, window } => {
+                // 控制模式会收到整台 server 上其它 session 的切换通知
+                // （日志里 `$4 muxterm` vs 已 attach 的 `$0 yaklang-workspace`）。
+                if !self.is_attached_session(session) {
+                    tracing::debug!(
+                        target: "muxterm::tmux",
+                        session = session.0,
+                        window = window.0,
+                        "忽略其它 session 的 %session-window-changed"
+                    );
+                    return;
+                }
                 // tmux session 的 active window 切换 → muxterm active tab 切换
                 // 虚拟 Window 不动（永远 1 个）
                 let tab_id = TabId(window.0);
@@ -1555,11 +1595,13 @@ impl Backend for TmuxBackend {
                 TaskOutcome::Done
             }
             Task::NextPane | Task::PrevPane => {
-                let target = self.active_pane().map(|p| p.id).unwrap_or(PaneId(0));
+                // 不能拼 `select-pane -t @N -N/-P`：PaneId Display 是 @N（window
+                // 语法），且 tmux 3.7 的 -N 不存在、 -P 是设 pane 样式。相对
+                // 当前 window 循环用 :.+ / :.-。
                 let c = if matches!(task, Task::NextPane) {
-                    cmd::TmuxCommand::from_raw(format!("select-pane -t {} -N", target))
+                    cmd::select_pane_next()
                 } else {
-                    cmd::TmuxCommand::from_raw(format!("select-pane -t {} -P", target))
+                    cmd::select_pane_prev()
                 };
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
@@ -3133,6 +3175,7 @@ mod tests {
             name: "s0".into(),
             active_window: None,
         });
+        b.active_session = Some(session);
         // 预置两个 tab（对应两个 tmux window @0 @1）
         for (id, active) in [(0u32, true), (1, false)] {
             b.tabs.push(crate::core::model::state::TabInfo {
@@ -3168,6 +3211,72 @@ mod tests {
         );
     }
 
+    /// 同一 tmux server 上其它 session 的 %session-window-changed 不得改 tab。
+    #[test]
+    fn session_window_changed_ignores_other_session() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let attached = crate::core::types::SessionId(0);
+        b.sessions.push(crate::core::model::state::SessionInfo {
+            id: attached,
+            name: "yaklang-workspace".into(),
+            active_window: None,
+        });
+        b.active_session = Some(attached);
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: crate::core::types::TabId(0),
+            name: "Monitor".into(),
+            window: TmuxBackend::VIRTUAL_WINDOW_ID,
+            active: true,
+        });
+
+        b.handle_message(Message::SessionWindowChanged {
+            session: crate::core::types::SessionId(4),
+            window: crate::core::types::WindowId(20),
+        });
+
+        assert!(b.tabs[0].active, "其它 session 的通知不应取消当前 tab");
+        assert!(
+            !b.events
+                .iter()
+                .any(|e| matches!(e, StateChange::ActiveTabChanged { .. })),
+            "不应为其它 session 发 ActiveTabChanged"
+        );
+        assert!(
+            !b.tabs.iter().any(|t| t.id == crate::core::types::TabId(20)),
+            "不应把其它 session 的 window 收成 tab"
+        );
+    }
+
+    /// 未拥有的 window 的 %layout-change 不得排队 list-panes。
+    #[test]
+    fn layout_change_ignores_foreign_window() {
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: crate::core::types::TabId(0),
+            name: "Monitor".into(),
+            window: TmuxBackend::VIRTUAL_WINDOW_ID,
+            active: true,
+        });
+        b.handle_message(Message::LayoutChange {
+            window: crate::core::types::WindowId(20),
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse("abcd,80x24,0,0,1")
+                .unwrap(),
+            visible_layout: None,
+            flags: None,
+        });
+        assert!(rx.try_recv().is_err(), "外站 window 不应触发 list-panes");
+        assert!(!b
+            .window_layouts
+            .contains_key(&crate::core::types::WindowId(20)));
+    }
+
     /// Task::SwitchTab 应乐观更新 active tab：即使 %session-window-changed
     /// 在输出洪峰下延迟到达，前端也能立刻切 tab；通知到达后不重复发事件。
     #[test]
@@ -3185,6 +3294,7 @@ mod tests {
             name: "s0".into(),
             active_window: None,
         });
+        b.active_session = Some(session);
         for (id, active) in [(0u32, true), (1, false), (2, false)] {
             b.tabs.push(crate::core::model::state::TabInfo {
                 id: crate::core::types::TabId(id),
