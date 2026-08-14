@@ -92,6 +92,8 @@ pub struct PanelShowArgs {
     pub on_reply: Box<dyn Fn(String, u32, String)>,
     pub on_mute: Box<dyn Fn(String, u32)>,
     pub peek_text: Box<dyn Fn(String, u32) -> String>,
+    /// 面板关闭回调（window 侧清 panel_open 状态）。
+    pub on_close: Box<dyn Fn()>,
 }
 
 /// 弹出三 tab QuickConnect 面板（普通 Overlay，不构造 AppWindow）。
@@ -225,6 +227,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_reply,
         on_mute,
         peek_text,
+        on_close,
     } = args;
     let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
     let all = Rc::new(workspaces);
@@ -240,14 +243,17 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_reply,
         on_mute,
         peek_text,
+        on_close: std::boxed::Box::new(|| {}),
     });
     let finished = Rc::new(RefCell::new(false));
 
+    let on_close = Rc::new(on_close);
     let dismiss = {
         let overlay = overlay.clone();
         let backdrop = backdrop.clone();
         let panel = panel.clone();
         let finished = finished.clone();
+        let on_close = on_close.clone();
         move || {
             if *finished.borrow() {
                 return;
@@ -255,6 +261,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             *finished.borrow_mut() = true;
             overlay.remove_overlay(&backdrop);
             overlay.remove_overlay(&panel);
+            on_close();
         }
     };
 
