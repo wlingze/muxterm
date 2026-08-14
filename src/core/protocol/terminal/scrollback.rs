@@ -1,4 +1,7 @@
 //! 输出缓冲：纯环形行缓冲，不解析 ANSI。
+//!
+//! 生产路径已由 `emulate.rs` 自持 scrollback 取代（LINUX-PLAN §6）；
+//! 本类型保留作语义参考。不要在生产路径新增调用者。
 
 /// 固定上限的滚动行缓冲。
 #[derive(Debug, Clone)]
