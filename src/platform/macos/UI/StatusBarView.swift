@@ -35,6 +35,9 @@ final class StatusBarView: NSView {
         windowStack.alignment = .centerY
         windowStack.spacing = 2
         windowStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        // 长窗口名/长左右段不能把整条 bar 撑出窗口：窗口列表允许压缩，
+        // 每个窗口按钮按尾部截断（tmux 自己也会截断 status-left/right）。
+        windowStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         for view in [leftLabel, windowStack, rightLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -43,6 +46,22 @@ final class StatusBarView: NSView {
 
         // 初始默认：居中。
         applyJustify("centre")
+        // 左右段按比例封顶（tmux status-left/right-length 的等价物），
+        // 窗口列表至少保留一块可见宽度（软约束，空间不足时优先压缩窗口按钮）。
+        let leftMaxWidth = leftLabel.widthAnchor.constraint(
+            lessThanOrEqualTo: widthAnchor,
+            multiplier: StatusBarLayoutPolicy.sideMaxFraction
+        )
+        let rightMaxWidth = rightLabel.widthAnchor.constraint(
+            lessThanOrEqualTo: widthAnchor,
+            multiplier: StatusBarLayoutPolicy.sideMaxFraction
+        )
+        let windowMinWidth = windowStack.widthAnchor.constraint(
+            greaterThanOrEqualTo: widthAnchor,
+            multiplier: StatusBarLayoutPolicy.windowMinFraction
+        )
+        windowMinWidth.priority = .defaultHigh
+
         NSLayoutConstraint.activate([
             heightConstraint,
             leftLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
@@ -54,6 +73,10 @@ final class StatusBarView: NSView {
             rightLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             rightLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             rightLabel.leadingAnchor.constraint(greaterThanOrEqualTo: windowStack.trailingAnchor, constant: 8),
+
+            leftMaxWidth,
+            rightMaxWidth,
+            windowMinWidth,
         ])
     }
 
@@ -87,12 +110,17 @@ final class StatusBarView: NSView {
             if i > 0 {
                 let sep = NSTextField(labelWithString: snapshot.separator.isEmpty ? " " : snapshot.separator)
                 sep.font = NSFont.systemFont(ofSize: 11)
+                sep.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 windowStack.addArrangedSubview(sep)
             }
             let button = NSButton(title: "", target: self, action: #selector(windowClicked(_:)))
             button.isBordered = false
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: win.current ? .semibold : .regular)
             button.tag = Int(win.windowId)
+            // 窗口多/名字长时按尾部截断，而不是把整条 bar 撑出窗口。
+            button.lineBreakMode = .byTruncatingTail
+            button.cell?.lineBreakMode = .byTruncatingTail
+            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let styleName = win.current ? snapshot.windowCurrentStyle : snapshot.windowStyle
             let inlineBase = StatusBarStyleParser.parse(style: styleName)
             button.attributedTitle = Self.attributed(

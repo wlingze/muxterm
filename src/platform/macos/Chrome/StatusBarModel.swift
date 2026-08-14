@@ -59,6 +59,37 @@ public enum StatusBarMode: String, Sendable {
     }
 }
 
+/// status bar 横向空间预算（纯逻辑，便于单测）。
+///
+/// tmux 自己按 `status-left-length` / `status-right-length` 截断左右段，
+/// 窗口列表始终拥有剩余空间。原生条用比例预算实现同一语义：左右各封顶、
+/// 窗口列表至少保留一块可见宽度，避免长窗口名把整条 bar 撑出窗口。
+public struct StatusBarWidthBudget: Equatable, Sendable {
+    public let leftMax: CGFloat
+    public let rightMax: CGFloat
+    public let windowMin: CGFloat
+
+    public init(leftMax: CGFloat, rightMax: CGFloat, windowMin: CGFloat) {
+        self.leftMax = leftMax
+        self.rightMax = rightMax
+        self.windowMin = windowMin
+    }
+}
+
+public enum StatusBarLayoutPolicy {
+    /// left / right 段最多占整条 bar 的比例（各 36%，合 72%）。
+    public static let sideMaxFraction: CGFloat = 0.36
+    /// 窗口列表最少占整条 bar 的比例（28%）。
+    public static let windowMinFraction: CGFloat = 0.28
+
+    /// 按整条 bar 宽度计算左右段封顶与窗口列表最小宽度。
+    public static func budget(totalWidth: CGFloat) -> StatusBarWidthBudget {
+        let side = max(0, totalWidth * sideMaxFraction)
+        let window = max(0, totalWidth * windowMinFraction)
+        return StatusBarWidthBudget(leftMax: side, rightMax: side, windowMin: window)
+    }
+}
+
 /// muxterm status bar 快照（对应 Rust `StatusSnapshot` 的 JSON；连接控制模式
 /// 会话时读取兼容的 status 配置，概念上属于 muxterm 自己的 status bar）。
 public struct StatusBarSnapshot: Equatable, Decodable, Sendable {

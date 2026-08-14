@@ -165,3 +165,38 @@ final class StatusBarSnapshotDecodingTests: XCTestCase {
         XCTAssertFalse(segments.isEmpty)
     }
 }
+
+final class StatusBarLayoutPolicyTests: XCTestCase {
+    /// 左右段封顶 + 窗口列表最小宽度必须能同时放进整条 bar（含边距）。
+    func testBudgetFitsInsideBar() {
+        let total: CGFloat = 960
+        let budget = StatusBarLayoutPolicy.budget(totalWidth: total)
+        XCTAssertEqual(budget.leftMax, total * StatusBarLayoutPolicy.sideMaxFraction)
+        XCTAssertEqual(budget.rightMax, total * StatusBarLayoutPolicy.sideMaxFraction)
+        XCTAssertEqual(budget.windowMin, total * StatusBarLayoutPolicy.windowMinFraction)
+        // 36% + 36% + 28% = 100%，左右段与窗口列表不会互相挤没。
+        XCTAssertLessThanOrEqual(
+            budget.leftMax + budget.rightMax + budget.windowMin,
+            total
+        )
+    }
+
+    /// 窄窗口（最小 480pt）下预算仍然成立，窗口列表至少可见。
+    func testBudgetFitsNarrowWindow() {
+        let total: CGFloat = 480
+        let budget = StatusBarLayoutPolicy.budget(totalWidth: total)
+        XCTAssertGreaterThan(budget.windowMin, 100)
+        XCTAssertLessThanOrEqual(
+            budget.leftMax + budget.rightMax + budget.windowMin,
+            total
+        )
+    }
+
+    /// 非正宽度不产生负预算。
+    func testBudgetClampsNonPositiveWidth() {
+        let budget = StatusBarLayoutPolicy.budget(totalWidth: 0)
+        XCTAssertEqual(budget.leftMax, 0)
+        XCTAssertEqual(budget.rightMax, 0)
+        XCTAssertEqual(budget.windowMin, 0)
+    }
+}

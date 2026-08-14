@@ -120,6 +120,12 @@ final class ContentView: NSView {
         connectionStatus.isHidden = enabled
         NSLayoutConstraint.deactivate(statusTopConstraints)
         NSLayoutConstraint.deactivate(statusBottomConstraints)
+        if enabled {
+            // status bar 替换 tab 栏：隐藏的 tabBar 约束必须一并停用，
+            // 否则 pane 仍被 tab 约束钉在整窗高度，status bar 会叠在终端上。
+            NSLayoutConstraint.deactivate(tabTopConstraints)
+            NSLayoutConstraint.deactivate(tabBottomConstraints)
+        }
         guard let snapshot, enabled else {
             applyTabBarPosition(position)
             return
