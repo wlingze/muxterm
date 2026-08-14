@@ -98,6 +98,8 @@ struct UiState {
     notification_sink: std::boxed::Box<dyn NotificationSink>,
     /// 面板是否打开及当前 tab（测试钩子 + badge 点击入口）。
     panel_open: Option<PanelTab>,
+    /// 用户显式 Quit（Ctrl+Q / 命令面板）：close_request 放行真正关闭。
+    quit_requested: bool,
 }
 
 impl UiState {
@@ -256,6 +258,7 @@ impl AppWindow {
             notification_log: Vec::new(),
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
             panel_open: None,
+            quit_requested: false,
         }));
 
         // tab 点击
@@ -312,6 +315,7 @@ impl AppWindow {
                 };
                 // Ctrl+Q 必须在放下 RefCell 之后再 close：close-request 会再借同一把锁。
                 if action == Action::Quit {
+                    st.borrow_mut().quit_requested = true;
                     window_for_palette.close();
                     return glib::Propagation::Stop;
                 }
@@ -327,13 +331,19 @@ impl AppWindow {
             window.add_controller(controller);
         }
 
-        // 关闭窗口清理
+        // 关闭窗口：非 Quit 动作隐藏并保持 16ms 轮询；Quit 才真正关闭。
         {
             let st = state.clone();
+            let win = window.clone();
             window.connect_close_request(move |_| {
-                // 可能从 Ctrl+Q 同步重入；绝不能 borrow_mut。
-                let _ = st.try_borrow_mut();
-                glib::Propagation::Proceed
+                let quit = st.borrow().quit_requested;
+                match close_intent(quit) {
+                    CloseIntent::Quit => glib::Propagation::Proceed,
+                    CloseIntent::HideKeepPolling => {
+                        win.set_visible(false);
+                        glib::Propagation::Stop
+                    }
+                }
             });
         }
 
@@ -417,6 +427,7 @@ impl AppWindow {
                     close
                 };
                 if pending_close {
+                    st.borrow_mut().quit_requested = true;
                     if let Some(w) = win_weak.upgrade() {
                         w.close();
                     }
@@ -490,6 +501,7 @@ impl AppWindow {
             close
         };
         if pending_close {
+            self._state.borrow_mut().quit_requested = true;
             self.window.close();
         }
     }
@@ -697,7 +709,10 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             let mut s = state.borrow_mut();
             reset_font(&mut s);
         }
-        PaletteAction::Quit => window.close(),
+        PaletteAction::Quit => {
+            state.borrow_mut().quit_requested = true;
+            window.close();
+        }
         PaletteAction::NewTab => {
             let mut s = state.borrow_mut();
             s.bridge().execute(tasks::new_tab());
@@ -1156,6 +1171,22 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
     }
 }
 
+/// 窗口关闭意图：非 Quit 动作 → 隐藏并保持轮询；Quit → 真正关闭。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseIntent {
+    HideKeepPolling,
+    Quit,
+}
+
+/// 根据是否 Quit 动作决定关闭意图（M3.5 纯函数）。
+pub fn close_intent(is_quit_action: bool) -> CloseIntent {
+    if is_quit_action {
+        CloseIntent::Quit
+    } else {
+        CloseIntent::HideKeepPolling
+    }
+}
+
 /// 是否仍需要按时间轮询状态栏。
 ///
 /// tmux 订阅生效时值变化走推送，轮询只在订阅未生效或强制刷新时发生。
@@ -1297,6 +1328,9 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         s.panel_open = Some(initial_tab);
         (workspaces, attention, win, st)
     };
+    if !window.is_visible() {
+        window.present();
+    }
     crate::platform::linux::quickconnect_panel::show(
         &win,
         crate::platform::linux::quickconnect_panel::PanelShowArgs {
@@ -1802,6 +1836,12 @@ mod tests {
         assert!(!snap.right.is_empty(), "right 应含关闭提示");
         assert!(snap.windows.is_empty(), "本地模式无 tmux 窗口列表");
         assert_eq!(snap.interval, 1);
+    }
+
+    #[test]
+    fn close_intent_maps_quit_and_hide() {
+        assert_eq!(close_intent(true), CloseIntent::Quit);
+        assert_eq!(close_intent(false), CloseIntent::HideKeepPolling);
     }
 
     #[test]
