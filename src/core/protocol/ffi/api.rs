@@ -20,13 +20,15 @@ use crate::platform::cli::session::session_socket_path;
 
 use super::callbacks::FfiCallbacks;
 use super::types::{
-    CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF,
-    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED,
-    STATE_BACKEND_STATUS, STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED,
-    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED,
-    STATE_TAB_CLOSED, STATE_TAB_RENAMED, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH,
-    TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE,
-    TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    CLayoutNode, CPane, CStateChange, CTab, CTask, BACKEND_STATUS_CONNECTED,
+    BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
+    BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
+    LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
+    STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT,
+    STATE_PANE_RESIZED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED,
+    STATE_TAB_RENAMED, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE,
+    TASK_PREV_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
+    TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：TerminalModel + runtime + 供 C 侧借用的缓冲。
@@ -776,11 +778,13 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
         StateChange::BackendStatusChanged(status) => {
             out.type_ = STATE_BACKEND_STATUS;
             out.pane_id = match status {
-                crate::core::model::state::BackendStatus::Disconnected => 0,
-                crate::core::model::state::BackendStatus::Connecting => 1,
-                crate::core::model::state::BackendStatus::Connected => 2,
-                crate::core::model::state::BackendStatus::Error => 3,
-                crate::core::model::state::BackendStatus::Exited => 4,
+                crate::core::model::state::BackendStatus::Disconnected => {
+                    BACKEND_STATUS_DISCONNECTED
+                }
+                crate::core::model::state::BackendStatus::Connecting => BACKEND_STATUS_CONNECTING,
+                crate::core::model::state::BackendStatus::Connected => BACKEND_STATUS_CONNECTED,
+                crate::core::model::state::BackendStatus::Error => BACKEND_STATUS_ERROR,
+                crate::core::model::state::BackendStatus::Exited => BACKEND_STATUS_EXITED,
             };
         }
         StateChange::PaneTitleChanged { pane, title } => {
