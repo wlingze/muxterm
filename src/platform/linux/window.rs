@@ -931,6 +931,17 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                 mark_pending_close_if_session_ended(s);
             }
         }
+        STATE_STATUS_SUBSCRIPTION => {
+            // name = 订阅名，data = format 展开值（utf8）。
+            let value = String::from_utf8_lossy(&ev.data).to_string();
+            if ev.name.starts_with("muxterm.pane-cmd") {
+                let ws = active_workspace_id(s);
+                s.attention.set_process_name(&ws, ev.pane_id, Some(value));
+            } else {
+                // status-left/right 等订阅：值已变化，强制按快照刷新一次。
+                maybe_refresh_status(s, true);
+            }
+        }
         STATE_BACKEND_STATUS => {
             if ev.pane_id == BACKEND_STATUS_EXITED {
                 tracing::info!(target = "muxterm::linux", "backend exited");
@@ -1046,7 +1057,16 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
         return;
     }
     let now = Instant::now();
-    if !force && now.duration_since(s.last_status_at) < s.status_interval {
+    // tmux ≥3.2 订阅生效后：值变化由 %subscription-changed 推送，不再 1s 轮询；
+    // force/structural 或订阅事件本身仍刷新。
+    if !force
+        && !should_poll_status(
+            s.bridge().status_subscription_active(),
+            s.last_status_at,
+            now,
+            s.status_interval,
+        )
+    {
         return;
     }
     s.last_status_at = now;
@@ -1056,6 +1076,18 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
         s.status.apply(&snap);
         sync_chrome_visibility(s);
     }
+}
+
+/// 是否仍需要按时间轮询状态栏。
+///
+/// tmux 订阅生效时值变化走推送，轮询只在订阅未生效或强制刷新时发生。
+pub fn should_poll_status(
+    sub_active: bool,
+    last: Instant,
+    now: Instant,
+    interval: Duration,
+) -> bool {
+    !sub_active && now.duration_since(last) >= interval
 }
 
 fn sync_chrome_visibility(s: &UiState) {
@@ -1586,6 +1618,18 @@ mod tests {
         assert!(!snap.right.is_empty(), "right 应含关闭提示");
         assert!(snap.windows.is_empty(), "本地模式无 tmux 窗口列表");
         assert_eq!(snap.interval, 1);
+    }
+
+    #[test]
+    fn should_poll_status_respects_subscription() {
+        let last = Instant::now() - Duration::from_secs(5);
+        let now = Instant::now();
+        // 订阅生效 → 不轮询（值变化走 %subscription-changed 推送）
+        assert!(!should_poll_status(true, last, now, Duration::from_secs(1)));
+        // 无订阅且到间隔 → 轮询
+        assert!(should_poll_status(false, last, now, Duration::from_secs(1)));
+        // 无订阅但未到间隔 → 不轮询
+        assert!(!should_poll_status(false, now, now, Duration::from_secs(1)));
     }
 
     #[test]
