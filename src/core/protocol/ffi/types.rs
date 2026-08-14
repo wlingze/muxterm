@@ -19,6 +19,13 @@ pub const STATE_BACKEND_STATUS: u32 = 10;
 pub const STATE_STATUS_SUBSCRIPTION: u32 = 11;
 pub const STATE_OTHER: u32 = 99;
 
+// ── BackendStatus 编码到 CStateChange.pane_id ──────────────
+pub const BACKEND_STATUS_DISCONNECTED: u32 = 0;
+pub const BACKEND_STATUS_CONNECTING: u32 = 1;
+pub const BACKEND_STATUS_CONNECTED: u32 = 2;
+pub const BACKEND_STATUS_ERROR: u32 = 3;
+pub const BACKEND_STATUS_EXITED: u32 = 4;
+
 // ── Task.type_ ─────────────────────────────────────────────
 pub const TASK_SPLIT_PANE: u32 = 0;
 pub const TASK_NEW_TAB: u32 = 1;
