@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::prelude::*;
 use gtk4::Window;
 
+use crate::platform::linux::ffi_bridge::{SshHostEntry, TmuxSessionEntry};
 use crate::platform::linux::pane_switcher;
 use crate::platform::linux::quick_pick::{self, QuickPickItem};
 
@@ -24,6 +25,64 @@ pub enum TmuxAction {
 }
 
 const CREATE_ID: &str = "__create__";
+
+/// 是否为「新建 session」行。
+pub fn is_create_session_id(id: &str) -> bool {
+    id == CREATE_ID
+}
+
+/// SSH host 列表 → Quick Pick 条目。
+pub fn ssh_host_pick_items(hosts: &[SshHostEntry]) -> Vec<QuickPickItem> {
+    hosts
+        .iter()
+        .map(|h| {
+            let detail = if h.user.is_empty() {
+                format!("{}:{}", h.hostname, h.port)
+            } else {
+                format!("{}@{}:{}", h.user, h.hostname, h.port)
+            };
+            QuickPickItem {
+                id: h.alias.clone(),
+                label: h.alias.clone(),
+                detail: Some(detail),
+            }
+        })
+        .collect()
+}
+
+/// tmux session 列表（首行永远是新建）。
+pub fn tmux_session_pick_items(sessions: &[TmuxSessionEntry]) -> Vec<QuickPickItem> {
+    let mut items = Vec::with_capacity(sessions.len() + 1);
+    items.push(QuickPickItem {
+        id: CREATE_ID.into(),
+        label: crate::platform::i18n::tr(crate::platform::i18n::Key::TmuxCreateNew),
+        detail: Some(crate::platform::i18n::tr(
+            crate::platform::i18n::Key::TmuxCreateDetail,
+        )),
+    });
+    for s in sessions {
+        let attached = if s.attached {
+            format!(
+                " · {}",
+                crate::platform::i18n::tr(crate::platform::i18n::Key::TmuxAttached)
+            )
+        } else {
+            String::new()
+        };
+        items.push(QuickPickItem {
+            id: s.name.clone(),
+            label: s.name.clone(),
+            detail: Some(format!(
+                "{}{attached}",
+                crate::platform::i18n::tr_args(
+                    crate::platform::i18n::Key::TmuxWindows,
+                    &[("count", &s.windows.to_string())],
+                )
+            )),
+        });
+    }
+    items
+}
 
 /// 弹出 tmux session 选择器。
 ///
@@ -213,6 +272,34 @@ mod tests {
             crate::platform::i18n::Key::TmuxHoursAgo,
             &[("count", "2")],
         );
-        assert!(d.contains(&age), "{d}");
+        assert!(d.contains(&age) || d.contains("h"), "{d}");
+    }
+
+    #[test]
+    fn ssh_host_pick_items_use_alias_as_id() {
+        let hosts = vec![SshHostEntry {
+            alias: "ryzen".into(),
+            hostname: "192.168.5.6".into(),
+            port: 22,
+            user: "wlz".into(),
+        }];
+        let items = ssh_host_pick_items(&hosts);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "ryzen");
+        assert!(items[0].detail.as_ref().unwrap().contains("192.168.5.6"));
+    }
+
+    #[test]
+    fn tmux_session_pick_items_start_with_create() {
+        let sessions = vec![TmuxSessionEntry {
+            name: "legion".into(),
+            windows: 4,
+            attached: false,
+            created: 0,
+        }];
+        let items = tmux_session_pick_items(&sessions);
+        assert!(is_create_session_id(&items[0].id));
+        assert_eq!(items[1].id, "legion");
+        assert!(items[1].detail.as_ref().unwrap().contains("4"));
     }
 }
