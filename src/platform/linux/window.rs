@@ -16,7 +16,7 @@ use gtk4::{ApplicationWindow, Box, CssProvider, EventControllerKey, Orientation,
 use vte4::prelude::*;
 
 use crate::core::attention::clock::RealClock;
-use crate::core::attention::engine::AttentionEngine;
+use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::state::PaneStatus;
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::quickconnect::model::QuickConnect;
@@ -35,6 +35,7 @@ use crate::platform::linux::lifecycle::{
     tab_strip_kind,
 };
 use crate::platform::linux::pane_view::rgb_hex;
+use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::quickconnect::event_policy::{
     ClientSizePolicy, EventBatchPlan, StateEventPolicy,
 };
@@ -95,6 +96,8 @@ struct UiState {
     notification_log: Vec<String>,
     /// 通知出口（生产 GioSink fail-soft；测试可替换）。
     notification_sink: std::boxed::Box<dyn NotificationSink>,
+    /// 面板是否打开及当前 tab（测试钩子 + badge 点击入口）。
+    panel_open: Option<PanelTab>,
 }
 
 impl UiState {
@@ -252,6 +255,7 @@ impl AppWindow {
             attention: AttentionEngine::new(cfg.attention.clone(), RealClock),
             notification_log: Vec::new(),
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
+            panel_open: None,
         }));
 
         // tab 点击
@@ -273,6 +277,16 @@ impl AppWindow {
                     let mut s = st.borrow_mut();
                     request_switch_tab(&mut s, tab_id);
                 });
+        }
+
+        // 红点点击 → Attention tab
+        {
+            let st = state.clone();
+            let win = window.clone();
+            state.borrow().status.connect_attention_activate(move || {
+                let mut s = st.borrow_mut();
+                open_panel(&mut s, &win, &st, PanelTab::Attention);
+            });
         }
 
         // 快捷键
@@ -481,14 +495,18 @@ impl AppWindow {
         self.window.clone()
     }
 
-    /// 测试用：QuickConnect 面板是否打开（M3 接真逻辑，当前返回 false）。
+    /// 测试用：QuickConnect 面板是否打开。
     pub fn test_panel_open(&self) -> bool {
-        false
+        self._state.borrow().panel_open.is_some()
     }
 
-    /// 测试用：当前面板 tab（0=workspaces / 1=attention / 2=search，M3 接真逻辑）。
+    /// 测试用：当前面板 tab（0=workspaces / 1=attention / 2=search）。
     pub fn test_active_panel_tab(&self) -> u32 {
-        0
+        self._state
+            .borrow()
+            .panel_open
+            .map(|t| t as u32)
+            .unwrap_or(0)
     }
 
     /// 测试用：当前 blocked 工作区数（红点 N）。
@@ -1237,18 +1255,35 @@ fn sync_window_size(s: &mut UiState) {
 }
 
 fn open_quick_connect(s: &mut UiState, window: &Window, state: &Rc<RefCell<UiState>>) {
+    open_panel(s, window, state, PanelTab::Workspaces);
+}
+
+/// 打开三 tab 面板（initial_tab 由入口决定：Alt+Q → Workspaces，红点 → Attention）。
+fn open_panel(
+    s: &mut UiState,
+    window: &Window,
+    state: &Rc<RefCell<UiState>>,
+    initial_tab: PanelTab,
+) {
     s.qc_store.replace_recents(&s.pool.recent_target_configs(5));
     let current = s.pool.current_target_config();
     let store = s.qc_store.clone();
     let win = window.clone();
     let st = state.clone();
     let workspaces = build_items(&store, current.as_ref());
+    let attention: Vec<PaneAttention> = s
+        .attention
+        .snapshot()
+        .into_iter()
+        .flat_map(|w| w.panes)
+        .collect();
+    s.panel_open = Some(initial_tab);
     crate::platform::linux::quickconnect_panel::show(
         &win,
         crate::platform::linux::quickconnect_panel::PanelShowArgs {
-            initial_tab: crate::platform::linux::panel_model::PanelTab::Workspaces,
+            initial_tab,
             workspaces,
-            attention: Vec::new(),
+            attention,
             on_connect: {
                 let st = st.clone();
                 std::boxed::Box::new(move |cfg| {
@@ -1269,13 +1304,89 @@ fn open_quick_connect(s: &mut UiState, window: &Window, state: &Rc<RefCell<UiSta
                     open_target_config(&st, &win, None);
                 })
             },
-            // C3.7 接 AttentionEngine；当前 no-op 占位。
-            on_jump_pane: std::boxed::Box::new(|_, _| {}),
-            on_reply: std::boxed::Box::new(|_, _, _| {}),
-            on_mute: std::boxed::Box::new(|_, _| {}),
-            peek_text: std::boxed::Box::new(|_, _| String::new()),
+            on_jump_pane: {
+                let st = st.clone();
+                std::boxed::Box::new(move |ws, pane| {
+                    jump_to_attention_pane(&st, &ws, pane);
+                })
+            },
+            on_reply: {
+                let st = st.clone();
+                std::boxed::Box::new(move |ws, pane, line| {
+                    reply_to_attention_pane(&st, &ws, pane, &line);
+                })
+            },
+            on_mute: {
+                let st = st.clone();
+                std::boxed::Box::new(move |ws, pane| {
+                    let mut s = st.borrow_mut();
+                    s.attention.mute_for(&ws, pane, Duration::from_secs(3600));
+                })
+            },
+            peek_text: {
+                let st = st.clone();
+                std::boxed::Box::new(move |ws, pane| {
+                    let s = st.borrow();
+                    s.replicas.last_n_lines(&ws, pane, 20).join("\n")
+                })
+            },
+            on_close: {
+                let st = st.clone();
+                std::boxed::Box::new(move || {
+                    st.borrow_mut().panel_open = None;
+                })
+            },
         },
     );
+}
+
+/// 跳到注意力 pane：切到对应工作区连接并激活该 pane。
+fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32) {
+    let mut s = state.borrow_mut();
+    let key = attention_connection_key(&s, ws);
+    if let Some(key) = key {
+        if s.pool.get(&key).is_some() {
+            activate_existing(&mut s, key);
+        }
+    }
+    // 激活 pane（若已在前台连接中）。
+    let _ = s.bridge().execute(tasks::switch_pane(pane));
+}
+
+/// 一行答复：发送 `line + \r` 到目标 pane。
+fn reply_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, line: &str) {
+    let mut s = state.borrow_mut();
+    let key = attention_connection_key(&s, ws);
+    if let Some(key) = key {
+        if s.pool.get(&key).is_some() {
+            activate_existing(&mut s, key);
+        }
+    }
+    let mut data = line.as_bytes().to_vec();
+    data.push(b'\r');
+    let _ = s.bridge().send_input(pane, &data);
+    s.attention.on_user_input(ws, pane);
+}
+
+/// 按 workspace_id（name@transport）找连接 key。
+fn attention_connection_key(
+    s: &UiState,
+    ws: &str,
+) -> Option<crate::platform::linux::quickconnect::pool::ConnectionKey> {
+    s.pool
+        .recent_target_configs(32)
+        .into_iter()
+        .find_map(|cfg| {
+            if QuickConnect::unique_id(&cfg) != ws {
+                return None;
+            }
+            let session = if cfg.runtime == TargetRuntime::Tmux {
+                cfg.name.clone()
+            } else {
+                String::new()
+            };
+            Some(connection_key(&cfg, &session))
+        })
 }
 
 fn open_target_config(

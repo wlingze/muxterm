@@ -23,6 +23,7 @@ use crate::platform::linux::quickconnect::status_style::{
 pub const STATUS_BAR_HEIGHT: u32 = 24;
 
 type WindowActivateCb = Rc<RefCell<Option<Box<dyn Fn(u32)>>>>;
+type AttentionActivateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
 /// muxterm status bar。
 pub struct StatusBar {
@@ -33,6 +34,7 @@ pub struct StatusBar {
     /// 注意力红点胶囊（`muxterm-attention-badge`，n=0 隐藏）。
     attention_badge: Label,
     on_window_activate: WindowActivateCb,
+    on_attention_activate: AttentionActivateCb,
     css: RefCell<CssProvider>,
     last_snapshot: RefCell<Option<StatusBarSnapshot>>,
     mode: RefCell<StatusBarMode>,
@@ -74,6 +76,8 @@ impl StatusBar {
         attention_badge.set_valign(Align::Center);
         attention_badge.add_css_class("muxterm-attention-badge");
         attention_badge.set_visible(false);
+        let badge_gesture = gtk4::GestureClick::new();
+        attention_badge.add_controller(badge_gesture);
 
         container.append(&left);
         container.append(&windows);
@@ -95,17 +99,33 @@ impl StatusBar {
             windows,
             attention_badge,
             on_window_activate: Rc::new(RefCell::new(None)),
+            on_attention_activate: Rc::new(RefCell::new(None)),
             css: RefCell::new(css),
             last_snapshot: RefCell::new(None),
             mode: RefCell::new(mode),
             theme: RefCell::new(theme),
         };
         bar.refresh_css();
+        {
+            let on_attention_activate = bar.on_attention_activate.clone();
+            let gesture = gtk4::GestureClick::new();
+            gesture.connect_released(move |_, _, _, _| {
+                if let Some(cb) = on_attention_activate.borrow().as_ref() {
+                    cb();
+                }
+            });
+            bar.attention_badge.add_controller(gesture);
+        }
         bar
     }
 
     pub fn connect_window_activate<F: Fn(u32) + 'static>(&self, f: F) {
         *self.on_window_activate.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 红点点击回调（打开 Attention tab）。
+    pub fn connect_attention_activate<F: Fn() + 'static>(&self, f: F) {
+        *self.on_attention_activate.borrow_mut() = Some(Box::new(f));
     }
 
     /// 当前模式（tmux / theme）。
