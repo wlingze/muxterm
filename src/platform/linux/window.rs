@@ -45,7 +45,7 @@ use crate::platform::linux::quickconnect::project_flow::{ProjectConnectFlow, Pro
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
-use crate::platform::linux::quickconnect_panel::QuickConnectCallbacks;
+use crate::platform::linux::quickconnect_panel::build_items;
 use crate::platform::linux::status_bar::StatusBar;
 use crate::platform::linux::tab_bar::TabBar;
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
@@ -1198,11 +1198,13 @@ fn open_quick_connect(s: &mut UiState, window: &Window, state: &Rc<RefCell<UiSta
     let store = s.qc_store.clone();
     let win = window.clone();
     let st = state.clone();
+    let workspaces = build_items(&store, current.as_ref());
     crate::platform::linux::quickconnect_panel::show(
         &win,
-        &store,
-        current,
-        QuickConnectCallbacks {
+        crate::platform::linux::quickconnect_panel::PanelShowArgs {
+            initial_tab: crate::platform::linux::panel_model::PanelTab::Workspaces,
+            workspaces,
+            attention: Vec::new(),
             on_connect: {
                 let st = st.clone();
                 std::boxed::Box::new(move |cfg| {
@@ -1223,6 +1225,10 @@ fn open_quick_connect(s: &mut UiState, window: &Window, state: &Rc<RefCell<UiSta
                     open_target_config(&st, &win, None);
                 })
             },
+            // C3.7 接 AttentionEngine；当前 no-op 占位。
+            on_jump_pane: std::boxed::Box::new(|_, _| {}),
+            on_reply: std::boxed::Box::new(|_, _, _| {}),
+            peek_text: std::boxed::Box::new(|_, _| String::new()),
         },
     );
 }

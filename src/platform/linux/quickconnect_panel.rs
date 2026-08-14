@@ -14,7 +14,12 @@ use gtk4::{
     Orientation, Overlay, ScrolledWindow, SelectionMode, Window,
 };
 
+use crate::core::attention::engine::PaneAttention;
+use crate::core::attention::state::PaneStatus;
 use crate::platform::i18n::{self, Key as TextKey};
+use crate::platform::linux::panel_model::{
+    filter_attention_rows, filter_workspace_rows, PanelModel, PanelTab,
+};
 use crate::platform::linux::quick_pick;
 use crate::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig,
@@ -58,7 +63,7 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
         .collect()
 }
 
-fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
+pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
     let current_id = current.map(QuickConnect::unique_id);
     let mut items: Vec<PanelItem> = QuickConnect::entries(&store.recents, &store.projects, 5)
         .into_iter()
@@ -74,12 +79,21 @@ fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec
 }
 
 /// 弹出 QuickConnect 面板。
-pub fn show(
-    parent: &impl IsA<Window>,
-    store: &QuickConnectStore,
-    current: Option<TargetConfig>,
-    callbacks: QuickConnectCallbacks,
-) {
+/// 三 tab 面板参数（LINUX-PLAN §10 C3.2/C3.3）。
+pub struct PanelShowArgs {
+    pub initial_tab: PanelTab,
+    pub workspaces: Vec<PanelItem>,
+    pub attention: Vec<PaneAttention>,
+    pub on_connect: Box<dyn Fn(TargetConfig)>,
+    pub on_edit: Box<dyn Fn(TargetConfig)>,
+    pub on_new_project: Box<dyn Fn()>,
+    pub on_jump_pane: Box<dyn Fn(String, u32)>,
+    pub on_reply: Box<dyn Fn(String, u32, String)>,
+    pub peek_text: Box<dyn Fn(String, u32) -> String>,
+}
+
+/// 弹出三 tab QuickConnect 面板（普通 Overlay，不构造 AppWindow）。
+pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     let parent = parent.as_ref();
     let parent_h = parent.height().max(400);
     let (panel_h, list_h) = quick_pick::panel_list_heights(parent_h);
@@ -98,6 +112,7 @@ pub fn show(
         .valign(Align::Start)
         .build();
     panel.add_css_class("quick-pick-root");
+    panel.set_widget_name("muxterm-panel");
     panel.set_margin_top(40);
     panel.set_size_request(panel_w, panel_h);
     panel.set_overflow(gtk4::Overflow::Hidden);
@@ -106,15 +121,36 @@ pub fn show(
         .placeholder_text(i18n::tr(TextKey::QuickConnectPlaceholder))
         .hexpand(true)
         .build();
+    entry.set_widget_name("muxterm-panel-entry");
     entry.add_css_class("quick-pick-entry");
     entry.set_margin_start(12);
     entry.set_margin_end(12);
     entry.set_margin_top(12);
     panel.append(&entry);
 
+    // 三 tab 按钮
+    let tab_bar = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(4)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    let tab_workspaces = gtk4::ToggleButton::with_label(&i18n::tr(TextKey::PanelTabWorkspaces));
+    tab_workspaces.set_widget_name("muxterm-panel-tab-workspaces");
+    let tab_attention = gtk4::ToggleButton::with_label(&i18n::tr(TextKey::PanelTabAttention));
+    tab_attention.set_widget_name("muxterm-panel-tab-attention");
+    let tab_search = gtk4::ToggleButton::with_label(&i18n::tr(TextKey::PanelTabSearch));
+    tab_search.set_widget_name("muxterm-panel-tab-search");
+    tab_bar.append(&tab_workspaces);
+    tab_bar.append(&tab_attention);
+    tab_bar.append(&tab_search);
+    panel.append(&tab_bar);
+
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Browse);
     list.add_css_class("quick-pick-list");
+    list.set_widget_name("muxterm-panel-list");
 
     let sw = ScrolledWindow::builder()
         .vexpand(true)
@@ -127,12 +163,44 @@ pub fn show(
     sw.set_size_request(panel_w, list_h);
     panel.append(&sw);
 
+    // Tab3 占位（搜索中…行，阶段 C 前固定显示占位文案）
+    let search_status = Label::new(Some(&i18n::tr(TextKey::SearchPlaceholderPhaseC)));
+    search_status.set_widget_name("muxterm-search-status");
+    search_status.set_halign(Align::Start);
+    search_status.set_margin_start(16);
+    search_status.set_margin_top(10);
+    search_status.set_margin_bottom(10);
+    search_status.set_visible(false);
+    panel.append(&search_status);
+
     overlay.add_overlay(&backdrop);
     overlay.add_overlay(&panel);
 
-    let all = Rc::new(build_items(store, current.as_ref()));
-    let visible: Rc<RefCell<Vec<PanelItem>>> = Rc::new(RefCell::new(all.to_vec()));
-    let callbacks = Rc::new(callbacks);
+    let PanelShowArgs {
+        initial_tab,
+        workspaces,
+        attention,
+        on_connect,
+        on_edit,
+        on_new_project,
+        on_jump_pane,
+        on_reply,
+        peek_text,
+    } = args;
+    let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
+    let all = Rc::new(workspaces);
+    let attention = Rc::new(attention);
+    let callbacks = Rc::new(PanelShowArgs {
+        initial_tab,
+        workspaces: Vec::new(),
+        attention: Vec::new(),
+        on_connect,
+        on_edit,
+        on_new_project,
+        on_jump_pane,
+        on_reply,
+        peek_text,
+    });
     let finished = Rc::new(RefCell::new(false));
 
     let dismiss = {
@@ -157,60 +225,169 @@ pub fn show(
         backdrop.add_controller(gesture);
     }
 
+    // 工作区级状态：blocked 优先于 done（从 attention 行推导）。
+    let workspace_status = {
+        let mut map: std::collections::HashMap<String, PaneStatus> =
+            std::collections::HashMap::new();
+        for p in attention.iter() {
+            let entry = map
+                .entry(p.workspace_id.clone())
+                .or_insert(PaneStatus::Idle);
+            if p.status == PaneStatus::Blocked {
+                *entry = PaneStatus::Blocked;
+            } else if *entry != PaneStatus::Blocked && p.status == PaneStatus::Done {
+                *entry = PaneStatus::Done;
+            }
+        }
+        map
+    };
+
     let rebuild = {
         let list = list.clone();
-        let visible = visible.clone();
+        let model = model.clone();
+        let all = all.clone();
+        let attention = attention.clone();
         let callbacks = callbacks.clone();
         let dismiss = dismiss.clone();
+        let search_status = search_status.clone();
+        let tab_workspaces = tab_workspaces.clone();
+        let tab_attention = tab_attention.clone();
+        let tab_search = tab_search.clone();
+        let workspace_status = workspace_status.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
-            for (i, item) in visible.borrow().iter().enumerate() {
-                let row = ListBoxRow::new();
-                row.set_activatable(true);
-                match item {
-                    PanelItem::Target(entry, is_current) => {
-                        row.set_widget_name(&QuickConnect::unique_id(&entry.config));
-                        if *is_current {
-                            row.add_css_class("qc-current");
-                        }
-                        row.set_child(Some(&target_row(entry, *is_current)));
-                        let cfg = entry.config.clone();
-                        let dismiss = dismiss.clone();
-                        let on_edit = {
-                            let callbacks = callbacks.clone();
-                            let cfg = cfg.clone();
-                            let dismiss = dismiss.clone();
-                            move || {
-                                dismiss();
-                                (callbacks.on_edit)(cfg.clone());
-                            }
+            // 先取 tab/query 并释放 RefCell，再 set_active（toggled 会重入 rebuild）。
+            let (tab, query) = {
+                let m = model.borrow();
+                (m.tab, m.query.clone())
+            };
+            tab_workspaces.set_active(tab == PanelTab::Workspaces);
+            tab_attention.set_active(tab == PanelTab::Attention);
+            tab_search.set_active(tab == PanelTab::Search);
+            search_status.set_visible(tab == PanelTab::Search);
+            match tab {
+                PanelTab::Workspaces => {
+                    let rows = filter_workspace_rows(&all, &query, |item| {
+                        let id = match item {
+                            PanelItem::Target(entry, _) => QuickConnect::unique_id(&entry.config),
+                            PanelItem::NewProject => return None,
                         };
-                        let dbl = GestureClick::new();
-                        dbl.set_button(1);
-                        dbl.connect_pressed(move |g, n, _, _| {
-                            if n == 2 {
-                                on_edit();
-                                g.set_state(gtk4::EventSequenceState::Claimed);
+                        workspace_status.get(&id).copied()
+                    });
+                    for (i, row) in rows.iter().enumerate() {
+                        let row_widget = ListBoxRow::new();
+                        row_widget.set_activatable(true);
+                        match &row.item {
+                            PanelItem::Target(entry, is_current) => {
+                                row_widget.set_widget_name(&QuickConnect::unique_id(&entry.config));
+                                if *is_current {
+                                    row_widget.add_css_class("qc-current");
+                                }
+                                let boxed = target_row(entry, *is_current);
+                                if let Some(status) = row.status {
+                                    let mark = Label::new(Some(match status {
+                                        PaneStatus::Blocked => "● ",
+                                        PaneStatus::Done => "✓ ",
+                                        _ => "",
+                                    }));
+                                    mark.add_css_class("qc-status-mark");
+                                    boxed.prepend(&mark);
+                                }
+                                row_widget.set_child(Some(&boxed));
+                                let cfg = entry.config.clone();
+                                let dismiss = dismiss.clone();
+                                let on_edit = {
+                                    let callbacks = callbacks.clone();
+                                    let cfg = cfg.clone();
+                                    let dismiss = dismiss.clone();
+                                    move || {
+                                        dismiss();
+                                        (callbacks.on_edit)(cfg.clone());
+                                    }
+                                };
+                                let dbl = GestureClick::new();
+                                dbl.set_button(1);
+                                dbl.connect_pressed(move |g, n, _, _| {
+                                    if n == 2 {
+                                        on_edit();
+                                        g.set_state(gtk4::EventSequenceState::Claimed);
+                                    }
+                                });
+                                row_widget.add_controller(dbl);
                             }
-                        });
-                        row.add_controller(dbl);
-                    }
-                    PanelItem::NewProject => {
-                        row.set_widget_name(NEW_PROJECT_ID);
-                        let label =
-                            Label::new(Some(&format!("＋ {}", i18n::tr(TextKey::NewProject))));
-                        label.set_halign(Align::Start);
-                        label.set_margin_start(16);
-                        label.set_margin_top(10);
-                        label.set_margin_bottom(10);
-                        row.set_child(Some(&label));
+                            PanelItem::NewProject => {
+                                row_widget.set_widget_name(NEW_PROJECT_ID);
+                                let label = Label::new(Some(&format!(
+                                    "＋ {}",
+                                    i18n::tr(TextKey::NewProject)
+                                )));
+                                label.set_halign(Align::Start);
+                                label.set_margin_start(16);
+                                label.set_margin_top(10);
+                                label.set_margin_bottom(10);
+                                row_widget.set_child(Some(&label));
+                            }
+                        }
+                        list.append(&row_widget);
+                        if i == 0 {
+                            list.select_row(Some(&row_widget));
+                        }
                     }
                 }
-                list.append(&row);
-                if i == 0 {
-                    list.select_row(Some(&row));
+                PanelTab::Attention => {
+                    let rows = filter_attention_rows(&attention, &query);
+                    let count = Label::new(Some(&i18n::tr_args(
+                        TextKey::AttentionCount,
+                        &[("n", &rows.len().to_string())],
+                    )));
+                    count.set_halign(Align::Start);
+                    count.add_css_class("qc-attention-count");
+                    count.set_margin_start(16);
+                    count.set_margin_top(8);
+                    count.set_margin_bottom(4);
+                    let count_row = ListBoxRow::new();
+                    count_row.set_activatable(false);
+                    count_row.set_child(Some(&count));
+                    list.append(&count_row);
+                    if rows.is_empty() {
+                        let empty = Label::new(Some(&i18n::tr(TextKey::AttentionEmpty)));
+                        empty.set_halign(Align::Start);
+                        empty.set_margin_start(16);
+                        empty.set_margin_top(10);
+                        empty.set_margin_bottom(10);
+                        let empty_row = ListBoxRow::new();
+                        empty_row.set_activatable(false);
+                        empty_row.set_child(Some(&empty));
+                        list.append(&empty_row);
+                    }
+                    for (i, row) in rows.iter().enumerate() {
+                        let row_widget = ListBoxRow::new();
+                        row_widget.set_activatable(true);
+                        row_widget.set_widget_name(&format!(
+                            "muxterm-attention-{}-{}",
+                            row.attention.workspace_id, row.attention.pane_id
+                        ));
+                        let process = row.attention.process_name.as_deref().unwrap_or("?");
+                        let text = format!(
+                            "{} · {} · {}",
+                            row.attention.workspace_id, process, row.attention.last_line
+                        );
+                        let label = Label::new(Some(&text));
+                        label.set_halign(Align::Start);
+                        label.set_margin_start(16);
+                        label.set_margin_top(8);
+                        label.set_margin_bottom(8);
+                        row_widget.set_child(Some(&label));
+                        list.append(&row_widget);
+                        if i == 0 {
+                            list.select_row(Some(&row_widget));
+                        }
+                    }
+                }
+                PanelTab::Search => {
+                    // 阶段 C 前：占位行（search_status 已显示）。
                 }
             }
         }
@@ -218,18 +395,44 @@ pub fn show(
     rebuild();
 
     {
-        let visible = visible.clone();
-        let all = all.clone();
+        let model = model.clone();
         let rebuild = rebuild.clone();
         entry.connect_changed(move |e| {
-            *visible.borrow_mut() = filter_panel_items(&all, &e.text());
+            model.borrow_mut().query = e.text().to_string();
             rebuild();
+        });
+    }
+
+    // tab 按钮点击
+    for (btn, tab) in [
+        (tab_workspaces.clone(), PanelTab::Workspaces),
+        (tab_attention.clone(), PanelTab::Attention),
+        (tab_search.clone(), PanelTab::Search),
+    ] {
+        let model = model.clone();
+        let rebuild = rebuild.clone();
+        btn.connect_toggled(move |b| {
+            if b.is_active() {
+                // 只有 tab 真正变化才重建，避免 set_active 重入死循环。
+                let changed = {
+                    let mut m = model.borrow_mut();
+                    if m.tab == tab {
+                        false
+                    } else {
+                        m.tab = tab;
+                        true
+                    }
+                };
+                if changed {
+                    rebuild();
+                }
+            }
         });
     }
 
     let activate = {
         let list = list.clone();
-        let visible = visible.clone();
+        let model = model.clone();
         let callbacks = callbacks.clone();
         let dismiss = dismiss.clone();
         move || {
@@ -237,17 +440,32 @@ pub fn show(
                 return;
             };
             let idx = row.index() as usize;
-            let item = visible.borrow().get(idx).cloned();
-            match item {
-                Some(PanelItem::Target(entry, _)) => {
-                    dismiss();
-                    (callbacks.on_connect)(entry.config);
+            let tab = model.borrow().tab;
+            match tab {
+                PanelTab::Workspaces => {
+                    let visible = filter_panel_items(&all, &model.borrow().query);
+                    match visible.get(idx).cloned() {
+                        Some(PanelItem::Target(entry, _)) => {
+                            dismiss();
+                            (callbacks.on_connect)(entry.config);
+                        }
+                        Some(PanelItem::NewProject) => {
+                            dismiss();
+                            (callbacks.on_new_project)();
+                        }
+                        None => {}
+                    }
                 }
-                Some(PanelItem::NewProject) => {
-                    dismiss();
-                    (callbacks.on_new_project)();
+                PanelTab::Attention => {
+                    let rows = filter_attention_rows(&attention, &model.borrow().query);
+                    if let Some(row) = rows.get(idx) {
+                        (callbacks.on_jump_pane)(
+                            row.attention.workspace_id.clone(),
+                            row.attention.pane_id,
+                        );
+                    }
                 }
-                None => {}
+                PanelTab::Search => {}
             }
         }
     };
@@ -260,15 +478,24 @@ pub fn show(
     {
         let dismiss = dismiss.clone();
         let activate = activate.clone();
+        let model = model.clone();
+        let rebuild = rebuild.clone();
         let list = list.clone();
         let controller = EventControllerKey::new();
-        controller.connect_key_pressed(move |_c, key, _code, _mods| match key {
+        controller.connect_key_pressed(move |_c, key, _code, mods| match key {
             Key::Escape => {
                 dismiss();
                 glib::Propagation::Stop
             }
             Key::Return | Key::KP_Enter => {
                 activate();
+                glib::Propagation::Stop
+            }
+            Key::Tab => {
+                model
+                    .borrow_mut()
+                    .cycle_tab(mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK));
+                rebuild();
                 glib::Propagation::Stop
             }
             Key::Up | Key::Down => {

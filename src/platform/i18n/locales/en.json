@@ -174,5 +174,14 @@
   "current": "Current",
   "local_transport": "Local machine",
   "ssh_transport": "SSH remote",
-  "plain_shell": "plain shell"
+  "plain_shell": "plain shell",
+  "panel_tab_workspaces": "Workspaces",
+  "panel_tab_attention": "Attention",
+  "panel_tab_search": "Search",
+  "attention_count": "Pending {n}",
+  "attention_empty": "No pending panes",
+  "peek": "Peek",
+  "reply_hint": "Reply (Enter)",
+  "mute_1h": "Mute 1h",
+  "search_placeholder_phase_c": "Search scrollback (phase C)"
 }
