@@ -30,6 +30,8 @@ pub struct StatusBar {
     left: Label,
     right: Label,
     windows: GtkBox,
+    /// 注意力红点胶囊（`muxterm-attention-badge`，n=0 隐藏）。
+    attention_badge: Label,
     on_window_activate: WindowActivateCb,
     css: RefCell<CssProvider>,
     last_snapshot: RefCell<Option<StatusBarSnapshot>>,
@@ -67,8 +69,15 @@ impl StatusBar {
         right.set_hexpand(true);
         right.add_css_class("muxterm-status-text");
 
+        let attention_badge = Label::new(None);
+        attention_badge.set_widget_name("muxterm-attention-badge");
+        attention_badge.set_valign(Align::Center);
+        attention_badge.add_css_class("muxterm-attention-badge");
+        attention_badge.set_visible(false);
+
         container.append(&left);
         container.append(&windows);
+        container.append(&attention_badge);
         container.append(&right);
 
         let css = CssProvider::new();
@@ -84,6 +93,7 @@ impl StatusBar {
             left,
             right,
             windows,
+            attention_badge,
             on_window_activate: Rc::new(RefCell::new(None)),
             css: RefCell::new(css),
             last_snapshot: RefCell::new(None),
@@ -129,6 +139,20 @@ impl StatusBar {
 
     pub fn set_visible(&self, visible: bool) {
         self.container.set_visible(visible);
+    }
+
+    /// 更新注意力红点：n=0 隐藏，否则显示 `● N`。
+    pub fn set_attention(&self, n: usize) {
+        match crate::platform::linux::attention_ui::badge_label(n) {
+            Some(label) => {
+                self.attention_badge.set_text(&label);
+                self.attention_badge.set_visible(true);
+            }
+            None => {
+                self.attention_badge.set_text("");
+                self.attention_badge.set_visible(false);
+            }
+        }
     }
 
     /// 切换 status bar 模式（tmux / theme）并重渲染。

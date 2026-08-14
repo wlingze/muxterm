@@ -6,6 +6,8 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Orientation};
 
+use crate::core::attention::state::PaneStatus;
+use crate::platform::linux::attention_ui::tab_prefix;
 use crate::platform::linux::ffi_bridge::BridgeTab;
 use crate::platform::linux::lifecycle::tab_shortcut_label;
 
@@ -74,6 +76,30 @@ impl TabBar {
 
     pub fn tab_count(&self) -> usize {
         self.buttons.borrow().len()
+    }
+
+    /// 给 tab 加注意力前缀（blocked `● ` / done `✓ `），并加 CSS 类。
+    pub fn set_attention(&self, tab_id: u32, status: Option<PaneStatus>) {
+        let prefix = tab_prefix(status);
+        let buttons = self.buttons.borrow();
+        for (id, btn) in buttons.iter() {
+            if *id != tab_id {
+                continue;
+            }
+            let label = btn.label().map(|l| l.to_string()).unwrap_or_default();
+            let stripped = label
+                .strip_prefix("● ")
+                .or_else(|| label.strip_prefix("✓ "))
+                .unwrap_or(&label);
+            btn.set_label(&format!("{prefix}{stripped}"));
+            btn.remove_css_class("tab-blocked");
+            btn.remove_css_class("tab-done");
+            match status {
+                Some(PaneStatus::Blocked) => btn.add_css_class("tab-blocked"),
+                Some(PaneStatus::Done) => btn.add_css_class("tab-done"),
+                _ => {}
+            }
+        }
     }
 
     pub fn set_visible(&self, visible: bool) {
