@@ -1192,6 +1192,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         var outputSeen = false
         var uiStateChanged = false
+        // 轻量更新标记：tab 标题变化 / pane 尺寸变化不需要全量 snapshot。
+        var needsTabRefresh = false
+        var needsLightweightUpdate = false
         let deferOutputs = EventBatchPlan.hasStructuralEvent(
             types: events.map(\.type),
             requiresLayoutReload: StateEventPolicy.requiresLayoutReload
@@ -1252,14 +1255,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     }
                 }
             } else if ev.type == STATE_TAB_RENAMED {
-                // 标题会改变状态栏或焦点，但不会改变布局树。
-                uiStateChanged = true
+                // 标题变化只更新 tab 列表文字，不需要全量 snapshot + 布局重建。
+                // 高频输出时 TAB_RENAMED 频繁触发，走 refreshUI 会卡顿。
+                needsTabRefresh = true
             } else if ev.type == STATE_PANE_RESIZED {
-                // 标题/字符格尺寸改变只影响状态栏/焦点，不改变布局树。
-                // 模型尺寸跟随 SwiftTerm 视图像素自适应（syncSizeToPty），
-                // 不能用 tmux 报告的 PaneInfo 强制设置——resize 时 tmux 对
-                // 后台窗口的尺寸滞后，强制设置会造成模型与视图错位（黑框）。
-                uiStateChanged = true
+                // pane 尺寸变化：SwiftTerm 视图按像素自适应（syncSizeToPty），
+                // 不需要 bridge.snapshot() 或布局重建。高频输出时 PANE_RESIZED
+                // 频繁触发，走 refreshUI 会卡顿。
+                // 标记轻量更新：只在下一轮 poll 时更新 debug 文本。
+                needsLightweightUpdate = true
             }
             if ev.isBackendStatus, ev.paneId == 4 {
                 // pane_id 复用状态码：4 = exited
@@ -1272,7 +1276,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if uiStateChanged {
                 maybeCloseIfSessionEnded()
             }
-        } else if outputSeen {
+        } else if needsTabRefresh {
+            // 只更新 tab 列表文字，不做全量 snapshot + 布局重建。
+            let tabs = bridge.getTabs()
+            let activeTab = tabs.first(where: \.isActive)?.id ?? tabs.first?.id ?? 0
+            lastSnapshot.tabs = tabs
+            lastSnapshot.activeTab = activeTab
+            content.updateTabs(tabs)
+            reportPaneColoursIfNeeded(lastSnapshot.panes)
+        } else if outputSeen || needsLightweightUpdate {
             content.statusBar.updateDebugSnapshot(lastSnapshot)
             // 颜色上报只依赖 refreshUI 时，attach 后没有结构事件就永远不会
             // 触发（日志里没有 refresh-client -r 的原因）。纯输出也要补报。
