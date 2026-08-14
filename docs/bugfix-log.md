@@ -107,6 +107,15 @@
 - `110c9cf`：split 回归测试 pane id 修正（新 session 首 pane 是 %0）。
 - `6104197` / `76c41c9`：statusbar justify/模式、字体缩放与 TOML 配置。
 
+## 17. statusbar 内容超出窗口，只露出一小截
+
+- 原因：长窗口名（如 `feature-syntaxflow-support_large_value_in_query`）让窗口列表
+  的固有宽度超过窗口；窗口按钮不可压缩也不截断，整条 bar 被撑出窗口。
+  另外 status bar 启用时隐藏 tab 栏的约束未停用，pane 仍被钉在整窗高度，
+  status bar 会叠在终端上。
+- 测试：`StatusBarLayoutPolicyTests`（左右段封顶 + 窗口列表最小宽度预算）
+- Commit：`b74290d fix(macos): keep status bar inside window bounds`
+
 ## 待验证（需要用户实测/新日志）
 
 - Cmd-T 新建 tab 卡住：core 3s 超时回归不卡，疑似前端，缺复现日志。
