@@ -1,38 +1,71 @@
 import AppKit
 import MuxtermChrome
 
-/// muxterm status bar：left + 窗口列表 + right。
+/// 统一状态栏：tab 列表 + SSH 连接状态 + 流量监控 + tmux status（left/right）。
 ///
-/// 连接控制模式会话时按兼容的 status 配置渲染（left/window/right 与样式），
-/// 但这是 muxterm 自己的 status bar。
+/// 一个 bar 装下全部：tab（tmux 窗口列表或本地 tab 列表）在中间，
+/// 左侧 SSH 连接状态 + 流量速率，右侧 tmux status-right 或 session 名。
+/// 渲染纪律：高频输出时只更新流量数字，不重建 tab 列表。
 final class StatusBarView: NSView {
     var onSelectWindow: ((UInt32) -> Void)?
+    var onSelectTab: ((UInt32) -> Void)?
+    var onNewTab: (() -> Void)?
     /// 提醒位点击（文档 §B.1：与 QuickConnect 入口同一位置）。
     var onAttentionClick: (() -> Void)?
     /// status bar 模式：tmux = 有 tmux 就跟 tmux 一致（默认）；
     /// theme = 只用 muxterm 主题黑白。
     var colorMode: StatusBarMode = .tmux
 
+    private let sshStatusLabel = NSTextField(labelWithString: "")
+    private let trafficLabel = NSTextField(labelWithString: "")
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
-    private let windowStack = NSStackView()
-    /// 消息弹窗/提醒位：右侧固定预留的窄槽，平时空着，attention > 0 时变红点。
+    /// tab / 窗口列表（中间区域）。
+    private let tabStack = NSStackView()
+    /// 「+」新建 tab 按钮。
+    private let newTabButton = NSButton()
+    /// 消息弹窗/提醒位：右侧固定预留的窄槽。
     private let attentionSlot = NSView()
     private let attentionDot = CALayer()
     private let attentionCountLabel = NSTextField(labelWithString: "")
+    private let edgeLine = CALayer()
     private var justifyConstraints: [NSLayoutConstraint] = []
     private var heightConstraint: NSLayoutConstraint!
-    /// 最近一次快照与样式基准：订阅推送只更新 left/right 文本，不复建窗口列表。
-    private var lastSnapshot: StatusBarSnapshot?
+    /// 最近一次 tmux 快照与样式基准。
+    private var lastTmuxSnapshot: StatusBarSnapshot?
     private var lastBase = StatusBarTextStyle.default
     private var lastLeftStyle = "default"
     private var lastRightStyle = "default"
     private var lastPlainForeground: NSColor?
+    /// 当前 tab 列表（供非 tmux status 模式渲染）。
+    private var currentTabs: [Tab] = []
+    /// tmux status 是否启用：启用时 tab 列表从 tmux 窗口列表渲染，
+    /// 否则从 FrameSnapshot 的 tab 列表渲染。
+    private var tmuxStatusEnabled = false
+    private var edgeAtBottom = true
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         heightConstraint = heightAnchor.constraint(equalToConstant: FlatChrome.tabBarHeight)
+        setAccessibilityIdentifier("muxterm.statusBar")
+
+        edgeLine.backgroundColor = NSColor.separatorColor.cgColor
+        layer?.addSublayer(edgeLine)
+
+        // SSH 连接状态（左侧固定）：显示 backend 类型 + host + 连接状态。
+        sshStatusLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        sshStatusLabel.lineBreakMode = .byTruncatingTail
+        sshStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sshStatusLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        sshStatusLabel.textColor = NSColor.tertiaryLabelColor
+
+        // 流量监控（SSH 状态右侧）：显示实时下行速率。
+        trafficLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        trafficLabel.lineBreakMode = .byTruncatingTail
+        trafficLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trafficLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        trafficLabel.textColor = NSColor.tertiaryLabelColor
 
         leftLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         leftLabel.lineBreakMode = .byTruncatingTail
@@ -43,20 +76,29 @@ final class StatusBarView: NSView {
         rightLabel.alignment = .right
         rightLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        windowStack.orientation = .horizontal
-        windowStack.alignment = .centerY
-        windowStack.spacing = 2
-        windowStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        // 长窗口名/长左右段不能把整条 bar 撑出窗口：窗口列表允许压缩，
-        // 每个窗口按钮按尾部截断（tmux 自己也会截断 status-left/right）。
-        windowStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tabStack.orientation = .horizontal
+        tabStack.alignment = .centerY
+        tabStack.spacing = 2
+        tabStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        tabStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        for view in [leftLabel, windowStack, rightLabel, attentionSlot] {
+        // 「+」新建 tab 按钮。
+        newTabButton.title = "+"
+        newTabButton.bezelStyle = .shadowlessSquare
+        newTabButton.isBordered = false
+        newTabButton.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        newTabButton.contentTintColor = NSColor.secondaryLabelColor
+        newTabButton.target = self
+        newTabButton.action = #selector(newTabClicked)
+        newTabButton.setAccessibilityIdentifier("muxterm.newTabButton")
+        newTabButton.translatesAutoresizingMaskIntoConstraints = false
+
+        for view in [sshStatusLabel, trafficLabel, leftLabel, tabStack, rightLabel, attentionSlot, newTabButton] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
 
-        // 提醒位：固定宽度常驻，给后续消息弹窗/通知红点预留位置。
+        // 提醒位。
         attentionSlot.wantsLayer = true
         attentionSlot.layer?.backgroundColor = NSColor.clear.cgColor
         attentionSlot.setAccessibilityIdentifier("muxterm.statusAttention")
@@ -77,10 +119,6 @@ final class StatusBarView: NSView {
         let click = NSClickGestureRecognizer(target: self, action: #selector(attentionClicked))
         attentionSlot.addGestureRecognizer(click)
 
-        // 初始默认：居中。
-        applyJustify("centre")
-        // 左右段按比例封顶（tmux status-left/right-length 的等价物），
-        // 窗口列表至少保留一块可见宽度（软约束，空间不足时优先压缩窗口按钮）。
         let leftMaxWidth = leftLabel.widthAnchor.constraint(
             lessThanOrEqualTo: widthAnchor,
             multiplier: StatusBarLayoutPolicy.sideMaxFraction
@@ -89,23 +127,35 @@ final class StatusBarView: NSView {
             lessThanOrEqualTo: widthAnchor,
             multiplier: StatusBarLayoutPolicy.sideMaxFraction
         )
-        let windowMinWidth = windowStack.widthAnchor.constraint(
-            greaterThanOrEqualTo: widthAnchor,
-            multiplier: StatusBarLayoutPolicy.windowMinFraction
-        )
-        windowMinWidth.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
             heightConstraint,
-            leftLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+
+            // SSH 状态在最左侧。
+            sshStatusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            sshStatusLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            // 流量在 SSH 状态右侧。
+            trafficLabel.leadingAnchor.constraint(equalTo: sshStatusLabel.trailingAnchor, constant: 8),
+            trafficLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            // tmux status-left 在流量右侧（tmux 模式才显示）。
+            leftLabel.leadingAnchor.constraint(equalTo: trafficLabel.trailingAnchor, constant: 8),
             leftLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            leftLabel.trailingAnchor.constraint(lessThanOrEqualTo: windowStack.leadingAnchor, constant: -8),
+            leftLabel.trailingAnchor.constraint(lessThanOrEqualTo: tabStack.leadingAnchor, constant: -8),
 
-            windowStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            // tab 列表居中。
+            tabStack.centerYAnchor.constraint(equalTo: centerYAnchor),
 
+            // 「+」按钮在 tab 列表右侧。
+            newTabButton.leadingAnchor.constraint(equalTo: tabStack.trailingAnchor, constant: 4),
+            newTabButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            newTabButton.widthAnchor.constraint(equalToConstant: FlatChrome.newTabButtonWidth),
+
+            // tmux status-right 在「+」右侧。
+            rightLabel.leadingAnchor.constraint(equalTo: newTabButton.trailingAnchor, constant: 4),
             rightLabel.trailingAnchor.constraint(equalTo: attentionSlot.leadingAnchor, constant: -4),
             rightLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            rightLabel.leadingAnchor.constraint(greaterThanOrEqualTo: windowStack.trailingAnchor, constant: 8),
 
             attentionSlot.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             attentionSlot.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -117,8 +167,9 @@ final class StatusBarView: NSView {
 
             leftMaxWidth,
             rightMaxWidth,
-            windowMinWidth,
         ])
+
+        applyJustify("centre")
     }
 
     @available(*, unavailable)
@@ -128,7 +179,8 @@ final class StatusBarView: NSView {
 
     override func layout() {
         super.layout()
-        // 红点始终在预留槽内居中；count 文本由 Auto Layout 铺满整个槽。
+        let y: CGFloat = edgeAtBottom ? 0 : bounds.height - 1
+        edgeLine.frame = CGRect(x: 0, y: y, width: bounds.width, height: 1)
         attentionDot.frame = CGRect(
             x: attentionSlot.bounds.midX - 4,
             y: attentionSlot.bounds.midY - 4,
@@ -137,93 +189,181 @@ final class StatusBarView: NSView {
         )
     }
 
-    func apply(snapshot: StatusBarSnapshot) {
+    /// `edgeAtBottom == true` 时画底部分隔线（bar 在上）；否则画顶部。
+    func setEdgeLineAtBottom(_ atBottom: Bool) {
+        edgeAtBottom = atBottom
+        needsLayout = true
+    }
+
+    // MARK: - Tab 列表更新
+
+    /// 用 FrameSnapshot 的 tab 列表更新（非 tmux status 模式）。
+    func updateTabs(_ tabs: [Tab]) {
+        currentTabs = tabs
+        guard !tmuxStatusEnabled else { return }
+        rebuildTabButtons(tabs.map { TabBarItem(id: $0.id, title: tabTitle($0), active: $0.isActive) })
+    }
+
+    /// 应用 tmux status 快照：启用时 tab 列表从窗口列表渲染。
+    func applyTmuxSnapshot(_ snapshot: StatusBarSnapshot?, enabled: Bool) {
+        tmuxStatusEnabled = enabled
         let useTmuxColors = colorMode == .tmux
-        let base = StatusBarStyleParser.parse(style: snapshot.statusStyle)
-        lastSnapshot = snapshot
-        lastBase = base
-        lastLeftStyle = snapshot.leftStyle
-        lastRightStyle = snapshot.rightStyle
-        lastPlainForeground = useTmuxColors ? nil : Self.themeForeground
-        if useTmuxColors, let bg = base.bg.map(Self.color) {
-            layer?.backgroundColor = bg.cgColor
-        } else {
-            layer?.backgroundColor = Self.themeBackground.cgColor
-        }
-        let plainForeground = useTmuxColors ? nil : Self.themeForeground
-        leftLabel.attributedStringValue = Self.attributed(
-            StatusBarStyleParser.parseInline(text: snapshot.left, base: merged(base, snapshot.leftStyle)),
-            font: leftLabel.font ?? NSFont.systemFont(ofSize: 11),
-            plainForeground: plainForeground
-        )
-        rightLabel.attributedStringValue = Self.attributed(
-            StatusBarStyleParser.parseInline(text: snapshot.right, base: merged(base, snapshot.rightStyle)),
-            font: rightLabel.font ?? NSFont.systemFont(ofSize: 11),
-            plainForeground: plainForeground
-        )
-
-        rebuildWindowButtons(snapshot)
-    }
-
-    @objc private func windowClicked(_ sender: NSButton) {
-        onSelectWindow?(UInt32(sender.tag))
-    }
-
-    /// 前端驱动高亮：切 tab 时立即把高亮移到目标窗口，不等 tmux 慢查询
-    /// （文档 §B+：status bar 是 muxterm 自己的原生条，选中态由前端控制）。
-    func markCurrentWindow(_ windowId: UInt32) {
-        guard let snapshot = lastSnapshot else { return }
-        let updated = snapshot.updatingCurrentWindow(windowId)
-        guard updated.windows != snapshot.windows else { return }
-        lastSnapshot = updated
-        // 只重建窗口列表按钮（样式/高亮），left/right 与提醒位不动。
-        rebuildWindowButtons(updated)
-    }
-
-    private func rebuildWindowButtons(_ snapshot: StatusBarSnapshot) {
-        let useTmuxColors = colorMode == .tmux
-        let plainForeground = lastPlainForeground
-        windowStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for (i, win) in snapshot.windows.enumerated() {
-            if i > 0 {
-                let sep = NSTextField(labelWithString: snapshot.separator.isEmpty ? " " : snapshot.separator)
-                sep.font = NSFont.systemFont(ofSize: 11)
-                sep.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-                windowStack.addArrangedSubview(sep)
+        if let snapshot, enabled {
+            lastTmuxSnapshot = snapshot
+            lastBase = StatusBarStyleParser.parse(style: snapshot.statusStyle)
+            lastLeftStyle = snapshot.leftStyle
+            lastRightStyle = snapshot.rightStyle
+            lastPlainForeground = useTmuxColors ? nil : Self.themeForeground
+            if useTmuxColors, let bg = lastBase.bg.map(Self.color) {
+                layer?.backgroundColor = bg.cgColor
+            } else {
+                layer?.backgroundColor = Self.themeBackground.cgColor
             }
-            let button = NSButton(title: "", target: self, action: #selector(windowClicked(_:)))
+            leftLabel.isHidden = false
+            rightLabel.isHidden = false
+            leftLabel.attributedStringValue = Self.attributed(
+                StatusBarStyleParser.parseInline(text: snapshot.left, base: merged(lastBase, snapshot.leftStyle)),
+                font: leftLabel.font ?? NSFont.systemFont(ofSize: 11),
+                plainForeground: lastPlainForeground
+            )
+            rightLabel.attributedStringValue = Self.attributed(
+                StatusBarStyleParser.parseInline(text: snapshot.right, base: merged(lastBase, snapshot.rightStyle)),
+                font: rightLabel.font ?? NSFont.systemFont(ofSize: 11),
+                plainForeground: lastPlainForeground
+            )
+            // tab 列表从 tmux 窗口列表渲染。
+            rebuildTabButtons(snapshot.windows.map { win in
+                TabBarItem(id: win.windowId, title: win.text, active: win.current)
+            })
+        } else {
+            leftLabel.isHidden = true
+            rightLabel.isHidden = true
+            layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+            // 回退到 FrameSnapshot tab 列表。
+            rebuildTabButtons(currentTabs.map { TabBarItem(id: $0.id, title: tabTitle($0), active: $0.isActive) })
+        }
+        needsLayout = true
+    }
+
+    // MARK: - SSH 连接状态 + 流量监控
+
+    /// 更新 SSH 连接状态 + 流量速率显示。
+    func updateConnectionStatus(_ summary: (type: String, host: String?, status: String),
+                                trafficRate: UInt64, totalBytes: UInt64) {
+        // SSH 状态标签。
+        let typeText: String
+        switch summary.type {
+        case "ssh": typeText = "SSH"
+        case "tmux": typeText = "tmux"
+        case "local": typeText = "local"
+        case "daemon": typeText = "daemon"
+        default: typeText = summary.type
+        }
+        let hostPart = summary.host.map { " \($0)" } ?? ""
+        let statusColor: NSColor
+        switch summary.status {
+        case "connected": statusColor = NSColor.systemGreen
+        case "connecting": statusColor = NSColor.systemYellow
+        case "disconnected", "exited": statusColor = NSColor.systemRed
+        default: statusColor = NSColor.tertiaryLabelColor
+        }
+        let sshText = "\(typeText)\(hostPart)"
+        let attrSSH = NSMutableAttributedString(string: sshText, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        // 状态指示点。
+        let dot = NSAttributedString(string: " ● ", attributes: [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: statusColor,
+        ])
+        attrSSH.append(dot)
+        sshStatusLabel.attributedStringValue = attrSSH
+        sshStatusLabel.isHidden = false
+
+        // 流量监控：显示实时下行速率 + 累计。
+        trafficLabel.stringValue = formatTraffic(rate: trafficRate, total: totalBytes)
+        trafficLabel.isHidden = summary.type == "local"
+    }
+
+    /// 格式化流量速率：bytes/s → KB/s / MB/s。
+    private func formatTraffic(rate: UInt64, total: UInt64) -> String {
+        func humanReadable(_ bytes: UInt64) -> String {
+            if bytes < 1024 { return "\(bytes) B" }
+            if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
+            return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+        }
+        return "↓ \(humanReadable(rate))/s"
+    }
+
+    // MARK: - tab 列表重建
+
+    private struct TabBarItem {
+        let id: UInt32
+        let title: String
+        let active: Bool
+    }
+
+    private func tabTitle(_ tab: Tab) -> String {
+        if tab.name.isEmpty { return "\(tab.id)" }
+        return "\(tab.id):\(tab.name)"
+    }
+
+    private func rebuildTabButtons(_ items: [TabBarItem]) {
+        tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for item in items {
+            let button = NSButton(title: item.title, target: self, action: #selector(tabClicked(_:)))
             button.isBordered = false
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: win.current ? .semibold : .regular)
-            button.tag = Int(win.windowId)
+            button.font = NSFont.monospacedDigitSystemFont(
+                ofSize: 11,
+                weight: item.active ? .semibold : .regular
+            )
+            button.tag = Int(item.id)
             button.lineBreakMode = .byTruncatingTail
             button.cell?.lineBreakMode = .byTruncatingTail
+            button.cell?.truncatesLastVisibleLine = true
             button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let styleName = win.current ? snapshot.windowCurrentStyle : snapshot.windowStyle
-            let inlineBase = StatusBarStyleParser.parse(style: styleName)
-            button.attributedTitle = Self.attributed(
-                StatusBarStyleParser.parseInline(text: win.text, base: inlineBase),
-                font: button.font ?? NSFont.systemFont(ofSize: 11),
-                plainForeground: plainForeground
-            )
-            if useTmuxColors, let bg = inlineBase.bg {
-                button.wantsLayer = true
+            button.contentTintColor = item.active ? NSColor.labelColor : NSColor.secondaryLabelColor
+            button.wantsLayer = true
+            if item.active {
+                button.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
                 button.layer?.cornerRadius = 3
-                button.layer?.backgroundColor = Self.color(bg).cgColor
-            } else if !useTmuxColors, win.current {
-                button.wantsLayer = true
-                button.layer?.cornerRadius = 3
-                button.layer?.backgroundColor = Self.themeAccent.cgColor
             } else {
-                button.layer?.backgroundColor = nil
+                button.layer?.backgroundColor = NSColor.clear.cgColor
             }
-            button.setAccessibilityIdentifier("muxterm.statusWindow.\(win.index)")
-            windowStack.addArrangedSubview(button)
+            button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
+            tabStack.addArrangedSubview(button)
         }
-        applyJustify(snapshot.justify)
+        // 单 tab 时隐藏「+」按钮也保留，用户仍可新建。
+        newTabButton.isHidden = false
     }
 
-    /// 设置提醒位（文档 §B.1）：count > 0 时亮红点并显示计数。
-    /// 消息弹窗/通知列表落地前，这个位置始终预留、不参与内容布局。
+    @objc private func tabClicked(_ sender: NSButton) {
+        if tmuxStatusEnabled {
+            onSelectWindow?(UInt32(sender.tag))
+        } else {
+            onSelectTab?(UInt32(sender.tag))
+        }
+    }
+
+    @objc private func newTabClicked() {
+        onNewTab?()
+    }
+
+    /// 前端驱动高亮：切 tab 时立即把高亮移到目标窗口。
+    func markCurrentWindow(_ windowId: UInt32) {
+        guard let snapshot = lastTmuxSnapshot else { return }
+        let updated = snapshot.updatingCurrentWindow(windowId)
+        guard updated.windows != snapshot.windows else { return }
+        lastTmuxSnapshot = updated
+        if tmuxStatusEnabled {
+            rebuildTabButtons(updated.windows.map { win in
+                TabBarItem(id: win.windowId, title: win.text, active: win.current)
+            })
+        }
+    }
+
+    /// 设置提醒位。
     func setAttention(_ attention: StatusBarAttention) {
         attentionDot.isHidden = !attention.isActive
         attentionCountLabel.isHidden = attention.count <= 1
@@ -234,13 +374,12 @@ final class StatusBarView: NSView {
         attentionSlot.needsLayout = true
     }
 
-    /// 订阅推送（tmux `refresh-client -B` → `%subscription-changed`）：
-    /// 只更新 left/right 文本，复用最近一次快照的样式，不重建窗口列表。
+    /// 订阅推送：只更新 left/right 文本。
     func applySubscription(name: String, value: String) {
-        guard lastSnapshot != nil else { return }
+        guard lastTmuxSnapshot != nil else { return }
         switch name {
         case "muxterm.status-left":
-            lastSnapshot?.left = value
+            lastTmuxSnapshot?.left = value
             leftLabel.attributedStringValue = Self.attributed(
                 StatusBarStyleParser.parseInline(
                     text: value,
@@ -250,7 +389,7 @@ final class StatusBarView: NSView {
                 plainForeground: lastPlainForeground
             )
         case "muxterm.status-right":
-            lastSnapshot?.right = value
+            lastTmuxSnapshot?.right = value
             rightLabel.attributedStringValue = Self.attributed(
                 StatusBarStyleParser.parseInline(
                     text: value,
@@ -264,32 +403,34 @@ final class StatusBarView: NSView {
         }
     }
 
+    func refreshLocalization() {
+        attentionSlot.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
+        newTabButton.toolTip = MuxtermI18n.shared.tr(.newTabTooltip)
+    }
+
     @objc private func attentionClicked() {
         onAttentionClick?()
     }
 
-    /// 按 justify 切换窗口列表的位置：
-    /// left 紧挨 left 文本之后，centre 居中，right 紧挨 right 文本之前，
-    /// absolute-centre 与 centre 相同。
     private func applyJustify(_ justify: String) {
         NSLayoutConstraint.deactivate(justifyConstraints)
         justifyConstraints.removeAll()
         switch justify {
         case "left":
             justifyConstraints = [
-                windowStack.leadingAnchor.constraint(equalTo: leftLabel.trailingAnchor, constant: 8),
-                windowStack.trailingAnchor.constraint(lessThanOrEqualTo: rightLabel.leadingAnchor, constant: -8),
+                tabStack.leadingAnchor.constraint(equalTo: leftLabel.trailingAnchor, constant: 8),
+                tabStack.trailingAnchor.constraint(lessThanOrEqualTo: rightLabel.leadingAnchor, constant: -8),
             ]
         case "right":
             justifyConstraints = [
-                windowStack.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
-                windowStack.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor, constant: -8),
+                tabStack.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
+                tabStack.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor, constant: -8),
             ]
         default:
             justifyConstraints = [
-                windowStack.centerXAnchor.constraint(equalTo: centerXAnchor),
-                windowStack.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
-                windowStack.trailingAnchor.constraint(lessThanOrEqualTo: rightLabel.leadingAnchor, constant: -8),
+                tabStack.centerXAnchor.constraint(equalTo: centerXAnchor),
+                tabStack.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
+                tabStack.trailingAnchor.constraint(lessThanOrEqualTo: rightLabel.leadingAnchor, constant: -8),
             ]
         }
         NSLayoutConstraint.activate(justifyConstraints)
@@ -334,7 +475,6 @@ final class StatusBarView: NSView {
         NSColor(srgbRed: c.red, green: c.green, blue: c.blue, alpha: 1)
     }
 
-    /// GUI 黑白模式的文字/背景（跟随 muxterm 主题）。
     private static var themeForeground: NSColor {
         Self.color(
             StatusBarStyleParser.color(MuxtermTerminalColors.activePalette.fg)
@@ -347,9 +487,5 @@ final class StatusBarView: NSView {
             StatusBarStyleParser.color(MuxtermTerminalColors.activePalette.bg)
                 ?? StatusBarColor(red: 1, green: 1, blue: 1)
         )
-    }
-
-    private static var themeAccent: NSColor {
-        Self.themeForeground.withAlphaComponent(0.12)
     }
 }

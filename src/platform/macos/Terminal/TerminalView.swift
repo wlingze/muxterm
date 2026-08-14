@@ -118,11 +118,6 @@ final class MuxTerminalView: TerminalView {
             lastAccessibilityUpdate = now
             updateAccessibilityOutput()
         }
-        // 只做普通标记：SwiftTerm 会按自己的 refresh 范围节流绘制。
-        // 不要在每次 feed 后强制全屏重绘或同步 displayIfNeeded——agent 在
-        // resize 后会发出一连串纯擦除序列（每事件 1KB），逐事件全屏重绘
-        // 会占满主线程（tab 快捷键失效、IMK mach port 报错）。
-        needsDisplay = true
     }
 
     private func appendRenderDebug(_ line: String) {
@@ -197,21 +192,22 @@ final class MuxTerminalView: TerminalView {
 
         let term = getTerminal()
         guard term.cols >= 2, term.rows >= 1 else { return false }
-        // 窗口 resize 时 SwiftTerm 缩小模型会保留旧屏幕 + 光标位置，agent/htop
-        // 会按新尺寸重绘，旧行残留在屏幕上造成堆叠/下半空白。这里只在模型行列
-        // 真正变化（resize 瞬间）做一次全屏重绘清掉残留；不逐 feed、不强制同步
-        // displayIfNeeded，避免高频输出时刷屏。
+        // 窗口 resize 时模型行列变化才做一次全屏标记：SwiftTerm 的
+        // queuePendingDisplay 已经按 60fps 节流，这里只清除 resize 后的
+        // 残留行，不逐 feed 触发——高频输出时全屏重绘会占满主线程。
+        // 渲染纪律（文档 §2.15.2 追加 B）：输出直接渲染到末尾位置，
+        // 不逐帧滚动刷新。
         if term.cols != lastModelCols || term.rows != lastModelRows {
             lastModelCols = term.cols
             lastModelRows = term.rows
             getTerminal().updateFullScreen()
-            setNeedsDisplay(bounds)
-            if let layer { layer.setNeedsDisplay() }
+            // 不在这里 setNeedsDisplay(bounds) 全屏刷新——SwiftTerm 的
+            // updateFullScreen 只标记 refresh range，下一次 updateDisplay
+            // 会自动只画脏区域，避免 resize 时的滚动闪烁。
         }
         if notifyResize {
             inputHandler?.terminal(self, sizeChanged: term.cols, rows: term.rows)
         }
-        needsDisplay = true
         return true
     }
 

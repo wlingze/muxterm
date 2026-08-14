@@ -42,6 +42,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var lastStatusFetchAt = Date.distantPast
     /// 结构事件后的 status bar 刷新（合并同一轮事件，避免 resize 风暴逐帧查询）。
     private var statusRefreshWorkItem: DispatchWorkItem?
+    /// SSH 连接状态 + 流量监控刷新定时器（每秒更新一次显示）。
+    private var trafficMonitorTimer: Timer?
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
@@ -145,10 +147,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.refreshLocalizedUI()
         }
 
-        content.tabBar.onSelectTab = { [weak self] tabId in
+        content.statusBar.onSelectTab = { [weak self] tabId in
             self?.requestSwitchTab(tabId)
         }
-        content.tabBar.onNewTab = { [weak self] in
+        content.statusBar.onNewTab = { [weak self] in
             self?.newTab()
         }
         content.paneLayout.onActivatePane = { [weak self] paneId in
@@ -195,6 +197,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     deinit {
         pollTimer?.invalidate()
+        trafficMonitorTimer?.invalidate()
         if let languageObserver {
             NotificationCenter.default.removeObserver(languageObserver)
         }
@@ -331,8 +334,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             bgHex: theme.palette.bg
         )
         // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
-        if let snapshot = statusBarSnapshot {
-            content.statusBar.apply(snapshot: snapshot)
+        if statusBarSnapshot != nil {
+            content.applyStatusBar(statusBarSnapshot)
         }
     }
 
@@ -358,8 +361,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let next: StatusBarMode = content.statusBar.colorMode == .tmux ? .theme : .tmux
         UserDefaults.standard.set(next.rawValue, forKey: Self.statusBarModePreferenceKey)
         content.statusBar.colorMode = next
-        if let snapshot = statusBarSnapshot {
-            content.statusBar.apply(snapshot: snapshot)
+        if statusBarSnapshot != nil {
+            content.applyStatusBar(statusBarSnapshot)
         }
         commandPalette.update(
             items: rootPaletteItems(),
@@ -647,6 +650,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshUI()
         focusActiveTerminal()
         refreshStatusBar(force: true)
+        // 切连接后立即更新 SSH 状态 + 流量监控显示。
+        updateTrafficMonitor()
         // 若旧 bridge 不在 pool（初始连接或非 pool 路径），切走后直接回收；
         // pool 内的旧 slot 由 acquire 降为 background，保持 warm。
         let oldIsPooled = connectionPool.slots.values.contains { $0.bridge === oldBridge }
@@ -1157,6 +1162,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
+
+        // SSH 连接状态 + 流量监控：每秒更新一次显示（不需要 60Hz）。
+        let trafficTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateTrafficMonitor()
+        }
+        RunLoop.main.add(trafficTimer, forMode: .common)
+        trafficMonitorTimer = trafficTimer
+    }
+
+    /// 更新 SSH 连接状态 + 流量监控显示。
+    private func updateTrafficMonitor() {
+        guard !isClosing else { return }
+        let summary = terminalManager.connectionSummary
+        content.updateConnectionStatus(
+            summary,
+            trafficRate: terminalManager.trafficRate,
+            totalBytes: terminalManager.totalBytesReceived
+        )
     }
 
     private func pollOnce() {
@@ -1275,7 +1298,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 请求切换的 tab 已不存在（shell 退出/外部关闭）：立即放行门禁。
         tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         reportPaneColoursIfNeeded(snap.panes)
-        content.tabBar.update(tabs: snap.tabs)
+        content.updateTabs(snap.tabs)
         if needsLayoutReload, tabSwitchGate.isReleased() {
             if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
                 needsLayoutReload = false
@@ -1336,7 +1359,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let updated = snapshot.removingWindow(tabId)
         guard updated.windows.count != snapshot.windows.count else { return }
         statusBarSnapshot = updated
-        content.statusBar.apply(snapshot: updated)
+        content.applyStatusBar(updated)
     }
 
     /// 抓取并应用 tmux status bar 快照（只读查询，后台执行）。
@@ -1402,6 +1425,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         isClosing = true
         pollTimer?.invalidate()
         pollTimer = nil
+        trafficMonitorTimer?.invalidate()
+        trafficMonitorTimer = nil
         statusRefreshTimer?.invalidate()
         statusRefreshTimer = nil
         statusRefreshWorkItem?.cancel()
@@ -1422,6 +1447,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         isClosing = true
         pollTimer?.invalidate()
         pollTimer = nil
+        trafficMonitorTimer?.invalidate()
+        trafficMonitorTimer = nil
         statusRefreshTimer?.invalidate()
         statusRefreshTimer = nil
         statusRefreshWorkItem?.cancel()

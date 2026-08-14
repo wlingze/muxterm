@@ -32,10 +32,19 @@ final class TerminalManager: TerminalInputHandler {
     /// 也造成高频重绘；合并后一次 feed 保持稳定。
     private var pendingFeeds: [UInt32: Data] = [:]
     private var feedFlushWorkItem: DispatchWorkItem?
-    private static let feedFlushInterval: TimeInterval = 0.025
+    private static let feedFlushInterval: TimeInterval = 0.033 // 合并同一 pane 短窗口输出（约 30fps），减少中间态闪烁
     /// 同一 pane 的 resize 失败只报告一次，避免轮询/重绘时刷屏。
     private var reportedResizeFailures = Set<UInt32>()
     private var reportedClientResizeFailure = false
+
+    /// SSH 流量统计：累计接收字节数 + 最近窗口速率（bytes/s）。
+    /// 供 statusbar 的 SSH Traffic Monitor 显示实时下行速率。
+    private(set) var totalBytesReceived: UInt64 = 0
+    private var trafficTimestamps: [TimeInterval] = []
+    private var trafficByteCounts: [UInt64] = []
+    private var lastTrafficRate: UInt64 = 0
+    /// 最近一次统计更新时间，用于周期刷新 statusbar 流量显示。
+    private(set) var trafficRate: UInt64 = 0
 
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
@@ -77,6 +86,10 @@ final class TerminalManager: TerminalInputHandler {
         reportedResizeFailures.removeAll()
         reportedClientResizeFailure = false
         recentOutputSnippet = ""
+        totalBytesReceived = 0
+        trafficTimestamps.removeAll()
+        trafficByteCounts.removeAll()
+        trafficRate = 0
         onOutputSnippetChanged?(recentOutputSnippet)
     }
 
@@ -144,6 +157,7 @@ final class TerminalManager: TerminalInputHandler {
             // pane 短窗口内的字节，减少 SwiftTerm 中间态漂移与重绘频率。
             pendingFeeds[paneId, default: Data()].append(data)
             appendSnippet(data)
+            recordTraffic(bytes: data.count)
             scheduleFeedFlush()
         }
     }
@@ -374,5 +388,49 @@ final class TerminalManager: TerminalInputHandler {
             recentOutputSnippet = String(recentOutputSnippet.suffix(400))
         }
         onOutputSnippetChanged?(recentOutputSnippet)
+    }
+
+    /// 记录流量统计：在 2 秒滑动窗口内计算下行速率（bytes/s）。
+    /// 供 statusbar 的 SSH Traffic Monitor 实时显示。
+    func recordTraffic(bytes: Int) {
+        guard bytes > 0 else { return }
+        totalBytesReceived &+= UInt64(bytes)
+        let now = Date().timeIntervalSince1970
+        trafficTimestamps.append(now)
+        trafficByteCounts.append(UInt64(bytes))
+        // 淘汰 2 秒窗口外的样本
+        let cutoff = now - 2.0
+        while !trafficTimestamps.isEmpty, trafficTimestamps[0] < cutoff {
+            trafficTimestamps.removeFirst()
+            trafficByteCounts.removeFirst()
+        }
+        let windowBytes = trafficByteCounts.reduce(0, &+)
+        trafficRate = windowBytes / 2
+    }
+
+    /// SSH 连接状态摘要（供 statusbar 显示）。
+    /// 返回 backend 类型 + alias/session + 连接状态。
+    var connectionSummary: (type: String, host: String?, status: String) {
+        let bt = bridge?.backendType ?? "unknown"
+        let host: String?
+        switch bt {
+        case "ssh":
+            host = bridge?.sshAlias ?? bridge?.socket
+        case "tmux":
+            host = bridge?.session
+        case "local":
+            host = nil
+        default:
+            host = bridge?.session
+        }
+        let statusLabel: String
+        switch bridge?.lastStatus {
+        case 0: statusLabel = "disconnected"
+        case 1: statusLabel = "connecting"
+        case 2: statusLabel = "connected"
+        case 3: statusLabel = "exited"
+        default: statusLabel = "unknown"
+        }
+        return (bt, host, statusLabel)
     }
 }
