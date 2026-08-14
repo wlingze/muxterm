@@ -57,6 +57,7 @@ struct CLayoutNode {
 #define STATE_TAB_RENAMED         8u
 #define STATE_PANE_RESIZED        9u
 #define STATE_BACKEND_STATUS      10u
+#define STATE_STATUS_SUBSCRIPTION 11u
 #define STATE_OTHER               99u
 
 #define TASK_SPLIT_PANE  0u
@@ -98,6 +99,7 @@ int muxterm_report_pane_colours(struct MuxtermHandle* h, uint32_t pane_id, const
 int muxterm_report_all_pane_colours(struct MuxtermHandle* h, const char* fg_hex, const char* bg_hex);
 int muxterm_resize_pane(struct MuxtermHandle* h, uint32_t pane_id, uint16_t cols, uint16_t rows);
 int muxterm_resize_client(struct MuxtermHandle* h, uint16_t cols, uint16_t rows);
+int muxterm_status_subscription_active(struct MuxtermHandle* h);
 int muxterm_resize_pane_axis(struct MuxtermHandle* h, uint32_t pane_id, uint32_t axis, uint16_t size);
 
 // ── 事件轮询 ──

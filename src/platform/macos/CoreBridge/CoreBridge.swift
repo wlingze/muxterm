@@ -399,6 +399,13 @@ final class CoreBridge {
         return bridge
     }
 
+    /// status bar 订阅是否已启用（tmux ≥3.2 `refresh-client -B`）。
+    /// 已启用时前端关闭轮询定时器，由 `%subscription-changed` 推送驱动。
+    func statusSubscriptionActive() -> Bool {
+        guard let handle else { return false }
+        return muxterm_status_subscription_active(handle) != 0
+    }
+
     /// 抓取 status bar 快照（只读查询，tmux 兼容），返回 JSON 文本。
     func statusBarSnapshotJSON() -> String? {
         guard let handle else { return nil }

@@ -62,6 +62,7 @@
   "status_unknown": "未知",
   "statusbar_mode_switch_to": "切换状态栏为{{mode}}",
   "statusbar_mode_detail": "当前状态栏模式：{{mode}}",
+  "status_attention": "消息提醒",
   "layout_syncing": "GUI 布局同步中：等待当前 tab 的 pane 布局",
   "terminal_output_snippet": "终端输出片段",
   "theme_switch_to": "切换到{{theme}}主题",

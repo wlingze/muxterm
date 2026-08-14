@@ -7,6 +7,8 @@ import MuxtermChrome
 /// 但这是 muxterm 自己的 status bar。
 final class StatusBarView: NSView {
     var onSelectWindow: ((UInt32) -> Void)?
+    /// 提醒位点击（文档 §B.1：与 QuickConnect 入口同一位置）。
+    var onAttentionClick: (() -> Void)?
     /// status bar 模式：tmux = 有 tmux 就跟 tmux 一致（默认）；
     /// theme = 只用 muxterm 主题黑白。
     var colorMode: StatusBarMode = .tmux
@@ -14,8 +16,18 @@ final class StatusBarView: NSView {
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
     private let windowStack = NSStackView()
+    /// 消息弹窗/提醒位：右侧固定预留的窄槽，平时空着，attention > 0 时变红点。
+    private let attentionSlot = NSView()
+    private let attentionDot = CALayer()
+    private let attentionCountLabel = NSTextField(labelWithString: "")
     private var justifyConstraints: [NSLayoutConstraint] = []
     private var heightConstraint: NSLayoutConstraint!
+    /// 最近一次快照与样式基准：订阅推送只更新 left/right 文本，不复建窗口列表。
+    private var lastSnapshot: StatusBarSnapshot?
+    private var lastBase = StatusBarTextStyle.default
+    private var lastLeftStyle = "default"
+    private var lastRightStyle = "default"
+    private var lastPlainForeground: NSColor?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -39,10 +51,31 @@ final class StatusBarView: NSView {
         // 每个窗口按钮按尾部截断（tmux 自己也会截断 status-left/right）。
         windowStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        for view in [leftLabel, windowStack, rightLabel] {
+        for view in [leftLabel, windowStack, rightLabel, attentionSlot] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
+
+        // 提醒位：固定宽度常驻，给后续消息弹窗/通知红点预留位置。
+        attentionSlot.wantsLayer = true
+        attentionSlot.layer?.backgroundColor = NSColor.clear.cgColor
+        attentionSlot.setAccessibilityIdentifier("muxterm.statusAttention")
+        attentionSlot.setAccessibilityElement(true)
+        attentionSlot.setAccessibilityRole(.button)
+        attentionSlot.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
+        attentionDot.frame = CGRect(x: 0, y: 0, width: 8, height: 8)
+        attentionDot.cornerRadius = 4
+        attentionDot.backgroundColor = NSColor.systemRed.cgColor
+        attentionDot.isHidden = true
+        attentionSlot.layer?.addSublayer(attentionDot)
+        attentionCountLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        attentionCountLabel.textColor = NSColor.systemRed
+        attentionCountLabel.alignment = .center
+        attentionCountLabel.translatesAutoresizingMaskIntoConstraints = false
+        attentionCountLabel.isHidden = true
+        attentionSlot.addSubview(attentionCountLabel)
+        let click = NSClickGestureRecognizer(target: self, action: #selector(attentionClicked))
+        attentionSlot.addGestureRecognizer(click)
 
         // 初始默认：居中。
         applyJustify("centre")
@@ -70,9 +103,17 @@ final class StatusBarView: NSView {
 
             windowStack.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            rightLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            rightLabel.trailingAnchor.constraint(equalTo: attentionSlot.leadingAnchor, constant: -4),
             rightLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             rightLabel.leadingAnchor.constraint(greaterThanOrEqualTo: windowStack.trailingAnchor, constant: 8),
+
+            attentionSlot.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            attentionSlot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            attentionSlot.widthAnchor.constraint(equalToConstant: 22),
+
+            attentionCountLabel.leadingAnchor.constraint(equalTo: attentionSlot.leadingAnchor),
+            attentionCountLabel.trailingAnchor.constraint(equalTo: attentionSlot.trailingAnchor),
+            attentionCountLabel.centerYAnchor.constraint(equalTo: attentionSlot.centerYAnchor),
 
             leftMaxWidth,
             rightMaxWidth,
@@ -85,9 +126,25 @@ final class StatusBarView: NSView {
         return nil
     }
 
+    override func layout() {
+        super.layout()
+        // 红点始终在预留槽内居中；count 文本由 Auto Layout 铺满整个槽。
+        attentionDot.frame = CGRect(
+            x: attentionSlot.bounds.midX - 4,
+            y: attentionSlot.bounds.midY - 4,
+            width: 8,
+            height: 8
+        )
+    }
+
     func apply(snapshot: StatusBarSnapshot) {
         let useTmuxColors = colorMode == .tmux
         let base = StatusBarStyleParser.parse(style: snapshot.statusStyle)
+        lastSnapshot = snapshot
+        lastBase = base
+        lastLeftStyle = snapshot.leftStyle
+        lastRightStyle = snapshot.rightStyle
+        lastPlainForeground = useTmuxColors ? nil : Self.themeForeground
         if useTmuxColors, let bg = base.bg.map(Self.color) {
             layer?.backgroundColor = bg.cgColor
         } else {
@@ -150,6 +207,52 @@ final class StatusBarView: NSView {
 
     @objc private func windowClicked(_ sender: NSButton) {
         onSelectWindow?(UInt32(sender.tag))
+    }
+
+    /// 设置提醒位（文档 §B.1）：count > 0 时亮红点并显示计数。
+    /// 消息弹窗/通知列表落地前，这个位置始终预留、不参与内容布局。
+    func setAttention(_ attention: StatusBarAttention) {
+        attentionDot.isHidden = !attention.isActive
+        attentionCountLabel.isHidden = attention.count <= 1
+        attentionCountLabel.stringValue = "\(attention.count)"
+        attentionSlot.setAccessibilityValue(
+            attention.isActive ? "\(attention.count)" : "0"
+        )
+        attentionSlot.needsLayout = true
+    }
+
+    /// 订阅推送（tmux `refresh-client -B` → `%subscription-changed`）：
+    /// 只更新 left/right 文本，复用最近一次快照的样式，不重建窗口列表。
+    func applySubscription(name: String, value: String) {
+        guard lastSnapshot != nil else { return }
+        switch name {
+        case "muxterm.status-left":
+            lastSnapshot?.left = value
+            leftLabel.attributedStringValue = Self.attributed(
+                StatusBarStyleParser.parseInline(
+                    text: value,
+                    base: merged(lastBase, lastLeftStyle)
+                ),
+                font: leftLabel.font ?? NSFont.systemFont(ofSize: 11),
+                plainForeground: lastPlainForeground
+            )
+        case "muxterm.status-right":
+            lastSnapshot?.right = value
+            rightLabel.attributedStringValue = Self.attributed(
+                StatusBarStyleParser.parseInline(
+                    text: value,
+                    base: merged(lastBase, lastRightStyle)
+                ),
+                font: rightLabel.font ?? NSFont.systemFont(ofSize: 11),
+                plainForeground: lastPlainForeground
+            )
+        default:
+            break
+        }
+    }
+
+    @objc private func attentionClicked() {
+        onAttentionClick?()
     }
 
     /// 按 justify 切换窗口列表的位置：

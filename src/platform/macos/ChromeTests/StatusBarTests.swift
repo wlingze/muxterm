@@ -200,3 +200,24 @@ final class StatusBarLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(budget.windowMin, 0)
     }
 }
+
+final class StatusBarAttentionTests: XCTestCase {
+    /// 平时是空的：没有「卡在我这里」的工作区就不亮红点。
+    func testZeroCountIsInactive() {
+        let attention = StatusBarAttention(count: 0)
+        XCTAssertFalse(attention.isActive)
+    }
+
+    /// 有事才亮：blocked/done 工作区数量 > 0 时显示红点。
+    func testPositiveCountIsActive() {
+        XCTAssertTrue(StatusBarAttention(count: 1).isActive)
+        XCTAssertTrue(StatusBarAttention(count: 3).isActive)
+    }
+
+    /// 计数只增不减的防御：负数按 0 处理，绝不出负红点。
+    func testNegativeCountClampsToZero() {
+        let attention = StatusBarAttention(count: -5)
+        XCTAssertEqual(attention.count, 0)
+        XCTAssertFalse(attention.isActive)
+    }
+}

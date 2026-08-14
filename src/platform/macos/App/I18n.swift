@@ -132,6 +132,7 @@ enum MuxtermTextKey: CaseIterable {
     case statusUnknown
     case statusBarModeSwitchTo
     case statusBarModeDetail
+    case statusAttention
     case tabs
     case tabsAccessibility
     case terminalOutputSnippet
@@ -285,6 +286,7 @@ enum MuxtermTextKey: CaseIterable {
         case .statusUnknown: return "status_unknown"
         case .statusBarModeSwitchTo: return "statusbar_mode_switch_to"
         case .statusBarModeDetail: return "statusbar_mode_detail"
+        case .statusAttention: return "status_attention"
         case .tabs: return "tabs"
         case .tabsAccessibility: return "tabs_accessibility"
         case .terminalOutputSnippet: return "terminal_output_snippet"

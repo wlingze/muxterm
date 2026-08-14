@@ -165,6 +165,7 @@ define_text_keys! {
     StatusUnknown => "status_unknown",
     StatusBarModeSwitchTo => "statusbar_mode_switch_to",
     StatusBarModeDetail => "statusbar_mode_detail",
+    StatusAttention => "status_attention",
     Tabs => "tabs",
     TabsAccessibility => "tabs_accessibility",
     TerminalOutputSnippet => "terminal_output_snippet",

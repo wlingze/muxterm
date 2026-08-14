@@ -167,6 +167,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onSelectWindow = { [weak self] tabId in
             self?.requestSwitchTab(tabId)
         }
+        // 提醒位与 QuickConnect 入口同一位置（文档 §B.1）：点红点打开切换面板。
+        content.statusBar.onAttentionClick = { [weak self] in
+            self?.openQuickConnect()
+        }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.connectionStatus.updateOutputSnippet(snippet)
         }
@@ -1179,6 +1183,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 uiStateChanged = true
             } else if ev.isBackendStatus {
                 uiStateChanged = true
+            } else if ev.type == STATE_STATUS_SUBSCRIPTION {
+                // status-left/right 订阅推送（文档 §B+）：零轮询更新原生条。
+                if !ev.name.isEmpty, let value = String(data: ev.data, encoding: .utf8) {
+                    content.statusBar.applySubscription(name: ev.name, value: value)
+                    if let snapshot = statusBarSnapshot {
+                        var updated = snapshot
+                        if ev.name == "muxterm.status-left" {
+                            updated.left = value
+                        } else if ev.name == "muxterm.status-right" {
+                            updated.right = value
+                        }
+                        statusBarSnapshot = updated
+                    }
+                }
             } else if ev.type == STATE_TAB_RENAMED {
                 // 标题会改变状态栏或焦点，但不会改变布局树。
                 uiStateChanged = true
@@ -1302,7 +1320,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 guard self.bridge === bridge else { return }
                 self.statusBarSnapshot = snapshot
                 self.content.applyStatusBar(snapshot)
-                self.scheduleStatusRefresh(snapshot)
+                // 文档 §B+：tmux ≥3.2 用 refresh-client -B 订阅推送（零轮询）；
+                // 只有老版本才保留 status-interval 轮询定时器。
+                if !bridge.statusSubscriptionActive() {
+                    self.scheduleStatusRefresh(snapshot)
+                }
             }
         }
     }

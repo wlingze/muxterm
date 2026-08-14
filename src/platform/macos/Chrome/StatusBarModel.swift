@@ -90,6 +90,19 @@ public enum StatusBarLayoutPolicy {
     }
 }
 
+/// 提醒位（文档 §B.1）：状态栏上一个常驻位置，面积趋近于零；
+/// count > 0 时变红点，表示「我是瓶颈」的工作区数量（绝不因新输出点亮）。
+/// 消息弹窗 / 通知列表后续复用这个位置，这里先预留。
+public struct StatusBarAttention: Equatable, Sendable {
+    public let count: Int
+
+    public init(count: Int) {
+        self.count = max(0, count)
+    }
+
+    public var isActive: Bool { count > 0 }
+}
+
 /// muxterm status bar 快照（对应 Rust `StatusSnapshot` 的 JSON；连接控制模式
 /// 会话时读取兼容的 status 配置，概念上属于 muxterm 自己的 status bar）。
 public struct StatusBarSnapshot: Equatable, Decodable, Sendable {
@@ -97,8 +110,9 @@ public struct StatusBarSnapshot: Equatable, Decodable, Sendable {
     public let position: String
     public let justify: String
     public let interval: UInt64
-    public let left: String
-    public let right: String
+    /// 订阅推送会原地更新（`refresh-client -B` → `%subscription-changed`）。
+    public var left: String
+    public var right: String
     public let leftLength: Int
     public let rightLength: Int
     public let statusStyle: String
