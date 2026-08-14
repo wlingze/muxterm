@@ -71,6 +71,18 @@ impl ReplicaStore {
     }
 }
 
+/// 把一条 pane 输出应用到副本（window 前台/后台 pump 共用入口）。
+pub fn apply_output_to_replicas(
+    replicas: &mut ReplicaStore,
+    ws: &str,
+    pane: u32,
+    bytes: &[u8],
+    cols: u16,
+    rows: u16,
+) {
+    replicas.feed(ws, pane, bytes, cols, rows);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +122,13 @@ mod tests {
         // 副本不受外部修改影响（返回的是克隆）。
         store.feed("ws-a", 1, b"three\r\n", 80, 24);
         assert_eq!(store.last_n_lines("ws-a", 1, 2), vec!["two", "three"]);
+    }
+
+    #[test]
+    fn apply_output_feeds_replica() {
+        let mut store = ReplicaStore::new(100);
+        apply_output_to_replicas(&mut store, "ws-a", 7, b"hello\r\n", 80, 24);
+        assert_eq!(store.last_n_lines("ws-a", 7, 1), vec!["hello"]);
     }
 
     #[test]

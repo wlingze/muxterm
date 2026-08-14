@@ -52,8 +52,8 @@ impl ConnectionSlotProtocol for WarmConnectionSlot {
         self.last_used_at = now;
     }
 
-    fn poll_background(&mut self) {
-        let _ = self.bridge.poll_events();
+    fn poll_background(&mut self) -> Vec<crate::platform::linux::ffi_bridge::BridgeEvent> {
+        self.bridge.poll_events()
     }
 
     fn evict(&mut self, _reason: ConnectionEvictionReason) {

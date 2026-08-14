@@ -16,6 +16,8 @@ use gtk4::{ApplicationWindow, Box, CssProvider, EventControllerKey, Orientation,
 use vte4::prelude::*;
 
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
+use crate::core::quickconnect::model::QuickConnect;
+use crate::core::replica::{apply_output_to_replicas, ReplicaStore};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
 use crate::platform::linux::connection_slot::{
@@ -34,7 +36,9 @@ use crate::platform::linux::quickconnect::event_policy::{
 };
 use crate::platform::linux::quickconnect::font::{FontSettings, Preferences};
 use crate::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
-use crate::platform::linux::quickconnect::pool::{ConnectionPool, ConnectionPoolPolicy};
+use crate::platform::linux::quickconnect::pool::{
+    ConnectionPool, ConnectionPoolPolicy, ConnectionSlotProtocol,
+};
 use crate::platform::linux::quickconnect::project_flow::{ProjectConnectFlow, ProjectConnectState};
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
@@ -79,6 +83,8 @@ struct UiState {
     on_last_pane_exit: OnLastPaneExit,
     /// 事件分发里不能同步 `window.close()`（可能正握着 RefCell）。
     pending_close: bool,
+    /// 跨工作区 pane 副本（前台+后台 %output 都喂这里；VTE 只显示）。
+    replicas: ReplicaStore,
 }
 
 impl UiState {
@@ -232,6 +238,7 @@ impl AppWindow {
             preferences,
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
+            replicas: ReplicaStore::new(cfg.scrollback.lines as usize),
         }));
 
         // tab 点击
@@ -320,8 +327,20 @@ impl AppWindow {
                 };
                 let pending_close = {
                     let mut s = st.borrow_mut();
-                    s.pool.poll_background_slots();
+                    for (key, events) in s.pool.poll_background_slots() {
+                        let ws = QuickConnect::unique_id(&key.target_config());
+                        let UiState { pool, replicas, .. } = &mut *s;
+                        if let Some(slot) = pool.get(&key) {
+                            for ev in &events {
+                                apply_background_event(replicas, &ws, &slot.bridge, ev);
+                            }
+                        }
+                    }
                     s.pool.evict_expired();
+                    for key in s.pool.take_evicted() {
+                        let ws = QuickConnect::unique_id(&key.target_config());
+                        s.replicas.drop_workspace(&ws);
+                    }
                     let events = s.bridge().poll_events();
                     let mut structural = false;
                     for ev in &events {
@@ -436,13 +455,19 @@ impl AppWindow {
             .unwrap_or_default()
     }
 
-    /// 测试用：ReplicaStore 中某 pane 的最近 n 行（M1.5 接真逻辑，当前为空）。
-    pub fn test_replica_last_n(&self, _pane_id: u32, _n: usize) -> Vec<String> {
-        Vec::new()
+    /// 测试用：ReplicaStore 中某 pane 的最近 n 行。
+    pub fn test_replica_last_n(&self, pane_id: u32, n: usize) -> Vec<String> {
+        let s = self._state.borrow();
+        let ws = active_workspace_id(&s);
+        s.replicas.last_n_lines(&ws, pane_id, n)
     }
 
-    /// 测试用：绕过 tmux 直接向 ReplicaStore 注入字节（M1.5 接真逻辑，当前 no-op）。
-    pub fn test_feed_replica(&self, _pane_id: u32, _bytes: &[u8]) {}
+    /// 测试用：绕过 tmux 直接向 ReplicaStore 注入字节。
+    pub fn test_feed_replica(&self, pane_id: u32, bytes: &[u8]) {
+        let mut s = self._state.borrow_mut();
+        let ws = active_workspace_id(&s);
+        apply_output_to_replicas(&mut s.replicas, &ws, pane_id, bytes, 80, 24);
+    }
 
     /// 测试用：RecordingSink 记录的通知（M3.4 接真逻辑，当前为空）。
     pub fn test_notifications_recorded(&self) -> Vec<String> {
@@ -778,6 +803,40 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
     }
 }
 
+/// 当前前台连接的 workspace id（ReplicaStore 键）。
+fn active_workspace_id(s: &UiState) -> String {
+    s.pool
+        .active_slot()
+        .map(|slot| QuickConnect::unique_id(&slot.key().target_config()))
+        .unwrap_or_default()
+}
+
+/// 后台 slot 事件只喂副本/清理副本，不碰前台 widget 树。
+/// 尺寸用该后台 slot 自己的 bridge 查询，不能拿前台 pane 尺寸替代。
+fn apply_background_event(
+    replicas: &mut ReplicaStore,
+    ws: &str,
+    bridge: &CoreBridge,
+    ev: &BridgeEvent,
+) {
+    use crate::core::protocol::ffi::types::*;
+    match ev.type_ {
+        STATE_PANE_OUTPUT => {
+            let panes = bridge.get_panes(0);
+            let (cols, rows) = panes
+                .iter()
+                .find(|p| p.id == ev.pane_id)
+                .map(|p| (p.cols, p.rows))
+                .unwrap_or((80, 24));
+            apply_output_to_replicas(replicas, ws, ev.pane_id, &ev.data, cols, rows);
+        }
+        STATE_PANE_CLOSED => {
+            replicas.drop_pane(ws, ev.pane_id);
+        }
+        _ => {}
+    }
+}
+
 fn dispatch_event_batch(s: &mut UiState, events: Vec<BridgeEvent>) {
     let types: Vec<u32> = events.iter().map(|e| e.type_).collect();
     let (now, later) = EventBatchPlan::partition(&types);
@@ -793,6 +852,14 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
     use crate::core::protocol::ffi::types::*;
     match ev.type_ {
         STATE_PANE_OUTPUT => {
+            let ws = active_workspace_id(s);
+            let panes = s.bridge().get_panes(s.active_tab);
+            let (cols, rows) = panes
+                .iter()
+                .find(|p| p.id == ev.pane_id)
+                .map(|p| (p.cols, p.rows))
+                .unwrap_or((80, 24));
+            apply_output_to_replicas(&mut s.replicas, &ws, ev.pane_id, &ev.data, cols, rows);
             if let Some(view) = s.layout.pane(ev.pane_id).cloned() {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
@@ -831,6 +898,8 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                 refresh_ui(s);
             }
             if ev.type_ == STATE_PANE_CLOSED {
+                let ws = active_workspace_id(s);
+                s.replicas.drop_pane(&ws, ev.pane_id);
                 mark_pending_close_if_session_ended(s);
             }
         }
