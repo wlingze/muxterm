@@ -14,6 +14,7 @@ use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation};
 
 use crate::core::config::Theme;
+use crate::platform::linux::lifecycle::tab_shortcut_label;
 use crate::platform::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarStyleParser,
 };
@@ -117,6 +118,19 @@ impl StatusBar {
         self.render();
     }
 
+    /// 最近一次快照是否启用 status（tmux `status on`）。
+    pub fn is_enabled(&self) -> bool {
+        self.last_snapshot
+            .borrow()
+            .as_ref()
+            .map(|s| s.enabled)
+            .unwrap_or(false)
+    }
+
+    pub fn set_visible(&self, visible: bool) {
+        self.container.set_visible(visible);
+    }
+
     /// 切换 status bar 模式（tmux / theme）并重渲染。
     pub fn set_mode(&self, mode: StatusBarMode) {
         *self.mode.borrow_mut() = mode;
@@ -178,14 +192,22 @@ impl StatusBar {
                 &snapshot.window_style
             };
             let inline_base = StatusBarStyleParser::parse(style_name);
+            let raw = if win.text.trim().is_empty() {
+                win.name.as_str()
+            } else {
+                win.text.as_str()
+            };
+            let label = tab_shortcut_label(i, raw);
             let markup = styled_markup(
-                &StatusBarStyleParser::parse_inline(&win.text, inline_base.clone()),
+                &StatusBarStyleParser::parse_inline(&label, inline_base.clone()),
                 plain_fg,
             );
             let button = Button::with_label("");
             button.set_label("");
+            button.set_has_frame(false);
             button.set_can_focus(false);
             button.add_css_class("muxterm-status-window");
+            button.add_css_class("flat");
             if win.current {
                 button.add_css_class("current");
             }
