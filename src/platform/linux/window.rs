@@ -1440,6 +1440,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_status_snapshot_reports_pane_count_and_close_hint() {
+        let snap = local_status_snapshot(3);
+        assert!(snap.enabled);
+        assert_eq!(snap.justify, "left");
+        assert!(snap.left.contains('3'), "left 应含 pane 数: {}", snap.left);
+        assert!(!snap.right.is_empty(), "right 应含关闭提示");
+        assert!(snap.windows.is_empty(), "本地模式无 tmux 窗口列表");
+        assert_eq!(snap.interval, 1);
+    }
+
+    #[test]
     fn chrome_css_follows_light_and_dark_background() {
         let light = Theme::load("light").unwrap();
         let dark = Theme::load("dark").unwrap();

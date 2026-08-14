@@ -19,12 +19,9 @@ pub struct PaneEntry {
     pub detail: Option<String>,
 }
 
-/// 弹出 pane 切换器。选中后回调；取消不回调。
-pub fn show<F>(parent: &impl IsA<Window>, panes: Vec<PaneEntry>, on_pick: F)
-where
-    F: Fn(PaneEntry) + 'static,
-{
-    let items: Vec<QuickPickItem> = panes
+/// 把 pane 列表映射成 QuickPick 条目（纯函数，便于单测）。
+pub fn pane_entries_to_items(panes: &[PaneEntry]) -> Vec<QuickPickItem> {
+    panes
         .iter()
         .enumerate()
         .map(|(i, p)| QuickPickItem {
@@ -32,7 +29,15 @@ where
             label: p.label.clone(),
             detail: p.detail.clone(),
         })
-        .collect();
+        .collect()
+}
+
+/// 弹出 pane 切换器。选中后回调；取消不回调。
+pub fn show<F>(parent: &impl IsA<Window>, panes: Vec<PaneEntry>, on_pick: F)
+where
+    F: Fn(PaneEntry) + 'static,
+{
+    let items = pane_entries_to_items(&panes);
 
     let panes = std::rc::Rc::new(panes);
     let placeholder = crate::platform::i18n::tr(crate::platform::i18n::Key::PaneSearchPlaceholder);
@@ -117,4 +122,36 @@ where
     dlg.show();
     entry.grab_focus();
     entry.select_region(0, -1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(i: usize, name: &str) -> PaneEntry {
+        PaneEntry {
+            tab: TabKey::TmuxWindow(i as u32),
+            pane: PaneKey::Tmux(i as u32),
+            name: name.into(),
+            label: format!("{i}:{name}"),
+            detail: Some(format!("detail-{name}")),
+        }
+    }
+
+    #[test]
+    fn pane_entries_map_to_quick_pick_items_in_order() {
+        let panes = vec![entry(0, "bash"), entry(1, "vim")];
+        let items = pane_entries_to_items(&panes);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "0");
+        assert_eq!(items[0].label, "0:bash");
+        assert_eq!(items[0].detail.as_deref(), Some("detail-bash"));
+        assert_eq!(items[1].id, "1");
+        assert_eq!(items[1].label, "1:vim");
+    }
+
+    #[test]
+    fn pane_entries_empty_list() {
+        assert!(pane_entries_to_items(&[]).is_empty());
+    }
 }

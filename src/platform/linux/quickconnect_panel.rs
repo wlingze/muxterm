@@ -383,4 +383,55 @@ mod tests {
         assert_eq!(new_only.len(), 1);
         assert!(matches!(new_only[0], PanelItem::NewProject));
     }
+
+    #[test]
+    fn build_items_marks_current_and_appends_new_project() {
+        let mut store = QuickConnectStore::new(None);
+        let recent = cfg("recent");
+        let project = cfg("project");
+        store.recents.push(recent.clone());
+        store.projects.push(project.clone());
+        let items = build_items(&store, Some(&recent));
+        assert_eq!(items.len(), 3);
+        assert!(matches!(
+            &items[0],
+            PanelItem::Target(entry, true) if entry.config == recent
+        ));
+        assert!(matches!(
+            &items[1],
+            PanelItem::Target(entry, false) if entry.config == project
+        ));
+        assert!(matches!(items[2], PanelItem::NewProject));
+    }
+
+    #[test]
+    fn build_items_dedupes_recent_and_project() {
+        let mut store = QuickConnectStore::new(None);
+        let dup = cfg("dup");
+        store.recents.push(dup.clone());
+        store.projects.push(dup.clone());
+        let items = build_items(&store, None);
+        assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
+        assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.config == dup));
+        assert!(matches!(items[1], PanelItem::NewProject));
+    }
+
+    #[test]
+    fn filter_matches_subtitle_and_path() {
+        let ssh = TargetConfig::new(
+            "srv",
+            TargetRuntime::Tmux,
+            TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+            "~/work",
+        );
+        let items = vec![PanelItem::Target(
+            QuickConnectEntry::new(ssh, vec![]),
+            false,
+        )];
+        assert_eq!(filter_panel_items(&items, "ryzen").len(), 1);
+        assert_eq!(filter_panel_items(&items, "work").len(), 1);
+        assert_eq!(filter_panel_items(&items, "nomatch").len(), 0);
+    }
 }
