@@ -9,16 +9,17 @@
 //!
 //! 无 DISPLAY 时跳过。本地：`xvfb-run -a cargo test --features gtk --test linux_gtk_integration`
 
+mod support;
+
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use gtk4::gdk;
 use gtk4::glib;
-use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
-use gtk4::{EventControllerKey, Orientation, Paned, ToggleButton, Widget};
+use gtk4::{Orientation, Widget};
 
-use muxterm::core::config::{Config, Theme};
+use muxterm::core::config::Config;
 use muxterm::platform::linux::ffi_bridge::{BridgeLayout, BridgeTab, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
@@ -28,24 +29,7 @@ use muxterm::platform::linux::tab_bar::TabBar;
 use muxterm::platform::linux::target_config_window;
 use muxterm::platform::linux::window::AppWindow;
 
-fn has_display() -> bool {
-    std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
-}
-
-fn skip_no_display() -> bool {
-    if has_display() {
-        return false;
-    }
-    eprintln!("skip: 无 DISPLAY/WAYLAND_DISPLAY（可用 xvfb-run -a cargo test --features gtk）");
-    true
-}
-
-fn rand_suffix() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos().to_string())
-        .unwrap_or_else(|_| "0".into())
-}
+use support::linux_gtk::*;
 
 /// 同进程内是否已跑过含 AppWindow 的重用例。
 static HEAVY_GTK_UI_DONE: AtomicBool = AtomicBool::new(false);
@@ -53,107 +37,6 @@ static HEAVY_GTK_UI_DONE: AtomicBool = AtomicBool::new(false);
 /// 同进程内是否已跑过 target-config 窗口用例。
 /// 与 AppWindow 一样，重复建/析构 GTK 窗口会触发二次析构堆损坏。
 static HEAVY_TARGET_CONFIG_DONE: AtomicBool = AtomicBool::new(false);
-
-fn gtk_test_framework_smoke() {
-    gtk4::test_register_all_types();
-    let types = gtk4::test_list_all_types();
-    assert!(!types.is_empty(), "gtk_test_list_all_types 应非空");
-}
-
-fn load_theme() -> Theme {
-    Theme::load("light").unwrap_or_else(|_| Theme {
-        name: "test".into(),
-        background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-        foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-        cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-        colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
-    })
-}
-
-fn pump_main_loop(ms: u64) {
-    let start = Instant::now();
-    let ctx = glib::MainContext::default();
-    while start.elapsed() < Duration::from_millis(ms) {
-        while ctx.iteration(false) {}
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-fn count_css_class(root: &impl IsA<Widget>, class: &str) -> usize {
-    let root = root.as_ref();
-    let mut n = usize::from(root.has_css_class(class));
-    let mut child = root.first_child();
-    while let Some(c) = child {
-        n += count_css_class(&c, class);
-        child = c.next_sibling();
-    }
-    n
-}
-
-fn find_first_paned(root: &impl IsA<Widget>) -> Option<Paned> {
-    let root = root.as_ref();
-    if let Ok(p) = root.clone().downcast::<Paned>() {
-        return Some(p);
-    }
-    let mut child = root.first_child();
-    while let Some(c) = child {
-        if let Some(found) = find_first_paned(&c) {
-            return Some(found);
-        }
-        child = c.next_sibling();
-    }
-    None
-}
-
-fn count_paned(root: &impl IsA<Widget>) -> usize {
-    let root = root.as_ref();
-    let mut n = usize::from(root.is::<Paned>());
-    let mut child = root.first_child();
-    while let Some(c) = child {
-        n += count_paned(&c);
-        child = c.next_sibling();
-    }
-    n
-}
-
-fn has_nested_paned(root: &impl IsA<Widget>) -> bool {
-    let Some(outer) = find_first_paned(root) else {
-        return false;
-    };
-    outer.start_child().is_some_and(|c| c.is::<Paned>())
-        || outer.end_child().is_some_and(|c| c.is::<Paned>())
-}
-
-fn widget_label_texts(root: &impl IsA<Widget>) -> Vec<String> {
-    let root = root.as_ref();
-    let mut out = Vec::new();
-    if let Ok(label) = root.clone().downcast::<gtk4::Label>() {
-        out.push(label.text().to_string());
-    }
-    let mut child = root.first_child();
-    while let Some(c) = child {
-        out.extend(widget_label_texts(&c));
-        child = c.next_sibling();
-    }
-    out
-}
-
-fn find_toggle_with_title(root: &impl IsA<Widget>, title: &str) -> Option<ToggleButton> {
-    let root = root.as_ref();
-    if let Ok(btn) = root.clone().downcast::<ToggleButton>() {
-        if widget_label_texts(root).iter().any(|t| t == title) {
-            return Some(btn);
-        }
-    }
-    let mut child = root.first_child();
-    while let Some(c) = child {
-        if let Some(found) = find_toggle_with_title(&c, title) {
-            return Some(found);
-        }
-        child = c.next_sibling();
-    }
-    None
-}
 
 /// 复现：新建 Project 打开后 debounce 已触发，再点 SSH 卡片。
 /// 旧实现会对已完成的 `SourceId` 再 `remove()`，在 toggled trampoline 里 abort。
@@ -199,25 +82,6 @@ fn assert_target_config_ssh_toggle_after_debounce() {
     pump_main_loop(40);
 }
 
-fn window_key_controller(window: &impl IsA<Widget>) -> Option<EventControllerKey> {
-    let list = window.as_ref().observe_controllers();
-    for i in 0..list.n_items() {
-        if let Some(obj) = list.item(i) {
-            if let Ok(ctrl) = obj.downcast::<EventControllerKey>() {
-                return Some(ctrl);
-            }
-        }
-    }
-    None
-}
-
-/// 模拟按键（GTK4 已移除 `gtk_test_widget_send_key`）。
-fn simulate_key_press(ctrl: &EventControllerKey, key: gdk::Key, mods: gdk::ModifierType) {
-    let keyval: u32 = key.into_glib();
-    let keycode: u32 = 0;
-    let _handled: bool = ctrl.emit_by_name("key-pressed", &[&keyval, &keycode, &mods]);
-}
-
 fn wait_until(app: &AppWindow, ms: u64, mut pred: impl FnMut(&AppWindow) -> bool) -> bool {
     let start = Instant::now();
     while start.elapsed() < Duration::from_millis(ms) {
@@ -229,12 +93,6 @@ fn wait_until(app: &AppWindow, ms: u64, mut pred: impl FnMut(&AppWindow) -> bool
         std::thread::sleep(Duration::from_millis(30));
     }
     false
-}
-
-/// 短唯一标记，避免窄 pane 截断。
-fn unique_marker(tag: &str) -> String {
-    let s = rand_suffix();
-    format!("{tag}{}", &s[s.len().saturating_sub(5)..])
 }
 
 /// 向当前激活 pane 发 `echo`，断言核心缓冲与 VTE 可见文本都出现标记。
