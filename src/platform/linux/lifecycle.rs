@@ -45,6 +45,17 @@ pub fn last_tabs_closed_action(policy: OnLastPaneExit) -> LastTabsClosedAction {
     }
 }
 
+/// 最后一个 tab 没了、或 backend 已 Exited 时，是否应关掉 GTK 窗口。
+///
+/// `n_tabs == 0` 覆盖「shell 里 `exit` 关掉唯一 pane」；`backend_exited`
+/// 覆盖 FFI `STATE_BACKEND_STATUS`（pane_id = Exited）。
+pub fn should_close_window(backend_exited: bool, n_tabs: usize, policy: OnLastPaneExit) -> bool {
+    match last_tabs_closed_action(policy) {
+        LastTabsClosedAction::CloseWindow => backend_exited || n_tabs == 0,
+        LastTabsClosedAction::KeepEmpty | LastTabsClosedAction::NewShell => false,
+    }
+}
+
 /// 当前 tab 内 pane 循环切换；len≤1 时返回 None（无操作）。
 pub fn next_pane_index(len: usize, idx: usize, forward: bool) -> Option<usize> {
     if len <= 1 {
@@ -58,6 +69,13 @@ pub fn next_pane_index(len: usize, idx: usize, forward: bool) -> Option<usize> {
     } else {
         idx - 1
     })
+}
+
+/// 按当前 tab 的 pane id 列表循环；对齐 macOS `PaneNavigation.target`。
+pub fn cycle_pane_id(pane_ids: &[u32], active: u32, forward: bool) -> Option<u32> {
+    let idx = pane_ids.iter().position(|&id| id == active).unwrap_or(0);
+    let next = next_pane_index(pane_ids.len(), idx, forward)?;
+    pane_ids.get(next).copied()
 }
 
 /// Alt+N 切 tab：`n==0` 为最后一个；否则 1-based 转 0-based（越界钳到 last）。
@@ -92,6 +110,65 @@ pub fn palette_should_refocus_terminal(cmd: &str) -> bool {
         cmd,
         "tmux_attach" | "tmux_new" | "ssh_connect" | "rename_pane" | "search_panes"
     )
+}
+
+/// 顶栏用 TabBar 还是 tmux status 的窗口列表（二者互斥，对齐 macOS）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabStripKind {
+    /// 本地 shell：TabBar；仅 1 个 tab 时隐藏整栏。
+    NativeTabs,
+    /// tmux/SSH：status bar 窗口列表就是 tab，不再画 TabBar。
+    StatusWindows,
+}
+
+/// tmux 且 status 启用时，用 status 窗口列表替换 TabBar。
+pub fn tab_strip_kind(uses_tmux: bool, status_enabled: bool) -> TabStripKind {
+    if uses_tmux && status_enabled {
+        TabStripKind::StatusWindows
+    } else {
+        TabStripKind::NativeTabs
+    }
+}
+
+/// 本地 TabBar：至少 2 个 tab 才显示（macOS 单 tab 隐藏）。
+pub fn native_tab_bar_visible(kind: TabStripKind, n_tabs: usize) -> bool {
+    matches!(kind, TabStripKind::NativeTabs) && n_tabs >= 2
+}
+
+/// status 条：tmux 替换模式显示窗口列表；本地底栏仅在 snapshot 启用时显示。
+pub fn status_strip_visible(kind: TabStripKind, status_enabled: bool) -> bool {
+    match kind {
+        TabStripKind::StatusWindows => true,
+        TabStripKind::NativeTabs => status_enabled,
+    }
+}
+
+/// 列表第 `position` 项（0-based）的显示标签，序号与 Alt+1..9 一致。
+///
+/// tmux `#I:#W` 若已带数字前缀会先剥掉再按快捷键位置重标，避免 `1:1:bash`，
+/// 也避免空洞窗口号和 Alt+N 对不上。
+pub fn tab_shortcut_label(position: usize, name: &str) -> String {
+    let n = position.saturating_add(1);
+    let rest = strip_existing_tab_index(name);
+    if rest.is_empty() {
+        n.to_string()
+    } else {
+        format!("{n}:{rest}")
+    }
+}
+
+fn strip_existing_tab_index(name: &str) -> &str {
+    let s = name.trim();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 && i < bytes.len() && bytes[i] == b':' {
+        s[i + 1..].trim_start()
+    } else {
+        s
+    }
 }
 
 #[cfg(test)]
@@ -143,6 +220,24 @@ mod tests {
     }
 
     #[test]
+    fn last_shell_exit_closes_window_by_default() {
+        assert!(should_close_window(true, 1, OnLastPaneExit::CloseWindow));
+        assert!(should_close_window(false, 0, OnLastPaneExit::CloseWindow));
+        assert!(!should_close_window(false, 1, OnLastPaneExit::CloseWindow));
+        assert!(!should_close_window(true, 0, OnLastPaneExit::KeepEmpty));
+        assert!(!should_close_window(true, 0, OnLastPaneExit::NewShell));
+    }
+
+    /// Ctrl+Q 会在 key handler 仍持有 RefCell 时同步触发 close-request。
+    /// 关窗回调必须 try_borrow，不能 borrow_mut（否则 panic in trampoline）。
+    #[test]
+    fn close_request_try_borrow_does_not_panic_when_already_borrowed() {
+        let cell = std::cell::RefCell::new(());
+        let _hold = cell.borrow_mut();
+        assert!(cell.try_borrow_mut().is_err());
+    }
+
+    #[test]
     fn test_lifecycle_last_tab_keep_empty() {
         assert_eq!(
             last_tabs_closed_action(OnLastPaneExit::KeepEmpty),
@@ -165,6 +260,17 @@ mod tests {
         assert_eq!(next_pane_index(3, 2, true), Some(0));
         assert_eq!(next_pane_index(3, 0, false), Some(2));
         assert_eq!(next_pane_index(3, 1, false), Some(0));
+    }
+
+    #[test]
+    fn test_lifecycle_cycle_pane_id_from_tab2_codex_layout() {
+        // 2219.log tab2：window @1 的叶子是 %2 / %8。
+        let ids = [2u32, 8];
+        assert_eq!(cycle_pane_id(&ids, 2, true), Some(8));
+        assert_eq!(cycle_pane_id(&ids, 8, true), Some(2));
+        assert_eq!(cycle_pane_id(&ids, 2, false), Some(8));
+        assert_eq!(cycle_pane_id(&ids, 8, false), Some(2));
+        assert_eq!(cycle_pane_id(&[2], 2, true), None);
     }
 
     /// 对应：单 pane 切换无操作。
@@ -221,5 +327,48 @@ mod tests {
         assert!(!palette_should_refocus_terminal("tmux_new"));
         assert!(!palette_should_refocus_terminal("rename_pane"));
         assert!(!palette_should_refocus_terminal("search_panes"));
+    }
+
+    /// tmux status 启用时不得再画 TabBar（否则会看到两排 tab）。
+    #[test]
+    fn tmux_status_replaces_native_tab_bar() {
+        let kind = tab_strip_kind(true, true);
+        assert_eq!(kind, TabStripKind::StatusWindows);
+        assert!(!native_tab_bar_visible(kind, 1));
+        assert!(!native_tab_bar_visible(kind, 3));
+        assert!(status_strip_visible(kind, true));
+    }
+
+    /// 本地 shell：1 个 tab 隐藏栏，2 个才显示；status 仍作底栏。
+    #[test]
+    fn local_tab_bar_hides_when_single_tab() {
+        let kind = tab_strip_kind(false, true);
+        assert_eq!(kind, TabStripKind::NativeTabs);
+        assert!(!native_tab_bar_visible(kind, 1));
+        assert!(native_tab_bar_visible(kind, 2));
+        assert!(status_strip_visible(kind, true));
+    }
+
+    #[test]
+    fn tmux_status_off_falls_back_to_native_tabs() {
+        let kind = tab_strip_kind(true, false);
+        assert_eq!(kind, TabStripKind::NativeTabs);
+        assert!(native_tab_bar_visible(kind, 2));
+        assert!(!native_tab_bar_visible(kind, 1));
+        assert!(!status_strip_visible(kind, false));
+    }
+
+    #[test]
+    fn tab_shortcut_label_matches_alt_n() {
+        assert_eq!(tab_shortcut_label(0, "shell"), "1:shell");
+        assert_eq!(tab_shortcut_label(1, "build"), "2:build");
+        assert_eq!(tab_shortcut_label(2, "vim"), "3:vim");
+        assert_eq!(tab_shortcut_label(3, "logs"), "4:logs");
+        assert_eq!(tab_shortcut_label(0, ""), "1");
+        assert_eq!(tab_shortcut_label(0, "1:shell"), "1:shell");
+        assert_eq!(tab_shortcut_label(0, " 1:bash*"), "1:bash*");
+        // 列表第 1 项应对 Alt+1，即使 tmux #I 是 3
+        assert_eq!(tab_shortcut_label(0, "3:vim"), "1:vim");
+        assert_eq!(tab_shortcut_label(1, "3:vim"), "2:vim");
     }
 }

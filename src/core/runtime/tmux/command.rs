@@ -401,6 +401,17 @@ pub fn select_pane(pane: PaneId) -> TmuxCommand {
     build(&[pane_target(pane)], "select-pane")
 }
 
+/// 当前 window 的下一个 pane。tmux 没有 `select-pane -N`；正确写法是 `-t :.+`。
+pub fn select_pane_next() -> TmuxCommand {
+    TmuxCommand::from_raw("select-pane -t :.+".into())
+}
+
+/// 当前 window 的上一个 pane。tmux 没有 `select-pane -P` 表示 previous
+///（`-P` 是已废弃的 pane style）；正确写法是 `-t :.-`。
+pub fn select_pane_prev() -> TmuxCommand {
+    TmuxCommand::from_raw("select-pane -t :.-".into())
+}
+
 /// select-window -t <window>。
 pub fn select_window(window: WindowId) -> TmuxCommand {
     build(&[window_target(window)], "select-window")
@@ -669,6 +680,20 @@ mod tests {
     #[test]
     fn select_pane_cmd() {
         assert_eq!(select_pane(PaneId(2)).as_str(), "select-pane -t %2");
+    }
+
+    #[test]
+    fn select_pane_relative_uses_tmux_window_offset() {
+        assert_eq!(select_pane_next().as_str(), "select-pane -t :.+");
+        assert_eq!(select_pane_prev().as_str(), "select-pane -t :.-");
+        assert!(
+            !select_pane_next().as_str().contains(" -N"),
+            "tmux 3.7 没有 select-pane -N"
+        );
+        assert!(
+            !select_pane_prev().as_str().contains(" -P"),
+            "select-pane -P 是设样式，不是 previous pane"
+        );
     }
 
     #[test]
