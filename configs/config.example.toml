@@ -146,4 +146,19 @@ action = "search"
 [[keybindings]]
 key = "p"
 mods = ["alt"]
+action = "quick_connect"
+
+[[keybindings]]
+key = "p"
+mods = ["alt", "shift"]
 action = "command_palette"
+
+[[keybindings]]
+key = "c"
+mods = ["control", "shift"]
+action = "copy"
+
+[[keybindings]]
+key = "v"
+mods = ["control", "shift"]
+action = "paste"
