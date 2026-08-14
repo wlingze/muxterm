@@ -11,6 +11,8 @@
 //! - 不处理完整渲染细节（例如真正绘制颜色），只做「状态层面」的验证：
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
+use std::collections::VecDeque;
+
 use vte::ansi::{
     Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
     KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
@@ -157,7 +159,7 @@ pub struct TerminalState {
     /// G0-G3 字符集指定（DEC charset designation）。
     pub charsets: [StandardCharset; 4],
     /// scrollback：从屏幕顶部滚出的行（字符串），有上限。
-    pub scrollback: Vec<String>,
+    pub scrollback: VecDeque<String>,
     /// scrollback 上限（行数）。
     scrollback_max: usize,
     /// 当前激活字符集（SI/SO 切换）。
@@ -269,7 +271,7 @@ impl TerminalState {
             palette: default_palette(),
             charsets: [StandardCharset::default(); 4],
             active_charset: CharsetIndex::G0,
-            scrollback: Vec::new(),
+            scrollback: VecDeque::new(),
             scrollback_max: max_lines.max(1),
             processor: Processor::default(),
         }
@@ -480,8 +482,10 @@ impl TerminalState {
                     // 去掉行尾空白，保持 scrollback 可读
                     self.push_scrollback(s.trim_end().to_string());
                 }
+                // 先取列数：rows=1 时 remove(0) 会让 grid 暂时为空，cols() 返回 0。
+                let cols = self.cols();
                 self.grid.remove(0);
-                self.grid.push(vec![Cell::blank(); self.cols()]);
+                self.grid.push(vec![Cell::blank(); cols]);
             } else if top < self.rows() && bottom < self.rows() {
                 // 部分滚动区域（DECSTBM）：区域顶行滚出、区域底行补空，
                 // 区域外的行不能动。htop 正是靠这个固定表头/表尾只滚动正文。
@@ -498,9 +502,9 @@ impl TerminalState {
     /// 把一行推入 scrollback（按 `with_scrollback` 上限截断）。
     fn push_scrollback(&mut self, line: String) {
         if self.scrollback.len() >= self.scrollback_max {
-            self.scrollback.remove(0);
+            self.scrollback.pop_front();
         }
-        self.scrollback.push(line);
+        self.scrollback.push_back(line);
     }
 
     /// scrollback 行数。
@@ -1010,6 +1014,7 @@ fn xterm_rgb(color: Rgb) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use vte::ansi::{Color::*, NamedColor, Rgb};
 
     /// 便捷：喂字节后返回去尾空白的屏幕快照。
@@ -1707,6 +1712,18 @@ mod scrollback_tests {
         assert!(
             t.scrollback_line(49).unwrap().contains("row199") || t.scrollback_line(49).is_some()
         );
+    }
+
+    /// 淘汰必须丢最旧行：上限 3，喂 a/b/c/d 后最旧是 b。
+    #[test]
+    fn scrollback_eviction_drops_oldest() {
+        let mut t = TerminalState::with_scrollback(10, 1, 3);
+        for line in ["a", "b", "c", "d"] {
+            t.feed(format!("{line}\r\n").as_bytes());
+        }
+        assert_eq!(t.scrollback_lines(), 3);
+        assert_eq!(t.scrollback_line(0), Some("b"));
+        assert_eq!(t.scrollback_line(2), Some("d"));
     }
 
     /// 清屏不应污染 scrollback（ESC[2J 只清当前屏）。
