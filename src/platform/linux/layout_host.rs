@@ -188,10 +188,11 @@ impl LayoutHost {
                 let w2 = self.build_widget(second);
                 paned.set_start_child(Some(&w1));
                 paned.set_end_child(Some(&w2));
-                // ratio 0..=1000 → 位置百分比近似
-                let _ratio = (*ratio).min(1000) as f64 / 1000.0;
-                paned.set_position(1);
-                let _ = _ratio;
+                paned.set_resize_start_child(true);
+                paned.set_resize_end_child(true);
+                paned.set_shrink_start_child(false);
+                paned.set_shrink_end_child(false);
+                bind_split_position(&paned, *horizontal, *ratio);
                 paned.upcast()
             }
         }
@@ -206,6 +207,39 @@ fn collect_pane_ids(layout: &BridgeLayout, out: &mut Vec<u32>) {
             collect_pane_ids(second, out);
         }
     }
+}
+
+/// GtkPaned 位置（像素）。`ratio_permille` 为 0..=1000。
+pub(crate) fn split_position_px(total: i32, ratio_permille: u32) -> i32 {
+    if total <= 2 {
+        return 1;
+    }
+    let pos = i64::from(ratio_permille.min(1000)) * i64::from(total) / 1000;
+    pos.clamp(1, i64::from(total - 1)) as i32
+}
+
+fn apply_split_position(paned: &Paned, horizontal: bool, ratio_permille: u32) {
+    let total = if horizontal {
+        paned.width()
+    } else {
+        paned.height()
+    };
+    let want = split_position_px(total, ratio_permille);
+    if (paned.position() - want).abs() > 2 {
+        paned.set_position(want);
+    }
+}
+
+fn bind_split_position(paned: &Paned, horizontal: bool, ratio_permille: u32) {
+    apply_split_position(paned, horizontal, ratio_permille);
+    let p = paned.clone();
+    paned.connect_notify_local(Some("width"), move |_, _| {
+        apply_split_position(&p, horizontal, ratio_permille);
+    });
+    let p = paned.clone();
+    paned.connect_notify_local(Some("height"), move |_, _| {
+        apply_split_position(&p, horizontal, ratio_permille);
+    });
 }
 
 fn layout_signature(layout: &BridgeLayout) -> String {
@@ -223,5 +257,19 @@ fn layout_signature(layout: &BridgeLayout) -> String {
             layout_signature(first),
             layout_signature(second)
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_position_uses_ratio_not_one_pixel() {
+        assert_eq!(split_position_px(1000, 500), 500);
+        assert_eq!(split_position_px(800, 250), 200);
+        assert_eq!(split_position_px(100, 0), 1);
+        assert_eq!(split_position_px(100, 1000), 99);
+        assert_ne!(split_position_px(640, 500), 1);
     }
 }
