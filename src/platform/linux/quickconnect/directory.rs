@@ -421,4 +421,17 @@ mod tests {
         c.select("foo");
         assert_eq!(c.text, "~/Devel/foo/");
     }
+
+    #[test]
+    fn set_transport_ssh_without_alias_skips_remote_target() {
+        let mut c = DirectorySuggestionController::new("~");
+        let req = c.set_transport(true, None);
+        assert!(req.is_ssh);
+        assert_eq!(req.alias, None);
+        let req = c.set_transport(true, Some("ryzen"));
+        assert_eq!(req.alias.as_deref(), Some("ryzen"));
+        let req = c.set_transport(false, Some("ryzen"));
+        assert!(!req.is_ssh);
+        assert_eq!(req.alias, None);
+    }
 }

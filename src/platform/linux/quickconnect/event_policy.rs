@@ -43,6 +43,7 @@ pub mod state_types {
     pub const STATE_PANE_CLOSED: u32 = 5;
     pub const STATE_ACTIVE_TAB_CHANGED: u32 = 6;
     pub const STATE_ACTIVE_PANE_CHANGED: u32 = 7;
+    pub const STATE_PANE_RESIZED: u32 = 9;
 }
 
 /// FFI 状态事件的渲染策略。
@@ -79,6 +80,52 @@ impl EventBatchPlan {
         requires_layout_reload: impl Fn(u32) -> bool,
     ) -> bool {
         types.iter().any(|t| requires_layout_reload(*t))
+    }
+
+    /// 同一批里若有布局/尺寸变化，PaneOutput 必须等网格对齐后再喂。
+    /// 否则 htop/codex 按新列数生成的 CUP 会画进旧宽度（折行、表头叠表）。
+    pub fn defer_output(types: &[u32]) -> bool {
+        types.iter().any(|&t| {
+            StateEventPolicy::requires_layout_reload(t) || t == state_types::STATE_PANE_RESIZED
+        })
+    }
+
+    /// 先处理非输出事件（布局、resize），再处理 `%output`。
+    pub fn partition(types: &[u32]) -> (Vec<usize>, Vec<usize>) {
+        let defer = Self::defer_output(types);
+        let mut now = Vec::new();
+        let mut later = Vec::new();
+        for (i, t) in types.iter().enumerate() {
+            if defer && *t == state_types::STATE_PANE_OUTPUT {
+                later.push(i);
+            } else {
+                now.push(i);
+            }
+        }
+        (now, later)
+    }
+}
+
+/// 用 VTE 实际列数驱动 `refresh-client -C`，避免 root 像素/字宽算出
+/// 比 widget 更宽的 client（htop CUP 画到 VTE 右缘之外再折行）。
+pub enum ClientSizePolicy {}
+
+impl ClientSizePolicy {
+    pub fn cols(vte_cols: i64, allocated: bool, root_w: u64, cell_w: i64) -> Option<u16> {
+        if allocated && vte_cols >= 2 {
+            return Some(vte_cols.clamp(2, u16::MAX as i64) as u16);
+        }
+        if cell_w <= 0 || root_w == 0 {
+            return None;
+        }
+        Some((root_w / cell_w as u64).clamp(2, u16::MAX as u64) as u16)
+    }
+
+    pub fn rows(root_h: u64, cell_h: i64) -> Option<u16> {
+        if cell_h <= 0 || root_h == 0 {
+            return None;
+        }
+        Some((root_h / cell_h as u64).clamp(1, u16::MAX as u64) as u16)
     }
 }
 
@@ -126,5 +173,35 @@ mod tests {
             &[0, 7, 8],
             StateEventPolicy::requires_layout_reload
         ));
+    }
+
+    #[test]
+    fn htop_output_deferred_until_after_layout_and_resize() {
+        use state_types::{STATE_LAYOUT_CHANGED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED};
+        // 2219/2144：%layout-change + PaneResized + htop %output 同一批。
+        let types = [STATE_LAYOUT_CHANGED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED];
+        assert!(EventBatchPlan::defer_output(&types));
+        let (now, later) = EventBatchPlan::partition(&types);
+        assert_eq!(now, vec![0, 2], "布局和 resize 必须先于输出");
+        assert_eq!(later, vec![1]);
+        // 同一批里 output 写在 resize 前面时，仍要先 resize。
+        let types = [STATE_PANE_OUTPUT, STATE_PANE_RESIZED];
+        let (now, later) = EventBatchPlan::partition(&types);
+        assert_eq!(now, vec![1]);
+        assert_eq!(later, vec![0]);
+        assert!(!EventBatchPlan::defer_output(&[STATE_PANE_OUTPUT]));
+        let (now, later) = EventBatchPlan::partition(&[STATE_PANE_OUTPUT]);
+        assert_eq!(now, vec![0]);
+        assert!(later.is_empty());
+    }
+
+    #[test]
+    fn client_cols_prefer_vte_over_pixel_division() {
+        // 2310.log：root/字宽算出 128，VTE 已布局时用实际 120，避免 htop 折行。
+        assert_eq!(ClientSizePolicy::cols(120, true, 1280, 10), Some(120));
+        // 未实现前 VTE 默认 80，不能压过像素推算。
+        assert_eq!(ClientSizePolicy::cols(80, false, 1280, 10), Some(128));
+        assert_eq!(ClientSizePolicy::rows(580, 10), Some(58));
+        assert_eq!(ClientSizePolicy::rows(0, 10), None);
     }
 }
