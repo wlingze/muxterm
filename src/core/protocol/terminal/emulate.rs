@@ -13,6 +13,7 @@
 
 use std::collections::VecDeque;
 
+use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use vte::ansi::{
     Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
     KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
@@ -171,6 +172,13 @@ pub struct TerminalState {
     scrollback_max: usize,
     /// 下一条 scrollback 行的 seq（从 1 起，淘汰后不回退）。
     next_seq: u64,
+    /// 本次 feed 中累计的注意力信号。
+    signals: Vec<AttentionSignal>,
+    /// OSC 注意力收集器：是否刚看到 ESC（等待 `]` 或普通字符）。
+    osc_esc_seen: bool,
+    /// OSC 注意力收集器：尚未终止的 OSC 原始字节（含 ESC ] 前缀）。
+    /// 与 vte 并行维护，支持跨 feed 截断（`\x1b]133` + `;C\x07`）。
+    osc_pending: Option<Vec<u8>>,
     /// 当前激活字符集（SI/SO 切换）。
     pub active_charset: CharsetIndex,
     processor: Processor,
@@ -283,6 +291,9 @@ impl TerminalState {
             scrollback: VecDeque::new(),
             scrollback_max: max_lines.max(1),
             next_seq: 1,
+            signals: Vec::new(),
+            osc_esc_seen: false,
+            osc_pending: None,
             processor: Processor::default(),
         }
     }
@@ -312,6 +323,11 @@ impl TerminalState {
     /// 字面文本。
     pub fn take_reply(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pending_reply)
+    }
+
+    /// 取出本次 feed 累计的注意力信号，并清空队列。
+    pub fn take_attention_signals(&mut self) -> Vec<AttentionSignal> {
+        std::mem::take(&mut self.signals)
     }
 
     /// 运行时 resize：保留屏幕内容 / 光标 / 滚动区域，只调整行列。
@@ -396,9 +412,97 @@ impl TerminalState {
         // 把 processor 临时取出来，避免与 `self`（作为 Handler）同时可变借用。
         let mut processor = std::mem::take(&mut self.processor);
         for &b in bytes {
+            // vte 0.13 的 Handler 不暴露 osc_dispatch，OSC 由内部 Performer
+            // 直接派发成 set_title/set_color 等；注意力 OSC 在这里并行收集。
+            self.scan_attention_byte(b);
             processor.advance(self, b);
         }
         self.processor = processor;
+    }
+
+    /// OSC 注意力收集器（LINUX-PLAN §0.4）。
+    ///
+    /// 只认 `ESC ] ... BEL|ST` 的 OSC 帧：133 的 A/B/C/D/P 与
+    /// 9/99/777/1337 通知类产生信号，其余原样留给 vte 处理。
+    fn scan_attention_byte(&mut self, b: u8) {
+        if self.osc_pending.is_some() {
+            let mut buf = self.osc_pending.take().expect("is_some 分支必须命中");
+            let mut terminated = false;
+            if self.osc_esc_seen {
+                if b == b'\\' {
+                    terminated = true;
+                } else {
+                    buf.push(b);
+                }
+                self.osc_esc_seen = false;
+            } else if b == 0x1b {
+                buf.push(b);
+                self.osc_esc_seen = true;
+            } else if b == 0x07 {
+                terminated = true;
+            } else {
+                buf.push(b);
+            }
+            if terminated {
+                self.process_attention_osc(buf);
+            } else {
+                self.osc_pending = Some(buf);
+            }
+            return;
+        }
+        if self.osc_esc_seen {
+            if b == b']' {
+                self.osc_pending = Some(vec![0x1b, b']']);
+                self.osc_esc_seen = false;
+            } else {
+                self.osc_esc_seen = false;
+                // 普通 ESC + 非 `]`：不是 OSC，重新按当前字节处理。
+                self.scan_attention_byte(b);
+            }
+            return;
+        }
+        if b == 0x1b {
+            self.osc_esc_seen = true;
+        }
+    }
+
+    /// 处理一条完整的注意力 OSC（其余 OSC 由 vte 正常处理，这里直接忽略）。
+    fn process_attention_osc(&mut self, raw: Vec<u8>) {
+        let body = raw.get(2..).unwrap_or(&[]);
+        let params: Vec<&[u8]> = body.split(|&b| b == b';').collect();
+        if params.is_empty() || params[0].is_empty() {
+            return;
+        }
+        match params[0] {
+            b"133" => {
+                let code = params.get(1).and_then(|p| p.first()).copied();
+                match code {
+                    Some(b'C') => self.signals.push(AttentionSignal::CommandStart),
+                    Some(b'D') => {
+                        // OSC 133;D;<exit>：按 `;` 拆分后退出码在第 3 段。
+                        let exit = params
+                            .get(2)
+                            .and_then(|p| p.first())
+                            .and_then(|c| (*c as char).to_digit(10))
+                            .map(|n| n as u8);
+                        self.signals
+                            .push(AttentionSignal::CommandDone { exit_code: exit });
+                    }
+                    Some(b'A' | b'P') => {
+                        // prompt start：Working 尚未收到 D → 视为结束（无退出码）。
+                        self.signals
+                            .push(AttentionSignal::CommandDone { exit_code: None });
+                    }
+                    _ => {}
+                }
+            }
+            b"9" | b"99" | b"777" | b"1337" => {
+                self.signals.push(AttentionSignal::AttentionRequest {
+                    source: AttentionSource::OscNotify,
+                });
+            }
+            _ => {}
+        }
     }
 
     /// 屏幕快照：每行一个字符串（行尾空白保留）。
@@ -1071,6 +1175,13 @@ impl Handler for TerminalState {
         if index < self.palette.len() {
             self.palette[index] = default_palette()[index];
         }
+    }
+
+    /// BEL：进程求关注 → Blocked。
+    fn bell(&mut self) {
+        self.signals.push(AttentionSignal::AttentionRequest {
+            source: AttentionSource::Bel,
+        });
     }
 }
 
@@ -1866,6 +1977,172 @@ mod scrollback_tests {
         t.feed(b"\x1b[2J"); // clear all
         assert_eq!(t.scrollback_lines(), before, "清屏不应改动 scrollback");
         assert_eq!(snap(&t), Vec::<String>::new());
+    }
+}
+
+#[cfg(test)]
+mod attention_signal_tests {
+    use super::*;
+
+    #[test]
+    fn osc133_c_emits_command_start() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;C\x07");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![AttentionSignal::CommandStart]
+        );
+    }
+
+    #[test]
+    fn osc133_d_emits_command_done_with_exit() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;D;0\x07");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![AttentionSignal::CommandDone { exit_code: Some(0) }]
+        );
+    }
+
+    #[test]
+    fn osc133_d_without_exit_emits_none() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;D\x1b\\");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![AttentionSignal::CommandDone { exit_code: None }]
+        );
+    }
+
+    #[test]
+    fn osc133_a_and_p_treated_as_done() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;A;aid=1\x07");
+        t.feed(b"\x1b]133;P\x07");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![
+                AttentionSignal::CommandDone { exit_code: None },
+                AttentionSignal::CommandDone { exit_code: None },
+            ]
+        );
+    }
+
+    #[test]
+    fn osc133_b_ignored() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;B\x07");
+        assert!(t.take_attention_signals().is_empty());
+    }
+
+    #[test]
+    fn bel_emits_attention_request() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x07");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel
+            }]
+        );
+    }
+
+    #[test]
+    fn osc9_and_777_emit_osc_notify() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]9;hi\x07");
+        t.feed(b"\x1b]777;notify;x;y\x07");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![
+                AttentionSignal::AttentionRequest {
+                    source: AttentionSource::OscNotify
+                },
+                AttentionSignal::AttentionRequest {
+                    source: AttentionSource::OscNotify
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_osc_keeps_printing() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;X\x07hello");
+        assert!(t.take_attention_signals().is_empty());
+        assert_eq!(t.snapshot_trimmed(), vec!["hello"]);
+    }
+
+    #[test]
+    fn truncated_osc_resumes_across_feeds() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133");
+        assert!(t.take_attention_signals().is_empty());
+        t.feed(b";C\x07");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![AttentionSignal::CommandStart]
+        );
+    }
+
+    #[test]
+    fn title_osc_still_sets_title() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]0;my-title\x07");
+        assert!(t.take_attention_signals().is_empty());
+        assert_eq!(t.title.as_deref(), Some("my-title"));
+    }
+
+    #[test]
+    fn fixture_osc_attention_passthrough_decodes_to_signals() {
+        // E1 fixture 的 %output 行经 ControlEscapeDecoder 还原后 feed，
+        // 应产出 OSC 133 C / D 与 BEL/9/777 信号（PASS_THROUGH 三态）。
+        let decoder = crate::core::runtime::tmux::protocol::ControlEscapeDecoder::new();
+        let raw = include_str!("../../../../tests/samples/osc-attention-tmux3.7b.txt");
+        let mut t = TerminalState::new(80, 24);
+        let mut saw = Vec::new();
+        for line in raw.lines() {
+            if !line.starts_with("%output ") {
+                continue;
+            }
+            // 3.7b 控制模式直接写 `%output %0 <content>`（无引号）；
+            // 取 pane id 之后的内容并解码 C 转义。
+            let rest = &line["%output ".len()..];
+            let Some(space) = rest.find(' ') else {
+                continue;
+            };
+            let content = &rest[space + 1..];
+            let decoded = decoder.decode(content).unwrap_or_default();
+            t.feed(&decoded);
+            saw.extend(t.take_attention_signals());
+        }
+        assert!(
+            saw.contains(&AttentionSignal::CommandStart),
+            "fixture 应含 CommandStart: {saw:?}"
+        );
+        assert!(
+            saw.iter()
+                .any(|s| matches!(s, AttentionSignal::CommandDone { exit_code: Some(0) })),
+            "fixture 应含 CommandDone(0): {saw:?}"
+        );
+        assert!(
+            saw.iter().any(|s| matches!(
+                s,
+                AttentionSignal::AttentionRequest {
+                    source: AttentionSource::Bel
+                }
+            )),
+            "fixture 应含 Bel: {saw:?}"
+        );
+        assert!(
+            saw.iter().any(|s| matches!(
+                s,
+                AttentionSignal::AttentionRequest {
+                    source: AttentionSource::OscNotify
+                }
+            )),
+            "fixture 应含 OscNotify: {saw:?}"
+        );
     }
 }
 
