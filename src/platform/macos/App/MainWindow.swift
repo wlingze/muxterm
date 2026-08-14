@@ -472,9 +472,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     box.flow.createSucceeded()
                     self.runProjectFlow(box, config: config)
                 case .failure(let error):
-                    box.flow.createFailed(message: error.localizedDescription)
-                    self.activeProjectFlow = nil
-                    self.showError(error, prefix: "create session failed")
+                    let msg = error.localizedDescription
+                    // session 已存在（attach 失败后 create 撞名）：直接重试 attach，
+                    // 不报错——session 可能在上一步 attach 和 create 之间被其他进程创建。
+                    if msg.contains("duplicate session") {
+                        box.flow.createSucceeded()
+                        self.runProjectFlow(box, config: config)
+                    } else {
+                        box.flow.createFailed(message: msg)
+                        self.activeProjectFlow = nil
+                        self.showError(error, prefix: "create session failed")
+                    }
                 }
             }
         case .attachCreated:

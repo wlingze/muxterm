@@ -86,13 +86,14 @@ final class StatusBarView: NSView {
         rightLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         rightLabel.isHidden = true
 
-        // 状态点（绿/黄/红）
+        // 状态点（绿/黄/红）—— 悬停显示 tooltip，点击弹出详细信息。
         statusDot.wantsLayer = true
         statusDot.layer?.backgroundColor = NSColor.clear.cgColor
         statusDot.setAccessibilityIdentifier("muxterm.statusDot")
         statusDot.setAccessibilityElement(true)
         statusDot.setAccessibilityRole(.button)
         statusDot.setAccessibilityLabel("Connection status")
+        statusDot.toolTip = "Click for connection details"
         statusDotLayer.frame = CGRect(x: 5, y: 5, width: 8, height: 8)
         statusDotLayer.cornerRadius = 4
         statusDotLayer.backgroundColor = NSColor.systemGreen.cgColor
@@ -314,19 +315,24 @@ final class StatusBarView: NSView {
         if let errorText {
             _ = errorText
             color = NSColor.systemRed
+            statusDot.toolTip = "Error: \(errorText) — click for details"
         } else {
             switch connectionSummary.status {
             case "connected":
                 // SSH 时按流量速率变色：高速=黄，否则=绿。
                 if connectionSummary.type == "ssh" && trafficRate > 1_000_000 {
                     color = NSColor.systemYellow
+                    statusDot.toolTip = "SSH \(connectionSummary.host ?? "") — high traffic ↓\(formatTraffic(trafficRate))/s — click for details"
                 } else {
                     color = NSColor.systemGreen
+                    statusDot.toolTip = "\(connectionSummary.type) \(connectionSummary.host ?? "") — connected — click for details"
                 }
             case "connecting":
                 color = NSColor.systemYellow
+                statusDot.toolTip = "Connecting... — click for details"
             case "disconnected", "exited":
                 color = NSColor.systemRed
+                statusDot.toolTip = "\(connectionSummary.status) — click for details"
             default:
                 color = NSColor.tertiaryLabelColor
             }
@@ -350,30 +356,45 @@ final class StatusBarView: NSView {
         return "\(typeText)\(host) \(connectionSummary.status)\(traffic)\(debug)"
     }
 
-    /// 点击状态点 → 弹出 debug 信息。
+    /// 点击状态点 → 弹出 debug 信息（连接状态 + SSH 流量 + debug tabs/panes）。
     @objc private func statusDotClicked() {
+        // 如果已有弹出框，先关闭再开（避免重复）。
+        statusPopover?.close()
+        statusPopover = nil
+
         let info = statusDotAccessibilityLabel
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 320, height: 80)
-        let field = NSTextField(labelWithString: "")
-        field.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        field.stringValue = info
-        field.preferredMaxLayoutWidth = 300
-        field.lineBreakMode = .byCharWrapping
-        field.cell?.truncatesLastVisibleLine = false
-        field.cell?.wraps = true
+        popover.animates = true
+
         let container = NSView()
-        container.addSubview(field)
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        // 多行文本：连接类型 + host + 状态 + 流量 + debug 信息 + 错误。
+        let field = NSTextField(wrappingLabelWithString: info)
+        field.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        field.textColor = NSColor.labelColor
+        field.preferredMaxLayoutWidth = 280
+        field.isEditable = false
+        field.isSelectable = true
+        field.drawsBackground = false
         field.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(field)
+
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            field.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            field.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            field.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+            field.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            field.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            field.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            field.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
         ])
-        popover.contentViewController = NSViewController()
-        popover.contentViewController?.view = container
+
+        let vc = NSViewController()
+        vc.view = container
+        popover.contentViewController = vc
+        // 按内容自适应高度。
+        popover.contentSize = NSSize(width: 320, height: 60)
+
         popover.show(relativeTo: statusDot.bounds, of: statusDot, preferredEdge: .minY)
         statusPopover = popover
     }
