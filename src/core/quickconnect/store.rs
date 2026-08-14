@@ -24,10 +24,7 @@ pub const MAX_RECENT: usize = 20;
 
 /// 用户配置文件路径：`~/.config/muxterm/quickconnect.toml`。
 pub fn user_quickconnect_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("muxterm").join("quickconnect.toml"))
+    crate::core::config::user_config_dir().map(|d| d.join("quickconnect.toml"))
 }
 
 impl QuickConnectStore {
@@ -35,6 +32,12 @@ impl QuickConnectStore {
         let mut store = QuickConnectStore::default();
         if let Some(url) = file_url {
             store.load(&url);
+            let missing = !url.exists();
+            store.file_url = Some(url);
+            // 启动时若文件不存在，写出空 projects，保证配置目录可被发现。
+            if missing {
+                store.persist();
+            }
         }
         store
     }
@@ -159,9 +162,22 @@ impl QuickConnectStore {
             return;
         };
         if let Some(parent) = file_url.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(
+                    target = "muxterm::quickconnect",
+                    path = %parent.display(),
+                    "创建 QuickConnect 配置目录失败: {e}"
+                );
+                return;
+            }
         }
-        let _ = std::fs::write(file_url, self.encode());
+        if let Err(e) = std::fs::write(file_url, self.encode()) {
+            tracing::warn!(
+                target = "muxterm::quickconnect",
+                path = %file_url.display(),
+                "写入 quickconnect.toml 失败: {e}"
+            );
+        }
     }
 }
 
@@ -333,5 +349,56 @@ runtime = "weird"
         assert!(!store.upsert_project(&b));
         assert_eq!(store.projects.len(), 1);
         assert_eq!(store.projects[0].path, "~/b");
+    }
+
+    fn temp_qc_path() -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "muxterm-qc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        dir.join("quickconnect.toml")
+    }
+
+    /// 回归：`new()` 必须记住落盘路径，否则 upsert 静默不写文件。
+    #[test]
+    fn persist_creates_config_dir_and_writes_projects() {
+        let path = temp_qc_path();
+        let parent = path.parent().unwrap().to_path_buf();
+        let _ = std::fs::remove_dir_all(&parent);
+        let mut store = QuickConnectStore::new(Some(path.clone()));
+        assert!(
+            path.exists(),
+            "启动时应创建空的 quickconnect.toml: {}",
+            path.display()
+        );
+        store.upsert_project(&cfg(
+            "muxterm",
+            TargetRuntime::Shell,
+            TargetTransport::Local,
+            "~/Developer/self/muxterm",
+        ));
+        let text = std::fs::read_to_string(&path).expect("应能读回 quickconnect.toml");
+        assert!(text.contains("name = \"muxterm\""));
+        assert!(text.contains("runtime = \"shell\""));
+        let back = QuickConnectStore::new(Some(path.clone()));
+        assert_eq!(back.projects.len(), 1);
+        assert_eq!(back.projects[0].name, "muxterm");
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn user_quickconnect_path_is_under_user_config_dir() {
+        let dir = crate::core::config::user_config_dir();
+        let qc = user_quickconnect_path();
+        match (dir, qc) {
+            (Some(d), Some(p)) => assert_eq!(p, d.join("quickconnect.toml")),
+            (None, None) => {}
+            other => panic!("config dir 与 quickconnect 路径应同时有或同时无: {other:?}"),
+        }
     }
 }

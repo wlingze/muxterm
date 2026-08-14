@@ -13,6 +13,9 @@
 //! - `[behavior]` 最后 pane 退出 / 异常退出策略
 //! - `[[keybindings]]` key/mods/action 数组
 //!
+//! QuickConnect 项目列表在同目录的 `quickconnect.toml`（见
+//! [`crate::core::quickconnect`]），不写进 `config.toml`。
+//!
 //! 主题：`configs/themes/<name>.toml` 或 `~/.config/muxterm/themes/<name>.toml`，
 //! 定义 ANSI 16 色 + 背景/前景/光标。解析逻辑是纯函数，附单元测试。
 
@@ -435,10 +438,15 @@ pub fn decode_wait_status(status: i32) -> i32 {
     }
 }
 
+/// 用户配置目录：`~/.config/muxterm`（或 `$XDG_CONFIG_HOME/muxterm`）。
+pub fn user_config_dir() -> Option<PathBuf> {
+    dirs_config()
+}
+
 impl Config {
     /// 用户配置文件路径：`~/.config/muxterm/config.toml`。
     pub fn user_config_path() -> Option<PathBuf> {
-        dirs_config().map(|d| d.join("config.toml"))
+        user_config_dir().map(|d| d.join("config.toml"))
     }
 
     /// 加载：优先用户配置，缺失走默认。
@@ -866,6 +874,18 @@ color15 = "#a6adc8"
         assert_eq!(c.scrollback.lines, 10000);
         // 空 keybindings → 补默认全套
         assert_eq!(c.keybindings.len(), default_keybindings().len());
+    }
+
+    #[test]
+    fn user_config_dir_contains_config_toml() {
+        match (user_config_dir(), Config::user_config_path()) {
+            (Some(dir), Some(file)) => {
+                assert_eq!(file, dir.join("config.toml"));
+                assert!(dir.ends_with("muxterm"));
+            }
+            (None, None) => {}
+            other => panic!("user_config_dir 与 user_config_path 应同时有或同时无: {other:?}"),
+        }
     }
 
     #[test]
