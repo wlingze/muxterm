@@ -1,6 +1,7 @@
 //! Linux 前端（GTK4 + vte4），经 FFI 调用核心。
 
 pub mod app;
+pub mod attention_ui;
 pub mod command_palette;
 pub mod connection_slot;
 pub mod ffi_bridge;

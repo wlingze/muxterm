@@ -17,10 +17,12 @@ use vte4::prelude::*;
 
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::AttentionEngine;
+use crate::core::attention::state::PaneStatus;
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::replica::{apply_output_to_replicas, ReplicaStore};
 use crate::platform::i18n::{self, Key};
+use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
 use crate::platform::linux::connection_slot::{
     connection_key, startup_connection_key, WarmConnectionSlot,
@@ -89,8 +91,10 @@ struct UiState {
     replicas: ReplicaStore,
     /// 注意力引擎（信号 → 状态机 → blocked 工作区聚合）。
     attention: AttentionEngine<RealClock>,
-    /// 本轮进入 blocked 的 workspace 通知日志（C3.4 换 NotificationSink）。
+    /// 本轮进入 blocked 的 workspace 通知日志（测试钩子读取）。
     notification_log: Vec<String>,
+    /// 通知出口（生产 GioSink fail-soft；测试可替换）。
+    notification_sink: std::boxed::Box<dyn NotificationSink>,
 }
 
 impl UiState {
@@ -247,6 +251,7 @@ impl AppWindow {
             replicas: ReplicaStore::new(cfg.scrollback.lines as usize),
             attention: AttentionEngine::new(cfg.attention.clone(), RealClock),
             notification_log: Vec::new(),
+            notification_sink: std::boxed::Box::new(GioSink::new(None)),
         }));
 
         // tab 点击
@@ -377,10 +382,16 @@ impl AppWindow {
                     }
                     dispatch_event_batch(&mut s, events);
                     let notifications = s.attention.take_new_blocked_notifications();
+                    for ws in &notifications {
+                        s.notification_sink.notify_blocked(ws, "needs attention");
+                    }
                     s.notification_log.extend(notifications);
                     sync_pane_outputs(&mut s);
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);
+                    if let Some(w) = win_weak.upgrade() {
+                        refresh_attention_chrome(&s, &w);
+                    }
                     let close = s.pending_close;
                     if close {
                         s.pending_close = false;
@@ -447,9 +458,13 @@ impl AppWindow {
             let events = s.bridge().poll_events();
             dispatch_event_batch(&mut s, events);
             let notifications = s.attention.take_new_blocked_notifications();
+            for ws in &notifications {
+                s.notification_sink.notify_blocked(ws, "needs attention");
+            }
             s.notification_log.extend(notifications);
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
+            refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
             if close {
                 s.pending_close = false;
@@ -855,6 +870,18 @@ fn feed_replica_and_engine(
     s.attention.apply(ws, pane, &signals, &last_line, seq);
 }
 
+/// 刷新状态栏红点与窗口标题（blocked 工作区数）。
+fn refresh_attention_chrome(s: &UiState, window: &Window) {
+    let n = s.attention.blocked_workspace_count();
+    s.status.set_attention(n);
+    let workspace = s
+        .pool
+        .active_slot()
+        .map(|slot| slot.key().target_config().name)
+        .unwrap_or_else(|| "muxterm".into());
+    window.set_title(Some(&window_title(n, &workspace)));
+}
+
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
 fn active_workspace_id(s: &UiState) -> String {
     s.pool
@@ -972,6 +999,23 @@ fn mark_pending_close_if_session_ended(s: &mut UiState) {
 fn refresh_ui(s: &mut UiState) {
     let tabs = s.bridge().get_tabs();
     s.tabs.set_tabs(&tabs);
+    // 工作区注意力标记：当前连接的工作区 blocked/done 反映到 tab 前缀。
+    {
+        let ws = active_workspace_id(s);
+        let snap = s.attention.snapshot();
+        let ws_status = snap.iter().find(|w| w.workspace_id == ws).map(|w| {
+            if w.blocked > 0 {
+                PaneStatus::Blocked
+            } else if w.done > 0 {
+                PaneStatus::Done
+            } else {
+                PaneStatus::Idle
+            }
+        });
+        for t in &tabs {
+            s.tabs.set_attention(t.id, ws_status);
+        }
+    }
     let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id).collect();
     s.tab_gate.on_snapshot(&tab_ids);
     if let Some(active) = tabs.iter().find(|t| t.is_active) {
