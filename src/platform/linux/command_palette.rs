@@ -1,4 +1,4 @@
-//! VSCode 风格命令面板（Alt+P）。
+//! VSCode 风格命令面板（Linux Alt+Shift+P / macOS Cmd+Shift+P）。
 //!
 //! 顶部输入框模糊搜索 + 下方命令列表；↑↓ 选中，Enter 执行，Esc 关闭。
 //! 基于 [`crate::platform::linux::quick_pick`]。
@@ -9,6 +9,77 @@ use gtk4::Window;
 use crate::platform::linux::quick_pick::{self, fuzzy_match, QuickPickItem};
 
 pub const TMUX_DETACH_COMMAND: &str = "tmux_detach";
+
+/// 命令面板 id → 动作（纯逻辑，保证列出的命令都有处理分支）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteAction {
+    TmuxAttach,
+    TmuxNew,
+    TmuxDetach,
+    SshConnect,
+    SshDisconnect,
+    NewTab,
+    NewPane,
+    NewPaneVertical,
+    ClosePane,
+    CloseTab,
+    CloseWindow,
+    SwitchTab(usize),
+    SwitchPanePrev,
+    SwitchPaneNext,
+    SearchPanes,
+    RenamePane,
+    ReloadConfig,
+    OpenConfig,
+    Preferences,
+    Language,
+    QuickConnect,
+    TogglePaneFullscreen,
+    IncreaseFontSize,
+    DecreaseFontSize,
+    ResetFontSize,
+    ToggleTheme,
+    ToggleStatusBarMode,
+    Quit,
+}
+
+/// 解析命令面板 id；未知 id 返回 None。
+pub fn parse_palette_action(id: &str) -> Option<PaletteAction> {
+    Some(match id {
+        "tmux_attach" => PaletteAction::TmuxAttach,
+        "tmux_new" => PaletteAction::TmuxNew,
+        TMUX_DETACH_COMMAND => PaletteAction::TmuxDetach,
+        "ssh_connect" => PaletteAction::SshConnect,
+        "ssh_disconnect" => PaletteAction::SshDisconnect,
+        "new_tab" | "new_window" => PaletteAction::NewTab,
+        "new_pane" => PaletteAction::NewPane,
+        "new_pane_vertical" => PaletteAction::NewPaneVertical,
+        "close_pane" => PaletteAction::ClosePane,
+        "close_tab" => PaletteAction::CloseTab,
+        "close_window" => PaletteAction::CloseWindow,
+        "switch_pane_prev" => PaletteAction::SwitchPanePrev,
+        "switch_pane_next" => PaletteAction::SwitchPaneNext,
+        "search_panes" => PaletteAction::SearchPanes,
+        "rename_pane" => PaletteAction::RenamePane,
+        "reload_config" => PaletteAction::ReloadConfig,
+        "open_config" => PaletteAction::OpenConfig,
+        "preferences" => PaletteAction::Preferences,
+        "language" => PaletteAction::Language,
+        "quick_connect" => PaletteAction::QuickConnect,
+        "toggle_pane_fullscreen" => PaletteAction::TogglePaneFullscreen,
+        "increase_font_size" => PaletteAction::IncreaseFontSize,
+        "decrease_font_size" => PaletteAction::DecreaseFontSize,
+        "reset_font_size" => PaletteAction::ResetFontSize,
+        "theme" => PaletteAction::ToggleTheme,
+        "statusbar_mode" => PaletteAction::ToggleStatusBarMode,
+        "quit" => PaletteAction::Quit,
+        id if id.starts_with("switch_tab_") => {
+            let n = id.trim_start_matches("switch_tab_").parse().ok()?;
+            PaletteAction::SwitchTab(n)
+        }
+        _ => return None,
+    })
+}
 
 /// 一条核心命令。
 #[derive(Debug, Clone)]
@@ -469,6 +540,30 @@ mod tests {
         let f = filter_commands("attach");
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].id, "tmux_attach");
+    }
+
+    #[test]
+    fn every_core_command_has_a_palette_action() {
+        for cmd in core_commands() {
+            assert!(
+                parse_palette_action(cmd.id).is_some(),
+                "命令面板 id 无处理分支: {}",
+                cmd.id
+            );
+        }
+        assert_eq!(
+            parse_palette_action("ssh_connect"),
+            Some(PaletteAction::SshConnect)
+        );
+        assert_eq!(
+            parse_palette_action("tmux_attach"),
+            Some(PaletteAction::TmuxAttach)
+        );
+        assert_eq!(
+            parse_palette_action("theme"),
+            Some(PaletteAction::ToggleTheme)
+        );
+        assert_eq!(parse_palette_action("not-a-command"), None);
     }
 
     #[test]
