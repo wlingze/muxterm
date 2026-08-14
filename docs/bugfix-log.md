@@ -116,6 +116,15 @@
 - 测试：`StatusBarLayoutPolicyTests`（左右段封顶 + 窗口列表最小宽度预算）
 - Commit：`b74290d fix(macos): keep status bar inside window bounds`
 
+## 18. codex 输入换行后内容消失（SwiftTerm 模型比 tmux pane 窄 1–2 列）
+
+- 原因：SwiftTerm `processSizeChange` 用 `getEffectiveWidth` 扣除滚动条预留宽度
+  （overlay 16pt），模型列数比 `refresh-client -C` 发给 tmux 的 pane 少 1–2 列。
+  1058 日志里 tmux pane 87×29、SwiftTerm 模型只有 85 列：codex 的 87 列帧提前
+  折行，erase-up 行数对不上，输入换行后内容被擦掉。
+- 测试：`SwiftTermGridSyncRegressionTests`（隐藏滚动条后模型必须等于 pane 列数；
+  可见滚动条会让模型缩水）
+- Commit：待填
 ## 待验证（需要用户实测/新日志）
 
 - Cmd-T 新建 tab 卡住：core 3s 超时回归不卡，疑似前端，缺复现日志。

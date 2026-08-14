@@ -53,6 +53,13 @@ final class MuxTerminalView: TerminalView {
         self.fontFamily = fontFamily
         self.fontSize = MuxtermTerminalFont.clamp(fontSize)
         super.init(frame: frame)
+        // SwiftTerm 为每条可见滚动条预留 ~16pt，模型列数会比 tmux pane 少
+        // 1–2 列（`processSizeChange` 用 getEffectiveWidth 扣掉滚动条宽度）。
+        // agent 帧按 pane 宽度折行，SwiftTerm 提前折行，erase-up 行数对不上，
+        // 换行后输入区/提示内容被擦掉（1721/1740/1745 同族根因）。Muxterm
+        // 不需要可见滚动条指示器（触控板/滚轮滚动照常），隐藏它让模型宽度
+        // = pane 宽度，与 `refresh-client -C` 发给 tmux 的列数一致。
+        subviews.first(where: { $0 is NSScroller })?.isHidden = true
         terminalDelegate = self
         wantsLayer = true
         font = Self.makeFont(family: fontFamily, size: self.fontSize)

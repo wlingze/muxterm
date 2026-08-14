@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import SwiftTerm
 
@@ -42,5 +43,41 @@ final class ResizeRedrawRegressionTests: XCTestCase {
         XCTAssertEqual(gridCount(t, "STATUS-A"), 0, "旧帧 STATUS-A 不得残留")
         XCTAssertEqual(gridCount(t, "STATUS-B"), 0, "旧帧 STATUS-B 不得残留")
         XCTAssertEqual(gridCount(t, "STATUS-C"), 0, "旧帧 STATUS-C 不得残留")
+    }
+}
+
+/// SwiftTerm 视图层回归：模型列数必须等于 Muxterm 发给 tmux 的 pane 列数。
+///
+/// 根因：SwiftTerm 的 `processSizeChange` 用 `getEffectiveWidth` 扣掉滚动条
+/// 预留宽度（overlay 下 16pt），而 Muxterm 的 `refresh-client -C` 用容器全宽
+/// 计算列数。于是 tmux pane = 87 列、SwiftTerm 模型 = 85 列：codex 的 87 列
+/// 帧提前折行，erase-up 行数对不上，输入换行后内容消失（1058 日志复现）。
+/// MuxTerminalView 在 init 时隐藏滚动条，让两边都用全宽 → 模型 = pane。
+final class SwiftTermGridSyncRegressionTests: XCTestCase {
+    private func makeView(width: CGFloat, height: CGFloat) -> TerminalView {
+        TerminalView(
+            frame: NSRect(x: 0, y: 0, width: width, height: height),
+            font: NSFont(name: "Menlo", size: 18)
+        )
+    }
+
+    /// 与 1058 日志相同的几何：Muxterm 算出的 client 87×29。
+    /// 隐藏滚动条后 SwiftTerm 模型必须是 87×29，不允许再少 1–2 列。
+    func testHiddenScrollerKeepsModelEqualToTmuxPaneColumns() {
+        let view = makeView(width: 957, height: 609)
+        view.subviews.first(where: { $0 is NSScroller })?.isHidden = true
+        view.setFrameSize(NSSize(width: 957, height: 609))
+        let dims = view.getTerminal().getDims()
+        XCTAssertEqual(dims.cols, 87, "隐藏滚动条后模型列数必须等于 tmux pane 列数")
+        XCTAssertEqual(dims.rows, 29)
+    }
+
+    /// 记录 bug 机制：滚动条可见时 SwiftTerm 模型会缩水（这里应为 85 列）。
+    /// 该断言同时防止未来改动把滚动条重新打开而不修尺寸计算。
+    func testVisibleScrollerShrinksModelColumns() {
+        let view = makeView(width: 957, height: 609)
+        view.setFrameSize(NSSize(width: 957, height: 609))
+        let dims = view.getTerminal().getDims()
+        XCTAssertLessThan(dims.cols, 87, "可见滚动条会让模型列数少于 pane 列数")
     }
 }
