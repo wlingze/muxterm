@@ -162,6 +162,27 @@ final class StatusBarView: NSView {
             plainForeground: plainForeground
         )
 
+        rebuildWindowButtons(snapshot)
+    }
+
+    @objc private func windowClicked(_ sender: NSButton) {
+        onSelectWindow?(UInt32(sender.tag))
+    }
+
+    /// 前端驱动高亮：切 tab 时立即把高亮移到目标窗口，不等 tmux 慢查询
+    /// （文档 §B+：status bar 是 muxterm 自己的原生条，选中态由前端控制）。
+    func markCurrentWindow(_ windowId: UInt32) {
+        guard let snapshot = lastSnapshot else { return }
+        let updated = snapshot.updatingCurrentWindow(windowId)
+        guard updated.windows != snapshot.windows else { return }
+        lastSnapshot = updated
+        // 只重建窗口列表按钮（样式/高亮），left/right 与提醒位不动。
+        rebuildWindowButtons(updated)
+    }
+
+    private func rebuildWindowButtons(_ snapshot: StatusBarSnapshot) {
+        let useTmuxColors = colorMode == .tmux
+        let plainForeground = lastPlainForeground
         windowStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for (i, win) in snapshot.windows.enumerated() {
             if i > 0 {
@@ -174,7 +195,6 @@ final class StatusBarView: NSView {
             button.isBordered = false
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: win.current ? .semibold : .regular)
             button.tag = Int(win.windowId)
-            // 窗口多/名字长时按尾部截断，而不是把整条 bar 撑出窗口。
             button.lineBreakMode = .byTruncatingTail
             button.cell?.lineBreakMode = .byTruncatingTail
             button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -185,14 +205,11 @@ final class StatusBarView: NSView {
                 font: button.font ?? NSFont.systemFont(ofSize: 11),
                 plainForeground: plainForeground
             )
-            // 当前窗口按 tmux window-status-current-style 的 bg 画整块高亮，
-            // 切 tab 后立刻可辨（不能只靠文字颜色/粗体）。
             if useTmuxColors, let bg = inlineBase.bg {
                 button.wantsLayer = true
                 button.layer?.cornerRadius = 3
                 button.layer?.backgroundColor = Self.color(bg).cgColor
             } else if !useTmuxColors, win.current {
-                // GUI 黑白模式：当前窗口用主题色淡底高亮。
                 button.wantsLayer = true
                 button.layer?.cornerRadius = 3
                 button.layer?.backgroundColor = Self.themeAccent.cgColor
@@ -203,10 +220,6 @@ final class StatusBarView: NSView {
             windowStack.addArrangedSubview(button)
         }
         applyJustify(snapshot.justify)
-    }
-
-    @objc private func windowClicked(_ sender: NSButton) {
-        onSelectWindow?(UInt32(sender.tag))
     }
 
     /// 设置提醒位（文档 §B.1）：count > 0 时亮红点并显示计数。

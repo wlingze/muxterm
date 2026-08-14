@@ -134,7 +134,7 @@ final class TerminalManager: TerminalInputHandler {
             return
         }
         let existed = views[paneId] != nil
-        let view = view(for: paneId)
+        _ = view(for: paneId)
         if PaneOutputFeedPolicy.shouldFeedEvent(
             viewExistedBeforeEvent: existed,
             seedCoveredEvent: viewsCreatedThisBatch.contains(paneId)

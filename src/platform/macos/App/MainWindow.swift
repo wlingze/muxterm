@@ -35,6 +35,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var reportedColourPanes = Set<UInt32>()
     /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
     private var statusBarSnapshot: StatusBarSnapshot?
+    /// statusbar 需要刷新（tab 增删/激活才置位；layout-change/pane 事件不触发，
+    /// 避免多 tab 时每次结构事件都 spawn 1+N 个 tmux 子进程造成卡顿）。
+    private var statusBarNeedsRefresh = false
     private var statusRefreshTimer: Timer?
     private var lastStatusFetchAt = Date.distantPast
     /// 结构事件后的 status bar 刷新（合并同一轮事件，避免 resize 风暴逐帧查询）。
@@ -836,6 +839,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.statusBarMode)
             ),
             PaletteItem(
+                title: i18n.tr(.menuTabBarTop),
+                detail: i18n.tr(.tabBarTopDetail),
+                keywords: "tab bar position top 标签栏 顶部",
+                kind: .command(.tabBarTop)
+            ),
+            PaletteItem(
+                title: i18n.tr(.menuTabBarBottom),
+                detail: i18n.tr(.tabBarBottomDetail),
+                keywords: "tab bar position bottom 标签栏 底部",
+                kind: .command(.tabBarBottom)
+            ),
+            PaletteItem(
                 title: i18n.tr(.quitMuxterm),
                 detail: i18n.tr(.quitMuxtermDetail),
                 keywords: "quit exit 退出",
@@ -904,6 +919,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toggleTheme()
         case .command(.statusBarMode):
             toggleStatusBarMode()
+        case .command(.tabBarTop):
+            commandPalette.dismiss()
+            setTabBarTop(nil)
+        case .command(.tabBarBottom):
+            commandPalette.dismiss()
+            setTabBarBottom(nil)
         case .command(.quit):
             commandPalette.dismiss()
             NSApp.terminate(nil)
@@ -1176,8 +1197,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 needsLayoutReload = true
                 if ev.type == STATE_ACTIVE_TAB_CHANGED {
                     tabSwitchGate.onTabChanged(to: ev.tabId)
+                    // 前端驱动高亮：立即把 statusbar 高亮移到目标 tab，
+                    // 不等子进程快照查询（用户要求：tmux 不同步就前端控制）。
+                    content.statusBar.markCurrentWindow(ev.tabId)
+                    statusBarNeedsRefresh = true
                 } else if ev.type == STATE_TAB_CLOSED {
                     tabSwitchGate.onTabClosed(ev.tabId)
+                    // 本地移除已关闭 tab 的 statusbar 条目，立即反馈；
+                    // scheduleStatusBarRefresh 随后用权威快照兜底。
+                    removeStatusBarWindow(ev.tabId)
+                    statusBarNeedsRefresh = true
+                } else if ev.type == STATE_TAB_ADDED {
+                    statusBarNeedsRefresh = true
                 }
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
@@ -1224,9 +1255,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // 触发（日志里没有 refresh-client -r 的原因）。纯输出也要补报。
             reportPaneColoursIfNeeded(lastSnapshot.panes)
         }
-        if needsLayoutReload {
-            // 结构事件（窗口增删/重命名/布局变化）后刷新 status bar；
-            // 走防抖调度，避免 2s 节流把切 tab 后的高亮更新吞掉。
+        if statusBarNeedsRefresh {
+            statusBarNeedsRefresh = false
+            // 只有 tab 增删/激活才刷新 status bar（走防抖调度，避免
+            // 2s 节流把切 tab 后的高亮更新吞掉）；layout-change 不触发，
+            // 防止多 tab 时每次结构事件都 spawn 1+N 个子进程。
             scheduleStatusBarRefresh()
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
@@ -1295,6 +1328,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 reportedColourPanes.insert(id)
             }
         }
+    }
+
+    /// 本地移除 statusbar 里已关闭的窗口条目（前端驱动，立即反馈）。
+    private func removeStatusBarWindow(_ tabId: UInt32) {
+        guard let snapshot = statusBarSnapshot else { return }
+        let updated = snapshot.removingWindow(tabId)
+        guard updated.windows.count != snapshot.windows.count else { return }
+        statusBarSnapshot = updated
+        content.statusBar.apply(snapshot: updated)
     }
 
     /// 抓取并应用 tmux status bar 快照（只读查询，后台执行）。

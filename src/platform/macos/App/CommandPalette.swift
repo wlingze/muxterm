@@ -15,6 +15,8 @@ enum PaletteCommand: Equatable {
     case language
     case theme
     case statusBarMode
+    case tabBarTop
+    case tabBarBottom
     case togglePaneFullscreen
     case quit
 }

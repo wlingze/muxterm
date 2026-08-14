@@ -123,7 +123,7 @@ public struct StatusBarSnapshot: Equatable, Decodable, Sendable {
     public let windowCurrentFormat: String
     public let windowStyle: String
     public let windowCurrentStyle: String
-    public let windows: [StatusBarWindow]
+    public var windows: [StatusBarWindow]
     public let error: String?
 
     enum CodingKeys: String, CodingKey {
@@ -148,12 +148,32 @@ public struct StatusBarWindow: Equatable, Decodable, Sendable {
     public let index: UInt32
     public let name: String
     public let flags: String
-    public let current: Bool
+    /// 前端驱动的高亮标记：切 tab 时本地更新，不等 tmux 慢查询。
+    public var current: Bool
     public let text: String
 
     enum CodingKeys: String, CodingKey {
         case windowId = "window_id"
         case index, name, flags, current, text
+    }
+}
+
+extension StatusBarSnapshot {
+    /// 前端驱动高亮：把 current 标记移到指定窗口，返回新快照。
+    /// 切 tab 时立即调用，不等 tmux 快照查询（文档 §B+ 前端控制选中态）。
+    public func updatingCurrentWindow(_ windowId: UInt32) -> StatusBarSnapshot {
+        var copy = self
+        for i in copy.windows.indices {
+            copy.windows[i].current = copy.windows[i].windowId == windowId
+        }
+        return copy
+    }
+
+    /// 前端驱动关闭：移除指定窗口条目，返回新快照。
+    public func removingWindow(_ windowId: UInt32) -> StatusBarSnapshot {
+        var copy = self
+        copy.windows.removeAll { $0.windowId == windowId }
+        return copy
     }
 }
 

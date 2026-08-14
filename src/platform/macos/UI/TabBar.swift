@@ -155,6 +155,11 @@ private final class TabCellButton: NSButton {
         isBordered = false
         setButtonType(.momentaryChange)
         font = NSFont.systemFont(ofSize: 11, weight: active ? .semibold : .regular)
+        // tab 多时每个单元变窄，标题必须截断而不是把整条栏撑出窗口。
+        lineBreakMode = .byTruncatingTail
+        cell?.lineBreakMode = .byTruncatingTail
+        cell?.truncatesLastVisibleLine = true
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         contentTintColor = active ? NSColor.labelColor : NSColor.secondaryLabelColor
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor

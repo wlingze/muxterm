@@ -151,5 +151,7 @@
   "cmd_reload_config": "Reload Config",
   "cmd_open_config": "Open Config File",
   "cmd_preferences": "Preferences",
-  "cmd_switch_tab": "Switch to Tab {{number}}"
+  "cmd_switch_tab": "Switch to Tab {{number}}",
+  "tab_bar_top_detail": "Move the tab bar to the top",
+  "tab_bar_bottom_detail": "Move the tab bar to the bottom"
 }

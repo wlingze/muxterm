@@ -408,7 +408,7 @@ final class CoreBridge {
 
     /// 抓取 status bar 快照（只读查询，tmux 兼容），返回 JSON 文本。
     func statusBarSnapshotJSON() -> String? {
-        guard let handle else { return nil }
+        guard handle != nil else { return nil }
         return backendType.withCString { bt in
             Self.withOptionalCString(sshAlias) { alias in
                 Self.withOptionalCString(socket) { sock in

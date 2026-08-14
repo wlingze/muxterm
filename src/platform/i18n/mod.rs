@@ -129,6 +129,8 @@ define_text_keys! {
     MenuSwitchTab => "menu_switch_tab",
     MenuTabBarBottom => "menu_tab_bar_bottom",
     MenuTabBarTop => "menu_tab_bar_top",
+    TabBarTopDetail => "tab_bar_top_detail",
+    TabBarBottomDetail => "tab_bar_bottom_detail",
     MenuView => "menu_view",
     MenuWindow => "menu_window",
     NewSession => "new_session",

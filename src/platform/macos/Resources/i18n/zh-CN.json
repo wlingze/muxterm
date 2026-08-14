@@ -151,5 +151,7 @@
   "cmd_reload_config": "重新加载配置",
   "cmd_open_config": "打开配置文件",
   "cmd_preferences": "偏好设置",
-  "cmd_switch_tab": "切换到标签页 {{number}}"
+  "cmd_switch_tab": "切换到标签页 {{number}}",
+  "tab_bar_top_detail": "把标签栏移到顶部",
+  "tab_bar_bottom_detail": "把标签栏移到底部"
 }

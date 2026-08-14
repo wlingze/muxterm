@@ -342,13 +342,11 @@ public enum TerminalQueryDetector {
             sawGreater = true
             i += 1
         }
-        let paramsStart = i
         while i < bytes.count, bytes[i].isASCIIDigit || bytes[i] == UInt8(ascii: ";") {
             i += 1
         }
         guard i < bytes.count else { return nil }
         let final = bytes[i]
-        let params = Array(bytes[paramsStart..<i])
         switch final {
         case UInt8(ascii: "c"):
             return (.csiDeviceAttributes, i - start + 1)

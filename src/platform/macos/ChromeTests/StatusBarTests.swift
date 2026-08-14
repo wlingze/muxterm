@@ -221,3 +221,82 @@ final class StatusBarAttentionTests: XCTestCase {
         XCTAssertFalse(attention.isActive)
     }
 }
+
+final class StatusBarFrontendSyncTests: XCTestCase {
+    /// 解码出的快照 current 标记可变：前端驱动高亮的前提。
+    func testDecodedWindowsAreMutable() throws {
+        let json = """
+        {
+          "ok": true,
+          "status": {
+            "enabled": true,
+            "position": "bottom",
+            "justify": "left",
+            "interval": 15,
+            "left": "",
+            "right": "",
+            "left_length": 20,
+            "right_length": 50,
+            "status_style": "bg=green,fg=black",
+            "left_style": "default",
+            "right_style": "default",
+            "separator": " ",
+            "window_format": " #I:#W ",
+            "window_current_format": " #I:#W ",
+            "window_style": "default",
+            "window_current_style": "default",
+            "windows": [
+              { "window_id": 0, "index": 1, "name": "a", "flags": "", "current": true, "text": " 1:a " },
+              { "window_id": 1, "index": 2, "name": "b", "flags": "", "current": false, "text": " 2:b " }
+            ],
+            "error": null
+          }
+        }
+        """
+        let response = try JSONDecoder().decode(StatusBarResponse.self, from: Data(json.utf8))
+        let snapshot = try XCTUnwrap(response.status)
+        XCTAssertTrue(snapshot.windows[0].current)
+        XCTAssertFalse(snapshot.windows[1].current)
+
+        // 前端切到 tab2：高亮立即移动，不依赖 tmux 查询。
+        let switched = snapshot.updatingCurrentWindow(1)
+        XCTAssertFalse(switched.windows[0].current)
+        XCTAssertTrue(switched.windows[1].current)
+    }
+
+    /// tab 关闭后前端本地移除条目，Alt+N 不再指向幽灵 tab。
+    func testRemovingWindowDropsTabEntry() throws {
+        let json = """
+        {
+          "ok": true,
+          "status": {
+            "enabled": true,
+            "position": "bottom",
+            "justify": "left",
+            "interval": 15,
+            "left": "",
+            "right": "",
+            "left_length": 20,
+            "right_length": 50,
+            "status_style": "bg=green,fg=black",
+            "left_style": "default",
+            "right_style": "default",
+            "separator": " ",
+            "window_format": " #I:#W ",
+            "window_current_format": " #I:#W ",
+            "window_style": "default",
+            "window_current_style": "default",
+            "windows": [
+              { "window_id": 0, "index": 1, "name": "a", "flags": "", "current": true, "text": " 1:a " },
+              { "window_id": 3, "index": 2, "name": "c", "flags": "", "current": false, "text": " 2:c " }
+            ],
+            "error": null
+          }
+        }
+        """
+        let response = try JSONDecoder().decode(StatusBarResponse.self, from: Data(json.utf8))
+        let snapshot = try XCTUnwrap(response.status)
+        let after = snapshot.removingWindow(3)
+        XCTAssertEqual(after.windows.map(\.windowId), [0])
+    }
+}
