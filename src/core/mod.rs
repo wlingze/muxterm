@@ -7,6 +7,7 @@ pub mod executable;
 pub mod logging;
 pub mod model;
 pub mod protocol;
+pub mod quickconnect;
 pub mod runtime;
 pub mod transport;
 pub mod types;

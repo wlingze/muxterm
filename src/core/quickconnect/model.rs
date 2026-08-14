@@ -88,6 +88,12 @@ impl TargetConfig {
             path: path.into(),
         }
     }
+
+    /// 命令面板 / SSH 向导：attach 指定 tmux session。
+    pub fn tmux_session(session: impl Into<String>, transport: TargetTransport) -> Self {
+        let session = session.into();
+        TargetConfig::new(session, TargetRuntime::Tmux, transport, "~")
+    }
 }
 
 /// 快速连接条目上的小标记：目标同时是 Recent 和/或 Project。
@@ -259,6 +265,20 @@ mod tests {
         };
         assert_eq!(ssh.create_backend(), ("ssh", Some("ryzen")));
         assert_eq!(ssh.attach_backend(), ("tmux-ssh", Some("ryzen")));
+    }
+
+    #[test]
+    fn tmux_session_helper_keeps_ssh_alias() {
+        let cfg = TargetConfig::tmux_session(
+            "legion",
+            TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+        );
+        assert_eq!(cfg.name, "legion");
+        assert_eq!(cfg.runtime, TargetRuntime::Tmux);
+        assert_eq!(cfg.transport.attach_backend(), ("tmux-ssh", Some("ryzen")));
+        assert_eq!(cfg.transport.create_backend(), ("ssh", Some("ryzen")));
     }
 
     #[test]
