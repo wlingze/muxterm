@@ -732,10 +732,10 @@ fn paste_active_pane(s: &UiState, state: &Rc<RefCell<UiState>>) {
         let Ok(Some(text)) = result else {
             return;
         };
-        let data = crate::core::protocol::terminal::mirror::encode_clipboard_paste(
-            text.as_str(),
-            bracketed,
-        );
+        let text =
+            crate::core::protocol::terminal::mirror::sanitize_paste(text.as_str(), bracketed);
+        let data =
+            crate::core::protocol::terminal::mirror::encode_clipboard_paste(&text, bracketed);
         if data.is_empty() {
             return;
         }
