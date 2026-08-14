@@ -421,6 +421,8 @@ pub enum Message {
     UnlinkedWindowAdd { window: WindowId },
     /// `%unlinked-window-close <window_id>`
     UnlinkedWindowClose { window: WindowId },
+    /// `%unlinked-window-renamed <window_id> <name>`（tmux 3.3+ 实测带 name）
+    UnlinkedWindowRenamed { window: WindowId, name: String },
     /// `%exit [<reason>...]`
     Exit { reason: Option<String> },
     /// `%window-pane-changed <window_id> <pane_id>`：某 window 的激活 pane 切换。
@@ -430,11 +432,14 @@ pub enum Message {
         session: SessionId,
         window: WindowId,
     },
-    /// `%extended-output <pane_id> <type> <args>`（tmux 3.3+，如 hyperlink）
+    /// `%extended-output <pane_id> <age> ... : <value>`（pause-after 下的
+    /// %output 新形式；value 与 %output 一样是 C 转义字符串，age 是缓冲毫秒）。
     ExtendedOutput {
         pane: PaneId,
-        output_type: String,
-        args: String,
+        age_ms: u64,
+        content: Vec<u8>,
+        /// 原始转义字符串（剥引号后），便于调试 / 重新编码。
+        raw_content: String,
     },
     /// `%pause <flags...>`（tmux 3.3+ 流控）：pane 输出被暂停（`pause-after`）。
     /// 第一版只「识别并安全忽略」，不阻塞状态机；内容保留以便后续实现背压。
@@ -466,6 +471,7 @@ impl Message {
             Message::PaneModeChanged { .. } => "pane-mode-changed",
             Message::UnlinkedWindowAdd { .. } => "unlinked-window-add",
             Message::UnlinkedWindowClose { .. } => "unlinked-window-close",
+            Message::UnlinkedWindowRenamed { .. } => "unlinked-window-renamed",
             Message::Exit { .. } => "exit",
             Message::WindowPaneChanged { .. } => "window-pane-changed",
             Message::SessionWindowChanged { .. } => "session-window-changed",
@@ -571,6 +577,7 @@ fn parse_line_known_keyword(line_str: &str) -> Result<Option<Message>, ProtocolE
         "pane-mode-changed" => parse_pane_mode_changed(rest),
         "unlinked-window-add" => parse_window_id_only(rest, WindowKind::UnlinkedAdd),
         "unlinked-window-close" => parse_window_id_only(rest, WindowKind::UnlinkedClose),
+        "unlinked-window-renamed" => parse_unlinked_window_renamed(rest),
         "exit" => Ok(Message::Exit {
             reason: if rest.is_empty() {
                 None
@@ -700,22 +707,46 @@ fn parse_pane_mode_changed(rest: &str) -> Result<Message, ProtocolError> {
 }
 
 fn parse_extended_output(rest: &str) -> Result<Message, ProtocolError> {
-    // %extended-output @0 hyperlink <args...>
-    let mut it = rest.splitn(3, ' ');
+    // %extended-output <pane-id> <age> [future...] : <value>
+    // value 与 %output 一样是 C 转义字符串，用同一个解码器还原原始字节。
+    let Some((meta, value)) = rest.split_once(" : ") else {
+        return Err(ProtocolError::MalformedField(
+            "extended-output 缺 : 分隔符".into(),
+        ));
+    };
+    let mut it = meta.splitn(2, ' ');
     let pid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("extended-output 缺 pane id".into()))?;
-    let pane = PaneId::parse(pid)?;
-    let output_type = it
+    // tmux 3.3+ 的 %extended-output 与 %output 一样用 %N / @N / N 三种 id 形式。
+    let pane = parse_pane_id_lenient(pid)?;
+    let age_ms = it
         .next()
-        .ok_or_else(|| ProtocolError::MalformedField("extended-output 缺 type".into()))?
-        .to_string();
-    let args = it.next().unwrap_or("").to_string();
+        .and_then(|a| a.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    // value 与 %output 一样是双引号包裹的 C 转义字符串。
+    let inner = strip_c_string(value)?;
+    let raw_content = inner.to_string();
+    let content = ControlEscapeDecoder::new()
+        .decode(inner)
+        .map_err(ProtocolError::EscapeError)?;
     Ok(Message::ExtendedOutput {
         pane,
-        output_type,
-        args,
+        age_ms,
+        content,
+        raw_content,
     })
+}
+
+fn parse_unlinked_window_renamed(rest: &str) -> Result<Message, ProtocolError> {
+    // %unlinked-window-renamed @0 name（实测 tmux 3.4 带 name）
+    let mut it = rest.splitn(2, ' ');
+    let wid = it
+        .next()
+        .ok_or_else(|| ProtocolError::MalformedField("unlinked-window-renamed 缺 id".into()))?;
+    let window = WindowId::parse(wid)?;
+    let name = it.next().unwrap_or("").to_string();
+    Ok(Message::UnlinkedWindowRenamed { window, name })
 }
 
 fn parse_output(rest: &str) -> Result<Message, ProtocolError> {
@@ -1862,13 +1893,16 @@ mod tests {
 
     #[test]
     fn parse_extended_output() {
-        let m = parse_line("%extended-output @1 hyperlink file:///tmp").unwrap();
+        // %extended-output <pane> <age> ... : "C-escaped value"
+        let line = r"%extended-output %1 42 : \033]8;;https://example.com\033\\link\033]8;;\033\\";
+        let m = parse_line(line).unwrap();
         assert_eq!(
             m,
             Message::ExtendedOutput {
                 pane: PaneId(1),
-                output_type: "hyperlink".into(),
-                args: "file:///tmp".into(),
+                age_ms: 42,
+                content: b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\".to_vec(),
+                raw_content: "\\033]8;;https://example.com\\033\\\\link\\033]8;;\\033\\\\".into(),
             }
         );
     }
@@ -2653,17 +2687,20 @@ mod iterm2_protocol_conformance_tests {
         assert!(matches!(cont, Message::Continue { ref args } if args == "3"));
     }
 
-    /// extended-output 的 type 与 args 原样保留。
+    /// extended-output 的 value 与 %output 一样按 C 转义解码。
     #[test]
-    fn extended_output_preserves_type_and_args() {
-        let msg = parse_line("%extended-output @5 hyperlink 8;;https://example.com").unwrap();
+    fn extended_output_decodes_value_like_output() {
+        let msg = parse_line(r#"%extended-output @5 12 : "a
+b""#).unwrap();
         assert!(matches!(
             msg,
             Message::ExtendedOutput {
                 pane: PaneId(5),
-                ref output_type,
-                ref args
-            } if output_type == "hyperlink" && args == "8;;https://example.com"
+                age_ms: 12,
+                ref content,
+                ..
+            } if content == b"a
+b"
         ));
     }
 

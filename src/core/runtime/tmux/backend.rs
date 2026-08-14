@@ -449,6 +449,70 @@ impl TmuxBackend {
         matches!(self.config.mode.as_ref(), Some(ConnectMode::Attach { .. }))
     }
 
+    /// tmux window → muxterm Tab（不是 Window！）。处理 `%window-add`；
+    /// `%unlinked-window-add` 是其它 session 的窗口，不进入当前 tab 列表。
+    fn add_window_tab(&mut self, window: WindowId) {
+        let _sess = self.active_session.unwrap_or(SessionId(0));
+        self.ensure_virtual_window();
+        let tab_id = TabId(window.0);
+        if !self.tabs.iter().any(|t| t.id == tab_id) {
+            self.tabs.push(TabInfo {
+                id: tab_id,
+                name: format!("t{}", window.0),
+                window: Self::VIRTUAL_WINDOW_ID, // 指向虚拟 Window
+                active: true,
+            });
+            for t in self.tabs.iter_mut() {
+                if t.id != tab_id {
+                    t.active = false;
+                }
+            }
+            self.layouts.insert(
+                tab_id,
+                TabLayout {
+                    tab: tab_id,
+                    tree: LayoutNode::leaf(PaneId(0)),
+                    active: PaneId(0),
+                },
+            );
+            self.events.push_back(StateChange::TabAdded {
+                tab: tab_id,
+                window: Self::VIRTUAL_WINDOW_ID,
+            });
+        }
+        // 主动查询该 tmux window 的 pane
+        self.query_list_panes(window);
+    }
+
+    /// tmux window 关闭 → muxterm Tab 关闭（虚拟 Window 不动）。
+    /// `%window-close` 与 `%unlinked-window-close` 共用。
+    fn close_window_tab(&mut self, window: WindowId) {
+        let tab_id = TabId(window.0);
+        // 先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
+        // 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在
+        // PaneClosed 时移除）。
+        for p in self.panes.iter().filter(|p| p.tab == tab_id) {
+            self.events
+                .push_back(StateChange::PaneClosed { pane: p.id });
+        }
+        self.panes.retain(|p| p.tab != tab_id);
+        self.layouts.remove(&tab_id);
+        self.tabs.retain(|t| t.id != tab_id);
+        self.events
+            .push_back(StateChange::TabClosed { tab: tab_id });
+    }
+
+    /// tmux window 重命名 → muxterm Tab 重命名。
+    /// `%window-renamed` 与 `%unlinked-window-renamed` 共用。
+    fn rename_window_tab(&mut self, window: WindowId, name: String) {
+        let tab_id = TabId(window.0);
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            t.name = name.clone();
+        }
+        self.events
+            .push_back(StateChange::TabRenamed { tab: tab_id, name });
+    }
+
     /// 处理一条 tmux Message，更新内部 state 并产生 StateChange。
     fn handle_message(&mut self, msg: Message) {
         match msg {
@@ -519,62 +583,27 @@ impl TmuxBackend {
                 self.query_list_panes(window);
             }
             Message::WindowAdd { window } => {
-                // tmux window → muxterm Tab（不是 Window！）
-                let _sess = self.active_session.unwrap_or(SessionId(0));
-                self.ensure_virtual_window();
-                let tab_id = TabId(window.0);
-                if !self.tabs.iter().any(|t| t.id == tab_id) {
-                    self.tabs.push(TabInfo {
-                        id: tab_id,
-                        name: format!("t{}", window.0),
-                        window: Self::VIRTUAL_WINDOW_ID, // 指向虚拟 Window
-                        active: true,
-                    });
-                    for t in self.tabs.iter_mut() {
-                        if t.id != tab_id {
-                            t.active = false;
-                        }
-                    }
-                    self.layouts.insert(
-                        tab_id,
-                        TabLayout {
-                            tab: tab_id,
-                            tree: LayoutNode::leaf(PaneId(0)),
-                            active: PaneId(0),
-                        },
-                    );
-                    self.events.push_back(StateChange::TabAdded {
-                        tab: tab_id,
-                        window: Self::VIRTUAL_WINDOW_ID,
-                    });
-                }
-                // 主动查询该 tmux window 的 pane
-                self.query_list_panes(window);
+                self.add_window_tab(window);
             }
             Message::WindowClose { window } => {
-                // tmux window 关闭 → muxterm Tab 关闭（虚拟 Window 不动）
-                let tab_id = TabId(window.0);
-                // 先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
-                // 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在
-                // PaneClosed 时移除）。
-                for p in self.panes.iter().filter(|p| p.tab == tab_id) {
-                    self.events
-                        .push_back(StateChange::PaneClosed { pane: p.id });
-                }
-                self.panes.retain(|p| p.tab != tab_id);
-                self.layouts.remove(&tab_id);
-                self.tabs.retain(|t| t.id != tab_id);
-                self.events
-                    .push_back(StateChange::TabClosed { tab: tab_id });
+                self.close_window_tab(window);
             }
             Message::WindowRenamed { window, name } => {
-                // tmux window 重命名 → muxterm Tab 重命名
-                let tab_id = TabId(window.0);
-                if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                    t.name = name.clone();
-                }
-                self.events
-                    .push_back(StateChange::TabRenamed { tab: tab_id, name });
+                self.rename_window_tab(window, name);
+            }
+            Message::UnlinkedWindowAdd { .. } => {
+                // 其它 session 新建窗口也会推 %unlinked-window-add（实测），
+                // 该窗口不属于当前 attach 的 session，不能加进 tab 列表；
+                // 若它随后被 link 进当前 session，tmux 会再发 %window-add。
+            }
+            Message::UnlinkedWindowClose { window } => {
+                // 实测：kill-window 时控制客户端收到的是 %unlinked-window-close
+                // 而不是 %window-close（tmux 3.4）。忽略它会导致 tab 关闭后
+                // statusbar 不更新、Alt+1..4 仍能切到幽灵 tab。
+                self.close_window_tab(window);
+            }
+            Message::UnlinkedWindowRenamed { window, name } => {
+                self.rename_window_tab(window, name);
             }
             Message::SessionChanged { session, name } => {
                 if !self.sessions.iter().any(|s| s.id == session) {
@@ -643,14 +672,31 @@ impl TmuxBackend {
                 self.events
                     .push_back(StateChange::StatusBarSubscription { name, value });
             }
-            Message::ExtendedOutput { .. }
-            | Message::Pause { .. }
-            | Message::Continue { .. }
-            | Message::UnlinkedWindowAdd { .. }
-            | Message::UnlinkedWindowClose { .. }
-            | Message::ResponseBoundary(_)
-            | Message::Unknown { .. } => {
-                // 暂不处理（第一版只识别 %pause/%continue，安全忽略，不阻塞状态机）
+            Message::ExtendedOutput { pane, content, .. } => {
+                // pause-after 下的 %output 新形式：内容与 %output 一样是 pane
+                // 增量字节，必须走同一条累积/交付路径，否则暂停恢复后丢输出。
+                tracing::debug!(
+                    target: "muxterm::tmux",
+                    pane = pane.0,
+                    len = content.len(),
+                    "实时 %extended-output 交付"
+                );
+                append_capped(
+                    self.outputs.entry(pane).or_default(),
+                    &content,
+                    MAX_PANE_OUTPUT_BYTES,
+                );
+                self.events.push_back(StateChange::PaneOutput {
+                    pane,
+                    data: content,
+                });
+                self.trim_event_queue();
+            }
+            Message::Pause { .. } | Message::Continue { .. } => {
+                // 流控：识别并安全忽略（不阻塞状态机；内容保留以便后续背压）。
+            }
+            Message::ResponseBoundary(_) | Message::Unknown { .. } => {
+                // 命令响应边界由 pump_events 单独处理；未知消息忽略。
             }
         }
     }
@@ -2006,6 +2052,42 @@ mod tests {
     }
 
     #[test]
+    fn unlinked_window_close_closes_tab() {
+        let mut b = TmuxBackend::new(None);
+        // 先加两个 tab
+        b.handle_message(Message::WindowAdd { window: WindowId(0) });
+        b.handle_message(Message::WindowAdd { window: WindowId(1) });
+        assert!(b.tabs.iter().any(|t| t.id == TabId(1)));
+
+        // 实测：kill-window 时控制客户端收到 %unlinked-window-close
+        b.handle_message(Message::UnlinkedWindowClose {
+            window: WindowId(1),
+        });
+
+        assert!(!b.tabs.iter().any(|t| t.id == TabId(1)), "tab1 应被关闭");
+        assert!(b.tabs.iter().any(|t| t.id == TabId(0)), "tab0 应保留");
+        assert!(b.events.iter().any(|e| matches!(e, StateChange::TabClosed { tab } if *tab == TabId(1))));
+    }
+
+    #[test]
+    fn unlinked_window_renamed_updates_tab_name() {
+        let mut b = TmuxBackend::new(None);
+        b.handle_message(Message::WindowAdd { window: WindowId(0) });
+
+        b.handle_message(Message::UnlinkedWindowRenamed {
+            window: WindowId(0),
+            name: "renamed-tab".into(),
+        });
+
+        let tab = b.tabs.iter().find(|t| t.id == TabId(0)).unwrap();
+        assert_eq!(tab.name, "renamed-tab");
+        assert!(b.events.iter().any(|e| matches!(
+            e,
+            StateChange::TabRenamed { tab, name } if *tab == TabId(0) && name == "renamed-tab"
+        )));
+    }
+
+    #[test]
     fn subscription_changed_forwards_to_state_change() {
         let mut b = TmuxBackend::new(None);
         b.handle_message(Message::SubscriptionChanged {
@@ -3036,11 +3118,12 @@ mod tests {
             content: b"x".to_vec(),
             raw_content: String::new(),
         });
-        // 穿插一个 hyperlink 类的 %extended-output
+        // 穿插一个 pause-after 的 %extended-output
         b.handle_message(Message::ExtendedOutput {
             pane,
-            output_type: "hyperlink".into(),
-            args: "file:///tmp".into(),
+            age_ms: 12,
+            content: b"z".to_vec(),
+            raw_content: "z".into(),
         });
         b.handle_message(Message::Output {
             pane,
@@ -3048,9 +3131,9 @@ mod tests {
             raw_content: String::new(),
         });
 
-        // output 仍完整累积（xy），extended-output 不打断
+        // output 与 extended-output 都按增量累积（xzy），不互相打断
         let out = b.outputs.get(&pane).cloned().unwrap_or_default();
-        assert_eq!(out, b"xy", "%extended-output 不应破坏 %output 累积");
+        assert_eq!(out, b"xzy", "%extended-output 应与 %output 同路径累积");
     }
 
     /// 布局变化与 %output 交织：%layout-change 不应重置已累积的 pane 输出。
