@@ -390,6 +390,17 @@ mod tests {
     }
 
     #[test]
+    fn default_fg_on_truecolor_light_box_stays_contrasty() {
+        // 2219/2144：Codex 浅色主题输入框 `48;2;216;216;216` + `39` 默认前景。
+        let t = Theme::load("light").expect("light");
+        let boxed = apply_sgr(&[48, 2, 216, 216, 216], base(&t), &t);
+        let s = apply_sgr(&[39], boxed, &t);
+        assert_eq!(s.fg, t.foreground, "39m 必须是主题前景而不是盒子灰");
+        assert_eq!(s.bg, Rgb(216, 216, 216));
+        assert_ne!(s.fg, s.bg, "默认字色不能和 Codex 输入盒背景相同");
+    }
+
+    #[test]
     fn test_theme_resolve_without_reverse() {
         let t = theme();
         let s = base(&t);

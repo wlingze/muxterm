@@ -22,6 +22,7 @@ use ratatui::Terminal;
 
 use crate::core::protocol::ffi::types::{STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED};
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
+use crate::core::protocol::terminal::mirror::should_forward_parser_response;
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
@@ -188,7 +189,8 @@ fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(
 /// tmux 控制模式下应答经 `send-keys -l` 回写会被 pane 回显并执行，造成
 /// `git lg` 的 `10;rgb:...` / `65;...c` 泄漏，因此必须丢弃。
 fn maybe_send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
-    if is_direct_pty_terminal(bridge.backend()) {
+    let is_tmux_mirror = !is_direct_pty_terminal(bridge.backend());
+    if should_forward_parser_response(true, is_tmux_mirror) {
         send_replies(bridge, replies);
     }
 }

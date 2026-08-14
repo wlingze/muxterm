@@ -278,7 +278,7 @@ impl Transport for SshProcessTransport {
         };
         match rx.try_recv() {
             Ok(data) => {
-                tracing::debug!(
+                tracing::trace!(
                     target = "muxterm::ssh",
                     len = data.len(),
                     hex = %hex_debug(&data),

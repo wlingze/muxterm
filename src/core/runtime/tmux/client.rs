@@ -516,14 +516,14 @@ async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
         if chunk.is_empty() {
             continue;
         }
-        tracing::debug!(
+        tracing::trace!(
             target = "muxterm::client",
             len = chunk.len(),
             hex = %hex_debug(&chunk),
             "recv tmux chunk"
         );
         for line in feed_bytes_to_lines(&mut buf, &chunk) {
-            tracing::debug!(
+            tracing::trace!(
                 target = "muxterm::client",
                 line = %String::from_utf8_lossy(&line),
                 "recv line"

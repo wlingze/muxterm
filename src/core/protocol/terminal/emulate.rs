@@ -2176,4 +2176,48 @@ mod inplace_redraw_tests {
         assert_eq!(line(8), "row8");
         assert_eq!(line(9), "row9");
     }
+
+    /// htop 用 CUP/CHA 把 CPU 条画到很靠右的列（真实样例 `ESC[102G`）。
+    /// 网格必须至少那么宽，否则坐标被 clamp，表头数字叠在一起。
+    #[test]
+    fn htop_cup_column_102_needs_matching_width() {
+        let mut wide = TerminalState::new(120, 8);
+        wide.feed(b"\x1b[2;1HLEFT\x1b[102GRIGHT");
+        assert_eq!(
+            wide.cell(1, 101).map(|c| c.ch),
+            Some('R'),
+            "120 列时 ESC[102G 应写在第 102 列"
+        );
+        assert!(wide.line(1).contains("LEFT"));
+
+        let mut narrow = TerminalState::new(80, 8);
+        narrow.feed(b"\x1b[2;1HLEFT\x1b[102GRIGHT");
+        assert!(
+            narrow.cell(1, 101).is_none(),
+            "80 列没有第 102 列，htop 帧会错位"
+        );
+    }
+
+    /// 2219.log tab2 Codex：每个 IME 词只推 ~230 字节 CUP+EL 增量，不是整屏。
+    /// 网格宽度与 pane 一致时，整句必须留在同一行（「只能看见最后一个词」的反例）。
+    #[test]
+    fn cup_el_cjk_input_keeps_full_line_when_width_matches() {
+        let mut t = TerminalState::new(80, 16);
+        let frame = |text: &str| {
+            format!("\x1b[11;1H\x1b[0m\x1b[48;2;216;216;216m › {text}\x1b[K\x1b[49m").into_bytes()
+        };
+        t.feed(&frame("把这个"));
+        t.feed(&frame("把这个分支修改"));
+        t.feed(&frame("把这个分支修改，让yaklib可以在xx"));
+        let line = grid_rows(&t)
+            .into_iter()
+            .find(|r| r.contains("yaklib"))
+            .expect("yaklib 应在输入行");
+        // 宽字符占两列，第二格可能是空格；去掉空白后再比整句。
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains("把这个分支修改"),
+            "增量 CUP+EL 不得只留下最后一个词: {line:?}"
+        );
+    }
 }
