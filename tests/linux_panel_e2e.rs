@@ -148,3 +148,98 @@ fn three_tab_panel_renders_attention_and_cycles() {
         pump_main_loop(40);
     });
 }
+
+#[test]
+fn attention_peek_and_single_line_reply() {
+    if skip_no_display() {
+        return;
+    }
+    gtk4::test_synced(|| {
+        gtk_test_framework_smoke();
+
+        let win = gtk4::Window::builder()
+            .title("panel-reply-e2e")
+            .default_width(800)
+            .default_height(600)
+            .build();
+        win.present();
+        gtk4::test_widget_wait_for_draw(&win);
+
+        let replies = Rc::new(RefCell::new(Vec::<(String, u32, String)>::new()));
+        let r = replies.clone();
+        show(
+            &win,
+            PanelShowArgs {
+                initial_tab: PanelTab::Attention,
+                workspaces: vec![],
+                attention: vec![attention("legion", 1, PaneStatus::Blocked, "ask me")],
+                on_connect: Box::new(|_| {}),
+                on_edit: Box::new(|_| {}),
+                on_new_project: Box::new(|| {}),
+                on_jump_pane: Box::new(|_, _| {}),
+                on_reply: Box::new(move |ws, pane, text| {
+                    r.borrow_mut().push((ws, pane, text));
+                }),
+                peek_text: Box::new(|ws, pane| format!("peek-{ws}-{pane}\nline2")),
+            },
+        );
+        pump_main_loop(80);
+
+        // 选中 Tab2 行 → peek 非空、答复可用、目标标签正确。
+        let list = find_by_name(&win, "muxterm-panel-list")
+            .expect("列表应存在")
+            .downcast::<gtk4::ListBox>()
+            .expect("ListBox 类型");
+        let row = list.row_at_index(1).expect("第一条注意力行");
+        // GTK4 select_row 不触发 row-selected 信号；e2e 直接 emit 模拟用户点击。
+        let _: () = list.emit_by_name("row-selected", &[&row]);
+        pump_main_loop(40);
+
+        let peek = find_by_name(&win, "muxterm-peek-view")
+            .expect("peek 视图应存在")
+            .downcast::<gtk4::TextView>()
+            .expect("TextView 类型");
+        let buf = peek.buffer();
+        let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+        assert!(
+            text.contains("peek-legion-1"),
+            "peek 应显示副本尾部: {text:?}"
+        );
+
+        let reply_entry = find_by_name(&win, "muxterm-reply-entry")
+            .expect("答复输入框应存在")
+            .downcast::<gtk4::Entry>()
+            .expect("Entry 类型");
+        assert!(reply_entry.is_sensitive(), "选中后答复应可用");
+        let target = find_by_name(&win, "muxterm-reply-target")
+            .expect("目标标签应存在")
+            .downcast::<gtk4::Label>()
+            .expect("Label 类型");
+        assert!(
+            target.text().contains("legion"),
+            "目标标签应含工作区: {}",
+            target.text()
+        );
+
+        // 输入一行 + Enter → on_reply 收到且无换行。
+        reply_entry.set_text("y\n");
+        let ctrl = window_key_controller(&reply_entry).expect("答复 Entry 应有 controller");
+        simulate_key_press(&ctrl, gdk::Key::Return, gdk::ModifierType::empty());
+        pump_main_loop(40);
+
+        let got = replies.borrow();
+        assert_eq!(got.len(), 1, "应恰好发送一条答复");
+        assert_eq!(got[0].0, "legion");
+        assert_eq!(got[0].1, 1);
+        assert!(
+            !got[0].2.contains('\n'),
+            "答复文本不应含换行: {:?}",
+            got[0].2
+        );
+        assert_eq!(reply_entry.text().as_str(), "", "发送后输入框应清空");
+
+        win.close();
+        win.destroy();
+        pump_main_loop(40);
+    });
+}
