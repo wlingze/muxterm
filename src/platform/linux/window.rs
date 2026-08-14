@@ -407,6 +407,47 @@ impl AppWindow {
             self.window.close();
         }
     }
+
+    /// 测试用：主窗口本身（供 widget 树断言）。
+    pub fn test_window(&self) -> gtk4::Window {
+        self.window.clone()
+    }
+
+    /// 测试用：QuickConnect 面板是否打开（M3 接真逻辑，当前返回 false）。
+    pub fn test_panel_open(&self) -> bool {
+        false
+    }
+
+    /// 测试用：当前面板 tab（0=workspaces / 1=attention / 2=search，M3 接真逻辑）。
+    pub fn test_active_panel_tab(&self) -> u32 {
+        0
+    }
+
+    /// 测试用：当前 blocked 工作区数（M2.4 接 AttentionEngine，当前返回 0）。
+    pub fn test_attention_blocked_workspaces(&self) -> usize {
+        0
+    }
+
+    /// 测试用：窗口标题（M3.4 接红点前缀，当前返回原始标题）。
+    pub fn test_window_title(&self) -> String {
+        self.window
+            .title()
+            .map(|t| t.to_string())
+            .unwrap_or_default()
+    }
+
+    /// 测试用：ReplicaStore 中某 pane 的最近 n 行（M1.5 接真逻辑，当前为空）。
+    pub fn test_replica_last_n(&self, _pane_id: u32, _n: usize) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// 测试用：绕过 tmux 直接向 ReplicaStore 注入字节（M1.5 接真逻辑，当前 no-op）。
+    pub fn test_feed_replica(&self, _pane_id: u32, _bytes: &[u8]) {}
+
+    /// 测试用：RecordingSink 记录的通知（M3.4 接真逻辑，当前为空）。
+    pub fn test_notifications_recorded(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<RefCell<UiState>>) {
