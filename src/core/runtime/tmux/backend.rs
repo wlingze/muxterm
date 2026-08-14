@@ -66,6 +66,7 @@ enum PendingQuery {
 
 /// status bar 订阅名（文档 §B+：`refresh-client -B` 的名字）。
 pub const STATUS_LEFT_SUBSCRIPTION: &str = "muxterm.status-left";
+const PANE_CMD_SUBSCRIPTION: &str = "muxterm.pane-cmd";
 pub const STATUS_RIGHT_SUBSCRIPTION: &str = "muxterm.status-right";
 
 /// tmux -CC 后端。
@@ -722,10 +723,10 @@ impl TmuxBackend {
                 }
                 self.query_panes_if_empty(tab_id, window);
             }
-            Message::SubscriptionChanged { name, value } => {
-                // status-left/right 订阅推送 → 前端直接更新原生条（零轮询）。
+            Message::SubscriptionChanged { name, value, pane } => {
+                // status-left/right / pane-cmd 订阅推送 → 前端直接消费（零轮询）。
                 self.events
-                    .push_back(StateChange::StatusBarSubscription { name, value });
+                    .push_back(StateChange::StatusBarSubscription { name, value, pane });
             }
             Message::ExtendedOutput { pane, content, .. } => {
                 // pause-after 下的 %output 新形式：内容与 %output 一样是 pane
@@ -1199,11 +1200,18 @@ impl TmuxBackend {
             "",
             "#{T:status-right}",
         );
+        // pane 前台命令订阅：Working 粗判来源（LINUX-PLAN §9 C2.5b）。
+        let pane_cmd = crate::core::runtime::tmux::command::refresh_client_subscribe(
+            PANE_CMD_SUBSCRIPTION,
+            "%*",
+            "#{pane_current_command}",
+        );
         // 必须走 dispatch_command：它会给每条命令登记一个 Ignore 响应槽，
         // 保持与 %begin/%end 的 FIFO 对齐；直接 tx.send 会吃掉后续真实查询
         // 的槽位，导致 list-windows/list-panes 响应错配（集成测试回归）。
         if self.dispatch_command(left.to_line()).is_ok()
             && self.dispatch_command(right.to_line()).is_ok()
+            && self.dispatch_command(pane_cmd.to_line()).is_ok()
         {
             self.status_subscriptions_active = true;
             tracing::info!(
@@ -2207,10 +2215,11 @@ mod tests {
         b.handle_message(Message::SubscriptionChanged {
             name: STATUS_LEFT_SUBSCRIPTION.into(),
             value: "#[fg=red]11:50:23 ".into(),
+            pane: None,
         });
         assert!(b.events.iter().any(|event| matches!(
             event,
-            StateChange::StatusBarSubscription { name, value }
+            StateChange::StatusBarSubscription { name, value, pane: None }
                 if name == STATUS_LEFT_SUBSCRIPTION && value == "#[fg=red]11:50:23 "
         )));
     }
@@ -2226,7 +2235,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_status_subscriptions_sends_two_subscriptions_when_supported() {
+    fn setup_status_subscriptions_sends_three_subscriptions_when_supported() {
         let mut backend = TmuxBackend::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         backend.cmd_tx = Some(tx);
@@ -2239,9 +2248,10 @@ mod tests {
         while let Ok(line) = rx.try_recv() {
             lines.push(line);
         }
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert!(lines.iter().any(|l| l.contains("muxterm.status-left")));
         assert!(lines.iter().any(|l| l.contains("muxterm.status-right")));
+        assert!(lines.iter().any(|l| l.contains("muxterm.pane-cmd")));
         assert!(lines.iter().all(|l| l.starts_with("refresh-client -B \"")));
     }
 

@@ -768,8 +768,9 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             out.data = p;
             out.data_len = n;
         }
-        StateChange::StatusBarSubscription { name, value } => {
+        StateChange::StatusBarSubscription { name, value, pane } => {
             out.type_ = STATE_STATUS_SUBSCRIPTION;
+            out.pane_id = pane.map(|p| p.0).unwrap_or(0);
             out.name = handle.push_name(name);
             let (ptr, len) = handle.push_data(value.as_bytes());
             out.data = ptr;
