@@ -66,6 +66,7 @@ let package = Package(
                 "ChromeTests",
                 "project.yml",
                 ".build",
+                "UI/ConnectionStatusView.swift",
             ],
             sources: [
                 "main.swift",
@@ -83,7 +84,6 @@ let package = Package(
                 "Terminal/TerminalManager.swift",
                 "UI/TabBar.swift",
                 "UI/PaneLayout.swift",
-                "UI/ConnectionStatusView.swift",
                 "UI/StatusBarView.swift",
             ],
             resources: [

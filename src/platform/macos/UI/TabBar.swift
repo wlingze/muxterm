@@ -7,7 +7,7 @@ enum TabBarPosition: String {
     case bottom
 
     static var current: TabBarPosition {
-        let raw = UserDefaults.standard.string(forKey: "muxterm.tabBarPosition") ?? "top"
+        let raw = UserDefaults.standard.string(forKey: "muxterm.tabBarPosition") ?? "bottom"
         return TabBarPosition(rawValue: raw) ?? .top
     }
 

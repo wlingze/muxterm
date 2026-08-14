@@ -92,7 +92,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             fontSize: terminalFontSettings.size
         )
         self.content = ContentView(terminalManager: terminalManager)
-        content.connectionStatus.isDebug = debug
+        content.statusBar.setDebug(debug)
         // status bar 配色来源：默认 GUI 黑白；`[statusbar] color_mode = "tmux"`
         // 时完全采用 tmux 样式。
         content.statusBar.colorMode = Self.currentStatusBarMode(
@@ -177,7 +177,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.openQuickConnect()
         }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
-            self?.content.connectionStatus.updateOutputSnippet(snippet)
+            self?.content.statusBar.updateOutputSnippet(snippet)
         }
         terminalManager.onError = { [weak self] message in
             self?.reportStatusError(message)
@@ -1273,7 +1273,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 maybeCloseIfSessionEnded()
             }
         } else if outputSeen {
-            content.connectionStatus.update(snapshot: lastSnapshot)
+            content.statusBar.updateDebugSnapshot(lastSnapshot)
             // 颜色上报只依赖 refreshUI 时，attach 后没有结构事件就永远不会
             // 触发（日志里没有 refresh-client -r 的原因）。纯输出也要补报。
             reportPaneColoursIfNeeded(lastSnapshot.panes)
@@ -1302,13 +1302,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if needsLayoutReload, tabSwitchGate.isReleased() {
             if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
                 needsLayoutReload = false
-                content.connectionStatus.clearLayoutSyncError()
+                content.statusBar.clearLayoutSyncError()
             } else {
-                content.connectionStatus.showLayoutSyncing()
+                content.statusBar.showLayoutSyncing()
             }
         }
-        content.connectionStatus.update(snapshot: snap)
-        content.connectionStatus.updateOutputSnippet(terminalManager.recentOutputSnippet)
+        content.statusBar.updateDebugSnapshot(snap)
+        content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
 
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
             let view = terminalManager.view(for: activePane)
@@ -1337,7 +1337,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func reportStatusError(_ message: String) {
-        content.connectionStatus.showError(message)
+        content.statusBar.showError(message)
     }
 
     /// 新出现的 pane 需要把客户端主题色上报给 tmux，否则 tmux 代答

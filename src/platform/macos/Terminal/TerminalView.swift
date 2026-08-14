@@ -192,18 +192,17 @@ final class MuxTerminalView: TerminalView {
 
         let term = getTerminal()
         guard term.cols >= 2, term.rows >= 1 else { return false }
-        // 窗口 resize 时模型行列变化才做一次全屏标记：SwiftTerm 的
-        // queuePendingDisplay 已经按 60fps 节流，这里只清除 resize 后的
-        // 残留行，不逐 feed 触发——高频输出时全屏重绘会占满主线程。
-        // 渲染纪律（文档 §2.15.2 追加 B）：输出直接渲染到末尾位置，
-        // 不逐帧滚动刷新。
+        // 窗口 resize 时模型行列变化才做一次全屏重绘：清除 resize 后的残留行。
+        // SwiftTerm 的 queuePendingDisplay 是 internal 无法跨模块调用，
+        // 所以用 setNeedsDisplay 触发 AppKit 渲染循环（只在 resize 时，
+        // 不在每次 feed 时——避免高频输出时刷屏和滚动闪烁）。
+        // 渲染纪律（§2.15.2 追加 B）：输出直接渲染到末尾位置，不逐帧滚动刷新。
         if term.cols != lastModelCols || term.rows != lastModelRows {
             lastModelCols = term.cols
             lastModelRows = term.rows
             getTerminal().updateFullScreen()
-            // 不在这里 setNeedsDisplay(bounds) 全屏刷新——SwiftTerm 的
-            // updateFullScreen 只标记 refresh range，下一次 updateDisplay
-            // 会自动只画脏区域，避免 resize 时的滚动闪烁。
+            setNeedsDisplay(bounds)
+            if let layer { layer.setNeedsDisplay() }
         }
         if notifyResize {
             inputHandler?.terminal(self, sizeChanged: term.cols, rows: term.rows)
