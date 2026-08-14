@@ -16,7 +16,7 @@ final class ContentView: NSView {
         self.paneLayout = PaneLayoutView(terminalManager: terminalManager)
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         paneLayout.translatesAutoresizingMaskIntoConstraints = false
         statusBar.translatesAutoresizingMaskIntoConstraints = false

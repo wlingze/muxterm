@@ -86,7 +86,7 @@ final class StatusBarView: NSView {
         rightLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         rightLabel.isHidden = true
 
-        // 状态点（绿/黄/红）—— 悬停显示 tooltip，点击弹出详细信息。
+        // 状态点（绿/黄/红）—— 用 NSButton 保证点击可靠，悬停显示 tooltip。
         statusDot.wantsLayer = true
         statusDot.layer?.backgroundColor = NSColor.clear.cgColor
         statusDot.setAccessibilityIdentifier("muxterm.statusDot")
@@ -98,8 +98,15 @@ final class StatusBarView: NSView {
         statusDotLayer.cornerRadius = 4
         statusDotLayer.backgroundColor = NSColor.systemGreen.cgColor
         statusDot.layer?.addSublayer(statusDotLayer)
-        let dotClick = NSClickGestureRecognizer(target: self, action: #selector(statusDotClicked))
-        statusDot.addGestureRecognizer(dotClick)
+        let dotButton = NSButton()
+        dotButton.isBordered = false
+        dotButton.wantsLayer = true
+        dotButton.layer?.backgroundColor = NSColor.clear.cgColor
+        dotButton.target = self
+        dotButton.action = #selector(statusDotClicked)
+        dotButton.toolTip = "Click for connection details"
+        dotButton.translatesAutoresizingMaskIntoConstraints = false
+        statusDot.addSubview(dotButton)
 
         // 通知红点
         attentionSlot.wantsLayer = true
@@ -173,6 +180,7 @@ final class StatusBarView: NSView {
             statusDot.trailingAnchor.constraint(equalTo: attentionSlot.leadingAnchor, constant: -2),
             statusDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             statusDot.widthAnchor.constraint(equalToConstant: 18),
+            statusDot.heightAnchor.constraint(equalToConstant: 18),
 
             attentionCountLabel.leadingAnchor.constraint(equalTo: attentionSlot.leadingAnchor),
             attentionCountLabel.trailingAnchor.constraint(equalTo: attentionSlot.trailingAnchor),
@@ -223,11 +231,10 @@ final class StatusBarView: NSView {
             lastLeftStyle = snapshot.leftStyle
             lastRightStyle = snapshot.rightStyle
             lastPlainForeground = useTmuxColors ? nil : Self.themeForeground
-            if useTmuxColors, let bg = lastBase.bg.map(Self.color) {
-                layer?.backgroundColor = bg.cgColor
-            } else {
-                layer?.backgroundColor = Self.themeBackground.cgColor
-            }
+            // 不用 tmux status bar 的背景色给整条 bar 上色——它通常是深灰色，
+            // 会让 tab 文字和状态点看不清。bar 本身始终用原生窗口背景色，
+            // tmux left/right 文字保留各自的 fg/bg 样式。
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             leftLabel.isHidden = false
             rightLabel.isHidden = false
             leftLabel.attributedStringValue = Self.attributed(
@@ -246,7 +253,7 @@ final class StatusBarView: NSView {
         } else {
             leftLabel.isHidden = true
             rightLabel.isHidden = true
-            layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             rebuildTabButtons(currentTabs.map { TabBarItem(id: $0.id, title: tabTitle($0), active: $0.isActive) })
         }
         needsLayout = true
@@ -431,12 +438,18 @@ final class StatusBarView: NSView {
             button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             button.contentTintColor = item.active ? NSColor.labelColor : NSColor.secondaryLabelColor
             button.wantsLayer = true
+            // 活跃 tab：底部下划线指示（与旧 TabBar 风格一致），不用背景色块。
             if item.active {
-                button.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
-                button.layer?.cornerRadius = 3
+                let underline = CALayer()
+                underline.backgroundColor = NSColor.controlAccentColor.cgColor
+                underline.name = "activeUnderline"
+                button.layer?.addSublayer(underline)
+                button.layer?.backgroundColor = NSColor.clear.cgColor
             } else {
                 button.layer?.backgroundColor = NSColor.clear.cgColor
             }
+            button.layer?.cornerRadius = 0
+            // 内边距：文字不紧贴边缘。
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
             tabStack.addArrangedSubview(button)
         }
