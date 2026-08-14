@@ -92,7 +92,8 @@ pub trait ConnectionSlotProtocol {
     fn last_used_at(&self) -> Instant;
     fn set_last_used_at(&mut self, now: Instant);
     /// 后台继续 poll 事件、维护 warm 状态；不得同步重绘。
-    fn poll_background(&mut self);
+    /// 返回本轮事件，供调用方喂进 ReplicaStore（LINUX-PLAN C1.6）。
+    fn poll_background(&mut self) -> Vec<crate::platform::linux::ffi_bridge::BridgeEvent>;
     /// 淘汰：tmux 用 detach 保留 session；local shell 按实现策略处理。
     fn evict(&mut self, reason: ConnectionEvictionReason);
     /// 窗口/应用关闭：直接回收 handle。
@@ -119,6 +120,8 @@ pub struct ConnectionPool<Slot: ConnectionSlotProtocol> {
     slots: HashMap<ConnectionKey, Slot>,
     active_key: Option<ConnectionKey>,
     pub policy: ConnectionPoolPolicy,
+    /// 本轮淘汰的 key，供调用方清理 ReplicaStore 工作区副本。
+    recently_evicted: Vec<ConnectionKey>,
 }
 
 impl<Slot: ConnectionSlotProtocol> Default for ConnectionPool<Slot> {
@@ -127,6 +130,7 @@ impl<Slot: ConnectionSlotProtocol> Default for ConnectionPool<Slot> {
             slots: HashMap::new(),
             active_key: None,
             policy: ConnectionPoolPolicy::new(5),
+            recently_evicted: Vec::new(),
         }
     }
 }
@@ -137,6 +141,7 @@ impl<Slot: ConnectionSlotProtocol> ConnectionPool<Slot> {
             slots: HashMap::new(),
             active_key: None,
             policy,
+            recently_evicted: Vec::new(),
         }
     }
 
@@ -294,19 +299,29 @@ impl<Slot: ConnectionSlotProtocol> ConnectionPool<Slot> {
         }
     }
 
-    /// 后台连接继续 poll，保持 warm。
-    pub fn poll_background_slots(&mut self) {
+    /// 后台连接继续 poll，保持 warm；返回每个 slot 本轮事件。
+    pub fn poll_background_slots(
+        &mut self,
+    ) -> Vec<(
+        ConnectionKey,
+        Vec<crate::platform::linux::ffi_bridge::BridgeEvent>,
+    )> {
         let keys: Vec<ConnectionKey> = self
             .slots
             .iter()
             .filter(|(_, s)| s.lifecycle() == ConnectionLifecycle::Background)
             .map(|(k, _)| k.clone())
             .collect();
+        let mut out = Vec::new();
         for key in keys {
             if let Some(slot) = self.slots.get_mut(&key) {
-                slot.poll_background();
+                let events = slot.poll_background();
+                if !events.is_empty() {
+                    out.push((key, events));
+                }
             }
         }
+        out
     }
 
     /// 窗口/应用关闭：回收全部连接。
@@ -325,6 +340,12 @@ impl<Slot: ConnectionSlotProtocol> ConnectionPool<Slot> {
         if self.active_key.as_ref() == Some(key) {
             self.active_key = None;
         }
+        self.recently_evicted.push(key.clone());
+    }
+
+    /// 取走本轮淘汰的 key（调用方据此 drop ReplicaStore 工作区）。
+    pub fn take_evicted(&mut self) -> Vec<ConnectionKey> {
+        std::mem::take(&mut self.recently_evicted)
     }
 }
 
@@ -359,8 +380,9 @@ mod tests {
         fn set_last_used_at(&mut self, now: Instant) {
             self.last_used_at = now;
         }
-        fn poll_background(&mut self) {
+        fn poll_background(&mut self) -> Vec<crate::platform::linux::ffi_bridge::BridgeEvent> {
             *self.polled.borrow_mut() += 1;
+            Vec::new()
         }
         fn evict(&mut self, reason: ConnectionEvictionReason) {
             self.lifecycle = ConnectionLifecycle::Evicting;
