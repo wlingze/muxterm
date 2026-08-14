@@ -30,8 +30,8 @@ pub struct QuickConnectCallbacks {
     pub on_new_project: Box<dyn Fn()>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum PanelItem {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelItem {
     Target(QuickConnectEntry, bool),
     NewProject,
 }
