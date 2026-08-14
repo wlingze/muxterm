@@ -66,21 +66,34 @@ impl KeyMap {
         for b in bindings {
             let action = Action::from_str(&b.action);
             let mods = ModSet::from_binding(&b.mods);
-            map.insert((b.key.clone(), mods), action);
+            map.insert((b.key.to_lowercase(), mods), action);
         }
         KeyMap { map }
     }
 
     /// 查找匹配的 action。
     pub fn lookup(&self, keyval: gdk::Key, mods: gdk::ModifierType) -> Option<Action> {
+        // GTK4 会把 Shift 算进 keyval（`C` vs `c`）并从 mods 里吃掉
+        // SHIFT_MASK。不补回来的话 Ctrl+Shift+C 会变成 Ctrl+C（`\\003`）。
+        let mods = restore_consumed_shift(keyval, mods);
         // 特殊键（Return/plus/minus/F 键等）按键名匹配（大小写不敏感）；
+        // `[` / `]` 在 GDK 里叫 bracketleft/bracketright，Alt 组合下
+        // to_unicode() 可能为 None，必须按键名归一。
         // 普通字符键优先用 unicode（区分大小写），保证 `d` 与 `D` 不同。
         let key_str = match keyval.name() {
-            Some(name) if is_special_key_name(&name) => name.to_lowercase(),
-            _ => match keyval.to_unicode() {
-                Some(c) => c.to_string(),
-                None => keyval.name()?.to_string().to_lowercase(),
-            },
+            Some(name) => {
+                let lower = name.to_ascii_lowercase();
+                match lower.as_str() {
+                    "bracketleft" => "[".to_string(),
+                    "bracketright" => "]".to_string(),
+                    _ if is_special_key_name(&name) => lower,
+                    _ => match keyval.to_unicode() {
+                        Some(c) => c.to_ascii_lowercase().to_string(),
+                        None => lower,
+                    },
+                }
+            }
+            None => keyval.to_unicode()?.to_ascii_lowercase().to_string(),
         };
         let modset = ModSet::from_modifiers(modifiers_from_gdk(mods));
         self.map.get(&(key_str, modset)).copied()
@@ -90,7 +103,16 @@ impl KeyMap {
     pub fn lookup_str(&self, key: &str, mods: &[&str]) -> Option<Action> {
         let mods: Vec<String> = mods.iter().map(|s| (*s).to_string()).collect();
         let modset = ModSet::from_binding(&mods);
-        self.map.get(&(key.to_string(), modset)).copied()
+        self.map.get(&(key.to_lowercase(), modset)).copied()
+    }
+}
+
+/// GTK4 `EventControllerKey` 的 mods 不含已被 keyval 消费的 Shift。
+pub fn restore_consumed_shift(keyval: gdk::Key, mods: gdk::ModifierType) -> gdk::ModifierType {
+    if keyval.to_unicode().is_some_and(|c| c.is_ascii_uppercase()) {
+        mods | gdk::ModifierType::SHIFT_MASK
+    } else {
+        mods
     }
 }
 
@@ -124,7 +146,7 @@ mod tests {
     fn test_keymap_alt_shift_d_vertical_pane() {
         let km = KeyMap::from_bindings(&default_keybindings());
         assert_eq!(
-            km.lookup_str("D", &["alt", "shift"]),
+            km.lookup_str("d", &["alt", "shift"]),
             Some(Action::NewPaneVertical)
         );
     }
@@ -226,6 +248,21 @@ mod tests {
     }
 
     #[test]
+    fn test_keymap_ctrl_shift_c_v_copy_paste() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(
+            km.lookup_str("c", &["control", "shift"]),
+            Some(Action::Copy)
+        );
+        assert_eq!(
+            km.lookup_str("v", &["control", "shift"]),
+            Some(Action::Paste)
+        );
+        assert_eq!(km.lookup_str("c", &["control"]), None);
+        assert_eq!(km.lookup_str("v", &["control"]), None);
+    }
+
+    #[test]
     fn test_keymap_custom_overrides_new_actions() {
         let mut bs = default_keybindings();
         bs.push(KeyBinding {
@@ -247,9 +284,71 @@ mod tests {
         assert_eq!(km.lookup_str("q", &["control"]), Some(Action::Quit));
     }
 
+    /// 对应：Alt+P 快速连接，Alt+Shift+P 命令面板（macOS 为 Cmd / Cmd+Shift）。
+    /// Ctrl+P 不拦截，留给终端「上一个」。
     #[test]
-    fn test_keymap_alt_p_command_palette() {
+    fn test_keymap_alt_p_quick_connect_shift_p_palette() {
         let km = KeyMap::from_bindings(&default_keybindings());
-        assert_eq!(km.lookup_str("p", &["alt"]), Some(Action::CommandPalette));
+        assert_eq!(km.lookup_str("p", &["alt"]), Some(Action::QuickConnect));
+        assert_eq!(
+            km.lookup_str("p", &["alt", "shift"]),
+            Some(Action::CommandPalette)
+        );
+        assert_eq!(
+            km.lookup_str("P", &["alt", "shift"]),
+            Some(Action::CommandPalette)
+        );
+        assert_eq!(km.lookup_str("p", &["control"]), None);
+        assert_eq!(km.lookup_str("p", &["control", "shift"]), None);
+        assert_eq!(km.lookup_str("p", &["super"]), None);
+        assert_eq!(km.lookup_str("p", &["super", "shift"]), None);
+    }
+
+    #[test]
+    fn test_keymap_gdk_alt_shift_p_uppercase_is_palette() {
+        use gdk::ModifierType as M;
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(
+            km.lookup(gdk::Key::p, M::ALT_MASK),
+            Some(Action::QuickConnect)
+        );
+        assert_eq!(
+            km.lookup(gdk::Key::P, M::ALT_MASK | M::SHIFT_MASK),
+            Some(Action::CommandPalette)
+        );
+        assert_eq!(km.lookup(gdk::Key::p, M::CONTROL_MASK), None);
+        assert_eq!(
+            km.lookup(gdk::Key::C, M::CONTROL_MASK | M::SHIFT_MASK),
+            Some(Action::Copy)
+        );
+        assert_eq!(
+            km.lookup(gdk::Key::V, M::CONTROL_MASK | M::SHIFT_MASK),
+            Some(Action::Paste)
+        );
+        assert_eq!(km.lookup(gdk::Key::c, M::CONTROL_MASK), None);
+        // 2310.log：GTK 吃掉 Shift 后只剩 CONTROL + 大写 C/V，必须仍是复制粘贴，
+        // 不能当 Ctrl+C / Ctrl+V 漏进 send-keys（`\\003` / `\\026`）。
+        assert_eq!(km.lookup(gdk::Key::C, M::CONTROL_MASK), Some(Action::Copy));
+        assert_eq!(km.lookup(gdk::Key::V, M::CONTROL_MASK), Some(Action::Paste));
+        assert_eq!(
+            km.lookup(gdk::Key::P, M::ALT_MASK),
+            Some(Action::CommandPalette)
+        );
+    }
+
+    #[test]
+    fn test_keymap_alt_brackets_switch_pane() {
+        use gdk::ModifierType as M;
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(km.lookup_str("[", &["alt"]), Some(Action::SwitchPanePrev));
+        assert_eq!(km.lookup_str("]", &["alt"]), Some(Action::SwitchPaneNext));
+        assert_eq!(
+            km.lookup(gdk::Key::bracketleft, M::ALT_MASK),
+            Some(Action::SwitchPanePrev)
+        );
+        assert_eq!(
+            km.lookup(gdk::Key::bracketright, M::ALT_MASK),
+            Some(Action::SwitchPaneNext)
+        );
     }
 }
