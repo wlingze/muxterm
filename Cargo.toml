@@ -61,6 +61,31 @@ name = "linux_gtk_integration"
 path = "tests/linux_gtk_integration.rs"
 required-features = ["gtk"]
 
+[[test]]
+name = "linux_gtk_support"
+path = "tests/linux_gtk_support.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "linux_attention_e2e"
+path = "tests/linux_attention_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "linux_panel_e2e"
+path = "tests/linux_panel_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "linux_prefs_e2e"
+path = "tests/linux_prefs_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "linux_search_e2e"
+path = "tests/linux_search_e2e.rs"
+required-features = ["gtk"]
+
 # 四模式集成测试（local/ssh × shell/tmux × CLI）
 [[test]]
 name = "four_mode_integration"
