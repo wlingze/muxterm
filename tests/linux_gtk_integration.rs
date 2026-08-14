@@ -16,14 +16,16 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
-use gtk4::{EventControllerKey, Orientation, Paned, Widget};
+use gtk4::{EventControllerKey, Orientation, Paned, ToggleButton, Widget};
 
 use muxterm::core::config::{Config, Theme};
-use muxterm::platform::linux::ffi_bridge::{BridgeLayout, BridgeTab};
+use muxterm::platform::linux::ffi_bridge::{BridgeLayout, BridgeTab, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
+use muxterm::platform::linux::quickconnect::store::QuickConnectStore;
 use muxterm::platform::linux::tab_bar::TabBar;
+use muxterm::platform::linux::target_config_window;
 use muxterm::platform::linux::window::AppWindow;
 
 fn has_display() -> bool {
@@ -47,6 +49,10 @@ fn rand_suffix() -> String {
 
 /// 同进程内是否已跑过含 AppWindow 的重用例。
 static HEAVY_GTK_UI_DONE: AtomicBool = AtomicBool::new(false);
+
+/// 同进程内是否已跑过 target-config 窗口用例。
+/// 与 AppWindow 一样，重复建/析构 GTK 窗口会触发二次析构堆损坏。
+static HEAVY_TARGET_CONFIG_DONE: AtomicBool = AtomicBool::new(false);
 
 fn gtk_test_framework_smoke() {
     gtk4::test_register_all_types();
@@ -116,6 +122,81 @@ fn has_nested_paned(root: &impl IsA<Widget>) -> bool {
     };
     outer.start_child().is_some_and(|c| c.is::<Paned>())
         || outer.end_child().is_some_and(|c| c.is::<Paned>())
+}
+
+fn widget_label_texts(root: &impl IsA<Widget>) -> Vec<String> {
+    let root = root.as_ref();
+    let mut out = Vec::new();
+    if let Ok(label) = root.clone().downcast::<gtk4::Label>() {
+        out.push(label.text().to_string());
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        out.extend(widget_label_texts(&c));
+        child = c.next_sibling();
+    }
+    out
+}
+
+fn find_toggle_with_title(root: &impl IsA<Widget>, title: &str) -> Option<ToggleButton> {
+    let root = root.as_ref();
+    if let Ok(btn) = root.clone().downcast::<ToggleButton>() {
+        if widget_label_texts(root).iter().any(|t| t == title) {
+            return Some(btn);
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = find_toggle_with_title(&c, title) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// 复现：新建 Project 打开后 debounce 已触发，再点 SSH 卡片。
+/// 旧实现会对已完成的 `SourceId` 再 `remove()`，在 toggled trampoline 里 abort。
+fn assert_target_config_ssh_toggle_after_debounce() {
+    let parent = gtk4::Window::builder()
+        .title("target-config-parent")
+        .default_width(320)
+        .default_height(200)
+        .build();
+    parent.present();
+    gtk4::test_widget_wait_for_draw(&parent);
+
+    let dialog = target_config_window::show(
+        &parent,
+        None,
+        QuickConnectStore::new(None),
+        vec![SshHostEntry {
+            alias: "ryzen".into(),
+            hostname: "192.168.5.6".into(),
+            port: 22,
+            user: "wlz".into(),
+        }],
+        |_| {},
+        || {},
+    );
+    gtk4::test_widget_wait_for_draw(&dialog);
+    // 等过 120ms listing debounce，让旧 SourceId 自行失效
+    pump_main_loop(200);
+
+    let ssh = find_toggle_with_title(&dialog, "ssh").expect("SSH 卡片");
+    let local = find_toggle_with_title(&dialog, "local").expect("Local 卡片");
+    assert!(local.is_active());
+    assert!(!ssh.is_active());
+    ssh.set_active(true);
+    pump_main_loop(80);
+    assert!(ssh.is_active(), "点 SSH 后应保持选中");
+    assert!(!local.is_active(), "Local 应取消选中");
+
+    dialog.close();
+    dialog.destroy();
+    parent.set_child(None::<&Widget>);
+    parent.destroy();
+    pump_main_loop(40);
 }
 
 fn window_key_controller(window: &impl IsA<Widget>) -> Option<EventControllerKey> {
@@ -200,6 +281,20 @@ fn assert_tab_bar_renders() {
     ]);
     gtk4::test_widget_wait_for_draw(&win);
     assert_eq!(count_css_class(&tabs.container, "tab-button"), 2);
+    assert_eq!(
+        count_css_class(&tabs.container, "tab-active"),
+        1,
+        "当前 tab 应有且仅有一个 tab-active 标识"
+    );
+    let labels = widget_label_texts(&tabs.container);
+    assert!(
+        labels.iter().any(|t| t == "1:shell"),
+        "第 1 个 tab 应标 1: 以对应 Alt+1，got={labels:?}"
+    );
+    assert!(
+        labels.iter().any(|t| t == "2:build"),
+        "第 2 个 tab 应标 2: 以对应 Alt+2，got={labels:?}"
+    );
     win.set_child(None::<&Widget>);
     win.destroy();
     pump_main_loop(40);
@@ -353,11 +448,34 @@ fn gtk_linux_ui_integration() {
         gtk_test_framework_smoke();
         assert_tab_bar_renders();
         assert_pane_layout_widget();
+        // 与 AppWindow 相同，target-config 窗口用例同进程只跑一次，
+        // 重复建/析构会触发二次析构堆损坏。
+        if !HEAVY_TARGET_CONFIG_DONE.load(Ordering::SeqCst) {
+            assert_target_config_ssh_toggle_after_debounce();
+            HEAVY_TARGET_CONFIG_DONE.store(true, Ordering::SeqCst);
+        }
         // 若 gtk_build_* 已跑过 AppWindow，跳过重段避免二次析构堆损坏
         if !HEAVY_GTK_UI_DONE.load(Ordering::SeqCst) {
             assert_build_2tab3pane_via_keys();
             HEAVY_GTK_UI_DONE.store(true, Ordering::SeqCst);
         }
+    });
+}
+
+/// 可单独过滤：新建 Project 点 SSH（debounce 已触发后不得 abort）。
+#[test]
+fn gtk_target_config_ssh_toggle_after_debounce() {
+    if skip_no_display() {
+        return;
+    }
+    if HEAVY_TARGET_CONFIG_DONE.load(Ordering::SeqCst) {
+        eprintln!("skip: 同进程已由 gtk_linux_ui_integration 覆盖");
+        return;
+    }
+    gtk4::test_synced(|| {
+        gtk_test_framework_smoke();
+        assert_target_config_ssh_toggle_after_debounce();
+        HEAVY_TARGET_CONFIG_DONE.store(true, Ordering::SeqCst);
     });
 }
 
@@ -391,5 +509,14 @@ mod keymap_alt_s_v {
         assert_eq!(km.lookup_str("s", &["alt"]), Some(Action::NewPane));
         assert_eq!(km.lookup_str("v", &["alt"]), Some(Action::NewPaneVertical));
         assert_eq!(km.lookup_str("t", &["alt"]), Some(Action::NewTab));
+        assert_eq!(km.lookup_str("q", &["control"]), Some(Action::Quit));
+        assert_eq!(
+            km.lookup_str("c", &["control", "shift"]),
+            Some(Action::Copy)
+        );
+        assert_eq!(
+            km.lookup_str("v", &["control", "shift"]),
+            Some(Action::Paste)
+        );
     }
 }
