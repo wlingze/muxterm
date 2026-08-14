@@ -42,6 +42,12 @@ pub trait Backend: State {
         self.status()
     }
 
+    /// 当前后端是否已启用 status bar 订阅（`refresh-client -B`）。
+    /// 非 tmux 后端 / tmux < 3.2 返回 false，前端回退轮询。
+    fn status_subscriptions_active(&self) -> bool {
+        false
+    }
+
     /// 关闭后端并释放资源；显式 tmux 分离请使用 `Task::Detach`。
     /// 关闭后 `status()` 应为 `Exited` 或 `Disconnected`。
     async fn shutdown(&mut self) -> anyhow::Result<()>;

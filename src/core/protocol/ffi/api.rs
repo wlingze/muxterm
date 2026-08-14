@@ -23,9 +23,10 @@ use super::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF,
     LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED,
     STATE_BACKEND_STATUS, STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED,
-    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED,
-    TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
-    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED,
+    STATE_TAB_CLOSED, STATE_TAB_RENAMED, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH,
+    TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE,
+    TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：TerminalModel + runtime + 供 C 侧借用的缓冲。
@@ -283,6 +284,25 @@ pub extern "C" fn muxterm_status_snapshot_json(
         }
     }))
     .unwrap_or_else(|_| json_error("status snapshot panic"))
+}
+
+/// 当前 tmux 后端是否已启用 status bar 订阅（`refresh-client -B`）。
+///
+/// 返回 1 = 已启用（前端关闭轮询定时器，由 `%subscription-changed` 推送）；
+/// 0 = 未启用（tmux < 3.2 / 非 tmux 后端 / 发送失败，前端回退轮询）。
+///
+/// # Safety
+/// `handle` 必须是 [`muxterm_create`] 返回且尚未释放的指针。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_status_subscription_active(handle: *mut MuxtermHandle) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return 0;
+        }
+        let h = unsafe { &*handle };
+        i32::from(h.model.status_subscriptions_active())
+    }))
+    .unwrap_or(0)
 }
 
 /// 通过 core 创建 detached tmux session，随后由调用方使用同一 alias/session
@@ -745,6 +765,13 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             let (p, n) = handle.push_data(&bytes);
             out.data = p;
             out.data_len = n;
+        }
+        StateChange::StatusBarSubscription { name, value } => {
+            out.type_ = STATE_STATUS_SUBSCRIPTION;
+            out.name = handle.push_name(name);
+            let (ptr, len) = handle.push_data(value.as_bytes());
+            out.data = ptr;
+            out.data_len = len;
         }
         StateChange::BackendStatusChanged(status) => {
             out.type_ = STATE_BACKEND_STATUS;

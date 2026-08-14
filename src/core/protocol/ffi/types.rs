@@ -16,6 +16,7 @@ pub const STATE_ACTIVE_PANE_CHANGED: u32 = 7;
 pub const STATE_TAB_RENAMED: u32 = 8;
 pub const STATE_PANE_RESIZED: u32 = 9;
 pub const STATE_BACKEND_STATUS: u32 = 10;
+pub const STATE_STATUS_SUBSCRIPTION: u32 = 11;
 pub const STATE_OTHER: u32 = 99;
 
 // ── Task.type_ ─────────────────────────────────────────────

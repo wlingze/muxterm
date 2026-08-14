@@ -283,6 +283,24 @@ pub fn refresh_client_size(cols: u32, rows: u32) -> TmuxCommand {
     build(&[format!("-C {cols}x{rows}")], "refresh-client")
 }
 
+/// 订阅控制模式 client 的 format（tmux ≥3.2，见文档 §B+）：值变化时推
+/// `%subscription-changed`（至多 1 次/秒）。`scope` 为空串表示 attached session。
+///
+/// 整个 `name:scope:format` 参数用双引号包裹，避免 `#` 被 tmux 当注释吃掉。
+pub fn refresh_client_subscribe(name: &str, scope: &str, format: &str) -> TmuxCommand {
+    let arg = if scope.is_empty() {
+        format!("{name}::{format}")
+    } else {
+        format!("{name}:{scope}:{format}")
+    };
+    build(&[format!("-B {}", quote_c_string(&arg))], "refresh-client")
+}
+
+/// 移除订阅（`refresh-client -B <name>`）。
+pub fn refresh_client_unsubscribe(name: &str) -> TmuxCommand {
+    build(&[format!("-B {name}")], "refresh-client")
+}
+
 /// 上报控制客户端的前景/背景色给 tmux（`refresh-client -r %N:<OSC 应答>`）。
 ///
 /// `code` 为 10（前景）或 11（背景）。值必须用 tmux 的 C 转义双引号包裹，
@@ -684,6 +702,32 @@ mod tests {
     #[test]
     fn refresh_client_cmd() {
         assert_eq!(refresh_client().as_str(), "refresh-client");
+    }
+
+    #[test]
+    fn refresh_client_subscribe_quotes_format() {
+        // `#` 在 tmux 命令行里是注释起始符，必须引号包裹整个 -B 参数。
+        assert_eq!(
+            refresh_client_subscribe("muxterm.status-left", "", "#{T:status-left}").as_str(),
+            r#"refresh-client -B "muxterm.status-left::#{T:status-left}""#
+        );
+    }
+
+    #[test]
+    fn refresh_client_subscribe_with_scope() {
+        // 阶段 B 的 pane 状态订阅同一条通道（scope=%*）。
+        assert_eq!(
+            refresh_client_subscribe("state", "%*", "#{pane_current_command}").as_str(),
+            r#"refresh-client -B "state:%*:#{pane_current_command}""#
+        );
+    }
+
+    #[test]
+    fn refresh_client_unsubscribe_by_name() {
+        assert_eq!(
+            refresh_client_unsubscribe("muxterm.status-left").as_str(),
+            "refresh-client -B muxterm.status-left"
+        );
     }
 
     #[test]

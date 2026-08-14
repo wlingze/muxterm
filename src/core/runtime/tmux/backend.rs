@@ -64,6 +64,10 @@ enum PendingQuery {
     ListSessions,
 }
 
+/// status bar 订阅名（文档 §B+：`refresh-client -B` 的名字）。
+pub const STATUS_LEFT_SUBSCRIPTION: &str = "muxterm.status-left";
+pub const STATUS_RIGHT_SUBSCRIPTION: &str = "muxterm.status-right";
+
 /// tmux -CC 后端。
 pub struct TmuxBackend {
     config: TmuxClientConfig,
@@ -119,6 +123,10 @@ pub struct TmuxBackend {
     /// 是否支持 `refresh-client -r`（OSC 10/11 颜色上报；tmux < 3.2 不支持）。
     colour_report_supported: bool,
     colour_report_warned: bool,
+    /// 是否支持 `refresh-client -B`（status bar 订阅；tmux ≥ 3.2，文档 §B+）。
+    status_subscription_supported: bool,
+    /// 已成功发出 status-left/right 订阅（前端据此关闭轮询定时器）。
+    status_subscriptions_active: bool,
 }
 
 /// 解析 `tmux -V` 输出（如 `tmux 3.7b` / `tmux 2.9a`）。
@@ -140,6 +148,11 @@ pub fn supports_colour_report(version: Option<(u32, u32)>) -> bool {
         None => true, // 版本未知时尝试上报，失败由命令错误自然暴露
         Some((major, minor)) => major > 3 || (major == 3 && minor >= 2),
     }
+}
+
+/// `refresh-client -B`（format 订阅）需要 tmux >= 3.2（文档 §B+）。
+pub fn supports_status_subscription(version: Option<(u32, u32)>) -> bool {
+    matches!(version, Some((major, minor)) if major > 3 || (major == 3 && minor >= 2))
 }
 
 /// capture-pane 响应 → 终端字节流。
@@ -220,6 +233,8 @@ impl TmuxBackend {
             initial_capture_buf: HashMap::new(),
             colour_report_supported: true,
             colour_report_warned: false,
+            status_subscription_supported: false,
+            status_subscriptions_active: false,
         }
     }
 
@@ -622,6 +637,11 @@ impl TmuxBackend {
                     sess.active_window = Some(Self::VIRTUAL_WINDOW_ID);
                 }
                 self.query_panes_if_empty(tab_id, window);
+            }
+            Message::SubscriptionChanged { name, value } => {
+                // status-left/right 订阅推送 → 前端直接更新原生条（零轮询）。
+                self.events
+                    .push_back(StateChange::StatusBarSubscription { name, value });
             }
             Message::ExtendedOutput { .. }
             | Message::Pause { .. }
@@ -1048,7 +1068,42 @@ impl TmuxBackend {
             session: String::new(),
         };
         if let Ok(version_out) = super::status::run_tmux(&cfg, &["-V"]) {
-            self.colour_report_supported = supports_colour_report(parse_tmux_version(&version_out));
+            let version = parse_tmux_version(&version_out);
+            self.colour_report_supported = supports_colour_report(version);
+            self.status_subscription_supported = supports_status_subscription(version);
+        }
+    }
+
+    /// 订阅 status-left/right（文档 §B+：`refresh-client -B`，零轮询）。
+    ///
+    /// tmux ≥ 3.2 时值变化推 `%subscription-changed`（至多 1 次/秒），
+    /// 前端据此更新原生条；老版本回退到前端轮询定时器。
+    fn setup_status_subscriptions(&mut self) {
+        self.status_subscriptions_active = false;
+        if !self.status_subscription_supported {
+            return;
+        }
+        let left = crate::core::runtime::tmux::command::refresh_client_subscribe(
+            STATUS_LEFT_SUBSCRIPTION,
+            "",
+            "#{T:status-left}",
+        );
+        let right = crate::core::runtime::tmux::command::refresh_client_subscribe(
+            STATUS_RIGHT_SUBSCRIPTION,
+            "",
+            "#{T:status-right}",
+        );
+        // 必须走 dispatch_command：它会给每条命令登记一个 Ignore 响应槽，
+        // 保持与 %begin/%end 的 FIFO 对齐；直接 tx.send 会吃掉后续真实查询
+        // 的槽位，导致 list-windows/list-panes 响应错配（集成测试回归）。
+        if self.dispatch_command(left.to_line()).is_ok()
+            && self.dispatch_command(right.to_line()).is_ok()
+        {
+            self.status_subscriptions_active = true;
+            tracing::info!(
+                target: "muxterm::tmux",
+                "status bar 订阅已启用（refresh-client -B）"
+            );
         }
     }
 
@@ -1230,6 +1285,9 @@ impl State for TmuxBackend {
 
 #[async_trait]
 impl Backend for TmuxBackend {
+    fn status_subscriptions_active(&self) -> bool {
+        self.status_subscriptions_active
+    }
     async fn connect(&mut self) -> Result<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
@@ -1341,6 +1399,7 @@ impl Backend for TmuxBackend {
         // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
         self.query_list_sessions();
         self.detect_colour_report_support();
+        self.setup_status_subscriptions();
 
         self.status = BackendStatus::Connected;
         self.events
@@ -1944,6 +2003,63 @@ mod tests {
             received += 1;
         }
         assert_eq!(received, burst, "高频输入不能因队列满而丢失");
+    }
+
+    #[test]
+    fn subscription_changed_forwards_to_state_change() {
+        let mut b = TmuxBackend::new(None);
+        b.handle_message(Message::SubscriptionChanged {
+            name: STATUS_LEFT_SUBSCRIPTION.into(),
+            value: "#[fg=red]11:50:23 ".into(),
+        });
+        assert!(b.events.iter().any(|event| matches!(
+            event,
+            StateChange::StatusBarSubscription { name, value }
+                if name == STATUS_LEFT_SUBSCRIPTION && value == "#[fg=red]11:50:23 "
+        )));
+    }
+
+    #[test]
+    fn supports_status_subscription_requires_tmux_3_2() {
+        assert!(supports_status_subscription(Some((3, 2))));
+        assert!(supports_status_subscription(Some((3, 7))));
+        assert!(supports_status_subscription(Some((4, 0))));
+        assert!(!supports_status_subscription(Some((3, 1))));
+        assert!(!supports_status_subscription(Some((2, 9))));
+        assert!(!supports_status_subscription(None));
+    }
+
+    #[test]
+    fn setup_status_subscriptions_sends_two_subscriptions_when_supported() {
+        let mut backend = TmuxBackend::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        backend.cmd_tx = Some(tx);
+        backend.status_subscription_supported = true;
+
+        backend.setup_status_subscriptions();
+
+        assert!(backend.status_subscriptions_active);
+        let mut lines = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            lines.push(line);
+        }
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().any(|l| l.contains("muxterm.status-left")));
+        assert!(lines.iter().any(|l| l.contains("muxterm.status-right")));
+        assert!(lines.iter().all(|l| l.starts_with("refresh-client -B \"")));
+    }
+
+    #[test]
+    fn setup_status_subscriptions_skips_unsupported_tmux() {
+        let mut backend = TmuxBackend::new(None);
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        backend.cmd_tx = Some(tx);
+        backend.status_subscription_supported = false;
+
+        backend.setup_status_subscriptions();
+
+        assert!(!backend.status_subscriptions_active);
+        assert!(rx.is_empty());
     }
 
     #[test]

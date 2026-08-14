@@ -113,6 +113,9 @@ pub enum StateChange {
     SessionRenamed { session: SessionId, name: String },
     /// session 列表变化。
     SessionsChanged,
+    /// status bar 订阅推送（`refresh-client -B` → `%subscription-changed`）。
+    /// name 是订阅名（如 `muxterm.status-left`），value 是 format 展开值。
+    StatusBarSubscription { name: String, value: String },
     /// 后端整体状态变化（连接中 / 已连接 / 断开 / 错误）。
     BackendStatusChanged(BackendStatus),
 }

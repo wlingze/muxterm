@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use muxterm::core::model::layout::SplitDir;
-use muxterm::core::model::state::{BackendStatus, State};
+use muxterm::core::model::state::{BackendStatus, State, StateChange};
 use muxterm::core::model::task::{Task, TaskOutcome};
 use muxterm::core::model::TerminalModel;
 use muxterm::core::runtime::TmuxBackend;
@@ -3057,5 +3057,59 @@ fn detach_reattach_layout_persists() {
     );
 
     let _ = model2.shutdown();
+    cleanup(&socket);
+}
+
+// ============================================================================
+// 场景 4: status bar 订阅（文档 §B+：refresh-client -B → %subscription-changed）
+// ============================================================================
+
+#[test]
+fn scenario4_status_subscription_pushes_left_value_changes() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let create = Command::new("tmux")
+        .args(["-L", &socket, "new-session", "-d", "-s", "subtest"])
+        .output()
+        .expect("创建隔离 tmux server 失败");
+    assert!(create.status.success(), "创建隔离 tmux server 失败: {:?}", create);
+
+    let mut model = connect_tmux(&socket);
+    // tmux >= 3.2 时连接后应自动启用 status-left/right 订阅。
+    assert!(
+        model.status_subscriptions_active(),
+        "tmux >= 3.2 应启用 status bar 订阅"
+    );
+    let _ = model.poll_events();
+
+    // 原生侧修改 status-left，订阅应在 ~1s 内推送 %subscription-changed。
+    let set = Command::new("tmux")
+        .args(["-L", &socket, "set", "-g", "status-left", "SUB-LEFT-"])
+        .output()
+        .expect("修改 status-left 失败");
+    assert!(set.status.success(), "set status-left 失败: {:?}", set);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut got = false;
+    while Instant::now() < deadline {
+        // refresh() 先从 backend 拉取事件再派发（poll_events 只排空 pending）。
+        for ev in model.refresh() {
+            if let StateChange::StatusBarSubscription { name, value } = ev {
+                if name == "muxterm.status-left" && value.contains("SUB-LEFT-") {
+                    got = true;
+                }
+            }
+        }
+        if got {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(got, "应收到 status-left 订阅推送");
+
+    let _ = model.shutdown();
     cleanup(&socket);
 }

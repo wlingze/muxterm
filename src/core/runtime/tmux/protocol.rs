@@ -441,6 +441,10 @@ pub enum Message {
     Pause { args: String },
     /// `%continue <flags...>`（tmux 3.3+ 流控）：pane 输出恢复。
     Continue { args: String },
+    /// `%subscription-changed <name> <session-id> <window-id> <window-index>
+    /// <pane-id> ... : <value>`（tmux ≥3.2 `refresh-client -B` 订阅推送）。
+    /// value 是 format 的展开值（可能含空格、冒号、样式指令）。
+    SubscriptionChanged { name: String, value: String },
     /// 命令响应边界 `%begin` / `%end` / `%error`。
     ResponseBoundary(ResponseBoundary),
     /// 未识别的 `%` 消息，保留原始行（去掉行尾 \r\n）。
@@ -468,6 +472,7 @@ impl Message {
             Message::ExtendedOutput { .. } => "extended-output",
             Message::Pause { .. } => "pause",
             Message::Continue { .. } => "continue",
+            Message::SubscriptionChanged { .. } => "subscription-changed",
             Message::ResponseBoundary(b) => match b.kind {
                 NotificationKind::Begin => "begin",
                 NotificationKind::End => "end",
@@ -580,6 +585,7 @@ fn parse_line_known_keyword(line_str: &str) -> Result<Option<Message>, ProtocolE
         "continue" => Ok(Message::Continue {
             args: rest.trim().to_string(),
         }),
+        "subscription-changed" => parse_subscription_changed(rest),
         "begin" => parse_boundary(rest, NotificationKind::Begin).map(Message::ResponseBoundary),
         "end" => parse_boundary(rest, NotificationKind::End).map(Message::ResponseBoundary),
         "error" => parse_boundary(rest, NotificationKind::Error).map(Message::ResponseBoundary),
@@ -607,6 +613,27 @@ fn parse_output_line_bytes(line: &[u8]) -> Option<Message> {
             None
         }
     }
+}
+
+/// `%subscription-changed <name> <session-id> <window-id> <window-index> <pane-id> ... : <value>`
+///
+/// 分隔符是第一个 ` : `：之前是订阅元数据（name 是首个 token，其余字段供
+/// 未来使用），之后是 format 展开值（原样保留，可能含空格/冒号/样式指令）。
+fn parse_subscription_changed(rest: &str) -> Result<Message, ProtocolError> {
+    let (meta, value) = rest
+        .split_once(" : ")
+        .map(|(m, v)| (m.trim(), v))
+        .unwrap_or((rest.trim(), ""));
+    let name = meta.split_whitespace().next().unwrap_or("");
+    if name.is_empty() {
+        return Err(ProtocolError::MalformedField(
+            "subscription-changed 缺少订阅名".into(),
+        ));
+    }
+    Ok(Message::SubscriptionChanged {
+        name: name.to_string(),
+        value: value.to_string(),
+    })
 }
 
 // 辅助枚举：window-add / window-close / unlinked-window-add / unlinked-window-close
@@ -1451,6 +1478,36 @@ mod tests {
     fn parse_sessions_changed() {
         let m = parse_line("%sessions-changed\r\n").unwrap();
         assert_eq!(m, Message::SessionsChanged);
+
+        // %subscription-changed（tmux ≥3.2 refresh-client -B 推送）
+        let m = parse_line(
+            "%subscription-changed muxterm.status-left $0 - - - : #[fg=red]11:50:23 ",
+        )
+        .unwrap();
+        assert_eq!(
+            m,
+            Message::SubscriptionChanged {
+                name: "muxterm.status-left".into(),
+                value: "#[fg=red]11:50:23 ".into(),
+            }
+        );
+
+        // 展开值本身可以含冒号与空格：只按第一个 " : " 切分。
+        let m = parse_line(
+            "%subscription-changed muxterm.status-right $0 - - - : a : b  c",
+        )
+        .unwrap();
+        assert_eq!(
+            m,
+            Message::SubscriptionChanged {
+                name: "muxterm.status-right".into(),
+                value: "a : b  c".into(),
+            }
+        );
+
+        // 缺订阅名的畸形行按忽略处理（不 panic、不进状态机）。
+        assert_eq!(parse_line("%subscription-changed"), None);
+        assert_eq!(parse_line("%subscription-changed   "), None);
     }
 
     #[test]

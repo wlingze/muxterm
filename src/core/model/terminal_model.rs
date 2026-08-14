@@ -70,6 +70,11 @@ impl TerminalModel {
         self.backend.backend_status()
     }
 
+    /// status bar 订阅是否已启用（tmux ≥3.2 `refresh-client -B`）。
+    pub fn status_subscriptions_active(&self) -> bool {
+        self.backend.status_subscriptions_active()
+    }
+
     /// 执行一个 Task。
     ///
     /// 若 task 需要「当前激活 pane」（`needs_active_pane`），从 state 查询填入。
