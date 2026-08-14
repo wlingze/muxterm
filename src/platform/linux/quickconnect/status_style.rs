@@ -4,6 +4,7 @@
 //! 颜色名 / `colourN` / `#rgb` / `#rrggbb` / `rrggbb` 与 bold/reverse 属性，
 //! 以及 `#[...]` 内联指令（align/range/list 等布局指令忽略）。
 
+use crate::platform::linux::lifecycle::tab_shortcut_label;
 use serde::Deserialize;
 
 /// status bar 模式。
@@ -365,6 +366,49 @@ fn hex_color(hex: &str) -> Option<StatusBarColor> {
     })
 }
 
+/// 用已有 tab 快照拼一条轻量 status（不发起独立 `ssh tmux`）。
+///
+/// SSH attach 时 GTK 主线程不能同步跑 N 次 ssh。窗口列表画在 status bar 上，
+/// 并隐藏原生 TabBar，避免两排 tab。
+pub fn snapshot_from_tabs(
+    session: &str,
+    npanes: usize,
+    tabs: &[(u32, String, bool)],
+) -> StatusBarSnapshot {
+    let windows = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, (id, name, current))| StatusBarWindow {
+            window_id: *id,
+            index: (i as u32).saturating_add(1),
+            name: name.clone(),
+            flags: if *current { "*".into() } else { String::new() },
+            current: *current,
+            text: tab_shortcut_label(i, name),
+        })
+        .collect();
+    StatusBarSnapshot {
+        enabled: true,
+        position: "bottom".into(),
+        justify: "left".into(),
+        interval: 15,
+        left: format!("{session} · {npanes}"),
+        right: String::new(),
+        left_length: 40,
+        right_length: 40,
+        status_style: String::new(),
+        left_style: String::new(),
+        right_style: String::new(),
+        separator: " ".into(),
+        window_format: String::new(),
+        window_current_format: String::new(),
+        window_style: String::new(),
+        window_current_style: String::new(),
+        windows,
+        error: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +491,28 @@ mod tests {
         assert!(snapshot.enabled);
         assert_eq!(snapshot.windows.len(), 1);
         assert!(snapshot.windows[0].current);
+    }
+
+    #[test]
+    fn snapshot_from_tabs_keeps_window_order_and_active() {
+        let snap = snapshot_from_tabs(
+            "yaklang-workspace",
+            2,
+            &[
+                (0, "Monitor".into(), true),
+                (18, "feature-syntaxflow".into(), false),
+            ],
+        );
+        assert_eq!(snap.windows.len(), 2);
+        assert_eq!(snap.windows[0].window_id, 0);
+        assert!(snap.windows[0].current);
+        assert!(!snap.windows[1].current);
+        assert_eq!(snap.windows.iter().filter(|w| w.current).count(), 1);
+        assert_eq!(snap.windows[0].text, "1:Monitor");
+        assert_eq!(snap.windows[1].text, "2:feature-syntaxflow");
+        assert_eq!(snap.windows[1].window_id, 18);
+        assert!(!snap.windows[1].current);
+        assert!(snap.left.contains("yaklang-workspace"));
+        assert_eq!(snap.interval, 15);
     }
 }
