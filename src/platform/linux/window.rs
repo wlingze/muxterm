@@ -759,7 +759,10 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         PaletteAction::SearchPanes | PaletteAction::RenamePane => {
             tracing::info!(target = "muxterm::linux", "命令 {id} 尚未接到 GTK 对话框");
         }
-        PaletteAction::ReloadConfig | PaletteAction::OpenConfig | PaletteAction::Preferences => {
+        PaletteAction::Preferences => {
+            open_preferences(state, parent);
+        }
+        PaletteAction::ReloadConfig | PaletteAction::OpenConfig => {
             tracing::info!(target = "muxterm::linux", "命令 {id} 尚未接到 GTK 对话框");
         }
     }
@@ -1443,6 +1446,38 @@ fn attention_connection_key(
             };
             Some(connection_key(&cfg, &session))
         })
+}
+
+/// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
+fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
+    let Some(path) = Config::user_config_path() else {
+        tracing::warn!(target = "muxterm::linux", "无用户配置目录，无法打开配置页");
+        return;
+    };
+    let st = state.clone();
+    crate::platform::linux::preferences_window::show(
+        window,
+        path,
+        std::boxed::Box::new(move || {
+            let mut s = st.borrow_mut();
+            if let Ok(cfg) = Config::load() {
+                s.attention.set_config(cfg.attention.clone());
+                s.config_font_size = cfg.font.size;
+                s.font.size = FontSettings::clamp_size(cfg.font.size);
+                s.font.family = cfg.font.family.clone();
+                s.theme_name = cfg.theme.name.to_ascii_lowercase();
+                if let Ok(t) = Theme::load(&s.theme_name) {
+                    s.theme = t.clone();
+                    apply_chrome_css(&t);
+                    s.layout.apply_theme(&t);
+                    s.status.apply_theme(&t);
+                }
+                s.status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
+                s.status.set_mode(s.status_mode);
+                maybe_refresh_status(&mut s, true);
+            }
+        }),
+    );
 }
 
 fn open_target_config(

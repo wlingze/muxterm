@@ -13,6 +13,7 @@ pub mod notebook;
 pub mod pane_switcher;
 pub mod pane_view;
 pub mod panel_model;
+pub mod preferences_window;
 pub mod quick_pick;
 pub mod quickconnect;
 pub mod quickconnect_panel;
