@@ -114,6 +114,13 @@ impl AttrState {
     }
 }
 
+/// 一条 scrollback 行：文本 + 稳定递增序号（淘汰后不重排）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollbackLine {
+    pub text: String,
+    pub seq: u64,
+}
+
 /// 无头终端状态。
 pub struct TerminalState {
     grid: Vec<Vec<Cell>>,
@@ -158,10 +165,12 @@ pub struct TerminalState {
     pub palette: [Rgb; 16],
     /// G0-G3 字符集指定（DEC charset designation）。
     pub charsets: [StandardCharset; 4],
-    /// scrollback：从屏幕顶部滚出的行（字符串），有上限。
-    pub scrollback: VecDeque<String>,
+    /// scrollback：从屏幕顶部滚出的行（带稳定 seq），有上限。
+    pub scrollback: VecDeque<ScrollbackLine>,
     /// scrollback 上限（行数）。
     scrollback_max: usize,
+    /// 下一条 scrollback 行的 seq（从 1 起，淘汰后不回退）。
+    next_seq: u64,
     /// 当前激活字符集（SI/SO 切换）。
     pub active_charset: CharsetIndex,
     processor: Processor,
@@ -273,6 +282,7 @@ impl TerminalState {
             active_charset: CharsetIndex::G0,
             scrollback: VecDeque::new(),
             scrollback_max: max_lines.max(1),
+            next_seq: 1,
             processor: Processor::default(),
         }
     }
@@ -499,12 +509,15 @@ impl TerminalState {
         self.cursor_col = 0;
     }
 
-    /// 把一行推入 scrollback（按 `with_scrollback` 上限截断）。
+    /// 把一行推入 scrollback（按 `with_scrollback` 上限截断，seq 单调递增）。
     fn push_scrollback(&mut self, line: String) {
         if self.scrollback.len() >= self.scrollback_max {
             self.scrollback.pop_front();
         }
-        self.scrollback.push_back(line);
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.scrollback
+            .push_back(ScrollbackLine { text: line, seq });
     }
 
     /// scrollback 行数。
@@ -514,7 +527,63 @@ impl TerminalState {
 
     /// 取第 idx 行 scrollback（0 = 最早）。
     pub fn scrollback_line(&self, idx: usize) -> Option<&str> {
-        self.scrollback.get(idx).map(|s| s.as_str())
+        self.scrollback.get(idx).map(|s| s.text.as_str())
+    }
+
+    /// 取第 idx 行 scrollback 条目（文本 + seq）。
+    pub fn scrollback_entry(&self, idx: usize) -> Option<&ScrollbackLine> {
+        self.scrollback.get(idx)
+    }
+
+    /// 最新一条 scrollback 的 seq（无行时为 0）。
+    pub fn latest_seq(&self) -> u64 {
+        self.scrollback.back().map(|l| l.seq).unwrap_or(0)
+    }
+
+    /// 大小写敏感子串搜索，返回 (seq, 行文本)；空 query 返回空。
+    pub fn search(&self, query: &str) -> Vec<(u64, String)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        self.scrollback
+            .iter()
+            .filter(|l| l.text.contains(query))
+            .map(|l| (l.seq, l.text.clone()))
+            .collect()
+    }
+
+    /// 最近 n 行：先取可见屏 `snapshot_trimmed()` 尾部，不足再向前取 scrollback。
+    pub fn last_n_lines(&self, n: usize) -> Vec<String> {
+        let mut out: Vec<String> = self.snapshot_trimmed();
+        let mut need = n.saturating_sub(out.len());
+        let mut idx = self.scrollback.len();
+        while need > 0 && idx > 0 {
+            idx -= 1;
+            out.insert(0, self.scrollback[idx].text.clone());
+            need -= 1;
+        }
+        out.truncate(n);
+        out
+    }
+
+    /// 最近一条非空行：先看可见屏，再回退 scrollback。
+    pub fn last_non_empty_line(&self) -> Option<String> {
+        self.snapshot_trimmed()
+            .into_iter()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .or_else(|| {
+                self.scrollback
+                    .iter()
+                    .rev()
+                    .map(|l| l.text.clone())
+                    .find(|l| !l.trim().is_empty())
+            })
+    }
+
+    /// 可见屏快照（去行尾空白与末尾空行）。
+    pub fn visible_snapshot(&self) -> Vec<String> {
+        self.snapshot_trimmed()
     }
 
     fn scroll_up_n(&mut self, n: usize) {
@@ -1724,6 +1793,65 @@ mod scrollback_tests {
         assert_eq!(t.scrollback_lines(), 3);
         assert_eq!(t.scrollback_line(0), Some("b"));
         assert_eq!(t.scrollback_line(2), Some("d"));
+    }
+
+    /// search 返回 (seq, 行文本)，大小写敏感。
+    #[test]
+    fn search_finds_hits_with_seq() {
+        let mut t = TerminalState::with_scrollback(10, 1, 50);
+        for line in ["alpha", "beta", "alphabet"] {
+            t.feed(format!("{line}\r\n").as_bytes());
+        }
+        assert_eq!(
+            t.search("alpha"),
+            vec![(1, "alpha".into()), (3, "alphabet".into())]
+        );
+        assert!(t.search("zzz").is_empty());
+    }
+
+    /// 空 query 不搜索。
+    #[test]
+    fn search_empty_query_returns_none() {
+        let mut t = TerminalState::with_scrollback(10, 1, 50);
+        t.feed(b"alpha\n");
+        assert!(t.search("").is_empty());
+    }
+
+    /// 淘汰后 seq 不重排（坐标稳定）。
+    #[test]
+    fn seq_monotonic_across_eviction() {
+        let mut t = TerminalState::with_scrollback(10, 1, 3);
+        for line in ["a", "b", "c", "d", "e"] {
+            t.feed(format!("{line}\r\n").as_bytes());
+        }
+        assert_eq!(t.scrollback_lines(), 3);
+        let seqs: Vec<u64> = (0..3).map(|i| t.scrollback_entry(i).unwrap().seq).collect();
+        assert_eq!(seqs, vec![3, 4, 5]);
+        assert_eq!(t.latest_seq(), 5);
+    }
+
+    /// last_non_empty_line 跳过空白行，从可见屏回退到 scrollback。
+    #[test]
+    fn last_non_empty_line_skips_blank() {
+        let mut t = TerminalState::with_scrollback(10, 3, 50);
+        t.feed(b"a\r\n\r\nb\r\n");
+        assert_eq!(t.last_non_empty_line(), Some("b".into()));
+        t.feed(b"\r\n\r\n\r\n");
+        assert_eq!(t.last_non_empty_line(), Some("b".into()));
+    }
+
+    /// last_n_lines 先取可见屏尾部，不足再向前取 scrollback。
+    #[test]
+    fn last_n_lines_includes_visible() {
+        let mut t = TerminalState::with_scrollback(10, 3, 50);
+        for i in 0..10 {
+            t.feed(format!("row{i}\r\n").as_bytes());
+        }
+        let lines = t.last_n_lines(4);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.last().map(String::as_str), Some("row9"));
+        assert_eq!(lines, vec!["row6", "row7", "row8", "row9"]);
+        assert_eq!(t.last_n_lines(2), vec!["row8", "row9"]);
     }
 
     /// 清屏不应污染 scrollback（ESC[2J 只清当前屏）。
