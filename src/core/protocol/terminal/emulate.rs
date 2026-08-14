@@ -562,7 +562,10 @@ impl TerminalState {
             out.insert(0, self.scrollback[idx].text.clone());
             need -= 1;
         }
-        out.truncate(n);
+        // 保留合并后的尾部 n 行（不是头部）。
+        if out.len() > n {
+            out.drain(..out.len() - n);
+        }
         out
     }
 
