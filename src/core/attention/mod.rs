@@ -6,3 +6,4 @@
 //! - [`clock`]：可注入时钟（C2.3 加入）
 
 pub mod signal;
+pub mod state;
