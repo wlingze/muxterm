@@ -45,6 +45,8 @@ pub struct Config {
     #[serde(default)]
     pub scrollback: ScrollbackConfig,
     #[serde(default)]
+    pub attention: AttentionConfig,
+    #[serde(default)]
     pub ui: UiConfig,
     #[serde(default)]
     pub pane: PaneConfig,
@@ -236,6 +238,32 @@ impl Default for ScrollbackConfig {
     }
 }
 
+/// `[attention]`：阶段 B 注意力聚合配置。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttentionConfig {
+    #[serde(default = "default_attention_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub blocked_regex: Vec<String>,
+    #[serde(default = "default_attention_debounce_ms")]
+    pub debounce_ms: u64,
+}
+fn default_attention_enabled() -> bool {
+    true
+}
+fn default_attention_debounce_ms() -> u64 {
+    100
+}
+impl Default for AttentionConfig {
+    fn default() -> Self {
+        AttentionConfig {
+            enabled: default_attention_enabled(),
+            blocked_regex: Vec::new(),
+            debounce_ms: default_attention_debounce_ms(),
+        }
+    }
+}
+
 /// `[ui]`：极简布局相关。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
@@ -357,6 +385,7 @@ impl Default for Config {
             tmux: TmuxConfig::default(),
             ssh: SshFileConfig::default(),
             scrollback: ScrollbackConfig::default(),
+            attention: AttentionConfig::default(),
             ui: UiConfig::default(),
             pane: PaneConfig::default(),
             behavior: BehaviorConfig::default(),
@@ -1277,6 +1306,9 @@ on_program_exit_abnormal = "close"
         assert_eq!(c.theme.name, "light");
         assert!(c.tmux.auto_mouse);
         assert_eq!(c.scrollback.lines, 10000);
+        assert!(c.attention.enabled);
+        assert_eq!(c.attention.debounce_ms, 100);
+        assert!(c.attention.blocked_regex.is_empty());
         assert_eq!(c.behavior.on_last_pane_exit, OnLastPaneExit::CloseWindow);
         assert_eq!(c.pane.default_command, "$SHELL");
         assert_eq!(c.keybindings, default_keybindings());
@@ -1309,6 +1341,14 @@ action = "new_tab"
     fn test_config_partial_toml_falls_back_fields() {
         let c = parse_config_toml("[scrollback]\nlines = 123\n").unwrap();
         assert_eq!(c.scrollback.lines, 123);
+
+        let c = parse_config_toml(
+            "[attention]\nenabled = false\ndebounce_ms = 0\nblocked_regex = [\"ask\", \"confirm?\"]\n",
+        )
+        .unwrap();
+        assert!(!c.attention.enabled);
+        assert_eq!(c.attention.debounce_ms, 0);
+        assert_eq!(c.attention.blocked_regex, vec!["ask", "confirm?"]);
         assert_eq!(c.font.family, "Monospace");
         assert_eq!(c.theme.name, "light");
         assert!(!c.keybindings.is_empty()); // 未写 [[keybindings]] → 补默认
