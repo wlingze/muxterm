@@ -66,6 +66,10 @@ cargo test --no-default-features --features tui
 cargo test --features gtk --lib quickconnect -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_gtk_integration -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_quickconnect_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_gtk_support -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_panel_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_attention_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -138,7 +142,17 @@ cargo test --all-features
 | 11 | resize→feed + 输出合并 | ✅ pane_view | ⚠️ 2tab3pane 键盘流程已覆盖；真实 htop/git lg 的 GTK 复放待补 | ✅ core 单测有真实样本 |
 | 12 | 镜像模式丢弃应答 | ✅ mirror + 真实 OSC 样本 | ✅ mirror e2e | ✅ 真实样本 |
 | 13 | 键位扩展 | ✅ keymap defaults | ⚠️ Alt+S/V/1/2 已覆盖；Quit/字体/全屏按键待补 | — |
-| 14 | i18n 补齐 | ✅ en/zh parity | ❌ 页面文案断言待补 | — |
+| 14 | i18n 补齐 | ✅ en/zh parity | ✅ 面板 tab/占位文案在 panel e2e 断言 | — |
+| 15 | scrollback 上限/seq/search | ✅ emulate C1.* | — | — |
+| 16 | 粘贴安全 | ✅ mirror sanitize | — | — |
+| 17 | ReplicaStore + 后台 feed | ✅ replica/pool | — | — |
+| 18 | OSC/BEL 注意力信号 | ✅ emulate + E1 fixture | — | ✅ osc-attention-tmux3.7b.txt |
+| 19 | 状态机/聚合/静音 | ✅ attention::* | — | — |
+| 20 | 三 tab 面板 | ✅ panel_model | ✅ linux_panel_e2e | — |
+| 21 | peek/一行答复 | ✅ panel 钩子 | ✅ linux_panel_e2e / linux_attention_e2e | ✅ attention e2e 真实 tmux |
+| 22 | 红点/标题 | ✅ attention_ui 字符串 | ✅ linux_attention_e2e | ✅ 注入 BEL + printf |
+| 23 | 配置页 | ✅ config_edit | ✅ linux_prefs_e2e | — |
+| 24 | pane-cmd 订阅 | ✅ protocol/backend | — | ✅ tmux_backend scenario5 |
 
 ## 8. 新增功能验收矩阵模板
 
