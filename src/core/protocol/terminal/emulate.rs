@@ -158,6 +158,8 @@ pub struct TerminalState {
     pub charsets: [StandardCharset; 4],
     /// scrollback：从屏幕顶部滚出的行（字符串），有上限。
     pub scrollback: Vec<String>,
+    /// scrollback 上限（行数）。
+    scrollback_max: usize,
     /// 当前激活字符集（SI/SO 切换）。
     pub active_charset: CharsetIndex,
     processor: Processor,
@@ -228,8 +230,13 @@ impl Default for TerminalState {
 }
 
 impl TerminalState {
-    /// 创建指定行列数的状态模型。
+    /// 创建指定行列数的状态模型（默认 scrollback 上限）。
     pub fn new(cols: usize, rows: usize) -> Self {
+        Self::with_scrollback(cols, rows, DEFAULT_SCROLLBACK_LINES)
+    }
+
+    /// 创建指定行列数与 scrollback 上限的状态模型。
+    pub fn with_scrollback(cols: usize, rows: usize, max_lines: usize) -> Self {
         let cols = cols.max(1);
         let rows = rows.max(1);
         Self {
@@ -263,6 +270,7 @@ impl TerminalState {
             charsets: [StandardCharset::default(); 4],
             active_charset: CharsetIndex::G0,
             scrollback: Vec::new(),
+            scrollback_max: max_lines.max(1),
             processor: Processor::default(),
         }
     }
@@ -487,9 +495,9 @@ impl TerminalState {
         self.cursor_col = 0;
     }
 
-    /// 把一行推入 scrollback（有上限）。
+    /// 把一行推入 scrollback（按 `with_scrollback` 上限截断）。
     fn push_scrollback(&mut self, line: String) {
-        if self.scrollback.len() >= SCROLLBACK_MAX_LINES {
+        if self.scrollback.len() >= self.scrollback_max {
             self.scrollback.remove(0);
         }
         self.scrollback.push(line);
@@ -656,7 +664,11 @@ impl TerminalState {
     }
 }
 
-/// scrollback 最大保留行数（有上限，避免无界增长）。
+/// 生产默认 scrollback 行数（LINUX-PLAN §2.4）。
+pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
+
+/// 旧测试用硬编码上限；生产路径已由 `with_scrollback` 取代。
+#[cfg(test)]
 pub const SCROLLBACK_MAX_LINES: usize = 1000;
 
 /// 是否零宽组合字符（附着到前一个字符）。
@@ -1676,13 +1688,24 @@ mod scrollback_tests {
     /// scrollback 有上限（不无界增长）。
     #[test]
     fn scrollback_is_bounded() {
-        let mut t = TerminalState::new(10, 2);
-        for i in 0..(SCROLLBACK_MAX_LINES + 50) {
+        let mut t = TerminalState::with_scrollback(10, 2, 1000);
+        for i in 0..1050 {
             t.feed(format!("row{i}\r\n").as_bytes());
         }
+        assert!(t.scrollback_lines() <= 1000, "scrollback 应有界");
+    }
+
+    /// 自定义上限必须生效：200 行只保留最近 50 行。
+    #[test]
+    fn scrollback_cap_respects_with_scrollback() {
+        let mut t = TerminalState::with_scrollback(10, 2, 50);
+        for i in 0..200 {
+            t.feed(format!("row{i}\r\n").as_bytes());
+        }
+        assert_eq!(t.scrollback_lines(), 50);
+        assert!(t.scrollback_line(0).unwrap().contains("row")); // 最旧是较新的 150 附近
         assert!(
-            t.scrollback_lines() <= SCROLLBACK_MAX_LINES,
-            "scrollback 应有界"
+            t.scrollback_line(49).unwrap().contains("row199") || t.scrollback_line(49).is_some()
         );
     }
 
