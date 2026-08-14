@@ -1272,6 +1272,7 @@ fn open_quick_connect(s: &mut UiState, window: &Window, state: &Rc<RefCell<UiSta
             // C3.7 接 AttentionEngine；当前 no-op 占位。
             on_jump_pane: std::boxed::Box::new(|_, _| {}),
             on_reply: std::boxed::Box::new(|_, _, _| {}),
+            on_mute: std::boxed::Box::new(|_, _| {}),
             peek_text: std::boxed::Box::new(|_, _| String::new()),
         },
     );
