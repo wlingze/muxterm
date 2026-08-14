@@ -2098,6 +2098,64 @@ mod tests {
     }
 
     #[test]
+    fn real_sample_osc_attention_passthrough() {
+        // LINUX-PLAN C2.0 E1 fixture：tmux 3.7b 控制模式 %output 原样携带
+        // OSC 133 C/D、BEL、OSC 9 与 777（无需 allow-passthrough）。
+        let raw = include_str!("../../../../tests/samples/osc-attention-tmux3.7b.txt");
+        assert!(
+            raw.starts_with("# tmux version: tmux 3.7b"),
+            "fixture 头必须写明 tmux 版本"
+        );
+        assert!(
+            raw.contains("E1 conclusion: PASS_THROUGH"),
+            "E1 结论必须写进 fixture 头"
+        );
+        let mut saw_osc133_c = false;
+        let mut saw_osc133_d = false;
+        let mut saw_bel = false;
+        let mut saw_osc9 = false;
+        let mut saw_osc777 = false;
+        let mut round1_output = 0;
+        let mut in_round1 = false;
+        for line in raw.lines() {
+            let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+            if stripped.contains("R1-DEFAULT-START") {
+                in_round1 = true;
+            }
+            if stripped.contains("R1-DEFAULT-END") {
+                in_round1 = false;
+            }
+            let Some(Message::Output { content, .. }) = parse_line(stripped) else {
+                continue;
+            };
+            if in_round1 {
+                round1_output += 1;
+            }
+            if content.windows(6).any(|w| w == b"]133;C") {
+                saw_osc133_c = true;
+            }
+            if content.windows(6).any(|w| w == b"]133;D") {
+                saw_osc133_d = true;
+            }
+            if content.contains(&0x07) {
+                saw_bel = true;
+            }
+            if content.windows(4).any(|w| w == b"]9;h") {
+                saw_osc9 = true;
+            }
+            if content.windows(6).any(|w| w == b"]777;n") {
+                saw_osc777 = true;
+            }
+        }
+        assert!(round1_output > 0, "round 1 应有 %output");
+        assert!(saw_osc133_c, "round 1 %output 应含 OSC 133 C（三态精确）");
+        assert!(saw_osc133_d, "round 1 %output 应含 OSC 133 D");
+        assert!(saw_bel, "round 1 %output 应含 BEL");
+        assert!(saw_osc9, "round 1 %output 应含 OSC 9");
+        assert!(saw_osc777, "round 1 %output 应含 OSC 777");
+    }
+
+    #[test]
     fn real_sample_cmd_response() {
         let raw = include_str!("../../../../tests/samples/cmd-response.txt");
         let mut begins = 0;
