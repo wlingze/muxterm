@@ -406,4 +406,90 @@ mod tests {
         let s = test_snapshot(false);
         assert!(!s.enabled);
     }
+
+    #[test]
+    fn styled_markup_escapes_and_applies_style() {
+        let segments = vec![
+            crate::platform::linux::quickconnect::status_style::StatusBarStyledSegment {
+                text: "<b>&".into(),
+                style: crate::platform::linux::quickconnect::status_style::StatusBarTextStyle {
+                    fg: Some(
+                        crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                            red: 1.0,
+                            green: 0.0,
+                            blue: 0.0,
+                        },
+                    ),
+                    bg: None,
+                    bold: true,
+                    reverse: false,
+                },
+            },
+        ];
+        let markup = styled_markup(&segments, None);
+        assert!(markup.contains("&lt;b&gt;&amp;"), "{markup}");
+        assert!(markup.contains("foreground=\"#ff0000\""), "{markup}");
+        assert!(markup.contains("<b>"), "{markup}");
+    }
+
+    #[test]
+    fn theme_plain_fg_overrides_segment_colors() {
+        let segments = vec![
+            crate::platform::linux::quickconnect::status_style::StatusBarStyledSegment {
+                text: "x".into(),
+                style: crate::platform::linux::quickconnect::status_style::StatusBarTextStyle {
+                    fg: Some(
+                        crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                            red: 1.0,
+                            green: 0.0,
+                            blue: 0.0,
+                        },
+                    ),
+                    bg: Some(
+                        crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                            red: 0.0,
+                            green: 0.0,
+                            blue: 1.0,
+                        },
+                    ),
+                    bold: false,
+                    reverse: false,
+                },
+            },
+        ];
+        let markup = styled_markup(&segments, Some("abcdef"));
+        assert!(markup.contains("foreground=\"#abcdef\""), "{markup}");
+        assert!(!markup.contains("#ff0000"), "{markup}");
+        assert!(!markup.contains("background="), "{markup}");
+    }
+
+    #[test]
+    fn color_hex_conversion_rounds_to_bytes() {
+        assert_eq!(
+            bg_to_hex(
+                crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                    red: 1.0,
+                    green: 0.5,
+                    blue: 0.0,
+                }
+            ),
+            "ff8000"
+        );
+        assert_eq!(
+            fg_to_hex(
+                crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 1.0,
+                }
+            ),
+            "0000ff"
+        );
+    }
+
+    #[test]
+    fn escape_markup_handles_all_special_chars() {
+        assert_eq!(escape_markup("a&b<c>d"), "a&amp;b&lt;c&gt;d");
+        assert_eq!(escape_markup("plain"), "plain");
+    }
 }

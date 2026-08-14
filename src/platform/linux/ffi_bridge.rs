@@ -716,3 +716,72 @@ pub mod tasks {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::protocol::ffi::types::{
+        DIR_HORIZONTAL, DIR_VERTICAL, STATE_PANE_OUTPUT, TASK_CLOSE_PANE, TASK_CLOSE_TAB,
+        TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE,
+        TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    };
+
+    #[test]
+    fn task_builders_set_expected_type_and_targets() {
+        let split_h = tasks::split_h(7);
+        assert_eq!(split_h.type_, TASK_SPLIT_PANE);
+        assert_eq!(split_h.target_pane, 7);
+        assert_eq!(split_h.dir, DIR_HORIZONTAL);
+
+        let split_v = tasks::split_v(8);
+        assert_eq!(split_v.type_, TASK_SPLIT_PANE);
+        assert_eq!(split_v.target_pane, 8);
+        assert_eq!(split_v.dir, DIR_VERTICAL);
+
+        let new_tab = tasks::new_tab();
+        assert_eq!(new_tab.type_, TASK_NEW_TAB);
+
+        let switch_tab = tasks::switch_tab(3);
+        assert_eq!(switch_tab.type_, TASK_SWITCH_TAB);
+        assert_eq!(switch_tab.target_tab, 3);
+
+        let close_pane = tasks::close_pane(9);
+        assert_eq!(close_pane.type_, TASK_CLOSE_PANE);
+        assert_eq!(close_pane.target_pane, 9);
+
+        let close_tab = tasks::close_tab(4);
+        assert_eq!(close_tab.type_, TASK_CLOSE_TAB);
+        assert_eq!(close_tab.target_tab, 4);
+
+        assert_eq!(tasks::next_pane().type_, TASK_NEXT_PANE);
+        assert_eq!(tasks::prev_pane().type_, TASK_PREV_PANE);
+
+        let switch_pane = tasks::switch_pane(11);
+        assert_eq!(switch_pane.type_, TASK_SWITCH_PANE);
+        assert_eq!(switch_pane.target_pane, 11);
+
+        assert_eq!(tasks::detach().type_, TASK_DETACH);
+
+        let fullscreen = tasks::toggle_pane_fullscreen(12);
+        assert_eq!(fullscreen.type_, TASK_TOGGLE_PANE_FULLSCREEN);
+        assert_eq!(fullscreen.target_pane, 12);
+    }
+
+    #[test]
+    fn is_pane_output_matches_state_type() {
+        let ev = BridgeEvent {
+            type_: STATE_PANE_OUTPUT,
+            pane_id: 1,
+            tab_id: 0,
+            window_id: 0,
+            data: b"x".to_vec(),
+            name: String::new(),
+        };
+        assert!(CoreBridge::is_pane_output(&ev));
+        let other = BridgeEvent {
+            type_: STATE_PANE_OUTPUT + 1,
+            ..ev
+        };
+        assert!(!CoreBridge::is_pane_output(&other));
+    }
+}
