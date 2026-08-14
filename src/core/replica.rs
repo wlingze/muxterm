@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::core::attention::signal::AttentionSignal;
 use crate::core::protocol::terminal::emulate::TerminalState;
 
 /// 工作区 → pane → 终端副本。
@@ -41,9 +42,18 @@ impl ReplicaStore {
         state
     }
 
-    /// 把 pane 输出喂进副本（自动 resize 到最新尺寸）。
-    pub fn feed(&mut self, ws: &str, pane: u32, bytes: &[u8], cols: u16, rows: u16) {
-        self.ensure_pane(ws, pane, cols, rows).feed(bytes);
+    /// 把 pane 输出喂进副本（自动 resize 到最新尺寸），返回本轮注意力信号。
+    pub fn feed(
+        &mut self,
+        ws: &str,
+        pane: u32,
+        bytes: &[u8],
+        cols: u16,
+        rows: u16,
+    ) -> Vec<AttentionSignal> {
+        let state = self.ensure_pane(ws, pane, cols, rows);
+        state.feed(bytes);
+        state.take_attention_signals()
     }
 
     /// 只读访问副本。
@@ -79,8 +89,8 @@ pub fn apply_output_to_replicas(
     bytes: &[u8],
     cols: u16,
     rows: u16,
-) {
-    replicas.feed(ws, pane, bytes, cols, rows);
+) -> Vec<AttentionSignal> {
+    replicas.feed(ws, pane, bytes, cols, rows)
 }
 
 #[cfg(test)]
@@ -129,6 +139,13 @@ mod tests {
         let mut store = ReplicaStore::new(100);
         apply_output_to_replicas(&mut store, "ws-a", 7, b"hello\r\n", 80, 24);
         assert_eq!(store.last_n_lines("ws-a", 7, 1), vec!["hello"]);
+    }
+
+    #[test]
+    fn feed_returns_attention_signals() {
+        let mut store = ReplicaStore::new(100);
+        let sigs = apply_output_to_replicas(&mut store, "ws-a", 1, b"\x1b]133;C\x07", 80, 24);
+        assert_eq!(sigs, vec![AttentionSignal::CommandStart]);
     }
 
     #[test]
