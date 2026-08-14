@@ -7,6 +7,7 @@ use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Orientation};
 
 use crate::platform::linux::ffi_bridge::BridgeTab;
+use crate::platform::linux::lifecycle::tab_shortcut_label;
 
 type TabActivateCb = Box<dyn Fn(u32)>;
 
@@ -48,16 +49,15 @@ impl TabBar {
         }
         self.buttons.borrow_mut().clear();
 
-        for t in tabs {
-            let label = if t.name.is_empty() {
-                format!("t{}", t.id)
-            } else {
-                truncate_label(&t.name, 24)
-            };
-            let btn = Button::with_label(&label);
+        for (index, t) in tabs.iter().enumerate() {
+            let title = tab_button_title(index, &t.name);
+            let btn = Button::with_label(&title);
+            btn.set_has_frame(false);
+            btn.set_can_focus(false);
             btn.add_css_class("tab-button");
+            btn.add_css_class("flat");
             if t.is_active {
-                btn.add_css_class("active");
+                btn.add_css_class("tab-active");
             }
             btn.set_size_request(-1, self.height);
             let id = t.id;
@@ -71,6 +71,18 @@ impl TabBar {
             self.buttons.borrow_mut().push((t.id, btn));
         }
     }
+
+    pub fn tab_count(&self) -> usize {
+        self.buttons.borrow().len()
+    }
+
+    pub fn set_visible(&self, visible: bool) {
+        self.container.set_visible(visible);
+    }
+}
+
+fn tab_button_title(index: usize, name: &str) -> String {
+    truncate_label(&tab_shortcut_label(index, name), 28)
 }
 
 fn truncate_label(s: &str, max_chars: usize) -> String {
@@ -80,4 +92,16 @@ fn truncate_label(s: &str, max_chars: usize) -> String {
     }
     let prefix: String = s.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{prefix}…")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_title_uses_1based_index_like_macos() {
+        assert_eq!(tab_button_title(0, "shell"), "1:shell");
+        assert_eq!(tab_button_title(1, "build"), "2:build");
+        assert_eq!(tab_button_title(0, ""), "1");
+    }
 }
