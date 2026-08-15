@@ -119,6 +119,8 @@ pub struct TmuxBackend {
     initial_capture_pending: HashSet<PaneId>,
     /// 已完成 attach 初始快照的 pane；之后的 `%output` 才是实时增量。
     initial_capture_done: HashSet<PaneId>,
+    /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
+    paused_panes: HashSet<PaneId>,
     /// attach 初始快照查询进行期间到达的实时 `%output` 缓冲。
     ///
     /// capture-pane 返回的是查询瞬间的完整屏幕；在「发出 capture-pane」到「收到
@@ -238,6 +240,7 @@ impl TmuxBackend {
             expected_panes_per_window: HashMap::new(),
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
+            paused_panes: HashSet::new(),
             initial_capture_buf: HashMap::new(),
             colour_report_supported: true,
             colour_report_warned: false,
@@ -751,8 +754,16 @@ impl TmuxBackend {
                 });
                 self.trim_event_queue();
             }
-            Message::Pause { .. } | Message::Continue { .. } => {
-                // 流控：识别并安全忽略（不阻塞状态机；内容保留以便后续背压）。
+            Message::Pause { pane, .. } => {
+                // 流控：tmux 暂停该 pane 的输出（control.c `%%pause %%%u`）。
+                if let Some(pane) = pane {
+                    self.paused_panes.insert(pane);
+                }
+            }
+            Message::Continue { pane, .. } => {
+                if let Some(pane) = pane {
+                    self.paused_panes.remove(&pane);
+                }
             }
             Message::ResponseBoundary(_) | Message::Unknown { .. } => {
                 // 命令响应边界由 pump_events 单独处理；未知消息忽略。
@@ -3043,25 +3054,34 @@ mod tests {
 
     /// 流控：%pause / %continue 被安全忽略，不阻塞后续 %output 累积与状态机。
     #[test]
-    fn flow_control_pause_continue_safely_ignored() {
+    fn flow_control_pause_continue_tracks_pane() {
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxBackend::new(None);
         let pane = PaneId(7);
 
-        // 在 %output 之间穿插 %pause / %continue，验证不破坏输出累积
+        // 在 %output 之间穿插 %pause / %continue，验证不破坏输出累积，
+        // 且暂停状态被跟踪（%pause %N → paused；%continue %N → 恢复）。
         b.handle_message(Message::Output {
             pane,
             content: b"a".to_vec(),
             raw_content: String::new(),
         });
-        b.handle_message(Message::Pause { args: "100".into() });
+        b.handle_message(Message::Pause {
+            pane: Some(pane),
+            args: String::new(),
+        });
+        assert!(b.paused_panes.contains(&pane), "%pause 后应标记暂停");
         b.handle_message(Message::Output {
             pane,
             content: b"b".to_vec(),
             raw_content: String::new(),
         });
-        b.handle_message(Message::Continue { args: "100".into() });
+        b.handle_message(Message::Continue {
+            pane: Some(pane),
+            args: String::new(),
+        });
+        assert!(!b.paused_panes.contains(&pane), "%continue 后应恢复");
         b.handle_message(Message::Output {
             pane,
             content: b"c".to_vec(),
