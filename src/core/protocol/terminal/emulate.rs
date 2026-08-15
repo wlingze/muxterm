@@ -142,6 +142,8 @@ pub struct TerminalState {
     scroll_bottom: usize,
     /// 是否自动换行。
     pub line_wrap: bool,
+    /// 末列打印后待触发的自动换行（真实终端是延迟 wrap：下一个可打印字符才换行）。
+    wrap_pending: bool,
     /// 是否显示光标。
     pub show_cursor: bool,
     /// bracketed paste 模式（DECSET 2004）。
@@ -275,6 +277,7 @@ impl TerminalState {
             scroll_top: 0,
             scroll_bottom: rows - 1,
             line_wrap: true,
+            wrap_pending: false,
             show_cursor: true,
             title: None,
             title_stack: Vec::new(),
@@ -375,6 +378,7 @@ impl TerminalState {
             self.scroll_bottom = rows - 1;
         }
 
+        self.wrap_pending = false;
         self.cursor_row = self.cursor_row.min(rows - 1);
         self.cursor_col = self.cursor_col.min(cols - 1);
     }
@@ -558,6 +562,14 @@ impl TerminalState {
             }
             return;
         }
+        // 延迟 wrap：上一字符打在末列，这个字符才换行。
+        if self.wrap_pending {
+            self.wrap_pending = false;
+            if self.line_wrap {
+                self.linefeed();
+                self.carriage_return();
+            }
+        }
         // 先按当前激活字符集映射（如 DEC line-drawing），再写单元格。
         let idx = self.active_charset as usize;
         let mapped = self.charsets.get(idx).copied().unwrap_or_default().map(c);
@@ -575,8 +587,8 @@ impl TerminalState {
             if self.cursor_col + 1 < self.cols() {
                 self.cursor_col += 1;
             } else if self.line_wrap {
-                self.linefeed();
-                self.carriage_return();
+                // 末列只挂起 wrap，等下一个可打印字符（CUP/CR/LF 会取消）。
+                self.wrap_pending = true;
             } else {
                 break;
             }
@@ -584,6 +596,7 @@ impl TerminalState {
     }
 
     fn linefeed(&mut self) {
+        self.wrap_pending = false;
         if self.cursor_row < self.scroll_bottom {
             self.cursor_row += 1;
         } else {
@@ -610,6 +623,7 @@ impl TerminalState {
     }
 
     fn carriage_return(&mut self) {
+        self.wrap_pending = false;
         self.cursor_col = 0;
     }
 
@@ -718,23 +732,23 @@ impl TerminalState {
     ///
     /// 几何 dump：`ESC[H ESC[2J` 后对每一行（1-based，**含空行**）发
     /// `ESC[{row};1H` 再输出恰好 `cols` 个单元格（空格保留，**不 trim**）；
-    /// 颜色/加粗在变化处插简单 SGR（0 / 1 / 30-37 / 40-47，真彩后补）。
+    /// 颜色/加粗在变化处插 SGR（0 / 1 / 30-37 / 40-47 / 38;2 / 48;2 / 38;5 / 48;5）。
     /// 全屏 TUI 靠空行/空格撑几何，shell 提示符在底行——skip/trim 会挤碎。
     pub fn visible_ansi(&self) -> Vec<u8> {
         let cols = self.cols();
         let rows = self.rows();
-        let mut out = Vec::with_capacity(cols * rows * 4);
+        let mut out = Vec::with_capacity(cols * rows * 8);
         // 关自动换行：写满 cols 个单元格时第 cols 个会触发 linefeed 滚屏，
         // 把首行挤掉。dump 期间 DECAWM off，写完恢复。
         out.extend_from_slice(b"\x1b[H\x1b[2J\x1b[?7l");
-        let mut last_fg: Option<u8> = None;
-        let mut last_bg: Option<u8> = None;
+        let mut last_fg: Option<String> = None;
+        let mut last_bg: Option<String> = None;
         let mut last_bold = false;
         for (row_idx, row) in self.grid.iter().enumerate() {
             // 每行独立 CUP：`ESC[{row};1H`（1-based）。
             out.extend_from_slice(format!("\x1b[{};1H", row_idx + 1).as_bytes());
-            let mut fg: Option<u8> = None;
-            let mut bg: Option<u8> = None;
+            let mut fg: Option<String> = None;
+            let mut bg: Option<String> = None;
             let mut bold = false;
             for (col_idx, cell) in row.iter().enumerate() {
                 if cell.fg.is_some() || cell.bg.is_some() || cell.bold {
@@ -750,23 +764,28 @@ impl TerminalState {
                     } else if last_bold {
                         parts.push("0".into());
                     }
-                    if let Some(f) = fg {
-                        parts.push(f.to_string());
+                    if let Some(f) = &fg {
+                        parts.push(f.clone());
                     }
-                    if let Some(b) = bg {
-                        parts.push(b.to_string());
+                    if let Some(b) = &bg {
+                        parts.push(b.clone());
                     }
                     if parts.is_empty() {
                         parts.push("0".into());
                     }
                     out.extend_from_slice(parts.join(";").as_bytes());
                     out.push(b'm');
-                    last_fg = fg;
-                    last_bg = bg;
+                    last_fg = fg.clone();
+                    last_bg = bg.clone();
                     last_bold = bold;
                 }
                 // 整行单元格：NUL 当空格，其余原样（不 trim）。
-                out.push(if cell.ch == '\0' { b' ' } else { cell.ch as u8 });
+                if cell.ch == '\0' {
+                    out.push(b' ');
+                } else {
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(cell.ch.encode_utf8(&mut buf).as_bytes());
+                }
                 // 最后一个单元格前先 CUP 到末列，避免写满触发 wrap。
                 if col_idx + 1 == cols {
                     out.extend_from_slice(format!("\x1b[{};{}H", row_idx + 1, cols).as_bytes());
@@ -1005,15 +1024,18 @@ impl Handler for TerminalState {
     }
 
     fn goto(&mut self, line: i32, col: usize) {
+        self.wrap_pending = false;
         self.cursor_row = line.clamp(0, self.rows() as i32 - 1) as usize;
         self.cursor_col = col.min(self.cols().saturating_sub(1));
     }
 
     fn goto_line(&mut self, line: i32) {
+        self.wrap_pending = false;
         self.cursor_row = line.clamp(0, self.rows() as i32 - 1) as usize;
     }
 
     fn goto_col(&mut self, col: usize) {
+        self.wrap_pending = false;
         self.cursor_col = col.min(self.cols().saturating_sub(1));
     }
 
@@ -1022,27 +1044,33 @@ impl Handler for TerminalState {
     }
 
     fn move_up(&mut self, n: usize) {
+        self.wrap_pending = false;
         self.cursor_row = self.cursor_row.saturating_sub(n.min(self.cursor_row));
     }
 
     fn move_down(&mut self, n: usize) {
+        self.wrap_pending = false;
         self.cursor_row = (self.cursor_row + n).min(self.rows() - 1);
     }
 
     fn move_forward(&mut self, n: usize) {
+        self.wrap_pending = false;
         self.cursor_col = (self.cursor_col + n).min(self.cols() - 1);
     }
 
     fn move_backward(&mut self, n: usize) {
+        self.wrap_pending = false;
         self.cursor_col = self.cursor_col.saturating_sub(n.min(self.cursor_col));
     }
 
     fn move_down_and_cr(&mut self, n: usize) {
+        self.wrap_pending = false;
         self.move_down(n);
         self.cursor_col = 0;
     }
 
     fn move_up_and_cr(&mut self, n: usize) {
+        self.wrap_pending = false;
         self.move_up(n);
         self.cursor_col = 0;
     }
@@ -1061,6 +1089,7 @@ impl Handler for TerminalState {
     }
 
     fn backspace(&mut self) {
+        self.wrap_pending = false;
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
         }
@@ -1107,10 +1136,12 @@ impl Handler for TerminalState {
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.line_wrap = true;
+        self.wrap_pending = false;
         self.show_cursor = true;
     }
 
     fn reverse_index(&mut self) {
+        self.wrap_pending = false;
         if self.cursor_row == self.scroll_top {
             self.scroll_down_n(1);
         } else if self.cursor_row > 0 {
@@ -1173,6 +1204,7 @@ impl Handler for TerminalState {
             self.scroll_top = 0;
             self.scroll_bottom = rows.saturating_sub(1);
         }
+        self.wrap_pending = false;
         self.cursor_row = 0;
         self.cursor_col = 0;
     }
@@ -1269,37 +1301,41 @@ impl Handler for TerminalState {
     }
 }
 
-/// 前景 SGR 码：Named 0-7 → 30-37，bright 8-15 → 90-97；其它返回 None（真彩后补）。
-fn sgr_fg(color: &Color) -> Option<u8> {
+/// 前景 SGR 参数：Named 0-7 → 30-37，bright 8-15 → 90-97，
+/// Indexed → 38;5;n，Spec 真彩 → 38;2;r;g;b。
+fn sgr_fg(color: &Color) -> Option<String> {
     match color {
         Color::Named(n) => {
             let v = *n as u8;
             if v < 8 {
-                Some(30 + v)
+                Some((30 + v).to_string())
             } else if v < 16 {
-                Some(90 + (v - 8))
+                Some((90 + (v - 8)).to_string())
             } else {
                 None
             }
         }
-        _ => None,
+        Color::Indexed(n) => Some(format!("38;5;{n}")),
+        Color::Spec(Rgb { r, g, b }) => Some(format!("38;2;{r};{g};{b}")),
     }
 }
 
-/// 背景 SGR 码：Named 0-7 → 40-47，bright 8-15 → 100-107。
-fn sgr_bg(color: &Color) -> Option<u8> {
+/// 背景 SGR 参数：Named 0-7 → 40-47，bright 8-15 → 100-107，
+/// Indexed → 48;5;n，Spec 真彩 → 48;2;r;g;b。
+fn sgr_bg(color: &Color) -> Option<String> {
     match color {
         Color::Named(n) => {
             let v = *n as u8;
             if v < 8 {
-                Some(40 + v)
+                Some((40 + v).to_string())
             } else if v < 16 {
-                Some(100 + (v - 8))
+                Some((100 + (v - 8)).to_string())
             } else {
                 None
             }
         }
-        _ => None,
+        Color::Indexed(n) => Some(format!("48;5;{n}")),
+        Color::Spec(Rgb { r, g, b }) => Some(format!("48;2;{r};{g};{b}")),
     }
 }
 
@@ -2141,6 +2177,57 @@ mod scrollback_tests {
             fresh.snapshot()[23]
         );
         assert!(!fresh.snapshot()[0].contains("PROMPT"), "首行不应含 PROMPT");
+    }
+
+    /// E1：Codex 风格 TUI——visible_ansi 必须保留 UTF-8 盒线与真彩背景，
+    /// 往返后网格（含 U+2500）和 `48;2;216;216;216` 都在。
+    #[test]
+    fn visible_ansi_preserves_box_drawing_and_truecolor() {
+        let raw = include_str!("../../../../tests/samples/codex-tui-sanitized.txt");
+        let payload = raw
+            .split_once("PAYLOAD_UTF8_BELOW\n")
+            .map(|(_, p)| p)
+            .expect("fixture 应含 PAYLOAD_UTF8_BELOW 标记");
+        let mut t = TerminalState::new(80, 24);
+        t.feed(payload.as_bytes());
+
+        let snap = t.snapshot();
+        assert!(snap[0].contains("TOKEN_HEADER"), "首行应含 TOKEN_HEADER");
+        assert!(
+            snap.iter().any(|l| l.contains("TOKEN_BODY")),
+            "应有 TOKEN_BODY 行"
+        );
+        assert!(
+            snap[21].contains("TOKEN_PROMPT") || snap[23].contains("TOKEN_FOOTER"),
+            "第 22/24 行应含 TOKEN_PROMPT 或 TOKEN_FOOTER"
+        );
+        assert!(
+            snap.iter().any(|l| l.contains('─')),
+            "网格应保留 U+2500 盒线"
+        );
+
+        let ansi = t.visible_ansi();
+        let dump = String::from_utf8_lossy(&ansi);
+        assert!(
+            dump.contains("48;2;216;216;216"),
+            "真彩背景应编码成 48;2;216;216;216: {dump:?}"
+        );
+        assert!(dump.contains('─'), "dump 应含 UTF-8 盒线: {dump:?}");
+
+        let mut fresh = TerminalState::new(80, 24);
+        fresh.feed(&ansi);
+        assert_eq!(fresh.snapshot(), snap, "可见屏 dump 往返后网格应一致");
+        assert!(
+            fresh.grid.iter().flatten().any(|c| matches!(
+                c.bg,
+                Some(Color::Spec(Rgb {
+                    r: 216,
+                    g: 216,
+                    b: 216
+                }))
+            )),
+            "往返后真彩背景 Spec(216,216,216) 应仍在"
+        );
     }
 
     /// 清屏不应污染 scrollback（ESC[2J 只清当前屏）。

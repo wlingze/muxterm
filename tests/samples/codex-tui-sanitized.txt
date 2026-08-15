@@ -1,0 +1,8 @@
+# tests/samples/codex-tui-sanitized.txt
+# Synthetic Codex-like full-screen TUI. NO real user/agent content.
+# Geometry: 80x24. Tokens for tests: TOKEN_HEADER / TOKEN_BODY / TOKEN_PROMPT / TOKEN_FOOTER
+# Contains: alt-screen, CUP, Unicode box-drawing U+2500, truecolor 48;2;216;216;216 composer.
+# Source inspiration: test_2026-0815-1854.log (SSH attach legion) had capture-pane + CUP
+# %output lens 1365/2730 on panes 15/25/53 — log has NO payloads, so this is reconstructed shape.
+# PAYLOAD_UTF8_BELOW
+[?1049h[H[2J[1;1H[1m TOKEN_HEADER  example-project                                                  [0m[2;1H────────────────────────────────────────────────────────────────────────────────[4;1Hexample user: list the files in this folder                                     [6;1Hexample assistant: listing example files...                                     [8;1H  TOKEN_BODY                                                                    [9;1H  example.txt                                                                   [10;1H  README.md                                                                     [14;1H                                                                                [22;1H[48;2;216;216;216m[30m                                                                                [0m[22;1H[48;2;216;216;216m[30m TOKEN_PROMPT  example composer[0m[24;1H[0m TOKEN_FOOTER  80x24  +123 -4                                                   
