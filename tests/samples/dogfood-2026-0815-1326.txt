@@ -3,8 +3,8 @@
 # 时间：2026-08-15T05:26:53Z — 05:50:33Z（约 24 分钟）
 # 场景：Linux GTK SSH attach
 #   spawn: ssh -tt ryzen -- tmux -CC attach -t yaklang-workspace
-# 本文件只保留「必须落地成测试」的行。Codex 用 include_str! 喂 parser / backend，
-# 不要去读那份 25MB 原日志当测试输入。
+# Codex 用 include_str! 喂 parser / backend（Phase C 已做）。
+# Phase D 仍必须读完本文（档案），不要再改 session-id；原 25MB 只许 rg。
 #
 # ========== 已核实的产品 bug（不要再争论）==========
 #

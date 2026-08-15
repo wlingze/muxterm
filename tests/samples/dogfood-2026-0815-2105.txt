@@ -1,0 +1,41 @@
+# dogfood 2026-08-15 21:05（Phase E 之后，Surface 必读）
+# 源：仓库根目录 test_2026-0815-2105.log（约 34.6MB / ~13 min，gitignored）
+# 时间：2026-08-15T13:05:48Z — 13:18:44Z
+# 场景：Linux GTK SSH attach
+#   spawn: ssh -tt ryzen -- tmux -CC attach -t yaklang-workspace
+# Codex 动手前读完本文，再按 SURFACE-PLAN 对原日志 rg。禁止 include_str 原日志。
+#
+# ========== 已核实（python 剥 ANSI 后统计，2026-08-15T21:26:10+08:00）==========
+#
+# 已好（相对 1540/1854）：能 attach；list-windows；SwitchTab 40 次 + select-window 40；
+# 状态点/切 tab 控制面仍在。backend **有** 数据。
+#
+# 仍坏（产品，不是 log 缺字节）：
+# 1. Codex 闪烁 / 切 pane 白屏：CUP 风暴 reset+visible_ansi（见 SURFACE.md）。
+# 2. 跳到 agent 只见中段，tmux 里滑到末尾才好：视口没钉在尾；dump 某一时刻网格。
+# 3. 输入「同一句越来越长」：显示路径追加，不是原地 CUP/\r。用户验收：VTE 里该句恰好一份。
+# 4. 鼠标滚动怪：镜像 VTE scrollback_lines=0 + replica dump。
+#
+# 量级：
+#   实时 %output 交付 298404
+#   pane 39=227376, 13=29045, 64=23820, 12=5358, 46=4941, 3=3714
+#   len 2730×25499, 1365×11632（连续半帧，不是二选一的完整帧）
+#   send-keys -l 819（逐字符 "l"/"s"/" "/"\\r"；也有 "\\e[A"）
+#   send-keys -H 0
+#   capture-pane 19
+#   WARN 8：全部 `pane id 缺少 @ 前缀: %64`（%pane-mode-changed）
+#
+# 日志 **没有** pane 像素。渲染测试用 tests/samples/codex-tui-sanitized.txt raw feed
+# + 隔离 tmux e2e，不要从本 log 还原画面。
+#
+# ========== rg 核对句 ==========
+
+spawn tmux -CC via SSH
+tmux -CC attach -t yaklang-workspace
+list-windows -t $0
+capture-pane -e -p -t %
+SwitchTab
+send-keys -t %50 -l "l"
+send-keys -t %3 -l "\\e[A"
+pane id 缺少 @ 前缀: %64
+实时 %output 交付

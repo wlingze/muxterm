@@ -2,7 +2,9 @@
 
 > 适用：`/home/wlz/Developer/self/muxterm`（当前 Linux 分支 `feat/linux-quickconnect-ui`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [LINUX-PLAN.md](LINUX-PLAN.md)（**当前执行计划**）、[TASKS.md](../TASKS.md)（已冻结）、
+> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**）、
+> [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
+> [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
 > [bugfix-log.md](bugfix-log.md)。
 
 ## 1. 四条硬性要求（验收红线）
@@ -86,7 +88,8 @@ cargo test --all-features
 
 ## 4. 开发流程（TDD 优先）
 
-1. 读文档：`PRODUCT.md` → `ARCHITECTURE.md` → `AGENTS.md` → `docs/LINUX-PLAN.md` → 本文档。`TASKS.md` 已冻结，不要当工作单。
+1. 读文档：`docs/WORKSPACE.md` → `docs/WORKSPACE-PLAN.md` → `PRODUCT.md` → `AGENTS.md` → `docs/SURFACE.md` → 本文档。
+   `TASKS.md`、`LINUX-PLAN.md`、`SURFACE-PLAN.md` 已冻结，不要当新工作单。F 的 e2e 是回归门，不是本轮要重做的功能。
 2. RED：写最小单测或 e2e，先看到失败（真实数据 fixture 优先）。
 3. GREEN：写最小实现，只改本功能相关文件。
 4. 补测试：增加边界、错误路径、真实 tmux 数据复放。
@@ -98,9 +101,10 @@ cargo test --all-features
 
 ## 5. GUI e2e 编写指南（硬性：不许自创更弱测试）
 
-Phase C 的场景、函数名、断言、怎么跑：**只准**按 [`LINUX-PLAN.md`](LINUX-PLAN.md) §5。
-没有写进该节的「能绿就行」测试（`placeholder_compiles`、按英文 `"Save"` 找按钮、
-只用 `test_feed_replica` 代替真实 attach）**不算**完成。
+Phase F 的场景、函数名、断言（`linux_render_e2e` / `linux_live_e2e`）是 **回归门**：W 轮必须保持绿，**不要重写这些用例来迁就 dump**。
+新功能按 [`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md) 写测试（两工作区切回、viewport、带 tab 的搜索）。
+C8 ASCII 几何 / E 的 `visible_ansi` 单测可留作 Index，**不算** Surface 完成，也 **不是** live 显示路径。
+`present_from_replica` 当直播、CUP 风暴 `resets==1`、只 `contains(TOKEN)` 不数次数 **不算**完成。
 
 ### 5.1 四层断言（缺一层就没做完）
 
@@ -108,7 +112,7 @@ Phase C 的场景、函数名、断言、怎么跑：**只准**按 [`LINUX-PLAN.
 |---|---|---|
 | A core | `ReplicaStore` / `RenderPolicy` / `TerminalState` | `last_n_lines` 含 token；CUP 风暴只留末帧 |
 | B widget | `widget_name` | `find_by_name(..., "muxterm-new-tab")`，禁止靠 Label 英文 |
-| C VTE | `PaneView::visible_text()` | 含 `frame-19`，**不含** `frame-0` |
+| C VTE | `PaneView::visible_text()` | 含 `frame-19`，**不含** `frame-0`；底行 prompt 必须在**最后一行** |
 | D 真 tmux | `tmux -L muxterm-test-… capture-pane` | 含 `echo` 的 token；清理必须同一 `-L` |
 
 SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_support.rs`；
@@ -123,10 +127,11 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 - 等待：`pump_main_loop` / `wait_until` / `wait_until_widget`，禁止裸 `sleep` 当同步。
 - 控件：每个可点的生产控件必须有稳定 `widget_name`；测试只 `find_by_name`。
 
-### 5.3 怎么跑（Phase C）
+### 5.3 怎么跑（Phase F / Surface）
 
-见 `LINUX-PLAN.md` §5.2 / §8。新增 crate：`linux_chrome_e2e`、`linux_render_e2e`、
-`linux_live_e2e`、`linux_ssh_e2e`（ignore）。`linux_search_e2e` 本轮仍占位。
+见 `SURFACE-PLAN.md` §0 / §3。继续用已有 crate：`linux_render_e2e`、`linux_live_e2e`。
+动手前必读 `docs/SURFACE.md` 与 `tests/samples/dogfood-2026-0815-2105.txt`；
+原 `.log` 只许 `rg`，禁止 `include_str!`。Codex TUI fixture **raw feed**，禁止经 `visible_ansi`。
 
 ### 5.4 检查单
 
@@ -135,7 +140,10 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 - [ ] widget_name + VTE 文本有断言
 - [ ] 持久化写的是 `config.toml`（不是 `preferences.toml`）
 - [ ] 真 tmux 用隔离 `-L`；Drop 带同一 `-L` 的 `kill-server`
-- [ ] 场景函数名与计划 §5.4 一致，没有放宽「含 frame 即可」这类断言
+- [ ] 场景函数名与 `SURFACE-PLAN.md` 一致；打字 token **恰好一次**；CUP seed 后 `resets` 不涨
+- [ ] 几何用例比行号，不只 `contains(TOKEN)`
+- [ ] 状态点走 `clicked`，没有 `popover.popup()` 冒充
+- [ ] 已读 `dogfood-2026-0815-2105.txt` 与 `codex-tui-sanitized.txt`
 
 ## 6. 真实 tmux 数据规范
 
@@ -145,7 +153,11 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 - `real-codex.txt` 目前是空文件，**不要**当 fixture；CUP 刷屏用计划里的合成帧
 - `real-gitlg-osc-query.txt`：镜像模式查询应答不转发（`src/core/protocol/terminal/mirror.rs`）
 - `osc-attention-tmux3.7b.txt`：OSC 133 / BEL 透传
-- `dogfood-2026-0815-1326.txt`：2026-08-15 SSH attach 日志摘录（session `$4` / 点 tab）
+- `dogfood-2026-0815-1326.txt`：2026-08-15 13:26 SSH attach 摘录（session `$4` / 点 tab；Phase C 已修）
+- `dogfood-2026-0815-1540.txt`：2026-08-15 15:40（backend 有 capture/%output；切 tab）
+- `dogfood-2026-0815-1854.txt`：2026-08-15 18:54 再测（切 tab/状态点好；Codex 仍无画面；log 无 payload）
+- `dogfood-2026-0815-2105.txt`：2026-08-15 21:05（闪烁/白屏/越写越长；298k `%output`；`%64` WARN）
+- `codex-tui-sanitized.txt`：合成 Codex 风格 TUI；Surface 测试必须 **raw feed**，禁止 `visible_ansi`
 
 新增要求：
 
@@ -163,15 +175,15 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 | 2 | TargetConfig 窗口 | ✅ options/directory/debounce | ⚠️ SSH toggle debounce 已覆盖；完整窗口流程待补 | ✅ 隔离 tmux 目录发现 |
 | 3 | Project 连接流程 | ✅ project_flow | ✅ attach→create→attach | ✅ e2e 真实 tmux |
 | 4 | Warm Connection Pool | ✅ pool | ✅ detach 保留 session | ✅ e2e 真实 tmux |
-| 5 | 统一 status bar（左中右 + 最右三按钮） | ⚠️ 旧 snapshot；Phase C 重做 | ❌ `linux_chrome_e2e` 待补 | ⚠️ 旧 snapshot e2e |
-| 5b | 鼠标点 tab 切窗口 | ❌ `$4` session-window-changed 被忽略；list-windows `$0` | ❌ 按钮每 tick 重建；S13 待补 | ✅ dogfood-2026-0815-1326.txt |
+| 5 | 统一 status bar（左中右 + 最右三按钮） | ✅ lifecycle / status_bar | ✅ linux_chrome_e2e S5/S6 | — |
+| 5b | 鼠标点 tab 切窗口 | ✅ attach session id（C7.0） | ✅ S13a；live S13b | ✅ dogfood-1326 + 1540（1540 已无「忽略其它 session」） |
 | 6 | 主题切换 + 重报色 | ✅ theme/font | ⚠️ 偏好持久化已覆盖；即时切换/颜色重报待补 | ⚠️ 部分 |
 | 7 | 状态栏模式切换 | ✅ set_mode | ❌ 待补 | ❌ 待补 |
-| 8 | 字体缩放 Ctrl+=/-/0 → config.toml | ✅ font zoom 数值 | ❌ 仍写 preferences.toml；equal 未绑 | — |
+| 8 | 字体缩放 Ctrl+=/-/0 → config.toml | ✅ keymap/config_edit | ✅ linux_prefs_e2e S10 | — |
 | 9 | Pane 全屏 | ✅ layout 状态 | ✅ zoom e2e；本地布局切换待补 | ✅ e2e 真实 tmux |
 | 10 | Tab 门禁 + 事件策略 | ✅ tab_gate/event_policy | ❌ 待补 | ❌ 待补 |
-| 11 | resize→feed + 输出合并 | ✅ pane_view 25ms | ⚠️ 仍整段 `get_pane_output` 播种，agent 会刷屏 | ✅ core 单测有真实样本 |
-| 11b | 终端层末帧渲染 | ❌ `render_policy` 待补 | ❌ `linux_render_e2e` / `linux_live_e2e` 待补 | ❌ 合成 CUP；勿用空的 real-codex.txt |
+| 11 | resize→feed + 输出合并 | ✅ pane_view 25ms | ⚠️ replica 播种在，几何仍有损（C8） | ✅ core 单测有真实样本 |
+| 11b | 终端层末帧渲染 | ✅ render_policy | ⚠️ S3/S4/S9 只 contains 末帧 token，不比行号 | ⚠️ 合成 CUP；勿用空的 real-codex.txt |
 | 12 | 镜像模式丢弃应答 | ✅ mirror + 真实 OSC 样本 | ✅ mirror e2e | ✅ 真实样本 |
 | 13 | 键位扩展 | ✅ keymap defaults | ⚠️ Alt+S/V/1/2 已覆盖；Quit/字体/全屏按键待补 | — |
 | 14 | i18n 补齐 | ✅ en/zh parity | ✅ 面板 tab/占位文案在 panel e2e 断言 | — |
@@ -183,20 +195,22 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 | 20 | 三 tab 面板 | ✅ panel_model | ✅ linux_panel_e2e | — |
 | 21 | peek/一行答复 | ✅ panel 钩子 | ✅ linux_panel_e2e / linux_attention_e2e | ✅ attention e2e 真实 tmux |
 | 22 | 红点/标题 | ✅ attention_ui 字符串 | ✅ linux_attention_e2e | ✅ 注入 BEL + printf |
-| 23 | 配置页 | ✅ config_edit | ⚠️ linux_prefs_e2e 靠英文 Save/下标，待 widget_name | — |
+| 23 | 配置页 widget_name | ✅ config_edit | ✅ linux_prefs_e2e | — |
 | 24 | pane-cmd 订阅 | ✅ protocol/backend | — | ✅ tmux_backend scenario5 |
-| 25 | attach session id（$4 切 tab） | ✅ backend/protocol | — | ✅ dogfood 摘录 fixture |
+| 25 | URL 点击 | ✅ url_detect | ✅ linux_render_e2e S11 | — |
 | 26 | RenderPolicy 末帧 | ✅ render_policy | ✅ linux_render_e2e S3/S4 | ✅ live CUP 脚本 S9 |
-| 27 | 统一 status bar（无 TabBar） | ✅ lifecycle | ✅ linux_chrome_e2e S5/S6/S13a | ✅ live 点 tab S13b |
-| 28 | 状态 popover | ✅ ConnectionSummary | ✅ linux_chrome_e2e S7 | — |
-| 29 | Ctrl+= 写 config.toml | ✅ keymap/config_edit | ✅ linux_prefs_e2e S10 | — |
-| 30 | URL 点击 | ✅ url_detect | ✅ linux_render_e2e S11 | — |
-| 31 | 配置页 widget_name | ✅ prefs 控件 | ✅ linux_prefs_e2e | — |
-| 32 | 真隔离 tmux echo | ✅ replica | ✅ linux_live_e2e S8 | ✅ capture-pane |
-| 33 | loopback SSH 远端 tmux | ✅ CoreBridge | ✅ linux_ssh_e2e S12（ignore） | ✅ 远端 -L capture-pane |
-| 25 | URL 点击 | ⚠️ Cell.link 已有 | ❌ UrlOpener / VTE match 待补 | — |
-| 26 | 独立 TabBar | — | ⚠️ 仍挂在 window.rs，Phase C 删除 | — |
-| 27 | loopback SSH + 远端 -L tmux | — | ❌ `linux_ssh_e2e` `#[ignore]` 待补 | — |
+| 27 | 独立 TabBar | — | ✅ Phase C 已删第二条带子 | — |
+| 28 | 状态 popover 真点击 + 颜色 | ✅ CSS 三色 | ✅ C8.4 clicked；⚠️ 无 SSH 上下行（E4） | — |
+| 29 | 几何 visible_ansi ASCII 底行 | ✅ C8.1 snapshot | ✅ C8.2/C8.5 ASCII PROMPT | ⚠️ 不够测 Codex |
+| 30 | replica 滚动历史 | ✅ scroll_history | ✅ linux_render_e2e C8.3 | — |
+| 31 | 真隔离 tmux echo | ✅ replica | ⚠️ S8 contains TOKEN | ✅ capture-pane |
+| 32 | loopback SSH 远端 tmux | ✅ CoreBridge | ✅ linux_ssh_e2e S12（ignore） | ✅ 远端 -L |
+| 33 | Codex TUI UTF-8+真彩播种 | ❌ `ch as u8`（E1） | ❌ 待 E2 | ✅ codex-tui-sanitized.txt |
+| 34 | CUP 半帧不打烂 VTE | ❌ 仍 feed last_visible_frame（E3） | ❌ 待 E3 | 1854 len 1365/2730 |
+| 35 | SSH popover 上下行 | ❌ 无计数 | ❌ 待 E4 | — |
+| 36 | Search tab 搜 replica | ⚠️ core search 有 | ❌ placeholder_compiles（E5） | — |
+| 37 | 前台 ls 不进 attention | ❌ CommandDone→Done | ❌ 待 E6 | — |
+| 38 | attention 小 VTE + mute 下拉 | ❌ Label+Entry | ❌ 待 E6 | — |
 
 ## 8. 新增功能验收矩阵模板
 
@@ -217,7 +231,13 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 - 状态栏显示正确、点击窗口可切 tab；状态栏模式可切换
 - 字体 Ctrl+= / Ctrl+- / Ctrl+0 即时生效且写入 `config.toml`；主题切换即时生效
 - 只有一条 status bar：左/中/右同步 tmux，最右状态/通知/新建；没有第二条 tab 带
-- 进入已有大量输出的 pane（或 Codex 刷屏）时画面落在末尾，不从历史重放
+- 进入已有大量输出的 pane（或 Codex 刷屏）时画面落在当前帧且几何正确（提示符在底部），不从历史重放
+- 滚轮向上能看到 replica 历史，滚回底部恢复直播
+- 点状态点弹出连接摘要；SSH 显示 connecting/connected 颜色，以及 down=/up= 流量
+- 前台自己跑完的命令（如 ls）不要出现在 attention；后台等待/完成才提醒
+- attention 预览是小终端（可打字）；双击跳转；可放大；禁止提醒可选 5m/10m/30m/1h/4h/24h
+- 搜索能搜到 pane 文本并跳转
+- Codex/htop 全屏 TUI 头栏和底栏同时在，不要空白或挤成一团
 - Pane 全屏进入/恢复；attach / new / ssh 向导三种路径可用；退出干净
 
 ### 视觉验收（截图 + 看图模型）
@@ -241,7 +261,12 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 - 用裸 `sleep` “修”时序失败 → 换成硬超时轮询。
 - `--all-features` 并发 streaming 失败 → 先 `--test-threads=1` 复现，不掩盖。
 - 镜像模式查询应答泄漏 → 查 `should_forward_replies` / `real-gitlg-osc-query.txt`。
-- GTK 首帧刷屏 → 用 replica `visible_ansi()` 播种，**禁止** `get_pane_output` 整段重放。
+- GTK 首帧：一次 `capture-pane` 的原始字节 `vte.feed`，**禁止** live 路径 `visible_ansi` dump，也禁止 `get_pane_output` 当滚动历史重放。
+- `visible_ansi` 只给 Index（搜索）；禁止 skip 空行当 Index 单测。
+- 状态点禁止 `GestureClick` + 测试里直接 `popover.popup()`；必须 `connect_clicked`。
+- 镜像 VTE **不要**强制 `scrollback_lines=0`；滚动走 VTE，禁止 replica dump 冒充滚轮。
+- CUP 风暴禁止 `vte.reset` 追帧；1365/2730 是前后半，都要 feed。
+- dogfood：`dogfood-2026-0815-*.txt` 都要读（含 2105）；原 `test_2026-0815-*.log` 只许 `rg`。
 - GTK 首帧尺寸错误 → 按 pane 的 cols/rows resize，不要用 client 尺寸代替 pane 尺寸。
 - GTK 与 tmux 行列差一 → 用 pane 的 `WxH`，不是 `refresh-client -C` 的 client 尺寸。
 - 测试 server 没清理 → 创建与清理必须带同一个 `-L`。

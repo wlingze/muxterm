@@ -1,9 +1,16 @@
 # Muxterm 统一 ID 体系
 
-## 设计目标
+> **2026-08-15 23:41：产品路径是 Workspace / Tab / Pane。**
+> 权威：[`WORKSPACE.md`](WORKSPACE.md) §6。废弃 `s{name}/w1/t2`。
+> tmux `$N` `@N` `%N` 只在 `runtime/tmux`。
+>
+> 新路径（W7 落地）：
+> `workspace/{name}` · `workspace/{name}/tab/{id}` · `workspace/{name}/tab/{id}/pane/{id}`
+> CLI：`-s <工作区名>` / `-t <tab>` / `-p <pane>`。没有 `-w`。
 
-muxterm 使用自己的 ID 体系，不暴露 tmux 的原始 ID（$N, @N, %N）。
-用户可以通过层级路径精确指定任意元素。
+## 设计目标（历史）
+
+下文 `s{name}/wN/tN/pN` 是旧方案，**不要按它实现**。保留以免考古断档。
 
 ## ID 格式
 

@@ -1,0 +1,28 @@
+# dogfood 2026-08-15 18:54（Phase D 之后，Phase E 必读）
+# 源：仓库根目录 test_2026-0815-1854.log（约 111KB / 77s，gitignored）
+# 时间：2026-08-15T10:54:40Z — 10:55:57Z
+# 场景：Linux GTK SSH attach
+#   spawn: ssh -tt ryzen -- tmux -CC attach -t legion
+# Codex 动手前读完本文，再按 LINUX-PLAN §2 对原日志 rg。禁止 include_str 原日志。
+#
+# ========== 已核实 ==========
+#
+# 已好：list-windows -t $1；SwitchTab 5 次（含 @24）；无「忽略其它 session」。
+# 状态点用户确认可用（C8.4）。
+#
+# 仍坏：
+# D1 画面：7 次 capture-pane（%15/%57/%25/%18/%26/%53/%56），725 条「实时 %output 交付」。
+#     pane 15/25/53 len 常 1365/2730（Codex CUP 半帧）。日志 **没有** pane 字节，
+#     无法从本 log 还原画面。渲染测试用 tests/samples/codex-tui-sanitized.txt。
+# D2 根因（对照代码，不是 log）：visible_ansi 把 char 写成 `ch as u8`，U+2500 等
+#     盒线变成 NUL/控制字节，真彩 48;2 被 sgr_fg/sgr_bg 丢掉。C8 测试全是 ASCII。
+# Attention / Search / SSH 流量：本 log 无 UI 事件；见 LINUX-PLAN Phase E。
+#
+# WARN：仅 detach 一条 Ignore。不要当 parser 修。
+#
+# ========== rg 核对句 ==========
+
+list-windows -t $1
+capture-pane -e -p -t %25
+SwitchTab { target: TabId(24) }
+detach-client -t $1

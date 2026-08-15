@@ -59,6 +59,3 @@ pub trait Runtime: State {
 }
 
 pub mod mock;
-
-/// 过渡别名：W4 后新代码只写 `Runtime`。
-pub type Backend = dyn Runtime;
