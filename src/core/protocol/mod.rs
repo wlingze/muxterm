@@ -17,7 +17,7 @@ pub use crate::core::model::task;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Capability {
     pub can_attach: bool,
-    pub can_list_sessions: bool,
+    pub can_discover: bool,
     pub can_display_message: bool,
 }
 
@@ -25,7 +25,7 @@ impl Capability {
     pub fn shell() -> Self {
         Self {
             can_attach: false,
-            can_list_sessions: false,
+            can_discover: false,
             can_display_message: false,
         }
     }
@@ -33,7 +33,7 @@ impl Capability {
     pub fn tmux() -> Self {
         Self {
             can_attach: true,
-            can_list_sessions: true,
+            can_discover: true,
             can_display_message: true,
         }
     }
@@ -57,12 +57,12 @@ mod tests {
     fn capability_shell_vs_tmux() {
         let s = Capability::shell();
         assert!(!s.can_attach);
-        assert!(!s.can_list_sessions);
+        assert!(!s.can_discover);
         assert!(!s.can_display_message);
 
         let t = Capability::tmux();
         assert!(t.can_attach);
-        assert!(t.can_list_sessions);
+        assert!(t.can_discover);
         assert!(t.can_display_message);
     }
 

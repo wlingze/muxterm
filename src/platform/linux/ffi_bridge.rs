@@ -10,13 +10,14 @@ use std::ptr;
 use gtk4::glib;
 
 use crate::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_create_tmux_session_json, muxterm_detach,
-    muxterm_discover_ssh_hosts_json, muxterm_discover_tmux_sessions_json, muxterm_execute,
-    muxterm_free, muxterm_free_string, muxterm_get_layout, muxterm_get_pane_output,
-    muxterm_get_panes, muxterm_get_tabs, muxterm_list_dir_json, muxterm_new, muxterm_new_connect,
-    muxterm_poll_events, muxterm_report_all_pane_colours, muxterm_report_pane_colours,
-    muxterm_resize_client, muxterm_resize_pane, muxterm_send_input, muxterm_status_snapshot_json,
-    muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up, MuxtermHandle,
+    muxterm_connect, muxterm_detach, muxterm_discover_ssh_hosts_json,
+    muxterm_discover_workspaces_json, muxterm_execute, muxterm_free, muxterm_free_string,
+    muxterm_get_layout, muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs,
+    muxterm_list_dir_json, muxterm_new, muxterm_new_connect, muxterm_poll_events,
+    muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
+    muxterm_resize_pane, muxterm_send_input, muxterm_status_snapshot_json,
+    muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up,
+    muxterm_workspace_create, MuxtermHandle,
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
@@ -569,7 +570,7 @@ impl CoreBridge {
         let target_c = cstr_pair(target);
         let sock_c = cstr_pair(socket);
         let value = discovery_json(|| {
-            muxterm_discover_tmux_sessions_json(
+            muxterm_discover_workspaces_json(
                 bt_c.as_ptr(),
                 target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
                 sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
@@ -595,7 +596,7 @@ impl CoreBridge {
         let sess_c = CString::new(session).unwrap_or_default();
         let dir_c = CString::new(directory).unwrap_or_default();
         let value = discovery_json(|| {
-            muxterm_create_tmux_session_json(
+            muxterm_workspace_create(
                 bt_c.as_ptr(),
                 target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
                 sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),

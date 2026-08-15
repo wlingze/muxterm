@@ -79,10 +79,11 @@ struct CLayoutNode {
 #define LAYOUT_SPLIT_H 1u
 #define LAYOUT_SPLIT_V 2u
 
-// ── 生命周期 ──
+// ── 生命周期（W7：MuxtermHandle = WorkspacePool）──
 struct MuxtermHandle;
+// deprecated 转发：建池并打开一个工作区（macOS 暂用）。
 struct MuxtermHandle* muxterm_new(const char* backend_type, const char* socket, const char* session);
-// 一步建连：支持 tmux-ssh（需要 alias）与本地/远程 shell 指定起始目录。
+// deprecated 转发：一步建连（macOS 暂用）。
 struct MuxtermHandle* muxterm_new_connect(
     const char* backend_type, const char* socket, const char* session,
     const char* ssh_alias, const char* start_directory);
@@ -91,6 +92,15 @@ int muxterm_connect(struct MuxtermHandle* h);
 int muxterm_shutdown(struct MuxtermHandle* h);
 int muxterm_detach(struct MuxtermHandle* h);
 int muxterm_init_logging(const char* log_file, const char* level);
+
+// ── Workspace 池（W7 新接口）──
+int muxterm_workspace_open(
+    struct MuxtermHandle* h,
+    const char* transport, const char* alias, const char* session,
+    const char* runtime, const char* path, const char* socket);
+char* muxterm_workspace_list(struct MuxtermHandle* h);
+int muxterm_workspace_activate(struct MuxtermHandle* h, const char* id);
+int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
 
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
@@ -121,6 +131,14 @@ char* muxterm_list_dir_json(
     const char* path,
     uint32_t timeout_ms
 );
+char* muxterm_discover_workspaces_json(
+    const char* backend_type,
+    const char* target,
+    const char* socket,
+    const char* config_path,
+    uint32_t timeout_ms
+);
+// deprecated 别名（W7 改名）。
 char* muxterm_discover_tmux_sessions_json(
     const char* backend_type,
     const char* target,
@@ -134,6 +152,16 @@ char* muxterm_status_snapshot_json(
     const char* socket,
     const char* session
 );
+char* muxterm_workspace_create(
+    const char* backend_type,
+    const char* target,
+    const char* socket,
+    const char* config_path,
+    const char* session,
+    const char* directory,
+    uint32_t timeout_ms
+);
+// deprecated 别名（W7 改名）。
 char* muxterm_create_tmux_session_json(
     const char* backend_type,
     const char* target,
