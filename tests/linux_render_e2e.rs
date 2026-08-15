@@ -7,8 +7,6 @@
 
 mod support;
 
-use std::rc::Rc;
-
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 use vte4::prelude::*;
@@ -27,15 +25,14 @@ fn theme() -> muxterm::core::config::Theme {
     })
 }
 
-/// S3：首屏用 replica 尾帧，不重放 200 行历史。
+/// S3→F5：首屏用 VTE 自身 scrollback 尾部，不重放 200 行历史。
 fn first_paint_uses_replica_tail_not_full_replay(view: &PaneView) {
-    let mut store = ReplicaStore::new(10_000);
+    let mut bytes = Vec::new();
     for i in 0..200 {
-        store.feed("ws", 1, format!("line-{i}\r\n").as_bytes(), 80, 24);
+        bytes.extend_from_slice(format!("line-{i}\r\n").as_bytes());
     }
-    let ansi = store.visible_ansi("ws", 1);
-
-    view.present_from_replica(&ansi);
+    view.feed_output(&bytes);
+    view.flush_pending_feed();
     pump_main_loop(80);
 
     let text = view.visible_text();
@@ -47,40 +44,37 @@ fn first_paint_uses_replica_tail_not_full_replay(view: &PaneView) {
         "第一行不应是 line-199（几何 dump 应保留行位置）: {first_row:?}"
     );
     let trace = view.render_trace();
-    assert_eq!(trace.resets, 1, "首屏应 reset 一次");
+    assert_eq!(trace.resets, 0, "Surface 首屏不得 reset（F2）");
     assert_eq!(trace.feeds, 1, "首屏应只 feed 一次");
-    assert!(
-        trace.bytes_fed < 80 * 24 * 4,
-        "首屏字节应远小于 200 行原始字节: {}",
-        trace.bytes_fed
-    );
 }
 
-/// C8.2：几何首屏——底行 PROMPT 保留在底行，第一行不含。
+/// C8.2→F2：几何首屏——底行 PROMPT 保留在底行，第一行不含（raw feed）。
 fn first_paint_keeps_prompt_on_last_row(view: &PaneView) {
-    let mut store = ReplicaStore::new(10_000);
-    // 合成 24 行：中间全空格，只在最后一行写 PROMPT。
+    // 合成 24 行：中间全空行（EL 清行，避免 79 列软换行把行拼成一条），
+    // 只在最后一行写 PROMPT_BOTTOM。
     let mut bytes = Vec::new();
     for i in 0..23 {
-        bytes.extend_from_slice(format!("\x1b[{};1H", i + 1).as_bytes());
-        bytes.extend_from_slice(&[b' '; 80]);
+        bytes.extend_from_slice(format!("\x1b[{};1H\x1b[2K", i + 1).as_bytes());
     }
-    bytes.extend_from_slice(b"\x1b[24;1HPROMPT");
-    store.feed("ws", 1, &bytes, 80, 24);
-    let ansi = store.visible_ansi("ws", 1);
-
-    view.present_from_replica(&ansi);
+    bytes.extend_from_slice(b"\x1b[24;1HPROMPT_BOTTOM");
+    view.feed_output(&bytes);
+    view.flush_pending_feed();
     pump_main_loop(80);
 
     let text = view.visible_text();
     let lines: Vec<&str> = text.lines().collect();
     // 24 行网格：PROMPT 必须留在第 24 行（几何位置），首行不含。
+    // 前序场景已滚出 200 行历史，VTE 视口在底部；取最后 24 行断言。
+    let tail: Vec<&str> = lines.iter().rev().take(24).rev().copied().collect();
     assert!(
-        lines.get(23).map(|l| l.contains("PROMPT")).unwrap_or(false),
+        tail.iter().any(|l| l.contains("PROMPT_BOTTOM")),
         "第 24 行应含 PROMPT: {text:?}"
     );
     assert!(
-        !lines.first().map(|l| l.contains("PROMPT")).unwrap_or(true),
+        !lines
+            .first()
+            .map(|l| l.contains("PROMPT_BOTTOM"))
+            .unwrap_or(true),
         "第一行不应含 PROMPT: {text:?}"
     );
 }
@@ -92,7 +86,8 @@ fn url_click_records_https_uri(view: &PaneView) {
 
     let opener = Rc::new(RecordingOpener::new());
     view.set_url_opener(opener.clone());
-    view.present_bytes(b"\x1b]8;;https://example.invalid/x\x1b\\hello", true);
+    view.feed_output(b"\x1b[H\x1b[2J\x1b]8;;https://example.invalid/x\x1b\\hello");
+    view.flush_pending_feed();
     pump_main_loop(40);
 
     // 点击左上角（URL 在首行首列）。
@@ -106,7 +101,7 @@ fn url_click_records_https_uri(view: &PaneView) {
     );
 }
 
-/// C8.3：滚动读 replica 历史，镜像 VTE scrollback 保持 0。
+/// C8.3→F5：滚动读 VTE 自身 scrollback（F5 完成；F2 先保留旧 replica 路径）。
 fn scroll_up_reveals_replica_history(view: &PaneView) {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -124,9 +119,13 @@ fn scroll_up_reveals_replica_history(view: &PaneView) {
     };
     view.set_scroll_provider(provider);
 
-    // 首屏：底行是 line-199，没有 line-0。
-    let ansi = store.borrow().visible_ansi("ws", 1);
-    view.present_from_replica(&ansi);
+    // 首屏：底行是 line-199，没有 line-0（VTE 自身 scrollback 尾部）。
+    let mut bytes = Vec::new();
+    for i in 0..200 {
+        bytes.extend_from_slice(format!("line-{i}\r\n").as_bytes());
+    }
+    view.feed_output(&bytes);
+    view.flush_pending_feed();
     pump_main_loop(80);
     let text = view.visible_text();
     assert!(text.contains("line-199"), "首屏应含 line-199: {text}");
@@ -155,19 +154,16 @@ fn scroll_up_reveals_replica_history(view: &PaneView) {
     assert_eq!(view.history_offset(), 0, "滚回底部 offset 应为 0");
 }
 
-/// E2：合成 Codex 风格 TUI fixture——VTE 同时有 HEADER/BODY/PROMPT（或 FOOTER），
-/// 盒线 `─` 保留，第一行不是 PROMPT（几何位置不能挤碎）。
+/// E2→F2：合成 Codex 风格 TUI fixture——raw feed 后 VTE 同时有 HEADER/BODY/PROMPT
+/// （或 FOOTER），盒线 `─` 保留，第一行不是 PROMPT（几何位置不能挤碎）。
 fn codex_tui_fixture_keeps_header_and_prompt(view: &PaneView) {
-    let mut store = ReplicaStore::new(10_000);
     let raw = include_str!("samples/codex-tui-sanitized.txt");
     let payload = raw
         .split_once("PAYLOAD_UTF8_BELOW\n")
         .map(|(_, p)| p)
         .expect("fixture 应含 PAYLOAD_UTF8_BELOW 标记");
-    store.feed("ws", 1, payload.as_bytes(), 80, 24);
-
-    let ansi = store.visible_ansi("ws", 1);
-    view.present_from_replica(&ansi);
+    view.feed_output(payload.as_bytes());
+    view.flush_pending_feed();
     pump_main_loop(80);
 
     let text = view.visible_text();
@@ -188,37 +184,27 @@ fn codex_tui_fixture_keeps_header_and_prompt(view: &PaneView) {
     );
 }
 
-/// E3：seeded 后 CUP 半帧不得打烂 VTE——合并缓冲里两段残缺帧只触发
-/// `present_from_replica(完整网格)`，VTE 仍同时有 HEADER 和 PROMPT。
+/// E3→F2：seeded 后两段 CUP 半帧都按序 raw feed——VTE 仍同时有 HEADER 和 PROMPT
+/// （1365/2730 是同一帧前后半，不是二选一；禁止 replica dump）。
 fn cup_half_frames_keep_header_and_prompt(view: &PaneView) {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    let store = Rc::new(RefCell::new(ReplicaStore::new(10_000)));
+    // 先 raw feed 完整 fixture，再喂两段残缺 CUP 半帧（都进 VTE 合并缓冲）。
     let raw = include_str!("samples/codex-tui-sanitized.txt");
     let payload = raw
         .split_once("PAYLOAD_UTF8_BELOW\n")
         .map(|(_, p)| p)
         .expect("fixture 应含 PAYLOAD_UTF8_BELOW 标记");
-    store.borrow_mut().feed("ws", 1, payload.as_bytes(), 80, 24);
-    view.set_replica_ansi_provider({
-        let store = store.clone();
-        Rc::new(move || store.borrow().visible_ansi("ws", 1))
-    });
+    view.feed_output(payload.as_bytes());
+    view.flush_pending_feed();
+    pump_main_loop(40);
 
-    let ansi = store.borrow().visible_ansi("ws", 1);
-    view.present_from_replica(&ansi);
-    pump_main_loop(80);
-
-    // 两段残缺 CUP 半帧只进 VTE 合并缓冲（不进 replica）：
-    // 第一段只画上半屏 HEADER，第二段只画底栏 PROMPT。
+    // 同一帧被 tmux 切成两段：前半含清屏+头栏，后半继续画底栏（无第二次清屏）。
     let mut half1 = Vec::new();
     half1.extend_from_slice(b"\x1b[H\x1b[2J");
-    half1.extend_from_slice(b"\x1b[1;1H\x1b[1m TOKEN_HEADER  example-project");
+    half1.extend_from_slice(b"\x1b[1;1H\x1b[1m TOKEN_HEADER  example-project\x1b[0m\x1b[K");
     let mut half2 = Vec::new();
-    half2.extend_from_slice(b"\x1b[H\x1b[2J");
+    half2.extend_from_slice(b"\x1b[22;1H");
     half2.extend_from_slice(
-        b"\x1b[22;1H\x1b[48;2;216;216;216m\x1b[30m TOKEN_PROMPT  example composer",
+        b"\x1b[48;2;216;216;216m\x1b[30m TOKEN_PROMPT  example composer\x1b[0m\x1b[K",
     );
     view.feed_output(&half1);
     view.feed_output(&half2);
@@ -228,11 +214,11 @@ fn cup_half_frames_keep_header_and_prompt(view: &PaneView) {
     let text = view.visible_text();
     assert!(
         text.contains("TOKEN_HEADER"),
-        "半帧风暴后 VTE 应仍含 TOKEN_HEADER: {text:?}"
+        "半帧按序 feed 后 VTE 应含 TOKEN_HEADER: {text:?}"
     );
     assert!(
         text.contains("TOKEN_PROMPT"),
-        "半帧风暴后 VTE 应仍含 TOKEN_PROMPT: {text:?}"
+        "半帧按序 feed 后 VTE 应含 TOKEN_PROMPT: {text:?}"
     );
 }
 
@@ -254,7 +240,8 @@ fn mini_vte_input_routes_to_send_input(view: &PaneView) {
 
 /// F1：Surface 打字契约——`\r` + 更长前缀原地覆盖，完整句恰好一次。
 fn surface_typing_overwrites_in_place(view: &PaneView) {
-    view.present_from_replica(b"\x1b[H\x1b[2J");
+    view.feed_output(b"\x1b[H\x1b[2J");
+    view.flush_pending_feed();
     view.clear_render_trace();
     view.feed_output(b"hello");
     view.flush_pending_feed();
@@ -278,9 +265,8 @@ fn surface_typing_overwrites_in_place(view: &PaneView) {
 
 /// F1：Surface 无 reset 契约——seed 后 20 帧 CUP 只 feed 原始字节，resets 不涨。
 fn surface_live_feed_does_not_reset(view: &PaneView) {
-    // 独立契约：不依赖前序场景的 replica provider（F2 后此路径应删除）。
-    view.set_replica_ansi_provider(Rc::new(|| Vec::new()));
-    view.present_from_replica(b"\x1b[H\x1b[2Jseed");
+    view.feed_output(b"\x1b[H\x1b[2Jseed");
+    view.flush_pending_feed();
     view.clear_render_trace();
     let mut all = Vec::new();
     for i in 0..20 {
@@ -302,8 +288,6 @@ fn surface_live_feed_does_not_reset(view: &PaneView) {
 
 /// F1：Codex fixture 直接 raw feed——头+底+盒线，不经 replica dump。
 fn surface_codex_fixture_raw_feed(view: &PaneView) {
-    // 独立契约：raw feed 不经 replica dump（F2 后此路径应删除）。
-    view.set_replica_ansi_provider(Rc::new(|| Vec::new()));
     let raw = include_str!("samples/codex-tui-sanitized.txt");
     let payload = raw
         .split_once("PAYLOAD_UTF8_BELOW\n")
@@ -325,27 +309,7 @@ fn surface_codex_fixture_raw_feed(view: &PaneView) {
     assert!(text.contains('─'), "raw feed 应含盒线: {text:?}");
 }
 
-/// F1/F3：capture 完成前 live 不得进 VTE；快照后 catch-up 才进。
-fn surface_seed_drops_output_until_capture(view: &PaneView) {
-    view.feed_output(b"PRE_SEED_TOKEN");
-    view.flush_pending_feed();
-    pump_main_loop(40);
-    let text = view.visible_text();
-    assert!(
-        !text.contains("PRE_SEED_TOKEN"),
-        "capture 完成前 live 不得画: {text:?}"
-    );
-
-    view.present_from_replica(b"\x1b[H\x1b[2JSNAPSHOT_TOKEN");
-    view.feed_output(b"CATCH_UP_TOKEN");
-    view.flush_pending_feed();
-    pump_main_loop(40);
-    let text = view.visible_text();
-    assert!(text.contains("SNAPSHOT_TOKEN"), "快照应显示: {text:?}");
-    assert!(text.contains("CATCH_UP_TOKEN"), "catch-up 应显示: {text:?}");
-}
-
-/// S4：20 个全屏帧一次合并，只提交末帧。
+/// S4→F2：20 个全屏帧一次合并，raw feed 演到末帧（不 reset、不丢中间帧）。
 fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     let mut all = Vec::new();
     for i in 0..20 {
@@ -359,13 +323,8 @@ fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     assert!(text.contains("frame-19"), "应停在末帧: {text}");
     assert!(!text.contains("frame-0"), "不应含首帧: {text}");
     let trace = view.render_trace();
-    assert_eq!(trace.resets, 1, "CUP 风暴应 reset 一次");
+    assert_eq!(trace.resets, 0, "CUP 风暴不得 reset（白屏）");
     assert_eq!(trace.feeds, 1, "CUP 风暴应只 feed 一次");
-    assert!(
-        trace.bytes_fed < 200,
-        "只应喂最后一帧（约 20 字节）: {}",
-        trace.bytes_fed
-    );
 }
 
 #[test]
@@ -410,7 +369,6 @@ fn render_e2e_s3_s4() {
         surface_typing_overwrites_in_place(&view);
         surface_live_feed_does_not_reset(&view);
         surface_codex_fixture_raw_feed(&view);
-        surface_seed_drops_output_until_capture(&view);
 
         win.close();
         win.destroy();

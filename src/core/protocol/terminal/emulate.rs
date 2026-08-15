@@ -176,6 +176,8 @@ pub struct TerminalState {
     next_seq: u64,
     /// 本次 feed 中累计的注意力信号。
     signals: Vec<AttentionSignal>,
+    /// 最近一次 feed 的原始字节（Index 自用；Surface 小终端按同一字节流播种）。
+    last_raw_bytes: Vec<u8>,
     /// OSC 注意力收集器：是否刚看到 ESC（等待 `]` 或普通字符）。
     osc_esc_seen: bool,
     /// OSC 注意力收集器：尚未终止的 OSC 原始字节（含 ESC ] 前缀）。
@@ -295,6 +297,7 @@ impl TerminalState {
             scrollback_max: max_lines.max(1),
             next_seq: 1,
             signals: Vec::new(),
+            last_raw_bytes: Vec::new(),
             osc_esc_seen: false,
             osc_pending: None,
             processor: Processor::default(),
@@ -413,6 +416,7 @@ impl TerminalState {
 
     /// 把原始字节喂给解析器。
     pub fn feed(&mut self, bytes: &[u8]) {
+        self.last_raw_bytes = bytes.to_vec();
         // 把 processor 临时取出来，避免与 `self`（作为 Handler）同时可变借用。
         let mut processor = std::mem::take(&mut self.processor);
         for &b in bytes {
@@ -422,6 +426,11 @@ impl TerminalState {
             processor.advance(self, b);
         }
         self.processor = processor;
+    }
+
+    /// 最近一次 feed 的原始字节（未解转义、未重编码）。
+    pub fn raw_bytes(&self) -> &[u8] {
+        &self.last_raw_bytes
     }
 
     /// OSC 注意力收集器（LINUX-PLAN §0.4）。

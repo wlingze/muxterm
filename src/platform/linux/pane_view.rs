@@ -18,7 +18,6 @@ use crate::core::protocol::terminal::emulate::TerminalState;
 use crate::core::protocol::terminal::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
 };
-use crate::core::render_policy::{last_visible_frame, render_intent, RenderIntent};
 use crate::core::url_detect::UrlOpener;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
@@ -28,9 +27,6 @@ pub const FEED_COALESCE_MS: u64 = 25;
 
 /// 滚动数据源：`(offset, rows)` → 几何 ANSI（window 侧接 ReplicaStore）。
 pub type ScrollProvider = Rc<dyn Fn(u32, u32) -> Vec<u8>>;
-
-/// 完整可见网格数据源：`() → 几何 ANSI`（window 侧接 ReplicaStore）。
-pub type ReplicaAnsiProvider = Rc<dyn Fn() -> Vec<u8>>;
 
 /// 用户输入回调：`(pane_id, bytes)`。
 pub type InputCallback = Box<dyn Fn(u32, &[u8])>;
@@ -75,8 +71,6 @@ struct PaneViewInner {
     url_opener: RefCell<Option<Rc<dyn UrlOpener>>>,
     /// 滚动历史数据源（ReplicaStore）。
     scroll_provider: RefCell<Option<ScrollProvider>>,
-    /// 完整可见网格数据源（CUP 风暴时用 replica 几何帧替换半帧）。
-    replica_ansi_provider: RefCell<Option<ReplicaAnsiProvider>>,
     /// 当前历史偏移（0=直播底部）。
     history_offset: Cell<u32>,
 }
@@ -110,7 +104,6 @@ impl PaneView {
             render_trace: RefCell::new(RenderTrace::default()),
             url_opener: RefCell::new(None),
             scroll_provider: RefCell::new(None),
-            replica_ansi_provider: RefCell::new(None),
             history_offset: Cell::new(0),
         });
         // 滚轮 → scroll_history（与测试钩子同一函数）。
@@ -241,35 +234,6 @@ impl PaneView {
         self.inner.seeded.set(true);
     }
 
-    /// 首屏：用 replica 的几何 ANSI 播种（禁止 get_pane_output 重放历史）。
-    /// 喂**完整** dump，不做 last_visible_frame 切片；空 dump 不标 seeded。
-    pub fn present_from_replica(&self, ansi: &[u8]) {
-        if ansi.is_empty() {
-            return;
-        }
-        self.reset_and_feed_full(ansi);
-    }
-
-    /// 按 RenderPolicy 提交一批字节：ReplaceVisible 只喂最后一帧。
-    pub fn present_bytes(&self, bytes: &[u8], first_paint: bool) {
-        if bytes.is_empty() {
-            return;
-        }
-        match render_intent(bytes, first_paint) {
-            RenderIntent::ReplaceVisible if first_paint => {
-                // 首屏：完整几何 dump，不切片。
-                self.reset_and_feed_full(bytes);
-            }
-            RenderIntent::ReplaceVisible => {
-                let frame = last_visible_frame(bytes);
-                self.reset_and_feed(frame);
-            }
-            RenderIntent::Incremental(data) => {
-                self.feed_direct(data);
-            }
-        }
-    }
-
     /// 渲染痕迹（测试断言不刷屏）。
     pub fn render_trace(&self) -> RenderTrace {
         *self.inner.render_trace.borrow()
@@ -283,11 +247,6 @@ impl PaneView {
     /// 注入滚动历史数据源（window 侧接 ReplicaStore）。
     pub fn set_scroll_provider(&self, provider: ScrollProvider) {
         *self.inner.scroll_provider.borrow_mut() = Some(provider);
-    }
-
-    /// 注入完整可见网格数据源（window 侧接 ReplicaStore）。
-    pub fn set_replica_ansi_provider(&self, provider: ReplicaAnsiProvider) {
-        *self.inner.replica_ansi_provider.borrow_mut() = Some(provider);
     }
 
     /// 当前历史偏移（0=直播底部）。
@@ -309,7 +268,8 @@ impl PaneView {
         if let Some(provider) = provider {
             let ansi = provider(next, rows);
             if !ansi.is_empty() {
-                self.present_from_replica(&ansi);
+                self.feed_output(&ansi);
+                self.flush_pending_feed();
             }
         }
     }
@@ -341,28 +301,6 @@ impl PaneView {
     #[cfg(test)]
     pub fn test_open_url_at(&self, x: f64, y: f64) {
         self.open_url_at(x, y);
-    }
-
-    fn reset_and_feed_full(&self, bytes: &[u8]) {
-        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
-            id.remove();
-        }
-        self.inner.pending_feed.borrow_mut().clear();
-        self.inner.renderer.terminal().reset(true, true);
-        self.inner.render_trace.borrow_mut().resets += 1;
-        self.feed_direct(bytes);
-        self.inner.seeded.set(true);
-    }
-
-    fn reset_and_feed(&self, bytes: &[u8]) {
-        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
-            id.remove();
-        }
-        self.inner.pending_feed.borrow_mut().clear();
-        self.inner.renderer.terminal().reset(true, true);
-        self.inner.render_trace.borrow_mut().resets += 1;
-        self.feed_direct(bytes);
-        self.inner.seeded.set(true);
     }
 
     fn feed_direct(&self, bytes: &[u8]) {
@@ -469,51 +407,17 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     if data.is_empty() {
         return;
     }
-    // CUP 风暴：合并缓冲里 ≥2 帧时只提交最后一帧（RenderPolicy）。
-    match render_intent(&data, !inner.seeded.get()) {
-        RenderIntent::ReplaceVisible => {
-            // 镜像 pane 的 CUP 风暴：replica 已吃全部原始字节，VTE 只显示
-            // replica 的完整几何帧，避免 1365/2730 半帧把画面切成半屏。
-            if let Some(provider) = inner.replica_ansi_provider.borrow().clone() {
-                let ansi = provider();
-                if !ansi.is_empty() {
-                    inner.renderer.terminal().reset(true, true);
-                    inner.render_trace.borrow_mut().resets += 1;
-                    with_remote_feed(inner, || {
-                        inner.renderer.terminal().feed(&ansi);
-                        apply_mirror_mouse_policy(inner);
-                    });
-                    let mut trace = inner.render_trace.borrow_mut();
-                    trace.feeds += 1;
-                    trace.bytes_fed += ansi.len();
-                    inner.seeded.set(true);
-                    return;
-                }
-            }
-            let frame = last_visible_frame(&data);
-            inner.renderer.terminal().reset(true, true);
-            inner.render_trace.borrow_mut().resets += 1;
-            with_remote_feed(inner, || {
-                inner.renderer.terminal().feed(frame);
-                apply_mirror_mouse_policy(inner);
-            });
-            let mut trace = inner.render_trace.borrow_mut();
-            trace.feeds += 1;
-            trace.bytes_fed += frame.len();
-            inner.seeded.set(true);
-        }
-        RenderIntent::Incremental(data) => {
-            with_remote_feed(inner, || {
-                inner.renderer.terminal().feed(data);
-                feed_reply_state(inner, data);
-                apply_mirror_mouse_policy(inner);
-            });
-            let mut trace = inner.render_trace.borrow_mut();
-            trace.feeds += 1;
-            trace.bytes_fed += data.len();
-            inner.seeded.set(true);
-        }
-    }
+    // Surface：合并缓冲里的原始 pane 字节按序 feed，永不 reset 追帧。
+    // 半帧（1365/2730）必须都留下；CUP 风暴由 VTE 自己演到末帧。
+    with_remote_feed(inner, || {
+        inner.renderer.terminal().feed(&data);
+        feed_reply_state(inner, &data);
+        apply_mirror_mouse_policy(inner);
+    });
+    let mut trace = inner.render_trace.borrow_mut();
+    trace.feeds += 1;
+    trace.bytes_fed += data.len();
+    inner.seeded.set(true);
 }
 
 fn apply_mirror_mouse_policy(inner: &PaneViewInner) {
