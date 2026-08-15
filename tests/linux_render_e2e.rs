@@ -104,6 +104,55 @@ fn url_click_records_https_uri(view: &PaneView) {
     );
 }
 
+/// C8.3：滚动读 replica 历史，镜像 VTE scrollback 保持 0。
+fn scroll_up_reveals_replica_history(view: &PaneView) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let store = Rc::new(RefCell::new(ReplicaStore::new(10_000)));
+    for i in 0..200 {
+        store
+            .borrow_mut()
+            .feed("ws", 1, format!("line-{i}\r\n").as_bytes(), 80, 24);
+    }
+    // 滚动 provider：offset 行前、rows 行的几何 ANSI。
+    let provider = {
+        let store = store.clone();
+        Rc::new(move |offset: u32, rows: u32| store.borrow().scroll_ansi("ws", 1, offset, rows))
+    };
+    view.set_scroll_provider(provider);
+
+    // 首屏：底行是 line-199，没有 line-0。
+    let ansi = store.borrow().visible_ansi("ws", 1);
+    view.present_from_replica(&ansi);
+    pump_main_loop(80);
+    let text = view.visible_text();
+    assert!(text.contains("line-199"), "首屏应含 line-199: {text}");
+    assert!(!text.contains("line-0"), "首屏不应含 line-0: {text}");
+    assert_eq!(view.history_offset(), 0, "初始 offset 应为 0");
+
+    // 向上滚 24 行：出现更早的块（line-152..175），line-199 消失。
+    view.scroll_history(24);
+    pump_main_loop(80);
+    let text = view.visible_text();
+    assert!(
+        text.contains("line-152") || text.contains("line-0"),
+        "滚动后应出现更早历史: {text}"
+    );
+    assert!(
+        !text.contains("line-199"),
+        "滚动后不应再显示 line-199: {text}"
+    );
+    assert!(view.history_offset() > 0, "offset 应大于 0");
+
+    // 滚回底部：恢复 line-199，offset 归零。
+    view.scroll_history(-1000);
+    pump_main_loop(80);
+    let text = view.visible_text();
+    assert!(text.contains("line-199"), "滚回后应含 line-199: {text}");
+    assert_eq!(view.history_offset(), 0, "滚回底部 offset 应为 0");
+}
+
 /// S4：20 个全屏帧一次合并，只提交末帧。
 fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     let mut all = Vec::new();
@@ -159,6 +208,7 @@ fn render_e2e_s3_s4() {
         view.clear_render_trace();
         cup_storm_feeds_only_last_frame(&view);
         url_click_records_https_uri(&view);
+        scroll_up_reveals_replica_history(&view);
 
         win.close();
         win.destroy();

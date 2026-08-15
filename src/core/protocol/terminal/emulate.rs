@@ -693,6 +693,20 @@ impl TerminalState {
         self.snapshot_trimmed()
     }
 
+    /// 滚动窗口：从 scrollback + 可见屏取 `rows` 行，`offset` 行前（0=底部）。
+    pub fn scroll_window(&self, offset: u32, rows: usize) -> Vec<String> {
+        let mut history: Vec<String> = self.scrollback.iter().map(|l| l.text.clone()).collect();
+        history.extend(self.snapshot_trimmed());
+        let rows = rows.max(1);
+        let offset = offset as usize;
+        if history.len() <= offset {
+            return Vec::new();
+        }
+        let end = history.len() - offset;
+        let start = end.saturating_sub(rows);
+        history[start..end].to_vec()
+    }
+
     /// 网格是否全空（没有任何非空白单元格）。
     pub fn is_blank(&self) -> bool {
         self.grid

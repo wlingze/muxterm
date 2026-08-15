@@ -26,6 +26,9 @@ use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;
 
+/// 滚动数据源：`(offset, rows)` → 几何 ANSI（window 侧接 ReplicaStore）。
+pub type ScrollProvider = Rc<dyn Fn(u32, u32) -> Vec<u8>>;
+
 /// 渲染痕迹：没有视觉时证明「不刷屏」。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderTrace {
@@ -62,6 +65,10 @@ struct PaneViewInner {
     render_trace: RefCell<RenderTrace>,
     /// URL 打开出口（测试注入 Recording，生产接 GTK）。
     url_opener: RefCell<Option<Rc<dyn UrlOpener>>>,
+    /// 滚动历史数据源（ReplicaStore）。
+    scroll_provider: RefCell<Option<ScrollProvider>>,
+    /// 当前历史偏移（0=直播底部）。
+    history_offset: Cell<u32>,
 }
 
 impl PaneView {
@@ -77,23 +84,38 @@ impl PaneView {
         if let Ok(re) = vte4::Regex::for_match(r#"https?://[^\s<>"']+"#, 0x400) {
             renderer.terminal().match_add_regex(&re, 0);
         }
-        PaneView {
-            inner: Rc::new(PaneViewInner {
-                renderer,
-                pane_id: Cell::new(pane_id),
-                reply_state: RefCell::new(TerminalState::new(80, 24)),
-                pending_replies: RefCell::new(Vec::new()),
-                is_tmux_mirror: Cell::new(is_tmux_mirror),
-                is_feeding_remote_output: Cell::new(false),
-                pending_feed: RefCell::new(Vec::new()),
-                feed_flush_source: RefCell::new(None),
-                seeded: Cell::new(false),
-                grid_cols: Cell::new(80),
-                grid_rows: Cell::new(24),
-                render_trace: RefCell::new(RenderTrace::default()),
-                url_opener: RefCell::new(None),
-            }),
+        let inner = Rc::new(PaneViewInner {
+            renderer,
+            pane_id: Cell::new(pane_id),
+            reply_state: RefCell::new(TerminalState::new(80, 24)),
+            pending_replies: RefCell::new(Vec::new()),
+            is_tmux_mirror: Cell::new(is_tmux_mirror),
+            is_feeding_remote_output: Cell::new(false),
+            pending_feed: RefCell::new(Vec::new()),
+            feed_flush_source: RefCell::new(None),
+            seeded: Cell::new(false),
+            grid_cols: Cell::new(80),
+            grid_rows: Cell::new(24),
+            render_trace: RefCell::new(RenderTrace::default()),
+            url_opener: RefCell::new(None),
+            scroll_provider: RefCell::new(None),
+            history_offset: Cell::new(0),
+        });
+        // 滚轮 → scroll_history（与测试钩子同一函数）。
+        {
+            let weak = Rc::downgrade(&inner);
+            let scroll =
+                gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+            scroll.connect_scroll(move |_c, _dx, dy| {
+                if let Some(inner) = weak.upgrade() {
+                    let view = PaneView { inner };
+                    view.scroll_history(if dy > 0.0 { 3 } else { -3 });
+                }
+                glib::Propagation::Stop
+            });
+            inner.renderer.terminal().add_controller(scroll);
         }
+        PaneView { inner }
     }
 
     /// 是否已经用完整快照播种。
@@ -244,6 +266,35 @@ impl PaneView {
     /// 清空渲染痕迹（测试在独立场景前调用）。
     pub fn clear_render_trace(&self) {
         *self.inner.render_trace.borrow_mut() = RenderTrace::default();
+    }
+
+    /// 注入滚动历史数据源（window 侧接 ReplicaStore）。
+    pub fn set_scroll_provider(&self, provider: ScrollProvider) {
+        *self.inner.scroll_provider.borrow_mut() = Some(provider);
+    }
+
+    /// 当前历史偏移（0=直播底部）。
+    pub fn history_offset(&self) -> u32 {
+        self.inner.history_offset.get()
+    }
+
+    /// 滚动历史：正 delta 向上看更早，负 delta 回底部；滚轮与测试走同一函数。
+    pub fn scroll_history(&self, delta_rows: i32) {
+        let rows = self.inner.grid_rows.get().max(1) as u32;
+        let current = self.inner.history_offset.get();
+        let next = if delta_rows >= 0 {
+            current.saturating_add(delta_rows as u32)
+        } else {
+            current.saturating_sub((-delta_rows) as u32)
+        };
+        self.inner.history_offset.set(next);
+        let provider = self.inner.scroll_provider.borrow().clone();
+        if let Some(provider) = provider {
+            let ansi = provider(next, rows);
+            if !ansi.is_empty() {
+                self.present_from_replica(&ansi);
+            }
+        }
     }
 
     /// 注入 URL 打开出口（测试用 Recording，生产接 GTK）。

@@ -94,6 +94,27 @@ impl ReplicaStore {
             .unwrap_or_default()
     }
 
+    /// 滚动窗口的几何 ANSI：offset 行前、rows 行（0=底部直播）。
+    pub fn scroll_ansi(&self, ws: &str, pane: u32, offset: u32, rows: u32) -> Vec<u8> {
+        let Some(t) = self.get(ws, pane) else {
+            return Vec::new();
+        };
+        let lines = t.scroll_window(offset, rows as usize);
+        if lines.is_empty() {
+            return Vec::new();
+        }
+        let mut tmp = TerminalState::new(t.cols(), rows.max(1) as usize);
+        for (i, line) in lines.iter().enumerate() {
+            if i + 1 == lines.len() {
+                // 最后一行不带换行，避免把窗口首行滚出屏幕。
+                tmp.feed(line.as_bytes());
+            } else {
+                tmp.feed(format!("{line}\r\n").as_bytes());
+            }
+        }
+        tmp.visible_ansi()
+    }
+
     /// 该 pane 的网格是否全空（空网格不得把 VTE 标成已播种）。
     pub fn is_blank(&self, ws: &str, pane: u32) -> bool {
         self.get(ws, pane).map(|t| t.is_blank()).unwrap_or(true)

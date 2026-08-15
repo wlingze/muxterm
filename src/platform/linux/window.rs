@@ -97,6 +97,8 @@ struct UiState {
     quit_requested: bool,
     /// 最近一次 STATE_BACKEND_STATUS 的 pane_id 编码（连接状态）。
     backend_status: u32,
+    /// 自身弱引用（滚动 provider 用，避免循环引用）。
+    self_weak: std::rc::Weak<RefCell<UiState>>,
 }
 
 impl UiState {
@@ -252,7 +254,9 @@ impl AppWindow {
             panel_open: None,
             quit_requested: false,
             backend_status: crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
+            self_weak: std::rc::Weak::new(),
         }));
+        state.borrow_mut().self_weak = Rc::downgrade(&state);
 
         // status bar 中区 tab 按钮 → SwitchTab(id)
         {
@@ -1141,6 +1145,19 @@ fn refresh_ui(s: &mut UiState) {
         let ws = active_workspace_id(s);
         for pane in s.bridge().get_panes(s.active_tab) {
             if let Some(view) = s.layout.pane(pane.id).cloned() {
+                // 滚动历史数据源：offset 行前、rows 行的几何 ANSI。
+                {
+                    let weak = s.self_weak.clone();
+                    let ws = ws.clone();
+                    let pid = pane.id;
+                    view.set_scroll_provider(std::rc::Rc::new(move |offset, rows| {
+                        let Some(st) = weak.upgrade() else {
+                            return Vec::new();
+                        };
+                        let s = st.borrow();
+                        s.replicas.scroll_ansi(&ws, pid, offset, rows)
+                    }));
+                }
                 if !view.is_seeded() && !s.replicas.is_blank(&ws, pane.id) {
                     let ansi = s.replicas.visible_ansi(&ws, pane.id);
                     view.present_from_replica(&ansi);
