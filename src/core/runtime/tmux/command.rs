@@ -249,11 +249,18 @@ pub fn send_keys(pane: PaneId, keys: &[Key]) -> TmuxCommand {
 }
 
 /// 发送原始字节，不经过 UTF-8 转换；用于终端控制字节和任意粘贴数据。
+///
+/// Surface 输入是字节通道：`-H` 每个参数一个十六进制 ASCII 字节
+/// （tmux `cmd-send-keys.c`：`strtol(s, &endptr, 16)`，0..=0xff）。
 pub fn send_keys_bytes(pane: PaneId, bytes: &[u8]) -> TmuxCommand {
-    build(
-        &[pane_target(pane), "-l".to_string(), quote_c_bytes(bytes)],
-        "send-keys",
-    )
+    let mut hex = String::with_capacity(bytes.len() * 3);
+    for b in bytes {
+        if !hex.is_empty() {
+            hex.push(' ');
+        }
+        let _ = write!(hex, "{b:02x}");
+    }
+    build(&[pane_target(pane), "-H".to_string(), hex], "send-keys")
 }
 
 /// 发送前缀键（`prefix` 表里的键）。
@@ -501,6 +508,29 @@ mod tests {
     fn send_keys_literal_escapes_quote_and_backslash() {
         let c = send_keys(PaneId(3), &[Key::literal(r#"a"b\c"#)]);
         assert_eq!(c.as_str(), r#"send-keys -t %3 -l "a\"b\\c""#);
+    }
+
+    /// F4：原始字节走 `-H` 十六进制字节通道（对照 tmux cmd-send-keys.c）。
+    #[test]
+    fn send_keys_bytes_uses_hex_h_flag() {
+        let c = send_keys_bytes(PaneId(1), &[0x03, 0x1b, 0xff]);
+        assert_eq!(c.as_str(), "send-keys -t %1 -H 03 1b ff");
+        assert_eq!(c.to_line(), "send-keys -t %1 -H 03 1b ff\n");
+    }
+
+    /// F4：`-H` 对任意字节 roundtrip（含 NUL/ESC/非 ASCII）。
+    #[test]
+    fn send_keys_bytes_hex_roundtrip_any_bytes() {
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        let c = send_keys_bytes(PaneId(7), &bytes);
+        let line = c.as_str();
+        assert!(line.starts_with("send-keys -t %7 -H "));
+        let hex_part = &line["send-keys -t %7 -H ".len()..];
+        let tokens: Vec<&str> = hex_part.split(' ').collect();
+        assert_eq!(tokens.len(), 256);
+        for (i, tok) in tokens.iter().enumerate() {
+            assert_eq!(*tok, format!("{i:02x}"), "第 {i} 字节应两位小写 hex");
+        }
     }
 
     #[test]
@@ -793,7 +823,7 @@ mod tests {
     #[test]
     fn send_keys_bytes_preserves_control_and_non_utf8_bytes() {
         let command = send_keys_bytes(PaneId(1), &[0x03, 0x0c, 0xff]);
-        assert_eq!(command.as_str(), "send-keys -t %1 -l \"\\003\\014\\377\"");
+        assert_eq!(command.as_str(), "send-keys -t %1 -H 03 0c ff");
     }
 
     /// send-keys -l 走 C 转义而不是 shell，因此 $、`、; 都不能被展开。
