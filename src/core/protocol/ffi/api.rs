@@ -16,6 +16,9 @@ use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
 use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::core::types::{PaneId, TabId};
+use crate::core::workspace::id::WorkspaceId;
+use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
+use crate::core::workspace::workspace::Workspace;
 use crate::platform::cli::session::session_socket_path;
 
 use super::callbacks::FfiCallbacks;
@@ -31,9 +34,12 @@ use super::types::{
     TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
-/// FFI 句柄：TerminalModel + runtime + 供 C 侧借用的缓冲。
+/// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
+///
+/// W7：`muxterm_new()` 建空池；`muxterm_workspace_open` 开工作区。
+/// 旧 `muxterm_new(backend, socket, session)` 是 deprecated 转发（macOS 暂用）。
 pub struct MuxtermHandle {
-    pub(crate) model: TerminalModel,
+    pub(crate) pool: WorkspacePool,
     pub(crate) rt: tokio::runtime::Runtime,
     pub(crate) callbacks: FfiCallbacks,
     /// `poll_events` 产出的字节 / 字符串，保证指针在下次 poll 前有效。
@@ -49,6 +55,16 @@ pub struct MuxtermHandle {
 }
 
 impl MuxtermHandle {
+    /// 当前前台工作区。
+    pub(crate) fn active_workspace(&self) -> Option<&Workspace> {
+        self.pool.active()
+    }
+
+    /// 当前前台工作区（可变）。
+    pub(crate) fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
+        self.pool.active_mut()
+    }
+
     fn clear_event_bufs(&mut self) {
         self.event_data.clear();
         self.event_names.clear();
@@ -197,13 +213,13 @@ pub extern "C" fn muxterm_list_dir_json(
     .unwrap_or_else(|_| json_error("directory listing panic"))
 }
 
-/// 通过 core 发现 local 或 SSH tmux session。
+/// 通过 core 发现 local 或 SSH tmux session（W7：workspace 发现）。
 ///
 /// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
 /// 中的 alias。所有连接选项仍由系统 `ssh` 读取，`config_path` 仅供测试或显式
 /// 配置使用。返回的 JSON 字符串由 [`muxterm_free_string`] 释放。
 #[no_mangle]
-pub extern "C" fn muxterm_discover_tmux_sessions_json(
+pub extern "C" fn muxterm_discover_workspaces_json(
     transport_type: *const c_char,
     target: *const c_char,
     socket: *const c_char,
@@ -243,6 +259,18 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
         }
     }))
     .unwrap_or_else(|_| json_error("tmux session discovery panic"))
+}
+
+/// deprecated 别名：`muxterm_discover_tmux_sessions_json`（W7 改名）。
+#[no_mangle]
+pub extern "C" fn muxterm_discover_tmux_sessions_json(
+    transport_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    config_path: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    muxterm_discover_workspaces_json(transport_type, target, socket, config_path, timeout_ms)
 }
 
 /// 抓取 status bar 快照（tmux 兼容：`show -g` / `show -w -g` + `display-message`）。
@@ -302,7 +330,11 @@ pub unsafe extern "C" fn muxterm_status_subscription_active(handle: *mut Muxterm
             return 0;
         }
         let h = unsafe { &*handle };
-        i32::from(h.model.status_subscriptions_active())
+        i32::from(
+            h.active_workspace()
+                .map(|w| w.runtime().status_subscriptions_active())
+                .unwrap_or(false),
+        )
     }))
     .unwrap_or(0)
 }
@@ -318,7 +350,9 @@ pub unsafe extern "C" fn muxterm_traffic_down(handle: *mut MuxtermHandle) -> u64
             return 0;
         }
         let h = unsafe { &*handle };
-        h.model.traffic_bytes().0
+        h.active_workspace()
+            .map(|w| w.runtime().traffic_bytes().0)
+            .unwrap_or(0)
     }))
     .unwrap_or(0)
 }
@@ -334,16 +368,18 @@ pub unsafe extern "C" fn muxterm_traffic_up(handle: *mut MuxtermHandle) -> u64 {
             return 0;
         }
         let h = unsafe { &*handle };
-        h.model.traffic_bytes().1
+        h.active_workspace()
+            .map(|w| w.runtime().traffic_bytes().1)
+            .unwrap_or(0)
     }))
     .unwrap_or(0)
 }
 
-/// 通过 core 创建 detached tmux session，随后由调用方使用同一 alias/session
-/// 进入控制模式。返回 `{"ok":true,"session":"..."}`，字符串由
-/// [`muxterm_free_string`] 释放。
+/// 通过 core 创建 detached tmux session（W7：workspace create）。
+/// 随后由调用方使用同一 alias/session 进入控制模式。返回
+/// `{"ok":true,"session":"..."}`，字符串由 [`muxterm_free_string`] 释放。
 #[no_mangle]
-pub extern "C" fn muxterm_create_tmux_session_json(
+pub extern "C" fn muxterm_workspace_create(
     transport_type: *const c_char,
     target: *const c_char,
     socket: *const c_char,
@@ -398,6 +434,28 @@ pub extern "C" fn muxterm_create_tmux_session_json(
     .unwrap_or_else(|_| json_error("tmux session creation panic"))
 }
 
+/// deprecated 别名：`muxterm_create_tmux_session_json`（W7 改名）。
+#[no_mangle]
+pub extern "C" fn muxterm_create_tmux_session_json(
+    transport_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    config_path: *const c_char,
+    session: *const c_char,
+    directory: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    muxterm_workspace_create(
+        transport_type,
+        target,
+        socket,
+        config_path,
+        session,
+        directory,
+        timeout_ms,
+    )
+}
+
 /// 释放 discovery API 返回的 JSON 字符串。
 ///
 /// # Safety
@@ -416,8 +474,9 @@ fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     }
 }
 
-/// 创建 handle。
+/// 创建 handle（deprecated 转发：建空池并打开一个工作区）。
 ///
+/// W7 起新代码用 [`muxterm_workspace_open`]；本函数保留给 macOS 暂用。
 /// `runtime_type`：`"local"` / `"tmux"` / `"daemon"`（大小写不敏感）。
 /// `socket` / `session`：tmux 模式可选；daemon 用 `session` 推导 socket 路径；local 忽略。
 ///
@@ -434,37 +493,6 @@ pub extern "C" fn muxterm_new(
     let sock = cstr_opt(socket);
     let sess = cstr_opt(session);
 
-    let runtime: Box<dyn crate::core::model::Runtime> = match kind.as_str() {
-        "tmux" => {
-            let sock_ref = sock.as_deref();
-            if let Some(name) = sess.as_deref() {
-                // 有 session：优先 attach；不存在时由 TmuxRuntime 内部处理
-                Box::new(TmuxRuntime::new_with_attach(sock_ref, name))
-            } else {
-                Box::new(TmuxRuntime::new(sock_ref))
-            }
-        }
-        "ssh" => {
-            let Some(alias) = sock.as_deref().filter(|value| !value.trim().is_empty()) else {
-                return ptr::null_mut();
-            };
-            let Some(name) = sess.as_deref().filter(|value| !value.trim().is_empty()) else {
-                return ptr::null_mut();
-            };
-            Box::new(TmuxRuntime::new_with_ssh_attach(alias, name))
-        }
-        "daemon" => {
-            // TUI × local：连已有 daemon（unix socket IPC）
-            let name = sess.unwrap_or_else(|| "default".into());
-            let path = sock
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| session_socket_path(&name));
-            Box::new(DaemonRuntime::new(path, name))
-        }
-        // 默认 local
-        _ => Box::new(ShellRuntime::new("$SHELL", "")),
-    };
-
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -473,9 +501,19 @@ pub extern "C" fn muxterm_new(
         Ok(rt) => rt,
         Err(_) => return ptr::null_mut(),
     };
+    let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(5));
 
-    let handle = MuxtermHandle {
-        model: TerminalModel::new(runtime),
+    let (id, name, runtime) = match legacy_runtime_spec(&kind, sock, sess, None, None) {
+        Some(spec) => spec,
+        None => return ptr::null_mut(),
+    };
+    let fut = pool.open(id.clone(), name, move |_| runtime);
+    if rt.block_on(fut).is_err() {
+        return ptr::null_mut();
+    }
+
+    Box::into_raw(Box::new(MuxtermHandle {
+        pool,
         rt,
         callbacks: FfiCallbacks::default(),
         event_data: Vec::new(),
@@ -483,13 +521,13 @@ pub extern "C" fn muxterm_new(
         tab_names: Vec::new(),
         layout_nodes: Vec::new(),
         deferred_events: VecDeque::new(),
-    };
-    Box::into_raw(Box::new(handle))
+    }))
 }
 
-/// 创建 handle 并直接连接（支持 SSH / attach / 起始目录）。
+/// 创建 handle 并直接连接（deprecated 转发：开一个工作区）。
 ///
 /// 相比 [`muxterm_new`]（+ [`muxterm_connect`] 两步），此函数一步完成建连。
+/// W7 起新代码用 [`muxterm_workspace_open`]。
 ///
 /// - `runtime_type`：`"local"` / `"tmux"` / `"daemon"` / `"tmux-ssh"`
 /// - `socket`：tmux 的 `-L` socket 名（本地 tmux），SSH 模式为远端 socket（可选）
@@ -514,41 +552,6 @@ pub extern "C" fn muxterm_new_connect(
     let alias = cstr_opt(ssh_alias);
     let start_dir = cstr_opt(start_directory);
 
-    let runtime: Box<dyn crate::core::model::Runtime> = match kind.as_str() {
-        "tmux-ssh" => {
-            let sock_ref = sock.as_deref();
-            let Some(alias) = alias.as_deref() else {
-                return ptr::null_mut();
-            };
-            if let Some(name) = sess.as_deref() {
-                Box::new(TmuxRuntime::new_ssh_attach(alias, sock_ref, name))
-            } else {
-                Box::new(TmuxRuntime::new_ssh(alias, sock_ref))
-            }
-        }
-        "tmux" => {
-            let sock_ref = sock.as_deref();
-            if let Some(name) = sess.as_deref() {
-                Box::new(TmuxRuntime::new_with_attach(sock_ref, name))
-            } else if let Some(dir) = start_dir.as_deref() {
-                Box::new(TmuxRuntime::new_with_cwd(sock_ref, Some(dir)))
-            } else {
-                Box::new(TmuxRuntime::new(sock_ref))
-            }
-        }
-        "daemon" => {
-            let name = sess.unwrap_or_else(|| "default".into());
-            let path = sock
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| session_socket_path(&name));
-            Box::new(DaemonRuntime::new(path, name))
-        }
-        _ => Box::new(ShellRuntime::new(
-            "$SHELL",
-            start_dir.as_deref().unwrap_or(""),
-        )),
-    };
-
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -557,9 +560,19 @@ pub extern "C" fn muxterm_new_connect(
         Ok(rt) => rt,
         Err(_) => return ptr::null_mut(),
     };
+    let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(5));
 
-    let mut handle = MuxtermHandle {
-        model: TerminalModel::new(runtime),
+    let (id, name, runtime) = match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
+        Some(spec) => spec,
+        None => return ptr::null_mut(),
+    };
+    let fut = pool.open(id.clone(), name, move |_| runtime);
+    if rt.block_on(fut).is_err() {
+        return ptr::null_mut();
+    }
+
+    Box::into_raw(Box::new(MuxtermHandle {
+        pool,
         rt,
         callbacks: FfiCallbacks::default(),
         event_data: Vec::new(),
@@ -567,15 +580,269 @@ pub extern "C" fn muxterm_new_connect(
         tab_names: Vec::new(),
         layout_nodes: Vec::new(),
         deferred_events: VecDeque::new(),
-    };
-    // 建连失败则 free 并返回 null
-    match handle.rt.block_on(handle.model.connect()) {
-        Ok(()) => Box::into_raw(Box::new(handle)),
-        Err(_) => {
-            let _ = handle.rt.block_on(handle.model.shutdown());
-            ptr::null_mut()
+    }))
+}
+
+/// 旧 `muxterm_new` / `muxterm_new_connect` 的 runtime 规格（deprecated 转发）。
+fn legacy_runtime_spec(
+    kind: &str,
+    sock: Option<String>,
+    sess: Option<String>,
+    alias: Option<String>,
+    start_dir: Option<String>,
+) -> Option<(
+    WorkspaceId,
+    String,
+    std::boxed::Box<dyn crate::core::model::Runtime>,
+)> {
+    let runtime: std::boxed::Box<dyn crate::core::model::Runtime> = match kind {
+        "tmux" => {
+            let sock_ref = sock.as_deref();
+            if let Some(name) = sess.as_deref() {
+                std::boxed::Box::new(TmuxRuntime::new_with_attach(sock_ref, name))
+            } else if let Some(dir) = start_dir.as_deref() {
+                std::boxed::Box::new(TmuxRuntime::new_with_cwd(sock_ref, Some(dir)))
+            } else {
+                std::boxed::Box::new(TmuxRuntime::new(sock_ref))
+            }
         }
+        "ssh" | "tmux-ssh" => {
+            let sock_ref = sock.as_deref();
+            let alias = alias.as_deref().or(sock.as_deref())?;
+            if let Some(name) = sess.as_deref() {
+                std::boxed::Box::new(TmuxRuntime::new_ssh_attach(alias, sock_ref, name))
+            } else {
+                std::boxed::Box::new(TmuxRuntime::new_ssh(alias, sock_ref))
+            }
+        }
+        "daemon" => {
+            let name = sess.clone().unwrap_or_else(|| "default".into());
+            let path = sock
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| session_socket_path(&name));
+            std::boxed::Box::new(DaemonRuntime::new(path, name))
+        }
+        _ => std::boxed::Box::new(ShellRuntime::new(
+            "$SHELL",
+            start_dir.as_deref().unwrap_or(""),
+        )),
+    };
+    let transport = if matches!(kind, "ssh" | "tmux-ssh") {
+        "ssh"
+    } else {
+        "local"
+    };
+    let runtime_kind = if matches!(kind, "daemon") {
+        "daemon"
+    } else if matches!(kind, "ssh" | "tmux-ssh") || kind == "tmux" {
+        "tmux"
+    } else {
+        "shell"
+    };
+    let session = sess.unwrap_or_default();
+    let id = WorkspaceId::new(transport, alias.as_deref(), &session, runtime_kind, "");
+    let name = if session.is_empty() {
+        "muxterm".to_string()
+    } else {
+        session.clone()
+    };
+    Some((id, name, runtime))
+}
+
+/// 按连接身份构造 Runtime（W7 workspace_open 用）。
+fn runtime_from_workspace_spec(
+    transport: &str,
+    alias: Option<&str>,
+    session: &str,
+    runtime: &str,
+    path: &str,
+    socket: Option<&str>,
+) -> std::boxed::Box<dyn crate::core::model::Runtime> {
+    match runtime {
+        "tmux" if transport == "ssh" => {
+            let alias = alias.unwrap_or("");
+            if session.is_empty() {
+                std::boxed::Box::new(TmuxRuntime::new_ssh(alias, socket))
+            } else {
+                std::boxed::Box::new(TmuxRuntime::new_ssh_attach(alias, socket, session))
+            }
+        }
+        "tmux" => {
+            if session.is_empty() {
+                std::boxed::Box::new(TmuxRuntime::new(socket))
+            } else {
+                std::boxed::Box::new(TmuxRuntime::new_with_attach(socket, session))
+            }
+        }
+        "daemon" => {
+            let name = if session.is_empty() {
+                "default"
+            } else {
+                session
+            };
+            let path = if path.is_empty() {
+                session_socket_path(name)
+            } else {
+                std::path::PathBuf::from(path)
+            };
+            std::boxed::Box::new(DaemonRuntime::new(path, name))
+        }
+        _ => std::boxed::Box::new(ShellRuntime::new("$SHELL", path)),
     }
+}
+
+/// 打开一个工作区并设为前台。0=ok，-1=err。
+///
+/// `transport`：`"local"` / `"ssh"`；`runtime`：`"tmux"` / `"shell"` / `"daemon"`。
+/// `alias`：SSH 的 `~/.ssh/config` Host 名；`session`：tmux session 名；
+/// `path`：shell 工作目录 / daemon socket 路径；`socket`：tmux `-L` socket 名。
+///
+/// # Safety
+/// `h` 有效且未 free；字符串参数 NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_open(
+    h: *mut MuxtermHandle,
+    transport: *const c_char,
+    alias: *const c_char,
+    session: *const c_char,
+    runtime: *const c_char,
+    path: *const c_char,
+    socket: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
+        let alias = cstr_opt(alias);
+        let session = cstr_opt(session).unwrap_or_default();
+        let runtime = cstr_opt(runtime).unwrap_or_else(|| "shell".into());
+        let path = cstr_opt(path).unwrap_or_default();
+        let socket = cstr_opt(socket);
+
+        let id = WorkspaceId::new(&transport, alias.as_deref(), &session, &runtime, &path);
+        let name = if session.is_empty() {
+            crate::core::quickconnect::model::QuickConnect::default_name(&path)
+        } else {
+            session.clone()
+        };
+        let handle = &mut *h;
+        let MuxtermHandle { rt, pool, .. } = handle;
+        if pool.get(&id).is_some() {
+            pool.activate(&id);
+            return 0;
+        }
+        let runtime = runtime_from_workspace_spec(
+            &transport,
+            alias.as_deref(),
+            &session,
+            &runtime,
+            &path,
+            socket.as_deref(),
+        );
+        let fut = pool.open(id.clone(), name, move |_| runtime);
+        match rt.block_on(fut) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+/// 列出池里全部工作区，返回 JSON 字符串（`muxterm_free_string` 释放）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_list(h: *mut MuxtermHandle) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let handle = &*h;
+        let workspaces: Vec<serde_json::Value> = handle
+            .pool
+            .list()
+            .into_iter()
+            .map(|w| {
+                serde_json::json!({
+                    "id": w.id().as_str(),
+                    "name": w.name(),
+                    "runtime": w.state().workspace_runtime(),
+                    "active": handle.pool.active_id() == Some(w.id()),
+                })
+            })
+            .collect();
+        json_string(serde_json::json!({ "ok": true, "workspaces": workspaces }))
+    }))
+    .unwrap_or_else(|_| json_error("workspace list panic"))
+}
+
+/// 激活池里一个工作区。0=ok，-1=err。
+///
+/// `id` 是 `muxterm_workspace_list` 返回的 `id` 字符串。
+///
+/// # Safety
+/// `h` 有效且未 free；`id` NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_activate(
+    h: *mut MuxtermHandle,
+    id: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let Some(id) = cstr_opt(id) else {
+            return -1;
+        };
+        let wid = parse_workspace_id(&id);
+        let handle = &mut *h;
+        match handle.pool.activate(&wid) {
+            Some(_) => 0,
+            None => -1,
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+/// 关闭池里一个工作区（tmux Detach / shell Shutdown）。0=ok，-1=err。
+///
+/// # Safety
+/// `h` 有效且未 free；`id` NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_close(h: *mut MuxtermHandle, id: *const c_char) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let Some(id) = cstr_opt(id) else {
+            return -1;
+        };
+        let wid = parse_workspace_id(&id);
+        let handle = &mut *h;
+        if handle.pool.close(&wid) {
+            0
+        } else {
+            -1
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+/// 从 `transport/alias/session/runtime/path` 字符串解析 WorkspaceId。
+fn parse_workspace_id(id: &str) -> WorkspaceId {
+    let parts: Vec<&str> = id.splitn(5, '/').collect();
+    let transport = parts.first().copied().unwrap_or("").to_string();
+    let alias = parts
+        .get(1)
+        .copied()
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let session = parts.get(2).copied().unwrap_or("").to_string();
+    let runtime = parts.get(3).copied().unwrap_or("").to_string();
+    let path = parts.get(4).copied().unwrap_or("").to_string();
+    WorkspaceId::new(&transport, alias.as_deref(), &session, &runtime, &path)
 }
 
 /// 释放 handle。
@@ -589,7 +856,7 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let mut handle = Box::from_raw(h);
-        let _ = handle.rt.block_on(handle.model.shutdown());
+        handle.pool.shutdown_all();
     }));
 }
 
@@ -604,7 +871,11 @@ pub unsafe extern "C" fn muxterm_connect(h: *mut MuxtermHandle) -> i32 {
             return -1;
         }
         let handle = &mut *h;
-        match handle.rt.block_on(handle.model.connect()) {
+        let MuxtermHandle { rt, pool, .. } = handle;
+        let Some(ws) = pool.active_mut() else {
+            return -1;
+        };
+        match rt.block_on(ws.connect()) {
             Ok(()) => 0,
             Err(_) => -1,
         }
@@ -623,10 +894,8 @@ pub unsafe extern "C" fn muxterm_shutdown(h: *mut MuxtermHandle) -> i32 {
             return -1;
         }
         let handle = &mut *h;
-        match handle.rt.block_on(handle.model.shutdown()) {
-            Ok(()) => 0,
-            Err(_) => -1,
-        }
+        handle.pool.shutdown_all();
+        0
     }))
     .unwrap_or(-1)
 }
@@ -645,12 +914,15 @@ pub unsafe extern "C" fn muxterm_detach(h: *mut MuxtermHandle) -> i32 {
             return -1;
         }
         let handle = &mut *h;
-        task_result_code(handle.model.execute(Task::Detach))
+        match handle.active_workspace_mut() {
+            Some(ws) => task_result_code(ws.execute(Task::Detach)),
+            None => -1,
+        }
     }))
     .unwrap_or(-1)
 }
 
-fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
+fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
     let name = cstr_opt(task.name);
     match task.type_ {
         TASK_SPLIT_PANE => {
@@ -659,7 +931,7 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
             } else {
                 SplitDir::Horizontal
             };
-            let target = Some(resolve_c_task_pane(task.target_pane, model));
+            let target = Some(resolve_c_task_pane(task.target_pane, ws));
             Some(Task::SplitPane {
                 target,
                 dir,
@@ -676,7 +948,7 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
             target: TabId(task.target_tab),
         }),
         TASK_CLOSE_PANE => {
-            let pane = resolve_c_task_pane(task.target_pane, model);
+            let pane = resolve_c_task_pane(task.target_pane, ws);
             Some(Task::ClosePane { target: pane })
         }
         TASK_CLOSE_TAB => Some(Task::CloseTab {
@@ -685,13 +957,13 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
         TASK_NEXT_PANE => Some(Task::NextPane),
         TASK_PREV_PANE => Some(Task::PrevPane),
         TASK_SWITCH_PANE => {
-            let pane = resolve_c_task_pane(task.target_pane, model);
+            let pane = resolve_c_task_pane(task.target_pane, ws);
             Some(Task::SwitchPane { target: pane })
         }
         TASK_SHUTDOWN => Some(Task::Shutdown),
         TASK_DETACH => Some(Task::Detach),
         TASK_TOGGLE_PANE_FULLSCREEN => {
-            let pane = resolve_c_task_pane(task.target_pane, model);
+            let pane = resolve_c_task_pane(task.target_pane, ws);
             Some(Task::TogglePaneFullscreen { target: pane })
         }
         _ => None,
@@ -702,9 +974,9 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
 ///
 /// macOS 会把可见 pane 的真实 id（包括 0）传进来；若当前后端没有
 /// PaneId(0)，才把 0 解释为“当前 active pane”的旧兼容语义。
-fn resolve_c_task_pane(raw: u32, model: &TerminalModel) -> PaneId {
-    if raw == 0 && model.state().pane(&PaneId(0)).is_none() {
-        model.active_pane_id().unwrap_or(PaneId(0))
+fn resolve_c_task_pane(raw: u32, ws: &Workspace) -> PaneId {
+    if raw == 0 && ws.state().pane(&PaneId(0)).is_none() {
+        ws.state().active_pane().map(|p| p.id).unwrap_or(PaneId(0))
     } else {
         PaneId(raw)
     }
@@ -722,11 +994,14 @@ pub unsafe extern "C" fn muxterm_execute(h: *mut MuxtermHandle, task: *const CTa
         }
         let handle = &mut *h;
         let ctask = &*task;
-        let Some(rust_task) = ctask_to_task(ctask, &handle.model) else {
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let Some(rust_task) = ctask_to_task(ctask, ws) else {
             return -1;
         };
         tracing::debug!(target: "muxterm::ffi", task = ?rust_task, "execute task");
-        task_result_code(handle.model.execute(rust_task))
+        task_result_code(ws.execute(rust_task))
     }))
     .unwrap_or(-1)
 }
@@ -840,7 +1115,15 @@ pub unsafe extern "C" fn muxterm_poll_events(
         }
         let handle = &mut *h;
         handle.clear_event_bufs();
-        handle.deferred_events.extend(handle.model.refresh());
+        // 后台工作区事件也拉取（W7：池在 core）。
+        let mut fresh: Vec<StateChange> = Vec::new();
+        for (_, events) in handle.pool.poll_background() {
+            fresh.extend(events);
+        }
+        if let Some(ws) = handle.active_workspace_mut() {
+            fresh.extend(ws.refresh());
+        }
+        handle.deferred_events.extend(fresh);
         let n = handle.deferred_events.len().min(max_count as usize);
         let slice = std::slice::from_raw_parts_mut(out, n);
         let ready: Vec<StateChange> = handle.deferred_events.drain(..n).collect();
@@ -879,10 +1162,13 @@ pub unsafe extern "C" fn muxterm_send_input(
         }
         let handle = &mut *h;
         let bytes = std::slice::from_raw_parts(data, len).to_vec();
-        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+        let Some(ws) = handle.active_workspace_mut() else {
             return -1;
         };
-        task_result_code(handle.model.execute(Task::WriteRaw {
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::WriteRaw {
             target: pane,
             data: bytes,
         }))
@@ -913,10 +1199,13 @@ pub unsafe extern "C" fn muxterm_report_pane_colours(
             return -1;
         };
         let handle = &mut *h;
-        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+        let Some(ws) = handle.active_workspace_mut() else {
             return -1;
         };
-        task_result_code(handle.model.execute(Task::ReportPaneColours {
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::ReportPaneColours {
             target: pane,
             fg,
             bg,
@@ -949,8 +1238,27 @@ pub unsafe extern "C" fn muxterm_report_all_pane_colours(
             return -1;
         };
         let handle = &mut *h;
-        let n = handle.model.report_all_pane_colours(fg, bg);
-        if n > 0 {
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let panes: Vec<PaneId> = ws
+            .state()
+            .tabs()
+            .iter()
+            .flat_map(|t| ws.state().panes(&t.id))
+            .map(|p| p.id)
+            .collect();
+        let mut dispatched = 0;
+        for pane in panes {
+            if let Ok(TaskOutcome::Done) = ws.execute(Task::ReportPaneColours {
+                target: pane,
+                fg,
+                bg,
+            }) {
+                dispatched += 1;
+            }
+        }
+        if dispatched > 0 {
             0
         } else {
             -1
@@ -961,9 +1269,9 @@ pub unsafe extern "C" fn muxterm_report_all_pane_colours(
 
 /// C ABI 中 `0` 既是历史上的 active-pane 哨兵，也可能是真实的 tmux pane id。
 /// 只有当前状态不存在 PaneId(0) 时才使用旧哨兵语义。
-fn resolve_c_io_pane(raw: u32, model: &TerminalModel) -> Option<PaneId> {
-    if raw == 0 && model.state().pane(&PaneId(0)).is_none() {
-        model.active_pane_id()
+fn resolve_c_io_pane(raw: u32, ws: &Workspace) -> Option<PaneId> {
+    if raw == 0 && ws.state().pane(&PaneId(0)).is_none() {
+        ws.state().active_pane().map(|p| p.id)
     } else {
         Some(PaneId(raw))
     }
@@ -985,10 +1293,13 @@ pub unsafe extern "C" fn muxterm_resize_pane(
             return -1;
         }
         let handle = &mut *h;
-        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+        let Some(ws) = handle.active_workspace_mut() else {
             return -1;
         };
-        task_result_code(handle.model.execute(Task::ResizePane {
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::ResizePane {
             target: pane,
             cols,
             rows,
@@ -1008,7 +1319,10 @@ pub unsafe extern "C" fn muxterm_resize_client(h: *mut MuxtermHandle, cols: u16,
             return -1;
         }
         let handle = &mut *h;
-        task_result_code(handle.model.execute(Task::ResizeClient { cols, rows }))
+        match handle.active_workspace_mut() {
+            Some(ws) => task_result_code(ws.execute(Task::ResizeClient { cols, rows })),
+            None => -1,
+        }
     }))
     .unwrap_or(-1)
 }
@@ -1030,7 +1344,10 @@ pub unsafe extern "C" fn muxterm_resize_pane_axis(
             return -1;
         }
         let handle = &mut *h;
-        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
             return -1;
         };
         let dir = if axis == DIR_VERTICAL {
@@ -1038,7 +1355,7 @@ pub unsafe extern "C" fn muxterm_resize_pane_axis(
         } else {
             SplitDir::Horizontal
         };
-        task_result_code(handle.model.execute(Task::ResizePaneAxis {
+        task_result_code(ws.execute(Task::ResizePaneAxis {
             target: pane,
             dir,
             size,
@@ -1062,11 +1379,19 @@ pub unsafe extern "C" fn muxterm_get_tabs(
     }
     let handle = &mut *h;
     handle.tab_names.clear();
-    let tabs = handle.model.state().tabs();
+    let Some(ws) = handle.active_workspace() else {
+        return 0;
+    };
+    let tabs: Vec<(u32, String, bool)> = ws
+        .state()
+        .tabs()
+        .iter()
+        .map(|t| (t.id.0, t.name.clone(), t.active))
+        .collect();
     let n = tabs.len().min(max_count as usize);
     let slice = std::slice::from_raw_parts_mut(out, n);
-    for (i, t) in tabs.iter().take(n).enumerate() {
-        let name_ptr = match CString::new(t.name.as_str()) {
+    for (i, (id, name, active)) in tabs.iter().take(n).enumerate() {
+        let name_ptr = match CString::new(name.as_str()) {
             Ok(cs) => {
                 handle.tab_names.push(cs);
                 handle.tab_names.last().unwrap().as_ptr()
@@ -1074,9 +1399,9 @@ pub unsafe extern "C" fn muxterm_get_tabs(
             Err(_) => ptr::null(),
         };
         slice[i] = CTab {
-            id: t.id.0,
+            id: *id,
             name: name_ptr,
-            is_active: u8::from(t.active),
+            is_active: u8::from(*active),
         };
     }
     n as i32
@@ -1099,7 +1424,10 @@ pub unsafe extern "C" fn muxterm_get_panes(
     let handle = &*h;
     // tmux window index 也是 0 基的，tab_id==0 是真实 tab，不能当作“active”哨兵。
     let tid = TabId(tab_id);
-    let panes = handle.model.state().panes(&tid);
+    let Some(ws) = handle.active_workspace() else {
+        return 0;
+    };
+    let panes = ws.state().panes(&tid);
     let n = panes.len().min(max_count as usize);
     let slice = std::slice::from_raw_parts_mut(out, n);
     for (i, p) in panes.iter().take(n).enumerate() {
@@ -1134,10 +1462,13 @@ pub unsafe extern "C" fn muxterm_get_pane_output(
             return -1;
         }
         let handle = &*h;
-        let Some(pane) = resolve_c_io_pane(pane_id, &handle.model) else {
+        let Some(ws) = handle.active_workspace() else {
             return -1;
         };
-        let Some(out) = handle.model.state().pane_output(&pane) else {
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let Some(out) = ws.state().pane_output(&pane) else {
             return 0;
         };
         let n = out.len().min(buf_len);
@@ -1167,10 +1498,14 @@ pub unsafe extern "C" fn muxterm_get_layout(
     handle.layout_nodes.clear();
     // tmux window index 0 基，tab_id==0 是真实 tab。
     let tid = TabId(tab_id);
-    let Some(tl) = handle.model.state().layout(&tid) else {
+    let Some(ws) = handle.active_workspace() else {
         return -1;
     };
-    let root_idx = push_layout_node(&mut handle.layout_nodes, &tl.tree);
+    let Some(tl) = ws.state().layout(&tid) else {
+        return -1;
+    };
+    let tree = tl.tree.clone();
+    let root_idx = push_layout_node(&mut handle.layout_nodes, &tree);
     *out = handle.layout_nodes[root_idx];
     // 重新修正指针（push 时用 index，最后一遍 fixup）
     fixup_layout_pointers(&mut handle.layout_nodes);
@@ -1297,6 +1632,53 @@ mod tests {
             assert!(n >= 0);
 
             assert_eq!(muxterm_shutdown(h), 0);
+            muxterm_free(h);
+        }
+    }
+
+    /// W7：workspace_open / list / activate / close 走 core 池。
+    #[test]
+    fn ffi_workspace_open_list_activate_close() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            // 旧 muxterm_new 已开一个 local shell 工作区。
+            let list = muxterm_workspace_list(h);
+            assert!(!list.is_null());
+            let text = CStr::from_ptr(list).to_string_lossy().into_owned();
+            muxterm_free_string(list);
+            assert!(text.contains("workspaces"), "list 应含 workspaces: {text}");
+
+            // 再开一个 tmux 工作区（无真实 tmux 时 open 失败，但不应 panic）。
+            let rc = muxterm_workspace_open(
+                h,
+                c"local".as_ptr(),
+                ptr::null(),
+                c"demo".as_ptr(),
+                c"tmux".as_ptr(),
+                c"".as_ptr(),
+                ptr::null(),
+            );
+            // 有 tmux 时 rc==0；无 tmux 时 rc==-1，两种情况都接受。
+            let _ = rc;
+
+            // list 应仍可调用。
+            let list = muxterm_workspace_list(h);
+            assert!(!list.is_null());
+            let text = CStr::from_ptr(list).to_string_lossy().into_owned();
+            muxterm_free_string(list);
+            assert!(text.contains("workspaces"), "list 应可重复调用: {text}");
+
+            // activate/close 不存在的 id 返回 -1，不 panic。
+            assert_eq!(
+                muxterm_workspace_activate(h, c"local//missing/tmux/".as_ptr()),
+                -1
+            );
+            assert_eq!(
+                muxterm_workspace_close(h, c"local//missing/tmux/".as_ptr()),
+                -1
+            );
+
             muxterm_free(h);
         }
     }
