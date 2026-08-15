@@ -478,6 +478,23 @@ impl AppWindow {
             .unwrap_or_default()
     }
 
+    /// 测试用：当前激活 pane 的 VTE reset 次数（F1 Surface 契约）。
+    pub fn test_active_pane_resets(&self) -> u32 {
+        let s = self._state.borrow();
+        s.layout
+            .pane(s.active_pane)
+            .map(|v| v.render_trace().resets)
+            .unwrap_or(0)
+    }
+
+    /// 测试用：清空当前激活 pane 的渲染痕迹（切 tab 前归零）。
+    pub fn test_clear_active_pane_render_trace(&self) {
+        let s = self._state.borrow();
+        if let Some(v) = s.layout.pane(s.active_pane) {
+            v.clear_render_trace();
+        }
+    }
+
     /// 测试用：tab / 当前 tab 的 pane 数量。
     pub fn test_tab_and_pane_counts(&self) -> (usize, usize) {
         let s = self._state.borrow();

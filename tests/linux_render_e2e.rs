@@ -7,6 +7,8 @@
 
 mod support;
 
+use std::rc::Rc;
+
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 use vte4::prelude::*;
@@ -250,6 +252,99 @@ fn mini_vte_input_routes_to_send_input(view: &PaneView) {
     );
 }
 
+/// F1：Surface 打字契约——`\r` + 更长前缀原地覆盖，完整句恰好一次。
+fn surface_typing_overwrites_in_place(view: &PaneView) {
+    view.present_from_replica(b"\x1b[H\x1b[2J");
+    view.clear_render_trace();
+    view.feed_output(b"hello");
+    view.flush_pending_feed();
+    view.feed_output(b"\rhello world");
+    view.flush_pending_feed();
+    view.feed_output(b"\rhello world again");
+    view.flush_pending_feed();
+    pump_main_loop(80);
+
+    let text = view.visible_text();
+    assert_eq!(
+        text.matches("hello world again").count(),
+        1,
+        "完整句应恰好一次（2105 越写越长）: {text:?}"
+    );
+    assert!(
+        !text.contains("hello world\nhello world again"),
+        "不应残留旧前缀: {text:?}"
+    );
+}
+
+/// F1：Surface 无 reset 契约——seed 后 20 帧 CUP 只 feed 原始字节，resets 不涨。
+fn surface_live_feed_does_not_reset(view: &PaneView) {
+    // 独立契约：不依赖前序场景的 replica provider（F2 后此路径应删除）。
+    view.set_replica_ansi_provider(Rc::new(|| Vec::new()));
+    view.present_from_replica(b"\x1b[H\x1b[2Jseed");
+    view.clear_render_trace();
+    let mut all = Vec::new();
+    for i in 0..20 {
+        all.extend_from_slice(format!("\x1b[H\x1b[2Jframe-{i}").as_bytes());
+    }
+    view.feed_output(&all);
+    view.flush_pending_feed();
+    pump_main_loop(80);
+
+    let text = view.visible_text();
+    assert!(text.contains("frame-19"), "应停在末帧: {text}");
+    assert!(!text.contains("frame-0"), "不应含首帧: {text}");
+    let trace = view.render_trace();
+    assert_eq!(
+        trace.resets, 0,
+        "seed 后 CUP 风暴不得 reset（白屏）: {trace:?}"
+    );
+}
+
+/// F1：Codex fixture 直接 raw feed——头+底+盒线，不经 replica dump。
+fn surface_codex_fixture_raw_feed(view: &PaneView) {
+    // 独立契约：raw feed 不经 replica dump（F2 后此路径应删除）。
+    view.set_replica_ansi_provider(Rc::new(|| Vec::new()));
+    let raw = include_str!("samples/codex-tui-sanitized.txt");
+    let payload = raw
+        .split_once("PAYLOAD_UTF8_BELOW\n")
+        .map(|(_, p)| p)
+        .expect("fixture 应含 PAYLOAD_UTF8_BELOW 标记");
+    view.feed_output(payload.as_bytes());
+    view.flush_pending_feed();
+    pump_main_loop(80);
+
+    let text = view.visible_text();
+    assert!(
+        text.contains("TOKEN_HEADER"),
+        "raw feed 应含 HEADER: {text:?}"
+    );
+    assert!(
+        text.contains("TOKEN_PROMPT") || text.contains("TOKEN_FOOTER"),
+        "raw feed 应含 PROMPT/FOOTER: {text:?}"
+    );
+    assert!(text.contains('─'), "raw feed 应含盒线: {text:?}");
+}
+
+/// F1/F3：capture 完成前 live 不得进 VTE；快照后 catch-up 才进。
+fn surface_seed_drops_output_until_capture(view: &PaneView) {
+    view.feed_output(b"PRE_SEED_TOKEN");
+    view.flush_pending_feed();
+    pump_main_loop(40);
+    let text = view.visible_text();
+    assert!(
+        !text.contains("PRE_SEED_TOKEN"),
+        "capture 完成前 live 不得画: {text:?}"
+    );
+
+    view.present_from_replica(b"\x1b[H\x1b[2JSNAPSHOT_TOKEN");
+    view.feed_output(b"CATCH_UP_TOKEN");
+    view.flush_pending_feed();
+    pump_main_loop(40);
+    let text = view.visible_text();
+    assert!(text.contains("SNAPSHOT_TOKEN"), "快照应显示: {text:?}");
+    assert!(text.contains("CATCH_UP_TOKEN"), "catch-up 应显示: {text:?}");
+}
+
 /// S4：20 个全屏帧一次合并，只提交末帧。
 fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     let mut all = Vec::new();
@@ -312,6 +407,10 @@ fn render_e2e_s3_s4() {
         view.clear_render_trace();
         cup_half_frames_keep_header_and_prompt(&view);
         mini_vte_input_routes_to_send_input(&view);
+        surface_typing_overwrites_in_place(&view);
+        surface_live_feed_does_not_reset(&view);
+        surface_codex_fixture_raw_feed(&view);
+        surface_seed_drops_output_until_capture(&view);
 
         win.close();
         win.destroy();
