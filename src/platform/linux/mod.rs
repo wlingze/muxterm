@@ -3,7 +3,6 @@
 pub mod app;
 pub mod attention_ui;
 pub mod command_palette;
-pub mod connection_slot;
 pub mod ffi_bridge;
 pub mod input_bar;
 pub mod keymap;

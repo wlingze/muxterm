@@ -6,7 +6,6 @@ pub mod directory;
 pub mod event_policy;
 pub mod font;
 pub mod options;
-pub mod pool;
 pub mod project_flow;
 pub mod status_style;
 pub mod tab_gate;

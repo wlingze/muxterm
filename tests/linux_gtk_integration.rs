@@ -171,11 +171,13 @@ fn assert_tab_bar_renders() {
 
 fn assert_pane_layout_widget() {
     let mut host = LayoutHost::new(load_theme(), FontSettings::default(), false, 10_000);
-    let layout = BridgeLayout::Split {
-        horizontal: true,
+    use muxterm::core::model::layout::{LayoutNode, SplitDir};
+    use muxterm::core::types::PaneId;
+    let layout = LayoutNode::Split {
+        dir: SplitDir::Horizontal,
         ratio: 500,
-        first: Box::new(BridgeLayout::Leaf { pane_id: 1 }),
-        second: Box::new(BridgeLayout::Leaf { pane_id: 2 }),
+        first: std::boxed::Box::new(LayoutNode::Leaf(PaneId(1))),
+        second: std::boxed::Box::new(LayoutNode::Leaf(PaneId(2))),
     };
     let on_input = |_pid: u32, _data: &[u8]| {};
     assert!(host.apply_layout(&layout, &on_input));
