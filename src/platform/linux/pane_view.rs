@@ -18,11 +18,20 @@ use crate::core::protocol::terminal::emulate::TerminalState;
 use crate::core::protocol::terminal::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
 };
+use crate::core::render_policy::{last_visible_frame, render_intent, RenderIntent};
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;
+
+/// 渲染痕迹：没有视觉时证明「不刷屏」。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderTrace {
+    pub resets: u32,
+    pub feeds: u32,
+    pub bytes_fed: usize,
+}
 
 /// 一个 pane 的 GTK 视图（薄包装；内部用 Rc 供合并定时器弱引用）。
 pub struct PaneView {
@@ -48,6 +57,8 @@ struct PaneViewInner {
     /// VTE / 无头模型当前字符格。Codex CUP 帧必须与此一致。
     grid_cols: Cell<u16>,
     grid_rows: Cell<u16>,
+    /// 渲染痕迹（reset/feed 次数与字节数）。
+    render_trace: RefCell<RenderTrace>,
 }
 
 impl PaneView {
@@ -69,6 +80,7 @@ impl PaneView {
                 seeded: Cell::new(false),
                 grid_cols: Cell::new(80),
                 grid_rows: Cell::new(24),
+                render_trace: RefCell::new(RenderTrace::default()),
             }),
         }
     }
@@ -184,6 +196,61 @@ impl PaneView {
         self.inner.seeded.set(true);
     }
 
+    /// 首屏：用 replica 的可见 ANSI 播种（禁止 get_pane_output 重放历史）。
+    pub fn present_from_replica(&self, ansi: &[u8]) {
+        self.present_bytes(ansi, true);
+    }
+
+    /// 按 RenderPolicy 提交一批字节：ReplaceVisible 只喂最后一帧。
+    pub fn present_bytes(&self, bytes: &[u8], first_paint: bool) {
+        if bytes.is_empty() {
+            return;
+        }
+        match render_intent(bytes, first_paint) {
+            RenderIntent::ReplaceVisible => {
+                let frame = last_visible_frame(bytes);
+                self.reset_and_feed(frame);
+            }
+            RenderIntent::Incremental(data) => {
+                self.feed_direct(data);
+            }
+        }
+    }
+
+    /// 渲染痕迹（测试断言不刷屏）。
+    pub fn render_trace(&self) -> RenderTrace {
+        *self.inner.render_trace.borrow()
+    }
+
+    /// 清空渲染痕迹（测试在独立场景前调用）。
+    pub fn clear_render_trace(&self) {
+        *self.inner.render_trace.borrow_mut() = RenderTrace::default();
+    }
+
+    fn reset_and_feed(&self, bytes: &[u8]) {
+        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
+            id.remove();
+        }
+        self.inner.pending_feed.borrow_mut().clear();
+        self.inner.renderer.terminal().reset(true, true);
+        self.inner.render_trace.borrow_mut().resets += 1;
+        self.feed_direct(bytes);
+        self.inner.seeded.set(true);
+    }
+
+    fn feed_direct(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        with_remote_feed(&self.inner, || {
+            self.inner.renderer.terminal().feed(bytes);
+            apply_mirror_mouse_policy(&self.inner);
+        });
+        let mut trace = self.inner.render_trace.borrow_mut();
+        trace.feeds += 1;
+        trace.bytes_fed += bytes.len();
+    }
+
     /// 取出待回写 shell 的查询应答字节。
     pub fn take_replies(&self) -> Vec<u8> {
         std::mem::take(&mut self.inner.pending_replies.borrow_mut())
@@ -262,11 +329,33 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     if data.is_empty() {
         return;
     }
-    with_remote_feed(inner, || {
-        inner.renderer.terminal().feed(&data);
-        feed_reply_state(inner, &data);
-        apply_mirror_mouse_policy(inner);
-    });
+    // CUP 风暴：合并缓冲里 ≥2 帧时只提交最后一帧（RenderPolicy）。
+    match render_intent(&data, !inner.seeded.get()) {
+        RenderIntent::ReplaceVisible => {
+            let frame = last_visible_frame(&data);
+            inner.renderer.terminal().reset(true, true);
+            inner.render_trace.borrow_mut().resets += 1;
+            with_remote_feed(inner, || {
+                inner.renderer.terminal().feed(frame);
+                apply_mirror_mouse_policy(inner);
+            });
+            let mut trace = inner.render_trace.borrow_mut();
+            trace.feeds += 1;
+            trace.bytes_fed += frame.len();
+            inner.seeded.set(true);
+        }
+        RenderIntent::Incremental(data) => {
+            with_remote_feed(inner, || {
+                inner.renderer.terminal().feed(data);
+                feed_reply_state(inner, data);
+                apply_mirror_mouse_policy(inner);
+            });
+            let mut trace = inner.render_trace.borrow_mut();
+            trace.feeds += 1;
+            trace.bytes_fed += data.len();
+            inner.seeded.set(true);
+        }
+    }
 }
 
 fn apply_mirror_mouse_policy(inner: &PaneViewInner) {
