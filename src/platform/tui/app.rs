@@ -1,7 +1,7 @@
 //! TUI 事件循环入口（经 FFI + ratatui）。
 //!
 //! `run()` 进入 crossterm raw mode + alternate screen，经 `CoreBridge` 调用
-//! `muxterm_*` C ABI（不直接持有 TerminalModel / Backend）。
+//! `muxterm_*` C ABI（不直接持有 TerminalModel / Runtime）。
 //! 轮询键盘 → execute / send_input；轮询 poll_events → 重绘。
 //! Ctrl-Q 退出，Alt+T 新建 tab，Alt+S / Alt+V 分割 pane，Alt+P 连接向导。
 //!
@@ -50,16 +50,16 @@ pub fn run(opts: TuiOpts) -> Result<()> {
 fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     execute!(out, EnterAlternateScreen).context("enter alternate screen")?;
 
-    let (backend_type, socket, session) = resolve_backend(&opts);
-    let mut bridge = CoreBridge::new(backend_type, socket.as_deref(), session.as_deref())
+    let (runtime_type, socket, session) = resolve_runtime(&opts);
+    let mut bridge = CoreBridge::new(runtime_type, socket.as_deref(), session.as_deref())
         .context("CoreBridge::new")?;
 
     // 连接后给查询响应一点时间，再做一次 poll 让初始状态到达
     std::thread::sleep(Duration::from_millis(300));
     let _ = bridge.poll_events();
 
-    let backend = CrosstermBackend::new(&mut *out);
-    let mut terminal = Terminal::new(backend).context("ratatui Terminal::new")?;
+    let terminal_backend = CrosstermBackend::new(&mut *out);
+    let mut terminal = Terminal::new(terminal_backend).context("ratatui Terminal::new")?;
 
     let mut palette = PaletteState::new();
     palette.socket = opts.socket.clone();
@@ -69,7 +69,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     // tmux 控制模式（tmux / tmux-ssh）拥有 pane 的 PTY 与协议，前端只是渲染
     // 镜像：解析出的查询应答必须丢弃，不能经 send-keys 回写，否则 `git lg`
     // 的 `10;rgb:...` / `65;...c` 会泄漏成 shell 里的字面命令。
-    term_mgr.forward_replies = is_direct_pty_terminal(bridge.backend());
+    term_mgr.forward_replies = is_direct_pty_terminal(bridge.runtime());
 
     // 首帧：立即渲染一次（不依赖事件）
     let snap = bridge.snapshot();
@@ -134,7 +134,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     // 重绘后被裁切/错位。
                     let cols = c.saturating_sub(2).max(20);
                     let rows = r.saturating_sub(8).max(8);
-                    if bridge.backend() != "local" {
+                    if bridge.runtime() != "local" {
                         let _ = bridge.resize_client(cols, rows);
                     } else if let Some(pane) = active_pane_id(&bridge.snapshot()) {
                         let _ = bridge.resize_pane(pane, cols, rows);
@@ -156,7 +156,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
 
     // tmux/daemon 用显式 detach；local shell 没有 tmux client，直接由 Drop
     // 做普通 shutdown。FFI detach 失败时仍让 Drop 兜底，不能 panic。
-    if matches!(backend_type, "tmux" | "daemon") {
+    if matches!(runtime_type, "tmux" | "daemon") {
         let _ = bridge.detach();
     }
     drop(bridge);
@@ -189,7 +189,7 @@ fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(
 /// tmux 控制模式下应答经 `send-keys -l` 回写会被 pane 回显并执行，造成
 /// `git lg` 的 `10;rgb:...` / `65;...c` 泄漏，因此必须丢弃。
 fn maybe_send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
-    let is_tmux_mirror = !is_direct_pty_terminal(bridge.backend());
+    let is_tmux_mirror = !is_direct_pty_terminal(bridge.runtime());
     if should_forward_parser_response(true, is_tmux_mirror) {
         send_replies(bridge, replies);
     }
@@ -207,8 +207,8 @@ fn send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
 /// （`tmux` / `tmux-ssh`）以及 daemon 代理（daemon 可能代理 tmux，client
 /// 侧无法分辨）都不是，解析器应答必须丢弃，否则经 send-keys 注入会泄漏成
 /// shell 字面命令。
-fn is_direct_pty_terminal(backend: &str) -> bool {
-    backend == "local"
+fn is_direct_pty_terminal(runtime: &str) -> bool {
+    runtime == "local"
 }
 
 /// 当前激活 pane；快照里没有标记时退回第一个。
@@ -254,7 +254,7 @@ fn draw<W: std::io::Write>(
 }
 
 /// 解析 backend 类型与参数。
-fn resolve_backend(opts: &TuiOpts) -> (&'static str, Option<String>, Option<String>) {
+fn resolve_runtime(opts: &TuiOpts) -> (&'static str, Option<String>, Option<String>) {
     match (opts.socket.as_deref(), opts.session.as_deref()) {
         (Some(sock), session) => {
             let sock = sock.trim();
@@ -321,7 +321,7 @@ fn handle_palette_key(
                     reconnect(bridge, &action, sock.as_deref())?;
                     // 重连后旧 pane 状态全部失效：清空并按新后端重设应答策略。
                     term_mgr.clear();
-                    term_mgr.forward_replies = is_direct_pty_terminal(bridge.backend());
+                    term_mgr.forward_replies = is_direct_pty_terminal(bridge.runtime());
                     *palette_open = false;
                     Ok(true)
                 }
@@ -454,7 +454,7 @@ fn load_step_data(palette: &mut PaletteState) {
 /// 连接动作 → 重建 CoreBridge。
 fn reconnect(bridge: &mut CoreBridge, action: &ConnectAction, socket: Option<&str>) -> Result<()> {
     let sock = socket.map(|s| s.to_string());
-    let (backend_type, socket, session, ssh_alias, start_dir) = match action {
+    let (runtime_type, socket, session, ssh_alias, start_dir) = match action {
         ConnectAction::Attach {
             source,
             host,
@@ -486,7 +486,7 @@ fn reconnect(bridge: &mut CoreBridge, action: &ConnectAction, socket: Option<&st
     };
 
     let new_bridge = CoreBridge::new_connect(
-        backend_type,
+        runtime_type,
         socket.as_deref(),
         session.as_deref(),
         ssh_alias.as_deref(),

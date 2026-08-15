@@ -44,7 +44,7 @@ pub fn format_output(
     }
 }
 
-/// 完整状态快照（供 TUI DaemonBackend 反序列化）。
+/// 完整状态快照（供 TUI DaemonRuntime 反序列化）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StateSnapshot {
     pub workspace_name: String,
@@ -307,11 +307,11 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockBackend;
+    use crate::core::model::backend::mock::MockRuntime;
     use crate::platform::cli::command::CliCommand;
 
-    fn mock_with_pane() -> MockBackend {
-        MockBackend::with_single_pane()
+    fn mock_with_pane() -> MockRuntime {
+        MockRuntime::with_single_pane()
     }
 
     #[test]

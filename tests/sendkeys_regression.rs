@@ -113,13 +113,13 @@ fn send_keys_pure_special_produces_single_special_command() {
 }
 
 /// ── Test 2: backend integration — send text+Enter, native capture has marker ──
-/// 通过 TmuxBackend 发送 echo MARKER + Enter，用原生 tmux capture-pane 验证。
+/// 通过 TmuxRuntime 发送 echo MARKER + Enter，用原生 tmux capture-pane 验证。
 #[test]
 fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
     use muxterm::core::model::task::Task;
     use muxterm::core::model::TerminalModel;
     use muxterm::core::protocol::terminal::input::KeyEvent;
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxRuntime;
 
     let socket = unique_socket("backend-sk");
     let session = format!("sk-test-{}", rand_suffix());
@@ -143,7 +143,7 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
         .expect("创建 tmux session 失败");
     std::thread::sleep(Duration::from_millis(300));
 
-    let backend = TmuxBackend::new_with_attach(Some(&socket), &session);
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), &session);
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -214,7 +214,7 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
 }
 
 /// ── Test 3: daemon local-shell CLI regression — exact marker in capture ──
-/// 通过 muxterm CLI daemon 模式（LocalBackend）发送 echo + Enter，capture 含 marker。
+/// 通过 muxterm CLI daemon 模式（ShellRuntime）发送 echo + Enter，capture 含 marker。
 #[test]
 #[cfg(feature = "tui")]
 fn daemon_local_shell_cli_exact_marker_in_capture() {

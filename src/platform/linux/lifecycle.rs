@@ -47,11 +47,11 @@ pub fn last_tabs_closed_action(policy: OnLastPaneExit) -> LastTabsClosedAction {
 
 /// 最后一个 tab 没了、或 backend 已 Exited 时，是否应关掉 GTK 窗口。
 ///
-/// `n_tabs == 0` 覆盖「shell 里 `exit` 关掉唯一 pane」；`backend_exited`
+/// `n_tabs == 0` 覆盖「shell 里 `exit` 关掉唯一 pane」；`runtime_exited`
 /// 覆盖 FFI `STATE_BACKEND_STATUS`（pane_id = Exited）。
-pub fn should_close_window(backend_exited: bool, n_tabs: usize, policy: OnLastPaneExit) -> bool {
+pub fn should_close_window(runtime_exited: bool, n_tabs: usize, policy: OnLastPaneExit) -> bool {
     match last_tabs_closed_action(policy) {
-        LastTabsClosedAction::CloseWindow => backend_exited || n_tabs == 0,
+        LastTabsClosedAction::CloseWindow => runtime_exited || n_tabs == 0,
         LastTabsClosedAction::KeepEmpty | LastTabsClosedAction::NewShell => false,
     }
 }

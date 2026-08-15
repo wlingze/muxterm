@@ -215,7 +215,7 @@ fn cli_socket_does_not_leak_to_default_server() {
 /// ── Layer 1: 真实 binary split ──
 /// 创建独立 socket session → 通过 muxterm binary 用 --socket 执行 split → 用原生 tmux 验证 pane 数增加。
 ///
-/// ROOT CAUSE: TmuxBackend::dispatch_command 用 try_send 到异步 channel，
+/// ROOT CAUSE: TmuxRuntime::dispatch_command 用 try_send 到异步 channel，
 /// sender task 在 tokio runtime 中异步写 pty。CLI exec 在 execute 后立即 shutdown，
 /// shutdown drop cmd_tx → sender task 结束 → 命令可能未到达 tmux。
 /// 修复方案：CLI exec 在 execute 后等命令实际完成（通过 refresh/poll 等待 layout-change 事件）。
@@ -410,7 +410,7 @@ fn backend_split_actually_creates_pane_in_tmux() {
     use muxterm::core::model::layout::SplitDir;
     use muxterm::core::model::task::Task;
     use muxterm::core::model::TerminalModel;
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxRuntime;
 
     let socket = unique_socket("layer4");
     let session = format!("backend-split-{}", rand_suffix());
@@ -434,7 +434,7 @@ fn backend_split_actually_creates_pane_in_tmux() {
         .expect("创建 tmux session 失败");
     std::thread::sleep(Duration::from_millis(300));
 
-    let backend = TmuxBackend::new_with_attach(Some(&socket), &session);
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), &session);
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -540,7 +540,7 @@ fn cli_exec_waits_for_command_completion_before_shutdown() {
     kill_server(&socket);
 }
 
-/// CLI attach 与 macOS FFI 使用同一 TmuxBackend；attach 响应必须能观察到
+/// CLI attach 与 macOS FFI 使用同一 TmuxRuntime；attach 响应必须能观察到
 /// attach 前已经存在的 shell 画面，而不是只返回 tab 数量。
 #[test]
 fn cli_attach_reports_existing_screen_output() {

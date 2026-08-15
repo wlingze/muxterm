@@ -1,6 +1,6 @@
 //! FFI Bridge：GTK 前端 ↔ `protocol::ffi` C ABI。
 //!
-//! 所有核心交互经此模块，不直接使用 TerminalModel / Backend trait。
+//! 所有核心交互经此模块，不直接使用 TerminalModel / Runtime trait。
 //! GTK 主线程轮询事件；`MuxtermHandle` 生命周期由本结构体管理。
 
 use std::ffi::{CStr, CString};
@@ -72,7 +72,7 @@ pub struct BridgePane {
 pub struct CoreBridge {
     handle: *mut MuxtermHandle,
     /// 当前连接的后端类型（local / tmux / tmux-ssh / daemon）。
-    pub backend_type: String,
+    pub runtime_type: String,
     /// tmux `-L` socket 名（可选）。
     pub socket: Option<String>,
     /// tmux session 名（可选）。
@@ -86,11 +86,11 @@ pub struct CoreBridge {
 impl CoreBridge {
     /// 创建并 `connect`。失败返回 Err。
     pub fn new(
-        backend_type: &str,
+        runtime_type: &str,
         socket: Option<&str>,
         session: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let bt = CString::new(backend_type).unwrap_or_default();
+        let bt = CString::new(runtime_type).unwrap_or_default();
         let sock_c = socket.and_then(|s| CString::new(s).ok());
         let sess_c = session.and_then(|s| CString::new(s).ok());
         let sock_ptr = sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
@@ -110,10 +110,10 @@ impl CoreBridge {
                 &[("code", &rc.to_string())],
             ));
         }
-        let backend_type = backend_type.to_ascii_lowercase();
+        let runtime_type = runtime_type.to_ascii_lowercase();
         Ok(Self {
             handle,
-            backend_type,
+            runtime_type,
             socket: socket.map(|s| s.to_string()),
             session: session.map(|s| s.to_string()),
             ssh_alias: None,
@@ -127,13 +127,13 @@ impl CoreBridge {
     /// 已完成 `connect`；这里再调一次 `muxterm_connect`（幂等）以便统一
     /// 错误路径。
     pub fn connect(
-        backend_type: &str,
+        runtime_type: &str,
         socket: Option<&str>,
         session: Option<&str>,
         ssh_alias: Option<&str>,
         start_directory: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let bt = CString::new(backend_type).unwrap_or_default();
+        let bt = CString::new(runtime_type).unwrap_or_default();
         let sock_c = socket.and_then(|s| CString::new(s).ok());
         let sess_c = session.and_then(|s| CString::new(s).ok());
         let alias_c = ssh_alias.and_then(|s| CString::new(s).ok());
@@ -157,17 +157,17 @@ impl CoreBridge {
                 &[("code", &rc.to_string())],
             ));
         }
-        let normalized = backend_type.to_ascii_lowercase();
-        // QuickConnect 面板统一用 backend_type="tmux-ssh" + alias 建连，
+        let normalized = runtime_type.to_ascii_lowercase();
+        // QuickConnect 面板统一用 runtime_type="tmux-ssh" + alias 建连，
         // 但旧代码/配置也可能传 "ssh"：这里归一化记录。
-        let (backend_type, ssh_alias) = if normalized == "ssh" {
+        let (runtime_type, ssh_alias) = if normalized == "ssh" {
             ("tmux-ssh".to_string(), socket.map(|s| s.to_string()))
         } else {
             (normalized, ssh_alias.map(|s| s.to_string()))
         };
         Ok(Self {
             handle,
-            backend_type,
+            runtime_type,
             socket: socket.map(|s| s.to_string()),
             session: session.map(|s| s.to_string()),
             ssh_alias,
@@ -177,7 +177,7 @@ impl CoreBridge {
 
     /// 当前连接是否由 tmux/SSH 控制 client 管理尺寸与状态栏。
     pub fn uses_tmux(&self) -> bool {
-        matches!(self.backend_type.as_str(), "tmux" | "ssh" | "tmux-ssh")
+        matches!(self.runtime_type.as_str(), "tmux" | "ssh" | "tmux-ssh")
     }
 
     /// 在 GTK 主循环上启动周期轮询（默认由 window 以 16ms 调用）。
@@ -364,13 +364,13 @@ impl CoreBridge {
         if !self.uses_tmux() {
             return None;
         }
-        // SSH：backend 归一化为 tmux-ssh，FFI 期望 backend_type="ssh"
-        let ffi_backend = if self.backend_type == "tmux-ssh" {
+        // SSH：runtime 归一化为 tmux-ssh，FFI 期望 runtime_type="ssh"
+        let ffi_runtime = if self.runtime_type == "tmux-ssh" {
             "ssh"
         } else {
-            self.backend_type.as_str()
+            self.runtime_type.as_str()
         };
-        let bt_c = CString::new(ffi_backend).unwrap_or_default();
+        let bt_c = CString::new(ffi_runtime).unwrap_or_default();
         let alias_c = self
             .ssh_alias
             .as_ref()
@@ -539,11 +539,11 @@ impl CoreBridge {
 
     /// 列出本地或远端目录条目。
     pub fn list_dir(
-        backend_type: &str,
+        runtime_type: &str,
         target: Option<&str>,
         path: &str,
     ) -> anyhow::Result<Vec<FsEntry>> {
-        let bt_c = CString::new(backend_type).unwrap_or_default();
+        let bt_c = CString::new(runtime_type).unwrap_or_default();
         let target_c = cstr_pair(target);
         let path_c = CString::new(path).unwrap_or_default();
         let value = discovery_json(|| {
@@ -561,11 +561,11 @@ impl CoreBridge {
 
     /// 发现本地或 SSH tmux session。
     pub fn discover_tmux_sessions(
-        backend_type: &str,
+        runtime_type: &str,
         target: Option<&str>,
         socket: Option<&str>,
     ) -> anyhow::Result<Vec<TmuxSessionEntry>> {
-        let bt_c = CString::new(backend_type).unwrap_or_default();
+        let bt_c = CString::new(runtime_type).unwrap_or_default();
         let target_c = cstr_pair(target);
         let sock_c = cstr_pair(socket);
         let value = discovery_json(|| {
@@ -583,13 +583,13 @@ impl CoreBridge {
 
     /// 创建 detached tmux session（Project attach→create fallback 用）。
     pub fn create_tmux_session(
-        backend_type: &str,
+        runtime_type: &str,
         target: Option<&str>,
         socket: Option<&str>,
         session: &str,
         directory: &str,
     ) -> anyhow::Result<String> {
-        let bt_c = CString::new(backend_type).unwrap_or_default();
+        let bt_c = CString::new(runtime_type).unwrap_or_default();
         let target_c = cstr_pair(target);
         let sock_c = cstr_pair(socket);
         let sess_c = CString::new(session).unwrap_or_default();

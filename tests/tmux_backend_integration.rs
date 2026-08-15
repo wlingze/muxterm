@@ -1,4 +1,4 @@
-//! TmuxBackend 集成测试：用真实 tmux -L <socket> 验证 state 构建。
+//! TmuxRuntime 集成测试：用真实 tmux -L <socket> 验证 state 构建。
 //!
 //! 场景 1：原生 tmux 创建 2-tab 3-pane 布局 → muxterm 连接 → 验证 state
 //! 场景 2：attach/detach → re-attach 布局保持
@@ -13,7 +13,7 @@ use muxterm::core::model::layout::SplitDir;
 use muxterm::core::model::state::{BackendStatus, State, StateChange};
 use muxterm::core::model::task::{Task, TaskOutcome};
 use muxterm::core::model::TerminalModel;
-use muxterm::core::runtime::TmuxBackend;
+use muxterm::core::runtime::TmuxRuntime;
 use muxterm::core::types::{PaneId, TabId, WindowId};
 use muxterm::platform::cli::entry::cli_command_to_task;
 use muxterm::platform::cli::parse_cli_command;
@@ -116,11 +116,11 @@ where
     }
 }
 
-/// 创建 TerminalModel with TmuxBackend，连接到指定 socket。
+/// 创建 TerminalModel with TmuxRuntime，连接到指定 socket。
 ///
 /// 内部用多线程 tokio runtime，保持后台 task 存活。
 fn connect_tmux(socket: &str) -> TerminalModel {
-    let backend = TmuxBackend::new(Some(socket));
+    let backend = TmuxRuntime::new(Some(socket));
     let mut model = TerminalModel::new(Box::new(backend));
     // 用 multi_thread runtime 保持后台 task 存活
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -149,7 +149,7 @@ fn scenario1_connect_new_session_basic_state() {
     }
     let socket = unique_socket();
 
-    // muxterm TmuxBackend 连接（new-session 模式，创建新 session）
+    // muxterm TmuxRuntime 连接（new-session 模式，创建新 session）
     let mut model = connect_tmux(&socket);
     assert_eq!(model.state().status(), BackendStatus::Connected);
 
@@ -260,7 +260,7 @@ fn scenario2_modify_via_muxterm_verify_tmux() {
     cleanup(&socket);
 }
 
-/// CLI 命令解析 → core Task → TmuxBackend → 原生 tmux：覆盖 client resize、
+/// CLI 命令解析 → core Task → TmuxRuntime → 原生 tmux：覆盖 client resize、
 /// pane 横向/纵向单轴 resize，以及 send-keys 的实际回显。
 #[test]
 fn cli_resize_client_and_pane_axes_reach_tmux() {
@@ -1038,7 +1038,7 @@ fn edge_single_tab() {
 #[test]
 fn negative_connect_nonexistent_socket() {
     let socket = unique_socket();
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2082,7 +2082,7 @@ fn fix3_edge_all_tabs_panes_on_connect() {
 }
 
 // ============================================================================
-// Bug 5 测试：CLI -L 用 TmuxBackend
+// Bug 5 测试：CLI -L 用 TmuxRuntime
 // ============================================================================
 
 #[test]
@@ -2093,8 +2093,8 @@ fn bug5_cli_list_sessions_with_tmux_socket() {
     }
     let socket = unique_socket();
 
-    // 用 TmuxBackend 连接（通过 TerminalModel，模拟 CLI 路径）
-    let backend = TmuxBackend::new(Some(&socket));
+    // 用 TmuxRuntime 连接（通过 TerminalModel，模拟 CLI 路径）
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2106,7 +2106,7 @@ fn bug5_cli_list_sessions_with_tmux_socket() {
     std::mem::forget(rt);
 
     assert_eq!(model.state().status(), BackendStatus::Connected);
-    // 应有 session（TmuxBackend 创建的新 session）
+    // 应有 session（TmuxRuntime 创建的新 session）
     assert!(!model.state().sessions().is_empty(), "CLI -L 应有 session");
 
     let _ = model.shutdown();
@@ -2121,7 +2121,7 @@ fn bug5_cli_list_windows_with_tmux_socket() {
     }
     let socket = unique_socket();
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2152,7 +2152,7 @@ fn bug5_cli_list_panes_with_tmux_socket() {
     }
     let socket = unique_socket();
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2183,7 +2183,7 @@ fn bug5_cli_split_pane_via_tmux_socket() {
     }
     let socket = unique_socket();
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2259,7 +2259,7 @@ fn bug5_cli_new_window_via_tmux_socket() {
     }
     let socket = unique_socket();
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2302,7 +2302,7 @@ fn bug5_cli_send_keys_via_tmux_socket() {
     }
     let socket = unique_socket();
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2347,14 +2347,14 @@ fn bug5_cli_send_keys_via_tmux_socket() {
 }
 
 // ============================================================================
-// Bug 5 边界测试：CLI 无 -L 仍用 LocalBackend
+// Bug 5 边界测试：CLI 无 -L 仍用 ShellRuntime
 // ============================================================================
 
 #[test]
 fn bug5_edge_no_socket_uses_local_backend() {
-    use muxterm::core::runtime::LocalBackend;
+    use muxterm::core::runtime::ShellRuntime;
 
-    let backend = LocalBackend::new("sleep 60", "/");
+    let backend = ShellRuntime::new("sleep 60", "/");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2363,12 +2363,12 @@ fn bug5_edge_no_socket_uses_local_backend() {
     rt.block_on(model.connect()).unwrap();
     let _ = model.poll_events();
 
-    // LocalBackend 的 session name 是 "local"
+    // ShellRuntime 的 session name 是 "local"
     let sessions = model.state().sessions();
     assert!(!sessions.is_empty());
     assert_eq!(
         sessions[0].name, "local",
-        "无 -L 应用 LocalBackend (local session)"
+        "无 -L 应用 ShellRuntime (local session)"
     );
 
     let _ = rt.block_on(model.shutdown());
@@ -2561,8 +2561,8 @@ fn bug7_positive_attach_existing_session() {
         .status()
         .unwrap();
 
-    // 用 TmuxBackend attach 到 demo session
-    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    // 用 TmuxRuntime attach 到 demo session
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), "demo");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2646,7 +2646,7 @@ fn bug7_positive_attach_then_split() {
         .status()
         .unwrap();
 
-    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), "demo");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2751,8 +2751,8 @@ fn bug7_positive_list_sessions_shows_all() {
         .status()
         .unwrap();
 
-    // 用 TmuxBackend 连接（new-session 模式，会创建第三个 session）
-    let backend = TmuxBackend::new(Some(&socket));
+    // 用 TmuxRuntime 连接（new-session 模式，会创建第三个 session）
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2803,7 +2803,7 @@ fn bug7_negative_attach_nonexistent_session() {
     let socket = unique_socket();
 
     // 不创建任何 session，直接 attach
-    let backend = TmuxBackend::new_with_attach(Some(&socket), "nonexistent_session");
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), "nonexistent_session");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2853,7 +2853,7 @@ fn bug7_edge_attach_switch_tab() {
         .unwrap();
 
     // attach
-    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), "demo");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2927,7 +2927,7 @@ fn bug7_edge_attach_send_keys() {
         .status()
         .unwrap();
 
-    let backend = TmuxBackend::new_with_attach(Some(&socket), "demo");
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), "demo");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -3015,7 +3015,7 @@ fn detach_reattach_layout_persists() {
 
     // ── 第一次 attach ──
     let mut model = {
-        let backend = TmuxBackend::new_with_attach(Some(&socket), "reattach");
+        let backend = TmuxRuntime::new_with_attach(Some(&socket), "reattach");
         let mut m = TerminalModel::new(Box::new(backend));
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -3055,7 +3055,7 @@ fn detach_reattach_layout_persists() {
 
     // ── 第二次 attach，验证布局保持 ──
     let mut model2 = {
-        let backend = TmuxBackend::new_with_attach(Some(&socket), "reattach");
+        let backend = TmuxRuntime::new_with_attach(Some(&socket), "reattach");
         let mut m = TerminalModel::new(Box::new(backend));
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

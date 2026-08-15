@@ -96,7 +96,7 @@ struct UiState {
     /// 用户显式 Quit（Ctrl+Q / 命令面板）：close_request 放行真正关闭。
     quit_requested: bool,
     /// 最近一次 STATE_BACKEND_STATUS 的 pane_id 编码（连接状态）。
-    backend_status: u32,
+    runtime_status: u32,
     /// 自身弱引用（滚动 provider 用，避免循环引用）。
     self_weak: std::rc::Weak<RefCell<UiState>>,
 }
@@ -142,7 +142,7 @@ impl AppWindow {
             .build();
         let window: Window = window.upcast();
 
-        let backend = if cfg.tmux.socket.trim().is_empty() {
+        let runtime = if cfg.tmux.socket.trim().is_empty() {
             "local"
         } else {
             "tmux"
@@ -166,13 +166,13 @@ impl AppWindow {
 
         let requested_tmux = socket.is_some();
         let (bridge, uses_tmux) =
-            match CoreBridge::new(backend, socket.as_deref(), session.as_deref()) {
+            match CoreBridge::new(runtime, socket.as_deref(), session.as_deref()) {
                 Ok(b) => (b, requested_tmux),
                 Err(e) => {
                     tracing::error!(target = "muxterm::linux", "启动核心失败: {e}");
                     // 回退 local；回退后不能展示 tmux detach。
                     (
-                        CoreBridge::new("local", None, None).expect("local backend 必须可用"),
+                        CoreBridge::new("local", None, None).expect("local runtime 必须可用"),
                         false,
                     )
                 }
@@ -253,7 +253,7 @@ impl AppWindow {
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
             panel_open: None,
             quit_requested: false,
-            backend_status: crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
+            runtime_status: crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
             self_weak: std::rc::Weak::new(),
         }));
         state.borrow_mut().self_weak = Rc::downgrade(&state);
@@ -689,7 +689,7 @@ fn open_command_palette(s: &UiState, window: &Window, state: &Rc<RefCell<UiState
         StatusBarMode::Tmux => StatusBarMode::Theme.as_str(),
         StatusBarMode::Theme => StatusBarMode::Tmux.as_str(),
     };
-    crate::platform::linux::command_palette::show_for_backend(
+    crate::platform::linux::command_palette::show_for_runtime(
         &parent,
         uses_tmux,
         next_theme,
@@ -1005,13 +1005,13 @@ fn refresh_connection_summary(s: &UiState) {
         return;
     };
     let bridge = &slot.bridge;
-    let kind = match bridge.backend_type.as_str() {
+    let kind = match bridge.runtime_type.as_str() {
         "tmux-ssh" | "ssh" => "ssh",
         "tmux" => "tmux",
         _ => "local",
     };
     let host = bridge.ssh_alias.clone().or_else(|| bridge.socket.clone());
-    let status = match s.backend_status {
+    let status = match s.runtime_status {
         crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
         crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
         _ => "disconnected",
@@ -1104,9 +1104,9 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
             }
         }
         STATE_BACKEND_STATUS => {
-            s.backend_status = ev.pane_id;
+            s.runtime_status = ev.pane_id;
             if ev.pane_id == BACKEND_STATUS_EXITED {
-                tracing::info!(target = "muxterm::linux", "backend exited");
+                tracing::info!(target = "muxterm::linux", "runtime exited");
                 if should_close_window(true, 0, s.on_last_pane_exit) {
                     s.pending_close = true;
                 }
@@ -1626,8 +1626,8 @@ fn step_project_flow(
             attach_tmux(state, config, session, flow, true);
         }
         ProjectConnectState::CreateDetached { session, directory } => {
-            let (backend, target) = config.transport.create_backend();
-            match CoreBridge::create_tmux_session(backend, target, None, &session, &directory) {
+            let (transport, target) = config.transport.create_backend();
+            match CoreBridge::create_tmux_session(transport, target, None, &session, &directory) {
                 Ok(_) => {
                     flow.create_succeeded();
                     step_project_flow(state, config, flow);
@@ -1673,8 +1673,8 @@ fn attach_tmux(
             return;
         }
     }
-    let (backend, alias) = config.transport.attach_backend();
-    match CoreBridge::connect(backend, None, Some(&session), alias, Some(&config.path)) {
+    let (transport, alias) = config.transport.attach_backend();
+    match CoreBridge::connect(transport, None, Some(&session), alias, Some(&config.path)) {
         Ok(bridge) => {
             let mut s = state.borrow_mut();
             activate_new(&mut s, key, bridge);

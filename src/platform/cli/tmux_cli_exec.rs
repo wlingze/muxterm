@@ -1,4 +1,4 @@
-//! tmux CLI 命令执行器：把 TmuxCliCommand 映射到 Runtime + Backend，输出 JSON envelope。
+//! tmux CLI 命令执行器：把 TmuxCliCommand 映射到 Runtime，输出 JSON envelope。
 //!
 //! 设计基线：`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md` §8。
 //! 所有命令输出统一 envelope：`{"ok":true|false,...}`。
@@ -9,7 +9,7 @@ use anyhow::Context;
 
 use crate::core::model::task::Task;
 use crate::core::model::TerminalModel;
-use crate::core::runtime::tmux::TmuxBackend;
+use crate::core::runtime::tmux::TmuxRuntime;
 use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
@@ -66,12 +66,12 @@ where
     F: FnOnce(&mut TerminalModel) -> anyhow::Result<serde_json::Value>,
 {
     let session_exists = tmux_session_exists(socket, session_name);
-    let backend: Box<dyn crate::core::model::Backend> = if session_exists {
-        Box::new(TmuxBackend::new_with_attach(socket, session_name))
+    let runtime: Box<dyn crate::core::model::Runtime> = if session_exists {
+        Box::new(TmuxRuntime::new_with_attach(socket, session_name))
     } else {
-        Box::new(TmuxBackend::new_with_session_name(socket, session_name))
+        Box::new(TmuxRuntime::new_with_session_name(socket, session_name))
     };
-    let mut model = TerminalModel::new(backend);
+    let mut model = TerminalModel::new(runtime);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)

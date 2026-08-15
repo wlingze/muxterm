@@ -1,4 +1,4 @@
-//! CLI 集成测试：端到端测试 CLI 命令（LocalBackend）。
+//! CLI 集成测试：端到端测试 CLI 命令（ShellRuntime）。
 //!
 //! 直接调用 cli 模块函数，不 spawn 进程（避免共享 state 的复杂性）。
 //! 覆盖：session/window/tab/pane 管理 + send-keys/capture-pane。
@@ -10,14 +10,14 @@
 
 use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
-use muxterm::core::runtime::LocalBackend;
+use muxterm::core::runtime::ShellRuntime;
 use muxterm::core::types::{PaneId, TabId, WindowId};
 use muxterm::platform::cli::entry::cli_command_to_task;
 use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 
 fn make_model() -> TerminalModel {
     // cat：阻塞读 stdin、回显 stdout，适合结构测试 + WriteRaw/capture
-    let backend = LocalBackend::new("cat", "/");
+    let backend = ShellRuntime::new("cat", "/");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -382,9 +382,9 @@ fn cli_send_keys_and_capture() {
 
 #[test]
 fn cli_capture_pane_with_lines_limit() {
-    use muxterm::core::model::backend::mock::MockBackend;
+    use muxterm::core::model::backend::mock::MockRuntime;
     use muxterm::core::model::TerminalModel;
-    let mut b = MockBackend::with_single_pane();
+    let mut b = MockRuntime::with_single_pane();
     b.outputs[0].1 = b"alpha\nbeta\ngamma\ndelta\n".to_vec();
     let model = TerminalModel::new(Box::new(b));
     let out = format_output(
@@ -625,11 +625,11 @@ fn cli_parse_send_keys_with_text() {
     }
 }
 
-// ── TmuxBackend 测试 ──────────────────────────────────────
+// ── TmuxRuntime 测试 ──────────────────────────────────────
 
 #[test]
 fn cli_tmux_backend_connect_and_list() {
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -640,7 +640,7 @@ fn cli_tmux_backend_connect_and_list() {
             .unwrap_or(0)
     );
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -667,7 +667,7 @@ fn cli_tmux_backend_connect_and_list() {
 
 #[test]
 fn cli_tmux_backend_new_window() {
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -678,7 +678,7 @@ fn cli_tmux_backend_new_window() {
             .unwrap_or(0)
     );
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -717,7 +717,7 @@ fn cli_tmux_backend_new_window() {
 
 #[test]
 fn cli_tmux_backend_send_keys() {
-    use muxterm::core::runtime::TmuxBackend;
+    use muxterm::core::runtime::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -728,7 +728,7 @@ fn cli_tmux_backend_send_keys() {
             .unwrap_or(0)
     );
 
-    let backend = TmuxBackend::new(Some(&socket));
+    let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -12,7 +12,7 @@
 //! ## CLI/TUI 复现笔记
 //! - macOS：Cmd+D / Cmd+Shift+D 分屏；Ctrl+D 关 pane/tab/window。
 //! - TUI 仍将 Ctrl+D 映射为退出应用（`is_quit`）。
-//! - LocalBackend：单 pane Close → 关 window；多 tab 末 pane → 只关该 tab。
+//! - ShellRuntime：单 pane Close → 关 window；多 tab 末 pane → 只关该 tab。
 //!
 //! 跑：`cargo test --no-default-features --features ffi --test macos_integration`
 

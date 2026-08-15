@@ -110,7 +110,7 @@ pub enum CliCommand {
         format: String,
     },
 
-    /// 导出完整状态快照（TUI DaemonBackend 同步用）。
+    /// 导出完整状态快照（TUI DaemonRuntime 同步用）。
     DumpState,
 }
 

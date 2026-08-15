@@ -3,7 +3,7 @@
 //! 参考 tmux 的 `-L <socket-name>` 设计：
 //! - session name 是用户友好名字
 //! - socket 路径派生自 session name：`/tmp/muxterm-<name>.sock`
-//! - daemon 进程监听该 socket，持有 LocalBackend + TerminalModel
+//! - daemon 进程监听该 socket，持有 ShellRuntime + TerminalModel
 
 use std::path::PathBuf;
 

@@ -1,9 +1,9 @@
 //! CLI 路由：从 main.rs 提取的命令分发逻辑。
 
-use crate::core::model::Backend;
+use crate::core::model::Runtime;
 use crate::core::model::TerminalModel;
-use crate::core::runtime::shell::LocalBackend;
-use crate::core::runtime::tmux::TmuxBackend;
+use crate::core::runtime::shell::ShellRuntime;
+use crate::core::runtime::tmux::TmuxRuntime;
 use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 
@@ -75,36 +75,36 @@ fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
     text.lines().next().map(|s| s.trim().to_string())
 }
 
-/// tmux 模式：用 TmuxBackend 连接 tmux server，执行命令后关闭。
+/// tmux 模式：用 TmuxRuntime 连接 tmux server，执行命令后关闭。
 fn cli_mode_tmux(
     socket: Option<&str>,
     session_name: Option<&str>,
     cmd: &CliCommand,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let backend: Box<dyn Backend> = match cmd {
+    let runtime: Box<dyn Runtime> = match cmd {
         CliCommand::AttachWorkspace { target } => {
-            Box::new(TmuxBackend::new_with_attach(socket, target))
+            Box::new(TmuxRuntime::new_with_attach(socket, target))
         }
         _ => {
             if let Some(name) = session_name {
                 let existing = find_existing_tmux_session(socket);
                 if existing.as_deref() == Some(name) {
-                    Box::new(TmuxBackend::new_with_attach(socket, name))
+                    Box::new(TmuxRuntime::new_with_attach(socket, name))
                 } else {
-                    Box::new(TmuxBackend::new_with_session_name(socket, name))
+                    Box::new(TmuxRuntime::new_with_session_name(socket, name))
                 }
             } else {
                 let existing_session = find_existing_tmux_session(socket);
                 if let Some(name) = existing_session {
-                    Box::new(TmuxBackend::new_with_attach(socket, &name))
+                    Box::new(TmuxRuntime::new_with_attach(socket, &name))
                 } else {
-                    Box::new(TmuxBackend::new(socket))
+                    Box::new(TmuxRuntime::new(socket))
                 }
             }
         }
     };
-    let mut model = TerminalModel::new(backend);
+    let mut model = TerminalModel::new(runtime);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -252,10 +252,10 @@ pub fn ensure_local_daemon(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 临时模式：创建临时 LocalBackend，执行后关闭。
+/// 临时模式：创建临时 ShellRuntime，执行后关闭。
 fn cli_mode_ephemeral(cmd: &CliCommand, format: OutputFormat) -> anyhow::Result<()> {
-    let backend = LocalBackend::new("$SHELL", "");
-    let mut model = TerminalModel::new(Box::new(backend));
+    let runtime = ShellRuntime::new("$SHELL", "");
+    let mut model = TerminalModel::new(Box::new(runtime));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

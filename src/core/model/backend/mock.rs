@@ -1,6 +1,6 @@
-//! 测试用 MockBackend：一个最小可用的内存后端实现。
+//! 测试用 MockRuntime：一个最小可用的内存后端实现。
 //!
-//! 实现 [`Backend`] + [`State`]，用于 `TerminalModel` 的纯逻辑单元测试，
+//! 实现 [`Runtime`] + [`State`]，用于 `TerminalModel` 的纯逻辑单元测试，
 //! 不依赖任何 I/O 或 GUI。覆盖常见 `Task`（split / close / switch / next / prev /
 //! new window / close window / send keys / write raw / resize / shutdown）的行为，
 //! 让 model 层测试有可验证的真实后端。
@@ -16,7 +16,7 @@ use crate::core::types::{PaneId, TabId};
 use std::sync::{Arc, Mutex};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。
-pub struct MockBackend {
+pub struct MockRuntime {
     pub(crate) workspace_name: String,
     pub(crate) workspace_runtime: String,
     pub(crate) tabs: Vec<TabInfo>,
@@ -30,13 +30,13 @@ pub struct MockBackend {
     pub executed_log: Option<Arc<Mutex<Vec<Task>>>>,
 }
 
-impl Default for MockBackend {
+impl Default for MockRuntime {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MockBackend {
+impl MockRuntime {
     pub fn new() -> Self {
         Self {
             workspace_name: "mock".into(),
@@ -79,7 +79,7 @@ impl MockBackend {
     }
 }
 
-impl State for MockBackend {
+impl State for MockRuntime {
     fn workspace_name(&self) -> &str {
         &self.workspace_name
     }
@@ -119,7 +119,7 @@ impl State for MockBackend {
 }
 
 #[async_trait]
-impl Backend for MockBackend {
+impl Runtime for MockRuntime {
     async fn connect(&mut self) -> anyhow::Result<()> {
         self.status = BackendStatus::Connected;
         self.events
@@ -467,9 +467,9 @@ impl Backend for MockBackend {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn mock_backend_connect_and_split() {
-        let mut b = MockBackend::with_single_pane();
-        assert_eq!(b.backend_status(), BackendStatus::Connected);
+    async fn mock_runtime_connect_and_split() {
+        let mut b = MockRuntime::with_single_pane();
+        assert_eq!(b.runtime_status(), BackendStatus::Connected);
         let events = b.take_events();
         assert!(events.is_empty()); // with_single_pane 不预置事件
 
@@ -509,10 +509,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_backend_shutdown() {
-        let mut b = MockBackend::with_single_pane();
+    async fn mock_runtime_shutdown() {
+        let mut b = MockRuntime::with_single_pane();
         b.shutdown().await.unwrap();
-        assert_eq!(b.backend_status(), BackendStatus::Exited);
+        assert_eq!(b.runtime_status(), BackendStatus::Exited);
         let events = b.take_events();
         assert!(matches!(
             events[0],
@@ -521,8 +521,8 @@ mod tests {
     }
 
     #[test]
-    fn mock_backend_take_events_drains() {
-        let mut b = MockBackend::with_single_pane();
+    fn mock_runtime_take_events_drains() {
+        let mut b = MockRuntime::with_single_pane();
         b.events.push(StateChange::PoolChanged);
         b.events.push(StateChange::PoolChanged);
         assert_eq!(b.take_events().len(), 2);

@@ -109,7 +109,7 @@ pub enum TransportError {
 /// 不理解 pane/session/tmux，只管字节流 + PTY 控制。
 ///
 /// 同步接口（内部可 spawn 后台线程做 async→sync 桥接），
-/// 与 `Backend::execute` 同步签名一致。
+/// 与 `Runtime::execute` 同步签名一致。
 pub trait Transport: Send {
     /// 在远端（或本地）以 PTY 模式启动一个长驻命令。
     ///

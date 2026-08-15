@@ -1,7 +1,7 @@
-//! TmuxBackend：tmux -CC 控制模式后端。
+//! TmuxRuntime：tmux -CC 控制模式后端。
 //!
 //! 封装现有 `runtime::tmux::client`（spawn tmux -CC + 事件流）和
-//! `runtime::tmux::command`（强类型命令构造器），实现 `Backend` trait。
+//! `runtime::tmux::command`（强类型命令构造器），实现 `Runtime` trait。
 //!
 //! 设计：
 //! - `connect()`：spawn tmux -CC new-session，drain 启动事件建立初始 state
@@ -13,7 +13,7 @@
 //! - `take_events()`：drain 内部事件队列
 //! - State 视图从内部 state 读
 //!
-//! 与 LocalBackend 不同：状态变化由 tmux 推送的事件驱动，execute 只发命令，
+//! 与 ShellRuntime 不同：状态变化由 tmux 推送的事件驱动，execute 只发命令，
 //! 不立即改 state（tmux 会回推 LayoutChange/PaneModeChanged 等通知）。
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
-use crate::core::model::backend::Backend;
+use crate::core::model::backend::Runtime;
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -68,7 +68,7 @@ const PANE_CMD_SUBSCRIPTION: &str = "muxterm.pane-cmd";
 pub const STATUS_RIGHT_SUBSCRIPTION: &str = "muxterm.status-right";
 
 /// tmux -CC 后端。
-pub struct TmuxBackend {
+pub struct TmuxRuntime {
     config: TmuxClientConfig,
     handle: Option<TmuxClientHandle>,
     event_rx: Option<mpsc::Receiver<TmuxEvent>>,
@@ -177,7 +177,7 @@ fn capture_pane_bytes(lines: &[String]) -> Vec<u8> {
     lines[..end].join("\r\n").into_bytes()
 }
 
-impl TmuxBackend {
+impl TmuxRuntime {
     // ── 层级映射（docs/LAYER-MAPPING.md 权威定义）──────────
     //
     // muxterm: Workspace → Tab → Pane  (3 层)
@@ -1315,7 +1315,7 @@ impl TmuxBackend {
     }
 }
 
-impl State for TmuxBackend {
+impl State for TmuxRuntime {
     fn workspace_name(&self) -> &str {
         &self.workspace_name
     }
@@ -1362,7 +1362,7 @@ impl State for TmuxBackend {
 }
 
 #[async_trait]
-impl Backend for TmuxBackend {
+impl Runtime for TmuxRuntime {
     fn status_subscriptions_active(&self) -> bool {
         self.status_subscriptions_active
     }
@@ -2054,7 +2054,7 @@ mod tests {
 
     #[test]
     fn command_queue_accepts_high_frequency_input_without_would_block() {
-        let mut backend = TmuxBackend::new(None);
+        let mut backend = TmuxRuntime::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         backend.cmd_tx = Some(tx);
         backend.status = BackendStatus::Connected;
@@ -2079,7 +2079,7 @@ mod tests {
 
     #[test]
     fn unlinked_window_close_closes_tab() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         // 先加两个 tab
         b.handle_message(Message::WindowAdd { window: TabId(0) });
         b.handle_message(Message::WindowAdd { window: TabId(1) });
@@ -2098,7 +2098,7 @@ mod tests {
 
     #[test]
     fn unlinked_window_renamed_updates_tab_name() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         b.handle_message(Message::WindowAdd { window: TabId(0) });
 
         b.handle_message(Message::UnlinkedWindowRenamed {
@@ -2116,7 +2116,7 @@ mod tests {
 
     #[test]
     fn subscription_changed_forwards_to_state_change() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         b.handle_message(Message::SubscriptionChanged {
             name: STATUS_LEFT_SUBSCRIPTION.into(),
             value: "#[fg=red]11:50:23 ".into(),
@@ -2141,7 +2141,7 @@ mod tests {
 
     #[test]
     fn setup_status_subscriptions_sends_three_subscriptions_when_supported() {
-        let mut backend = TmuxBackend::new(None);
+        let mut backend = TmuxRuntime::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         backend.cmd_tx = Some(tx);
         backend.status_subscription_supported = true;
@@ -2162,7 +2162,7 @@ mod tests {
 
     #[test]
     fn setup_status_subscriptions_skips_unsupported_tmux() {
-        let mut backend = TmuxBackend::new(None);
+        let mut backend = TmuxRuntime::new(None);
         let (tx, rx) = mpsc::unbounded_channel::<String>();
         backend.cmd_tx = Some(tx);
         backend.status_subscription_supported = false;
@@ -2175,7 +2175,7 @@ mod tests {
 
     #[test]
     fn asynchronous_command_error_becomes_backend_status_instead_of_panic() {
-        let mut backend = TmuxBackend::new(None);
+        let mut backend = TmuxRuntime::new(None);
         let (tx, rx) = mpsc::unbounded_channel::<String>();
         backend.command_error_rx = Some(rx);
         tx.send("pty 已关闭".into()).unwrap();
@@ -2191,7 +2191,7 @@ mod tests {
 
     #[test]
     fn layout_change_rebuilds_from_latest_nested_tmux_tree() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let window = TabId(0);
         let latest = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
 
@@ -2249,7 +2249,7 @@ mod tests {
 
     #[test]
     fn layout_change_zoom_collapses_to_active_pane() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let window = TabId(0);
         let full = "aabd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}";
         let visible = "bbcd,80x24,0,0,1";
@@ -2293,7 +2293,7 @@ mod tests {
 
     #[test]
     fn incomplete_pane_snapshot_does_not_collapse_layout() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let window = TabId(0);
         let layout = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
         b.handle_message(Message::LayoutChange {
@@ -2313,7 +2313,7 @@ mod tests {
 
     #[test]
     fn pending_layout_events_are_coalesced_per_tab() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let window = TabId(0);
         let layout = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
         let message = || Message::LayoutChange {
@@ -2352,7 +2352,7 @@ mod tests {
 
     #[test]
     fn capture_pane_response_restores_existing_screen_without_double_feed() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let pane = PaneId(7);
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
@@ -2380,7 +2380,7 @@ mod tests {
 
     #[test]
     fn attach_initial_output_waits_for_full_capture_snapshot() {
-        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(3);
 
         // attach 初始流里的 prompt 不是完整屏幕，不能先暴露给 GUI。
@@ -2408,7 +2408,7 @@ mod tests {
 
     #[test]
     fn capture_pane_strips_trailing_blank_rows_so_cursor_stays_at_prompt() {
-        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(9);
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
@@ -2434,7 +2434,7 @@ mod tests {
 
     #[test]
     fn command_response_placeholder_does_not_consume_capture_query() {
-        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(4);
         b.pending_by_number.insert(1, PendingQuery::Ignore);
         b.pending_by_number
@@ -2449,7 +2449,7 @@ mod tests {
 
     #[test]
     fn attach_live_output_during_capture_is_appended_after_snapshot() {
-        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(5);
 
         // 发起 capture 查询后，查询期间到达的实时输出先暂存，不直接暴露。
@@ -2490,7 +2490,7 @@ mod tests {
     /// 快照返回后单事件 = 快照 + catch-up；capture 每 pane 只发一次。
     #[test]
     fn surface_seed_drops_output_until_capture() {
-        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(11);
 
         // 发起 capture 后、快照返回前：live 只暂存，不产生 PaneOutput 事件。
@@ -2531,7 +2531,7 @@ mod tests {
 
     #[test]
     fn attach_capture_failure_recovers_live_output_without_black_screen() {
-        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(6);
 
         b.initial_capture_pending.insert(pane);
@@ -2563,7 +2563,7 @@ mod tests {
     #[test]
     fn response_number_matching_does_not_misassign_interleaved_queries() {
         // 高输出下多个 %begin/%end 交叠时，必须按 number 精确匹配，而不是 FIFO。
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let p1 = PaneId(10);
         let p2 = PaneId(11);
 
@@ -2622,7 +2622,7 @@ mod tests {
     async fn connect_establishes_session_and_window() {
         let socket = unique_socket();
         let run = async {
-            let mut b = TmuxBackend::new(Some(&socket));
+            let mut b = TmuxRuntime::new(Some(&socket));
             b.connect().await.unwrap_or_else(|e| {
                 eprintln!("skip: tmux 不可用: {e}");
             });
@@ -2650,7 +2650,7 @@ mod tests {
     async fn new_window_via_tmux() {
         let socket = unique_socket();
         let run = async {
-            let mut b = TmuxBackend::new(Some(&socket));
+            let mut b = TmuxRuntime::new(Some(&socket));
             if b.connect().await.is_err() {
                 return;
             }
@@ -2692,7 +2692,7 @@ mod tests {
     async fn send_keys_does_not_error() {
         let socket = unique_socket();
         let run = async {
-            let mut b = TmuxBackend::new(Some(&socket));
+            let mut b = TmuxRuntime::new(Some(&socket));
             if b.connect().await.is_err() {
                 return;
             }
@@ -2722,7 +2722,7 @@ mod tests {
     async fn pane_output_events_preserve_exact_frame_bytes() {
         let socket = unique_socket();
         let run = async {
-            let mut b = TmuxBackend::new(Some(&socket));
+            let mut b = TmuxRuntime::new(Some(&socket));
             if b.connect().await.is_err() {
                 return;
             }
@@ -2796,7 +2796,7 @@ mod tests {
     async fn split_pane_dispatched() {
         let socket = unique_socket();
         let run = async {
-            let mut b = TmuxBackend::new(Some(&socket));
+            let mut b = TmuxRuntime::new(Some(&socket));
             if b.connect().await.is_err() {
                 return;
             }
@@ -2824,7 +2824,7 @@ mod tests {
     async fn toggle_pane_fullscreen_dispatches_zoom() {
         let socket = unique_socket();
         let run = async {
-            let mut b = TmuxBackend::new(Some(&socket));
+            let mut b = TmuxRuntime::new(Some(&socket));
             if b.connect().await.is_err() {
                 return;
             }
@@ -2843,7 +2843,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn execute_before_connect_rejected() {
-        let mut b = TmuxBackend::new(Some("muxterm-nosuch-socket-xyz"));
+        let mut b = TmuxRuntime::new(Some("muxterm-nosuch-socket-xyz"));
         let outcome = b
             .execute(&Task::SendKeys {
                 target: PaneId(1),
@@ -2859,7 +2859,7 @@ mod tests {
         use crate::core::buffer_cap::MAX_PANE_OUTPUT_BYTES;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let pane = PaneId(42);
         let chunk = vec![b'x'; 64 * 1024];
         // 灌入远超上限的数据
@@ -2890,7 +2890,7 @@ mod tests {
         use crate::core::model::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let pane = PaneId(1);
         // 先放一个 ActiveTabChanged（切 tab 的确认事件）
         b.events.push_back(StateChange::ActiveTabChanged {
@@ -2921,7 +2921,7 @@ mod tests {
     fn flow_control_pause_continue_tracks_pane() {
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let pane = PaneId(7);
 
         // 在 %output 之间穿插 %pause / %continue，验证不破坏输出累积，
@@ -2970,7 +2970,7 @@ mod tests {
         use crate::core::model::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         // 预置一个 window + 两个 pane 在同一 tab
         let win = crate::core::types::TabId(0);
         let tab = crate::core::types::TabId(0);
@@ -3028,7 +3028,7 @@ mod tests {
         use crate::core::model::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let win = crate::core::types::TabId(2);
         let tab = crate::core::types::TabId(2);
         b.tabs.push(crate::core::model::state::TabInfo {
@@ -3073,7 +3073,7 @@ mod tests {
     /// 产品层无 Window/Session 概念（编译期由 types 移除保证）。
     #[test]
     fn attach_snapshot_maps_windows_to_tabs_without_product_window() {
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         b.workspace_name = "demo".into();
         b.active_session = Some(crate::core::runtime::tmux::protocol::TmuxSessionId(0));
 
@@ -3120,7 +3120,7 @@ mod tests {
         use crate::core::model::task::Task;
         use tokio::sync::mpsc;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         // 预置 pane 所在 tab/window
         b.panes.push(crate::core::model::state::PaneInfo {
             id: crate::core::types::PaneId(3),
@@ -3174,7 +3174,7 @@ mod tests {
         use crate::core::model::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let session = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
         b.workspace_name = "s0".into();
         b.active_session = Some(session);
@@ -3220,7 +3220,7 @@ mod tests {
         use crate::core::model::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let attached = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
         b.workspace_name = "yaklang-workspace".into();
         b.active_session = Some(attached);
@@ -3255,7 +3255,7 @@ mod tests {
     fn session_changed_sets_active_session_before_list_windows() {
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new_with_attach(None, "yaklang-workspace");
+        let mut b = TmuxRuntime::new_with_attach(None, "yaklang-workspace");
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
 
@@ -3288,7 +3288,7 @@ mod tests {
         use crate::core::model::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let attached = crate::core::runtime::tmux::protocol::TmuxSessionId(4);
         b.active_session = Some(attached);
         b.workspace_name = "yaklang-workspace".into();
@@ -3335,7 +3335,7 @@ mod tests {
     fn layout_change_ignores_foreign_window() {
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
         b.tabs.push(crate::core::model::state::TabInfo {
@@ -3363,7 +3363,7 @@ mod tests {
         use crate::core::model::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
         b.status = crate::core::model::state::BackendStatus::Connected;
@@ -3413,7 +3413,7 @@ mod tests {
     fn extended_output_safely_ignored() {
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let pane = PaneId(9);
 
         b.handle_message(Message::Output {
@@ -3444,7 +3444,7 @@ mod tests {
     fn layout_change_does_not_reset_pane_output() {
         use crate::core::runtime::tmux::protocol::Message;
 
-        let mut b = TmuxBackend::new(None);
+        let mut b = TmuxRuntime::new(None);
         let pane = PaneId(3);
 
         // 先灌入一些输出
@@ -3484,7 +3484,7 @@ mod tests {
     async fn shutdown_completes_and_clears_buffers() {
         let socket = unique_socket();
         let run = async {
-            let mut b = TmuxBackend::new(Some(&socket));
+            let mut b = TmuxRuntime::new(Some(&socket));
             if b.connect().await.is_err() {
                 return;
             }

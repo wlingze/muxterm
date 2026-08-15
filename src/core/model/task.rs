@@ -1,7 +1,7 @@
 //! Task：可执行操作的纯描述。
 //!
 //! `Task` 是「用户/前端想做的事」的抽象描述，**不含任何执行逻辑**。
-//! TerminalModel 把 `Task` 交给 Backend，Backend 把它映射到具体动作
+//! TerminalModel 把 `Task` 交给 Runtime，Runtime 把它映射到具体动作
 //! （tmux 命令 / 本地 spawn / vte4 操作）。
 //!
 //! Task 是 `Copy`/`Clone` 友好的纯数据，可序列化、可记入历史（undo/redo）。

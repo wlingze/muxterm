@@ -14,7 +14,7 @@ use muxterm::core::model::state::{BackendStatus, State};
 use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
 use muxterm::core::protocol::terminal::input::KeyEvent;
-use muxterm::core::runtime::TmuxBackend;
+use muxterm::core::runtime::TmuxRuntime;
 use muxterm::core::types::PaneId;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -44,7 +44,7 @@ fn tmux_available() -> bool {
 }
 
 fn connect_tmux(socket: &str) -> TerminalModel {
-    let backend = TmuxBackend::new(Some(socket));
+    let backend = TmuxRuntime::new(Some(socket));
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -457,7 +457,7 @@ fn attach_initial_flood_and_live_output() {
         .unwrap();
 
     // attach 到该 session（attach 模式会收到大量初始状态 + 历史输出）
-    let backend = TmuxBackend::new_with_attach(Some(&socket), "flood");
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), "flood");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -542,7 +542,7 @@ fn attach_restores_existing_shell_screen_output() {
     assert!(sent, "预置 attach 屏幕内容失败");
     std::thread::sleep(Duration::from_millis(150));
 
-    let backend = TmuxBackend::new_with_attach(Some(&socket), "restore");
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), "restore");
     let mut model = TerminalModel::new(Box::new(backend));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

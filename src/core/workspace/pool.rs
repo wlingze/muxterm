@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::core::model::backend::Backend;
+use crate::core::model::backend::Runtime;
 use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
 use crate::core::workspace::id::WorkspaceId;
@@ -125,7 +125,7 @@ impl WorkspacePool {
         &mut self,
         id: WorkspaceId,
         name: String,
-        create: impl FnOnce(&WorkspaceId) -> Box<dyn Backend>,
+        create: impl FnOnce(&WorkspaceId) -> Box<dyn Runtime>,
     ) -> anyhow::Result<&mut Workspace> {
         let now = Instant::now();
         if self.slots.contains_key(&id) {
@@ -152,8 +152,8 @@ impl WorkspacePool {
                 }
             }
         }
-        let backend = create(&id);
-        let mut workspace = Workspace::new(id.clone(), name, backend);
+        let runtime = create(&id);
+        let mut workspace = Workspace::new(id.clone(), name, runtime);
         workspace.connect().await?;
         self.slots.insert(
             id.clone(),
@@ -323,7 +323,7 @@ fn is_tmux_runtime(runtime: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockBackend;
+    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::model::task::Task;
     use crate::core::types::PaneId;
     use std::sync::{Arc, Mutex};
@@ -339,12 +339,12 @@ mod tests {
         let a = id("a", "tmux");
         let b = id("b", "tmux");
         pool.open(a.clone(), "a".into(), |_| {
-            Box::new(MockBackend::with_single_pane())
+            Box::new(MockRuntime::with_single_pane())
         })
         .await
         .unwrap();
         pool.open(b.clone(), "b".into(), |_| {
-            Box::new(MockBackend::with_single_pane())
+            Box::new(MockRuntime::with_single_pane())
         })
         .await
         .unwrap();
@@ -398,7 +398,7 @@ mod tests {
             let log_cb = log.clone();
             tmux_pool
                 .open(wid.clone(), n.to_string(), move |_| {
-                    let mut b = MockBackend::with_single_pane();
+                    let mut b = MockRuntime::with_single_pane();
                     b.executed_log = Some(log_cb);
                     Box::new(b)
                 })
@@ -423,7 +423,7 @@ mod tests {
             let log_cb = shell_log.clone();
             shell_pool
                 .open(wid.clone(), n.to_string(), move |_| {
-                    let mut b = MockBackend::with_single_pane();
+                    let mut b = MockRuntime::with_single_pane();
                     b.executed_log = Some(log_cb);
                     Box::new(b)
                 })
@@ -451,7 +451,7 @@ mod tests {
         let c1 = created.clone();
         pool.open(a.clone(), "a".into(), move |_| {
             *c1.lock().unwrap() += 1;
-            Box::new(MockBackend::with_single_pane())
+            Box::new(MockRuntime::with_single_pane())
         })
         .await
         .unwrap();
@@ -482,7 +482,7 @@ mod tests {
                 workspace: Workspace::new(
                     a.clone(),
                     "a".into(),
-                    Box::new(MockBackend::with_single_pane()),
+                    Box::new(MockRuntime::with_single_pane()),
                 ),
                 lifecycle: WorkspaceLifecycle::Background,
                 last_used_at: Instant::now() - Duration::from_secs(60),
@@ -494,7 +494,7 @@ mod tests {
                 workspace: Workspace::new(
                     b.clone(),
                     "b".into(),
-                    Box::new(MockBackend::with_single_pane()),
+                    Box::new(MockRuntime::with_single_pane()),
                 ),
                 lifecycle: WorkspaceLifecycle::Active,
                 last_used_at: Instant::now(),
@@ -516,14 +516,14 @@ mod tests {
         let b = id("b", "tmux");
         let log_cb = log.clone();
         pool.open(a.clone(), "a".into(), move |_| {
-            let mut bk = MockBackend::with_single_pane();
+            let mut bk = MockRuntime::with_single_pane();
             bk.executed_log = Some(log_cb);
             Box::new(bk)
         })
         .await
         .unwrap();
         pool.open(b.clone(), "b".into(), |_| {
-            Box::new(MockBackend::with_single_pane())
+            Box::new(MockRuntime::with_single_pane())
         })
         .await
         .unwrap();

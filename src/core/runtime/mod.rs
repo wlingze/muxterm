@@ -5,7 +5,7 @@
 //! 扩展规则：新增 Runtime 不修改 Transport、不修改 Core Protocol。
 //! - `shell`：ShellRuntime（自管 pane 分割 + shell 进程生命周期）
 //! - `tmux`：TmuxRuntime（tmux 控制模式；内部含 adapter）
-//! - `daemon`：DaemonBackend（IPC client，连本地 daemon）
+//! - `daemon`：DaemonRuntime（IPC client，连本地 daemon）
 //!
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 //! tmux 的 %pane/@window 等真实 ID 只能在 runtime/tmux 内部。
@@ -14,18 +14,18 @@ pub mod daemon;
 pub mod shell;
 pub mod tmux;
 
-// Re-export Backend trait from model
-pub use crate::core::model::backend::Backend;
+// Re-export Runtime trait from model
+pub use crate::core::model::backend::Runtime;
 
 // Re-export backend implementations
-pub use daemon::DaemonBackend;
-pub use shell::LocalBackend;
-pub use tmux::backend::TmuxBackend;
+pub use daemon::DaemonRuntime;
+pub use shell::ShellRuntime;
+pub use tmux::backend::TmuxRuntime;
 
 /// 运行时模式：四种组合的入口。
 ///
 /// 2 个 Transport × 2 个 Runtime = 4 种组合。
-/// `create_backend` 工厂根据模式构造对应的 Backend 实例。
+/// `create_runtime` 工厂根据模式构造对应的 Runtime 实例。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeMode {
     /// local-shell = LocalProcessTransport + ShellRuntime
@@ -91,32 +91,32 @@ impl RuntimeMode {
     }
 }
 
-/// 根据 RuntimeMode 构造对应的 Backend 实例。
+/// 根据 RuntimeMode 构造对应的 Runtime 实例。
 ///
-/// **注意**：当前实现为兼容 facade，内部委托给现有 `LocalBackend` / `TmuxBackend`
+/// **注意**：当前实现为兼容 facade，内部委托给现有 `ShellRuntime` / `TmuxRuntime`
 /// 构造逻辑。后续阶段逐步替换为 ShellRuntime / TmuxRuntime + Transport。
-pub fn create_backend(mode: &RuntimeMode) -> Box<dyn Backend> {
+pub fn create_runtime(mode: &RuntimeMode) -> Box<dyn Runtime> {
     match mode {
-        RuntimeMode::LocalShell { .. } => Box::new(LocalBackend::new("$SHELL", "")),
+        RuntimeMode::LocalShell { .. } => Box::new(ShellRuntime::new("$SHELL", "")),
         RuntimeMode::LocalTmux {
             socket,
             session_name,
         } => {
             if let Some(name) = session_name {
-                Box::new(TmuxBackend::new_with_session_name(socket.as_deref(), name))
+                Box::new(TmuxRuntime::new_with_session_name(socket.as_deref(), name))
             } else {
-                Box::new(TmuxBackend::new(socket.as_deref()))
+                Box::new(TmuxRuntime::new(socket.as_deref()))
             }
         }
         RuntimeMode::SshShell { .. } => {
-            // v1: SSH shell 尚未完全接入，fallback 到 LocalBackend
+            // v1: SSH shell 尚未完全接入，fallback 到 ShellRuntime
             // TODO(phase 4): SshProcessTransport + ShellRuntime
-            Box::new(LocalBackend::new("$SHELL", ""))
+            Box::new(ShellRuntime::new("$SHELL", ""))
         }
         RuntimeMode::SshTmux { .. } => {
             // v1: SSH tmux 尚未完全接入
             // TODO(phase 4): SshProcessTransport + TmuxRuntime
-            Box::new(LocalBackend::new("$SHELL", ""))
+            Box::new(ShellRuntime::new("$SHELL", ""))
         }
     }
 }
@@ -220,22 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn create_backend_local_shell() {
+    fn create_runtime_local_shell() {
         let mode = RuntimeMode::LocalShell { session_name: None };
-        let backend = create_backend(&mode);
-        // 验证 Backend 可构造（不 panic）
-        let _ = backend.status();
+        let runtime = create_runtime(&mode);
+        // 验证 Runtime 可构造（不 panic）
+        let _ = runtime.status();
     }
 
     #[test]
-    fn create_backend_local_tmux() {
+    fn create_runtime_local_tmux() {
         let mode = RuntimeMode::LocalTmux {
             socket: None,
             session_name: Some("test-runtime-create".into()),
         };
-        let backend = create_backend(&mode);
+        let runtime = create_runtime(&mode);
         // 不 connect，只验证可构造
-        let _ = backend.status();
+        let _ = runtime.status();
     }
 
     /// 验证 RuntimeMode 四种组合可区分。

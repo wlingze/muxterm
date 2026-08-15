@@ -544,12 +544,12 @@ fn start_listing(state: &Rc<RefCell<EditorState>>, suggest: &ListBox, alive: &Rc
         }
         return;
     }
-    let backend = if request.is_ssh { "ssh" } else { "local" };
+    let transport = if request.is_ssh { "ssh" } else { "local" };
     let target = request.alias.clone();
     let path = request.path.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = CoreBridge::list_dir(backend, target.as_deref(), &path);
+        let result = CoreBridge::list_dir(transport, target.as_deref(), &path);
         let _ = tx.send(result);
     });
     let state = state.clone();
