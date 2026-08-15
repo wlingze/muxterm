@@ -207,9 +207,13 @@ impl PaneView {
         self.inner.seeded.set(true);
     }
 
-    /// 首屏：用 replica 的可见 ANSI 播种（禁止 get_pane_output 重放历史）。
+    /// 首屏：用 replica 的几何 ANSI 播种（禁止 get_pane_output 重放历史）。
+    /// 喂**完整** dump，不做 last_visible_frame 切片；空 dump 不标 seeded。
     pub fn present_from_replica(&self, ansi: &[u8]) {
-        self.present_bytes(ansi, true);
+        if ansi.is_empty() {
+            return;
+        }
+        self.reset_and_feed_full(ansi);
     }
 
     /// 按 RenderPolicy 提交一批字节：ReplaceVisible 只喂最后一帧。
@@ -218,6 +222,10 @@ impl PaneView {
             return;
         }
         match render_intent(bytes, first_paint) {
+            RenderIntent::ReplaceVisible if first_paint => {
+                // 首屏：完整几何 dump，不切片。
+                self.reset_and_feed_full(bytes);
+            }
             RenderIntent::ReplaceVisible => {
                 let frame = last_visible_frame(bytes);
                 self.reset_and_feed(frame);
@@ -265,6 +273,17 @@ impl PaneView {
     #[cfg(test)]
     pub fn test_open_url_at(&self, x: f64, y: f64) {
         self.open_url_at(x, y);
+    }
+
+    fn reset_and_feed_full(&self, bytes: &[u8]) {
+        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
+            id.remove();
+        }
+        self.inner.pending_feed.borrow_mut().clear();
+        self.inner.renderer.terminal().reset(true, true);
+        self.inner.render_trace.borrow_mut().resets += 1;
+        self.feed_direct(bytes);
+        self.inner.seeded.set(true);
     }
 
     fn reset_and_feed(&self, bytes: &[u8]) {

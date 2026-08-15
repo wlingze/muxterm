@@ -1039,8 +1039,9 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                 sync_pane_grid_size(s, ev.pane_id);
                 if view.is_seeded() {
                     view.feed_output(&ev.data);
-                } else {
-                    // 首屏只从 replica 取可见帧，禁止 get_pane_output 重放历史。
+                } else if !s.replicas.is_blank(&ws, ev.pane_id) {
+                    // 首屏只从 replica 取几何帧，禁止 get_pane_output 重放历史；
+                    // 空网格不标 seeded，等 replica 有内容再播种。
                     let ansi = s.replicas.visible_ansi(&ws, ev.pane_id);
                     view.present_from_replica(&ansi);
                 }
@@ -1140,7 +1141,7 @@ fn refresh_ui(s: &mut UiState) {
         let ws = active_workspace_id(s);
         for pane in s.bridge().get_panes(s.active_tab) {
             if let Some(view) = s.layout.pane(pane.id).cloned() {
-                if !view.is_seeded() {
+                if !view.is_seeded() && !s.replicas.is_blank(&ws, pane.id) {
                     let ansi = s.replicas.visible_ansi(&ws, pane.id);
                     view.present_from_replica(&ansi);
                     forward_parser_replies(s, pane.id);
@@ -1266,7 +1267,7 @@ fn sync_pane_outputs(s: &mut UiState) {
     let ws = active_workspace_id(s);
     for pane in s.bridge().get_panes(s.active_tab) {
         if let Some(view) = s.layout.pane(pane.id).cloned() {
-            if view.is_seeded() {
+            if view.is_seeded() || s.replicas.is_blank(&ws, pane.id) {
                 continue;
             }
             let ansi = s.replicas.visible_ansi(&ws, pane.id);

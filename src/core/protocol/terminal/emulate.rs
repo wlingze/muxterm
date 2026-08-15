@@ -693,6 +693,13 @@ impl TerminalState {
         self.snapshot_trimmed()
     }
 
+    /// 网格是否全空（没有任何非空白单元格）。
+    pub fn is_blank(&self) -> bool {
+        self.grid
+            .iter()
+            .all(|row| row.iter().all(|c| c.ch == ' ' || c.ch == '\0'))
+    }
+
     /// 把当前可见网格编成可再 feed 的 ANSI 字节（LINUX-PLAN §4 D1）。
     ///
     /// 几何 dump：`ESC[H ESC[2J` 后对每一行（1-based，**含空行**）发
