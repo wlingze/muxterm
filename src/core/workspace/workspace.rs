@@ -80,6 +80,13 @@ impl Workspace {
         events
     }
 
+    /// 先从 Runtime 拉取最新事件（异步输出），再取走并喂进本工作区副本。
+    pub fn refresh(&mut self) -> Vec<StateChange> {
+        let events = self.model.refresh();
+        self.feed_events(&events);
+        events
+    }
+
     /// 某 pane 的文本（可见屏 + scrollback，供搜索/提醒）。
     pub fn pane_text(&self, pane: PaneId) -> String {
         self.panes

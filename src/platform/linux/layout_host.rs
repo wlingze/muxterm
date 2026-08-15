@@ -7,7 +7,8 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Paned, Widget};
 
 use crate::core::config::Theme;
-use crate::platform::linux::ffi_bridge::BridgeLayout;
+use crate::core::model::layout::{LayoutNode, SplitDir};
+use crate::core::types::PaneId;
 use crate::platform::linux::pane_view::PaneView;
 use crate::platform::linux::quickconnect::font::FontSettings;
 
@@ -89,12 +90,15 @@ impl LayoutHost {
     }
 
     /// 若布局签名变化则重建 GTK 树。返回是否重建。
-    pub fn apply_layout<F>(&mut self, layout: &BridgeLayout, on_input: &F) -> bool
+    ///
+    /// W5：**不**因换 Tab 而 `retain` 掉其它 pane 控件——pane 是像素缓存，
+    /// 切回时 VTE 内容与滚动位置必须还在。pane 只在工作区关闭时整体释放。
+    pub fn apply_layout<F>(&mut self, layout: &LayoutNode, on_input: &F) -> bool
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
     {
         let effective = match self.fullscreen_pane {
-            Some(id) => BridgeLayout::Leaf { pane_id: id },
+            Some(id) => LayoutNode::Leaf(PaneId(id)),
             None => layout.clone(),
         };
         let sig = layout_signature(&effective);
@@ -114,15 +118,12 @@ impl LayoutHost {
             self.root_box.remove(&child);
         }
 
-        // 收集新树需要的 pane id
+        // 收集新树需要的 pane id，缺失的创建；已有的一律保留（跨 tab 像素缓存）。
         let mut needed = Vec::new();
         collect_pane_ids(&effective, &mut needed);
-        // 创建缺失 pane
         for id in &needed {
             self.ensure_pane(*id, on_input);
         }
-        // 移除不再需要的
-        self.panes.retain(|id, _| needed.contains(id));
 
         let widget = self.build_widget(&effective);
         self.root_box.append(&widget);
@@ -169,22 +170,23 @@ impl LayoutHost {
         }
     }
 
-    fn build_widget(&self, layout: &BridgeLayout) -> Widget {
+    fn build_widget(&self, layout: &LayoutNode) -> Widget {
         match layout {
-            BridgeLayout::Leaf { pane_id } => self
+            LayoutNode::Leaf(pane_id) => self
                 .panes
-                .get(pane_id)
+                .get(&pane_id.0)
                 .map(|p| p.widget())
                 .unwrap_or_else(|| {
-                    gtk4::Label::new(Some(&format!("?{pane_id}"))).upcast::<Widget>()
+                    gtk4::Label::new(Some(&format!("?{}", pane_id.0))).upcast::<Widget>()
                 }),
-            BridgeLayout::Split {
-                horizontal,
+            LayoutNode::Split {
+                dir,
                 ratio,
                 first,
                 second,
             } => {
-                let orient = if *horizontal {
+                let horizontal = matches!(dir, SplitDir::Horizontal);
+                let orient = if horizontal {
                     Orientation::Horizontal
                 } else {
                     Orientation::Vertical
@@ -200,17 +202,17 @@ impl LayoutHost {
                 paned.set_resize_end_child(true);
                 paned.set_shrink_start_child(false);
                 paned.set_shrink_end_child(false);
-                bind_split_position(&paned, *horizontal, *ratio);
+                bind_split_position(&paned, horizontal, u32::from(*ratio));
                 paned.upcast()
             }
         }
     }
 }
 
-fn collect_pane_ids(layout: &BridgeLayout, out: &mut Vec<u32>) {
+fn collect_pane_ids(layout: &LayoutNode, out: &mut Vec<u32>) {
     match layout {
-        BridgeLayout::Leaf { pane_id } => out.push(*pane_id),
-        BridgeLayout::Split { first, second, .. } => {
+        LayoutNode::Leaf(pane_id) => out.push(pane_id.0),
+        LayoutNode::Split { first, second, .. } => {
             collect_pane_ids(first, out);
             collect_pane_ids(second, out);
         }
@@ -250,17 +252,21 @@ fn bind_split_position(paned: &Paned, horizontal: bool, ratio_permille: u32) {
     });
 }
 
-fn layout_signature(layout: &BridgeLayout) -> String {
+fn layout_signature(layout: &LayoutNode) -> String {
     match layout {
-        BridgeLayout::Leaf { pane_id } => format!("L{pane_id}"),
-        BridgeLayout::Split {
-            horizontal,
+        LayoutNode::Leaf(pane_id) => format!("L{}", pane_id.0),
+        LayoutNode::Split {
+            dir,
             ratio,
             first,
             second,
         } => format!(
             "S{}:{}:{}:{}",
-            if *horizontal { "H" } else { "V" },
+            if matches!(dir, SplitDir::Horizontal) {
+                "H"
+            } else {
+                "V"
+            },
             ratio,
             layout_signature(first),
             layout_signature(second)

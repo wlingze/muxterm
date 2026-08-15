@@ -14,6 +14,7 @@ use support::linux_gtk::*;
 use support::tmux_test_support::*;
 
 use muxterm::core::config::{Config, Theme};
+use muxterm::platform::linux::quickconnect::model::{TargetConfig, TargetTransport};
 use muxterm::platform::linux::window::AppWindow;
 
 fn theme() -> Theme {
@@ -236,6 +237,7 @@ fn isolated_tmux_switch_tab_resets_bounded(app: &AppWindow, _socket: &str) {
     );
 }
 
+/// W5：两个工作区切回 VTE 非空（像素缓存不随切走销毁）。
 #[test]
 fn live_e2e_s8_s9_s13b() {
     if skip_no_display() {
@@ -261,6 +263,55 @@ fn live_e2e_s8_s9_s13b() {
         click_status_tab_switches_real_window(&app, &socket);
         isolated_tmux_typing_token_appears_once(&app, &socket);
         isolated_tmux_switch_tab_resets_bounded(&app, &socket);
+
+        // W5：两个工作区切回 VTE 非空（像素缓存不随切走销毁）。
+        create_session(&socket, "b", 80, 24);
+        send_keys(&socket, "s", "echo WORKSPACE_A_TOKEN");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut a_ok = false;
+        while Instant::now() < deadline {
+            app.test_poll_once();
+            pump_main_loop(30);
+            if app
+                .test_active_pane_vte_text()
+                .contains("WORKSPACE_A_TOKEN")
+            {
+                a_ok = true;
+                break;
+            }
+        }
+        assert!(a_ok, "工作区 A 的 token 应出现在 VTE");
+
+        app.test_connect_target(TargetConfig::tmux_session("b", TargetTransport::Local));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut b_ok = false;
+        while Instant::now() < deadline {
+            app.test_poll_once();
+            pump_main_loop(30);
+            if app
+                .test_active_pane_vte_text()
+                .contains("WORKSPACE_B_TOKEN")
+            {
+                b_ok = true;
+                break;
+            }
+            send_keys(&socket, "b", "echo WORKSPACE_B_TOKEN");
+        }
+        assert!(b_ok, "工作区 B 的 token 应出现在 VTE");
+
+        app.test_connect_target(TargetConfig::tmux_session("s", TargetTransport::Local));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut back_ok = false;
+        while Instant::now() < deadline {
+            app.test_poll_once();
+            pump_main_loop(30);
+            let vte = app.test_active_pane_vte_text();
+            if vte.contains("WORKSPACE_A_TOKEN") {
+                back_ok = true;
+                break;
+            }
+        }
+        assert!(back_ok, "切回工作区 A 后 VTE 应保留 token（像素缓存）");
 
         app.shutdown();
         pump_main_loop(250);

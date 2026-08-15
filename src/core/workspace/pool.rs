@@ -208,7 +208,7 @@ impl WorkspacePool {
         let mut out = Vec::new();
         for key in keys {
             if let Some(slot) = self.slots.get_mut(&key) {
-                let events = slot.workspace.take_events();
+                let events = slot.workspace.refresh();
                 if !events.is_empty() {
                     out.push((key, events));
                 }
