@@ -470,13 +470,13 @@ fn attach_initial_flood_and_live_output() {
 
     assert_eq!(model.state().status(), BackendStatus::Connected);
     assert!(
-        !model.state().sessions().is_empty(),
+        !model.state().workspace_name().is_empty(),
         "attach 后应有 session"
     );
 
     // 等待初始状态完全建好（tab + pane）
     let ready = wait_for(&mut model, Duration::from_secs(10), |s| {
-        s.active_pane().is_some() && s.active_window().is_some()
+        s.active_pane().is_some() && s.active_tab().is_some()
     });
     assert!(ready, "attach 初始状态应建好");
 

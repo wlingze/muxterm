@@ -31,6 +31,21 @@ impl WorkspaceId {
         }
     }
 
+    /// ReplicaStore/注意力引擎键：`name@transport`（与 QuickConnect 一致）。
+    pub fn replica_id(&self) -> String {
+        let name = if self.session.is_empty() {
+            crate::core::quickconnect::model::QuickConnect::default_name(&self.path)
+        } else {
+            self.session.clone()
+        };
+        let transport = if self.transport == "ssh" {
+            self.alias.clone().unwrap_or_else(|| "ssh".into())
+        } else {
+            "local".into()
+        };
+        format!("{name}@{transport}")
+    }
+
     /// 稳定显示形式（alias 为空时留空段）。
     pub fn as_str(&self) -> String {
         format!(

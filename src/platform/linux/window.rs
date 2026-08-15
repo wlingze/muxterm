@@ -23,7 +23,6 @@ use crate::core::model::layout::SplitDir;
 use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::Task;
 use crate::core::quickconnect::model::QuickConnect;
-use crate::core::replica::{apply_output_to_replicas, ReplicaStore};
 use crate::core::runtime::shell::ShellRuntime;
 use crate::core::runtime::tmux::TmuxRuntime;
 use crate::core::types::{PaneId, TabId};
@@ -87,8 +86,6 @@ struct UiState {
     on_last_pane_exit: OnLastPaneExit,
     /// 事件分发里不能同步 `window.close()`（可能正握着 RefCell）。
     pending_close: bool,
-    /// 跨工作区 pane 副本（前台+后台 %output 都喂这里；VTE 只显示）。
-    replicas: ReplicaStore,
     /// 注意力引擎（信号 → 状态机 → blocked 工作区聚合）。
     attention: AttentionEngine<RealClock>,
     /// 本轮进入 blocked 的 workspace 通知日志（测试钩子读取）。
@@ -319,7 +316,6 @@ impl AppWindow {
             preferences,
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
-            replicas: ReplicaStore::new(cfg.scrollback.lines as usize),
             attention: AttentionEngine::new(cfg.attention.clone(), RealClock),
             notification_log: Vec::new(),
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
@@ -460,32 +456,18 @@ impl AppWindow {
                 };
                 let pending_close = {
                     let mut s = st.borrow_mut();
-                    // 后台工作区由 core 池 poll：字节喂 replica/attention，不重建前台。
+                    // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
+                    // 喂好，这里只把注意力信号应用到引擎，不重建前台。
                     for (wid, events) in s.pool.poll_background() {
                         let ws = workspace_replica_id(&wid);
                         for ev in &events {
-                            match ev {
-                                StateChange::PaneOutput { pane, data } => {
-                                    let (cols, rows) = s
-                                        .pool
-                                        .get(&wid)
-                                        .and_then(|w| {
-                                            w.state().pane(pane).map(|p| (p.cols, p.rows))
-                                        })
-                                        .unwrap_or((80, 24));
-                                    feed_replica_and_engine(&mut s, &ws, pane.0, data, cols, rows);
-                                }
-                                StateChange::PaneClosed { pane } => {
-                                    s.replicas.drop_pane(&ws, pane.0);
-                                }
-                                _ => {}
+                            if let StateChange::PaneOutput { pane, .. } = ev {
+                                apply_attention_from_workspace(&mut s, &wid, &ws, pane.0);
                             }
                         }
                     }
                     s.pool.evict_expired();
                     for wid in s.pool.take_evicted() {
-                        let ws = workspace_replica_id(&wid);
-                        s.replicas.drop_workspace(&ws);
                         s.pixel_cache.remove(&wid);
                     }
                     let events = s.active_workspace_mut().refresh();
@@ -687,18 +669,20 @@ impl AppWindow {
             .unwrap_or_default()
     }
 
-    /// 测试用：ReplicaStore 中某 pane 的最近 n 行。
+    /// 测试用：工作区 PaneBuf 中某 pane 的最近 n 行。
     pub fn test_replica_last_n(&self, pane_id: u32, n: usize) -> Vec<String> {
         let s = self._state.borrow();
-        let ws = active_workspace_id(&s);
-        s.replicas.last_n_lines(&ws, pane_id, n)
+        s.active_workspace().pane_last_n_lines(PaneId(pane_id), n)
     }
 
-    /// 测试用：绕过 tmux 直接向 ReplicaStore/AttentionEngine 注入字节。
+    /// 测试用：绕过 tmux 直接向工作区 PaneBuf/AttentionEngine 注入字节。
     pub fn test_feed_replica(&self, pane_id: u32, bytes: &[u8]) {
         let mut s = self._state.borrow_mut();
         let ws = active_workspace_id(&s);
-        feed_replica_and_engine(&mut s, &ws, pane_id, bytes, 80, 24);
+        let wid = s.active_ws_id().clone();
+        s.active_workspace_mut()
+            .feed_pane_bytes(PaneId(pane_id), bytes, 80, 24);
+        apply_attention_from_workspace(&mut s, &wid, &ws, pane_id);
     }
 
     /// 测试用：本轮进入 blocked 的 workspace 通知记录。
@@ -1133,24 +1117,19 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
     }
 }
 
-/// 把一条 pane 输出喂进副本并把注意力信号应用到引擎（前台/后台共用）。
-fn feed_replica_and_engine(
-    s: &mut UiState,
-    ws: &str,
-    pane: u32,
-    bytes: &[u8],
-    cols: u16,
-    rows: u16,
-) {
-    let signals = apply_output_to_replicas(&mut s.replicas, ws, pane, bytes, cols, rows);
-    let (last_line, seq) = s
-        .replicas
-        .get(ws, pane)
-        .map(|t| (t.last_non_empty_line().unwrap_or_default(), t.latest_seq()))
-        .unwrap_or_default();
+/// 把工作区 PaneBuf 的注意力信号应用到引擎（前台/后台共用）。
+///
+/// PaneBuf 已在 `Workspace::refresh` 里喂好；这里只取信号，不再维护
+/// GUI 侧副本（W6：PaneBuf 收进 core Workspace）。
+fn apply_attention_from_workspace(s: &mut UiState, wid: &WorkspaceId, ws: &str, pane: u32) {
+    let Some(workspace) = s.pool.get_mut(wid) else {
+        return;
+    };
+    let signals = workspace.take_attention_signals(PaneId(pane));
+    let (last_line, seq) = workspace.pane_last_line_seq(PaneId(pane));
     s.attention.apply(ws, pane, &signals, &last_line, seq);
     // 前台 pane 的输出视为已看见：CommandDone 清成 Idle，前台 `ls` 不进 attention。
-    if pane == s.active_pane {
+    if pane == s.active_pane && s.pool.active_id() == Some(wid) {
         s.attention.on_became_visible(ws, pane);
     }
 }
@@ -1207,17 +1186,7 @@ fn active_workspace_id(s: &UiState) -> String {
 
 /// WorkspaceId → ReplicaStore 键（`name@transport`，与 QuickConnect 一致）。
 fn workspace_replica_id(id: &WorkspaceId) -> String {
-    let name = if id.session.is_empty() {
-        QuickConnect::default_name(&id.path)
-    } else {
-        id.session.clone()
-    };
-    let transport = if id.transport == "ssh" {
-        id.alias.clone().unwrap_or_else(|| "ssh".into())
-    } else {
-        "local".into()
-    };
-    format!("{name}@{transport}")
+    id.replica_id()
 }
 
 fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
@@ -1230,13 +1199,8 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
     match ev {
         StateChange::PaneOutput { pane, data } => {
             let ws = active_workspace_id(s);
-            let (cols, rows) = s
-                .active_workspace()
-                .state()
-                .pane(pane)
-                .map(|p| (p.cols, p.rows))
-                .unwrap_or((80, 24));
-            feed_replica_and_engine(s, &ws, pane.0, data, cols, rows);
+            let wid = s.active_ws_id().clone();
+            apply_attention_from_workspace(s, &wid, &ws, pane.0);
             if let Some(view) = s.active_layout().pane(pane.0).cloned() {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
@@ -1276,8 +1240,6 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
             if s.active_workspace().state().pane(pane).is_none() {
                 refresh_ui(s);
             }
-            let ws = active_workspace_id(s);
-            s.replicas.drop_pane(&ws, pane.0);
             mark_pending_close_if_session_ended(s);
         }
         StateChange::StatusBarSubscription { name, value, pane } => {
@@ -1505,10 +1467,9 @@ fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
 }
 
 fn forward_parser_replies(s: &mut UiState, pane_id: u32) {
-    // 查询应答以 ReplicaStore 的 TerminalState 为事实源（LINUX-PLAN §2.5）。
+    // 查询应答以工作区 PaneBuf 的 TerminalState 为事实源（LINUX-PLAN §2.5）。
     // tmux/SSH 镜像模式由 refresh-client -r 代答 OSC/DA，不能写回 PTY。
-    let ws = active_workspace_id(s);
-    let replies = s.replicas.take_reply(&ws, pane_id);
+    let replies = s.active_workspace_mut().take_reply(PaneId(pane_id));
     if s.uses_tmux() {
         return;
     }
@@ -1658,19 +1619,27 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                 let st = st.clone();
                 std::boxed::Box::new(move |ws, pane| {
                     let s = st.borrow();
-                    let (cols, rows) = s
-                        .replicas
-                        .get(&ws, pane)
-                        .map(|t| (t.cols() as u16, t.rows() as u16))
+                    let wid = s
+                        .pool
+                        .list()
+                        .into_iter()
+                        .find(|w| workspace_replica_id(w.id()) == ws);
+                    let Some(w) = wid else {
+                        return (80, 24, Vec::new());
+                    };
+                    let (cols, rows) = w
+                        .state()
+                        .pane(&PaneId(pane))
+                        .map(|p| (p.cols, p.rows))
                         .unwrap_or((80, 24));
-                    (cols, rows, s.replicas.raw_bytes(&ws, pane))
+                    (cols, rows, w.pane_raw_bytes(PaneId(pane)))
                 })
             },
             search: {
                 let st = st.clone();
                 std::boxed::Box::new(move |query| {
                     let s = st.borrow();
-                    s.replicas
+                    s.pool
                         .search_all(query)
                         .into_iter()
                         .map(Into::into)

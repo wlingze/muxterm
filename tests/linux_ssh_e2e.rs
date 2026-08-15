@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 
 use support::sshd_test_support::{sshd_available, SshTestEnv};
 
-use muxterm::core::replica::ReplicaStore;
+use muxterm::core::model::backend::mock::MockRuntime;
+use muxterm::core::types::PaneId;
+use muxterm::core::workspace::id::WorkspaceId;
+use muxterm::core::workspace::workspace::Workspace;
 use muxterm::platform::linux::ffi_bridge::CoreBridge;
 
 /// S12：远端隔离 tmux echo 到达 replica；status summary 是 ssh。
@@ -43,17 +46,21 @@ fn loopback_ssh_isolated_tmux_echo() {
     let (ok, _, err) = env.remote_tmux("send-keys -t s 'echo MUXTERM_SSH_TOKEN' Enter");
     assert!(ok, "远端 send-keys 失败: {err}");
 
-    // 轮询：replica 与远端 capture-pane 都含 token。
-    let mut store = ReplicaStore::new(10_000);
+    // 轮询：工作区 PaneBuf 与远端 capture-pane 都含 token。
+    let mut ws = Workspace::new(
+        WorkspaceId::new("ssh", Some("s12"), "s", "tmux", ""),
+        "s".into(),
+        std::boxed::Box::new(MockRuntime::with_single_pane()),
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut ok = false;
     while Instant::now() < deadline {
         for ev in bridge.poll_events() {
             if ev.type_ == muxterm::core::protocol::ffi::types::STATE_PANE_OUTPUT {
-                store.feed("ssh@local", ev.pane_id, &ev.data, 80, 24);
+                ws.feed_pane_bytes(PaneId(ev.pane_id), &ev.data, 80, 24);
             }
         }
-        let replica = store.last_n_lines("ssh@local", 0, 5).join("\n");
+        let replica = ws.pane_last_n_lines(PaneId(0), 5).join("\n");
         let (_, capture, _) = env.remote_tmux("capture-pane -p -t s");
         if replica.contains("MUXTERM_SSH_TOKEN") && capture.contains("MUXTERM_SSH_TOKEN") {
             ok = true;

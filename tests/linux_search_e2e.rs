@@ -13,7 +13,10 @@ use gtk4::prelude::*;
 use support::linux_gtk::*;
 
 use muxterm::core::config::Theme;
-use muxterm::core::replica::ReplicaStore;
+use muxterm::core::model::backend::mock::MockRuntime;
+use muxterm::core::types::PaneId;
+use muxterm::core::workspace::id::WorkspaceId;
+use muxterm::core::workspace::workspace::Workspace;
 use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect_panel::{show, PanelShowArgs};
@@ -34,16 +37,20 @@ fn search_tab_finds_replica_hits_and_jumps() {
         win.present();
         gtk4::test_widget_wait_for_draw(&win);
 
-        // 注入含 TOKEN_BODY 的 replica（真实 ReplicaStore 路径）。
-        let store = Rc::new(RefCell::new(ReplicaStore::new(10_000)));
-        store
-            .borrow_mut()
-            .feed("legion", 7, b"alpha TOKEN_BODY one\r\n", 80, 24);
-        store.borrow_mut().feed("legion", 8, b"beta\r\n", 80, 24);
+        // 注入含 TOKEN_BODY 的工作区 PaneBuf（core Workspace 路径）。
+        let ws = Rc::new(RefCell::new(Workspace::new(
+            WorkspaceId::new("local", None, "legion", "tmux", ""),
+            "legion".into(),
+            std::boxed::Box::new(MockRuntime::with_single_pane()),
+        )));
+        ws.borrow_mut()
+            .feed_pane_bytes(PaneId(7), b"alpha TOKEN_BODY one\r\n", 80, 24);
+        ws.borrow_mut()
+            .feed_pane_bytes(PaneId(8), b"beta\r\n", 80, 24);
 
         let jumps = Rc::new(RefCell::new(Vec::<(String, u32)>::new()));
         let j = jumps.clone();
-        let s = store.clone();
+        let s = ws.clone();
         show(
             &win,
             PanelShowArgs {
@@ -67,7 +74,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
                 search: Box::new(move |query| {
                     s.borrow()
-                        .search_all(query)
+                        .search_workspace(query)
                         .into_iter()
                         .map(SearchRow::from)
                         .collect()
@@ -89,7 +96,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
         entry.set_text("TOKEN_BODY");
         pump_main_loop(80);
 
-        let hit = find_by_name(&win, "muxterm-search-hit-legion-7-1").expect("命中行应存在");
+        let hit = find_by_name(&win, "muxterm-search-hit-legion@local-7-1").expect("命中行应存在");
         assert!(hit.is_visible(), "命中行应可见");
         assert!(!status.is_visible(), "有命中时占位应隐藏");
 
@@ -99,12 +106,12 @@ fn search_tab_finds_replica_hits_and_jumps() {
             .downcast::<gtk4::ListBox>()
             .expect("ListBox 类型");
         let row = list.selected_row().expect("应自动选中首行");
-        assert_eq!(row.widget_name(), "muxterm-search-hit-legion-7-1");
+        assert_eq!(row.widget_name(), "muxterm-search-hit-legion@local-7-1");
         let _: () = row.emit_by_name("activate", &[]);
         pump_main_loop(40);
         assert_eq!(
             *jumps.borrow(),
-            vec![("legion".to_string(), 7)],
+            vec![("legion@local".to_string(), 7)],
             "激活命中行应跳转到 (legion, 7)"
         );
 

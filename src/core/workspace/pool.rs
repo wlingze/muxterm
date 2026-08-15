@@ -217,6 +217,15 @@ impl WorkspacePool {
         out
     }
 
+    /// 跨全部工作区搜索（含后台），返回带 tab 的命中。
+    pub fn search_all(&self, query: &str) -> Vec<crate::core::workspace::workspace::SearchHit> {
+        let mut out = Vec::new();
+        for slot in self.slots.values() {
+            out.extend(slot.workspace.search_workspace(query));
+        }
+        out
+    }
+
     /// 关闭一个工作区：tmux Detach，shell Shutdown。
     pub fn close(&mut self, id: &WorkspaceId) -> bool {
         if !self.slots.contains_key(id) {
@@ -325,7 +334,7 @@ mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockRuntime;
     use crate::core::model::task::Task;
-    use crate::core::types::PaneId;
+    use crate::core::types::{PaneId, TabId};
     use std::sync::{Arc, Mutex};
 
     fn id(name: &str, runtime: &str) -> WorkspaceId {
@@ -384,6 +393,50 @@ mod tests {
                 .contains("background-token"),
             "activate 后已索引文本仍可读"
         );
+    }
+
+    /// W6：search_all 跨工作区/pane 返回带 tab 的命中；同 pane 不同 tab 不串。
+    #[tokio::test]
+    async fn search_all_finds_hits_across_workspaces_and_panes() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
+        let a = id("a", "tmux");
+        let b = id("b", "tmux");
+        pool.open(a.clone(), "a".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+        pool.open(b.clone(), "b".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+
+        pool.get_mut(&a)
+            .unwrap()
+            .feed_pane_bytes(PaneId(1), b"alpha TOKEN_BODY one\r\n", 80, 24);
+        pool.get_mut(&a)
+            .unwrap()
+            .feed_pane_bytes(PaneId(2), b"beta\r\n", 80, 24);
+        pool.get_mut(&b)
+            .unwrap()
+            .feed_pane_bytes(PaneId(1), b"gamma TOKEN_BODY two\r\n", 80, 24);
+
+        let hits = pool.search_all("TOKEN_BODY");
+        assert_eq!(hits.len(), 2, "两个 pane 各命中一次");
+        assert!(hits.iter().any(|h| {
+            h.workspace_id.contains("a")
+                && h.pane_id == PaneId(1)
+                && h.tab_id == TabId(1)
+                && h.line.contains("TOKEN_BODY")
+        }));
+        assert!(hits.iter().any(|h| {
+            h.workspace_id.contains("b")
+                && h.pane_id == PaneId(1)
+                && h.tab_id == TabId(1)
+                && h.line.contains("TOKEN_BODY")
+        }));
+        assert!(pool.search_all("missing").is_empty());
     }
 
     /// 超容量：tmux mock 计数 detach，shell 计数 shutdown。
