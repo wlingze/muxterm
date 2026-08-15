@@ -27,18 +27,16 @@ use tokio::sync::mpsc;
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::core::model::backend::Backend;
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::core::model::state::{
-    BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
-};
+use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::runtime::tmux::client::{
     ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent,
 };
 use crate::core::runtime::tmux::command as cmd;
 use crate::core::runtime::tmux::protocol::{
-    parse_layout_tree, LayoutTree, Message, NotificationKind,
+    parse_layout_tree, LayoutTree, Message, NotificationKind, TmuxSessionId,
 };
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
 #[derive(Debug, Clone)]
@@ -46,8 +44,8 @@ use crate::core::types::{PaneId, SessionId, TabId, WindowId};
 enum PendingQuery {
     /// 非查询命令的响应占位；避免 split/send-keys 的 `%end` 消耗后续查询。
     Ignore,
-    /// list-panes -t <window> -F '...'：解析所有 pane（pane_id, window_id, active, cols, rows）。
-    ListPanes { window: WindowId },
+    /// list-panes -t <tab> -F '...'：解析所有 pane（pane_id, tab_id, active, cols, rows）。
+    ListPanes { tab: TabId },
     /// list-windows -t <session> -F '...'：解析所有 window（window_id, name, active, layout, panes）。
     ListWindows,
     /// display-message -p -t <pane> '<format>'：取单行响应。
@@ -86,9 +84,11 @@ pub struct TmuxBackend {
     traffic: Option<crate::core::transport::TrafficCounters>,
 
     // ── 内部 state ──────────────────────────────────────────
-    sessions: Vec<SessionInfo>,
-    active_session: Option<SessionId>,
-    windows: Vec<WindowInfo>,
+    /// 当前 bind 的 tmux session 名（= Workspace 名）。
+    workspace_name: String,
+    active_session: Option<TmuxSessionId>,
+    /// list-sessions 查询到的 server 上全部 session（供池层发现）。
+    known_sessions: Vec<(TmuxSessionId, String)>,
     tabs: Vec<TabInfo>,
     panes: Vec<PaneInfo>,
     layouts: HashMap<TabId, TabLayout>,
@@ -107,13 +107,13 @@ pub struct TmuxBackend {
     /// tmux 控制模式是串行的，但高输出下 `%begin/%end` 仍可能与多个在途查询
     /// 交叠。按 number 匹配能避免用简单的 FIFO `pop_front` 错配查询。
     pending_by_number: HashMap<i64, PendingQuery>,
-    /// 缓存每个 window 的 layout 字符串（从 list-windows 响应获取），用于重建 LayoutNode。
-    window_layouts: HashMap<WindowId, String>,
-    /// 当前处于 zoom（`resize-pane -Z` / prefix-z）的 window。
+    /// 缓存每个 tab（tmux window）的 layout 字符串（从 list-windows 响应获取），用于重建 LayoutNode。
+    window_layouts: HashMap<TabId, String>,
+    /// 当前处于 zoom（`resize-pane -Z` / prefix-z）的 tab。
     /// 此时 tmux 的 `window_layout` 仍是完整 split 树，GUI 必须只渲染 active pane。
-    window_zoomed: HashSet<WindowId>,
-    /// 每个 window 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
-    expected_panes_per_window: HashMap<WindowId, usize>,
+    window_zoomed: HashSet<TabId>,
+    /// 每个 tab 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
+    expected_panes_per_window: HashMap<TabId, usize>,
     /// attach 初始快照查询中的 pane。初始 `%output` 不能先喂给前端，
     /// 否则随后 capture-pane 只能追加，已有屏幕内容会重复或缺失。
     initial_capture_pending: HashSet<PaneId>,
@@ -180,22 +180,18 @@ fn capture_pane_bytes(lines: &[String]) -> Vec<u8> {
 impl TmuxBackend {
     // ── 层级映射（docs/LAYER-MAPPING.md 权威定义）──────────
     //
-    // muxterm: Session → Window → Tab → Pane  (4 层)
-    // tmux:    session → window → pane          (3 层)
+    // muxterm: Workspace → Tab → Pane  (3 层)
+    // tmux:    session → window → pane    (3 层)
     //
     // 映射规则：
-    //   tmux session  → muxterm Session  (1:1)
-    //   tmux window   → muxterm Tab      (1:1)  ← tmux window = muxterm Tab，不是 Window！
+    //   tmux session  → Workspace（按名字 bind 一条 session）
+    //   tmux window   → muxterm Tab      (1:1)  ← tmux window = muxterm Tab
     //   tmux pane     → muxterm Pane     (1:1)
-    //   (虚拟)        → muxterm Window   (固定 1 个，绑定 Session)
     //
     // 因此：
-    //   self.windows 永远只有 1 个 WindowInfo（虚拟 Window，id=WindowId(1)）
-    //   self.tabs 的每个 tab.window = WindowId(1)（指向虚拟 Window，不是 tmux @N）
     //   self.tabs 的每个 tab.id = TabId(tmux_window_index)
     //   self.panes 的每个 pane.tab = TabId(tmux_window_index)
-    //   list-windows 返回 1 个 Window
-    //   list-tabs 返回 N 个 Tab（对应 tmux 的 N 个 window）
+    //   list-windows 返回 N 个 Tab（对应 tmux 的 N 个 window）
     /// 创建后端（尚未 connect）。socket 非空时隔离 tmux server（`-L`）。
     pub fn new(socket: Option<&str>) -> Self {
         let mut extra_args: Vec<String> = Vec::new();
@@ -223,9 +219,9 @@ impl TmuxBackend {
             _sender_handle: None,
             command_error_rx: None,
             traffic: None,
-            sessions: vec![],
+            workspace_name: String::new(),
             active_session: None,
-            windows: vec![],
+            known_sessions: vec![],
             tabs: vec![],
             panes: vec![],
             layouts: HashMap::new(),
@@ -311,25 +307,6 @@ impl TmuxBackend {
         backend
     }
 
-    /// 虚拟 Window 的固定 id。一个 session 永远只有 1 个 Window。
-    const VIRTUAL_WINDOW_ID: WindowId = WindowId(1);
-
-    /// 确保虚拟 Window 存在（connect / SessionChanged 时调用）。
-    fn ensure_virtual_window(&mut self) {
-        let sess = self.active_session.unwrap_or(SessionId(0));
-        if !self.windows.iter().any(|w| w.id == Self::VIRTUAL_WINDOW_ID) {
-            self.windows.push(WindowInfo {
-                id: Self::VIRTUAL_WINDOW_ID,
-                name: format!("w{}", Self::VIRTUAL_WINDOW_ID.0),
-                session: sess,
-                active: true,
-            });
-        }
-        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == sess) {
-            s.active_window = Some(Self::VIRTUAL_WINDOW_ID);
-        }
-    }
-
     /// 把指定 tab 标记为 active，并发出 ActiveTabChanged 事件。
     fn mark_tab_active(&mut self, tab_id: TabId) {
         if !self.tabs.iter().any(|t| t.id == tab_id) {
@@ -340,15 +317,13 @@ impl TmuxBackend {
             t.active = t.id == tab_id;
         }
         if current_active != Some(tab_id) {
-            self.events.push_back(StateChange::ActiveTabChanged {
-                window: Self::VIRTUAL_WINDOW_ID,
-                tab: tab_id,
-            });
+            self.events
+                .push_back(StateChange::ActiveTabChanged { tab: tab_id });
         }
     }
 
     /// 目标 tab 的 pane 数据为空时重新查询（兜底）。
-    fn query_panes_if_empty(&mut self, tab_id: TabId, window: WindowId) {
+    fn query_panes_if_empty(&mut self, tab_id: TabId) {
         if !self.owns_tab(tab_id) {
             return;
         }
@@ -357,9 +332,9 @@ impl TmuxBackend {
             tracing::debug!(
                 target: "muxterm::tmux",
                 "切 tab 到 @{} 但 pane 为空，重新查询",
-                window.0
+                tab_id.0
             );
-            self.query_list_panes(window);
+            self.query_list_panes(tab_id);
         }
     }
 
@@ -367,11 +342,11 @@ impl TmuxBackend {
         self.tabs.iter().any(|t| t.id == tab_id)
     }
 
-    fn should_ignore_foreign_window(&self, window: WindowId) -> bool {
-        !self.tabs.is_empty() && !self.owns_tab(TabId(window.0))
+    fn should_ignore_foreign_tab(&self, tab: TabId) -> bool {
+        !self.tabs.is_empty() && !self.owns_tab(tab)
     }
 
-    fn is_attached_session(&self, session: SessionId) -> bool {
+    fn is_attached_session(&self, session: TmuxSessionId) -> bool {
         self.active_session == Some(session)
     }
 
@@ -458,85 +433,61 @@ impl TmuxBackend {
         }
     }
 
-    /// 从内部 state 同步更新 active 标记。
-    fn sync_active_marks(&mut self) {
-        if let Some(sid) = self.active_session {
-            for s in self.sessions.iter_mut() {
-                let is_active = s.id == sid;
-                if is_active {
-                    s.active_window = self.windows.iter().find(|w| w.active).map(|w| w.id);
-                }
-                let _ = is_active;
-            }
-        }
-    }
-
     fn is_attach_mode(&self) -> bool {
         matches!(self.config.mode.as_ref(), Some(ConnectMode::Attach { .. }))
     }
 
-    /// tmux window → muxterm Tab（不是 Window！）。处理 `%window-add`；
+    /// tmux window → muxterm Tab。处理 `%window-add`；
     /// `%unlinked-window-add` 是其它 session 的窗口，不进入当前 tab 列表。
-    fn add_window_tab(&mut self, window: WindowId) {
-        let _sess = self.active_session.unwrap_or(SessionId(0));
-        self.ensure_virtual_window();
-        let tab_id = TabId(window.0);
-        if !self.tabs.iter().any(|t| t.id == tab_id) {
+    fn add_window_tab(&mut self, tab: TabId) {
+        if !self.tabs.iter().any(|t| t.id == tab) {
             self.tabs.push(TabInfo {
-                id: tab_id,
-                name: format!("t{}", window.0),
-                window: Self::VIRTUAL_WINDOW_ID, // 指向虚拟 Window
+                id: tab,
+                name: format!("t{}", tab.0),
                 active: true,
             });
             for t in self.tabs.iter_mut() {
-                if t.id != tab_id {
+                if t.id != tab {
                     t.active = false;
                 }
             }
             self.layouts.insert(
-                tab_id,
+                tab,
                 TabLayout {
-                    tab: tab_id,
+                    tab,
                     tree: LayoutNode::leaf(PaneId(0)),
                     active: PaneId(0),
                 },
             );
-            self.events.push_back(StateChange::TabAdded {
-                tab: tab_id,
-                window: Self::VIRTUAL_WINDOW_ID,
-            });
+            self.events.push_back(StateChange::TabAdded { tab });
         }
         // 主动查询该 tmux window 的 pane
-        self.query_list_panes(window);
+        self.query_list_panes(tab);
     }
 
-    /// tmux window 关闭 → muxterm Tab 关闭（虚拟 Window 不动）。
+    /// tmux window 关闭 → muxterm Tab 关闭。
     /// `%window-close` 与 `%unlinked-window-close` 共用。
-    fn close_window_tab(&mut self, window: WindowId) {
-        let tab_id = TabId(window.0);
+    fn close_window_tab(&mut self, tab: TabId) {
         // 先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
         // 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在
         // PaneClosed 时移除）。
-        for p in self.panes.iter().filter(|p| p.tab == tab_id) {
+        for p in self.panes.iter().filter(|p| p.tab == tab) {
             self.events
                 .push_back(StateChange::PaneClosed { pane: p.id });
         }
-        self.panes.retain(|p| p.tab != tab_id);
-        self.layouts.remove(&tab_id);
-        self.tabs.retain(|t| t.id != tab_id);
-        self.events
-            .push_back(StateChange::TabClosed { tab: tab_id });
+        self.panes.retain(|p| p.tab != tab);
+        self.layouts.remove(&tab);
+        self.tabs.retain(|t| t.id != tab);
+        self.events.push_back(StateChange::TabClosed { tab });
     }
 
     /// tmux window 重命名 → muxterm Tab 重命名。
     /// `%window-renamed` 与 `%unlinked-window-renamed` 共用。
-    fn rename_window_tab(&mut self, window: WindowId, name: String) {
-        let tab_id = TabId(window.0);
-        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+    fn rename_window_tab(&mut self, tab: TabId, name: String) {
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
             t.name = name.clone();
         }
-        self.events
-            .push_back(StateChange::TabRenamed { tab: tab_id, name });
+        self.events.push_back(StateChange::TabRenamed { tab, name });
     }
 
     /// 处理一条 tmux Message，更新内部 state 并产生 StateChange。
@@ -594,7 +545,8 @@ impl TmuxBackend {
             } => {
                 // 同一 tmux server 上其它 session 的 layout-change 也会广播；
                 // 不能对未 attach 的 window 发 list-panes，否则 tab/pane 会串台。
-                if self.should_ignore_foreign_window(window) {
+                let tab = TabId(window.0);
+                if self.should_ignore_foreign_tab(tab) {
                     tracing::debug!(
                         target: "muxterm::tmux",
                         window = window.0,
@@ -617,21 +569,21 @@ impl TmuxBackend {
                     flags = flags.as_deref().unwrap_or(""),
                     "%layout-change 已保存并重新查询 pane"
                 );
-                self.window_layouts.insert(window, layout.raw.clone());
+                self.window_layouts.insert(tab, layout.raw.clone());
                 if window_is_zoomed(
                     flags.as_deref(),
                     &layout.raw,
                     visible_layout.as_ref().map(|v| v.raw.as_str()),
                 ) {
-                    self.window_zoomed.insert(window);
+                    self.window_zoomed.insert(tab);
                 } else {
-                    self.window_zoomed.remove(&window);
+                    self.window_zoomed.remove(&tab);
                 }
                 if let Ok(tree) = parse_layout_tree(&layout.raw) {
                     self.expected_panes_per_window
-                        .insert(window, collect_layout_leaves(&tree).len());
+                        .insert(tab, collect_layout_leaves(&tree).len());
                 }
-                self.query_list_panes(window);
+                self.query_list_panes(tab);
             }
             Message::WindowAdd { window } => {
                 self.add_window_tab(window);
@@ -657,27 +609,24 @@ impl TmuxBackend {
                 self.rename_window_tab(window, name);
             }
             Message::SessionChanged { session, name } => {
-                if !self.sessions.iter().any(|s| s.id == session) {
-                    self.sessions.push(SessionInfo {
-                        id: session,
-                        name: name.clone().unwrap_or_default(),
-                        active_window: None,
-                    });
-                }
                 self.active_session = Some(session);
-                self.ensure_virtual_window();
-                self.events
-                    .push_back(StateChange::SessionChanged { session, name });
+                if let Some(n) = name {
+                    if self.workspace_name != n {
+                        self.workspace_name = n.clone();
+                        self.events
+                            .push_back(StateChange::WorkspaceRenamed { name: n });
+                    }
+                }
             }
             Message::SessionRenamed { session, name } => {
-                if let Some(s) = self.sessions.iter_mut().find(|s| s.id == session) {
-                    s.name = name.clone();
+                if self.active_session == Some(session) && self.workspace_name != name {
+                    self.workspace_name = name.clone();
+                    self.events
+                        .push_back(StateChange::WorkspaceRenamed { name });
                 }
-                self.events
-                    .push_back(StateChange::SessionRenamed { session, name });
             }
             Message::SessionsChanged => {
-                self.events.push_back(StateChange::SessionsChanged);
+                self.events.push_back(StateChange::PoolChanged);
             }
             Message::PaneModeChanged { pane, mode } => {
                 // mode 变化暂用作标题（简化）
@@ -721,13 +670,9 @@ impl TmuxBackend {
                     return;
                 }
                 // tmux session 的 active window 切换 → muxterm active tab 切换
-                // 虚拟 Window 不动（永远 1 个）
                 let tab_id = TabId(window.0);
                 self.mark_tab_active(tab_id);
-                if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session) {
-                    sess.active_window = Some(Self::VIRTUAL_WINDOW_ID);
-                }
-                self.query_panes_if_empty(tab_id, window);
+                self.query_panes_if_empty(tab_id);
             }
             Message::SubscriptionChanged { name, value, pane } => {
                 // status-left/right / pane-cmd 订阅推送 → 前端直接消费（零轮询）。
@@ -834,7 +779,6 @@ impl TmuxBackend {
                 }
             }
         }
-        self.sync_active_marks();
     }
 
     /// 处理一条命令的完整响应（%begin..%end 之间的行）。
@@ -844,8 +788,8 @@ impl TmuxBackend {
         if let Some(query) = self.pending_by_number.remove(&number) {
             match query {
                 PendingQuery::Ignore => {}
-                PendingQuery::ListPanes { window } => {
-                    self.handle_list_panes_response(window, lines);
+                PendingQuery::ListPanes { tab } => {
+                    self.handle_list_panes_response(tab, lines);
                 }
                 PendingQuery::ListWindows => {
                     self.handle_list_windows_response(lines);
@@ -869,13 +813,12 @@ impl TmuxBackend {
                     if let Some(path) = lines.first().map(|s| s.trim().to_string()) {
                         if !path.is_empty() {
                             let tab_id = self.pane(&pane).map(|p| p.tab).unwrap_or(TabId(0));
-                            let tmux_win = WindowId(tab_id.0);
                             let direction = match dir {
                                 SplitDir::Horizontal => cmd::SplitDirection::Horizontal,
                                 SplitDir::Vertical => cmd::SplitDirection::Vertical,
                             };
                             let name = command.as_ref().and_then(|c| c.first()).map(|s| s.as_str());
-                            let c = cmd::split_window(tmux_win, direction, name, Some(&path));
+                            let c = cmd::split_window(tab_id, direction, name, Some(&path));
                             let _ = self.dispatch_tmux_command(&c);
                         }
                     }
@@ -927,6 +870,7 @@ impl TmuxBackend {
                 }
                 PendingQuery::ListSessions => {
                     // list-sessions 默认格式: "demo: 1 windows (created ...)"
+                    let mut changed = false;
                     for line in &lines {
                         let line = line.trim();
                         if line.is_empty() {
@@ -936,21 +880,15 @@ impl TmuxBackend {
                         if name.is_empty() {
                             continue;
                         }
-                        let sid = self
-                            .sessions
-                            .iter()
-                            .find(|s| s.name == name)
-                            .map(|s| s.id)
-                            .unwrap_or(SessionId(self.sessions.len() as u32));
-                        if !self.sessions.iter().any(|s| s.name == name) {
-                            self.sessions.push(SessionInfo {
-                                id: sid,
-                                name: name.to_string(),
-                                active_window: None,
-                            });
+                        if !self.known_sessions.iter().any(|(_, n)| n == name) {
+                            let sid = TmuxSessionId(self.known_sessions.len() as u32);
+                            self.known_sessions.push((sid, name.to_string()));
+                            changed = true;
                         }
                     }
-                    self.events.push_back(StateChange::SessionsChanged);
+                    if changed {
+                        self.events.push_back(StateChange::PoolChanged);
+                    }
                 }
             }
         }
@@ -993,10 +931,10 @@ impl TmuxBackend {
     /// 解析 `list-panes -t @N` 的响应。
     ///
     /// 默认格式："1: [70x30] [history ...] %0 (active)"
-    /// 参数 window 是这些 pane 所属的 tmux window。
-    fn handle_list_panes_response(&mut self, window: WindowId, lines: Vec<String>) {
-        tracing::debug!(target: "muxterm::tmux", "list-panes 响应 window=@{}: {} 行", window.0, lines.len());
-        let tab_id = TabId(window.0);
+    /// 参数 tab 是这些 pane 所属的 tmux window（= muxterm tab）。
+    fn handle_list_panes_response(&mut self, tab: TabId, lines: Vec<String>) {
+        tracing::debug!(target: "muxterm::tmux", "list-panes 响应 tab=@{}: {} 行", tab.0, lines.len());
+        let tab_id = tab;
         let mut new_panes: Vec<PaneInfo> = Vec::new();
         for line in lines {
             let line = line.trim();
@@ -1020,19 +958,19 @@ impl TmuxBackend {
         }
         if let Some(expected) = self
             .expected_panes_per_window
-            .get(&window)
+            .get(&tab)
             .copied()
             .filter(|count| *count > 0)
         {
             if new_panes.len() != expected {
                 tracing::debug!(
                     target: "muxterm::tmux",
-                    "忽略 window=@{} 的不完整 pane 快照: got={}, expected={}",
-                    window.0,
+                    "忽略 tab=@{} 的不完整 pane 快照: got={}, expected={}",
+                    tab.0,
                     new_panes.len(),
                     expected
                 );
-                self.query_list_panes(window);
+                self.query_list_panes(tab);
                 return;
             }
         }
@@ -1074,7 +1012,7 @@ impl TmuxBackend {
             changed = true;
         }
         if changed || !new_panes.is_empty() {
-            self.rebuild_layout(tab_id, window, &new_panes);
+            self.rebuild_layout(tab_id, &new_panes);
         }
         // attach 的控制模式不一定会把当前屏幕历史作为 %output 推送；对尚无
         // 累计输出的 pane 查询一次可见屏幕。查询结果通过同一个事件队列回流，
@@ -1087,63 +1025,55 @@ impl TmuxBackend {
     /// 解析 `list-windows -t <session> -F '#{window_id},#{window_name},#{window_active},#{window_layout},#{window_panes},#{window_zoomed_flag}'` 的响应。
     fn handle_list_windows_response(&mut self, lines: Vec<String>) {
         // tmux list-windows 返回所有 tmux window → 每个创建/更新一个 muxterm Tab
-        // 虚拟 Window 不动（永远 1 个）
-        self.ensure_virtual_window();
         for line in lines {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
             // window_layout 本身含逗号（如 `d67e,80x24,0,0{...}`），不能用 splitn(5)
-            let Some((tmux_window, name, active, layout_str, panes_count, zoomed)) =
+            let Some((tab, name, active, layout_str, panes_count, zoomed)) =
                 parse_list_windows_line(line)
             else {
                 tracing::warn!(target: "muxterm::tmux", "list-windows 行解析失败: {line}");
                 continue;
             };
-            self.window_layouts.insert(tmux_window, layout_str);
+            self.window_layouts.insert(tab, layout_str);
             if zoomed {
-                self.window_zoomed.insert(tmux_window);
+                self.window_zoomed.insert(tab);
             } else {
-                self.window_zoomed.remove(&tmux_window);
+                self.window_zoomed.remove(&tab);
             }
-            self.expected_panes_per_window
-                .insert(tmux_window, panes_count);
+            self.expected_panes_per_window.insert(tab, panes_count);
 
             // tmux window → muxterm Tab
-            let tab_id = TabId(tmux_window.0);
-            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
                 t.name = name.clone();
                 t.active = active;
             } else {
                 self.tabs.push(TabInfo {
-                    id: tab_id,
+                    id: tab,
                     name: name.clone(),
-                    window: Self::VIRTUAL_WINDOW_ID, // 指向虚拟 Window
                     active,
                 });
-                self.events.push_back(StateChange::TabAdded {
-                    tab: tab_id,
-                    window: Self::VIRTUAL_WINDOW_ID,
-                });
+                self.events.push_back(StateChange::TabAdded { tab });
             }
 
             // 主动查询该 tmux window 的 panes
-            self.query_list_panes(tmux_window);
+            self.query_list_panes(tab);
         }
     }
 
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
-    fn query_list_panes(&mut self, window: WindowId) {
+    fn query_list_panes(&mut self, tab: TabId) {
         // 用 list-panes -t @N 查询单个 window 的 pane（默认格式不含 window_id）。
-        if self.pending_queries.iter().any(|query| {
-            matches!(query, PendingQuery::ListPanes { window: pending } if *pending == window)
-        }) {
+        if self.pending_queries.iter().any(
+            |query| matches!(query, PendingQuery::ListPanes { tab: pending } if *pending == tab),
+        ) {
             return;
         }
-        let line = format!("list-panes -t @{}\n", window.0);
+        let line = format!("list-panes -t @{}\n", tab.0);
         if self.dispatch_command(line).is_ok() {
-            self.replace_last_pending(PendingQuery::ListPanes { window });
+            self.replace_last_pending(PendingQuery::ListPanes { tab });
         }
     }
 
@@ -1271,7 +1201,7 @@ impl TmuxBackend {
     ///
     /// 需要 list-windows 的 window_layout 字符串。这里通过几何匹配把
     /// LayoutTree 叶子映射到 pane id（位置匹配）。
-    fn rebuild_layout(&mut self, tab_id: TabId, window: WindowId, panes: &[PaneInfo]) {
+    fn rebuild_layout(&mut self, tab_id: TabId, panes: &[PaneInfo]) {
         if panes.is_empty() {
             return;
         }
@@ -1281,7 +1211,7 @@ impl TmuxBackend {
             .map(|p| p.id)
             .unwrap_or(panes[0].id);
         // zoom：pane 快照仍有全部 pane，但 GUI 只显示当前 pane（tmux prefix-z）。
-        if self.window_zoomed.contains(&window) {
+        if self.window_zoomed.contains(&tab_id) {
             let layout = TabLayout {
                 tab: tab_id,
                 tree: LayoutNode::leaf(active),
@@ -1302,7 +1232,7 @@ impl TmuxBackend {
             self.push_layout_changed(layout);
             return;
         }
-        let layout_str = match self.window_layouts.get(&window) {
+        let layout_str = match self.window_layouts.get(&tab_id) {
             Some(s) => s.clone(),
             None => {
                 self.build_fallback_layout(tab_id, panes, active);
@@ -1386,21 +1316,12 @@ impl TmuxBackend {
 }
 
 impl State for TmuxBackend {
-    fn sessions(&self) -> &[SessionInfo] {
-        &self.sessions
+    fn workspace_name(&self) -> &str {
+        &self.workspace_name
     }
 
-    fn active_session(&self) -> Option<&SessionInfo> {
-        self.active_session
-            .and_then(|sid| self.sessions.iter().find(|s| s.id == sid))
-    }
-
-    fn active_window(&self) -> Option<&WindowInfo> {
-        self.windows.iter().find(|w| w.active)
-    }
-
-    fn all_windows(&self) -> Vec<&WindowInfo> {
-        self.windows.iter().collect()
+    fn workspace_runtime(&self) -> &str {
+        "tmux"
     }
 
     fn active_tab(&self) -> Option<&TabInfo> {
@@ -1411,9 +1332,8 @@ impl State for TmuxBackend {
         self.panes.iter().find(|p| p.active)
     }
 
-    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
-        // 所有 tab 都属于虚拟 Window（window 字段 = VIRTUAL_WINDOW_ID）
-        self.tabs.iter().filter(|t| &t.window == window).collect()
+    fn tabs(&self) -> Vec<&TabInfo> {
+        self.tabs.iter().collect()
     }
 
     fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
@@ -1501,12 +1421,12 @@ impl Backend for TmuxBackend {
             self.pump_events();
             if is_attach {
                 // attach 模式只需 session 事件
-                if !self.sessions.is_empty() {
+                if self.active_session.is_some() {
                     break;
                 }
             } else {
                 // new-session 模式需 session + window
-                if !self.sessions.is_empty() && !self.windows.is_empty() {
+                if self.active_session.is_some() && !self.tabs.is_empty() {
                     break;
                 }
             }
@@ -1517,7 +1437,7 @@ impl Backend for TmuxBackend {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
-        if self.sessions.is_empty() {
+        if self.active_session.is_none() {
             self.status = BackendStatus::Error;
             self.events
                 .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
@@ -1530,8 +1450,8 @@ impl Backend for TmuxBackend {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             self.pump_events();
-            // 等 list-windows 响应到达：windows 非空且 expected_panes_per_window 非空
-            if !self.windows.is_empty() && !self.expected_panes_per_window.is_empty() {
+            // 等 list-windows 响应到达：tabs 非空且 expected_panes_per_window 非空
+            if !self.tabs.is_empty() && !self.expected_panes_per_window.is_empty() {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -1548,9 +1468,8 @@ impl Backend for TmuxBackend {
             let all_ready = self
                 .expected_panes_per_window
                 .iter()
-                .all(|(wid, expected)| {
-                    let tab_id = TabId(wid.0);
-                    self.panes.iter().filter(|p| p.tab == tab_id).count() >= *expected
+                .all(|(tab, expected)| {
+                    self.panes.iter().filter(|p| p.tab == *tab).count() >= *expected
                 });
             if all_ready {
                 break;
@@ -1588,9 +1507,8 @@ impl Backend for TmuxBackend {
                 let target =
                     target.unwrap_or_else(|| self.active_pane().map(|p| p.id).unwrap_or(PaneId(0)));
                 // tmux split-window 用 target pane 所在 tmux window
-                // tab_id.0 = tmux window index → WindowId(tab_id.0) = tmux @N
+                // tab_id.0 = tmux window index → tmux @N
                 let tab_id = self.pane(&target).map(|p| p.tab).unwrap_or(TabId(0));
-                let tmux_win = WindowId(tab_id.0); // tmux window id = @N
                 let direction = match dir {
                     SplitDir::Horizontal => cmd::SplitDirection::Horizontal,
                     SplitDir::Vertical => cmd::SplitDirection::Vertical,
@@ -1599,7 +1517,7 @@ impl Backend for TmuxBackend {
                 match workdir {
                     Some(dir) => {
                         // 显式指定目录：直接 split -c。
-                        let c = cmd::split_window(tmux_win, direction, name, Some(dir));
+                        let c = cmd::split_window(tab_id, direction, name, Some(dir));
                         if self.dispatch_tmux_command(&c).is_err() {
                             return Ok(TaskOutcome::Rejected {
                                 reason: "发送命令失败".into(),
@@ -1658,62 +1576,13 @@ impl Backend for TmuxBackend {
                 }
                 TaskOutcome::Done
             }
-            Task::NewWindow { name, .. } => {
-                let sess = self.active_session.unwrap_or(SessionId(0));
-
-                let c = cmd::new_window(sess, name.as_deref());
-
-                if self.dispatch_tmux_command(&c).is_err() {
+            Task::RenameWorkspace { name } => {
+                let Some(sess) = self.active_session else {
                     return Ok(TaskOutcome::Rejected {
-                        reason: "发送命令失败".into(),
+                        reason: "tmux 未连接".into(),
                     });
-                }
-                TaskOutcome::Done
-            }
-            Task::CloseWindow { target } => {
-                // muxterm 只有 1 个虚拟 Window，CloseWindow 在 TmuxBackend 中
-                // 实际是关闭 Tab（target.0 = tmux window index）
-                let c = cmd::kill_window(*target);
-                if self.dispatch_tmux_command(&c).is_err() {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: "发送命令失败".into(),
-                    });
-                }
-                TaskOutcome::Done
-            }
-            Task::SwitchWindow { target } => {
-                // muxterm 只有 1 个虚拟 Window，SwitchWindow 在 TmuxBackend 中
-                // 实际是切换 Tab（target.0 = tmux window index）
-                let c = cmd::select_window(*target);
-                if self.dispatch_tmux_command(&c).is_err() {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: "发送命令失败".into(),
-                    });
-                }
-                TaskOutcome::Done
-            }
-            Task::RenameWindow { target, name } => {
-                // muxterm 只有 1 个虚拟 Window，RenameWindow 在 TmuxBackend 中
-                // 实际是重命名 Tab（target.0 = tmux window index）
-                let c = cmd::rename_window(*target, name);
-                if self.dispatch_tmux_command(&c).is_err() {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: "发送命令失败".into(),
-                    });
-                }
-                TaskOutcome::Done
-            }
-            Task::SwitchSession { target } => {
-                let c = cmd::TmuxCommand::from_raw(format!("switch-client -t {}", target));
-                if self.dispatch_tmux_command(&c).is_err() {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: "发送命令失败".into(),
-                    });
-                }
-                TaskOutcome::Done
-            }
-            Task::RenameSession { target, name } => {
-                let c = cmd::rename_session(*target, name);
+                };
+                let c = cmd::rename_session(sess, name);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
@@ -1821,14 +1690,13 @@ impl Backend for TmuxBackend {
                 }
                 TaskOutcome::Done
             }
-            Task::NewTab {
-                window: _,
-                name,
-                command: _,
-                workdir: _,
-            } => {
+            Task::NewTab { name, .. } => {
                 // tmux 的 tab = tmux window，新建 tab = 新建 tmux window
-                let sess = self.active_session.unwrap_or(SessionId(0));
+                let Some(sess) = self.active_session else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "tmux 未连接".into(),
+                    });
+                };
                 let c = cmd::new_window(sess, name.as_deref());
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
@@ -1840,8 +1708,7 @@ impl Backend for TmuxBackend {
 
             Task::CloseTab { target } => {
                 // tmux tab = tmux window，关闭 tab = kill-window
-                let win_id = WindowId(target.0);
-                let c = cmd::kill_window(win_id);
+                let c = cmd::kill_window(*target);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
@@ -1851,8 +1718,7 @@ impl Backend for TmuxBackend {
             }
 
             Task::SwitchTab { target } => {
-                let win_id = WindowId(target.0);
-                let c = cmd::select_window(win_id);
+                let c = cmd::select_window(*target);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
@@ -1861,14 +1727,13 @@ impl Backend for TmuxBackend {
                 // 乐观更新 active tab：tmux 在输出洪峰下可能延迟回
                 // %session-window-changed，前端等太久会以为切 tab 不生效。
                 // 真正的通知到达后 mark_tab_active 幂等，不会重复切换。
-                self.mark_tab_active(TabId(target.0));
-                self.query_panes_if_empty(TabId(target.0), win_id);
+                self.mark_tab_active(*target);
+                self.query_panes_if_empty(*target);
                 TaskOutcome::Done
             }
 
             Task::RenameTab { target, name } => {
-                let win_id = WindowId(target.0);
-                let c = cmd::rename_window(win_id, name);
+                let c = cmd::rename_window(*target, name);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
@@ -1879,7 +1744,11 @@ impl Backend for TmuxBackend {
 
             Task::Detach => {
                 // 显式 detach 只关闭当前 control client，不杀 tmux server/session。
-                let sess = self.active_session.unwrap_or(SessionId(0));
+                let Some(sess) = self.active_session else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "tmux 未连接".into(),
+                    });
+                };
                 let c = cmd::detach_client(sess);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
@@ -1899,7 +1768,11 @@ impl Backend for TmuxBackend {
             Task::Shutdown => {
                 // 生命周期清理仍使用独立的 shutdown 状态；正常的 tmux
                 // shutdown 也先 detach control client，再回收本地进程句柄。
-                let sess = self.active_session.unwrap_or(SessionId(0));
+                let Some(sess) = self.active_session else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "tmux 未连接".into(),
+                    });
+                };
                 let c = cmd::detach_client(sess);
                 let _ = self.dispatch_tmux_command(&c);
                 self.status = BackendStatus::Exited;
@@ -1956,18 +1829,18 @@ impl Backend for TmuxBackend {
 ///
 /// 格式：`@N,name,active,LAYOUT,panes`
 /// LAYOUT 含逗号，因此前三个字段用 `split_once`，最后一个用 `rsplit_once`。
-fn parse_list_windows_line(line: &str) -> Option<(WindowId, String, bool, String, usize, bool)> {
+fn parse_list_windows_line(line: &str) -> Option<(TabId, String, bool, String, usize, bool)> {
     let (id_str, rest) = line.split_once(',')?;
     let (name, rest) = rest.split_once(',')?;
     let (active_str, rest) = rest.split_once(',')?;
     let (layout_and_panes, zoomed_str) = rest.rsplit_once(',')?;
     let (layout_str, panes_str) = layout_and_panes.rsplit_once(',')?;
-    let tmux_window = WindowId::parse(id_str).ok()?;
+    let tab = TabId::parse(id_str).ok()?;
     let active = active_str == "1";
     let panes_count = panes_str.parse().ok()?;
     let zoomed = zoomed_str == "1";
     Some((
-        tmux_window,
+        tab,
         name.to_string(),
         active,
         layout_str.to_string(),
@@ -2147,7 +2020,7 @@ mod tests {
         let line =
             "@1,zsh,1,d67e,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]},3,0";
         let (wid, name, active, layout, panes, zoomed) = parse_list_windows_line(line).unwrap();
-        assert_eq!(wid, WindowId(1));
+        assert_eq!(wid, TabId(1));
         assert_eq!(name, "zsh");
         assert!(active);
         assert_eq!(
@@ -2208,18 +2081,12 @@ mod tests {
     fn unlinked_window_close_closes_tab() {
         let mut b = TmuxBackend::new(None);
         // 先加两个 tab
-        b.handle_message(Message::WindowAdd {
-            window: WindowId(0),
-        });
-        b.handle_message(Message::WindowAdd {
-            window: WindowId(1),
-        });
+        b.handle_message(Message::WindowAdd { window: TabId(0) });
+        b.handle_message(Message::WindowAdd { window: TabId(1) });
         assert!(b.tabs.iter().any(|t| t.id == TabId(1)));
 
         // 实测：kill-window 时控制客户端收到 %unlinked-window-close
-        b.handle_message(Message::UnlinkedWindowClose {
-            window: WindowId(1),
-        });
+        b.handle_message(Message::UnlinkedWindowClose { window: TabId(1) });
 
         assert!(!b.tabs.iter().any(|t| t.id == TabId(1)), "tab1 应被关闭");
         assert!(b.tabs.iter().any(|t| t.id == TabId(0)), "tab0 应保留");
@@ -2232,12 +2099,10 @@ mod tests {
     #[test]
     fn unlinked_window_renamed_updates_tab_name() {
         let mut b = TmuxBackend::new(None);
-        b.handle_message(Message::WindowAdd {
-            window: WindowId(0),
-        });
+        b.handle_message(Message::WindowAdd { window: TabId(0) });
 
         b.handle_message(Message::UnlinkedWindowRenamed {
-            window: WindowId(0),
+            window: TabId(0),
             name: "renamed-tab".into(),
         });
 
@@ -2327,7 +2192,7 @@ mod tests {
     #[test]
     fn layout_change_rebuilds_from_latest_nested_tmux_tree() {
         let mut b = TmuxBackend::new(None);
-        let window = WindowId(0);
+        let window = TabId(0);
         let latest = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
 
         b.handle_message(Message::LayoutChange {
@@ -2385,7 +2250,7 @@ mod tests {
     #[test]
     fn layout_change_zoom_collapses_to_active_pane() {
         let mut b = TmuxBackend::new(None);
-        let window = WindowId(0);
+        let window = TabId(0);
         let full = "aabd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}";
         let visible = "bbcd,80x24,0,0,1";
         b.handle_message(Message::LayoutChange {
@@ -2429,7 +2294,7 @@ mod tests {
     #[test]
     fn incomplete_pane_snapshot_does_not_collapse_layout() {
         let mut b = TmuxBackend::new(None);
-        let window = WindowId(0);
+        let window = TabId(0);
         let layout = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
         b.handle_message(Message::LayoutChange {
             window,
@@ -2449,7 +2314,7 @@ mod tests {
     #[test]
     fn pending_layout_events_are_coalesced_per_tab() {
         let mut b = TmuxBackend::new(None);
-        let window = WindowId(0);
+        let window = TabId(0);
         let layout = "1268,140x30,0,0{70x30,0,0,0,69x30,71,0[69x15,71,0,1,69x14,71,16,2]}";
         let message = || Message::LayoutChange {
             window,
@@ -2770,8 +2635,8 @@ mod tests {
                 e,
                 StateChange::BackendStatusChanged(BackendStatus::Connected)
             )));
-            assert!(!b.sessions().is_empty());
-            assert!(!b.windows.is_empty());
+            assert!(b.active_session.is_some());
+            assert!(!b.tabs.is_empty());
             let _ = b.shutdown().await;
         };
         let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
@@ -2791,7 +2656,7 @@ mod tests {
             }
             let _ = b.take_events();
             let initial_tabs = b.tabs.len();
-            b.execute(&Task::NewWindow {
+            b.execute(&Task::NewTab {
                 name: Some("test-win".into()),
                 command: None,
                 workdir: None,
@@ -2813,7 +2678,7 @@ mod tests {
                 "新 tab（tmux window）未建立: tabs={}",
                 b.tabs.len()
             );
-            assert_eq!(b.windows.len(), 1, "虚拟 Window 应始终只有 1 个");
+            assert_eq!(b.tabs.len(), initial_tabs + 1, "NewTab 应新增 1 个 tab");
             let _ = b.shutdown().await;
         };
         let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
@@ -3029,7 +2894,6 @@ mod tests {
         let pane = PaneId(1);
         // 先放一个 ActiveTabChanged（切 tab 的确认事件）
         b.events.push_back(StateChange::ActiveTabChanged {
-            window: crate::core::types::WindowId(1),
             tab: crate::core::types::TabId(14),
         });
         // 灌入远超上限的 PaneOutput
@@ -3108,12 +2972,11 @@ mod tests {
 
         let mut b = TmuxBackend::new(None);
         // 预置一个 window + 两个 pane 在同一 tab
-        let win = crate::core::types::WindowId(0);
+        let win = crate::core::types::TabId(0);
         let tab = crate::core::types::TabId(0);
         b.tabs.push(crate::core::model::state::TabInfo {
             id: tab,
             name: "t0".into(),
-            window: crate::core::runtime::tmux::backend::TmuxBackend::VIRTUAL_WINDOW_ID,
             active: true,
         });
         b.panes.push(crate::core::model::state::PaneInfo {
@@ -3166,12 +3029,11 @@ mod tests {
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxBackend::new(None);
-        let win = crate::core::types::WindowId(2);
+        let win = crate::core::types::TabId(2);
         let tab = crate::core::types::TabId(2);
         b.tabs.push(crate::core::model::state::TabInfo {
             id: tab,
             name: "t2".into(),
-            window: TmuxBackend::VIRTUAL_WINDOW_ID,
             active: false,
         });
         for id in [5u32, 6] {
@@ -3207,6 +3069,49 @@ mod tests {
         );
     }
 
+    /// W3：attach 假布局「tmux 2 window / 4 pane」→ 2 个 Tab、pane 挂在对应 tab，
+    /// 产品层无 Window/Session 概念（编译期由 types 移除保证）。
+    #[test]
+    fn attach_snapshot_maps_windows_to_tabs_without_product_window() {
+        let mut b = TmuxBackend::new(None);
+        b.workspace_name = "demo".into();
+        b.active_session = Some(crate::core::runtime::tmux::protocol::TmuxSessionId(0));
+
+        // list-windows 响应：2 个 tmux window（@0 1 pane，@1 3 panes）
+        b.handle_list_windows_response(vec![
+            "@0,main,1,bbcd,80x24,0,0,1,1,0".into(),
+            "@1,code,0,d67e,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]},3,0"
+                .into(),
+        ]);
+        assert_eq!(b.tabs.len(), 2, "2 个 tmux window → 2 个 Tab");
+        assert!(b.tabs.iter().any(|t| t.id == TabId(0) && t.name == "main"));
+        assert!(b.tabs.iter().any(|t| t.id == TabId(1) && t.name == "code"));
+
+        // list-panes 响应：@0 有 1 个 pane，@1 有 3 个 pane
+        b.handle_list_panes_response(
+            TabId(0),
+            vec!["0: [80x24] [history 0/2000, 0/2000 bytes] %0 (active)".into()],
+        );
+        b.handle_list_panes_response(
+            TabId(1),
+            vec![
+                "1: [80x24] [history 0/2000, 0/2000 bytes] %1 (active)".into(),
+                "2: [80x24] [history 0/2000, 0/2000 bytes] %2".into(),
+                "3: [80x24] [history 0/2000, 0/2000 bytes] %3".into(),
+            ],
+        );
+        assert_eq!(b.panes.len(), 4, "4 个 pane");
+        assert!(b
+            .panes
+            .iter()
+            .all(|p| p.tab == TabId(0) || p.tab == TabId(1)));
+        assert_eq!(b.panes.iter().filter(|p| p.tab == TabId(0)).count(), 1);
+        assert_eq!(b.panes.iter().filter(|p| p.tab == TabId(1)).count(), 3);
+        // 产品层无 Window：State 只暴露 workspace/tab/pane
+        assert_eq!(b.workspace_name(), "demo");
+        assert_eq!(b.workspace_runtime(), "tmux");
+    }
+
     /// 回归：未指定 workdir 的 split 先查当前 pane 路径，再用该路径 split -c，
     /// 保证从 a/b 切分出来的新 pane 也在 a/b 而不是窗口根目录 a。
     #[test]
@@ -3228,7 +3133,6 @@ mod tests {
         b.tabs.push(crate::core::model::state::TabInfo {
             id: crate::core::types::TabId(7),
             name: "t7".into(),
-            window: TmuxBackend::VIRTUAL_WINDOW_ID,
             active: true,
         });
         // 建立命令通道，捕获后续 dispatch 的命令
@@ -3271,26 +3175,21 @@ mod tests {
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxBackend::new(None);
-        let session = crate::core::types::SessionId(0);
-        b.sessions.push(crate::core::model::state::SessionInfo {
-            id: session,
-            name: "s0".into(),
-            active_window: None,
-        });
+        let session = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
+        b.workspace_name = "s0".into();
         b.active_session = Some(session);
         // 预置两个 tab（对应两个 tmux window @0 @1）
         for (id, active) in [(0u32, true), (1, false)] {
             b.tabs.push(crate::core::model::state::TabInfo {
                 id: crate::core::types::TabId(id),
                 name: format!("t{id}"),
-                window: crate::core::runtime::tmux::backend::TmuxBackend::VIRTUAL_WINDOW_ID,
                 active,
             });
         }
 
         b.handle_message(Message::SessionWindowChanged {
             session,
-            window: crate::core::types::WindowId(1),
+            window: crate::core::types::TabId(1),
         });
 
         // tab1 应变为 active，tab0 不再 active
@@ -3322,23 +3221,18 @@ mod tests {
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxBackend::new(None);
-        let attached = crate::core::types::SessionId(0);
-        b.sessions.push(crate::core::model::state::SessionInfo {
-            id: attached,
-            name: "yaklang-workspace".into(),
-            active_window: None,
-        });
+        let attached = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
+        b.workspace_name = "yaklang-workspace".into();
         b.active_session = Some(attached);
         b.tabs.push(crate::core::model::state::TabInfo {
             id: crate::core::types::TabId(0),
             name: "Monitor".into(),
-            window: TmuxBackend::VIRTUAL_WINDOW_ID,
             active: true,
         });
 
         b.handle_message(Message::SessionWindowChanged {
-            session: crate::core::types::SessionId(4),
-            window: crate::core::types::WindowId(20),
+            session: crate::core::runtime::tmux::protocol::TmuxSessionId(4),
+            window: crate::core::types::TabId(20),
         });
 
         assert!(b.tabs[0].active, "其它 session 的通知不应取消当前 tab");
@@ -3376,7 +3270,7 @@ mod tests {
 
         // %session-changed $4 yaklang-workspace → active_session = $4。
         b.handle_message(Message::SessionChanged {
-            session: crate::core::types::SessionId(4),
+            session: crate::core::runtime::tmux::protocol::TmuxSessionId(4),
             name: Some("yaklang-workspace".into()),
         });
         b.query_list_windows();
@@ -3395,29 +3289,23 @@ mod tests {
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxBackend::new(None);
-        let attached = crate::core::types::SessionId(4);
+        let attached = crate::core::runtime::tmux::protocol::TmuxSessionId(4);
         b.active_session = Some(attached);
-        b.sessions.push(crate::core::model::state::SessionInfo {
-            id: attached,
-            name: "yaklang-workspace".into(),
-            active_window: None,
-        });
+        b.workspace_name = "yaklang-workspace".into();
         b.tabs.push(crate::core::model::state::TabInfo {
             id: crate::core::types::TabId(21),
             name: "code".into(),
-            window: TmuxBackend::VIRTUAL_WINDOW_ID,
             active: false,
         });
         b.tabs.push(crate::core::model::state::TabInfo {
             id: crate::core::types::TabId(29),
             name: "other".into(),
-            window: TmuxBackend::VIRTUAL_WINDOW_ID,
             active: true,
         });
 
         b.handle_message(Message::SessionWindowChanged {
             session: attached,
-            window: crate::core::types::WindowId(21),
+            window: crate::core::types::TabId(21),
         });
 
         let t21 = b
@@ -3453,11 +3341,10 @@ mod tests {
         b.tabs.push(crate::core::model::state::TabInfo {
             id: crate::core::types::TabId(0),
             name: "Monitor".into(),
-            window: TmuxBackend::VIRTUAL_WINDOW_ID,
             active: true,
         });
         b.handle_message(Message::LayoutChange {
-            window: crate::core::types::WindowId(20),
+            window: crate::core::types::TabId(20),
             layout: crate::core::runtime::tmux::protocol::LayoutChange::parse("abcd,80x24,0,0,1")
                 .unwrap(),
             visible_layout: None,
@@ -3466,7 +3353,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "外站 window 不应触发 list-panes");
         assert!(!b
             .window_layouts
-            .contains_key(&crate::core::types::WindowId(20)));
+            .contains_key(&crate::core::types::TabId(20)));
     }
 
     /// Task::SwitchTab 应乐观更新 active tab：即使 %session-window-changed
@@ -3480,18 +3367,13 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
         b.status = crate::core::model::state::BackendStatus::Connected;
-        let session = crate::core::types::SessionId(0);
-        b.sessions.push(crate::core::model::state::SessionInfo {
-            id: session,
-            name: "s0".into(),
-            active_window: None,
-        });
+        let session = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
+        b.workspace_name = "s0".into();
         b.active_session = Some(session);
         for (id, active) in [(0u32, true), (1, false), (2, false)] {
             b.tabs.push(crate::core::model::state::TabInfo {
                 id: crate::core::types::TabId(id),
                 name: format!("t{id}"),
-                window: crate::core::runtime::tmux::backend::TmuxBackend::VIRTUAL_WINDOW_ID,
                 active,
             });
         }
@@ -3520,7 +3402,7 @@ mod tests {
         let before = b.events.len();
         b.handle_message(Message::SessionWindowChanged {
             session,
-            window: crate::core::types::WindowId(2),
+            window: crate::core::types::TabId(2),
         });
         let after = b.events.len();
         assert_eq!(after, before, "幂等通知不应重复产生 ActiveTabChanged");
@@ -3574,7 +3456,7 @@ mod tests {
 
         // 插入 %layout-change（带合法 layout 字符串）
         b.handle_message(Message::LayoutChange {
-            window: crate::core::types::WindowId(0),
+            window: crate::core::types::TabId(0),
             layout: crate::core::runtime::tmux::protocol::LayoutChange::parse("80x24,0,0,0")
                 .unwrap(),
             visible_layout: None,

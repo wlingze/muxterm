@@ -1015,7 +1015,7 @@ mod tests {
                 // 创建第二个窗口，再 list-windows，应得到 2 行响应
                 handle
                     .send_command(&super::super::command::new_window(
-                        super::super::command::SessionId(0),
+                        super::super::command::TmuxSessionId(0),
                         Some("second"),
                     ))
                     .await
@@ -1025,7 +1025,7 @@ mod tests {
 
                 handle
                     .send_command(&super::super::command::list_windows(
-                        super::super::command::SessionId(0),
+                        super::super::command::TmuxSessionId(0),
                     ))
                     .await
                     .unwrap();

@@ -10,15 +10,15 @@
 use super::*;
 #[allow(unused_imports)]
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
+use crate::core::model::state::{PaneInfo, TabInfo};
 use crate::core::model::task::Task;
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 use std::sync::{Arc, Mutex};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。
 pub struct MockBackend {
-    pub(crate) sessions: Vec<SessionInfo>,
-    pub(crate) windows: Vec<WindowInfo>,
+    pub(crate) workspace_name: String,
+    pub(crate) workspace_runtime: String,
     pub(crate) tabs: Vec<TabInfo>,
     pub(crate) panes: Vec<PaneInfo>,
     pub(crate) layouts: Vec<TabLayout>,
@@ -39,8 +39,8 @@ impl Default for MockBackend {
 impl MockBackend {
     pub fn new() -> Self {
         Self {
-            sessions: vec![],
-            windows: vec![],
+            workspace_name: "mock".into(),
+            workspace_runtime: "tmux".into(),
             tabs: vec![],
             panes: vec![],
             layouts: vec![],
@@ -55,21 +55,9 @@ impl MockBackend {
     /// 预置一个单 pane 的最简状态，并标记 Connected。
     pub fn with_single_pane() -> Self {
         let mut b = Self::new();
-        b.sessions.push(SessionInfo {
-            id: SessionId(1),
-            name: "mock".into(),
-            active_window: Some(WindowId(1)),
-        });
-        b.windows.push(WindowInfo {
-            id: WindowId(1),
-            name: "w1".into(),
-            session: SessionId(1),
-            active: true,
-        });
         b.tabs.push(TabInfo {
             id: TabId(1),
             name: "t1".into(),
-            window: WindowId(1),
             active: true,
         });
         b.panes.push(PaneInfo {
@@ -92,17 +80,11 @@ impl MockBackend {
 }
 
 impl State for MockBackend {
-    fn sessions(&self) -> &[SessionInfo] {
-        &self.sessions
+    fn workspace_name(&self) -> &str {
+        &self.workspace_name
     }
-    fn active_session(&self) -> Option<&SessionInfo> {
-        self.sessions.first()
-    }
-    fn active_window(&self) -> Option<&WindowInfo> {
-        self.windows.iter().find(|w| w.active)
-    }
-    fn all_windows(&self) -> Vec<&WindowInfo> {
-        self.windows.iter().collect()
+    fn workspace_runtime(&self) -> &str {
+        &self.workspace_runtime
     }
     fn active_tab(&self) -> Option<&TabInfo> {
         self.tabs.iter().find(|t| t.active)
@@ -110,8 +92,8 @@ impl State for MockBackend {
     fn active_pane(&self) -> Option<&PaneInfo> {
         self.panes.iter().find(|p| p.active)
     }
-    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
-        self.tabs.iter().filter(|t| &t.window == window).collect()
+    fn tabs(&self) -> Vec<&TabInfo> {
+        self.tabs.iter().collect()
     }
     fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
         self.tabs.iter().find(|t| &t.id == tab)
@@ -295,146 +277,10 @@ impl Backend for MockBackend {
                 }
                 TaskOutcome::Done
             }
-            Task::NewWindow { name, .. } => {
-                let new_win = WindowId(self.windows.iter().map(|w| w.id.0).max().unwrap_or(0) + 1);
-                let new_tab = TabId(self.tabs.iter().map(|t| t.id.0).max().unwrap_or(0) + 1);
-                let sess = self.sessions.first().map(|s| s.id).unwrap_or(SessionId(1));
-                // 旧 window 取消 active
-                for w in self.windows.iter_mut() {
-                    w.active = false;
-                }
-                for t in self.tabs.iter_mut() {
-                    t.active = false;
-                }
-                self.windows.push(WindowInfo {
-                    id: new_win,
-                    name: name.clone().unwrap_or_else(|| format!("w{}", new_win.0)),
-                    session: sess,
-                    active: true,
-                });
-                self.tabs.push(TabInfo {
-                    id: new_tab,
-                    name: format!("t{}", new_tab.0),
-                    window: new_win,
-                    active: true,
-                });
-                let new_pane = PaneId(self.panes.iter().map(|p| p.id.0).max().unwrap_or(0) + 1);
-                self.panes.push(PaneInfo {
-                    id: new_pane,
-                    tab: new_tab,
-                    active: true,
-                    title: "bash".into(),
-                    cols: 80,
-                    rows: 24,
-                });
-                self.outputs.push((new_pane, Vec::new()));
-                self.layouts.push(TabLayout {
-                    tab: new_tab,
-                    tree: LayoutNode::leaf(new_pane),
-                    active: new_pane,
-                });
-                if let Some(s) = self.sessions.iter_mut().find(|s| s.id == sess) {
-                    s.active_window = Some(new_win);
-                }
-                self.events.push(StateChange::WindowAdded {
-                    window: new_win,
-                    session: sess,
-                });
-                self.events.push(StateChange::ActiveWindowChanged {
-                    session: sess,
-                    window: new_win,
-                });
-                TaskOutcome::Done
-            }
-            Task::CloseWindow { target } => {
-                if !self.windows.iter().any(|w| w.id == *target) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {target} 不存在"),
-                    });
-                }
-                let sess = self
-                    .windows
-                    .iter()
-                    .find(|w| w.id == *target)
-                    .map(|w| w.session)
-                    .unwrap_or(SessionId(1));
-                // 移除该 window 下所有 tab + pane
-                let tab_ids: Vec<TabId> = self
-                    .tabs
-                    .iter()
-                    .filter(|t| t.window == *target)
-                    .map(|t| t.id)
-                    .collect();
-                let to_remove: Vec<PaneId> = self
-                    .panes
-                    .iter()
-                    .filter(|p| tab_ids.contains(&p.tab))
-                    .map(|p| p.id)
-                    .collect();
-                self.panes.retain(|p| !to_remove.contains(&p.id));
-                self.outputs.retain(|(pid, _)| !to_remove.contains(pid));
-                self.tabs.retain(|t| t.window != *target);
-                self.layouts.retain(|l| !tab_ids.contains(&l.tab));
-                self.windows.retain(|w| w.id != *target);
-                // active window 切到剩余的第一个
-                if let Some(w) = self.windows.first() {
-                    let wid = w.id;
-                    for x in self.windows.iter_mut() {
-                        x.active = x.id == wid;
-                    }
-                    if let Some(s) = self.sessions.iter_mut().find(|s| s.id == sess) {
-                        s.active_window = Some(wid);
-                    }
-                    self.events.push(StateChange::ActiveWindowChanged {
-                        session: sess,
-                        window: wid,
-                    });
-                }
+            Task::RenameWorkspace { name } => {
+                self.workspace_name = name.clone();
                 self.events
-                    .push(StateChange::WindowClosed { window: *target });
-                TaskOutcome::Done
-            }
-            Task::SwitchWindow { target } => {
-                if !self.windows.iter().any(|w| w.id == *target) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {target} 不存在"),
-                    });
-                }
-                let sess = self
-                    .windows
-                    .iter()
-                    .find(|w| w.id == *target)
-                    .map(|w| w.session)
-                    .unwrap_or(SessionId(1));
-                for w in self.windows.iter_mut() {
-                    w.active = w.id == *target;
-                }
-                if let Some(s) = self.sessions.iter_mut().find(|s| s.id == sess) {
-                    s.active_window = Some(*target);
-                }
-                self.events.push(StateChange::ActiveWindowChanged {
-                    session: sess,
-                    window: *target,
-                });
-                TaskOutcome::Done
-            }
-            Task::RenameWindow { target, name } => {
-                if !self.windows.iter().any(|w| w.id == *target) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {target} 不存在"),
-                    });
-                }
-                if let Some(w) = self.windows.iter_mut().find(|w| w.id == *target) {
-                    w.name = name.clone();
-                }
-                self.events.push(StateChange::WindowRenamed {
-                    window: *target,
-                    name: name.clone(),
-                });
-                TaskOutcome::Done
-            }
-            Task::SwitchSession { .. } | Task::RenameSession { .. } => {
-                // 单 session mock，直接 Done
+                    .push(StateChange::WorkspaceRenamed { name: name.clone() });
                 TaskOutcome::Done
             }
             Task::SendKeys { target, keys } => {
@@ -518,27 +364,18 @@ impl Backend for MockBackend {
                 TaskOutcome::Done
             }
             Task::NewTab {
-                window,
                 name,
                 command: _,
                 workdir: _,
             } => {
-                if !self.windows.iter().any(|w| w.id == *window) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {window} 不存在"),
-                    });
-                }
                 let new_tab = TabId(self.tabs.iter().map(|t| t.id.0).max().unwrap_or(0) + 1);
                 let new_pane = PaneId(self.panes.iter().map(|p| p.id.0).max().unwrap_or(0) + 1);
                 for t in self.tabs.iter_mut() {
-                    if t.window == *window {
-                        t.active = false;
-                    }
+                    t.active = false;
                 }
                 self.tabs.push(TabInfo {
                     id: new_tab,
                     name: name.clone().unwrap_or_else(|| format!("t{}", new_tab.0)),
-                    window: *window,
                     active: true,
                 });
                 self.panes.push(PaneInfo {
@@ -555,10 +392,7 @@ impl Backend for MockBackend {
                     tree: LayoutNode::leaf(new_pane),
                     active: new_pane,
                 });
-                self.events.push(StateChange::TabAdded {
-                    tab: new_tab,
-                    window: *window,
-                });
+                self.events.push(StateChange::TabAdded { tab: new_tab });
                 self.events.push(StateChange::PaneAdded {
                     pane: new_pane,
                     tab: new_tab,
@@ -583,20 +417,11 @@ impl Backend for MockBackend {
                         reason: format!("tab {target} 不存在"),
                     });
                 }
-                let win = self.tabs.iter().find(|t| t.id == *target).map(|t| t.window);
                 for t in self.tabs.iter_mut() {
-                    if let Some(w) = win {
-                        if t.window == w {
-                            t.active = t.id == *target;
-                        }
-                    }
+                    t.active = t.id == *target;
                 }
-                if let Some(w) = win {
-                    self.events.push(StateChange::ActiveTabChanged {
-                        window: w,
-                        tab: *target,
-                    });
-                }
+                self.events
+                    .push(StateChange::ActiveTabChanged { tab: *target });
                 TaskOutcome::Done
             }
             Task::RenameTab { target, name } => {
@@ -698,8 +523,8 @@ mod tests {
     #[test]
     fn mock_backend_take_events_drains() {
         let mut b = MockBackend::with_single_pane();
-        b.events.push(StateChange::SessionsChanged);
-        b.events.push(StateChange::SessionsChanged);
+        b.events.push(StateChange::PoolChanged);
+        b.events.push(StateChange::PoolChanged);
         assert_eq!(b.take_events().len(), 2);
         assert!(b.take_events().is_empty()); // 已排空
     }

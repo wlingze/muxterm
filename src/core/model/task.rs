@@ -9,7 +9,7 @@
 use crate::core::config::Rgb;
 use crate::core::model::layout::SplitDir;
 use crate::core::protocol::terminal::input::KeyEvent;
-use crate::core::types::{PaneId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 
 /// 所有终端操作任务。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,25 +57,9 @@ pub enum Task {
     /// 切换到上一个 pane（循环）。
     PrevPane,
 
-    // ── Tab / Window 操作 ─────────────────────────────────
-    /// 新建 window（tab），可选名字。新建后焦点跳到新 window。
-    NewWindow {
-        name: Option<String>,
-        /// 新 window 第一个 pane 的启动程序；None = 默认。
-        command: Option<Vec<String>>,
-        workdir: Option<String>,
-    },
-    /// 关闭 window（含所有 tab/pane）。
-    CloseWindow { target: WindowId },
-    /// 切换激活 window（同 session 内）。
-    SwitchWindow { target: WindowId },
-    /// 重命名 window。
-    RenameWindow { target: WindowId, name: String },
-
     // ── Tab 操作 ───────────────────────────────────────────
-    /// 在 window 内新建 tab。新建后焦点跳到新 tab。
+    /// 在当前 Workspace 新建 tab。新建后焦点跳到新 tab。
     NewTab {
-        window: WindowId,
         name: Option<String>,
         /// 新 tab 第一个 pane 的启动程序；None = 默认。
         command: Option<Vec<String>>,
@@ -88,16 +72,9 @@ pub enum Task {
     /// 重命名 tab。
     RenameTab { target: TabId, name: String },
 
-    // ── Session 操作 ──────────────────────────────────────
-    /// 切换激活 session。
-    SwitchSession {
-        target: crate::core::types::SessionId,
-    },
-    /// 重命名 session。
-    RenameSession {
-        target: crate::core::types::SessionId,
-        name: String,
-    },
+    // ── Workspace 操作 ────────────────────────────────────
+    /// 重命名当前 Workspace。
+    RenameWorkspace { name: String },
 
     // ── 输入 ──────────────────────────────────────────────
     /// 向 pane 发送按键序列（tmux send-keys / 本地 pty write）。
@@ -125,7 +102,7 @@ impl Task {
             Task::SplitPane { target: None, .. }
                 | Task::NextPane
                 | Task::PrevPane
-                | Task::NewWindow { .. }
+                | Task::NewTab { .. }
         )
     }
 
@@ -133,11 +110,7 @@ impl Task {
     pub fn is_readonly(&self) -> bool {
         matches!(
             self,
-            Task::SwitchPane { .. }
-                | Task::NextPane
-                | Task::PrevPane
-                | Task::SwitchWindow { .. }
-                | Task::SwitchSession { .. }
+            Task::SwitchPane { .. } | Task::NextPane | Task::PrevPane
         )
     }
 }
@@ -202,8 +175,8 @@ mod tests {
     }
 
     #[test]
-    fn new_window_needs_active_for_inherited_cwd() {
-        let t = Task::NewWindow {
+    fn new_tab_needs_active_for_inherited_cwd() {
+        let t = Task::NewTab {
             name: None,
             command: None,
             workdir: None,

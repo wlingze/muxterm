@@ -3,7 +3,7 @@
 //! 支持 20+ 命令（spec 定义），缩写兼容。
 //! 不依赖 clap subcommand（保持 main.rs 的 clap Parser 兼容）。
 
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 
 /// CLI 解析错误。
 #[derive(Debug, Clone)]
@@ -28,54 +28,33 @@ impl std::error::Error for CliError {}
 /// CLI 命令（已解析的结构化表示）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CliCommand {
-    // Session
-    NewSession {
+    // Workspace
+    NewWorkspace {
         name: Option<String>,
         socket: Option<String>,
     },
-    KillSession {
-        target: Option<SessionId>,
+    CloseWorkspace {
+        target: Option<String>,
     },
-    ListSessions,
-    AttachSession {
+    ListWorkspaces,
+    AttachWorkspace {
         target: String,
     },
     Detach {
-        target: Option<SessionId>,
+        target: Option<String>,
     },
-    RenameSession {
-        new_name: String,
-    },
-
-    // Window
-    NewWindow {
-        name: Option<String>,
-        session: Option<SessionId>,
-    },
-    KillWindow {
-        target: Option<WindowId>,
-    },
-    ListWindows {
-        session: Option<SessionId>,
-    },
-    SelectWindow {
-        target: WindowId,
-    },
-    RenameWindow {
+    RenameWorkspace {
         new_name: String,
     },
 
     // Tab
     NewTab {
         name: Option<String>,
-        window: Option<WindowId>,
     },
     KillTab {
         target: Option<TabId>,
     },
-    ListTabs {
-        window: Option<WindowId>,
-    },
+    ListTabs,
     SelectTab {
         target: TabId,
     },
@@ -125,9 +104,7 @@ pub enum CliCommand {
     },
 
     // 布局查询
-    ListLayout {
-        window: Option<WindowId>,
-    },
+    ListLayout,
     DisplayMessage {
         target: PaneId,
         format: String,
@@ -168,57 +145,34 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
     let rest = &filtered[1..];
 
     let command = match cmd {
-        // Session
-        "new-session" | "new" => CliCommand::NewSession {
+        // Workspace
+        "new-workspace" | "new-session" | "new" => CliCommand::NewWorkspace {
             name: get_opt_arg(rest, "-n"),
             socket: get_opt_arg(rest, "-s"),
         },
-        "kill-session" => CliCommand::KillSession {
-            target: get_opt_arg(rest, "-t").and_then(|s| parse_session_id(&s)),
+        "close-workspace" | "kill-session" => CliCommand::CloseWorkspace {
+            target: get_opt_arg(rest, "-t"),
         },
-        "list-sessions" | "ls" => CliCommand::ListSessions,
-        "attach-session" | "attach" => CliCommand::AttachSession {
+        "list-workspaces" | "list-sessions" | "ls" => CliCommand::ListWorkspaces,
+        "attach-workspace" | "attach-session" | "attach" => CliCommand::AttachWorkspace {
             target: get_req_arg(rest, "-t")
-                .ok_or_else(|| CliError::MissingArg("-t session".into()))?,
+                .ok_or_else(|| CliError::MissingArg("-t workspace".into()))?,
         },
         "detach" => CliCommand::Detach {
-            target: get_opt_arg(rest, "-t").and_then(|s| parse_session_id(&s)),
+            target: get_opt_arg(rest, "-t"),
         },
-        "rename-session" => CliCommand::RenameSession {
+        "rename-workspace" | "rename-session" => CliCommand::RenameWorkspace {
             new_name: rest.first().cloned().unwrap_or_default(),
         },
 
-        // Window
-        "new-window" | "neww" => CliCommand::NewWindow {
+        // Tab（tmux new-window = 我们的 new-tab）
+        "new-tab" | "new-window" | "neww" => CliCommand::NewTab {
             name: get_opt_arg(rest, "-n"),
-            session: get_opt_arg(rest, "-t").and_then(|s| parse_session_id(&s)),
-        },
-        "kill-window" | "killw" => CliCommand::KillWindow {
-            target: get_opt_arg(rest, "-t").and_then(|s| parse_window_id(&s)),
-        },
-        "list-windows" | "lsw" => CliCommand::ListWindows {
-            session: get_opt_arg(rest, "-t").and_then(|s| parse_session_id(&s)),
-        },
-        "select-window" | "selectw" => CliCommand::SelectWindow {
-            target: get_req_arg(rest, "-t")
-                .and_then(|s| parse_window_id(&s))
-                .ok_or_else(|| CliError::MissingArg("-t window".into()))?,
-        },
-        "rename-window" | "renamew" => CliCommand::RenameWindow {
-            new_name: rest.first().cloned().unwrap_or_default(),
-        },
-
-        // Tab
-        "new-tab" => CliCommand::NewTab {
-            name: get_opt_arg(rest, "-n"),
-            window: get_opt_arg(rest, "-t").and_then(|s| parse_window_id(&s)),
         },
         "kill-tab" => CliCommand::KillTab {
             target: get_opt_arg(rest, "-t").and_then(|s| parse_tab_id(&s)),
         },
-        "list-tabs" | "lst" => CliCommand::ListTabs {
-            window: get_opt_arg(rest, "-t").and_then(|s| parse_window_id(&s)),
-        },
+        "list-tabs" | "lst" => CliCommand::ListTabs,
         "select-tab" => CliCommand::SelectTab {
             target: get_req_arg(rest, "-t")
                 .and_then(|s| parse_tab_id(&s))
@@ -278,9 +232,7 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
         },
 
         // 布局查询
-        "list-layout" => CliCommand::ListLayout {
-            window: get_opt_arg(rest, "-t").and_then(|s| parse_window_id(&s)),
-        },
+        "list-layout" => CliCommand::ListLayout,
         "display-message" => CliCommand::DisplayMessage {
             target: get_req_arg(rest, "-t")
                 .and_then(|s| parse_pane_id(&s))
@@ -385,20 +337,9 @@ fn parse_pane_id(s: &str) -> Option<PaneId> {
     s.strip_prefix('@').and_then(|n| n.parse().ok()).map(PaneId)
 }
 
-fn parse_window_id(s: &str) -> Option<WindowId> {
-    // 接受 w1 或 1
-    let n = s.strip_prefix('w').unwrap_or(s);
-    n.parse().ok().map(WindowId)
-}
-
 fn parse_tab_id(s: &str) -> Option<TabId> {
     let n = s.strip_prefix('t').unwrap_or(s);
     n.parse().ok().map(TabId)
-}
-
-fn parse_session_id(s: &str) -> Option<SessionId> {
-    let n = s.strip_prefix('$').unwrap_or(s);
-    n.parse().ok().map(SessionId)
 }
 
 #[cfg(test)]
@@ -414,21 +355,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_new_session() {
+    fn parse_new_workspace() {
         let (cmd, _) = parse_cli_command(&args("new-session", &["-n", "dev"])).unwrap();
-        assert!(matches!(cmd, CliCommand::NewSession { name: Some(ref n), .. } if n == "dev"));
+        assert!(matches!(cmd, CliCommand::NewWorkspace { name: Some(ref n), .. } if n == "dev"));
     }
 
     #[test]
-    fn parse_new_session_alias() {
+    fn parse_new_workspace_alias() {
         let (cmd, _) = parse_cli_command(&args("new", &["-n", "test", "-s", "sock"])).unwrap();
-        assert!(matches!(cmd, CliCommand::NewSession { .. }));
+        assert!(matches!(cmd, CliCommand::NewWorkspace { .. }));
     }
 
     #[test]
-    fn parse_list_sessions_alias() {
+    fn parse_list_workspaces_alias() {
         let (cmd, _) = parse_cli_command(&args("ls", &[])).unwrap();
-        assert!(matches!(cmd, CliCommand::ListSessions));
+        assert!(matches!(cmd, CliCommand::ListWorkspaces));
     }
 
     #[test]
@@ -580,43 +521,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_new_window() {
-        let (cmd, _) = parse_cli_command(&args("new-window", &["-n", "main"])).unwrap();
-        assert!(matches!(cmd, CliCommand::NewWindow { name: Some(ref n), .. } if n == "main"));
-    }
-
-    #[test]
-    fn parse_kill_window() {
-        let (cmd, _) = parse_cli_command(&args("killw", &["-t", "w2"])).unwrap();
-        assert!(matches!(
-            cmd,
-            CliCommand::KillWindow {
-                target: Some(WindowId(2))
-            }
-        ));
-    }
-
-    #[test]
-    fn parse_list_windows() {
-        let (cmd, _) = parse_cli_command(&args("lsw", &[])).unwrap();
-        assert!(matches!(cmd, CliCommand::ListWindows { .. }));
-    }
-
-    #[test]
-    fn parse_select_window() {
-        let (cmd, _) = parse_cli_command(&args("selectw", &["-t", "w3"])).unwrap();
-        assert!(matches!(
-            cmd,
-            CliCommand::SelectWindow {
-                target: WindowId(3)
-            }
-        ));
-    }
-
-    #[test]
-    fn parse_new_tab() {
+    fn parse_new_tab_and_new_window_alias() {
         let (cmd, _) = parse_cli_command(&args("new-tab", &["-n", "shell"])).unwrap();
         assert!(matches!(cmd, CliCommand::NewTab { name: Some(ref n), .. } if n == "shell"));
+        let (cmd, _) = parse_cli_command(&args("new-window", &["-n", "main"])).unwrap();
+        assert!(matches!(cmd, CliCommand::NewTab { name: Some(ref n), .. } if n == "main"));
     }
 
     #[test]
@@ -632,13 +541,8 @@ mod tests {
 
     #[test]
     fn parse_list_tabs() {
-        let (cmd, _) = parse_cli_command(&args("lst", &["-t", "w1"])).unwrap();
-        assert!(matches!(
-            cmd,
-            CliCommand::ListTabs {
-                window: Some(WindowId(1))
-            }
-        ));
+        let (cmd, _) = parse_cli_command(&args("lst", &[])).unwrap();
+        assert!(matches!(cmd, CliCommand::ListTabs));
     }
 
     #[test]
@@ -648,34 +552,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_attach_session() {
-        let (cmd, _) = parse_cli_command(&args("attach", &["-t", "$1"])).unwrap();
+    fn parse_attach_workspace() {
+        let (cmd, _) = parse_cli_command(&args("attach", &["-t", "demo"])).unwrap();
         match cmd {
-            CliCommand::AttachSession { target } => assert_eq!(target, "$1"),
+            CliCommand::AttachWorkspace { target } => assert_eq!(target, "demo"),
             other => panic!("unexpected: {other:?}"),
         }
     }
 
     #[test]
-    fn parse_kill_session() {
-        let (cmd, _) = parse_cli_command(&args("kill-session", &["-t", "$2"])).unwrap();
+    fn parse_close_workspace() {
+        let (cmd, _) = parse_cli_command(&args("close-workspace", &["-t", "demo"])).unwrap();
         assert!(matches!(
             cmd,
-            CliCommand::KillSession {
-                target: Some(SessionId(2))
-            }
+            CliCommand::CloseWorkspace {
+                target: Some(ref t)
+            } if t == "demo"
         ));
     }
 
     #[test]
     fn parse_list_layout() {
-        let (cmd, _) = parse_cli_command(&args("list-layout", &["-t", "w1"])).unwrap();
-        assert!(matches!(
-            cmd,
-            CliCommand::ListLayout {
-                window: Some(WindowId(1))
-            }
-        ));
+        let (cmd, _) = parse_cli_command(&args("list-layout", &[])).unwrap();
+        assert!(matches!(cmd, CliCommand::ListLayout));
     }
 
     #[test]

@@ -105,11 +105,9 @@ impl TerminalModel {
     /// 白底白字）。这里遍历全部 pane，一次性对齐 tmux 的颜色代答。
     pub fn report_all_pane_colours(&mut self, fg: Rgb, bg: Rgb) -> usize {
         let mut targets: Vec<PaneId> = Vec::new();
-        if let Some(w) = self.state().active_window() {
-            for t in self.state().tabs(&w.id) {
-                for p in self.state().panes(&t.id) {
-                    targets.push(p.id);
-                }
+        for t in self.state().tabs() {
+            for p in self.state().panes(&t.id) {
+                targets.push(p.id);
             }
         }
         let mut dispatched = 0;
@@ -132,7 +130,7 @@ impl TerminalModel {
     /// - `SplitPane { target: None }` → 填入 active pane id
     /// - `NextPane` → 用布局树算出下一个 pane，转成 `SwitchPane`
     /// - `PrevPane` → 用布局树算出上一个 pane，转成 `SwitchPane`
-    /// - `NewWindow` → 不需要 target（cwd 继承由 backend 内部从 active pane 查询），
+    /// - `NewTab` → 不需要 target（cwd 继承由 backend 内部从 active pane 查询），
     ///   保持原样传给 backend
     fn resolve_active_pane(&self, task: Task) -> Task {
         if !task.needs_active_pane() {
@@ -167,7 +165,7 @@ impl TerminalModel {
                 Some(id) => Task::SwitchPane { target: id },
                 None => Task::PrevPane,
             },
-            // NewWindow 不需要 pane target；cwd 继承由 backend 内部从 active pane 查询。
+            // NewTab 不需要 pane target；cwd 继承由 backend 内部从 active pane 查询。
             // needs_active_pane 返回 true 只是为了提示「需要 active 存在」。
             t => t,
         }
@@ -284,7 +282,7 @@ mod tests {
     use crate::core::model::layout::SplitDir;
     use crate::core::model::state::BackendStatus;
     use crate::core::protocol::terminal::input::KeyEvent;
-    use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+    use crate::core::types::{PaneId, TabId};
 
     use std::sync::{Arc, Mutex};
 
@@ -569,26 +567,16 @@ mod tests {
     fn report_all_pane_colours_covers_every_tab() {
         use crate::core::config::Rgb;
         use crate::core::model::layout::{LayoutNode, TabLayout};
-        use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
+        use crate::core::model::state::{PaneInfo, TabInfo};
 
         let mut backend = MockBackend::new();
         backend.status = BackendStatus::Connected;
-        backend.sessions.push(SessionInfo {
-            id: SessionId(1),
-            name: "s".into(),
-            active_window: Some(WindowId(1)),
-        });
-        backend.windows.push(WindowInfo {
-            id: WindowId(1),
-            name: "w".into(),
-            session: SessionId(1),
-            active: true,
-        });
+        backend.workspace_name = "s".into();
+        backend.workspace_runtime = "tmux".into();
         for (ti, pi) in [(1u32, 1u32), (2u32, 2u32)] {
             backend.tabs.push(TabInfo {
                 id: TabId(ti),
                 name: format!("t{ti}"),
-                window: WindowId(1),
                 active: ti == 1,
             });
             backend.panes.push(PaneInfo {
@@ -755,9 +743,9 @@ mod tests {
     }
 
     #[test]
-    fn new_window_adds_window_and_first_pane() {
+    fn new_tab_adds_tab_and_first_pane() {
         let mut m = make_model();
-        m.execute(Task::NewWindow {
+        m.execute(Task::NewTab {
             name: Some("dev".into()),
             command: None,
             workdir: None,
@@ -766,39 +754,33 @@ mod tests {
         let events = m.poll_events();
         assert!(events
             .iter()
-            .any(|e| matches!(e, StateChange::WindowAdded { .. })));
-        // 校验：window 数量增加（新 window 有自己的 pane），active 切到新 window
-        assert_eq!(m.state().sessions()[0].name, "mock");
+            .any(|e| matches!(e, StateChange::TabAdded { .. })));
+        // 校验：tab 数量增加（新 tab 有自己的 pane），active 切到新 tab
+        assert_eq!(m.state().workspace_name(), "mock");
         let total_panes = m.state().panes(&TabId(1)).len() + m.state().panes(&TabId(2)).len();
         assert!(total_panes >= 2);
-        assert_eq!(m.state().active_window().map(|w| w.id), Some(WindowId(2)));
+        assert_eq!(m.state().active_tab().map(|t| t.id), Some(TabId(2)));
     }
 
     #[test]
-    fn close_window_removes_all_panes() {
+    fn close_tab_removes_all_panes() {
         let mut m = make_model();
-        m.execute(Task::NewWindow {
+        m.execute(Task::NewTab {
             name: None,
             command: None,
             workdir: None,
         })
         .unwrap();
         let _ = m.poll_events();
-        assert_eq!(m.state().active_window().map(|w| w.id), Some(WindowId(2)));
+        assert_eq!(m.state().active_tab().map(|t| t.id), Some(TabId(2)));
 
-        m.execute(Task::CloseWindow {
-            target: WindowId(2),
-        })
-        .unwrap();
+        m.execute(Task::CloseTab { target: TabId(2) }).unwrap();
         let events = m.poll_events();
-        assert!(events.iter().any(|e| matches!(
-            e,
-            StateChange::WindowClosed {
-                window: WindowId(2)
-            }
-        )));
-        // active window 应回到 1
-        assert_eq!(m.state().active_window().map(|w| w.id), Some(WindowId(1)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StateChange::TabClosed { tab: TabId(2) })));
+        // 剩 tab 1
+        assert_eq!(m.state().tabs().len(), 1);
     }
 
     #[test]
@@ -901,22 +883,17 @@ mod tests {
     }
 
     #[test]
-    fn rename_window_event_emitted() {
+    fn rename_workspace_event_emitted() {
         let mut m = make_model();
-        m.execute(Task::RenameWindow {
-            target: WindowId(1),
+        m.execute(Task::RenameWorkspace {
             name: "renamed".into(),
         })
         .unwrap();
         let events = m.poll_events();
-        assert!(events.iter().any(|e| matches!(
-            e,
-            StateChange::WindowRenamed {
-                window: WindowId(1),
-                ..
-            }
-        )));
-        assert_eq!(m.state().active_window().unwrap().name, "renamed");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StateChange::WorkspaceRenamed { .. })));
+        assert_eq!(m.state().workspace_name(), "renamed");
     }
 
     #[test]

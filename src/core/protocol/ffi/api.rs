@@ -15,7 +15,7 @@ use crate::core::model::state::StateChange;
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
 use crate::core::runtime::{DaemonBackend, LocalBackend, TmuxBackend};
-use crate::core::types::{PaneId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::session::session_socket_path;
 
 use super::callbacks::FfiCallbacks;
@@ -667,19 +667,11 @@ fn ctask_to_task(task: &CTask, model: &TerminalModel) -> Option<Task> {
                 workdir: None,
             })
         }
-        TASK_NEW_TAB => {
-            let window = model
-                .state()
-                .active_window()
-                .map(|w| w.id)
-                .unwrap_or(WindowId(0));
-            Some(Task::NewTab {
-                window,
-                name,
-                command: None,
-                workdir: None,
-            })
-        }
+        TASK_NEW_TAB => Some(Task::NewTab {
+            name,
+            command: None,
+            workdir: None,
+        }),
         TASK_SWITCH_TAB => Some(Task::SwitchTab {
             target: TabId(task.target_tab),
         }),
@@ -749,10 +741,9 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             out.data = p;
             out.data_len = n;
         }
-        StateChange::TabAdded { tab, window } => {
+        StateChange::TabAdded { tab } => {
             out.type_ = STATE_TAB_ADDED;
             out.tab_id = tab.0;
-            out.window_id = window.0;
         }
         StateChange::TabClosed { tab } => {
             out.type_ = STATE_TAB_CLOSED;
@@ -771,9 +762,8 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             out.type_ = STATE_PANE_CLOSED;
             out.pane_id = pane.0;
         }
-        StateChange::ActiveTabChanged { window, tab } => {
+        StateChange::ActiveTabChanged { tab } => {
             out.type_ = STATE_ACTIVE_TAB_CHANGED;
-            out.window_id = window.0;
             out.tab_id = tab.0;
         }
         StateChange::ActivePaneChanged { tab, pane } => {
@@ -1072,11 +1062,7 @@ pub unsafe extern "C" fn muxterm_get_tabs(
     }
     let handle = &mut *h;
     handle.tab_names.clear();
-    let window = match handle.model.state().active_window() {
-        Some(w) => w.id,
-        None => return 0,
-    };
-    let tabs = handle.model.state().tabs(&window);
+    let tabs = handle.model.state().tabs();
     let n = tabs.len().min(max_count as usize);
     let slice = std::slice::from_raw_parts_mut(out, n);
     for (i, t) in tabs.iter().take(n).enumerate() {

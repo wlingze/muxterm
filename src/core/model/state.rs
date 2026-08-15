@@ -1,32 +1,22 @@
-//! 终端状态快照类型 + `State` trait。
+//! 终端状态快照类型 + `State` trait（产品模型：Workspace → Tab → Pane）。
 //!
-//! `State` 描述「当前 session/window/pane 的完整快照」，由 Backend 维护，
+//! `State` 描述「当前 Workspace 的完整快照」，由 Backend 维护，
 //! 被 TerminalModel 和前端读取。纯数据接口，**不依赖任何 I/O 或 GUI**。
 //!
 //! 设计要点：
-//! - 前端只读 `State` 做渲染；状态变更通过 `BackendEvent` 推送（见 `backend.rs`）。
+//! - 前端只读 `State` 做渲染；状态变更通过 `StateChange` 推送。
 //! - pane 输出是字节流（`&[u8]`），因为可能含非 UTF-8 的 ANSI 序列。
 //! - 所有方法返回 `Option` / `&` 引用，不 clone，便于高频渲染。
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 
-/// 一个 session 的元信息。
+/// 工作区元信息（Backend 侧可知的部分：名字与 runtime 种类）。
+/// `WorkspaceId` / transport 属于池层，由 WorkspacePool 持有。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionInfo {
-    pub id: SessionId,
+pub struct WorkspaceInfo {
     pub name: String,
-    /// 该 session 当前激活的 window（若有）。
-    pub active_window: Option<WindowId>,
-}
-
-/// 一个 window 的元信息。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct WindowInfo {
-    pub id: WindowId,
-    pub name: String,
-    /// 所属 session。
-    pub session: SessionId,
-    /// 是否激活（在所属 session 中）。
-    pub active: bool,
+    pub runtime: String,
+    /// 该工作区当前激活的 tab（若有）。
+    pub active_tab: Option<TabId>,
 }
 
 /// 一个 tab 的元信息。
@@ -34,9 +24,7 @@ pub struct WindowInfo {
 pub struct TabInfo {
     pub id: TabId,
     pub name: String,
-    /// 所属 window。
-    pub window: WindowId,
-    /// 是否激活（在所属 window 中）。
+    /// 是否激活（在所属 Workspace 中）。
     pub active: bool,
 }
 
@@ -66,23 +54,14 @@ pub enum StateChange {
         /// 自上次事件以来的增量字节。
         data: Vec<u8>,
     },
-    /// 新 window 被加入。
-    WindowAdded {
-        window: WindowId,
-        session: SessionId,
-    },
-    /// window 被关闭。
-    WindowClosed { window: WindowId },
-    /// window 被重命名。
-    WindowRenamed { window: WindowId, name: String },
     /// tab 被加入。
-    TabAdded { tab: TabId, window: WindowId },
+    TabAdded { tab: TabId },
     /// tab 被关闭。
     TabClosed { tab: TabId },
     /// tab 被重命名。
     TabRenamed { tab: TabId, name: String },
     /// 激活的 tab 变化。
-    ActiveTabChanged { window: WindowId, tab: TabId },
+    ActiveTabChanged { tab: TabId },
     /// tab 布局变化（分割 / resize / pane 增减）。
     LayoutChanged {
         tab: TabId,
@@ -99,20 +78,10 @@ pub enum StateChange {
     PaneResized { pane: PaneId, cols: u16, rows: u16 },
     /// 激活的 pane 变化。
     ActivePaneChanged { tab: TabId, pane: PaneId },
-    /// 激活的 window 变化。
-    ActiveWindowChanged {
-        session: SessionId,
-        window: WindowId,
-    },
-    /// 当前 session 变化。
-    SessionChanged {
-        session: SessionId,
-        name: Option<String>,
-    },
-    /// session 被重命名。
-    SessionRenamed { session: SessionId, name: String },
-    /// session 列表变化。
-    SessionsChanged,
+    /// 工作区被重命名。
+    WorkspaceRenamed { name: String },
+    /// 池里工作区列表变化（open / close / evict）。
+    PoolChanged,
     /// status bar 订阅推送（`refresh-client -B` → `%subscription-changed`）。
     /// name 是订阅名（如 `muxterm.status-left`），value 是 format 展开值；
     /// pane 是订阅元数据里的 pane-id（status-left/right 为 None）。
@@ -145,19 +114,11 @@ pub enum BackendStatus {
 /// Backend 实现此 trait，TerminalModel 持有 `&dyn State`，前端也只读 `State`。
 /// 所有方法不可失败（找不到返回 `None`），调用方自行处理。
 pub trait State {
-    /// 当前所有 session。
-    fn sessions(&self) -> &[SessionInfo];
+    /// 工作区名字（tmux 时常用 session 名；shell 用目录名/配置名）。
+    fn workspace_name(&self) -> &str;
 
-    /// 当前激活的 session。
-    fn active_session(&self) -> Option<&SessionInfo>;
-
-    /// 当前激活的 window（属于激活 session）。
-    fn active_window(&self) -> Option<&WindowInfo>;
-
-    /// 所有 window（跨 session）。默认实现返回空（后端可覆盖）。
-    fn all_windows(&self) -> Vec<&WindowInfo> {
-        Vec::new()
-    }
+    /// 工作区 runtime 种类（`"tmux"` / `"shell"`）。
+    fn workspace_runtime(&self) -> &str;
 
     /// 当前激活的 tab（属于激活 window）。
     fn active_tab(&self) -> Option<&TabInfo>;
@@ -165,8 +126,8 @@ pub trait State {
     /// 当前激活的 pane（属于激活 tab）。
     fn active_pane(&self) -> Option<&PaneInfo>;
 
-    /// 某 window 下的所有 tab。
-    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo>;
+    /// 工作区里所有 tab。
+    fn tabs(&self) -> Vec<&TabInfo>;
 
     /// 某 tab 的元信息。
     fn tab(&self, tab: &TabId) -> Option<&TabInfo>;
@@ -195,33 +156,23 @@ mod tests {
 
     /// 一个最小可用的内存 State 实现，用于 trait 编译期检查 + 后续 mock。
     struct MemState {
-        sessions: Vec<SessionInfo>,
-        windows: Vec<WindowInfo>,
+        workspace_name: String,
+        workspace_runtime: String,
         tabs: Vec<TabInfo>,
         panes: Vec<PaneInfo>,
         layouts: Vec<crate::core::model::layout::TabLayout>,
         outputs: Vec<(PaneId, Vec<u8>)>,
         status: BackendStatus,
-        active_session: Option<SessionId>,
-        active_window: Option<WindowId>,
         active_tab: Option<TabId>,
         active_pane: Option<PaneId>,
     }
 
     impl State for MemState {
-        fn sessions(&self) -> &[SessionInfo] {
-            &self.sessions
+        fn workspace_name(&self) -> &str {
+            &self.workspace_name
         }
-        fn active_session(&self) -> Option<&SessionInfo> {
-            self.active_session
-                .and_then(|sid| self.sessions.iter().find(|s| s.id == sid))
-        }
-        fn active_window(&self) -> Option<&WindowInfo> {
-            self.active_window
-                .and_then(|wid| self.windows.iter().find(|w| w.id == wid))
-        }
-        fn all_windows(&self) -> Vec<&WindowInfo> {
-            self.windows.iter().collect()
+        fn workspace_runtime(&self) -> &str {
+            &self.workspace_runtime
         }
         fn active_tab(&self) -> Option<&TabInfo> {
             self.active_tab
@@ -231,8 +182,8 @@ mod tests {
             self.active_pane
                 .and_then(|pid| self.panes.iter().find(|p| p.id == pid))
         }
-        fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
-            self.tabs.iter().filter(|t| &t.window == window).collect()
+        fn tabs(&self) -> Vec<&TabInfo> {
+            self.tabs.iter().collect()
         }
         fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
             self.tabs.iter().find(|t| &t.id == tab)
@@ -260,21 +211,11 @@ mod tests {
     #[test]
     fn mem_state_basic_access() {
         let s = MemState {
-            sessions: vec![SessionInfo {
-                id: SessionId(1),
-                name: "main".into(),
-                active_window: Some(WindowId(1)),
-            }],
-            windows: vec![WindowInfo {
-                id: WindowId(1),
-                name: "bash".into(),
-                session: SessionId(1),
-                active: true,
-            }],
+            workspace_name: "main".into(),
+            workspace_runtime: "tmux".into(),
             tabs: vec![TabInfo {
                 id: TabId(1),
                 name: "shell".into(),
-                window: WindowId(1),
                 active: true,
             }],
             panes: vec![PaneInfo {
@@ -292,19 +233,16 @@ mod tests {
             }],
             outputs: vec![(PaneId(1), b"hello".to_vec())],
             status: BackendStatus::Connected,
-            active_session: Some(SessionId(1)),
-            active_window: Some(WindowId(1)),
             active_tab: Some(TabId(1)),
             active_pane: Some(PaneId(1)),
         };
-        assert_eq!(s.sessions().len(), 1);
-        assert_eq!(s.active_session().unwrap().name, "main");
-        assert_eq!(s.active_window().unwrap().name, "bash");
+        assert_eq!(s.workspace_name(), "main");
+        assert_eq!(s.workspace_runtime(), "tmux");
         assert_eq!(s.active_pane().unwrap().title, "bash");
         assert_eq!(s.panes(&TabId(1)).len(), 1);
         assert!(s.layout(&TabId(1)).is_some());
         assert_eq!(s.active_tab().unwrap().name, "shell");
-        assert_eq!(s.tabs(&WindowId(1)).len(), 1);
+        assert_eq!(s.tabs().len(), 1);
         assert_eq!(s.pane(&PaneId(1)).unwrap().cols, 80);
         assert_eq!(s.pane_output(&PaneId(1)).unwrap(), b"hello");
         assert_eq!(s.status(), BackendStatus::Connected);
@@ -313,9 +251,8 @@ mod tests {
     #[test]
     fn state_change_variants_compile() {
         // 仅验证枚举可构造、可比较，不依赖运行时行为。
-        let c1 = StateChange::WindowAdded {
-            window: WindowId(1),
-            session: SessionId(1),
+        let c1 = StateChange::WorkspaceRenamed {
+            name: "main".into(),
         };
         let c2 = StateChange::PaneOutput {
             pane: PaneId(1),
@@ -332,26 +269,21 @@ mod tests {
     #[test]
     fn empty_state_returns_none() {
         let s = MemState {
-            sessions: vec![],
-            windows: vec![],
+            workspace_name: String::new(),
+            workspace_runtime: "shell".into(),
             tabs: vec![],
             panes: vec![],
             layouts: vec![],
             outputs: vec![],
             status: BackendStatus::Disconnected,
-            active_session: None,
-            active_window: None,
             active_tab: None,
             active_pane: None,
         };
-        assert!(s.sessions().is_empty());
-        assert!(s.active_session().is_none());
-        assert!(s.active_window().is_none());
         assert!(s.active_tab().is_none());
         assert!(s.active_pane().is_none());
         assert!(s.layout(&TabId(1)).is_none());
         assert!(s.tab(&TabId(1)).is_none());
-        assert!(s.tabs(&WindowId(1)).is_empty());
+        assert!(s.tabs().is_empty());
         assert!(s.pane(&PaneId(1)).is_none());
         assert!(s.pane_output(&PaneId(1)).is_none());
         assert_eq!(s.status(), BackendStatus::Disconnected);

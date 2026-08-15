@@ -4,7 +4,7 @@
 //! → 客户端的通知），每条命令以换行结尾。
 //!
 //! 本模块提供强类型构造器，避免直接拼裸字符串导致的转义/注入问题：
-//! - pane/window/session id 用 newtype 包装（`PaneId` / `WindowId` / `SessionId`）
+//! - pane/window/session id 用 newtype 包装（`PaneId` / `TabId` / `TmuxSessionId`）
 //! - 按键用 `Key` enum 区分「逐字文本」与「特殊键」
 //! - 文本参数统一 C 转义后用双引号包裹（与 tmux 解析一致）
 //!
@@ -15,8 +15,9 @@ use crate::core::config::Rgb;
 use crate::core::types::PaneId as ProtoPaneId;
 use std::fmt::Write;
 
-// 复用 `crate::types` 里的 ID 类型，保持单一来源。
-pub use crate::core::types::{PaneId, SessionId, WindowId};
+// 复用 `crate::types` 里的产品 ID；tmux session id 只在 runtime/tmux。
+pub use super::protocol::TmuxSessionId;
+pub use crate::core::types::{PaneId, TabId};
 
 /// 一个已构造好的 tmux 命令。
 ///
@@ -179,11 +180,11 @@ fn pane_target(p: PaneId) -> String {
     // @N 是 window id，不能混用。
     target_arg(&format!("%{}", p.0))
 }
-fn window_target(w: WindowId) -> String {
+fn window_target(w: TabId) -> String {
     // tmux 协议用 @N 格式的 window id（与 muxterm 的 wN 显示格式不同）
     target_arg(&format!("@{}", w.0))
 }
-fn session_target(s: SessionId) -> String {
+fn session_target(s: TmuxSessionId) -> String {
     target_arg(&s.as_str())
 }
 
@@ -333,12 +334,12 @@ fn xterm_rgb(rgb: Rgb) -> String {
 }
 
 /// list-windows -t <session>。
-pub fn list_windows(session: SessionId) -> TmuxCommand {
+pub fn list_windows(session: TmuxSessionId) -> TmuxCommand {
     build(&[session_target(session)], "list-windows")
 }
 
 /// list-panes -t <window>。
-pub fn list_panes(window: WindowId) -> TmuxCommand {
+pub fn list_panes(window: TabId) -> TmuxCommand {
     build(&[window_target(window)], "list-panes")
 }
 
@@ -355,7 +356,7 @@ pub fn display_message(target: PaneId, format: &str) -> TmuxCommand {
 }
 
 /// new-window -t <session> -n <name>。
-pub fn new_window(session: SessionId, name: Option<&str>) -> TmuxCommand {
+pub fn new_window(session: TmuxSessionId, name: Option<&str>) -> TmuxCommand {
     let mut args = vec![session_target(session)];
     if let Some(n) = name {
         args.push(format!("-n {}", quote_c_string(n)));
@@ -364,7 +365,7 @@ pub fn new_window(session: SessionId, name: Option<&str>) -> TmuxCommand {
 }
 
 /// kill-window -t <window>。
-pub fn kill_window(window: WindowId) -> TmuxCommand {
+pub fn kill_window(window: TabId) -> TmuxCommand {
     build(&[window_target(window)], "kill-window")
 }
 
@@ -375,7 +376,7 @@ pub fn kill_pane(pane: PaneId) -> TmuxCommand {
 
 /// split-window -t <window> [-h|-v] [-n name] [-c start_dir]。
 pub fn split_window(
-    window: WindowId,
+    window: TabId,
     direction: SplitDirection,
     name: Option<&str>,
     start_dir: Option<&str>,
@@ -420,12 +421,12 @@ pub fn select_pane_prev() -> TmuxCommand {
 }
 
 /// select-window -t <window>。
-pub fn select_window(window: WindowId) -> TmuxCommand {
+pub fn select_window(window: TabId) -> TmuxCommand {
     build(&[window_target(window)], "select-window")
 }
 
 /// rename-window -t <window> <new_name>。
-pub fn rename_window(window: WindowId, new_name: &str) -> TmuxCommand {
+pub fn rename_window(window: TabId, new_name: &str) -> TmuxCommand {
     build(
         &[window_target(window), quote_c_string(new_name)],
         "rename-window",
@@ -433,7 +434,7 @@ pub fn rename_window(window: WindowId, new_name: &str) -> TmuxCommand {
 }
 
 /// rename-session -t <session> <new_name>。
-pub fn rename_session(session: SessionId, new_name: &str) -> TmuxCommand {
+pub fn rename_session(session: TmuxSessionId, new_name: &str) -> TmuxCommand {
     build(
         &[session_target(session), quote_c_string(new_name)],
         "rename-session",
@@ -441,7 +442,7 @@ pub fn rename_session(session: SessionId, new_name: &str) -> TmuxCommand {
 }
 
 /// detach-client -t <session>。
-pub fn detach_client(session: SessionId) -> TmuxCommand {
+pub fn detach_client(session: TmuxSessionId) -> TmuxCommand {
     build(&[session_target(session)], "detach-client")
 }
 
@@ -654,12 +655,15 @@ mod tests {
 
     #[test]
     fn list_windows_cmd() {
-        assert_eq!(list_windows(SessionId(0)).as_str(), "list-windows -t $0");
+        assert_eq!(
+            list_windows(TmuxSessionId(0)).as_str(),
+            "list-windows -t $0"
+        );
     }
 
     #[test]
     fn list_panes_cmd() {
-        assert_eq!(list_panes(WindowId(1)).as_str(), "list-panes -t @1");
+        assert_eq!(list_panes(TabId(1)).as_str(), "list-panes -t @1");
     }
 
     #[test]
@@ -679,18 +683,21 @@ mod tests {
 
     #[test]
     fn new_window_with_name() {
-        let c = new_window(SessionId(0), Some("second"));
+        let c = new_window(TmuxSessionId(0), Some("second"));
         assert_eq!(c.as_str(), r#"new-window -t $0 -n "second""#);
     }
 
     #[test]
     fn new_window_no_name() {
-        assert_eq!(new_window(SessionId(0), None).as_str(), "new-window -t $0");
+        assert_eq!(
+            new_window(TmuxSessionId(0), None).as_str(),
+            "new-window -t $0"
+        );
     }
 
     #[test]
     fn kill_window_cmd() {
-        assert_eq!(kill_window(WindowId(1)).as_str(), "kill-window -t @1");
+        assert_eq!(kill_window(TabId(1)).as_str(), "kill-window -t @1");
     }
 
     #[test]
@@ -700,13 +707,13 @@ mod tests {
 
     #[test]
     fn split_window_horizontal() {
-        let c = split_window(WindowId(0), SplitDirection::Horizontal, Some("log"), None);
+        let c = split_window(TabId(0), SplitDirection::Horizontal, Some("log"), None);
         assert_eq!(c.as_str(), r#"split-window -t @0 -h -n "log""#);
     }
 
     #[test]
     fn split_window_vertical_no_name() {
-        let c = split_window(WindowId(1), SplitDirection::Vertical, None, None);
+        let c = split_window(TabId(1), SplitDirection::Vertical, None, None);
         assert_eq!(c.as_str(), "split-window -t @1 -v");
     }
 
@@ -714,7 +721,7 @@ mod tests {
     #[test]
     fn split_window_with_start_dir() {
         let c = split_window(
-            WindowId(0),
+            TabId(0),
             SplitDirection::Horizontal,
             None,
             Some("/home/user/project/sub"),
@@ -724,7 +731,7 @@ mod tests {
             r#"split-window -t @0 -h -c "/home/user/project/sub""#
         );
         // 目录中的引号要转义
-        let c = split_window(WindowId(0), SplitDirection::Vertical, None, Some("a\"b\\c"));
+        let c = split_window(TabId(0), SplitDirection::Vertical, None, Some("a\"b\\c"));
         assert_eq!(c.as_str(), r#"split-window -t @0 -v -c "a\"b\\c""#);
     }
 
@@ -749,30 +756,33 @@ mod tests {
 
     #[test]
     fn select_window_cmd() {
-        assert_eq!(select_window(WindowId(1)).as_str(), "select-window -t @1");
+        assert_eq!(select_window(TabId(1)).as_str(), "select-window -t @1");
     }
 
     #[test]
     fn rename_window_cmd() {
-        let c = rename_window(WindowId(0), "main");
+        let c = rename_window(TabId(0), "main");
         assert_eq!(c.as_str(), r#"rename-window -t @0 "main""#);
     }
 
     #[test]
     fn rename_window_escapes() {
-        let c = rename_window(WindowId(0), "a\\b\"c");
+        let c = rename_window(TabId(0), "a\\b\"c");
         assert_eq!(c.as_str(), r#"rename-window -t @0 "a\\b\"c""#);
     }
 
     #[test]
     fn rename_session_cmd() {
-        let c = rename_session(SessionId(1), "work");
+        let c = rename_session(TmuxSessionId(1), "work");
         assert_eq!(c.as_str(), r#"rename-session -t $1 "work""#);
     }
 
     #[test]
     fn detach_client_cmd() {
-        assert_eq!(detach_client(SessionId(0)).as_str(), "detach-client -t $0");
+        assert_eq!(
+            detach_client(TmuxSessionId(0)).as_str(),
+            "detach-client -t $0"
+        );
     }
 
     #[test]
@@ -836,7 +846,7 @@ mod tests {
     /// 窗口名里的换行/ESC/控制字节必须编码成 C 转义。
     #[test]
     fn rename_window_escapes_control_and_newline() {
-        let c = rename_window(WindowId(0), "a\nb\x1b");
+        let c = rename_window(TabId(0), "a\nb\x1b");
         assert_eq!(c.as_str(), r#"rename-window -t @0 "a\nb\e""#);
     }
 
@@ -850,12 +860,7 @@ mod tests {
     /// 分割窗口的名字带引号/反斜杠时也要转义。
     #[test]
     fn split_window_escapes_name() {
-        let c = split_window(
-            WindowId(0),
-            SplitDirection::Horizontal,
-            Some("a\"b\\c"),
-            None,
-        );
+        let c = split_window(TabId(0), SplitDirection::Horizontal, Some("a\"b\\c"), None);
         assert_eq!(c.as_str(), r#"split-window -t @0 -h -n "a\"b\\c""#);
     }
 }

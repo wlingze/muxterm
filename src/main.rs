@@ -66,98 +66,73 @@ struct Cli {
 /// `disable_help_flag` keeps `-h` from conflicting with help.
 #[derive(Subcommand, Debug)]
 enum CliSubcommand {
-    /// Create a new session
-    #[command(alias = "new", disable_help_flag = true)]
-    NewSession {
+    /// Create a new workspace
+    #[command(alias = "new", alias = "new-session", disable_help_flag = true)]
+    NewWorkspace {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Kill a session
-    #[command(disable_help_flag = true)]
-    KillSession {
+    /// Close a workspace
+    #[command(alias = "kill-session", disable_help_flag = true)]
+    CloseWorkspace {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// List sessions
-    #[command(alias = "ls", disable_help_flag = true)]
-    ListSessions {
+    /// List workspaces
+    #[command(alias = "ls", alias = "list-sessions", disable_help_flag = true)]
+    ListWorkspaces {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Attach to a session
-    #[command(alias = "attach", disable_help_flag = true)]
-    AttachSession {
+    /// Attach to a workspace
+    #[command(alias = "attach", alias = "attach-session", disable_help_flag = true)]
+    AttachWorkspace {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Detach from the current session
+    /// Detach from the current workspace
     #[command(disable_help_flag = true)]
     Detach {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Rename a session
-    #[command(disable_help_flag = true)]
-    RenameSession {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Create a new window
-    #[command(alias = "neww", disable_help_flag = true)]
-    NewWindow {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Kill a window
-    #[command(alias = "killw", disable_help_flag = true)]
-    KillWindow {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// List windows
-    #[command(alias = "lsw", disable_help_flag = true)]
-    ListWindows {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Select a window
-    #[command(alias = "selectw", disable_help_flag = true)]
-    SelectWindow {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Rename a window
-    #[command(alias = "renamew", disable_help_flag = true)]
-    RenameWindow {
+    /// Rename a workspace
+    #[command(alias = "rename-session", disable_help_flag = true)]
+    RenameWorkspace {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Create a new tab
-    #[command(disable_help_flag = true)]
+    #[command(alias = "neww", alias = "new-window", disable_help_flag = true)]
     NewTab {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Kill a tab
-    #[command(disable_help_flag = true)]
+    #[command(alias = "killw", alias = "kill-window", disable_help_flag = true)]
     KillTab {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// List tabs
-    #[command(alias = "lst", disable_help_flag = true)]
+    #[command(
+        alias = "lst",
+        alias = "list-windows",
+        alias = "lsw",
+        disable_help_flag = true
+    )]
     ListTabs {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Select a tab
-    #[command(disable_help_flag = true)]
+    #[command(alias = "selectw", alias = "select-window", disable_help_flag = true)]
     SelectTab {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Rename a tab
-    #[command(disable_help_flag = true)]
+    #[command(alias = "renamew", alias = "rename-window", disable_help_flag = true)]
     RenameTab {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -307,17 +282,12 @@ fn main() -> anyhow::Result<()> {
         };
         return match cmd {
             // CLI 命令模式：把 canonical 命令名 + 原始参数交给既有 run_cli。
-            CliSubcommand::NewSession { args } => dispatch("new-session", args),
-            CliSubcommand::KillSession { args } => dispatch("kill-session", args),
-            CliSubcommand::ListSessions { args } => dispatch("list-sessions", args),
-            CliSubcommand::AttachSession { args } => dispatch("attach-session", args),
+            CliSubcommand::NewWorkspace { args } => dispatch("new-workspace", args),
+            CliSubcommand::CloseWorkspace { args } => dispatch("close-workspace", args),
+            CliSubcommand::ListWorkspaces { args } => dispatch("list-workspaces", args),
+            CliSubcommand::AttachWorkspace { args } => dispatch("attach-workspace", args),
             CliSubcommand::Detach { args } => dispatch("detach", args),
-            CliSubcommand::RenameSession { args } => dispatch("rename-session", args),
-            CliSubcommand::NewWindow { args } => dispatch("new-window", args),
-            CliSubcommand::KillWindow { args } => dispatch("kill-window", args),
-            CliSubcommand::ListWindows { args } => dispatch("list-windows", args),
-            CliSubcommand::SelectWindow { args } => dispatch("select-window", args),
-            CliSubcommand::RenameWindow { args } => dispatch("rename-window", args),
+            CliSubcommand::RenameWorkspace { args } => dispatch("rename-workspace", args),
             CliSubcommand::NewTab { args } => dispatch("new-tab", args),
             CliSubcommand::KillTab { args } => dispatch("kill-tab", args),
             CliSubcommand::ListTabs { args } => dispatch("list-tabs", args),
@@ -497,11 +467,11 @@ mod tests {
     }
 
     #[test]
-    fn subcommand_new_session_captures_args() {
+    fn subcommand_new_workspace_captures_args() {
         let cli =
             Cli::try_parse_from(["muxterm", "new-session", "-n", "dev", "-s", "sock"]).unwrap();
         match cli.cmd {
-            Some(CliSubcommand::NewSession { args }) => {
+            Some(CliSubcommand::NewWorkspace { args }) => {
                 assert_eq!(
                     args,
                     vec![
@@ -570,14 +540,17 @@ mod tests {
     }
 
     #[test]
-    fn subcommand_alias_new_maps_to_new_session() {
+    fn subcommand_alias_new_maps_to_new_workspace() {
         let cli = Cli::try_parse_from(["muxterm", "new", "-n", "test"]).unwrap();
-        assert!(matches!(cli.cmd, Some(CliSubcommand::NewSession { .. })));
+        assert!(matches!(cli.cmd, Some(CliSubcommand::NewWorkspace { .. })));
     }
 
     #[test]
-    fn subcommand_alias_ls_maps_to_list_sessions() {
+    fn subcommand_alias_ls_maps_to_list_workspaces() {
         let cli = Cli::try_parse_from(["muxterm", "ls"]).unwrap();
-        assert!(matches!(cli.cmd, Some(CliSubcommand::ListSessions { .. })));
+        assert!(matches!(
+            cli.cmd,
+            Some(CliSubcommand::ListWorkspaces { .. })
+        ));
     }
 }
