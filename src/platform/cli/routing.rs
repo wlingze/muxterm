@@ -45,7 +45,7 @@ fn extract_socket_arg(args: &[String]) -> Option<String> {
 
 /// 从命令参数中提取 session name（`-s <name>`）。
 fn extract_session_name(cmd: &CliCommand, args: &[String]) -> Option<String> {
-    if let CliCommand::NewSession { socket, .. } = cmd {
+    if let CliCommand::NewWorkspace { socket, .. } = cmd {
         if socket.is_some() {
             return socket.clone();
         }
@@ -83,7 +83,7 @@ fn cli_mode_tmux(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let backend: Box<dyn Backend> = match cmd {
-        CliCommand::AttachSession { target } => {
+        CliCommand::AttachWorkspace { target } => {
             Box::new(TmuxBackend::new_with_attach(socket, target))
         }
         _ => {
@@ -145,7 +145,7 @@ fn cli_mode_daemon(
 
     let sock = session_socket_path(name);
 
-    if matches!(cmd, CliCommand::NewSession { .. }) {
+    if matches!(cmd, CliCommand::NewWorkspace { .. }) {
         if sock.exists() && !socket_is_alive(&sock) {
             let _ = std::fs::remove_file(&sock);
         }

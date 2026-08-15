@@ -333,10 +333,10 @@ fn split_cli_parse_produces_correct_command() {
 /// ── Layer 3: command builder split-window 正确 target ──
 #[test]
 fn split_window_command_uses_correct_target() {
-    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, WindowId};
+    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, TabId};
 
-    // WindowId(0) → @0 in tmux (first window)
-    let cmd = split_window(WindowId(0), SplitDirection::Horizontal, None, None);
+    // TabId(0) → @0 in tmux (first window)
+    let cmd = split_window(TabId(0), SplitDirection::Horizontal, None, None);
     let line = cmd.to_line();
     assert!(
         line.contains("split-window"),
@@ -346,12 +346,12 @@ fn split_window_command_uses_correct_target() {
     assert!(line.contains("@0"), "target 应含 tmux window id @0: {line}");
 }
 
-/// ── Layer 3b: PaneId → TabId → WindowId 映射 ──
-/// 验证 backend 从 pane 查找 tab_id 再转 WindowId 的映射链正确。
+/// ── Layer 3b: PaneId → TabId → TabId 映射 ──
+/// 验证 backend 从 pane 查找 tab_id 再转 TabId 的映射链正确。
 /// 用真实 tmux 验证 #{window_id} 是 @N 格式（不是 window_index）。
 #[test]
 fn paneid_to_tabid_to_windowid_mapping_matches_tmux_window_id() {
-    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, WindowId};
+    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, TabId};
 
     let socket = unique_socket("layer3b");
     let session = format!("map-test-{}", rand_suffix());
@@ -378,8 +378,8 @@ fn paneid_to_tabid_to_windowid_mapping_matches_tmux_window_id() {
     );
     let win_num: u32 = tmux_window_id[1..].parse().expect("window_id 数字");
 
-    // 验证 split_window(WindowId(win_num), ...) 生成的命令 target 是正确的 @N
-    let cmd = split_window(WindowId(win_num), SplitDirection::Horizontal, None, None);
+    // 验证 split_window(TabId(win_num), ...) 生成的命令 target 是正确的 @N
+    let cmd = split_window(TabId(win_num), SplitDirection::Horizontal, None, None);
     let line = cmd.to_line();
     assert!(
         line.contains(&tmux_window_id),

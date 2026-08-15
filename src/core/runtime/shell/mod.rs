@@ -31,12 +31,10 @@ use crate::core::config::{
 };
 use crate::core::model::backend::Backend;
 use crate::core::model::layout::{LayoutNode, TabLayout};
-use crate::core::model::state::{
-    BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
-};
+use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 
 /// 默认字符格尺寸。
 const DEFAULT_COLS: u16 = 80;
@@ -90,26 +88,18 @@ struct LocalTab {
     layout: TabLayout,
 }
 
-/// 一个本地 window。
-struct LocalWindow {
-    info: WindowInfo,
-}
-
 /// 本地 shell 后端。
 pub struct LocalBackend {
     /// 配置：默认启动命令 + 工作目录。
     default_command: String,
     default_workdir: String,
 
-    session: Option<SessionInfo>,
-    windows: Vec<LocalWindow>,
+    workspace_name: String,
     tabs: Vec<LocalTab>,
     panes: Vec<LocalPane>,
     status: BackendStatus,
     events: VecDeque<StateChange>,
 
-    /// 下一个 window id。
-    next_window: u32,
     /// 下一个 tab id。
     next_tab: u32,
     /// 下一个 pane id。
@@ -129,13 +119,11 @@ impl LocalBackend {
         Self {
             default_command: default_command.into(),
             default_workdir: default_workdir.into(),
-            session: None,
-            windows: vec![],
+            workspace_name: "local".into(),
             tabs: vec![],
             panes: vec![],
             status: BackendStatus::Disconnected,
             events: VecDeque::new(),
-            next_window: 0,
             next_tab: 0,
             next_pane: 0,
             pty_tx: None,
@@ -217,16 +205,9 @@ impl LocalBackend {
         };
         let panes_in_tab = self.panes.iter().filter(|p| p.info.tab == tab_id).count();
 
-        // 唯一 pane → 关整个 window（及 session 若无剩余 window）
+        // 唯一 pane → 关 tab（无剩余 tab 时后端退出）
         if self.panes.len() == 1 {
-            if let Some(win) = self
-                .tabs
-                .iter()
-                .find(|t| t.info.id == tab_id)
-                .map(|t| t.info.window)
-            {
-                self.close_window_internal(win);
-            }
+            self.close_tab_internal(tab_id);
             return;
         }
         // 该 tab 的最后一个 pane → 关 tab（保留其他 tab）
@@ -283,12 +264,6 @@ impl LocalBackend {
         if !self.tabs.iter().any(|t| t.info.id == target) {
             return;
         }
-        let win_id = self
-            .tabs
-            .iter()
-            .find(|t| t.info.id == target)
-            .map(|t| t.info.window)
-            .unwrap_or(WindowId(0));
         let to_kill: Vec<PaneId> = self
             .panes
             .iter()
@@ -303,17 +278,13 @@ impl LocalBackend {
         self.tabs.retain(|t| t.info.id != target);
         self.events
             .push_back(StateChange::TabClosed { tab: target });
-        if let Some(t) = self.tabs.iter().find(|t| t.info.window == win_id) {
+        if let Some(t) = self.tabs.first() {
             let tid = t.info.id;
             for t in self.tabs.iter_mut() {
-                if t.info.window == win_id {
-                    t.info.active = t.info.id == tid;
-                }
+                t.info.active = t.info.id == tid;
             }
-            self.events.push_back(StateChange::ActiveTabChanged {
-                window: win_id,
-                tab: tid,
-            });
+            self.events
+                .push_back(StateChange::ActiveTabChanged { tab: tid });
             // 激活新 tab 的 active pane
             if let Some(pane) = self
                 .tabs
@@ -326,55 +297,7 @@ impl LocalBackend {
                     .push_back(StateChange::ActivePaneChanged { tab: tid, pane });
             }
         } else {
-            // 无剩余 tab → 关 window
-            self.close_window_internal(win_id);
-        }
-    }
-
-    /// 关闭 window 及其下所有 pane/tab（供 CloseWindow / 末 pane 退出复用）。
-    fn close_window_internal(&mut self, target: WindowId) {
-        if !self.windows.iter().any(|w| w.info.id == target) {
-            return;
-        }
-        let sess = self
-            .windows
-            .iter()
-            .find(|w| w.info.id == target)
-            .map(|w| w.info.session)
-            .unwrap_or(SessionId(1));
-        let tab_ids: Vec<TabId> = self
-            .tabs
-            .iter()
-            .filter(|t| t.info.window == target)
-            .map(|t| t.info.id)
-            .collect();
-        let to_kill: Vec<PaneId> = self
-            .panes
-            .iter()
-            .filter(|p| tab_ids.contains(&p.info.tab))
-            .map(|p| p.info.id)
-            .collect();
-        for pid in &to_kill {
-            self.kill_pane(*pid);
-            self.events
-                .push_back(StateChange::PaneClosed { pane: *pid });
-        }
-        for tid in &tab_ids {
-            self.events.push_back(StateChange::TabClosed { tab: *tid });
-        }
-        self.tabs.retain(|t| t.info.window != target);
-        self.windows.retain(|w| w.info.id != target);
-        self.events
-            .push_back(StateChange::WindowClosed { window: target });
-        if let Some(w) = self.windows.first() {
-            let wid = w.info.id;
-            self.set_active_window(wid);
-            self.events.push_back(StateChange::ActiveWindowChanged {
-                session: sess,
-                window: wid,
-            });
-        } else {
-            // 无剩余 window → session 结束
+            // 无剩余 tab → 后端退出
             self.status = BackendStatus::Exited;
             self.events
                 .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
@@ -388,12 +311,6 @@ impl LocalBackend {
             self.pty_tx = Some(tx);
             self.pty_rx = Some(rx);
         }
-    }
-
-    /// 分配下一个 window id。
-    fn alloc_window_id(&mut self) -> WindowId {
-        self.next_window += 1;
-        WindowId(self.next_window)
     }
 
     /// 分配下一个 pane id。
@@ -519,22 +436,15 @@ impl LocalBackend {
         Ok(pane_id)
     }
 
-    /// 新建一个 window（含第一个 pane）。返回 window id + pane id。
-    fn new_window_internal(
+    /// 新建一个 tab（含第一个 pane）。返回 tab id + pane id。
+    fn new_tab_internal(
         &mut self,
         name: Option<String>,
         command: Option<&[String]>,
         workdir: Option<&str>,
-    ) -> Result<(WindowId, TabId, PaneId)> {
-        let win_id = self.alloc_window_id();
+    ) -> Result<(TabId, PaneId)> {
         let tab_id = self.alloc_tab_id();
-        let sess = self.session.as_ref().map(|s| s.id).unwrap_or(SessionId(1));
-        let win_name = name.unwrap_or_else(|| format!("w{}", win_id.0));
 
-        // 旧 window 取消 active
-        for w in self.windows.iter_mut() {
-            w.info.active = false;
-        }
         // 旧 tab 取消 active
         for t in self.tabs.iter_mut() {
             t.info.active = false;
@@ -547,19 +457,10 @@ impl LocalBackend {
         let pane_id =
             self.spawn_pane(tab_id, command, workdir, DEFAULT_COLS, DEFAULT_ROWS, true)?;
 
-        self.windows.push(LocalWindow {
-            info: WindowInfo {
-                id: win_id,
-                name: win_name,
-                session: sess,
-                active: true,
-            },
-        });
         self.tabs.push(LocalTab {
             info: TabInfo {
                 id: tab_id,
-                name: format!("t{}", tab_id.0),
-                window: win_id,
+                name: name.unwrap_or_else(|| format!("t{}", tab_id.0)),
                 active: true,
             },
             layout: TabLayout {
@@ -568,13 +469,10 @@ impl LocalBackend {
                 active: pane_id,
             },
         });
-        if let Some(s) = self.session.as_mut() {
-            s.active_window = Some(win_id);
-        }
-        Ok((win_id, tab_id, pane_id))
+        Ok((tab_id, pane_id))
     }
 
-    /// 找 pane 所在 window。
+    /// 找 pane 所在 tab。
     fn tab_of_pane(&self, pane: PaneId) -> Option<TabId> {
         self.panes
             .iter()
@@ -582,7 +480,7 @@ impl LocalBackend {
             .map(|p| p.info.tab)
     }
 
-    /// 设置某 window 下某 pane 为 active（取消其他）。
+    /// 设置某 tab 下某 pane 为 active（取消其他）。
     fn set_active_pane(&mut self, tab: TabId, pane: PaneId) {
         // 全后端只允许「一个 active pane」。旧实现只取消同一 tab 内的 active，
         // 导致 NewTab/SwitchTab 后多个 tab 的 pane 同时 active，State::active_pane()
@@ -592,37 +490,6 @@ impl LocalBackend {
         }
         if let Some(tl) = self.tabs.iter_mut().find(|t| t.info.id == tab) {
             tl.layout.active = pane;
-        }
-    }
-
-    /// 设置某 session 下某 window 为 active（取消其他）。
-    fn set_active_window(&mut self, window: WindowId) {
-        let sess = self
-            .windows
-            .iter()
-            .find(|w| w.info.id == window)
-            .map(|w| w.info.session);
-        for w in self.windows.iter_mut() {
-            w.info.active = w.info.id == window;
-        }
-        // 同时激活该 window 下第一个 tab，并把激活 pane 切到该 tab 的 active pane
-        if let Some(t) = self.tabs.iter().find(|t| t.info.window == window) {
-            let tid = t.info.id;
-            for t in self.tabs.iter_mut() {
-                if t.info.window == window {
-                    t.info.active = t.info.id == tid;
-                }
-            }
-            if let Some(tl) = self.tabs.iter().find(|t| t.info.id == tid) {
-                let active_pane = tl.layout.active;
-                for p in self.panes.iter_mut() {
-                    p.info.active = p.info.id == active_pane && p.info.tab == tid;
-                }
-            }
-        }
-        if let (Some(s), Some(sess)) = (self.session.as_mut(), sess) {
-            s.active_window = Some(window);
-            let _ = sess;
         }
     }
 
@@ -674,24 +541,12 @@ impl LocalBackend {
 }
 
 impl State for LocalBackend {
-    fn sessions(&self) -> &[SessionInfo] {
-        static EMPTY: Vec<SessionInfo> = Vec::new();
-        match &self.session {
-            Some(s) => std::slice::from_ref(s),
-            None => &EMPTY,
-        }
+    fn workspace_name(&self) -> &str {
+        &self.workspace_name
     }
 
-    fn active_session(&self) -> Option<&SessionInfo> {
-        self.session.as_ref()
-    }
-
-    fn active_window(&self) -> Option<&WindowInfo> {
-        self.windows.iter().find(|w| w.info.active).map(|w| &w.info)
-    }
-
-    fn all_windows(&self) -> Vec<&WindowInfo> {
-        self.windows.iter().map(|w| &w.info).collect()
+    fn workspace_runtime(&self) -> &str {
+        "shell"
     }
 
     fn active_tab(&self) -> Option<&TabInfo> {
@@ -702,12 +557,8 @@ impl State for LocalBackend {
         self.panes.iter().find(|p| p.info.active).map(|p| &p.info)
     }
 
-    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
-        self.tabs
-            .iter()
-            .filter(|t| &t.info.window == window)
-            .map(|t| &t.info)
-            .collect()
+    fn tabs(&self) -> Vec<&TabInfo> {
+        self.tabs.iter().map(|t| &t.info).collect()
     }
 
     fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
@@ -763,38 +614,17 @@ impl Backend for LocalBackend {
 
         self.ensure_channel();
 
-        // 建立第一个 session
-        let sess_id = SessionId(1);
-        self.session = Some(SessionInfo {
-            id: sess_id,
-            name: "local".into(),
-            active_window: None,
-        });
-
-        // spawn 第一个 window + pane
-        match self.new_window_internal(None, None, None) {
-            Ok((win_id, tab_id, pane_id)) => {
+        // spawn 第一个 tab + pane
+        match self.new_tab_internal(None, None, None) {
+            Ok((tab_id, pane_id)) => {
                 self.status = BackendStatus::Connected;
-                self.events.push_back(StateChange::WindowAdded {
-                    window: win_id,
-                    session: sess_id,
-                });
-                self.events.push_back(StateChange::TabAdded {
-                    tab: tab_id,
-                    window: win_id,
-                });
+                self.events.push_back(StateChange::TabAdded { tab: tab_id });
                 self.events.push_back(StateChange::PaneAdded {
                     pane: pane_id,
                     tab: tab_id,
                 });
-                self.events.push_back(StateChange::ActiveWindowChanged {
-                    session: sess_id,
-                    window: win_id,
-                });
-                self.events.push_back(StateChange::ActiveTabChanged {
-                    window: win_id,
-                    tab: tab_id,
-                });
+                self.events
+                    .push_back(StateChange::ActiveTabChanged { tab: tab_id });
                 self.events.push_back(StateChange::ActivePaneChanged {
                     tab: tab_id,
                     pane: pane_id,
@@ -939,35 +769,20 @@ impl Backend for LocalBackend {
                 TaskOutcome::Done
             }
 
-            Task::NewWindow {
+            Task::NewTab {
                 name,
                 command,
                 workdir,
             } => {
-                match self.new_window_internal(name.clone(), command.as_deref(), workdir.as_deref())
-                {
-                    Ok((win_id, tab_id, pane_id)) => {
-                        let sess = self.session.as_ref().map(|s| s.id).unwrap_or(SessionId(1));
-                        self.events.push_back(StateChange::WindowAdded {
-                            window: win_id,
-                            session: sess,
-                        });
-                        self.events.push_back(StateChange::TabAdded {
-                            tab: tab_id,
-                            window: win_id,
-                        });
+                match self.new_tab_internal(name.clone(), command.as_deref(), workdir.as_deref()) {
+                    Ok((tab_id, pane_id)) => {
+                        self.events.push_back(StateChange::TabAdded { tab: tab_id });
                         self.events.push_back(StateChange::PaneAdded {
                             pane: pane_id,
                             tab: tab_id,
                         });
-                        self.events.push_back(StateChange::ActiveWindowChanged {
-                            session: sess,
-                            window: win_id,
-                        });
-                        self.events.push_back(StateChange::ActiveTabChanged {
-                            window: win_id,
-                            tab: tab_id,
-                        });
+                        self.events
+                            .push_back(StateChange::ActiveTabChanged { tab: tab_id });
                         self.events.push_back(StateChange::ActivePaneChanged {
                             tab: tab_id,
                             pane: pane_id,
@@ -980,54 +795,10 @@ impl Backend for LocalBackend {
                 }
             }
 
-            Task::CloseWindow { target } => {
-                if !self.windows.iter().any(|w| w.info.id == *target) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {target} 不存在"),
-                    });
-                }
-                self.close_window_internal(*target);
-                TaskOutcome::Done
-            }
-
-            Task::SwitchWindow { target } => {
-                if !self.windows.iter().any(|w| w.info.id == *target) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {target} 不存在"),
-                    });
-                }
-                self.set_active_window(*target);
-                let sess = self
-                    .windows
-                    .iter()
-                    .find(|w| w.info.id == *target)
-                    .map(|w| w.info.session)
-                    .unwrap_or(SessionId(1));
-                self.events.push_back(StateChange::ActiveWindowChanged {
-                    session: sess,
-                    window: *target,
-                });
-                TaskOutcome::Done
-            }
-
-            Task::RenameWindow { target, name } => {
-                if !self.windows.iter().any(|w| w.info.id == *target) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {target} 不存在"),
-                    });
-                }
-                if let Some(w) = self.windows.iter_mut().find(|w| w.info.id == *target) {
-                    w.info.name = name.clone();
-                }
-                self.events.push_back(StateChange::WindowRenamed {
-                    window: *target,
-                    name: name.clone(),
-                });
-                TaskOutcome::Done
-            }
-
-            Task::SwitchSession { .. } | Task::RenameSession { .. } => {
-                // 单 session 后端，直接 Done
+            Task::RenameWorkspace { name } => {
+                self.workspace_name = name.clone();
+                self.events
+                    .push_back(StateChange::WorkspaceRenamed { name: name.clone() });
                 TaskOutcome::Done
             }
 
@@ -1139,68 +910,6 @@ impl Backend for LocalBackend {
                 TaskOutcome::Done
             }
 
-            Task::NewTab {
-                window,
-                name,
-                command,
-                workdir,
-            } => {
-                if !self.windows.iter().any(|w| w.info.id == *window) {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: format!("window {window} 不存在"),
-                    });
-                }
-                let tab_id = self.alloc_tab_id();
-                // 旧 tab 取消 active
-                for t in self.tabs.iter_mut() {
-                    if t.info.window == *window {
-                        t.info.active = false;
-                    }
-                }
-                let pane_id = self.spawn_pane(
-                    tab_id,
-                    command.as_deref(),
-                    workdir.as_deref(),
-                    DEFAULT_COLS,
-                    DEFAULT_ROWS,
-                    true,
-                )?;
-                // 全后端只保留一个 active pane：新 tab 的 pane 激活，其余全部取消。
-                for p in self.panes.iter_mut() {
-                    p.info.active = p.info.id == pane_id;
-                }
-                self.tabs.push(LocalTab {
-                    info: TabInfo {
-                        id: tab_id,
-                        name: name.clone().unwrap_or_else(|| format!("t{}", tab_id.0)),
-                        window: *window,
-                        active: true,
-                    },
-                    layout: TabLayout {
-                        tab: tab_id,
-                        tree: LayoutNode::leaf(pane_id),
-                        active: pane_id,
-                    },
-                });
-                self.events.push_back(StateChange::TabAdded {
-                    tab: tab_id,
-                    window: *window,
-                });
-                self.events.push_back(StateChange::PaneAdded {
-                    pane: pane_id,
-                    tab: tab_id,
-                });
-                self.events.push_back(StateChange::ActiveTabChanged {
-                    window: *window,
-                    tab: tab_id,
-                });
-                self.events.push_back(StateChange::ActivePaneChanged {
-                    tab: tab_id,
-                    pane: pane_id,
-                });
-                TaskOutcome::Done
-            }
-
             Task::CloseTab { target } => {
                 if !self.tabs.iter().any(|t| t.info.id == *target) {
                     return Ok(TaskOutcome::Rejected {
@@ -1217,16 +926,8 @@ impl Backend for LocalBackend {
                         reason: format!("tab {target} 不存在"),
                     });
                 }
-                let win_id = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.info.id == *target)
-                    .map(|t| t.info.window)
-                    .unwrap_or(WindowId(0));
                 for t in self.tabs.iter_mut() {
-                    if t.info.window == win_id {
-                        t.info.active = t.info.id == *target;
-                    }
+                    t.info.active = t.info.id == *target;
                 }
                 // 切 tab 时把激活 pane 切到目标 tab 的 active pane，并取消其他 tab
                 // 的 active pane（旧实现漏了这一步，导致 cmd+[ / cmd+] 用全局 find
@@ -1241,10 +942,8 @@ impl Backend for LocalBackend {
                         pane: active_pane,
                     });
                 }
-                self.events.push_back(StateChange::ActiveTabChanged {
-                    window: win_id,
-                    tab: *target,
-                });
+                self.events
+                    .push_back(StateChange::ActiveTabChanged { tab: *target });
                 TaskOutcome::Done
             }
 
@@ -1274,9 +973,7 @@ impl Backend for LocalBackend {
                 for pid in all {
                     self.kill_pane(pid);
                 }
-                self.windows.clear();
                 self.tabs.clear();
-                self.session = None;
                 self.status = BackendStatus::Exited;
                 self.events
                     .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
@@ -1334,8 +1031,8 @@ mod tests {
         let mut b = backend();
         b.connect().await.unwrap();
         assert_eq!(b.status(), BackendStatus::Connected);
-        assert!(b.session.is_some());
-        assert_eq!(b.windows.len(), 1);
+        assert_eq!(b.workspace_name(), "local");
+        assert_eq!(b.tabs.len(), 1);
         assert_eq!(b.panes.len(), 1);
         // 事件
         let events = b.take_events();
@@ -1345,7 +1042,7 @@ mod tests {
         )));
         assert!(events
             .iter()
-            .any(|e| matches!(e, StateChange::WindowAdded { .. })));
+            .any(|e| matches!(e, StateChange::TabAdded { .. })));
         assert!(events
             .iter()
             .any(|e| matches!(e, StateChange::PaneAdded { .. })));
@@ -1399,8 +1096,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn last_pane_process_exit_closes_window() {
-        // 短命命令：退出后若仅剩该 pane，应关闭整个 window/session。
+    async fn last_pane_process_exit_closes_tab() {
+        // 短命命令：退出后若仅剩该 pane，应关闭整个 tab/后端。
         // 注意：不能先 `let _ = take_events()` 再 sleep——Exit 可能已在 connect 后立刻到达并被丢弃。
         let mut b = LocalBackend::new("sleep 0.05", "/");
         b.connect().await.unwrap();
@@ -1408,7 +1105,7 @@ mod tests {
             ev.iter().any(|e| {
                 matches!(
                     e,
-                    StateChange::WindowClosed { .. }
+                    StateChange::TabClosed { .. }
                         | StateChange::BackendStatusChanged(BackendStatus::Exited)
                 )
             })
@@ -1417,13 +1114,13 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                StateChange::WindowClosed { .. }
+                StateChange::TabClosed { .. }
                     | StateChange::BackendStatusChanged(BackendStatus::Exited)
             )),
-            "末 pane 退出应关闭 window/session: {events:?}"
+            "末 pane 退出应关闭 tab/后端: {events:?}"
         );
         assert!(b.panes.is_empty());
-        assert!(b.windows.is_empty());
+        assert!(b.tabs.is_empty());
     }
 
     #[tokio::test]
@@ -1431,12 +1128,10 @@ mod tests {
         // cat 是前台子进程；收到 EOF 后退出，外层 shell 继续运行 sleep。
         // 这验证 Ctrl+D/0x04 不能被 GUI 直接转换成 ClosePane。
         let mut b = backend();
-        let win = b.active_window();
-        assert!(win.is_none(), "connect 前不应有 window");
+        let tab = b.active_tab();
+        assert!(tab.is_none(), "connect 前不应有 tab");
         b.connect().await.unwrap();
-        let window = b.active_window().map(|w| w.id).unwrap();
         b.execute(&Task::NewTab {
-            window,
             name: None,
             command: Some(vec!["sh".into(), "-c".into(), "cat; sleep 60".into()]),
             workdir: None,
@@ -1471,9 +1166,7 @@ mod tests {
         let mut b = backend();
         b.connect().await.unwrap();
         let _ = b.take_events();
-        let win = b.active_window().map(|w| w.id).unwrap();
         b.execute(&Task::NewTab {
-            window: win,
             name: None,
             command: Some(vec!["sleep".into(), "0.05".into()]),
             workdir: None,
@@ -1494,24 +1187,17 @@ mod tests {
                 .any(|e| matches!(e, StateChange::TabClosed { .. })),
             "应关闭退出 pane 所在 tab: {events:?}"
         );
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, StateChange::WindowClosed { .. })),
-            "多 tab 时不应关整个 window: {events:?}"
-        );
         assert_eq!(b.tabs.len(), 1, "应剩 1 tab");
-        assert_eq!(b.windows.len(), 1, "window 应保留");
         assert_eq!(b.panes.len(), 1, "应剩 1 pane");
         assert_eq!(b.status(), BackendStatus::Connected);
     }
 
     #[tokio::test]
-    async fn new_window_adds_window_and_pane() {
+    async fn new_tab_adds_tab_and_pane() {
         let mut b = backend();
         b.connect().await.unwrap();
         let _ = b.take_events();
-        b.execute(&Task::NewWindow {
+        b.execute(&Task::NewTab {
             name: Some("dev".into()),
             command: None,
             workdir: None,
@@ -1520,16 +1206,16 @@ mod tests {
         let events = b.take_events();
         assert!(events
             .iter()
-            .any(|e| matches!(e, StateChange::WindowAdded { .. })));
-        assert_eq!(b.windows.len(), 2);
-        assert_eq!(b.active_window().map(|w| w.id), Some(WindowId(2)));
+            .any(|e| matches!(e, StateChange::TabAdded { .. })));
+        assert_eq!(b.tabs.len(), 2);
+        assert_eq!(b.active_tab().map(|t| t.id), Some(TabId(2)));
     }
 
     #[tokio::test]
-    async fn close_window_removes_panes() {
+    async fn close_tab_removes_panes() {
         let mut b = backend();
         b.connect().await.unwrap();
-        b.execute(&Task::NewWindow {
+        b.execute(&Task::NewTab {
             name: None,
             command: None,
             workdir: None,
@@ -1537,20 +1223,14 @@ mod tests {
         .unwrap();
         let _ = b.take_events();
         assert_eq!(b.panes.len(), 2);
-        b.execute(&Task::CloseWindow {
-            target: WindowId(2),
-        })
-        .unwrap();
+        b.execute(&Task::CloseTab { target: TabId(2) }).unwrap();
         let events = b.take_events();
-        assert!(events.iter().any(|e| matches!(
-            e,
-            StateChange::WindowClosed {
-                window: WindowId(2)
-            }
-        )));
-        assert_eq!(b.windows.len(), 1);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StateChange::TabClosed { tab: TabId(2) })));
+        assert_eq!(b.tabs.len(), 1);
         assert_eq!(b.panes.len(), 1);
-        assert_eq!(b.active_window().map(|w| w.id), Some(WindowId(1)));
+        assert_eq!(b.active_tab().map(|t| t.id), Some(TabId(1)));
     }
 
     #[tokio::test]
@@ -1599,23 +1279,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rename_window_emits_event() {
+    async fn rename_tab_emits_event() {
         let mut b = backend();
         b.connect().await.unwrap();
-        b.execute(&Task::RenameWindow {
-            target: WindowId(1),
+        b.execute(&Task::RenameTab {
+            target: TabId(1),
             name: "renamed".into(),
         })
         .unwrap();
         let events = b.take_events();
-        assert!(events.iter().any(|e| matches!(
-            e,
-            StateChange::WindowRenamed {
-                window: WindowId(1),
-                ..
-            }
-        )));
-        assert_eq!(b.active_window().unwrap().name, "renamed");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StateChange::TabRenamed { tab: TabId(1), .. })));
+        assert_eq!(b.active_tab().unwrap().name, "renamed");
     }
 
     #[tokio::test]
@@ -1634,7 +1310,7 @@ mod tests {
         let _ = b.take_events();
         assert_eq!(b.status(), BackendStatus::Exited);
         assert!(b.panes.is_empty());
-        assert!(b.windows.is_empty());
+        assert!(b.tabs.is_empty());
     }
 
     #[tokio::test]
@@ -1650,9 +1326,9 @@ mod tests {
         let mut b = backend();
         b.connect().await.unwrap();
         let _ = b.take_events();
-        assert_eq!(b.sessions().len(), 1);
-        assert_eq!(b.sessions()[0].name, "local");
-        assert_eq!(b.active_window().map(|w| w.id), Some(WindowId(1)));
+        assert_eq!(b.workspace_name(), "local");
+        assert_eq!(b.workspace_runtime(), "shell");
+        assert_eq!(b.active_tab().map(|t| t.id), Some(TabId(1)));
         assert_eq!(b.active_pane().map(|p| p.id), Some(PaneId(1)));
         assert_eq!(b.panes(&TabId(1)).len(), 1);
         assert!(b.layout(&TabId(1)).is_some());
@@ -1727,7 +1403,6 @@ mod tests {
         let mut b = backend();
         b.connect().await.unwrap();
         let _ = b.take_events();
-        let win = b.active_window().map(|w| w.id).unwrap();
 
         // tab1（首个）：split 出一个 pane，得到 pane1/pane2 两个 pane
         let tab1_first = b.active_pane_id().unwrap();
@@ -1743,7 +1418,6 @@ mod tests {
 
         // 新建 tab2：tab2 的第一个 pane 应是当前 active pane
         b.execute(&Task::NewTab {
-            window: win,
             name: None,
             command: Some(vec!["sleep".into(), "60".into()]),
             workdir: None,
@@ -1811,11 +1485,9 @@ mod tests {
         let mut b = backend();
         b.connect().await.unwrap();
         let _ = b.take_events();
-        let win = b.active_window().map(|w| w.id).unwrap();
 
         // tab2：新建并 split，得到两个 pane
         b.execute(&Task::NewTab {
-            window: win,
             name: None,
             command: Some(vec!["sleep".into(), "60".into()]),
             workdir: None,

@@ -160,7 +160,7 @@ fn handle_connection(
         // 检查是否是 KillSession
         if matches!(
             req.command,
-            crate::platform::cli::CliCommand::KillSession { .. }
+            crate::platform::cli::CliCommand::CloseWorkspace { .. }
         ) {
             should_kill = true;
         }

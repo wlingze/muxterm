@@ -14,12 +14,10 @@ use async_trait::async_trait;
 
 use crate::core::model::backend::Backend;
 use crate::core::model::layout::{SplitDir, TabLayout};
-use crate::core::model::state::{
-    BackendStatus, PaneInfo, SessionInfo, State, StateChange, TabInfo, WindowInfo,
-};
+use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
-use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::client::send_command;
 use crate::platform::cli::{CliCommand, OutputFormat, StateSnapshot};
 
@@ -27,15 +25,12 @@ use crate::platform::cli::{CliCommand, OutputFormat, StateSnapshot};
 pub struct DaemonBackend {
     socket_path: PathBuf,
     session_name: String,
-    sessions: Vec<SessionInfo>,
-    windows: Vec<WindowInfo>,
+    workspace_runtime: String,
     tabs: Vec<TabInfo>,
     panes: Vec<PaneInfo>,
     layouts: HashMap<TabId, TabLayout>,
     outputs: HashMap<PaneId, Vec<u8>>,
     status: BackendStatus,
-    active_session: Option<SessionId>,
-    active_window: Option<WindowId>,
     active_tab: Option<TabId>,
     active_pane: Option<PaneId>,
     events: VecDeque<StateChange>,
@@ -47,15 +42,12 @@ impl DaemonBackend {
         Self {
             socket_path: socket_path.into(),
             session_name: session_name.into(),
-            sessions: vec![],
-            windows: vec![],
+            workspace_runtime: String::new(),
             tabs: vec![],
             panes: vec![],
             layouts: HashMap::new(),
             outputs: HashMap::new(),
             status: BackendStatus::Disconnected,
-            active_session: None,
-            active_window: None,
             active_tab: None,
             active_pane: None,
             events: VecDeque::new(),
@@ -91,8 +83,8 @@ impl DaemonBackend {
         let old_active_pane = self.active_pane;
         let old_status = self.status;
 
-        self.sessions = snap.sessions;
-        self.windows = snap.windows;
+        self.session_name = snap.workspace_name;
+        self.workspace_runtime = snap.workspace_runtime;
         self.tabs = snap.tabs;
         self.panes = snap.panes;
         self.layouts = snap.layouts.into_iter().map(|l| (l.tab, l)).collect();
@@ -102,8 +94,6 @@ impl DaemonBackend {
             .map(|(id, s)| (PaneId(id), s.into_bytes()))
             .collect();
         self.status = snap.status;
-        self.active_session = snap.active_session.map(SessionId);
-        self.active_window = snap.active_window.map(WindowId);
         self.active_tab = snap.active_tab.map(TabId);
         self.active_pane = snap.active_pane.map(PaneId);
 
@@ -142,9 +132,9 @@ impl DaemonBackend {
         }
 
         if self.active_tab != old_active_tab {
-            if let (Some(w), Some(t)) = (self.active_window, self.active_tab) {
+            if let Some(t) = self.active_tab {
                 self.events
-                    .push_back(StateChange::ActiveTabChanged { window: w, tab: t });
+                    .push_back(StateChange::ActiveTabChanged { tab: t });
             }
         }
         if self.active_pane != old_active_pane {
@@ -181,20 +171,9 @@ impl DaemonBackend {
             }),
             Task::SwitchPane { target } => Some(CliCommand::SelectPane { target: *target }),
             Task::TogglePaneFullscreen { .. } => None, // daemon CLI 暂不支持 zoom
-            Task::NewWindow { name, .. } => Some(CliCommand::NewWindow {
-                name: name.clone(),
-                session: None,
-            }),
-            Task::CloseWindow { target } => Some(CliCommand::KillWindow {
-                target: Some(*target),
-            }),
-            Task::SwitchWindow { target } => Some(CliCommand::SelectWindow { target: *target }),
-            Task::RenameWindow { name, .. } => Some(CliCommand::RenameWindow {
+            Task::NewTab { name, .. } => Some(CliCommand::NewTab { name: name.clone() }),
+            Task::RenameWorkspace { name } => Some(CliCommand::RenameWorkspace {
                 new_name: name.clone(),
-            }),
-            Task::NewTab { window, name, .. } => Some(CliCommand::NewTab {
-                window: Some(*window),
-                name: name.clone(),
             }),
             Task::CloseTab { target } => Some(CliCommand::KillTab {
                 target: Some(*target),
@@ -235,8 +214,6 @@ impl DaemonBackend {
             Task::Detach | Task::Shutdown => None, // detach：不向 daemon 发 KillSession
             Task::NextPane
             | Task::PrevPane
-            | Task::SwitchSession { .. }
-            | Task::RenameSession { .. }
             | Task::ResizePaneStep { .. }
             | Task::ReportPaneColours { .. } => None,
         }
@@ -244,22 +221,12 @@ impl DaemonBackend {
 }
 
 impl State for DaemonBackend {
-    fn sessions(&self) -> &[SessionInfo] {
-        &self.sessions
+    fn workspace_name(&self) -> &str {
+        &self.session_name
     }
 
-    fn active_session(&self) -> Option<&SessionInfo> {
-        let id = self.active_session?;
-        self.sessions.iter().find(|s| s.id == id)
-    }
-
-    fn active_window(&self) -> Option<&WindowInfo> {
-        let id = self.active_window?;
-        self.windows.iter().find(|w| w.id == id)
-    }
-
-    fn all_windows(&self) -> Vec<&WindowInfo> {
-        self.windows.iter().collect()
+    fn workspace_runtime(&self) -> &str {
+        &self.workspace_runtime
     }
 
     fn active_tab(&self) -> Option<&TabInfo> {
@@ -272,8 +239,8 @@ impl State for DaemonBackend {
         self.panes.iter().find(|p| p.id == id)
     }
 
-    fn tabs(&self, window: &WindowId) -> Vec<&TabInfo> {
-        self.tabs.iter().filter(|t| t.window == *window).collect()
+    fn tabs(&self) -> Vec<&TabInfo> {
+        self.tabs.iter().collect()
     }
 
     fn tab(&self, tab: &TabId) -> Option<&TabInfo> {

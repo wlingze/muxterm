@@ -23,7 +23,23 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use crate::core::model::layout::SplitDir;
-pub use crate::core::types::{PaneId, SessionId, WindowId};
+pub use crate::core::types::{PaneId, TabId};
+
+/// tmux session id（`$N`）。只存在于 `runtime/tmux`，产品层没有 Session。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct TmuxSessionId(pub u32);
+
+impl TmuxSessionId {
+    pub fn as_str(self) -> String {
+        format!("${}", self.0)
+    }
+}
+
+impl std::fmt::Display for TmuxSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "${}", self.0)
+    }
+}
 
 /// 协议解析错误（库层）。
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -224,25 +240,25 @@ impl PaneId {
     }
 }
 
-impl WindowId {
+impl TabId {
     pub fn parse(s: &str) -> Result<Self, ProtocolError> {
         let s = s
             .strip_prefix('@')
             .ok_or_else(|| ProtocolError::MalformedField(format!("window id 缺少 @ 前缀: {s}")))?;
         let n = u32::from_str(s)
             .map_err(|_| ProtocolError::MalformedField(format!("window id 非数字: {s}")))?;
-        Ok(WindowId(n))
+        Ok(TabId(n))
     }
 }
 
-impl SessionId {
+impl TmuxSessionId {
     pub fn parse(s: &str) -> Result<Self, ProtocolError> {
         let s = s
             .strip_prefix('$')
             .ok_or_else(|| ProtocolError::MalformedField(format!("session id 缺少 $ 前缀: {s}")))?;
         let n = u32::from_str(s)
             .map_err(|_| ProtocolError::MalformedField(format!("session id 非数字: {s}")))?;
-        Ok(SessionId(n))
+        Ok(TmuxSessionId(n))
     }
 }
 
@@ -401,7 +417,7 @@ pub enum Message {
     /// `#{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}`。
     /// zoom 时 `window_raw_flags` 含 `Z`，`window_visible_layout` 是铺满窗口的单叶。
     LayoutChange {
-        window: WindowId,
+        window: TabId,
         layout: LayoutChange,
         /// 可见的布局字符串（若 tmux 给了第二个布局参数）。
         visible_layout: Option<LayoutChange>,
@@ -409,36 +425,39 @@ pub enum Message {
         flags: Option<String>,
     },
     /// `%window-add <window_id>`
-    WindowAdd { window: WindowId },
+    WindowAdd { window: TabId },
     /// `%window-close <window_id>`
-    WindowClose { window: WindowId },
+    WindowClose { window: TabId },
     /// `%window-renamed <window_id> <name>`
-    WindowRenamed { window: WindowId, name: String },
+    WindowRenamed { window: TabId, name: String },
     /// `%session-changed <session_id> [<session_name>]`
     SessionChanged {
-        session: SessionId,
+        session: TmuxSessionId,
         name: Option<String>,
     },
     /// `%session-renamed <session_id> <name>`
-    SessionRenamed { session: SessionId, name: String },
+    SessionRenamed {
+        session: TmuxSessionId,
+        name: String,
+    },
     /// `%sessions-changed`（无参数）
     SessionsChanged,
     /// `%pane-mode-changed <pane_id> <mode>`
     PaneModeChanged { pane: PaneId, mode: String },
     /// `%unlinked-window-add <window_id>`
-    UnlinkedWindowAdd { window: WindowId },
+    UnlinkedWindowAdd { window: TabId },
     /// `%unlinked-window-close <window_id>`
-    UnlinkedWindowClose { window: WindowId },
+    UnlinkedWindowClose { window: TabId },
     /// `%unlinked-window-renamed <window_id> <name>`（tmux 3.3+ 实测带 name）
-    UnlinkedWindowRenamed { window: WindowId, name: String },
+    UnlinkedWindowRenamed { window: TabId, name: String },
     /// `%exit [<reason>...]`
     Exit { reason: Option<String> },
     /// `%window-pane-changed <window_id> <pane_id>`：某 window 的激活 pane 切换。
-    WindowPaneChanged { window: WindowId, pane: PaneId },
+    WindowPaneChanged { window: TabId, pane: PaneId },
     /// `%session-window-changed <session_id> <window_id>`：某 session 的激活 window 切换。
     SessionWindowChanged {
-        session: SessionId,
-        window: WindowId,
+        session: TmuxSessionId,
+        window: TabId,
     },
     /// `%extended-output <pane_id> <age> ... : <value>`（pause-after 下的
     /// %output 新形式；value 与 %output 一样是 C 转义字符串，age 是缓冲毫秒）。
@@ -678,7 +697,7 @@ enum WindowKind {
 
 fn parse_window_id_only(rest: &str, kind: WindowKind) -> Result<Message, ProtocolError> {
     let rest = rest.trim();
-    let window = WindowId::parse(rest)?;
+    let window = TabId::parse(rest)?;
     Ok(match kind {
         WindowKind::NormalAdd => Message::WindowAdd { window },
         WindowKind::NormalClose => Message::WindowClose { window },
@@ -693,7 +712,7 @@ fn parse_window_renamed(rest: &str) -> Result<Message, ProtocolError> {
     let wid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("window-renamed 缺 id".into()))?;
-    let window = WindowId::parse(wid)?;
+    let window = TabId::parse(wid)?;
     let name = it.next().unwrap_or("").to_string();
     Ok(Message::WindowRenamed { window, name })
 }
@@ -704,7 +723,7 @@ fn parse_session_changed(rest: &str) -> Result<Message, ProtocolError> {
     let sid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("session-changed 缺 id".into()))?;
-    let session = SessionId::parse(sid)?;
+    let session = TmuxSessionId::parse(sid)?;
     let name = it.next().map(|s| s.to_string());
     Ok(Message::SessionChanged { session, name })
 }
@@ -714,7 +733,7 @@ fn parse_session_renamed(rest: &str) -> Result<Message, ProtocolError> {
     let sid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("session-renamed 缺 id".into()))?;
-    let session = SessionId::parse(sid)?;
+    let session = TmuxSessionId::parse(sid)?;
     let name = it.next().unwrap_or("").to_string();
     Ok(Message::SessionRenamed { session, name })
 }
@@ -786,7 +805,7 @@ fn parse_unlinked_window_renamed(rest: &str) -> Result<Message, ProtocolError> {
     let wid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("unlinked-window-renamed 缺 id".into()))?;
-    let window = WindowId::parse(wid)?;
+    let window = TabId::parse(wid)?;
     let name = it.next().unwrap_or("").to_string();
     Ok(Message::UnlinkedWindowRenamed { window, name })
 }
@@ -887,7 +906,7 @@ fn parse_layout_change(rest: &str) -> Result<Message, ProtocolError> {
     let wid = parts
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("layout-change 缺 window id".into()))?;
-    let window = WindowId::parse(wid)?;
+    let window = TabId::parse(wid)?;
     let layout_str = parts
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("layout-change 缺 layout".into()))?;
@@ -921,7 +940,7 @@ fn parse_window_pane_changed(rest: &str) -> Result<Message, ProtocolError> {
     let wid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("window-pane-changed 缺 window id".into()))?;
-    let window = WindowId::parse(wid)?;
+    let window = TabId::parse(wid)?;
     let pid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("window-pane-changed 缺 pane id".into()))?;
@@ -935,11 +954,11 @@ fn parse_session_window_changed(rest: &str) -> Result<Message, ProtocolError> {
     let sid = it.next().ok_or_else(|| {
         ProtocolError::MalformedField("session-window-changed 缺 session id".into())
     })?;
-    let session = SessionId::parse(sid)?;
+    let session = TmuxSessionId::parse(sid)?;
     let wid = it.next().ok_or_else(|| {
         ProtocolError::MalformedField("session-window-changed 缺 window id".into())
     })?;
-    let window = WindowId::parse(wid.trim())?;
+    let window = TabId::parse(wid.trim())?;
     Ok(Message::SessionWindowChanged { session, window })
 }
 
@@ -1397,16 +1416,16 @@ mod tests {
     }
 
     #[test]
-    fn window_id_parse() {
-        assert_eq!(WindowId::parse("@0").unwrap(), WindowId(0));
-        assert_eq!(WindowId(12).as_str(), "w12");
+    fn tab_id_parse_maps_tmux_window() {
+        assert_eq!(TabId::parse("@0").unwrap(), TabId(0));
+        assert_eq!(TabId(12).as_str(), "t12");
     }
 
     #[test]
     fn session_id_parse() {
-        assert_eq!(SessionId::parse("$0").unwrap(), SessionId(0));
-        assert_eq!(SessionId(5).as_str(), "$5");
-        assert!(SessionId::parse("@1").is_err());
+        assert_eq!(TmuxSessionId::parse("$0").unwrap(), TmuxSessionId(0));
+        assert_eq!(TmuxSessionId(5).as_str(), "$5");
+        assert!(TmuxSessionId::parse("@1").is_err());
     }
 
     // ---------- LayoutChange ----------
@@ -1472,42 +1491,22 @@ mod tests {
     #[test]
     fn parse_window_add() {
         let m = parse_line("%window-add @0\r\n").unwrap();
-        assert_eq!(
-            m,
-            Message::WindowAdd {
-                window: WindowId(0)
-            }
-        );
+        assert_eq!(m, Message::WindowAdd { window: TabId(0) });
         assert_eq!(m.keyword(), "window-add");
     }
 
     #[test]
     fn parse_window_close() {
         let m = parse_line("%window-close @3").unwrap();
-        assert_eq!(
-            m,
-            Message::WindowClose {
-                window: WindowId(3)
-            }
-        );
+        assert_eq!(m, Message::WindowClose { window: TabId(3) });
     }
 
     #[test]
     fn parse_unlinked_window_add_close() {
         let a = parse_line("%unlinked-window-add @5").unwrap();
-        assert_eq!(
-            a,
-            Message::UnlinkedWindowAdd {
-                window: WindowId(5)
-            }
-        );
+        assert_eq!(a, Message::UnlinkedWindowAdd { window: TabId(5) });
         let c = parse_line("%unlinked-window-close @5").unwrap();
-        assert_eq!(
-            c,
-            Message::UnlinkedWindowClose {
-                window: WindowId(5)
-            }
-        );
+        assert_eq!(c, Message::UnlinkedWindowClose { window: TabId(5) });
     }
 
     #[test]
@@ -1516,7 +1515,7 @@ mod tests {
         assert_eq!(
             m,
             Message::WindowRenamed {
-                window: WindowId(0),
+                window: TabId(0),
                 name: "bash".into(),
             }
         );
@@ -1528,7 +1527,7 @@ mod tests {
         assert_eq!(
             m,
             Message::SessionChanged {
-                session: SessionId(0),
+                session: TmuxSessionId(0),
                 name: Some("cmd".into()),
             }
         );
@@ -1540,7 +1539,7 @@ mod tests {
         assert_eq!(
             m,
             Message::SessionChanged {
-                session: SessionId(0),
+                session: TmuxSessionId(0),
                 name: None,
             }
         );
@@ -1552,7 +1551,7 @@ mod tests {
         assert_eq!(
             m,
             Message::SessionRenamed {
-                session: SessionId(0),
+                session: TmuxSessionId(0),
                 name: "mysession".into(),
             }
         );
@@ -1747,7 +1746,7 @@ mod tests {
         let renamed = parse_line_bytes("%window-renamed @2 编译".as_bytes()).unwrap();
         assert!(matches!(
             renamed,
-            Message::WindowRenamed { window: WindowId(2), name } if name == "编译"
+            Message::WindowRenamed { window: TabId(2), name } if name == "编译"
         ));
 
         // 非 output 消息的字段不能安全地进入 String；应安全忽略，不得 panic 或生成替换符。
@@ -1896,7 +1895,7 @@ mod tests {
                 visible_layout,
                 flags,
             } => {
-                assert_eq!(window, WindowId(0));
+                assert_eq!(window, TabId(0));
                 assert_eq!((layout.cols, layout.rows), (80, 24));
                 assert_eq!(visible_layout, None);
                 assert_eq!(flags, None);
@@ -1915,7 +1914,7 @@ mod tests {
             flags,
         } = m
         {
-            assert_eq!(window, WindowId(1));
+            assert_eq!(window, TabId(1));
             assert_eq!((layout.cols, layout.rows, layout.flags), (100, 30, 1));
             let v = visible_layout.unwrap();
             assert_eq!((v.cols, v.rows), (100, 30));
@@ -1938,7 +1937,7 @@ mod tests {
                 flags,
                 ..
             } => {
-                assert_eq!(window, WindowId(0));
+                assert_eq!(window, TabId(0));
                 assert_eq!(visible_layout.unwrap().flags, 1);
                 assert_eq!(flags.as_deref(), Some("*Z"));
             }
@@ -2114,7 +2113,7 @@ mod tests {
         assert_eq!(
             m,
             Message::WindowPaneChanged {
-                window: WindowId(0),
+                window: TabId(0),
                 pane: PaneId(1),
             }
         );
@@ -2123,7 +2122,7 @@ mod tests {
         assert_eq!(
             m2,
             Message::WindowPaneChanged {
-                window: WindowId(1),
+                window: TabId(1),
                 pane: PaneId(2),
             }
         );
@@ -2135,8 +2134,8 @@ mod tests {
         assert_eq!(
             m,
             Message::SessionWindowChanged {
-                session: SessionId(0),
-                window: WindowId(1),
+                session: TmuxSessionId(0),
+                window: TabId(1),
             }
         );
     }
@@ -2199,12 +2198,16 @@ mod tests {
             match &m {
                 Message::SessionChanged { session, name } => {
                     session_changed += 1;
-                    assert_eq!(session, &SessionId(4), "dogfood 的 session 是 $4: {line}");
+                    assert_eq!(
+                        session,
+                        &TmuxSessionId(4),
+                        "dogfood 的 session 是 $4: {line}"
+                    );
                     assert_eq!(name.as_deref(), Some("yaklang-workspace"), "{line}");
                 }
                 Message::SessionWindowChanged { session, window } => {
                     session_window_changed += 1;
-                    assert_eq!(session, &SessionId(4), "{line}");
+                    assert_eq!(session, &TmuxSessionId(4), "{line}");
                     assert!(matches!(window.0, 21 | 29 | 27 | 19), "{line}");
                 }
                 Message::LayoutChange { window, .. } => {
@@ -2844,16 +2847,12 @@ mod iterm2_protocol_conformance_tests {
         let add = parse_line("%unlinked-window-add @12").unwrap();
         assert!(matches!(
             add,
-            Message::UnlinkedWindowAdd {
-                window: WindowId(12)
-            }
+            Message::UnlinkedWindowAdd { window: TabId(12) }
         ));
         let close = parse_line("%unlinked-window-close @12").unwrap();
         assert!(matches!(
             close,
-            Message::UnlinkedWindowClose {
-                window: WindowId(12)
-            }
+            Message::UnlinkedWindowClose { window: TabId(12) }
         ));
     }
 
@@ -2864,7 +2863,7 @@ mod iterm2_protocol_conformance_tests {
         assert!(matches!(
             pane,
             Message::WindowPaneChanged {
-                window: WindowId(3),
+                window: TabId(3),
                 pane: PaneId(9)
             }
         ));
@@ -2872,8 +2871,8 @@ mod iterm2_protocol_conformance_tests {
         assert!(matches!(
             window,
             Message::SessionWindowChanged {
-                session: SessionId(1),
-                window: WindowId(4)
+                session: TmuxSessionId(1),
+                window: TabId(4)
             }
         ));
     }
@@ -2962,7 +2961,7 @@ b""#,
         assert!(matches!(
             msg,
             Message::LayoutChange {
-                window: WindowId(0),
+                window: TabId(0),
                 visible_layout: None,
                 flags: Some(ref f),
                 ..

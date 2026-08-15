@@ -26,7 +26,7 @@ pub use backend::Backend;
 #[allow(unused_imports)]
 pub use layout::{LayoutNode, RemoveRootError, SplitDir, WindowLayout};
 #[allow(unused_imports)]
-pub use state::{BackendStatus, PaneInfo, SessionInfo, State, StateChange, WindowInfo};
+pub use state::{BackendStatus, PaneInfo, State, StateChange, TabInfo, WorkspaceInfo};
 #[allow(unused_imports)]
 pub use task::{Task, TaskOutcome};
 #[allow(unused_imports)]

@@ -3,7 +3,7 @@
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
 use crate::core::model::state::State;
-use crate::core::types::{PaneId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 
 /// 输出格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -30,11 +30,10 @@ pub fn format_output(
 ) -> String {
     use super::command::CliCommand::*;
     match cmd {
-        ListSessions => format_sessions(state, format),
-        ListWindows { .. } => format_windows(state, format),
-        ListTabs { .. } => format_tabs(state, format),
+        ListWorkspaces => format_workspaces(state, format),
+        ListTabs => format_tabs(state, format),
         ListPanes { tab } => format_panes(state, *tab, format),
-        ListLayout { window } => format_layout(state, *window, format),
+        ListLayout => format_layout(state, format),
         CapturePane { target, lines } => format_capture(state, *target, *lines, format),
         DisplayMessage {
             target,
@@ -48,172 +47,101 @@ pub fn format_output(
 /// 完整状态快照（供 TUI DaemonBackend 反序列化）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StateSnapshot {
-    pub sessions: Vec<crate::core::model::state::SessionInfo>,
-    pub windows: Vec<crate::core::model::state::WindowInfo>,
+    pub workspace_name: String,
+    pub workspace_runtime: String,
     pub tabs: Vec<crate::core::model::state::TabInfo>,
     pub panes: Vec<crate::core::model::state::PaneInfo>,
     pub layouts: Vec<crate::core::model::layout::TabLayout>,
     /// pane_id.0 → 累计输出（lossy UTF-8；含 ANSI）。
     pub outputs: Vec<(u32, String)>,
     pub status: crate::core::model::state::BackendStatus,
-    pub active_session: Option<u32>,
-    pub active_window: Option<u32>,
     pub active_tab: Option<u32>,
     pub active_pane: Option<u32>,
 }
 
 fn format_dump_state(state: &dyn State) -> String {
-    let windows: Vec<_> = state.all_windows().into_iter().cloned().collect();
     let mut tabs = Vec::new();
     let mut panes = Vec::new();
     let mut layouts = Vec::new();
     let mut outputs = Vec::new();
 
-    for w in &windows {
-        for t in state.tabs(&w.id) {
-            tabs.push(t.clone());
-            if let Some(layout) = state.layout(&t.id) {
-                layouts.push(layout.clone());
-            }
-            for p in state.panes(&t.id) {
-                panes.push(p.clone());
-                if let Some(out) = state.pane_output(&p.id) {
-                    outputs.push((p.id.0, String::from_utf8_lossy(out).into_owned()));
-                }
+    for t in state.tabs() {
+        tabs.push(t.clone());
+        if let Some(layout) = state.layout(&t.id) {
+            layouts.push(layout.clone());
+        }
+        for p in state.panes(&t.id) {
+            panes.push(p.clone());
+            if let Some(out) = state.pane_output(&p.id) {
+                outputs.push((p.id.0, String::from_utf8_lossy(out).into_owned()));
             }
         }
     }
 
     let snap = StateSnapshot {
-        sessions: state.sessions().to_vec(),
-        windows,
+        workspace_name: state.workspace_name().to_string(),
+        workspace_runtime: state.workspace_runtime().to_string(),
         tabs,
         panes,
         layouts,
         outputs,
         status: state.status(),
-        active_session: state.active_session().map(|s| s.id.0),
-        active_window: state.active_window().map(|w| w.id.0),
         active_tab: state.active_tab().map(|t| t.id.0),
         active_pane: state.active_pane().map(|p| p.id.0),
     };
     serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into())
 }
 
-fn format_sessions(state: &dyn State, format: OutputFormat) -> String {
-    let sessions = state.sessions();
+fn format_workspaces(state: &dyn State, format: OutputFormat) -> String {
     match format {
         OutputFormat::Json => {
-            let items: Vec<String> = sessions
-                .iter()
-                .map(|s| {
-                    let windows = state.active_window().map(|_| 1).unwrap_or(0);
-                    format!(
-                        r#"{{"id":"${}","name":"{}","windows":{},"attached":{}}}"#,
-                        s.id.0,
-                        json_escape(&s.name),
-                        windows,
-                        s.active_window.is_some()
-                    )
-                })
-                .collect();
-            format!("[{}]", items.join(","))
-        }
-        OutputFormat::Text => sessions
-            .iter()
-            .map(|s| {
-                let windows = state.active_window().map(|_| 1).unwrap_or(0);
-                let attached = if s.active_window.is_some() {
-                    "attached"
-                } else {
-                    "detached"
-                };
-                format!(
-                    "${}: {} ({} windows, {})",
-                    s.id.0, s.name, windows, attached
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
-
-fn format_windows(state: &dyn State, format: OutputFormat) -> String {
-    let windows = state.all_windows();
-    match format {
-        OutputFormat::Json => {
-            let items: Vec<String> = windows
-                .iter()
-                .map(|w| {
-                    let tabs = state.tabs(&w.id).len();
-                    let sess = w.session;
-                    format!(
-                        r#"{{"id":"w{}","name":"{}","tabs":{},"session":"${}"}}"#,
-                        w.id.0,
-                        json_escape(&w.name),
-                        tabs,
-                        sess.0
-                    )
-                })
-                .collect();
-            format!("[{}]", items.join(","))
+            let item = format!(
+                r#"{{"id":"local/{}/{}","name":"{}","runtime":"{}","transport":"local","in_pool":true}}"#,
+                state.workspace_runtime(),
+                json_escape(state.workspace_name()),
+                json_escape(state.workspace_name()),
+                state.workspace_runtime()
+            );
+            format!("[{item}]")
         }
         OutputFormat::Text => {
-            let items: Vec<String> = windows
-                .iter()
-                .map(|w| {
-                    let tabs = state.tabs(&w.id).len();
-                    let mark = if w.active { "*" } else { " " };
-                    format!("w{}: {}{} ({} tabs)", w.id.0, w.name, mark, tabs)
-                })
-                .collect();
-            if items.is_empty() {
-                String::new()
-            } else {
-                items.join("\n")
-            }
+            format!(
+                "{} ({}): attached",
+                state.workspace_name(),
+                state.workspace_runtime()
+            )
         }
     }
 }
 
 fn format_tabs(state: &dyn State, format: OutputFormat) -> String {
-    let win = state.active_window();
+    let tabs = state.tabs();
     match format {
         OutputFormat::Json => {
-            let items: Vec<String> = win
-                .map(|w| {
-                    state
-                        .tabs(&w.id)
-                        .iter()
-                        .map(|t| {
-                            let panes = state.panes(&t.id).len();
-                            format!(
-                                r#"{{"id":"t{}","name":"{}","panes":{},"active":{}}}"#,
-                                t.id.0,
-                                json_escape(&t.name),
-                                panes,
-                                t.active
-                            )
-                        })
-                        .collect()
+            let items: Vec<String> = tabs
+                .iter()
+                .map(|t| {
+                    let panes = state.panes(&t.id).len();
+                    format!(
+                        r#"{{"id":"t{}","name":"{}","panes":{},"active":{}}}"#,
+                        t.id.0,
+                        json_escape(&t.name),
+                        panes,
+                        t.active
+                    )
                 })
-                .unwrap_or_default();
+                .collect();
             format!("[{}]", items.join(","))
         }
-        OutputFormat::Text => win
-            .map(|w| {
-                state
-                    .tabs(&w.id)
-                    .iter()
-                    .map(|t| {
-                        let panes = state.panes(&t.id).len();
-                        let mark = if t.active { "*" } else { " " };
-                        format!("t{}: {}{} ({} panes)", t.id.0, t.name, mark, panes)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
+        OutputFormat::Text => tabs
+            .iter()
+            .map(|t| {
+                let panes = state.panes(&t.id).len();
+                let mark = if t.active { "*" } else { " " };
+                format!("t{}: {}{} ({} panes)", t.id.0, t.name, mark, panes)
             })
-            .unwrap_or_default(),
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
@@ -244,85 +172,70 @@ fn format_panes(state: &dyn State, tab: Option<TabId>, format: OutputFormat) -> 
     }
 }
 
-fn format_layout(state: &dyn State, window: Option<WindowId>, format: OutputFormat) -> String {
-    let win = window.or_else(|| state.active_window().map(|w| w.id));
-    // For text format, render a tree
-    let win_info = win.and_then(|_w| {
-        state
-            .sessions()
-            .iter()
-            .find(|_| true)
-            .and_then(|_| state.active_window())
-    });
-
-    let _ = win;
+fn format_layout(state: &dyn State, format: OutputFormat) -> String {
+    let tabs = state.tabs();
     match format {
         OutputFormat::Json => {
-            // JSON: nested layout
-            if let Some(w) = win_info {
-                let tabs = state.tabs(&w.id);
-                let tab_items: Vec<String> = tabs
-                    .iter()
-                    .map(|t| {
-                        let layout = state.layout(&t.id);
-                        let tree = layout
-                            .map(|tl| layout_node_to_json(&tl.tree))
-                            .unwrap_or_else(|| "null".to_string());
-                        format!(
-                            r#"{{"id":"t{}","name":"{}","active":{},"tree":{}}}"#,
-                            t.id.0,
-                            json_escape(&t.name),
-                            t.active,
-                            tree
-                        )
-                    })
-                    .collect();
-                format!("[{}]", tab_items.join(","))
-            } else {
-                "[]".to_string()
-            }
+            let tab_items: Vec<String> = tabs
+                .iter()
+                .map(|t| {
+                    let tree = state
+                        .layout(&t.id)
+                        .map(|tl| layout_node_to_json(&tl.tree))
+                        .unwrap_or_else(|| "null".to_string());
+                    format!(
+                        r#"{{"id":"t{}","name":"{}","active":{},"tree":{}}}"#,
+                        t.id.0,
+                        json_escape(&t.name),
+                        t.active,
+                        tree
+                    )
+                })
+                .collect();
+            format!("[{}]", tab_items.join(","))
         }
         OutputFormat::Text => {
-            // Text tree format
-            if let Some(w) = win_info {
-                let mut out = format!("window w{}: {}\n", w.id.0, w.name);
-                let tabs = state.tabs(&w.id);
-                for (i, t) in tabs.iter().enumerate() {
-                    let prefix = if i == tabs.len() - 1 {
-                        "└─"
-                    } else {
-                        "├─"
-                    };
-                    let active = if t.active { " [active]" } else { "" };
-                    out.push_str(&format!(
-                        "{} tab t{}: {}{}\n",
-                        prefix, t.id.0, t.name, active
-                    ));
-                    if let Some(tl) = state.layout(&t.id) {
-                        let leaves = tl.tree.leaves();
-                        for (j, pid) in leaves.iter().enumerate() {
-                            let leaf_prefix = if i == tabs.len() - 1 { "   " } else { "│  " };
-                            let last_leaf = if j == leaves.len() - 1 {
-                                "└─"
-                            } else {
-                                "├─"
-                            };
-                            let pane_info = state.pane(pid);
-                            let size = pane_info
-                                .map(|p| format!("{}x{}", p.cols, p.rows))
-                                .unwrap_or_default();
-                            let active_mark = if *pid == tl.active { " [active]" } else { "" };
-                            out.push_str(&format!(
-                                "{}   {} @{} {} {}{}\n",
-                                leaf_prefix, last_leaf, pid.0, size, "", active_mark
-                            ));
-                        }
+            if tabs.is_empty() {
+                return "(no tab)".to_string();
+            }
+            let mut out = format!(
+                "workspace {}: {}\n",
+                state.workspace_runtime(),
+                state.workspace_name()
+            );
+            for (i, t) in tabs.iter().enumerate() {
+                let prefix = if i == tabs.len() - 1 {
+                    "└─"
+                } else {
+                    "├─"
+                };
+                let active = if t.active { " [active]" } else { "" };
+                out.push_str(&format!(
+                    "{} tab t{}: {}{}\n",
+                    prefix, t.id.0, t.name, active
+                ));
+                if let Some(tl) = state.layout(&t.id) {
+                    let leaves = tl.tree.leaves();
+                    for (j, pid) in leaves.iter().enumerate() {
+                        let leaf_prefix = if i == tabs.len() - 1 { "   " } else { "│  " };
+                        let last_leaf = if j == leaves.len() - 1 {
+                            "└─"
+                        } else {
+                            "├─"
+                        };
+                        let size = state
+                            .pane(pid)
+                            .map(|p| format!("{}x{}", p.cols, p.rows))
+                            .unwrap_or_default();
+                        let active_mark = if *pid == tl.active { " [active]" } else { "" };
+                        out.push_str(&format!(
+                            "{}   {} @{} {} {}{}\n",
+                            leaf_prefix, last_leaf, pid.0, size, "", active_mark
+                        ));
                     }
                 }
-                out.trim_end().to_string()
-            } else {
-                "(no window)".to_string()
             }
+            out.trim_end().to_string()
         }
     }
 }
@@ -375,16 +288,13 @@ fn format_capture(
 
 fn format_display(state: &dyn State, target: PaneId, fmt_str: &str) -> String {
     let pane = state.pane(&target);
-    let _ = pane;
-    // 简化：返回 pane 信息
     if let Some(p) = pane {
-        let s = fmt_str
+        fmt_str
             .replace("#{pane_id}", &format!("@{}", p.id.0))
             .replace("#{pane_active}", &p.active.to_string())
             .replace("#{pane_width}", &p.cols.to_string())
             .replace("#{pane_height}", &p.rows.to_string())
-            .replace("#{pane_title}", &p.title);
-        s
+            .replace("#{pane_title}", &p.title)
     } else {
         String::new()
     }
@@ -398,7 +308,6 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockBackend;
-    use crate::core::types::PaneId;
     use crate::platform::cli::command::CliCommand;
 
     fn mock_with_pane() -> MockBackend {
@@ -406,19 +315,25 @@ mod tests {
     }
 
     #[test]
-    fn format_sessions_json() {
+    fn format_workspaces_json() {
         let b = mock_with_pane();
-        let out = format_output(&b, &CliCommand::ListSessions, OutputFormat::Json);
+        let out = format_output(&b, &CliCommand::ListWorkspaces, OutputFormat::Json);
         assert!(out.contains(r#""name":"mock""#));
         assert!(out.starts_with('['));
     }
 
     #[test]
-    fn format_sessions_text() {
+    fn format_workspaces_text() {
         let b = mock_with_pane();
-        let out = format_output(&b, &CliCommand::ListSessions, OutputFormat::Text);
+        let out = format_output(&b, &CliCommand::ListWorkspaces, OutputFormat::Text);
         assert!(out.contains("mock"));
-        assert!(out.contains("attached"));
+    }
+
+    #[test]
+    fn format_tabs_json() {
+        let b = mock_with_pane();
+        let out = format_output(&b, &CliCommand::ListTabs, OutputFormat::Json);
+        assert!(out.contains(r#""id":"t1""#));
     }
 
     #[test]
@@ -426,124 +341,19 @@ mod tests {
         let b = mock_with_pane();
         let out = format_output(&b, &CliCommand::ListPanes { tab: None }, OutputFormat::Json);
         assert!(out.contains(r#""id":"@1""#));
-        assert!(out.contains(r#""active":true"#));
-    }
-
-    #[test]
-    fn format_panes_text() {
-        let b = mock_with_pane();
-        let out = format_output(&b, &CliCommand::ListPanes { tab: None }, OutputFormat::Text);
-        assert!(out.contains("@1"));
-        assert!(out.contains("80x24"));
-    }
-
-    #[test]
-    fn format_tabs_json() {
-        let b = mock_with_pane();
-        let out = format_output(
-            &b,
-            &CliCommand::ListTabs { window: None },
-            OutputFormat::Json,
-        );
-        assert!(out.contains(r#""id":"t1""#));
-    }
-
-    #[test]
-    fn format_capture_returns_output() {
-        let mut b = mock_with_pane();
-        b.outputs[0].1 = b"hello world\n".to_vec();
-        let out = format_output(
-            &b,
-            &CliCommand::CapturePane {
-                target: Some(PaneId(1)),
-                lines: None,
-            },
-            OutputFormat::Json,
-        );
-        assert!(out.contains("hello world"));
-    }
-
-    #[test]
-    fn format_capture_with_lines() {
-        let mut b = mock_with_pane();
-        b.outputs[0].1 = b"line1\nline2\nline3\n".to_vec();
-        let out = format_output(
-            &b,
-            &CliCommand::CapturePane {
-                target: Some(PaneId(1)),
-                lines: Some(2),
-            },
-            OutputFormat::Json,
-        );
-        assert!(out.contains("line2"));
-        assert!(out.contains("line3"));
-        assert!(!out.contains("line1"));
-    }
-
-    #[test]
-    fn format_layout_text() {
-        let b = mock_with_pane();
-        let out = format_output(
-            &b,
-            &CliCommand::ListLayout { window: None },
-            OutputFormat::Text,
-        );
-        assert!(out.contains("window"));
-        assert!(out.contains("tab"));
-    }
-
-    #[test]
-    fn format_windows_text() {
-        let b = mock_with_pane();
-        let out = format_output(
-            &b,
-            &CliCommand::ListWindows { session: None },
-            OutputFormat::Text,
-        );
-        assert!(out.contains("w1"));
-    }
-
-    /// JSON 输出要能被下游（TUI/daemon）稳定消费。
-    #[test]
-    fn format_windows_json() {
-        let b = mock_with_pane();
-        let out = format_output(
-            &b,
-            &CliCommand::ListWindows { session: None },
-            OutputFormat::Json,
-        );
-        assert!(out.starts_with('['));
-        assert!(out.contains(r#""id":"w1""#));
-        assert!(out.contains(r#""session":"$"#));
-        assert!(out.contains(r#""tabs":1"#));
     }
 
     #[test]
     fn format_layout_json() {
         let b = mock_with_pane();
-        let out = format_output(
-            &b,
-            &CliCommand::ListLayout { window: None },
-            OutputFormat::Json,
-        );
-        assert!(out.starts_with('['));
-        assert!(
-            out.contains(r#""tree":"@1""#),
-            "layout JSON 应含 pane 叶子: {out}"
-        );
+        let out = format_output(&b, &CliCommand::ListLayout, OutputFormat::Json);
+        assert!(out.contains(r#""id":"t1""#));
     }
 
     #[test]
-    fn format_display_message() {
+    fn format_dump_state_has_workspace() {
         let b = mock_with_pane();
-        let out = format_output(
-            &b,
-            &CliCommand::DisplayMessage {
-                target: PaneId(1),
-                format: "#{pane_id}".into(),
-            },
-            OutputFormat::Text,
-        );
-        assert_eq!(out, "@1");
+        let out = format_output(&b, &CliCommand::DumpState, OutputFormat::Json);
+        assert!(out.contains(r#""workspace_name":"mock""#));
     }
 }

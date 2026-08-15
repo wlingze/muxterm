@@ -10,7 +10,7 @@ use anyhow::Context;
 use crate::core::model::task::Task;
 use crate::core::model::TerminalModel;
 use crate::core::runtime::tmux::TmuxBackend;
-use crate::core::types::{PaneId, TabId, WindowId};
+use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
@@ -123,10 +123,8 @@ fn wait_for_pane_count(model: &mut TerminalModel, min_panes: usize, deadline: In
 fn wait_for_tab_count(model: &mut TerminalModel, min_tabs: usize, deadline: Instant) {
     while Instant::now() < deadline {
         let _ = model.refresh();
-        if let Some(win) = model.state().active_window() {
-            if model.state().tabs(&win.id).len() >= min_tabs {
-                return;
-            }
+        if model.state().tabs().len() >= min_tabs {
+            return;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -222,11 +220,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
             match target {
                 Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |model| {
                     wait_ready(model, READY_POLL_DURATION);
-                    let session_name = model
-                        .state()
-                        .active_session()
-                        .map(|s| s.name.clone())
-                        .unwrap_or_else(|| name.clone());
+                    let session_name = model.state().workspace_name().to_string();
                     Ok(serde_json::json!({
                         "session": session_name,
                         "created": true,
@@ -268,11 +262,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                         }
                         std::thread::sleep(Duration::from_millis(20));
                     }
-                    let tabs = model
-                        .state()
-                        .active_window()
-                        .map(|w| model.state().tabs(&w.id).len() as u32)
-                        .unwrap_or(0);
+                    let tabs = model.state().tabs().len() as u32;
                     let panes: Vec<serde_json::Value> = model
                         .state()
                         .active_tab()
@@ -324,22 +314,16 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
                     let _ = model.refresh();
                     let tabs: Vec<serde_json::Value> = model
                         .state()
-                        .active_window()
-                        .map(|w| {
-                            model
-                                .state()
-                                .tabs(&w.id)
-                                .iter()
-                                .map(|t| {
-                                    serde_json::json!({
-                                        "id": t.id.0,
-                                        "name": t.name,
-                                        "active": t.active,
-                                    })
-                                })
-                                .collect()
+                        .tabs()
+                        .iter()
+                        .map(|t| {
+                            serde_json::json!({
+                                "id": t.id.0,
+                                "name": t.name,
+                                "active": t.active,
+                            })
                         })
-                        .unwrap_or_default();
+                        .collect();
                     Ok(serde_json::json!({"tabs": tabs}))
                 }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
@@ -358,13 +342,7 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
                 Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
                     wait_ready(model, READY_POLL_DURATION);
                     let _ = model.refresh();
-                    let wid = model
-                        .state()
-                        .active_window()
-                        .map(|w| w.id)
-                        .unwrap_or(WindowId(1));
                     model.execute(Task::NewTab {
-                        window: wid,
                         name: name.clone(),
                         command: None,
                         workdir: None,
@@ -374,9 +352,10 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
                     let _ = model.refresh();
                     let new_tab = {
                         let state = model.state();
-                        let win_id = state.active_window().map(|w| w.id);
-                        win_id
-                            .and_then(|wid| state.tabs(&wid).last().copied())
+                        state
+                            .tabs()
+                            .last()
+                            .copied()
                             .map(|t| {
                                 serde_json::json!({
                                     "id": t.id.0,

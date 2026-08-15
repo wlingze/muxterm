@@ -19,42 +19,21 @@ pub fn cli_command_to_task(
     use CliCommand::*;
 
     match cmd {
-        // Session
-        NewSession { .. } => None,
-        KillSession { .. } => Some(Task::Shutdown),
-        AttachSession { .. } => None,
+        // Workspace
+        NewWorkspace { .. } => None,
+        CloseWorkspace { .. } => Some(Task::Shutdown),
+        AttachWorkspace { .. } => None,
         Detach { .. } => Some(Task::Detach),
-        RenameSession { .. } => None,
+        RenameWorkspace { new_name } => Some(Task::RenameWorkspace {
+            name: new_name.clone(),
+        }),
 
-        // Window
-        NewWindow { name, .. } => Some(Task::NewWindow {
+        // Tab
+        NewTab { name } => Some(Task::NewTab {
             name: name.clone(),
             command: None,
             workdir: None,
         }),
-        KillWindow { target } => {
-            let wid = target.or_else(|| state.active_window().map(|w| w.id))?;
-            Some(Task::CloseWindow { target: wid })
-        }
-        SelectWindow { target } => Some(Task::SwitchWindow { target: *target }),
-        RenameWindow { new_name } => {
-            let wid = state.active_window()?.id;
-            Some(Task::RenameWindow {
-                target: wid,
-                name: new_name.clone(),
-            })
-        }
-
-        // Tab
-        NewTab { name, window } => {
-            let wid = window.or_else(|| state.active_window().map(|w| w.id))?;
-            Some(Task::NewTab {
-                window: wid,
-                name: name.clone(),
-                command: None,
-                workdir: None,
-            })
-        }
         KillTab { target } => {
             let tid = target.or_else(|| state.active_tab().map(|t| t.id))?;
             Some(Task::CloseTab { target: tid })
@@ -133,12 +112,7 @@ pub fn cli_command_to_task(
         CapturePane { .. } => None,
 
         // 查询命令
-        ListSessions
-        | ListWindows { .. }
-        | ListTabs { .. }
-        | ListPanes { .. }
-        | ListLayout { .. }
-        | DumpState => None,
+        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | DumpState => None,
         DisplayMessage { .. } => None,
     }
 }
@@ -174,9 +148,9 @@ mod tests {
     }
 
     #[test]
-    fn list_sessions_returns_none() {
+    fn list_workspaces_returns_none() {
         let model = make_model();
-        let task = cli_command_to_task(&CliCommand::ListSessions, model.state());
+        let task = cli_command_to_task(&CliCommand::ListWorkspaces, model.state());
         assert!(task.is_none());
     }
 
