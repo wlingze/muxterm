@@ -78,26 +78,35 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
         );
         pump_main_loop(80);
 
-        // 找到字号 SpinButton（第二个 SpinButton：font size）。
-        let spin = find_by_name(&win, "").and_then(|_| None::<gtk4::Widget>);
-        let _ = spin;
-        // 直接按顺序找 SpinButton：font size 是第一个。
-        let mut spins = Vec::new();
-        collect_spin_buttons(&win, &mut spins);
-        assert!(!spins.is_empty(), "配置页应有 SpinButton");
-        let font_size = &spins[0];
+        // 按 widget_name 契约找控件（禁止下标 / 英文 Save）。
+        let font_size = find_by_name(&win, "muxterm-prefs-font-size")
+            .expect("font-size SpinButton 应存在")
+            .downcast::<gtk4::SpinButton>()
+            .expect("SpinButton 类型");
+        assert!(
+            find_by_name(&win, "muxterm-prefs-theme").is_some(),
+            "theme Combo 应有 name"
+        );
+        assert!(
+            find_by_name(&win, "muxterm-prefs-font-family").is_some(),
+            "font-family Entry 应有 name"
+        );
+        assert!(
+            find_by_name(&win, "muxterm-prefs-status-mode").is_some(),
+            "status-mode Combo 应有 name"
+        );
+        assert!(
+            find_by_name(&win, "muxterm-prefs-scrollback").is_some(),
+            "scrollback SpinButton 应有 name"
+        );
         font_size.set_value(14.0);
         pump_main_loop(40);
 
-        // 点保存
-        let save_btn = find_by_name(&win, "").and_then(|_| None::<gtk4::Widget>);
-        let _ = save_btn;
-        let buttons = collect_buttons(&win);
-        let save = buttons
-            .iter()
-            .find(|b| b.label().map(|l| l.to_string()).unwrap_or_default() == "Save")
-            .cloned()
-            .expect("应有 Save 按钮");
+        // 点保存（只认 name，不认英文文本）。
+        let save = find_by_name(&win, "muxterm-prefs-save")
+            .expect("保存按钮应有 name")
+            .downcast::<gtk4::Button>()
+            .expect("Button 类型");
         let _: () = save.emit_by_name("clicked", &[]);
         pump_main_loop(80);
 
@@ -118,33 +127,4 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
         pump_main_loop(40);
         let _ = std::fs::remove_dir_all(&tmp);
     });
-}
-
-fn collect_spin_buttons(root: &impl IsA<gtk4::Widget>, out: &mut Vec<gtk4::SpinButton>) {
-    let root = root.as_ref();
-    if let Ok(s) = root.clone().downcast::<gtk4::SpinButton>() {
-        out.push(s);
-    }
-    let mut child = root.first_child();
-    while let Some(c) = child {
-        collect_spin_buttons(&c, out);
-        child = c.next_sibling();
-    }
-}
-
-fn collect_buttons(root: &impl IsA<gtk4::Widget>) -> Vec<gtk4::Button> {
-    let mut out = Vec::new();
-    fn walk(root: &impl IsA<gtk4::Widget>, out: &mut Vec<gtk4::Button>) {
-        let root = root.as_ref();
-        if let Ok(b) = root.clone().downcast::<gtk4::Button>() {
-            out.push(b);
-        }
-        let mut child = root.first_child();
-        while let Some(c) = child {
-            walk(&c, out);
-            child = c.next_sibling();
-        }
-    }
-    walk(root, &mut out);
-    out
 }
