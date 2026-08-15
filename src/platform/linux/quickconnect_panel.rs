@@ -18,7 +18,7 @@ use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::panel_model::{
-    filter_attention_rows, filter_workspace_rows, PanelModel, PanelTab,
+    filter_attention_rows, filter_workspace_rows, search_rows, PanelModel, PanelTab, SearchRow,
 };
 use crate::platform::linux::quick_pick;
 use crate::platform::linux::quickconnect::model::{
@@ -92,6 +92,8 @@ pub struct PanelShowArgs {
     pub on_reply: Box<dyn Fn(String, u32, String)>,
     pub on_mute: Box<dyn Fn(String, u32)>,
     pub peek_text: Box<dyn Fn(String, u32) -> String>,
+    /// Search tab：query → replica 命中行。
+    pub search: Box<dyn Fn(&str) -> Vec<SearchRow>>,
     /// 面板关闭回调（window 侧清 panel_open 状态）。
     pub on_close: Box<dyn Fn()>,
 }
@@ -227,6 +229,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_reply,
         on_mute,
         peek_text,
+        search,
         on_close,
     } = args;
     let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
@@ -243,6 +246,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_reply,
         on_mute,
         peek_text,
+        search,
         on_close: std::boxed::Box::new(|| {}),
     });
     let finished = Rc::new(RefCell::new(false));
@@ -489,7 +493,27 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     }
                 }
                 PanelTab::Search => {
-                    // 阶段 C 前：占位行（search_status 已显示）。
+                    let hits = (callbacks.search)(&query);
+                    let (rows, placeholder) = search_rows(&query, hits);
+                    search_status.set_visible(placeholder);
+                    for (i, row) in rows.iter().enumerate() {
+                        let row_widget = ListBoxRow::new();
+                        row_widget.set_widget_name(&format!(
+                            "muxterm-search-hit-{}-{}-{}",
+                            row.workspace_id, row.pane_id, row.seq
+                        ));
+                        let text = format!("{} · {} · {}", row.workspace_id, row.pane_id, row.line);
+                        let label = Label::new(Some(&text));
+                        label.set_halign(Align::Start);
+                        label.set_margin_start(16);
+                        label.set_margin_top(8);
+                        label.set_margin_bottom(8);
+                        row_widget.set_child(Some(&label));
+                        list.append(&row_widget);
+                        if i == 0 {
+                            list.select_row(Some(&row_widget));
+                        }
+                    }
                 }
             }
             update_peek();
@@ -694,7 +718,13 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         );
                     }
                 }
-                PanelTab::Search => {}
+                PanelTab::Search => {
+                    let hits = (callbacks.search)(&model.borrow().query);
+                    let (rows, _) = search_rows(&model.borrow().query, hits);
+                    if let Some(row) = rows.get(idx) {
+                        (callbacks.on_jump_pane)(row.workspace_id.clone(), row.pane_id);
+                    }
+                }
             }
         }
     };

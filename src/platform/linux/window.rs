@@ -330,6 +330,10 @@ impl AppWindow {
                     open_panel(&st, &window_for_palette, PanelTab::Workspaces);
                     return glib::Propagation::Stop;
                 }
+                if action == Action::Search {
+                    open_panel(&st, &window_for_palette, PanelTab::Search);
+                    return glib::Propagation::Stop;
+                }
                 let mut s = st.borrow_mut();
                 handle_action(&mut s, action, &window_for_palette, &st);
                 glib::Propagation::Stop
@@ -780,7 +784,10 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         PaletteAction::TmuxAttach => open_tmux_attach(state, parent, false),
         PaletteAction::TmuxNew => open_tmux_attach(state, parent, true),
         PaletteAction::SshConnect => open_ssh_connect(state, parent),
-        PaletteAction::SearchPanes | PaletteAction::RenamePane => {
+        PaletteAction::SearchPanes => {
+            open_panel(state, parent, PanelTab::Search);
+        }
+        PaletteAction::RenamePane => {
             tracing::info!(target = "muxterm::linux", "命令 {id} 尚未接到 GTK 对话框");
         }
         PaletteAction::Preferences => {
@@ -1443,6 +1450,17 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                 std::boxed::Box::new(move |ws, pane| {
                     let s = st.borrow();
                     s.replicas.last_n_lines(&ws, pane, 20).join("\n")
+                })
+            },
+            search: {
+                let st = st.clone();
+                std::boxed::Box::new(move |query| {
+                    let s = st.borrow();
+                    s.replicas
+                        .search_all(query)
+                        .into_iter()
+                        .map(Into::into)
+                        .collect()
                 })
             },
             on_close: {
