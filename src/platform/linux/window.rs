@@ -972,15 +972,9 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                 if view.is_seeded() {
                     view.feed_output(&ev.data);
                 } else {
-                    // 首次输出前先按后端尺寸播种完整快照，避免增量叠在空模型上。
-                    let out = s.bridge().get_pane_output(ev.pane_id);
-                    let panes = s.bridge().get_panes(s.active_tab);
-                    let (cols, rows) = panes
-                        .iter()
-                        .find(|p| p.id == ev.pane_id)
-                        .map(|p| (p.cols, p.rows))
-                        .unwrap_or((80, 24));
-                    view.seed_snapshot(&out, cols, rows);
+                    // 首屏只从 replica 取可见帧，禁止 get_pane_output 重放历史。
+                    let ansi = s.replicas.visible_ansi(&ws, ev.pane_id);
+                    view.present_from_replica(&ansi);
                 }
                 forward_parser_replies(s, ev.pane_id);
             }
@@ -1091,11 +1085,12 @@ fn refresh_ui(s: &mut UiState) {
         };
         s.layout.apply_layout(&layout, &input_cb);
 
+        let ws = active_workspace_id(s);
         for pane in s.bridge().get_panes(s.active_tab) {
             if let Some(view) = s.layout.pane(pane.id).cloned() {
                 if !view.is_seeded() {
-                    let out = s.bridge().get_pane_output(pane.id);
-                    view.seed_snapshot(&out, pane.cols, pane.rows);
+                    let ansi = s.replicas.visible_ansi(&ws, pane.id);
+                    view.present_from_replica(&ansi);
                     forward_parser_replies(s, pane.id);
                 } else {
                     view.ensure_grid_size(pane.cols, pane.rows);
@@ -1222,14 +1217,15 @@ fn ssh_model_status_snapshot(s: &UiState) -> StatusBarSnapshot {
 }
 
 fn sync_pane_outputs(s: &mut UiState) {
-    // 只给尚未播种的 pane 补一次快照；已挂载 pane 的增量走 STATE_PANE_OUTPUT。
+    // 只给尚未播种的 pane 补一次首屏；已挂载 pane 的增量走 STATE_PANE_OUTPUT。
+    let ws = active_workspace_id(s);
     for pane in s.bridge().get_panes(s.active_tab) {
         if let Some(view) = s.layout.pane(pane.id).cloned() {
             if view.is_seeded() {
                 continue;
             }
-            let out = s.bridge().get_pane_output(pane.id);
-            view.seed_snapshot(&out, pane.cols, pane.rows);
+            let ansi = s.replicas.visible_ansi(&ws, pane.id);
+            view.present_from_replica(&ansi);
             forward_parser_replies(s, pane.id);
         }
     }
@@ -1249,17 +1245,14 @@ fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
     }
 }
 
-fn forward_parser_replies(s: &UiState, pane_id: u32) {
-    // tmux/SSH 镜像模式由 refresh-client -r 代答 OSC/DA，不能把 VTE 解析器
-    // 应答写回 PTY，否则 `git lg` 一类查询会把 ESC 字面泄漏进输出。
-    let replies = match s.layout.pane(pane_id) {
-        Some(view) if view.is_tmux_mirror() || s.uses_tmux => {
-            let _ = view.take_replies();
-            Vec::new()
-        }
-        Some(view) => view.take_replies(),
-        None => Vec::new(),
-    };
+fn forward_parser_replies(s: &mut UiState, pane_id: u32) {
+    // 查询应答以 ReplicaStore 的 TerminalState 为事实源（LINUX-PLAN §2.5）。
+    // tmux/SSH 镜像模式由 refresh-client -r 代答 OSC/DA，不能写回 PTY。
+    let ws = active_workspace_id(s);
+    let replies = s.replicas.take_reply(&ws, pane_id);
+    if s.uses_tmux {
+        return;
+    }
     if !replies.is_empty() {
         let _ = s.bridge().send_input(pane_id, &replies);
     }
