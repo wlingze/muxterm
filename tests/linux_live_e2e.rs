@@ -161,13 +161,13 @@ fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
     assert!(ok, "点击后 tmux window 应切到 @{target}");
 }
 
-/// F1：隔离 tmux 逐字打字——VTE 里完整 token 恰好一份（2105「越写越长」）。
-fn isolated_tmux_typing_token_appears_once(app: &AppWindow, socket: &str) {
-    // 逐字符发送（F1 阶段 helper 仍走 send-keys -l；F4 换生产路径）。
+/// F1/F4：隔离 tmux 逐字打字（走 AppWindow 输入 → send-keys -H）——
+/// VTE 里完整 token 恰好一份（2105「越写越长」）。
+fn isolated_tmux_typing_token_appears_once(app: &AppWindow, _socket: &str) {
+    // 逐字符经生产输入路径（muxterm_send_input → WriteRaw → send-keys -H）。
     for ch in "MUXTERM_TYPE_TOKEN".chars() {
-        let _ = std::process::Command::new("tmux")
-            .args(["-L", socket, "send-keys", "-t", "s", "-l", &ch.to_string()])
-            .status();
+        app.test_send_input(&[ch as u8]);
+        pump_main_loop(20);
     }
     // 等 tmux 把字符回显到 pane 再轮询 VTE。
     std::thread::sleep(Duration::from_millis(300));
