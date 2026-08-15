@@ -693,6 +693,65 @@ impl TerminalState {
         self.snapshot_trimmed()
     }
 
+    /// 把当前可见网格编成可再 feed 的 ANSI 字节（LINUX-PLAN §2.2）。
+    ///
+    /// 前缀 `ESC[H ESC[2J`，逐行输出可见字符（行尾空白 trim）+ `\r\n`；
+    /// 颜色/加粗在变化处插简单 SGR（0 / 1 / 30-37 / 40-47，真彩后补）。
+    pub fn visible_ansi(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.cols() * self.rows() * 4);
+        out.extend_from_slice(b"\x1b[H\x1b[2J");
+        let mut last_fg: Option<u8> = None;
+        let mut last_bg: Option<u8> = None;
+        let mut last_bold = false;
+        for row in &self.grid {
+            let mut line = String::new();
+            let mut fg: Option<u8> = None;
+            let mut bg: Option<u8> = None;
+            let mut bold = false;
+            for cell in row {
+                if cell.ch == '\0' {
+                    continue;
+                }
+                if cell.fg.is_some() || cell.bg.is_some() || cell.bold {
+                    fg = cell.fg.as_ref().and_then(sgr_fg);
+                    bg = cell.bg.as_ref().and_then(sgr_bg);
+                    bold = cell.bold;
+                }
+                line.push(cell.ch);
+            }
+            let trimmed = line.trim_end_matches([' ', '\0']).to_string();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if fg != last_fg || bg != last_bg || bold != last_bold {
+                out.extend_from_slice(b"\x1b[");
+                let mut parts: Vec<String> = Vec::new();
+                if bold {
+                    parts.push("1".into());
+                } else if last_bold {
+                    parts.push("0".into());
+                }
+                if let Some(f) = fg {
+                    parts.push(f.to_string());
+                }
+                if let Some(b) = bg {
+                    parts.push(b.to_string());
+                }
+                if parts.is_empty() {
+                    parts.push("0".into());
+                }
+                out.extend_from_slice(parts.join(";").as_bytes());
+                out.push(b'm');
+                last_fg = fg;
+                last_bg = bg;
+                last_bold = bold;
+            }
+            out.extend_from_slice(trimmed.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        out
+    }
+
     fn scroll_up_n(&mut self, n: usize) {
         let span = self.scroll_bottom.saturating_sub(self.scroll_top) + 1;
         let n = n.min(span);
@@ -1182,6 +1241,40 @@ impl Handler for TerminalState {
         self.signals.push(AttentionSignal::AttentionRequest {
             source: AttentionSource::Bel,
         });
+    }
+}
+
+/// 前景 SGR 码：Named 0-7 → 30-37，bright 8-15 → 90-97；其它返回 None（真彩后补）。
+fn sgr_fg(color: &Color) -> Option<u8> {
+    match color {
+        Color::Named(n) => {
+            let v = *n as u8;
+            if v < 8 {
+                Some(30 + v)
+            } else if v < 16 {
+                Some(90 + (v - 8))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 背景 SGR 码：Named 0-7 → 40-47，bright 8-15 → 100-107。
+fn sgr_bg(color: &Color) -> Option<u8> {
+    match color {
+        Color::Named(n) => {
+            let v = *n as u8;
+            if v < 8 {
+                Some(40 + v)
+            } else if v < 16 {
+                Some(100 + (v - 8))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1979,6 +2072,33 @@ mod scrollback_tests {
         assert_eq!(lines.last().map(String::as_str), Some("row9"));
         assert_eq!(lines, vec!["row6", "row7", "row8", "row9"]);
         assert_eq!(t.last_n_lines(2), vec!["row8", "row9"]);
+    }
+
+    /// S2：visible_ansi 往返——新 state feed 后可见网格一致，且只含最后 24 行。
+    #[test]
+    fn visible_ansi_roundtrip_preserves_trimmed_snapshot() {
+        let mut old = TerminalState::new(80, 24);
+        for i in 0..30 {
+            old.feed(format!("row{i}\r\n").as_bytes());
+        }
+        let ansi = old.visible_ansi();
+        assert!(ansi.starts_with(b"\x1b[H\x1b[2J"), "应以前缀复位+清屏开头");
+        let mut fresh = TerminalState::new(80, 24);
+        fresh.feed(&ansi);
+        assert_eq!(
+            fresh.snapshot_trimmed(),
+            old.snapshot_trimmed(),
+            "visible_ansi 往返后可见网格应一致"
+        );
+        let visible = fresh.snapshot_trimmed();
+        assert!(visible.iter().any(|l| l.contains("row29")), "应含最后一行");
+        assert!(!visible.iter().any(|l| l.contains("row0")), "不应含最早行");
+        assert_eq!(fresh.rows(), 24, "网格高度应为 24");
+        assert!(
+            visible.len() <= 24,
+            "可见非空行不超过 24: {}",
+            visible.len()
+        );
     }
 
     /// 清屏不应污染 scrollback（ESC[2J 只清当前屏）。
