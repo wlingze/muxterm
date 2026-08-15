@@ -34,7 +34,7 @@ const NEW_PROJECT_ID: &str = "__new_project__";
 
 type SendInputCb = Box<dyn Fn(String, u32, &[u8])>;
 type MuteCb = Box<dyn Fn(String, u32, Duration)>;
-type PeekAnsiCb = Box<dyn Fn(String, u32) -> (u16, u16, Vec<u8>)>;
+type PeekBytesCb = Box<dyn Fn(String, u32) -> (u16, u16, Vec<u8>)>;
 type SearchCb = Box<dyn Fn(&str) -> Vec<SearchRow>>;
 
 /// 面板回调。
@@ -104,8 +104,8 @@ pub struct PanelShowArgs {
     pub on_send_input: SendInputCb,
     /// 禁止提醒：`(ws, pane, duration)`。
     pub on_mute: MuteCb,
-    /// 小 VTE 播种：`(ws, pane) → (cols, rows, replica 几何 ANSI)`。
-    pub peek_ansi: PeekAnsiCb,
+    /// 小 VTE 播种：`(ws, pane) → (cols, rows, 原始 pane 字节)`。
+    pub peek_bytes: PeekBytesCb,
     /// Search tab：query → replica 命中行。
     pub search: SearchCb,
     /// 面板关闭回调（window 侧清 panel_open 状态）。
@@ -131,7 +131,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_jump_pane,
         on_send_input,
         on_mute,
-        peek_ansi,
+        peek_bytes,
         search,
         on_close,
     } = args;
@@ -288,7 +288,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_jump_pane,
         on_send_input,
         on_mute,
-        peek_ansi,
+        peek_bytes,
         search,
         on_close: std::boxed::Box::new(|| {}),
     });
@@ -387,10 +387,11 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             zoom_button.set_sensitive(true);
             mute_button.set_sensitive(true);
             peek_view.set_pane_id(pane);
-            let (cols, rows, ansi) = (callbacks.peek_ansi)(ws, pane);
+            let (cols, rows, bytes) = (callbacks.peek_bytes)(ws, pane);
             peek_view.ensure_grid_size(cols, rows);
-            if !ansi.is_empty() {
-                peek_view.present_from_replica(&ansi);
+            if !bytes.is_empty() {
+                peek_view.feed_output(&bytes);
+                peek_view.flush_pending_feed();
             }
         }
     };

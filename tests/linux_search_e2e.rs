@@ -64,7 +64,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 on_jump_pane: Box::new(move |ws, pane| j.borrow_mut().push((ws, pane))),
                 on_send_input: Box::new(|_, _, _| {}),
                 on_mute: Box::new(|_, _, _| {}),
-                peek_ansi: Box::new(|_, _| (80, 24, Vec::new())),
+                peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
                 search: Box::new(move |query| {
                     s.borrow()
                         .search_all(query)

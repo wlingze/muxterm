@@ -1061,14 +1061,9 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
                 sync_pane_grid_size(s, ev.pane_id);
-                if view.is_seeded() {
-                    view.feed_output(&ev.data);
-                } else if !s.replicas.is_blank(&ws, ev.pane_id) {
-                    // 首屏只从 replica 取几何帧，禁止 get_pane_output 重放历史；
-                    // 空网格不标 seeded，等 replica 有内容再播种。
-                    let ansi = s.replicas.visible_ansi(&ws, ev.pane_id);
-                    view.present_from_replica(&ansi);
-                }
+                // Surface：synced 后只 feed 原始字节；未 synced 的 live 由
+                // F3 capture 门丢弃（F2 阶段先 raw feed，禁止 dump）。
+                view.feed_output(&ev.data);
                 forward_parser_replies(s, ev.pane_id);
             }
         }
@@ -1168,34 +1163,18 @@ fn refresh_ui(s: &mut UiState) {
                 // 滚动历史数据源：offset 行前、rows 行的几何 ANSI。
                 {
                     let weak = s.self_weak.clone();
-                    let weak_scroll = weak.clone();
-                    let weak_replica = weak;
                     let ws_scroll = ws.clone();
-                    let ws_replica = ws.clone();
                     let pid_scroll = pane.id;
-                    let pid_replica = pane.id;
                     view.set_scroll_provider(std::rc::Rc::new(move |offset, rows| {
-                        let Some(st) = weak_scroll.upgrade() else {
+                        let Some(st) = weak.upgrade() else {
                             return Vec::new();
                         };
                         let s = st.borrow();
                         s.replicas.scroll_ansi(&ws_scroll, pid_scroll, offset, rows)
                     }));
-                    view.set_replica_ansi_provider(std::rc::Rc::new(move || {
-                        let Some(st) = weak_replica.upgrade() else {
-                            return Vec::new();
-                        };
-                        let s = st.borrow();
-                        s.replicas.visible_ansi(&ws_replica, pid_replica)
-                    }));
                 }
-                if !view.is_seeded() && !s.replicas.is_blank(&ws, pane.id) {
-                    let ansi = s.replicas.visible_ansi(&ws, pane.id);
-                    view.present_from_replica(&ansi);
-                    forward_parser_replies(s, pane.id);
-                } else {
-                    view.ensure_grid_size(pane.cols, pane.rows);
-                }
+                // Surface：已有 pane 只 show/hide，不 reset、不 dump。
+                view.ensure_grid_size(pane.cols, pane.rows);
                 if pane.is_active {
                     s.active_pane = pane.id;
                     view.grab_focus();
@@ -1311,16 +1290,11 @@ fn ssh_model_status_snapshot(s: &UiState) -> StatusBarSnapshot {
 }
 
 fn sync_pane_outputs(s: &mut UiState) {
-    // 只给尚未播种的 pane 补一次首屏；已挂载 pane 的增量走 STATE_PANE_OUTPUT。
-    let ws = active_workspace_id(s);
+    // Surface：已挂载 pane 的增量走 STATE_PANE_OUTPUT；这里不再 dump replica。
+    // F3 的 capture 门接管首屏 seed。
     for pane in s.bridge().get_panes(s.active_tab) {
         if let Some(view) = s.layout.pane(pane.id).cloned() {
-            if view.is_seeded() || s.replicas.is_blank(&ws, pane.id) {
-                continue;
-            }
-            let ansi = s.replicas.visible_ansi(&ws, pane.id);
-            view.present_from_replica(&ansi);
-            forward_parser_replies(s, pane.id);
+            view.ensure_grid_size(pane.cols, pane.rows);
         }
     }
 }
@@ -1476,14 +1450,16 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                     s.attention.mute_for(&ws, pane, duration);
                 })
             },
-            peek_ansi: {
+            peek_bytes: {
                 let st = st.clone();
                 std::boxed::Box::new(move |ws, pane| {
                     let s = st.borrow();
-                    s.replicas
+                    let (cols, rows) = s
+                        .replicas
                         .get(&ws, pane)
-                        .map(|t| (t.cols() as u16, t.rows() as u16, t.visible_ansi()))
-                        .unwrap_or((80, 24, Vec::new()))
+                        .map(|t| (t.cols() as u16, t.rows() as u16))
+                        .unwrap_or((80, 24));
+                    (cols, rows, s.replicas.raw_bytes(&ws, pane))
                 })
             },
             search: {

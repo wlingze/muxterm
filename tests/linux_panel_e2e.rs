@@ -97,7 +97,7 @@ fn three_tab_panel_full_flow() {
                     i.borrow_mut().push((ws, pane, data.to_vec()))
                 }),
                 on_mute: Box::new(move |ws, pane, d| m.borrow_mut().push((ws, pane, d))),
-                peek_ansi: Box::new(|ws, pane| {
+                peek_bytes: Box::new(|ws, pane| {
                     (80, 24, format!("\x1b[1;1Hpeek-{ws}-{pane}").into_bytes())
                 }),
                 search: Box::new(|_| vec![]),

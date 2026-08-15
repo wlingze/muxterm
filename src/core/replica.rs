@@ -129,6 +129,13 @@ impl ReplicaStore {
         self.get(ws, pane).map(|t| t.is_blank()).unwrap_or(true)
     }
 
+    /// 最近一次 feed 的原始 pane 字节（Surface 小终端播种用，禁止重编码）。
+    pub fn raw_bytes(&self, ws: &str, pane: u32) -> Vec<u8> {
+        self.get(ws, pane)
+            .map(|t| t.raw_bytes().to_vec())
+            .unwrap_or_default()
+    }
+
     /// 跨全部 pane 搜索可见屏 + scrollback，返回命中行（E5 Search tab）。
     pub fn search_all(&self, query: &str) -> Vec<SearchHit> {
         let mut out = Vec::new();
