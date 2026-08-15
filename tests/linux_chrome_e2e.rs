@@ -172,8 +172,8 @@ fn click_status_tab_invokes_switch_with_window_id(bar: &StatusBar, win: &gtk4::W
     assert_eq!(before, after, "签名不变时按钮指针应保持不变");
 }
 
-/// S7：状态 popover 含连接摘要。
-fn status_dot_popover_shows_ssh_host_and_connected(bar: &StatusBar, win: &gtk4::Window) {
+/// S7（C8.4）：点状态点（emit clicked）打开 popover，SSH 摘要 + 真实颜色。
+fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::Window) {
     use muxterm::platform::linux::status_bar::ConnectionSummary;
     bar.set_connection_summary(&ConnectionSummary {
         kind: "ssh".into(),
@@ -186,24 +186,30 @@ fn status_dot_popover_shows_ssh_host_and_connected(bar: &StatusBar, win: &gtk4::
         .expect("状态点应存在")
         .downcast::<gtk4::Button>()
         .expect("Button 类型");
+    assert!(dot.has_css_class("status-ok"), "connected 应为 status-ok");
     let popover = find_by_name(win, "muxterm-status-popover")
         .expect("popover 应存在")
         .downcast::<gtk4::Popover>()
         .expect("Popover 类型");
-    // 模拟点击状态点（GestureClick 在 window 侧接线；这里直接 popup 同一路径）。
-    popover.popup();
+    // 必须 emit clicked（禁止直接调 popover 的 popup 冒充点击）。
+    let _: () = dot.emit_by_name("clicked", &[]);
     pump_main_loop(40);
-    assert!(popover.is_visible(), "popover 应可见");
+    assert!(popover.is_visible(), "点状态点后 popover 应可见");
     let label = find_by_name(win, "muxterm-status-popover-label")
         .expect("popover label 应存在")
         .downcast::<gtk4::Label>()
         .expect("Label 类型");
     let text = label.text().to_string();
-    assert!(text.contains("ssh"), "应含 ssh: {text}");
-    assert!(text.contains("127.0.0.1"), "应含 host: {text}");
-    assert!(text.contains("connected"), "应含 connected: {text}");
+    assert!(text.contains("type=ssh"), "应含 type=ssh: {text}");
+    assert!(text.contains("host=127.0.0.1"), "应含 host: {text}");
+    assert!(text.contains("status=connected"), "应含 status: {text}");
     popover.popdown();
-    let _ = dot;
+
+    // CSS 数据必须含真实颜色（status-ok 绿）。
+    let css = muxterm::platform::linux::status_bar::status_dot_css();
+    assert!(css.contains("#27ae60"), "status-ok 应有绿色: {css}");
+    assert!(css.contains("#f39c12"), "status-warn 应有黄色: {css}");
+    assert!(css.contains("#c0392b"), "status-err 应有红色: {css}");
 }
 
 /// S13a 的签名部分：独立断言函数名（与计划一致）。
@@ -254,7 +260,7 @@ fn chrome_e2e_s5_s6_s13a() {
         notify_button_invokes_attention_callback_when_n_positive(&bar, &win);
         click_status_tab_invokes_switch_with_window_id(&bar, &win);
         status_bar_does_not_rebuild_buttons_when_tab_signature_unchanged(&bar, &win);
-        status_dot_popover_shows_ssh_host_and_connected(&bar, &win);
+        status_dot_click_opens_popover_with_ssh_summary(&bar, &win);
 
         drop(bar);
         win.close();

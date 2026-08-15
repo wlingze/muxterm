@@ -24,6 +24,13 @@ type WindowActivateCb = Rc<RefCell<Option<Box<dyn Fn(u32)>>>>;
 type NotifyActivateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 type NewTabCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
+/// 状态点三色 CSS（测试与实现同一常量）。
+pub fn status_dot_css() -> &'static str {
+    ".muxterm-status-dot.status-ok { color: #27ae60; }\n\
+     .muxterm-status-dot.status-warn { color: #f39c12; }\n\
+     .muxterm-status-dot.status-err { color: #c0392b; }"
+}
+
 /// 连接摘要（C7.7 popover 内容）。
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionSummary {
@@ -92,6 +99,7 @@ impl StatusBar {
         dot.set_widget_name("muxterm-status-dot");
         dot.set_has_frame(false);
         dot.set_can_focus(false);
+        dot.set_size_request(18, 18);
         dot.add_css_class("muxterm-status-dot");
         dot.add_css_class("status-ok");
 
@@ -158,6 +166,14 @@ impl StatusBar {
                 if let Some(cb) = cb.borrow().as_ref() {
                     cb();
                 }
+            });
+        }
+        // 状态点：Button 的 connect_clicked 打开 popover（GestureClick 会被吃掉）。
+        {
+            let popover = bar.popover.clone();
+            let dot = bar.dot.clone();
+            dot.connect_clicked(move |_| {
+                popover.popup();
             });
         }
         {
@@ -441,7 +457,9 @@ impl StatusBar {
         let css = format!(
             ".muxterm-status-bar {{ background: #{bg_hex}; color: #{fg_hex}; }}\n\
              .muxterm-status-window-colored {{ background: #{bg_hex}; border-radius: 3px; }}\n\
-             .muxterm-status-window-theme-current {{ background: alpha(currentColor, 0.12); border-radius: 3px; }}\n"
+             .muxterm-status-window-theme-current {{ background: alpha(currentColor, 0.12); border-radius: 3px; }}\n\
+             {}\n",
+            status_dot_css()
         );
         self.css.borrow().load_from_data(&css);
     }
