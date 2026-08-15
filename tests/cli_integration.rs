@@ -11,7 +11,7 @@
 use muxterm::core::model::task::Task;
 use muxterm::core::model::TerminalModel;
 use muxterm::core::runtime::ShellRuntime;
-use muxterm::core::types::{PaneId, TabId, WindowId};
+use muxterm::core::types::{PaneId, TabId};
 use muxterm::platform::cli::entry::cli_command_to_task;
 use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 
@@ -33,146 +33,56 @@ fn exec_and_drain(model: &mut TerminalModel, task: Task) {
     let _ = model.poll_events();
 }
 
-// ── Session 测试 ──────────────────────────────────────────
+// ── Workspace 测试 ────────────────────────────────────────
 
 #[test]
-fn cli_list_sessions_json() {
+fn cli_list_workspaces_json() {
     let model = make_model();
-    let out = format_output(model.state(), &CliCommand::ListSessions, OutputFormat::Json);
+    let out = format_output(
+        model.state(),
+        &CliCommand::ListWorkspaces,
+        OutputFormat::Json,
+    );
     assert!(out.contains(r#""name":"local""#));
     assert!(out.contains(r#""attached":true"#));
 }
 
 #[test]
-fn cli_list_sessions_text() {
+fn cli_list_workspaces_text() {
     let model = make_model();
-    let out = format_output(model.state(), &CliCommand::ListSessions, OutputFormat::Text);
+    let out = format_output(
+        model.state(),
+        &CliCommand::ListWorkspaces,
+        OutputFormat::Text,
+    );
     assert!(out.contains("local"));
     assert!(out.contains("attached"));
-}
-
-// ── Window 测试 ───────────────────────────────────────────
-
-#[test]
-fn cli_list_windows() {
-    let model = make_model();
-    let out = format_output(
-        model.state(),
-        &CliCommand::ListWindows { session: None },
-        OutputFormat::Text,
-    );
-    assert!(out.contains("w1"));
-}
-
-#[test]
-fn cli_new_window_and_list() {
-    let mut model = make_model();
-    exec_and_drain(
-        &mut model,
-        Task::NewWindow {
-            name: Some("dev".into()),
-            command: None,
-            workdir: None,
-        },
-    );
-    let out = format_output(
-        model.state(),
-        &CliCommand::ListWindows { session: None },
-        OutputFormat::Text,
-    );
-    assert!(out.contains("w2"));
-    assert!(out.contains("dev"));
-}
-
-#[test]
-fn cli_kill_window() {
-    let mut model = make_model();
-    exec_and_drain(
-        &mut model,
-        Task::NewWindow {
-            name: None,
-            command: None,
-            workdir: None,
-        },
-    );
-    assert_eq!(
-        model.state().active_window().map(|w| w.id),
-        Some(WindowId(2))
-    );
-    exec_and_drain(
-        &mut model,
-        Task::CloseWindow {
-            target: WindowId(2),
-        },
-    );
-    assert_eq!(
-        model.state().active_window().map(|w| w.id),
-        Some(WindowId(1))
-    );
-}
-
-#[test]
-fn cli_select_window() {
-    let mut model = make_model();
-    exec_and_drain(
-        &mut model,
-        Task::NewWindow {
-            name: None,
-            command: None,
-            workdir: None,
-        },
-    );
-    exec_and_drain(
-        &mut model,
-        Task::SwitchWindow {
-            target: WindowId(1),
-        },
-    );
-    assert_eq!(
-        model.state().active_window().map(|w| w.id),
-        Some(WindowId(1))
-    );
-}
-
-#[test]
-fn cli_rename_window() {
-    let mut model = make_model();
-    exec_and_drain(
-        &mut model,
-        Task::RenameWindow {
-            target: WindowId(1),
-            name: "renamed".into(),
-        },
-    );
-    assert_eq!(model.state().active_window().unwrap().name, "renamed");
 }
 
 // ── Tab 测试 ──────────────────────────────────────────────
 
 #[test]
+fn cli_list_tabs() {
+    let model = make_model();
+    let out = format_output(model.state(), &CliCommand::ListTabs, OutputFormat::Text);
+    assert!(out.contains("t1"));
+}
+
+#[test]
 fn cli_new_tab_and_list() {
     let mut model = make_model();
-    let out_before = format_output(
-        model.state(),
-        &CliCommand::ListTabs { window: None },
-        OutputFormat::Text,
-    );
+    let out_before = format_output(model.state(), &CliCommand::ListTabs, OutputFormat::Text);
     assert!(out_before.contains("t1"));
 
     exec_and_drain(
         &mut model,
         Task::NewTab {
-            window: WindowId(1),
             name: Some("logs".into()),
             command: None,
             workdir: None,
         },
     );
-    let out_after = format_output(
-        model.state(),
-        &CliCommand::ListTabs { window: None },
-        OutputFormat::Text,
-    );
+    let out_after = format_output(model.state(), &CliCommand::ListTabs, OutputFormat::Text);
     assert!(out_after.contains("t2"));
     assert!(out_after.contains("logs"));
 }
@@ -183,15 +93,14 @@ fn cli_kill_tab() {
     exec_and_drain(
         &mut model,
         Task::NewTab {
-            window: WindowId(1),
             name: None,
             command: None,
             workdir: None,
         },
     );
-    assert!(model.state().tabs(&WindowId(1)).len() >= 2);
+    assert!(model.state().tabs().len() >= 2);
     exec_and_drain(&mut model, Task::CloseTab { target: TabId(2) });
-    assert_eq!(model.state().tabs(&WindowId(1)).len(), 1);
+    assert_eq!(model.state().tabs().len(), 1);
 }
 
 #[test]
@@ -200,7 +109,6 @@ fn cli_select_tab() {
     exec_and_drain(
         &mut model,
         Task::NewTab {
-            window: WindowId(1),
             name: None,
             command: None,
             workdir: None,
@@ -404,11 +312,7 @@ fn cli_capture_pane_with_lines_limit() {
 #[test]
 fn cli_list_layout_text() {
     let model = make_model();
-    let out = format_output(
-        model.state(),
-        &CliCommand::ListLayout { window: None },
-        OutputFormat::Text,
-    );
+    let out = format_output(model.state(), &CliCommand::ListLayout, OutputFormat::Text);
     assert!(out.contains("window"));
     assert!(out.contains("tab"));
     assert!(out.contains("@1"));
@@ -417,11 +321,7 @@ fn cli_list_layout_text() {
 #[test]
 fn cli_list_layout_json() {
     let model = make_model();
-    let out = format_output(
-        model.state(),
-        &CliCommand::ListLayout { window: None },
-        OutputFormat::Json,
-    );
+    let out = format_output(model.state(), &CliCommand::ListLayout, OutputFormat::Json);
     assert!(out.contains(r#""id":"t1""#));
 }
 
@@ -438,11 +338,7 @@ fn cli_list_layout_after_split() {
             workdir: None,
         },
     );
-    let out = format_output(
-        model.state(),
-        &CliCommand::ListLayout { window: None },
-        OutputFormat::Text,
-    );
+    let out = format_output(model.state(), &CliCommand::ListLayout, OutputFormat::Text);
     assert!(out.contains("@1"));
     assert!(out.contains("@2"));
 }
@@ -481,11 +377,7 @@ fn cli_nested_split_layout_tree() {
     );
 
     // 验证布局树: Split(H, @1, Split(V, @2, @3))
-    let out = format_output(
-        model.state(),
-        &CliCommand::ListLayout { window: None },
-        OutputFormat::Json,
-    );
+    let out = format_output(model.state(), &CliCommand::ListLayout, OutputFormat::Json);
     assert!(
         out.contains(r#""dir":"horizontal""#),
         "布局 JSON 应含 horizontal: {out}"
@@ -549,11 +441,7 @@ fn cli_nested_split_text_layout_shows_tree() {
     );
 
     // text 格式布局
-    let out = format_output(
-        model.state(),
-        &CliCommand::ListLayout { window: None },
-        OutputFormat::Text,
-    );
+    let out = format_output(model.state(), &CliCommand::ListLayout, OutputFormat::Text);
     assert!(out.contains("@1"), "text 布局应含 @1: {out}");
     assert!(out.contains("@2"), "text 布局应含 @2: {out}");
     assert!(out.contains("@3"), "text 布局应含 @3: {out}");
@@ -656,7 +544,11 @@ fn cli_tmux_backend_connect_and_list() {
     }
     let _ = model.poll_events();
 
-    let out = format_output(model.state(), &CliCommand::ListSessions, OutputFormat::Text);
+    let out = format_output(
+        model.state(),
+        &CliCommand::ListWorkspaces,
+        OutputFormat::Text,
+    );
     assert!(!out.is_empty(), "应列出 session");
 
     let _ = rt.block_on(model.shutdown());
@@ -693,9 +585,9 @@ fn cli_tmux_backend_new_window() {
     }
     let _ = model.poll_events();
 
-    let initial = model.state().sessions().len();
+    let initial = model.state().tabs().len();
     model
-        .execute(Task::NewWindow {
+        .execute(Task::NewTab {
             name: Some("test".into()),
             command: None,
             workdir: None,
@@ -704,10 +596,7 @@ fn cli_tmux_backend_new_window() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = model.poll_events();
 
-    assert!(
-        model.state().sessions().len() >= initial,
-        "新 window 应建立"
-    );
+    assert!(model.state().tabs().len() > initial, "新 tab 应建立");
 
     let _ = rt.block_on(model.shutdown());
     let _ = std::process::Command::new("tmux")
@@ -869,7 +758,7 @@ mod daemon_tests {
         };
 
         // list-sessions 应成功（daemon 已启动）
-        let resp = send_command(&sock, &CliCommand::ListSessions, OutputFormat::Text);
+        let resp = send_command(&sock, &CliCommand::ListWorkspaces, OutputFormat::Text);
         match resp {
             Ok(r) => {
                 assert!(r.ok, "list-sessions 应成功: {:?}", r.error);
@@ -884,7 +773,7 @@ mod daemon_tests {
         // 发送 kill-session 关闭 daemon
         let _ = send_command(
             &sock,
-            &CliCommand::KillSession { target: None },
+            &CliCommand::CloseWorkspace { target: None },
             OutputFormat::Json,
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -919,7 +808,7 @@ mod daemon_tests {
                     eprintln!("skip: split-pane 失败: {}", r.error);
                     let _ = send_command(
                         &sock,
-                        &CliCommand::KillSession { target: None },
+                        &CliCommand::CloseWorkspace { target: None },
                         OutputFormat::Json,
                     );
                     cleanup_session(&name);
@@ -949,7 +838,7 @@ mod daemon_tests {
         // 清理
         let _ = send_command(
             &sock,
-            &CliCommand::KillSession { target: None },
+            &CliCommand::CloseWorkspace { target: None },
             OutputFormat::Json,
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1000,7 +889,7 @@ mod daemon_tests {
         let name = unique_session();
         let sock = session_socket_path(&name);
         // 不启动 daemon，直接连接应失败
-        let resp = send_command(&sock, &CliCommand::ListSessions, OutputFormat::Text);
+        let resp = send_command(&sock, &CliCommand::ListWorkspaces, OutputFormat::Text);
         assert!(resp.is_err(), "连接不存在的 session 应失败");
         cleanup_session(&name);
     }

@@ -57,20 +57,22 @@ pub struct AttentionRow {
     pub attention: PaneAttention,
 }
 
-/// Tab3 结果：replica 搜索命中行。
+/// Tab3 结果：工作区 PaneBuf 搜索命中行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRow {
     pub workspace_id: String,
+    pub tab_id: u32,
     pub pane_id: u32,
     pub seq: u64,
     pub line: String,
 }
 
-impl From<crate::core::replica::SearchHit> for SearchRow {
-    fn from(hit: crate::core::replica::SearchHit) -> Self {
+impl From<crate::core::workspace::workspace::SearchHit> for SearchRow {
+    fn from(hit: crate::core::workspace::workspace::SearchHit) -> Self {
         Self {
             workspace_id: hit.workspace_id,
-            pane_id: hit.pane_id,
+            tab_id: hit.tab_id.0,
+            pane_id: hit.pane_id.0,
             seq: hit.seq,
             line: hit.line,
         }
@@ -238,12 +240,14 @@ mod tests {
         let hits = vec![
             SearchRow {
                 workspace_id: "legion".into(),
+                tab_id: 1,
                 pane_id: 1,
                 seq: 3,
                 line: "TOKEN_BODY example".into(),
             },
             SearchRow {
                 workspace_id: "muxterm".into(),
+                tab_id: 2,
                 pane_id: 2,
                 seq: 7,
                 line: "build ok".into(),
