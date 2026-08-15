@@ -170,7 +170,7 @@ fn assert_tab_bar_renders() {
 }
 
 fn assert_pane_layout_widget() {
-    let mut host = LayoutHost::new(load_theme(), FontSettings::default(), false);
+    let mut host = LayoutHost::new(load_theme(), FontSettings::default(), false, 10_000);
     let layout = BridgeLayout::Split {
         horizontal: true,
         ratio: 500,

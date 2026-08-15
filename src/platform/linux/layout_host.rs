@@ -18,6 +18,7 @@ pub struct LayoutHost {
     theme: Theme,
     font: FontSettings,
     is_tmux_mirror: bool,
+    scrollback_lines: u32,
     /// 当前布局签名，用于 damage tracking（只在变化时重建）。
     last_sig: String,
     /// 本地 shell 模式的全屏 pane（tmux 模式由 resize-pane -Z 处理）。
@@ -25,7 +26,12 @@ pub struct LayoutHost {
 }
 
 impl LayoutHost {
-    pub fn new(theme: Theme, font: FontSettings, is_tmux_mirror: bool) -> Self {
+    pub fn new(
+        theme: Theme,
+        font: FontSettings,
+        is_tmux_mirror: bool,
+        scrollback_lines: u32,
+    ) -> Self {
         let root_box = gtk4::Box::builder()
             .orientation(Orientation::Vertical)
             .hexpand(true)
@@ -37,6 +43,7 @@ impl LayoutHost {
             theme,
             font,
             is_tmux_mirror,
+            scrollback_lines,
             last_sig: String::new(),
             fullscreen_pane: None,
         }
@@ -73,6 +80,7 @@ impl LayoutHost {
             &self.theme,
             &self.font,
             self.is_tmux_mirror,
+            self.scrollback_lines,
         ));
         let cb = on_input.clone();
         view.connect_input(move |pid, data| cb(pid, data));

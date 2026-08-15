@@ -211,7 +211,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     panel.append(&search_status);
 
     // Attention 小 VTE（E6）：镜像、scrollback 0、replica 播种；仅 Attention tab 显示。
-    let peek_view = Rc::new(PaneView::new(0, &theme, &font, true));
+    let peek_view = Rc::new(PaneView::new(0, &theme, &font, true, 0));
     let peek_sw = ScrolledWindow::builder()
         .vexpand(true)
         .hexpand(true)

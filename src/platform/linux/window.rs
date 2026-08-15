@@ -206,7 +206,7 @@ impl AppWindow {
             .map(|m| StatusBarMode::from_toml(Some(m)))
             .unwrap_or_else(|| StatusBarMode::from_toml(Some(&cfg.statusbar.mode)));
 
-        let layout = LayoutHost::new(theme.clone(), font.clone(), uses_tmux);
+        let layout = LayoutHost::new(theme.clone(), font.clone(), uses_tmux, cfg.scrollback.lines);
         let status = StatusBar::new(status_mode, theme.clone());
         status.container.add_css_class("status-bar");
 
@@ -1157,23 +1157,10 @@ fn refresh_ui(s: &mut UiState) {
         };
         s.layout.apply_layout(&layout, &input_cb);
 
-        let ws = active_workspace_id(s);
         for pane in s.bridge().get_panes(s.active_tab) {
             if let Some(view) = s.layout.pane(pane.id).cloned() {
-                // 滚动历史数据源：offset 行前、rows 行的几何 ANSI。
-                {
-                    let weak = s.self_weak.clone();
-                    let ws_scroll = ws.clone();
-                    let pid_scroll = pane.id;
-                    view.set_scroll_provider(std::rc::Rc::new(move |offset, rows| {
-                        let Some(st) = weak.upgrade() else {
-                            return Vec::new();
-                        };
-                        let s = st.borrow();
-                        s.replicas.scroll_ansi(&ws_scroll, pid_scroll, offset, rows)
-                    }));
-                }
-                // Surface：已有 pane 只 show/hide，不 reset、不 dump。
+                // Surface：已有 pane 只 show/hide，不 reset、不 dump；
+                // 滚动走 VTE 自身 scrollback（F5）。
                 view.ensure_grid_size(pane.cols, pane.rows);
                 if pane.is_active {
                     s.active_pane = pane.id;

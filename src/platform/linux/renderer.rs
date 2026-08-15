@@ -68,7 +68,8 @@ impl VteRenderer {
     }
 
     /// tmux/SSH 镜像：VTE 没有 PTY。htop/codex 用 CUP 画全屏，必须关掉
-    /// rewrap、scroll-on-output 和 scrollback，否则表头被卷走、CPU 条折行叠在一起。
+    /// rewrap 和 scroll-on-output，否则表头被卷走、CPU 条折行叠在一起。
+    /// scrollback 由用户 prefs 决定（F5：不再强制 0）。
     pub fn apply_mirror_policy(&self, is_tmux_mirror: bool) {
         if !is_tmux_mirror {
             return;
@@ -76,7 +77,6 @@ impl VteRenderer {
         self.terminal.set_enable_fallback_scrolling(false);
         self.terminal.set_scroll_on_output(false);
         self.terminal.set_scroll_on_insert(false);
-        self.terminal.set_scrollback_lines(0);
         self.terminal.set_enable_bidi(false);
         // vte4 0.8 未导出 set_rewrap_on_resize；属性仍在（VTE 3.91）。
         self.terminal.set_property("rewrap-on-resize", false);

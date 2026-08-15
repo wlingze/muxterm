@@ -11,7 +11,6 @@ use gtk4::prelude::*;
 use support::linux_gtk::*;
 use vte4::prelude::*;
 
-use muxterm::core::replica::ReplicaStore;
 use muxterm::platform::linux::pane_view::PaneView;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 
@@ -101,23 +100,9 @@ fn url_click_records_https_uri(view: &PaneView) {
     );
 }
 
-/// C8.3→F5：滚动读 VTE 自身 scrollback（F5 完成；F2 先保留旧 replica 路径）。
-fn scroll_up_reveals_replica_history(view: &PaneView) {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    let store = Rc::new(RefCell::new(ReplicaStore::new(10_000)));
-    for i in 0..200 {
-        store
-            .borrow_mut()
-            .feed("ws", 1, format!("line-{i}\r\n").as_bytes(), 80, 24);
-    }
-    // 滚动 provider：offset 行前、rows 行的几何 ANSI。
-    let provider = {
-        let store = store.clone();
-        Rc::new(move |offset: u32, rows: u32| store.borrow().scroll_ansi("ws", 1, offset, rows))
-    };
-    view.set_scroll_provider(provider);
+/// C8.3→F5：滚动读 VTE 自身 scrollback（不 dump replica）。
+fn scroll_up_reveals_vte_scrollback(view: &PaneView) {
+    use gtk4::prelude::ScrollableExt;
 
     // 首屏：底行是 line-199，没有 line-0（VTE 自身 scrollback 尾部）。
     let mut bytes = Vec::new();
@@ -130,28 +115,23 @@ fn scroll_up_reveals_replica_history(view: &PaneView) {
     let text = view.visible_text();
     assert!(text.contains("line-199"), "首屏应含 line-199: {text}");
     assert!(!text.contains("line-0"), "首屏不应含 line-0: {text}");
-    assert_eq!(view.history_offset(), 0, "初始 offset 应为 0");
 
-    // 向上滚 24 行：出现更早的块（line-152..175），line-199 消失。
-    view.scroll_history(24);
+    // 向上滚到 scrollback 顶部：出现 line-0，line-199 消失。
+    let adj = view.terminal().vadjustment().expect("VTE 应有 vadjustment");
+    adj.set_value(0.0);
     pump_main_loop(80);
     let text = view.visible_text();
-    assert!(
-        text.contains("line-152") || text.contains("line-0"),
-        "滚动后应出现更早历史: {text}"
-    );
+    assert!(text.contains("line-0"), "滚到顶部应出现 line-0: {text}");
     assert!(
         !text.contains("line-199"),
         "滚动后不应再显示 line-199: {text}"
     );
-    assert!(view.history_offset() > 0, "offset 应大于 0");
 
-    // 滚回底部：恢复 line-199，offset 归零。
-    view.scroll_history(-1000);
+    // 滚回底部：恢复 line-199。
+    adj.set_value(adj.upper() - adj.page_size());
     pump_main_loop(80);
     let text = view.visible_text();
     assert!(text.contains("line-199"), "滚回后应含 line-199: {text}");
-    assert_eq!(view.history_offset(), 0, "滚回底部 offset 应为 0");
 }
 
 /// E2→F2：合成 Codex 风格 TUI fixture——raw feed 后 VTE 同时有 HEADER/BODY/PROMPT
@@ -335,7 +315,7 @@ fn render_e2e_s3_s4() {
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
 
-        let view = PaneView::new(1, &theme(), &FontSettings::default(), true);
+        let view = PaneView::new(1, &theme(), &FontSettings::default(), true, 10_000);
         let win = gtk4::Window::builder()
             .title("render-e2e")
             .default_width(640)
@@ -359,7 +339,7 @@ fn render_e2e_s3_s4() {
         view.clear_render_trace();
         cup_storm_feeds_only_last_frame(&view);
         url_click_records_https_uri(&view);
-        scroll_up_reveals_replica_history(&view);
+        scroll_up_reveals_vte_scrollback(&view);
         view.ensure_grid_size(80, 24);
         pump_main_loop(80);
         codex_tui_fixture_keeps_header_and_prompt(&view);
