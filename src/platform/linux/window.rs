@@ -540,6 +540,22 @@ impl AppWindow {
             .unwrap_or(0)
     }
 
+    /// 测试用：全部 tab id（FFI 顺序）。
+    pub fn test_tab_ids(&self) -> Vec<u32> {
+        self._state
+            .borrow()
+            .bridge()
+            .get_tabs()
+            .iter()
+            .map(|t| t.id)
+            .collect()
+    }
+
+    /// 测试用：当前激活 tab id。
+    pub fn test_active_tab_id(&self) -> u32 {
+        self._state.borrow().active_tab
+    }
+
     /// 测试用：以指定 tab 打开面板（0=workspaces / 1=attention / 2=search）。
     pub fn test_open_panel(&self, tab: u32) {
         let state = self._state.clone();

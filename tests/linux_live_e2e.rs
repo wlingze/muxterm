@@ -1,17 +1,149 @@
-//! 占位：后续 C 填实（LINUX-PLAN §7）。
+//! 真隔离 tmux live e2e（本文件唯一 AppWindow）。
+//!
+//! LINUX-PLAN §5.4 S8 / S9 / S13b：真实 attach + echo 到 replica/VTE、
+//! CUP 脚本停在末帧、点 status tab 真的切 window。
 
 #![cfg(feature = "gtk")]
 
 mod support;
 
+use std::time::{Duration, Instant};
+
+use gtk4::prelude::*;
 use support::linux_gtk::*;
+use support::tmux_test_support::*;
+
+use muxterm::core::config::{Config, Theme};
+use muxterm::platform::linux::window::AppWindow;
+
+fn theme() -> Theme {
+    Theme::load("light").unwrap_or_else(|_| Theme {
+        name: "test".into(),
+        background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
+        foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
+        cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
+        colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+    })
+}
+
+/// S8：echo 出现在 replica 与 VTE（真实 attach，不靠 test_feed_replica）。
+fn isolated_tmux_echo_reaches_replica_and_vte(app: &AppWindow, socket: &str) {
+    send_keys(socket, "s", "echo MUXTERM_LIVE_TOKEN");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ok = false;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        let capture = capture_pane(socket, "s");
+        let replica = app.test_replica_last_n(0, 5).join("\n");
+        let vte = app.test_active_pane_vte_text();
+        if capture.contains("MUXTERM_LIVE_TOKEN")
+            && replica.contains("MUXTERM_LIVE_TOKEN")
+            && vte.contains("MUXTERM_LIVE_TOKEN")
+        {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "5s 内 echo 应到达 capture/replica/VTE");
+}
+
+/// S9：CUP 脚本后 VTE 停在末帧。
+fn isolated_tmux_cup_script_lands_on_last_frame(app: &AppWindow, socket: &str) {
+    send_keys(
+        socket,
+        "s",
+        "python3 -c 'import sys; [sys.stdout.write(\"\\x1b[H\\x1b[2Jframe-%d\\n\"%i) or sys.stdout.flush() for i in range(20)]'",
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ok = false;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        let vte = app.test_active_pane_vte_text();
+        if vte.contains("frame-19") {
+            ok = true;
+            assert!(!vte.contains("frame-0"), "VTE 不应残留 frame-0: {vte}");
+            break;
+        }
+    }
+    assert!(ok, "5s 内 VTE 应停在 frame-19");
+}
+
+/// S13b：点 status tab 真的切 window（tmux 侧确认）。
+fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
+    // 先建第二个 window。
+    let _ = std::process::Command::new("tmux")
+        .args(["-L", socket, "new-window", "-d", "-t", "s", "-n", "other"])
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut tabs = Vec::new();
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        tabs = app.test_tab_ids();
+        if tabs.len() >= 2 {
+            break;
+        }
+    }
+    assert!(tabs.len() >= 2, "应有 2 个 tab: {tabs:?}");
+
+    // 找非当前 tab 的按钮并点击。
+    let current = app.test_active_tab_id();
+    let target = tabs
+        .iter()
+        .copied()
+        .find(|t| *t != current)
+        .expect("应有非当前 tab");
+    let btn = find_by_name(&app.test_window(), &format!("muxterm-status-tab-{target}"))
+        .expect("status tab 按钮应存在")
+        .downcast::<gtk4::Button>()
+        .expect("Button 类型");
+    let _: () = btn.emit_by_name("clicked", &[]);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ok = false;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        let out = std::process::Command::new("tmux")
+            .args(["-L", socket, "display-message", "-p", "#{window_id}"])
+            .output()
+            .expect("display-message 失败");
+        let wid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if wid == format!("@{}", target) && app.test_active_tab_id() == target {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "点击后 tmux window 应切到 @{target}");
+}
 
 #[test]
-fn placeholder_compiles() {
+fn live_e2e_s8_s9_s13b() {
     if skip_no_display() {
         return;
     }
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
+
+        let socket = unique_socket("live");
+        create_session(&socket, "s", 80, 24);
+
+        let mut cfg = Config::default();
+        cfg.tmux.socket = socket.clone();
+        cfg.tmux.default_session = "s".into();
+        let app = AppWindow::new(cfg, theme());
+        app.window.present();
+        gtk4::test_widget_wait_for_draw(&app.window);
+        pump_main_loop(200);
+
+        isolated_tmux_echo_reaches_replica_and_vte(&app, &socket);
+        isolated_tmux_cup_script_lands_on_last_frame(&app, &socket);
+        click_status_tab_switches_real_window(&app, &socket);
+
+        app.shutdown();
+        pump_main_loop(250);
+        kill_server(&socket);
     });
 }
