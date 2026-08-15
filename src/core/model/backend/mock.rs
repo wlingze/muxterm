@@ -13,6 +13,7 @@ use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{PaneInfo, SessionInfo, TabInfo, WindowInfo};
 use crate::core::model::task::Task;
 use crate::core::types::{PaneId, SessionId, TabId, WindowId};
+use std::sync::{Arc, Mutex};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。
 pub struct MockBackend {
@@ -25,6 +26,8 @@ pub struct MockBackend {
     pub(crate) status: BackendStatus,
     pub(crate) events: Vec<StateChange>,
     pub executed: Vec<Task>,
+    /// 可选共享执行日志：池淘汰测试在 Workspace 被移出后仍能检查 Detach/Shutdown。
+    pub executed_log: Option<Arc<Mutex<Vec<Task>>>>,
 }
 
 impl Default for MockBackend {
@@ -45,6 +48,7 @@ impl MockBackend {
             status: BackendStatus::Disconnected,
             events: vec![],
             executed: vec![],
+            executed_log: None,
         }
     }
 
@@ -143,6 +147,9 @@ impl Backend for MockBackend {
 
     fn execute(&mut self, task: &Task) -> anyhow::Result<TaskOutcome> {
         self.executed.push(task.clone());
+        if let Some(log) = &self.executed_log {
+            log.lock().unwrap().push(task.clone());
+        }
         let outcome = match task {
             Task::SplitPane { target, dir, .. } => {
                 let target = target.unwrap_or(PaneId(1));
