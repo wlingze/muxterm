@@ -1,17 +1,15 @@
-//! tmux 兼容 status bar（GTK4 渲染）。
+//! 统一 status bar（LINUX-PLAN §3）：一条 24px bar。
 //!
-//! left + 窗口列表 + right；样式来自 core 快照的 tmux status 配置：
-//! - `tmux` 模式：完全采用 tmux 的颜色/样式；
-//! - `theme` 模式：只用 muxterm 主题前景/背景，忽略 tmux 配色。
-//!
-//! 窗口按钮可点击切换 tab；justify（left/centre/right）决定列表位置。
+//! 布局：`[status-left] [tabs] [status-right] [●状态] [🔔面板] [+]`。
+//! 左/中/右同步 tmux status；最右三个按钮是 Muxterm chrome，永远可见。
+//! tab 按钮只在 tab 集合/当前 tab 变化时重建（SSH 16ms 轮询不得拆按钮）。
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk4::gdk;
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation};
+use gtk4::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Popover};
 
 use crate::core::config::Theme;
 use crate::platform::linux::lifecycle::tab_shortcut_label;
@@ -19,22 +17,36 @@ use crate::platform::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarStyleParser,
 };
 
-/// status bar 高度（与 tab bar 一致，≤ 24px）。
+/// status bar 高度（≤ 24px）。
 pub const STATUS_BAR_HEIGHT: u32 = 24;
 
 type WindowActivateCb = Rc<RefCell<Option<Box<dyn Fn(u32)>>>>;
-type AttentionActivateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+type NotifyActivateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+type NewTabCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
-/// muxterm status bar。
+/// 连接摘要（C7.7 popover 内容）。
+#[derive(Debug, Clone, Default)]
+pub struct ConnectionSummary {
+    pub kind: String,
+    pub host: Option<String>,
+    pub status: String,
+}
+
+/// muxterm status bar（唯一 chrome）。
 pub struct StatusBar {
     pub container: GtkBox,
     left: Label,
+    tabs: GtkBox,
     right: Label,
-    windows: GtkBox,
-    /// 注意力红点胶囊（`muxterm-attention-badge`，n=0 隐藏）。
-    attention_badge: Label,
+    dot: Button,
+    notify: Button,
+    new_tab: Button,
+    popover: Popover,
     on_window_activate: WindowActivateCb,
-    on_attention_activate: AttentionActivateCb,
+    on_notify_activate: NotifyActivateCb,
+    on_new_tab: NewTabCb,
+    /// tab 签名：id+name+current；不变就不重建按钮。
+    last_tab_signature: RefCell<Option<String>>,
     css: RefCell<CssProvider>,
     last_snapshot: RefCell<Option<StatusBarSnapshot>>,
     mode: RefCell<StatusBarMode>,
@@ -50,39 +62,68 @@ impl StatusBar {
             .vexpand(false)
             .build();
         container.add_css_class("muxterm-status-bar");
+        container.set_widget_name("muxterm-status-bar");
         container.set_size_request(-1, STATUS_BAR_HEIGHT as i32);
 
         let left = Label::new(None);
+        left.set_widget_name("muxterm-status-left");
         left.set_halign(Align::Start);
         left.set_valign(Align::Center);
         left.set_hexpand(false);
         left.add_css_class("muxterm-status-text");
 
-        let windows = GtkBox::builder()
+        let tabs = GtkBox::builder()
             .orientation(Orientation::Horizontal)
             .spacing(2)
             .valign(Align::Center)
             .build();
-        windows.add_css_class("muxterm-status-windows");
+        tabs.set_widget_name("muxterm-status-tabs");
+        tabs.add_css_class("muxterm-status-windows");
 
         let right = Label::new(None);
+        right.set_widget_name("muxterm-status-right");
         right.set_halign(Align::End);
         right.set_valign(Align::Center);
         right.set_hexpand(true);
         right.add_css_class("muxterm-status-text");
 
-        let attention_badge = Label::new(None);
-        attention_badge.set_widget_name("muxterm-attention-badge");
-        attention_badge.set_valign(Align::Center);
-        attention_badge.add_css_class("muxterm-attention-badge");
-        attention_badge.set_visible(false);
-        let badge_gesture = gtk4::GestureClick::new();
-        attention_badge.add_controller(badge_gesture);
+        // Muxterm chrome：状态点 / 通知面板 / 新建 tab（永远可见）。
+        let dot = Button::with_label("●");
+        dot.set_widget_name("muxterm-status-dot");
+        dot.set_has_frame(false);
+        dot.set_can_focus(false);
+        dot.add_css_class("muxterm-status-dot");
+        dot.add_css_class("status-ok");
+
+        let popover = Popover::new();
+        popover.set_widget_name("muxterm-status-popover");
+        popover.set_parent(&dot);
+        let pop_label = Label::new(Some("type=local status=connected"));
+        pop_label.set_widget_name("muxterm-status-popover-label");
+        pop_label.set_margin_top(8);
+        pop_label.set_margin_bottom(8);
+        pop_label.set_margin_start(12);
+        pop_label.set_margin_end(12);
+        popover.set_child(Some(&pop_label));
+
+        let notify = Button::with_label("🔔");
+        notify.set_widget_name("muxterm-status-notify");
+        notify.set_has_frame(false);
+        notify.set_can_focus(false);
+        notify.add_css_class("muxterm-status-notify");
+
+        let new_tab = Button::with_label("+");
+        new_tab.set_widget_name("muxterm-new-tab");
+        new_tab.set_has_frame(false);
+        new_tab.set_can_focus(false);
+        new_tab.add_css_class("muxterm-new-tab");
 
         container.append(&left);
-        container.append(&windows);
-        container.append(&attention_badge);
+        container.append(&tabs);
         container.append(&right);
+        container.append(&dot);
+        container.append(&notify);
+        container.append(&new_tab);
 
         let css = CssProvider::new();
         if let Some(display) = gdk::Display::default() {
@@ -95,27 +136,40 @@ impl StatusBar {
         let bar = StatusBar {
             container,
             left,
+            tabs,
             right,
-            windows,
-            attention_badge,
+            dot,
+            notify,
+            new_tab,
+            popover,
             on_window_activate: Rc::new(RefCell::new(None)),
-            on_attention_activate: Rc::new(RefCell::new(None)),
+            on_notify_activate: Rc::new(RefCell::new(None)),
+            on_new_tab: Rc::new(RefCell::new(None)),
+            last_tab_signature: RefCell::new(None),
             css: RefCell::new(css),
             last_snapshot: RefCell::new(None),
             mode: RefCell::new(mode),
             theme: RefCell::new(theme),
         };
-        bar.refresh_css();
         {
-            let on_attention_activate = bar.on_attention_activate.clone();
-            let gesture = gtk4::GestureClick::new();
-            gesture.connect_released(move |_, _, _, _| {
-                if let Some(cb) = on_attention_activate.borrow().as_ref() {
+            let cb = bar.on_notify_activate.clone();
+            let notify = bar.notify.clone();
+            notify.connect_clicked(move |_| {
+                if let Some(cb) = cb.borrow().as_ref() {
                     cb();
                 }
             });
-            bar.attention_badge.add_controller(gesture);
         }
+        {
+            let cb = bar.on_new_tab.clone();
+            let new_tab = bar.new_tab.clone();
+            new_tab.connect_clicked(move |_| {
+                if let Some(cb) = cb.borrow().as_ref() {
+                    cb();
+                }
+            });
+        }
+        bar.refresh_css();
         bar
     }
 
@@ -123,9 +177,34 @@ impl StatusBar {
         *self.on_window_activate.borrow_mut() = Some(Box::new(f));
     }
 
-    /// 红点点击回调（打开 Attention tab）。
+    /// 通知/面板按钮点击回调（window 侧决定 Workspaces 或 Attention tab）。
     pub fn connect_attention_activate<F: Fn() + 'static>(&self, f: F) {
-        *self.on_attention_activate.borrow_mut() = Some(Box::new(f));
+        *self.on_notify_activate.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 新建 tab 按钮回调。
+    pub fn connect_new_tab<F: Fn() + 'static>(&self, f: F) {
+        *self.on_new_tab.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 状态点按钮（测试/接线用）。
+    pub fn dot_widget(&self) -> Button {
+        self.dot.clone()
+    }
+
+    /// 状态 popover（测试/接线用）。
+    pub fn popover_widget(&self) -> Popover {
+        self.popover.clone()
+    }
+
+    /// 通知/面板按钮（测试/接线用）。
+    pub fn notify_widget(&self) -> Button {
+        self.notify.clone()
+    }
+
+    /// 新建 tab 按钮（测试/接线用）。
+    pub fn new_tab_widget(&self) -> Button {
+        self.new_tab.clone()
     }
 
     /// 当前模式（tmux / theme）。
@@ -142,7 +221,7 @@ impl StatusBar {
             .unwrap_or_default()
     }
 
-    /// 应用一份快照；模式/主题变化后调用本函数即可重渲染。
+    /// 应用一份快照；tab 签名不变时不重建按钮。
     pub fn apply(&self, snapshot: &StatusBarSnapshot) {
         *self.last_snapshot.borrow_mut() = Some(snapshot.clone());
         self.render();
@@ -157,21 +236,56 @@ impl StatusBar {
             .unwrap_or(false)
     }
 
+    /// tab 签名是否与当前按钮不同（SSH 16ms 轮询用：没变就不 apply）。
+    pub fn tab_signature_changed(&self, snapshot: &StatusBarSnapshot) -> bool {
+        let signature: String = snapshot
+            .windows
+            .iter()
+            .map(|w| format!("{}|{}|{}|{};", w.window_id, w.name, w.current, w.text))
+            .collect();
+        self.last_tab_signature.borrow().as_deref() != Some(signature.as_str())
+    }
+
     pub fn set_visible(&self, visible: bool) {
         self.container.set_visible(visible);
     }
 
-    /// 更新注意力红点：n=0 隐藏，否则显示 `● N`。
+    /// 通知按钮数字：n=0 无数字；n>0 显示 `🔔 N`。
     pub fn set_attention(&self, n: usize) {
-        match crate::platform::linux::attention_ui::badge_label(n) {
-            Some(label) => {
-                self.attention_badge.set_text(&label);
-                self.attention_badge.set_visible(true);
+        if n == 0 {
+            self.notify.set_label("🔔");
+        } else {
+            self.notify.set_label(&format!("🔔 {n}"));
+        }
+    }
+
+    /// 连接摘要 → 状态点 class + popover 文本（C7.7 接线）。
+    pub fn set_connection_summary(&self, summary: &ConnectionSummary) {
+        self.dot.remove_css_class("status-ok");
+        self.dot.remove_css_class("status-warn");
+        self.dot.remove_css_class("status-err");
+        match summary.status.as_str() {
+            "connected" => self.dot.add_css_class("status-ok"),
+            "connecting" => self.dot.add_css_class("status-warn"),
+            _ => self.dot.add_css_class("status-err"),
+        }
+        let host = summary.host.as_deref().unwrap_or("");
+        let text = format!(
+            "type={} status={}{}",
+            summary.kind,
+            summary.status,
+            if host.is_empty() {
+                String::new()
+            } else {
+                format!(" host={host}")
             }
-            None => {
-                self.attention_badge.set_text("");
-                self.attention_badge.set_visible(false);
-            }
+        );
+        if let Some(label) = self
+            .popover
+            .child()
+            .and_then(|c| c.downcast::<Label>().ok())
+        {
+            label.set_text(&text);
         }
     }
 
@@ -216,76 +330,29 @@ impl StatusBar {
             plain_fg,
         ));
 
-        // 窗口列表
-        while let Some(child) = self.windows.first_child() {
-            self.windows.remove(&child);
-        }
-        for (i, win) in snapshot.windows.iter().enumerate() {
-            if i > 0 {
-                let sep = Label::new(Some(&if snapshot.separator.is_empty() {
-                    " ".to_string()
-                } else {
-                    snapshot.separator.clone()
-                }));
-                sep.add_css_class("muxterm-status-text");
-                self.windows.append(&sep);
-            }
-            let style_name = if win.current {
-                &snapshot.window_current_style
-            } else {
-                &snapshot.window_style
-            };
-            let inline_base = StatusBarStyleParser::parse(style_name);
-            let raw = if win.text.trim().is_empty() {
-                win.name.as_str()
-            } else {
-                win.text.as_str()
-            };
-            let label = tab_shortcut_label(i, raw);
-            let markup = styled_markup(
-                &StatusBarStyleParser::parse_inline(&label, inline_base.clone()),
-                plain_fg,
-            );
-            let button = Button::with_label("");
-            button.set_label("");
-            button.set_has_frame(false);
-            button.set_can_focus(false);
-            button.add_css_class("muxterm-status-window");
-            button.add_css_class("flat");
-            if win.current {
-                button.add_css_class("current");
-            }
-            // 当前窗口高亮整块背景
-            if use_tmux_colors {
-                if inline_base.bg.is_some() {
-                    button.add_css_class("muxterm-status-window-colored");
-                }
-            } else if win.current {
-                button.add_css_class("muxterm-status-window-theme-current");
-            }
-            let label = Label::new(None);
-            label.set_markup(&markup);
-            button.set_child(Some(&label));
-            let cb = self.on_window_activate.clone();
-            let id = win.window_id;
-            button.connect_clicked(move |_| {
-                if let Some(cb) = cb.borrow().as_ref() {
-                    cb(id);
-                }
-            });
-            self.windows.append(&button);
+        // tab 签名：id+name+current+text；不变就不重建（SSH 16ms 轮询安全）。
+        let signature: String = snapshot
+            .windows
+            .iter()
+            .map(|w| format!("{}|{}|{}|{};", w.window_id, w.name, w.current, w.text))
+            .collect();
+        if self.last_tab_signature.borrow().as_deref() != Some(signature.as_str()) {
+            self.rebuild_tabs(&snapshot, use_tmux_colors, plain_fg);
+            *self.last_tab_signature.borrow_mut() = Some(signature);
         }
 
-        // justify：left / right / centre（absolute-centre 与 centre 相同）
-        self.windows.set_halign(match snapshot.justify.as_str() {
+        // justify 只影响中区。
+        self.tabs.set_halign(match snapshot.justify.as_str() {
             "left" => Align::Start,
             "right" => Align::End,
             _ => Align::Center,
         });
+
+        // chrome 永远可见；左/中/右跟随 tmux status on/off。
         self.left.set_visible(snapshot.enabled);
         self.right.set_visible(snapshot.enabled);
-        self.windows.set_visible(snapshot.enabled);
-        self.container.set_visible(snapshot.enabled);
+        self.tabs.set_visible(snapshot.enabled);
+        self.container.set_visible(true);
 
         // 状态栏底色/前景
         if use_tmux_colors {
@@ -303,6 +370,73 @@ impl StatusBar {
         }
     }
 
+    fn rebuild_tabs(
+        &self,
+        snapshot: &StatusBarSnapshot,
+        use_tmux_colors: bool,
+        plain_fg: Option<&str>,
+    ) {
+        while let Some(child) = self.tabs.first_child() {
+            self.tabs.remove(&child);
+        }
+        for (i, win) in snapshot.windows.iter().enumerate() {
+            if i > 0 {
+                let sep = Label::new(Some(&if snapshot.separator.is_empty() {
+                    " ".to_string()
+                } else {
+                    snapshot.separator.clone()
+                }));
+                sep.add_css_class("muxterm-status-text");
+                self.tabs.append(&sep);
+            }
+            let style_name = if win.current {
+                &snapshot.window_current_style
+            } else {
+                &snapshot.window_style
+            };
+            let inline_base = StatusBarStyleParser::parse(style_name);
+            let raw = if win.text.trim().is_empty() {
+                win.name.as_str()
+            } else {
+                win.text.as_str()
+            };
+            let label = tab_shortcut_label(i, raw);
+            let markup = styled_markup(
+                &StatusBarStyleParser::parse_inline(&label, inline_base.clone()),
+                plain_fg,
+            );
+            let button = Button::new();
+            button.set_widget_name(&format!("muxterm-status-tab-{}", win.window_id));
+            button.set_has_frame(false);
+            button.set_can_focus(false);
+            button.add_css_class("muxterm-status-window");
+            button.add_css_class("flat");
+            if win.current {
+                button.add_css_class("tab-active");
+            }
+            if use_tmux_colors {
+                if inline_base.bg.is_some() {
+                    button.add_css_class("muxterm-status-window-colored");
+                }
+            } else if win.current {
+                button.add_css_class("muxterm-status-window-theme-current");
+            }
+            let label_widget = Label::new(None);
+            label_widget.set_markup(&markup);
+            // Label 不抢点击（GTK4 会把点击吃掉）。
+            label_widget.set_can_target(false);
+            button.set_child(Some(&label_widget));
+            let cb = self.on_window_activate.clone();
+            let id = win.window_id;
+            button.connect_clicked(move |_| {
+                if let Some(cb) = cb.borrow().as_ref() {
+                    cb(id);
+                }
+            });
+            self.tabs.append(&button);
+        }
+    }
+
     fn set_bar_colors(&self, bg_hex: &str, fg_hex: &str) {
         let css = format!(
             ".muxterm-status-bar {{ background: #{bg_hex}; color: #{fg_hex}; }}\n\
@@ -317,6 +451,13 @@ impl StatusBar {
         let bg = format!("{:06x}", theme.background.to_u32());
         let fg = format!("{:06x}", theme.foreground.to_u32());
         self.set_bar_colors(&bg, &fg);
+    }
+}
+
+impl Drop for StatusBar {
+    fn drop(&mut self) {
+        // Popover 挂在 dot 上：先解除父子关系，避免 dot 销毁时 popover 仍引用它。
+        self.popover.unparent();
     }
 }
 

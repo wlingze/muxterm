@@ -112,35 +112,26 @@ pub fn palette_should_refocus_terminal(cmd: &str) -> bool {
     )
 }
 
-/// 顶栏用 TabBar 还是 tmux status 的窗口列表（二者互斥，对齐 macOS）。
+/// 顶栏用 TabBar 还是 tmux status 的窗口列表（LINUX-PLAN §3：永远只有一条 status bar）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabStripKind {
-    /// 本地 shell：TabBar；仅 1 个 tab 时隐藏整栏。
-    NativeTabs,
-    /// tmux/SSH：status bar 窗口列表就是 tab，不再画 TabBar。
+    /// 唯一 chrome：status bar 中区画 tab/窗口。
     StatusWindows,
 }
 
-/// tmux 且 status 启用时，用 status 窗口列表替换 TabBar。
-pub fn tab_strip_kind(uses_tmux: bool, status_enabled: bool) -> TabStripKind {
-    if uses_tmux && status_enabled {
-        TabStripKind::StatusWindows
-    } else {
-        TabStripKind::NativeTabs
-    }
+/// 永远只有一条 status bar（不再有独立 TabBar）。
+pub fn tab_strip_kind(_uses_tmux: bool, _status_enabled: bool) -> TabStripKind {
+    TabStripKind::StatusWindows
 }
 
-/// 本地 TabBar：至少 2 个 tab 才显示（macOS 单 tab 隐藏）。
-pub fn native_tab_bar_visible(kind: TabStripKind, n_tabs: usize) -> bool {
-    matches!(kind, TabStripKind::NativeTabs) && n_tabs >= 2
+/// 第二条 tab 带永远不显示。
+pub fn native_tab_bar_visible(_kind: TabStripKind, _n_tabs: usize) -> bool {
+    false
 }
 
-/// status 条：tmux 替换模式显示窗口列表；本地底栏仅在 snapshot 启用时显示。
-pub fn status_strip_visible(kind: TabStripKind, status_enabled: bool) -> bool {
-    match kind {
-        TabStripKind::StatusWindows => true,
-        TabStripKind::NativeTabs => status_enabled,
-    }
+/// status 条永远可见（chrome 钉在 bar 最右，即使 tmux status off）。
+pub fn status_strip_visible(_kind: TabStripKind, _status_enabled: bool) -> bool {
+    true
 }
 
 /// 列表第 `position` 项（0-based）的显示标签，序号与 Alt+1..9 一致。
@@ -339,23 +330,24 @@ mod tests {
         assert!(status_strip_visible(kind, true));
     }
 
-    /// 本地 shell：1 个 tab 隐藏栏，2 个才显示；status 仍作底栏。
+    /// 本地 shell 也只有一条 status bar：第二条 tab 带永远不显示。
     #[test]
-    fn local_tab_bar_hides_when_single_tab() {
+    fn local_shell_never_gets_second_tab_strip() {
         let kind = tab_strip_kind(false, true);
-        assert_eq!(kind, TabStripKind::NativeTabs);
+        assert_eq!(kind, TabStripKind::StatusWindows);
         assert!(!native_tab_bar_visible(kind, 1));
-        assert!(native_tab_bar_visible(kind, 2));
+        assert!(!native_tab_bar_visible(kind, 2));
         assert!(status_strip_visible(kind, true));
     }
 
+    /// tmux status off 时 chrome 仍常驻（不退回第二条 TabBar）。
     #[test]
-    fn tmux_status_off_falls_back_to_native_tabs() {
+    fn tmux_status_off_keeps_single_status_bar() {
         let kind = tab_strip_kind(true, false);
-        assert_eq!(kind, TabStripKind::NativeTabs);
-        assert!(native_tab_bar_visible(kind, 2));
+        assert_eq!(kind, TabStripKind::StatusWindows);
+        assert!(!native_tab_bar_visible(kind, 2));
         assert!(!native_tab_bar_visible(kind, 1));
-        assert!(!status_strip_visible(kind, false));
+        assert!(status_strip_visible(kind, false));
     }
 
     #[test]

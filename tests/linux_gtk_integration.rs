@@ -12,6 +12,17 @@
 mod support;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+
+fn count_widget_names(root: &impl IsA<Widget>, prefix: &str) -> usize {
+    let root = root.as_ref();
+    let mut n = usize::from(root.widget_name().starts_with(prefix));
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        n += count_widget_names(&c, prefix);
+        child = c.next_sibling();
+    }
+    n
+}
 use std::time::{Duration, Instant};
 
 use gtk4::gdk;
@@ -256,11 +267,10 @@ fn assert_build_2tab3pane_via_keys() {
         app.test_status_text()
     );
     let root = app.window.child().expect("root");
-    assert_eq!(
-        count_css_class(&root, "tab-button"),
-        2,
-        "tab 栏应显示 2 个 tab"
-    );
+    // 唯一 status bar：中区 tab 按钮（muxterm-status-tab-*），没有第二条 TabBar。
+    let tab_buttons = count_widget_names(&root, "muxterm-status-tab-");
+    assert_eq!(tab_buttons, 2, "status bar 中区应显示 2 个 tab");
+    assert_eq!(count_css_class(&root, "tab-bar"), 0, "不应有第二条 tab-bar");
     assert_active_pane_echo(&app, "t2");
 
     // Alt+1 → 回到 3-pane tab

@@ -124,12 +124,20 @@ fn attention_bel_paints_badge_and_panel() {
             "标题应含红点: {}",
             app.test_window_title()
         );
-        let badge = find_by_name(&app.test_window(), "muxterm-attention-badge")
-            .expect("badge 应存在")
-            .downcast::<gtk4::Label>()
-            .expect("Label 类型");
-        assert!(badge.is_visible(), "badge 应可见");
-        assert!(badge.text().contains('1'), "badge 应含 1: {}", badge.text());
+        // 红点已迁到通知按钮（muxterm-status-notify）：n=1 时文本含 1。
+        let notify = find_by_name(&app.test_window(), "muxterm-status-notify")
+            .expect("通知按钮应存在")
+            .downcast::<gtk4::Button>()
+            .expect("Button 类型");
+        assert!(
+            notify
+                .label()
+                .map(|l| l.to_string())
+                .unwrap_or_default()
+                .contains('1'),
+            "通知按钮应含 1: {:?}",
+            notify.label()
+        );
 
         // Alt+Q → Workspaces tab。
         let ctrl = window_key_controller(&app.window).expect("窗口应有 EventControllerKey");

@@ -17,7 +17,6 @@ use vte4::prelude::*;
 
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
-use crate::core::attention::state::PaneStatus;
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::replica::{apply_output_to_replicas, ReplicaStore};
@@ -30,10 +29,7 @@ use crate::platform::linux::connection_slot::{
 use crate::platform::linux::ffi_bridge::{tasks, BridgeEvent, CoreBridge};
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
-use crate::platform::linux::lifecycle::{
-    cycle_pane_id, native_tab_bar_visible, should_close_window, status_strip_visible,
-    tab_strip_kind,
-};
+use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
 use crate::platform::linux::pane_view::rgb_hex;
 use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::quickconnect::event_policy::{
@@ -50,7 +46,6 @@ use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickC
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::platform::linux::quickconnect_panel::build_items;
 use crate::platform::linux::status_bar::StatusBar;
-use crate::platform::linux::tab_bar::TabBar;
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 
 /// 主窗口。
@@ -72,7 +67,6 @@ struct UiState {
     config_font_size: f32,
     theme: Theme,
     theme_name: String,
-    tabs: TabBar,
     layout: LayoutHost,
     status: StatusBar,
     status_mode: StatusBarMode,
@@ -126,6 +120,9 @@ impl AppWindow {
                 s.layout.root_box.remove(&child);
             }
             s.layout.panes_mut().clear();
+            // Popover 挂在状态点按钮上：先解除父子关系，避免 dot 销毁时
+            // popover 仍引用它（finalize-with-children 堆损坏）。
+            s.status.popover_widget().unparent();
         }
         self.window.set_child(None::<&gtk4::Widget>);
         self.window.destroy();
@@ -204,20 +201,13 @@ impl AppWindow {
             .map(|m| StatusBarMode::from_toml(Some(m)))
             .unwrap_or_else(|| StatusBarMode::from_toml(Some(&cfg.statusbar.mode)));
 
-        let tabs = TabBar::new(cfg.ui.tab_bar_height);
         let layout = LayoutHost::new(theme.clone(), font.clone(), uses_tmux);
         let status = StatusBar::new(status_mode, theme.clone());
         status.container.add_css_class("status-bar");
 
-        if cfg.ui.tab_bar_at_bottom() {
-            root.append(&layout.root_box);
-            root.append(&status.container);
-            root.append(&tabs.container);
-        } else {
-            root.append(&tabs.container);
-            root.append(&layout.root_box);
-            root.append(&status.container);
-        }
+        // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
+        root.append(&layout.root_box);
+        root.append(&status.container);
         window.set_child(Some(&root));
 
         let keymap = KeyMap::from_bindings(&cfg.keybindings);
@@ -237,7 +227,6 @@ impl AppWindow {
             config_font_size,
             theme,
             theme_name,
-            tabs,
             layout,
             status,
             status_mode,
@@ -261,16 +250,7 @@ impl AppWindow {
             quit_requested: false,
         }));
 
-        // tab 点击
-        {
-            let st = state.clone();
-            state.borrow().tabs.connect_activate(move |tab_id| {
-                let mut s = st.borrow_mut();
-                request_switch_tab(&mut s, tab_id);
-            });
-        }
-
-        // status bar 窗口按钮
+        // status bar 中区 tab 按钮 → SwitchTab(id)
         {
             let st = state.clone();
             state
@@ -282,12 +262,41 @@ impl AppWindow {
                 });
         }
 
-        // 红点点击 → Attention tab
+        // 状态点 → popover
+        {
+            let (dot, popover) = {
+                let s = state.borrow();
+                (s.status.dot_widget(), s.status.popover_widget())
+            };
+            let gesture = gtk4::GestureClick::new();
+            gesture.connect_released(move |_, _, _, _| {
+                popover.popup();
+            });
+            dot.add_controller(gesture);
+        }
+
+        // 通知/面板按钮：n=0 → Workspaces，n>0 → Attention
         {
             let st = state.clone();
             let win = window.clone();
             state.borrow().status.connect_attention_activate(move || {
-                open_panel(&st, &win, PanelTab::Attention);
+                let n = st.borrow().attention.blocked_workspace_count();
+                let tab = if n > 0 {
+                    PanelTab::Attention
+                } else {
+                    PanelTab::Workspaces
+                };
+                open_panel(&st, &win, tab);
+            });
+        }
+
+        // 新建 tab 按钮 → Action::NewTab
+        {
+            let st = state.clone();
+            state.borrow().status.connect_new_tab(move || {
+                let mut s = st.borrow_mut();
+                s.bridge().execute(tasks::new_tab());
+                refresh_ui(&mut s);
             });
         }
 
@@ -1044,24 +1053,7 @@ fn mark_pending_close_if_session_ended(s: &mut UiState) {
 
 fn refresh_ui(s: &mut UiState) {
     let tabs = s.bridge().get_tabs();
-    s.tabs.set_tabs(&tabs);
-    // 工作区注意力标记：当前连接的工作区 blocked/done 反映到 tab 前缀。
-    {
-        let ws = active_workspace_id(s);
-        let snap = s.attention.snapshot();
-        let ws_status = snap.iter().find(|w| w.workspace_id == ws).map(|w| {
-            if w.blocked > 0 {
-                PaneStatus::Blocked
-            } else if w.done > 0 {
-                PaneStatus::Done
-            } else {
-                PaneStatus::Idle
-            }
-        });
-        for t in &tabs {
-            s.tabs.set_attention(t.id, ws_status);
-        }
-    }
+    // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
     let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id).collect();
     s.tab_gate.on_snapshot(&tab_ids);
     if let Some(active) = tabs.iter().find(|t| t.is_active) {
@@ -1107,44 +1099,41 @@ fn refresh_ui(s: &mut UiState) {
     sync_chrome_visibility(s);
 }
 
-fn local_status_snapshot(npanes: usize) -> StatusBarSnapshot {
+fn local_status_snapshot(npanes: usize, tabs: &[(u32, String, bool)]) -> StatusBarSnapshot {
     let connected = i18n::tr(Key::StatusConnected);
     let panes = i18n::tr(Key::Panes);
     let close_hint = i18n::tr(Key::WindowCloseHint);
-    StatusBarSnapshot {
-        enabled: true,
-        position: "bottom".into(),
-        justify: "left".into(),
-        interval: 1,
-        left: format!("{connected} | {npanes} {panes}"),
-        right: close_hint,
-        left_length: 40,
-        right_length: 40,
-        status_style: String::new(),
-        left_style: String::new(),
-        right_style: String::new(),
-        separator: " ".into(),
-        window_format: String::new(),
-        window_current_format: String::new(),
-        window_style: String::new(),
-        window_current_style: String::new(),
-        windows: Vec::new(),
-        error: None,
-    }
+    let mut snap = crate::platform::linux::quickconnect::status_style::snapshot_from_tabs(
+        "local", npanes, tabs,
+    );
+    snap.left = format!("{connected} | {npanes} {panes}");
+    snap.right = close_hint;
+    snap.interval = 1;
+    snap
 }
 
 fn maybe_refresh_status(s: &mut UiState, force: bool) {
     if !s.uses_tmux {
         let npanes = s.bridge().get_panes(s.active_tab).len();
-        s.status.apply(&local_status_snapshot(npanes));
+        let rows: Vec<(u32, String, bool)> = s
+            .bridge()
+            .get_tabs()
+            .iter()
+            .map(|t| (t.id, t.name.clone(), t.is_active))
+            .collect();
+        s.status.apply(&local_status_snapshot(npanes, &rows));
         sync_chrome_visibility(s);
         return;
     }
     // SSH：`fetch_snapshot` 会对每个 window 单独 `ssh tmux`，在 GTK 线程同步
     // 执行会把 attach 后的 UI 卡死，tab/layout 也来不及刷新。
     if s.bridge().ssh_alias.is_some() {
-        s.status.apply(&ssh_model_status_snapshot(s));
-        sync_chrome_visibility(s);
+        // 16ms 轮询不得拆 tab 按钮：tab 签名没变就不 apply（LINUX-PLAN B2）。
+        let snap = ssh_model_status_snapshot(s);
+        if force || s.status.tab_signature_changed(&snap) {
+            s.status.apply(&snap);
+            sync_chrome_visibility(s);
+        }
         return;
     }
     let now = Instant::now();
@@ -1197,12 +1186,8 @@ pub fn should_poll_status(
     !sub_active && now.duration_since(last) >= interval
 }
 
-fn sync_chrome_visibility(s: &UiState) {
-    let kind = tab_strip_kind(s.uses_tmux, s.status.is_enabled());
-    let n_tabs = s.tabs.tab_count();
-    s.tabs.set_visible(native_tab_bar_visible(kind, n_tabs));
-    s.status
-        .set_visible(status_strip_visible(kind, s.status.is_enabled()));
+fn sync_chrome_visibility(_s: &UiState) {
+    // 唯一 chrome：status bar 永远可见，没有第二条 tab 带。
 }
 
 fn ssh_model_status_snapshot(s: &UiState) -> StatusBarSnapshot {
@@ -1857,12 +1842,14 @@ mod tests {
 
     #[test]
     fn local_status_snapshot_reports_pane_count_and_close_hint() {
-        let snap = local_status_snapshot(3);
+        // 本地模式中区也画 FFI tab（唯一 status bar）。
+        let snap = local_status_snapshot(3, &[(7, "shell".into(), true)]);
         assert!(snap.enabled);
         assert_eq!(snap.justify, "left");
         assert!(snap.left.contains('3'), "left 应含 pane 数: {}", snap.left);
         assert!(!snap.right.is_empty(), "right 应含关闭提示");
-        assert!(snap.windows.is_empty(), "本地模式无 tmux 窗口列表");
+        assert_eq!(snap.windows.len(), 1, "本地模式中区应画 FFI tab");
+        assert_eq!(snap.windows[0].window_id, 7);
         assert_eq!(snap.interval, 1);
     }
 
