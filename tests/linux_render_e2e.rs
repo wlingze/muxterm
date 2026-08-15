@@ -153,6 +153,36 @@ fn scroll_up_reveals_replica_history(view: &PaneView) {
     assert_eq!(view.history_offset(), 0, "滚回底部 offset 应为 0");
 }
 
+/// E2：合成 Codex 风格 TUI fixture——VTE 同时有 HEADER/BODY/PROMPT（或 FOOTER），
+/// 盒线 `─` 保留，第一行不是 PROMPT（几何位置不能挤碎）。
+fn codex_tui_fixture_keeps_header_and_prompt(view: &PaneView) {
+    let mut store = ReplicaStore::new(10_000);
+    let raw = include_str!("samples/codex-tui-sanitized.txt");
+    let payload = raw
+        .split_once("PAYLOAD_UTF8_BELOW\n")
+        .map(|(_, p)| p)
+        .expect("fixture 应含 PAYLOAD_UTF8_BELOW 标记");
+    store.feed("ws", 1, payload.as_bytes(), 80, 24);
+
+    let ansi = store.visible_ansi("ws", 1);
+    view.present_from_replica(&ansi);
+    pump_main_loop(80);
+
+    let text = view.visible_text();
+    assert!(text.contains("TOKEN_HEADER"), "VTE 应含 TOKEN_HEADER: {text:?}");
+    assert!(text.contains("TOKEN_BODY"), "VTE 应含 TOKEN_BODY: {text:?}");
+    assert!(
+        text.contains("TOKEN_PROMPT") || text.contains("TOKEN_FOOTER"),
+        "VTE 应含 TOKEN_PROMPT 或 TOKEN_FOOTER: {text:?}"
+    );
+    assert!(text.contains('─'), "VTE 应保留 U+2500 盒线: {text:?}");
+    let first_row = text.lines().next().unwrap_or("");
+    assert!(
+        !first_row.contains("TOKEN_PROMPT"),
+        "第一行不应是 PROMPT: {first_row:?}"
+    );
+}
+
 /// S4：20 个全屏帧一次合并，只提交末帧。
 fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     let mut all = Vec::new();
@@ -209,6 +239,9 @@ fn render_e2e_s3_s4() {
         cup_storm_feeds_only_last_frame(&view);
         url_click_records_https_uri(&view);
         scroll_up_reveals_replica_history(&view);
+        view.ensure_grid_size(80, 24);
+        pump_main_loop(80);
+        codex_tui_fixture_keeps_header_and_prompt(&view);
 
         win.close();
         win.destroy();
