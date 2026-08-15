@@ -25,9 +25,6 @@ use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;
 
-/// 滚动数据源：`(offset, rows)` → 几何 ANSI（window 侧接 ReplicaStore）。
-pub type ScrollProvider = Rc<dyn Fn(u32, u32) -> Vec<u8>>;
-
 /// 用户输入回调：`(pane_id, bytes)`。
 pub type InputCallback = Box<dyn Fn(u32, &[u8])>;
 
@@ -69,18 +66,23 @@ struct PaneViewInner {
     render_trace: RefCell<RenderTrace>,
     /// URL 打开出口（测试注入 Recording，生产接 GTK）。
     url_opener: RefCell<Option<Rc<dyn UrlOpener>>>,
-    /// 滚动历史数据源（ReplicaStore）。
-    scroll_provider: RefCell<Option<ScrollProvider>>,
-    /// 当前历史偏移（0=直播底部）。
-    history_offset: Cell<u32>,
 }
 
 impl PaneView {
-    pub fn new(pane_id: u32, theme: &Theme, font: &FontSettings, is_tmux_mirror: bool) -> Self {
+    pub fn new(
+        pane_id: u32,
+        theme: &Theme,
+        font: &FontSettings,
+        is_tmux_mirror: bool,
+        scrollback_lines: u32,
+    ) -> Self {
         let renderer = VteRenderer::new();
         renderer.apply_theme(theme);
         renderer.apply_font(font);
         renderer.apply_mirror_policy(is_tmux_mirror);
+        renderer
+            .terminal()
+            .set_scrollback_lines(scrollback_lines as i64);
         // OSC 8 超链接默认关闭：打开才能 check_hyperlink_at。
         renderer.terminal().set_allow_hyperlink(true);
         // https? URL 正则匹配（点击走 check_hyperlink_at 优先，其次 match）。
@@ -103,23 +105,7 @@ impl PaneView {
             grid_rows: Cell::new(24),
             render_trace: RefCell::new(RenderTrace::default()),
             url_opener: RefCell::new(None),
-            scroll_provider: RefCell::new(None),
-            history_offset: Cell::new(0),
         });
-        // 滚轮 → scroll_history（与测试钩子同一函数）。
-        {
-            let weak = Rc::downgrade(&inner);
-            let scroll =
-                gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
-            scroll.connect_scroll(move |_c, _dx, dy| {
-                if let Some(inner) = weak.upgrade() {
-                    let view = PaneView { inner };
-                    view.scroll_history(if dy > 0.0 { 3 } else { -3 });
-                }
-                glib::Propagation::Stop
-            });
-            inner.renderer.terminal().add_controller(scroll);
-        }
         PaneView { inner }
     }
 
@@ -242,36 +228,6 @@ impl PaneView {
     /// 清空渲染痕迹（测试在独立场景前调用）。
     pub fn clear_render_trace(&self) {
         *self.inner.render_trace.borrow_mut() = RenderTrace::default();
-    }
-
-    /// 注入滚动历史数据源（window 侧接 ReplicaStore）。
-    pub fn set_scroll_provider(&self, provider: ScrollProvider) {
-        *self.inner.scroll_provider.borrow_mut() = Some(provider);
-    }
-
-    /// 当前历史偏移（0=直播底部）。
-    pub fn history_offset(&self) -> u32 {
-        self.inner.history_offset.get()
-    }
-
-    /// 滚动历史：正 delta 向上看更早，负 delta 回底部；滚轮与测试走同一函数。
-    pub fn scroll_history(&self, delta_rows: i32) {
-        let rows = self.inner.grid_rows.get().max(1) as u32;
-        let current = self.inner.history_offset.get();
-        let next = if delta_rows >= 0 {
-            current.saturating_add(delta_rows as u32)
-        } else {
-            current.saturating_sub((-delta_rows) as u32)
-        };
-        self.inner.history_offset.set(next);
-        let provider = self.inner.scroll_provider.borrow().clone();
-        if let Some(provider) = provider {
-            let ansi = provider(next, rows);
-            if !ansi.is_empty() {
-                self.feed_output(&ansi);
-                self.flush_pending_feed();
-            }
-        }
     }
 
     /// 注入 URL 打开出口（测试用 Recording，生产接 GTK）。
