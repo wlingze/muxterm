@@ -43,24 +43,29 @@ pub fn show(
 
     // 主题
     let theme = ComboBoxText::new();
+    theme.set_widget_name("muxterm-prefs-theme");
     theme.append(Some("light"), "light");
     theme.append(Some("dark"), "dark");
     theme.set_active_id(Some(&cfg.theme.name.to_ascii_lowercase()));
 
     // 字体
     let font_family = Entry::new();
+    font_family.set_widget_name("muxterm-prefs-font-family");
     font_family.set_text(&cfg.font.family);
     let font_size = SpinButton::with_range(1.0, 72.0, 0.5);
+    font_size.set_widget_name("muxterm-prefs-font-size");
     font_size.set_value(f64::from(cfg.font.size));
 
     // 状态栏模式
     let status_mode = ComboBoxText::new();
+    status_mode.set_widget_name("muxterm-prefs-status-mode");
     status_mode.append(Some("tmux"), "tmux");
     status_mode.append(Some("theme"), "theme");
     status_mode.set_active_id(Some(&cfg.statusbar.mode));
 
     // scrollback
     let scrollback_lines = SpinButton::with_range(100.0, 1_000_000.0, 100.0);
+    scrollback_lines.set_widget_name("muxterm-prefs-scrollback");
     scrollback_lines.set_value(f64::from(cfg.scrollback.lines));
 
     // attention
@@ -106,6 +111,7 @@ pub fn show(
     root.append(&field_row("Keybindings (read-only)", &keys_sw));
 
     let save = gtk4::Button::with_label(&i18n::tr(TextKey::Save));
+    save.set_widget_name("muxterm-prefs-save");
     save.set_halign(Align::End);
     root.append(&save);
 
