@@ -211,12 +211,14 @@ fn hex_value(byte: u8) -> Option<u32> {
 // ============================================================================
 
 impl PaneId {
-    /// 从 `@N` 形式解析。
+    /// 从 `@N` / `%N` / `N` 形式解析（tmux 3.3+ 的 `%output` / `%pane-mode-changed`
+    /// 用 `%N`；`@N` 是 window id，靠上下文区分）。
     pub fn parse(s: &str) -> Result<Self, ProtocolError> {
-        let s = s
+        let num_part = s
             .strip_prefix('@')
-            .ok_or_else(|| ProtocolError::MalformedField(format!("pane id 缺少 @ 前缀: {s}")))?;
-        let n = u32::from_str(s)
+            .or_else(|| s.strip_prefix('%'))
+            .unwrap_or(s);
+        let n = u32::from_str(num_part)
             .map_err(|_| ProtocolError::MalformedField(format!("pane id 非数字: {s}")))?;
         Ok(PaneId(n))
     }
@@ -447,11 +449,10 @@ pub enum Message {
         /// 原始转义字符串（剥引号后），便于调试 / 重新编码。
         raw_content: String,
     },
-    /// `%pause <flags...>`（tmux 3.3+ 流控）：pane 输出被暂停（`pause-after`）。
-    /// 第一版只「识别并安全忽略」，不阻塞状态机；内容保留以便后续实现背压。
-    Pause { args: String },
-    /// `%continue <flags...>`（tmux 3.3+ 流控）：pane 输出恢复。
-    Continue { args: String },
+    /// `%pause %N`（tmux 3.3+ 流控，control.c `%%pause %%%u`）：pane 输出被暂停。
+    Pause { pane: Option<PaneId>, args: String },
+    /// `%continue %N`（tmux 3.3+ 流控）：pane 输出恢复。
+    Continue { pane: Option<PaneId>, args: String },
     /// `%subscription-changed <name> <session-id> <window-id> <window-index>
     /// <pane-id> ... : <value>`（tmux ≥3.2 `refresh-client -B` 订阅推送）。
     /// value 是 format 的展开值（可能含空格、冒号、样式指令）。
@@ -597,12 +598,8 @@ fn parse_line_known_keyword(line_str: &str) -> Result<Option<Message>, ProtocolE
             },
         }),
         "extended-output" => parse_extended_output(rest),
-        "pause" => Ok(Message::Pause {
-            args: rest.trim().to_string(),
-        }),
-        "continue" => Ok(Message::Continue {
-            args: rest.trim().to_string(),
-        }),
+        "pause" => parse_pause_continue(rest, true),
+        "continue" => parse_pause_continue(rest, false),
         "subscription-changed" => parse_subscription_changed(rest),
         "begin" => parse_boundary(rest, NotificationKind::Begin).map(Message::ResponseBoundary),
         "end" => parse_boundary(rest, NotificationKind::End).map(Message::ResponseBoundary),
@@ -723,7 +720,7 @@ fn parse_session_renamed(rest: &str) -> Result<Message, ProtocolError> {
 }
 
 fn parse_pane_mode_changed(rest: &str) -> Result<Message, ProtocolError> {
-    // %pane-mode-changed @0 copy-mode
+    // %pane-mode-changed @0 copy-mode / %pane-mode-changed %64 copy-mode
     let mut it = rest.splitn(2, ' ');
     let pid = it
         .next()
@@ -731,6 +728,24 @@ fn parse_pane_mode_changed(rest: &str) -> Result<Message, ProtocolError> {
     let pane = PaneId::parse(pid)?;
     let mode = it.next().unwrap_or("").to_string();
     Ok(Message::PaneModeChanged { pane, mode })
+}
+
+/// 解析 `%pause %N` / `%continue %N`（tmux 3.3+ 流控）。
+/// 首 token 是 pane id（`%N`）；其余保留为 args（兼容 flags）。
+fn parse_pause_continue(rest: &str, is_pause: bool) -> Result<Message, ProtocolError> {
+    let mut it = rest.splitn(2, ' ');
+    let first = it.next().unwrap_or("").trim();
+    let pane = if first.is_empty() {
+        None
+    } else {
+        parse_pane_id_lenient(first).ok()
+    };
+    let args = it.next().unwrap_or("").trim().to_string();
+    if is_pause {
+        Ok(Message::Pause { pane, args })
+    } else {
+        Ok(Message::Continue { pane, args })
+    }
 }
 
 fn parse_extended_output(rest: &str) -> Result<Message, ProtocolError> {
@@ -1374,7 +1389,9 @@ mod tests {
     #[test]
     fn pane_id_parse() {
         assert_eq!(PaneId::parse("@3").unwrap(), PaneId(3));
-        assert!(PaneId::parse("3").is_err());
+        // F6：tmux 3.3+ 的 %output / %pane-mode-changed 用 %N；纯数字也容错。
+        assert_eq!(PaneId::parse("%3").unwrap(), PaneId(3));
+        assert_eq!(PaneId::parse("3").unwrap(), PaneId(3));
         assert!(PaneId::parse("@x").is_err());
         assert_eq!(PaneId(7).as_str(), "@7");
     }
@@ -1604,6 +1621,16 @@ mod tests {
             m,
             Message::PaneModeChanged {
                 pane: PaneId(0),
+                mode: "copy-mode".into(),
+            }
+        );
+
+        // F6：2105 的 `%pane-mode-changed %64 copy-mode` 不再 WARN。
+        let m = parse_line("%pane-mode-changed %64 copy-mode").unwrap();
+        assert_eq!(
+            m,
+            Message::PaneModeChanged {
+                pane: PaneId(64),
                 mode: "copy-mode".into(),
             }
         );
@@ -1990,12 +2017,24 @@ mod tests {
 
     #[test]
     fn parse_pause_continue() {
-        // %pause / %continue 是 tmux 3.3+ 流控消息，第一版只识别并安全忽略
-        let m = parse_line("%pause 100").unwrap();
-        assert_eq!(m, Message::Pause { args: "100".into() });
+        // %pause / %continue 是 tmux 3.3+ 流控消息（control.c `%%pause %%%u`）。
+        let m = parse_line("%pause %64").unwrap();
+        assert_eq!(
+            m,
+            Message::Pause {
+                pane: Some(PaneId(64)),
+                args: String::new()
+            }
+        );
 
-        let m = parse_line("%continue 100").unwrap();
-        assert_eq!(m, Message::Continue { args: "100".into() });
+        let m = parse_line("%continue %64").unwrap();
+        assert_eq!(
+            m,
+            Message::Continue {
+                pane: Some(PaneId(64)),
+                args: String::new()
+            }
+        );
 
         // 空参数也应识别
         assert!(matches!(parse_line("%pause"), Some(Message::Pause { .. })));
@@ -2007,6 +2046,7 @@ mod tests {
         // keyword 返回正确的类型名
         assert_eq!(
             Message::Pause {
+                pane: None,
                 args: String::new()
             }
             .keyword(),
@@ -2014,6 +2054,7 @@ mod tests {
         );
         assert_eq!(
             Message::Continue {
+                pane: None,
                 args: String::new()
             }
             .keyword(),
@@ -2862,10 +2903,22 @@ mod iterm2_protocol_conformance_tests {
     /// 流控消息保留 flags（tmux 3.3+ pause-after）。
     #[test]
     fn flow_control_pause_continue() {
-        let pause = parse_line("%pause -U 1 2").unwrap();
-        assert!(matches!(pause, Message::Pause { ref args } if args == "-U 1 2"));
-        let cont = parse_line("%continue 3").unwrap();
-        assert!(matches!(cont, Message::Continue { ref args } if args == "3"));
+        let pause = parse_line("%pause %7 -U 1 2").unwrap();
+        assert!(matches!(
+            pause,
+            Message::Pause {
+                pane: Some(PaneId(7)),
+                ref args
+            } if args == "-U 1 2"
+        ));
+        let cont = parse_line("%continue %7").unwrap();
+        assert!(matches!(
+            cont,
+            Message::Continue {
+                pane: Some(PaneId(7)),
+                ..
+            }
+        ));
     }
 
     /// extended-output 的 value 与 %output 一样按 C 转义解码。

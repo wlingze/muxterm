@@ -98,9 +98,10 @@ mod tests {
     }
 
     /// 对应：非法 pane/window/session id 必须拒绝，避免静默错绑。
+    /// F6：pane id 接受 `@N` / `%N` / `N`（tmux 3.3+），非数字仍拒绝。
     #[test]
     fn test_types_reject_malformed_ids() {
-        for bad in ["", "@", "abc", "1", "$1", "@@1"] {
+        for bad in ["", "@", "abc", "$1", "@@1", "%x"] {
             assert!(PaneId::parse(bad).is_err(), "pane 应拒绝 {bad:?}");
         }
         for bad in ["", "abc"] {
