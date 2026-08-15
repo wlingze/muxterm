@@ -70,6 +70,48 @@ fn isolated_tmux_cup_script_lands_on_last_frame(app: &AppWindow, socket: &str) {
     assert!(ok, "5s 内 VTE 应停在 frame-19");
 }
 
+/// C8.5：attach 后 VTE 非空，底行 PROMPT 不塌缩。
+fn live_attach_vte_nonempty_and_prompt_not_collapsed(app: &AppWindow, socket: &str) {
+    // 光标放到底行再写 PROMPT_BOTTOM。
+    // 注意：Rust 里要写 \\033（反斜杠+033），让 tmux send-keys 解释成 ESC。
+    send_keys(socket, "s", "printf '\\033[24;1HPROMPT_BOTTOM'");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ok = false;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        let vte = app.test_active_pane_vte_text();
+        let replica = app.test_replica_last_n(0, 5).join("\n");
+        if vte.is_empty() || replica.is_empty() {
+            continue;
+        }
+        let lines: Vec<&str> = vte.lines().collect();
+        // 底行区域（最后 3 个非空行）含 PROMPT_BOTTOM，且不在第一行。
+        let nonempty: Vec<&str> = lines
+            .iter()
+            .filter(|l| !l.trim().is_empty())
+            .copied()
+            .collect();
+        let bottom = nonempty
+            .iter()
+            .rev()
+            .take(3)
+            .any(|l| l.contains("PROMPT_BOTTOM"));
+        if bottom {
+            ok = true;
+            assert!(
+                !lines
+                    .first()
+                    .map(|l| l.contains("PROMPT_BOTTOM"))
+                    .unwrap_or(true),
+                "第一行不应含 PROMPT_BOTTOM: {vte:?}"
+            );
+            break;
+        }
+    }
+    assert!(ok, "5s 内 VTE 应非空且底行含 PROMPT_BOTTOM");
+}
+
 /// S13b：点 status tab 真的切 window（tmux 侧确认）。
 fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
     // 先建第二个 window。
@@ -140,6 +182,7 @@ fn live_e2e_s8_s9_s13b() {
 
         isolated_tmux_echo_reaches_replica_and_vte(&app, &socket);
         isolated_tmux_cup_script_lands_on_last_frame(&app, &socket);
+        live_attach_vte_nonempty_and_prompt_not_collapsed(&app, &socket);
         click_status_tab_switches_real_window(&app, &socket);
 
         app.shutdown();
