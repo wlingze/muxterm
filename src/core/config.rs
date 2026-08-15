@@ -617,6 +617,7 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         kb("q", &["alt"], "quick_connect"),
         kb("q", &["control"], "quit"),
         kb("plus", &["control"], "increase_font_size"),
+        kb("equal", &["control"], "increase_font_size"),
         kb("minus", &["control"], "decrease_font_size"),
         kb("0", &["control"], "reset_font_size"),
         kb("return", &["control"], "toggle_pane_fullscreen"),

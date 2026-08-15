@@ -38,6 +38,7 @@ fn is_special_key_name(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "plus"
+            | "equal"
             | "minus"
             | "return"
             | "kp_enter"
@@ -213,13 +214,23 @@ mod tests {
         assert_eq!(km.lookup_str("q", &["alt"]), Some(Action::QuickConnect));
     }
 
-    /// 对应：Ctrl+Plus/Minus/0 字体缩放。
+    /// 对应：Ctrl+Plus/Minus/0 字体缩放；US 键盘 Ctrl+= 是 equal+Control。
     #[test]
     fn test_keymap_font_zoom_bindings() {
         let km = KeyMap::from_bindings(&default_keybindings());
         assert_eq!(
             km.lookup_str("plus", &["control"]),
             Some(Action::IncreaseFontSize)
+        );
+        assert_eq!(
+            km.lookup_str("equal", &["control"]),
+            Some(Action::IncreaseFontSize),
+            "Ctrl+= 应绑定增大字号"
+        );
+        assert_eq!(
+            km.lookup(gdk::Key::equal, gdk::ModifierType::CONTROL_MASK),
+            Some(Action::IncreaseFontSize),
+            "GDK equal+Control 应命中"
         );
         assert_eq!(
             km.lookup_str("minus", &["control"]),

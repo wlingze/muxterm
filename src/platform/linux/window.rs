@@ -18,6 +18,7 @@ use vte4::prelude::*;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
+use crate::core::config_edit::set_dotted_key;
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::replica::{apply_output_to_replicas, ReplicaStore};
 use crate::platform::i18n::{self, Key};
@@ -795,6 +796,20 @@ fn toggle_fullscreen(s: &mut UiState) {
     }
 }
 
+/// 把 dotted key 写回 config.toml（唯一事实源；不再写 preferences.toml）。
+pub fn persist_config(dotted: &str, value: toml_edit::Item) {
+    let Some(path) = Config::user_config_path() else {
+        return;
+    };
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    if let Ok(out) = set_dotted_key(&raw, dotted, value) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, out);
+    }
+}
+
 fn adjust_font(s: &mut UiState, direction: i32) {
     let next = FontSettings::zoomed(s.font.size, direction);
     if (next - s.font.size).abs() < f32::EPSILON {
@@ -802,16 +817,14 @@ fn adjust_font(s: &mut UiState, direction: i32) {
     }
     s.font.size = next;
     s.layout.set_font_size(next);
-    s.preferences.font_size = Some(next);
-    s.preferences.save();
+    persist_config("font.size", toml_edit::value(f64::from(next)));
 }
 
 fn reset_font(s: &mut UiState) {
     s.font.size = s.config_font_size;
     let font = s.font.clone();
     s.layout.set_font(&font);
-    s.preferences.font_size = None;
-    s.preferences.save();
+    persist_config("font.size", toml_edit::value(f64::from(s.config_font_size)));
 }
 
 fn toggle_theme(s: &mut UiState) {
@@ -828,8 +841,7 @@ fn toggle_theme(s: &mut UiState) {
     s.layout.apply_theme(&theme);
     s.status.apply_theme(&theme);
     apply_chrome_css(&theme);
-    s.preferences.theme = Some(next_name.to_string());
-    s.preferences.save();
+    persist_config("theme.name", toml_edit::value(next_name.to_string()));
     report_all_pane_colours(s);
 }
 
@@ -840,8 +852,10 @@ fn toggle_status_mode(s: &mut UiState) {
     };
     s.status_mode = next;
     s.status.set_mode(next);
-    s.preferences.statusbar_mode = Some(next.as_str().to_string());
-    s.preferences.save();
+    persist_config(
+        "statusbar.mode",
+        toml_edit::value(next.as_str().to_string()),
+    );
     maybe_refresh_status(s, true);
 }
 
