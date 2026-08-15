@@ -94,6 +94,11 @@ impl ReplicaStore {
             .unwrap_or_default()
     }
 
+    /// 该 pane 的网格是否全空（空网格不得把 VTE 标成已播种）。
+    pub fn is_blank(&self, ws: &str, pane: u32) -> bool {
+        self.get(ws, pane).map(|t| t.is_blank()).unwrap_or(true)
+    }
+
     /// 该 pane 是否处于 bracketed paste 模式。
     pub fn bracketed_paste(&self, ws: &str, pane: u32) -> bool {
         self.get(ws, pane)

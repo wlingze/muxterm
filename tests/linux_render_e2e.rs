@@ -9,6 +9,7 @@ mod support;
 
 use gtk4::prelude::*;
 use support::linux_gtk::*;
+use vte4::prelude::*;
 
 use muxterm::core::replica::ReplicaStore;
 use muxterm::platform::linux::pane_view::PaneView;
@@ -38,6 +39,11 @@ fn first_paint_uses_replica_tail_not_full_replay(view: &PaneView) {
     let text = view.visible_text();
     assert!(text.contains("line-199"), "首屏应含最后一行: {text}");
     assert!(!text.contains("line-0"), "首屏不应含最早行: {text}");
+    let first_row = text.lines().next().unwrap_or("");
+    assert!(
+        !first_row.contains("line-199"),
+        "第一行不应是 line-199（几何 dump 应保留行位置）: {first_row:?}"
+    );
     let trace = view.render_trace();
     assert_eq!(trace.resets, 1, "首屏应 reset 一次");
     assert_eq!(trace.feeds, 1, "首屏应只 feed 一次");
@@ -45,6 +51,35 @@ fn first_paint_uses_replica_tail_not_full_replay(view: &PaneView) {
         trace.bytes_fed < 80 * 24 * 4,
         "首屏字节应远小于 200 行原始字节: {}",
         trace.bytes_fed
+    );
+}
+
+/// C8.2：几何首屏——底行 PROMPT 保留在底行，第一行不含。
+fn first_paint_keeps_prompt_on_last_row(view: &PaneView) {
+    let mut store = ReplicaStore::new(10_000);
+    // 合成 24 行：中间全空格，只在最后一行写 PROMPT。
+    let mut bytes = Vec::new();
+    for i in 0..23 {
+        bytes.extend_from_slice(format!("\x1b[{};1H", i + 1).as_bytes());
+        bytes.extend_from_slice(&[b' '; 80]);
+    }
+    bytes.extend_from_slice(b"\x1b[24;1HPROMPT");
+    store.feed("ws", 1, &bytes, 80, 24);
+    let ansi = store.visible_ansi("ws", 1);
+
+    view.present_from_replica(&ansi);
+    pump_main_loop(80);
+
+    let text = view.visible_text();
+    let lines: Vec<&str> = text.lines().collect();
+    // 24 行网格：PROMPT 必须留在第 24 行（几何位置），首行不含。
+    assert!(
+        lines.get(23).map(|l| l.contains("PROMPT")).unwrap_or(false),
+        "第 24 行应含 PROMPT: {text:?}"
+    );
+    assert!(
+        !lines.first().map(|l| l.contains("PROMPT")).unwrap_or(true),
+        "第一行不应含 PROMPT: {text:?}"
     );
 }
 
@@ -104,13 +139,23 @@ fn render_e2e_s3_s4() {
         let win = gtk4::Window::builder()
             .title("render-e2e")
             .default_width(640)
-            .default_height(400)
+            .default_height(640)
             .child(&view.widget())
             .build();
         win.present();
         gtk4::test_widget_wait_for_draw(&win);
+        // 镜像 80×24：VTE 网格与 replica 一致，几何 dump 的 24 行全部可见。
+        view.ensure_grid_size(80, 24);
+        pump_main_loop(80);
 
+        eprintln!(
+            "rows={} cols={}",
+            view.terminal().row_count(),
+            view.terminal().column_count()
+        );
         first_paint_uses_replica_tail_not_full_replay(&view);
+        view.clear_render_trace();
+        first_paint_keeps_prompt_on_last_row(&view);
         view.clear_render_trace();
         cup_storm_feeds_only_last_frame(&view);
         url_click_records_https_uri(&view);
