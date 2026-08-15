@@ -1368,6 +1368,19 @@ mod tests {
     }
 
     #[test]
+    fn vte_execute_c1_bytes_do_not_panic() {
+        // 2026-08-15 dogfood：vte 0.13 对 C1/ETX 等打 DEBUG [unhandled]，
+        // 但不得 panic，也不得把应答交出去当输入。
+        let mut t = TerminalState::new(80, 24);
+        t.feed(&[0x80, 0x94, 0x03, 0x82, 0x8e]);
+        assert!(t.take_reply().is_empty(), "C1/ETX 不应产生回写应答");
+        assert!(t.take_attention_signals().is_empty());
+        // 之后正常文本仍可解析。
+        t.feed(b"ok");
+        assert_eq!(t.snapshot_trimmed(), vec!["ok"]);
+    }
+
+    #[test]
     fn dcs_passthrough_does_not_break_control_parsing() {
         let mut t = TerminalState::new(40, 5);
         // DCS passthrough：ESC P ... ESC \，内部字节不当作控制消息

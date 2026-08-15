@@ -525,6 +525,27 @@ mod tests {
     }
 
     #[test]
+    fn tab_key_encodes_as_ht_not_letters() {
+        // 2026-08-15 dogfood B5：Tab 被发成 -l "tab"（四个字母）。
+        // Tab 键必须编码为 HT（\t / C-i），生产路径不得 -l "tab"。
+        assert_eq!(
+            send_keys(PaneId(1), &[Key::tab()]).as_str(),
+            "send-keys -t %1 Tab",
+            "Tab 应作为特殊键 Tab 发送"
+        );
+        let bytes = crate::core::protocol::terminal::input::encode(
+            &crate::core::protocol::terminal::input::KeyEvent::Tab,
+        );
+        assert_eq!(bytes, b"\t", "Tab 应编码为 HT");
+        let raw = send_keys_bytes(PaneId(1), &bytes);
+        assert!(
+            !raw.as_str().contains("-l \"tab\""),
+            "不得发送字母 tab: {}",
+            raw.as_str()
+        );
+    }
+
+    #[test]
     fn send_keys_tab_bspace_escape_arrows() {
         assert_eq!(
             send_keys(PaneId(1), &[Key::tab()]).as_str(),
