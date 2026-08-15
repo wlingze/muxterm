@@ -414,4 +414,33 @@ mod tests {
         e.apply("ws", 1, &[], "line", 1);
         assert_eq!(e.blocked_workspace_count(), 0);
     }
+
+    /// E6：前台 pane 的 CommandDone 视为已看见（BecameVisible → Idle），
+    /// 不进 attention 列表（前台 `ls` 不弹提醒）。
+    #[test]
+    fn foreground_command_done_is_not_listed() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::CommandDone { exit_code: Some(0) }],
+            "ls",
+            1,
+        );
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Done,
+            "未看见前 CommandDone 是 Done"
+        );
+        // 前台输出/可见 → 已看见，Done 清成 Idle。
+        e.on_became_visible("ws", 1);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "前台 CommandDone 应清成 Idle"
+        );
+        let rows =
+            crate::platform::linux::panel_model::filter_attention_rows(&e.snapshot()[0].panes, "");
+        assert!(rows.is_empty(), "前台 Done 不应进 attention 列表");
+    }
 }
