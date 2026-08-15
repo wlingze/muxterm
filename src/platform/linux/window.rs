@@ -270,18 +270,7 @@ impl AppWindow {
                 });
         }
 
-        // 状态点 → popover
-        {
-            let (dot, popover) = {
-                let s = state.borrow();
-                (s.status.dot_widget(), s.status.popover_widget())
-            };
-            let gesture = gtk4::GestureClick::new();
-            gesture.connect_released(move |_, _, _, _| {
-                popover.popup();
-            });
-            dot.add_controller(gesture);
-        }
+        // 状态点 → popover：由 StatusBar 的 connect_clicked 处理（C8.4）。
 
         // 通知/面板按钮：n=0 → Workspaces，n>0 → Attention
         {
