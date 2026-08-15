@@ -1,7 +1,9 @@
 # Muxterm 测试与开发规范
 
 > 适用：`/home/wlz/Developer/self/muxterm`（当前 Linux 分支 `feat/linux-quickconnect-ui`）。
-> 配套文档：[AGENTS.md](../AGENTS.md)（环境/提交约定）、[ARCHITECTURE.md](../ARCHITECTURE.md)（交互模型）、[TASKS.md](../TASKS.md)（Linux GTK 移植执行计划）、[bugfix-log.md](bugfix-log.md)（历史坑）。
+> 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
+> [LINUX-PLAN.md](LINUX-PLAN.md)（**当前执行计划**）、[TASKS.md](../TASKS.md)（已冻结）、
+> [bugfix-log.md](bugfix-log.md)。
 
 ## 1. 四条硬性要求（验收红线）
 
@@ -70,6 +72,12 @@ xvfb-run -a cargo test --features gtk --test linux_gtk_support -- --test-threads
 xvfb-run -a cargo test --features gtk --test linux_panel_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_attention_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
+# Phase C 新增（落地后必须进门禁）：
+xvfb-run -a cargo test --features gtk --test linux_chrome_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_render_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_live_e2e -- --test-threads=1
+# SSH 有 sshd 才跑：eval "$(./scripts/ci/setup-sshd.sh)" 后
+# xvfb-run -a cargo test --features gtk --test linux_ssh_e2e -- --ignored --test-threads=1
 cargo test --all-features
 ```
 
@@ -78,7 +86,7 @@ cargo test --all-features
 
 ## 4. 开发流程（TDD 优先）
 
-1. 读文档：`PRODUCT.md` → `ARCHITECTURE.md` → `AGENTS.md` → `TASKS.md` → 本文档。
+1. 读文档：`PRODUCT.md` → `ARCHITECTURE.md` → `AGENTS.md` → `docs/LINUX-PLAN.md` → 本文档。`TASKS.md` 已冻结，不要当工作单。
 2. RED：写最小单测或 e2e，先看到失败（真实数据 fixture 优先）。
 3. GREEN：写最小实现，只改本功能相关文件。
 4. 补测试：增加边界、错误路径、真实 tmux 数据复放。
@@ -88,34 +96,56 @@ cargo test --all-features
 
 共享 GTK 文件（`window.rs`、`layout_host.rs`、`pane_view.rs`、`status_bar.rs`）同一时刻只允许一个 agent 写；并行只用于叶子任务（键位、i18n、隔离集成测试）。
 
-## 5. GUI e2e 编写指南
+## 5. GUI e2e 编写指南（硬性：不许自创更弱测试）
 
-参考 `tests/linux_gtk_integration.rs` 的既有手段：
+Phase C 的场景、函数名、断言、怎么跑：**只准**按 [`LINUX-PLAN.md`](LINUX-PLAN.md) §5。
+没有写进该节的「能绿就行」测试（`placeholder_compiles`、按英文 `"Save"` 找按钮、
+只用 `test_feed_replica` 代替真实 attach）**不算**完成。
 
-- 环境：无 DISPLAY 时用 `xvfb-run -a`；`gtk_test_*` 系列（`test_register_all_types` / `test_widget_wait_for_draw`）保证 GTK 测试类型可用。
-- 按键：`EventControllerKey` + `simulate_key_press` 模拟 Alt+S / Alt+V / Alt+T / Alt+1/2 等真实路径。
-- 等待：`pump_main_loop(ms)` 推进主循环，`wait_until(app, ms, pred)` 等待状态收敛，不要裸 sleep。
-- 断言分三层：
-  1. core 状态（`TerminalModel` / layout / snapshot）；
-  2. widget 树（`count_paned`、`has_nested_paned`、`widget_label_texts`、`find_toggle_with_title`）；
-  3. 页面可见结果（VTE `text_format` 可见文本，如 `assert_active_pane_echo`、tab bar 文本）。
-- 真实 tmux 的 e2e 参考 `tests/linux_quickconnect_e2e.rs`：`unique_socket` + `wait_until` + 结束 `drop` 时用同一 socket 清理。
+### 5.1 四层断言（缺一层就没做完）
 
-新功能的 e2e 检查单：
+| 层 | 对象 | 例子 |
+|---|---|---|
+| A core | `ReplicaStore` / `RenderPolicy` / `TerminalState` | `last_n_lines` 含 token；CUP 风暴只留末帧 |
+| B widget | `widget_name` | `find_by_name(..., "muxterm-new-tab")`，禁止靠 Label 英文 |
+| C VTE | `PaneView::visible_text()` | 含 `frame-19`，**不含** `frame-0` |
+| D 真 tmux | `tmux -L muxterm-test-… capture-pane` | 含 `echo` 的 token；清理必须同一 `-L` |
 
-- [ ] 打开入口（快捷键/命令面板/状态栏点击）有断言
-- [ ] 交互后的 core 状态变化有断言
-- [ ] 页面可见变化（文本/布局/样式）有断言
-- [ ] 涉及持久化时，重启后保持有断言
-- [ ] 涉及真实 tmux 时，用隔离 socket 有真实 e2e
+SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_support.rs`；
+远端 tmux 也必须 `-L`。无 sshd 时 `#[ignore]`，默认门禁不跑，不算失败。
+
+### 5.2 手段（沿用现有 helper）
+
+- 环境：无 DISPLAY 用 `xvfb-run -a`；`gtk4::test_synced`。无显示就 skip，不要空 assert。
+- **同进程至多一个 `AppWindow`**。status bar / PaneView / prefs 用普通 `gtk4::Window`。
+- 隔离 tmux：**复用** `tests/support/tmux_test_support.rs`，禁止再复制 `struct IsolatedTmux`。
+- 按键：`EventControllerKey` + `simulate_key_press`。
+- 等待：`pump_main_loop` / `wait_until` / `wait_until_widget`，禁止裸 `sleep` 当同步。
+- 控件：每个可点的生产控件必须有稳定 `widget_name`；测试只 `find_by_name`。
+
+### 5.3 怎么跑（Phase C）
+
+见 `LINUX-PLAN.md` §5.2 / §8。新增 crate：`linux_chrome_e2e`、`linux_render_e2e`、
+`linux_live_e2e`、`linux_ssh_e2e`（ignore）。`linux_search_e2e` 本轮仍占位。
+
+### 5.4 检查单
+
+- [ ] 入口（快捷键 / 状态栏按钮 / 真实 attach）有断言
+- [ ] core 状态变化有断言
+- [ ] widget_name + VTE 文本有断言
+- [ ] 持久化写的是 `config.toml`（不是 `preferences.toml`）
+- [ ] 真 tmux 用隔离 `-L`；Drop 带同一 `-L` 的 `kill-server`
+- [ ] 场景函数名与计划 §5.4 一致，没有放宽「含 frame 即可」这类断言
 
 ## 6. 真实 tmux 数据规范
 
 已纳入测试的真实样例（`tests/samples/`）：
 
-- `real-htop.txt` / `real-git_lg.txt` / `real-ls_la.txt` / `real-codex.txt`：core parser/client 单测
+- `real-htop.txt` / `real-git_lg.txt` / `real-ls_la.txt`：core parser/client 单测
+- `real-codex.txt` 目前是空文件，**不要**当 fixture；CUP 刷屏用计划里的合成帧
 - `real-gitlg-osc-query.txt`：镜像模式查询应答不转发（`src/core/protocol/terminal/mirror.rs`）
-- `new-session*.txt` / `attach*.txt` / `cmd-response.txt` / `2tab-3pane-cc.txt`：协议解析
+- `osc-attention-tmux3.7b.txt`：OSC 133 / BEL 透传
+- `dogfood-2026-0815-1326.txt`：2026-08-15 SSH attach 日志摘录（session `$4` / 点 tab）
 
 新增要求：
 
@@ -133,13 +163,15 @@ cargo test --all-features
 | 2 | TargetConfig 窗口 | ✅ options/directory/debounce | ⚠️ SSH toggle debounce 已覆盖；完整窗口流程待补 | ✅ 隔离 tmux 目录发现 |
 | 3 | Project 连接流程 | ✅ project_flow | ✅ attach→create→attach | ✅ e2e 真实 tmux |
 | 4 | Warm Connection Pool | ✅ pool | ✅ detach 保留 session | ✅ e2e 真实 tmux |
-| 5 | tmux Status Bar | ✅ status_style | ⚠️ snapshot 已断言；点击窗口切 tab 待补 | ✅ status snapshot e2e |
+| 5 | 统一 status bar（左中右 + 最右三按钮） | ⚠️ 旧 snapshot；Phase C 重做 | ❌ `linux_chrome_e2e` 待补 | ⚠️ 旧 snapshot e2e |
+| 5b | 鼠标点 tab 切窗口 | ❌ `$4` session-window-changed 被忽略；list-windows `$0` | ❌ 按钮每 tick 重建；S13 待补 | ✅ dogfood-2026-0815-1326.txt |
 | 6 | 主题切换 + 重报色 | ✅ theme/font | ⚠️ 偏好持久化已覆盖；即时切换/颜色重报待补 | ⚠️ 部分 |
 | 7 | 状态栏模式切换 | ✅ set_mode | ❌ 待补 | ❌ 待补 |
-| 8 | 字体缩放 + 持久化 | ✅ font | ✅ 偏好 roundtrip；按键即时生效待补 | — |
+| 8 | 字体缩放 Ctrl+=/-/0 → config.toml | ✅ font zoom 数值 | ❌ 仍写 preferences.toml；equal 未绑 | — |
 | 9 | Pane 全屏 | ✅ layout 状态 | ✅ zoom e2e；本地布局切换待补 | ✅ e2e 真实 tmux |
 | 10 | Tab 门禁 + 事件策略 | ✅ tab_gate/event_policy | ❌ 待补 | ❌ 待补 |
-| 11 | resize→feed + 输出合并 | ✅ pane_view | ⚠️ 2tab3pane 键盘流程已覆盖；真实 htop/git lg 的 GTK 复放待补 | ✅ core 单测有真实样本 |
+| 11 | resize→feed + 输出合并 | ✅ pane_view 25ms | ⚠️ 仍整段 `get_pane_output` 播种，agent 会刷屏 | ✅ core 单测有真实样本 |
+| 11b | 终端层末帧渲染 | ❌ `render_policy` 待补 | ❌ `linux_render_e2e` / `linux_live_e2e` 待补 | ❌ 合成 CUP；勿用空的 real-codex.txt |
 | 12 | 镜像模式丢弃应答 | ✅ mirror + 真实 OSC 样本 | ✅ mirror e2e | ✅ 真实样本 |
 | 13 | 键位扩展 | ✅ keymap defaults | ⚠️ Alt+S/V/1/2 已覆盖；Quit/字体/全屏按键待补 | — |
 | 14 | i18n 补齐 | ✅ en/zh parity | ✅ 面板 tab/占位文案在 panel e2e 断言 | — |
@@ -151,8 +183,20 @@ cargo test --all-features
 | 20 | 三 tab 面板 | ✅ panel_model | ✅ linux_panel_e2e | — |
 | 21 | peek/一行答复 | ✅ panel 钩子 | ✅ linux_panel_e2e / linux_attention_e2e | ✅ attention e2e 真实 tmux |
 | 22 | 红点/标题 | ✅ attention_ui 字符串 | ✅ linux_attention_e2e | ✅ 注入 BEL + printf |
-| 23 | 配置页 | ✅ config_edit | ✅ linux_prefs_e2e | — |
+| 23 | 配置页 | ✅ config_edit | ⚠️ linux_prefs_e2e 靠英文 Save/下标，待 widget_name | — |
 | 24 | pane-cmd 订阅 | ✅ protocol/backend | — | ✅ tmux_backend scenario5 |
+| 25 | attach session id（$4 切 tab） | ✅ backend/protocol | — | ✅ dogfood 摘录 fixture |
+| 26 | RenderPolicy 末帧 | ✅ render_policy | ✅ linux_render_e2e S3/S4 | ✅ live CUP 脚本 S9 |
+| 27 | 统一 status bar（无 TabBar） | ✅ lifecycle | ✅ linux_chrome_e2e S5/S6/S13a | ✅ live 点 tab S13b |
+| 28 | 状态 popover | ✅ ConnectionSummary | ✅ linux_chrome_e2e S7 | — |
+| 29 | Ctrl+= 写 config.toml | ✅ keymap/config_edit | ✅ linux_prefs_e2e S10 | — |
+| 30 | URL 点击 | ✅ url_detect | ✅ linux_render_e2e S11 | — |
+| 31 | 配置页 widget_name | ✅ prefs 控件 | ✅ linux_prefs_e2e | — |
+| 32 | 真隔离 tmux echo | ✅ replica | ✅ linux_live_e2e S8 | ✅ capture-pane |
+| 33 | loopback SSH 远端 tmux | ✅ CoreBridge | ✅ linux_ssh_e2e S12（ignore） | ✅ 远端 -L capture-pane |
+| 25 | URL 点击 | ⚠️ Cell.link 已有 | ❌ UrlOpener / VTE match 待补 | — |
+| 26 | 独立 TabBar | — | ⚠️ 仍挂在 window.rs，Phase C 删除 | — |
+| 27 | loopback SSH + 远端 -L tmux | — | ❌ `linux_ssh_e2e` `#[ignore]` 待补 | — |
 
 ## 8. 新增功能验收矩阵模板
 
@@ -171,7 +215,9 @@ cargo test --all-features
 - Alt+P 命令面板可用；Alt+Q QuickConnect 面板打开、搜索、连接
 - TargetConfig 窗口可编辑保存；目录补全不竞态
 - 状态栏显示正确、点击窗口可切 tab；状态栏模式可切换
-- 字体 Ctrl+Plus/Minus/0 即时生效且重启保持；主题切换即时生效
+- 字体 Ctrl+= / Ctrl+- / Ctrl+0 即时生效且写入 `config.toml`；主题切换即时生效
+- 只有一条 status bar：左/中/右同步 tmux，最右状态/通知/新建；没有第二条 tab 带
+- 进入已有大量输出的 pane（或 Codex 刷屏）时画面落在末尾，不从历史重放
 - Pane 全屏进入/恢复；attach / new / ssh 向导三种路径可用；退出干净
 
 ### 视觉验收（截图 + 看图模型）
@@ -195,7 +241,8 @@ cargo test --all-features
 - 用裸 `sleep` “修”时序失败 → 换成硬超时轮询。
 - `--all-features` 并发 streaming 失败 → 先 `--test-threads=1` 复现，不掩盖。
 - 镜像模式查询应答泄漏 → 查 `should_forward_replies` / `real-gitlg-osc-query.txt`。
-- GTK 首帧尺寸错误 → 先 `seed_snapshot(output, cols, rows)` 再喂增量，不要用 client 尺寸代替 pane 尺寸。
+- GTK 首帧刷屏 → 用 replica `visible_ansi()` 播种，**禁止** `get_pane_output` 整段重放。
+- GTK 首帧尺寸错误 → 按 pane 的 cols/rows resize，不要用 client 尺寸代替 pane 尺寸。
 - GTK 与 tmux 行列差一 → 用 pane 的 `WxH`，不是 `refresh-client -C` 的 client 尺寸。
 - 测试 server 没清理 → 创建与清理必须带同一个 `-L`。
 - `*.log` 不许提交；`tests/samples/*.txt` 必须提交。
