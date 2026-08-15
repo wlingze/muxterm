@@ -82,6 +82,8 @@ pub struct TmuxBackend {
     _sender_handle: Option<tokio::task::JoinHandle<()>>,
     /// sender task 的异步写错误；由前端轮询成可见状态事件。
     command_error_rx: Option<mpsc::UnboundedReceiver<String>>,
+    /// SSH 读写字节计数（spawn_ssh 时从 handle 克隆）。
+    traffic: Option<crate::core::transport::TrafficCounters>,
 
     // ── 内部 state ──────────────────────────────────────────
     sessions: Vec<SessionInfo>,
@@ -218,6 +220,7 @@ impl TmuxBackend {
             _pump_handle: None,
             _sender_handle: None,
             command_error_rx: None,
+            traffic: None,
             sessions: vec![],
             active_session: None,
             windows: vec![],
@@ -1432,6 +1435,12 @@ impl Backend for TmuxBackend {
     fn status_subscriptions_active(&self) -> bool {
         self.status_subscriptions_active
     }
+    fn traffic_bytes(&self) -> (u64, u64) {
+        self.traffic
+            .as_ref()
+            .map(|t| t.snapshot())
+            .unwrap_or((0, 0))
+    }
     async fn connect(&mut self) -> Result<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
@@ -1444,6 +1453,7 @@ impl Backend for TmuxBackend {
         let (handle, rx) = TmuxClient::spawn(config)
             .await
             .context("spawn tmux -CC 失败")?;
+        self.traffic = handle.traffic.clone();
 
         // 命令发送 channel + 后台 sender task（持有 handle）。
         // execute 同步 dispatch 命令到 cmd_tx；sender task 异步 send_command。

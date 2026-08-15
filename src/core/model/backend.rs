@@ -48,6 +48,11 @@ pub trait Backend: State {
         false
     }
 
+    /// 当前连接的读写字节计数 `(down, up)`；非 SSH 后端默认 0。
+    fn traffic_bytes(&self) -> (u64, u64) {
+        (0, 0)
+    }
+
     /// 关闭后端并释放资源；显式 tmux 分离请使用 `Task::Detach`。
     /// 关闭后 `status()` 应为 `Exited` 或 `Disconnected`。
     async fn shutdown(&mut self) -> anyhow::Result<()>;

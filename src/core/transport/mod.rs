@@ -11,6 +11,9 @@
 pub mod local;
 pub mod ssh;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 // pub use local::LocalProcessTransport;
 // pub use ssh::SshProcessTransport;
 
@@ -42,6 +45,37 @@ impl PtySize {
             pixel_width: 0,
             pixel_height: 0,
         }
+    }
+}
+
+/// 传输读写字节计数（SSH 读线程与 PtyWriter 各自累加，前端轮询快照）。
+#[derive(Debug, Clone, Default)]
+pub struct TrafficCounters {
+    down: Arc<AtomicU64>,
+    up: Arc<AtomicU64>,
+}
+
+impl TrafficCounters {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 记录下行（远端 → 本地）字节。
+    pub fn add_down(&self, n: u64) {
+        self.down.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// 记录上行（本地 → 远端）字节。
+    pub fn add_up(&self, n: u64) {
+        self.up.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// 当前 (down, up) 字节快照。
+    pub fn snapshot(&self) -> (u64, u64) {
+        (
+            self.down.load(Ordering::Relaxed),
+            self.up.load(Ordering::Relaxed),
+        )
     }
 }
 

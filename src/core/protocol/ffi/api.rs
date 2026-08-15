@@ -307,6 +307,38 @@ pub unsafe extern "C" fn muxterm_status_subscription_active(handle: *mut Muxterm
     .unwrap_or(0)
 }
 
+/// 当前连接累计下行字节（SSH transport 读端计数；非 SSH 为 0）。
+///
+/// # Safety
+/// `handle` 必须是 [`muxterm_create`] 返回且尚未释放的指针。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_traffic_down(handle: *mut MuxtermHandle) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return 0;
+        }
+        let h = unsafe { &*handle };
+        h.model.traffic_bytes().0
+    }))
+    .unwrap_or(0)
+}
+
+/// 当前连接累计上行字节（SSH PtyWriter 计数；非 SSH 为 0）。
+///
+/// # Safety
+/// `handle` 必须是 [`muxterm_create`] 返回且尚未释放的指针。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_traffic_up(handle: *mut MuxtermHandle) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return 0;
+        }
+        let h = unsafe { &*handle };
+        h.model.traffic_bytes().1
+    }))
+    .unwrap_or(0)
+}
+
 /// 通过 core 创建 detached tmux session，随后由调用方使用同一 alias/session
 /// 进入控制模式。返回 `{"ok":true,"session":"..."}`，字符串由
 /// [`muxterm_free_string`] 释放。

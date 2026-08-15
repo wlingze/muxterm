@@ -81,6 +81,8 @@ pub struct TmuxClientHandle {
     child: Option<Child>,
     /// pty 模式的子进程。
     pty_child: Option<PtyChild>,
+    /// SSH 读写字节计数（本地 pty 模式为 None）。
+    pub traffic: Option<crate::core::transport::TrafficCounters>,
 }
 
 /// 事件：tmux → 客户端。
@@ -152,7 +154,9 @@ impl TmuxClient {
             "spawn tmux -CC via SSH"
         );
 
+        let traffic = crate::core::transport::TrafficCounters::new();
         let mut transport = SshProcessTransport::new();
+        transport.set_traffic(traffic.clone());
         transport
             .spawn_exec(&program, &arg_refs, pty_size)
             .context("SSH transport spawn 失败")?;
@@ -161,7 +165,7 @@ impl TmuxClient {
         let writer = transport
             .take_pty_writer()
             .context("SSH transport take_writer 失败")?;
-        let writer = PtyWriter::new(writer);
+        let writer = PtyWriter::with_traffic(writer, traffic.clone());
 
         // 再把 transport 移入读线程（read 是非阻塞，用后台线程桥接到 mpsc）
         let (read_tx, read_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>(4096);
@@ -196,6 +200,7 @@ impl TmuxClient {
             stdin: None,
             child: None,
             pty_child: None,
+            traffic: Some(traffic),
         };
         Ok((handle, rx))
     }
@@ -228,6 +233,7 @@ impl TmuxClient {
             stdin: None,
             child: None,
             pty_child: Some(pty_child),
+            traffic: None,
         };
         // 配置消费标记（避免未使用）
         let _ = config.extra_args.len();
@@ -274,6 +280,7 @@ impl TmuxClient {
             stdin: Some(stdin),
             child: Some(child),
             pty_child: None,
+            traffic: None,
         };
         Ok((handle, rx))
     }
