@@ -234,6 +234,22 @@ fn cup_half_frames_keep_header_and_prompt(view: &PaneView) {
     );
 }
 
+/// E6：小 VTE 的键直接走 send_input 回调（不做输入框）。
+fn mini_vte_input_routes_to_send_input(view: &PaneView) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let got = Rc::new(RefCell::new(Vec::<(u32, Vec<u8>)>::new()));
+    let g = got.clone();
+    view.connect_input(move |pid, data| g.borrow_mut().push((pid, data.to_vec())));
+    view.test_emit_input(b"ls\r");
+    assert_eq!(
+        *got.borrow(),
+        vec![(1, b"ls\r".to_vec())],
+        "小 VTE 输入应原样路由到 send_input"
+    );
+}
+
 /// S4：20 个全屏帧一次合并，只提交末帧。
 fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     let mut all = Vec::new();
@@ -295,6 +311,7 @@ fn render_e2e_s3_s4() {
         codex_tui_fixture_keeps_header_and_prompt(&view);
         view.clear_render_trace();
         cup_half_frames_keep_header_and_prompt(&view);
+        mini_vte_input_routes_to_send_input(&view);
 
         win.close();
         win.destroy();

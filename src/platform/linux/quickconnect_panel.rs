@@ -5,29 +5,37 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk4::gdk::Key;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Entry, EventControllerKey, GestureClick, Label, ListBox, ListBoxRow,
-    Orientation, Overlay, ScrolledWindow, SelectionMode, Window,
+    Align, Box as GtkBox, Button, Entry, EventControllerKey, GestureClick, Label, ListBox,
+    ListBoxRow, MenuButton, Orientation, Overlay, Popover, ScrolledWindow, SelectionMode, Window,
 };
 
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
+use crate::core::config::Theme;
 use crate::platform::i18n::{self, Key as TextKey};
+use crate::platform::linux::pane_view::PaneView;
 use crate::platform::linux::panel_model::{
     filter_attention_rows, filter_workspace_rows, search_rows, PanelModel, PanelTab, SearchRow,
 };
 use crate::platform::linux::quick_pick;
+use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
-use crate::platform::linux::scrollback_view::{peek_view, set_peek_text};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
+
+type SendInputCb = Box<dyn Fn(String, u32, &[u8])>;
+type MuteCb = Box<dyn Fn(String, u32, Duration)>;
+type PeekAnsiCb = Box<dyn Fn(String, u32) -> (u16, u16, Vec<u8>)>;
+type SearchCb = Box<dyn Fn(&str) -> Vec<SearchRow>>;
 
 /// 面板回调。
 pub struct QuickConnectCallbacks {
@@ -85,15 +93,21 @@ pub struct PanelShowArgs {
     pub initial_tab: PanelTab,
     pub workspaces: Vec<PanelItem>,
     pub attention: Vec<PaneAttention>,
+    /// 小 VTE 主题/字体（与主窗口一致）。
+    pub theme: Theme,
+    pub font: FontSettings,
     pub on_connect: Box<dyn Fn(TargetConfig)>,
     pub on_edit: Box<dyn Fn(TargetConfig)>,
     pub on_new_project: Box<dyn Fn()>,
     pub on_jump_pane: Box<dyn Fn(String, u32)>,
-    pub on_reply: Box<dyn Fn(String, u32, String)>,
-    pub on_mute: Box<dyn Fn(String, u32)>,
-    pub peek_text: Box<dyn Fn(String, u32) -> String>,
+    /// 小 VTE 按键 → 目标 pane 输入。
+    pub on_send_input: SendInputCb,
+    /// 禁止提醒：`(ws, pane, duration)`。
+    pub on_mute: MuteCb,
+    /// 小 VTE 播种：`(ws, pane) → (cols, rows, replica 几何 ANSI)`。
+    pub peek_ansi: PeekAnsiCb,
     /// Search tab：query → replica 命中行。
-    pub search: Box<dyn Fn(&str) -> Vec<SearchRow>>,
+    pub search: SearchCb,
     /// 面板关闭回调（window 侧清 panel_open 状态）。
     pub on_close: Box<dyn Fn()>,
 }
@@ -104,6 +118,23 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     let parent_h = parent.height().max(400);
     let (panel_h, list_h) = quick_pick::panel_list_heights(parent_h);
     let panel_w = 640;
+
+    let PanelShowArgs {
+        initial_tab,
+        workspaces,
+        attention,
+        theme,
+        font,
+        on_connect,
+        on_edit,
+        on_new_project,
+        on_jump_pane,
+        on_send_input,
+        on_mute,
+        peek_ansi,
+        search,
+        on_close,
+    } = args;
 
     let overlay = ensure_overlay(parent);
     let backdrop = GtkBox::new(Orientation::Vertical, 0);
@@ -179,8 +210,16 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     search_status.set_visible(false);
     panel.append(&search_status);
 
-    // peek + 一行答复（C3.3）：仅 Attention tab 显示。
-    let (peek_sw, peek_view) = peek_view();
+    // Attention 小 VTE（E6）：镜像、scrollback 0、replica 播种；仅 Attention tab 显示。
+    let peek_view = Rc::new(PaneView::new(0, &theme, &font, true));
+    let peek_sw = ScrolledWindow::builder()
+        .vexpand(true)
+        .hexpand(true)
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .child(&peek_view.widget())
+        .build();
+    peek_sw.set_widget_name("muxterm-attention-peek");
     peek_sw.set_margin_start(12);
     peek_sw.set_margin_end(12);
     peek_sw.set_margin_top(8);
@@ -188,7 +227,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     peek_sw.set_visible(false);
     panel.append(&peek_sw);
 
-    let reply_row = GtkBox::builder()
+    // 按钮行：跳转 / 放大 / 禁止提醒（下拉 5m/10m/30m/1h/4h/24h）。
+    let attention_actions = GtkBox::builder()
         .orientation(Orientation::Horizontal)
         .spacing(8)
         .margin_start(12)
@@ -196,42 +236,43 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         .margin_top(8)
         .margin_bottom(12)
         .build();
-    let reply_target = Label::new(Some(""));
-    reply_target.set_widget_name("muxterm-reply-target");
-    reply_target.set_halign(Align::Start);
-    reply_target.add_css_class("qc-reply-target");
-    let reply_entry = Entry::builder()
-        .placeholder_text(i18n::tr(TextKey::ReplyHint))
-        .hexpand(true)
-        .build();
-    reply_entry.set_widget_name("muxterm-reply-entry");
-    reply_entry.set_sensitive(false);
-    let mute_button = gtk4::Button::with_label(&i18n::tr(TextKey::Mute1h));
-    mute_button.set_widget_name("muxterm-mute-1h");
+    let jump_button = Button::with_label(&i18n::tr(TextKey::AttentionJump));
+    jump_button.set_widget_name("muxterm-attention-jump");
+    jump_button.set_sensitive(false);
+    let zoom_button = Button::with_label(&i18n::tr(TextKey::AttentionZoom));
+    zoom_button.set_widget_name("muxterm-attention-zoom");
+    zoom_button.set_sensitive(false);
+    let mute_button = MenuButton::new();
+    mute_button.set_widget_name("muxterm-attention-mute");
+    mute_button.set_label(&i18n::tr(TextKey::Mute1h));
     mute_button.set_sensitive(false);
-    reply_row.append(&reply_target);
-    reply_row.append(&reply_entry);
-    reply_row.append(&mute_button);
-    reply_row.set_visible(false);
-    panel.append(&reply_row);
+    let mute_popover = Popover::new();
+    let mute_box = GtkBox::new(Orientation::Vertical, 0);
+    let mut mute_items: Vec<Button> = Vec::new();
+    for (id, label) in [
+        ("5m", "5m"),
+        ("10m", "10m"),
+        ("30m", "30m"),
+        ("1h", "1h"),
+        ("4h", "4h"),
+        ("24h", "24h"),
+    ] {
+        let item = Button::with_label(label);
+        item.set_widget_name(&format!("muxterm-attention-mute-{id}"));
+        mute_box.append(&item);
+        mute_items.push(item);
+    }
+    mute_popover.set_child(Some(&mute_box));
+    mute_button.set_popover(Some(&mute_popover));
+    attention_actions.append(&jump_button);
+    attention_actions.append(&zoom_button);
+    attention_actions.append(&mute_button);
+    attention_actions.set_visible(false);
+    panel.append(&attention_actions);
 
     overlay.add_overlay(&backdrop);
     overlay.add_overlay(&panel);
 
-    let PanelShowArgs {
-        initial_tab,
-        workspaces,
-        attention,
-        on_connect,
-        on_edit,
-        on_new_project,
-        on_jump_pane,
-        on_reply,
-        on_mute,
-        peek_text,
-        search,
-        on_close,
-    } = args;
     let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
     let all = Rc::new(workspaces);
     let attention = Rc::new(attention);
@@ -239,13 +280,15 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         initial_tab,
         workspaces: Vec::new(),
         attention: Vec::new(),
+        theme,
+        font,
         on_connect,
         on_edit,
         on_new_project,
         on_jump_pane,
-        on_reply,
+        on_send_input,
         on_mute,
-        peek_text,
+        peek_ansi,
         search,
         on_close: std::boxed::Box::new(|| {}),
     });
@@ -293,25 +336,29 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         map
     };
 
-    // 根据当前选中行刷新 peek/答复（rebuild 与 row-selected 共用）。
+    // 当前选中的注意力 pane（小 VTE 输入/双击/按钮共用）。
+    let selected = Rc::new(RefCell::new(None::<(String, u32)>));
+
+    // 根据当前选中行刷新小 VTE 与按钮（rebuild 与 row-selected 共用）。
     let update_peek = {
         let model = model.clone();
         let attention = attention.clone();
         let callbacks = callbacks.clone();
         let peek_view = peek_view.clone();
-        let reply_target = reply_target.clone();
-        let reply_entry = reply_entry.clone();
+        let jump_button = jump_button.clone();
+        let zoom_button = zoom_button.clone();
         let mute_button = mute_button.clone();
         let list = list.clone();
+        let selected = selected.clone();
         move || {
             let tab = model.borrow().tab;
             if tab != PanelTab::Attention {
                 return;
             }
             let Some(row) = list.selected_row() else {
-                set_peek_text(&peek_view, "");
-                reply_target.set_text("");
-                reply_entry.set_sensitive(false);
+                *selected.borrow_mut() = None;
+                jump_button.set_sensitive(false);
+                zoom_button.set_sensitive(false);
                 mute_button.set_sensitive(false);
                 return;
             };
@@ -335,12 +382,16 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             };
             let ws = sel.workspace_id.clone();
             let pane = sel.pane_id;
-            let process = sel.process_name.as_deref().unwrap_or("?");
-            reply_target.set_text(&format!("{ws} · {process}"));
-            reply_entry.set_sensitive(true);
+            *selected.borrow_mut() = Some((ws.clone(), pane));
+            jump_button.set_sensitive(true);
+            zoom_button.set_sensitive(true);
             mute_button.set_sensitive(true);
-            let text = (callbacks.peek_text)(ws, pane);
-            set_peek_text(&peek_view, &text);
+            peek_view.set_pane_id(pane);
+            let (cols, rows, ansi) = (callbacks.peek_ansi)(ws, pane);
+            peek_view.ensure_grid_size(cols, rows);
+            if !ansi.is_empty() {
+                peek_view.present_from_replica(&ansi);
+            }
         }
     };
 
@@ -357,6 +408,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let tab_search = tab_search.clone();
         let workspace_status = workspace_status.clone();
         let update_peek = update_peek.clone();
+        let peek_sw = peek_sw.clone();
+        let attention_actions = attention_actions.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
@@ -372,7 +425,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             search_status.set_visible(tab == PanelTab::Search);
             let show_peek = tab == PanelTab::Attention;
             peek_sw.set_visible(show_peek);
-            reply_row.set_visible(show_peek);
+            attention_actions.set_visible(show_peek);
             match tab {
                 PanelTab::Workspaces => {
                     let rows = filter_workspace_rows(&all, &query, |item| {
@@ -527,124 +580,72 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         list.connect_row_selected(move |_, _| update_peek());
     }
 
-    // 静音 1h：按钮或 `m` 键（选中行）。
+    // 小 VTE 输入 → 目标 pane（键直接打在 VTE 上，不做输入框）。
     {
-        let model = model.clone();
         let callbacks = callbacks.clone();
-        let mute_button = mute_button.clone();
-        let list_closure = list.clone();
-        mute_button.connect_clicked(move |_| {
-            let tab = model.borrow().tab;
-            if tab != PanelTab::Attention {
-                return;
+        let selected = selected.clone();
+        peek_view.connect_input(move |_pid, data| {
+            if let Some((ws, pane)) = selected.borrow().clone() {
+                (callbacks.on_send_input)(ws, pane, data);
             }
-            let Some(row) = list_closure.selected_row() else {
-                return;
-            };
-            let name = row.widget_name();
-            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
-                return;
-            };
-            let Some((ws, pane)) = rest.rsplit_once('-') else {
-                return;
-            };
-            let Ok(pane) = pane.parse::<u32>() else {
-                return;
-            };
-            (callbacks.on_mute)(ws.to_string(), pane);
         });
-    }
-    {
-        let model = model.clone();
-        let callbacks = callbacks.clone();
-        let list_closure = list.clone();
-        let controller = EventControllerKey::new();
-        controller.connect_key_pressed(move |_c, key, _code, _mods| {
-            if key != Key::m {
-                return glib::Propagation::Proceed;
-            }
-            let tab = model.borrow().tab;
-            if tab != PanelTab::Attention {
-                return glib::Propagation::Proceed;
-            }
-            let Some(row) = list_closure.selected_row() else {
-                return glib::Propagation::Stop;
-            };
-            let name = row.widget_name();
-            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
-                return glib::Propagation::Stop;
-            };
-            let Some((ws, pane)) = rest.rsplit_once('-') else {
-                return glib::Propagation::Stop;
-            };
-            let Ok(pane) = pane.parse::<u32>() else {
-                return glib::Propagation::Stop;
-            };
-            (callbacks.on_mute)(ws.to_string(), pane);
-            glib::Propagation::Stop
-        });
-        reply_entry.add_controller(controller);
     }
 
-    // 一行答复：Enter（无 Shift）发送一行 + \r，不关面板，发完重新 peek。
+    // 双击小 VTE = 跳转。
     {
-        let model = model.clone();
-        let attention = attention.clone();
         let callbacks = callbacks.clone();
-        let peek_view = peek_view.clone();
-        let reply_entry = reply_entry.clone();
-        let list_closure = list.clone();
-        let controller = EventControllerKey::new();
-        controller.connect_key_pressed(move |c, key, _code, mods| {
-            if key != Key::Return && key != Key::KP_Enter {
-                return glib::Propagation::Proceed;
+        let selected = selected.clone();
+        let gesture = GestureClick::new();
+        gesture.set_button(1);
+        gesture.connect_released(move |_g, n_press, _x, _y| {
+            if n_press == 2 {
+                if let Some((ws, pane)) = selected.borrow().clone() {
+                    (callbacks.on_jump_pane)(ws, pane);
+                }
             }
-            if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                return glib::Propagation::Proceed;
-            }
-            let tab = model.borrow().tab;
-            if tab != PanelTab::Attention {
-                return glib::Propagation::Proceed;
-            }
-            // 从 controller 取宿主 Entry，避免闭包自持有造成 GObject 环。
-            let Some(host) = c.widget().and_then(|w| w.downcast::<Entry>().ok()) else {
-                return glib::Propagation::Stop;
-            };
-            let text = host.text().to_string();
-            if text.trim().is_empty() {
-                return glib::Propagation::Stop;
-            }
-            let Some(row) = list_closure.selected_row() else {
-                return glib::Propagation::Stop;
-            };
-            let name = row.widget_name();
-            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
-                return glib::Propagation::Stop;
-            };
-            let Some((ws, pane)) = rest.rsplit_once('-') else {
-                return glib::Propagation::Stop;
-            };
-            let Ok(pane) = pane.parse::<u32>() else {
-                return glib::Propagation::Stop;
-            };
-            let ws = ws.to_string();
-            let Some(sel) = attention
-                .iter()
-                .find(|p| p.workspace_id == ws && p.pane_id == pane)
-                .cloned()
-            else {
-                return glib::Propagation::Stop;
-            };
-            let ws = sel.workspace_id.clone();
-            let pane = sel.pane_id;
-            let line = text.trim_end_matches('\n').to_string();
-            (callbacks.on_reply)(ws.clone(), pane, line.clone());
-            host.set_text("");
-            let peek = (callbacks.peek_text)(ws, pane);
-            set_peek_text(&peek_view, &peek);
-            glib::Propagation::Stop
         });
-        reply_entry.add_controller(controller);
+        peek_view.widget().add_controller(gesture);
+    }
+
+    // 跳转按钮。
+    {
+        let callbacks = callbacks.clone();
+        let selected = selected.clone();
+        jump_button.connect_clicked(move |_| {
+            if let Some((ws, pane)) = selected.borrow().clone() {
+                (callbacks.on_jump_pane)(ws, pane);
+            }
+        });
+    }
+
+    // 放大按钮：面板内大预览（120 ↔ 360 高）。
+    {
+        let peek_sw = peek_sw.clone();
+        zoom_button.connect_clicked(move |_| {
+            let cur = peek_sw.height_request();
+            peek_sw.set_size_request(-1, if cur > 200 { 120 } else { 360 });
+        });
+    }
+
+    // 禁止提醒下拉：5m/10m/30m/1h/4h/24h（默认 1h 在菜单里）。
+    {
+        let callbacks = callbacks.clone();
+        let selected = selected.clone();
+        let mute_popover = mute_popover.clone();
+        for (item, secs) in mute_items
+            .into_iter()
+            .zip([300u64, 600, 1800, 3600, 14400, 86400])
+        {
+            let mute_popover = mute_popover.clone();
+            let callbacks = callbacks.clone();
+            let selected = selected.clone();
+            item.connect_clicked(move |_| {
+                if let Some((ws, pane)) = selected.borrow().clone() {
+                    (callbacks.on_mute)(ws, pane, Duration::from_secs(secs));
+                }
+                mute_popover.popdown();
+            });
+        }
     }
 
     {

@@ -32,6 +32,9 @@ pub type ScrollProvider = Rc<dyn Fn(u32, u32) -> Vec<u8>>;
 /// 完整可见网格数据源：`() → 几何 ANSI`（window 侧接 ReplicaStore）。
 pub type ReplicaAnsiProvider = Rc<dyn Fn() -> Vec<u8>>;
 
+/// 用户输入回调：`(pane_id, bytes)`。
+pub type InputCallback = Box<dyn Fn(u32, &[u8])>;
+
 /// 渲染痕迹：没有视觉时证明「不刷屏」。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderTrace {
@@ -52,6 +55,8 @@ struct PaneViewInner {
     reply_state: RefCell<TerminalState>,
     /// 已生成、待回写 shell 的应答字节。
     pending_replies: RefCell<Vec<u8>>,
+    /// 用户输入回调（connect_input 注册；测试可经 test_emit_input 触发）。
+    input_cb: RefCell<Option<InputCallback>>,
     /// tmux/SSH 镜像模式：feed 期间解析器应答一律丢弃。
     is_tmux_mirror: Cell<bool>,
     /// 正在把远端 pane 输出 feed 进 VTE（解析器应答只在这个窗口产生）。
@@ -94,6 +99,7 @@ impl PaneView {
             pane_id: Cell::new(pane_id),
             reply_state: RefCell::new(TerminalState::new(80, 24)),
             pending_replies: RefCell::new(Vec::new()),
+            input_cb: RefCell::new(None),
             is_tmux_mirror: Cell::new(is_tmux_mirror),
             is_feeding_remote_output: Cell::new(false),
             pending_feed: RefCell::new(Vec::new()),
@@ -385,6 +391,8 @@ impl PaneView {
         let pid = self.inner.pane_id.clone();
         let feeding = self.inner.is_feeding_remote_output.clone();
         let mirror = self.inner.is_tmux_mirror.clone();
+        let weak = Rc::downgrade(&self.inner);
+        *self.inner.input_cb.borrow_mut() = Some(Box::new(f));
         self.inner
             .renderer
             .terminal()
@@ -393,8 +401,19 @@ impl PaneView {
                 if !should_forward_mixed_input(feeding.get(), mirror.get(), data) {
                     return;
                 }
-                f(pid.get(), data);
+                if let Some(inner) = weak.upgrade() {
+                    if let Some(cb) = inner.input_cb.borrow().as_ref() {
+                        cb(pid.get(), data);
+                    }
+                }
             });
+    }
+
+    /// 测试用：直接触发输入回调（与 VTE commit 同一路径）。
+    pub fn test_emit_input(&self, data: &[u8]) {
+        if let Some(cb) = self.inner.input_cb.borrow().as_ref() {
+            cb(self.inner.pane_id.get(), data);
+        }
     }
 
     pub fn copy_clipboard(&self) {

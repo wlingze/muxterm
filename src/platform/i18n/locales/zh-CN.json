@@ -183,5 +183,7 @@
   "peek": "预览",
   "reply_hint": "答复（Enter）",
   "mute_1h": "静音 1 小时",
+  "attention_jump": "跳转",
+  "attention_zoom": "放大",
   "search_placeholder_phase_c": "搜索历史（阶段 C）"
 }

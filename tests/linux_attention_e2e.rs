@@ -9,11 +9,12 @@
 mod support;
 
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk4::gdk;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
+use vte4::prelude::*;
 
 use muxterm::core::config::{Config, Theme};
 use muxterm::platform::linux::window::AppWindow;
@@ -62,14 +63,6 @@ impl IsolatedTmux {
             .map(|s| s.success())
             .unwrap_or(false)
     }
-
-    fn capture_pane(&self, target: &str) -> String {
-        let out = Command::new("tmux")
-            .args(["-L", &self.socket, "capture-pane", "-p", "-t", target])
-            .output()
-            .expect("capture-pane 失败");
-        String::from_utf8_lossy(&out.stdout).to_string()
-    }
 }
 
 impl Drop for IsolatedTmux {
@@ -111,8 +104,9 @@ fn attention_bel_paints_badge_and_panel() {
         gtk4::test_widget_wait_for_draw(&app.window);
         pump_main_loop(150);
 
-        // 注入路径（必过）：文本 + BEL → blocked 工作区 = 1。
-        let pane = 0;
+        // 注入路径（必过）：后台 pane 1 文本 + BEL → blocked 工作区 = 1。
+        // 前台 pane 0 会被 E6 排除，不能用来制造注意力行。
+        let pane = 1;
         app.test_feed_replica(pane, b"hello\r\n\x07");
         app.test_poll_once();
         let ok = wait_until_widget(5000, || app.test_attention_blocked_workspaces() == 1);
@@ -166,7 +160,7 @@ fn attention_bel_paints_badge_and_panel() {
             .expect("ToggleButton 类型");
         assert!(attention_tab.is_active(), "Attention tab 应激活");
 
-        // 选中注意力行 → peek 非空（副本里有 hello）。
+        // 选中注意力行 → 小 VTE 播种（副本里有 hello）。
         let list = find_by_name(&app.test_window(), "muxterm-panel-list")
             .expect("列表应存在")
             .downcast::<gtk4::ListBox>()
@@ -180,35 +174,45 @@ fn attention_bel_paints_badge_and_panel() {
         entry.set_text("x");
         entry.set_text("");
         pump_main_loop(40);
-        let peek = find_by_name(&app.test_window(), "muxterm-peek-view")
-            .expect("peek 应存在")
-            .downcast::<gtk4::TextView>()
-            .expect("TextView 类型");
-        let buf = peek.buffer();
-        let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-        assert!(text.contains("hello"), "peek 应含副本文本: {text:?}");
+        let peek_sw = find_by_name(&app.test_window(), "muxterm-attention-peek")
+            .expect("小 VTE 容器应存在")
+            .downcast::<gtk4::ScrolledWindow>()
+            .expect("ScrolledWindow 类型");
+        let peek_term = peek_sw
+            .child()
+            .expect("小 VTE 应有子控件")
+            .downcast::<vte4::Terminal>()
+            .expect("子控件应为 VTE Terminal");
+        let text = peek_term
+            .text_format(vte4::Format::Text)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        assert!(text.contains("hello"), "小 VTE 应含副本文本: {text:?}");
 
-        // 答复 y + Enter → 真实 tmux capture-pane 含 y（E1 PASS_THROUGH 路径）。
-        let reply_entry = find_by_name(&app.test_window(), "muxterm-reply-entry")
-            .expect("答复输入框应存在")
-            .downcast::<gtk4::Entry>()
-            .expect("Entry 类型");
-        reply_entry.set_text("y");
-        let reply_ctrl = window_key_controller(&reply_entry).expect("答复 Entry 应有 controller");
-        simulate_key_press(&reply_ctrl, gdk::Key::Return, gdk::ModifierType::empty());
+        // 前台 pane 0 的 CommandDone（如 ls）→ 已看见，不进 attention 列表。
+        app.test_feed_replica(0, b"\x1b]133;D;0\x07");
+        app.test_poll_once();
+        let ok = wait_until_widget(5000, || app.test_attention_blocked_workspaces() == 1);
+        assert!(ok, "后台 BEL 的 blocked 工作区应保持 1");
+        // 重开 Attention tab：前台 ls 不应出现在列表里。
+        let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
+        simulate_key_press(&entry_ctrl, gdk::Key::Escape, gdk::ModifierType::empty());
+        pump_main_loop(40);
+        app.test_open_panel(1);
         pump_main_loop(80);
-        if let Some(t) = &tmux {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut got = false;
-            while Instant::now() < deadline {
-                if t.capture_pane("att").contains('y') {
-                    got = true;
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            assert!(got, "真实 tmux pane 应收到答复 y");
-        }
+        let list = find_by_name(&app.test_window(), "muxterm-panel-list")
+            .expect("列表应存在")
+            .downcast::<gtk4::ListBox>()
+            .expect("ListBox 类型");
+        let labels = widget_label_texts(&list);
+        assert!(
+            !labels.iter().any(|t| t.contains("ls")),
+            "前台 ls 不应出现在 attention 列表: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|t| t.contains("hello")),
+            "后台 BEL 行应仍在 attention 列表: {labels:?}"
+        );
 
         app.shutdown();
         pump_main_loop(250);

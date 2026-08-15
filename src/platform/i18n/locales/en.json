@@ -183,5 +183,7 @@
   "peek": "Peek",
   "reply_hint": "Reply (Enter)",
   "mute_1h": "Mute 1h",
+  "attention_jump": "Jump",
+  "attention_zoom": "Zoom",
   "search_placeholder_phase_c": "Search scrollback (phase C)"
 }

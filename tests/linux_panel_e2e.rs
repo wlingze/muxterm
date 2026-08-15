@@ -10,15 +10,18 @@ mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gtk4::gdk;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
+use vte4::prelude::*;
 
 use muxterm::core::attention::engine::PaneAttention;
 use muxterm::core::attention::state::PaneStatus;
+use muxterm::core::config::Theme;
 use muxterm::platform::linux::panel_model::PanelTab;
+use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
@@ -64,10 +67,10 @@ fn three_tab_panel_full_flow() {
         gtk4::test_widget_wait_for_draw(&win);
 
         let jumps = Rc::new(RefCell::new(Vec::<(String, u32)>::new()));
-        let replies = Rc::new(RefCell::new(Vec::<(String, u32, String)>::new()));
-        let mutes = Rc::new(RefCell::new(Vec::<(String, u32)>::new()));
+        let inputs = Rc::new(RefCell::new(Vec::<(String, u32, Vec<u8>)>::new()));
+        let mutes = Rc::new(RefCell::new(Vec::<(String, u32, Duration)>::new()));
         let j = jumps.clone();
-        let r = replies.clone();
+        let i = inputs.clone();
         let m = mutes.clone();
         show(
             &win,
@@ -78,13 +81,25 @@ fn three_tab_panel_full_flow() {
                     attention("legion", 1, PaneStatus::Blocked, "ask me"),
                     attention("muxterm", 2, PaneStatus::Done, "build ok"),
                 ],
+                theme: Theme::load("light").unwrap_or_else(|_| Theme {
+                    name: "test".into(),
+                    background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
+                    foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
+                    cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
+                    colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+                }),
+                font: FontSettings::default(),
                 on_connect: Box::new(|_| {}),
                 on_edit: Box::new(|_| {}),
                 on_new_project: Box::new(|| {}),
                 on_jump_pane: Box::new(move |ws, pane| j.borrow_mut().push((ws, pane))),
-                on_reply: Box::new(move |ws, pane, text| r.borrow_mut().push((ws, pane, text))),
-                on_mute: Box::new(move |ws, pane| m.borrow_mut().push((ws, pane))),
-                peek_text: Box::new(|ws, pane| format!("peek-{ws}-{pane}\nline2")),
+                on_send_input: Box::new(move |ws, pane, data| {
+                    i.borrow_mut().push((ws, pane, data.to_vec()))
+                }),
+                on_mute: Box::new(move |ws, pane, d| m.borrow_mut().push((ws, pane, d))),
+                peek_ansi: Box::new(|ws, pane| {
+                    (80, 24, format!("\x1b[1;1Hpeek-{ws}-{pane}").into_bytes())
+                }),
                 search: Box::new(|_| vec![]),
                 on_close: Box::new(|| {}),
             },
@@ -131,73 +146,78 @@ fn three_tab_panel_full_flow() {
             "过滤后应去掉 muxterm: {labels:?}"
         );
 
-        // 4. 清空 query，选中 legion 行 → peek + 答复目标 + 静音可用
+        // 4. 清空 query，选中 legion 行 → 小 VTE 播种 + 按钮可用
         entry.set_text("");
         pump_main_loop(40);
         let row = list.row_at_index(1).expect("注意力行");
         list.select_row(Some(&row));
-        // select_row 不触发信号；rebuild 会按当前选中行刷新 peek。
+        // select_row 不触发信号；rebuild 会按当前选中行刷新小 VTE。
         entry.set_text("x");
         entry.set_text("");
         pump_main_loop(40);
 
-        let peek = find_by_name(&win, "muxterm-peek-view")
-            .expect("peek 视图应存在")
-            .downcast::<gtk4::TextView>()
-            .expect("TextView 类型");
-        let buf = peek.buffer();
-        let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+        let peek_sw = find_by_name(&win, "muxterm-attention-peek")
+            .expect("小 VTE 容器应存在")
+            .downcast::<gtk4::ScrolledWindow>()
+            .expect("ScrolledWindow 类型");
+        let peek_term = peek_sw
+            .child()
+            .expect("小 VTE 应有子控件")
+            .downcast::<vte4::Terminal>()
+            .expect("子控件应为 VTE Terminal");
+        let text = peek_term
+            .text_format(vte4::Format::Text)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         assert!(
             text.contains("peek-legion-1"),
-            "peek 应显示副本尾部: {text:?}"
+            "小 VTE 应显示 replica 播种内容: {text:?}"
         );
 
-        let reply_entry = find_by_name(&win, "muxterm-reply-entry")
-            .expect("答复输入框应存在")
-            .downcast::<gtk4::Entry>()
-            .expect("Entry 类型");
-        assert!(reply_entry.is_sensitive(), "选中后答复应可用");
-        let target = find_by_name(&win, "muxterm-reply-target")
-            .expect("目标标签应存在")
-            .downcast::<gtk4::Label>()
-            .expect("Label 类型");
-        assert!(
-            target.text().contains("legion"),
-            "目标标签应含工作区: {}",
-            target.text()
-        );
-
-        // 5. 一行答复：Enter 发送且无换行
-        reply_entry.set_text("y\n");
-        let ctrl = window_key_controller(&reply_entry).expect("答复 Entry 应有 controller");
-        simulate_key_press(&ctrl, gdk::Key::Return, gdk::ModifierType::empty());
-        pump_main_loop(40);
-        let got = replies.borrow();
-        assert_eq!(got.len(), 1, "应恰好发送一条答复");
-        assert_eq!(got[0].0, "legion");
-        assert_eq!(got[0].1, 1);
-        assert!(
-            !got[0].2.contains('\n'),
-            "答复文本不应含换行: {:?}",
-            got[0].2
-        );
-        assert_eq!(reply_entry.text().as_str(), "", "发送后输入框应清空");
-        drop(got);
-
-        // 6. 静音 1h：按钮触发 on_mute
-        let mute_btn = find_by_name(&win, "muxterm-mute-1h")
-            .expect("静音按钮应存在")
+        // 5. 跳转按钮 → on_jump_pane
+        let jump_btn = find_by_name(&win, "muxterm-attention-jump")
+            .expect("跳转按钮应存在")
             .downcast::<gtk4::Button>()
             .expect("Button 类型");
-        assert!(mute_btn.is_sensitive(), "选中后静音应可用");
-        let _: () = mute_btn.emit_by_name("clicked", &[]);
+        assert!(jump_btn.is_sensitive(), "选中后跳转应可用");
+        let _: () = jump_btn.emit_by_name("clicked", &[]);
         pump_main_loop(40);
-        let got = mutes.borrow();
-        assert_eq!(got.len(), 1, "应恰好静音一次");
+        let got = jumps.borrow();
+        assert_eq!(got.len(), 1, "应恰好跳转一次");
         assert_eq!(got[0], ("legion".to_string(), 1));
         drop(got);
 
-        // 7. Tab 键切到 Search，entry 文本仍在
+        // 6. 放大按钮：小 VTE 高度 120 → 360
+        let zoom_btn = find_by_name(&win, "muxterm-attention-zoom")
+            .expect("放大按钮应存在")
+            .downcast::<gtk4::Button>()
+            .expect("Button 类型");
+        assert!(zoom_btn.is_sensitive(), "选中后放大应可用");
+        assert_eq!(peek_sw.height_request(), 120, "初始小 VTE 高 120");
+        let _: () = zoom_btn.emit_by_name("clicked", &[]);
+        pump_main_loop(40);
+        assert_eq!(peek_sw.height_request(), 360, "放大后小 VTE 高 360");
+
+        // 7. 禁止提醒下拉：mute-10m → on_mute(ws, pane, 600s)
+        let mute_btn = find_by_name(&win, "muxterm-attention-mute")
+            .expect("静音下拉应存在")
+            .downcast::<gtk4::MenuButton>()
+            .expect("MenuButton 类型");
+        assert!(mute_btn.is_sensitive(), "选中后静音应可用");
+        let mute_10m = find_by_name(&win, "muxterm-attention-mute-10m")
+            .expect("10m 菜单项应存在")
+            .downcast::<gtk4::Button>()
+            .expect("Button 类型");
+        let _: () = mute_10m.emit_by_name("clicked", &[]);
+        pump_main_loop(40);
+        let got = mutes.borrow();
+        assert_eq!(got.len(), 1, "应恰好静音一次");
+        assert_eq!(got[0].0, "legion");
+        assert_eq!(got[0].1, 1);
+        assert_eq!(got[0].2, Duration::from_secs(600), "10m 应回调 600s");
+        drop(got);
+
+        // 8. Tab 键切到 Search，entry 文本仍在
         let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
         simulate_key_press(&entry_ctrl, gdk::Key::Tab, gdk::ModifierType::empty());
         pump_main_loop(40);
@@ -208,7 +228,7 @@ fn three_tab_panel_full_flow() {
         let status = find_by_name(&win, "muxterm-search-status").expect("搜索占位行");
         assert!(status.is_visible(), "Search tab 应显示占位行");
 
-        // 8. Esc 关闭
+        // 9. Esc 关闭
         simulate_key_press(&entry_ctrl, gdk::Key::Escape, gdk::ModifierType::empty());
         pump_main_loop(40);
         assert!(

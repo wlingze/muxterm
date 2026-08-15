@@ -964,6 +964,10 @@ fn feed_replica_and_engine(
         .map(|t| (t.last_non_empty_line().unwrap_or_default(), t.latest_seq()))
         .unwrap_or_default();
     s.attention.apply(ws, pane, &signals, &last_line, seq);
+    // 前台 pane 的输出视为已看见：CommandDone 清成 Idle，前台 `ls` 不进 attention。
+    if pane == s.active_pane {
+        s.attention.on_became_visible(ws, pane);
+    }
 }
 
 /// 刷新状态栏红点与窗口标题（blocked 工作区数）。
@@ -1379,23 +1383,28 @@ fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
 /// 内部自行 borrow：show() 的 rebuild 会同步触发 peek_text（st.borrow()），
 /// 调用方不能同时持有 RefMut。
 fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
-    let (workspaces, attention, win, st) = {
+    let (workspaces, attention, theme, font, win, st) = {
         let mut s = state.borrow_mut();
         let recents = s.pool.recent_target_configs(5);
         s.qc_store.replace_recents(&recents);
         let current = s.pool.current_target_config();
         let store = s.qc_store.clone();
+        let theme = s.theme.clone();
+        let font = s.font.clone();
         let win = window.clone();
         let st = state.clone();
         let workspaces = build_items(&store, current.as_ref());
+        let ws = active_workspace_id(&s);
+        let active_pane = s.active_pane;
         let attention: Vec<PaneAttention> = s
             .attention
             .snapshot()
             .into_iter()
             .flat_map(|w| w.panes)
+            .filter(|p| !(p.workspace_id == ws && p.pane_id == active_pane))
             .collect();
         s.panel_open = Some(initial_tab);
-        (workspaces, attention, win, st)
+        (workspaces, attention, theme, font, win, st)
     };
     if !window.is_visible() {
         window.present();
@@ -1406,6 +1415,8 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             initial_tab,
             workspaces,
             attention,
+            theme,
+            font,
             on_connect: {
                 let st = st.clone();
                 std::boxed::Box::new(move |cfg| {
@@ -1432,24 +1443,30 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                     jump_to_attention_pane(&st, &ws, pane);
                 })
             },
-            on_reply: {
+            on_send_input: {
                 let st = st.clone();
-                std::boxed::Box::new(move |ws, pane, line| {
-                    reply_to_attention_pane(&st, &ws, pane, &line);
+                std::boxed::Box::new(move |ws, pane, data| {
+                    let mut s = st.borrow_mut();
+                    activate_attention_workspace(&mut s, &ws);
+                    let _ = s.bridge().send_input(pane, data);
+                    s.attention.on_user_input(&ws, pane);
                 })
             },
             on_mute: {
                 let st = st.clone();
-                std::boxed::Box::new(move |ws, pane| {
+                std::boxed::Box::new(move |ws, pane, duration| {
                     let mut s = st.borrow_mut();
-                    s.attention.mute_for(&ws, pane, Duration::from_secs(3600));
+                    s.attention.mute_for(&ws, pane, duration);
                 })
             },
-            peek_text: {
+            peek_ansi: {
                 let st = st.clone();
                 std::boxed::Box::new(move |ws, pane| {
                     let s = st.borrow();
-                    s.replicas.last_n_lines(&ws, pane, 20).join("\n")
+                    s.replicas
+                        .get(&ws, pane)
+                        .map(|t| (t.cols() as u16, t.rows() as u16, t.visible_ansi()))
+                        .unwrap_or((80, 24, Vec::new()))
                 })
             },
             search: {
@@ -1479,16 +1496,6 @@ fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32) {
     activate_attention_workspace(&mut s, ws);
     // 激活 pane（若已在前台连接中）。
     let _ = s.bridge().execute(tasks::switch_pane(pane));
-}
-
-/// 一行答复：发送 `line + \r` 到目标 pane。
-fn reply_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, line: &str) {
-    let mut s = state.borrow_mut();
-    activate_attention_workspace(&mut s, ws);
-    let mut data = line.as_bytes().to_vec();
-    data.push(b'\r');
-    let _ = s.bridge().send_input(pane, &data);
-    s.attention.on_user_input(ws, pane);
 }
 
 /// 目标工作区不是当前前台时切连接；相同则不动（避免无谓的 layout 重建）。

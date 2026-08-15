@@ -86,6 +86,8 @@ define_text_keys! {
     Peek => "peek",
     ReplyHint => "reply_hint",
     Mute1h => "mute_1h",
+    AttentionJump => "attention_jump",
+    AttentionZoom => "attention_zoom",
     SearchPlaceholderPhaseC => "search_placeholder_phase_c",
     Recent => "recent",
     Runtime => "runtime",
