@@ -161,6 +161,81 @@ fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
     assert!(ok, "点击后 tmux window 应切到 @{target}");
 }
 
+/// F1：隔离 tmux 逐字打字——VTE 里完整 token 恰好一份（2105「越写越长」）。
+fn isolated_tmux_typing_token_appears_once(app: &AppWindow, socket: &str) {
+    // 逐字符发送（F1 阶段 helper 仍走 send-keys -l；F4 换生产路径）。
+    for ch in "MUXTERM_TYPE_TOKEN".chars() {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", socket, "send-keys", "-t", "s", "-l", &ch.to_string()])
+            .status();
+    }
+    // 等 tmux 把字符回显到 pane 再轮询 VTE。
+    std::thread::sleep(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ok = false;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        let vte = app.test_active_pane_vte_text();
+        let count = vte.matches("MUXTERM_TYPE_TOKEN").count();
+        if count >= 1 {
+            ok = true;
+            assert_eq!(
+                count, 1,
+                "VTE 里完整 token 应恰好一次（2105 越写越长）: {vte:?}"
+            );
+            break;
+        }
+    }
+    assert!(ok, "5s 内 VTE 应出现 MUXTERM_TYPE_TOKEN");
+}
+
+/// F1：切 tab 不 reset 刷屏——切换前后 resets 增量 ≤ 1。
+fn isolated_tmux_switch_tab_resets_bounded(app: &AppWindow, _socket: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut tabs = Vec::new();
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        tabs = app.test_tab_ids();
+        if tabs.len() >= 2 {
+            break;
+        }
+    }
+    assert!(tabs.len() >= 2, "应有 2 个 tab: {tabs:?}");
+
+    let current = app.test_active_tab_id();
+    let target = tabs
+        .iter()
+        .copied()
+        .find(|t| *t != current)
+        .expect("应有非当前 tab");
+    app.test_clear_active_pane_render_trace();
+    let before = app.test_active_pane_resets();
+    let btn = find_by_name(&app.test_window(), &format!("muxterm-status-tab-{target}"))
+        .expect("status tab 按钮应存在")
+        .downcast::<gtk4::Button>()
+        .expect("Button 类型");
+    let _: () = btn.emit_by_name("clicked", &[]);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut ok = false;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        if app.test_active_tab_id() == target {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "点击后应切到 @{target}");
+    let after = app.test_active_pane_resets();
+    assert!(
+        after.saturating_sub(before) <= 1,
+        "切 tab 不应 reset 刷屏（增量 {before}→{after}）"
+    );
+}
+
 #[test]
 fn live_e2e_s8_s9_s13b() {
     if skip_no_display() {
@@ -184,6 +259,8 @@ fn live_e2e_s8_s9_s13b() {
         isolated_tmux_cup_script_lands_on_last_frame(&app, &socket);
         live_attach_vte_nonempty_and_prompt_not_collapsed(&app, &socket);
         click_status_tab_switches_real_window(&app, &socket);
+        isolated_tmux_typing_token_appears_once(&app, &socket);
+        isolated_tmux_switch_tab_resets_bounded(&app, &socket);
 
         app.shutdown();
         pump_main_loop(250);
