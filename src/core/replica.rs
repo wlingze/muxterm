@@ -9,6 +9,15 @@ use std::collections::HashMap;
 use crate::core::attention::signal::AttentionSignal;
 use crate::core::protocol::terminal::emulate::TerminalState;
 
+/// 一次搜索命中：工作区 + pane + scrollback seq + 行文本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub workspace_id: String,
+    pub pane_id: u32,
+    pub seq: u64,
+    pub line: String,
+}
+
 /// 工作区 → pane → 终端副本。
 pub struct ReplicaStore {
     inner: HashMap<String, HashMap<u32, TerminalState>>,
@@ -118,6 +127,24 @@ impl ReplicaStore {
     /// 该 pane 的网格是否全空（空网格不得把 VTE 标成已播种）。
     pub fn is_blank(&self, ws: &str, pane: u32) -> bool {
         self.get(ws, pane).map(|t| t.is_blank()).unwrap_or(true)
+    }
+
+    /// 跨全部 pane 搜索可见屏 + scrollback，返回命中行（E5 Search tab）。
+    pub fn search_all(&self, query: &str) -> Vec<SearchHit> {
+        let mut out = Vec::new();
+        for (ws, panes) in &self.inner {
+            for (pane, t) in panes {
+                for (seq, line) in t.search(query) {
+                    out.push(SearchHit {
+                        workspace_id: ws.clone(),
+                        pane_id: *pane,
+                        seq,
+                        line,
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// 该 pane 是否处于 bracketed paste 模式。
@@ -242,5 +269,24 @@ mod tests {
         let t = store.get("ws-a", 1).unwrap();
         assert_eq!(t.cols(), 120);
         assert_eq!(t.rows(), 40);
+    }
+
+    /// E5：search_all 跨工作区/pane 返回 (ws, pane, seq, line) 命中。
+    #[test]
+    fn search_all_finds_hits_across_workspaces_and_panes() {
+        let mut store = ReplicaStore::new(100);
+        store.feed("ws-a", 1, b"alpha TOKEN_BODY one\r\n", 80, 24);
+        store.feed("ws-a", 2, b"beta\r\n", 80, 24);
+        store.feed("ws-b", 3, b"gamma TOKEN_BODY two\r\n", 80, 24);
+
+        let hits = store.search_all("TOKEN_BODY");
+        assert_eq!(hits.len(), 2, "两个 pane 各命中一次");
+        assert!(hits.iter().any(|h| {
+            h.workspace_id == "ws-a" && h.pane_id == 1 && h.line.contains("TOKEN_BODY")
+        }));
+        assert!(hits.iter().any(|h| {
+            h.workspace_id == "ws-b" && h.pane_id == 3 && h.line.contains("TOKEN_BODY")
+        }));
+        assert!(store.search_all("missing").is_empty());
     }
 }

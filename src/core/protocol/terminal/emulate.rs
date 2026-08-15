@@ -659,15 +659,25 @@ impl TerminalState {
     }
 
     /// 大小写敏感子串搜索，返回 (seq, 行文本)；空 query 返回空。
+    /// 覆盖 scrollback + 可见屏（可见行用 next_seq 起的稳定 seq）。
     pub fn search(&self, query: &str) -> Vec<(u64, String)> {
         if query.is_empty() {
             return Vec::new();
         }
-        self.scrollback
+        let mut out: Vec<(u64, String)> = self
+            .scrollback
             .iter()
             .filter(|l| l.text.contains(query))
             .map(|l| (l.seq, l.text.clone()))
-            .collect()
+            .collect();
+        let mut seq = self.next_seq;
+        for line in self.snapshot_trimmed() {
+            if line.contains(query) {
+                out.push((seq, line));
+                seq += 1;
+            }
+        }
+        out
     }
 
     /// 最近 n 行：先取可见屏 `snapshot_trimmed()` 尾部，不足再向前取 scrollback。
@@ -2088,6 +2098,18 @@ mod scrollback_tests {
             vec![(1, "alpha".into()), (3, "alphabet".into())]
         );
         assert!(t.search("zzz").is_empty());
+    }
+
+    /// E5：search 必须覆盖可见屏（Codex TUI 的 TOKEN_BODY 在可见网格里）。
+    #[test]
+    fn search_includes_visible_screen_lines() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"alpha TOKEN_BODY one\r\n");
+        t.feed(b"beta\r\n");
+        let hits = t.search("TOKEN_BODY");
+        assert_eq!(hits.len(), 1, "可见屏命中一次");
+        assert_eq!(hits[0].0, 1, "可见行 seq 从 next_seq 起");
+        assert!(hits[0].1.contains("TOKEN_BODY"));
     }
 
     /// 空 query 不搜索。

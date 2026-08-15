@@ -85,6 +85,7 @@ fn three_tab_panel_full_flow() {
                 on_reply: Box::new(move |ws, pane, text| r.borrow_mut().push((ws, pane, text))),
                 on_mute: Box::new(move |ws, pane| m.borrow_mut().push((ws, pane))),
                 peek_text: Box::new(|ws, pane| format!("peek-{ws}-{pane}\nline2")),
+                search: Box::new(|_| vec![]),
                 on_close: Box::new(|| {}),
             },
         );

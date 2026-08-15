@@ -57,9 +57,25 @@ pub struct AttentionRow {
     pub attention: PaneAttention,
 }
 
-/// Tab3 结果：本阶段占位。
+/// Tab3 结果：replica 搜索命中行。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchRow;
+pub struct SearchRow {
+    pub workspace_id: String,
+    pub pane_id: u32,
+    pub seq: u64,
+    pub line: String,
+}
+
+impl From<crate::core::replica::SearchHit> for SearchRow {
+    fn from(hit: crate::core::replica::SearchHit) -> Self {
+        Self {
+            workspace_id: hit.workspace_id,
+            pane_id: hit.pane_id,
+            seq: hit.seq,
+            line: hit.line,
+        }
+    }
+}
 
 /// Tab1 过滤：现有 filter_panel_items + 每行状态标记。
 /// 顺序固定，不按最近使用重排。
@@ -108,9 +124,19 @@ pub fn filter_attention_rows(panes: &[PaneAttention], query: &str) -> Vec<Attent
     rows
 }
 
-/// Tab3：本阶段返回空列表 + 占位 flag。
-pub fn search_rows() -> (Vec<SearchRow>, bool) {
-    (Vec::new(), true)
+/// Tab3：按 query 过滤命中行；空结果返回占位 flag。
+pub fn search_rows(query: &str, hits: Vec<SearchRow>) -> (Vec<SearchRow>, bool) {
+    let q = query.trim().to_lowercase();
+    let rows: Vec<SearchRow> = hits
+        .into_iter()
+        .filter(|h| {
+            q.is_empty()
+                || h.line.to_lowercase().contains(&q)
+                || h.workspace_id.to_lowercase().contains(&q)
+        })
+        .collect();
+    let placeholder = rows.is_empty();
+    (rows, placeholder)
 }
 
 #[cfg(test)]
@@ -208,8 +234,27 @@ mod tests {
     }
 
     #[test]
-    fn search_tab_placeholder() {
-        let (rows, placeholder) = search_rows();
+    fn search_rows_filters_hits_and_flags_empty() {
+        let hits = vec![
+            SearchRow {
+                workspace_id: "legion".into(),
+                pane_id: 1,
+                seq: 3,
+                line: "TOKEN_BODY example".into(),
+            },
+            SearchRow {
+                workspace_id: "muxterm".into(),
+                pane_id: 2,
+                seq: 7,
+                line: "build ok".into(),
+            },
+        ];
+        let (rows, placeholder) = search_rows("TOKEN_BODY", hits.clone());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pane_id, 1);
+        assert!(!placeholder);
+
+        let (rows, placeholder) = search_rows("missing", hits);
         assert!(rows.is_empty());
         assert!(placeholder);
     }
