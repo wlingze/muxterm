@@ -988,10 +988,13 @@ fn refresh_connection_summary(s: &UiState) {
         crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
         _ => "disconnected",
     };
+    let (down, up) = bridge.traffic_bytes();
     s.status.set_connection_summary(&ConnectionSummary {
         kind: kind.into(),
         host,
         status: status.into(),
+        down,
+        up,
     });
 }
 

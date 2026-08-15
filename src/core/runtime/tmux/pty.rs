@@ -126,18 +126,33 @@ impl PtyReader {
 /// 内部用 `Arc<Mutex<Box<dyn Write>>>` 共享，写量小、串行化足够。
 pub struct PtyWriter {
     inner: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// 上行字节计数（SSH 模式与 transport 共享）。
+    traffic: Option<crate::core::transport::TrafficCounters>,
 }
 
 impl PtyWriter {
     pub fn new(writer: Box<dyn Write + Send>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(writer)),
+            traffic: None,
+        }
+    }
+
+    /// 带共享流量计数构造（SSH 模式）。
+    pub fn with_traffic(
+        writer: Box<dyn Write + Send>,
+        traffic: crate::core::transport::TrafficCounters,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(writer)),
+            traffic: Some(traffic),
         }
     }
 
     /// 异步写：把数据克隆后丢到阻塞线程池写；超时返回 TimedOut，便于 shutdown 推进。
     pub async fn write_all(&self, data: Vec<u8>) -> std::io::Result<()> {
         let inner = self.inner.clone();
+        let traffic = self.traffic.clone();
         let write_fut = tokio::task::spawn_blocking(move || {
             let mut w = inner.lock().unwrap();
             let deadline = Instant::now() + Duration::from_secs(2);
@@ -162,6 +177,9 @@ impl PtyWriter {
                     }
                     Err(e) => return Err(e),
                 }
+            }
+            if let Some(t) = &traffic {
+                t.add_up(written as u64);
             }
             Ok(())
         });
@@ -422,6 +440,19 @@ mod tests {
             out.contains("writer-test"),
             "PtyWriter 写入后 cat 应回显, 实际: {out:?}"
         );
+        let _ = child.child.try_wait();
+    }
+
+    /// E4：PtyWriter 带共享计数时，write_all 累加 up 字节。
+    #[tokio::test]
+    async fn pty_writer_with_traffic_counts_up_bytes() {
+        let mut child = spawn_pty("cat", &[], 40, 12).expect("spawn cat");
+        let writer = child.master.take_writer().expect("take_writer");
+        let traffic = crate::core::transport::TrafficCounters::new();
+        let writer = PtyWriter::with_traffic(writer, traffic.clone());
+
+        writer.write_all(b"abc".to_vec()).await.expect("write_all");
+        assert_eq!(traffic.snapshot(), (0, 3), "up 应累加 3 字节");
         let _ = child.child.try_wait();
     }
 

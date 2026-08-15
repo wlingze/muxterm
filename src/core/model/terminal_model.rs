@@ -75,6 +75,11 @@ impl TerminalModel {
         self.backend.status_subscriptions_active()
     }
 
+    /// 当前连接的读写字节计数 `(down, up)`（SSH 才有非零值）。
+    pub fn traffic_bytes(&self) -> (u64, u64) {
+        self.backend.traffic_bytes()
+    }
+
     /// 执行一个 Task。
     ///
     /// 若 task 需要「当前激活 pane」（`needs_active_pane`），从 state 查询填入。

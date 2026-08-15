@@ -179,6 +179,8 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
         kind: "ssh".into(),
         host: Some("127.0.0.1".into()),
         status: "connected".into(),
+        down: 1234,
+        up: 56,
     });
     pump_main_loop(40);
 
@@ -203,6 +205,8 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
     assert!(text.contains("type=ssh"), "应含 type=ssh: {text}");
     assert!(text.contains("host=127.0.0.1"), "应含 host: {text}");
     assert!(text.contains("status=connected"), "应含 status: {text}");
+    assert!(text.contains("down=1234B/s"), "SSH 应含下行流量: {text}");
+    assert!(text.contains("up=56B/s"), "SSH 应含上行流量: {text}");
     popover.popdown();
 
     // CSS 数据必须含真实颜色（status-ok 绿）。

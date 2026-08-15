@@ -145,6 +145,8 @@ pub struct SshProcessTransport {
     /// 记录最后一次 spawn 的参数（测试验证用）。
     last_program: Option<String>,
     last_args: Option<Vec<String>>,
+    /// 读写字节计数（SSH 读线程 + PtyWriter 共享）。
+    traffic: Option<super::TrafficCounters>,
 }
 
 impl SshProcessTransport {
@@ -171,7 +173,13 @@ impl SshProcessTransport {
             ssh_config_path: None,
             last_program: None,
             last_args: None,
+            traffic: None,
         }
+    }
+
+    /// 注入共享流量计数（spawn_ssh 创建，读线程与 PtyWriter 共用）。
+    pub fn set_traffic(&mut self, traffic: super::TrafficCounters) {
+        self.traffic = Some(traffic);
     }
 
     /// 最后一次 spawn 的 program（测试验证用）。
@@ -278,6 +286,9 @@ impl Transport for SshProcessTransport {
         };
         match rx.try_recv() {
             Ok(data) => {
+                if let Some(t) = &self.traffic {
+                    t.add_down(data.len() as u64);
+                }
                 tracing::trace!(
                     target = "muxterm::ssh",
                     len = data.len(),
@@ -316,6 +327,9 @@ impl Transport for SshProcessTransport {
         );
         writer.write_all(data)?;
         writer.flush()?;
+        if let Some(t) = &self.traffic {
+            t.add_up(data.len() as u64);
+        }
         Ok(data.len())
     }
 
@@ -612,5 +626,75 @@ mod tests {
             std::io::ErrorKind::UnexpectedEof,
             "应为 EOF 错误"
         );
+    }
+
+    /// E4：SSH transport 读写字节计数——down/up 来自真实 read/write，不假造。
+    #[test]
+    fn ssh_transport_counts_read_and_write_bytes() {
+        struct ChannelLauncher {
+            tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>>,
+        }
+        impl ProcessLauncher for ChannelLauncher {
+            fn launch(
+                &self,
+                _program: &str,
+                _args: &[&str],
+                pty_size: super::super::PtySize,
+            ) -> Result<LaunchedProcess> {
+                let pty_system = NativePtySystem::default();
+                let pair = pty_system
+                    .openpty(PtySize {
+                        rows: pty_size.rows.max(1),
+                        cols: pty_size.cols.max(1),
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    })
+                    .map_err(|e| anyhow::anyhow!("pty: {e}"))?;
+                let cmd = CommandBuilder::new("true");
+                let child = pair
+                    .slave
+                    .spawn_command(cmd)
+                    .map_err(|e| anyhow::anyhow!("spawn: {e}"))?;
+                drop(pair.slave);
+                let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+                *self.tx.lock().unwrap() = Some(tx);
+                Ok(LaunchedProcess {
+                    master: pair.master,
+                    child,
+                    reader: rx,
+                    pid: 0,
+                })
+            }
+        }
+
+        let launcher = ChannelLauncher {
+            tx: Arc::new(Mutex::new(None)),
+        };
+        let tx_handle = launcher.tx.clone();
+        let traffic = super::super::TrafficCounters::new();
+        let mut transport = SshProcessTransport::with_launcher(Box::new(launcher));
+        transport.set_traffic(traffic.clone());
+
+        let (program, args) = build_ssh_command("test-alias", "echo hello", None);
+        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        transport
+            .spawn_exec(&program, &args_ref, super::super::PtySize::new(80, 24))
+            .expect("spawn");
+
+        // 下行：reader channel 注入一块数据，read() 应累加 down。
+        let tx = tx_handle
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("launcher 应持有 tx");
+        tx.blocking_send(b"hello-pty".to_vec()).expect("send");
+        let data = transport.read().expect("read").expect("应有数据");
+        assert_eq!(data, b"hello-pty");
+
+        // 上行：write() 真实写入 pty master，应累加 up。
+        let n = transport.write(b"abc").expect("write");
+        assert_eq!(n, 3);
+
+        assert_eq!(traffic.snapshot(), (9, 3), "down=9 up=3");
     }
 }

@@ -37,6 +37,10 @@ pub struct ConnectionSummary {
     pub kind: String,
     pub host: Option<String>,
     pub status: String,
+    /// 累计下行字节（SSH transport 读端）。
+    pub down: u64,
+    /// 累计上行字节（SSH PtyWriter 写端）。
+    pub up: u64,
 }
 
 /// muxterm status bar（唯一 chrome）。
@@ -287,9 +291,11 @@ impl StatusBar {
         }
         let host = summary.host.as_deref().unwrap_or("");
         let text = format!(
-            "type={} status={}{}",
+            "type={} status={} down={}B/s up={}B/s{}",
             summary.kind,
             summary.status,
+            summary.down,
+            summary.up,
             if host.is_empty() {
                 String::new()
             } else {
