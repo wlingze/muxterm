@@ -172,6 +172,40 @@ fn click_status_tab_invokes_switch_with_window_id(bar: &StatusBar, win: &gtk4::W
     assert_eq!(before, after, "签名不变时按钮指针应保持不变");
 }
 
+/// S7：状态 popover 含连接摘要。
+fn status_dot_popover_shows_ssh_host_and_connected(bar: &StatusBar, win: &gtk4::Window) {
+    use muxterm::platform::linux::status_bar::ConnectionSummary;
+    bar.set_connection_summary(&ConnectionSummary {
+        kind: "ssh".into(),
+        host: Some("127.0.0.1".into()),
+        status: "connected".into(),
+    });
+    pump_main_loop(40);
+
+    let dot = find_by_name(win, "muxterm-status-dot")
+        .expect("状态点应存在")
+        .downcast::<gtk4::Button>()
+        .expect("Button 类型");
+    let popover = find_by_name(win, "muxterm-status-popover")
+        .expect("popover 应存在")
+        .downcast::<gtk4::Popover>()
+        .expect("Popover 类型");
+    // 模拟点击状态点（GestureClick 在 window 侧接线；这里直接 popup 同一路径）。
+    popover.popup();
+    pump_main_loop(40);
+    assert!(popover.is_visible(), "popover 应可见");
+    let label = find_by_name(win, "muxterm-status-popover-label")
+        .expect("popover label 应存在")
+        .downcast::<gtk4::Label>()
+        .expect("Label 类型");
+    let text = label.text().to_string();
+    assert!(text.contains("ssh"), "应含 ssh: {text}");
+    assert!(text.contains("127.0.0.1"), "应含 host: {text}");
+    assert!(text.contains("connected"), "应含 connected: {text}");
+    popover.popdown();
+    let _ = dot;
+}
+
 /// S13a 的签名部分：独立断言函数名（与计划一致）。
 fn status_bar_does_not_rebuild_buttons_when_tab_signature_unchanged(
     bar: &StatusBar,
@@ -220,6 +254,7 @@ fn chrome_e2e_s5_s6_s13a() {
         notify_button_invokes_attention_callback_when_n_positive(&bar, &win);
         click_status_tab_invokes_switch_with_window_id(&bar, &win);
         status_bar_does_not_rebuild_buttons_when_tab_signature_unchanged(&bar, &win);
+        status_dot_popover_shows_ssh_host_and_connected(&bar, &win);
 
         drop(bar);
         win.close();

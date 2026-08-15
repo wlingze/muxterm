@@ -45,7 +45,7 @@ use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBa
 use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::platform::linux::quickconnect_panel::build_items;
-use crate::platform::linux::status_bar::StatusBar;
+use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 
 /// 主窗口。
@@ -94,6 +94,8 @@ struct UiState {
     panel_open: Option<PanelTab>,
     /// 用户显式 Quit（Ctrl+Q / 命令面板）：close_request 放行真正关闭。
     quit_requested: bool,
+    /// 最近一次 STATE_BACKEND_STATUS 的 pane_id 编码（连接状态）。
+    backend_status: u32,
 }
 
 impl UiState {
@@ -248,6 +250,7 @@ impl AppWindow {
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
             panel_open: None,
             quit_requested: false,
+            backend_status: crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
         }));
 
         // status bar 中区 tab 按钮 → SwitchTab(id)
@@ -426,6 +429,7 @@ impl AppWindow {
                     sync_pane_outputs(&mut s);
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);
+                    refresh_connection_summary(&s);
                     if let Some(w) = win_weak.upgrade() {
                         refresh_attention_chrome(&s, &w);
                     }
@@ -502,6 +506,7 @@ impl AppWindow {
             s.notification_log.extend(notifications);
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
+            refresh_connection_summary(&s);
             refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
             if close {
@@ -943,6 +948,30 @@ fn refresh_attention_chrome(s: &UiState, window: &Window) {
     window.set_title(Some(&window_title(n, &workspace)));
 }
 
+/// 把当前连接摘要刷到状态点 popover（C7.7）。
+fn refresh_connection_summary(s: &UiState) {
+    let Some(slot) = s.pool.active_slot() else {
+        return;
+    };
+    let bridge = &slot.bridge;
+    let kind = match bridge.backend_type.as_str() {
+        "tmux-ssh" | "ssh" => "ssh",
+        "tmux" => "tmux",
+        _ => "local",
+    };
+    let host = bridge.ssh_alias.clone().or_else(|| bridge.socket.clone());
+    let status = match s.backend_status {
+        crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
+        crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
+        _ => "disconnected",
+    };
+    s.status.set_connection_summary(&ConnectionSummary {
+        kind: kind.into(),
+        host,
+        status: status.into(),
+    });
+}
+
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
 fn active_workspace_id(s: &UiState) -> String {
     s.pool
@@ -1025,6 +1054,7 @@ fn dispatch_event(s: &mut UiState, ev: &BridgeEvent) {
             }
         }
         STATE_BACKEND_STATUS => {
+            s.backend_status = ev.pane_id;
             if ev.pane_id == BACKEND_STATUS_EXITED {
                 tracing::info!(target = "muxterm::linux", "backend exited");
                 if should_close_window(true, 0, s.on_last_pane_exit) {
