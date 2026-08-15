@@ -6,13 +6,15 @@
 > 主链 **Frontend → Core Protocol → Runtime → Transport**，Config 横切，Discovery 连接前查询。
 >
 > **目录结构（权威）**：见 [`docs/PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md) —
-> 当前与目标目录职责，`[proposed]` 标记尚未创建的目录。
+> 当前与目标目录职责，`[proposed]` 标记尚未创建的目录。目标 `src/core/workspace/` 见 [`WORKSPACE.md`](WORKSPACE.md)。
 >
 > **ID 体系**：见 [`docs/ID-SYSTEM.md`](ID-SYSTEM.md) —
 > `s{name}` / `wN` / `tN` / `pN`，tmux 真实 ID 只在 TmuxRuntime adapter 内部。
 >
+> **产品层级**：见 [`docs/WORKSPACE.md`](WORKSPACE.md) —
+> Workspace → Tab → Pane；GUI Window 不是 Runtime 层。
 > **层级映射**：见 [`docs/LAYER-MAPPING.md`](LAYER-MAPPING.md) —
-> tmux window → muxterm Tab；muxterm Window 虚拟固定 1 个。
+> tmux window → muxterm Tab；无虚拟 `w1`。
 >
 > **交互模型**：见根目录 `ARCHITECTURE.md` —
 > 窗口/tab/pane 生命周期、嵌套分割、焦点管理、快捷键表。

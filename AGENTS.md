@@ -1,7 +1,10 @@
 # AGENTS.md — Muxterm 开发约定
 
 > 这个文件给 Codex / Claude Code / Cursor 等 coding agent 读。
-> 产品文档见 `PRODUCT.md`，架构见 `ARCHITECTURE.md`。
+> 产品文档见 `PRODUCT.md`。产品结构见 `docs/WORKSPACE.md`
+> （WorkspacePool → Workspace → Tab → Pane；Window 只是体现；
+> tmux 全部在 `runtime/tmux`；池在 core）。施工 `docs/WORKSPACE-PLAN.md`。
+> 像素契约 `docs/SURFACE.md`。FFI/CLI 以 WORKSPACE.md §6 为准。
 
 ## 角色
 
@@ -18,7 +21,8 @@
 
 ## 工作原则
 
-1. 先读 `PRODUCT.md`（产品规划）、`ARCHITECTURE.md`（架构与交互规范），再动代码。
+1. 先读 `docs/WORKSPACE.md`（含 §6 接口）、`docs/WORKSPACE-PLAN.md`、`PRODUCT.md`，再动代码。
+   像素路径还要读 `docs/SURFACE.md`。不要实现 Session / 虚拟 Window；不要在 platform 做连接池。
 2. **增量提交**：每个可独立验证的逻辑单元一个 commit。commit 信息 `feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `ci:` / `chore:`。
 2b. **commit 一律用英文写**：subject 用 `类型(scope): 英文描述` 格式（如 `feat(tui): rewrite TUI with ratatui`），
     body 用英文逐条列出改动。类型前缀保持英文（feat/fix/test/refactor/docs/ci/perf/chore），描述与细节一律英文。

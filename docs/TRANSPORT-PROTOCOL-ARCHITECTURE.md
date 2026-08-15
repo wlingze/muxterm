@@ -14,7 +14,8 @@
 > - `docs/PROJECT-STRUCTURE.md` — 当前与目标目录结构
 > - `docs/ARCHITECTURE-PLAN.md` — C ABI 拆分方案与平台前端方案
 > - `docs/ID-SYSTEM.md` — ID 体系（本文 §3 扩展）
-> - `docs/LAYER-MAPPING.md` — muxterm↔tmux 层级映射（本文 §5 引用）
+> - `docs/WORKSPACE.md` — **当前产品层级**（Workspace → Tab → Pane）
+> - `docs/LAYER-MAPPING.md` — muxterm↔tmux 映射（已去掉产品 Session / 虚拟 Window）
 
 ---
 
@@ -23,7 +24,7 @@
 ### 1.1 目标
 
 1. **主链清晰**：Frontend → Core Protocol → Runtime → Transport，四层各司其职，不混层。
-2. **Core Protocol 是稳定产品语义**：Session → Window → Tab → Pane 层级、命令、事件、snapshot、ID 规则不随实现变更。
+2. **Core Protocol 是稳定产品语义**：Workspace → Tab → Pane（Window 只表示 GUI；tmux `$N` 不出 Runtime）。命令、事件、snapshot、ID 规则不随实现变更。旧四层 Session→Window→Tab→Pane 已作废。
 3. **Runtime 可扩展**：ShellRuntime、TmuxRuntime，以及未来 ZellijRuntime/其他 multiplexer runtime 可在不修改 Transport 或 Core Protocol 的前提下接入。
 4. **Transport 可扩展**：LocalProcessTransport、SshProcessTransport，以及未来其他连接/字节流传输方式可在不修改 Runtime 或 Core Protocol 的前提下接入。
 5. **SSH 是 Transport，不是 Runtime**：SSH 只提供连接和字节流；认证/密钥/agent/ProxyJump/known_hosts/密码交互全部委托系统 `ssh <alias>`，不设计自有 SSH 认证协议。
@@ -52,7 +53,8 @@
 │   CLI  │  TUI (crossterm)  │  Linux GTK4  │  macOS SwiftUI  │ ...   │
 └───────┬───────────────────────────────────────────────────────────┘
         │  Core Protocol (stable product semantics)
-        │  Session → Window → Tab → Pane / Task / StateChange / Snapshot / ID
+        │  Workspace → Tab → Pane / Task / StateChange / Snapshot / ID
+        │  （Window = GUI，不在 Core Protocol）
 ┌───────┴───────────────────────────────────────────────────────────┐
 │                      Core Protocol                                  │
 │  对外稳定的层级模型、命令、事件、快照、能力、错误、ID 规则           │
@@ -121,8 +123,11 @@ Core Protocol 是 muxterm 对外稳定的语义层。前端、CLI、FFI 只与 C
 
 ### 3.1 层级模型（v1 稳定）
 
+> **2026-08-15：本节四层已作废。** 现行：[`WORKSPACE.md`](WORKSPACE.md)
+> `Workspace → Tab → Pane`；Window = GUI；无产品 Session。下文仅作历史。
+
 ```
-Session → Window → Tab → Pane
+Session → Window → Tab → Pane   ← 作废
 ```
 
 | 层级 | 说明 | 数量关系 | 可前端新建 |
@@ -163,7 +168,7 @@ tmux 的 `$N`(session)、`@N`(window)、`%N`(pane) **只能存在于 TmuxRuntime
 - 前端、CLI、FFI、StateChange 事件、Snapshot 只携带 muxterm ID。
 - 映射表不序列化到 Snapshot 的协议字段。
 
-> 与 `docs/LAYER-MAPPING.md` 一致：tmux window → muxterm Tab；muxterm Window 虚拟固定 1 个。
+> 与 `docs/LAYER-MAPPING.md` 一致：tmux window → muxterm Tab；GUI Window 由 platform 持有，Runtime 不造虚拟 `w1`。
 
 ### 3.4 命令（Task，v1 稳定）
 

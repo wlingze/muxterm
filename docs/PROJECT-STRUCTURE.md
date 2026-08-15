@@ -4,7 +4,8 @@
 > 不创建代码目录，仅记录结构设计。
 >
 > **基线**：`/home/wlz/Developer/self/muxterm` main `d69fab2`（2026-07-28）。
-> 相关文档：`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md`、`docs/ARCHITECTURE-PLAN.md`、`ARCHITECTURE.md`。
+> **2026-08-15：** 目标增加 `src/core/workspace/`（见 [`WORKSPACE.md`](WORKSPACE.md)）；旧 Session/虚拟 Window 目录语义作废。
+> 相关文档：`docs/WORKSPACE.md`、`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md`、`docs/ARCHITECTURE-PLAN.md`、`ARCHITECTURE.md`。
 
 ---
 
@@ -90,6 +91,9 @@ muxterm/
 ├── docs/                         # 文档
 │   ├── ARCHITECTURE-PLAN.md
 │   ├── ID-SYSTEM.md
+│   ├── WORKSPACE.md
+│   ├── WORKSPACE-PLAN.md
+│   ├── SURFACE.md
 │   ├── LAYER-MAPPING.md
 │   ├── RENDERING-OPTIMIZATION.md
 │   ├── TRANSPORT-PROTOCOL-ARCHITECTURE.md  # 本文配套

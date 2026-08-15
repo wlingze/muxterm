@@ -1,5 +1,9 @@
 # Muxterm Architecture
 
+> **2026-08-15 23:41：** 产品结构以 [`docs/WORKSPACE.md`](docs/WORKSPACE.md) 为准：
+> WorkspacePool → Workspace → Tab → Pane；Window 只是 Workspace 的体现；
+> 池在 core；tmux 只在 `runtime/tmux`。施工 [`docs/WORKSPACE-PLAN.md`](docs/WORKSPACE-PLAN.md)。
+>
 > 项目组织结构与设计理念
 > 本文档指导各平台前端如何实现，以及核心层与平台层的职责划分。
 

@@ -22,7 +22,7 @@ pub mod terminal_model;
 
 // 便捷 re-export（被 TerminalModel / 平台层使用）
 #[allow(unused_imports)]
-pub use backend::{Backend, Runtime};
+pub use backend::Runtime;
 #[allow(unused_imports)]
 pub use layout::{LayoutNode, RemoveRootError, SplitDir, WindowLayout};
 #[allow(unused_imports)]

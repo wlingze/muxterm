@@ -9,7 +9,7 @@
 
 ## 一句话
 
-**跨平台的 iTerm2 风格终端**，原生支持 tmux 控制模式（`-CC`），把 tmux 的 session/window/pane 渲染成自己的 tab/pane UI。最终目标是全平台（Linux / Windows / macOS / 移动端）统一体验 + AI agent 感知。
+**跨平台的 iTerm2 风格终端**，原生支持 tmux 控制模式（`-CC`），把一条 tmux session 收成一个 **工作区**（Tab = tmux window，Pane = tmux pane），画在很少的 GUI 窗口里。最终目标是全平台统一体验 + AI agent 感知。产品层级见 `docs/WORKSPACE.md`。
 
 ---
 
