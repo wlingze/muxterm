@@ -1137,14 +1137,25 @@ fn refresh_ui(s: &mut UiState) {
                 // 滚动历史数据源：offset 行前、rows 行的几何 ANSI。
                 {
                     let weak = s.self_weak.clone();
-                    let ws = ws.clone();
-                    let pid = pane.id;
+                    let weak_scroll = weak.clone();
+                    let weak_replica = weak;
+                    let ws_scroll = ws.clone();
+                    let ws_replica = ws.clone();
+                    let pid_scroll = pane.id;
+                    let pid_replica = pane.id;
                     view.set_scroll_provider(std::rc::Rc::new(move |offset, rows| {
-                        let Some(st) = weak.upgrade() else {
+                        let Some(st) = weak_scroll.upgrade() else {
                             return Vec::new();
                         };
                         let s = st.borrow();
-                        s.replicas.scroll_ansi(&ws, pid, offset, rows)
+                        s.replicas.scroll_ansi(&ws_scroll, pid_scroll, offset, rows)
+                    }));
+                    view.set_replica_ansi_provider(std::rc::Rc::new(move || {
+                        let Some(st) = weak_replica.upgrade() else {
+                            return Vec::new();
+                        };
+                        let s = st.borrow();
+                        s.replicas.visible_ansi(&ws_replica, pid_replica)
                     }));
                 }
                 if !view.is_seeded() && !s.replicas.is_blank(&ws, pane.id) {

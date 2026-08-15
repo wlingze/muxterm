@@ -169,7 +169,10 @@ fn codex_tui_fixture_keeps_header_and_prompt(view: &PaneView) {
     pump_main_loop(80);
 
     let text = view.visible_text();
-    assert!(text.contains("TOKEN_HEADER"), "VTE 应含 TOKEN_HEADER: {text:?}");
+    assert!(
+        text.contains("TOKEN_HEADER"),
+        "VTE 应含 TOKEN_HEADER: {text:?}"
+    );
     assert!(text.contains("TOKEN_BODY"), "VTE 应含 TOKEN_BODY: {text:?}");
     assert!(
         text.contains("TOKEN_PROMPT") || text.contains("TOKEN_FOOTER"),
@@ -180,6 +183,54 @@ fn codex_tui_fixture_keeps_header_and_prompt(view: &PaneView) {
     assert!(
         !first_row.contains("TOKEN_PROMPT"),
         "第一行不应是 PROMPT: {first_row:?}"
+    );
+}
+
+/// E3：seeded 后 CUP 半帧不得打烂 VTE——合并缓冲里两段残缺帧只触发
+/// `present_from_replica(完整网格)`，VTE 仍同时有 HEADER 和 PROMPT。
+fn cup_half_frames_keep_header_and_prompt(view: &PaneView) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let store = Rc::new(RefCell::new(ReplicaStore::new(10_000)));
+    let raw = include_str!("samples/codex-tui-sanitized.txt");
+    let payload = raw
+        .split_once("PAYLOAD_UTF8_BELOW\n")
+        .map(|(_, p)| p)
+        .expect("fixture 应含 PAYLOAD_UTF8_BELOW 标记");
+    store.borrow_mut().feed("ws", 1, payload.as_bytes(), 80, 24);
+    view.set_replica_ansi_provider({
+        let store = store.clone();
+        Rc::new(move || store.borrow().visible_ansi("ws", 1))
+    });
+
+    let ansi = store.borrow().visible_ansi("ws", 1);
+    view.present_from_replica(&ansi);
+    pump_main_loop(80);
+
+    // 两段残缺 CUP 半帧只进 VTE 合并缓冲（不进 replica）：
+    // 第一段只画上半屏 HEADER，第二段只画底栏 PROMPT。
+    let mut half1 = Vec::new();
+    half1.extend_from_slice(b"\x1b[H\x1b[2J");
+    half1.extend_from_slice(b"\x1b[1;1H\x1b[1m TOKEN_HEADER  example-project");
+    let mut half2 = Vec::new();
+    half2.extend_from_slice(b"\x1b[H\x1b[2J");
+    half2.extend_from_slice(
+        b"\x1b[22;1H\x1b[48;2;216;216;216m\x1b[30m TOKEN_PROMPT  example composer",
+    );
+    view.feed_output(&half1);
+    view.feed_output(&half2);
+    view.flush_pending_feed();
+    pump_main_loop(80);
+
+    let text = view.visible_text();
+    assert!(
+        text.contains("TOKEN_HEADER"),
+        "半帧风暴后 VTE 应仍含 TOKEN_HEADER: {text:?}"
+    );
+    assert!(
+        text.contains("TOKEN_PROMPT"),
+        "半帧风暴后 VTE 应仍含 TOKEN_PROMPT: {text:?}"
     );
 }
 
@@ -242,6 +293,8 @@ fn render_e2e_s3_s4() {
         view.ensure_grid_size(80, 24);
         pump_main_loop(80);
         codex_tui_fixture_keeps_header_and_prompt(&view);
+        view.clear_render_trace();
+        cup_half_frames_keep_header_and_prompt(&view);
 
         win.close();
         win.destroy();

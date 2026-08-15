@@ -29,6 +29,9 @@ pub const FEED_COALESCE_MS: u64 = 25;
 /// 滚动数据源：`(offset, rows)` → 几何 ANSI（window 侧接 ReplicaStore）。
 pub type ScrollProvider = Rc<dyn Fn(u32, u32) -> Vec<u8>>;
 
+/// 完整可见网格数据源：`() → 几何 ANSI`（window 侧接 ReplicaStore）。
+pub type ReplicaAnsiProvider = Rc<dyn Fn() -> Vec<u8>>;
+
 /// 渲染痕迹：没有视觉时证明「不刷屏」。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderTrace {
@@ -67,6 +70,8 @@ struct PaneViewInner {
     url_opener: RefCell<Option<Rc<dyn UrlOpener>>>,
     /// 滚动历史数据源（ReplicaStore）。
     scroll_provider: RefCell<Option<ScrollProvider>>,
+    /// 完整可见网格数据源（CUP 风暴时用 replica 几何帧替换半帧）。
+    replica_ansi_provider: RefCell<Option<ReplicaAnsiProvider>>,
     /// 当前历史偏移（0=直播底部）。
     history_offset: Cell<u32>,
 }
@@ -99,6 +104,7 @@ impl PaneView {
             render_trace: RefCell::new(RenderTrace::default()),
             url_opener: RefCell::new(None),
             scroll_provider: RefCell::new(None),
+            replica_ansi_provider: RefCell::new(None),
             history_offset: Cell::new(0),
         });
         // 滚轮 → scroll_history（与测试钩子同一函数）。
@@ -273,6 +279,11 @@ impl PaneView {
         *self.inner.scroll_provider.borrow_mut() = Some(provider);
     }
 
+    /// 注入完整可见网格数据源（window 侧接 ReplicaStore）。
+    pub fn set_replica_ansi_provider(&self, provider: ReplicaAnsiProvider) {
+        *self.inner.replica_ansi_provider.borrow_mut() = Some(provider);
+    }
+
     /// 当前历史偏移（0=直播底部）。
     pub fn history_offset(&self) -> u32 {
         self.inner.history_offset.get()
@@ -442,6 +453,24 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     // CUP 风暴：合并缓冲里 ≥2 帧时只提交最后一帧（RenderPolicy）。
     match render_intent(&data, !inner.seeded.get()) {
         RenderIntent::ReplaceVisible => {
+            // 镜像 pane 的 CUP 风暴：replica 已吃全部原始字节，VTE 只显示
+            // replica 的完整几何帧，避免 1365/2730 半帧把画面切成半屏。
+            if let Some(provider) = inner.replica_ansi_provider.borrow().clone() {
+                let ansi = provider();
+                if !ansi.is_empty() {
+                    inner.renderer.terminal().reset(true, true);
+                    inner.render_trace.borrow_mut().resets += 1;
+                    with_remote_feed(inner, || {
+                        inner.renderer.terminal().feed(&ansi);
+                        apply_mirror_mouse_policy(inner);
+                    });
+                    let mut trace = inner.render_trace.borrow_mut();
+                    trace.feeds += 1;
+                    trace.bytes_fed += ansi.len();
+                    inner.seeded.set(true);
+                    return;
+                }
+            }
             let frame = last_visible_frame(&data);
             inner.renderer.terminal().reset(true, true);
             inner.render_trace.borrow_mut().resets += 1;
