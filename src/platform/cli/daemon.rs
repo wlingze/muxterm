@@ -1,7 +1,7 @@
-//! Daemon 进程：持有 LocalBackend + TerminalModel，监听 unix socket 接收命令。
+//! Daemon 进程：持有 ShellRuntime + TerminalModel，监听 unix socket 接收命令。
 //!
 //! 架构（参考 tmux server/client）：
-//! - daemon 启动后 connect LocalBackend（spawn 默认 shell）
+//! - daemon 启动后 connect ShellRuntime（spawn 默认 shell）
 //! - 监听 unix socket，每收到一个 Request 就执行对应 Task
 //! - 返回格式化输出给 client
 //! - 收到 KillSession 或 SIGTERM/SIGINT 时优雅退出
@@ -18,7 +18,7 @@ use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
 use crate::core::model::TerminalModel;
-use crate::core::runtime::shell::LocalBackend;
+use crate::core::runtime::shell::ShellRuntime;
 use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::format_output;
 use crate::platform::cli::ipc::{Request, Response};
@@ -43,8 +43,8 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
     info!(target: "muxterm", session = %name, "daemon 启动");
 
     // 创建 backend + model
-    // 有 tmux_socket → TmuxBackend（-CC 连接 tmux），否则 LocalBackend
-    let backend: Box<dyn crate::core::model::Backend> = if let Some(ref ts) = tmux_socket {
+    // 有 tmux_socket → TmuxRuntime（-CC 连接 tmux），否则 ShellRuntime
+    let runtime: Box<dyn crate::core::model::Runtime> = if let Some(ref ts) = tmux_socket {
         // 检查 tmux server 是否已有同名 session
         let existing = std::process::Command::new("tmux")
             .args(["-L", ts, "list-sessions", "-F", "#{session_name}"])
@@ -52,19 +52,19 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
-        let backend = if existing.as_deref() == Some(&name) {
+        let runtime = if existing.as_deref() == Some(&name) {
             // session 已存在 → attach
-            crate::core::runtime::tmux::TmuxBackend::new_with_attach(Some(ts), &name)
+            crate::core::runtime::tmux::TmuxRuntime::new_with_attach(Some(ts), &name)
         } else {
             // session 不存在 → new-session -s <name>
-            crate::core::runtime::tmux::TmuxBackend::new_with_session_name(Some(ts), &name)
+            crate::core::runtime::tmux::TmuxRuntime::new_with_session_name(Some(ts), &name)
         };
-        Box::new(backend)
+        Box::new(runtime)
     } else {
-        Box::new(LocalBackend::new("$SHELL", ""))
+        Box::new(ShellRuntime::new("$SHELL", ""))
     };
-    let mut model = TerminalModel::new(backend);
-    // TmuxBackend 需要 multi_thread runtime（后台 I/O task）
+    let mut model = TerminalModel::new(runtime);
+    // TmuxRuntime 需要 multi_thread runtime（后台 I/O task）
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)

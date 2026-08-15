@@ -1,4 +1,4 @@
-//! Workspace：池里一格，包装一个 Runtime（今天叫 Backend，W4 改名）。
+//! Workspace：池里一格，包装一个 Runtime。
 //!
 //! 一个 Workspace = 一个 Runtime + 本工作区 pane 文本副本。Runtime 推
 //! `StateChange::PaneOutput` 时，Workspace 把原始字节喂进对应 Pane 的
@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::model::backend::Backend;
+use crate::core::model::backend::Runtime;
 use crate::core::model::state::{State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
@@ -14,7 +14,7 @@ use crate::core::protocol::terminal::emulate::{TerminalState, DEFAULT_SCROLLBACK
 use crate::core::types::PaneId;
 use crate::core::workspace::id::WorkspaceId;
 
-/// 一个工作区：稳定 id + 一个 Runtime（Backend）+ 本工作区 pane 文本副本。
+/// 一个工作区：稳定 id + 一个 Runtime+ 本工作区 pane 文本副本。
 pub struct Workspace {
     id: WorkspaceId,
     name: String,
@@ -24,11 +24,11 @@ pub struct Workspace {
 
 impl Workspace {
     /// 创建工作区，接管给定 backend（W4 改名为 Runtime）。
-    pub fn new(id: WorkspaceId, name: String, backend: Box<dyn Backend>) -> Self {
+    pub fn new(id: WorkspaceId, name: String, runtime: Box<dyn Runtime>) -> Self {
         Self {
             id,
             name,
-            model: TerminalModel::new(backend),
+            model: TerminalModel::new(runtime),
             panes: HashMap::new(),
         }
     }
@@ -43,14 +43,14 @@ impl Workspace {
         &self.name
     }
 
-    /// 只读访问底层 Runtime（Backend）。
-    pub fn backend(&self) -> &dyn Backend {
-        self.model.backend()
+    /// 只读访问底层 Runtime。
+    pub fn runtime(&self) -> &dyn Runtime {
+        self.model.runtime()
     }
 
-    /// 可变访问底层 Runtime（Backend），供测试注入事件。
-    pub fn backend_mut(&mut self) -> &mut dyn Backend {
-        self.model.backend_mut()
+    /// 可变访问底层 Runtime，供测试注入事件。
+    pub fn runtime_mut(&mut self) -> &mut dyn Runtime {
+        self.model.runtime_mut()
     }
 
     /// 只读访问当前状态快照。
@@ -116,7 +116,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockBackend;
+    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::model::task::Task;
 
     fn workspace(name: &str) -> Workspace {
@@ -124,7 +124,7 @@ mod tests {
         Workspace::new(
             id,
             name.to_string(),
-            Box::new(MockBackend::with_single_pane()),
+            Box::new(MockRuntime::with_single_pane()),
         )
     }
 

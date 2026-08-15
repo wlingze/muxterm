@@ -13,4 +13,4 @@ pub mod pty;
 pub mod ssh_client;
 pub mod status;
 
-pub use backend::TmuxBackend;
+pub use backend::TmuxRuntime;

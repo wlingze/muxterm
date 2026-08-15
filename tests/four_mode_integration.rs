@@ -258,7 +258,7 @@ fn ssh_shell_cli() {
 // 测试 muxterm CLI 的 SSH tmux 路径：
 //   muxterm tmux session list --target <alias>
 //   muxterm tmux pane list --target <alias> --session <name>
-// 这会通过 TmuxBackend → TmuxClient::spawn_ssh → SshProcessTransport
+// 这会通过 TmuxRuntime → TmuxClient::spawn_ssh → SshProcessTransport
 // 在远端启动 tmux -CC，不是 raw ssh+tmux。
 
 #[test]

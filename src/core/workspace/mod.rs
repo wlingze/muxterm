@@ -1,6 +1,6 @@
 //! Workspace：池里一格，标准内部结构 Tab → Pane 的宿主。
 //!
-//! W1 先立住「一个 Workspace = 一个 Runtime（今天叫 Backend）+ 本工作区
+//! W1 先立住「一个 Workspace = 一个 Runtime+ 本工作区
 //! pane 文本副本」。WorkspacePool 在 W2 加入。
 
 pub mod id;

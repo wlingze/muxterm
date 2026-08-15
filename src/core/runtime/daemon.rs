@@ -1,4 +1,4 @@
-//! DaemonBackend：TUI 作为 client 连接本地 daemon（unix socket IPC）。
+//! DaemonRuntime：TUI 作为 client 连接本地 daemon（unix socket IPC）。
 //!
 //! 生命周期：
 //! - `connect()`：检查 socket 存在，拉取 DumpState 建立初始快照
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
-use crate::core::model::backend::Backend;
+use crate::core::model::backend::Runtime;
 use crate::core::model::layout::{SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -21,8 +21,8 @@ use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::client::send_command;
 use crate::platform::cli::{CliCommand, OutputFormat, StateSnapshot};
 
-/// 通过 unix socket 连接本地 daemon 的 Backend。
-pub struct DaemonBackend {
+/// 通过 unix socket 连接本地 daemon 的 Runtime。
+pub struct DaemonRuntime {
     socket_path: PathBuf,
     session_name: String,
     workspace_runtime: String,
@@ -36,7 +36,7 @@ pub struct DaemonBackend {
     events: VecDeque<StateChange>,
 }
 
-impl DaemonBackend {
+impl DaemonRuntime {
     /// 创建尚未 connect 的 backend。
     pub fn new(socket_path: impl Into<PathBuf>, session_name: impl Into<String>) -> Self {
         Self {
@@ -220,7 +220,7 @@ impl DaemonBackend {
     }
 }
 
-impl State for DaemonBackend {
+impl State for DaemonRuntime {
     fn workspace_name(&self) -> &str {
         &self.session_name
     }
@@ -269,7 +269,7 @@ impl State for DaemonBackend {
 }
 
 #[async_trait]
-impl Backend for DaemonBackend {
+impl Runtime for DaemonRuntime {
     async fn connect(&mut self) -> Result<()> {
         self.status = BackendStatus::Connecting;
         tracing::debug!(
@@ -305,7 +305,7 @@ impl Backend for DaemonBackend {
         }
         let Some(cmd) = Self::task_to_cli(task) else {
             return Ok(TaskOutcome::Rejected {
-                reason: format!("DaemonBackend 不支持任务: {task:?}"),
+                reason: format!("DaemonRuntime 不支持任务: {task:?}"),
             });
         };
         tracing::debug!(target = "muxterm::daemon", task = ?task, cli = ?cmd, "daemon execute");
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn task_send_keys_maps_to_write_raw() {
-        let cmd = DaemonBackend::task_to_cli(&Task::SendKeys {
+        let cmd = DaemonRuntime::task_to_cli(&Task::SendKeys {
             target: PaneId(1),
             keys: vec![KeyEvent::Char('a'), KeyEvent::Enter],
         });
@@ -350,11 +350,11 @@ mod tests {
 
     #[test]
     fn task_shutdown_maps_to_none() {
-        assert!(DaemonBackend::task_to_cli(&Task::Shutdown).is_none());
+        assert!(DaemonRuntime::task_to_cli(&Task::Shutdown).is_none());
     }
 
     #[test]
     fn task_detach_maps_to_none() {
-        assert!(DaemonBackend::task_to_cli(&Task::Detach).is_none());
+        assert!(DaemonRuntime::task_to_cli(&Task::Detach).is_none());
     }
 }

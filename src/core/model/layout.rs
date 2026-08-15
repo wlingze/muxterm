@@ -1,7 +1,7 @@
 //! 纯布局树：session / window / pane 嵌套分割模型。
 //!
 //! Terminal 层的纯数据结构，**无 I/O、无 GUI 依赖**。
-//! 由 [`crate::core::model::state`] 引用，由各 Backend 构造/同步。
+//! 由 [`crate::core::model::state`] 引用，由各 Runtime 构造/同步。
 //!
 //! 嵌套模型（非平铺）：每次分割只替换当前激活的叶子 pane，不重排其他 pane。
 //! 参考 `ARCHITECTURE.md` §2.4。
@@ -32,7 +32,7 @@ pub enum LayoutNode {
     Split {
         dir: SplitDir,
         /// 分割比例（0..=1000，first 占比），用于字符格分配。
-        /// tmux Backend 从 `window_layout` 推导；LocalBackend 默认 500（各半）。
+        /// tmux Runtime 从 `window_layout` 推导；ShellRuntime 默认 500（各半）。
         ratio: u16,
         first: Box<LayoutNode>,
         second: Box<LayoutNode>,
@@ -154,7 +154,7 @@ pub struct RemoveRootError;
 /// 一个 tab 的布局快照。
 ///
 /// Terminal 层不关心 tab 的像素几何，只关心 pane 拓扑 + 每个 pane 的字符格大小
-/// （由 Backend 从 tmux `window_layout` 或本地 vte4 尺寸同步）。
+/// （由 Runtime 从 tmux `window_layout` 或本地 vte4 尺寸同步）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TabLayout {
     pub tab: crate::core::types::TabId,

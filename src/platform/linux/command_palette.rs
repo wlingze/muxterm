@@ -297,11 +297,11 @@ fn core_command_list() -> Vec<PaletteCommand> {
 /// local shell 没有 tmux control client，不能展示或执行 detach；tmux/SSH
 /// 模式则保留完整命令集。`core_commands` 仍保留完整清单，方便静态命令
 /// 目录和纯逻辑测试覆盖所有命令。
-pub fn commands_for_backend(uses_tmux: bool) -> Vec<PaletteCommand> {
-    commands_for_backend_with(uses_tmux, "Light", "theme")
+pub fn commands_for_runtime(uses_tmux: bool) -> Vec<PaletteCommand> {
+    commands_for_runtime_with(uses_tmux, "Light", "theme")
 }
 
-pub fn commands_for_backend_with(
+pub fn commands_for_runtime_with(
     uses_tmux: bool,
     next_theme: &str,
     next_status_mode: &str,
@@ -328,11 +328,11 @@ pub fn show<F>(parent: &impl IsA<Window>, on_run: F)
 where
     F: Fn(&str) + 'static,
 {
-    show_for_backend(parent, true, "Light", "theme", on_run);
+    show_for_runtime(parent, true, "Light", "theme", on_run);
 }
 
 /// 弹出与 backend 能力匹配的命令面板。
-pub fn show_for_backend<F>(
+pub fn show_for_runtime<F>(
     parent: &impl IsA<Window>,
     uses_tmux: bool,
     next_theme: &str,
@@ -342,7 +342,7 @@ pub fn show_for_backend<F>(
     F: Fn(&str) + 'static,
 {
     let items: Vec<QuickPickItem> =
-        commands_for_backend_with(uses_tmux, next_theme, next_status_mode)
+        commands_for_runtime_with(uses_tmux, next_theme, next_status_mode)
             .into_iter()
             .map(|c| QuickPickItem {
                 id: c.id.into(),
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn local_command_palette_hides_tmux_detach() {
-        let ids: HashSet<_> = commands_for_backend(false)
+        let ids: HashSet<_> = commands_for_runtime(false)
             .iter()
             .map(|command| command.id)
             .collect();
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn tmux_command_palette_contains_detach() {
-        let ids: HashSet<_> = commands_for_backend(true)
+        let ids: HashSet<_> = commands_for_runtime(true)
             .iter()
             .map(|command| command.id)
             .collect();

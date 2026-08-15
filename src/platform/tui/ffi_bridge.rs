@@ -1,6 +1,6 @@
 //! TUI ↔ `protocol::ffi` C ABI 桥接。
 //!
-//! 不直接使用 TerminalModel / Backend trait；所有状态经 muxterm_* 导出函数。
+//! 不直接使用 TerminalModel / Runtime trait；所有状态经 muxterm_* 导出函数。
 //! 与 Linux `ffi_bridge` 同构，但不依赖 glib（TUI 自己在事件循环里 poll）。
 
 use std::collections::HashMap;
@@ -82,17 +82,17 @@ pub struct CoreBridge {
     /// 最近一次 BackendStatus（pane_id 字段复用状态码）。
     last_status: u32,
     /// 当前后端类型（local / tmux / tmux-ssh / daemon），供前端判断 resize 策略。
-    backend_type: String,
+    runtime_type: String,
 }
 
 impl CoreBridge {
     /// 创建 handle 并 connect。
     pub fn new(
-        backend_type: &str,
+        runtime_type: &str,
         socket: Option<&str>,
         session: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let bt = CString::new(backend_type).unwrap_or_default();
+        let bt = CString::new(runtime_type).unwrap_or_default();
         let sock_c = socket.and_then(|s| CString::new(s).ok());
         let sess_c = session.and_then(|s| CString::new(s).ok());
         let sock_ptr = sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
@@ -115,19 +115,19 @@ impl CoreBridge {
         Ok(Self {
             handle,
             last_status: 2, // Connected
-            backend_type: backend_type.to_string(),
+            runtime_type: runtime_type.to_string(),
         })
     }
 
     /// 用 `muxterm_new_connect` 一步建连（支持 SSH / attach / 起始目录）。
     pub fn new_connect(
-        backend_type: &str,
+        runtime_type: &str,
         socket: Option<&str>,
         session: Option<&str>,
         ssh_alias: Option<&str>,
         start_directory: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let bt = CString::new(backend_type).unwrap_or_default();
+        let bt = CString::new(runtime_type).unwrap_or_default();
         let sock_c = socket.and_then(|s| CString::new(s).ok());
         let sess_c = session.and_then(|s| CString::new(s).ok());
         let alias_c = ssh_alias.and_then(|s| CString::new(s).ok());
@@ -144,7 +144,7 @@ impl CoreBridge {
         Ok(Self {
             handle,
             last_status: 2, // Connected
-            backend_type: backend_type.to_string(),
+            runtime_type: runtime_type.to_string(),
         })
     }
 
@@ -158,8 +158,8 @@ impl CoreBridge {
     }
 
     /// 当前后端类型。
-    pub fn backend(&self) -> &str {
-        &self.backend_type
+    pub fn runtime(&self) -> &str {
+        &self.runtime_type
     }
 
     pub fn poll_events(&mut self) -> Vec<BridgeEvent> {

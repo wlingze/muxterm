@@ -7,7 +7,7 @@
 //! - [`parse_line`]：解析单行原始输出（已按真换行切分）为 `Option<Message>`
 //! - [`ControlEscapeDecoder`]：解码 `%output` 里 C 风格转义字符串
 //! - [`parse_layout_tree`]：把 tmux 的 window_layout 树字符串解析成 [`LayoutTree`]，
-//!   供 TmuxBackend 映射成 [`LayoutNode`](crate::core::model::layout::LayoutNode)。
+//!   供 TmuxRuntime 映射成 [`LayoutNode`](crate::core::model::layout::LayoutNode)。
 //!
 //! 设计要点：
 //! - 纯函数，输入 `&str` 输出 `Message`，方便单元测试。
@@ -976,7 +976,7 @@ fn parse_session_window_changed(rest: &str) -> Result<Message, ProtocolError> {
 /// ```
 /// 叶子节点的 tree_id 是一个数字（pane 的 layout-cell 序号），但**叶子本身
 /// 不直接含 pane id**——pane id 需要通过 `list-panes` 的 `#{pane_id}` + 几何
-/// 匹配来关联。所以本结构只提供几何拓扑；pane id 的映射由 TmuxBackend 完成。
+/// 匹配来关联。所以本结构只提供几何拓扑；pane id 的映射由 TmuxRuntime 完成。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutTree {
     /// 根节点的几何（整个 window 的 cols/rows）。

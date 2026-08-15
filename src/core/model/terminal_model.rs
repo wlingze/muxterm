@@ -1,20 +1,20 @@
 //! TerminalModel：Terminal 层的纯逻辑核心。
 //!
-//! 持有一个 [`Backend`]，提供：
+//! 持有一个 [`Runtime`]，提供：
 //! - `execute(Task)`：把任务派发给 backend，并聚合产生的 `StateChange` 事件
 //! - `current_state()`：只读访问当前状态快照（`&dyn State`）
 //! - `take_events()` / `poll_events()`：拉取尚未派发的事件（供前端轮询）
 //! - `subscribe(callback)`：注册状态变更回调（同步，事件到来时调用）
 //! - undo/redo 历史（基于 Task 序列，可选）
 //!
-//! **纯逻辑，无 I/O、无 GUI 依赖**。所有测试用 MockBackend，`cargo test` 即可跑。
+//! **纯逻辑，无 I/O、无 GUI 依赖**。所有测试用 MockRuntime，`cargo test` 即可跑。
 //!
 //! 设计要点：
 //! - TerminalModel 不直接改 state，state 由 backend 维护；model 只做编排 + 事件聚合
 //! - 需要当前激活 pane 的 Task（`needs_active_pane()`），model 从 state 查询后填入
 //! - 回调在 `poll_events()` 时同步触发（不在 backend execute 时触发），保证单线程确定性
 use crate::core::config::Rgb;
-use crate::core::model::backend::Backend;
+use crate::core::model::backend::Runtime;
 use crate::core::model::state::{State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::types::PaneId;
@@ -27,7 +27,7 @@ pub type StateChangeCallback = Box<dyn Fn(&StateChange) + Send + Sync>;
 ///
 /// 持有一个 backend，编排 task → backend → state → 事件流 → 订阅者。
 pub struct TerminalModel {
-    backend: Box<dyn Backend>,
+    runtime: Box<dyn Runtime>,
     /// 待派发给订阅者的事件队列（从 backend take_events 拉来）。
     pending_events: VecDeque<StateChange>,
     /// 订阅者回调列表。
@@ -40,9 +40,9 @@ pub struct TerminalModel {
 
 impl TerminalModel {
     /// 创建模型，接管给定 backend。
-    pub fn new(backend: Box<dyn Backend>) -> Self {
+    pub fn new(runtime: Box<dyn Runtime>) -> Self {
         Self {
-            backend,
+            runtime,
             pending_events: VecDeque::new(),
             subscribers: Vec::new(),
             history: Vec::new(),
@@ -51,33 +51,33 @@ impl TerminalModel {
     }
 
     /// 借用 backend（只读），供测试或前端查询后端状态。
-    pub fn backend(&self) -> &dyn Backend {
-        self.backend.as_ref()
+    pub fn runtime(&self) -> &dyn Runtime {
+        self.runtime.as_ref()
     }
 
     /// 借用 backend（可变），供测试直接注入事件（模拟 pty 输出等）。
-    pub fn backend_mut(&mut self) -> &mut dyn Backend {
-        self.backend.as_mut()
+    pub fn runtime_mut(&mut self) -> &mut dyn Runtime {
+        self.runtime.as_mut()
     }
 
     /// 只读访问当前状态（`&dyn State`）。
     pub fn state(&self) -> &dyn State {
-        self.backend.as_ref()
+        self.runtime.as_ref()
     }
 
     /// 当前后端状态（便捷方法）。
-    pub fn backend_status(&self) -> crate::core::model::state::BackendStatus {
-        self.backend.backend_status()
+    pub fn runtime_status(&self) -> crate::core::model::state::BackendStatus {
+        self.runtime.runtime_status()
     }
 
     /// status bar 订阅是否已启用（tmux ≥3.2 `refresh-client -B`）。
     pub fn status_subscriptions_active(&self) -> bool {
-        self.backend.status_subscriptions_active()
+        self.runtime.status_subscriptions_active()
     }
 
     /// 当前连接的读写字节计数 `(down, up)`（SSH 才有非零值）。
     pub fn traffic_bytes(&self) -> (u64, u64) {
-        self.backend.traffic_bytes()
+        self.runtime.traffic_bytes()
     }
 
     /// 执行一个 Task。
@@ -91,9 +91,9 @@ impl TerminalModel {
         if self.record_history {
             self.history.push(resolved.clone());
         }
-        let outcome = self.backend.execute(&resolved)?;
+        let outcome = self.runtime.execute(&resolved)?;
         // 拉取 backend 产生的事件，入队
-        let events = self.backend.take_events();
+        let events = self.runtime.take_events();
         self.pending_events.extend(events);
         Ok(outcome)
     }
@@ -190,8 +190,8 @@ impl TerminalModel {
     /// 否则 `execute()` 之外的 pty 产出（如敲完回车后 shell 的回显/命令输出）
     /// 会一直堆积在 backend 内部缓冲里，永远显示不出来。
     pub fn refresh(&mut self) -> Vec<StateChange> {
-        let backend_events = self.backend.take_events();
-        self.pending_events.extend(backend_events);
+        let runtime_events = self.runtime.take_events();
+        self.pending_events.extend(runtime_events);
         self.poll_events()
     }
 
@@ -228,16 +228,16 @@ impl TerminalModel {
 
     /// 连接后端（spawn tmux / 启动本地 shell）。
     pub async fn connect(&mut self) -> anyhow::Result<()> {
-        self.backend.connect().await?;
-        let events = self.backend.take_events();
+        self.runtime.connect().await?;
+        let events = self.runtime.take_events();
         self.pending_events.extend(events);
         Ok(())
     }
 
     /// 关闭后端。
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
-        self.backend.shutdown().await?;
-        let events = self.backend.take_events();
+        self.runtime.shutdown().await?;
+        let events = self.runtime.take_events();
         self.pending_events.extend(events);
         Ok(())
     }
@@ -278,7 +278,7 @@ impl TerminalModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockBackend;
+    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::model::layout::SplitDir;
     use crate::core::model::state::BackendStatus;
     use crate::core::protocol::terminal::input::KeyEvent;
@@ -287,7 +287,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn make_model() -> TerminalModel {
-        TerminalModel::new(Box::new(MockBackend::with_single_pane()))
+        TerminalModel::new(Box::new(MockRuntime::with_single_pane()))
     }
 
     #[test]
@@ -378,7 +378,7 @@ mod tests {
     /// refresh() 应先从 backend 拉取事件再派发给订阅者。
     /// 验证：execute 后不 poll，backend 仍有 pending；refresh 一次性取走并触发回调。
     #[test]
-    fn refresh_pulls_backend_events_and_fires_callbacks() {
+    fn refresh_pulls_runtime_events_and_fires_callbacks() {
         let mut m = make_model();
         let fired = Arc::new(Mutex::new(0u32));
         let fired_cb = fired.clone();
@@ -416,7 +416,7 @@ mod tests {
             *fired_cb.lock().unwrap() += 1;
         }));
 
-        // connect 后 backend 通常会推事件；MockBackend::with_single_pane 已 Connected，
+        // connect 后 backend 通常会推事件；MockRuntime::with_single_pane 已 Connected，
         // connect 是空操作但 shutdown 会推一个 Exited 事件。这里用 shutdown 注入。
         m.shutdown().await.unwrap();
         // shutdown 内部已 take_events 到 pending，但未 poll。
@@ -569,17 +569,17 @@ mod tests {
         use crate::core::model::layout::{LayoutNode, TabLayout};
         use crate::core::model::state::{PaneInfo, TabInfo};
 
-        let mut backend = MockBackend::new();
-        backend.status = BackendStatus::Connected;
-        backend.workspace_name = "s".into();
-        backend.workspace_runtime = "tmux".into();
+        let mut runtime = MockRuntime::new();
+        runtime.status = BackendStatus::Connected;
+        runtime.workspace_name = "s".into();
+        runtime.workspace_runtime = "tmux".into();
         for (ti, pi) in [(1u32, 1u32), (2u32, 2u32)] {
-            backend.tabs.push(TabInfo {
+            runtime.tabs.push(TabInfo {
                 id: TabId(ti),
                 name: format!("t{ti}"),
                 active: ti == 1,
             });
-            backend.panes.push(PaneInfo {
+            runtime.panes.push(PaneInfo {
                 id: PaneId(pi),
                 tab: TabId(ti),
                 active: true,
@@ -587,14 +587,14 @@ mod tests {
                 cols: 80,
                 rows: 24,
             });
-            backend.layouts.push(TabLayout {
+            runtime.layouts.push(TabLayout {
                 tab: TabId(ti),
                 tree: LayoutNode::leaf(PaneId(pi)),
                 active: PaneId(pi),
             });
         }
 
-        let mut m = TerminalModel::new(Box::new(backend));
+        let mut m = TerminalModel::new(Box::new(runtime));
         let n = m.report_all_pane_colours(Rgb(1, 2, 3), Rgb(4, 5, 6));
         assert_eq!(n, 2, "两个 tab 的 pane 都应上报");
 
@@ -608,15 +608,15 @@ mod tests {
 
     #[tokio::test]
     async fn connect_and_shutdown_flow_events() {
-        let mut m = TerminalModel::new(Box::new(MockBackend::new()));
-        assert_eq!(m.backend_status(), BackendStatus::Disconnected);
+        let mut m = TerminalModel::new(Box::new(MockRuntime::new()));
+        assert_eq!(m.runtime_status(), BackendStatus::Disconnected);
         m.connect().await.unwrap();
         let events = m.poll_events();
         assert!(matches!(
             events[0],
             StateChange::BackendStatusChanged(BackendStatus::Connected)
         ));
-        assert_eq!(m.backend_status(), BackendStatus::Connected);
+        assert_eq!(m.runtime_status(), BackendStatus::Connected);
         m.shutdown().await.unwrap();
         let events = m.poll_events();
         assert!(matches!(
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn empty_state_no_active_pane() {
-        let m = TerminalModel::new(Box::new(MockBackend::new()));
+        let m = TerminalModel::new(Box::new(MockRuntime::new()));
         assert!(m.active_pane_id().is_none());
         assert!(m.pane_ids_in_active_tab().is_empty());
         assert!(m.next_pane_id().is_none());
@@ -792,7 +792,7 @@ mod tests {
         })
         .unwrap();
         let _ = m.poll_events();
-        // MockBackend 把 SendKeys 累积到 pane 输出
+        // MockRuntime 把 SendKeys 累积到 pane 输出
         let out = m.state().pane_output(&PaneId(1)).unwrap();
         assert!(out.ends_with(b"hi\r") || out.ends_with(b"hi"));
     }
@@ -867,7 +867,7 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, StateChange::BackendStatusChanged(BackendStatus::Exited))));
-        assert_eq!(m.backend_status(), BackendStatus::Exited);
+        assert_eq!(m.runtime_status(), BackendStatus::Exited);
     }
 
     #[test]
@@ -879,7 +879,7 @@ mod tests {
             event,
             StateChange::BackendStatusChanged(BackendStatus::Disconnected)
         )));
-        assert_eq!(m.backend_status(), BackendStatus::Disconnected);
+        assert_eq!(m.runtime_status(), BackendStatus::Disconnected);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! LocalBackend：纯本地 shell 后端。
+//! ShellRuntime：纯本地 shell 后端。
 //!
 //! 自维护一个 session / 多个 window / 每个 window 一个布局树（pane 嵌套分割）。
 //! 每个 pane 持有一对 pty（master + child），通过后台读线程把输出喂回 backend，
@@ -10,7 +10,7 @@
 //!
 //! 设计要点：
 //! - `connect()` spawn 第一个 window 的第一个 pane（默认 shell）
-//! - pane id / window id 单调递增，LocalBackend 自行分配
+//! - pane id / window id 单调递增，ShellRuntime 自行分配
 //! - pane 输出累积在 `Vec<u8>`（有界裁剪，上限见 `buffer_cap::MAX_PANE_OUTPUT_BYTES`）
 //! - `execute(Task)` 直接改本地状态 + spawn/kill/resize/write，产生事件入队
 //! - 所有 pane 的后台读线程共用一个 `mpsc::Sender<PtyMsg>`（clone 后传入线程），
@@ -29,7 +29,7 @@ use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EV
 use crate::core::config::{
     expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
 };
-use crate::core::model::backend::Backend;
+use crate::core::model::backend::Runtime;
 use crate::core::model::layout::{LayoutNode, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -89,7 +89,7 @@ struct LocalTab {
 }
 
 /// 本地 shell 后端。
-pub struct LocalBackend {
+pub struct ShellRuntime {
     /// 配置：默认启动命令 + 工作目录。
     default_command: String,
     default_workdir: String,
@@ -113,7 +113,7 @@ pub struct LocalBackend {
     intentionally_closed: HashSet<PaneId>,
 }
 
-impl LocalBackend {
+impl ShellRuntime {
     /// 用默认启动命令 + 工作目录创建（尚未 connect）。
     pub fn new(default_command: impl Into<String>, default_workdir: impl Into<String>) -> Self {
         Self {
@@ -540,7 +540,7 @@ impl LocalBackend {
     }
 }
 
-impl State for LocalBackend {
+impl State for ShellRuntime {
     fn workspace_name(&self) -> &str {
         &self.workspace_name
     }
@@ -603,7 +603,7 @@ impl State for LocalBackend {
 }
 
 #[async_trait]
-impl Backend for LocalBackend {
+impl Runtime for ShellRuntime {
     async fn connect(&mut self) -> Result<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
@@ -869,7 +869,7 @@ impl Backend for LocalBackend {
             }
 
             Task::ResizeClient { .. } => TaskOutcome::Rejected {
-                reason: "LocalBackend 不支持 client resize".into(),
+                reason: "ShellRuntime 不支持 client resize".into(),
             },
 
             Task::ResizePaneAxis { target, dir, size } => {
@@ -1001,14 +1001,14 @@ mod tests {
     use crate::core::config::Config;
     use crate::core::model::layout::SplitDir;
 
-    fn backend() -> LocalBackend {
+    fn runtime() -> ShellRuntime {
         // 长驻进程，避免测试中途 Exit 触发「末 pane 关 window」逻辑。
-        LocalBackend::new("sleep 60", "/")
+        ShellRuntime::new("sleep 60", "/")
     }
 
     /// 轮询 `take_events`，直到 `pred` 成立或超时（避免短命子进程 Exit 与单次 sleep 竞态）。
     async fn wait_events(
-        b: &mut LocalBackend,
+        b: &mut ShellRuntime,
         timeout: std::time::Duration,
         mut pred: impl FnMut(&[StateChange]) -> bool,
     ) -> Vec<StateChange> {
@@ -1028,7 +1028,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_creates_session_window_pane() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         assert_eq!(b.status(), BackendStatus::Connected);
         assert_eq!(b.workspace_name(), "local");
@@ -1050,7 +1050,7 @@ mod tests {
 
     #[tokio::test]
     async fn split_pane_adds_pane_and_updates_layout() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let _ = b.take_events();
         let active = b.active_pane_id().unwrap();
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_pane_removes_and_restores_active() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let first = b.active_pane_id().unwrap();
         b.execute(&Task::SplitPane {
@@ -1099,7 +1099,7 @@ mod tests {
     async fn last_pane_process_exit_closes_tab() {
         // 短命命令：退出后若仅剩该 pane，应关闭整个 tab/后端。
         // 注意：不能先 `let _ = take_events()` 再 sleep——Exit 可能已在 connect 后立刻到达并被丢弃。
-        let mut b = LocalBackend::new("sleep 0.05", "/");
+        let mut b = ShellRuntime::new("sleep 0.05", "/");
         b.connect().await.unwrap();
         let events = wait_events(&mut b, std::time::Duration::from_secs(2), |ev| {
             ev.iter().any(|e| {
@@ -1127,7 +1127,7 @@ mod tests {
     async fn eof_exits_foreground_child_without_closing_shell_pane() {
         // cat 是前台子进程；收到 EOF 后退出，外层 shell 继续运行 sleep。
         // 这验证 Ctrl+D/0x04 不能被 GUI 直接转换成 ClosePane。
-        let mut b = backend();
+        let mut b = runtime();
         let tab = b.active_tab();
         assert!(tab.is_none(), "connect 前不应有 tab");
         b.connect().await.unwrap();
@@ -1163,7 +1163,7 @@ mod tests {
     #[tokio::test]
     async fn multi_tab_pane_exit_closes_only_that_tab() {
         // 复现：多 tab 时某一 tab 的 shell Exit 应只关该 tab，不关整个 window。
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let _ = b.take_events();
         b.execute(&Task::NewTab {
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_tab_adds_tab_and_pane() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let _ = b.take_events();
         b.execute(&Task::NewTab {
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_tab_removes_panes() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         b.execute(&Task::NewTab {
             name: None,
@@ -1235,7 +1235,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_keys_writes_to_pane() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let pane = b.active_pane_id().unwrap();
         let outcome = b
@@ -1249,7 +1249,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_raw_writes_bytes() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let pane = b.active_pane_id().unwrap();
         let outcome = b
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[tokio::test]
     async fn resize_pane_updates_size() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let pane = b.active_pane_id().unwrap();
         b.execute(&Task::ResizePane {
@@ -1280,7 +1280,7 @@ mod tests {
 
     #[tokio::test]
     async fn rename_tab_emits_event() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         b.execute(&Task::RenameTab {
             target: TabId(1),
@@ -1296,7 +1296,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_kills_all_and_exits() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         b.execute(&Task::SplitPane {
             target: Some(PaneId(1)),
@@ -1315,7 +1315,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_missing_pane_rejected() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let outcome = b.execute(&Task::ClosePane { target: PaneId(99) }).unwrap();
         assert!(matches!(outcome, TaskOutcome::Rejected { .. }));
@@ -1323,7 +1323,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_views_match_internal() {
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let _ = b.take_events();
         assert_eq!(b.workspace_name(), "local");
@@ -1338,14 +1338,14 @@ mod tests {
     #[tokio::test]
     async fn from_config_uses_pane_config() {
         let cfg = Config::default();
-        let b = LocalBackend::from_config(&cfg);
+        let b = ShellRuntime::from_config(&cfg);
         assert_eq!(b.default_command, cfg.pane.default_command);
         assert_eq!(b.default_workdir, cfg.pane.workdir);
     }
 
     #[tokio::test]
     async fn pty_output_accumulates_to_pane() {
-        let mut b = LocalBackend::new("printf", "/");
+        let mut b = ShellRuntime::new("printf", "/");
         b.connect().await.unwrap();
         let pane = b.active_pane_id().unwrap();
         // 写一个 printf 命令到 pty，让它输出一些字节
@@ -1361,7 +1361,7 @@ mod tests {
     #[tokio::test]
     async fn write_raw_bytes_roundtrip_to_pty() {
         // cat 会回显 stdin；这里不关它（Ctrl-D 才退出），避免中途 Exit
-        let mut b = LocalBackend::new("cat", "/");
+        let mut b = ShellRuntime::new("cat", "/");
         b.connect().await.unwrap();
         let pane = b.active_pane_id().expect("应有 active pane");
 
@@ -1400,7 +1400,7 @@ mod tests {
         // 旧实现用全局 find(p.info.active) 找 active pane，且 NewTab/SwitchTab
         // 只切 tab 的 active 标志、不清其他 tab 的 pane active 标志，导致两个 tab
         // 的 pane 同时 active，find 返回旧 tab 的 pane，next/prev 循环到了错误 tab。
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let _ = b.take_events();
 
@@ -1482,7 +1482,7 @@ mod tests {
         // 在 tab2 split 出两个 pane、切回 tab1 再切回 tab2 后，active pane
         // 必须是 tab2 的 pane（旧实现切 tab 不清其他 tab 的 pane active 标志，
         // 导致全局 find 返回 tab1 的 pane，next/prev 切到错误 tab）。
-        let mut b = backend();
+        let mut b = runtime();
         b.connect().await.unwrap();
         let _ = b.take_events();
 
@@ -1533,11 +1533,11 @@ mod tests {
         );
     }
 
-    /// 辅助：从 LocalBackend 取 active pane id。
+    /// 辅助：从 ShellRuntime 取 active pane id。
     trait ActivePane {
         fn active_pane_id(&self) -> Option<PaneId>;
     }
-    impl ActivePane for LocalBackend {
+    impl ActivePane for ShellRuntime {
         fn active_pane_id(&self) -> Option<PaneId> {
             self.active_pane().map(|p| p.id)
         }

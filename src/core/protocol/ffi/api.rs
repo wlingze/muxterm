@@ -14,7 +14,7 @@ use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::StateChange;
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
-use crate::core::runtime::{DaemonBackend, LocalBackend, TmuxBackend};
+use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::session::session_socket_path;
 
@@ -138,31 +138,31 @@ pub extern "C" fn muxterm_discover_ssh_hosts_json(config_path: *const c_char) ->
 
 /// 列出本地或远端目录条目（`name` + `is_dir`），供「选起始目录」UI 逐步浏览。
 ///
-/// `backend_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
+/// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
 /// 中的 alias。返回 `{"ok":true,"entries":[...]}`，字符串由
 /// [`muxterm_free_string`] 释放。`path` 为空时：本地取 HOME，SSH 取 `~`。
 #[no_mangle]
 pub extern "C" fn muxterm_list_dir_json(
-    backend_type: *const c_char,
+    transport_type: *const c_char,
     target: *const c_char,
     config_path: *const c_char,
     path: *const c_char,
     timeout_ms: u32,
 ) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
-        let backend = cstr_opt(backend_type)
+        let transport = cstr_opt(transport_type)
             .unwrap_or_else(|| "local".into())
             .to_ascii_lowercase();
         let target = cstr_opt(target);
         let config_path = cstr_opt(config_path);
         let path = cstr_opt(path).unwrap_or_else(|| {
-            if backend == "ssh" {
+            if transport == "ssh" {
                 "~".to_string()
             } else {
                 ".".to_string()
             }
         });
-        let result = match backend.as_str() {
+        let result = match transport.as_str() {
             "local" => {
                 let expanded = if path == "~" {
                     std::env::var("HOME").unwrap_or_else(|_| ".".into())
@@ -184,7 +184,7 @@ pub extern "C" fn muxterm_list_dir_json(
                     discovery_timeout(timeout_ms),
                 )
             }
-            _ => return json_error(format!("unsupported directory backend: {backend}")),
+            _ => return json_error(format!("unsupported directory transport: {transport}")),
         };
         match result {
             Ok(entries) => json_string(serde_json::json!({
@@ -199,25 +199,25 @@ pub extern "C" fn muxterm_list_dir_json(
 
 /// 通过 core 发现 local 或 SSH tmux session。
 ///
-/// `backend_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
+/// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
 /// 中的 alias。所有连接选项仍由系统 `ssh` 读取，`config_path` 仅供测试或显式
 /// 配置使用。返回的 JSON 字符串由 [`muxterm_free_string`] 释放。
 #[no_mangle]
 pub extern "C" fn muxterm_discover_tmux_sessions_json(
-    backend_type: *const c_char,
+    transport_type: *const c_char,
     target: *const c_char,
     socket: *const c_char,
     config_path: *const c_char,
     timeout_ms: u32,
 ) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
-        let backend = cstr_opt(backend_type)
+        let transport = cstr_opt(transport_type)
             .unwrap_or_else(|| "local".into())
             .to_ascii_lowercase();
         let target = cstr_opt(target);
         let socket = cstr_opt(socket);
         let config_path = cstr_opt(config_path);
-        let result = match backend.as_str() {
+        let result = match transport.as_str() {
             "local" => Ok(crate::core::discovery::list_local_tmux_sessions(
                 socket.as_deref(),
             )),
@@ -232,7 +232,7 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
                     discovery_timeout(timeout_ms),
                 )
             }
-            _ => return json_error(format!("unsupported discovery backend: {backend}")),
+            _ => return json_error(format!("unsupported discovery transport: {transport}")),
         };
         match result {
             Ok(sessions) => json_string(serde_json::json!({
@@ -247,21 +247,21 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
 
 /// 抓取 status bar 快照（tmux 兼容：`show -g` / `show -w -g` + `display-message`）。
 ///
-/// `backend_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是
+/// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是
 /// `~/.ssh/config` 的 alias。返回 `{"ok":true,"status":{...}}` JSON 字符串，
 /// 由 [`muxterm_free_string`] 释放。只读命令，不干扰控制客户端。
 #[no_mangle]
 pub extern "C" fn muxterm_status_snapshot_json(
-    backend_type: *const c_char,
+    transport_type: *const c_char,
     target: *const c_char,
     socket: *const c_char,
     session: *const c_char,
 ) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
-        let backend = cstr_opt(backend_type)
+        let transport = cstr_opt(transport_type)
             .unwrap_or_else(|| "local".into())
             .to_ascii_lowercase();
-        let ssh_alias = if backend == "ssh" {
+        let ssh_alias = if transport == "ssh" {
             cstr_opt(target)
         } else {
             None
@@ -344,7 +344,7 @@ pub unsafe extern "C" fn muxterm_traffic_up(handle: *mut MuxtermHandle) -> u64 {
 /// [`muxterm_free_string`] 释放。
 #[no_mangle]
 pub extern "C" fn muxterm_create_tmux_session_json(
-    backend_type: *const c_char,
+    transport_type: *const c_char,
     target: *const c_char,
     socket: *const c_char,
     config_path: *const c_char,
@@ -353,7 +353,7 @@ pub extern "C" fn muxterm_create_tmux_session_json(
     timeout_ms: u32,
 ) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
-        let backend = cstr_opt(backend_type)
+        let transport = cstr_opt(transport_type)
             .unwrap_or_else(|| "local".into())
             .to_ascii_lowercase();
         let target = cstr_opt(target);
@@ -366,7 +366,7 @@ pub extern "C" fn muxterm_create_tmux_session_json(
             return json_error("tmux working directory is required");
         };
 
-        let result = match backend.as_str() {
+        let result = match transport.as_str() {
             "local" => crate::core::discovery::create_local_tmux_session(
                 socket.as_deref(),
                 &session,
@@ -385,7 +385,7 @@ pub extern "C" fn muxterm_create_tmux_session_json(
                     discovery_timeout(timeout_ms),
                 )
             }
-            _ => return json_error(format!("unsupported session backend: {backend}")),
+            _ => return json_error(format!("unsupported session transport: {transport}")),
         };
         match result {
             Ok(()) => json_string(serde_json::json!({
@@ -418,30 +418,30 @@ fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
 
 /// 创建 handle。
 ///
-/// `backend_type`：`"local"` / `"tmux"` / `"daemon"`（大小写不敏感）。
+/// `runtime_type`：`"local"` / `"tmux"` / `"daemon"`（大小写不敏感）。
 /// `socket` / `session`：tmux 模式可选；daemon 用 `session` 推导 socket 路径；local 忽略。
 ///
 /// 失败返回 null。
 #[no_mangle]
 pub extern "C" fn muxterm_new(
-    backend_type: *const c_char,
+    runtime_type: *const c_char,
     socket: *const c_char,
     session: *const c_char,
 ) -> *mut MuxtermHandle {
-    let kind = cstr_opt(backend_type)
+    let kind = cstr_opt(runtime_type)
         .unwrap_or_else(|| "local".into())
         .to_ascii_lowercase();
     let sock = cstr_opt(socket);
     let sess = cstr_opt(session);
 
-    let backend: Box<dyn crate::core::model::Backend> = match kind.as_str() {
+    let runtime: Box<dyn crate::core::model::Runtime> = match kind.as_str() {
         "tmux" => {
             let sock_ref = sock.as_deref();
             if let Some(name) = sess.as_deref() {
-                // 有 session：优先 attach；不存在时由 TmuxBackend 内部处理
-                Box::new(TmuxBackend::new_with_attach(sock_ref, name))
+                // 有 session：优先 attach；不存在时由 TmuxRuntime 内部处理
+                Box::new(TmuxRuntime::new_with_attach(sock_ref, name))
             } else {
-                Box::new(TmuxBackend::new(sock_ref))
+                Box::new(TmuxRuntime::new(sock_ref))
             }
         }
         "ssh" => {
@@ -451,7 +451,7 @@ pub extern "C" fn muxterm_new(
             let Some(name) = sess.as_deref().filter(|value| !value.trim().is_empty()) else {
                 return ptr::null_mut();
             };
-            Box::new(TmuxBackend::new_with_ssh_attach(alias, name))
+            Box::new(TmuxRuntime::new_with_ssh_attach(alias, name))
         }
         "daemon" => {
             // TUI × local：连已有 daemon（unix socket IPC）
@@ -459,10 +459,10 @@ pub extern "C" fn muxterm_new(
             let path = sock
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| session_socket_path(&name));
-            Box::new(DaemonBackend::new(path, name))
+            Box::new(DaemonRuntime::new(path, name))
         }
         // 默认 local
-        _ => Box::new(LocalBackend::new("$SHELL", "")),
+        _ => Box::new(ShellRuntime::new("$SHELL", "")),
     };
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -475,7 +475,7 @@ pub extern "C" fn muxterm_new(
     };
 
     let handle = MuxtermHandle {
-        model: TerminalModel::new(backend),
+        model: TerminalModel::new(runtime),
         rt,
         callbacks: FfiCallbacks::default(),
         event_data: Vec::new(),
@@ -491,7 +491,7 @@ pub extern "C" fn muxterm_new(
 ///
 /// 相比 [`muxterm_new`]（+ [`muxterm_connect`] 两步），此函数一步完成建连。
 ///
-/// - `backend_type`：`"local"` / `"tmux"` / `"daemon"` / `"tmux-ssh"`
+/// - `runtime_type`：`"local"` / `"tmux"` / `"daemon"` / `"tmux-ssh"`
 /// - `socket`：tmux 的 `-L` socket 名（本地 tmux），SSH 模式为远端 socket（可选）
 /// - `session`：attach 的目标 session 名（非空 → attach 模式；空 → new-session）
 /// - `ssh_alias`：SSH 模式下的 `~/.ssh/config` Host 名（仅 `tmux-ssh` 用）
@@ -500,13 +500,13 @@ pub extern "C" fn muxterm_new(
 /// 失败返回 null。
 #[no_mangle]
 pub extern "C" fn muxterm_new_connect(
-    backend_type: *const c_char,
+    runtime_type: *const c_char,
     socket: *const c_char,
     session: *const c_char,
     ssh_alias: *const c_char,
     start_directory: *const c_char,
 ) -> *mut MuxtermHandle {
-    let kind = cstr_opt(backend_type)
+    let kind = cstr_opt(runtime_type)
         .unwrap_or_else(|| "local".into())
         .to_ascii_lowercase();
     let sock = cstr_opt(socket);
@@ -514,26 +514,26 @@ pub extern "C" fn muxterm_new_connect(
     let alias = cstr_opt(ssh_alias);
     let start_dir = cstr_opt(start_directory);
 
-    let backend: Box<dyn crate::core::model::Backend> = match kind.as_str() {
+    let runtime: Box<dyn crate::core::model::Runtime> = match kind.as_str() {
         "tmux-ssh" => {
             let sock_ref = sock.as_deref();
             let Some(alias) = alias.as_deref() else {
                 return ptr::null_mut();
             };
             if let Some(name) = sess.as_deref() {
-                Box::new(TmuxBackend::new_ssh_attach(alias, sock_ref, name))
+                Box::new(TmuxRuntime::new_ssh_attach(alias, sock_ref, name))
             } else {
-                Box::new(TmuxBackend::new_ssh(alias, sock_ref))
+                Box::new(TmuxRuntime::new_ssh(alias, sock_ref))
             }
         }
         "tmux" => {
             let sock_ref = sock.as_deref();
             if let Some(name) = sess.as_deref() {
-                Box::new(TmuxBackend::new_with_attach(sock_ref, name))
+                Box::new(TmuxRuntime::new_with_attach(sock_ref, name))
             } else if let Some(dir) = start_dir.as_deref() {
-                Box::new(TmuxBackend::new_with_cwd(sock_ref, Some(dir)))
+                Box::new(TmuxRuntime::new_with_cwd(sock_ref, Some(dir)))
             } else {
-                Box::new(TmuxBackend::new(sock_ref))
+                Box::new(TmuxRuntime::new(sock_ref))
             }
         }
         "daemon" => {
@@ -541,9 +541,9 @@ pub extern "C" fn muxterm_new_connect(
             let path = sock
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| session_socket_path(&name));
-            Box::new(DaemonBackend::new(path, name))
+            Box::new(DaemonRuntime::new(path, name))
         }
-        _ => Box::new(LocalBackend::new(
+        _ => Box::new(ShellRuntime::new(
             "$SHELL",
             start_dir.as_deref().unwrap_or(""),
         )),
@@ -559,7 +559,7 @@ pub extern "C" fn muxterm_new_connect(
     };
 
     let mut handle = MuxtermHandle {
-        model: TerminalModel::new(backend),
+        model: TerminalModel::new(runtime),
         rt,
         callbacks: FfiCallbacks::default(),
         event_data: Vec::new(),
@@ -824,7 +824,7 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
 
 /// 非阻塞拉取事件，写入 `out[0..]`，返回写入数量（或 -1）。
 ///
-/// 会先 `refresh()` 拉取 backend 增量（含 pty 输出）。
+/// 会先 `refresh()` 拉取 runtime 增量（含 pty 输出）。
 ///
 /// # Safety
 /// `out` 至少 `max_count` 个元素；返回的指针在下次 poll/free 前有效。
@@ -1302,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn ffi_detach_is_a_distinct_task_and_local_backend_rejects_it() {
+    fn ffi_detach_is_a_distinct_task_and_local_runtime_rejects_it() {
         let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
         assert!(!h.is_null());
         unsafe {
@@ -1334,7 +1334,7 @@ mod tests {
             let _ = muxterm_poll_events(h, buf.as_mut_ptr(), 32);
 
             // 等初始 pane 就绪并取真实 pane id（不能硬编码 1：并发跑时
-            // local backend 的 pane id 不保证是 1）。
+            // local runtime 的 pane id 不保证是 1）。
             let mut tabs = [CTab {
                 id: 0,
                 name: ptr::null(),

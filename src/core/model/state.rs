@@ -1,6 +1,6 @@
 //! 终端状态快照类型 + `State` trait（产品模型：Workspace → Tab → Pane）。
 //!
-//! `State` 描述「当前 Workspace 的完整快照」，由 Backend 维护，
+//! `State` 描述「当前 Workspace 的完整快照」，由 Runtime 维护，
 //! 被 TerminalModel 和前端读取。纯数据接口，**不依赖任何 I/O 或 GUI**。
 //!
 //! 设计要点：
@@ -9,7 +9,7 @@
 //! - 所有方法返回 `Option` / `&` 引用，不 clone，便于高频渲染。
 use crate::core::types::{PaneId, TabId};
 
-/// 工作区元信息（Backend 侧可知的部分：名字与 runtime 种类）。
+/// 工作区元信息（Runtime 侧可知的部分：名字与 runtime 种类）。
 /// `WorkspaceId` / transport 属于池层，由 WorkspacePool 持有。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceInfo {
@@ -36,14 +36,14 @@ pub struct PaneInfo {
     pub tab: TabId,
     /// 是否激活（在所属 window 中）。
     pub active: bool,
-    /// pane 标题（通常 = 当前进程名），由 Backend 更新。
+    /// pane 标题（通常 = 当前进程名），由 Runtime 更新。
     pub title: String,
-    /// pane 的字符格尺寸（由 Backend 从 tmux layout 或 vte4 同步）。
+    /// pane 的字符格尺寸（由 Runtime 从 tmux layout 或 vte4 同步）。
     pub cols: u16,
     pub rows: u16,
 }
 
-/// 状态变更事件（Backend → TerminalModel → 前端）。
+/// 状态变更事件（Runtime → TerminalModel → 前端）。
 ///
 /// 细粒度事件，避免每次小变动都全量重渲染。前端可按需聚合。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +111,7 @@ pub enum BackendStatus {
 
 /// 状态快照 trait：只读访问当前终端状态。
 ///
-/// Backend 实现此 trait，TerminalModel 持有 `&dyn State`，前端也只读 `State`。
+/// Runtime 实现此 trait，TerminalModel 持有 `&dyn State`，前端也只读 `State`。
 /// 所有方法不可失败（找不到返回 `None`），调用方自行处理。
 pub trait State {
     /// 工作区名字（tmux 时常用 session 名；shell 用目录名/配置名）。
