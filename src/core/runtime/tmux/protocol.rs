@@ -2142,6 +2142,48 @@ mod tests {
     }
 
     #[test]
+    fn dogfood_sample_parses_all_control_lines() {
+        // 2026-08-15 dogfood 摘录（禁止 include_str 25MB 原日志）。
+        let raw = include_str!("../../../../tests/samples/dogfood-2026-0815-1326.txt");
+        let mut parsed = 0usize;
+        let mut session_changed = 0usize;
+        let mut session_window_changed = 0usize;
+        let mut layout_change = 0usize;
+        for line in raw.lines() {
+            let line = line.trim();
+            if !line.starts_with('%') {
+                continue;
+            }
+            let m = parse_line(line).unwrap_or_else(|| panic!("% 行必须可解析: {line}"));
+            match &m {
+                Message::SessionChanged { session, name } => {
+                    session_changed += 1;
+                    assert_eq!(session, &SessionId(4), "dogfood 的 session 是 $4: {line}");
+                    assert_eq!(name.as_deref(), Some("yaklang-workspace"), "{line}");
+                }
+                Message::SessionWindowChanged { session, window } => {
+                    session_window_changed += 1;
+                    assert_eq!(session, &SessionId(4), "{line}");
+                    assert!(matches!(window.0, 21 | 29 | 27 | 19), "{line}");
+                }
+                Message::LayoutChange { window, .. } => {
+                    layout_change += 1;
+                    assert!(matches!(window.0, 18 | 29 | 21), "{line}");
+                }
+                Message::Unknown { keyword, .. } => {
+                    panic!("dogfood 行不应是 Unknown: keyword={keyword} line={line}")
+                }
+                _ => {}
+            }
+            parsed += 1;
+        }
+        assert!(parsed >= 8, "摘录里应有 8 条 % 行: {parsed}");
+        assert_eq!(session_changed, 1);
+        assert_eq!(session_window_changed, 4);
+        assert_eq!(layout_change, 3);
+    }
+
+    #[test]
     fn real_sample_osc_attention_passthrough() {
         // LINUX-PLAN C2.0 E1 fixture：tmux 3.7b 控制模式 %output 原样携带
         // OSC 133 C/D、BEL、OSC 9 与 777（无需 allow-passthrough）。

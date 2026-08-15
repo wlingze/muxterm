@@ -1,0 +1,53 @@
+# Muxterm dogfood log 摘录 / 复原协议
+# 源：仓库根目录 test_2026-0815-1326.log（25MB，gitignored，UTF-8+ANSI）
+# 时间：2026-08-15T05:26:53Z — 05:50:33Z（约 24 分钟）
+# 场景：Linux GTK SSH attach
+#   spawn: ssh -tt ryzen -- tmux -CC attach -t yaklang-workspace
+# 本文件只保留「必须落地成测试」的行。Codex 用 include_str! 喂 parser / backend，
+# 不要去读那份 25MB 原日志当测试输入。
+#
+# ========== 已核实的产品 bug（不要再争论）==========
+#
+# B1. 点 tab 看起来没切过去
+#     日志里鼠标点击 *已经* 打到 SwitchTab（不是 GTK 没点到那么简单）：
+#       execute task SwitchTab { target: TabId(21) }
+#       send: select-window -t @21
+#     紧接着 tmux 回了真实 session 的通知，却被丢掉：
+#       忽略其它 session 的 %session-window-changed session=4 window=21
+#     同一次 attach 的第一条查询却是：
+#       list-windows -t $0
+#     结论：yaklang-workspace 在这台 server 上是 $4，active_session 却停在 $0。
+#     旧单测 session_window_changed_ignores_other_session 把 $4 当成「别人的 session」
+#     （来自更早的日志 $4=muxterm / $0=yaklang-workspace）。今天的日志方向反了。
+#     过滤逻辑可以保留，但 active_session 必须是 attach 上的那一个。
+#
+# B2. SSH 路径每 tick 重建 status bar 按钮（window.rs maybe_refresh_status
+#     在 ssh_alias.is_some() 时无视 force/interval 直接 apply）。16ms poll
+#     会拆掉 GtkButton，鼠标点 tab 经常点空。要和 B1 一起修。
+#
+# B3. agent 刷屏：本日志 21 万行里约 21.7 万是「实时 %output 交付」，
+#     主要 pane=39 / pane=64，单条 len 经常 1365 / 2730。对应 LINUX-PLAN
+#     RenderPolicy：VTE 只提交末帧。
+#
+# B4. vte 0.13 默认 Handler::execute 对未知 C0/C1 打
+#     DEBUG [unhandled] execute byte=XX（十六进制）。本日志大量 80/94/03/82/8e…
+#     这是 C1/鼠标/ETX 进了 TerminalState，不是 tmux 行解析失败。
+#     要求：feed 这些字节不 panic；不要把它们变成 send-keys。
+#
+# B5. send-keys -l "tab" 出现过：Tab 键被当成四个字母 t-a-b，而不是 \t。
+#
+# ========== 从日志复原的控制模式行（给 parse_line / backend）==========
+
+%session-changed $4 yaklang-workspace
+%session-window-changed $4 @21
+%session-window-changed $4 @29
+%session-window-changed $4 @27
+%session-window-changed $4 @19
+%layout-change @18 e77b,127x58,0,0[127x36,0,0,39,127x21,0,37,47] *
+%layout-change @29 dd65,213x53,0,0,64
+%layout-change @21 e876,127x58,0,0,46 *
+
+# ========== 本日志未出现、不要假造的东西 ==========
+# - 没有 tracing WARN/ERROR，没有「解析失败:」
+# - 没有 %error 行被打印
+# - real-codex.txt 是空文件，不要拿它当 CUP fixture

@@ -1222,8 +1222,27 @@ impl TmuxBackend {
     }
 
     /// 发送 list-windows 查询。
+    /// list-windows 的 session 目标：active_session 已落地用 `$N`；
+    /// 尚未收到 %session-changed 时用 attach 目标名（禁止默认 `$0`——
+    /// 2026-08-15 dogfood 里 yaklang-workspace 是 `$4`，默认 `$0` 查错 session）。
+    fn list_windows_session_target(&self) -> String {
+        if let Some(sid) = self.active_session {
+            return sid.as_str();
+        }
+        if let Some(ConnectMode::Attach { target: Some(name) }) = &self.config.mode {
+            return name.clone();
+        }
+        // 非 attach 模式（new-session）在 SessionChanged 前没有可靠 id；
+        // 返回空让调用方跳过查询，等事件落地后再查。
+        String::new()
+    }
+
+    /// 发送 list-windows 查询。
     fn query_list_windows(&mut self) {
-        let sess = self.active_session.unwrap_or(SessionId(0));
+        let sess = self.list_windows_session_target();
+        if sess.is_empty() {
+            return;
+        }
         let line = format!(
             "list-windows -t {} -F \"#{{window_id}},#{{window_name}},#{{window_active}},#{{window_layout}},#{{window_panes}},#{{window_zoomed_flag}}\"\n",
             sess
@@ -3222,6 +3241,8 @@ mod tests {
     }
 
     /// 同一 tmux server 上其它 session 的 %session-window-changed 不得改 tab。
+    /// 注意：判断「其它」以 %session-changed 落地后的 active_session 为准，
+    /// 不要写死 yaklang-workspace=$0（2026-08-15 日志里它是 $4）。
     #[test]
     fn session_window_changed_ignores_other_session() {
         use crate::core::model::state::StateChange;
@@ -3257,6 +3278,94 @@ mod tests {
         assert!(
             !b.tabs.iter().any(|t| t.id == crate::core::types::TabId(20)),
             "不应把其它 session 的 window 收成 tab"
+        );
+    }
+
+    /// attach 到 yaklang-workspace（该 server 上是 $4）：%session-changed 必须先
+    /// 落地 active_session，list-windows 查询才不能默认 `-t $0`。
+    /// 尚未收到 %session-changed 时，用 attach 目标名而不是 $0。
+    #[test]
+    fn session_changed_sets_active_session_before_list_windows() {
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new_with_attach(None, "yaklang-workspace");
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+
+        // 尚未收到 %session-changed：不得拿没有 id 的 $0 去查，用 attach 目标名。
+        b.query_list_windows();
+        let first = rx.try_recv().expect("应发出 list-windows");
+        assert!(
+            first.contains("list-windows -t yaklang-workspace"),
+            "attach 已给目标名时不得默认 $0: {first}"
+        );
+        assert!(!first.contains("-t $0"), "不应查询 $0: {first}");
+
+        // %session-changed $4 yaklang-workspace → active_session = $4。
+        b.handle_message(Message::SessionChanged {
+            session: crate::core::types::SessionId(4),
+            name: Some("yaklang-workspace".into()),
+        });
+        b.query_list_windows();
+        let second = rx.try_recv().expect("应再次发出 list-windows");
+        assert!(
+            second.contains("list-windows -t $4"),
+            "SessionChanged 后应查询 $4: {second}"
+        );
+        assert!(!second.contains("-t $0"), "不应查询 $0: {second}");
+    }
+
+    /// 今天的 dogfood 日志：attach 的是 $4，`%session-window-changed $4 @21` 必须切 tab。
+    #[test]
+    fn session_window_changed_applies_when_attached_session_is_4() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxBackend::new(None);
+        let attached = crate::core::types::SessionId(4);
+        b.active_session = Some(attached);
+        b.sessions.push(crate::core::model::state::SessionInfo {
+            id: attached,
+            name: "yaklang-workspace".into(),
+            active_window: None,
+        });
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: crate::core::types::TabId(21),
+            name: "code".into(),
+            window: TmuxBackend::VIRTUAL_WINDOW_ID,
+            active: false,
+        });
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: crate::core::types::TabId(29),
+            name: "other".into(),
+            window: TmuxBackend::VIRTUAL_WINDOW_ID,
+            active: true,
+        });
+
+        b.handle_message(Message::SessionWindowChanged {
+            session: attached,
+            window: crate::core::types::WindowId(21),
+        });
+
+        let t21 = b
+            .tabs
+            .iter()
+            .find(|t| t.id == crate::core::types::TabId(21))
+            .unwrap();
+        assert!(t21.active, "attach session 为 $4 时 @21 应变为 active");
+        let t29 = b
+            .tabs
+            .iter()
+            .find(|t| t.id == crate::core::types::TabId(29))
+            .unwrap();
+        assert!(!t29.active, "@29 应取消 active");
+        assert!(
+            b.events.iter().any(|e| matches!(
+                e,
+                StateChange::ActiveTabChanged { tab, .. }
+                    if *tab == crate::core::types::TabId(21)
+            )),
+            "应发 ActiveTabChanged(TabId(21))"
         );
     }
 
