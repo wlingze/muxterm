@@ -15,3 +15,4 @@ pub mod replica;
 pub mod runtime;
 pub mod transport;
 pub mod types;
+pub mod url_detect;
