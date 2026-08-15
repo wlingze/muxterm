@@ -693,62 +693,66 @@ impl TerminalState {
         self.snapshot_trimmed()
     }
 
-    /// 把当前可见网格编成可再 feed 的 ANSI 字节（LINUX-PLAN §2.2）。
+    /// 把当前可见网格编成可再 feed 的 ANSI 字节（LINUX-PLAN §4 D1）。
     ///
-    /// 前缀 `ESC[H ESC[2J`，逐行输出可见字符（行尾空白 trim）+ `\r\n`；
+    /// 几何 dump：`ESC[H ESC[2J` 后对每一行（1-based，**含空行**）发
+    /// `ESC[{row};1H` 再输出恰好 `cols` 个单元格（空格保留，**不 trim**）；
     /// 颜色/加粗在变化处插简单 SGR（0 / 1 / 30-37 / 40-47，真彩后补）。
+    /// 全屏 TUI 靠空行/空格撑几何，shell 提示符在底行——skip/trim 会挤碎。
     pub fn visible_ansi(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.cols() * self.rows() * 4);
-        out.extend_from_slice(b"\x1b[H\x1b[2J");
+        let cols = self.cols();
+        let rows = self.rows();
+        let mut out = Vec::with_capacity(cols * rows * 4);
+        // 关自动换行：写满 cols 个单元格时第 cols 个会触发 linefeed 滚屏，
+        // 把首行挤掉。dump 期间 DECAWM off，写完恢复。
+        out.extend_from_slice(b"\x1b[H\x1b[2J\x1b[?7l");
         let mut last_fg: Option<u8> = None;
         let mut last_bg: Option<u8> = None;
         let mut last_bold = false;
-        for row in &self.grid {
-            let mut line = String::new();
+        for (row_idx, row) in self.grid.iter().enumerate() {
+            // 每行独立 CUP：`ESC[{row};1H`（1-based）。
+            out.extend_from_slice(format!("\x1b[{};1H", row_idx + 1).as_bytes());
             let mut fg: Option<u8> = None;
             let mut bg: Option<u8> = None;
             let mut bold = false;
-            for cell in row {
-                if cell.ch == '\0' {
-                    continue;
-                }
+            for (col_idx, cell) in row.iter().enumerate() {
                 if cell.fg.is_some() || cell.bg.is_some() || cell.bold {
                     fg = cell.fg.as_ref().and_then(sgr_fg);
                     bg = cell.bg.as_ref().and_then(sgr_bg);
                     bold = cell.bold;
                 }
-                line.push(cell.ch);
+                if fg != last_fg || bg != last_bg || bold != last_bold {
+                    out.extend_from_slice(b"\x1b[");
+                    let mut parts: Vec<String> = Vec::new();
+                    if bold {
+                        parts.push("1".into());
+                    } else if last_bold {
+                        parts.push("0".into());
+                    }
+                    if let Some(f) = fg {
+                        parts.push(f.to_string());
+                    }
+                    if let Some(b) = bg {
+                        parts.push(b.to_string());
+                    }
+                    if parts.is_empty() {
+                        parts.push("0".into());
+                    }
+                    out.extend_from_slice(parts.join(";").as_bytes());
+                    out.push(b'm');
+                    last_fg = fg;
+                    last_bg = bg;
+                    last_bold = bold;
+                }
+                // 整行单元格：NUL 当空格，其余原样（不 trim）。
+                out.push(if cell.ch == '\0' { b' ' } else { cell.ch as u8 });
+                // 最后一个单元格前先 CUP 到末列，避免写满触发 wrap。
+                if col_idx + 1 == cols {
+                    out.extend_from_slice(format!("\x1b[{};{}H", row_idx + 1, cols).as_bytes());
+                }
             }
-            let trimmed = line.trim_end_matches([' ', '\0']).to_string();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if fg != last_fg || bg != last_bg || bold != last_bold {
-                out.extend_from_slice(b"\x1b[");
-                let mut parts: Vec<String> = Vec::new();
-                if bold {
-                    parts.push("1".into());
-                } else if last_bold {
-                    parts.push("0".into());
-                }
-                if let Some(f) = fg {
-                    parts.push(f.to_string());
-                }
-                if let Some(b) = bg {
-                    parts.push(b.to_string());
-                }
-                if parts.is_empty() {
-                    parts.push("0".into());
-                }
-                out.extend_from_slice(parts.join(";").as_bytes());
-                out.push(b'm');
-                last_fg = fg;
-                last_bg = bg;
-                last_bold = bold;
-            }
-            out.extend_from_slice(trimmed.as_bytes());
-            out.extend_from_slice(b"\r\n");
         }
+        out.extend_from_slice(b"\x1b[?7h");
         out
     }
 
@@ -2074,9 +2078,10 @@ mod scrollback_tests {
         assert_eq!(t.last_n_lines(2), vec!["row8", "row9"]);
     }
 
-    /// S2：visible_ansi 往返——新 state feed 后可见网格一致，且只含最后 24 行。
+    /// D1：几何 visible_ansi——逐行 CUP + 整行单元格，不 skip 空行、不 trim。
+    /// 往返比全网格 snapshot()（含空白行），底行 prompt 必须保留在底行。
     #[test]
-    fn visible_ansi_roundtrip_preserves_trimmed_snapshot() {
+    fn visible_ansi_roundtrip_preserves_full_snapshot() {
         let mut old = TerminalState::new(80, 24);
         for i in 0..30 {
             old.feed(format!("row{i}\r\n").as_bytes());
@@ -2086,19 +2091,35 @@ mod scrollback_tests {
         let mut fresh = TerminalState::new(80, 24);
         fresh.feed(&ansi);
         assert_eq!(
-            fresh.snapshot_trimmed(),
-            old.snapshot_trimmed(),
-            "visible_ansi 往返后可见网格应一致"
+            fresh.snapshot(),
+            old.snapshot(),
+            "visible_ansi 往返后全网格（含空白行）应一致"
         );
-        let visible = fresh.snapshot_trimmed();
-        assert!(visible.iter().any(|l| l.contains("row29")), "应含最后一行");
-        assert!(!visible.iter().any(|l| l.contains("row0")), "不应含最早行");
         assert_eq!(fresh.rows(), 24, "网格高度应为 24");
-        assert!(
-            visible.len() <= 24,
-            "可见非空行不超过 24: {}",
-            visible.len()
+    }
+
+    /// D1：底行 prompt 不被 trim/skip 挤走。
+    #[test]
+    fn visible_ansi_keeps_prompt_on_last_row() {
+        let mut old = TerminalState::new(80, 24);
+        old.feed(b"\x1b[24;1HPROMPT");
+        assert!(old.snapshot()[23].contains("PROMPT"), "底行应含 PROMPT");
+        assert!(!old.snapshot()[0].contains("PROMPT"), "首行不应含 PROMPT");
+
+        let ansi = old.visible_ansi();
+        let mut fresh = TerminalState::new(80, 24);
+        fresh.feed(&ansi);
+        assert_eq!(
+            fresh.snapshot(),
+            old.snapshot(),
+            "几何 dump 往返后全网格应一致"
         );
+        assert!(
+            fresh.snapshot()[23].contains("PROMPT"),
+            "新 state 底行应含 PROMPT: {:?}",
+            fresh.snapshot()[23]
+        );
+        assert!(!fresh.snapshot()[0].contains("PROMPT"), "首行不应含 PROMPT");
     }
 
     /// 清屏不应污染 scrollback（ESC[2J 只清当前屏）。
