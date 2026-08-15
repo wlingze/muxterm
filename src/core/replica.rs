@@ -79,6 +79,31 @@ impl ReplicaStore {
             .map(|t| t.last_n_lines(n))
             .unwrap_or_default()
     }
+
+    /// 取走该 pane 的 OSC/CSI 查询应答（渲染层回写用）。
+    pub fn take_reply(&mut self, ws: &str, pane: u32) -> Vec<u8> {
+        self.get_mut(ws, pane)
+            .map(|t| t.take_reply())
+            .unwrap_or_default()
+    }
+
+    /// 该 pane 的可见网格 ANSI（首屏播种用）。
+    pub fn visible_ansi(&self, ws: &str, pane: u32) -> Vec<u8> {
+        self.get(ws, pane)
+            .map(|t| t.visible_ansi())
+            .unwrap_or_default()
+    }
+
+    /// 该 pane 是否处于 bracketed paste 模式。
+    pub fn bracketed_paste(&self, ws: &str, pane: u32) -> bool {
+        self.get(ws, pane)
+            .map(|t| t.bracketed_paste)
+            .unwrap_or(false)
+    }
+
+    fn get_mut(&mut self, ws: &str, pane: u32) -> Option<&mut TerminalState> {
+        self.inner.get_mut(ws).and_then(|m| m.get_mut(&pane))
+    }
 }
 
 /// 把一条 pane 输出应用到副本（window 前台/后台 pump 共用入口）。
@@ -146,6 +171,41 @@ mod tests {
         let mut store = ReplicaStore::new(100);
         let sigs = apply_output_to_replicas(&mut store, "ws-a", 1, b"\x1b]133;C\x07", 80, 24);
         assert_eq!(sigs, vec![AttentionSignal::CommandStart]);
+    }
+
+    #[test]
+    fn replica_take_reply_returns_osc_reply() {
+        let mut store = ReplicaStore::new(100);
+        // OSC 10 颜色查询 → TerminalState 生成应答。
+        store.feed("ws-a", 1, b"\x1b]10;?\x07", 80, 24);
+        let reply = store.take_reply("ws-a", 1);
+        assert!(!reply.is_empty(), "OSC 查询应产生应答");
+        assert!(
+            reply.windows(3).any(|w| w == b"]10"),
+            "应答应含 OSC 10: {reply:?}"
+        );
+        // 取走后为空。
+        assert!(store.take_reply("ws-a", 1).is_empty());
+    }
+
+    #[test]
+    fn replica_visible_ansi_matches_state() {
+        let mut store = ReplicaStore::new(100);
+        for i in 0..30 {
+            store.feed("ws-a", 1, format!("row{i}\r\n").as_bytes(), 80, 24);
+        }
+        let from_store = store.visible_ansi("ws-a", 1);
+        let from_state = store.get("ws-a", 1).unwrap().visible_ansi();
+        assert_eq!(from_store, from_state, "ReplicaStore 透传 visible_ansi");
+        assert!(from_store.starts_with(b"\x1b[H\x1b[2J"));
+    }
+
+    #[test]
+    fn replica_bracketed_paste_reflects_state() {
+        let mut store = ReplicaStore::new(100);
+        assert!(!store.bracketed_paste("ws-a", 1), "默认关闭");
+        store.feed("ws-a", 1, b"\x1b[?2004h", 80, 24);
+        assert!(store.bracketed_paste("ws-a", 1), "DECSET 2004 后应开启");
     }
 
     #[test]
