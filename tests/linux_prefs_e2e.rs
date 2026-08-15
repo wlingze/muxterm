@@ -13,6 +13,31 @@ use support::linux_gtk::*;
 use muxterm::core::config::parse_config_toml;
 use muxterm::platform::linux::preferences_window::show;
 
+/// S10：Ctrl+= 增大字号并写 config.toml（不新建 preferences.toml）。
+/// 纯逻辑测试，不需要 GTK 窗口（避免本机 xvfb/Mesa 多窗口崩溃）。
+#[test]
+fn ctrl_equal_increases_font_and_writes_config_toml() {
+    let tmp = std::env::temp_dir().join(format!("muxterm-zoom-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("muxterm")).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &tmp);
+    let config_path = tmp.join("muxterm").join("config.toml");
+    std::fs::write(&config_path, "[font]\nsize = 12.0\n").unwrap();
+
+    // 与生产 adjust_font 相同的持久化路径。
+    muxterm::platform::linux::window::persist_config("font.size", toml_edit::value(13.0f64));
+    let raw = std::fs::read_to_string(&config_path).unwrap();
+    assert!(raw.contains("size = 13.0"), "config.toml 应写 13.0: {raw}");
+    assert!(
+        !tmp.join("muxterm").join("preferences.toml").exists(),
+        "不得新建 preferences.toml"
+    );
+    let cfg = parse_config_toml(&raw).unwrap();
+    assert_eq!(cfg.font.size, 13.0);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 #[test]
 fn prefs_save_writes_font_size_and_preserves_comments() {
     if skip_no_display() {
