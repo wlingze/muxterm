@@ -10,6 +10,7 @@ pub mod logging;
 pub mod model;
 pub mod protocol;
 pub mod quickconnect;
+pub mod render_policy;
 pub mod replica;
 pub mod runtime;
 pub mod transport;
