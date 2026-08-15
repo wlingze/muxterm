@@ -2610,6 +2610,49 @@ mod tests {
             .ends_with(b"after-capture\r\n"));
     }
 
+    /// F3：capture 完成前 live 不得进 VTE（事件层）——快照前无 PaneOutput 事件；
+    /// 快照返回后单事件 = 快照 + catch-up；capture 每 pane 只发一次。
+    #[test]
+    fn surface_seed_drops_output_until_capture() {
+        let mut b = TmuxBackend::new_with_attach(None, "existing");
+        let pane = PaneId(11);
+
+        // 发起 capture 后、快照返回前：live 只暂存，不产生 PaneOutput 事件。
+        b.initial_capture_pending.insert(pane);
+        b.handle_message(Message::Output {
+            pane,
+            content: b"PRE_SEED_TOKEN".to_vec(),
+            raw_content: "PRE_SEED_TOKEN".into(),
+        });
+        assert!(!b.outputs.contains_key(&pane));
+        assert!(b.events.is_empty(), "capture 前 live 不得交付");
+
+        // 快照返回：单事件 = 快照 + catch-up。
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+        b.dispatch_response(1, vec!["SNAPSHOT_TOKEN".into()]);
+        let events: Vec<&StateChange> = b
+            .events
+            .iter()
+            .filter(|e| matches!(e, StateChange::PaneOutput { pane: p, .. } if *p == pane))
+            .collect();
+        assert_eq!(events.len(), 1, "快照+catch-up 应合并为一次交付");
+        let StateChange::PaneOutput { data, .. } = events[0] else {
+            unreachable!()
+        };
+        assert!(data.starts_with(b"SNAPSHOT_TOKEN"));
+        assert!(data.ends_with(b"PRE_SEED_TOKEN"));
+
+        // capture 每 pane 只发一次：已 done 的 pane 不再重复查询。
+        b.query_capture_pane(pane);
+        let captures = b
+            .pending_queries
+            .iter()
+            .filter(|q| matches!(q, PendingQuery::CapturePane { pane: p } if *p == pane))
+            .count();
+        assert_eq!(captures, 0, "已 done 的 pane 不应重复 capture");
+    }
+
     #[test]
     fn attach_capture_failure_recovers_live_output_without_black_screen() {
         let mut b = TmuxBackend::new_with_attach(None, "existing");
