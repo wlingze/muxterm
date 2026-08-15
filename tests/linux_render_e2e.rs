@@ -315,7 +315,18 @@ fn render_e2e_s3_s4() {
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
 
-        let view = PaneView::new(1, &theme(), &FontSettings::default(), true, 10_000);
+        // 本机 Monospace 12pt 下 VTE 实际网格只有 79x21，装不下 80x24 fixture
+        // （头部会被滚出可见区）。用 10pt 让网格 >= 80x24，断言不变。
+        let view = PaneView::new(
+            1,
+            &theme(),
+            &FontSettings {
+                family: "Monospace".into(),
+                size: 10.0,
+            },
+            true,
+            10_000,
+        );
         let win = gtk4::Window::builder()
             .title("render-e2e")
             .default_width(640)
