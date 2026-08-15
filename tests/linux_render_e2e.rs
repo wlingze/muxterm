@@ -48,6 +48,27 @@ fn first_paint_uses_replica_tail_not_full_replay(view: &PaneView) {
     );
 }
 
+/// S11：OSC 8 包着的 URL，Recording opener 收到一次（不真开浏览器）。
+fn url_click_records_https_uri(view: &PaneView) {
+    use muxterm::core::url_detect::RecordingOpener;
+    use std::rc::Rc;
+
+    let opener = Rc::new(RecordingOpener::new());
+    view.set_url_opener(opener.clone());
+    view.present_bytes(b"\x1b]8;;https://example.invalid/x\x1b\\hello", true);
+    pump_main_loop(40);
+
+    // 点击左上角（URL 在首行首列）。
+    view.open_url_at(5.0, 5.0);
+    pump_main_loop(40);
+    let opened = opener.opened.borrow();
+    assert_eq!(
+        *opened,
+        vec!["https://example.invalid/x".to_string()],
+        "Recording opener 应收到一次 URI"
+    );
+}
+
 /// S4：20 个全屏帧一次合并，只提交末帧。
 fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     let mut all = Vec::new();
@@ -92,6 +113,7 @@ fn render_e2e_s3_s4() {
         first_paint_uses_replica_tail_not_full_replay(&view);
         view.clear_render_trace();
         cup_storm_feeds_only_last_frame(&view);
+        url_click_records_https_uri(&view);
 
         win.close();
         win.destroy();

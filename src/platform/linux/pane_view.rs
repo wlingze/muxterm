@@ -19,6 +19,7 @@ use crate::core::protocol::terminal::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
 };
 use crate::core::render_policy::{last_visible_frame, render_intent, RenderIntent};
+use crate::core::url_detect::UrlOpener;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 
@@ -59,6 +60,8 @@ struct PaneViewInner {
     grid_rows: Cell<u16>,
     /// 渲染痕迹（reset/feed 次数与字节数）。
     render_trace: RefCell<RenderTrace>,
+    /// URL 打开出口（测试注入 Recording，生产接 GTK）。
+    url_opener: RefCell<Option<Rc<dyn UrlOpener>>>,
 }
 
 impl PaneView {
@@ -67,6 +70,13 @@ impl PaneView {
         renderer.apply_theme(theme);
         renderer.apply_font(font);
         renderer.apply_mirror_policy(is_tmux_mirror);
+        // OSC 8 超链接默认关闭：打开才能 check_hyperlink_at。
+        renderer.terminal().set_allow_hyperlink(true);
+        // https? URL 正则匹配（点击走 check_hyperlink_at 优先，其次 match）。
+        // VTE 要求 regex 带 PCRE2_MULTILINE 编译标志（0x400）。
+        if let Ok(re) = vte4::Regex::for_match(r#"https?://[^\s<>"']+"#, 0x400) {
+            renderer.terminal().match_add_regex(&re, 0);
+        }
         PaneView {
             inner: Rc::new(PaneViewInner {
                 renderer,
@@ -81,6 +91,7 @@ impl PaneView {
                 grid_cols: Cell::new(80),
                 grid_rows: Cell::new(24),
                 render_trace: RefCell::new(RenderTrace::default()),
+                url_opener: RefCell::new(None),
             }),
         }
     }
@@ -225,6 +236,35 @@ impl PaneView {
     /// 清空渲染痕迹（测试在独立场景前调用）。
     pub fn clear_render_trace(&self) {
         *self.inner.render_trace.borrow_mut() = RenderTrace::default();
+    }
+
+    /// 注入 URL 打开出口（测试用 Recording，生产接 GTK）。
+    pub fn set_url_opener(&self, opener: Rc<dyn UrlOpener>) {
+        *self.inner.url_opener.borrow_mut() = Some(opener);
+    }
+
+    /// 点击坐标 → 打开 URL：先 OSC 8 hyperlink，再正则 match。
+    /// 测试钩子 `test_open_url_at` 与真实 GestureClick 走同一函数。
+    pub fn open_url_at(&self, x: f64, y: f64) {
+        let term = self.inner.renderer.terminal();
+        let uri = term
+            .check_hyperlink_at(x, y)
+            .map(|s| s.to_string())
+            .or_else(|| {
+                let (m, _tag) = term.check_match_at(x, y);
+                m.map(|s| s.to_string())
+            });
+        if let Some(uri) = uri {
+            if let Some(opener) = self.inner.url_opener.borrow().clone() {
+                opener.open(&uri);
+            }
+        }
+    }
+
+    /// 测试用：直接调 open_url_at（与真实点击同一路径）。
+    #[cfg(test)]
+    pub fn test_open_url_at(&self, x: f64, y: f64) {
+        self.open_url_at(x, y);
     }
 
     fn reset_and_feed(&self, bytes: &[u8]) {
