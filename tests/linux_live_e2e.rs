@@ -165,8 +165,24 @@ fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
 /// F1/F4：隔离 tmux 逐字打字（走 AppWindow 输入 → send-keys -H）——
 /// VTE 里完整 token 恰好一份（2105「越写越长」）。
 fn isolated_tmux_typing_token_appears_once(app: &AppWindow, _socket: &str) {
+    // 切 tab 后 panes 查询可能还没回来，active_pane 仍是旧 tab 的 pane；
+    // 等它属于当前 tab 再逐字输入，否则字符会打到不可见 pane。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut pane_ready = false;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        let leaves = app.test_layout_leaf_ids();
+        if leaves.contains(&app.test_active_pane_id()) {
+            pane_ready = true;
+            break;
+        }
+    }
+    assert!(pane_ready, "active_pane 应属于 active_tab");
     // 逐字符经生产输入路径（muxterm_send_input → WriteRaw → send-keys -H）。
-    for ch in "MUXTERM_TYPE_TOKEN".chars() {
+    // token 用 ZZZZ 开头：zsh-autosuggestions 会从 ~/.histfile 建议以 MUXTERM
+    // 开头的旧命令，干扰逐字回显（环境相关，不是 Muxterm 回归）。
+    for ch in "ZZZZ_TYPE_TOKEN".chars() {
         app.test_send_input(&[ch as u8]);
         pump_main_loop(20);
     }
@@ -178,7 +194,7 @@ fn isolated_tmux_typing_token_appears_once(app: &AppWindow, _socket: &str) {
         app.test_poll_once();
         pump_main_loop(30);
         let vte = app.test_active_pane_vte_text();
-        let count = vte.matches("MUXTERM_TYPE_TOKEN").count();
+        let count = vte.matches("ZZZZ_TYPE_TOKEN").count();
         if count >= 1 {
             ok = true;
             assert_eq!(
@@ -188,7 +204,21 @@ fn isolated_tmux_typing_token_appears_once(app: &AppWindow, _socket: &str) {
             break;
         }
     }
-    assert!(ok, "5s 内 VTE 应出现 MUXTERM_TYPE_TOKEN");
+    assert!(ok, "5s 内 VTE 应出现 ZZZZ_TYPE_TOKEN");
+    // 回车执行残留的未完成命令，清空行编辑器：后续用例（WORKSPACE_A_TOKEN）
+    // 的 send-keys 才不会拼到 ZZZZ_TYPE_TOKEN 后面（环境相关，不是回归）。
+    app.test_send_input(b"\r");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        if app
+            .test_active_pane_vte_text()
+            .contains("command not found")
+        {
+            break;
+        }
+    }
 }
 
 /// F1：切 tab 不 reset 刷屏——切换前后 resets 增量 ≤ 1。
@@ -266,16 +296,31 @@ fn live_e2e_s8_s9_s13b() {
 
         // W5：两个工作区切回 VTE 非空（像素缓存不随切走销毁）。
         create_session(&socket, "b", 80, 24);
-        send_keys(&socket, "s", "echo WORKSPACE_A_TOKEN");
+        // 等 active_pane 跟上 active_tab（切 tab 后 panes 查询可能还没回来）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut pane_ready = false;
+        while Instant::now() < deadline {
+            app.test_poll_once();
+            pump_main_loop(30);
+            let leaves = app.test_layout_leaf_ids();
+            if leaves.contains(&app.test_active_pane_id()) {
+                pane_ready = true;
+                break;
+            }
+        }
+        assert!(pane_ready, "active_pane 应属于 active_tab");
+        // 发到 active_pane 而不是 session：tmux 的 active window 可能比
+        // app 的 active_tab 滞后一拍，发到 session 会打到旧 tab 的 pane。
+        let pane = app.test_active_pane_id();
+        send_keys(&socket, &format!("%{pane}"), "echo WORKSPACE_A_TOKEN");
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut a_ok = false;
         while Instant::now() < deadline {
             app.test_poll_once();
             pump_main_loop(30);
-            if app
-                .test_active_pane_vte_text()
-                .contains("WORKSPACE_A_TOKEN")
-            {
+            // 读同一个 pane 的 VTE：轮询期间 ActivePaneChanged 可能把
+            // active_pane 切走，读 active 会看不到刚发的 echo。
+            if app.test_pane_vte_text(pane).contains("WORKSPACE_A_TOKEN") {
                 a_ok = true;
                 break;
             }
