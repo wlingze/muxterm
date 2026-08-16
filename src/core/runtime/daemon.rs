@@ -37,6 +37,28 @@ pub struct DaemonRuntime {
 }
 
 impl DaemonRuntime {
+    /// 默认 unix socket 路径（$XDG_RUNTIME_DIR 或 /tmp，与 platform CLI 一致）。
+    ///
+    /// W12：core 不再 `use crate::platform::cli` 推导 daemon socket 路径；
+    /// 默认路径挪到 Runtime 构造处，platform CLI 的 `session_socket_path`
+    /// 只是这层的薄包装。
+    pub fn default_socket_path(name: &str) -> PathBuf {
+        let dir = std::env::var("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp"));
+        let safe: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        dir.join(format!("muxterm-{safe}.sock"))
+    }
+
     /// 创建尚未 connect 的 backend。
     pub fn new(socket_path: impl Into<PathBuf>, session_name: impl Into<String>) -> Self {
         Self {
@@ -270,6 +292,10 @@ impl State for DaemonRuntime {
 
 #[async_trait]
 impl Runtime for DaemonRuntime {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn connect(&mut self) -> Result<()> {
         self.status = BackendStatus::Connecting;
         tracing::debug!(

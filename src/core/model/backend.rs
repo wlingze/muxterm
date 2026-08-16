@@ -24,6 +24,9 @@ use async_trait::async_trait;
 /// 4. `shutdown()` — 释放 runtime 资源；tmux 会清理 control client
 #[async_trait]
 pub trait Runtime: State {
+    /// 类型擦除下行转换（测试 / 诊断用）。
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// 建立连接（spawn tmux / 启动本地 shell）。
     /// 成功后 `status()` 应为 `Connected`。
     async fn connect(&mut self) -> anyhow::Result<()>;
