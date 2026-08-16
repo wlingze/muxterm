@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! W16a：attach 之前 pane 里已经有滚出可见区的历史。
 //!
 //! 无 GTK。夹具一律 `tmux -L muxterm-test-*` + `/bin/cat`。

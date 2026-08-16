@@ -24,11 +24,11 @@ use crate::core::model::layout::SplitDir;
 use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::Task;
 use crate::core::quickconnect::model::QuickConnect;
+use crate::core::transport::ssh::probe::SshReach;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use crate::core::workspace::spec::WorkspaceSpec;
-use crate::core::transport::ssh::probe::SshReach;
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -290,14 +290,12 @@ impl AppWindow {
         let layout_overlay = gtk4::Overlay::new();
         layout_overlay.set_hexpand(true);
         layout_overlay.set_vexpand(true);
-        layout_overlay.set_child(
-            Some(
-                &pixel_cache
-                    .get(&startup_id)
-                    .expect("startup layout")
-                    .root_box,
-            ),
-        );
+        layout_overlay.set_child(Some(
+            &pixel_cache
+                .get(&startup_id)
+                .expect("startup layout")
+                .root_box,
+        ));
         let jump_latest = gtk4::Button::with_label("↓");
         jump_latest.set_widget_name("muxterm-jump-latest");
         jump_latest.set_halign(gtk4::Align::End);
@@ -1492,7 +1490,10 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
                     s.disconnect_overlay.set_visible(true);
                 }
                 BackendStatus::Exited if is_tmux => {
-                    tracing::info!(target = "muxterm::linux", "tmux runtime exited; keep last frame");
+                    tracing::info!(
+                        target = "muxterm::linux",
+                        "tmux runtime exited; keep last frame"
+                    );
                     s.disconnect_overlay.set_visible(true);
                 }
                 BackendStatus::Exited => {
@@ -2296,7 +2297,6 @@ fn handle_connect_outcome(state: &Rc<RefCell<UiState>>, pending: PendingConnect)
     }
 }
 
-
 fn start_local_shell(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
     let session =
         crate::platform::linux::quickconnect::model::QuickConnect::default_name(&config.path);
@@ -2462,7 +2462,6 @@ fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
         }
     }
 }
-
 
 /// 池里最近打开的工作区（按 last_used 倒序）→ QuickConnect 目标。
 fn recent_target_configs(pool: &WorkspacePool, limit: usize) -> Vec<TargetConfig> {

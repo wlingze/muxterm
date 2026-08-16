@@ -109,11 +109,8 @@ impl WorkspaceSpec {
                     rt.set_scrollback_lines(lines);
                     Box::new(rt)
                 } else {
-                    let mut rt = TmuxRuntime::new_ssh_attach(
-                        alias,
-                        self.socket.as_deref(),
-                        &self.session,
-                    );
+                    let mut rt =
+                        TmuxRuntime::new_ssh_attach(alias, self.socket.as_deref(), &self.session);
                     rt.set_scrollback_lines(lines);
                     Box::new(rt)
                 }
@@ -125,17 +122,13 @@ impl WorkspaceSpec {
                     rt.set_scrollback_lines(lines);
                     Box::new(rt)
                 } else if self.create {
-                    let mut rt = TmuxRuntime::new_with_session_name(
-                        self.socket.as_deref(),
-                        &self.session,
-                    );
+                    let mut rt =
+                        TmuxRuntime::new_with_session_name(self.socket.as_deref(), &self.session);
                     rt.set_scrollback_lines(lines);
                     Box::new(rt)
                 } else {
-                    let mut rt = TmuxRuntime::new_with_attach(
-                        self.socket.as_deref(),
-                        &self.session,
-                    );
+                    let mut rt =
+                        TmuxRuntime::new_with_attach(self.socket.as_deref(), &self.session);
                     rt.set_scrollback_lines(lines);
                     Box::new(rt)
                 }
