@@ -539,6 +539,81 @@ impl AppWindow {
             .unwrap_or_default()
     }
 
+    /// 测试用：把 pane 的 VTE 滚动到顶部（mock-codex 末帧头在 row 1，
+    /// 视口默认在底部时 text_format 只返回可见区，看不到 TOKEN_HEADER）。
+    pub fn test_scroll_pane_to_top(&self, pane_id: u32) {
+        let s = self._state.borrow();
+        if let Some(view) = s.active_layout().pane(pane_id) {
+            if let Some(adj) = view.terminal().vadjustment() {
+                adj.set_value(adj.lower());
+            }
+        }
+    }
+
+    /// 测试用：指定 pane 的 VTE 文本。
+    pub fn test_pane_vte_text(&self, pane_id: u32) -> String {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .map(|v| v.visible_text())
+            .unwrap_or_default()
+    }
+
+    /// 测试用：当前 tab 布局 leaf pane id。
+    pub fn test_layout_leaf_ids(&self) -> Vec<u32> {
+        let s = self._state.borrow();
+        s.active_workspace()
+            .state()
+            .layout(&TabId(s.active_tab))
+            .map(|l| l.tree.leaves().into_iter().map(|p| p.0).collect())
+            .unwrap_or_default()
+    }
+
+    /// 测试用：pane 控件分配尺寸（0×0 = 白屏）。
+    pub fn test_pane_allocation(&self, pane_id: u32) -> (i32, i32) {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .map(|v| {
+                let w = v.widget();
+                (w.width(), w.height())
+            })
+            .unwrap_or((0, 0))
+    }
+
+    /// 测试用：flush 全部 VTE 合并缓冲后再读文本。
+    pub fn test_flush_feeds(&self) {
+        self._state.borrow().active_layout().flush_all_feeds();
+    }
+
+    /// 测试用：轮询一次并返回本批 `PaneOutput` 条数（1820 CPU）。
+    pub fn test_poll_output_event_count(&self) -> usize {
+        let (n, pending_close) = {
+            let mut s = self._state.borrow_mut();
+            let events = s.active_workspace_mut().refresh();
+            let n = events
+                .iter()
+                .filter(|e| matches!(e, StateChange::PaneOutput { .. }))
+                .count();
+            dispatch_event_batch(&mut s, events);
+            drain_attention_notifications(&mut s);
+            sync_pane_outputs(&mut s);
+            maybe_refresh_status(&mut s, true);
+            refresh_connection_summary(&s);
+            refresh_attention_chrome(&s, &self.window);
+            let close = s.pending_close;
+            if close {
+                s.pending_close = false;
+            }
+            (n, close)
+        };
+        if pending_close {
+            self._state.borrow_mut().quit_requested = true;
+            self.window.close();
+        }
+        n
+    }
+
     /// 测试用：当前激活 pane 的 VTE reset 次数（F1 Surface 契约）。
     pub fn test_active_pane_resets(&self) -> u32 {
         let s = self._state.borrow();
@@ -576,11 +651,7 @@ impl AppWindow {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
             dispatch_event_batch(&mut s, events);
-            let notifications = s.attention.take_new_blocked_notifications();
-            for ws in &notifications {
-                s.notification_sink.notify_blocked(ws, "needs attention");
-            }
-            s.notification_log.extend(notifications);
+            drain_attention_notifications(&mut s);
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&s);
@@ -676,6 +747,44 @@ impl AppWindow {
     /// 测试用：本轮进入 blocked 的 workspace 通知记录。
     pub fn test_notifications_recorded(&self) -> Vec<String> {
         self._state.borrow().notification_log.clone()
+    }
+
+    /// 测试用：所有工作区 Done pane 数之和（任务完成，不是 blocked）。
+    pub fn test_attention_done_count(&self) -> usize {
+        self._state
+            .borrow()
+            .attention
+            .snapshot()
+            .iter()
+            .map(|w| w.done)
+            .sum()
+    }
+
+    /// 测试用：当前激活 pane id。
+    pub fn test_active_pane_id(&self) -> u32 {
+        self._state.borrow().active_pane
+    }
+
+    /// 测试用：SwitchPane（后台完成通知必须打在非前台 pane）。
+    pub fn test_switch_pane(&self, pane_id: u32) {
+        let _ = self
+            ._state
+            .borrow_mut()
+            .active_workspace_mut()
+            .execute(Task::SwitchPane {
+                target: PaneId(pane_id),
+            });
+    }
+
+    /// 测试用：生产搜索路径 `WorkspacePool::search_all`（不是 Mock PaneBuf）。
+    pub fn test_search_all(&self, query: &str) -> Vec<(String, u32, String)> {
+        self._state
+            .borrow()
+            .pool
+            .search_all(query)
+            .into_iter()
+            .map(|h| (h.workspace_id, h.pane_id.0, h.line))
+            .collect()
     }
 
     /// 测试用：连接一个 QuickConnect 目标（走生产 connect_target 路径）。
@@ -1284,6 +1393,30 @@ fn mark_pending_close_if_session_ended(s: &mut UiState) {
     let n_tabs = s.active_workspace().state().tabs().len();
     if should_close_window(false, n_tabs, s.on_last_pane_exit) {
         s.pending_close = true;
+    }
+}
+
+/// 取走本轮 blocked / done 通知并交给 sink（测试日志也记录）。
+fn drain_attention_notifications(s: &mut UiState) {
+    let blocked = s.attention.take_new_blocked_notifications();
+    for ws in &blocked {
+        tracing::info!(
+            target: "muxterm::notify",
+            workspace = %ws,
+            "blocked workspace notification"
+        );
+        s.notification_sink.notify_blocked(ws, "needs attention");
+        s.notification_log.push(format!("{ws}: needs attention"));
+    }
+    let done = s.attention.take_new_done_notifications();
+    for ws in &done {
+        tracing::info!(
+            target: "muxterm::notify",
+            workspace = %ws,
+            "background task done"
+        );
+        s.notification_sink.notify_done(ws, "task complete");
+        s.notification_log.push(format!("{ws}: task complete"));
     }
 }
 

@@ -222,6 +222,12 @@ impl Workspace {
 
     /// 搜索本工作区全部 pane。
     pub fn search_workspace(&self, query: &str) -> Vec<SearchHit> {
+        tracing::info!(
+            target: "muxterm::search",
+            query = query,
+            panes = self.panes.len(),
+            "search_workspace"
+        );
         let mut out = Vec::new();
         for pane in self.panes.keys() {
             out.extend(self.search_pane(*pane, query));

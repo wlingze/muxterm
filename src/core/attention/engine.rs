@@ -45,6 +45,8 @@ pub struct AttentionEngine<C: Clock> {
     clock: C,
     /// 已对哪些 workspace 发过「进入 blocked」通知（清除后删除，重亮再通知）。
     notified_blocked: HashSet<String>,
+    /// 已对哪些 workspace 发过「后台任务完成」通知（状态离开 Done 后删除）。
+    notified_done: HashSet<String>,
     /// 正则缓存：编译失败时记录该条并跳过。
     regex_cache: HashMap<String, Option<Regex>>,
 }
@@ -56,6 +58,7 @@ impl<C: Clock> AttentionEngine<C> {
             config,
             clock,
             notified_blocked: HashSet::new(),
+            notified_done: HashSet::new(),
             regex_cache: HashMap::new(),
         }
     }
@@ -207,6 +210,26 @@ impl<C: Clock> AttentionEngine<C> {
         out
     }
 
+    /// 取走本轮新进入 Done 的 workspace（后台 pane 任务完成；保持期间不重复）。
+    ///
+    /// 前台 pane 的 Done 会被 `on_became_visible` 清成 Idle，所以这里只
+    /// 剩后台 pane 的完成事件。
+    pub fn take_new_done_notifications(&mut self) -> Vec<String> {
+        let now = self.clock.now();
+        let mut out = Vec::new();
+        for p in self.panes.values() {
+            if p.status == PaneStatus::Done
+                && !p.mute_until.map(|m| m > now).unwrap_or(false)
+                && !self.notified_done.contains(&p.workspace_id)
+            {
+                self.notified_done.insert(p.workspace_id.clone());
+                out.push(p.workspace_id.clone());
+            }
+        }
+        out.sort();
+        out
+    }
+
     fn maybe_eval_regex(&mut self, ws: &str, pane: u32, now: Instant) {
         let (enabled, patterns, debounce) = {
             (
@@ -264,6 +287,9 @@ impl<C: Clock> AttentionEngine<C> {
         let muted = entry.mute_until.map(|m| m > now).unwrap_or(false);
         if entry.status != PaneStatus::Blocked || muted {
             self.notified_blocked.remove(ws);
+        }
+        if entry.status != PaneStatus::Done || muted {
+            self.notified_done.remove(ws);
         }
     }
 }
