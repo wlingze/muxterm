@@ -179,8 +179,10 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
         kind: "ssh".into(),
         host: Some("127.0.0.1".into()),
         status: "connected".into(),
-        down: 1234,
+        down: 1536,
         up: 56,
+        down_rate: 1536,
+        up_rate: 56,
     });
     pump_main_loop(40);
 
@@ -205,8 +207,18 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
     assert!(text.contains("type=ssh"), "应含 type=ssh: {text}");
     assert!(text.contains("host=127.0.0.1"), "应含 host: {text}");
     assert!(text.contains("status=connected"), "应含 status: {text}");
-    assert!(text.contains("down=1234B/s"), "SSH 应含下行流量: {text}");
-    assert!(text.contains("up=56B/s"), "SSH 应含上行流量: {text}");
+    assert!(
+        !text.contains("1536B/s") && !text.contains("1234B/s"),
+        "禁止把累计字节标成 B/s: {text}"
+    );
+    assert!(
+        text.contains("1.5 KB/s"),
+        "必须有人类可读速率 1.5 KB/s: {text}"
+    );
+    assert!(
+        text.contains("1.5 KB") && text.contains("56 B"),
+        "必须有人类可读累计（1.5 KB 和 56 B）: {text}"
+    );
     popover.popdown();
 
     // CSS 数据必须含真实颜色（status-ok 绿）。

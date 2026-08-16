@@ -4,6 +4,7 @@
 //! 左/中/右同步 tmux status；最右三个按钮是 Muxterm chrome，永远可见。
 //! tab 按钮只在 tab 集合/当前 tab 变化时重建（SSH 16ms 轮询不得拆按钮）。
 
+use crate::core::format::{format_bytes, format_rate};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -41,6 +42,10 @@ pub struct ConnectionSummary {
     pub down: u64,
     /// 累计上行字节（SSH PtyWriter 写端）。
     pub up: u64,
+    /// 瞬时下行字节/秒（由连续两次 snapshot 差出来，不是累计）。
+    pub down_rate: u64,
+    /// 瞬时上行字节/秒。
+    pub up_rate: u64,
 }
 
 /// muxterm status bar（唯一 chrome）。
@@ -290,17 +295,20 @@ impl StatusBar {
             _ => self.dot.add_css_class("status-err"),
         }
         let host = summary.host.as_deref().unwrap_or("");
+        // 速率与累计分开：禁止把累计字节标成 `B/s`（W15a）。
         let text = format!(
-            "type={} status={} down={}B/s up={}B/s{}",
+            "type={} status={}{}\n↓ {}  ↑ {}\ntotal ↓ {}  ↑ {}",
             summary.kind,
             summary.status,
-            summary.down,
-            summary.up,
             if host.is_empty() {
                 String::new()
             } else {
                 format!(" host={host}")
-            }
+            },
+            format_rate(summary.down_rate),
+            format_rate(summary.up_rate),
+            format_bytes(summary.down),
+            format_bytes(summary.up),
         );
         if let Some(label) = self
             .popover
