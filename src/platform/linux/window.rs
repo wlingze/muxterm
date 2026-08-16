@@ -103,6 +103,9 @@ struct UiState {
     status_right: Option<String>,
     /// 每个工作区的 tmux `-L` socket 名（仅 tmux 工作区有）。
     workspace_sockets: std::collections::HashMap<WorkspaceId, Option<String>>,
+    /// 上一次流量快照（down, up）与墙钟（W15a 速率差）。
+    last_traffic: Option<(u64, u64)>,
+    last_traffic_at: Option<Instant>,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
@@ -313,6 +316,8 @@ impl AppWindow {
             status_left: None,
             status_right: None,
             workspace_sockets: std::collections::HashMap::new(),
+            last_traffic: None,
+            last_traffic_at: None,
             root_box: root.clone(),
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
@@ -481,7 +486,7 @@ impl AppWindow {
                     sync_pane_outputs(&mut s);
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);
-                    refresh_connection_summary(&s);
+                    refresh_connection_summary(&mut s);
                     if let Some(w) = win_weak.upgrade() {
                         refresh_attention_chrome(&s, &w);
                     }
@@ -599,7 +604,7 @@ impl AppWindow {
             drain_attention_notifications(&mut s);
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
-            refresh_connection_summary(&s);
+            refresh_connection_summary(&mut s);
             refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
             if close {
@@ -654,7 +659,7 @@ impl AppWindow {
             drain_attention_notifications(&mut s);
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
-            refresh_connection_summary(&s);
+            refresh_connection_summary(&mut s);
             refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
             if close {
@@ -1244,7 +1249,10 @@ fn refresh_attention_chrome(s: &UiState, window: &Window) {
 }
 
 /// 把当前连接摘要刷到状态点 popover（C7.7）。
-fn refresh_connection_summary(s: &UiState) {
+///
+/// 速率由连续两次 `traffic_bytes()` 快照 + 墙钟差出来（W15a），
+/// 禁止把累计字节标成 `B/s`。
+fn refresh_connection_summary(s: &mut UiState) {
     let Some(ws) = s.pool.active() else {
         return;
     };
@@ -1264,12 +1272,27 @@ fn refresh_connection_summary(s: &UiState) {
         _ => "disconnected",
     };
     let (down, up) = ws.runtime().traffic_bytes();
+    let now = Instant::now();
+    let (down_rate, up_rate) = match (s.last_traffic, s.last_traffic_at) {
+        (Some((pdown, pup)), Some(at)) => {
+            let dt = now.duration_since(at);
+            (
+                crate::core::format::rate_bps(pdown, down, dt),
+                crate::core::format::rate_bps(pup, up, dt),
+            )
+        }
+        _ => (0, 0),
+    };
+    s.last_traffic = Some((down, up));
+    s.last_traffic_at = Some(now);
     s.status.set_connection_summary(&ConnectionSummary {
         kind: kind.into(),
         host,
         status: status.into(),
         down,
         up,
+        down_rate,
+        up_rate,
     });
 }
 
