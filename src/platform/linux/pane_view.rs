@@ -163,6 +163,10 @@ impl PaneView {
             // 对齐 macOS updateFullScreen：关掉 rewrap 后旧 CUP 会留在新网格里。
             self.inner.renderer.terminal().reset(false, true);
             *self.inner.reply_state.borrow_mut() = TerminalState::new(cols as usize, rows as usize);
+            // 重置已清空 VTE：标记未播种，由下一轮 sync_pane_outputs 从 core
+            // pane_output 重新播种（1820 白屏：ResizeClient 后 tmux 重排会
+            // 触发这里，若只 reset 不重播，attach 快照就永远丢了）。
+            self.inner.seeded.set(false);
         } else {
             self.inner
                 .reply_state
@@ -210,6 +214,34 @@ impl PaneView {
         self.inner.renderer.terminal().reset(true, true);
         *self.inner.reply_state.borrow_mut() =
             TerminalState::new(cols.max(2) as usize, rows.max(1) as usize);
+        if !data.is_empty() {
+            with_remote_feed(&self.inner, || {
+                self.inner.renderer.terminal().feed(data);
+                feed_reply_state(&self.inner, data);
+                apply_mirror_mouse_policy(&self.inner);
+            });
+        }
+        self.inner.seeded.set(true);
+    }
+
+    /// attach 快照播种：不 reset、不 dump，直接把 capture-pane 原始字节
+    /// 喂进 VTE（1820.log 白屏修复；live 路径禁止 visible_ansi → reset）。
+    pub fn seed_raw(&self, data: &[u8], cols: u16, rows: u16) {
+        tracing::info!(
+            target: "muxterm::surface",
+            pane = self.inner.pane_id.get(),
+            bytes = data.len(),
+            cols = cols,
+            rows = rows,
+            "seed_raw"
+        );
+        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
+            id.remove();
+        }
+        self.inner.pending_feed.borrow_mut().clear();
+        if cols >= 2 || rows >= 1 {
+            self.resize_to(cols, rows);
+        }
         if !data.is_empty() {
             with_remote_feed(&self.inner, || {
                 self.inner.renderer.terminal().feed(data);

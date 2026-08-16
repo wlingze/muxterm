@@ -291,6 +291,16 @@ pub fn refresh_client_size(cols: u32, rows: u32) -> TmuxCommand {
     build(&[format!("-C {cols}x{rows}")], "refresh-client")
 }
 
+/// 暂停/恢复控制模式客户端某个 pane 的输出（`refresh-client -A %N:pause|continue`）。
+///
+/// tmux 3.3+ 流控：pane 输出超过速率阈值时暂停，恢复后再继续投递
+/// （control.c `control_pause_pane`/`control_continue_pane`）。
+pub fn refresh_client_pause(pane: PaneId, paused: bool) -> TmuxCommand {
+    let state = if paused { "pause" } else { "continue" };
+    let arg = format!("%{}:{state}", pane.0);
+    build(&[format!("-A {}", quote_c_string(&arg))], "refresh-client")
+}
+
 /// 订阅控制模式 client 的 format（tmux ≥3.2，见文档 §B+）：值变化时推
 /// `%subscription-changed`（至多 1 次/秒）。`scope` 为空串表示 attached session。
 ///
@@ -813,6 +823,18 @@ mod tests {
         assert_eq!(
             refresh_client_unsubscribe("muxterm.status-left").as_str(),
             "refresh-client -B muxterm.status-left"
+        );
+    }
+
+    #[test]
+    fn refresh_client_pause_uses_dash_a_state() {
+        assert_eq!(
+            refresh_client_pause(PaneId(39), true).as_str(),
+            r#"refresh-client -A "%39:pause""#
+        );
+        assert_eq!(
+            refresh_client_pause(PaneId(39), false).as_str(),
+            r#"refresh-client -A "%39:continue""#
         );
     }
 

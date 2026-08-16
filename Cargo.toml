@@ -99,6 +99,28 @@ path = "tests/linux_live_e2e.rs"
 required-features = ["gtk"]
 
 [[test]]
+name = "tmux_attach_contract"
+path = "tests/tmux_attach_contract.rs"
+
+[[test]]
+name = "linux_workspace_attach_e2e"
+path = "tests/linux_workspace_attach_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "tmux_feature_contract"
+path = "tests/tmux_feature_contract.rs"
+
+[[test]]
+name = "linux_feature_e2e"
+path = "tests/linux_feature_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "tmux_ssh_feature_contract"
+path = "tests/tmux_ssh_feature_contract.rs"
+
+[[test]]
 name = "linux_ssh_e2e"
 path = "tests/linux_ssh_e2e.rs"
 required-features = ["gtk"]

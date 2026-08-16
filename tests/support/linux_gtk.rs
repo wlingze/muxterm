@@ -144,6 +144,22 @@ pub fn widget_label_texts(root: &impl IsA<Widget>) -> Vec<String> {
     out
 }
 
+/// 递归查找第一个 `widget_name` 以 `prefix` 开头的控件（搜索命中行 id 含 seq）。
+pub fn find_by_name_prefix(root: &impl IsA<Widget>, prefix: &str) -> Option<Widget> {
+    let root = root.as_ref();
+    if root.widget_name().starts_with(prefix) {
+        return Some(root.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = find_by_name_prefix(&c, prefix) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
 /// 递归查找 `widget_name` 等于 `name` 的控件（LINUX-PLAN §0.5 契约）。
 pub fn find_by_name(root: &impl IsA<Widget>, name: &str) -> Option<Widget> {
     let root = root.as_ref();

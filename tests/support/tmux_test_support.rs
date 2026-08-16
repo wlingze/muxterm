@@ -114,3 +114,66 @@ where
     }
     panic!("等待超时（{}s）：{}", timeout.as_secs(), label);
 }
+
+/// 带 `-L` 跑一条 tmux 命令；失败时带 stderr panic。
+pub fn tmux_ok(socket: &str, args: &[&str]) {
+    let output = Command::new("tmux")
+        .arg("-L")
+        .arg(socket)
+        .args(args)
+        .output()
+        .expect("spawn tmux 失败");
+    assert!(
+        output.status.success(),
+        "tmux {args:?} 失败: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// `list-panes -F #{pane_id}` → `%N` 去 `%` 后的数字。
+pub fn list_pane_ids(socket: &str, target: &str) -> Vec<u32> {
+    let output = Command::new("tmux")
+        .args(["-L", socket, "list-panes", "-t", target, "-F", "#{pane_id}"])
+        .output()
+        .expect("list-panes 失败");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let s = line.trim().trim_start_matches('%');
+            s.parse().ok()
+        })
+        .collect()
+}
+
+/// 字面写入 pane PTY（给 `/bin/cat` 用，不要 Enter）。
+pub fn send_keys_literal(socket: &str, target: &str, text: &str) {
+    tmux_ok(socket, &["send-keys", "-t", target, "-l", text]);
+}
+
+/// 用 `send-keys -H` 发送原始字节（`-l` 会把 ESC/BEL 转成 `^[`/`^G` 字面量，
+/// OSC 133 / BEL 注意力信号必须走 hex 才能原样进 pane）。
+pub fn send_keys_hex(socket: &str, target: &str, bytes: &[u8]) {
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    tmux_ok(socket, &["send-keys", "-t", target, "-H", &hex.join(" ")]);
+}
+
+/// 用 `send-keys -l` 发送原始字节（测试用；`-H` 会把控制字节转成 `^[`/`^G`）。
+pub fn send_keys_raw(socket: &str, target: &str, bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes).to_string();
+    tmux_ok(socket, &["send-keys", "-t", target, "-l", &text]);
+}
+
+/// 等到 `capture-pane -p` 含 needle。
+pub fn wait_capture_contains(socket: &str, target: &str, needle: &str, timeout: Duration) {
+    wait_for(timeout, &format!("capture {target} 含 {needle}"), || {
+        capture_pane(socket, target).contains(needle)
+    });
+}
+
+/// 把 pane 换成 CUP 洪水脚本，刷完后停在 `/bin/cat`。
+pub fn respawn_cup_flood(socket: &str, pane_percent: &str, frames: u32) {
+    let script = format!(
+        "bash -c 'for i in $(seq 1 {frames}); do printf \"\\033[H\\033[2Jframe-%s\\n\" \"$i\"; done; printf \"FLOOD_DONE\\n\"; exec /bin/cat'"
+    );
+    tmux_ok(socket, &["respawn-pane", "-k", "-t", pane_percent, &script]);
+}

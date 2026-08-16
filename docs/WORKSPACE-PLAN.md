@@ -1,10 +1,12 @@
 # WORKSPACE-PLAN.md — Codex 实施合同（工作区架构）
 
-> **当前执行计划。** W1–W8 已落地（HEAD `fd7f05f`）；本文追加 W9–W11（platform 清理）。
+> **当前执行计划。** W1–W11 已落地（HEAD `7a4edd4`）。W12 = W10 收口漏项；W13 = attach 保真（1820.log）；W14 = 功能 e2e（搜索/通知/SSH/mock-codex/tail-f）。
 > 架构：[`WORKSPACE.md`](WORKSPACE.md)（先读完再写代码，尤其 §6 接口）
 > 像素契约：[`SURFACE.md`](SURFACE.md)（F 已交，live 路径禁止 dump）
-> 分支：`feat/linux-quickconnect-ui`（HEAD `3f19923`，ahead 93，**不 push**）
-> 修订：2026-08-16 01:12 CST（`2026-08-16T01:12:12+08:00`）
+> 测试契约：[`TESTING.md`](TESTING.md) §5.4 attach + §5.5 功能 e2e
+> 功能测试规格：[`FEATURE-E2E-PLAN.md`](FEATURE-E2E-PLAN.md)
+> 分支：`feat/linux-quickconnect-ui`（**不 push**）
+> 修订：2026-08-16 18:50 CST（`2026-08-16T18:50:00+08:00`）
 
 ---
 
@@ -413,6 +415,88 @@ TmuxRuntime 按 **名字** bind 一条 tmux session，填进这一个 Workspace�
 - 门禁：`cargo fmt` / `cargo check --features gtk` / `cargo test` /
   `cargo clippy -- -D warnings` / `linux_render_e2e` / `linux_live_e2e` /
   `linux_quickconnect_e2e` 全绿。
+
+---
+
+### W12 — W10 收口（分层与命名，不修像素）
+
+W9–W11 的 `rg` 验收过了，但规格层没做完。真机 attach 白屏/卡顿是 **W13**，不要把两件事混进同一个 commit。
+
+**完成定义：**
+
+1. `WorkspacePool::open_spec` 必须把 `build_runtime()` 放进 `open` 的 `create` 闭包。复用已有 slot 时 **零构造**（对得上 `reopen_same_id_reuses_without_new_runtime`）。
+2. `src/core/workspace/spec.rs` 补 `#[cfg(test)]`：`id()` / `name()` / local attach vs `create` / ssh 空 session / 未知 runtime → shell。禁止 core 再 `use crate::platform::cli`（daemon socket 路径要么 spec 必填 `path`，要么挪到 runtime 构造处）。
+3. CLI（`routing.rs` / `daemon.rs` / `tmux_cli_exec.rs`）打开工作区走 `WorkspaceSpec` / `open_spec`，或删掉 spec 注释里「CLI 不再 new TmuxRuntime」这句话，别假装已经统一。
+4. 产品命名收口（可同一 commit 或紧随）：`TmuxAction::NewSession` / `SessionInfo` / `ChooseTmuxSession` / FFI JSON `"sessions"` → workspace 词。`window.rs` 文件头别再写 `muxterm_new`。`ARCHITECTURE.md` 删掉已删除的 `title_watch.rs`。
+
+**验收：** `cargo test --lib workspace::`；`rg 'platform::cli' src/core/workspace` 为空。
+
+---
+
+### W13 — attach 保真（1820.log：白屏 / 错布局 / 高 CPU）
+
+**证据（`test_2026-0816-1820.log`，2026-08-16T10:20:51Z–10:22:17Z，SSH `ryzen` attach `yaklang-workspace`）：**
+
+- 118 879 行日志，**118 608** 条 `实时 %output 交付`；pane `%39` 独占 84 446 条（2730/1365 半帧，Codex TUI）。
+- **0** 次 `%pause` / `refresh-client -A`。SURFACE.md 定律 7 没做。
+- capture-pane 只在 attach 时发了 13 次；之后客户端把洪水当直播喂 GTK。
+- 现有 `linux_live_e2e` **测不到**：它是 `new-session` 空壳再 `echo`，不是「先有 2 tab / 3 pane / 已有画面，再 attach」。
+
+**测试已写（先红，禁止改断言迁就）：**
+
+| 层 | 文件 | 必须抓住 |
+|---|---|---|
+| 夹具 | `tests/support/tmux_test_support.rs` + `workspace_attach_contract.rs` | 隔离 `-L muxterm-test-*`；**先**建 2tab/3pane + `/bin/cat` 涂 token，**再**让 Muxterm attach |
+| A core | `tests/tmux_attach_contract.rs` | attach 后 core 有 2 tab、当前 tab 3 leaf、每个 pane 的 `pane_output` 含 token；CUP 洪水下 1s 内 `PaneOutput` 事件有上界，否则必须发出 pause |
+| C+D GTK | `tests/linux_workspace_attach_e2e.rs` | VTE 非空；每个可见 pane 宽高 ≥ 40px；GTK Paned 数匹配 3 pane；切 tab token 还在；CUP 洪水后 VTE 仍可读、resets 有界 |
+| 门禁 | `TESTING.md` §3.6 / §5.4 | `cargo test --test tmux_attach_contract`；`xvfb-run -a cargo test --features gtk --test linux_workspace_attach_e2e -- --test-threads=1` |
+
+跨平台：契约在 `workspace_attach_contract.rs`（无 GTK）。macOS / Windows 复刻时实现同一套断言（SwiftTerm / DirectWrite 当 Surface），不要另写一套更弱的 echo 测试。
+
+**修的方向（实现自由，断言不自由）：**
+
+1. 已存在 session：capture 快照必须进 Surface（VTE 非空），禁止只 `feed` 洪水把播种冲掉。
+2. 布局：3 pane 的 `LayoutNode` 必须变成 3 个面积非零的控件，不能整窗一块白。
+3. 流控：忙 pane 必须 `%pause`（`refresh-client -A '%N:pause'`）或等价合并，禁止每条 `%output` 都进 GTK。iTerm2 `pausePanes` / tmux `control.c`。
+4. 禁止 live 路径 `visible_ansi` → `vte.reset`。禁止回滚 `fbc77e4`。禁止杀默认 tmux。
+
+**若大 e2e 红：** 拆小，但最终大 e2e 必须绿。建议顺序：
+
+1. 单测：attach 模式 capture 响应把快照推进 `PaneOutput`，洪水不得丢掉快照事件。
+2. 单测：输出速率超过阈值时 `dispatch` 出 pause 命令。
+3. core 集成：`tmux_attach_contract`。
+4. GTK：`linux_workspace_attach_e2e`。
+
+**Commit 建议：** 一逻辑一英文 commit（pause / seed / layout / 测试绿）。不 push。
+
+---
+
+### W14 — 功能保真 e2e（搜索 / 通知 / SSH / mock-codex / tail-f / 诊断日志）
+
+人工 dogfood 会反复回归，因为这些路径以前没有**真 tmux attach** 的测试：
+
+| 功能 | 今天的测试 | 为什么不够 |
+|---|---|---|
+| 搜索 | `linux_search_e2e` 注入 Mock PaneBuf | 不 attach、不跳 VTE |
+| Blocked 通知 | `linux_attention_e2e` `test_feed_replica(BEL)` | 几乎不走 `%output` |
+| 任务完成 Done | engine 有 Done | **没有** `notify_done` / 桌面通知 |
+| SSH tmux | `linux_ssh_e2e` `#[ignore]` 把 echo 喂进 **另一个 Mock Workspace** | 不算 SSH attach |
+| Codex TUI | `linux_render_e2e` 喂静态 sample | 没有活进程画 CUP |
+| `tail -f` / `/bin/cat` | attach 夹具只用 cat 涂一次 | 没有「后来追加的行」 |
+| DEBUG | 每条 `%output` 打 `实时 %output 交付` | 1820.log 13MB 仍看不出白屏原因 |
+
+**测试已写（先红，禁止改断言迁就）。规格见 [`FEATURE-E2E-PLAN.md`](FEATURE-E2E-PLAN.md)。**
+
+顺序：先绿 W13（播种/pause/布局），再绿 W14（功能依赖非空 PaneBuf/VTE），再 W12 分层。
+
+**修的方向（实现自由，断言不自由）：**
+
+1. `NotificationSink::notify_done` + `AttentionEngine::take_new_done_notifications`；16ms poll 与 `test_poll_once` 都要 drain。Done 只对**非前台** pane（E6 前台会 Idle）。
+2. Search tab 必须走 `WorkspacePool::search_all`（已接线）；命中后 `SwitchPane`，VTE 含 token。
+3. `tests/scripts/mock_codex.py` 末帧（`TOKEN_HEADER`/`TOKEN_PROMPT`）进 PaneBuf 和 VTE。
+4. `/usr/bin/tail -f` 追加行进缓冲。
+5. SSH：`TmuxRuntime::new_ssh_attach` + 远端 `-L`；禁止 MockRuntime。
+6. tracing target：`muxterm::tmux::seed` / `pause` / `layout` / `surface` / `search` / `notify`。`实时 %output 交付` 不得再 `debug!`。
 
 ---
 

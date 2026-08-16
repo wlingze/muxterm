@@ -1,5 +1,6 @@
 //! 从 FFI 布局树构建 / 更新 GTK4 Paned。
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,6 +23,10 @@ pub struct LayoutHost {
     scrollback_lines: u32,
     /// 当前布局签名，用于 damage tracking（只在变化时重建）。
     last_sig: String,
+    /// 当前布局结构签名（不含 ratio），用于区分「结构变化」与「仅 ratio 变化」。
+    last_structure_sig: String,
+    /// 每个 Paned 当前 ratio（permille），供 resize 绑定与 in-place 更新共享。
+    split_ratios: HashMap<Paned, Rc<Cell<u32>>>,
     /// 本地 shell 模式的全屏 pane（tmux 模式由 resize-pane -Z 处理）。
     fullscreen_pane: Option<u32>,
 }
@@ -46,12 +51,28 @@ impl LayoutHost {
             is_tmux_mirror,
             scrollback_lines,
             last_sig: String::new(),
+            last_structure_sig: String::new(),
+            split_ratios: HashMap::new(),
             fullscreen_pane: None,
         }
     }
 
     pub fn pane(&self, id: u32) -> Option<&Rc<PaneView>> {
         self.panes.get(&id)
+    }
+
+    /// 测试用：已创建的 pane id（含后台 tab 像素缓存）。
+    pub fn pane_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.panes.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// 测试用：立刻 flush 所有 VTE 合并缓冲。
+    pub fn flush_all_feeds(&self) {
+        for view in self.panes.values() {
+            view.flush_pending_feed();
+        }
     }
 
     pub fn panes_mut(&mut self) -> &mut HashMap<u32, Rc<PaneView>> {
@@ -66,6 +87,7 @@ impl LayoutHost {
         if self.fullscreen_pane != pane {
             self.fullscreen_pane = pane;
             self.last_sig.clear(); // 强制重建
+            self.last_structure_sig.clear();
         }
     }
 
@@ -89,10 +111,15 @@ impl LayoutHost {
         view
     }
 
-    /// 若布局签名变化则重建 GTK 树。返回是否重建。
+    /// 若布局结构变化则重建 GTK 树；仅 ratio 变化时 in-place 更新 Paned 位置。
+    /// 返回是否重建。
     ///
     /// W5：**不**因换 Tab 而 `retain` 掉其它 pane 控件——pane 是像素缓存，
     /// 切回时 VTE 内容与滚动位置必须还在。pane 只在工作区关闭时整体释放。
+    ///
+    /// 重建会 unparent/reparent VTE widget（unrealize → VTE 停止处理已排队
+    /// 的 feed），所以 ratio 变化不能走重建：tmux 每次 ResizeClient 都会微调
+    /// split ratio，重建会让 attach 快照永远停在 VTE 队列里（1820 白屏）。
     pub fn apply_layout<F>(&mut self, layout: &LayoutNode, on_input: &F) -> bool
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
@@ -102,10 +129,28 @@ impl LayoutHost {
             None => layout.clone(),
         };
         let sig = layout_signature(&effective);
-        if sig == self.last_sig {
+        let structure_sig = layout_structure_signature(&effective);
+        if structure_sig == self.last_structure_sig {
+            if sig != self.last_sig {
+                // 仅 ratio 变化：更新 Paned 位置，不重建 GTK 树。
+                tracing::info!(
+                    target: "muxterm::layout",
+                    sig = %sig,
+                    "layout ratio update (no rebuild)"
+                );
+                self.last_sig = sig;
+                self.update_split_positions(&effective);
+            }
             return false;
         }
+        tracing::info!(
+            target: "muxterm::layout",
+            sig = %sig,
+            "layout rebuild"
+        );
         self.last_sig = sig;
+        self.last_structure_sig = structure_sig;
+        self.split_ratios.clear();
 
         // 先把 pane widget 从旧 Paned 摘掉，再清空根（顺序反了会触发 unparent 断言）
         for view in self.panes.values() {
@@ -135,6 +180,8 @@ impl LayoutHost {
         self.is_tmux_mirror = is_tmux_mirror;
         self.fullscreen_pane = None;
         self.last_sig.clear();
+        self.last_structure_sig.clear();
+        self.split_ratios.clear();
         for view in self.panes.values() {
             let w = view.widget();
             if w.parent().is_some() {
@@ -170,7 +217,14 @@ impl LayoutHost {
         }
     }
 
-    fn build_widget(&self, layout: &LayoutNode) -> Widget {
+    /// 仅 ratio 变化时，沿现有 GTK 树更新 Paned 位置（不重建、不 unparent）。
+    fn update_split_positions(&self, layout: &LayoutNode) {
+        if let Some(root) = self.root_box.first_child() {
+            update_split_positions_walk(&root, layout, &self.split_ratios);
+        }
+    }
+
+    fn build_widget(&mut self, layout: &LayoutNode) -> Widget {
         match layout {
             LayoutNode::Leaf(pane_id) => self
                 .panes
@@ -202,7 +256,9 @@ impl LayoutHost {
                 paned.set_resize_end_child(true);
                 paned.set_shrink_start_child(false);
                 paned.set_shrink_end_child(false);
-                bind_split_position(&paned, horizontal, u32::from(*ratio));
+                let ratio_cell = Rc::new(Cell::new(u32::from(*ratio)));
+                self.split_ratios.insert(paned.clone(), ratio_cell.clone());
+                bind_split_position(&paned, horizontal, ratio_cell);
                 paned.upcast()
             }
         }
@@ -240,16 +296,48 @@ fn apply_split_position(paned: &Paned, horizontal: bool, ratio_permille: u32) {
     }
 }
 
-fn bind_split_position(paned: &Paned, horizontal: bool, ratio_permille: u32) {
-    apply_split_position(paned, horizontal, ratio_permille);
+fn bind_split_position(paned: &Paned, horizontal: bool, ratio: Rc<Cell<u32>>) {
+    apply_split_position(paned, horizontal, ratio.get());
     let p = paned.clone();
+    let ratio2 = ratio.clone();
     paned.connect_notify_local(Some("width"), move |_, _| {
-        apply_split_position(&p, horizontal, ratio_permille);
+        apply_split_position(&p, horizontal, ratio2.get());
     });
     let p = paned.clone();
+    let ratio3 = ratio.clone();
     paned.connect_notify_local(Some("height"), move |_, _| {
-        apply_split_position(&p, horizontal, ratio_permille);
+        apply_split_position(&p, horizontal, ratio3.get());
     });
+}
+
+fn update_split_positions_walk(
+    widget: &Widget,
+    layout: &LayoutNode,
+    ratios: &HashMap<Paned, Rc<Cell<u32>>>,
+) {
+    match layout {
+        LayoutNode::Leaf(_) => {}
+        LayoutNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => {
+            if let Ok(paned) = widget.clone().downcast::<Paned>() {
+                if let Some(cell) = ratios.get(&paned) {
+                    cell.set(u32::from(*ratio));
+                    let horizontal = matches!(dir, SplitDir::Horizontal);
+                    apply_split_position(&paned, horizontal, cell.get());
+                }
+                if let Some(start) = paned.start_child() {
+                    update_split_positions_walk(&start, first, ratios);
+                }
+                if let Some(end) = paned.end_child() {
+                    update_split_positions_walk(&end, second, ratios);
+                }
+            }
+        }
+    }
 }
 
 fn layout_signature(layout: &LayoutNode) -> String {
@@ -270,6 +358,28 @@ fn layout_signature(layout: &LayoutNode) -> String {
             ratio,
             layout_signature(first),
             layout_signature(second)
+        ),
+    }
+}
+
+/// 布局结构签名：只含树形与 pane id，不含 ratio。
+///
+/// ratio 变化（tmux ResizeClient 后的微调）不应触发 GTK 树重建，否则
+/// VTE widget 被 unparent/reparent 后停止处理已排队的 feed（1820 白屏）。
+fn layout_structure_signature(layout: &LayoutNode) -> String {
+    match layout {
+        LayoutNode::Leaf(pane_id) => format!("L{}", pane_id.0),
+        LayoutNode::Split {
+            dir, first, second, ..
+        } => format!(
+            "S{}:{}:{}",
+            if matches!(dir, SplitDir::Horizontal) {
+                "H"
+            } else {
+                "V"
+            },
+            layout_structure_signature(first),
+            layout_structure_signature(second)
         ),
     }
 }

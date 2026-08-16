@@ -67,6 +67,25 @@ pub const STATUS_LEFT_SUBSCRIPTION: &str = "muxterm.status-left";
 const PANE_CMD_SUBSCRIPTION: &str = "muxterm.pane-cmd";
 pub const STATUS_RIGHT_SUBSCRIPTION: &str = "muxterm.status-right";
 
+/// 单个 pane 在 1s 内允许直通交付的 `PaneOutput` 事件数上限。
+/// 超过后立即 `refresh-client -A '%N:pause'`，并把后续字节合并成少数事件，
+/// 防止 1820.log 的 Codex CUP 洪水把 GTK 帧队列打满。
+const PAUSE_OUTPUT_EVENT_THRESHOLD: usize = 200;
+
+/// 暂停后自动 `continue` 的间隔（pane 可能仍在刷屏，恢复后再次按阈值暂停）。
+const PAUSE_RESUME_AFTER: Duration = Duration::from_secs(1);
+
+/// 单个 pane 的输出速率窗口：1s 滑动窗口 + 超限后的合并缓冲。
+#[derive(Debug, Default)]
+struct PaneFlow {
+    window_start: Option<Instant>,
+    events: usize,
+    /// 超过直通上限后的字节（暂停生效前/后的余量），合并成事件喂给 Surface。
+    suppressed: Vec<u8>,
+    /// 已请求 pause 的恢复时间；None 表示未暂停。
+    resume_at: Option<Instant>,
+}
+
 /// tmux -CC 后端。
 pub struct TmuxRuntime {
     config: TmuxClientConfig,
@@ -121,6 +140,8 @@ pub struct TmuxRuntime {
     initial_capture_done: HashSet<PaneId>,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
+    /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
+    flow: HashMap<PaneId, PaneFlow>,
     /// attach 初始快照查询进行期间到达的实时 `%output` 缓冲。
     ///
     /// capture-pane 返回的是查询瞬间的完整屏幕；在「发出 capture-pane」到「收到
@@ -237,6 +258,7 @@ impl TmuxRuntime {
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
             paused_panes: HashSet::new(),
+            flow: HashMap::new(),
             initial_capture_buf: HashMap::new(),
             colour_report_supported: true,
             colour_report_warned: false,
@@ -398,6 +420,92 @@ impl TmuxRuntime {
             .push_back(StateChange::LayoutChanged { tab, layout });
     }
 
+    /// 记录一次 pane 输出并决定直通 / 暂停 / 合并。
+    ///
+    /// 1820.log 的 Codex CUP 洪水（单 pane ~1000 事件/秒）不能每条都进
+    /// `PaneOutput` 队列：超过 1s 阈值后先发 `refresh-client -A '%N:pause'`，
+    /// 暂停生效前的余量合并成一次事件；1s 后自动 `continue` 再按阈值判断。
+    fn note_pane_output(&mut self, pane: PaneId, content: &[u8]) {
+        let now = Instant::now();
+        let mut resume_backlog: Option<Vec<u8>> = None;
+        let mut dispatch_pause = false;
+        let mut direct = false;
+        {
+            let flow = self.flow.entry(pane).or_default();
+            if flow.window_start.is_none() {
+                flow.window_start = Some(now);
+            }
+            if now.duration_since(flow.window_start.unwrap()) >= Duration::from_secs(1) {
+                flow.window_start = Some(now);
+                flow.events = 0;
+            }
+            flow.events += 1;
+
+            if let Some(resume_at) = flow.resume_at {
+                if now >= resume_at {
+                    flow.resume_at = None;
+                    let mut backlog = std::mem::take(&mut flow.suppressed);
+                    append_capped(&mut backlog, content, MAX_PANE_OUTPUT_BYTES);
+                    resume_backlog = Some(backlog);
+                }
+            }
+            if flow.events > PAUSE_OUTPUT_EVENT_THRESHOLD && flow.resume_at.is_none() {
+                flow.resume_at = Some(now + PAUSE_RESUME_AFTER);
+                dispatch_pause = true;
+            }
+            if resume_backlog.is_none() && flow.resume_at.is_some() {
+                append_capped(&mut flow.suppressed, content, MAX_PANE_OUTPUT_BYTES);
+            } else if resume_backlog.is_none() {
+                direct = true;
+            }
+        }
+        if let Some(backlog) = resume_backlog {
+            self.paused_panes.remove(&pane);
+            self.push_pane_output(pane, backlog);
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+            tracing::info!(
+                target: "muxterm::tmux::pause",
+                pane = pane.0,
+                "恢复 %N 输出（refresh-client -A continue）"
+            );
+        }
+        if dispatch_pause {
+            self.paused_panes.insert(pane);
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, true));
+            tracing::info!(
+                target: "muxterm::tmux::pause",
+                pane = pane.0,
+                "输出超过 {PAUSE_OUTPUT_EVENT_THRESHOLD}/s，refresh-client -A '%N:pause'"
+            );
+        }
+        if direct {
+            self.push_pane_output(pane, content.to_vec());
+        }
+    }
+
+    /// 把一段 pane 字节追加进核心缓冲并产生一个 `PaneOutput` 事件。
+    fn push_pane_output(&mut self, pane: PaneId, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        append_capped(
+            self.outputs.entry(pane).or_default(),
+            &data,
+            MAX_PANE_OUTPUT_BYTES,
+        );
+        self.events
+            .push_back(StateChange::PaneOutput { pane, data });
+        self.trim_event_queue();
+    }
+
+    /// 收到 `%pause`/`%continue` 时把合并缓冲立即交付（暂停期间不丢字节）。
+    fn flush_suppressed_output(&mut self, pane: PaneId) {
+        let suppressed = std::mem::take(&mut self.flow.entry(pane).or_default().suppressed);
+        if !suppressed.is_empty() {
+            self.push_pane_output(pane, suppressed);
+        }
+    }
+
     /// abort/卡死路径：按 `-L socket` 强制 kill-server，回收残留 tmux。
     fn force_cleanup_tmux_server(&self) {
         let mut socket: Option<&str> = None;
@@ -505,14 +613,14 @@ impl TmuxRuntime {
                     if self.initial_capture_pending.contains(&pane) {
                         let buf = self.initial_capture_buf.entry(pane).or_default();
                         append_capped(buf, &content, MAX_PANE_OUTPUT_BYTES);
-                        tracing::debug!(
+                        tracing::trace!(
                             target: "muxterm::tmux",
                             pane = pane.0,
                             len = content.len(),
                             "attach 快照查询期间暂存实时 %output"
                         );
                     } else {
-                        tracing::debug!(
+                        tracing::trace!(
                             target: "muxterm::tmux",
                             pane = pane.0,
                             "attach 启动 prompt 已忽略（等待 capture 快照）"
@@ -520,22 +628,13 @@ impl TmuxRuntime {
                     }
                     return;
                 }
-                tracing::debug!(
+                tracing::trace!(
                     target: "muxterm::tmux",
                     pane = pane.0,
                     len = content.len(),
                     "实时 %output 交付"
                 );
-                append_capped(
-                    self.outputs.entry(pane).or_default(),
-                    &content,
-                    MAX_PANE_OUTPUT_BYTES,
-                );
-                self.events.push_back(StateChange::PaneOutput {
-                    pane,
-                    data: content,
-                });
-                self.trim_event_queue();
+                self.note_pane_output(pane, &content);
             }
             Message::LayoutChange {
                 window,
@@ -682,32 +781,30 @@ impl TmuxRuntime {
             Message::ExtendedOutput { pane, content, .. } => {
                 // pause-after 下的 %output 新形式：内容与 %output 一样是 pane
                 // 增量字节，必须走同一条累积/交付路径，否则暂停恢复后丢输出。
-                tracing::debug!(
+                tracing::trace!(
                     target: "muxterm::tmux",
                     pane = pane.0,
                     len = content.len(),
                     "实时 %extended-output 交付"
                 );
-                append_capped(
-                    self.outputs.entry(pane).or_default(),
-                    &content,
-                    MAX_PANE_OUTPUT_BYTES,
-                );
-                self.events.push_back(StateChange::PaneOutput {
-                    pane,
-                    data: content,
-                });
-                self.trim_event_queue();
+                self.note_pane_output(pane, &content);
             }
             Message::Pause { pane, .. } => {
                 // 流控：tmux 暂停该 pane 的输出（control.c `%%pause %%%u`）。
                 if let Some(pane) = pane {
                     self.paused_panes.insert(pane);
+                    if self.flow.entry(pane).or_default().resume_at.is_none() {
+                        self.flow.entry(pane).or_default().resume_at =
+                            Some(Instant::now() + PAUSE_RESUME_AFTER);
+                    }
+                    self.flush_suppressed_output(pane);
                 }
             }
             Message::Continue { pane, .. } => {
                 if let Some(pane) = pane {
                     self.paused_panes.remove(&pane);
+                    self.flush_suppressed_output(pane);
+                    self.flow.entry(pane).or_default().resume_at = None;
                 }
             }
             Message::ResponseBoundary(_) | Message::Unknown { .. } => {
@@ -778,6 +875,32 @@ impl TmuxRuntime {
                         .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
                 }
             }
+        }
+        self.maybe_resume_panes();
+    }
+
+    /// 暂停到期的 pane 定时 `continue`（洪峰停止后没有新输出也要恢复）。
+    fn maybe_resume_panes(&mut self) {
+        let now = Instant::now();
+        let due: Vec<PaneId> = self
+            .flow
+            .iter()
+            .filter(|(_, f)| f.resume_at.map(|at| now >= at).unwrap_or(false))
+            .map(|(pane, _)| *pane)
+            .collect();
+        for pane in due {
+            self.paused_panes.remove(&pane);
+            self.flow.entry(pane).or_default().resume_at = None;
+            let suppressed = std::mem::take(&mut self.flow.entry(pane).or_default().suppressed);
+            if !suppressed.is_empty() {
+                self.push_pane_output(pane, suppressed);
+            }
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+            tracing::info!(
+                target: "muxterm::tmux::pause",
+                pane = pane.0,
+                "暂停到期，自动 %continue"
+            );
         }
     }
 
@@ -1478,6 +1601,33 @@ impl Runtime for TmuxRuntime {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // attach 保真（1820.log 白屏 = 快照没进缓冲）：等所有已知 pane 的
+        // capture-pane 快照完成后再标记 Connected，前端首次取事件即拿到种子。
+        if is_attach {
+            let capture_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                self.pump_events();
+                let known: Vec<PaneId> = self.panes.iter().map(|p| p.id).collect();
+                if !known.is_empty()
+                    && known
+                        .iter()
+                        .all(|pane| self.initial_capture_done.contains(pane))
+                {
+                    break;
+                }
+                if std::time::Instant::now() >= capture_deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            tracing::info!(
+                target: "muxterm::tmux::seed",
+                panes = self.initial_capture_done.len(),
+                bytes = self.outputs.values().map(Vec::len).sum::<usize>(),
+                "attach 初始快照已进入 pane_output（Surface 非空）"
+            );
         }
 
         // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
