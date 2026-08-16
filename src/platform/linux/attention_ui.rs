@@ -37,6 +37,8 @@ pub fn tab_prefix(status: Option<PaneStatus>) -> &'static str {
 /// 通知出口（测试永远注入 RecordingSink，生产 GioSink fail-soft）。
 pub trait NotificationSink {
     fn notify_blocked(&self, workspace_id: &str, body: &str);
+    /// 后台 pane 任务完成（OSC 133 D）通知。
+    fn notify_done(&self, workspace_id: &str, body: &str);
 }
 
 /// 无操作 sink。
@@ -44,6 +46,7 @@ pub struct NullSink;
 
 impl NotificationSink for NullSink {
     fn notify_blocked(&self, _workspace_id: &str, _body: &str) {}
+    fn notify_done(&self, _workspace_id: &str, _body: &str) {}
 }
 
 /// 记录型 sink（测试断言用）。
@@ -64,6 +67,12 @@ impl NotificationSink for RecordingSink {
             .borrow_mut()
             .push(format!("{workspace_id}: {body}"));
     }
+
+    fn notify_done(&self, workspace_id: &str, body: &str) {
+        self.log
+            .borrow_mut()
+            .push(format!("{workspace_id}: {body}"));
+    }
 }
 
 /// Gio 通知 sink：无通知 daemon 时 no-op，绝不 panic。
@@ -79,6 +88,15 @@ impl GioSink {
 
 impl NotificationSink for GioSink {
     fn notify_blocked(&self, workspace_id: &str, body: &str) {
+        let Some(app) = &self.app else {
+            return;
+        };
+        let notification = gtk4::gio::Notification::new(workspace_id);
+        notification.set_body(Some(body));
+        app.send_notification(Some(workspace_id), &notification);
+    }
+
+    fn notify_done(&self, workspace_id: &str, body: &str) {
         let Some(app) = &self.app else {
             return;
         };

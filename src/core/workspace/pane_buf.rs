@@ -34,13 +34,16 @@ impl PaneBuf {
         }
     }
 
-    /// 喂入 pane 输出（自动 resize），返回本轮注意力信号。
+    /// 喂入 pane 输出（自动 resize）。
+    ///
+    /// 注意力信号留在 `TerminalState`，由 [`Self::take_attention_signals`]
+    /// 取走；这里**不** drain（`Workspace::feed_events` 丢弃返回值会丢信号）。
     pub fn feed(&mut self, bytes: &[u8], cols: u16, rows: u16) -> Vec<AttentionSignal> {
         self.terminal
             .resize(usize::from(cols.max(1)), usize::from(rows.max(1)));
         append_capped(&mut self.byte_ring, bytes, MAX_PANE_OUTPUT_BYTES);
         self.terminal.feed(bytes);
-        self.terminal.take_attention_signals()
+        Vec::new()
     }
 
     /// 取走尚未消费的注意力信号（GUI 在 refresh 后调用）。
