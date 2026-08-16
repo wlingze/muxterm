@@ -23,11 +23,10 @@ use crate::core::model::layout::SplitDir;
 use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::Task;
 use crate::core::quickconnect::model::QuickConnect;
-use crate::core::runtime::shell::ShellRuntime;
-use crate::core::runtime::tmux::TmuxRuntime;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
+use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -208,19 +207,9 @@ impl AppWindow {
         let mut pool =
             WorkspacePool::new(WorkspacePoolPolicy::new(cfg.pool.max_slots.max(1) as usize));
         let startup_id = if requested_tmux {
-            let id = WorkspaceId::new("local", None, session.as_deref().unwrap_or(""), "tmux", "");
-            let name = session.clone().unwrap_or_else(|| "muxterm".into());
-            let socket = socket.clone();
-            let session = session.clone();
-            let opened = rt.block_on(pool.open(id.clone(), name, move |_| {
-                let runtime: std::boxed::Box<dyn crate::core::model::Runtime> =
-                    if let Some(s) = &session {
-                        std::boxed::Box::new(TmuxRuntime::new_with_attach(socket.as_deref(), s))
-                    } else {
-                        std::boxed::Box::new(TmuxRuntime::new(socket.as_deref()))
-                    };
-                runtime
-            }));
+            let spec = WorkspaceSpec::local_tmux(session.clone(), socket.clone());
+            let id = spec.id();
+            let opened = rt.block_on(pool.open_spec(&spec));
             match opened {
                 Ok(_) => Some(id),
                 Err(e) => {
@@ -232,12 +221,10 @@ impl AppWindow {
             None
         };
         let startup_id = startup_id.unwrap_or_else(|| {
-            let id = WorkspaceId::new("local", None, "", "shell", "");
-            rt.block_on(pool.open(id.clone(), "local".into(), |_| {
-                std::boxed::Box::new(ShellRuntime::new("$SHELL", ""))
-                    as std::boxed::Box<dyn crate::core::model::Runtime>
-            }))
-            .expect("local runtime 必须可用");
+            let spec = WorkspaceSpec::local_shell("");
+            let id = spec.id();
+            rt.block_on(pool.open_spec(&spec))
+                .expect("local runtime 必须可用");
             id
         });
 
@@ -1781,13 +1768,10 @@ fn start_local_shell(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
         }
     }
     let path = config.path.clone();
+    let spec = WorkspaceSpec::local_shell(path);
     let mut s = state.borrow_mut();
     let UiState { rt, pool, .. } = &mut *s;
-    let fut = pool.open(id.clone(), session.clone(), move |_| {
-        std::boxed::Box::new(ShellRuntime::new("$SHELL", &path))
-            as std::boxed::Box<dyn crate::core::model::Runtime>
-    });
-    let opened = rt.block_on(fut);
+    let opened = rt.block_on(pool.open_spec(&spec));
     match opened {
         Ok(_) => {
             s.workspace_sockets.insert(id.clone(), None);
@@ -1813,7 +1797,7 @@ fn step_project_flow(
         }
         ProjectConnectState::CreateDetached { session, directory } => {
             let (transport, target) = config.transport.create_backend();
-            match CoreBridge::create_tmux_session(transport, target, None, &session, &directory) {
+            match CoreBridge::create_workspace(transport, target, None, &session, &directory) {
                 Ok(_) => {
                     flow.create_succeeded();
                     step_project_flow(state, config, flow);
@@ -1861,28 +1845,19 @@ fn attach_tmux(
     }
     let (transport, alias) = config.transport.attach_backend();
     let is_ssh = transport == "tmux-ssh";
-    let alias_owned = alias.map(|s| s.to_string());
-    let session_owned = session.clone();
     let mut s = state.borrow_mut();
     let socket = s.default_socket.clone();
-    let socket_for_runtime = socket.clone();
+    let spec = if is_ssh {
+        WorkspaceSpec::ssh_tmux(
+            alias.expect("SSH alias 必须存在").to_string(),
+            Some(session.clone()),
+            None,
+        )
+    } else {
+        WorkspaceSpec::local_tmux(Some(session.clone()), socket.clone())
+    };
     let UiState { rt, pool, .. } = &mut *s;
-    let fut = pool.open(id.clone(), session.clone(), move |_| {
-        let runtime: std::boxed::Box<dyn crate::core::model::Runtime> = if is_ssh {
-            std::boxed::Box::new(TmuxRuntime::new_ssh_attach(
-                alias_owned.as_deref().unwrap_or(""),
-                None,
-                &session_owned,
-            ))
-        } else {
-            std::boxed::Box::new(TmuxRuntime::new_with_attach(
-                socket_for_runtime.as_deref(),
-                &session_owned,
-            ))
-        };
-        runtime
-    });
-    let opened = rt.block_on(fut);
+    let opened = rt.block_on(pool.open_spec(&spec));
     match opened {
         Ok(_) => {
             s.workspace_sockets.insert(id.clone(), socket);
@@ -2010,7 +1985,7 @@ fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only:
         TmuxAction::NewSession { name } => {
             let session = name.unwrap_or_else(|| "muxterm".into());
             let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            match CoreBridge::create_tmux_session("local", None, socket.as_deref(), &session, &dir)
+            match CoreBridge::create_workspace("local", None, socket.as_deref(), &session, &dir)
             {
                 Ok(created) => connect_target(
                     &st,
@@ -2056,7 +2031,7 @@ fn open_ssh_connect(state: &Rc<RefCell<UiState>>, parent: &Window) {
 
 fn open_ssh_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, alias: String) {
     let sessions =
-        CoreBridge::discover_tmux_sessions("ssh", Some(&alias), None).unwrap_or_default();
+        CoreBridge::discover_workspaces("ssh", Some(&alias), None).unwrap_or_default();
     let items = tmux_dialog::tmux_session_pick_items(&sessions);
     let st = state.clone();
     let win = parent.clone();
@@ -2073,7 +2048,7 @@ fn open_ssh_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, alias: Strin
                 let st = st.clone();
                 crate::platform::linux::pane_switcher::show_rename(&win, "muxterm", move |name| {
                     let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    match CoreBridge::create_tmux_session("ssh", Some(&alias), None, &name, &dir) {
+                    match CoreBridge::create_workspace("ssh", Some(&alias), None, &name, &dir) {
                         Ok(created) => connect_target(
                             &st,
                             TargetConfig::tmux_session(

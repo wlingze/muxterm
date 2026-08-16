@@ -151,7 +151,7 @@ fn project_flow_attach_existing_then_create_then_attach() {
     ));
 
     let (backend, target) = created.transport.create_backend();
-    CoreBridge::create_tmux_session(backend, target, Some(&tmux.socket), "created", dir)
+    CoreBridge::create_workspace(backend, target, Some(&tmux.socket), "created", dir)
         .expect("create detached session");
     create_flow.create_succeeded();
     assert!(tmux.has_session("created"));

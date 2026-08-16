@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::platform::linux::ffi_bridge::{SshHostEntry, TmuxSessionEntry};
+use crate::platform::linux::ffi_bridge::{SshHostEntry, WorkspaceCandidate};
 use crate::platform::linux::pane_switcher;
 use crate::platform::linux::quick_pick::{self, QuickPickItem};
 
@@ -50,7 +50,7 @@ pub fn ssh_host_pick_items(hosts: &[SshHostEntry]) -> Vec<QuickPickItem> {
 }
 
 /// 工作区候选列表（首行永远是新建）。
-pub fn tmux_session_pick_items(sessions: &[TmuxSessionEntry]) -> Vec<QuickPickItem> {
+pub fn tmux_session_pick_items(sessions: &[WorkspaceCandidate]) -> Vec<QuickPickItem> {
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
         id: CREATE_ID.into(),
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn workspace_candidate_pick_items_start_with_create() {
-        let sessions = vec![TmuxSessionEntry {
+        let sessions = vec![WorkspaceCandidate {
             name: "legion".into(),
             windows: 4,
             attached: false,
