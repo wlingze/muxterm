@@ -1,6 +1,6 @@
 //! 主窗口：FFI 驱动的 GTK4 前端。
 //!
-//! - 启动 `CoreBridge`（muxterm_new/connect）
+//! - 启动 `CoreBridge`（connect）
 //! - 16ms 轮询 `poll_events`，分发到 tab / pane
 //! - 快捷键 → `execute(CTask)`
 //! - 退出 → `shutdown()` 或 Drop（`muxterm_free`）
@@ -2177,7 +2177,7 @@ fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only:
                 TargetConfig::tmux_session(session, TargetTransport::Local),
             );
         }
-        TmuxAction::NewSession { name } => {
+        TmuxAction::NewWorkspace { name } => {
             let session = name.unwrap_or_else(|| "muxterm".into());
             let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
             match CoreBridge::create_workspace("local", None, socket.as_deref(), &session, &dir) {
@@ -2230,7 +2230,7 @@ fn open_ssh_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, alias: Strin
     let win = parent.clone();
     crate::platform::linux::quick_pick::show(
         parent,
-        &i18n::tr(Key::ChooseTmuxSession),
+        &i18n::tr(Key::ChooseWorkspace),
         items,
         move |picked| {
             let Some(item) = picked else {

@@ -20,7 +20,7 @@ pub enum TmuxAction {
     /// attach 到已有工作区（按名字）。
     Attach { session: String },
     /// 新建工作区（空名=自动命名）。
-    NewSession { name: Option<String> },
+    NewWorkspace { name: Option<String> },
 }
 
 const CREATE_ID: &str = "__create__";
@@ -124,7 +124,7 @@ where
                 let on_done = on_done.clone();
                 pane_switcher::show_rename(&parent_for_cb, &default_name, move |name| {
                     if let Some(cb) = on_done.borrow_mut().take() {
-                        cb(TmuxAction::NewSession { name: Some(name) });
+                        cb(TmuxAction::NewWorkspace { name: Some(name) });
                     }
                 });
             } else if let Some(cb) = on_done.borrow_mut().take() {
@@ -136,17 +136,17 @@ where
 
 /// 工作区候选（来自 core discovery，产品名不是 tmux session）。
 #[derive(Debug, Clone)]
-pub struct SessionInfo {
+pub struct WorkspaceInfo {
     pub name: String,
     pub created: Option<u64>,
     pub windows: Option<u32>,
 }
 
 /// 列出工作区候选（core discovery，带创建时间与 tab 数）。
-pub fn list_workspace_candidates(socket: Option<&str>) -> Vec<SessionInfo> {
+pub fn list_workspace_candidates(socket: Option<&str>) -> Vec<WorkspaceInfo> {
     crate::core::discovery::list_local_tmux_sessions(socket)
         .into_iter()
-        .map(|s| SessionInfo {
+        .map(|s| WorkspaceInfo {
             name: s.name,
             created: Some(s.created),
             windows: Some(s.windows),
@@ -154,7 +154,7 @@ pub fn list_workspace_candidates(socket: Option<&str>) -> Vec<SessionInfo> {
         .collect()
 }
 
-fn format_session_detail(s: &SessionInfo) -> String {
+fn format_session_detail(s: &WorkspaceInfo) -> String {
     let age = s
         .created
         .map(|ts| relative_age_label(ts, now_secs()))
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn format_session_detail_contains_windows() {
-        let s = SessionInfo {
+        let s = WorkspaceInfo {
             name: "main".into(),
             created: Some(now_secs().saturating_sub(7200)),
             windows: Some(3),

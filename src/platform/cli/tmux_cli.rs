@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn envelope_ok() {
-        let env = CliEnvelope::ok(serde_json::json!({"sessions": []}));
+        let env = CliEnvelope::ok(serde_json::json!({"workspaces": []}));
         let json = serde_json::to_string(&env).unwrap();
         assert!(json.contains("\"ok\":true"));
         assert!(json.contains("\"data\""));

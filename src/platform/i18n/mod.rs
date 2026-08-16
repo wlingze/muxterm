@@ -38,7 +38,7 @@ define_text_keys! {
     ChooseRemoteDirectory => "choose_remote_directory",
     ChooseSshHost => "choose_ssh_host",
     ChooseTmuxDirectory => "choose_tmux_directory",
-    ChooseTmuxSession => "choose_tmux_session",
+    ChooseWorkspace => "choose_tmux_session",
     AttachCreateTmux => "attach_create_tmux",
     ClosePane => "close_pane",
     ClosePaneDetail => "close_pane_detail",

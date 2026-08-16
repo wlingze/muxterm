@@ -165,7 +165,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                             })
                         })
                         .collect();
-                    Ok(serde_json::json!({"sessions": arr}))
+                    Ok(serde_json::json!({"workspaces": arr}))
                 }
                 Target::Ssh { alias } => {
                     let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
@@ -186,7 +186,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                             })
                         })
                         .collect();
-                    Ok(serde_json::json!({"sessions": arr}))
+                    Ok(serde_json::json!({"workspaces": arr}))
                 }
             }
         }
