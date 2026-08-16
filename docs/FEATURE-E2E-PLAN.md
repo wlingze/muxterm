@@ -6,6 +6,8 @@
 > 先读：`docs/WORKSPACE.md` §6、`docs/SURFACE.md`、`docs/TESTING.md` §5.4/§5.5、`docs/WORKSPACE-PLAN.md` W13–W14、`AGENTS.md`
 >
 > **测试已经写好且必须先红。禁止改断言、阈值、token 名字来「绿」。**
+>
+> W13/W14 落地后的 dogfood 续工：[`W15-PLAN.md`](W15-PLAN.md)。愿景缺口：[`W16-PLAN.md`](W16-PLAN.md) / [`VISION-AUDIT.md`](VISION-AUDIT.md)。
 
 ---
 
@@ -15,7 +17,7 @@
 
 - `linux_live_e2e`：空 session 再 echo
 - `linux_search_e2e`：Mock PaneBuf，不经过 AppWindow attach
-- `linux_attention_e2e`：`test_feed_replica` 注入 BEL
+- `linux_attention_e2e`：`test_feed_replica` 注入 BEL（chrome 回归；live BEL+peek+回复是 W15e `linux_feature_e2e`）
 - `linux_ssh_e2e`：CoreBridge 事件喂进 **另一个 Mock Workspace**
 - `linux_render_e2e`：静态 `codex-tui-sanitized.txt` feed 进裸 PaneView
 - 1820.log：118 608 条 `实时 %output 交付`，0 `%pause`，仍看不出播种失败
@@ -199,3 +201,5 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 - [ ] 英文 commit，未 push
 
 不要做：Herdr Runtime、重做 F 像素、杀默认 tmux、把 Window 映射成 tmux window。
+
+W16 不在本文件展开，见 [`W16-PLAN.md`](W16-PLAN.md)。

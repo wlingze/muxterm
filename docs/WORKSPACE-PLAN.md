@@ -1,12 +1,12 @@
 # WORKSPACE-PLAN.md — Codex 实施合同（工作区架构）
 
-> **当前执行计划。** W1–W11 已落地（HEAD `7a4edd4`）。W12 = W10 收口漏项；W13 = attach 保真（1820.log）；W14 = 功能 e2e（搜索/通知/SSH/mock-codex/tail-f）。
+> **当前执行计划。** W1–W14 已落地。**现在做 W15**（[`W15-PLAN.md`](W15-PLAN.md)）。W15 绿了立刻做 **W16**（[`W16-PLAN.md`](W16-PLAN.md)，愿景缺口：历史播种 / 断线水印 / 注意力语义）。审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。
 > 架构：[`WORKSPACE.md`](WORKSPACE.md)（先读完再写代码，尤其 §6 接口）
 > 像素契约：[`SURFACE.md`](SURFACE.md)（F 已交，live 路径禁止 dump）
-> 测试契约：[`TESTING.md`](TESTING.md) §5.4 attach + §5.5 功能 e2e
+> 测试契约：[`TESTING.md`](TESTING.md) §5.4 attach + §5.5 功能 e2e + §5.6 W15 + §5.7 W16
 > 功能测试规格：[`FEATURE-E2E-PLAN.md`](FEATURE-E2E-PLAN.md)
 > 分支：`feat/linux-quickconnect-ui`（**不 push**）
-> 修订：2026-08-16 18:50 CST（`2026-08-16T18:50:00+08:00`）
+> 修订：2026-08-17 02:22 CST（`2026-08-17T02:22:54+08:00`）
 
 ---
 
@@ -497,6 +497,24 @@ W9–W11 的 `rg` 验收过了，但规格层没做完。真机 attach 白屏/�
 4. `/usr/bin/tail -f` 追加行进缓冲。
 5. SSH：`TmuxRuntime::new_ssh_attach` + 远端 `-L`；禁止 MockRuntime。
 6. tracing target：`muxterm::tmux::seed` / `pause` / `layout` / `surface` / `search` / `notify`。`实时 %output 交付` 不得再 `debug!`。
+
+---
+
+### W15 — dogfood UX + 通知 peek/回复
+
+用户 2026-08-17：attach/切 tab 可用。剩下流量永远 `B/s`、搜索跳转不能用、面板撑破窗口、SSH 冻整窗、SSH 无红绿灯。另外通知要能 **选中 → 渲染该 pane → 快速回复**。
+
+规格与测试清单：[`W15-PLAN.md`](W15-PLAN.md)。顺序 **a → b → e → c → d**，不要和 Herdr/像素混 commit。
+
+| 项 | 抓住 |
+|---|---|
+| a 流量 | `format_bytes` 1024 一位小数；popover 速率 + 累计；禁止把累计标成 `B/s` |
+| b 搜索 | 跨 tab `SwitchTab`+`SwitchPane`；关面板；长行 ellipsize，面板宽 ≤ 窗口 |
+| e 通知 | 真 `%output` BEL → `notify_blocked`；Attention 小 VTE 是该 pane；peek 输入进 tmux `capture-pane` |
+| c 超时 | `open_spec` 离开 GTK 线程；失败写 `notification_log`；`test_connect_target` 500ms 内把控制权交还 |
+| d SSH 灯 | `ssh_probe_args` BatchMode + ConnectTimeout=2；QC 行 `muxterm-ssh-dot-ok/err` |
+
+**Commit 建议：** 一逻辑一英文 commit。不 push。
 
 ---
 
