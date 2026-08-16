@@ -31,7 +31,7 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 
 use muxterm::core::config::Config;
-use muxterm::platform::linux::ffi_bridge::{BridgeLayout, BridgeTab, SshHostEntry};
+use muxterm::platform::linux::ffi_bridge::{BridgeTab, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
