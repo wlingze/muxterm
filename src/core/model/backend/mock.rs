@@ -120,6 +120,10 @@ impl State for MockRuntime {
 
 #[async_trait]
 impl Runtime for MockRuntime {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn connect(&mut self) -> anyhow::Result<()> {
         self.status = BackendStatus::Connected;
         self.events

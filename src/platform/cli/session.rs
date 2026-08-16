@@ -15,24 +15,12 @@ fn socket_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
 
-/// 把 session name 转成合法文件名（替换不安全字符）。
-fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
 /// session name → unix socket 路径。
 ///
 /// `/tmp/muxterm-<name>.sock` 或 `$XDG_RUNTIME_DIR/muxterm-<name>.sock`
 pub fn session_socket_path(name: &str) -> PathBuf {
-    socket_dir().join(format!("muxterm-{}.sock", sanitize_name(name)))
+    // W12：默认路径在 core（DaemonRuntime::default_socket_path），这里只做薄包装。
+    crate::core::runtime::DaemonRuntime::default_socket_path(name)
 }
 
 /// 列出所有活跃 session 的 socket 路径。

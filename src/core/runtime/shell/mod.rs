@@ -604,6 +604,10 @@ impl State for ShellRuntime {
 
 #[async_trait]
 impl Runtime for ShellRuntime {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn connect(&mut self) -> Result<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());

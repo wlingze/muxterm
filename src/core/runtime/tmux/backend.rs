@@ -319,6 +319,12 @@ impl TmuxRuntime {
         backend
     }
 
+    /// 测试用：当前 connect 模式（attach / new-session）。
+    #[cfg(test)]
+    pub fn test_connect_mode(&self) -> Option<&ConnectMode> {
+        self.config.mode.as_ref()
+    }
+
     /// 创建新 session，并指定起始工作目录（session 名由 tmux 自动生成）。
     pub fn new_with_cwd(socket: Option<&str>, start_directory: Option<&str>) -> Self {
         let mut backend = Self::new(socket);
@@ -1486,6 +1492,10 @@ impl State for TmuxRuntime {
 
 #[async_trait]
 impl Runtime for TmuxRuntime {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn status_subscriptions_active(&self) -> bool {
         self.status_subscriptions_active
     }

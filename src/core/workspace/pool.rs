@@ -179,8 +179,9 @@ impl WorkspacePool {
     ) -> anyhow::Result<&mut Workspace> {
         let id = spec.id();
         let name = spec.name();
-        let runtime = spec.build_runtime();
-        self.open(id, name, move |_| runtime).await
+        // build_runtime 放进 create 闭包：复用已有 slot 时零构造
+        // （对得上 reopen_same_id_reuses_without_new_runtime）。
+        self.open(id, name, move |_| spec.build_runtime()).await
     }
 
     /// 把某工作区设为前台；其余降为后台（不 shutdown）。
