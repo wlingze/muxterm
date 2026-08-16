@@ -353,6 +353,15 @@ pub fn list_panes(window: TabId) -> TmuxCommand {
     build(&[window_target(window)], "list-panes")
 }
 
+/// attach 播种：可见屏 + 最多 `history_lines` 行 scrollback。
+///
+/// tmux `capture-pane -S`：0 = 可见区第一行，负数 = 历史。
+/// 用 `-S -N` 而不是无界 `-S -`，避免一次灌整段 history。
+pub fn capture_pane_with_history(pane: PaneId, history_lines: u32) -> TmuxCommand {
+    let n = history_lines.max(1);
+    TmuxCommand::from_raw(format!("capture-pane -e -p -S -{n} -t %{}", pane.0))
+}
+
 /// display-message -p -t <pane> '<format>'。
 pub fn display_message(target: PaneId, format: &str) -> TmuxCommand {
     build(
@@ -990,6 +999,13 @@ fn input_roundtrip_dcs_passthrough() {
     // tmux passthrough / kitty keyboard：ESC P ... ESC \ 不应被破坏
     let seq = b"\x1bPtmux;\x1b\x1b]1337;SetUserVar=X=\x07\x1b\\";
     assert_eq!(roundtrip_bytes(seq), seq);
+}
+
+#[test]
+fn capture_pane_with_history_requests_scrollback() {
+    let c = capture_pane_with_history(PaneId(3), 10_000);
+    assert_eq!(c.as_str(), "capture-pane -e -p -S -10000 -t %3");
+    assert_eq!(c.to_line(), "capture-pane -e -p -S -10000 -t %3\n");
 }
 
 #[test]

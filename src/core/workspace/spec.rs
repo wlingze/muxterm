@@ -21,6 +21,8 @@ pub struct WorkspaceSpec {
     pub socket: Option<String>,
     /// tmux 模式下是否强制 new-session（false = attach 已存在候选）。
     pub create: bool,
+    /// attach 初始 capture 的历史行数（W16a：`capture-pane -S -N`）。
+    pub scrollback_lines: u32,
 }
 
 impl WorkspaceSpec {
@@ -33,6 +35,7 @@ impl WorkspaceSpec {
             path: String::new(),
             socket,
             create: false,
+            scrollback_lines: 10_000,
         }
     }
 
@@ -52,6 +55,7 @@ impl WorkspaceSpec {
             path: String::new(),
             socket,
             create: false,
+            scrollback_lines: 10_000,
         }
     }
 
@@ -64,7 +68,14 @@ impl WorkspaceSpec {
             path: path.into(),
             socket: None,
             create: false,
+            scrollback_lines: 10_000,
         }
+    }
+
+    /// 设置 attach 初始 capture 的历史行数（W16a）。
+    pub fn with_scrollback_lines(mut self, lines: u32) -> Self {
+        self.scrollback_lines = lines.max(1);
+        self
     }
 
     /// 稳定 WorkspaceId。
@@ -92,29 +103,41 @@ impl WorkspaceSpec {
         match self.runtime.as_str() {
             "tmux" if self.transport == "ssh" => {
                 let alias = self.alias.as_deref().unwrap_or("");
+                let lines = self.scrollback_lines;
                 if self.session.is_empty() {
-                    Box::new(TmuxRuntime::new_ssh(alias, self.socket.as_deref()))
+                    let mut rt = TmuxRuntime::new_ssh(alias, self.socket.as_deref());
+                    rt.set_scrollback_lines(lines);
+                    Box::new(rt)
                 } else {
-                    Box::new(TmuxRuntime::new_ssh_attach(
+                    let mut rt = TmuxRuntime::new_ssh_attach(
                         alias,
                         self.socket.as_deref(),
                         &self.session,
-                    ))
+                    );
+                    rt.set_scrollback_lines(lines);
+                    Box::new(rt)
                 }
             }
             "tmux" => {
+                let lines = self.scrollback_lines;
                 if self.session.is_empty() {
-                    Box::new(TmuxRuntime::new(self.socket.as_deref()))
+                    let mut rt = TmuxRuntime::new(self.socket.as_deref());
+                    rt.set_scrollback_lines(lines);
+                    Box::new(rt)
                 } else if self.create {
-                    Box::new(TmuxRuntime::new_with_session_name(
+                    let mut rt = TmuxRuntime::new_with_session_name(
                         self.socket.as_deref(),
                         &self.session,
-                    ))
+                    );
+                    rt.set_scrollback_lines(lines);
+                    Box::new(rt)
                 } else {
-                    Box::new(TmuxRuntime::new_with_attach(
+                    let mut rt = TmuxRuntime::new_with_attach(
                         self.socket.as_deref(),
                         &self.session,
-                    ))
+                    );
+                    rt.set_scrollback_lines(lines);
+                    Box::new(rt)
                 }
             }
             "daemon" => {
@@ -207,6 +230,7 @@ mod tests {
             path: "/tmp/x".into(),
             socket: None,
             create: false,
+            scrollback_lines: 10_000,
         };
         let rt = spec.build_runtime();
         assert_eq!(rt.workspace_runtime(), "shell");
