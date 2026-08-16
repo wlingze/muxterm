@@ -372,12 +372,9 @@ mod tests {
             Language::SimplifiedChinese
         );
         assert_eq!(Language::from_tag("en_US.UTF-8"), Language::English);
-        assert_eq!(
-            tr_in(Language::English, Key::TmuxWindows),
-            "{{count}} windows"
-        );
+        assert_eq!(tr_in(Language::English, Key::TmuxWindows), "{{count}} tabs");
         set_language(Language::English);
-        assert_eq!(tr_args(Key::TmuxWindows, &[("count", "3")]), "3 windows");
+        assert_eq!(tr_args(Key::TmuxWindows, &[("count", "3")]), "3 tabs");
         assert_eq!(
             tr_args(Key::DefaultNameHint, &[("name", "muxterm")]),
             "Default: muxterm"

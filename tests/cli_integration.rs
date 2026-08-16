@@ -44,7 +44,7 @@ fn cli_list_workspaces_json() {
         OutputFormat::Json,
     );
     assert!(out.contains(r#""name":"local""#));
-    assert!(out.contains(r#""attached":true"#));
+    assert!(out.contains(r#""runtime":"shell""#));
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn cli_capture_pane_with_lines_limit() {
 fn cli_list_layout_text() {
     let model = make_model();
     let out = format_output(model.state(), &CliCommand::ListLayout, OutputFormat::Text);
-    assert!(out.contains("window"));
+    assert!(out.contains("workspace"));
     assert!(out.contains("tab"));
     assert!(out.contains("@1"));
 }
@@ -530,8 +530,10 @@ fn cli_tmux_backend_connect_and_list() {
 
     let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // tmux runtime 的后台 I/O task 需要持续被轮询：必须 multi_thread。
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(2)
         .build()
         .unwrap();
     let result = rt.block_on(model.connect());
@@ -572,8 +574,10 @@ fn cli_tmux_backend_new_window() {
 
     let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // tmux runtime 的后台 I/O task 需要持续被轮询：必须 multi_thread。
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(2)
         .build()
         .unwrap();
     if rt.block_on(model.connect()).is_err() {
@@ -593,10 +597,19 @@ fn cli_tmux_backend_new_window() {
             workdir: None,
         })
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let _ = model.poll_events();
+    // 轮询直到 tab 数增加（tmux 异步回推 %window-add）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut grew = false;
+    while std::time::Instant::now() < deadline {
+        let _ = model.refresh();
+        if model.state().tabs().len() > initial {
+            grew = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
-    assert!(model.state().tabs().len() > initial, "新 tab 应建立");
+    assert!(grew, "新 tab 应建立");
 
     let _ = rt.block_on(model.shutdown());
     let _ = std::process::Command::new("tmux")
@@ -619,8 +632,10 @@ fn cli_tmux_backend_send_keys() {
 
     let backend = TmuxRuntime::new(Some(&socket));
     let mut model = TerminalModel::new(Box::new(backend));
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // tmux runtime 的后台 I/O task 需要持续被轮询：必须 multi_thread。
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(2)
         .build()
         .unwrap();
     if rt.block_on(model.connect()).is_err() {

@@ -46,12 +46,10 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
     // 有 tmux_socket → TmuxRuntime（-CC 连接 tmux），否则 ShellRuntime
     let runtime: Box<dyn crate::core::model::Runtime> = if let Some(ref ts) = tmux_socket {
         // 检查 tmux server 是否已有同名 session
-        let existing = std::process::Command::new("tmux")
-            .args(["-L", ts, "list-sessions", "-F", "#{session_name}"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+        let existing = crate::core::discovery::list_local_tmux_sessions(Some(ts))
+            .into_iter()
+            .find(|s| s.name == name)
+            .map(|s| s.name);
         let runtime = if existing.as_deref() == Some(&name) {
             // session 已存在 → attach
             crate::core::runtime::tmux::TmuxRuntime::new_with_attach(Some(ts), &name)
