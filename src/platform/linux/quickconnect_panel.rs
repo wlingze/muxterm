@@ -38,6 +38,10 @@ type PeekBytesCb = Box<dyn Fn(String, u32) -> (u16, u16, Vec<u8>)>;
 type SearchCb = Box<dyn Fn(&str) -> Vec<SearchRow>>;
 
 thread_local! {
+    static PEEK_VIEW: RefCell<Option<Rc<PaneView>>> = const { RefCell::new(None) };
+}
+
+thread_local! {
     static PANEL_DISMISS: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
@@ -49,6 +53,17 @@ pub fn close_current() {
         if let Some(dismiss) = slot.borrow().as_ref() {
             dismiss();
         }
+    });
+}
+
+/// 测试用：向当前面板的 Attention 小 VTE 注入按键（走 `connect_input` → `on_send_input`）。
+pub fn test_emit_peek_input(data: &[u8]) {
+    PEEK_VIEW.with(|slot| {
+        let view = slot.borrow();
+        let view = view
+            .as_ref()
+            .expect("W15e: peek PaneView 未登记（面板未打开）");
+        view.test_emit_input(data);
     });
 }
 
@@ -227,6 +242,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
 
     // Attention 小 VTE（E6）：镜像、scrollback 0、replica 播种；仅 Attention tab 显示。
     let peek_view = Rc::new(PaneView::new(0, &theme, &font, true, 0));
+    PEEK_VIEW.with(|s| *s.borrow_mut() = Some(peek_view.clone()));
     let peek_sw = ScrolledWindow::builder()
         .vexpand(true)
         .hexpand(true)
