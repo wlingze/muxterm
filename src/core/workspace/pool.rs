@@ -172,6 +172,17 @@ impl WorkspacePool {
             .workspace)
     }
 
+    /// 按产品规格打开工作区（platform 只传字段，Runtime 构造在 core）。
+    pub async fn open_spec(
+        &mut self,
+        spec: &crate::core::workspace::spec::WorkspaceSpec,
+    ) -> anyhow::Result<&mut Workspace> {
+        let id = spec.id();
+        let name = spec.name();
+        let runtime = spec.build_runtime();
+        self.open(id, name, move |_| runtime).await
+    }
+
     /// 把某工作区设为前台；其余降为后台（不 shutdown）。
     pub fn activate(&mut self, id: &WorkspaceId) -> Option<&mut Workspace> {
         if !self.slots.contains_key(id) {

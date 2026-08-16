@@ -477,9 +477,9 @@ pub struct SshHostEntry {
     pub user: String,
 }
 
-/// core tmux discovery 返回的 session 摘要。
+/// core discovery 返回的工作区候选摘要（产品名，不是 tmux session）。
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
-pub struct TmuxSessionEntry {
+pub struct WorkspaceCandidate {
     pub name: String,
     pub windows: u32,
     pub attached: bool,
@@ -561,11 +561,11 @@ impl CoreBridge {
     }
 
     /// 发现本地或 SSH 工作区候选。
-    pub fn discover_tmux_sessions(
+    pub fn discover_workspaces(
         runtime_type: &str,
         target: Option<&str>,
         socket: Option<&str>,
-    ) -> anyhow::Result<Vec<TmuxSessionEntry>> {
+    ) -> anyhow::Result<Vec<WorkspaceCandidate>> {
         let bt_c = CString::new(runtime_type).unwrap_or_default();
         let target_c = cstr_pair(target);
         let sock_c = cstr_pair(socket);
@@ -578,12 +578,12 @@ impl CoreBridge {
                 10_000,
             )
         })?;
-        let sessions: Vec<TmuxSessionEntry> = serde_json::from_value(value["sessions"].clone())?;
+        let sessions: Vec<WorkspaceCandidate> = serde_json::from_value(value["sessions"].clone())?;
         Ok(sessions)
     }
 
     /// 创建 detached 工作区（Project attach→create fallback 用）。
-    pub fn create_tmux_session(
+    pub fn create_workspace(
         runtime_type: &str,
         target: Option<&str>,
         socket: Option<&str>,
