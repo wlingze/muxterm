@@ -116,6 +116,10 @@ struct UiState {
     ssh_reach_cache: std::collections::HashMap<String, (SshReach, Instant)>,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
+    /// 终端区 Overlay：LayoutHost.root_box 是主 child，回底按钮浮在上面。
+    layout_overlay: gtk4::Overlay,
+    /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
+    jump_latest: gtk4::Button,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -219,7 +223,8 @@ impl AppWindow {
         let mut pool =
             WorkspacePool::new(WorkspacePoolPolicy::new(cfg.pool.max_slots.max(1) as usize));
         let startup_id = if requested_tmux {
-            let spec = WorkspaceSpec::local_tmux(session.clone(), socket.clone());
+            let spec = WorkspaceSpec::local_tmux(session.clone(), socket.clone())
+                .with_scrollback_lines(cfg.scrollback.lines);
             let id = spec.id();
             let opened = rt.block_on(pool.open_spec(&spec));
             match opened {
@@ -233,7 +238,7 @@ impl AppWindow {
             None
         };
         let startup_id = startup_id.unwrap_or_else(|| {
-            let spec = WorkspaceSpec::local_shell("");
+            let spec = WorkspaceSpec::local_shell("").with_scrollback_lines(cfg.scrollback.lines);
             let id = spec.id();
             rt.block_on(pool.open_spec(&spec))
                 .expect("local runtime 必须可用");
@@ -279,12 +284,27 @@ impl AppWindow {
         status.container.add_css_class("status-bar");
 
         // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
-        root.append(
-            &pixel_cache
-                .get(&startup_id)
-                .expect("startup layout")
-                .root_box,
+        // 终端区包一层 Overlay：回底按钮浮在 VTE 右下角（W16a）。
+        let layout_overlay = gtk4::Overlay::new();
+        layout_overlay.set_hexpand(true);
+        layout_overlay.set_vexpand(true);
+        layout_overlay.set_child(
+            Some(
+                &pixel_cache
+                    .get(&startup_id)
+                    .expect("startup layout")
+                    .root_box,
+            ),
         );
+        let jump_latest = gtk4::Button::with_label("↓");
+        jump_latest.set_widget_name("muxterm-jump-latest");
+        jump_latest.set_halign(gtk4::Align::End);
+        jump_latest.set_valign(gtk4::Align::End);
+        jump_latest.set_margin_end(12);
+        jump_latest.set_margin_bottom(12);
+        jump_latest.set_visible(false);
+        layout_overlay.add_overlay(&jump_latest);
+        root.append(&layout_overlay);
         root.append(&status.container);
         window.set_child(Some(&root));
 
@@ -330,6 +350,8 @@ impl AppWindow {
             pending_ssh_probes: std::collections::VecDeque::new(),
             ssh_reach_cache: std::collections::HashMap::new(),
             root_box: root.clone(),
+            layout_overlay,
+            jump_latest,
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -346,6 +368,19 @@ impl AppWindow {
                     let mut s = st.borrow_mut();
                     request_switch_tab(&mut s, tab_id);
                 });
+        }
+
+        // 回底按钮：把当前激活 pane 的 VTE 滚回尾部（W16a）。
+        {
+            let st = state.clone();
+            state.borrow().jump_latest.connect_clicked(move |_| {
+                let s = st.borrow();
+                if let Some(view) = s.active_layout().pane(s.active_pane).cloned() {
+                    if let Some(adj) = view.terminal().vadjustment() {
+                        adj.set_value(adj.upper());
+                    }
+                }
+            });
         }
 
         // 状态点 → popover：由 StatusBar 的 connect_clicked 处理（C8.4）。
@@ -500,6 +535,7 @@ impl AppWindow {
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);
                     refresh_connection_summary(&mut s);
+                    update_jump_latest(&s);
                     if let Some(w) = win_weak.upgrade() {
                         refresh_attention_chrome(&s, &w);
                     }
@@ -620,6 +656,7 @@ impl AppWindow {
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&mut s);
+            update_jump_latest(&s);
             refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
             if close {
@@ -677,6 +714,7 @@ impl AppWindow {
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&mut s);
+            update_jump_latest(&s);
             refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
             if close {
@@ -1268,6 +1306,22 @@ fn refresh_attention_chrome(s: &UiState, window: &Window) {
         .map(|w| w.name().to_string())
         .unwrap_or_else(|| "muxterm".into());
     window.set_title(Some(&window_title(n, &workspace)));
+}
+
+/// 回底按钮可见性：VTE 滚离底部时显示，回到尾部隐藏（W16a）。
+fn update_jump_latest(s: &UiState) {
+    let at_bottom = s
+        .active_layout()
+        .pane(s.active_pane)
+        .and_then(|v| v.terminal().vadjustment())
+        .map(|adj| {
+            let page = adj.page_size();
+            let upper = adj.upper();
+            // VTE 内容不足一屏时 upper 可能等于 page_size，视为已在底部。
+            upper - page <= adj.value() + 1.0
+        })
+        .unwrap_or(true);
+    s.jump_latest.set_visible(!at_bottom);
 }
 
 /// 把当前连接摘要刷到状态点 popover（C7.7）。
@@ -2228,7 +2282,8 @@ fn start_local_shell(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
             return;
         }
     }
-    let spec = WorkspaceSpec::local_shell(config.path.clone());
+    let spec = WorkspaceSpec::local_shell(config.path.clone())
+        .with_scrollback_lines(state.borrow().scrollback_lines);
     // W15c：连接不在 GTK 线程 block_on；后台线程完成后由 16ms poll 收编。
     spawn_background_connect(
         state,
@@ -2305,6 +2360,7 @@ fn attach_tmux(
     }
     let (transport, alias) = config.transport.attach_backend();
     let is_ssh = transport == "tmux-ssh";
+    let scrollback_lines = state.borrow().scrollback_lines;
     let socket = state.borrow().default_socket.clone();
     let spec = if is_ssh {
         WorkspaceSpec::ssh_tmux(
@@ -2312,8 +2368,10 @@ fn attach_tmux(
             Some(session.clone()),
             None,
         )
+        .with_scrollback_lines(scrollback_lines)
     } else {
         WorkspaceSpec::local_tmux(Some(session.clone()), socket.clone())
+            .with_scrollback_lines(scrollback_lines)
     };
     // W15c：SSH 连接可能卡到 ConnectTimeout，绝不能在 GTK 线程 block_on。
     spawn_background_connect(state, spec, id, socket, flow, config, existing);
@@ -2348,18 +2406,13 @@ fn after_activate(s: &mut UiState) {
     // 切工作区 = 改绑体现：挂载该工作区的像素缓存（没有则新建）。
     let id = s.active_ws_id().clone();
     if s.mounted_ws.as_ref() != Some(&id) {
-        if let Some(old_id) = s.mounted_ws.take() {
-            if let Some(old) = s.pixel_cache.get(&old_id) {
-                s.root_box.remove(&old.root_box);
-            }
-        }
         if !s.pixel_cache.contains_key(&id) {
             let uses = s.uses_tmux();
             let layout = LayoutHost::new(s.theme.clone(), s.font.clone(), uses, s.scrollback_lines);
             s.pixel_cache.insert(id.clone(), layout);
         }
         let layout = s.pixel_cache.get(&id).expect("layout 必须存在");
-        s.root_box.append(&layout.root_box);
+        s.layout_overlay.set_child(Some(&layout.root_box));
         s.mounted_ws = Some(id);
     }
     s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));

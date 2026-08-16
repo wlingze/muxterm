@@ -71,6 +71,15 @@ pub fn capture_pane(socket: &str, target: &str) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
+/// `capture-pane -p -S -`：可见屏 + 全部 scrollback。
+pub fn capture_pane_history(socket: &str, target: &str) -> String {
+    let output = Command::new("tmux")
+        .args(["-L", socket, "capture-pane", "-p", "-S", "-", "-t", target])
+        .output()
+        .expect("capture-pane -S - 失败");
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
 /// 硬超时 wrapper：在 deadline 内执行 fn，超时 panic。
 pub fn run_with_timeout<F, T>(timeout: Duration, label: &str, f: F) -> T
 where
@@ -148,6 +157,12 @@ pub fn list_pane_ids(socket: &str, target: &str) -> Vec<u32> {
 /// 字面写入 pane PTY（给 `/bin/cat` 用，不要 Enter）。
 pub fn send_keys_literal(socket: &str, target: &str, text: &str) {
     tmux_ok(socket, &["send-keys", "-t", target, "-l", text]);
+}
+
+/// 一行 + Enter。`send-keys -l` 里夹 `\n` 往往滚不出可见区。
+pub fn send_keys_line(socket: &str, target: &str, text: &str) {
+    send_keys_literal(socket, target, text);
+    tmux_ok(socket, &["send-keys", "-t", target, "Enter"]);
 }
 
 /// 用 `send-keys -H` 发送原始字节（`-l` 会把 ESC/BEL 转成 `^[`/`^G` 字面量，

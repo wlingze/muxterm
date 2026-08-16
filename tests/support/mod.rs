@@ -6,6 +6,7 @@
 //! - linux_gtk: Linux GTK4 测试共享助手（无 DISPLAY 跳过、widget 树查找、按键模拟）
 
 #[allow(dead_code)]
+pub mod attach_history_contract;
 pub mod behavior_driver;
 pub mod feature_e2e_contract;
 #[cfg(feature = "gtk")]

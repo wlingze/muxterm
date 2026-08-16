@@ -113,6 +113,8 @@ pub struct TmuxRuntime {
     layouts: HashMap<TabId, TabLayout>,
     /// pane 累积输出。
     outputs: HashMap<PaneId, Vec<u8>>,
+    /// attach 初始 capture 的历史行数（W16a：`capture-pane -S -N`）。
+    scrollback_lines: u32,
 
     status: BackendStatus,
     events: VecDeque<StateChange>,
@@ -247,6 +249,7 @@ impl TmuxRuntime {
             panes: vec![],
             layouts: HashMap::new(),
             outputs: HashMap::new(),
+            scrollback_lines: 10_000,
             status: BackendStatus::Disconnected,
             events: VecDeque::new(),
             response_accum: HashMap::new(),
@@ -317,6 +320,11 @@ impl TmuxRuntime {
             target: Some(target.to_string()),
         });
         backend
+    }
+
+    /// 设置 attach 初始 capture 的历史行数（W16a）。
+    pub fn set_scrollback_lines(&mut self, lines: u32) {
+        self.scrollback_lines = lines.max(1);
     }
 
     /// 测试用：当前 connect 模式（attach / new-session）。
@@ -1217,7 +1225,9 @@ impl TmuxRuntime {
         {
             return;
         }
-        let line = format!("capture-pane -e -p -t %{}\n", pane.0);
+        // W16a：attach 播种必须带 scrollback（`-S -N`），否则滚出可见区的
+        // 历史搜不到、滚不到。N = 配置的 scrollback 上限（默认 10000）。
+        let line = cmd::capture_pane_with_history(pane, self.scrollback_lines).to_line();
         if self.dispatch_command(line).is_ok() {
             self.initial_capture_pending.insert(pane);
             self.replace_last_pending(PendingQuery::CapturePane { pane });
@@ -2508,6 +2518,21 @@ mod tests {
             )
             .count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn attach_seed_capture_must_request_scrollback_history() {
+        let src = include_str!("backend.rs");
+        let call = concat!("cmd", "::", "capture_pane_with_history");
+        assert!(
+            src.contains(call),
+            "query_capture_pane 必须调用 cmd::capture_pane_with_history"
+        );
+        let old = concat!("format!(", r#""capture-pane -e -p -t %{}"#);
+        assert!(
+            !src.contains(old),
+            "禁止 attach 播种仍 format 可见屏-only 的 capture-pane（缺 -S）"
+        );
     }
 
     #[test]
