@@ -23,7 +23,7 @@ use async_trait::async_trait;
 /// 3. `poll_events()` / `take_events()` — 取状态变更事件
 /// 4. `shutdown()` — 释放 runtime 资源；tmux 会清理 control client
 #[async_trait]
-pub trait Runtime: State {
+pub trait Runtime: State + Send {
     /// 类型擦除下行转换（测试 / 诊断用）。
     fn as_any(&self) -> &dyn std::any::Any;
 

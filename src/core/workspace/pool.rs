@@ -184,6 +184,33 @@ impl WorkspacePool {
         self.open(id, name, move |_| spec.build_runtime()).await
     }
 
+    /// 插入一个已在后台线程完成 `connect()` 的工作区并设为前台。
+    ///
+    /// W15c：SSH 连接不能 `rt.block_on` 堵 GTK 主线程；连接在后台线程完成，
+    /// 结果经 idle 回主线程后由这里收编（复用/淘汰语义与 `open` 一致）。
+    pub fn insert_connected(&mut self, workspace: Workspace) -> WorkspaceId {
+        let now = Instant::now();
+        let id = workspace.id().clone();
+        if let Some(active_id) = self.active_id.clone() {
+            if active_id != id {
+                if let Some(active) = self.slots.get_mut(&active_id) {
+                    active.lifecycle = WorkspaceLifecycle::Background;
+                }
+            }
+        }
+        self.slots.insert(
+            id.clone(),
+            PooledWorkspace {
+                workspace,
+                lifecycle: WorkspaceLifecycle::Active,
+                last_used_at: now,
+            },
+        );
+        self.active_id = Some(id.clone());
+        self.evict_for_capacity();
+        id
+    }
+
     /// 把某工作区设为前台；其余降为后台（不 shutdown）。
     pub fn activate(&mut self, id: &WorkspaceId) -> Option<&mut Workspace> {
         if !self.slots.contains_key(id) {

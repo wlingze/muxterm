@@ -135,6 +135,11 @@ name = "linux_search_jump_e2e"
 path = "tests/linux_search_jump_e2e.rs"
 required-features = ["gtk"]
 
+[[test]]
+name = "linux_connect_timeout_e2e"
+path = "tests/linux_connect_timeout_e2e.rs"
+required-features = ["gtk"]
+
 # 四模式集成测试（local/ssh × shell/tmux × CLI）
 [[test]]
 name = "four_mode_integration"
