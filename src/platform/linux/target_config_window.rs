@@ -15,6 +15,7 @@ use gtk4::{
     ToggleButton, Window,
 };
 
+use crate::core::transport::ssh::probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::ffi_bridge::{CoreBridge, SshHostEntry};
 use crate::platform::linux::quickconnect::directory::{
@@ -149,6 +150,10 @@ pub fn show(
         .spacing(6)
         .build();
     ssh_section.append(&section_label(&i18n::tr(Key::SshName)));
+    let ssh_row = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .build();
     let ssh_combo = ComboBoxText::with_entry();
     ssh_combo.set_hexpand(true);
     for alias in &aliases {
@@ -161,8 +166,75 @@ pub fn show(
             entry.set_text(&current_alias);
         }
     }
-    ssh_section.append(&ssh_combo);
+    // W15d：host picker 与 QC 列表共用同一套 ssh_dot_widget_name / ssh_dot_css_class。
+    // 后台探测（BatchMode + ConnectTimeout=2），结果经 channel 回主线程更新灯。
+    let ssh_dot = Label::new(Some("●"));
+    ssh_dot.set_halign(Align::Start);
+    ssh_dot.set_valign(Align::Center);
+    ssh_dot.add_css_class(ssh_dot_css_class(SshReach::Unknown));
+    let (probe_tx, probe_rx) = mpsc::channel::<(String, SshReach)>();
+    for alias in &aliases {
+        let tx = probe_tx.clone();
+        let alias = alias.clone();
+        std::thread::spawn(move || {
+            let args = crate::core::transport::ssh::probe::ssh_probe_args(&alias, 2);
+            let status = std::process::Command::new("ssh")
+                .args(&args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let reach = match status {
+                Ok(st) => crate::core::transport::ssh::probe::classify_ssh_probe(st.code()),
+                Err(_) => SshReach::Err,
+            };
+            let _ = tx.send((alias, reach));
+        });
+    }
+    let update_dot = {
+        let ssh_dot = ssh_dot.clone();
+        let ssh_combo = ssh_combo.clone();
+        move || {
+            while let Ok((alias, reach)) = probe_rx.try_recv() {
+                let selected = ssh_combo.active_id().map(|s| s.to_string());
+                if selected.as_deref() == Some(alias.as_str()) {
+                    ssh_dot.set_widget_name(&ssh_dot_widget_name(&alias));
+                    ssh_dot.remove_css_class(ssh_dot_css_class(SshReach::Unknown));
+                    ssh_dot.remove_css_class(ssh_dot_css_class(SshReach::Ok));
+                    ssh_dot.remove_css_class(ssh_dot_css_class(SshReach::Err));
+                    ssh_dot.add_css_class(ssh_dot_css_class(reach));
+                }
+            }
+        }
+    };
+    let update_dot = Rc::new(update_dot);
+    update_dot();
+    let poll_dot = Rc::new(Cell::new(Some(glib::timeout_add_local(
+        Duration::from_millis(200),
+        {
+            let update_dot = update_dot.clone();
+            move || {
+                update_dot();
+                glib::ControlFlow::Continue
+            }
+        },
+    ))));
+    ssh_combo.connect_changed({
+        let update_dot = update_dot.clone();
+        move |_| update_dot()
+    });
+    ssh_row.append(&ssh_combo);
+    ssh_row.append(&ssh_dot);
+    ssh_section.append(&ssh_row);
     root.append(&ssh_section);
+    win.connect_close_request({
+        let poll_dot = poll_dot.clone();
+        move |_| {
+            if let Some(id) = poll_dot.take() {
+                id.remove();
+            }
+            glib::Propagation::Proceed
+        }
+    });
 
     root.append(&section_label(&i18n::tr(Key::Path)));
     let path_row = GtkBox::builder()
