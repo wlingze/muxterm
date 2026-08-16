@@ -106,6 +106,8 @@ struct UiState {
     /// 上一次流量快照（down, up）与墙钟（W15a 速率差）。
     last_traffic: Option<(u64, u64)>,
     last_traffic_at: Option<Instant>,
+    /// 后台连接结果队列（W15c：open_spec 离开 GTK 线程，16ms poll 收编）。
+    pending_connects: std::collections::VecDeque<std::sync::mpsc::Receiver<PendingConnect>>,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
@@ -318,6 +320,7 @@ impl AppWindow {
             workspace_sockets: std::collections::HashMap::new(),
             last_traffic: None,
             last_traffic_at: None,
+            pending_connects: std::collections::VecDeque::new(),
             root_box: root.clone(),
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
@@ -448,6 +451,7 @@ impl AppWindow {
                     return glib::ControlFlow::Break;
                 };
                 let pending_close = {
+                    drain_pending_connects(&st);
                     let mut s = st.borrow_mut();
                     // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
                     // 喂好，这里只把注意力信号应用到引擎，不重建前台。
@@ -593,6 +597,7 @@ impl AppWindow {
 
     /// 测试用：轮询一次并返回本批 `PaneOutput` 条数（1820 CPU）。
     pub fn test_poll_output_event_count(&self) -> usize {
+        drain_pending_connects(&self._state);
         let (n, pending_close) = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -652,6 +657,7 @@ impl AppWindow {
 
     /// 测试用：手动轮询一次核心事件并刷新输出（不等待 16ms 定时器）。
     pub fn test_poll_once(&self) {
+        drain_pending_connects(&self._state);
         let pending_close = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -1985,18 +1991,135 @@ fn open_target_config(
     );
 }
 
-fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
-    match config.runtime {
-        TargetRuntime::Tmux => run_project_flow(state, config),
-        TargetRuntime::Shell => {
-            if config.transport.is_ssh() {
-                run_project_flow(state, config);
+/// 后台连接结果（W15c：open_spec 离开 GTK 线程）。
+struct PendingConnect {
+    id: WorkspaceId,
+    socket: Option<String>,
+    flow: ProjectConnectFlow,
+    config: TargetConfig,
+    existing: bool,
+    result: anyhow::Result<Workspace>,
+}
+
+/// 在后台线程完成 `open_spec` 的阻塞部分（build runtime + connect），
+/// 结果经 channel 回主线程，由 16ms poll / test_poll_once 收编。
+fn spawn_background_connect(
+    state: &Rc<RefCell<UiState>>,
+    spec: WorkspaceSpec,
+    id: WorkspaceId,
+    socket: Option<String>,
+    flow: ProjectConnectFlow,
+    config: TargetConfig,
+    existing: bool,
+) {
+    let handle = state.borrow().rt.handle().clone();
+    let (tx, rx) = std::sync::mpsc::channel::<PendingConnect>();
+    state.borrow_mut().pending_connects.push_back(rx);
+    std::thread::spawn(move || {
+        let result = connect_workspace_blocking(&spec, &handle);
+        let _ = tx.send(PendingConnect {
+            id,
+            socket,
+            flow,
+            config,
+            existing,
+            result,
+        });
+    });
+}
+
+/// 后台线程：构造 Runtime 并 connect（SSH 卡住时只阻塞这个线程）。
+fn connect_workspace_blocking(
+    spec: &WorkspaceSpec,
+    handle: &tokio::runtime::Handle,
+) -> anyhow::Result<Workspace> {
+    let id = spec.id();
+    let name = spec.name();
+    let mut runtime = spec.build_runtime();
+    // transport 已带 ConnectTimeout=10；这里再兜底硬超时，防止个别路径卡死。
+    handle.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), runtime.connect())
+            .await
+            .map_err(|_| anyhow::anyhow!("connect timed out after 10s"))?
+    })?;
+    Ok(Workspace::new(id, name, runtime))
+}
+
+/// 收编后台连接结果（16ms poll 与 test_poll_once 共用）。
+fn drain_pending_connects(state: &Rc<RefCell<UiState>>) {
+    let mut done = false;
+    while !done {
+        let pending = {
+            let mut s = state.borrow_mut();
+            let Some(rx) = s.pending_connects.front() else {
+                break;
+            };
+            match rx.try_recv() {
+                Ok(p) => {
+                    s.pending_connects.pop_front();
+                    Some(p)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    done = true;
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    s.pending_connects.pop_front();
+                    None
+                }
+            }
+        };
+        if let Some(pending) = pending {
+            handle_connect_outcome(state, pending);
+        }
+    }
+}
+
+/// 后台连接完成：成功收编进池并激活；失败写 notification_log + 继续流程。
+fn handle_connect_outcome(state: &Rc<RefCell<UiState>>, pending: PendingConnect) {
+    let PendingConnect {
+        id,
+        socket,
+        mut flow,
+        config,
+        existing,
+        result,
+    } = pending;
+    match result {
+        Ok(workspace) => {
+            let mut s = state.borrow_mut();
+            s.pool.insert_connected(workspace);
+            s.workspace_sockets.insert(id, socket);
+            after_activate(&mut s);
+            if existing {
+                flow.attach_existing_succeeded();
             } else {
-                start_local_shell(state, config);
+                flow.attach_created_succeeded();
+            }
+        }
+        Err(e) => {
+            let detail = e.to_string();
+            let name = id.replica_id();
+            tracing::error!(target = "muxterm::linux", "connect failed: {detail}");
+            // 失败必须进 notification_log（W15c），不能只 tracing::error。
+            state
+                .borrow_mut()
+                .notification_log
+                .push(format!("{name}: connect failed: {detail}"));
+            if existing {
+                flow.attach_existing_failed(&detail);
+                step_project_flow(state, config, flow);
+            } else {
+                flow.attach_created_failed(&detail);
+                tracing::error!(
+                    target = "muxterm::linux",
+                    "attach created session failed: {detail}"
+                );
             }
         }
     }
 }
+
 
 fn start_local_shell(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
     let session =
@@ -2009,18 +2132,17 @@ fn start_local_shell(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
             return;
         }
     }
-    let path = config.path.clone();
-    let spec = WorkspaceSpec::local_shell(path);
-    let mut s = state.borrow_mut();
-    let UiState { rt, pool, .. } = &mut *s;
-    let opened = rt.block_on(pool.open_spec(&spec));
-    match opened {
-        Ok(_) => {
-            s.workspace_sockets.insert(id.clone(), None);
-            after_activate(&mut s);
-        }
-        Err(e) => tracing::error!(target = "muxterm::linux", "local shell 连接失败: {e}"),
-    }
+    let spec = WorkspaceSpec::local_shell(config.path.clone());
+    // W15c：连接不在 GTK 线程 block_on；后台线程完成后由 16ms poll 收编。
+    spawn_background_connect(
+        state,
+        spec,
+        id,
+        None,
+        ProjectConnectFlow::new(&config),
+        config,
+        false,
+    );
 }
 
 fn run_project_flow(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
@@ -2087,8 +2209,7 @@ fn attach_tmux(
     }
     let (transport, alias) = config.transport.attach_backend();
     let is_ssh = transport == "tmux-ssh";
-    let mut s = state.borrow_mut();
-    let socket = s.default_socket.clone();
+    let socket = state.borrow().default_socket.clone();
     let spec = if is_ssh {
         WorkspaceSpec::ssh_tmux(
             alias.expect("SSH alias 必须存在").to_string(),
@@ -2098,31 +2219,8 @@ fn attach_tmux(
     } else {
         WorkspaceSpec::local_tmux(Some(session.clone()), socket.clone())
     };
-    let UiState { rt, pool, .. } = &mut *s;
-    let opened = rt.block_on(pool.open_spec(&spec));
-    match opened {
-        Ok(_) => {
-            s.workspace_sockets.insert(id.clone(), socket);
-            after_activate(&mut s);
-            if existing {
-                flow.attach_existing_succeeded();
-            } else {
-                flow.attach_created_succeeded();
-            }
-        }
-        Err(e) => {
-            if existing {
-                flow.attach_existing_failed(&e.to_string());
-                step_project_flow(state, config, flow);
-            } else {
-                flow.attach_created_failed(&e.to_string());
-                tracing::error!(
-                    target = "muxterm::linux",
-                    "attach created session failed: {e}"
-                );
-            }
-        }
-    }
+    // W15c：SSH 连接可能卡到 ConnectTimeout，绝不能在 GTK 线程 block_on。
+    spawn_background_connect(state, spec, id, socket, flow, config, existing);
 }
 
 /// TargetConfig + session → 稳定 WorkspaceId。
@@ -2176,6 +2274,20 @@ fn after_activate(s: &mut UiState) {
     report_all_pane_colours(s);
     maybe_refresh_status(s, true);
 }
+
+fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+    match config.runtime {
+        TargetRuntime::Tmux => run_project_flow(state, config),
+        TargetRuntime::Shell => {
+            if config.transport.is_ssh() {
+                run_project_flow(state, config);
+            } else {
+                start_local_shell(state, config);
+            }
+        }
+    }
+}
+
 
 /// 池里最近打开的工作区（按 last_used 倒序）→ QuickConnect 目标。
 fn recent_target_configs(pool: &WorkspacePool, limit: usize) -> Vec<TargetConfig> {
