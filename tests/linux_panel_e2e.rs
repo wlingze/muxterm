@@ -9,6 +9,7 @@
 mod support;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -20,12 +21,15 @@ use vte4::prelude::*;
 use muxterm::core::attention::engine::PaneAttention;
 use muxterm::core::attention::state::PaneStatus;
 use muxterm::core::config::Theme;
+use muxterm::core::transport::ssh::probe::SshReach;
 use muxterm::platform::linux::panel_model::PanelTab;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
-use muxterm::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
+use muxterm::platform::linux::quickconnect_panel::{
+    show, test_emit_peek_input, PanelItem, PanelShowArgs,
+};
 
 fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
     PaneAttention {
@@ -45,6 +49,21 @@ fn target(name: &str) -> PanelItem {
         QuickConnectEntry::new(
             TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x"),
             vec![QuickBadge::Project],
+        ),
+        false,
+    )
+}
+
+fn ssh_target(alias: &str) -> PanelItem {
+    PanelItem::Target(
+        QuickConnectEntry::new(
+            TargetConfig::new(
+                alias,
+                TargetRuntime::Tmux,
+                TargetTransport::Ssh { name: alias.into() },
+                "~/x",
+            ),
+            vec![],
         ),
         false,
     )
@@ -76,7 +95,12 @@ fn three_tab_panel_full_flow() {
             &win,
             PanelShowArgs {
                 initial_tab: PanelTab::Attention,
-                workspaces: vec![target("legion"), target("muxterm")],
+                workspaces: vec![
+                    target("legion"),
+                    target("muxterm"),
+                    ssh_target("ryzen"),
+                    ssh_target("dead"),
+                ],
                 attention: vec![
                     attention("legion", 1, PaneStatus::Blocked, "ask me"),
                     attention("muxterm", 2, PaneStatus::Done, "build ok"),
@@ -102,6 +126,10 @@ fn three_tab_panel_full_flow() {
                 }),
                 search: Box::new(|_| vec![]),
                 on_close: Box::new(|| {}),
+                ssh_reach: HashMap::from([
+                    ("ryzen".into(), SshReach::Ok),
+                    ("dead".into(), SshReach::Err),
+                ]),
             },
         );
         pump_main_loop(80);
@@ -187,6 +215,16 @@ fn three_tab_panel_full_flow() {
         assert_eq!(got[0], ("legion".to_string(), 1));
         drop(got);
 
+        // 5b. 小 VTE 快速回复 → on_send_input（W15e）
+        test_emit_peek_input(b"REPLY_PANEL");
+        pump_main_loop(40);
+        let got = inputs.borrow();
+        assert_eq!(got.len(), 1, "peek 输入应走 on_send_input 一次: {got:?}");
+        assert_eq!(got[0].0, "legion");
+        assert_eq!(got[0].1, 1);
+        assert_eq!(got[0].2, b"REPLY_PANEL".to_vec());
+        drop(got);
+
         // 6. 放大按钮：小 VTE 高度 120 → 360
         let zoom_btn = find_by_name(&win, "muxterm-attention-zoom")
             .expect("放大按钮应存在")
@@ -217,18 +255,42 @@ fn three_tab_panel_full_flow() {
         assert_eq!(got[0].2, Duration::from_secs(600), "10m 应回调 600s");
         drop(got);
 
-        // 8. Tab 键切到 Search，entry 文本仍在
-        let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
-        simulate_key_press(&entry_ctrl, gdk::Key::Tab, gdk::ModifierType::empty());
+        // 7b. Workspaces tab：注入的 SSH 灯（W15d）
+        let ws_tab = find_by_name(&win, "muxterm-panel-tab-workspaces")
+            .expect("Workspaces tab")
+            .downcast::<gtk4::ToggleButton>()
+            .expect("ToggleButton");
+        let _: () = ws_tab.emit_by_name("clicked", &[]);
+        pump_main_loop(80);
+        let ok_dot = find_by_name(&win, "muxterm-ssh-dot-ryzen")
+            .expect("ryzen 行应有 muxterm-ssh-dot-ryzen");
+        assert!(
+            ok_dot.has_css_class("muxterm-ssh-dot-ok"),
+            "ryzen 应为 ok class: {:?}",
+            ok_dot.css_classes()
+        );
+        let err_dot =
+            find_by_name(&win, "muxterm-ssh-dot-dead").expect("dead 行应有 muxterm-ssh-dot-dead");
+        assert!(
+            err_dot.has_css_class("muxterm-ssh-dot-err"),
+            "dead 应为 err class: {:?}",
+            err_dot.css_classes()
+        );
+
+        // 8. 点 Search tab，占位行可见（从 Workspaces 起 Tab 会先到 Attention）
+        let search_tab = find_by_name(&win, "muxterm-panel-tab-search")
+            .expect("Search tab")
+            .downcast::<gtk4::ToggleButton>()
+            .expect("ToggleButton");
+        let _: () = search_tab.emit_by_name("clicked", &[]);
         pump_main_loop(40);
-        let search_tab = find_by_name(&win, "muxterm-panel-tab-search").expect("Search tab");
-        let search_btn = search_tab.downcast::<gtk4::ToggleButton>().unwrap();
-        assert!(search_btn.is_active(), "Tab 键应切到 Search");
+        assert!(search_tab.is_active(), "应切到 Search");
         assert_eq!(entry.text().as_str(), "", "query 应跨 tab 保留");
         let status = find_by_name(&win, "muxterm-search-status").expect("搜索占位行");
         assert!(status.is_visible(), "Search tab 应显示占位行");
 
         // 9. Esc 关闭
+        let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
         simulate_key_press(&entry_ctrl, gdk::Key::Escape, gdk::ModifierType::empty());
         pump_main_loop(40);
         assert!(
