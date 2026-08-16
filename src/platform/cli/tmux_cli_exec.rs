@@ -52,6 +52,13 @@ fn execute_tmux_cli(cmd: &TmuxCliCommand) -> anyhow::Result<serde_json::Value> {
     }
 }
 
+/// 检查指定名称的工作区候选是否存在（core discovery）。
+fn tmux_session_exists(socket: Option<&str>, name: &str) -> bool {
+    crate::core::discovery::list_local_tmux_sessions(socket)
+        .iter()
+        .any(|s| s.name == name)
+}
+
 /// 构造本地 tmux backend + TerminalModel，在 runtime 内执行 fn 并返回结果。
 ///
 /// **关键**：runtime 必须在整个命令生命周期内存活，否则 sender task 被杀，
@@ -137,33 +144,6 @@ fn wait_events_brief(model: &mut TerminalModel) {
         let _ = model.refresh();
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
-    let mut cmd = std::process::Command::new("tmux");
-    if let Some(s) = socket {
-        cmd.args(["-L", s]);
-    }
-    cmd.args(["list-sessions", "-F", "#{session_name}"]);
-    cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let output = cmd.output().ok()?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .map(|s| s.trim().to_string())
-}
-
-/// 检查指定名称的 tmux session 是否存在。
-fn tmux_session_exists(socket: Option<&str>, name: &str) -> bool {
-    let mut cmd = std::process::Command::new("tmux");
-    if let Some(s) = socket {
-        cmd.args(["-L", s]);
-    }
-    cmd.args(["has-session", "-t", name]);
-    cmd.stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_json::Value> {
@@ -522,28 +502,42 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
         PaneCmd::Capture {
             target,
             socket,
-            session: _,
+            session,
             pane,
             lines,
         } => {
             check_timeout(deadline)?;
             match target {
                 Target::Local => {
-                    // 使用 raw tmux capture-pane 获取可靠输出（不依赖 -CC %output 事件）
-                    let mut tmux_cmd = std::process::Command::new("tmux");
-                    if let Some(s) = socket {
-                        tmux_cmd.args(["-L", s]);
-                    }
-                    tmux_cmd.args(["capture-pane", "-t", &format!("%{}", pane), "-p"]);
-                    if let Some(n) = lines {
-                        tmux_cmd.args(["-S", &format!("-{}", n)]);
-                    }
-                    let output = tmux_cmd.output().context("tmux capture-pane 失败")?;
-                    let text = String::from_utf8_lossy(&output.stdout).to_string();
-                    Ok(serde_json::json!({
-                        "pane": pane,
-                        "output": text,
-                    }))
+                    // 走 core runtime 的 pane 输出（platform 不再拼 tmux）。
+                    with_local_tmux(socket.as_deref(), session, deadline, |model| {
+                        wait_ready(model, READY_POLL_DURATION);
+                        let pane_id = PaneId(*pane);
+                        // attach 后可见屏幕由 runtime 内部 capture-pane 查询恢复；
+                        // 等待输出到达（最多到命令 deadline）。
+                        let mut text = String::new();
+                        while Instant::now() < deadline {
+                            let _ = model.refresh();
+                            text = model
+                                .state()
+                                .pane_output(&pane_id)
+                                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                                .unwrap_or_default();
+                            if !text.is_empty() {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        if let Some(n) = lines {
+                            let all_lines: Vec<&str> = text.lines().collect();
+                            let start = all_lines.len().saturating_sub(*n);
+                            text = all_lines[start..].join("\n");
+                        }
+                        Ok(serde_json::json!({
+                            "pane": pane,
+                            "output": text,
+                        }))
+                    })
                 }
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
                     "SSH remote capture 尚未实现（alias={alias}）"

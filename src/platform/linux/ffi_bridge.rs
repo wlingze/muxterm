@@ -560,7 +560,7 @@ impl CoreBridge {
         Ok(entries)
     }
 
-    /// 发现本地或 SSH tmux session。
+    /// 发现本地或 SSH 工作区候选。
     pub fn discover_tmux_sessions(
         runtime_type: &str,
         target: Option<&str>,
@@ -582,7 +582,7 @@ impl CoreBridge {
         Ok(sessions)
     }
 
-    /// 创建 detached tmux session（Project attach→create fallback 用）。
+    /// 创建 detached 工作区（Project attach→create fallback 用）。
     pub fn create_tmux_session(
         runtime_type: &str,
         target: Option<&str>,

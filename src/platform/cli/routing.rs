@@ -61,18 +61,11 @@ fn extract_session_name(cmd: &CliCommand, args: &[String]) -> Option<String> {
     None
 }
 
-/// 用 `tmux -L <socket> list-sessions` 查找已有的 session 名。
+/// 用 core discovery 查找已有的工作区候选（产品名，不是 tmux session）。
 fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
-    let mut cmd = std::process::Command::new("tmux");
-    if let Some(s) = socket {
-        cmd.args(["-L", s]);
-    }
-    cmd.args(["list-sessions", "-F", "#{session_name}"]);
-    cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let output = cmd.output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines().next().map(|s| s.trim().to_string())
+    crate::core::discovery::list_local_tmux_sessions(socket)
+        .first()
+        .map(|s| s.name.clone())
 }
 
 /// tmux 模式：用 TmuxRuntime 连接 tmux server，执行命令后关闭。

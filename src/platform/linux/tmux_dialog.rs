@@ -1,11 +1,10 @@
-//! tmux attach 流程（VSCode Quick Pick 风格）。
+//! 工作区 attach 流程（VSCode Quick Pick 风格）。
 //!
 //! 由命令面板触发：
-//! 1. 列出 `tmux list-sessions`（名 + 创建时间 + 窗口数）
-//! 2. 顶部 `+ Create new session`
-//! 3. 选已有 → attach；选 Create → 输入名字 → new-session + attach
+//! 1. 列出 core discovery 的工作区候选（名 + 创建时间 + tab 数）
+//! 2. 顶部 `+ Create new workspace`
+//! 3. 选已有 → attach；选 Create → 输入名字 → 创建 + attach
 
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk4::prelude::*;
@@ -15,12 +14,12 @@ use crate::platform::linux::ffi_bridge::{SshHostEntry, TmuxSessionEntry};
 use crate::platform::linux::pane_switcher;
 use crate::platform::linux::quick_pick::{self, QuickPickItem};
 
-/// tmux 集成动作结果。
+/// 工作区集成动作结果。
 #[derive(Debug, Clone)]
 pub enum TmuxAction {
-    /// attach 到已有 session（按名字）。
+    /// attach 到已有工作区（按名字）。
     Attach { session: String },
-    /// 新建 session（空名=自动命名）。
+    /// 新建工作区（空名=自动命名）。
     NewSession { name: Option<String> },
 }
 
@@ -50,7 +49,7 @@ pub fn ssh_host_pick_items(hosts: &[SshHostEntry]) -> Vec<QuickPickItem> {
         .collect()
 }
 
-/// tmux session 列表（首行永远是新建）。
+/// 工作区候选列表（首行永远是新建）。
 pub fn tmux_session_pick_items(sessions: &[TmuxSessionEntry]) -> Vec<QuickPickItem> {
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
@@ -84,14 +83,14 @@ pub fn tmux_session_pick_items(sessions: &[TmuxSessionEntry]) -> Vec<QuickPickIt
     items
 }
 
-/// 弹出 tmux session 选择器。
+/// 弹出工作区选择器。
 ///
-/// `socket_args` 为 `["-L", name]` 或空；列出 session 时必须与 -CC 连接同一 socket。
-pub fn show<F>(parent: &impl IsA<Window>, socket_args: &[String], on_done: F)
+/// `socket` 为 tmux `-L` socket 名（可选）；列出候选时走 core discovery。
+pub fn show<F>(parent: &impl IsA<Window>, socket: Option<&str>, on_done: F)
 where
     F: Fn(TmuxAction) + 'static,
 {
-    let sessions = list_tmux_sessions_detailed(socket_args);
+    let sessions = list_workspace_candidates(socket);
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
         id: CREATE_ID.into(),
@@ -135,7 +134,7 @@ where
     );
 }
 
-/// session 列表项（解析自 tmux）。
+/// 工作区候选（来自 core discovery，产品名不是 tmux session）。
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
     pub name: String,
@@ -143,41 +142,16 @@ pub struct SessionInfo {
     pub windows: Option<u32>,
 }
 
-/// 调 `tmux list-sessions`，带创建时间与窗口数。
-pub fn list_tmux_sessions_detailed(socket_args: &[String]) -> Vec<SessionInfo> {
-    let mut cmd = Command::new("tmux");
-    cmd.args(socket_args).args([
-        "list-sessions",
-        "-F",
-        "#{session_name}\t#{session_created}\t#{session_windows}",
-    ]);
-    let out = cmd.output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            s.lines()
-                .filter_map(|line| {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        return None;
-                    }
-                    let mut parts = line.split('\t');
-                    let name = parts.next()?.trim().to_string();
-                    if name.is_empty() {
-                        return None;
-                    }
-                    let created = parts.next().and_then(|t| t.trim().parse().ok());
-                    let windows = parts.next().and_then(|t| t.trim().parse().ok());
-                    Some(SessionInfo {
-                        name,
-                        created,
-                        windows,
-                    })
-                })
-                .collect()
-        }
-        _ => Vec::new(),
-    }
+/// 列出工作区候选（core discovery，带创建时间与 tab 数）。
+pub fn list_workspace_candidates(socket: Option<&str>) -> Vec<SessionInfo> {
+    crate::core::discovery::list_local_tmux_sessions(socket)
+        .into_iter()
+        .map(|s| SessionInfo {
+            name: s.name,
+            created: Some(s.created),
+            windows: Some(s.windows),
+        })
+        .collect()
 }
 
 fn format_session_detail(s: &SessionInfo) -> String {
@@ -290,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn tmux_session_pick_items_start_with_create() {
+    fn workspace_candidate_pick_items_start_with_create() {
         let sessions = vec![TmuxSessionEntry {
             name: "legion".into(),
             windows: 4,

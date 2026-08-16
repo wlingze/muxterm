@@ -1998,12 +1998,9 @@ fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only:
         .get(state.borrow().active_ws_id())
         .cloned()
         .flatten();
-    let socket_args = socket
-        .as_ref()
-        .map(|s| vec!["-L".into(), s.clone()])
-        .unwrap_or_default();
+    let socket_opt = socket.clone();
     let st = state.clone();
-    tmux_dialog::show(parent, &socket_args, move |action| match action {
+    tmux_dialog::show(parent, socket_opt.as_deref(), move |action| match action {
         TmuxAction::Attach { session } => {
             connect_target(
                 &st,
