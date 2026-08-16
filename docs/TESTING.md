@@ -2,7 +2,7 @@
 
 > 适用：`/home/wlz/Developer/self/muxterm`（当前 Linux 分支 `feat/linux-quickconnect-ui`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**）、
+> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**；W15 见 [W15-PLAN.md](W15-PLAN.md)；W16 见 [W16-PLAN.md](W16-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)）、
 > [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
 > [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
 > [bugfix-log.md](bugfix-log.md)。
@@ -87,6 +87,19 @@ xvfb-run -a cargo test --features gtk --test linux_feature_e2e -- --test-threads
 # SSH 有 sshd 才跑：eval "$(./scripts/ci/setup-sshd.sh)" 后
 # cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 # xvfb-run -a cargo test --features gtk --test linux_ssh_e2e -- --ignored --test-threads=1
+# W15 dogfood UX + 通知 peek/回复
+cargo test --lib format:: -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_chrome_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_search_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_search_jump_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_panel_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_feature_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_connect_timeout_e2e -- --test-threads=1
+# W16 愿景缺口（W15 绿了再跑）
+cargo test --lib runtime::tmux::command::tests::capture_pane_with_history -- --exact
+xvfb-run -a cargo test --features gtk --test linux_attach_history_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_disconnect_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_attention_semantics_e2e -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -173,6 +186,36 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 ```
 
 禁止：把 Search/Done/flood 标 `#[ignore]`；用 `test_feed_replica` 冒充 `%output`；SSH 测试另建 Mock Workspace 喂字节。
+
+### 5.6 W15 dogfood UX + 通知 peek/回复
+
+规格：[`W15-PLAN.md`](W15-PLAN.md)。
+
+| crate | 必须抓住 |
+|---|---|
+| `format` / `transport::ssh::probe` 单测 | `1536 → 1.5 KB`；probe args 含 BatchMode + ConnectTimeout=2 |
+| `linux_chrome_e2e` | popover 人类可读累计 **和** `/s` 速率；禁止 `1234B/s` 这种把累计当速率 |
+| `linux_search_e2e` | 超长命中行时 `muxterm-panel` 宽 ≤ 窗口 |
+| `linux_search_jump_e2e` | 命中在 tab 2：激活后当前 tab 是 2，VTE 含 token，面板关闭 |
+| `linux_panel_e2e` | peek `test_emit_peek_input` 走 `on_send_input`；SSH 行 `muxterm-ssh-dot-ok/err` |
+| `linux_feature_e2e` | 真 BEL → blocked 通知；小 VTE 含后台 token；peek 回复出现在 `capture-pane` |
+| `linux_connect_timeout_e2e` | `test_connect_target` 到 192.0.2.1 不得堵 GTK 线程；失败进 notification_log |
+
+禁止：用 replica 注入冒充 W15e live BEL；快速回复只记回调不进 tmux；为了绿把连接改回 `block_on` 主线程。
+
+### 5.7 W16 愿景 1.0 缺口（历史 / 断线水印 / 注意力语义）
+
+规格：[`W16-PLAN.md`](W16-PLAN.md)。审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。**W15 绿了再做。**
+
+| crate | 必须抓住 |
+|---|---|
+| `runtime::tmux::command` `capture_pane_with_history` | `10000` → `capture-pane -e -p -S -10000 -t %3` |
+| `runtime::tmux::backend` | `query_capture_pane` 走 `capture_pane_with_history`，禁止可见屏-only `format!` |
+| `linux_attach_history_e2e` | 离屏 token：`search_all` 命中；滚到顶 VTE 含 token；`muxterm-jump-latest` 点完回到尾标 |
+| `linux_disconnect_e2e` | 隔离 `-L` `kill-server` 后窗口仍在、VTE 仍有 token、`muxterm-disconnect-overlay` 可见、无模态框 |
+| `linux_attention_semantics_e2e` | 真 BEL 红点；看见不熄；输入才熄；TOML 正则 `NEED_INPUT` 再点亮 |
+
+禁止：用 `test_feed_replica` 冒充 W16c BEL；为了绿把历史断言改成只查可见屏；断线靠关窗或 `vte.reset` 混过去。
 
 ### 5.2 手段（沿用现有 helper）
 
@@ -264,9 +307,13 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 | 33 | Codex TUI UTF-8+真彩播种 | ❌ `ch as u8`（E1） | ❌ 待 E2 | ✅ codex-tui-sanitized.txt |
 | 34 | CUP 半帧不打烂 VTE | ❌ 仍 feed last_visible_frame（E3） | ❌ 待 E3 | 1854 len 1365/2730 |
 | 35 | SSH popover 上下行 | ❌ 无计数 | ❌ 待 E4 | — |
-| 36 | Search tab 搜 replica | ⚠️ core search 有 | ❌ placeholder_compiles（E5） | — |
-| 37 | 前台 ls 不进 attention | ❌ CommandDone→Done | ❌ 待 E6 | — |
-| 38 | attention 小 VTE + mute 下拉 | ❌ Label+Entry | ❌ 待 E6 | — |
+| 36 | Search tab 搜 PaneBuf | ✅ `search_all` | ✅ linux_feature_e2e / linux_search_jump_e2e | ✅ 真 attach token |
+| 37 | 前台 ls 不进 attention | ✅ Done+BecameVisible | ⚠️ feature e2e 后台 Done；前台路径靠 apply 后 on_became_visible | ✅ OSC 133 |
+| 38 | attention 小 VTE + mute 下拉 | ✅ engine mute | ✅ linux_panel_e2e；live 回复见 W15e | ✅ 隔离 tmux |
+| 39 | attach 离屏历史 | ⚠️ command 构造器有；backend 播种仍只抓可见屏 | ❌ linux_attach_history_e2e（W16a） | ✅ 夹具 `-S -` vs `-p` |
+| 40 | 回底按钮 | — | ❌ muxterm-jump-latest（W16a） | — |
+| 41 | 断线水印 | — | ❌ linux_disconnect_e2e（W16b） | ✅ 隔离 kill-server |
+| 42 | blocked 看见不熄 / 正则 live | ✅ state 穷举表 | ❌ linux_attention_semantics_e2e（W16c） | ✅ 真 BEL + NEED_INPUT |
 
 ## 8. 新增功能验收矩阵模板
 
