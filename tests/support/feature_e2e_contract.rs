@@ -115,8 +115,17 @@ pub fn send_background_task_done(socket: &str, pane_percent: &str) {
     tmux_ok(socket, &["respawn-pane", "-k", "-t", pane_percent, &cmd]);
 }
 
-/// 后台 pane BEL（Blocked / needs attention）。脚本已自带 BEL，这里保持幂等。
-pub fn send_background_bel(_socket: &str, _pane_percent: &str) {}
+/// 后台 pane BEL（Blocked / needs attention）。
+///
+/// pane 必须仍是 `/bin/cat`：`-H` 把 0x07 打进 stdin，cat 原样写出，
+/// `%output` 才能带 BEL。不要 respawn（会丢掉 cat）。不要 `-l`（会变成 `^G`）。
+///
+/// canonical 模式下 cat 要 Enter 才收到输入：只发 `-H 07` 时 `%output` 只有
+/// 行规程的 `^G` 回显，没有 `\007`。补一个 Enter 让 cat 真正收到并回显 BEL。
+pub fn send_background_bel(socket: &str, pane_percent: &str) {
+    send_keys_hex(socket, pane_percent, b"\x07");
+    tmux_ok(socket, &["send-keys", "-t", pane_percent, "Enter"]);
+}
 
 pub fn respawn_mock_codex(socket: &str, pane_percent: &str) {
     let py = mock_codex_py();

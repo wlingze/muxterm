@@ -481,8 +481,8 @@ impl AppWindow {
                     let notifications = s.attention.take_new_blocked_notifications();
                     for ws in &notifications {
                         s.notification_sink.notify_blocked(ws, "needs attention");
+                        s.notification_log.push(format!("{ws}: needs attention"));
                     }
-                    s.notification_log.extend(notifications);
                     sync_pane_outputs(&mut s);
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);
@@ -795,6 +795,11 @@ impl AppWindow {
     /// 测试用：连接一个 QuickConnect 目标（走生产 connect_target 路径）。
     pub fn test_connect_target(&self, config: TargetConfig) {
         connect_target(&self._state.clone(), config);
+    }
+
+    /// 测试用：Attention 小 VTE 按键（必须走 peek `connect_input`，不要直接 WriteRaw）。
+    pub fn test_peek_emit_input(&self, data: &[u8]) {
+        crate::platform::linux::quickconnect_panel::test_emit_peek_input(data);
     }
 }
 

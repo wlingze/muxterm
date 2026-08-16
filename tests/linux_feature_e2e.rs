@@ -12,6 +12,7 @@ use gtk4::prelude::*;
 use support::feature_e2e_contract::*;
 use support::linux_gtk::*;
 use support::tmux_test_support::{tmux_available, wait_capture_contains};
+use vte4::prelude::*;
 
 use muxterm::core::config::Config;
 use muxterm::platform::linux::window::AppWindow;
@@ -120,6 +121,70 @@ fn linux_feature_search_notify_codex_tail() {
             app.test_pane_vte_text(fx.panes[0]),
             app.test_pane_vte_text(fx.panes[1])
         );
+
+        // --- 真 BEL：通知 + 选中 peek + 快速回复进 tmux（必须在 Done respawn 之前，pane1 还是 /bin/cat）---
+        app.test_switch_pane(fx.panes[0]);
+        app.test_poll_once();
+        pump_main_loop(40);
+        send_background_bel(&fx.socket, &fx.pane_target(1));
+        let deadline = Instant::now() + FEATURE_TIMEOUT;
+        let mut saw_blocked = false;
+        while Instant::now() < deadline {
+            app.test_poll_once();
+            pump_main_loop(30);
+            if app.test_notifications_recorded().iter().any(|n| {
+                let l = n.to_lowercase();
+                l.contains("attention") || l.contains("blocked") || n.contains("需要")
+            }) {
+                saw_blocked = true;
+                break;
+            }
+        }
+        assert!(
+            saw_blocked,
+            "真 %output BEL 必须 notify_blocked。实际: {:?}",
+            app.test_notifications_recorded()
+        );
+        app.test_open_panel(1);
+        pump_main_loop(80);
+        let list = find_by_name(&app.test_window(), "muxterm-panel-list")
+            .expect("Attention 列表")
+            .downcast::<gtk4::ListBox>()
+            .expect("ListBox");
+        let row = list
+            .row_at_index(1)
+            .or_else(|| list.row_at_index(0))
+            .expect("应有注意力行");
+        list.select_row(Some(&row));
+        let entry = find_by_name(&app.test_window(), "muxterm-panel-entry")
+            .expect("Entry")
+            .downcast::<gtk4::Entry>()
+            .expect("Entry");
+        entry.set_text("x");
+        entry.set_text("");
+        pump_main_loop(80);
+        let peek_sw = find_by_name(&app.test_window(), "muxterm-attention-peek")
+            .expect("小 VTE")
+            .downcast::<gtk4::ScrolledWindow>()
+            .expect("ScrolledWindow");
+        let peek_term = peek_sw
+            .child()
+            .expect("peek 子控件")
+            .downcast::<vte4::Terminal>()
+            .expect("VTE");
+        let peek_text = peek_term
+            .text_format(vte4::Format::Text)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        assert!(
+            peek_text.contains(&fx.bg_token),
+            "选中后小 VTE 必须是该 pane 画面（含 {}）。peek={peek_text:?}",
+            fx.bg_token
+        );
+        app.test_peek_emit_input(b"W15_REPLY");
+        app.test_poll_once();
+        pump_main_loop(80);
+        wait_capture_contains(&fx.socket, &fx.pane_target(1), "W15_REPLY", FEATURE_TIMEOUT);
 
         // --- 后台任务完成通知（前台是 pane0，Done 打在 pane1）---
         app.test_switch_pane(fx.panes[0]);
