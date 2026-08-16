@@ -578,7 +578,8 @@ impl CoreBridge {
                 10_000,
             )
         })?;
-        let sessions: Vec<WorkspaceCandidate> = serde_json::from_value(value["sessions"].clone())?;
+        let sessions: Vec<WorkspaceCandidate> =
+            serde_json::from_value(value["workspaces"].clone())?;
         Ok(sessions)
     }
 

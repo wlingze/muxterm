@@ -67,7 +67,7 @@ muxterm/
 │       ├── linux/                #   GTK4 前端（feature = "gtk"）
 │       │   ├── app.rs / window.rs / notebook.rs / pane_view.rs / tab_bar.rs
 │       │   ├── command_palette.rs / quick_pick.rs / pane_switcher.rs
-│       │   ├── keymap.rs / theme.rs / title_watch.rs / tmux_dialog.rs
+│       │   ├── keymap.rs / theme.rs / tmux_dialog.rs
 │       │   ├── ffi_bridge.rs / renderer.rs / layout_host.rs / lifecycle.rs
 │       │   ├── input_bar.rs（预留未用）
 │       │   └── mod.rs

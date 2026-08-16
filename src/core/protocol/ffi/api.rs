@@ -19,7 +19,6 @@ use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use crate::core::workspace::workspace::Workspace;
-use crate::platform::cli::session::session_socket_path;
 
 use super::callbacks::FfiCallbacks;
 use super::types::{
@@ -253,7 +252,7 @@ pub extern "C" fn muxterm_discover_workspaces_json(
         match result {
             Ok(sessions) => json_string(serde_json::json!({
                 "ok": true,
-                "sessions": sessions,
+                "workspaces": sessions,
             })),
             Err(error) => json_error(error),
         }
@@ -619,7 +618,7 @@ fn legacy_runtime_spec(
             let name = sess.clone().unwrap_or_else(|| "default".into());
             let path = sock
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| session_socket_path(&name));
+                .unwrap_or_else(|| DaemonRuntime::default_socket_path(&name));
             std::boxed::Box::new(DaemonRuntime::new(path, name))
         }
         _ => std::boxed::Box::new(ShellRuntime::new(
@@ -681,7 +680,7 @@ fn runtime_from_workspace_spec(
                 session
             };
             let path = if path.is_empty() {
-                session_socket_path(name)
+                DaemonRuntime::default_socket_path(name)
             } else {
                 std::path::PathBuf::from(path)
             };
