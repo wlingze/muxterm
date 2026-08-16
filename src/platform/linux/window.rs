@@ -120,6 +120,8 @@ struct UiState {
     layout_overlay: gtk4::Overlay,
     /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
     jump_latest: gtk4::Button,
+    /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
+    disconnect_overlay: gtk4::Label,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -303,6 +305,13 @@ impl AppWindow {
         jump_latest.set_margin_end(12);
         jump_latest.set_margin_bottom(12);
         jump_latest.set_visible(false);
+        let disconnect_overlay = gtk4::Label::new(Some("已断开"));
+        disconnect_overlay.set_widget_name("muxterm-disconnect-overlay");
+        disconnect_overlay.set_halign(gtk4::Align::Center);
+        disconnect_overlay.set_valign(gtk4::Align::Center);
+        disconnect_overlay.add_css_class("muxterm-disconnect-overlay");
+        disconnect_overlay.set_visible(false);
+        layout_overlay.add_overlay(&disconnect_overlay);
         layout_overlay.add_overlay(&jump_latest);
         root.append(&layout_overlay);
         root.append(&status.container);
@@ -352,6 +361,7 @@ impl AppWindow {
             root_box: root.clone(),
             layout_overlay,
             jump_latest,
+            disconnect_overlay,
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -1471,11 +1481,27 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
                 BackendStatus::Error => crate::core::protocol::ffi::types::BACKEND_STATUS_ERROR,
                 BackendStatus::Exited => crate::core::protocol::ffi::types::BACKEND_STATUS_EXITED,
             };
-            if matches!(status, BackendStatus::Exited) {
-                tracing::info!(target = "muxterm::linux", "runtime exited");
-                if should_close_window(true, 0, s.on_last_pane_exit) {
-                    s.pending_close = true;
+            // W16b：tmux server 死后保留最后一帧 + 水印，不 pending_close 整窗。
+            // shell runtime 仍按 on_last_pane_exit 策略处理。
+            let is_tmux = s.uses_tmux();
+            match status {
+                BackendStatus::Connected => {
+                    s.disconnect_overlay.set_visible(false);
                 }
+                BackendStatus::Disconnected if is_tmux => {
+                    s.disconnect_overlay.set_visible(true);
+                }
+                BackendStatus::Exited if is_tmux => {
+                    tracing::info!(target = "muxterm::linux", "tmux runtime exited; keep last frame");
+                    s.disconnect_overlay.set_visible(true);
+                }
+                BackendStatus::Exited => {
+                    tracing::info!(target = "muxterm::linux", "runtime exited");
+                    if should_close_window(true, 0, s.on_last_pane_exit) {
+                        s.pending_close = true;
+                    }
+                }
+                _ => {}
             }
             maybe_refresh_status(s, true);
         }
