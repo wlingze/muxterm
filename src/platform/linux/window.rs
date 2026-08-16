@@ -1985,8 +1985,7 @@ fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only:
         TmuxAction::NewSession { name } => {
             let session = name.unwrap_or_else(|| "muxterm".into());
             let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            match CoreBridge::create_workspace("local", None, socket.as_deref(), &session, &dir)
-            {
+            match CoreBridge::create_workspace("local", None, socket.as_deref(), &session, &dir) {
                 Ok(created) => connect_target(
                     &st,
                     TargetConfig::tmux_session(created, TargetTransport::Local),
@@ -2030,8 +2029,7 @@ fn open_ssh_connect(state: &Rc<RefCell<UiState>>, parent: &Window) {
 }
 
 fn open_ssh_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, alias: String) {
-    let sessions =
-        CoreBridge::discover_workspaces("ssh", Some(&alias), None).unwrap_or_default();
+    let sessions = CoreBridge::discover_workspaces("ssh", Some(&alias), None).unwrap_or_default();
     let items = tmux_dialog::tmux_session_pick_items(&sessions);
     let st = state.clone();
     let win = parent.clone();

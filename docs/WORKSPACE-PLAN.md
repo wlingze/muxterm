@@ -1,6 +1,6 @@
 # WORKSPACE-PLAN.md — Codex 实施合同（工作区架构）
 
-> **当前执行计划。** 只做本文 W1–W8。不要重做 C7 / C8 / Phase E / F1–F6。
+> **当前执行计划。** W1–W8 已落地（HEAD `fd7f05f`）；本文追加 W9–W11（platform 清理）。
 > 架构：[`WORKSPACE.md`](WORKSPACE.md)（先读完再写代码，尤其 §6 接口）
 > 像素契约：[`SURFACE.md`](SURFACE.md)（F 已交，live 路径禁止 dump）
 > 分支：`feat/linux-quickconnect-ui`（HEAD `3f19923`，ahead 93，**不 push**）
@@ -361,6 +361,58 @@ TmuxRuntime 按 **名字** bind 一条 tmux session，填进这一个 Workspace�
 **测试：** 无新逻辑则跑全门禁。文档-only 也要 `cargo test` 证明没误删代码。
 
 **验收：** 新 agent 只读 `WORKSPACE.md` + 本计划不会再实现虚拟 `w1`。
+
+---
+
+### W9 — 禁止 platform 自己 spawn tmux list-sessions
+
+**Commit：** `refactor(core): stop spawning tmux list-sessions from platform`
+
+**完成定义：**
+
+- `src/platform/cli/routing.rs` / `src/platform/cli/tmux_cli_exec.rs` /
+  `src/platform/tui/app.rs` / `src/platform/cli/daemon.rs` 的
+  `Command::new("tmux") list-sessions` 全部改为调 `core::discovery`（工作区候选）。
+- `src/platform/linux/tmux_dialog.rs` 不再 spawn tmux；改走 core discovery，
+  文案是工作区候选（name / created / tabs），不再叫 session list。
+- 遗留的 raw `tmux capture-pane` 直调（CLI debug 命令）改成走 Runtime 的
+  `pane_output`；`title_watch.rs` 的 `tmux display-message` 直调删除
+  （无人调用，且属于 platform 碰 tmux）。
+
+**验收：** `rg 'list-sessions' src/platform` 只剩 CLI alias 注释
+（`list-sessions` → `list-workspaces`）；`Command::new("tmux")` 在
+`src/platform` 为 0。
+
+---
+
+### W10 — Linux GUI 不要直接 new TmuxRuntime / 不要调 tmux 名字的 FFI
+
+**Commit：** `refactor(linux): open workspaces through core pool spec`
+
+**完成定义：**
+
+- `src/core/workspace/spec.rs` 新增 `WorkspaceSpec`（transport / alias /
+  session / runtime / path / socket / create），Runtime 构造只在 core。
+- `WorkspacePool::open_spec(spec)` 是 platform 打开工作区的唯一入口。
+- `src/platform/linux/window.rs` 不再 import `TmuxRuntime` / `ShellRuntime`；
+  启动、本地 shell、tmux attach 全部走 `WorkspaceSpec`。
+- `CoreBridge::discover_tmux_sessions` / `create_tmux_session` 改名为
+  `discover_workspaces` / `create_workspace`；`TmuxSessionEntry` 改名为
+  `WorkspaceCandidate`。macOS Swift 仍走 deprecated C 符号，本 W 不动。
+
+**验收：** `rg 'TmuxRuntime|ShellRuntime|DaemonRuntime|discover_tmux|create_tmux|TmuxSessionEntry' src/platform/linux` 为空。
+
+---
+
+### W11 — 文档与验收
+
+**Commit：** `docs: record remaining tmux-in-platform cleanup`
+
+- 本文记录 W9–W10 完成定义。
+- `rg 'list-sessions' src/platform` 只有 CLI alias 注释；`rg 'Command::new\("tmux"\)' src/platform` 为空。
+- 门禁：`cargo fmt` / `cargo check --features gtk` / `cargo test` /
+  `cargo clippy -- -D warnings` / `linux_render_e2e` / `linux_live_e2e` /
+  `linux_quickconnect_e2e` 全绿。
 
 ---
 
