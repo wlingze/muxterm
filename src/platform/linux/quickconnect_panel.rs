@@ -852,7 +852,9 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
     // SSH 可达性灯（W15d）：与 host picker 共用 ssh_dot_widget_name / ssh_dot_css_class。
     if let (Some(reach), TargetTransport::Ssh { name }) = (reach, &entry.config.transport) {
         let dot = Label::new(Some("●"));
-        dot.set_widget_name(&crate::core::transport::ssh::probe::ssh_dot_widget_name(name));
+        dot.set_widget_name(&crate::core::transport::ssh::probe::ssh_dot_widget_name(
+            name,
+        ));
         dot.add_css_class(crate::core::transport::ssh::probe::ssh_dot_css_class(reach));
         dot.set_tooltip_text(Some(match reach {
             SshReach::Ok => "SSH reachable",

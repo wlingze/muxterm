@@ -7,6 +7,7 @@
 
 #[allow(dead_code)]
 pub mod attach_history_contract;
+#[allow(dead_code)]
 pub mod behavior_driver;
 pub mod feature_e2e_contract;
 #[cfg(feature = "gtk")]
