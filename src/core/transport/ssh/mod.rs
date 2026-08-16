@@ -10,6 +10,8 @@
 //! `ProcessLauncher` trait 抽象 spawn 调用。生产用 `SystemLauncher`（spawn 系统
 //! ssh 进程），测试用 `FakeLauncher`（注入假进程输出）。
 
+pub mod probe;
+
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 

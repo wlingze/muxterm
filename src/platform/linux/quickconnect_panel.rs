@@ -4,6 +4,7 @@
 //! 回车连接、双击编辑、末行 New Project。
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use gtk4::{
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
 use crate::core::config::Theme;
+use crate::core::transport::ssh::probe::SshReach;
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::pane_view::PaneView;
 use crate::platform::linux::panel_model::{
@@ -26,7 +28,7 @@ use crate::platform::linux::panel_model::{
 use crate::platform::linux::quick_pick;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetTransport,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
@@ -140,6 +142,8 @@ pub struct PanelShowArgs {
     pub search: SearchCb,
     /// 面板关闭回调（window 侧清 panel_open 状态）。
     pub on_close: Box<dyn Fn()>,
+    /// SSH 别名 → 可达性（测试注入；生产由后台探测填充）。
+    pub ssh_reach: HashMap<String, SshReach>,
 }
 
 /// 弹出三 tab QuickConnect 面板（普通 Overlay，不构造 AppWindow）。
@@ -164,7 +168,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         peek_bytes,
         search,
         on_close,
+        ssh_reach,
     } = args;
+    let ssh_reach = Rc::new(ssh_reach);
 
     let overlay = ensure_overlay(parent);
     let backdrop = GtkBox::new(Orientation::Vertical, 0);
@@ -322,6 +328,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         peek_bytes,
         search,
         on_close: std::boxed::Box::new(|| {}),
+        ssh_reach: HashMap::new(),
     });
     let finished = Rc::new(RefCell::new(false));
 
@@ -443,6 +450,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let update_peek = update_peek.clone();
         let peek_sw = peek_sw.clone();
         let attention_actions = attention_actions.clone();
+        let ssh_reach = ssh_reach.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
@@ -477,7 +485,11 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                 if *is_current {
                                     row_widget.add_css_class("qc-current");
                                 }
-                                let boxed = target_row(entry, *is_current);
+                                let reach = match &entry.config.transport {
+                                    TargetTransport::Ssh { name } => ssh_reach.get(name).copied(),
+                                    TargetTransport::Local => None,
+                                };
+                                let boxed = target_row(entry, *is_current, reach);
                                 if let Some(status) = row.status {
                                     let mark = Label::new(Some(match status {
                                         PaneStatus::Blocked => "● ",
@@ -821,7 +833,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     entry.grab_focus();
 }
 
-fn target_row(entry: &QuickConnectEntry, is_current: bool) -> GtkBox {
+fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReach>) -> GtkBox {
     let col = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(2)
@@ -837,6 +849,18 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool) -> GtkBox {
         .orientation(Orientation::Horizontal)
         .spacing(8)
         .build();
+    // SSH 可达性灯（W15d）：与 host picker 共用 ssh_dot_widget_name / ssh_dot_css_class。
+    if let (Some(reach), TargetTransport::Ssh { name }) = (reach, &entry.config.transport) {
+        let dot = Label::new(Some("●"));
+        dot.set_widget_name(&crate::core::transport::ssh::probe::ssh_dot_widget_name(name));
+        dot.add_css_class(crate::core::transport::ssh::probe::ssh_dot_css_class(reach));
+        dot.set_tooltip_text(Some(match reach {
+            SshReach::Ok => "SSH reachable",
+            SshReach::Err => "SSH unreachable",
+            SshReach::Unknown => "SSH reachability unknown",
+        }));
+        title_row.append(&dot);
+    }
     let name = Label::new(Some(&entry.config.name));
     name.set_halign(Align::Start);
     name.add_css_class("qc-name");

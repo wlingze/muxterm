@@ -6,6 +6,7 @@
 //! - 退出 → `shutdown()` 或 Drop（`muxterm_free`）
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,7 @@ use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use crate::core::workspace::spec::WorkspaceSpec;
+use crate::core::transport::ssh::probe::SshReach;
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -44,7 +46,7 @@ use crate::platform::linux::quickconnect::project_flow::{ProjectConnectFlow, Pro
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
-use crate::platform::linux::quickconnect_panel::build_items;
+use crate::platform::linux::quickconnect_panel::{build_items, PanelItem};
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 
@@ -108,6 +110,10 @@ struct UiState {
     last_traffic_at: Option<Instant>,
     /// 后台连接结果队列（W15c：open_spec 离开 GTK 线程，16ms poll 收编）。
     pending_connects: std::collections::VecDeque<std::sync::mpsc::Receiver<PendingConnect>>,
+    /// SSH 可达性探测结果队列（W15d：面板打开时后台探测，TTL 缓存）。
+    pending_ssh_probes: std::collections::VecDeque<std::sync::mpsc::Receiver<(String, SshReach)>>,
+    /// SSH 别名 → (可达性, 探测时间)；TTL 内复用，不在 16ms tick 扫。
+    ssh_reach_cache: std::collections::HashMap<String, (SshReach, Instant)>,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
@@ -321,6 +327,8 @@ impl AppWindow {
             last_traffic: None,
             last_traffic_at: None,
             pending_connects: std::collections::VecDeque::new(),
+            pending_ssh_probes: std::collections::VecDeque::new(),
+            ssh_reach_cache: std::collections::HashMap::new(),
             root_box: root.clone(),
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
@@ -452,6 +460,7 @@ impl AppWindow {
                 };
                 let pending_close = {
                     drain_pending_connects(&st);
+                    drain_ssh_probes(&st);
                     let mut s = st.borrow_mut();
                     // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
                     // 喂好，这里只把注意力信号应用到引擎，不重建前台。
@@ -598,6 +607,7 @@ impl AppWindow {
     /// 测试用：轮询一次并返回本批 `PaneOutput` 条数（1820 CPU）。
     pub fn test_poll_output_event_count(&self) -> usize {
         drain_pending_connects(&self._state);
+        drain_ssh_probes(&self._state);
         let (n, pending_close) = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -658,6 +668,7 @@ impl AppWindow {
     /// 测试用：手动轮询一次核心事件并刷新输出（不等待 16ms 定时器）。
     pub fn test_poll_once(&self) {
         drain_pending_connects(&self._state);
+        drain_ssh_probes(&self._state);
         let pending_close = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -1743,6 +1754,89 @@ fn sync_window_size(s: &mut UiState) {
     }
 }
 
+/// SSH 可达性缓存 TTL（W15d：面板打开时后台探测，TTL 内复用）。
+const SSH_PROBE_TTL: Duration = Duration::from_secs(30);
+
+/// 后台探测一个 SSH 别名（`ssh -o BatchMode=yes -o ConnectTimeout=2 <alias> true`）。
+fn spawn_ssh_probe(s: &mut UiState, alias: String) {
+    let (tx, rx) = std::sync::mpsc::channel::<(String, SshReach)>();
+    s.pending_ssh_probes.push_back(rx);
+    std::thread::spawn(move || {
+        let args = crate::core::transport::ssh::probe::ssh_probe_args(&alias, 2);
+        let status = std::process::Command::new("ssh")
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let reach = match status {
+            Ok(st) => crate::core::transport::ssh::probe::classify_ssh_probe(st.code()),
+            Err(_) => SshReach::Err,
+        };
+        let _ = tx.send((alias, reach));
+    });
+}
+
+/// 面板打开时收集 SSH 灯：TTL 内用缓存，否则 Unknown 并后台探测。
+fn collect_ssh_reach(s: &mut UiState, workspaces: &[PanelItem]) -> HashMap<String, SshReach> {
+    let now = Instant::now();
+    let mut out = HashMap::new();
+    let mut seen = Vec::new();
+    for item in workspaces {
+        if let PanelItem::Target(entry, _) = item {
+            if let TargetTransport::Ssh { name } = &entry.config.transport {
+                if seen.contains(name) {
+                    continue;
+                }
+                seen.push(name.clone());
+                let fresh = s
+                    .ssh_reach_cache
+                    .get(name.as_str())
+                    .is_some_and(|(_, at)| now.duration_since(*at) < SSH_PROBE_TTL);
+                if fresh {
+                    out.insert(name.clone(), s.ssh_reach_cache[name.as_str()].0);
+                } else {
+                    out.insert(name.clone(), SshReach::Unknown);
+                    spawn_ssh_probe(s, name.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 收编后台 SSH 探测结果（16ms poll 与 test_poll_once 共用）。
+fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
+    let mut done = false;
+    while !done {
+        let result = {
+            let mut s = state.borrow_mut();
+            let Some(rx) = s.pending_ssh_probes.front() else {
+                break;
+            };
+            match rx.try_recv() {
+                Ok(r) => {
+                    s.pending_ssh_probes.pop_front();
+                    Some(r)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    done = true;
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    s.pending_ssh_probes.pop_front();
+                    None
+                }
+            }
+        };
+        if let Some((alias, reach)) = result {
+            state
+                .borrow_mut()
+                .ssh_reach_cache
+                .insert(alias, (reach, Instant::now()));
+        }
+    }
+}
+
 fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
     open_panel(state, window, PanelTab::Workspaces);
 }
@@ -1752,7 +1846,7 @@ fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
 /// 内部自行 borrow：show() 的 rebuild 会同步触发 peek_text（st.borrow()），
 /// 调用方不能同时持有 RefMut。
 fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
-    let (workspaces, attention, theme, font, win, st) = {
+    let (workspaces, attention, theme, font, win, st, ssh_reach) = {
         let mut s = state.borrow_mut();
         let recents = recent_target_configs(&s.pool, 5);
         s.qc_store.replace_recents(&recents);
@@ -1763,6 +1857,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let win = window.clone();
         let st = state.clone();
         let workspaces = build_items(&store, current.as_ref());
+        let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
         let ws = active_workspace_id(&s);
         let active_pane = s.active_pane;
         let attention: Vec<PaneAttention> = s
@@ -1773,7 +1868,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             .filter(|p| !(p.workspace_id == ws && p.pane_id == active_pane))
             .collect();
         s.panel_open = Some(initial_tab);
-        (workspaces, attention, theme, font, win, st)
+        (workspaces, attention, theme, font, win, st, ssh_reach)
     };
     if !window.is_visible() {
         window.present();
@@ -1868,6 +1963,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                     st.borrow_mut().panel_open = None;
                 })
             },
+            ssh_reach,
         },
     );
 }
