@@ -80,6 +80,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                         .collect()
                 }),
                 on_close: Box::new(|| {}),
+                ssh_reach: std::collections::HashMap::new(),
             },
         );
         pump_main_loop(80);
@@ -113,6 +114,22 @@ fn search_tab_finds_replica_hits_and_jumps() {
             *jumps.borrow(),
             vec![("legion@local".to_string(), 7)],
             "激活命中行应跳转到 (legion, 7)"
+        );
+
+        // 超长命中行不得把面板撑过窗口（W15b）。
+        let long = format!("LONGHIT {}", "x".repeat(240));
+        ws.borrow_mut()
+            .feed_pane_bytes(PaneId(7), format!("\r\n{long}\r\n").as_bytes(), 80, 24);
+        entry.set_text("LONGHIT");
+        pump_main_loop(120);
+        gtk4::test_widget_wait_for_draw(&win);
+        let panel = find_by_name(&win, "muxterm-panel").expect("长行后面板应仍在");
+        let win_w = win.width();
+        let panel_w = panel.width();
+        assert!(panel_w > 0 && win_w > 0, "窗口和面板应已分配宽度");
+        assert!(
+            panel_w <= win_w,
+            "长命中行不得把 muxterm-panel 撑过窗口: panel={panel_w} window={win_w}"
         );
 
         win.close();

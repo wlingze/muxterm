@@ -37,6 +37,21 @@ type MuteCb = Box<dyn Fn(String, u32, Duration)>;
 type PeekBytesCb = Box<dyn Fn(String, u32) -> (u16, u16, Vec<u8>)>;
 type SearchCb = Box<dyn Fn(&str) -> Vec<SearchRow>>;
 
+thread_local! {
+    static PANEL_DISMISS: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// 测试/生产共用：关闭当前 QuickConnect 面板（AppWindow 跳转后关面板，W15b）。
+///
+/// 独立面板测试（`linux_search_e2e`）不调用它，面板保持打开以便量宽度。
+pub fn close_current() {
+    PANEL_DISMISS.with(|slot| {
+        if let Some(dismiss) = slot.borrow().as_ref() {
+            dismiss();
+        }
+    });
+}
+
 /// 面板回调。
 pub struct QuickConnectCallbacks {
     pub on_connect: Box<dyn Fn(TargetConfig)>,
@@ -311,6 +326,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             on_close();
         }
     };
+    PANEL_DISMISS.with(|slot| *slot.borrow_mut() = Some(Box::new(dismiss.clone())));
 
     {
         let dismiss = dismiss.clone();
@@ -559,6 +575,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         let text = format!("{} · {} · {}", row.workspace_id, row.pane_id, row.line);
                         let label = Label::new(Some(&text));
                         label.set_halign(Align::Start);
+                        label.set_hexpand(true);
+                        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
                         label.set_margin_start(16);
                         label.set_margin_top(8);
                         label.set_margin_bottom(8);

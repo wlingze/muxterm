@@ -1861,14 +1861,33 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
     );
 }
 
-/// 跳到注意力 pane：若目标工作区不是当前前台连接，先切连接再激活 pane。
+/// 跳到注意力 pane：若目标工作区不是当前前台连接，先切连接；
+/// 命中在别的 tab 时先 `SwitchTab` 再 `SwitchPane`（W15b）。
 fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32) {
     let mut s = state.borrow_mut();
     activate_attention_workspace(&mut s, ws);
+    // 按 pane 查所在 tab（SearchRow 已带 tab_id，但回调只传 ws/pane；
+    // 这里从 core 状态反查，结果必须切 tab）。
+    let tab_id = {
+        let state = s.active_workspace().state();
+        state
+            .tabs()
+            .iter()
+            .find(|t| state.panes(&t.id).iter().any(|p| p.id.0 == pane))
+            .map(|t| t.id.0)
+    };
+    if let Some(tid) = tab_id {
+        if tid != s.active_tab {
+            request_switch_tab(&mut s, tid);
+        }
+    }
     // 激活 pane（若已在前台连接中）。
     let _ = s.active_workspace_mut().execute(Task::SwitchPane {
         target: PaneId(pane),
     });
+    // 跳转完成后面板关闭（W15b；独立面板测试不经过这里，面板保持打开）。
+    drop(s);
+    crate::platform::linux::quickconnect_panel::close_current();
 }
 
 /// 目标工作区不是当前前台时切连接；相同则不动（避免无谓的 layout 重建）。
