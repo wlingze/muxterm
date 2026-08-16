@@ -150,6 +150,11 @@ name = "linux_disconnect_e2e"
 path = "tests/linux_disconnect_e2e.rs"
 required-features = ["gtk"]
 
+[[test]]
+name = "linux_attention_semantics_e2e"
+path = "tests/linux_attention_semantics_e2e.rs"
+required-features = ["gtk"]
+
 # 四模式集成测试（local/ssh × shell/tmux × CLI）
 [[test]]
 name = "four_mode_integration"
