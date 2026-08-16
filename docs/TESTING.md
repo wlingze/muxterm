@@ -78,7 +78,14 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_chrome_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_render_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_live_e2e -- --test-threads=1
+# W13 attach 保真（先建 2tab/3pane 再 attach；禁止用空 session echo 冒充）
+cargo test --test tmux_attach_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_workspace_attach_e2e -- --test-threads=1
+# W14 功能保真（搜索/Done/mock-codex/tail-f；依赖 W13 播种）
+cargo test --test tmux_feature_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_feature_e2e -- --test-threads=1
 # SSH 有 sshd 才跑：eval "$(./scripts/ci/setup-sshd.sh)" 后
+# cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 # xvfb-run -a cargo test --features gtk --test linux_ssh_e2e -- --ignored --test-threads=1
 cargo test --all-features
 ```
@@ -118,6 +125,55 @@ C8 ASCII 几何 / E 的 `visible_ansi` 单测可留作 Index，**不算** Surfac
 SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_support.rs`；
 远端 tmux 也必须 `-L`。无 sshd 时 `#[ignore]`，默认门禁不跑，不算失败。
 
+### 5.4 Attach 保真套件（跨平台契约，W13）
+
+`linux_live_e2e` 的空 session + echo **不能**代替 attach。1820.log 是 SSH attach 到已有多 pane / Codex TUI 的 session：白屏、布局错、CPU 打满、零 `%pause`。
+
+**夹具顺序（所有平台相同）：**
+
+1. `tmux -L muxterm-test-<unique> new-session -d` 用 `/bin/cat`（不要默认 shell）。
+2. split 成 **3 pane**，再 `new-window` 成 **2 tab**。
+3. 每个 pane `send-keys -l` 涂独立 token，`capture-pane -p` 等到 token 出现。
+4. **然后** Muxterm attach（Linux：`AppWindow` + `cfg.tmux.socket`；core：`TmuxRuntime::new_with_attach`）。
+5. 断言 Surface / core 缓冲，不是只断言 tmux 侧还在。
+
+**文件：**
+
+- `tests/support/workspace_attach_contract.rs` — 无 GUI，macOS/Windows 复用同一套 token/布局/洪水上限。
+- `tests/tmux_attach_contract.rs` — core 集成（无 DISPLAY）。
+- `tests/linux_workspace_attach_e2e.rs` — GTK VTE + 控件几何。
+
+**硬断言（改实现，不许改阈值来「绿」）：**
+
+- attach 后 8s 内：2 个 tab；当前 tab 3 个 layout leaf。
+- 每个已涂 token 的 pane：core `pane_output` **和** Surface 可见文本都含该 token（恰好能搜到，允许 ANSI 包裹）。
+- 每个可见 pane 控件宽、高 ≥ 40px（0 尺寸 = 白屏）。
+- 切到 tab 2 再切回：tab 1 的 token 还在 Surface（像素缓存）。
+- CUP 洪水（`ESC[H ESC[2J` 循环）后 Surface 非空、停在末帧附近；`resets` 增量 ≤ 1。
+- 洪水 1s 内 core `PaneOutput` 事件数 ≤ `MAX_OUTPUT_EVENTS_PER_SEC`（400），否则必须已向 tmux 发 pause。对照 1820.log：单 pane 约 1000 事件/秒且 0 pause。
+
+禁止：用 `new-session` 之后立刻 echo 冒充 attach；只 `contains(TOKEN)` 不查 pane 几何；把洪水测试标 `#[ignore]`。
+
+### 5.5 功能保真套件（W14）
+
+规格：[`FEATURE-E2E-PLAN.md`](FEATURE-E2E-PLAN.md)。`linux_search_e2e`（Mock PaneBuf）和 `linux_render_e2e`（静态 sample）**保留作回归，不算本套件**。
+
+| crate | 层 | 必须抓住 |
+|---|---|---|
+| `tmux_feature_contract` | A core | 搜索播种 token；OSC 133 D + BEL 信号；mock-codex 末帧进 PaneBuf；tail -f 追加进 PaneBuf；tracing target 存在；禁止每条 `%output` `debug!` |
+| `linux_feature_e2e` | B+C GTK | **一个** AppWindow：Search tab 命中并跳转 VTE；后台 Done 通知；mock-codex VTE 含 HEADER/PROMPT；tail -f 新行在 VTE |
+| `tmux_ssh_feature_contract` | D SSH | `#[ignore]`；远端 `/bin/cat` **先**涂 token 再 `new_ssh_attach`；PaneBuf 能搜到。禁止 MockRuntime |
+
+```bash
+cargo test --test tmux_feature_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_feature_e2e -- --test-threads=1
+# 有 sshd：
+eval "$(./scripts/ci/setup-sshd.sh)"
+cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
+```
+
+禁止：把 Search/Done/flood 标 `#[ignore]`；用 `test_feed_replica` 冒充 `%output`；SSH 测试另建 Mock Workspace 喂字节。
+
 ### 5.2 手段（沿用现有 helper）
 
 - 环境：无 DISPLAY 用 `xvfb-run -a`；`gtk4::test_synced`。无显示就 skip，不要空 assert。
@@ -133,7 +189,7 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 动手前必读 `docs/SURFACE.md` 与 `tests/samples/dogfood-2026-0815-2105.txt`；
 原 `.log` 只许 `rg`，禁止 `include_str!`。Codex TUI fixture **raw feed**，禁止经 `visible_ansi`。
 
-### 5.4 检查单
+### 5.5 检查单
 
 - [ ] 入口（快捷键 / 状态栏按钮 / 真实 attach）有断言
 - [ ] core 状态变化有断言

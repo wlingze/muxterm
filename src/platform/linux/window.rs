@@ -35,6 +35,7 @@ use crate::platform::linux::ffi_bridge::CoreBridge;
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
+use crate::platform::linux::pane_view::PaneView;
 use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
 use crate::platform::linux::quickconnect::font::{FontSettings, Preferences};
@@ -1342,6 +1343,10 @@ fn refresh_ui(s: &mut UiState) {
                 // Surface：已有 pane 只 show/hide，不 reset、不 dump；
                 // 滚动走 VTE 自身 scrollback（F5）。
                 view.ensure_grid_size(cols, rows);
+                // attach 保真（1820.log 白屏）：布局建好后，把 core 里
+                // capture-pane 快照播种进 VTE。快照事件可能在视图创建前
+                // 已消费，不能只依赖 PaneOutput 增量。
+                seed_unseeded_pane(s, &view, pane_id, cols, rows);
                 if active {
                     s.active_pane = pane_id;
                     view.grab_focus();
@@ -1429,12 +1434,62 @@ fn sync_chrome_visibility(_s: &UiState) {
 
 fn sync_pane_outputs(s: &mut UiState) {
     // Surface：已挂载 pane 的增量走 StateChange::PaneOutput；这里不再 dump replica。
-    // F3 的 capture 门接管首屏 seed。
-    let panes = s.active_workspace().state().panes(&TabId(s.active_tab));
-    for pane in panes {
-        if let Some(view) = s.active_layout().pane(pane.id.0).cloned() {
-            view.ensure_grid_size(pane.cols, pane.rows);
+    // F3 的 capture 门接管首屏 seed；未 realized 的 pane 保持 unseeded，
+    // 等窗口 present 后由下一次轮询补种（present 前 feed 会被 VTE 丢弃）。
+    let panes: Vec<(u32, u16, u16)> = s
+        .active_workspace()
+        .state()
+        .panes(&TabId(s.active_tab))
+        .iter()
+        .map(|p| (p.id.0, p.cols, p.rows))
+        .collect();
+    for (pane_id, cols, rows) in panes {
+        if let Some(view) = s.active_layout().pane(pane_id).cloned() {
+            view.ensure_grid_size(cols, rows);
+            seed_unseeded_pane(s, &view, pane_id, cols, rows);
         }
+    }
+}
+
+/// 把 core 里已就绪的 attach 快照播种进尚未播种的 VTE。
+///
+/// 窗口 present/realize 前 feed 会被 VTE 丢弃（白屏），所以只在 widget
+/// 已 realized 时播种；未 realized 的 pane 保持 unseeded，等布局挂载后
+/// 由下一次 refresh_ui / sync_pane_outputs 补种。
+fn seed_unseeded_pane(
+    s: &mut UiState,
+    view: &std::rc::Rc<PaneView>,
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+) {
+    if view.is_seeded() || !view.widget().is_realized() {
+        return;
+    }
+    // VTE 在 Paned 子节点分配前 width/height 为 0，feed 会被丢弃（白屏）。
+    // 等 GTK 完成布局后再播种；sync_pane_outputs 每轮都会补种。
+    if view.widget().width() <= 0 || view.widget().height() <= 0 {
+        return;
+    }
+    if let Some(bytes) = s
+        .active_workspace()
+        .state()
+        .pane_output(&PaneId(pane_id))
+        .map(|b| b.to_vec())
+    {
+        tracing::info!(
+            target: "muxterm::surface",
+            pane = pane_id,
+            bytes = bytes.len(),
+            "seed_raw from core pane_output"
+        );
+        view.seed_raw(&bytes, cols, rows);
+    } else {
+        tracing::info!(
+            target: "muxterm::surface",
+            pane = pane_id,
+            "pane view unseeded and core pane_output empty"
+        );
     }
 }
 
@@ -1488,7 +1543,14 @@ fn sync_window_size(s: &mut UiState) {
         return;
     }
     let allocated = term.width() > 0 && term.height() > 0;
-    let cols = match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw) {
+    let multi_pane = s
+        .active_workspace()
+        .state()
+        .panes(&TabId(s.active_tab))
+        .len()
+        > 1;
+    let cols = match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane)
+    {
         Some(c) => c,
         None => return,
     };
