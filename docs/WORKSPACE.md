@@ -3,6 +3,7 @@
 > 定名：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）
 > 施工：[`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md)。像素：[`SURFACE.md`](SURFACE.md)（F 已交）。
 > 适配表：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)（只给 `runtime/tmux` 看）。
+> Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。Herdr 施工：[`HERDR-PLAN.md`](HERDR-PLAN.md)。
 
 **一句话：** Muxterm 自己的结构是 **WorkspacePool → Workspace → Tab → Pane**。GUI **Window 只是某个 Workspace 的体现**。tmux 只是 Runtime 的一种实现，全部关在 `runtime/tmux/`。前端只渲染，不养池、不养连接。
 
@@ -41,7 +42,7 @@ $N、@N、%output、send-keys、-CC 全部停在这里
 | **Tab** | Workspace 里的一页 | GUI 窗口；tmux window 本体 |
 | **Pane** | 最小格子：有 PaneBuf，前端在这里画终端 | |
 | **WorkspacePool** | 以前的连接池。打开/激活/后台保活/淘汰 | platform 里的 `ConnectionPool` |
-| **Runtime** | 给 Workspace **填** Tab/Pane 的接口。实现：Tmux / Shell / 以后 Herdr | 池；用户切换器 |
+| **Runtime** | 给 Workspace **填** Tab/Pane 的接口。实现：Tmux / Shell / Herdr。问能力用 `support()`，见 [`RUNTIME.md`](RUNTIME.md) | 池；用户切换器 |
 | **Window** | GUI 窗口 = **一个 Workspace 的体现** | 产品树节点；tmux window；旧虚拟 `w1` |
 | **Session** | **产品层没有。** 只在 `runtime/tmux` 叫 `TmuxSessionId`（`$N`） | FFI/CLI/GUI 类型 |
 
@@ -163,9 +164,9 @@ take_events() → StateChange   # PaneOutput(原始字节) / TabAdded / LayoutCh
 snapshot: tabs, panes, layout
 ```
 
-看不见：`list-sessions`、`%output`、`$N`、`send-keys -H`。那些是 `TmuxRuntime` 内部把事件翻译成上面的 `StateChange`。
+看不见：`list-sessions`、`%output`、`$N`、`send-keys -H`、Herdr 的 `w2:p1` / `terminal.frame`。那些是对应 `runtime/*` 内部把事件翻译成上面的 `StateChange`。
 
-`Capability`：`can_attach` / `can_discover`（能否列出可 open 的候选）/ `can_display_message`。不要 `can_list_sessions`。
+能力用 `Runtime::support() -> &'static [RuntimeCapability]`，不要 `can_list_sessions`，也不要 GUI `if runtime == "herdr"`。完整枚举与 worktree：[`RUNTIME.md`](RUNTIME.md) §4–§5。
 
 ---
 
@@ -259,6 +260,7 @@ src/core/workspace/     pool.rs + workspace.rs + pane_buf.rs + id.rs
 src/core/runtime/       trait Runtime
 src/core/runtime/tmux/  全部 tmux（含 list-sessions 实现）
 src/core/runtime/shell/ ShellRuntime
+src/core/runtime/herdr/ 全部 Herdr socket（尚未落地，见 HERDR-PLAN.md）
 src/core/protocol/ffi/  handle = WorkspacePool
 src/core/discovery/     返回 Workspace 候选，不返回 SessionInfo
 src/platform/linux|macos|tui
@@ -277,5 +279,5 @@ src/platform/linux|macos|tui
 - platform 实现连接池、ssh、tmux。
 - 把 GUI Window 一对一映射成 tmux window（iTerm2）。
 - 把 WezTerm 的 workspace 标签当产品层。
-- 本轮 Herdr。
+- 把 Herdr 做成身份；规划见 [`RUNTIME.md`](RUNTIME.md) / [`HERDR-PLAN.md`](HERDR-PLAN.md)。
 - 破坏 Surface：live 仍只 `vte.feed` 原始字节。

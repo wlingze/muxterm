@@ -2,7 +2,8 @@
 
 > **只给 `src/core/runtime/tmux/` 看。** 产品结构见 [`WORKSPACE.md`](WORKSPACE.md)。
 > Core Protocol / FFI / CLI / GUI **禁止**出现 tmux 的 session/window/pane 类型。
-> 修订：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）
+> Herdr 对照在 [`RUNTIME.md`](RUNTIME.md) §6.2 与 [`HERDR-PLAN.md`](HERDR-PLAN.md)，不要写进本表。
+> 修订：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）；Herdr 指针 2026-08-17。
 
 TmuxRuntime 是一个 **适配器**：把 tmux 控制模式填进 Muxterm 已经定好的 **Workspace → Tab → Pane**。不是反过来让产品层去迁就 tmux。
 

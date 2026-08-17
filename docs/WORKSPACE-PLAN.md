@@ -1,12 +1,13 @@
 # WORKSPACE-PLAN.md — Codex 实施合同（工作区架构）
 
 > **Linux tmux GUI 测试门禁已锁。** W1–W18 已落地（[`W18-PLAN.md`](W18-PLAN.md)）。后续：macOS 开发与人手修 bug；以后再改分支名、清理 log/test/文档。审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。
+> Herdr Runtime 施工单：[`HERDR-PLAN.md`](HERDR-PLAN.md)（分支 `feature/runtime/support_herdr`）。测试写法与运行命令以该文件 §4–§5 为准。
 > 架构：[`WORKSPACE.md`](WORKSPACE.md)（先读完再写代码，尤其 §6 接口）
 > 像素契约：[`SURFACE.md`](SURFACE.md)（F 已交，live 路径禁止 dump）
 > 测试契约：[`TESTING.md`](TESTING.md) §5.4 attach + §5.5 功能 e2e + §5.6 W15 + §5.7 W16 + §5.8 W17 + §5.9 W18
 > 功能测试规格：[`FEATURE-E2E-PLAN.md`](FEATURE-E2E-PLAN.md)
 > 分支：本地 `feat/linux-quickconnect-ui`，跟踪 `origin/feature/quickconnect-attach-ui`（macOS 同线，以后再改名）
-> 修订：2026-08-17 15:11 CST（`2026-08-17T15:11:19+08:00`）
+> 修订：2026-08-17 15:44 CST（`2026-08-17T15:44:12+08:00`）
 
 ---
 

@@ -2,7 +2,9 @@
 
 > 适用：`/home/wlz/Developer/self/muxterm`（当前 Linux 分支 `feat/linux-quickconnect-ui`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**；W18 见 [W18-PLAN.md](W18-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)）、
+> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)、
+> [RUNTIME.md](RUNTIME.md) / [HERDR-PLAN.md](HERDR-PLAN.md)（Herdr 接入）、
+> [W18-PLAN.md](W18-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)、
 > [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
 > [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
 > [bugfix-log.md](bugfix-log.md)。
@@ -109,6 +111,14 @@ xvfb-run -a cargo test --features gtk --test linux_jump_count_e2e -- --test-thre
 xvfb-run -a cargo test --features gtk --test linux_search_scope_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_last_seen_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_command_marks_e2e -- --test-threads=1
+# Herdr Runtime（隔离 named session；见 HERDR-PLAN.md）
+cargo test --test herdr_session_contract -- --test-threads=1
+cargo test --test herdr_feature_contract -- --test-threads=1
+cargo test --test herdr_multi_workspace_contract -- --test-threads=1
+cargo test --test herdr_worktree_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_herdr_switch_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_herdr_worktree_e2e -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -281,6 +291,30 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 | `osc133_records_command_marks_with_exit_and_text` | 两条刻度，exit 0 然后 1，带命令文本 |
 
 禁止：`#[ignore]` SSH 测试；连用户 22；SSH 重连用本地 `tmux -L` 查远端 bell；用 MockRuntime 冒充 SSH；削弱 +N / last-seen / 刻度断言。
+
+### 5.10 Herdr Runtime 接入
+
+规格：[`HERDR-PLAN.md`](HERDR-PLAN.md)。契约：[`RUNTIME.md`](RUNTIME.md)。
+
+测试自己拉起 **named session**（`herdr --session muxterm-test-* server`）。socket 在 `~/.config/herdr/sessions/<name>/herdr.sock`。清理：`herdr session stop <name>` 然后 `herdr session delete <name>`。**禁止** `herdr server stop`，禁止连用户默认 `/home/wlz/.config/herdr/herdr.sock`。夹具每条 CLI 必须带 `--session`（本环境常有 `HERDR_ENV=1`，不带就会打到用户 session）。
+
+无 `herdr` 二进制才 skip。不许 `#[ignore]`。生产代码走 socket JSON，不许 `Command::new("herdr")`。worktree fixture 只许 `/tmp/muxterm-test-herdr-*` 里的临时 git 仓库。
+
+| crate | 必须抓住 |
+|---|---|
+| `support()` 单测 | Tmux/Shell **不含** `Worktree*`；无能力时 create 被拒 |
+| `herdr_session_contract` | 隔离 session；snapshot 含刚 create 的 workspace |
+| `herdr_feature_contract` | 先涂 `HERDR_LIVE_*` 再 attach；`search_workspace` 非空 |
+| `linux_herdr_e2e` | GTK：VTE + `search_all` 含 token；replica runtime 是 herdr |
+| `herdr_multi_workspace_contract` / `linux_herdr_switch_e2e` | 同一 socket 两格，切过去 token 还在 |
+| `herdr_worktree_contract` / `linux_herdr_worktree_e2e` | list/create/open；`muxterm-worktree-create` 仅 Herdr 格出现 |
+
+```bash
+cargo test --test herdr_feature_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
+```
+
+禁止：MockRuntime 喂 `terminal.frame`；在本仓库 `git worktree add`；为绿把 token 断言改成「非空」。
 
 ### 5.2 手段（沿用现有 helper）
 
