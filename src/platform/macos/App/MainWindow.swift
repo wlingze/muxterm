@@ -20,9 +20,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     let content: ContentView
     private let discovery = ConnectionDiscovery()
     private var commandPalette: CommandPaletteController!
-    private var quickConnect: QuickConnectController!
-    var searchPanel: SearchPanelController!
-    var attentionPanel: AttentionPanelController!
+    var unifiedPanel: UnifiedPanelController!
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private let quickConnectStore: QuickConnectStore
@@ -136,29 +134,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandPalette.onSelect = { [weak self] item in
             self?.handlePaletteSelection(item)
         }
-        quickConnect = QuickConnectController(store: quickConnectStore, ownerWindow: window)
-        quickConnect.onConnect = { [weak self] config in
-            self?.connect(config: config)
-        }
-        quickConnect.onNewProject = { [weak self] in
-            self?.editProject(nil)
-        }
-        quickConnect.onEditProject = { [weak self] config in
-            self?.editProject(config)
-        }
-        searchPanel = SearchPanelController(ownerWindow: window) { [weak self] query in
-            guard let self, let json = self.bridge.searchAllJSON(query: query),
-                  let data = json.data(using: .utf8),
-                  let snapshot = SearchSnapshot.decode(data)
-            else {
-                return []
-            }
-            return snapshot.hits
-        }
-        searchPanel.onJump = { [weak self] tabId, paneId in
-            self?.jumpToPane(tabId: tabId, paneId: paneId)
-        }
-        attentionPanel = AttentionPanelController(
+        unifiedPanel = UnifiedPanelController(
+            store: quickConnectStore,
             ownerWindow: window,
             snapshot: { [weak self] in
                 guard let self, let json = self.bridge.attentionSnapshotJSON(),
@@ -173,9 +150,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             sendInput: { [weak self] paneId, data in
                 _ = self?.bridge.sendInput(paneId: paneId, data: data)
+            },
+            search: { [weak self] query in
+                guard let self, let json = self.bridge.searchAllJSON(query: query),
+                      let data = json.data(using: .utf8),
+                      let snapshot = SearchSnapshot.decode(data)
+                else {
+                    return []
+                }
+                return snapshot.hits
             }
         )
-        attentionPanel.onJump = { [weak self] tabId, paneId in
+        unifiedPanel.onConnect = { [weak self] config in
+            self?.connect(config: config)
+        }
+        unifiedPanel.onNewProject = { [weak self] in
+            self?.editProject(nil)
+        }
+        unifiedPanel.onEditProject = { [weak self] config in
+            self?.editProject(config)
+        }
+        unifiedPanel.onJump = { [weak self] tabId, paneId in
             self?.jumpToPane(tabId: tabId, paneId: paneId)
         }
         languageObserver = NotificationCenter.default.addObserver(
@@ -211,8 +206,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onSelectWindow = { [weak self] tabId in
             self?.requestSwitchTab(tabId)
         }
-        // 提醒位与 QuickConnect 入口同一位置（文档 §B.1）：有红点时打开注意力面板，
-        // 否则打开 QuickConnect。
+        // 提醒位与 QuickConnect 入口同一位置（文档 §B.1）：有红点时打开统一面板
+        // 并停在 Attention，否则停在 Workspaces（Linux 同一套）。
         content.statusBar.onAttentionClick = { [weak self] in
             guard let self else { return }
             if let json = self.bridge.attentionSnapshotJSON(),
@@ -372,16 +367,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func applyTheme(_ theme: MuxtermTheme) {
         UserDefaults.standard.set(theme.rawValue, forKey: Self.themePreferenceKey)
         MuxtermTerminalColors.activePalette = theme.palette
+        // 终端默认色固定深色（OSC 10/11 代答浅字深底）；主题只改 chrome。
         terminalManager.applyTheme(
-            fgHex: theme.palette.fg,
-            bgHex: theme.palette.bg
+            fgHex: MuxtermTerminalColors.foregroundHex,
+            bgHex: MuxtermTerminalColors.backgroundHex
         )
         // 主题色变化后必须给**所有** pane 重新上报，tmux 才会用新颜色代答
         // OSC 10/11；只报当前 tab 会让后台 tab 的 codex 输入框沿用旧色。
         reportedColourPanes.removeAll()
         _ = bridge.reportAllPaneColours(
-            fgHex: theme.palette.fg,
-            bgHex: theme.palette.bg
+            fgHex: MuxtermTerminalColors.foregroundHex,
+            bgHex: MuxtermTerminalColors.backgroundHex
         )
         // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
         if statusBarSnapshot != nil {
@@ -448,32 +444,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func openQuickConnect() {
-        guard let quickConnect else { return }
+        guard let unifiedPanel else { return }
         // Recent 由连接池派生（最近打开且仍 warm 的连接）；当前连接用于行高亮。
-        quickConnect.currentConfig = connectionPool.currentTargetConfig
+        unifiedPanel.currentConfig = connectionPool.currentTargetConfig
         quickConnectStore.replaceRecents(connectionPool.recentTargetConfigs())
-        if quickConnect.window?.isKeyWindow == true {
-            quickConnect.dismiss()
+        if unifiedPanel.window?.isKeyWindow == true {
+            unifiedPanel.dismiss()
         } else {
-            quickConnect.present()
+            unifiedPanel.present(initial: .workspaces)
         }
     }
 
     @objc func openSearchPanel() {
-        guard let searchPanel else { return }
-        if searchPanel.window?.isKeyWindow == true {
-            searchPanel.dismiss()
+        guard let unifiedPanel else { return }
+        if unifiedPanel.window?.isKeyWindow == true {
+            unifiedPanel.dismiss()
         } else {
-            searchPanel.present()
+            unifiedPanel.present(initial: .search)
         }
     }
 
     @objc func openAttentionPanel() {
-        guard let attentionPanel else { return }
-        if attentionPanel.window?.isKeyWindow == true {
-            attentionPanel.dismiss()
+        guard let unifiedPanel else { return }
+        if unifiedPanel.window?.isKeyWindow == true {
+            unifiedPanel.dismiss()
         } else {
-            attentionPanel.present()
+            unifiedPanel.present(initial: .attention)
         }
     }
 
@@ -524,7 +520,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 按 QuickConnect 目标连接：tmux 有 name → attach，无 name → 创建；
     /// shell runtime → 本地/远程 shell 在 path 启动。
     func connect(config: TargetConfig) {
-        quickConnect.dismiss()
+        unifiedPanel.dismiss()
         // recents 由连接池派生：连接成功后 pool.acquire 会更新最近列表。
         switch config.runtime {
         case .tmux:
@@ -637,22 +633,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        let backend: String
-        let socket: String?
-        switch config.transport {
-        case .local:
-            backend = "tmux"
-            socket = nil
-        case .ssh(let name):
-            backend = "ssh"
-            socket = name
-        }
+        let params = config.transport.attachBackend
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let nextBridge = try CoreBridge(
-                    backendType: backend,
-                    socket: socket,
-                    session: session
+                // SSH：alias 走 sshAlias，socket 不得填 Host 名（否则 `tmux -L ryzen`）。
+                let nextBridge = try CoreBridge.connect(
+                    backendType: params.type,
+                    socket: params.socket,
+                    session: session,
+                    sshAlias: params.sshAlias
                 )
                 DispatchQueue.main.async {
                     guard let self else {
@@ -747,16 +736,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             size: currentTerminalFontSize(),
             container: content.paneLayout
         )
-        // warm slot 的视图也要沿用当前主题（浅/深色）。
+        // warm slot 的视图也要沿用终端深色色板（agent 输入框契约）。
         terminalManager.applyTheme(
-            fgHex: MuxtermTerminalColors.activePalette.fg,
-            bgHex: MuxtermTerminalColors.activePalette.bg
+            fgHex: MuxtermTerminalColors.foregroundHex,
+            bgHex: MuxtermTerminalColors.backgroundHex
         )
         // 连接建立/切换后给全部 pane 上报一次颜色，避免后台 tab 的 codex
         // 输入框使用 tmux 默认（或上一个连接）的颜色代答。
         _ = bridge.reportAllPaneColours(
-            fgHex: MuxtermTerminalColors.activePalette.fg,
-            bgHex: MuxtermTerminalColors.activePalette.bg
+            fgHex: MuxtermTerminalColors.foregroundHex,
+            bgHex: MuxtermTerminalColors.backgroundHex
         )
         lastSnapshot = slot.lastSnapshot
         // 切连接后旧 status bar 属于上一个 tmux：先清掉，等新快照到达再显示。
@@ -785,7 +774,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 打开/编辑 project 配置窗口。
     private func editProject(_ config: TargetConfig?) {
         // 配置窗口以 sheet 形式出现，先收起 Cmd-P 面板，避免遮盖。
-        quickConnect.dismiss()
+        unifiedPanel.dismiss()
         let hosts: [SSHHostInfo]
         switch discovery.sshHosts() {
         case .success(let value):
@@ -802,11 +791,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         win.onSave = { [weak self] saved in
             self?.quickConnectStore.upsertProject(saved)
             // 保存后重新打开面板，方便继续连接/编辑。
-            self?.quickConnect.present()
+            self?.unifiedPanel.present(initial: .workspaces)
         }
         win.onCancel = { [weak self] in
             // 取消/关闭后恢复面板。
-            self?.quickConnect.present()
+            self?.unifiedPanel.present(initial: .workspaces)
         }
     }
 
@@ -1203,22 +1192,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func attach(target: ConnectionTarget, session: String) {
         commandPalette.dismiss()
-        let backend: String
-        let socket: String?
-        let alias: String?
+        let params: (type: String, socket: String?, sshAlias: String?)
         switch target {
         case .local:
-            backend = "tmux"
-            socket = nil
-            alias = nil
+            params = ("tmux", nil, nil)
         case .ssh(let host):
-            backend = "ssh"
-            socket = host.alias
-            alias = host.alias
+            params = ("ssh", nil, host.alias)
         }
         let key = ConnectionKey(
-            transport: alias == nil ? "local" : "ssh",
-            alias: alias,
+            transport: params.sshAlias == nil ? "local" : "ssh",
+            alias: params.sshAlias,
             session: session,
             runtime: "tmux",
             path: ""
@@ -1231,10 +1214,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // CoreBridge 的 connect 可能等待远端 tmux 初始化，放到后台线程。
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let nextBridge = try CoreBridge(
-                    backendType: backend,
-                    socket: socket,
-                    session: session
+                let nextBridge = try CoreBridge.connect(
+                    backendType: params.type,
+                    socket: params.socket,
+                    session: session,
+                    sshAlias: params.sshAlias
                 )
                 DispatchQueue.main.async {
                     guard let self else {
@@ -1367,15 +1351,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             } else if ev.type == STATE_STATUS_SUBSCRIPTION {
                 // status-left/right 订阅推送（文档 §B+）：零轮询更新原生条。
                 if !ev.name.isEmpty, let value = String(data: ev.data, encoding: .utf8) {
-                    content.statusBar.applySubscription(name: ev.name, value: value)
-                    if let snapshot = statusBarSnapshot {
-                        var updated = snapshot
-                        if ev.name == "muxterm.status-left" {
-                            updated.left = value
-                        } else if ev.name == "muxterm.status-right" {
-                            updated.right = value
+                    if ev.name.hasPrefix("muxterm.pane-cmd") {
+                        // pane-cmd 订阅 → AttentionEngine.set_process_name（Linux 同款）。
+                        // FFI 已把 pane 放进 ev.paneId；空 pane id 不误伤。
+                        if ev.paneId != 0 {
+                            _ = bridge.attentionSetProcessName(
+                                paneId: ev.paneId,
+                                name: value.isEmpty ? nil : value
+                            )
                         }
-                        statusBarSnapshot = updated
+                    } else {
+                        content.statusBar.applySubscription(name: ev.name, value: value)
+                        if let snapshot = statusBarSnapshot {
+                            var updated = snapshot
+                            if ev.name == "muxterm.status-left" {
+                                updated.left = value
+                            } else if ev.name == "muxterm.status-right" {
+                                updated.right = value
+                            }
+                            statusBarSnapshot = updated
+                        }
                     }
                 }
             } else if ev.type == STATE_TAB_RENAMED {
@@ -1633,6 +1628,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func testShutdown() {
         guard !isClosing else { return }
         isClosing = true
+        // 统一面板是独立 NSPanel：不关会留在 NSApp.windows 里干扰后续测试。
+        unifiedPanel?.dismiss()
         pollTimer?.invalidate()
         pollTimer = nil
         trafficMonitorTimer?.invalidate()
@@ -1694,8 +1691,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 返回 true 表示已消费事件。
-    private func handleKey(_ event: NSEvent) -> Bool {
+    /// 返回 true 表示已消费事件。in-process e2e 经 `testDispatchKeyEvent` 调用。
+    func handleKey(_ event: NSEvent) -> Bool {
+        // Cmd-P 统一面板可见时，Tab/Shift+Tab/Esc/Enter 走面板。
+        // （headless e2e 里 key window 可能为 nil，用 isVisible 判断。）
+        if unifiedPanel?.window?.isVisible == true {
+            switch event.keyCode {
+            case 53: // Escape
+                unifiedPanel.dismiss()
+                return true
+            case 48: // Tab
+                unifiedPanel.cycleTabForTest(back: event.modifierFlags.contains(.shift))
+                return true
+            case 36, 76: // Return / keypad Enter
+                unifiedPanel.activateForTest()
+                return true
+            default:
+                break
+            }
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         // macOS 的 Delete/Backspace 可能在 SwiftTerm 的 NSTextInputClient 路径
         // 中被吞掉；明确转成 DEL，保证 shell 和 tmux 收到基础编辑键。
