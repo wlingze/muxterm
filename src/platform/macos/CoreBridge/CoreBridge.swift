@@ -424,6 +424,96 @@ final class CoreBridge {
         }
     }
 
+    // MARK: - 搜索 / 注意力 / 历史（W14/W16 跨平台契约）
+
+    /// 跨全部工作区搜索 pane 文本，返回 JSON 文本（`muxterm_search_all`）。
+    func searchAllJSON(query: String) -> String? {
+        guard let handle else { return nil }
+        return query.withCString { q in
+            guard let p = muxterm_search_all(handle, q) else { return nil }
+            defer { muxterm_free_string(p) }
+            return String(cString: p)
+        }
+    }
+
+    /// 注意力引擎快照 JSON（`muxterm_attention_snapshot`）。
+    func attentionSnapshotJSON() -> String? {
+        guard let handle else { return nil }
+        guard let p = muxterm_attention_snapshot(handle) else { return nil }
+        defer { muxterm_free_string(p) }
+        return String(cString: p)
+    }
+
+    /// 取走本轮新进入 blocked / done 的通知 JSON（`muxterm_attention_take_notifications`）。
+    func attentionTakeNotificationsJSON() -> String? {
+        guard let handle else { return nil }
+        guard let p = muxterm_attention_take_notifications(handle) else { return nil }
+        defer { muxterm_free_string(p) }
+        return String(cString: p)
+    }
+
+    /// 标记某 pane 成为前台可见。
+    @discardableResult
+    func attentionOnBecameVisible(paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_attention_on_became_visible(handle, paneId)
+    }
+
+    /// 更新某 pane 的进程名。
+    @discardableResult
+    func attentionSetProcessName(paneId: UInt32, name: String?) -> Int32 {
+        guard let handle else { return -1 }
+        return Self.withOptionalCString(name) { namePtr in
+            muxterm_attention_set_process_name(handle, paneId, namePtr)
+        }
+    }
+
+    /// 静音某 pane 一段时间（秒）。
+    @discardableResult
+    func attentionMute(paneId: UInt32, seconds: UInt64) -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_attention_mute(handle, paneId, seconds)
+    }
+
+    /// 读取某 pane 的滚动窗口 ANSI 字节（历史查看用）。
+    func paneScrollANSI(paneId: UInt32, offset: UInt32, rows: UInt32) -> Data {
+        guard let handle else { return Data() }
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        let n = buf.withUnsafeMutableBytes { raw in
+            muxterm_pane_scroll_ansi(
+                handle,
+                paneId,
+                offset,
+                rows,
+                raw.bindMemory(to: UInt8.self).baseAddress,
+                raw.count
+            )
+        }
+        guard n > 0 else { return Data() }
+        return Data(buf.prefix(Int(n)))
+    }
+
+    /// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
+    func paneViewport(paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_pane_viewport(handle, paneId)
+    }
+
+    /// 设置某 pane 的 viewport 滚动偏移（跳转历史后恢复）。
+    @discardableResult
+    func setPaneViewport(paneId: UInt32, offset: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_set_pane_viewport(handle, paneId, offset)
+    }
+
+    /// 读取某 pane 最近 n 行文本 JSON（`muxterm_pane_last_n_lines`）。
+    func paneLastNLinesJSON(paneId: UInt32, n: UInt32) -> String? {
+        guard let handle else { return nil }
+        guard let p = muxterm_pane_last_n_lines(handle, paneId, n) else { return nil }
+        defer { muxterm_free_string(p) }
+        return String(cString: p)
+    }
+
     deinit {
         shutdownAndFree()
     }

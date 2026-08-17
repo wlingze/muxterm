@@ -12,6 +12,7 @@ public enum KeyAction: Equatable, Sendable {
     case prevPane
     case commandPalette
     case quickConnect
+    case searchPanes
     case quit
     case increaseFontSize
     case decreaseFontSize
@@ -89,6 +90,10 @@ public enum KeyBindings {
         // Cmd+Shift+P：旧命令面板（保留）。
         if chord.command, chord.shift, !chord.option, key == "p" {
             return .commandPalette
+        }
+        // Cmd+Shift+F：搜索 pane 文本。
+        if chord.command, chord.shift, !chord.option, key == "f" {
+            return .searchPanes
         }
         // Cmd+= / Cmd++ 增大字体，Cmd+- 减小，Cmd+0 重置。
         if chord.command, !chord.option {

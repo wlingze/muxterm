@@ -234,6 +234,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         commandPalette.target = windowController
         viewMenu.addItem(commandPalette)
 
+        let searchPanes = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuSearchPanes),
+            action: #selector(MainWindowController.openSearchPanel),
+            keyEquivalent: "f"
+        )
+        searchPanes.keyEquivalentModifierMask = [.command, .shift]
+        searchPanes.target = windowController
+        viewMenu.addItem(searchPanes)
+
         viewMenu.addItem(NSMenuItem.separator())
 
         let tabTop = NSMenuItem(
