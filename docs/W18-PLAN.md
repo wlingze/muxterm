@@ -2,7 +2,7 @@
 
 > 日期：2026-08-17（`2026-08-17T13:11:46+08:00`）
 > 工作目录：`/home/wlz/Developer/self/muxterm`
-> 分支：`feat/linux-quickconnect-ui`（**不 push**）
+> 分支：`feat/linux-quickconnect-ui`（跟踪 `origin/feature/quickconnect-attach-ui`）
 > 先读：`docs/VISION-AUDIT.md`、`docs/W17-PLAN.md`、`docs/WORKSPACE.md` §6、`docs/SURFACE.md`、`docs/TESTING.md` §5.9、`AGENTS.md`
 > 愿景：`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §2.15.2（重连）§2.15.4（上次看到这里 / 回底 / 命令轨）§6 阶段 C（搜索范围）
 >
@@ -39,9 +39,9 @@ Muxterm 纪律不变：live 路径禁止 `visible_ansi` → `vte.reset`；重连
 7. **W18g** `linux_last_seen_e2e`：`muxterm-last-seen`。
 8. **W18h** `linux_command_marks_e2e` + `osc133_records_command_marks_with_exit_and_text`：红绿刻度、点击跳转、tooltip 命令。
 
-一逻辑一英文 commit，`type(scope):`，无 Co-authored-by，不 `git add -A`，不 push。做完一个立刻下一个。
+一逻辑一英文 commit，`type(scope):`，无 Co-authored-by，不 `git add -A`。W18a–h 已按此落地。
 
-**不做：** Herdr、ET、多窗口、Linux 托盘、像素重写、push、连用户 22 端口、`tmux kill-server` 不带 `-L`。
+**不做：** Herdr、ET、多窗口、Linux 托盘、像素重写、连用户 22 端口、`tmux kill-server` 不带 `-L`。
 
 ---
 
@@ -71,9 +71,9 @@ Muxterm 纪律不变：live 路径禁止 `visible_ansi` → `vte.reset`；重连
 | W18g | `tests/linux_last_seen_e2e.rs` | 切到另一 pane、原 pane 继续写、切回：`muxterm-last-seen` 可见；点了 VTE 含 `LEFT_HERE_*` |
 | W18h | `tests/linux_command_marks_e2e.rs` + emulate 单测 | `muxterm-cmd-mark-ok` / `muxterm-cmd-mark-fail`；fail 的 tooltip 含 `CMD_FAIL_*`；点击后 VTE 含失败命令。`TerminalState::command_marks()` 两条，exit 0 然后 1，带 `cmd_ok` / `cmd_fail` |
 
-`AppWindow::test_open_pane_find` 现在是空的：接到与 Ctrl+F 同一条生产路径，显示 `muxterm-pane-find`。
+`AppWindow::test_open_pane_find` 与 Ctrl+F 共用生产路径，显示 `muxterm-pane-find`。
 
-`TerminalState::command_marks` 现在返回空切片：在 OSC 133 A/B/C/D 时写入 `CommandMark { seq, command, exit_code }`。命令文本是 B 与 C 之间的那一行。退出码解析 **整段** `D;<n>`（不要只取第一个字节，否则 12 会变成 1）。
+`TerminalState::command_marks` 在 OSC 133 A/B/C/D 时写入 `CommandMark { seq, command, exit_code }`。命令文本是 B 与 C 之间的那一行。退出码解析 **整段** `D;<n>`（不要只取第一个字节，否则 12 会变成 1）。
 
 命令刻度是滚动条旁 **极窄覆盖层**（愿景：十像素级，不是侧边栏）。成功绿、失败红。不要改 pane 字节。
 
@@ -110,9 +110,9 @@ W17 crate 必须继续绿。
 
 ## 5. 完成定义
 
-- [ ] 上表全部绿，断言没改弱，没有 `#[ignore]`
-- [ ] 未连用户 22 端口；未对默认 tmux `kill-server`
-- [ ] 英文 commit，未 push
-- [ ] `fbc77e4` 仍是祖先
+- [x] 上表全部绿，断言没改弱，没有 `#[ignore]`（Cursor 独立复跑，`2026-08-17T14:53:48+08:00`）
+- [x] 未连用户 22 端口；未对默认 tmux `kill-server`
+- [x] 英文 commit；本轮 Linux 关账后 push（见分支跟踪）
+- [x] `fbc77e4` 仍是祖先
 
-仍明确以后再做：ET、合盖一小时人手狗食、多窗口、Herdr。
+仍明确以后再做：ET、合盖一小时人手狗食、多窗口、Herdr。Linux 本轮到此。后续在 macOS 修 bug；分支改名、log/test/文档大清理另做。
