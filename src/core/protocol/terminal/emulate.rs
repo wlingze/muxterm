@@ -455,8 +455,10 @@ impl TerminalState {
             let terminated_osc = self.scan_attention_byte(b);
             // W18h：B..C 之间的命令文本（含混入的 C OSC 帧，C 处理时再剥掉）。
             // 终止 OSC 的 BEL/ST 不是命令文本，不收集。
-            if self.command_pending.is_some() && !terminated_osc {
-                self.command_pending.as_mut().expect("is_some").push(b as char);
+            if !terminated_osc {
+                if let Some(pending) = self.command_pending.as_mut() {
+                    pending.push(b as char);
+                }
             }
             processor.advance(self, b);
         }
@@ -537,12 +539,7 @@ impl TerminalState {
                         // B..C 之间的那一行就是命令文本；C 之后清空待收集。
                         if let Some(cmd) = self.command_pending.take() {
                             // 收集时把 C 的 OSC 帧也吞进来了，剥到 `ESC ]` 为止。
-                            let cmd = cmd
-                                .split("\x1b]")
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
+                            let cmd = cmd.split("\x1b]").next().unwrap_or("").trim().to_string();
                             if !cmd.is_empty() {
                                 self.command_seq += 1;
                                 self.command_marks.push(CommandMark {
@@ -556,7 +553,9 @@ impl TerminalState {
                     Some(b'D') => {
                         // OSC 133;D;<exit>：退出码在第 3 段，解析整段（12 不能变 1）。
                         let exit = params.get(2).and_then(|p| {
-                            std::str::from_utf8(p).ok().and_then(|s| s.parse::<u8>().ok())
+                            std::str::from_utf8(p)
+                                .ok()
+                                .and_then(|s| s.parse::<u8>().ok())
                         });
                         self.signals
                             .push(AttentionSignal::CommandDone { exit_code: exit });
@@ -701,11 +700,7 @@ impl TerminalState {
                 if let Some(evicted) = self.grid.first() {
                     let s: String = evicted.iter().map(|c| c.ch).collect();
                     // 去掉行尾空白，保持 scrollback 可读
-                    let was_soft = self
-                        .grid_soft_wrapped
-                        .first()
-                        .copied()
-                        .unwrap_or(false);
+                    let was_soft = self.grid_soft_wrapped.first().copied().unwrap_or(false);
                     self.push_scrollback(s.trim_end().to_string(), soft || was_soft);
                 }
                 // 先取列数：rows=1 时 remove(0) 会让 grid 暂时为空，cols() 返回 0。
@@ -737,8 +732,11 @@ impl TerminalState {
         }
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.scrollback
-            .push_back(ScrollbackLine { text: line, seq, soft_wrapped });
+        self.scrollback.push_back(ScrollbackLine {
+            text: line,
+            seq,
+            soft_wrapped,
+        });
     }
 
     /// scrollback 行数。
@@ -787,16 +785,16 @@ impl TerminalState {
             out.push((logical_seq, logical.clone()));
         }
         // 可见屏：软换行拼回逻辑行再匹配。
-        let mut seq = self.next_seq;
         let mut logical = String::new();
-        let mut logical_seq = seq;
-        for (i, line) in self.snapshot_trimmed().into_iter().enumerate() {
+        let mut logical_seq = self.next_seq;
+        for (seq, (i, line)) in
+            (self.next_seq..).zip(self.snapshot_trimmed().into_iter().enumerate())
+        {
             if logical.is_empty() {
                 logical_seq = seq;
             }
             logical.push_str(&line);
             let soft = self.grid_soft_wrapped.get(i).copied().unwrap_or(false);
-            seq += 1;
             if !soft {
                 if logical.contains(query) {
                     out.push((logical_seq, logical.clone()));
