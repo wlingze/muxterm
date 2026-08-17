@@ -38,6 +38,9 @@ pub const TASK_SHUTDOWN: u32 = 7;
 pub const TASK_SWITCH_PANE: u32 = 8;
 pub const TASK_DETACH: u32 = 9;
 pub const TASK_TOGGLE_PANE_FULLSCREEN: u32 = 10;
+pub const TASK_MOVE_WINDOW: u32 = 11;
+pub const TASK_BREAK_PANE: u32 = 12;
+pub const TASK_REFRESH_TABS: u32 = 13;
 
 // ── Split dir / layout node ────────────────────────────────
 pub const DIR_HORIZONTAL: u32 = 0;

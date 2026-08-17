@@ -712,7 +712,10 @@ impl Runtime for ShellRuntime {
                 TaskOutcome::Done
             }
 
-            Task::TogglePaneFullscreen { .. } => {
+            Task::TogglePaneFullscreen { .. }
+            | Task::MoveWindow { .. }
+            | Task::BreakPane { .. }
+            | Task::RefreshTabs => {
                 // 本地 shell：全屏由前端布局实现，后端只确认成功。
                 TaskOutcome::Done
             }

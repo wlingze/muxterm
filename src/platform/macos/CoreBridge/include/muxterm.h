@@ -71,6 +71,9 @@ struct CLayoutNode {
 #define TASK_SWITCH_PANE 8u
 #define TASK_DETACH      9u
 #define TASK_TOGGLE_PANE_FULLSCREEN 10u
+#define TASK_MOVE_WINDOW 11u
+#define TASK_BREAK_PANE 12u
+#define TASK_REFRESH_TABS 13u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u
@@ -105,6 +108,7 @@ int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
 int muxterm_send_input(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
+int muxterm_send_input_quiet(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
 int muxterm_report_pane_colours(struct MuxtermHandle* h, uint32_t pane_id, const char* fg_hex, const char* bg_hex);
 int muxterm_report_all_pane_colours(struct MuxtermHandle* h, const char* fg_hex, const char* bg_hex);
 int muxterm_resize_pane(struct MuxtermHandle* h, uint32_t pane_id, uint16_t cols, uint16_t rows);

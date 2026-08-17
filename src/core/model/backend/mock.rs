@@ -323,7 +323,10 @@ impl Runtime for MockRuntime {
                 TaskOutcome::Done
             }
             Task::ReportPaneColours { .. } => TaskOutcome::Done,
-            Task::TogglePaneFullscreen { .. } => TaskOutcome::Done,
+            Task::TogglePaneFullscreen { .. }
+            | Task::MoveWindow { .. }
+            | Task::BreakPane { .. }
+            | Task::RefreshTabs => TaskOutcome::Done,
             Task::ResizePane { target, cols, rows } => {
                 if !self.panes.iter().any(|p| p.id == *target) {
                     return Ok(TaskOutcome::Rejected {

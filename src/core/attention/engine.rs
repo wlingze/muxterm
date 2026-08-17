@@ -131,10 +131,54 @@ impl<C: Clock> AttentionEngine<C> {
         self.sync_notified(ws, pane, now);
     }
 
+    /// 交互 shell 的 basename（pane-cmd 回到 shell = 命令结束）。
+    fn is_shell(name: &str) -> bool {
+        let base = name.rsplit('/').next().unwrap_or(name).to_lowercase();
+        matches!(
+            base.as_str(),
+            "zsh" | "bash" | "sh" | "fish" | "tcsh" | "csh" | "dash" | "ksh"
+        )
+    }
+
     /// 更新 pane 进程名；非 shell 进程名可作 Working 粗判来源（注释见 LINUX-PLAN §9）。
+    ///
+    /// W19：pane-cmd 从非 shell（sleep/cat 等）回到交互 shell（zsh/bash）时，
+    /// 视为后台命令结束 → CommandDone（OSC 133 D 之外的兜底）。只对
+    /// Working/Idle/Unknown 生效，不覆盖 Blocked（输入才熄）。
     pub fn set_process_name(&mut self, ws: &str, pane: u32, name: Option<String>) {
-        let entry = self.entry_mut(ws, pane);
-        entry.process_name = name;
+        let now = self.clock.now();
+        let previous = self
+            .panes
+            .get(&(ws.to_string(), pane))
+            .and_then(|p| p.process_name.clone());
+        {
+            let entry = self.entry_mut(ws, pane);
+            entry.process_name = name.clone();
+        }
+        if let (Some(prev), Some(next)) = (previous, name) {
+            if !Self::is_shell(&prev) && Self::is_shell(&next) {
+                let shell_ok = {
+                    let entry = self.panes.get(&(ws.to_string(), pane));
+                    // 只对 Working/Unknown 生效：Idle 是被前台可见清掉的
+                    // （on_became_visible），不能又被 pane-cmd 点亮成 Done。
+                    matches!(
+                        entry.map(|p| p.status),
+                        Some(PaneStatus::Working | PaneStatus::Unknown)
+                    )
+                };
+                if shell_ok {
+                    self.apply(
+                        ws,
+                        pane,
+                        &[AttentionSignal::CommandDone { exit_code: None }],
+                        "",
+                        0,
+                    );
+                    return;
+                }
+            }
+        }
+        let _ = now;
     }
 
     /// 静音一段时间：不进红点、不通知；peek/答复仍可用。
