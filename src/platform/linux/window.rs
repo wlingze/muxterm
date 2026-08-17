@@ -3467,17 +3467,71 @@ fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
     });
 }
 
-/// SSH Herdr：W20h 实现 Unix socket 转发；v1 先报错不 panic。
+/// SSH Herdr：把远端 herdr.sock 转发到本机，再走 HerdrSession attach。
+///
+/// 禁止 `herdr --remote`（会在远端装/启 server）。转发进程随 Runtime 杀。
 fn connect_herdr_ssh(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
-    tracing::error!(
-        target = "muxterm::linux",
-        alias = ?config.transport,
-        "SSH Herdr attach 尚未实现（W20h）"
-    );
-    state
-        .borrow_mut()
-        .notification_log
-        .push("SSH Herdr attach 尚未实现".to_string());
+    let TargetTransport::Ssh { name: alias } = &config.transport else {
+        return;
+    };
+    let Some(remote_socket) = config.socket.clone() else {
+        state
+            .borrow_mut()
+            .notification_log
+            .push("SSH Herdr 缺远端 socket 路径".to_string());
+        return;
+    };
+    let session = config
+        .session
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let workspace_id = config.path.clone();
+    let alias = alias.clone();
+    let id = WorkspaceId::new("ssh", Some(&alias), &session, "herdr", &workspace_id);
+    let handle = state.borrow().rt.handle().clone();
+    let (tx, rx) = std::sync::mpsc::channel::<PendingConnect>();
+    state.borrow_mut().pending_connects.push_back(rx);
+    std::thread::spawn(move || {
+        let result = (|| -> anyhow::Result<Workspace> {
+            let (local_socket, forward) =
+                crate::core::runtime::herdr::forward::start_herdr_ssh_forward(
+                    &alias,
+                    &remote_socket,
+                    None,
+                )?;
+            let spec = WorkspaceSpec::ssh_herdr(
+                alias,
+                session,
+                workspace_id,
+                local_socket.to_string_lossy(),
+            );
+            let id = spec.id();
+            let name = spec.name();
+            let herdr_session =
+                HerdrSession::new(&spec.session, spec.socket.clone().unwrap_or_default());
+            let mut runtime =
+                HerdrRuntime::with_forward(std::sync::Arc::new(herdr_session), &spec.path, forward);
+            handle.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(10), runtime.connect())
+                    .await
+                    .map_err(|_| anyhow!("SSH Herdr connect 超时"))?
+            })?;
+            Ok(Workspace::new(id, name, std::boxed::Box::new(runtime)))
+        })();
+        let _ = tx.send(PendingConnect {
+            id,
+            socket: None,
+            flow: ProjectConnectFlow::new(&TargetConfig::new(
+                "",
+                TargetRuntime::Shell,
+                TargetTransport::Local,
+                "",
+            )),
+            config: TargetConfig::new("", TargetRuntime::Shell, TargetTransport::Local, ""),
+            existing: true,
+            result,
+        });
+    });
 }
 
 /// 池里最近打开的工作区（按 last_used 倒序）→ QuickConnect 目标。

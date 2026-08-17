@@ -125,6 +125,42 @@ fn ssh_discover_lists_remote_tmux_and_herdr() {
     drop(tmux_guard);
 }
 
+/// W20h SSH：远端 herdr.sock 转发到本机后，HerdrSession 能 attach。
+#[test]
+fn ssh_herdr_forward_attach_contract() {
+    if !loopback_sshd_available() {
+        eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
+        return;
+    }
+    if !herdr_available() {
+        eprintln!("skip: 无 herdr 二进制");
+        return;
+    }
+    let sshd = LoopbackSshd::start("herdr-fwd").expect("启动 loopback sshd 失败");
+    sshd.apply_ssh_config_env();
+    let herdr = IsolatedHerdr::start("fwd-attach");
+    let (ws, _tab, _pane) = herdr.create_workspace("/tmp", "mux-fwd");
+
+    let (local_socket, mut forward) =
+        muxterm::core::runtime::herdr::forward::start_herdr_ssh_forward(
+            &sshd.alias,
+            &herdr.socket_path().to_string_lossy(),
+            Some(&sshd.config_path.to_string_lossy()),
+        )
+        .expect("ssh socket 转发应就绪");
+
+    let session = muxterm::core::runtime::HerdrSession::new(herdr.name(), &local_socket);
+    session.ping().expect("转发后的 HerdrSession 应能 ping");
+    let snap = session.snapshot().expect("转发后的 snapshot 应成功");
+    assert!(
+        snap.workspaces.iter().any(|w| w.workspace_id == ws),
+        "转发后必须看到远端 workspace {ws}"
+    );
+
+    let _ = forward.kill();
+    let _ = forward.wait();
+}
+
 /// 隔离 tmux 清理（只杀自己的 -L server）。
 struct TmuxGuard {
     socket: String,

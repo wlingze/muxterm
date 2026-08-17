@@ -50,6 +50,8 @@ pub struct HerdrRuntime {
     pane_to_herdr_pane: HashMap<PaneId, String>,
     observe_rx: Option<mpsc::Receiver<ObserveEvent>>,
     observe_streams: Vec<ObserveStream>,
+    /// SSH 远端 socket 转发进程（Drop/shutdown 时杀掉）。
+    forward: Option<std::process::Child>,
 }
 
 impl HerdrRuntime {
@@ -73,7 +75,19 @@ impl HerdrRuntime {
             pane_to_herdr_pane: HashMap::new(),
             observe_rx: None,
             observe_streams: vec![],
+            forward: None,
         }
+    }
+
+    /// 绑定共享 session + workspace，并接管 SSH socket 转发进程。
+    pub fn with_forward(
+        session: Arc<HerdrSession>,
+        workspace_id: impl Into<String>,
+        forward: std::process::Child,
+    ) -> Self {
+        let mut rt = Self::new(session, workspace_id);
+        rt.forward = Some(forward);
+        rt
     }
 
     pub fn workspace_id(&self) -> &str {
@@ -666,6 +680,10 @@ impl Runtime for HerdrRuntime {
     async fn shutdown(&mut self) -> Result<()> {
         self.observe_streams.clear();
         self.observe_rx = None;
+        if let Some(mut forward) = self.forward.take() {
+            let _ = forward.kill();
+            let _ = forward.wait();
+        }
         self.status = BackendStatus::Disconnected;
         self.events.push_back(StateChange::BackendStatusChanged(
             BackendStatus::Disconnected,

@@ -92,6 +92,25 @@ impl WorkspaceSpec {
         }
     }
 
+    /// SSH Herdr：远端 socket 已转发到本机 `socket_path` 后 attach。
+    pub fn ssh_herdr(
+        alias: impl Into<String>,
+        session_name: impl Into<String>,
+        herdr_workspace_id: impl Into<String>,
+        socket_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport: "ssh".into(),
+            alias: Some(alias.into()),
+            session: session_name.into(),
+            runtime: "herdr".into(),
+            path: herdr_workspace_id.into(),
+            socket: Some(socket_path.into()),
+            create: false,
+            scrollback_lines: 10_000,
+        }
+    }
+
     /// 设置 attach 初始 capture 的历史行数（W16a）。
     pub fn with_scrollback_lines(mut self, lines: u32) -> Self {
         self.scrollback_lines = lines.max(1);
