@@ -143,6 +143,12 @@ struct UiState {
     last_seen: std::collections::HashMap<(String, u32), String>,
     /// 上次看到这里标记（客户端覆盖层，不改 pane 字节）。
     last_seen_mark: gtk4::Button,
+    /// 命令刻度（W18h）：最近成功/失败命令的滚动条旁标记。
+    cmd_mark_ok: gtk4::Button,
+    cmd_mark_fail: gtk4::Button,
+    /// 刻度点击要滚到的命令文本（由 update_command_marks 更新）。
+    cmd_mark_ok_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    cmd_mark_fail_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -365,10 +371,28 @@ impl AppWindow {
         last_seen_mark.set_margin_start(4);
         last_seen_mark.add_css_class("muxterm-last-seen");
         last_seen_mark.set_visible(false);
+        let cmd_mark_ok_text = Rc::new(RefCell::new(None::<String>));
+        let cmd_mark_fail_text = Rc::new(RefCell::new(None::<String>));
+        let cmd_mark_ok = gtk4::Button::with_label("✓");
+        cmd_mark_ok.set_widget_name("muxterm-cmd-mark-ok");
+        cmd_mark_ok.set_halign(gtk4::Align::End);
+        cmd_mark_ok.set_valign(gtk4::Align::Center);
+        cmd_mark_ok.set_margin_end(2);
+        cmd_mark_ok.add_css_class("muxterm-cmd-mark-ok");
+        cmd_mark_ok.set_visible(false);
+        let cmd_mark_fail = gtk4::Button::with_label("✗");
+        cmd_mark_fail.set_widget_name("muxterm-cmd-mark-fail");
+        cmd_mark_fail.set_halign(gtk4::Align::End);
+        cmd_mark_fail.set_valign(gtk4::Align::Center);
+        cmd_mark_fail.set_margin_end(2);
+        cmd_mark_fail.add_css_class("muxterm-cmd-mark-fail");
+        cmd_mark_fail.set_visible(false);
         layout_overlay.add_overlay(&pane_find);
         layout_overlay.add_overlay(&search_highlight);
         layout_overlay.add_overlay(&disconnect_overlay);
         layout_overlay.add_overlay(&last_seen_mark);
+        layout_overlay.add_overlay(&cmd_mark_ok);
+        layout_overlay.add_overlay(&cmd_mark_fail);
         layout_overlay.add_overlay(&jump_latest);
         root.append(&layout_overlay);
         root.append(&status.container);
@@ -429,6 +453,10 @@ impl AppWindow {
             pane_find_entry,
             last_seen: std::collections::HashMap::new(),
             last_seen_mark,
+            cmd_mark_ok,
+            cmd_mark_fail,
+            cmd_mark_ok_text: cmd_mark_ok_text.clone(),
+            cmd_mark_fail_text: cmd_mark_fail_text.clone(),
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -445,6 +473,22 @@ impl AppWindow {
                     let mut s = st.borrow_mut();
                     request_switch_tab(&mut s, tab_id);
                 });
+        }
+
+        // 命令刻度点击：滚到对应命令文本所在行（W18h）。
+        {
+            let st = state.clone();
+            let text = cmd_mark_ok_text.clone();
+            state.borrow().cmd_mark_ok.connect_clicked(move |_| {
+                scroll_to_command_text(&st, &text);
+            });
+        }
+        {
+            let st = state.clone();
+            let text = cmd_mark_fail_text.clone();
+            state.borrow().cmd_mark_fail.connect_clicked(move |_| {
+                scroll_to_command_text(&st, &text);
+            });
         }
 
         // 上次看到这里：点击滚回离开时的那一行（W18g）。
@@ -671,6 +715,7 @@ impl AppWindow {
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);
                     refresh_connection_summary(&mut s);
+                    update_command_marks(&s);
                     update_jump_latest(&s);
                     if let Some(w) = win_weak.upgrade() {
                         refresh_attention_chrome(&s, &w);
@@ -798,6 +843,7 @@ impl AppWindow {
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&mut s);
+            update_command_marks(&s);
             update_jump_latest(&s);
             refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
@@ -858,6 +904,7 @@ impl AppWindow {
             sync_pane_outputs(&mut s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&mut s);
+            update_command_marks(&s);
             update_jump_latest(&s);
             refresh_attention_chrome(&s, &self.window);
             let close = s.pending_close;
@@ -1534,6 +1581,54 @@ fn refresh_attention_chrome(s: &UiState, window: &Window) {
 }
 
 /// 回底按钮可见性：VTE 滚离底部时显示，回到尾部隐藏（W16a）。
+/// 把当前 pane 滚到包含指定文本的行（命令刻度 / 上次看到这里共用）。
+fn scroll_to_command_text(
+    state: &Rc<RefCell<UiState>>,
+    text: &Rc<RefCell<Option<String>>>,
+) {
+    let s = state.borrow();
+    let Some(text) = text.borrow().clone() else {
+        return;
+    };
+    let pane = s.active_pane;
+    let lines = s.active_workspace().pane_last_n_lines(PaneId(pane), 10_000);
+    if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
+        if let Some(view) = s.active_layout().pane(pane).cloned() {
+            if let Some(adj) = view.terminal().vadjustment() {
+                adj.set_value(adj.lower() + row as f64);
+            }
+        }
+    }
+}
+
+/// 从当前 pane 的 OSC 133 刻度刷新红/绿标记（W18h）。
+fn update_command_marks(s: &UiState) {
+    let marks = s
+        .active_workspace()
+        .pane_command_marks(PaneId(s.active_pane));
+    let ok = marks.iter().rev().find(|m| m.exit_code == Some(0));
+    let fail = marks
+        .iter()
+        .rev()
+        .find(|m| m.exit_code.is_some_and(|c| c != 0));
+    if let Some(m) = ok {
+        s.cmd_mark_ok.set_visible(true);
+        s.cmd_mark_ok.set_tooltip_text(Some(&m.command));
+        *s.cmd_mark_ok_text.borrow_mut() = Some(m.command.clone());
+    } else {
+        s.cmd_mark_ok.set_visible(false);
+        *s.cmd_mark_ok_text.borrow_mut() = None;
+    }
+    if let Some(m) = fail {
+        s.cmd_mark_fail.set_visible(true);
+        s.cmd_mark_fail.set_tooltip_text(Some(&m.command));
+        *s.cmd_mark_fail_text.borrow_mut() = Some(m.command.clone());
+    } else {
+        s.cmd_mark_fail.set_visible(false);
+        *s.cmd_mark_fail_text.borrow_mut() = None;
+    }
+}
+
 /// 当前激活 pane 的 VTE 是否在底部（scroll lock / 回底按钮共用）。
 fn view_at_bottom(view: &std::rc::Rc<PaneView>) -> bool {
     view.terminal()
