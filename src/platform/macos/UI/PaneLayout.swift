@@ -147,6 +147,15 @@ final class PaneLayoutView: NSView {
         return true
     }
 
+    func testLeafPaneIDs() -> [UInt32] {
+        guard let currentLayout else { return [] }
+        return collectPaneIds(currentLayout)
+    }
+
+    func testPaneAllocation(_ paneId: UInt32) -> NSSize {
+        hostByPane[paneId]?.bounds.size ?? .zero
+    }
+
     /// 本地 shell：切换 pane 全屏（再次调用恢复）。tmux 模式走 core zoom，
     /// 不调用这里。
     func toggleFullscreen(paneId: UInt32) {

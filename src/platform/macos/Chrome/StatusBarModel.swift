@@ -137,6 +137,46 @@ public struct StatusBarSnapshot: Equatable, Decodable, Sendable {
     public var windows: [StatusBarWindow]
     public let error: String?
 
+    public init(
+        enabled: Bool,
+        position: String,
+        justify: String,
+        interval: UInt64,
+        left: String,
+        right: String,
+        leftLength: Int,
+        rightLength: Int,
+        statusStyle: String,
+        leftStyle: String,
+        rightStyle: String,
+        separator: String,
+        windowFormat: String,
+        windowCurrentFormat: String,
+        windowStyle: String,
+        windowCurrentStyle: String,
+        windows: [StatusBarWindow],
+        error: String?
+    ) {
+        self.enabled = enabled
+        self.position = position
+        self.justify = justify
+        self.interval = interval
+        self.left = left
+        self.right = right
+        self.leftLength = leftLength
+        self.rightLength = rightLength
+        self.statusStyle = statusStyle
+        self.leftStyle = leftStyle
+        self.rightStyle = rightStyle
+        self.separator = separator
+        self.windowFormat = windowFormat
+        self.windowCurrentFormat = windowCurrentFormat
+        self.windowStyle = windowStyle
+        self.windowCurrentStyle = windowCurrentStyle
+        self.windows = windows
+        self.error = error
+    }
+
     enum CodingKeys: String, CodingKey {
         case enabled, position, justify, interval, left, right
         case leftLength = "left_length"
@@ -162,6 +202,22 @@ public struct StatusBarWindow: Equatable, Decodable, Sendable {
     /// 前端驱动的高亮标记：切 tab 时本地更新，不等 tmux 慢查询。
     public var current: Bool
     public let text: String
+
+    public init(
+        windowId: UInt32,
+        index: UInt32,
+        name: String,
+        flags: String,
+        current: Bool,
+        text: String
+    ) {
+        self.windowId = windowId
+        self.index = index
+        self.name = name
+        self.flags = flags
+        self.current = current
+        self.text = text
+    }
 
     enum CodingKeys: String, CodingKey {
         case windowId = "window_id"

@@ -12,13 +12,24 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
     private let input = NSSearchField()
     private let table = NSTableView()
     private let scrollView = NSScrollView()
+    private let peekContainer = NSView()
+    private var peekView: MuxTerminalView?
     private var rows: [AttentionRow] = []
     private weak var ownerWindow: NSWindow?
     private let snapshot: () -> AttentionSnapshot?
+    private let paneOutput: (UInt32) -> Data
+    private let sendInput: (UInt32, Data) -> Void
 
-    init(ownerWindow: NSWindow?, snapshot: @escaping () -> AttentionSnapshot?) {
+    init(
+        ownerWindow: NSWindow?,
+        snapshot: @escaping () -> AttentionSnapshot?,
+        paneOutput: @escaping (UInt32) -> Data,
+        sendInput: @escaping (UInt32, Data) -> Void
+    ) {
         self.ownerWindow = ownerWindow
         self.snapshot = snapshot
+        self.paneOutput = paneOutput
+        self.sendInput = sendInput
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 420),
@@ -101,6 +112,13 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
         scrollView.autohidesScrollers = true
         root.addSubview(scrollView)
 
+        // 选中行后显示该 pane 的小终端（对标 Linux `muxterm-attention-peek`）。
+        peekContainer.translatesAutoresizingMaskIntoConstraints = false
+        peekContainer.wantsLayer = true
+        peekContainer.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        peekContainer.isHidden = true
+        root.addSubview(peekContainer)
+
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -115,7 +133,12 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 12),
-            scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
+            scrollView.heightAnchor.constraint(equalToConstant: 180),
+
+            peekContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            peekContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            peekContainer.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 8),
+            peekContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
         ])
     }
 
@@ -140,6 +163,40 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
         dismiss()
     }
 
+    /// 选中行 → 填充 peek 小终端（该 pane 的最近输出）。
+    private func updatePeek() {
+        guard table.selectedRow >= 0, table.selectedRow < rows.count else {
+            peekView?.removeFromSuperview()
+            peekView = nil
+            peekContainer.isHidden = true
+            return
+        }
+        let paneId = rows[table.selectedRow].pane.paneId
+        if peekView?.paneId != paneId {
+            peekView?.removeFromSuperview()
+            let view = MuxTerminalView(paneId: paneId, frame: .zero)
+            view.setAccessibilityIdentifier("muxterm.attention.peek")
+            view.inputHandler = self
+            view.translatesAutoresizingMaskIntoConstraints = false
+            peekContainer.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: peekContainer.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: peekContainer.trailingAnchor),
+                view.topAnchor.constraint(equalTo: peekContainer.topAnchor),
+                view.bottomAnchor.constraint(equalTo: peekContainer.bottomAnchor),
+            ])
+            peekView = view
+        }
+        peekContainer.isHidden = false
+        peekContainer.layoutSubtreeIfNeeded()
+        peekView?.layoutSubtreeIfNeeded()
+        _ = peekView?.syncSizeToPty(notifyResize: false)
+        let data = paneOutput(paneId)
+        if !data.isEmpty {
+            peekView?.feedOutput(data, isSnapshot: true)
+        }
+    }
+
     // MARK: - NSSearchFieldDelegate
 
     func controlTextDidChange(_ obj: Notification) {
@@ -147,6 +204,10 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     // MARK: - NSTableViewDataSource / Delegate
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        updatePeek()
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         rows.count
@@ -175,6 +236,7 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
         label.stringValue = "\(status) \(row.workspaceId)  pane @\(row.pane.paneId)  \(process)\n\(row.pane.lastLine)"
         label.font = NSFont.systemFont(ofSize: 12)
         label.maximumNumberOfLines = 2
+        cell.setAccessibilityIdentifier("muxterm.attention.hit-\(row)")
         return cell
     }
 
@@ -184,5 +246,59 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
 
     @objc private func tableDoubleActivated() {
         activateSelected()
+    }
+
+    func testIsPresented() -> Bool {
+        window?.isVisible == true
+    }
+
+    func testRowCount() -> Int {
+        rows.count
+    }
+
+    func testActivateFirstRow() {
+        guard !rows.isEmpty else { return }
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        activateSelected()
+    }
+
+    /// 只选中、不跳转（给 peek 填充）。
+    func testSelectFirstRow() {
+        guard !rows.isEmpty else { return }
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        table.window?.makeFirstResponder(table)
+    }
+
+    func testPeekView() -> NSView? {
+        window?.contentView?.findSubview { view in
+            view.accessibilityIdentifier() == "muxterm.attention.peek"
+        }
+    }
+
+    func testPeekText() -> String {
+        if let term = testPeekView() as? MuxTerminalView {
+            return term.visibleScreenText()
+        }
+        return ""
+    }
+}
+
+private extension NSView {
+    func findSubview(_ pred: (NSView) -> Bool) -> NSView? {
+        if pred(self) { return self }
+        for child in subviews {
+            if let found = child.findSubview(pred) { return found }
+        }
+        return nil
+    }
+}
+
+extension AttentionPanelController: TerminalInputHandler {
+    func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
+        sendInput(view.paneId, Data(data))
+    }
+
+    func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {
+        // peek 小终端不写回 tmux 尺寸。
     }
 }

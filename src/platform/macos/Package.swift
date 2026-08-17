@@ -11,6 +11,38 @@ let libSearchPath = packageRoot
     .standardizedFileURL
     .path
 
+let muxtermForceLoad: [LinkerSetting] = [
+    .unsafeFlags([
+        "-Xlinker",
+        "-force_load",
+        "-Xlinker",
+        "\(libSearchPath)/libmuxterm.a",
+        "-liconv",
+        "-lresolv",
+    ]),
+]
+
+let appLibSources = [
+    "CoreBridge/CoreBridge.swift",
+    "App/AppDelegate.swift",
+    "App/I18n.swift",
+    "App/MainWindow.swift",
+    "App/MainWindow+Testing.swift",
+    "App/ContentView.swift",
+    "App/CommandPalette.swift",
+    "App/ConnectionDiscovery.swift",
+    "App/WarmConnectionSlot.swift",
+    "App/QuickConnectController.swift",
+    "App/SearchPanelController.swift",
+    "App/AttentionPanelController.swift",
+    "App/TargetConfigWindow.swift",
+    "Terminal/TerminalView.swift",
+    "Terminal/TerminalManager.swift",
+    "UI/TabBar.swift",
+    "UI/PaneLayout.swift",
+    "UI/StatusBarView.swift",
+]
+
 let package = Package(
     name: "MuxtermApp",
     platforms: [
@@ -18,6 +50,7 @@ let package = Package(
     ],
     products: [
         .library(name: "MuxtermChrome", targets: ["MuxtermChrome"]),
+        .library(name: "MuxtermAppLib", targets: ["MuxtermAppLib"]),
         .executable(name: "MuxtermApp", targets: ["MuxtermApp"]),
     ],
     dependencies: [
@@ -46,8 +79,9 @@ let package = Package(
             exclude: ["CoreBridge.swift", "muxterm.h"],
             publicHeadersPath: "include"
         ),
-        .executableTarget(
-            name: "MuxtermApp",
+        // AppKit 会话层：给 in-process e2e 用（对标 Linux AppWindow）。
+        .target(
+            name: "MuxtermAppLib",
             dependencies: [
                 "CMuxterm",
                 "MuxtermChrome",
@@ -55,6 +89,7 @@ let package = Package(
             ],
             path: ".",
             exclude: [
+                "main.swift",
                 "Package.swift",
                 "Info.plist",
                 "Vendor",
@@ -64,43 +99,51 @@ let package = Package(
                 "MuxtermAppUITests",
                 "Chrome",
                 "ChromeTests",
+                "AppE2ETests",
                 "project.yml",
                 ".build",
                 "UI/ConnectionStatusView.swift",
             ],
-            sources: [
-                "main.swift",
-                "CoreBridge/CoreBridge.swift",
-                "App/AppDelegate.swift",
-                "App/I18n.swift",
-                "App/MainWindow.swift",
-                "App/ContentView.swift",
-                "App/CommandPalette.swift",
-                "App/ConnectionDiscovery.swift",
-                "App/WarmConnectionSlot.swift",
-                "App/QuickConnectController.swift",
-                "App/SearchPanelController.swift",
-                "App/AttentionPanelController.swift",
-                "App/TargetConfigWindow.swift",
-                "Terminal/TerminalView.swift",
-                "Terminal/TerminalManager.swift",
-                "UI/TabBar.swift",
-                "UI/PaneLayout.swift",
-                "UI/StatusBarView.swift",
-            ],
+            sources: appLibSources,
             resources: [
                 .process("Resources"),
-            ],
-            linkerSettings: [
-                .unsafeFlags([
-                    "-Xlinker",
-                    "-force_load",
-                    "-Xlinker",
-                    "\(libSearchPath)/libmuxterm.a",
-                    "-liconv",
-                    "-lresolv",
-                ]),
             ]
+        ),
+        .executableTarget(
+            name: "MuxtermApp",
+            dependencies: [
+                "MuxtermAppLib",
+            ],
+            path: ".",
+            exclude: [
+                "Package.swift",
+                "Info.plist",
+                "Vendor",
+                "App",
+                "Terminal",
+                "UI",
+                "CoreBridge",
+                "Resources",
+                "MuxtermAppUITests",
+                "Chrome",
+                "ChromeTests",
+                "AppE2ETests",
+                "project.yml",
+                ".build",
+            ],
+            sources: [
+                "main.swift",
+            ],
+            linkerSettings: muxtermForceLoad
+        ),
+        // in-process AppKit e2e（对标 tests/linux_*_e2e.rs）。必须链 libmuxterm.a。
+        .testTarget(
+            name: "MuxtermAppE2ETests",
+            dependencies: [
+                "MuxtermAppLib",
+            ],
+            path: "AppE2ETests",
+            linkerSettings: muxtermForceLoad
         ),
     ]
 )
