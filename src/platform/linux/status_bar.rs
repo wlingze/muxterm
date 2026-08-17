@@ -24,6 +24,7 @@ pub const STATUS_BAR_HEIGHT: u32 = 24;
 type WindowActivateCb = Rc<RefCell<Option<Box<dyn Fn(u32)>>>>;
 type NotifyActivateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 type NewTabCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+type WorktreeCreateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
 /// 状态点三色 CSS（测试与实现同一常量）。
 pub fn status_dot_css() -> &'static str {
@@ -57,10 +58,12 @@ pub struct StatusBar {
     dot: Button,
     notify: Button,
     new_tab: Button,
+    worktree_create: Button,
     popover: Popover,
     on_window_activate: WindowActivateCb,
     on_notify_activate: NotifyActivateCb,
     on_new_tab: NewTabCb,
+    on_worktree_create: WorktreeCreateCb,
     /// tab 签名：id+name+current；不变就不重建按钮。
     last_tab_signature: RefCell<Option<String>>,
     css: RefCell<CssProvider>,
@@ -135,6 +138,13 @@ impl StatusBar {
         new_tab.set_can_focus(false);
         new_tab.add_css_class("muxterm-new-tab");
 
+        let worktree_create = Button::with_label("⿻");
+        worktree_create.set_widget_name("muxterm-worktree-create");
+        worktree_create.set_has_frame(false);
+        worktree_create.set_can_focus(false);
+        worktree_create.add_css_class("muxterm-worktree-create");
+        worktree_create.set_visible(false);
+
         container.append(&left);
         container.append(&tabs);
         container.append(&right);
@@ -158,10 +168,12 @@ impl StatusBar {
             dot,
             notify,
             new_tab,
+            worktree_create,
             popover,
             on_window_activate: Rc::new(RefCell::new(None)),
             on_notify_activate: Rc::new(RefCell::new(None)),
             on_new_tab: Rc::new(RefCell::new(None)),
+            on_worktree_create: Rc::new(RefCell::new(None)),
             last_tab_signature: RefCell::new(None),
             css: RefCell::new(css),
             last_snapshot: RefCell::new(None),
@@ -194,6 +206,15 @@ impl StatusBar {
                 }
             });
         }
+        {
+            let cb = bar.on_worktree_create.clone();
+            let worktree_create = bar.worktree_create.clone();
+            worktree_create.connect_clicked(move |_| {
+                if let Some(cb) = cb.borrow().as_ref() {
+                    cb();
+                }
+            });
+        }
         bar.refresh_css();
         bar
     }
@@ -210,6 +231,31 @@ impl StatusBar {
     /// 新建 tab 按钮回调。
     pub fn connect_new_tab<F: Fn() + 'static>(&self, f: F) {
         *self.on_new_tab.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// worktree 创建入口（仅 support() 含 WorktreeList 的 Runtime 可见）。
+    pub fn connect_worktree_create<F: Fn() + 'static>(&self, f: F) {
+        *self.on_worktree_create.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 按当前工作区能力显示/隐藏 worktree 创建按钮。
+    ///
+    /// 不支持的 Runtime 必须**找不到**该控件（不是只隐藏），
+    /// 测试用 `find_by_name` 断言 tmux 格没有入口。
+    pub fn set_worktree_visible(&self, visible: bool) {
+        if visible {
+            if self.worktree_create.parent().is_none() {
+                self.container.append(&self.worktree_create);
+            }
+            self.worktree_create.set_visible(true);
+        } else if self.worktree_create.parent().is_some() {
+            self.container.remove(&self.worktree_create);
+        }
+    }
+
+    /// 测试用：worktree 创建按钮。
+    pub fn worktree_create_widget(&self) -> Button {
+        self.worktree_create.clone()
     }
 
     /// 状态点按钮（测试/接线用）。

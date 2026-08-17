@@ -148,6 +148,15 @@ path = "tests/linux_herdr_switch_e2e.rs"
 required-features = ["gtk"]
 
 [[test]]
+name = "herdr_worktree_contract"
+path = "tests/herdr_worktree_contract.rs"
+
+[[test]]
+name = "linux_herdr_worktree_e2e"
+path = "tests/linux_herdr_worktree_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
 name = "linux_ssh_e2e"
 path = "tests/linux_ssh_e2e.rs"
 required-features = ["gtk"]

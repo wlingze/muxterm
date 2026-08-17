@@ -179,3 +179,91 @@ impl Drop for IsolatedHerdr {
         }
     }
 }
+
+/// 临时 git 仓库（H4 worktree 夹具）：路径只许 `/tmp/muxterm-test-herdr-*`。
+///
+/// Drop：先 `git worktree remove` 已建 linked worktree，再删整个临时目录。
+pub struct TempGitRepo {
+    path: PathBuf,
+    linked_worktrees: Vec<PathBuf>,
+}
+
+impl TempGitRepo {
+    /// `git init` + 一次 empty commit。
+    pub fn new(label: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("muxterm-test-herdr-{label}-{nanos}"));
+        std::fs::create_dir_all(&path).expect("创建临时 git 仓库失败");
+        let ok = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(["-C", path.to_str().unwrap()])
+                .args(args)
+                .output()
+                .expect("git 命令失败");
+            assert!(
+                out.status.success(),
+                "git {args:?} 失败: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        ok(&["init", "-q"]);
+        ok(&["config", "user.email", "muxterm-test@example.com"]);
+        ok(&["config", "user.name", "muxterm-test"]);
+        ok(&["commit", "--allow-empty", "-qm", "init"]);
+        Self {
+            path,
+            linked_worktrees: Vec::new(),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// 唯一分支名：`muxterm-test-wt-{label}-{nanos}`。
+    pub fn unique_branch(&self, label: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        format!("muxterm-test-wt-{label}-{nanos}")
+    }
+
+    /// 唯一 linked worktree 路径：`/tmp/muxterm-test-herdr-wt-{label}-{nanos}`。
+    pub fn unique_worktree_path(&self, label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("muxterm-test-herdr-wt-{label}-{nanos}"))
+    }
+
+    /// 记录 herdr 建出的 linked worktree（Drop 时先 remove 再删目录）。
+    pub fn track_worktree(&mut self, path: impl Into<PathBuf>) {
+        self.linked_worktrees.push(path.into());
+    }
+}
+
+impl Drop for TempGitRepo {
+    fn drop(&mut self) {
+        for wt in &self.linked_worktrees {
+            let _ = Command::new("git")
+                .args([
+                    "-C",
+                    self.path.to_str().unwrap(),
+                    "worktree",
+                    "remove",
+                    "--force",
+                ])
+                .arg(wt)
+                .output();
+        }
+        let _ = std::fs::remove_dir_all(&self.path);
+        for wt in &self.linked_worktrees {
+            let _ = std::fs::remove_dir_all(wt);
+        }
+    }
+}

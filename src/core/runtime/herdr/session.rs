@@ -156,6 +156,51 @@ impl HerdrSession {
             .map(|arr| arr.iter().filter_map(WorkspaceRecord::from_json).collect())
             .unwrap_or_default())
     }
+
+    /// `worktree.list`：当前仓库全部 checkout（需 WorktreeList）。
+    pub fn worktree_list(&self, workspace_id: &str) -> Result<HerdrWorktreeList> {
+        let result = self.call(
+            "worktree.list",
+            serde_json::json!({ "workspace_id": workspace_id }),
+        )?;
+        HerdrWorktreeList::from_json(&result)
+    }
+
+    /// `worktree.create`：git worktree add + 打开成新 Herdr workspace。
+    pub fn worktree_create(
+        &self,
+        workspace_id: &str,
+        branch: &str,
+        path: &str,
+        base: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<HerdrWorktreeRecord> {
+        let result = self.call(
+            "worktree.create",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "branch": branch,
+                "path": path,
+                "base": base,
+                "label": label,
+                "focus": false,
+            }),
+        )?;
+        HerdrWorktreeRecord::from_json(&result)
+    }
+
+    /// `worktree.open`：打开已有 checkout；已打开就返回那格。
+    pub fn worktree_open(&self, workspace_id: &str, path: &str) -> Result<HerdrWorktreeRecord> {
+        let result = self.call(
+            "worktree.open",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "path": path,
+                "focus": false,
+            }),
+        )?;
+        HerdrWorktreeRecord::from_json(&result)
+    }
 }
 
 /// `session.snapshot` 的产品视图（Herdr id 保持字符串，映射在 HerdrRuntime）。
@@ -320,6 +365,86 @@ impl LayoutRecord {
                 })
                 .unwrap_or_default(),
         })
+    }
+}
+
+/// `worktree.list` 的完整响应（source + worktrees）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HerdrWorktreeList {
+    pub repo_root: String,
+    pub worktrees: Vec<HerdrWorktreeRecord>,
+}
+
+impl HerdrWorktreeList {
+    fn from_json(v: &Value) -> Result<Self> {
+        let source = v.get("source").cloned().unwrap_or_default();
+        let worktrees = v
+            .get("worktrees")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(HerdrWorktreeRecord::from_worktree_json)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            repo_root: source
+                .get("repo_root")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            worktrees,
+        })
+    }
+}
+
+/// 一个 Herdr worktree checkout（Herdr id 保持字符串，池层映射产品 WorkspaceId）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HerdrWorktreeRecord {
+    pub path: String,
+    pub branch: String,
+    pub repo_root: String,
+    pub linked: bool,
+    pub open_workspace_id: Option<String>,
+}
+
+impl HerdrWorktreeRecord {
+    /// 从 `worktree.list` 的 worktrees 数组项解析。
+    fn from_worktree_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            path: v.get("path")?.as_str()?.to_string(),
+            branch: v
+                .get("branch")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            repo_root: String::new(),
+            linked: v
+                .get("is_linked_worktree")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            open_workspace_id: v
+                .get("open_workspace_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        })
+    }
+
+    /// 从 `worktree.create` / `worktree.open` 的 result 解析（repo_root 在 workspace.worktree）。
+    fn from_json(v: &Value) -> Result<Self> {
+        let worktree = v
+            .get("worktree")
+            .ok_or_else(|| anyhow!("worktree 响应缺 worktree: {v}"))?;
+        let mut record = Self::from_worktree_json(worktree)
+            .ok_or_else(|| anyhow!("worktree 响应解析失败: {v}"))?;
+        record.repo_root = v
+            .get("workspace")
+            .and_then(|w| w.get("worktree"))
+            .and_then(|w| w.get("repo_root"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Ok(record)
     }
 }
 

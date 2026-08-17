@@ -392,11 +392,11 @@ impl HerdrRuntime {
     }
 }
 
-/// `w1:t1` / `w1:p1` 的数字后缀 → 产品 id。
+/// `w1:t1` / `w1:p1` 的数字后缀 → 产品 id（后缀是 `t1`/`p1`，要去掉字母）。
 fn numeric_suffix(id: &str) -> u32 {
     id.rsplit(':')
         .next()
-        .and_then(|s| s.parse().ok())
+        .and_then(|s| s.trim_start_matches(['t', 'p']).parse().ok())
         .unwrap_or(0)
 }
 
