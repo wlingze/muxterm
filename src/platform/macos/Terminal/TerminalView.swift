@@ -131,6 +131,12 @@ final class MuxTerminalView: TerminalView {
         try? handle.close()
     }
 
+    /// 当前屏幕可见文本（测试 / AX）。立即刷新，不受 1s 节流限制。
+    func visibleScreenText() -> String {
+        updateAccessibilityOutput()
+        return accessibilityOutput
+    }
+
     private func updateAccessibilityOutput() {
         let term = getTerminal()
         let dims = term.getDims()

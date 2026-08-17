@@ -8,15 +8,20 @@
 use std::ffi::{CStr, CString};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
+use std::ptr;
 use std::time::{Duration, Instant};
 
 use muxterm::core::protocol::ffi::api::{
     muxterm_attention_on_became_visible, muxterm_attention_snapshot,
-    muxterm_attention_take_notifications, muxterm_connect, muxterm_free, muxterm_get_pane_output,
-    muxterm_new, muxterm_pane_last_n_lines, muxterm_pane_viewport, muxterm_poll_events,
-    muxterm_search_all, muxterm_set_pane_viewport,
+    muxterm_attention_take_notifications, muxterm_connect, muxterm_execute, muxterm_free,
+    muxterm_get_layout, muxterm_get_pane_output, muxterm_new, muxterm_pane_last_n_lines,
+    muxterm_pane_viewport, muxterm_poll_events, muxterm_search_all, muxterm_set_pane_viewport,
 };
-use muxterm::core::protocol::ffi::types::CStateChange;
+use muxterm::core::protocol::ffi::types::{
+    CLayoutNode, CStateChange, CTask, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_EXITED,
+    DIR_HORIZONTAL, LAYOUT_LEAF, STATE_BACKEND_STATUS, TASK_SPLIT_PANE,
+    TASK_TOGGLE_PANE_FULLSCREEN,
+};
 
 fn tmux_available() -> bool {
     Command::new("tmux")
@@ -24,6 +29,10 @@ fn tmux_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+fn require_tmux() {
+    assert!(tmux_available(), "需要本机 tmux（禁止 skip 冒充绿）");
 }
 
 fn rand_suffix() -> String {
@@ -273,10 +282,7 @@ fn take_notifications(
 /// W13/W14：attach 已有 2tab/3pane，搜索命中、BEL → blocked、Done → 通知。
 #[test]
 fn macos_ffi_attach_search_attention_and_done() {
-    if !tmux_available() {
-        eprintln!("skip: tmux 不可用");
-        return;
-    }
+    require_tmux();
     let fx = PaintedFixture::new("search-attn");
     let h = connect_attach(&fx.socket, &fx.session);
 
@@ -401,10 +407,7 @@ fn macos_ffi_attach_search_attention_and_done() {
 /// W16b：tmux server 死后窗口保留最后一帧（pane 输出仍在）+ 断线状态。
 #[test]
 fn macos_ffi_disconnect_keeps_last_frame() {
-    if !tmux_available() {
-        eprintln!("skip: tmux 不可用");
-        return;
-    }
+    require_tmux();
     let fx = PaintedFixture::new("disconnect");
     let h = connect_attach(&fx.socket, &fx.session);
 
@@ -428,10 +431,7 @@ fn macos_ffi_disconnect_keeps_last_frame() {
 /// W16a：attach 离屏历史可滚动查看 + viewport 回底。
 #[test]
 fn macos_ffi_attach_history_and_jump_latest() {
-    if !tmux_available() {
-        eprintln!("skip: tmux 不可用");
-        return;
-    }
+    require_tmux();
     let socket = format!("muxterm-e2e-hist-{}-{}", std::process::id(), rand_suffix());
     let session = "hist";
     let _ = run_tmux(&socket, &["kill-server"]);
@@ -520,4 +520,94 @@ fn macos_ffi_attach_history_and_jump_latest() {
 
     unsafe { muxterm_free(h) };
     let _ = run_tmux(&socket, &["kill-server"]);
+}
+
+/// W16b：kill-server 后必须发出 Disconnected/Exited，且最后一帧还在。
+#[test]
+fn macos_ffi_disconnect_emits_exited_or_disconnected() {
+    require_tmux();
+    let fx = PaintedFixture::new("disc-status");
+    let h = connect_attach(&fx.socket, &fx.session);
+    let ok = poll_until(h, Duration::from_secs(8), || {
+        pane_output(h, 0).contains(&fx.tab1_tokens[0])
+    });
+    assert!(ok, "attach 后 pane 输出应含 token");
+
+    assert!(tmux_ok(&fx.socket, &["kill-server"]));
+
+    let mut saw_status = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let mut events = [CStateChange::default(); 64];
+        let n = unsafe { muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32) };
+        for ev in events.iter().take(n.max(0) as usize) {
+            if ev.type_ == STATE_BACKEND_STATUS {
+                saw_status = Some(ev.pane_id);
+            }
+        }
+        if saw_status.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let status = saw_status.expect("kill-server 后必须有 BackendStatus 事件");
+    assert!(
+        status == BACKEND_STATUS_DISCONNECTED || status == BACKEND_STATUS_EXITED,
+        "断线状态应为 Disconnected(0) 或 Exited(4)，实际 {status}"
+    );
+    assert!(
+        pane_output(h, 0).contains(&fx.tab1_tokens[0]),
+        "断线后最后一帧必须保留"
+    );
+    unsafe { muxterm_free(h) };
+}
+
+/// Alt+Enter 对应的 core zoom：layout 必须塌成单叶。
+#[test]
+fn macos_ffi_zoom_collapses_layout_to_leaf() {
+    require_tmux();
+    let fx = PaintedFixture::new("zoom");
+    let h = connect_attach(&fx.socket, &fx.session);
+    let ok = poll_until(h, Duration::from_secs(8), || {
+        pane_output(h, 0).contains(&fx.tab1_tokens[0])
+    });
+    assert!(ok, "attach 后应有 token");
+
+    let pane = fx.tab1_panes[0]
+        .trim_start_matches('%')
+        .parse::<u32>()
+        .unwrap_or(0);
+    let split = CTask {
+        type_: TASK_SPLIT_PANE,
+        target_pane: pane,
+        target_tab: 0,
+        dir: DIR_HORIZONTAL,
+        name: ptr::null(),
+    };
+    // 已有 3 pane，不必再 split；直接 zoom 当前 pane。
+    let _ = split;
+    let zoom = CTask {
+        type_: TASK_TOGGLE_PANE_FULLSCREEN,
+        target_pane: pane,
+        target_tab: 0,
+        dir: 0,
+        name: ptr::null(),
+    };
+    assert_eq!(
+        unsafe { muxterm_execute(h, &zoom) },
+        0,
+        "resize-pane -Z 应成功"
+    );
+    let ok = poll_until(h, Duration::from_secs(3), || {
+        let mut node = CLayoutNode {
+            type_: 99,
+            pane_id: 0,
+            ratio: 0,
+            first: ptr::null(),
+            second: ptr::null(),
+        };
+        unsafe { muxterm_get_layout(h, 0, &mut node) == 0 && node.type_ == LAYOUT_LEAF }
+    });
+    assert!(ok, "zoom 后 layout 必须是单叶 LAYOUT_LEAF");
+    unsafe { muxterm_free(h) };
 }

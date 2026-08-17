@@ -175,6 +175,10 @@ final class TerminalManager: TerminalInputHandler {
         )
     }
 
+    func testFlushFeeds() {
+        flushPendingFeeds()
+    }
+
     private func flushPendingFeeds() {
         feedFlushWorkItem = nil
         let feeds = pendingFeeds

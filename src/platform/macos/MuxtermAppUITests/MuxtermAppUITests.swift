@@ -507,14 +507,15 @@ final class MuxtermAppUITests: XCTestCase {
 
     // MARK: - W14/W16 跨平台契约（镜像 Linux e2e）
 
-    /// 搜索：attach 已有 token 的 tmux，Cmd+Shift+F 打开搜索，命中后跳转。
+    /// 搜索：tab1 看不到 tab2 token；命中后必须切到 tab2。
     func testSearchFindsTokenAndJumps() throws {
         try XCTSkipUnless(tmuxAvailable(), "tmux 不可用，跳过真实 tmux UI 测试")
         let suffix = "\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970))"
         let socket = "muxterm-ui-search-\(suffix)"
         let session = "ui_search"
-        let marker = "UI_SEARCH_TOKEN_74291"
-        try createCatTmuxScenario(socket: socket, session: session, marker: marker)
+        let tab1 = "UI_SEARCH_TAB1_74291"
+        let tab2 = "UI_SEARCH_TAB2_74291"
+        try createTwoTabCatScenario(socket: socket, session: session, tab1: tab1, tab2: tab2)
         defer { _ = runTmux(socket: socket, args: ["kill-server"]) }
 
         app.terminate()
@@ -528,21 +529,22 @@ final class MuxtermAppUITests: XCTestCase {
         let window = waitMainWindow()
         window.click()
         waitStatusContains(statusBar(), "connected", timeout: 8)
-        assertAnyTerminalContains(marker, timeout: 10)
+        assertAnyTerminalContains(tab1, timeout: 10)
 
         app.typeKey("f", modifierFlags: [.command, .shift])
         let input = app.dialogs["search"].searchFields["muxterm.search.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 5), "搜索面板应打开")
-        input.typeText(marker)
+        input.typeText(tab2)
         let list = app.descendants(matching: .any)["muxterm.search.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 5))
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline, list.cells.count == 0 {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
-        XCTAssertGreaterThan(list.cells.count, 0, "搜索应命中 token")
+        XCTAssertGreaterThan(list.cells.count, 0, "搜索应命中 tab2 token")
         app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
-        assertAnyTerminalContains(marker, timeout: 10)
+        waitStatusContains(statusBar(), "panes: 1", timeout: 8)
+        assertAnyTerminalContains(tab2, timeout: 10)
     }
 
     /// 注意力：后台 pane 收到 BEL → 状态栏红点出现。
@@ -666,15 +668,61 @@ final class MuxtermAppUITests: XCTestCase {
         XCTAssertGreaterThan(list.cells.count, 0, "离屏历史应可搜索")
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
 
-        // 回底按钮：初始隐藏；滚离底部后显示。
+        // 回底按钮：滚离底部后必须可点，点击后回到尾标。
         let jump = app.descendants(matching: .any)["muxterm.jumpLatest"]
         XCTAssertTrue(jump.waitForExistence(timeout: 5))
-        XCTAssertFalse(jump.isHittable, "初始回底按钮应隐藏")
-        // 通过搜索命中跳转后 viewport 可能变化；这里只验证按钮存在且可点击后不崩溃。
-        if jump.isHittable {
-            jump.click()
+        app.typeKey("f", modifierFlags: [.command, .shift])
+        let jumpInput = app.dialogs["search"].searchFields["muxterm.search.input"]
+        XCTAssertTrue(jumpInput.waitForExistence(timeout: 5))
+        jumpInput.typeText(offscreen)
+        let jumpList = app.descendants(matching: .any)["muxterm.search.list"]
+        XCTAssertTrue(jumpList.waitForExistence(timeout: 5))
+        let jumpDeadline = Date().addingTimeInterval(8)
+        while Date() < jumpDeadline, jumpList.cells.count == 0 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
+        XCTAssertGreaterThan(jumpList.cells.count, 0)
+        app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        XCTAssertTrue(jump.isHittable, "跳到离屏命中后回底按钮必须可点")
+        jump.click()
         assertAnyTerminalContains(visible, timeout: 8)
+    }
+
+    /// Alt+Enter 后 GUI 必须变成单 pane（不能只 zoom tmux）。
+    func testAltEnterZoomsToSinglePane() throws {
+        try XCTSkipUnless(tmuxAvailable(), "tmux 不可用")
+        let window = waitMainWindow()
+        let status = statusBar()
+        window.click()
+        waitStatusContains(status, "connected", timeout: 5)
+        app.typeKey("d", modifierFlags: .command)
+        waitStatusContains(status, "panes: 2", timeout: 8)
+        settle(window)
+        let before = paneHostElements().count
+        XCTAssertGreaterThanOrEqual(before, 2, "zoom 前应有 ≥2 个 pane host")
+        app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: .option)
+        let deadline = Date().addingTimeInterval(5)
+        var after = before
+        while Date() < deadline {
+            after = paneHostElements().count
+            if after == 1 { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(after, 1, "Alt+Enter 后 GUI 必须只剩 1 个 pane host，实际 \(after)")
+    }
+
+    /// 点状态点必须弹出连接摘要（18×18 热区，不能点了没反应）。
+    func testStatusDotClickOpensPopover() throws {
+        let window = waitMainWindow()
+        window.click()
+        waitStatusContains(statusBar(), "connected", timeout: 5)
+        let dot = app.descendants(matching: .any)["muxterm.statusDot"]
+        XCTAssertTrue(dot.waitForExistence(timeout: 5), "状态点应存在")
+        XCTAssertTrue(dot.isHittable, "状态点必须可点（热区不能是 0）")
+        dot.click()
+        let pop = app.descendants(matching: .any)["muxterm.statusPopover"]
+        XCTAssertTrue(pop.waitForExistence(timeout: 5), "点状态点后 popover 应可见")
     }
 
     // MARK: - Helpers
@@ -882,7 +930,35 @@ final class MuxtermAppUITests: XCTestCase {
         XCTAssertEqual(newWindow.status, 0, "预置第二个 tab 失败: \(newWindow.output)")
     }
 
-    /// 2 pane /bin/cat 夹具（macOS tmux 3.4 不支持 `--` 分隔符）。
+    /// 2 tab /bin/cat：tab1 / tab2 各涂独立 token。
+    private func createTwoTabCatScenario(
+        socket: String,
+        session: String,
+        tab1: String,
+        tab2: String
+    ) throws {
+        let created = runTmux(
+            socket: socket,
+            args: ["-f", "/dev/null", "new-session", "-d", "-s", session, "-x", "100", "-y", "30", "/bin/cat"]
+        )
+        guard created.status == 0 else {
+            throw XCTSkip("无法创建独立 tmux session: \(created.output)")
+        }
+        let p0 = runTmux(socket: socket, args: ["list-panes", "-t", session, "-F", "#{pane_id}"])
+            .output.split(whereSeparator: \.isNewline).map(String.init).first ?? ""
+        XCTAssertFalse(p0.isEmpty)
+        _ = runTmux(socket: socket, args: ["send-keys", "-t", p0, "-l", tab1])
+        let newWindow = runTmux(socket: socket, args: ["new-window", "-t", session, "/bin/cat"])
+        XCTAssertEqual(newWindow.status, 0, "预置第二个 tab 失败: \(newWindow.output)")
+        let windows = runTmux(socket: socket, args: ["list-windows", "-t", session, "-F", "#{window_id}"])
+            .output.split(whereSeparator: \.isNewline).map(String.init)
+        XCTAssertGreaterThanOrEqual(windows.count, 2)
+        let p1 = runTmux(socket: socket, args: ["list-panes", "-t", windows[1], "-F", "#{pane_id}"])
+            .output.split(whereSeparator: \.isNewline).map(String.init).first ?? ""
+        _ = runTmux(socket: socket, args: ["send-keys", "-t", p1, "-l", tab2])
+    }
+
+    /// 2 pane /bin/cat 夹具。
     private func createCatTmuxScenario(socket: String, session: String, marker: String) throws {
         let created = runTmux(
             socket: socket,

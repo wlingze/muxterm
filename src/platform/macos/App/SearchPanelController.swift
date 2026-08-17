@@ -170,6 +170,7 @@ final class SearchPanelController: NSWindowController, NSSearchFieldDelegate,
         label.stringValue = "\(hit.workspaceId)  tab \(hit.tabId)  pane @\(hit.paneId)\n\(hit.line)"
         label.font = NSFont.systemFont(ofSize: 12)
         label.maximumNumberOfLines = 2
+        cell.setAccessibilityIdentifier("muxterm.search.hit-\(row)")
         return cell
     }
 
@@ -179,5 +180,24 @@ final class SearchPanelController: NSWindowController, NSSearchFieldDelegate,
 
     @objc private func tableDoubleActivated() {
         activateSelected()
+    }
+
+    func testIsPresented() -> Bool {
+        window?.isVisible == true
+    }
+
+    func testSetQuery(_ query: String) {
+        input.stringValue = query
+        runSearch()
+    }
+
+    func testActivateFirstHit() {
+        guard !hits.isEmpty else { return }
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        activateSelected()
+    }
+
+    func testHitCount() -> Int {
+        hits.count
     }
 }

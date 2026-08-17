@@ -34,25 +34,38 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "13.0"
         GENERATE_INFOPLIST_FILE: YES
 
-  MuxtermApp:
-    type: application
+  CMuxterm:
+    type: library.static
     platform: macOS
     sources:
-      - path: main.swift
+      - path: CoreBridge/include
+      - path: CoreBridge/shim.c
+        compilerFlags: []
+    settings:
+      base:
+        PRODUCT_NAME: CMuxterm
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        GENERATE_INFOPLIST_FILE: YES
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/CoreBridge/include"
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CoreBridge/include"
+        PUBLIC_HEADERS_FOLDER_PATH: include
+        MODULEMAP_FILE: "$(SRCROOT)/CoreBridge/include/module.modulemap"
+
+  MuxtermAppLib:
+    type: library.static
+    platform: macOS
+    sources:
       - path: App
       - path: Terminal
       - path: UI
       - path: CoreBridge/CoreBridge.swift
-      - path: CoreBridge/shim.c
-        compilerFlags: []
     resources:
       - path: Resources
     settings:
       base:
-        PRODUCT_NAME: Muxterm
-        PRODUCT_BUNDLE_IDENTIFIER: dev.muxterm.app
-        INFOPLIST_FILE: Info.plist
-        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_NAME: MuxtermAppLib
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        GENERATE_INFOPLIST_FILE: YES
         HEADER_SEARCH_PATHS: "$(SRCROOT)/CoreBridge/include"
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CoreBridge/include"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor"
@@ -60,13 +73,39 @@ targets:
         OTHER_SWIFT_FLAGS: "-Xcc -fmodule-map-file=$(SRCROOT)/CoreBridge/include/module.modulemap"
         SWIFT_OBJC_BRIDGING_HEADER: ""
         CLANG_ENABLE_MODULES: YES
+    dependencies:
+      - target: MuxtermChrome
+      - target: CMuxterm
+      - package: SwiftTerm
+        product: SwiftTerm
+
+  MuxtermApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: main.swift
+    settings:
+      base:
+        PRODUCT_NAME: Muxterm
+        PRODUCT_BUNDLE_IDENTIFIER: dev.muxterm.app
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
         MACOSX_DEPLOYMENT_TARGET: "13.0"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/CoreBridge/include"
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CoreBridge/include"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/Vendor"
+        OTHER_LDFLAGS: "-lmuxterm -liconv -lresolv"
+        OTHER_SWIFT_FLAGS: "-Xcc -fmodule-map-file=$(SRCROOT)/CoreBridge/include/module.modulemap"
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        CLANG_ENABLE_MODULES: YES
         # Xcode 16+ 默认把 App 打成 stub+debug.dylib，XCUITest 常卡在 Running Background
         ENABLE_DEBUG_DYLIB: "NO"
         CODE_SIGNING_ALLOWED: "YES"
         CODE_SIGN_IDENTITY: "-"
     dependencies:
+      - target: MuxtermAppLib
       - target: MuxtermChrome
+      - target: CMuxterm
       - package: SwiftTerm
         product: SwiftTerm
     info:
@@ -97,6 +136,8 @@ schemes:
     build:
       targets:
         MuxtermChrome: all
+        CMuxterm: all
+        MuxtermAppLib: all
         MuxtermApp: all
         MuxtermAppUITests: [test]
     run:
