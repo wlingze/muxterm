@@ -367,3 +367,13 @@ fn pool_must_not_hold_herdr_sessions_sidecar() {
         "WorkspacePool 不再持有 herdr_sessions；Connect 表在 Catalog"
     );
 }
+
+/// C7：测试隔离远端 tmux 必须能通过 env 传给 TmuxDriver.list。
+#[test]
+fn tmux_driver_list_honors_test_remote_socket_env() {
+    let src = include_str!("builtin/tmux.rs");
+    assert!(
+        src.contains("MUXTERM_TEST_REMOTE_TMUX_SOCKET"),
+        "TmuxDriver::list SSH 分支必须读 MUXTERM_TEST_REMOTE_TMUX_SOCKET 传给 list_ssh_tmux_sessions，否则 Host local 测会打到用户默认 server"
+    );
+}

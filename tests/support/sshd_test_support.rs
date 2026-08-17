@@ -262,7 +262,22 @@ pub struct LoopbackSshd {
 
 impl LoopbackSshd {
     /// 启动隔离 sshd，并做一次 `echo ok` smoke。
+    ///
+    /// Host alias 为 `muxterm-loop-{label}-{nanos}`。要固定名叫 `local` 时用
+    /// [`Self::start_with_alias`]。
     pub fn start(label: &str) -> anyhow::Result<Self> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        Self::start_with_alias(label, &format!("muxterm-loop-{label}-{nanos}"))
+    }
+
+    /// 启动隔离 sshd，SSH config 的 `Host` 用调用方给的 alias（可叫 `local`）。
+    ///
+    /// 仍听 `127.0.0.1` 随机端口、自签密钥，**不**读用户 `~/.ssh/config`。
+    /// tmp 目录仍带 nanos，同 alias 并发不会撞。
+    pub fn start_with_alias(label: &str, alias: &str) -> anyhow::Result<Self> {
         let sshd = sshd_binary().ok_or_else(|| anyhow::anyhow!("无 sshd 二进制"))?;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -338,7 +353,7 @@ impl LoopbackSshd {
         let ssh_dir = tmp.join("client-ssh");
         fs::create_dir_all(&ssh_dir)?;
         fs::set_permissions(&ssh_dir, PermissionsExt::from_mode(0o700))?;
-        let alias = format!("muxterm-loop-{label}-{nanos}");
+        let alias = alias.to_string();
         let ssh_config_path = ssh_dir.join("config");
         fs::write(
             &ssh_config_path,

@@ -806,6 +806,23 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
         s.attention.on_user_input(&ws, pane);
     }
 
+    /// 测试用：走生产 `adjust_font(+1)`（Ctrl+= 热路径）。
+    pub fn test_increase_font(&self) {
+        let mut s = self._state.borrow_mut();
+        adjust_font(&mut s, 1);
+    }
+
+    /// 测试用：走生产 `adjust_font(-1)`（Ctrl+- 热路径）。
+    pub fn test_decrease_font(&self) {
+        let mut s = self._state.borrow_mut();
+        adjust_font(&mut s, -1);
+    }
+
+    /// 测试用：当前 UiState 字号（缩放热路径断言）。
+    pub fn test_font_size(&self) -> f32 {
+        self._state.borrow().font.size
+    }
+
     /// 测试用：当前激活 pane 的核心输出快照。
     pub fn test_active_pane_output(&self) -> Vec<u8> {
         let s = self._state.borrow();
@@ -3880,5 +3897,53 @@ mod tests {
             "{light_css}"
         );
         assert_ne!(light_css, dark_css);
+    }
+
+    fn fn_src<'a>(src: &'a str, name: &str) -> &'a str {
+        let sig = format!("fn {name}(");
+        let start = src.find(&sig).unwrap_or_else(|| panic!("missing {sig}"));
+        let rest = &src[start..];
+        let after = &rest[sig.len()..];
+        let mut rel = after.len();
+        for pat in ["\nfn ", "\npub fn "] {
+            if let Some(i) = after.find(pat) {
+                rel = rel.min(i);
+            }
+        }
+        &rest[..sig.len() + rel]
+    }
+
+    /// C7：SSH 已有连接探测必须并发，禁止一个 spawn 里串行 map 每个 alias。
+    #[test]
+    fn spawn_existing_ssh_probe_must_fan_out() {
+        let src = include_str!("window.rs");
+        let body = fn_src(src, "spawn_existing_ssh_probe");
+        let spawns = body.matches("thread::spawn").count() + body.matches("thread::scope").count();
+        assert!(
+            body.contains("chunks(") || spawns >= 2,
+            "spawn_existing_ssh_probe 必须 4 路并发（chunks / scope / 每 host spawn），禁止串行 discover_sessions。body={body}"
+        );
+    }
+
+    /// C7：打开面板禁止在调用线程同步 discover_sessions（会冻 GTK）。
+    #[test]
+    fn open_panel_must_not_discover_sessions_on_caller() {
+        let src = include_str!("window.rs");
+        let body = fn_src(src, "open_panel");
+        assert!(
+            !body.contains("discover_sessions"),
+            "open_panel 禁止同步 Catalog::discover_sessions；本地列出搬后台线程。body={body}"
+        );
+    }
+
+    /// C8：字号热路径禁止同步写 config.toml。
+    #[test]
+    fn adjust_font_must_not_persist_config_synchronously() {
+        let src = include_str!("window.rs");
+        let body = fn_src(src, "adjust_font");
+        assert!(
+            !body.contains("persist_config"),
+            "adjust_font 禁止同步 persist_config；防抖或后台写盘。body={body}"
+        );
     }
 }

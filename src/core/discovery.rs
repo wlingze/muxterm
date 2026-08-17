@@ -992,6 +992,77 @@ mod tests {
         assert_eq!(sessions[1].name, "work");
     }
 
+    fn fn_src<'a>(src: &'a str, name: &str) -> &'a str {
+        let sig = format!("fn {name}(");
+        let start = src.find(&sig).unwrap_or_else(|| panic!("missing {sig}"));
+        let rest = &src[start..];
+        let after = &rest[sig.len()..];
+        let mut rel = after.len();
+        for pat in ["\nfn ", "\npub fn "] {
+            if let Some(i) = after.find(pat) {
+                rel = rel.min(i);
+            }
+        }
+        &rest[..sig.len() + rel]
+    }
+
+    /// C7：列出 SSH 用短超时、BatchMode，不要强制 pty（那是 attach）。
+    #[test]
+    fn discovery_ssh_command_is_batch_short_timeout_no_forced_tty() {
+        let (_, args) =
+            build_ssh_command_for_discovery("local", "tmux list-sessions", Some("/tmp/x"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-o" && w[1] == "BatchMode=yes"),
+            "应含 BatchMode=yes: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-o" && w[1] == "ConnectTimeout=2"),
+            "应含 ConnectTimeout=2: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "-tt" || a == "-t"),
+            "列出不要分配 pty: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("ConnectTimeout=10")),
+            "列出不要用 attach 的 10s: {args:?}"
+        );
+        assert!(args.contains(&"-F".to_string()), "{args:?}");
+        assert!(args.contains(&"local".to_string()), "{args:?}");
+    }
+
+    /// C7：list_ssh_tmux_sessions 必须走 discovery 命令，禁止 attach PTY transport。
+    #[test]
+    fn list_ssh_tmux_sessions_must_not_use_attach_transport() {
+        let src = include_str!("discovery.rs");
+        let body = fn_src(src, "list_ssh_tmux_sessions");
+        assert!(
+            body.contains("build_ssh_command_for_discovery"),
+            "list_ssh_tmux_sessions 必须用 discovery 命令: {body}"
+        );
+        assert!(
+            !body.contains("SshProcessTransport"),
+            "列出禁止 SshProcessTransport PTY: {body}"
+        );
+        assert!(
+            !body.contains("build_ssh_command("),
+            "列出禁止调用 attach 用的 build_ssh_command: {body}"
+        );
+    }
+
+    /// C7：discovery 短命令禁止 portable-pty / SshProcessTransport。
+    #[test]
+    fn run_ssh_discovery_command_must_not_use_pty() {
+        let src = include_str!("discovery.rs");
+        let body = fn_src(src, "run_ssh_discovery_command");
+        assert!(
+            !body.contains("SshProcessTransport"),
+            "run_ssh_discovery_command 必须是 ssh Command + stdout，不要 PTY: {body}"
+        );
+    }
+
     #[test]
     fn tmux_session_info_serializable() {
         let s = TmuxSessionInfo {

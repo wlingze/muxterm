@@ -132,6 +132,11 @@ cargo test --test existing_ssh_contract -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-threads=1
 # Catalog（内置 Driver 落地后必须绿）
 cargo test --lib catalog:: -- --test-threads=1
+# C7/C8：SSH Host local 列出 + 缩放热路径
+cargo test --lib discovery -- --test-threads=1
+cargo test --test existing_ssh_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_catalog_ssh_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_zoom_input_e2e -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -394,6 +399,41 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 | `pool_must_not_hold_herdr_sessions_sidecar` | 禁止 `herdr_sessions` 字段 |
 
 禁止：改断言来绿；测试连用户默认 herdr.sock；为探活 attach Runtime / 开 `-CC`；发明 `TransportDriver`。
+
+### 5.15 Catalog SSH Host `local` + 缩放热路径（C7 / C8）
+
+规格：[`CATALOG.md`](CATALOG.md) §1.2–1.3，施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C7/C8。素材：`test_2026-0818-0133.log`（只 `rg`，禁止 `include_str!`）。
+
+三个都叫 `local`：Transport `"local"`（单例 target `""`）、SSH Host alias `local`（LoopbackSshd 连 127.0.0.1）、`runtime_list()` 的 `"tmux"|"herdr"|"shell"`。测试用 **`Host local`**，走 `discover_sessions("ssh", "local")`。
+
+| 测试 | 必须抓住 |
+|---|---|
+| `discovery_ssh_command_is_batch_short_timeout_no_forced_tty` | 列出用 `ConnectTimeout=2` + BatchMode，**无** `-tt`/`-t` |
+| `list_ssh_tmux_sessions_must_not_use_attach_transport` | 列出禁止 `SshProcessTransport` / attach 用的 `build_ssh_command` |
+| `tmux_driver_list_honors_test_remote_socket_env` | `MUXTERM_TEST_REMOTE_TMUX_SOCKET` → `tmux -L` |
+| `catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list` | Host `local` 列出隔离 session；`runtime_list` 仍是三插件；`discover_sessions("local","")` 不是 SSH |
+| `ssh_hosts_empty_after_probe_must_not_stay_loading` | `ExistingPanelState.probe_inflight`：探测完空表是 Empty，不是永远 Loading |
+| `spawn_existing_ssh_probe_must_fan_out` | 最多 4 路并发，禁止串行 map |
+| `open_panel_must_not_discover_sessions_on_caller` | GTK/`open_panel` 禁止同步 `discover_sessions` |
+| `linux_catalog_ssh_e2e` | 面板：已有的连接 → SSH → `muxterm-existing-host-local` → `muxterm-existing-row-tmux-mux-ssh-local` |
+| `adjust_font_must_not_persist_config_synchronously` | `fn adjust_font` 禁止同步 `persist_config` |
+| `linux_zoom_input_e2e` | attach 后 `test_increase_font` / Enter 立刻把控制权还给 GTK |
+
+夹具：`LoopbackSshd::start_with_alias(..., "local")`；隔离 `-L muxterm-test-*`；`apply_ssh_config_env`。无 sshd eprintln skip，禁止 `#[ignore]`。
+
+禁止：列出走 `-tt` / `ConnectTimeout=10`；测用户默认 tmux/herdr.sock；把 Host `local` 当成 Local Transport；改断言把 Loading 算成功；缩放热路径同步写 `config.toml`。
+
+门禁（C7/C8 之后）：
+
+```
+cargo test --lib catalog:: -- --test-threads=1
+cargo test --lib discovery -- --test-threads=1
+cargo test --test existing_ssh_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_catalog_ssh_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_zoom_input_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
+```
 
 ### 5.2 手段（沿用现有 helper）
 

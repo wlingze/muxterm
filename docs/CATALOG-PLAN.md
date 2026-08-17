@@ -4,14 +4,16 @@
 > 工作目录：`/home/wlz/Developer/self/muxterm`
 > 分支：`feature/runtime/support_herdr`（HEAD 在写本文时为 `b739494`）
 > 契约：[`CATALOG.md`](CATALOG.md)（先读完）。产品树：[`WORKSPACE.md`](WORKSPACE.md) §6。Runtime：[`RUNTIME.md`](RUNTIME.md)。
-> 测试：[`TESTING.md`](TESTING.md) §5.12（W21）+ §5.14（Catalog）。结构：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
-> 滚轮漏项：[`W21-PLAN.md`](W21-PLAN.md)（上一轮 goal 跳过了，用户 Mini 上 shell/agent 滚轮都坏）。
+> 测试：[`TESTING.md`](TESTING.md) §5.12（W21）+ §5.14（Catalog）+ §5.15（C7/C8 Host `local` / 缩放）。结构：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
+> 滚轮漏项：[`W21-PLAN.md`](W21-PLAN.md)（已在 C0 落地）。
 >
 > **你是实现 agent。每个 Cx 先确认测试是红的，再写最小实现到绿。禁止改断言、token、widget_name、错误文案子串来「绿」。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止连用户默认 Herdr。禁止 `herdr server stop`。禁止对默认 tmux `kill-server`。生产代码禁止 `Command::new("herdr")`。GUI / Pool 禁止 `if spec.runtime == "herdr"`。`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。不要等用户确认。不要提前把 goal 标 complete。**
+>
+> **C0–C6 已在 HEAD `7c74edd`。不要重做 W21 / 内置 Driver / FFI / 项目卡。本 goal 从 C7 开始，C7 绿再 C8。**
 
-Cursor 已经落下：`docs/CATALOG.md`、本文件、结构/契约补丁、以及 `src/core/catalog/` **类型表面 + 单测**。内置 Driver 还没注册，所以 `with_builtins_*` 和两则 pool 源码断言现在是 **红的**——那是门禁，不是要你改测试。
+Cursor 已经落下 C7/C8 的红测试和文档。C0–C6（W21 滚轮、内置 Driver、FFI、项目卡）已在 `7c74edd`，**不要重做、不要改那些绿测试的断言**。
 
-W19 / W20 已在 HEAD。**W21 还没做**（仓库里没有 `scroll_policy.rs` / `linux_scroll_wheel_e2e.rs`）。先 W21，再 Catalog。不要把 Catalog 写进 emulate/滚轮。
+W19 / W20 / W21 已在 HEAD。本 goal 只做 C7 然后 C8。
 
 ---
 
@@ -224,3 +226,77 @@ xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-thread
 C0 / C6 之后加对应 GTK e2e（`--test-threads=1`，`xvfb-run -a`）。
 
 全绿后再停。汇报：commit hash、哪几个测试从红变绿、`fbc77e4` 仍是祖先。
+
+---
+
+## C7 — SSH 列出（dogfood `test_2026-0818-0133.log`）
+
+> 日期：2026-08-18（`2026-08-18T01:50:34+08:00`）
+> 日志：`test_2026-0818-0133.log`（UTC 17:33–17:37 = +08 01:33–01:37）。用户点「已有的连接 → SSH」拿可连接数据失败。
+
+C0–C6 已在 HEAD `7c74edd`。**不要重做。** 本步只修列出。不要 GNU Screen。不要弱化 W13 常量。
+
+### 根因（已核对日志，不要再猜）
+
+1. `TmuxDriver::list` → `list_ssh_tmux_sessions` → `build_ssh_command`（**attach** 用的 `-tt` + `ConnectTimeout=10`）+ `SshProcessTransport` PTY。日志 9–11 行：`spawn ssh transport args=["-tt", … "ConnectTimeout=10", "ryzen"|"mac"|"cd", "--", "tmux list-sessions …"]`。W20 `ssh_run` / `ssh_probe_args` 已经是 BatchMode + 2s、无 `-tt`。Catalog 列出没走那条。
+2. `build_ssh_command_for_discovery` 现在直接转调 `build_ssh_command`，等于没有 discovery 命令。
+3. `drain_existing_ssh` 只把 **非空** entries 的 alias 放进 `hosts`。解析失败 = 空 = host 消失。`existing_items` 在 `hosts` 空时永远 `Loading`，探测结束也转圈。
+4. `spawn_existing_ssh_probe` 注释写 4 路并发，代码是 `aliases.into_iter().map` **串行** `Catalog::discover_sessions`。每个 host 还扇出 tmux + herdr。`cd` 这类慢 host 会把整表拖到 10s 级。
+5. `open_panel` 在 **GTK 线程** `discover_sessions("local", "")`（本机 tmux + 扫全部 herdr socket，单次 ping 超时 5s）。
+6. Host 名叫 `local` 和 Transport id `"local"` 不是一回事。测试必须用 LoopbackSshd **`Host local` → 127.0.0.1**，断言 `discover_sessions("ssh", "local")`，禁止当成 Local 单例。
+
+### 要绿的测试（Cursor 已写下，禁止改断言）
+
+| 测试 | 现在为什么红 |
+|---|---|
+| `discovery_ssh_command_is_batch_short_timeout_no_forced_tty` | discovery 命令仍是 `-tt` / `ConnectTimeout=10` |
+| `list_ssh_tmux_sessions_must_not_use_attach_transport` | `list_ssh_tmux_sessions` 仍 `SshProcessTransport` + `build_ssh_command` |
+| `tmux_driver_list_honors_test_remote_socket_env` | `TmuxDriver::list` 不读 `MUXTERM_TEST_REMOTE_TMUX_SOCKET` |
+| `catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list` | Catalog 列不到隔离 `-L` session；三个 `local` 可能串 |
+| `ssh_hosts_empty_after_probe_must_not_stay_loading` | `ExistingPanelState` 没有 `probe_inflight`，空表 = 永远 Loading |
+| `spawn_existing_ssh_probe_must_fan_out` | 一个 `thread::spawn` 里串行 map |
+| `open_panel_must_not_discover_sessions_on_caller` | `open_panel` 里同步 `discover_sessions("local")` |
+| `linux_catalog_ssh_e2e` | 面板 SSH → Host `local` → 隔离 tmux 行 |
+
+### 实现要点
+
+- `build_ssh_command_for_discovery`：`-F`（若有）、`BatchMode=yes`、`ConnectTimeout=2`、alias、`--`、remote。**不要 `-t`/`-tt`。不要改 `build_ssh_command`（attach 仍要 `-tt`）。**
+- `list_ssh_tmux_sessions`（以及已走 discovery 的 `create_ssh_tmux_session`）用这条命令 + `Command` 收 stdout（可复用/改 `run_ssh_discovery_command`，不要再 PTY）。超时仍由调用方传入（Driver 用 2s）。
+- `TmuxDriver::list` SSH 分支：`std::env::var("MUXTERM_TEST_REMOTE_TMUX_SOCKET").ok()` 传给 `list_ssh_tmux_sessions` 的 `remote_socket`。生产不设 env = 远端默认 server。
+- `ExistingPanelState` 加 `probe_inflight: bool`。`spawn_existing_ssh_probe` 开头 true，`drain` 结束 false。`existing_items(SshHosts)`：空 + inflight → Loading；空 + 完成 → Empty；有 host → Host 行。W20「没有格子的 host 不要占满列表」仍成立：host 仍只来自 **有 entries** 的 alias。
+- `spawn_existing_ssh_probe`：最多 4 路并发（`chunks(4)` + `thread::scope`，或每 host 一个 join，限制 4）。注释已经这么写了。
+- `open_panel` 不要同步 `discover_sessions`。本地列出搬到后台线程，16ms poll / `test_poll_once` 收编，和 SSH probe 同一模式。GTK 线程禁止 `ssh`、禁止扫 herdr socket。
+
+夹具：`LoopbackSshd::start_with_alias(label, "local")` 已有。隔离 tmux `-L muxterm-test-*`。无 sshd 才 eprintln skip，禁止 `#[ignore]`。
+
+Commit：`fix(catalog): list ssh sessions without attach pty`
+
+---
+
+## C8 — 回车 / 缩放不冻 GTK
+
+同一份日志：attach 后 `%pause`/`%continue` 打满；`send-keys -H 0d`；17:37:04 `search_workspace query=""` 扫了 4 个工作区。用户：回车卡、放大缩小卡死。
+
+### 根因
+
+1. `adjust_font` / `reset_font` 在按键路径上对 **全部** `pixel_cache` 调 `set_font_size`（每个 VTE `set_font_desc`），再 **同步** `persist_config` 写 `config.toml`。日志里用户同时挂着本地 + SSH，pane 很多。
+2. 回车本身是 `WriteRaw` → 非阻塞 `send-keys`。卡是后续洪水 + 同步缩放/搜空串。不要改 `MAX_OUTPUT_EVENTS_PER_SEC`。
+3. Search tab 空 query 仍对每个 workspace `search_workspace("")`（info 日志）。空 query 在 emulate 层立刻空，但 GTK 打开 Search 会扫一遍。
+
+### 要绿的测试
+
+| 测试 | 现在为什么红 |
+|---|---|
+| `adjust_font_must_not_persist_config_synchronously` | `fn adjust_font` 里直接 `persist_config` |
+| `linux_zoom_input_e2e` | 热路径写盘 + 全 cache 改字体，预算很容易超 |
+
+### 实现要点
+
+- `adjust_font`：**先**改当前前台 `LayoutHost` 的字号，立刻返回。`persist_config` 用 `glib::timeout_add_local` 防抖（200–400ms）或后台线程写盘。`linux_prefs_e2e` 的 `persist_config("font.size", …)` 直写路径保持绿。
+- 后台 workspace 的 VTE 字号：切到前台时若 `layout.font.size != s.font.size` 再 `set_font_size`。不要在一次 Ctrl+= 里遍历全部 pixel_cache。
+- `test_increase_font` / `test_decrease_font` 钩子已在 `AppWindow`（Cursor 写的）。e2e：隔离 tmux attach 之后，缩放和 Enter 必须在几百毫秒内把控制权还给 GTK。
+- 空 query：`search_all` / 面板 Search 不要对空串扫 replica（emulate 已返回空）。可跳过调用。
+
+Commit：`fix(linux): debounce font zoom off the gtk key path`
+
+C7 绿之前不要开始 C8。C8 不要动 SSH 列出。每步 `cargo fmt`。禁止 `git add -A`。禁止 push。禁止 `herdr server stop`。禁止不带 `-L muxterm-test-*` 的 `kill-server`。`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。

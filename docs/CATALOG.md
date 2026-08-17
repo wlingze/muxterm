@@ -1,6 +1,6 @@
 # CATALOG.md — Catalog 是 backend 总状态
 
-> 日期：2026-08-17（`2026-08-17T22:19:47+08:00`）
+> 日期：2026-08-18（`2026-08-18T01:50:34+08:00`）
 > 工作目录：`/home/wlz/Developer/self/muxterm`
 > 分支：`feature/runtime/support_herdr`
 > 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。施工：[`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
@@ -38,6 +38,24 @@
 Driver 打开 Runtime 时，用 `Connect` 再 spawn 字节流（本机 PTY 或 `ssh` 上的 `tmux -CC` / Herdr socket）。**不要**再写 `TmuxRuntime::new_ssh_attach` 把 SSH 烤进 Runtime。
 
 **不要**发明 `TransportDriver`。插件就叫 Transport。
+
+### 1.2 三个都叫 `local` 的东西（不要混）
+
+| 词 | id / 名字 | 怎么列 |
+|---|---|---|
+| Local **Transport** | `"local"` | `discover_targets("local")` → 单例，target id 是 `""` |
+| SSH **Host alias** | 用户 `~/.ssh/config` 的 `Host` 名，**可以就叫 `local`** | `discover_targets("ssh")` 含 `id == "local"`；格子走 `discover_sessions("ssh", "local")` |
+| 可连接 Runtime 列表 | `"tmux"` / `"herdr"` / `"shell"` | `runtime_list()`，**不是** SSH host 表 |
+
+`discover_sessions("local", "")` 是本机。`discover_sessions("ssh", "local")` 是 SSH Host 名叫 `local` 的那台。两者禁止串。
+
+### 1.3 列出 SSH 不是 attach SSH
+
+`tmux -CC` / 交互 shell 需要远端 pty：`ssh -tt -o ConnectTimeout=10`。那是 **attach**。
+
+列出 session / 探活是短命令：`ssh -o BatchMode=yes -o ConnectTimeout=2`，**不要 `-tt`，不要 SshProcessTransport PTY**。和 W15 `ssh_probe_args`、W20 `ssh_run` 同一条。`-tt` 会灌 MOTD / `\r` / 提示符，`list-sessions` 解析成空，面板就把有 session 的 host 丢掉。
+
+测试用隔离远端 tmux：`MUXTERM_TEST_REMOTE_TMUX_SOCKET`（只测，对标 `HERDR_SOCKET_PATH`）。生产不设，列出远端默认 server。禁止测用户默认 `tmux` / `herdr.sock`。
 
 ---
 

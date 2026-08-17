@@ -7,8 +7,9 @@
 
 mod support;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use muxterm::core::catalog::Catalog;
 use muxterm::core::discovery::existing::{
     discover_local_herdr, discover_ssh_herdr, discover_ssh_tmux,
 };
@@ -159,6 +160,86 @@ fn ssh_herdr_forward_attach_contract() {
 
     let _ = forward.kill();
     let _ = forward.wait();
+}
+
+/// C7：SSH Host 名叫 `local`（连 loopback）时，Catalog 必须能列出隔离 tmux，
+/// 且 `runtime_list` 仍是插件表。Host `local` ≠ Transport `"local"`。
+#[test]
+fn catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list() {
+    if !loopback_sshd_available() {
+        eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
+        return;
+    }
+    if !tmux_available() {
+        eprintln!("skip: 无 tmux 二进制");
+        return;
+    }
+    let sshd = LoopbackSshd::start_with_alias("cat-local", "local").expect("启动 Host local sshd");
+    sshd.apply_ssh_config_env();
+    assert_eq!(sshd.alias, "local");
+
+    let socket = unique_socket("cat-local-tmux");
+    create_session(&socket, "mux-ssh-local", 80, 24);
+    let _tmux_guard = TmuxGuard {
+        socket: socket.clone(),
+    };
+    std::env::set_var("MUXTERM_TEST_REMOTE_TMUX_SOCKET", &socket);
+    struct EnvGuard;
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("MUXTERM_TEST_REMOTE_TMUX_SOCKET");
+            std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
+        }
+    }
+    let _env = EnvGuard;
+
+    let mut cat = Catalog::with_builtins();
+    let runtimes: Vec<String> = cat.runtime_list().into_iter().map(|r| r.id).collect();
+    assert_eq!(
+        runtimes,
+        vec!["tmux".to_string(), "herdr".into(), "shell".into()],
+        "runtime_list 是插件表，不是 SSH host / Transport id: {runtimes:?}"
+    );
+
+    let ssh_targets = cat.discover_targets("ssh").expect("ssh targets");
+    assert!(
+        ssh_targets.iter().any(|t| t.id == "local"),
+        "discover_targets(ssh) 必须含 Host alias local: {ssh_targets:?}"
+    );
+
+    let local_targets = cat.discover_targets("local").expect("local targets");
+    assert_eq!(local_targets.len(), 1, "{local_targets:?}");
+    assert_eq!(
+        local_targets[0].id, "",
+        "Local Transport 单例 target id 是空串，不是 Host local: {local_targets:?}"
+    );
+
+    let t0 = Instant::now();
+    let sessions = cat
+        .discover_sessions("ssh", "local")
+        .expect("ssh Host local 列出不应 Err");
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "Host local 列出必须用 2s discovery 超时，实际 {elapsed:?}"
+    );
+    assert!(
+        sessions.iter().any(|s| {
+            s.runtime_id == "tmux"
+                && s.transport_id == "ssh"
+                && s.target == "local"
+                && s.name == "mux-ssh-local"
+        }),
+        "discover_sessions(ssh, local) 必须看到隔离 session mux-ssh-local: {sessions:?}"
+    );
+
+    let local_sessions = cat
+        .discover_sessions("local", "")
+        .expect("local transport 列出不应 Err");
+    assert!(
+        local_sessions.iter().all(|s| s.transport_id == "local"),
+        "discover_sessions(local, \"\") 禁止串成 SSH Host local: {local_sessions:?}"
+    );
 }
 
 /// 隔离 tmux 清理（只杀自己的 -L server）。

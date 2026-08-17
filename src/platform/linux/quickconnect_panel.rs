@@ -1482,6 +1482,22 @@ mod tests {
         assert!(matches!(herdr[1], PanelItem::Existing(_)));
     }
 
+    /// C7：探测结束后空 host 表必须是 Empty，不能继续 Loading。
+    #[test]
+    fn ssh_hosts_empty_after_probe_must_not_stay_loading() {
+        let src = include_str!("quickconnect_panel.rs");
+        let start = src
+            .find("pub struct ExistingPanelState")
+            .expect("ExistingPanelState 应存在");
+        let rest = &src[start..];
+        let end = rest.find("\n///").unwrap_or(rest.len());
+        let struct_src = &rest[..end.min(500)];
+        assert!(
+            struct_src.contains("probe_inflight"),
+            "ExistingPanelState 必须有 probe_inflight（探测中 true / 完成后 false），空 host 才能从 Loading 变成 Empty。struct={struct_src}"
+        );
+    }
+
     #[test]
     fn filter_matches_subtitle_and_path() {
         let ssh = TargetConfig::new(
