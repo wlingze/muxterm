@@ -130,6 +130,8 @@ struct UiState {
     layout_overlay: gtk4::Overlay,
     /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
     jump_latest: gtk4::Button,
+    /// 离开底部期间累计的新行数（W18e：按钮显示 +N）。
+    jump_unseen: u32,
     /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
     disconnect_overlay: gtk4::Label,
     /// 搜索命中高亮（W17c：客户端覆盖层，不改 pane 字节）。
@@ -388,6 +390,7 @@ impl AppWindow {
             root_box: root.clone(),
             layout_overlay,
             jump_latest,
+            jump_unseen: 0,
             disconnect_overlay,
             search_highlight,
             scrollback_lines: cfg.scrollback.lines,
@@ -412,7 +415,8 @@ impl AppWindow {
         {
             let st = state.clone();
             state.borrow().jump_latest.connect_clicked(move |_| {
-                let s = st.borrow();
+                let mut s = st.borrow_mut();
+                s.jump_unseen = 0;
                 if let Some(view) = s.active_layout().pane(s.active_pane).cloned() {
                     if let Some(adj) = view.terminal().vadjustment() {
                         adj.set_value(adj.upper());
@@ -1440,22 +1444,34 @@ fn refresh_attention_chrome(s: &UiState, window: &Window) {
 }
 
 /// 回底按钮可见性：VTE 滚离底部时显示，回到尾部隐藏（W16a）。
-fn update_jump_latest(s: &UiState) {
-    let at_bottom = s
-        .active_layout()
-        .pane(s.active_pane)
-        .and_then(|v| v.terminal().vadjustment())
+/// 当前激活 pane 的 VTE 是否在底部（scroll lock / 回底按钮共用）。
+fn view_at_bottom(view: &std::rc::Rc<PaneView>) -> bool {
+    view.terminal()
+        .vadjustment()
         .map(|adj| {
             let page = adj.page_size();
             let upper = adj.upper();
             // VTE 内容不足一屏时 upper 可能等于 page_size，视为已在底部。
             upper - page <= adj.value() + 1.0
         })
+        .unwrap_or(true)
+}
+
+fn update_jump_latest(s: &UiState) {
+    let at_bottom = s
+        .active_layout()
+        .pane(s.active_pane)
+        .map(|v| view_at_bottom(&v))
         .unwrap_or(true);
     s.jump_latest.set_visible(!at_bottom);
-    // 回到尾部时搜索高亮不再有意义（W17c）。
     if at_bottom {
+        // 回到尾部：搜索高亮不再有意义（W17c）。
         s.search_highlight.set_visible(false);
+    } else if s.jump_unseen > 0 {
+        s.jump_latest
+            .set_label(&format!("↓ +{}", s.jump_unseen));
+    } else {
+        s.jump_latest.set_label("↓");
     }
 }
 
@@ -1539,6 +1555,12 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
                 // Surface：synced 后只 feed 原始字节；未 synced 的 live 由
                 // F3 capture 门丢弃（F2 阶段先 raw feed，禁止 dump）。
                 view.feed_output(data);
+                // W18e：离开底部期间的新行累计到回底按钮 +N。
+                if !view_at_bottom(&view) {
+                    s.jump_unseen = s
+                        .jump_unseen
+                        .saturating_add(data.iter().filter(|&&b| b == b'\n').count() as u32);
+                }
                 forward_parser_replies(s, pane.0);
             }
         }
