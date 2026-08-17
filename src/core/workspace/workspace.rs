@@ -116,6 +116,17 @@ impl Workspace {
         self.panes.get(&pane).and_then(|t| t.line_index_by_seq(seq))
     }
 
+    /// 某 pane 的 OSC 133 命令刻度（W18h 滚动条红绿标记）。
+    pub fn pane_command_marks(
+        &self,
+        pane: PaneId,
+    ) -> Vec<crate::core::protocol::terminal::emulate::CommandMark> {
+        self.panes
+            .get(&pane)
+            .map(|t| t.command_marks().to_vec())
+            .unwrap_or_default()
+    }
+
     /// 某 pane 的最近 n 行。
     pub fn pane_last_n_lines(&self, pane: PaneId, n: usize) -> Vec<String> {
         self.panes

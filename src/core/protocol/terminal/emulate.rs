@@ -191,6 +191,12 @@ pub struct TerminalState {
     pub active_charset: CharsetIndex,
     /// W18：OSC 133 命令回合（滚动条刻度）。Codex 必须在 A/B/C/D 时写入，不要永远空。
     command_marks: Vec<CommandMark>,
+    /// B 与 C 之间收集的命令文本（W18h）。
+    command_pending: Option<String>,
+    /// 命令回合开始时的 seq（刻度跳转用）。
+    command_start_seq: u64,
+    /// 命令刻度专用递增序号（随回合前进，不依赖 scrollback 淘汰）。
+    command_seq: u64,
     processor: Processor,
 }
 
@@ -316,6 +322,9 @@ impl TerminalState {
             osc_esc_seen: false,
             osc_pending: None,
             command_marks: Vec::new(),
+            command_pending: None,
+            command_start_seq: 0,
+            command_seq: 0,
             processor: Processor::default(),
         }
     }
@@ -443,7 +452,12 @@ impl TerminalState {
         for &b in bytes {
             // vte 0.13 的 Handler 不暴露 osc_dispatch，OSC 由内部 Performer
             // 直接派发成 set_title/set_color 等；注意力 OSC 在这里并行收集。
-            self.scan_attention_byte(b);
+            let terminated_osc = self.scan_attention_byte(b);
+            // W18h：B..C 之间的命令文本（含混入的 C OSC 帧，C 处理时再剥掉）。
+            // 终止 OSC 的 BEL/ST 不是命令文本，不收集。
+            if self.command_pending.is_some() && !terminated_osc {
+                self.command_pending.as_mut().expect("is_some").push(b as char);
+            }
             processor.advance(self, b);
         }
         self.processor = processor;
@@ -458,7 +472,8 @@ impl TerminalState {
     ///
     /// 只认 `ESC ] ... BEL|ST` 的 OSC 帧：133 的 A/B/C/D/P 与
     /// 9/99/777/1337 通知类产生信号，其余原样留给 vte 处理。
-    fn scan_attention_byte(&mut self, b: u8) {
+    /// 返回 true 表示该字节终止了一条 OSC（BEL/ST），调用方不要把它当命令文本。
+    fn scan_attention_byte(&mut self, b: u8) -> bool {
         if self.osc_pending.is_some() {
             let mut buf = self.osc_pending.take().expect("is_some 分支必须命中");
             let mut terminated = false;
@@ -482,7 +497,7 @@ impl TerminalState {
             } else {
                 self.osc_pending = Some(buf);
             }
-            return;
+            return terminated;
         }
         if self.osc_esc_seen {
             if b == b']' {
@@ -493,11 +508,12 @@ impl TerminalState {
                 // 普通 ESC + 非 `]`：不是 OSC，重新按当前字节处理。
                 self.scan_attention_byte(b);
             }
-            return;
+            return false;
         }
         if b == 0x1b {
             self.osc_esc_seen = true;
         }
+        false
     }
 
     /// 处理一条完整的注意力 OSC（其余 OSC 由 vte 正常处理，这里直接忽略）。
@@ -511,16 +527,52 @@ impl TerminalState {
             b"133" => {
                 let code = params.get(1).and_then(|p| p.first()).copied();
                 match code {
-                    Some(b'C') => self.signals.push(AttentionSignal::CommandStart),
+                    Some(b'B') => {
+                        // 命令文本从 B 开始收集，到 C 结束（W18h）。
+                        self.command_pending = Some(String::new());
+                        self.command_start_seq = self.next_seq;
+                    }
+                    Some(b'C') => {
+                        self.signals.push(AttentionSignal::CommandStart);
+                        // B..C 之间的那一行就是命令文本；C 之后清空待收集。
+                        if let Some(cmd) = self.command_pending.take() {
+                            // 收集时把 C 的 OSC 帧也吞进来了，剥到 `ESC ]` 为止。
+                            let cmd = cmd
+                                .split("\x1b]")
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            if !cmd.is_empty() {
+                                self.command_seq += 1;
+                                self.command_marks.push(CommandMark {
+                                    seq: self.command_seq,
+                                    command: cmd,
+                                    exit_code: None,
+                                });
+                            }
+                        }
+                    }
                     Some(b'D') => {
-                        // OSC 133;D;<exit>：按 `;` 拆分后退出码在第 3 段。
-                        let exit = params
-                            .get(2)
-                            .and_then(|p| p.first())
-                            .and_then(|c| (*c as char).to_digit(10))
-                            .map(|n| n as u8);
+                        // OSC 133;D;<exit>：退出码在第 3 段，解析整段（12 不能变 1）。
+                        let exit = params.get(2).and_then(|p| {
+                            std::str::from_utf8(p).ok().and_then(|s| s.parse::<u8>().ok())
+                        });
                         self.signals
                             .push(AttentionSignal::CommandDone { exit_code: exit });
+                        // 给 C 时已入队的刻度补退出码；没有 C 的 D 也补一条。
+                        if let Some(last) = self.command_marks.last_mut() {
+                            if last.exit_code.is_none() {
+                                last.exit_code = exit;
+                            }
+                        } else {
+                            self.command_seq += 1;
+                            self.command_marks.push(CommandMark {
+                                seq: self.command_seq,
+                                command: String::new(),
+                                exit_code: exit,
+                            });
+                        }
                     }
                     Some(b'A' | b'P') => {
                         // prompt start：Working 尚未收到 D → 视为结束（无退出码）。

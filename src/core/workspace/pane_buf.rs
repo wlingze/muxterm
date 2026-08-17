@@ -74,6 +74,11 @@ impl PaneBuf {
         self.terminal.line_index_by_seq(seq)
     }
 
+    /// OSC 133 命令刻度（W18h）。
+    pub fn command_marks(&self) -> &[crate::core::protocol::terminal::emulate::CommandMark] {
+        self.terminal.command_marks()
+    }
+
     /// 有界原始字节环（peek / 小终端播种用）。
     pub fn raw_bytes(&self) -> &[u8] {
         &self.byte_ring
