@@ -6,8 +6,9 @@
 //! socket / ssh / dir，core 内部决定用 TmuxRuntime / ShellRuntime / DaemonRuntime。
 
 use crate::core::model::Runtime;
-use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
+use crate::core::runtime::{DaemonRuntime, HerdrRuntime, HerdrSession, ShellRuntime, TmuxRuntime};
 use crate::core::workspace::id::WorkspaceId;
+use std::sync::Arc;
 
 /// 打开一个工作区的产品规格（不含 tmux 词）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +55,25 @@ impl WorkspaceSpec {
             runtime: "tmux".into(),
             path: String::new(),
             socket,
+            create: false,
+            scrollback_lines: 10_000,
+        }
+    }
+
+    /// Herdr workspace 规格：session = named session 名，path = Herdr workspace_id，
+    /// socket = API socket 绝对路径。
+    pub fn herdr(
+        session_name: impl Into<String>,
+        herdr_workspace_id: impl Into<String>,
+        socket_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport: "local".into(),
+            alias: None,
+            session: session_name.into(),
+            runtime: "herdr".into(),
+            path: herdr_workspace_id.into(),
+            socket: Some(socket_path.into()),
             create: false,
             scrollback_lines: 10_000,
         }
@@ -132,6 +152,11 @@ impl WorkspaceSpec {
                     rt.set_scrollback_lines(lines);
                     Box::new(rt)
                 }
+            }
+            "herdr" => {
+                let session =
+                    HerdrSession::new(&self.session, self.socket.clone().unwrap_or_default());
+                Box::new(HerdrRuntime::new(Arc::new(session), &self.path))
             }
             "daemon" => {
                 let name = if self.session.is_empty() {

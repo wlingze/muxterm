@@ -1095,6 +1095,17 @@ impl AppWindow {
             .collect()
     }
 
+    /// 测试用：池里各工作区的 runtime 种类（断言没误开成本地 tmux）。
+    pub fn test_workspace_runtimes(&self) -> Vec<String> {
+        self._state
+            .borrow()
+            .pool
+            .list()
+            .into_iter()
+            .map(|w| w.id().runtime.clone())
+            .collect()
+    }
+
     /// 测试用：按 replica id 激活工作区（上次看到这里 / 跨工作区搜索）。
     pub fn test_activate_workspace(&self, replica: &str) {
         let mut s = self._state.borrow_mut();

@@ -109,6 +109,53 @@ impl HerdrSession {
             .ok_or_else(|| anyhow!("session.snapshot 缺 snapshot: {result}"))?;
         SessionSnapshot::from_json(snap)
     }
+
+    /// `pane.read`：attach 快照（source=visible, format=ansi），返回原始 ANSI 字节。
+    pub fn pane_read_ansi(&self, pane_id: &str) -> Result<Vec<u8>> {
+        let result = self.call(
+            "pane.read",
+            serde_json::json!({
+                "pane_id": pane_id,
+                "source": "visible",
+                "format": "ansi",
+                "strip_ansi": false,
+            }),
+        )?;
+        let text = result
+            .get("read")
+            .and_then(|r| r.get("text"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("pane.read 缺 text: {result}"))?;
+        Ok(text.as_bytes().to_vec())
+    }
+
+    /// `pane.send_input`：写原始文本（粘贴/WriteRaw）。
+    pub fn pane_send_input(&self, pane_id: &str, text: &str) -> Result<()> {
+        self.call(
+            "pane.send_input",
+            serde_json::json!({ "pane_id": pane_id, "text": text }),
+        )?;
+        Ok(())
+    }
+
+    /// `pane.send_keys`：发 herdr key-combo 字符串（enter / ctrl+c / f1 …）。
+    pub fn pane_send_keys(&self, pane_id: &str, keys: &[String]) -> Result<()> {
+        self.call(
+            "pane.send_keys",
+            serde_json::json!({ "pane_id": pane_id, "keys": keys }),
+        )?;
+        Ok(())
+    }
+
+    /// `workspace.list`：全部 Herdr workspace 记录。
+    pub fn workspace_list(&self) -> Result<Vec<WorkspaceRecord>> {
+        let result = self.call("workspace.list", serde_json::json!({}))?;
+        Ok(result
+            .get("workspaces")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(WorkspaceRecord::from_json).collect())
+            .unwrap_or_default())
+    }
 }
 
 /// `session.snapshot` 的产品视图（Herdr id 保持字符串，映射在 HerdrRuntime）。

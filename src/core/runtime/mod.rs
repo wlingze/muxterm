@@ -20,6 +20,7 @@ pub use crate::core::model::backend::Runtime;
 
 // Re-export backend implementations
 pub use daemon::DaemonRuntime;
+pub use herdr::{HerdrRuntime, HerdrSession};
 pub use shell::ShellRuntime;
 pub use tmux::backend::TmuxRuntime;
 

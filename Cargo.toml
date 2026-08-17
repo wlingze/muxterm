@@ -34,6 +34,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+bincode = { version = "2", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 async-channel = "2"
 async-trait = "0.1"
@@ -127,6 +128,15 @@ path = "tests/tmux_ssh_feature_contract.rs"
 [[test]]
 name = "herdr_session_contract"
 path = "tests/herdr_session_contract.rs"
+
+[[test]]
+name = "herdr_feature_contract"
+path = "tests/herdr_feature_contract.rs"
+
+[[test]]
+name = "linux_herdr_e2e"
+path = "tests/linux_herdr_e2e.rs"
+required-features = ["gtk"]
 
 [[test]]
 name = "linux_ssh_e2e"
