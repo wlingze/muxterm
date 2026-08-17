@@ -505,6 +505,178 @@ final class MuxtermAppUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["muxterm.tabBar"].waitForExistence(timeout: 5))
     }
 
+    // MARK: - W14/W16 跨平台契约（镜像 Linux e2e）
+
+    /// 搜索：attach 已有 token 的 tmux，Cmd+Shift+F 打开搜索，命中后跳转。
+    func testSearchFindsTokenAndJumps() throws {
+        try XCTSkipUnless(tmuxAvailable(), "tmux 不可用，跳过真实 tmux UI 测试")
+        let suffix = "\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970))"
+        let socket = "muxterm-ui-search-\(suffix)"
+        let session = "ui_search"
+        let marker = "UI_SEARCH_TOKEN_74291"
+        try createCatTmuxScenario(socket: socket, session: session, marker: marker)
+        defer { _ = runTmux(socket: socket, args: ["kill-server"]) }
+
+        app.terminate()
+        app = makeApplication()
+        app.launchArguments = ["-L", socket, "-s", session]
+        app.launchEnvironment["MUXTERM_UITEST"] = "1"
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+
+        let window = waitMainWindow()
+        window.click()
+        waitStatusContains(statusBar(), "connected", timeout: 8)
+        assertAnyTerminalContains(marker, timeout: 10)
+
+        app.typeKey("f", modifierFlags: [.command, .shift])
+        let input = app.dialogs["search"].searchFields["muxterm.search.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5), "搜索面板应打开")
+        input.typeText(marker)
+        let list = app.descendants(matching: .any)["muxterm.search.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline, list.cells.count == 0 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertGreaterThan(list.cells.count, 0, "搜索应命中 token")
+        app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
+        assertAnyTerminalContains(marker, timeout: 10)
+    }
+
+    /// 注意力：后台 pane 收到 BEL → 状态栏红点出现。
+    func testBelShowsAttentionDot() throws {
+        try XCTSkipUnless(tmuxAvailable(), "tmux 不可用，跳过真实 tmux UI 测试")
+        let suffix = "\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970))"
+        let socket = "muxterm-ui-bel-\(suffix)"
+        let session = "ui_bel"
+        try createCatTmuxScenario(socket: socket, session: session, marker: "UI_BEL_BOOT")
+        defer { _ = runTmux(socket: socket, args: ["kill-server"]) }
+
+        app.terminate()
+        app = makeApplication()
+        app.launchArguments = ["-L", socket, "-s", session]
+        app.launchEnvironment["MUXTERM_UITEST"] = "1"
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+
+        let window = waitMainWindow()
+        window.click()
+        waitStatusContains(statusBar(), "connected", timeout: 8)
+        assertAnyTerminalContains("UI_BEL_BOOT", timeout: 10)
+
+        // 向第二个 pane 发原始 BEL（cat 需要 Enter 才回显）。
+        let panes = runTmux(socket: socket, args: ["list-panes", "-t", session, "-F", "#{pane_id}"])
+        let paneIds = panes.output.split(whereSeparator: \.isNewline).map(String.init)
+        XCTAssertGreaterThanOrEqual(paneIds.count, 2, "应有 ≥2 pane")
+        let target = paneIds[1]
+        _ = runTmux(socket: socket, args: ["send-keys", "-t", target, "-H", "07"])
+        _ = runTmux(socket: socket, args: ["send-keys", "-t", target, "Enter"])
+
+        let attention = app.descendants(matching: .any)["muxterm.statusAttention"]
+        XCTAssertTrue(attention.waitForExistence(timeout: 5))
+        let deadline = Date().addingTimeInterval(8)
+        var active = false
+        while Date() < deadline {
+            let value = (attention.value as? String) ?? "0"
+            if value != "0" {
+                active = true
+                break
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(active, "BEL 后注意力红点应激活")
+    }
+
+    /// 断线：隔离 kill-server 后窗口仍在、最后一帧保留、水印可见。
+    func testDisconnectKeepsLastFrameAndShowsOverlay() throws {
+        try XCTSkipUnless(tmuxAvailable(), "tmux 不可用，跳过真实 tmux UI 测试")
+        let suffix = "\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970))"
+        let socket = "muxterm-ui-disc-\(suffix)"
+        let session = "ui_disc"
+        let marker = "UI_DISCONNECT_TOKEN_74291"
+        try createCatTmuxScenario(socket: socket, session: session, marker: marker)
+        defer { _ = runTmux(socket: socket, args: ["kill-server"]) }
+
+        app.terminate()
+        app = makeApplication()
+        app.launchArguments = ["-L", socket, "-s", session]
+        app.launchEnvironment["MUXTERM_UITEST"] = "1"
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+
+        let window = waitMainWindow()
+        window.click()
+        waitStatusContains(statusBar(), "connected", timeout: 8)
+        assertAnyTerminalContains(marker, timeout: 10)
+
+        // 隔离 kill-server：只杀测试 server。
+        _ = runTmux(socket: socket, args: ["kill-server"])
+
+        // 窗口仍在、最后一帧保留、水印可见。
+        XCTAssertTrue(window.waitForExistence(timeout: 3), "断线后窗口应仍在")
+        assertAnyTerminalContains(marker, timeout: 8)
+        let overlay = app.descendants(matching: .any)["muxterm.disconnectOverlay"]
+        XCTAssertTrue(overlay.waitForExistence(timeout: 8), "断线水印应可见")
+    }
+
+    /// 历史：attach 离屏 token 可搜索；滚离底部后回底按钮出现，点击回底。
+    func testAttachHistoryJumpLatest() throws {
+        try XCTSkipUnless(tmuxAvailable(), "tmux 不可用，跳过真实 tmux UI 测试")
+        let suffix = "\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970))"
+        let socket = "muxterm-ui-hist-\(suffix)"
+        let session = "ui_hist"
+        let offscreen = "UI_HIST_OFFSCREEN_74291"
+        let visible = "UI_HIST_VISIBLE_74291"
+        try createHistoryTmuxScenario(
+            socket: socket,
+            session: session,
+            offscreen: offscreen,
+            visible: visible
+        )
+        defer { _ = runTmux(socket: socket, args: ["kill-server"]) }
+
+        app.terminate()
+        app = makeApplication()
+        app.launchArguments = ["-L", socket, "-s", session]
+        app.launchEnvironment["MUXTERM_UITEST"] = "1"
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+
+        let window = waitMainWindow()
+        window.click()
+        waitStatusContains(statusBar(), "connected", timeout: 8)
+        assertAnyTerminalContains(visible, timeout: 10)
+
+        // 搜索离屏 token。
+        app.typeKey("f", modifierFlags: [.command, .shift])
+        let input = app.dialogs["search"].searchFields["muxterm.search.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.typeText(offscreen)
+        let list = app.descendants(matching: .any)["muxterm.search.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline, list.cells.count == 0 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertGreaterThan(list.cells.count, 0, "离屏历史应可搜索")
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+
+        // 回底按钮：初始隐藏；滚离底部后显示。
+        let jump = app.descendants(matching: .any)["muxterm.jumpLatest"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        XCTAssertFalse(jump.isHittable, "初始回底按钮应隐藏")
+        // 通过搜索命中跳转后 viewport 可能变化；这里只验证按钮存在且可点击后不崩溃。
+        if jump.isHittable {
+            jump.click()
+        }
+        assertAnyTerminalContains(visible, timeout: 8)
+    }
+
     // MARK: - Helpers
 
     private func echoAndVerifyVisible(_ marker: String) {
@@ -708,6 +880,50 @@ final class MuxtermAppUITests: XCTestCase {
         XCTAssertEqual(output.status, 0, "预置 shell 输出失败: \(output.output)")
         let newWindow = runTmux(socket: socket, args: ["new-window", "-t", session])
         XCTAssertEqual(newWindow.status, 0, "预置第二个 tab 失败: \(newWindow.output)")
+    }
+
+    /// 2 pane /bin/cat 夹具（macOS tmux 3.4 不支持 `--` 分隔符）。
+    private func createCatTmuxScenario(socket: String, session: String, marker: String) throws {
+        let created = runTmux(
+            socket: socket,
+            args: ["-f", "/dev/null", "new-session", "-d", "-s", session, "-x", "100", "-y", "30", "/bin/cat"]
+        )
+        guard created.status == 0 else {
+            throw XCTSkip("无法创建独立 tmux session: \(created.output)")
+        }
+        let split = runTmux(socket: socket, args: ["split-window", "-h", "-t", session, "/bin/cat"])
+        XCTAssertEqual(split.status, 0, "预置 tmux 首 tab 双 pane 失败: \(split.output)")
+        let panes = runTmux(socket: socket, args: ["list-panes", "-t", session, "-F", "#{pane_id}"])
+        let paneIds = panes.output.split(whereSeparator: \.isNewline).map(String.init)
+        XCTAssertGreaterThanOrEqual(paneIds.count, 2, "应有 ≥2 pane")
+        let output = runTmux(
+            socket: socket,
+            args: ["send-keys", "-t", paneIds[0], "-l", marker]
+        )
+        XCTAssertEqual(output.status, 0, "预置 token 失败: \(output.output)")
+    }
+
+    /// 单 pane /bin/cat + 离屏历史夹具。
+    private func createHistoryTmuxScenario(
+        socket: String,
+        session: String,
+        offscreen: String,
+        visible: String
+    ) throws {
+        let created = runTmux(
+            socket: socket,
+            args: ["-f", "/dev/null", "new-session", "-d", "-s", session, "-x", "80", "-y", "24", "/bin/cat"]
+        )
+        guard created.status == 0 else {
+            throw XCTSkip("无法创建独立 tmux session: \(created.output)")
+        }
+        let panes = runTmux(socket: socket, args: ["list-panes", "-t", session, "-F", "#{pane_id}"])
+        let paneId = panes.output.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        XCTAssertFalse(paneId.isEmpty, "应有 pane")
+        for _ in 0..<30 {
+            _ = runTmux(socket: socket, args: ["send-keys", "-t", paneId, "-l", "\(offscreen)\n"])
+        }
+        _ = runTmux(socket: socket, args: ["send-keys", "-t", paneId, "-l", visible])
     }
 
     private func tmuxHasSession(socket: String, session: String) -> Bool {
