@@ -265,6 +265,57 @@ impl WorkspacePool {
         Ok(new_id)
     }
 
+    /// 列出当前工作区所在仓库的 checkout（需 `WorktreeList`）。
+    ///
+    /// 无能力 → `Err`，零 git、零 socket；有能力的实现（H4 HerdrRuntime）
+    /// 才真正走远端查询。
+    pub async fn list_worktrees(&self, ws: &WorkspaceId) -> anyhow::Result<Vec<WorktreeInfo>> {
+        let Some(slot) = self.slots.get(ws) else {
+            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
+        };
+        let caps = slot.workspace.runtime().support();
+        if !caps.contains(&RuntimeCapability::WorktreeList) {
+            return Err(anyhow::anyhow!("runtime 不支持 WorktreeList"));
+        }
+        Err(anyhow::anyhow!("WorktreeList 尚未实现"))
+    }
+
+    /// 创建 worktree 并作为新工作区开进池里（需 `WorktreeCreate`）。
+    ///
+    /// 无能力 → `Err`，零 git、零 socket。
+    pub async fn create_worktree(
+        &mut self,
+        ws: &WorkspaceId,
+        _spec: &WorktreeCreateSpec,
+    ) -> anyhow::Result<WorkspaceId> {
+        let Some(slot) = self.slots.get(ws) else {
+            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
+        };
+        let caps = slot.workspace.runtime().support();
+        if !caps.contains(&RuntimeCapability::WorktreeCreate) {
+            return Err(anyhow::anyhow!("runtime 不支持 WorktreeCreate"));
+        }
+        Err(anyhow::anyhow!("WorktreeCreate 尚未实现"))
+    }
+
+    /// 打开已有 checkout 并作为新工作区开进池里（需 `WorktreeOpen`）。
+    ///
+    /// 无能力 → `Err`，零 git、零 socket。
+    pub async fn open_worktree(
+        &mut self,
+        ws: &WorkspaceId,
+        _path: &str,
+    ) -> anyhow::Result<WorkspaceId> {
+        let Some(slot) = self.slots.get(ws) else {
+            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
+        };
+        let caps = slot.workspace.runtime().support();
+        if !caps.contains(&RuntimeCapability::WorktreeOpen) {
+            return Err(anyhow::anyhow!("runtime 不支持 WorktreeOpen"));
+        }
+        Err(anyhow::anyhow!("WorktreeOpen 尚未实现"))
+    }
+
     /// 插入一个已在后台线程完成 `connect()` 的工作区并设为前台。
     ///
     /// W15c：SSH 连接不能 `rt.block_on` 堵 GTK 主线程；连接在后台线程完成，
