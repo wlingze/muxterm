@@ -3,14 +3,14 @@
 > 日期：2026-08-17（`2026-08-17T15:26:26+08:00`）
 > 分支：`feature/runtime/support_herdr`
 > 产品树：[`WORKSPACE.md`](WORKSPACE.md)。tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
-> Herdr 接入施工：[`HERDR-PLAN.md`](HERDR-PLAN.md)。像素：[`SURFACE.md`](SURFACE.md)。
+> Herdr 接入施工：[`HERDR-PLAN.md`](HERDR-PLAN.md)。已有的连接：[`W20-PLAN.md`](W20-PLAN.md)。像素：[`SURFACE.md`](SURFACE.md)。
 > 愿景里的阶段 D：`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §0.3 / §6 阶段 D。
 >
 > 核对：本机 `herdr 0.8.0`，socket 协议 **19**；官方 [Concepts](https://herdr.dev/docs/concepts/)、[Socket API](https://herdr.dev/docs/socket-api/)、[CLI](https://herdr.dev/docs/cli-reference/)。
 
 **一句话：** Runtime 是给一个 Muxterm Workspace **填** Tab/Pane、收字节、执行 Task 的接口。tmux、本地 shell、Herdr 都是实现。SSH 不是 Runtime，是 Transport。GUI 不许按实现名字写 `if herdr`，只许问 `support()`。
 
-本文是契约。还没写代码。实现顺序见 [`HERDR-PLAN.md`](HERDR-PLAN.md)（含测试怎么写、怎么跑；Codex 按 H0→H4 执行）。
+本文是契约。H0–H4 已在 `feature/runtime/support_herdr`。QuickConnect 已有的连接见 [`W20-PLAN.md`](W20-PLAN.md)。
 
 ---
 
@@ -274,9 +274,9 @@ Live 路径不因 Runtime 而改：
 | herdr | 先连 socket，再 `workspace.list`（id + label + 可选 worktree） | `WorkspaceSpec { runtime: "herdr", session: <herdr session 名>, path: <workspace_id 或 cwd> }` |
 | shell | 目录，不是 session | `WorkspaceSpec::local_shell(path)` |
 
-QuickConnect 继续按**项目/工作区**索引，不要按「tmux / Herdr」做两套一级 UI。Runtime 只是那一格的徽章和 `support()` 决定的次级动作（worktree）。
+QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」（施工 [`W20-PLAN.md`](W20-PLAN.md)）：进去按 **Transport** 分目录（本地 / SSH），目录里 tmux session 和 Herdr workspace 用同一套项目行。Runtime 只是徽章和 `support()` 决定的次级动作（worktree）。
 
-远程 Herdr（`herdr --remote`）= Transport `ssh` + Runtime `herdr`。v1 可以只做本机 socket。
+远程 Herdr：Transport `ssh` + Runtime `herdr`。列出用 `ssh … herdr session list` / `workspace list`（和 `ssh … tmux list-sessions` 同类）。打开不要 `herdr --remote`（会在远端装/启 server）：把远端 `herdr.sock` Unix 转发到本机，再走现有 `HerdrSession`。没在跑就跳过，不要替用户启动。
 
 ---
 

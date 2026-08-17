@@ -4,6 +4,7 @@
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
 > [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)、
 > [RUNTIME.md](RUNTIME.md) / [HERDR-PLAN.md](HERDR-PLAN.md)（Herdr 接入）、
+> [W19-PLAN.md](W19-PLAN.md)（模拟器不可 panic）、[W20-PLAN.md](W20-PLAN.md)（已有的连接）、
 > [W18-PLAN.md](W18-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)、
 > [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
 > [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
@@ -119,6 +120,12 @@ cargo test --test herdr_worktree_contract -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_herdr_switch_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_herdr_worktree_e2e -- --test-threads=1
+# W19 模拟器 lockstep + GTK 不可崩溃
+cargo test --lib --features gtk resize_then_decstbm_lf_does_not_panic -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_fault_e2e -- --test-threads=1
+# W20 已有的连接 + Herdr runtime 卡
+cargo test --test existing_ssh_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -315,6 +322,37 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 ```
 
 禁止：MockRuntime 喂 `terminal.frame`；在本仓库 `git worktree add`；为绿把 token 断言改成「非空」。
+
+### 5.11 终端模拟器不可 panic（W19）
+
+规格：[`W19-PLAN.md`](W19-PLAN.md)。用户日志 `test_2026-0817-1902.log` / `1903.log`：`emulate.rs:718` `insertion index > len`，随后 glib trampoline abort。
+
+| 测试 | 必须抓住 |
+|---|---|
+| `resize_keeps_soft_wrapped_len_in_lockstep` | `resize` 后 `grid.len() == grid_soft_wrapped.len()` |
+| `resize_then_decstbm_lf_does_not_panic` | 24→38 行 + DECSTBM + LF，进程还在 |
+| `resize_50_to_59_partial_region_lf_does_not_panic` | 复现 insert 58 vs 50 |
+| `insert_delete_lines_keep_soft_wrapped_lockstep` | IL/DL 后仍等长 |
+| `fault_report_captures_message_without_aborting` | catch_unwind + 日志含 token |
+| `linux_fault_e2e` | `muxterm-fault-dialog`；`test_inject_fault`；进程不退出 |
+
+禁止：用 `#[should_panic]` 当完成；只 catch_unwind 不修 lockstep；fault hook 里再 panic。
+
+### 5.12 已有的连接 + 新建 Herdr（W20）
+
+规格：[`W20-PLAN.md`](W20-PLAN.md)。一级仍是预设项目；最上固定「已有的连接」；二级本地 / SSH；行样式与 Project 相同。
+
+| 测试 | 必须抓住 |
+|---|---|
+| `TargetRuntime::Herdr` 单测 | `from_str("herdr")`；subtitle `herdr @` |
+| `build_root_items` | 第 0 项 `muxterm-existing-connections` 对应 Folder |
+| IsolatedHerdr discover | 含测试 workspace；**不含**用户默认 `w2` |
+| `existing_ssh_contract` | LoopbackSshd：远端 tmux **和** Herdr 都能列出 |
+| `linux_panel_e2e` | click 已有的连接 → local/ssh 目录 → Back |
+| `linux_existing_e2e` | 面板 click 本地 Herdr 行 → VTE 含 token |
+| `muxterm-runtime-herdr` | 新建项目有 Herdr 卡 |
+
+禁止：测试连 `/home/wlz/.config/herdr/herdr.sock`；`herdr server stop`；生产 Runtime 走 `Command::new("herdr")`；GTK 线程同步 ssh；没有 tmux/Herdr 的 SSH host 仍占满列表。
 
 ### 5.2 手段（沿用现有 helper）
 

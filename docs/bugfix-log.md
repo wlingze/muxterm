@@ -1,5 +1,13 @@
 # Muxterm Bug 修复日志（2026-08-13）
 
+## 0. 打开：GUI abort @ emulate.rs:718（2026-08-17）
+
+- 现象：Mini 上 `muxterm gui --debug --log-file test_2026-0817-19{02,03}.log` 两次进程退出。stderr `insertion index (is 58) should be <= len (is 50)` / `(37) vs (23)`，随后 `panic in a function that cannot unwind`（glib 16ms poll）。
+- 原因：`TerminalState::resize` 拉高 `grid` 却不拉高 `grid_soft_wrapped`；第一次 `seed_raw` 走 `resize` 不是 `new`。DECSTBM + LF 对 soft 向量 `insert` 越界。IL/DL 同样只改 `grid`。
+- 规格：[`W19-PLAN.md`](W19-PLAN.md)。
+- Commit：待填
+
+
 > 全部按「测试 → 修改 → 测试通过 → commit」完成；日志素材保留在
 > `tests/logs/`（本地、不跟踪）。每个 commit 都有对应回归测试。
 
