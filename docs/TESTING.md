@@ -2,7 +2,7 @@
 
 > 适用：`/home/wlz/Developer/self/muxterm`（当前 Linux 分支 `feat/linux-quickconnect-ui`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**；W17 见 [W17-PLAN.md](W17-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)）、
+> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**；W18 见 [W18-PLAN.md](W18-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)）、
 > [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
 > [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
 > [bugfix-log.md](bugfix-log.md)。
@@ -100,11 +100,15 @@ cargo test --lib runtime::tmux::command::tests::capture_pane_with_history -- --e
 xvfb-run -a cargo test --features gtk --test linux_attach_history_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_disconnect_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_attention_semantics_e2e -- --test-threads=1
-# W17 1.0 门禁
-xvfb-run -a cargo test --features gtk --test linux_reconnect_e2e -- --test-threads=1
-xvfb-run -a cargo test --features gtk --test linux_scroll_lock_e2e -- --test-threads=1
-xvfb-run -a cargo test --features gtk --test linux_search_highlight_e2e -- --test-threads=1
-xvfb-run -a cargo test --features gtk --test linux_attention_1_0_e2e -- --test-threads=1
+# W18 SSH loopback + 搜索范围 / 上次看到这里 / 命令刻度 / 回底 +N
+cargo test --test tmux_ssh_feature_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_ssh_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_ssh_history_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_ssh_reconnect_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_jump_count_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_search_scope_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_last_seen_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_command_marks_e2e -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -140,8 +144,7 @@ C8 ASCII 几何 / E 的 `visible_ansi` 单测可留作 Index，**不算** Surfac
 | C VTE | `PaneView::visible_text()` | 含 `frame-19`，**不含** `frame-0`；底行 prompt 必须在**最后一行** |
 | D 真 tmux | `tmux -L muxterm-test-… capture-pane` | 含 `echo` 的 token；清理必须同一 `-L` |
 
-SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_support.rs`；
-远端 tmux 也必须 `-L`。无 sshd 时 `#[ignore]`，默认门禁不跑，不算失败。
+SSH 场景：测试自己拉起隔离 sshd（`LoopbackSshd`，随机端口），远端 tmux 也必须 `-L muxterm-test-*`。**禁止**连用户 22 端口。无 sshd 二进制才 skip。不许把 W18 SSH 测试标 `#[ignore]`。
 
 ### 5.4 Attach 保真套件（跨平台契约，W13）
 
@@ -180,14 +183,12 @@ SSH 场景另加 loopback `scripts/ci/setup-sshd.sh` + `tests/support/sshd_test_
 |---|---|---|
 | `tmux_feature_contract` | A core | 搜索播种 token；OSC 133 D + BEL 信号；mock-codex 末帧进 PaneBuf；tail -f 追加进 PaneBuf；tracing target 存在；禁止每条 `%output` `debug!` |
 | `linux_feature_e2e` | B+C GTK | **一个** AppWindow：Search tab 命中并跳转 VTE；后台 Done 通知；mock-codex VTE 含 HEADER/PROMPT；tail -f 新行在 VTE |
-| `tmux_ssh_feature_contract` | D SSH | `#[ignore]`；远端 `/bin/cat` **先**涂 token 再 `new_ssh_attach`；PaneBuf 能搜到。禁止 MockRuntime |
+| `tmux_ssh_feature_contract` | D SSH | 自启 loopback sshd；远端 `/bin/cat` **先**涂 token 再 `new_ssh_attach`；PaneBuf 能搜到。禁止 MockRuntime |
 
 ```bash
 cargo test --test tmux_feature_contract -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_feature_e2e -- --test-threads=1
-# 有 sshd：
-eval "$(./scripts/ci/setup-sshd.sh)"
-cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
+cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 ```
 
 禁止：把 Search/Done/flood 标 `#[ignore]`；用 `test_feed_replica` 冒充 `%output`；SSH 测试另建 Mock Workspace 喂字节。
@@ -235,6 +236,24 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 | `gio_sink_without_app` | `GioSink::new(None)` 不 panic |
 
 禁止：用 `osc133_done.py` 冒充无 BEL 的 Done；重连靠新建 Workspace 丢掉 PaneBuf；搜索跳转只切 pane 不滚。
+
+### 5.9 W18 SSH loopback + 地标（范围搜索 / 上次看到这里 / 命令刻度 / 回底 +N）
+
+规格：[`W18-PLAN.md`](W18-PLAN.md)。对照只读克隆：`/home/wlz/Developer/terminal/`。
+
+| crate | 必须抓住 |
+|---|---|
+| `tmux_ssh_feature_contract` | 自启 sshd；远端先涂 `SSH_LIVE_*`；PaneBuf 能搜到 |
+| `linux_ssh_e2e` | GTK SSH attach：VTE + `search_all` 含 token；replica id 含 ssh |
+| `linux_ssh_history_e2e` | 与本地 history 同断言：离屏 token / 滚到顶 / 回底 |
+| `linux_ssh_reconnect_e2e` | 远端 detach-client；15s 重连；`GAP_*`；BEL；`resets <= 1` |
+| `linux_jump_count_e2e` | `muxterm-jump-latest` label 含 `+` 和数字 |
+| `linux_search_scope_e2e` | `muxterm-search-scope-{pane,workspace,all}` + `muxterm-pane-find` |
+| `linux_last_seen_e2e` | 切走再切回：`muxterm-last-seen`；点击含 `LEFT_HERE_*` |
+| `linux_command_marks_e2e` | `muxterm-cmd-mark-ok/fail`；tooltip 命令；点击跳转 |
+| `osc133_records_command_marks_with_exit_and_text` | 两条刻度，exit 0 然后 1，带命令文本 |
+
+禁止：`#[ignore]` SSH 测试；连用户 22；SSH 重连用本地 `tmux -L` 查远端 bell；用 MockRuntime 冒充 SSH；削弱 +N / last-seen / 刻度断言。
 
 ### 5.2 手段（沿用现有 helper）
 
@@ -322,7 +341,7 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 | 29 | 几何 visible_ansi ASCII 底行 | ✅ C8.1 snapshot | ✅ C8.2/C8.5 ASCII PROMPT | ⚠️ 不够测 Codex |
 | 30 | replica 滚动历史 | ✅ scroll_history | ✅ linux_render_e2e C8.3 | — |
 | 31 | 真隔离 tmux echo | ✅ replica | ⚠️ S8 contains TOKEN | ✅ capture-pane |
-| 32 | loopback SSH 远端 tmux | ✅ CoreBridge | ✅ linux_ssh_e2e S12（ignore） | ✅ 远端 -L |
+| 32 | loopback SSH 远端 tmux | ✅ TmuxRuntime SSH | ❌ linux_ssh_e2e（W18，自启 sshd） | ✅ 远端 -L |
 | 33 | Codex TUI UTF-8+真彩播种 | ❌ `ch as u8`（E1） | ❌ 待 E2 | ✅ codex-tui-sanitized.txt |
 | 34 | CUP 半帧不打烂 VTE | ❌ 仍 feed last_visible_frame（E3） | ❌ 待 E3 | 1854 len 1365/2730 |
 | 35 | SSH popover 上下行 | ❌ 无计数 | ❌ 待 E4 | — |
@@ -330,13 +349,16 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 | 37 | 前台 ls 不进 attention | ✅ Done+BecameVisible | ⚠️ feature e2e 后台 Done；前台路径靠 apply 后 on_became_visible | ✅ OSC 133 |
 | 38 | attention 小 VTE + mute 下拉 | ✅ engine mute | ✅ linux_panel_e2e；live 回复见 W15e | ✅ 隔离 tmux |
 | 39 | attach 离屏历史 | ✅ `capture_pane_with_history` | ✅ linux_attach_history_e2e | ✅ 夹具 `-S -` vs `-p` |
-| 40 | 回底按钮 | — | ✅ muxterm-jump-latest | — |
+| 40 | 回底按钮 | — | ✅ muxterm-jump-latest；❌ +N linux_jump_count_e2e | — |
 | 41 | 断线水印 | — | ✅ linux_disconnect_e2e | ✅ 隔离 kill-server |
 | 42 | blocked 看见不熄 / 正则 live | ✅ state 穷举表 | ✅ linux_attention_semantics_e2e | ✅ 真 BEL + NEED_INPUT |
-| 43 | 自动重连 + 断线不漏 | — | ❌ linux_reconnect_e2e（W17a） | ✅ detach-client 保 session |
-| 44 | scroll lock | — | ❌ linux_scroll_lock_e2e（W17b） | ✅ 离屏历史夹具 |
-| 45 | 搜索滚到命中 + 高亮 | — | ❌ linux_search_highlight_e2e（W17c） | ✅ 离屏 token |
-| 46 | 前台 Done 静默 / 看见即熄 / 静音 | ✅ 转移表 | ❌ linux_attention_1_0_e2e（W17d） | ✅ osc133_d_only.py |
+| 43 | 自动重连 + 断线不漏 | — | ✅ linux_reconnect_e2e；❌ SSH linux_ssh_reconnect_e2e | ✅ detach-client 保 session |
+| 44 | scroll lock | — | ✅ linux_scroll_lock_e2e | ✅ 离屏历史夹具 |
+| 45 | 搜索滚到命中 + 高亮 | — | ✅ linux_search_highlight_e2e | ✅ 离屏 token |
+| 46 | 前台 Done 静默 / 看见即熄 / 静音 | ✅ 转移表 | ✅ linux_attention_1_0_e2e | ✅ osc133_d_only.py |
+| 47 | 搜索范围 pane/ws/all + pane 查找 | ✅ search_pane/workspace/all | ❌ linux_search_scope_e2e | ✅ 两工作区 token |
+| 48 | 上次看到这里 | — | ❌ linux_last_seen_e2e | ✅ 切 pane |
+| 49 | 命令刻度红绿跳转 | ❌ command_marks 空 | ❌ linux_command_marks_e2e | ✅ osc133_rounds.py |
 
 ## 8. 新增功能验收矩阵模板
 

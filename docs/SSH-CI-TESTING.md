@@ -1,6 +1,12 @@
 # SSH CI 测试说明
 
 > 本文档说明 Linux CI 中 SSH long-chain 集成测试的运行方式与 workflow 命令。
+>
+> **W18 产品门禁**（GTK / core attach）**自己拉起隔离 sshd**（`LoopbackSshd`，随机端口），
+> 不依赖本脚本，也不连用户 22。跑：
+> `cargo test --test tmux_ssh_feature_contract -- --test-threads=1`
+> 以及 `linux_ssh_e2e` / `linux_ssh_history_e2e` / `linux_ssh_reconnect_e2e`。
+> 无 sshd 二进制才 skip。不许 `#[ignore]`。
 
 ## 测试矩阵
 
