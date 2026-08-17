@@ -84,6 +84,11 @@ impl HerdrRuntime {
         &self.session
     }
 
+    /// 共享的 session Arc（H3 测试断言同一 socket 只建一条）。
+    pub fn session_arc(&self) -> &Arc<HerdrSession> {
+        &self.session
+    }
+
     /// 测试/诊断：当前绑定的 Herdr workspace id。
     pub fn test_workspace_id(&self) -> &str {
         &self.workspace_id

@@ -32,6 +32,9 @@ impl WorkspaceId {
     }
 
     /// ReplicaStore/注意力引擎键：`name@transport`（与 QuickConnect 一致）。
+    ///
+    /// Herdr 同一 named session 上多格 workspace 靠 `path`（Herdr workspace_id）
+    /// 区分，replica 键必须带上 path，否则注意力引擎无法切换。
     pub fn replica_id(&self) -> String {
         let name = if self.session.is_empty() {
             crate::core::quickconnect::model::QuickConnect::default_name(&self.path)
@@ -43,7 +46,11 @@ impl WorkspaceId {
         } else {
             "local".into()
         };
-        format!("{name}@{transport}")
+        if self.runtime == "herdr" && !self.path.is_empty() {
+            format!("{name}:{path}@{transport}", path = self.path)
+        } else {
+            format!("{name}@{transport}")
+        }
     }
 
     /// 稳定显示形式（alias 为空时留空段）。
