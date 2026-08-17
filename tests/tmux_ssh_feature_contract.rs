@@ -5,12 +5,13 @@
 
 mod support;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use muxterm::core::runtime::TmuxRuntime;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;
 use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT};
+use support::sshd_test_support::{sshd_available, SshTestEnv};
 use support::tmux_test_support::tmux_available;
 
 /// 远端 `/bin/cat` 先有画面，SSH attach 后 PaneBuf 必须能搜到 token（与本地 feature 契约一致）。
