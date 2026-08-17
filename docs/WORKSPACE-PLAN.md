@@ -1,9 +1,9 @@
 # WORKSPACE-PLAN.md — Codex 实施合同（工作区架构）
 
-> **当前执行计划。** W1–W14 已落地。**现在做 W15**（[`W15-PLAN.md`](W15-PLAN.md)）。W15 绿了立刻做 **W16**（[`W16-PLAN.md`](W16-PLAN.md)，愿景缺口：历史播种 / 断线水印 / 注意力语义）。审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。
+> **当前执行计划。** W1–W16 已落地。**现在做 W17**（[`W17-PLAN.md`](W17-PLAN.md)，Linux tmux 1.0 测试门禁：重连 / scroll lock / 搜索高亮 / Done 语义）。审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。
 > 架构：[`WORKSPACE.md`](WORKSPACE.md)（先读完再写代码，尤其 §6 接口）
 > 像素契约：[`SURFACE.md`](SURFACE.md)（F 已交，live 路径禁止 dump）
-> 测试契约：[`TESTING.md`](TESTING.md) §5.4 attach + §5.5 功能 e2e + §5.6 W15 + §5.7 W16
+> 测试契约：[`TESTING.md`](TESTING.md) §5.4 attach + §5.5 功能 e2e + §5.6 W15 + §5.7 W16 + §5.8 W17
 > 功能测试规格：[`FEATURE-E2E-PLAN.md`](FEATURE-E2E-PLAN.md)
 > 分支：`feat/linux-quickconnect-ui`（**不 push**）
 > 修订：2026-08-17 02:22 CST（`2026-08-17T02:22:54+08:00`）
