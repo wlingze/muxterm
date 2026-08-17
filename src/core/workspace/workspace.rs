@@ -353,6 +353,10 @@ impl Workspace {
 
     /// 搜索本工作区全部 pane。
     pub fn search_workspace(&self, query: &str) -> Vec<SearchHit> {
+        // C8：空 query 不扫 replica（emulate 已返回空）。
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
         tracing::info!(
             target: "muxterm::search",
             query = query,

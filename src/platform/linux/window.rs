@@ -1511,16 +1511,36 @@ pub fn persist_config(dotted: &str, value: toml_edit::Item) {
     }
 }
 
+/// C8：字号写盘防抖（300ms），避免 Ctrl+= 热路径同步写 config.toml。
+/// 用 generation 作废旧回调，不 remove 已触发的 SourceId（glib 会 panic）。
+fn schedule_font_persist(size: f32) {
+    use std::cell::Cell;
+    thread_local! {
+        static FONT_PERSIST_GEN: Cell<u64> = const { Cell::new(0) };
+    }
+    FONT_PERSIST_GEN.with(|gen| {
+        let my_gen = gen.get().wrapping_add(1);
+        gen.set(my_gen);
+        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+            let current = FONT_PERSIST_GEN.with(|g| g.get());
+            if current == my_gen {
+                persist_config("font.size", toml_edit::value(f64::from(size)));
+            }
+            glib::ControlFlow::Break
+        });
+    });
+}
+
 fn adjust_font(s: &mut UiState, direction: i32) {
     let next = FontSettings::zoomed(s.font.size, direction);
     if (next - s.font.size).abs() < f32::EPSILON {
         return;
     }
     s.font.size = next;
-    for layout in s.pixel_cache.values_mut() {
-        layout.set_font_size(next);
-    }
-    persist_config("font.size", toml_edit::value(f64::from(next)));
+    // C8：热路径只改当前前台 LayoutHost，立刻返回；后台 cache 在 activate
+    // 时按尺寸差补。写盘防抖 300ms，不阻塞按键。
+    s.active_layout_mut().set_font_size(next);
+    schedule_font_persist(next);
 }
 
 fn reset_font(s: &mut UiState) {
@@ -2920,6 +2940,10 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             search: {
                 let st = st.clone();
                 std::boxed::Box::new(move |query, scope| {
+                    // C8：空 query 不扫 replica（emulate 已返回空）。
+                    if query.trim().is_empty() {
+                        return Vec::new();
+                    }
                     let s = st.borrow();
                     let hits = match scope {
                         crate::platform::linux::panel_model::SearchScope::Pane => s
@@ -3510,6 +3534,19 @@ fn after_activate(s: &mut UiState) {
             let uses = s.uses_tmux();
             let layout = LayoutHost::new(s.theme.clone(), s.font.clone(), uses, s.scrollback_lines);
             s.pixel_cache.insert(id.clone(), layout);
+        }
+        // C8：后台 cache 的字号与当前字号不同才补（不在 Ctrl+= 里遍历全部）。
+        let needs_font = s
+            .pixel_cache
+            .get(&id)
+            .map(|l| (l.font_size() - s.font.size).abs() > f32::EPSILON)
+            .unwrap_or(false);
+        if needs_font {
+            let font = s.font.clone();
+            s.pixel_cache
+                .get_mut(&id)
+                .expect("layout 必须存在")
+                .set_font(&font);
         }
         let layout = s.pixel_cache.get(&id).expect("layout 必须存在");
         s.layout_overlay.set_child(Some(&layout.root_box));

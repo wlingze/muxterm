@@ -11,7 +11,6 @@ use crate::core::model::backend::{Runtime, RuntimeCapability, WorktreeCreateSpec
 use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
-use crate::core::runtime::herdr::session::HerdrWorktreeRecord;
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::workspace::Workspace;
 
@@ -197,13 +196,13 @@ impl WorkspacePool {
     ) -> anyhow::Result<&mut Workspace> {
         let id = spec.id();
         let name = spec.name();
-// build_runtime 放进 create 闭包：复用已有 slot 时零构造
-// （对得上 reopen_same_id_reuses_without_new_runtime）。
-// HerdrSession 共享已迁到 HerdrSession::shared（不用再按字符串旁路）。
-self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
-    spec.build_runtime()
-})
-.await
+        // build_runtime 放进 create 闭包：复用已有 slot 时零构造
+        // （对得上 reopen_same_id_reuses_without_new_runtime）。
+        // HerdrSession 共享已迁到 HerdrSession::shared（不用再按字符串旁路）。
+        self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
+            spec.build_runtime()
+        })
+        .await
     }
 
     /// 列出当前工作区所在仓库的 checkout（需 `WorktreeList`）。
@@ -336,6 +335,10 @@ self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
 
     /// 跨全部工作区搜索（含后台），返回带 tab 的命中。
     pub fn search_all(&self, query: &str) -> Vec<crate::core::workspace::workspace::SearchHit> {
+        // C8：空 query 不扫 replica（emulate 已返回空）。
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for slot in self.slots.values() {
             out.extend(slot.workspace.search_workspace(query));

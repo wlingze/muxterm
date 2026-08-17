@@ -207,6 +207,11 @@ impl LayoutHost {
         }
     }
 
+    /// 当前字号（C8：activate 时按尺寸差补后台 cache）。
+    pub fn font_size(&self) -> f32 {
+        self.font.size
+    }
+
     /// 运行期修改字号（所有已有 pane，保留 family）。
     pub fn set_font_size(&mut self, size: f32) {
         self.font.size = size;
