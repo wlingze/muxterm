@@ -189,8 +189,45 @@ impl Catalog {
     }
 
     /// 探活未打开的 target。禁止为此 attach Runtime。
+    ///
+    /// 对每个 Transport 的 target：connect 失败 → Reach::Err；成功 →
+    /// 各接受该 transport 的 Driver.list（短命令）成功 → Reach::Ok。
+    /// 只写 Inventory，不打开 Workspace。
     pub fn refresh_inventory(&mut self) -> anyhow::Result<()> {
-        let _ = self;
+        let transport_ids: Vec<String> =
+            self.transports.iter().map(|t| t.id().to_string()).collect();
+        for transport_id in transport_ids {
+            let targets: Vec<TargetInfo> = match self.transport(&transport_id) {
+                Some(t) => t.list_targets().unwrap_or_default(),
+                None => continue,
+            };
+            for target in targets {
+                let reach = match self.connect(&transport_id, &target.id) {
+                    Ok(connect) => {
+                        let mut ok = false;
+                        for driver in &self.runtimes {
+                            if !driver
+                                .accepted_transports()
+                                .contains(&transport_id.as_str())
+                            {
+                                continue;
+                            }
+                            if driver.list(&connect, None).is_ok() {
+                                ok = true;
+                                break;
+                            }
+                        }
+                        if ok {
+                            Reach::Ok
+                        } else {
+                            Reach::Err
+                        }
+                    }
+                    Err(_) => Reach::Err,
+                };
+                self.inventory.mark(&transport_id, &target.id, reach);
+            }
+        }
         Ok(())
     }
 
