@@ -30,9 +30,9 @@ use super::types::{
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
     STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT,
     STATE_PANE_RESIZED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED,
-    STATE_TAB_RENAMED, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE,
-    TASK_PREV_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
-    TASK_TOGGLE_PANE_FULLSCREEN,
+    STATE_TAB_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH,
+    TASK_MOVE_WINDOW, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
+    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
@@ -993,6 +993,15 @@ fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
             let pane = resolve_c_task_pane(task.target_pane, ws);
             Some(Task::TogglePaneFullscreen { target: pane })
         }
+        TASK_MOVE_WINDOW => Some(Task::MoveWindow {
+            from: TabId(task.target_tab),
+            to_index: task.target_pane,
+        }),
+        TASK_BREAK_PANE => {
+            let pane = resolve_c_task_pane(task.target_pane, ws);
+            Some(Task::BreakPane { target: pane })
+        }
+        TASK_REFRESH_TABS => Some(Task::RefreshTabs),
         _ => None,
     }
 }
@@ -1208,6 +1217,44 @@ pub unsafe extern "C" fn muxterm_send_input(
         if let Some(ws_id) = ws_id {
             handle.attention.on_user_input(&ws_id.replica_id(), pane.0);
         }
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::WriteRaw {
+            target: pane,
+            data: bytes,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// 向 pane 写入原始字节，但**不**触发注意力 `on_user_input`（W19-E：
+/// 注意力 reply overlay 的快速回复不应把 Blocked 清成 Idle）。
+///
+/// # Safety
+/// `data` 至少 `len` 字节。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_send_input_quiet(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || data.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let bytes = std::slice::from_raw_parts(data, len).to_vec();
+        let pane = {
+            let Some(ws) = handle.active_workspace() else {
+                return -1;
+            };
+            resolve_c_io_pane(pane_id, ws)
+        };
+        let Some(pane) = pane else {
+            return -1;
+        };
         let Some(ws) = handle.active_workspace_mut() else {
             return -1;
         };
@@ -1671,8 +1718,18 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
             .snapshot()
             .into_iter()
             .map(|ws| {
+                // 从池里找工作区路径（W19 注意力行标题需要 path）。
+                let path = handle
+                    .pool
+                    .list()
+                    .iter()
+                    .find(|w| w.id().replica_id() == ws.workspace_id)
+                    .map(|w| w.id().path.as_str())
+                    .filter(|p| !p.trim().is_empty())
+                    .unwrap_or("~");
                 serde_json::json!({
                     "workspace_id": ws.workspace_id,
+                    "path": path,
                     "blocked": ws.blocked,
                     "done": ws.done,
                     "working": ws.working,

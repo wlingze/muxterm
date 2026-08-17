@@ -286,6 +286,17 @@ pub fn zoom_pane(pane: PaneId) -> TmuxCommand {
     build(&[format!("-Z {}", pane_target(pane))], "resize-pane")
 }
 
+/// 把 window 移到目标 index（iTerm2 拖 tab 排序 → tmux `move-window`）。
+pub fn move_window(from: TabId, to_index: u32) -> TmuxCommand {
+    build(&[format!("-s :{} -t :{}", from.0, to_index)], "move-window")
+}
+
+/// 把 pane 拆成新 window/tab（iTerm2 breakOutWindowPane → tmux `break-pane`）。
+/// 注意 `-s` 是源 pane（不是 target），不能用 `pane_target`（会加 `-t` 前缀）。
+pub fn break_pane(pane: PaneId) -> TmuxCommand {
+    build(&[format!("-s %{}", pane.0)], "break-pane")
+}
+
 /// 调整 tmux 控制模式 client 的字符格尺寸。
 pub fn refresh_client_size(cols: u32, rows: u32) -> TmuxCommand {
     build(&[format!("-C {cols}x{rows}")], "refresh-client")

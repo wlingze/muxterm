@@ -1896,6 +1896,30 @@ impl Runtime for TmuxRuntime {
                 }
                 TaskOutcome::Done
             }
+            Task::MoveWindow { from, to_index } => {
+                let c = cmd::move_window(*from, *to_index);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送命令失败".into(),
+                    });
+                }
+                TaskOutcome::Done
+            }
+            Task::BreakPane { target } => {
+                let c = cmd::break_pane(*target);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送命令失败".into(),
+                    });
+                }
+                TaskOutcome::Done
+            }
+            Task::RefreshTabs => {
+                // 外部 tmux 变更后强制重查 window/pane，同步 GUI 标签。
+                self.query_list_windows();
+                self.query_list_sessions();
+                TaskOutcome::Done
+            }
             Task::NewTab { name, .. } => {
                 // tmux 的 tab = tmux window，新建 tab = 新建 tmux window
                 let Some(sess) = self.active_session else {
@@ -1904,6 +1928,7 @@ impl Runtime for TmuxRuntime {
                     });
                 };
                 let c = cmd::new_window(sess, name.as_deref());
+                eprintln!("DEBUG new-window cmd={:?}", c.to_line());
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
