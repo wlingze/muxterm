@@ -1,61 +1,36 @@
-//! W14 SSH attach 契约：远端隔离 tmux **先**涂 token，再 SSH attach。
+//! W18 SSH attach 契约：loopback sshd + 远端隔离 tmux **先**涂 token，再 SSH attach。
 //!
-//! 无 sshd 时 `#[ignore]`，默认门禁不跑。跑 `--ignored` 时必须有
-//! `eval "$(./scripts/ci/setup-sshd.sh)"`，禁止用 MockRuntime 冒充。
+//! 测试自己拉起 sshd（随机端口）。无 sshd 二进制时 skip。禁止 MockRuntime。
+//! 远端 tmux 一律 `-L muxterm-test-*`。
 
 mod support;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use muxterm::core::runtime::TmuxRuntime;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;
-use support::sshd_test_support::{sshd_available, SshTestEnv};
+use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT};
+use support::tmux_test_support::tmux_available;
 
-const SSH_TIMEOUT: Duration = Duration::from_secs(12);
-
-/// 远端 `/bin/cat` 先有画面，SSH attach 后 PaneBuf 必须能搜到 token。
+/// 远端 `/bin/cat` 先有画面，SSH attach 后 PaneBuf 必须能搜到 token（与本地 feature 契约一致）。
 #[test]
-#[ignore = "需要 loopback sshd（scripts/ci/setup-sshd.sh）"]
 fn ssh_attach_preexist_token_reaches_workspace() {
-    assert!(
-        sshd_available(),
-        "跑 --ignored 时 sshd 必须在听；先 eval \"$(./scripts/ci/setup-sshd.sh)\""
-    );
-    let env = SshTestEnv::setup("feat-ssh").expect("SSH 测试环境");
-    std::env::set_var("MUXTERM_SSH_CONFIG_PATH", &env.ssh_config_path);
-
-    let session = "featssh";
-    let token = format!(
-        "SSH_LIVE_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(1)
-    );
-    let (ok, _, err) = env.remote_tmux(&format!(
-        "new-session -d -s {session} -x 80 -y 24 -- /bin/cat"
-    ));
-    assert!(ok, "远端 new-session /bin/cat 失败: {err}");
-    let (ok, _, err) = env.remote_tmux(&format!("send-keys -t {session} -l {token}"));
-    assert!(ok, "远端 send-keys -l 失败: {err}");
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut painted = false;
-    while Instant::now() < deadline {
-        let (_, cap, _) = env.remote_tmux(&format!("capture-pane -p -t {session}"));
-        if cap.contains(&token) {
-            painted = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    if !tmux_available() {
+        eprintln!("skip: 无 tmux");
+        return;
     }
-    assert!(painted, "attach 前远端 capture-pane 必须已有 {token}");
+    if !ssh_tmux_available() {
+        eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
+        return;
+    }
+    let fx = build_remote_one_pane("feat-ssh");
+    fx.apply_ssh_config_env();
 
-    let runtime = TmuxRuntime::new_ssh_attach(&env.alias, Some(&env.remote_tmux_socket), session);
+    let runtime = TmuxRuntime::new_ssh_attach(&fx.sshd.alias, Some(&fx.socket), &fx.session);
     let mut ws = Workspace::new(
-        WorkspaceId::new("ssh", Some(&env.alias), session, "tmux", ""),
-        session.into(),
+        WorkspaceId::new("ssh", Some(&fx.sshd.alias), &fx.session, "tmux", ""),
+        fx.session.clone(),
         Box::new(runtime),
     );
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -69,16 +44,16 @@ fn ssh_attach_preexist_token_reaches_workspace() {
     let deadline = Instant::now() + SSH_TIMEOUT;
     while Instant::now() < deadline {
         let _ = ws.refresh();
-        if !ws.search_workspace(&token).is_empty() {
-            let _ = env.remote_tmux("kill-server");
+        if !ws.search_workspace(&fx.token).is_empty() {
             let _ = rt.block_on(ws.shutdown());
             return;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let _ = env.remote_tmux("kill-server");
+    let hits = ws.search_workspace(&fx.token).len();
+    let _ = rt.block_on(ws.shutdown());
     panic!(
-        "SSH attach 后 PaneBuf 必须含播种 token {token}。禁止另建 MockRuntime 喂字节冒充。hits={}",
-        ws.search_workspace(&token).len()
+        "SSH attach 后 PaneBuf 必须含播种 token {}。禁止另建 MockRuntime 喂字节冒充。hits={hits}",
+        fx.token
     );
 }
