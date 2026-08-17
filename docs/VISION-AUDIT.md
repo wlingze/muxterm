@@ -1,16 +1,15 @@
 # 产品愿景 vs 实现 vs 测试（2026-08-17）
 
 > 对照：`PRODUCT.md`、`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §2.14 / §2.15 / §6 / §9。
-> 修订：`2026-08-17T12:07:06+08:00`。W15/W16 已绿。当前执行：[`W17-PLAN.md`](W17-PLAN.md)。
+> 修订：`2026-08-17T13:11:46+08:00`。W17 已绿。当前执行：[`W18-PLAN.md`](W18-PLAN.md)。
 
-愿景 1.0 = **A（日用）+ B（可见性）+ C（搜索）**。D/E、Herdr、手机、账号、AI Chat、持久化索引不是 1.0。
+愿景 1.0 = **A（日用）+ B（可见性）+ C（搜索）**，外加负责人这轮点名的：真 SSH attach、上次看到这里、命令刻度、pane/工作区/全局搜索、回底 +N。D/E、Herdr、ET、手机、账号不是本轮。
 
 ---
 
 ## 一句话
 
-Linux tmux 路径已经能 attach、切 tab、搜已连接工作区、红点/peek/回复、断线留最后一帧。
-1.0 测试门禁还差四件，由 W17 锁住：自动重连、scroll lock、搜索滚到命中行、Done/前台静默/静音 live。
+Linux tmux 本地路径 W17 门禁已锁。W18 把 **SSH 当成和本地同一套断言**（ssh 到本机隔离 sshd），并把 scrollback 地标补齐。
 
 ---
 
@@ -21,12 +20,13 @@ Linux tmux 路径已经能 attach、切 tab、搜已连接工作区、红点/pee
 | 本地 attach / 切 tab / Surface | 有 | attach/live/render e2e | 够用 |
 | 客户端 scrollback | `capture-pane -S -N` + VTE | `linux_attach_history_e2e` | W16a 绿 |
 | 回底按钮 | `muxterm-jump-latest` | 同上 | W16a 绿 |
-| Scroll lock | feed 仍可能拽回底部 | `linux_scroll_lock_e2e` | **W17b** |
-| 断线水印 | overlay，不关窗 | `linux_disconnect_e2e`（kill-server） | W16b 绿 |
-| 自动重连 + 不漏事 | 无 | `linux_reconnect_e2e` | **W17a** |
-| 粘贴剥控制字符 | `sanitize_paste` | mirror 单测 | 够用 |
-| 系统通知 fail-soft | GioSink 无 app 直接 return | `gio_sink_without_app_does_not_panic` | 单测锁住 |
-| ET / 托盘 / 多窗口 | 无 | — | 不是 1.0 |
+| 回底 +N | 按钮无计数 | `linux_jump_count_e2e` | **W18e** |
+| Scroll lock | feed 不拽回 | `linux_scroll_lock_e2e` | W17b 绿 |
+| 断线水印 | overlay | `linux_disconnect_e2e` | W16b 绿 |
+| 自动重连（本地） | swap_runtime | `linux_reconnect_e2e` | W17a 绿 |
+| 真 SSH attach | 路径有；曾 `#[ignore]` | `tmux_ssh_feature_contract` / `linux_ssh_*` | **W18a–d** |
+| 粘贴剥控制字符 | `sanitize_paste` | 单测 | 够用 |
+| ET / 托盘 / 多窗口 | 无 | — | 不是本轮 |
 
 ---
 
@@ -34,27 +34,25 @@ Linux tmux 路径已经能 attach、切 tab、搜已连接工作区、红点/pee
 
 | 愿景项 | 代码 | 测试 | 判据 |
 |---|---|---|---|
-| BEL / OSC 133 | 引擎 + live `%output` | feature e2e / semantics e2e | 够用 |
-| blocked 看见不熄、输入才熄 | 转移表 + live | `linux_attention_semantics_e2e` | W16c 绿 |
-| TOML 正则 | `blocked_regex` | 同上 | W16c 绿 |
-| peek + 一行答复 | 小 VTE | feature e2e W15e | 够用 |
-| 静音 | 面板 mute-1h | panel e2e 点按钮；**live 再 BEL 不亮是 W17d** | **W17d** |
-| 前台 Done 不通知 / 后台 Done 看见即熄 | 引擎有；live 缺无 BEL 脚本 | `linux_attention_1_0_e2e` | **W17d** |
+| BEL / OSC 133 | 引擎 + live | feature / 1.0 e2e | W17d 绿 |
+| blocked 看见不熄 | 转移表 | `linux_attention_semantics_e2e` | W16c 绿 |
+| peek + 一行答复 | 小 VTE | W15e | 够用 |
+| 命令刻度 | `command_marks` 空切片 | emulate 单测 + `linux_command_marks_e2e` | **W18h** |
 
 ---
 
-## 阶段 C — 搜索
+## 阶段 C — 搜索与地标
 
 | 愿景项 | 代码 | 测试 | 判据 |
 |---|---|---|---|
 | `search_all` 内存 | PaneBuf | feature e2e | 够用 |
-| 跳到命中 tab/pane | SwitchTab+SwitchPane | `linux_search_jump_e2e` | 够用 |
-| 滚到命中行并高亮 | 丢掉 seq | `linux_search_highlight_e2e` | **W17c** |
-| 上次看到这里 / 命令轨 | 无 | — | 不是 1.0 完成定义 |
+| 跳到命中 + 高亮 | seq + overlay | `linux_search_highlight_e2e` | W17c 绿 |
+| pane / workspace / all 范围 | API 有，面板无开关 | `linux_search_scope_e2e` | **W18f** |
+| pane 内查找条 | 无 | 同上 `muxterm-pane-find` | **W18f** |
+| 上次看到这里 | 无 | `linux_last_seen_e2e` | **W18g** |
 
 ---
 
 ## SSH / 以后
 
-真 SSH attach 仍 `#[ignore]`。W15c/d 只保证不冻窗、有灯。不要把 ignore 改成默认绿。
-Herdr、ET、多窗口、上次看到这里：以后。
+W18 用 **测试自启的 loopback sshd**（随机端口），不是用户 22。合盖一小时仍是人手狗食。ET 仍是可选 Transport，本轮不做。Herdr 以后。
