@@ -59,6 +59,11 @@ impl Workspace {
         self.model.runtime()
     }
 
+    /// 换掉底层 Runtime（W17a 自动重连；PaneBuf 副本保留）。
+    pub fn swap_runtime(&mut self, runtime: Box<dyn Runtime>) {
+        self.model.swap_runtime(runtime);
+    }
+
     /// 可变访问底层 Runtime，供测试注入事件。
     pub fn runtime_mut(&mut self) -> &mut dyn Runtime {
         self.model.runtime_mut()
@@ -108,9 +113,7 @@ impl Workspace {
 
     /// 某 pane 的 scrollback 中指定 seq 的行索引（W17c 搜索跳转用）。
     pub fn pane_line_index_by_seq(&self, pane: PaneId, seq: u64) -> Option<usize> {
-        self.panes
-            .get(&pane)
-            .and_then(|t| t.line_index_by_seq(seq))
+        self.panes.get(&pane).and_then(|t| t.line_index_by_seq(seq))
     }
 
     /// 某 pane 的最近 n 行。

@@ -18,8 +18,10 @@ use vte4::prelude::*;
 
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
+use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::config_edit::set_dotted_key;
+use crate::core::model::backend::Runtime;
 use crate::core::model::layout::SplitDir;
 use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::Task;
@@ -114,6 +116,16 @@ struct UiState {
     pending_ssh_probes: std::collections::VecDeque<std::sync::mpsc::Receiver<(String, SshReach)>>,
     /// SSH 别名 → (可达性, 探测时间)；TTL 内复用，不在 16ms tick 扫。
     ssh_reach_cache: std::collections::HashMap<String, (SshReach, Instant)>,
+    /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
+    reconnecting: bool,
+    /// 重连失败退避：下一次允许发起重连的时刻。
+    reconnect_retry_at: Option<Instant>,
+    /// 连续失败次数（指数退避基数）。
+    reconnect_attempts: u32,
+    /// 重连结果队列（新 Runtime 回主线程后 swap 进同一个 Workspace）。
+    pending_reconnects: std::collections::VecDeque<
+        std::sync::mpsc::Receiver<(anyhow::Result<std::boxed::Box<dyn Runtime>>, bool)>,
+    >,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
     /// 终端区 Overlay：LayoutHost.root_box 是主 child，回底按钮浮在上面。
@@ -248,6 +260,11 @@ impl AppWindow {
                 .expect("local runtime 必须可用");
             id
         });
+        let mut startup_sockets = std::collections::HashMap::new();
+        if requested_tmux {
+            // 启动 attach 的工作区也要登记 socket（W17a 重连要用）。
+            startup_sockets.insert(startup_id.clone(), socket.clone());
+        }
 
         let root = Box::builder()
             .orientation(Orientation::Vertical)
@@ -360,12 +377,16 @@ impl AppWindow {
             runtime_status: crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
             status_left: None,
             status_right: None,
-            workspace_sockets: std::collections::HashMap::new(),
+            workspace_sockets: startup_sockets,
             last_traffic: None,
             last_traffic_at: None,
             pending_connects: std::collections::VecDeque::new(),
             pending_ssh_probes: std::collections::VecDeque::new(),
             ssh_reach_cache: std::collections::HashMap::new(),
+            reconnecting: false,
+            reconnect_retry_at: None,
+            reconnect_attempts: 0,
+            pending_reconnects: std::collections::VecDeque::new(),
             root_box: root.clone(),
             layout_overlay,
             jump_latest,
@@ -515,6 +536,8 @@ impl AppWindow {
                 let pending_close = {
                     drain_pending_connects(&st);
                     drain_ssh_probes(&st);
+                    drain_pending_reconnects(&st);
+                    maybe_schedule_reconnect(&st);
                     let mut s = st.borrow_mut();
                     // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
                     // 喂好，这里只把注意力信号应用到引擎，不重建前台。
@@ -662,6 +685,8 @@ impl AppWindow {
     pub fn test_poll_output_event_count(&self) -> usize {
         drain_pending_connects(&self._state);
         drain_ssh_probes(&self._state);
+        drain_pending_reconnects(&self._state);
+        maybe_schedule_reconnect(&self._state);
         let (n, pending_close) = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -724,6 +749,8 @@ impl AppWindow {
     pub fn test_poll_once(&self) {
         drain_pending_connects(&self._state);
         drain_ssh_probes(&self._state);
+        drain_pending_reconnects(&self._state);
+        maybe_schedule_reconnect(&self._state);
         let pending_close = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -1929,6 +1956,161 @@ fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
                 .ssh_reach_cache
                 .insert(alias, (reach, Instant::now()));
         }
+    }
+}
+
+/// W17a：tmux 控制 client 掉线后自动重连。
+///
+/// 只重连 tmux 类 runtime；shell runtime 掉线仍按原策略。重连线程构造**新**
+/// Runtime（同一 socket/session），成功后 swap 进同一个 Workspace——PaneBuf
+/// 在 Workspace 侧，不会因换 client 丢索引。
+fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
+    let mut s = state.borrow_mut();
+    if s.reconnecting {
+        return;
+    }
+    let Some(ws) = s.pool.active() else {
+        return;
+    };
+    let is_tmux = matches!(ws.state().workspace_runtime(), "tmux" | "ssh" | "tmux-ssh");
+    if !is_tmux || ws.runtime().runtime_status() == BackendStatus::Connected {
+        return;
+    }
+    let now = Instant::now();
+    if s.reconnect_retry_at.is_some_and(|at| now < at) {
+        return;
+    }
+    let id = ws.id().clone();
+    let socket = s.workspace_sockets.get(&id).cloned().flatten();
+    let scrollback = s.scrollback_lines;
+    let spec = reconnect_spec(&id, socket, scrollback);
+    let handle = s.rt.handle().clone();
+    let (tx, rx) =
+        std::sync::mpsc::channel::<(anyhow::Result<std::boxed::Box<dyn Runtime>>, bool)>();
+    s.reconnecting = true;
+    s.pending_reconnects.push_back(rx);
+    std::thread::spawn(move || {
+        // 新 client attach 会清掉 window_bell_flag，必须在 attach 之前查
+        //（断线期间的 BEL 不会以 %output 重放）。
+        let bell = spec
+            .socket
+            .as_deref()
+            .map(|sock| query_window_bell_flag(sock, &spec.session))
+            .unwrap_or(false);
+        let result = connect_runtime_blocking(&spec, &handle);
+        let _ = tx.send((result, bell));
+    });
+}
+
+/// 从 WorkspaceId + socket 重建连接规格（本地/SSH tmux attach）。
+fn reconnect_spec(id: &WorkspaceId, socket: Option<String>, scrollback: u32) -> WorkspaceSpec {
+    if id.transport == "ssh" {
+        WorkspaceSpec::ssh_tmux(
+            id.alias.clone().unwrap_or_default(),
+            Some(id.session.clone()),
+            socket,
+        )
+        .with_scrollback_lines(scrollback)
+    } else {
+        WorkspaceSpec::local_tmux(Some(id.session.clone()), socket)
+            .with_scrollback_lines(scrollback)
+    }
+}
+
+/// 后台线程：构造新 TmuxRuntime 并 connect（复用 tokio handle 保持任务存活）。
+fn connect_runtime_blocking(
+    spec: &WorkspaceSpec,
+    handle: &tokio::runtime::Handle,
+) -> anyhow::Result<std::boxed::Box<dyn Runtime>> {
+    let mut runtime = spec.build_runtime();
+    handle.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), runtime.connect())
+            .await
+            .map_err(|_| anyhow::anyhow!("reconnect timed out after 10s"))?
+    })?;
+    Ok(runtime)
+}
+
+/// 收编重连结果（16ms poll 与 test_poll_once 共用）。
+fn drain_pending_reconnects(state: &Rc<RefCell<UiState>>) {
+    let result = {
+        let mut s = state.borrow_mut();
+        let Some(rx) = s.pending_reconnects.front() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(r) => {
+                s.pending_reconnects.pop_front();
+                s.reconnecting = false;
+                Some(r)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                s.pending_reconnects.pop_front();
+                s.reconnecting = false;
+                None
+            }
+        }
+    };
+    if let Some((Ok(runtime), bell)) = result {
+        handle_reconnect_success(state, runtime, bell);
+    } else if let Some((Err(e), _)) = result {
+        let mut s = state.borrow_mut();
+        s.reconnect_attempts = s.reconnect_attempts.saturating_add(1);
+        let delay = Duration::from_secs(1u64 << s.reconnect_attempts.min(3));
+        s.reconnect_retry_at = Some(Instant::now() + delay);
+        tracing::warn!(
+            target = "muxterm::linux",
+            "reconnect failed (attempt {}): {e}; retry in {delay:?}",
+            s.reconnect_attempts
+        );
+    }
+}
+
+/// 断线期间查 `#{window_bell_flag}`（必须在新 client attach 之前查，attach 会清 flag）。
+fn query_window_bell_flag(socket: &str, session: &str) -> bool {
+    std::process::Command::new("tmux")
+        .args([
+            "-L",
+            socket,
+            "display-message",
+            "-p",
+            "-t",
+            session,
+            "#{window_bell_flag}",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+        .unwrap_or(false)
+}
+
+/// 重连成功：换 Runtime、隐藏水印；断线期间的 BEL 重新推导成 Blocked。
+fn handle_reconnect_success(
+    state: &Rc<RefCell<UiState>>,
+    runtime: std::boxed::Box<dyn Runtime>,
+    bell: bool,
+) {
+    let mut s = state.borrow_mut();
+    let id = s.active_ws_id().clone();
+    if let Some(ws) = s.pool.get_mut(&id) {
+        ws.swap_runtime(runtime);
+    }
+    s.reconnect_attempts = 0;
+    s.reconnect_retry_at = None;
+    s.disconnect_overlay.set_visible(false);
+    if bell {
+        let ws = active_workspace_id(&s);
+        let pane = s.active_pane;
+        let (last_line, seq) = s.active_workspace().pane_last_line_seq(PaneId(pane));
+        s.attention.apply(
+            &ws,
+            pane,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            &last_line,
+            seq,
+        );
     }
 }
 

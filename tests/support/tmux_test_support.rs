@@ -185,6 +185,20 @@ pub fn wait_capture_contains(socket: &str, target: &str, needle: &str, timeout: 
     });
 }
 
+/// 分离该 session 上所有 client（含 muxterm 的 `-CC`），**不**杀 session。
+pub fn detach_all_clients(socket: &str, session: &str) {
+    tmux_ok(socket, &["detach-client", "-s", session]);
+}
+
+/// `tmux has-session -t`（带同一 `-L`）。
+pub fn has_session(socket: &str, session: &str) -> bool {
+    Command::new("tmux")
+        .args(["-L", socket, "has-session", "-t", session])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// 把 pane 换成 CUP 洪水脚本，刷完后停在 `/bin/cat`。
 pub fn respawn_cup_flood(socket: &str, pane_percent: &str, frames: u32) {
     let script = format!(

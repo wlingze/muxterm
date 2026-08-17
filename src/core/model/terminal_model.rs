@@ -60,6 +60,12 @@ impl TerminalModel {
         self.runtime.as_mut()
     }
 
+    /// 换掉底层 Runtime（W17a 自动重连：新 client 接管，PaneBuf 在 Workspace 侧不受影响）。
+    pub fn swap_runtime(&mut self, runtime: Box<dyn Runtime>) {
+        self.runtime = runtime;
+        self.pending_events.clear();
+    }
+
     /// 只读访问当前状态（`&dyn State`）。
     pub fn state(&self) -> &dyn State {
         self.runtime.as_ref()

@@ -141,4 +141,11 @@ mod tests {
             vec!["ws-a: needs you".to_string(), "ws-b: ask".to_string()]
         );
     }
+
+    #[test]
+    fn gio_sink_without_app_does_not_panic() {
+        let sink = GioSink::new(None);
+        sink.notify_blocked("ws", "needs you");
+        sink.notify_done("ws", "task complete");
+    }
 }
