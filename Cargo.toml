@@ -125,6 +125,10 @@ name = "tmux_ssh_feature_contract"
 path = "tests/tmux_ssh_feature_contract.rs"
 
 [[test]]
+name = "herdr_session_contract"
+path = "tests/herdr_session_contract.rs"
+
+[[test]]
 name = "linux_ssh_e2e"
 path = "tests/linux_ssh_e2e.rs"
 required-features = ["gtk"]

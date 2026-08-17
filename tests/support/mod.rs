@@ -10,6 +10,7 @@ pub mod attach_history_contract;
 #[allow(dead_code)]
 pub mod behavior_driver;
 pub mod feature_e2e_contract;
+pub mod herdr_test_support;
 #[cfg(feature = "gtk")]
 pub mod linux_gtk;
 pub mod ssh_tmux_contract;
