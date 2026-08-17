@@ -65,8 +65,11 @@ final class MuxTerminalView: TerminalView {
         font = Self.makeFont(family: fontFamily, size: self.fontSize)
         // 固定深色主题：codex/cursor 的输入框是深色，默认前景必须是浅色，
         // 否则黑字黑框看不见；同时也作为 OSC 10/11 上报给 tmux 的颜色。
-        nativeForegroundColor = Self.color(hex: MuxtermTerminalColors.activePalette.fg)
-        nativeBackgroundColor = Self.color(hex: MuxtermTerminalColors.activePalette.bg)
+        // 终端始终用深色色板（浅字深底）：codex/cursor 输入框按 OSC 10/11
+        // 画深色背景，正文/光标用「默认前景」→ 必须浅字才能看见。AppKit 的
+        // 浅色 chrome 主题只影响 status bar，不绑定终端默认色。
+        nativeForegroundColor = Self.color(hex: MuxtermTerminalColors.foregroundHex)
+        nativeBackgroundColor = Self.color(hex: MuxtermTerminalColors.backgroundHex)
         // 关闭 SwiftTerm 的 mouse reporting 转发，保证鼠标点击/拖拽优先做文本
         // 选择（选中复制）。codex/htop 等应用启用 mouse 协议后，SwiftTerm 默认
         // 会把点击/拖拽当 mouse 序列发给程序，导致「选不中、一直闪烁」。需要
@@ -224,10 +227,14 @@ final class MuxTerminalView: TerminalView {
         }
     }
 
-    /// 运行期切换主题（浅色/深色）：更新默认前景/背景并重绘。
+    /// 运行期切换主题（浅色/深色）：终端默认色固定为深色（agent 输入框契约），
+    /// 主题只影响 chrome；这里保持深色并重绘，避免浅色主题把 OSC 10/11
+    /// 代答成黑字白底。
     func setThemeColors(fgHex: String, bgHex: String) {
-        nativeForegroundColor = Self.color(hex: fgHex)
-        nativeBackgroundColor = Self.color(hex: bgHex)
+        _ = fgHex
+        _ = bgHex
+        nativeForegroundColor = Self.color(hex: MuxtermTerminalColors.foregroundHex)
+        nativeBackgroundColor = Self.color(hex: MuxtermTerminalColors.backgroundHex)
         forceRedraw()
     }
 
