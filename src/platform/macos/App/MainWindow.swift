@@ -15,23 +15,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private var bridge: CoreBridge
-    private var terminalManager: TerminalManager
-    private let content: ContentView
+    var bridge: CoreBridge
+    var terminalManager: TerminalManager
+    let content: ContentView
     private let discovery = ConnectionDiscovery()
     private var commandPalette: CommandPaletteController!
     private var quickConnect: QuickConnectController!
-    private var searchPanel: SearchPanelController!
-    private var attentionPanel: AttentionPanelController!
+    var searchPanel: SearchPanelController!
+    var attentionPanel: AttentionPanelController!
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private let quickConnectStore: QuickConnectStore
     private var pollTimer: Timer?
-    private var lastSnapshot = FrameSnapshot()
+    var lastSnapshot = FrameSnapshot()
     private var needsLayoutReload = true
     /// tmux tab 切换确认门禁：外部关闭 / 快照缺失 / 超时都会放行。
     private var tabSwitchGate = TabSwitchGate()
-    private var isClosing = false
+    var isClosing = false
+    /// e2e 记录桌面通知文案（不依赖系统通知权限）。
+    private(set) var recordedNotifications: [String] = []
+    /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
+    private(set) var lastPaneOutputEventCount: Int = 0
     private var languageObserver: NSObjectProtocol?
     /// 已向 tmux 上报过颜色的 pane（`refresh-client -r` 只需每个 pane 一次；
     /// 外观变化时清空重报）。
@@ -154,14 +158,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         searchPanel.onJump = { [weak self] tabId, paneId in
             self?.jumpToPane(tabId: tabId, paneId: paneId)
         }
-        attentionPanel = AttentionPanelController(ownerWindow: window) { [weak self] in
-            guard let self, let json = self.bridge.attentionSnapshotJSON(),
-                  let data = json.data(using: .utf8)
-            else {
-                return nil
+        attentionPanel = AttentionPanelController(
+            ownerWindow: window,
+            snapshot: { [weak self] in
+                guard let self, let json = self.bridge.attentionSnapshotJSON(),
+                      let data = json.data(using: .utf8)
+                else {
+                    return nil
+                }
+                return AttentionSnapshot.decode(data)
+            },
+            paneOutput: { [weak self] paneId in
+                self?.bridge.getPaneOutput(paneId: paneId) ?? Data()
+            },
+            sendInput: { [weak self] paneId, data in
+                _ = self?.bridge.sendInput(paneId: paneId, data: data)
             }
-            return AttentionSnapshot.decode(data)
-        }
+        )
         attentionPanel.onJump = { [weak self] tabId, paneId in
             self?.jumpToPane(tabId: tabId, paneId: paneId)
         }
@@ -465,7 +478,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 跳转到指定 tab + pane（搜索命中 / 注意力行）。
-    private func jumpToPane(tabId: UInt32, paneId: UInt32) {
+    func jumpToPane(tabId: UInt32, paneId: UInt32) {
         if tabId != 0 {
             requestSwitchTab(tabId)
         }
@@ -485,13 +498,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         _ = bridge.setPaneViewport(paneId: pane, offset: 0)
+        applyPaneViewport(paneId: pane, offset: 0)
         content.setJumpLatestVisible(false)
         needsLayoutReload = true
     }
 
+    /// 把 core 的 viewport 滚动偏移应用到 SwiftTerm 可见区：
+    /// offset>0 时喂滚动窗口 ANSI（历史），offset==0 时恢复 live 输出。
+    func applyPaneViewport(paneId: UInt32, offset: UInt32) {
+        let view = terminalManager.view(for: paneId)
+        if offset > 0 {
+            let rows = UInt32(max(24, view.getTerminal().getDims().rows))
+            let ansi = bridge.paneScrollANSI(paneId: paneId, offset: offset, rows: rows)
+            if !ansi.isEmpty {
+                view.feedOutput(ansi, isSnapshot: true)
+            }
+        } else {
+            let data = bridge.getPaneOutput(paneId: paneId)
+            if !data.isEmpty {
+                view.feedOutput(data, isSnapshot: true)
+            }
+        }
+    }
+
     /// 按 QuickConnect 目标连接：tmux 有 name → attach，无 name → 创建；
     /// shell runtime → 本地/远程 shell 在 path 启动。
-    private func connect(config: TargetConfig) {
+    func connect(config: TargetConfig) {
         quickConnect.dismiss()
         // recents 由连接池派生：连接成功后 pool.acquire 会更新最近列表。
         switch config.runtime {
@@ -789,7 +821,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.paneLayout.markActivePane(activePane)
     }
 
-    private func requestSwitchTab(_ tabId: UInt32) {
+    func requestSwitchTab(_ tabId: UInt32) {
         guard tabId != lastSnapshot.activeTab else { return }
         tabSwitchGate.request(tab: tabId)
         needsLayoutReload = true
@@ -1270,11 +1302,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    private func pollOnce() {
+    func pollOnce() {
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
         connectionPool.pollBackgroundSlots()
         let events = bridge.pollEvents()
+        lastPaneOutputEventCount = events.filter(\.isPaneOutput).count
         if let error = bridge.takeError() {
             reportStatusError(error)
         }
@@ -1357,14 +1390,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 needsLightweightUpdate = true
             }
             if ev.isBackendStatus {
-                if ev.paneId == 4 {
-                    // pane_id 复用状态码：4 = exited
-                    closeSessionWindow()
-                    return
-                }
                 if ev.paneId == 0 || ev.paneId == 4 {
-                    // 0 = disconnected, 4 = exited：保留最后一帧 + 水印。
-                    content.setDisconnected(true)
+                    // 0 = disconnected, 4 = exited。
+                    // tmux/ssh 控制模式：保留最后一帧 + 水印，不关窗（W16b）。
+                    // 本地 shell 的 Exited 仍关窗（session 已结束）。
+                    if terminalManager.usesClientResize {
+                        content.setDisconnected(true)
+                    } else if ev.paneId == 4 {
+                        closeSessionWindow()
+                        return
+                    }
                 } else {
                     content.setDisconnected(false)
                 }
@@ -1427,8 +1462,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 桌面通知（fail-soft：无通知权限时静默）。
+    /// 桌面通知（fail-soft：无通知权限时静默；测试进程只记录不弹系统通知）。
     private func postNotification(title: String, body: String) {
+        let kind = body.lowercased().contains("complete")
+            || body.lowercased().contains("done")
+            || body.contains("完成")
+            ? "done"
+            : "blocked"
+        recordedNotifications.append("\(title): \(kind)")
+        // swift test / XCTest 进程没有 app bundle，UNUserNotificationCenter.current()
+        // 会抛 NSException 崩溃；只记录，不弹系统通知。
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        {
+            return
+        }
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             guard settings.authorizationStatus == UNAuthorizationStatus.authorized
@@ -1579,6 +1627,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         statusRefreshTimer = timer
+    }
+
+    /// 测试用：关掉桥接和窗口，不走 Exited 业务路径。
+    func testShutdown() {
+        guard !isClosing else { return }
+        isClosing = true
+        pollTimer?.invalidate()
+        pollTimer = nil
+        trafficMonitorTimer?.invalidate()
+        trafficMonitorTimer = nil
+        statusRefreshTimer?.invalidate()
+        statusRefreshTimer = nil
+        statusRefreshWorkItem?.cancel()
+        statusRefreshWorkItem = nil
+        connectionPool.shutdownAll()
+        bridge.shutdown()
+        window?.close()
     }
 
     private func closeSessionWindow() {

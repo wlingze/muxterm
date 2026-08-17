@@ -55,6 +55,8 @@ final class StatusBarView: NSView {
     private var connectionSummary: (type: String, host: String?, status: String) = ("local", nil, "connected")
     private var trafficRate: UInt64 = 0
     private var totalBytes: UInt64 = 0
+    private var upRate: UInt64 = 0
+    private var upBytes: UInt64 = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -77,6 +79,7 @@ final class StatusBarView: NSView {
         leftLabel.lineBreakMode = .byTruncatingTail
         leftLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         leftLabel.isHidden = true
+        leftLabel.setAccessibilityIdentifier("muxterm.statusLeft")
 
         // tmux status-right
         rightLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -84,6 +87,7 @@ final class StatusBarView: NSView {
         rightLabel.alignment = .right
         rightLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         rightLabel.isHidden = true
+        rightLabel.setAccessibilityIdentifier("muxterm.statusRight")
 
         // 状态点（绿/黄/红）—— 自身就是 NSButton，保证点击热区 18×18。
         statusDot.target = self
@@ -198,7 +202,7 @@ final class StatusBarView: NSView {
     func updateTabs(_ tabs: [Tab]) {
         currentTabs = tabs
         guard !tmuxStatusEnabled else { return }
-        rebuildTabButtons(tabs.map { TabBarItem(id: $0.id, title: tabTitle($0), active: $0.isActive) })
+        rebuildTabButtons(tabs.map { TabBarItem(id: $0.id, name: $0.name, active: $0.isActive) })
     }
 
     func applyTmuxSnapshot(_ snapshot: StatusBarSnapshot?, enabled: Bool) {
@@ -229,7 +233,7 @@ final class StatusBarView: NSView {
             rebuildTabButtons(snapshot.windows.map { win in
                 TabBarItem(
                     id: win.windowId,
-                    title: StatusBarTabTitle.display(index: win.index, name: win.name),
+                    name: win.name,
                     active: win.current
                 )
             })
@@ -237,7 +241,7 @@ final class StatusBarView: NSView {
             leftLabel.isHidden = true
             rightLabel.isHidden = true
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            rebuildTabButtons(currentTabs.map { TabBarItem(id: $0.id, title: tabTitle($0), active: $0.isActive) })
+            rebuildTabButtons(currentTabs.map { TabBarItem(id: $0.id, name: $0.name, active: $0.isActive) })
         }
         needsLayout = true
     }
@@ -249,10 +253,13 @@ final class StatusBarView: NSView {
     }
 
     func updateConnectionStatus(_ summary: (type: String, host: String?, status: String),
-                                trafficRate: UInt64, totalBytes: UInt64) {
+                                trafficRate: UInt64, totalBytes: UInt64,
+                                upRate: UInt64 = 0, upBytes: UInt64 = 0) {
         connectionSummary = summary
         self.trafficRate = trafficRate
         self.totalBytes = totalBytes
+        self.upRate = upRate
+        self.upBytes = upBytes
         updateStatusDotColor()
     }
 
@@ -332,17 +339,19 @@ final class StatusBarView: NSView {
 
     private var statusDotAccessibilityLabel: String {
         if let errorText { return "Status: error - \(errorText)" }
-        let typeText: String
-        switch connectionSummary.type {
-        case "ssh": typeText = "SSH"
-        case "tmux": typeText = "tmux"
-        case "local": typeText = "local"
-        default: typeText = connectionSummary.type
+        var lines = [
+            "type=\(connectionSummary.type)",
+            "host=\(connectionSummary.host ?? "")",
+            "status=\(connectionSummary.status)",
+        ]
+        if connectionSummary.type == "ssh" {
+            lines.append("↓\(formatTraffic(trafficRate))/s  ↑\(formatTraffic(upRate))/s")
+            lines.append("↓\(formatTraffic(totalBytes))  ↑\(formatTraffic(upBytes))")
         }
-        let host = connectionSummary.host.map { " \($0)" } ?? ""
-        let traffic = connectionSummary.type == "ssh" ? " ↓\(formatTraffic(trafficRate))/s" : ""
-        let debug = isDebug && !debugText.isEmpty ? "\n\(debugText)" : ""
-        return "\(typeText)\(host) \(connectionSummary.status)\(traffic)\(debug)"
+        if isDebug && !debugText.isEmpty {
+            lines.append(debugText)
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// 点击状态点 → 弹出 debug 信息（连接状态 + SSH 流量 + debug tabs/panes）。
@@ -368,7 +377,8 @@ final class StatusBarView: NSView {
         field.isEditable = false
         field.isSelectable = true
         field.drawsBackground = false
-        field.translatesAutoresizingMaskIntoConstraints = false
+        field.setAccessibilityIdentifier("muxterm.statusPopoverLabel")
+        container.setAccessibilityIdentifier("muxterm.statusPopover")
         container.addSubview(field)
 
         NSLayoutConstraint.activate([
@@ -390,19 +400,20 @@ final class StatusBarView: NSView {
         let edge: NSRectEdge = edgeAtBottom ? .minY : .maxY
         popover.show(relativeTo: statusDot.bounds, of: statusDot, preferredEdge: edge)
         statusPopover = popover
+        statusInfoView = field
     }
 
     private func formatTraffic(_ rate: UInt64) -> String {
-        if rate < 1024 { return "\(rate)B" }
-        if rate < 1024 * 1024 { return String(format: "%.1fKB", Double(rate) / 1024) }
-        return String(format: "%.1fMB", Double(rate) / (1024 * 1024))
+        if rate < 1024 { return "\(rate) B" }
+        if rate < 1024 * 1024 { return String(format: "%.1f KB", Double(rate) / 1024) }
+        return String(format: "%.1f MB", Double(rate) / (1024 * 1024))
     }
 
     // MARK: - tab 重建
 
     private struct TabBarItem {
         let id: UInt32
-        let title: String
+        let name: String
         let active: Bool
     }
 
@@ -412,9 +423,13 @@ final class StatusBarView: NSView {
 
     private func rebuildTabButtons(_ items: [TabBarItem]) {
         tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for item in items {
+        for (position, item) in items.enumerated() {
             let button = StatusTabButton()
-            button.title = item.title
+            // GUI tab 序号 = 列表位置（1-based），不是 tmux window id。
+            button.title = StatusBarTabTitle.display(
+                index: UInt32(position + 1),
+                name: item.name
+            )
             button.tag = Int(item.id)
             button.target = self
             button.action = #selector(tabClicked(_:))
@@ -446,7 +461,7 @@ final class StatusBarView: NSView {
             rebuildTabButtons(updated.windows.map { win in
                 TabBarItem(
                     id: win.windowId,
-                    title: StatusBarTabTitle.display(index: win.index, name: win.name),
+                    name: win.name,
                     active: win.current
                 )
             })
@@ -539,6 +554,49 @@ final class StatusBarView: NSView {
         case "exited": return MuxtermI18n.shared.tr(.statusExited)
         default: return MuxtermI18n.shared.tr(.statusUnknown)
         }
+    }
+
+    func testClickTab(_ tabId: UInt32) {
+        guard let button = tabStack.arrangedSubviews.compactMap({ $0 as? NSButton })
+            .first(where: { $0.tag == Int(tabId) })
+        else {
+            return
+        }
+        button.performClick(nil)
+    }
+
+    func testClickStatusDot() {
+        statusDot.performClick(nil)
+    }
+
+    func testStatusDotSize() -> NSSize {
+        statusDot.intrinsicContentSize
+    }
+
+    func testPopoverVisible() -> Bool {
+        statusPopover?.isShown == true
+    }
+
+    func testPopoverText() -> String {
+        statusInfoView?.stringValue ?? statusDotAccessibilityLabel
+    }
+
+    func testTabTitle(_ tabId: UInt32) -> String {
+        tabStack.arrangedSubviews.compactMap { $0 as? NSButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .title ?? ""
+    }
+
+    func testLeftText() -> String {
+        leftLabel.stringValue
+    }
+
+    func testRightText() -> String {
+        rightLabel.stringValue
+    }
+
+    func testAttentionCountLabel() -> String {
+        attentionCountLabel.stringValue
     }
 }
 
