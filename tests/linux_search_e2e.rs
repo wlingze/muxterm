@@ -81,6 +81,10 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 }),
                 on_close: Box::new(|| {}),
                 ssh_reach: std::collections::HashMap::new(),
+                existing: std::rc::Rc::new(std::cell::RefCell::new(
+                    muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                )),
+                on_existing_nav: Box::new(|_| {}),
             },
         );
         pump_main_loop(80);

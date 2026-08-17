@@ -130,6 +130,10 @@ fn three_tab_panel_full_flow() {
                     ("ryzen".into(), SshReach::Ok),
                     ("dead".into(), SshReach::Err),
                 ]),
+                existing: std::rc::Rc::new(std::cell::RefCell::new(
+                    muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                )),
+                on_existing_nav: Box::new(|_| {}),
             },
         );
         pump_main_loop(80);

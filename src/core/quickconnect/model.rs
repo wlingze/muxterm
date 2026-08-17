@@ -10,6 +10,7 @@ use std::path::Path;
 pub enum TargetRuntime {
     Shell,
     Tmux,
+    Herdr,
 }
 
 impl TargetRuntime {
@@ -17,6 +18,7 @@ impl TargetRuntime {
         match self {
             TargetRuntime::Shell => "shell",
             TargetRuntime::Tmux => "tmux",
+            TargetRuntime::Herdr => "herdr",
         }
     }
 
@@ -24,6 +26,7 @@ impl TargetRuntime {
         match value.to_ascii_lowercase().as_str() {
             "shell" => Some(TargetRuntime::Shell),
             "tmux" => Some(TargetRuntime::Tmux),
+            "herdr" => Some(TargetRuntime::Herdr),
             _ => None,
         }
     }
@@ -72,6 +75,10 @@ pub struct TargetConfig {
     pub runtime: TargetRuntime,
     pub transport: TargetTransport,
     pub path: String,
+    /// Herdr：本机 API socket 绝对路径（SSH 是转发后的本地路径）。
+    pub socket: Option<String>,
+    /// Herdr：named session 名（默认 socket 为 "default"）。
+    pub session: Option<String>,
 }
 
 impl TargetConfig {
@@ -86,6 +93,8 @@ impl TargetConfig {
             runtime,
             transport,
             path: path.into(),
+            socket: None,
+            session: None,
         }
     }
 
@@ -239,6 +248,20 @@ mod tests {
         );
         assert_eq!(QuickConnect::default_name(""), "workspace");
         assert_eq!(QuickConnect::default_name("/"), "workspace");
+    }
+
+    /// W20a：TargetRuntime::Herdr 可解析，subtitle 含 `herdr @`。
+    #[test]
+    fn herdr_runtime_roundtrip_and_subtitle() {
+        assert_eq!(TargetRuntime::from_str("herdr"), Some(TargetRuntime::Herdr));
+        assert_eq!(TargetRuntime::Herdr.as_str(), "herdr");
+        let c = cfg("w1", TargetRuntime::Herdr, TargetTransport::Local, "w1");
+        let subtitle = QuickConnect::subtitle(&c);
+        assert!(
+            subtitle.contains("herdr @"),
+            "subtitle 必须含 `herdr @`: {subtitle}"
+        );
+        assert_eq!(subtitle, "herdr @ local");
     }
 
     #[test]

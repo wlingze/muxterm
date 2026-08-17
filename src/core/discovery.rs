@@ -11,6 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod existing;
+
 /// SSH Host 条目（从 `~/.ssh/config` 读取）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SshHostEntry {

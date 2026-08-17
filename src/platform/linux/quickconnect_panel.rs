@@ -19,6 +19,7 @@ use gtk4::{
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
 use crate::core::config::Theme;
+use crate::core::discovery::existing::ExistingEntry;
 use crate::core::transport::ssh::probe::SshReach;
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::pane_view::PaneView;
@@ -46,6 +47,28 @@ thread_local! {
 
 thread_local! {
     static PANEL_DISMISS: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    static PANEL_REFRESH: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// 已有的连接面板共享状态（window 侧更新，面板 rebuild 读取）。
+#[derive(Debug, Clone, Default)]
+pub struct ExistingPanelState {
+    pub nav: ExistingNav,
+    pub locals: Vec<ExistingEntry>,
+    pub hosts: Vec<String>,
+    pub remote: std::collections::HashMap<String, Vec<ExistingEntry>>,
+}
+
+/// 测试/生产共用：让当前面板按最新状态重建列表（SSH 探测回来再填）。
+pub fn refresh_current() {
+    PANEL_REFRESH.with(|slot| {
+        if let Some(refresh) = slot.borrow().as_ref() {
+            refresh();
+        }
+    });
 }
 
 /// 测试/生产共用：关闭当前 QuickConnect 面板（AppWindow 跳转后关面板，W15b）。
@@ -81,6 +104,38 @@ pub struct QuickConnectCallbacks {
 pub enum PanelItem {
     Target(QuickConnectEntry, bool),
     NewProject,
+    /// 目录（已有的连接 / 本地 / SSH）。
+    Folder {
+        id: &'static str,
+        title: String,
+    },
+    /// 子目录返回。
+    Back,
+    /// 一条活着的 tmux session 或 Herdr workspace。
+    Existing(ExistingEntry),
+    /// SSH host 行（探测到至少一条 tmux 或 Herdr）。
+    Host {
+        alias: String,
+    },
+    /// SSH 探测中占位。
+    Loading,
+    /// 空目录占位。
+    Empty {
+        title: String,
+    },
+}
+
+/// 已有的连接导航状态（纯逻辑）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ExistingNav {
+    #[default]
+    Root,
+    Home,
+    Local,
+    SshHosts,
+    SshHost {
+        alias: String,
+    },
 }
 
 /// 按查询过滤（纯逻辑，便于单测）。
@@ -100,6 +155,14 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
                 );
                 label.contains(&q)
             }
+            PanelItem::Folder { title, .. } => title.to_lowercase().contains(&q),
+            PanelItem::Back => true,
+            PanelItem::Existing(entry) => format!("{} {}", entry.title, entry.subtitle())
+                .to_lowercase()
+                .contains(&q),
+            PanelItem::Host { alias } => alias.to_lowercase().contains(&q),
+            PanelItem::Loading => true,
+            PanelItem::Empty { title } => title.to_lowercase().contains(&q),
         })
         .cloned()
         .collect()
@@ -117,6 +180,75 @@ pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) ->
         })
         .collect();
     items.push(PanelItem::NewProject);
+    items
+}
+
+/// W20b：根列表 = 第一项「已有的连接」Folder + 原 Recent/Project + New Project。
+pub fn build_root_items(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+) -> Vec<PanelItem> {
+    let mut items = vec![PanelItem::Folder {
+        id: "existing-connections",
+        title: i18n::tr(TextKey::ExistingConnections),
+    }];
+    items.extend(build_items(store, current));
+    items
+}
+
+/// W20c：已有的连接子目录内容（纯函数，可单测）。
+///
+/// - Home：Back + Local + SSH 两个 Folder
+/// - Local：Back + 本地 tmux/Herdr 行（空 → Empty）
+/// - SshHosts：Back + 探测到的 Host 行（探测中 → Loading）
+/// - SshHost{alias}：Back + 该 host 的 tmux/Herdr 行
+pub fn existing_items(
+    nav: ExistingNav,
+    locals: &[ExistingEntry],
+    hosts: &[String],
+    remote_of_alias: impl Fn(&str) -> Vec<ExistingEntry>,
+) -> Vec<PanelItem> {
+    let mut items = vec![PanelItem::Back];
+    match nav {
+        ExistingNav::Root | ExistingNav::Home => {
+            items.push(PanelItem::Folder {
+                id: "existing-local",
+                title: i18n::tr(TextKey::ExistingLocal),
+            });
+            items.push(PanelItem::Folder {
+                id: "existing-ssh",
+                title: i18n::tr(TextKey::ExistingSsh),
+            });
+        }
+        ExistingNav::Local => {
+            if locals.is_empty() {
+                items.push(PanelItem::Empty {
+                    title: i18n::tr(TextKey::ExistingEmpty),
+                });
+            } else {
+                items.extend(locals.iter().cloned().map(PanelItem::Existing));
+            }
+        }
+        ExistingNav::SshHosts => {
+            if hosts.is_empty() {
+                items.push(PanelItem::Loading);
+            } else {
+                items.extend(hosts.iter().map(|alias| PanelItem::Host {
+                    alias: alias.clone(),
+                }));
+            }
+        }
+        ExistingNav::SshHost { alias } => {
+            let rows = remote_of_alias(&alias);
+            if rows.is_empty() {
+                items.push(PanelItem::Empty {
+                    title: i18n::tr(TextKey::ExistingEmpty),
+                });
+            } else {
+                items.extend(rows.into_iter().map(PanelItem::Existing));
+            }
+        }
+    }
     items
 }
 
@@ -147,6 +279,10 @@ pub struct PanelShowArgs {
     pub on_close: Box<dyn Fn()>,
     /// SSH 别名 → 可达性（测试注入；生产由后台探测填充）。
     pub ssh_reach: HashMap<String, SshReach>,
+    /// 已有的连接共享状态（nav + 本地/SSH 数据）。
+    pub existing: Rc<RefCell<ExistingPanelState>>,
+    /// 导航变化回调（window 侧触发 SSH 探测等）。
+    pub on_existing_nav: Box<dyn Fn(ExistingNav)>,
 }
 
 /// 弹出三 tab QuickConnect 面板（普通 Overlay，不构造 AppWindow）。
@@ -172,8 +308,11 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         search,
         on_close,
         ssh_reach,
+        existing,
+        on_existing_nav,
     } = args;
     let ssh_reach = Rc::new(ssh_reach);
+    let existing = Rc::new(existing);
 
     let overlay = ensure_overlay(parent);
     let backdrop = GtkBox::new(Orientation::Vertical, 0);
@@ -351,6 +490,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         search,
         on_close: std::boxed::Box::new(|| {}),
         ssh_reach: HashMap::new(),
+        existing: (*existing).clone(),
+        on_existing_nav,
     });
     let finished = Rc::new(RefCell::new(false));
 
@@ -477,6 +618,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let scope_workspace = scope_workspace.clone();
         let scope_all = scope_all.clone();
         let scope_bar = scope_bar.clone();
+        let existing = existing.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
@@ -485,6 +627,17 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             let (tab, query) = {
                 let m = model.borrow();
                 (m.tab, m.query.clone())
+            };
+            // W20：非 Root 时列表来自已有的连接子目录。
+            let all: Vec<PanelItem> = {
+                let ex = existing.borrow();
+                if ex.nav == ExistingNav::Root {
+                    (*all).clone()
+                } else {
+                    existing_items(ex.nav.clone(), &ex.locals, &ex.hosts, |alias| {
+                        ex.remote.get(alias).cloned().unwrap_or_default()
+                    })
+                }
             };
             tab_workspaces.set_active(tab == PanelTab::Workspaces);
             tab_attention.set_active(tab == PanelTab::Attention);
@@ -503,7 +656,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     let rows = filter_workspace_rows(&all, &query, |item| {
                         let id = match item {
                             PanelItem::Target(entry, _) => QuickConnect::unique_id(&entry.config),
-                            PanelItem::NewProject => return None,
+                            _ => return None,
                         };
                         workspace_status.get(&id).copied()
                     });
@@ -558,6 +711,74 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                     "＋ {}",
                                     i18n::tr(TextKey::NewProject)
                                 )));
+                                label.set_halign(Align::Start);
+                                label.set_margin_start(16);
+                                label.set_margin_top(10);
+                                label.set_margin_bottom(10);
+                                row_widget.set_child(Some(&label));
+                            }
+                            PanelItem::Folder { id, title } => {
+                                row_widget.set_widget_name(&format!("muxterm-{id}"));
+                                let label = Label::new(Some(title));
+                                label.set_halign(Align::Start);
+                                label.set_margin_start(16);
+                                label.set_margin_top(10);
+                                label.set_margin_bottom(10);
+                                row_widget.set_child(Some(&label));
+                            }
+                            PanelItem::Back => {
+                                row_widget.set_widget_name("muxterm-existing-back");
+                                let label = Label::new(Some(&i18n::tr(TextKey::ExistingBack)));
+                                label.set_halign(Align::Start);
+                                label.set_margin_start(16);
+                                label.set_margin_top(10);
+                                label.set_margin_bottom(10);
+                                row_widget.set_child(Some(&label));
+                            }
+                            PanelItem::Existing(entry) => {
+                                row_widget.set_widget_name(&format!(
+                                    "muxterm-existing-row-{}-{}",
+                                    entry.runtime.as_str(),
+                                    entry
+                                        .herdr_workspace_id
+                                        .as_deref()
+                                        .or(entry.tmux_session.as_deref())
+                                        .unwrap_or(&entry.title)
+                                ));
+                                let boxed = existing_row(entry);
+                                row_widget.set_child(Some(&boxed));
+                            }
+                            PanelItem::Host { alias } => {
+                                row_widget
+                                    .set_widget_name(&format!("muxterm-existing-host-{alias}"));
+                                let reach = ssh_reach.get(alias).copied();
+                                let label = Label::new(Some(alias));
+                                label.set_halign(Align::Start);
+                                label.set_margin_start(16);
+                                label.set_margin_top(10);
+                                label.set_margin_bottom(10);
+                                let boxed = GtkBox::new(Orientation::Horizontal, 8);
+                                boxed.append(&label);
+                                if let Some(reach) = reach {
+                                    let dot = reachability_dot(reach);
+                                    boxed.append(&dot);
+                                }
+                                row_widget.set_child(Some(&boxed));
+                            }
+                            PanelItem::Loading => {
+                                row_widget.set_widget_name("muxterm-existing-ssh-loading");
+                                row_widget.set_activatable(false);
+                                let label = Label::new(Some(&i18n::tr(TextKey::ExistingProbing)));
+                                label.set_halign(Align::Start);
+                                label.set_margin_start(16);
+                                label.set_margin_top(10);
+                                label.set_margin_bottom(10);
+                                row_widget.set_child(Some(&label));
+                            }
+                            PanelItem::Empty { title } => {
+                                row_widget.set_widget_name("muxterm-existing-empty");
+                                row_widget.set_activatable(false);
+                                let label = Label::new(Some(title));
                                 label.set_halign(Align::Start);
                                 label.set_margin_start(16);
                                 label.set_margin_top(10);
@@ -652,6 +873,10 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         }
     };
     rebuild();
+    {
+        let rebuild = rebuild.clone();
+        PANEL_REFRESH.with(|slot| *slot.borrow_mut() = Some(Box::new(rebuild)));
+    }
 
     // Tab2 选中行 → peek + 答复目标；无选中 → 清空并禁用答复。
     {
@@ -794,6 +1019,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let model = model.clone();
         let callbacks = callbacks.clone();
         let dismiss = dismiss.clone();
+        let rebuild = rebuild.clone();
+        let existing = existing.clone();
         move || {
             let Some(row) = list.selected_row() else {
                 return;
@@ -812,6 +1039,39 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                             dismiss();
                             (callbacks.on_new_project)();
                         }
+                        Some(PanelItem::Folder { id, .. }) => {
+                            let next = match id {
+                                "existing-connections" => ExistingNav::Home,
+                                "existing-local" => ExistingNav::Local,
+                                "existing-ssh" => ExistingNav::SshHosts,
+                                _ => return,
+                            };
+                            existing.borrow_mut().nav = next.clone();
+                            (callbacks.on_existing_nav)(next);
+                            rebuild();
+                        }
+                        Some(PanelItem::Back) => {
+                            let back = match existing.borrow().nav {
+                                ExistingNav::Home => ExistingNav::Root,
+                                ExistingNav::Local | ExistingNav::SshHosts => ExistingNav::Home,
+                                ExistingNav::SshHost { .. } => ExistingNav::SshHosts,
+                                ExistingNav::Root => ExistingNav::Root,
+                            };
+                            existing.borrow_mut().nav = back.clone();
+                            (callbacks.on_existing_nav)(back);
+                            rebuild();
+                        }
+                        Some(PanelItem::Existing(entry)) => {
+                            dismiss();
+                            (callbacks.on_connect)(existing_entry_to_config(&entry));
+                        }
+                        Some(PanelItem::Host { alias }) => {
+                            let nav = ExistingNav::SshHost { alias };
+                            existing.borrow_mut().nav = nav.clone();
+                            (callbacks.on_existing_nav)(nav);
+                            rebuild();
+                        }
+                        Some(PanelItem::Loading) | Some(PanelItem::Empty { .. }) => {}
                         None => {}
                     }
                 }
@@ -956,6 +1216,71 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
     col
 }
 
+/// W20：已有的连接行（title + `runtime @ transport` 副标题，与 Project 行同款）。
+fn existing_row(entry: &ExistingEntry) -> GtkBox {
+    let col = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(2)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(8)
+        .margin_bottom(8)
+        .build();
+    let title_row = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    if let TargetTransport::Ssh { name } = &entry.transport {
+        let dot = Label::new(Some("●"));
+        dot.set_widget_name(&crate::core::transport::ssh::probe::ssh_dot_widget_name(
+            name,
+        ));
+        dot.add_css_class(crate::core::transport::ssh::probe::ssh_dot_css_class(
+            SshReach::Unknown,
+        ));
+        title_row.append(&dot);
+    }
+    let name = Label::new(Some(&entry.title));
+    name.set_halign(Align::Start);
+    name.add_css_class("qc-name");
+    title_row.append(&name);
+    let sub = Label::new(Some(&entry.subtitle()));
+    sub.set_halign(Align::Start);
+    sub.add_css_class("qc-sub");
+    col.append(&title_row);
+    col.append(&sub);
+    col
+}
+
+/// W20：SSH host 行可达性灯（与 host picker 同款）。
+fn reachability_dot(reach: SshReach) -> Label {
+    let dot = Label::new(Some("●"));
+    dot.add_css_class(crate::core::transport::ssh::probe::ssh_dot_css_class(reach));
+    dot.set_tooltip_text(Some(match reach {
+        SshReach::Ok => "SSH reachable",
+        SshReach::Err => "SSH unreachable",
+        SshReach::Unknown => "SSH reachability unknown",
+    }));
+    dot
+}
+
+/// W20：ExistingEntry → TargetConfig（attach only；socket/session 带上）。
+fn existing_entry_to_config(entry: &ExistingEntry) -> TargetConfig {
+    let mut cfg = TargetConfig::new(
+        entry.title.clone(),
+        entry.runtime,
+        entry.transport.clone(),
+        entry
+            .herdr_workspace_id
+            .clone()
+            .or_else(|| entry.tmux_session.clone())
+            .unwrap_or_default(),
+    );
+    cfg.socket = entry.herdr_socket.clone();
+    cfg.session = entry.herdr_session.clone();
+    cfg
+}
+
 fn badge_label(badge: QuickBadge) -> String {
     match badge {
         QuickBadge::Recent => i18n::tr(TextKey::Recent).to_uppercase(),
@@ -1024,6 +1349,126 @@ mod tests {
         assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
         assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.config == dup));
         assert!(matches!(items[1], PanelItem::NewProject));
+    }
+
+    /// W20b：根列表第 0 项是「已有的连接」Folder，末项 New Project。
+    #[test]
+    fn build_root_items_puts_existing_connections_first() {
+        let mut store = QuickConnectStore::new(None);
+        let project = cfg("project");
+        store.projects.push(project.clone());
+        let items = build_root_items(&store, None);
+        assert_eq!(items.len(), 3, "Folder + project + NewProject");
+        assert!(matches!(
+            &items[0],
+            PanelItem::Folder {
+                id: "existing-connections",
+                ..
+            }
+        ));
+        assert!(matches!(items[2], PanelItem::NewProject));
+    }
+
+    /// W20c：Home 含 Back + Local + SSH 两个 Folder。
+    #[test]
+    fn existing_items_home_has_local_and_ssh_folders() {
+        let items = existing_items(ExistingNav::Home, &[], &[], |_| vec![]);
+        assert!(matches!(items[0], PanelItem::Back));
+        assert!(matches!(
+            &items[1],
+            PanelItem::Folder {
+                id: "existing-local",
+                ..
+            }
+        ));
+        assert!(matches!(
+            &items[2],
+            PanelItem::Folder {
+                id: "existing-ssh",
+                ..
+            }
+        ));
+    }
+
+    /// W20c：Local 空 → Empty；有行 → Existing 行。
+    #[test]
+    fn existing_items_local_lists_entries_or_empty() {
+        let empty = existing_items(ExistingNav::Local, &[], &[], |_| vec![]);
+        assert!(matches!(empty[1], PanelItem::Empty { .. }));
+
+        let entry = ExistingEntry {
+            title: "w1".into(),
+            runtime: TargetRuntime::Herdr,
+            transport: TargetTransport::Local,
+            tmux_session: None,
+            herdr_session: Some("default".into()),
+            herdr_workspace_id: Some("w1".into()),
+            herdr_socket: Some("/tmp/x.sock".into()),
+        };
+        let rows = existing_items(ExistingNav::Local, &[entry], &[], |_| vec![]);
+        assert!(matches!(rows[1], PanelItem::Existing(_)));
+    }
+
+    /// W20c：SshHosts 空 → Loading；有 host → Host 行；SshHost 显示远端行。
+    #[test]
+    fn existing_items_ssh_hosts_and_remote_rows() {
+        let loading = existing_items(ExistingNav::SshHosts, &[], &[], |_| vec![]);
+        assert!(matches!(loading[1], PanelItem::Loading));
+
+        let hosts = vec!["ryzen".to_string()];
+        let rows = existing_items(ExistingNav::SshHosts, &[], &hosts, |_| vec![]);
+        assert!(matches!(&rows[1], PanelItem::Host { alias } if alias == "ryzen"));
+
+        let remote = vec![ExistingEntry {
+            title: "legion".into(),
+            runtime: TargetRuntime::Tmux,
+            transport: TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+            tmux_session: Some("legion".into()),
+            herdr_session: None,
+            herdr_workspace_id: None,
+            herdr_socket: None,
+        }];
+        let host_rows = existing_items(
+            ExistingNav::SshHost {
+                alias: "ryzen".into(),
+            },
+            &[],
+            &[],
+            |_| remote.clone(),
+        );
+        assert!(matches!(host_rows[1], PanelItem::Existing(_)));
+    }
+
+    /// W20：filter 对 Folder/Existing/Back 生效，Back 始终保留。
+    #[test]
+    fn filter_handles_existing_variants() {
+        let items = vec![
+            PanelItem::Folder {
+                id: "existing-connections",
+                title: "已有的连接".into(),
+            },
+            PanelItem::Back,
+            PanelItem::Existing(ExistingEntry {
+                title: "w1".into(),
+                runtime: TargetRuntime::Herdr,
+                transport: TargetTransport::Local,
+                tmux_session: None,
+                herdr_session: Some("default".into()),
+                herdr_workspace_id: Some("w1".into()),
+                herdr_socket: None,
+            }),
+        ];
+        let hit = filter_panel_items(&items, "已有");
+        assert_eq!(hit.len(), 2, "Folder 按 title 过滤 + Back 始终保留");
+        assert!(matches!(hit[0], PanelItem::Folder { .. }));
+        let back = filter_panel_items(&items, "zzz");
+        assert_eq!(back.len(), 1, "Back 始终保留");
+        assert!(matches!(back[0], PanelItem::Back));
+        let herdr = filter_panel_items(&items, "herdr @");
+        assert_eq!(herdr.len(), 2, "Existing 按 subtitle 过滤 + Back 始终保留");
+        assert!(matches!(herdr[1], PanelItem::Existing(_)));
     }
 
     #[test]

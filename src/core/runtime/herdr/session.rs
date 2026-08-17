@@ -157,6 +157,18 @@ impl HerdrSession {
             .unwrap_or_default())
     }
 
+    /// `workspace.create`：新建 Herdr workspace（New Project 用）。
+    pub fn workspace_create(&self, cwd: &str, label: &str) -> Result<WorkspaceRecord> {
+        let result = self.call(
+            "workspace.create",
+            serde_json::json!({ "cwd": cwd, "label": label, "focus": false }),
+        )?;
+        let ws = result
+            .get("workspace")
+            .ok_or_else(|| anyhow!("workspace.create 缺 workspace: {result}"))?;
+        WorkspaceRecord::from_json(ws).ok_or_else(|| anyhow!("workspace.create 解析失败: {result}"))
+    }
+
     /// `worktree.list`：当前仓库全部 checkout（需 WorktreeList）。
     pub fn worktree_list(&self, workspace_id: &str) -> Result<HerdrWorktreeList> {
         let result = self.call(

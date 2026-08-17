@@ -23,12 +23,15 @@ use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::config_edit::set_dotted_key;
+use crate::core::discovery::existing::ExistingEntry;
+use crate::core::discovery::existing::{discover_local_herdr, discover_local_tmux};
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::SplitDir;
 use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::Task;
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::HerdrRuntime;
+use crate::core::runtime::HerdrSession;
 use crate::core::transport::ssh::probe::SshReach;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
@@ -51,7 +54,9 @@ use crate::platform::linux::quickconnect::project_flow::{ProjectConnectFlow, Pro
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
-use crate::platform::linux::quickconnect_panel::{build_items, PanelItem};
+use crate::platform::linux::quickconnect_panel::{
+    build_root_items, ExistingNav, ExistingPanelState, PanelItem,
+};
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 
@@ -125,6 +130,12 @@ struct UiState {
     pending_ssh_probes: std::collections::VecDeque<std::sync::mpsc::Receiver<(String, SshReach)>>,
     /// SSH 别名 → (可达性, 探测时间)；TTL 内复用，不在 16ms tick 扫。
     ssh_reach_cache: std::collections::HashMap<String, (SshReach, Instant)>,
+    /// W20：已有的连接面板共享状态（nav + 本地/SSH 数据）。
+    existing: Rc<RefCell<ExistingPanelState>>,
+    /// W20：SSH 已有连接探测是否在跑（防并发）。
+    existing_ssh_probing: bool,
+    /// W20：SSH 已有连接探测结果队列。
+    pending_existing_ssh: std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
     reconnecting: bool,
     /// 重连失败退避：下一次允许发起重连的时刻。
@@ -450,6 +461,9 @@ impl AppWindow {
             pending_worktree_creates: std::collections::VecDeque::new(),
             pending_ssh_probes: std::collections::VecDeque::new(),
             ssh_reach_cache: std::collections::HashMap::new(),
+            existing: Rc::new(RefCell::new(ExistingPanelState::default())),
+            existing_ssh_probing: false,
+            pending_existing_ssh: std::collections::VecDeque::new(),
             reconnecting: false,
             reconnect_retry_at: None,
             reconnect_attempts: 0,
@@ -856,6 +870,7 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
         drain_pending_connects(&self._state);
         drain_pending_worktree_creates(&self._state);
         drain_ssh_probes(&self._state);
+        drain_existing_ssh(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
         let (n, pending_close) = {
@@ -922,6 +937,7 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
         drain_pending_connects(&self._state);
         drain_pending_worktree_creates(&self._state);
         drain_ssh_probes(&self._state);
+        drain_existing_ssh(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
         let pending_close = {
@@ -2374,6 +2390,90 @@ fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
     }
 }
 
+/// W20：SSH 已有的连接探测（tmux + Herdr），后台线程，最多 4 路并发。
+fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
+    {
+        let mut s = state.borrow_mut();
+        if s.existing_ssh_probing {
+            return;
+        }
+        s.existing_ssh_probing = true;
+    }
+    let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(None)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|h| h.alias)
+        .collect();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<(String, Vec<ExistingEntry>)>>();
+    state.borrow_mut().pending_existing_ssh.push_back(rx);
+    std::thread::spawn(move || {
+        let results: Vec<(String, Vec<ExistingEntry>)> = aliases
+            .into_iter()
+            .map(|alias| {
+                let mut entries = crate::core::discovery::existing::discover_ssh_tmux(
+                    &alias,
+                    None,
+                    None,
+                    std::time::Duration::from_secs(2),
+                );
+                entries.extend(crate::core::discovery::existing::discover_ssh_herdr(
+                    &alias,
+                    None,
+                    std::time::Duration::from_secs(2),
+                ));
+                (alias, entries)
+            })
+            .collect();
+        let _ = tx.send(results);
+    });
+}
+
+/// 收编 SSH 已有连接探测结果（16ms poll 与 test_poll_once 共用）。
+fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
+    let mut done = false;
+    while !done {
+        let result = {
+            let mut s = state.borrow_mut();
+            let Some(rx) = s.pending_existing_ssh.front() else {
+                break;
+            };
+            match rx.try_recv() {
+                Ok(r) => {
+                    s.pending_existing_ssh.pop_front();
+                    s.existing_ssh_probing = false;
+                    Some(r)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    done = true;
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    s.pending_existing_ssh.pop_front();
+                    s.existing_ssh_probing = false;
+                    None
+                }
+            }
+        };
+        if let Some(results) = result {
+            let mut hosts = Vec::new();
+            let mut remote = std::collections::HashMap::new();
+            for (alias, entries) in results {
+                if !entries.is_empty() {
+                    hosts.push(alias.clone());
+                    remote.insert(alias, entries);
+                }
+            }
+            {
+                let s = state.borrow();
+                let mut ex = s.existing.borrow_mut();
+                ex.hosts = hosts;
+                ex.remote = remote;
+            }
+            crate::platform::linux::quickconnect_panel::refresh_current();
+        }
+    }
+}
+
 /// W17a：tmux 控制 client 掉线后自动重连。
 ///
 /// 只重连 tmux 类 runtime；shell runtime 掉线仍按原策略。重连线程构造**新**
@@ -2571,8 +2671,14 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let font = s.font.clone();
         let win = window.clone();
         let st = state.clone();
-        let workspaces = build_items(&store, current.as_ref());
+        let workspaces = build_root_items(&store, current.as_ref());
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
+        // W20：本地已有的连接（tmux 只读默认 server + Herdr socket JSON）。
+        {
+            let mut ex = s.existing.borrow_mut();
+            ex.locals = discover_local_tmux(None);
+            ex.locals.extend(discover_local_herdr(None));
+        }
         let ws = active_workspace_id(&s);
         let active_pane = s.active_pane;
         let attention: Vec<PaneAttention> = s
@@ -2686,6 +2792,15 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                 })
             },
             ssh_reach,
+            existing: state.borrow().existing.clone(),
+            on_existing_nav: {
+                let st = st.clone();
+                std::boxed::Box::new(move |nav| {
+                    if nav == ExistingNav::SshHosts {
+                        spawn_existing_ssh_probe(&st);
+                    }
+                })
+            },
         },
     );
 }
@@ -2966,6 +3081,9 @@ fn drain_pending_worktree_creates(state: &Rc<RefCell<UiState>>) {
         }
     }
 }
+
+/// W20：SSH 已有连接探测结果（alias → 该 host 的 tmux/Herdr 行）。
+type ExistingSshProbeResult = Vec<(String, Vec<ExistingEntry>)>;
 
 /// 后台连接结果（W15c：open_spec 离开 GTK 线程）。
 struct PendingConnect {
@@ -3264,7 +3382,101 @@ fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
                 start_local_shell(state, config);
             }
         }
+        TargetRuntime::Herdr => connect_herdr(state, config),
     }
+}
+
+/// Herdr 目标：本地直接 socket JSON；SSH 先转发远端 socket 再 attach。
+fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+    if config.transport.is_ssh() {
+        connect_herdr_ssh(state, config);
+        return;
+    }
+    let socket = config.socket.clone().unwrap_or_else(|| {
+        std::env::var("MUXTERM_TEST_HERDR_SOCKET").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{home}/.config/herdr/herdr.sock")
+        })
+    });
+    let session = config
+        .session
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let id = WorkspaceId::new("local", None, &session, "herdr", &config.path);
+    {
+        let mut s = state.borrow_mut();
+        if s.pool.get(&id).is_some() {
+            activate_existing(&mut s, id);
+            return;
+        }
+    }
+    // 后台：workspace.list 按 name/path 找，没有就 workspace.create，再 connect。
+    let handle = state.borrow().rt.handle().clone();
+    let (tx, rx) = std::sync::mpsc::channel::<PendingConnect>();
+    state.borrow_mut().pending_connects.push_back(rx);
+    std::thread::spawn(move || {
+        let result = (|| -> anyhow::Result<Workspace> {
+            let herdr_session = HerdrSession::new(&session, &socket);
+            let workspace_id = match herdr_session.workspace_list() {
+                Ok(list) => list
+                    .iter()
+                    .find(|w| w.label == config.name || w.workspace_id == config.path)
+                    .map(|w| w.workspace_id.clone())
+                    .unwrap_or_else(|| {
+                        herdr_session
+                            .workspace_create(&config.path, &config.name)
+                            .map(|w| w.workspace_id)
+                            .unwrap_or_else(|e| {
+                                tracing::error!(
+                                    target = "muxterm::linux",
+                                    "herdr workspace.create 失败: {e}"
+                                );
+                                config.path.clone()
+                            })
+                    }),
+                Err(e) => {
+                    tracing::error!(target = "muxterm::linux", "herdr workspace.list 失败: {e}");
+                    config.path.clone()
+                }
+            };
+            let spec = WorkspaceSpec::herdr(session, workspace_id, socket);
+            let id = spec.id();
+            let name = spec.name();
+            let mut runtime = spec.build_runtime();
+            handle.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(10), runtime.connect())
+                    .await
+                    .map_err(|_| anyhow!("herdr connect 超时"))?
+            })?;
+            Ok(Workspace::new(id, name, runtime))
+        })();
+        let _ = tx.send(PendingConnect {
+            id,
+            socket: None,
+            flow: ProjectConnectFlow::new(&TargetConfig::new(
+                "",
+                TargetRuntime::Shell,
+                TargetTransport::Local,
+                "",
+            )),
+            config: TargetConfig::new("", TargetRuntime::Shell, TargetTransport::Local, ""),
+            existing: true,
+            result,
+        });
+    });
+}
+
+/// SSH Herdr：W20h 实现 Unix socket 转发；v1 先报错不 panic。
+fn connect_herdr_ssh(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+    tracing::error!(
+        target = "muxterm::linux",
+        alias = ?config.transport,
+        "SSH Herdr attach 尚未实现（W20h）"
+    );
+    state
+        .borrow_mut()
+        .notification_log
+        .push("SSH Herdr attach 尚未实现".to_string());
 }
 
 /// 池里最近打开的工作区（按 last_used 倒序）→ QuickConnect 目标。
