@@ -5,6 +5,7 @@
 //! `trait Runtime` 只表示已经 attach 的格子。列出候选、拿管道、探活
 //! 都在 Catalog：Driver 表、Transport 表、Connect 缓存、Inventory、Pool。
 
+pub mod builtin;
 pub mod connect;
 pub mod driver;
 pub mod inventory;
@@ -56,8 +57,14 @@ impl Catalog {
     ///
     /// 只注册，不 connect、不探用户默认 herdr.sock。
     pub fn with_builtins() -> Self {
-        // C2：注册 TmuxDriver / HerdrDriver / ShellDriver / Local / Ssh。
-        Self::new()
+        let mut cat = Self::new();
+        for driver in builtin::builtin_runtimes() {
+            cat.register_runtime(driver);
+        }
+        for transport in builtin::builtin_transports() {
+            cat.register_transport(transport);
+        }
+        cat
     }
 
     /// 注册一个 Runtime 插件。同 id 原地覆盖（保持位置）；新 id 追加到末尾。
@@ -138,11 +145,7 @@ impl Catalog {
         };
         let mut out = Vec::new();
         for driver in &self.runtimes {
-            if !driver
-                .accepted_transports()
-                .iter()
-                .any(|t| *t == transport_id)
-            {
+            if !driver.accepted_transports().contains(&transport_id) {
                 continue;
             }
             match driver.list(&connect, None) {
