@@ -534,11 +534,10 @@ impl AppWindow {
                         }
                     }
                     dispatch_event_batch(&mut s, events);
-                    let notifications = s.attention.take_new_blocked_notifications();
-                    for ws in &notifications {
-                        s.notification_sink.notify_blocked(ws, "needs attention");
-                        s.notification_log.push(format!("{ws}: needs attention"));
-                    }
+                    // blocked 与 done 通知都要在 16ms poll 里收编（W17d）：
+                    // test_poll_once 的 drain 可能在 16ms poll 应用信号之前运行，
+                    // 只 drain blocked 会让后台 Done 的通知永远等不到下一次 poll。
+                    drain_attention_notifications(&mut s);
                     sync_pane_outputs(&mut s);
                     sync_window_size(&mut s);
                     maybe_refresh_status(&mut s, structural);

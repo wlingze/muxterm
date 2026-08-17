@@ -115,6 +115,14 @@ pub fn send_background_task_done(socket: &str, pane_percent: &str) {
     tmux_ok(socket, &["respawn-pane", "-k", "-t", pane_percent, &cmd]);
 }
 
+/// OSC 133 D，后面不再写 BEL（前台 Done / 看见即熄）。
+pub fn send_command_done_no_bel(socket: &str, pane_percent: &str) {
+    let py = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/osc133_d_only.py");
+    assert!(py.is_file(), "缺少 {}", py.display());
+    let cmd = format!("python3 -u {}", py.display());
+    tmux_ok(socket, &["respawn-pane", "-k", "-t", pane_percent, &cmd]);
+}
+
 /// 后台 pane BEL（Blocked / needs attention）。
 ///
 /// pane 必须仍是 `/bin/cat`：`-H` 把 0x07 打进 stdin，cat 原样写出，
