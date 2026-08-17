@@ -35,6 +35,7 @@ let appLibSources = [
     "App/QuickConnectController.swift",
     "App/SearchPanelController.swift",
     "App/AttentionPanelController.swift",
+    "App/UnifiedPanelController.swift",
     "App/TargetConfigWindow.swift",
     "Terminal/TerminalView.swift",
     "Terminal/TerminalManager.swift",

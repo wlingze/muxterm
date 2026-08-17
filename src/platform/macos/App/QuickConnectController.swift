@@ -271,13 +271,13 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
 }
 
 /// 面板条目：目标（带标记）/ 新建入口。
-private enum QuickConnectItem {
+enum QuickConnectItem {
     case target(TargetConfig, badges: [QuickBadge], isCurrent: Bool)
     case newProject
 }
 
 /// 两行目标 cell：主行 name + 小标记，副行 `runtime @ transport`，path 第二行。
-private final class QuickTargetCellView: NSTableCellView {
+final class QuickTargetCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
