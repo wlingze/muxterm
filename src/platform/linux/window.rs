@@ -499,9 +499,7 @@ impl AppWindow {
                 let ws = active_workspace_id(&s);
                 let pane = s.active_pane;
                 if let Some(text) = s.last_seen.get(&(ws.clone(), pane)).cloned() {
-                    let lines = s
-                        .active_workspace()
-                        .pane_last_n_lines(PaneId(pane), 10_000);
+                    let lines = s.active_workspace().pane_last_n_lines(PaneId(pane), 10_000);
                     if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
                         if let Some(view) = s.active_layout().pane(pane).cloned() {
                             if let Some(adj) = view.terminal().vadjustment() {
@@ -1582,10 +1580,7 @@ fn refresh_attention_chrome(s: &UiState, window: &Window) {
 
 /// 回底按钮可见性：VTE 滚离底部时显示，回到尾部隐藏（W16a）。
 /// 把当前 pane 滚到包含指定文本的行（命令刻度 / 上次看到这里共用）。
-fn scroll_to_command_text(
-    state: &Rc<RefCell<UiState>>,
-    text: &Rc<RefCell<Option<String>>>,
-) {
+fn scroll_to_command_text(state: &Rc<RefCell<UiState>>, text: &Rc<RefCell<Option<String>>>) {
     let s = state.borrow();
     let Some(text) = text.borrow().clone() else {
         return;
@@ -1646,15 +1641,14 @@ fn update_jump_latest(s: &UiState) {
     let at_bottom = s
         .active_layout()
         .pane(s.active_pane)
-        .map(|v| view_at_bottom(&v))
+        .map(view_at_bottom)
         .unwrap_or(true);
     s.jump_latest.set_visible(!at_bottom);
     if at_bottom {
         // 回到尾部：搜索高亮不再有意义（W17c）。
         s.search_highlight.set_visible(false);
     } else if s.jump_unseen > 0 {
-        s.jump_latest
-            .set_label(&format!("↓ +{}", s.jump_unseen));
+        s.jump_latest.set_label(&format!("↓ +{}", s.jump_unseen));
     } else {
         s.jump_latest.set_label("↓");
     }
@@ -1733,7 +1727,7 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
             let ws = active_workspace_id(s);
             let wid = s.active_ws_id().clone();
             apply_attention_from_workspace(s, &wid, &ws, pane.0);
-                if let Some(view) = s.active_layout().pane(pane.0).cloned() {
+            if let Some(view) = s.active_layout().pane(pane.0).cloned() {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
                 sync_pane_grid_size(s, pane.0);
@@ -1765,15 +1759,9 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
             s.active_pane = pane.0;
             s.attention.on_became_visible(&ws, pane.0);
             // 回到有未读输出的 pane：显示标记。
-            let has_unseen = s
-                .last_seen
-                .get(&(ws.clone(), pane.0))
-                .is_some_and(|seen| {
-                    s.active_workspace()
-                        .pane_last_line_seq(PaneId(pane.0))
-                        .0
-                        != *seen
-                });
+            let has_unseen = s.last_seen.get(&(ws.clone(), pane.0)).is_some_and(|seen| {
+                s.active_workspace().pane_last_line_seq(PaneId(pane.0)).0 != *seen
+            });
             s.last_seen_mark.set_visible(has_unseen);
         }
         StateChange::TabClosed { tab } => {
@@ -2385,9 +2373,10 @@ fn query_window_bell_flag(spec: &WorkspaceSpec) -> bool {
         if let Ok(cfg) = std::env::var("MUXTERM_SSH_CONFIG_PATH") {
             cmd.args(["-F", &cfg]);
         }
-        cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", alias, "--"]).arg(format!(
-            "tmux -L {socket} display-message -p -t {session} '#{{window_bell_flag}}'"
-        ));
+        cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", alias, "--"])
+            .arg(format!(
+                "tmux -L {socket} display-message -p -t {session} '#{{window_bell_flag}}'"
+            ));
         cmd.output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
             .unwrap_or(false)
@@ -2563,9 +2552,9 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                         crate::platform::linux::panel_model::SearchScope::Pane => s
                             .active_workspace()
                             .search_pane(PaneId(s.active_pane), query),
-                        crate::platform::linux::panel_model::SearchScope::Workspace => s
-                            .active_workspace()
-                            .search_workspace(query),
+                        crate::platform::linux::panel_model::SearchScope::Workspace => {
+                            s.active_workspace().search_workspace(query)
+                        }
                         crate::platform::linux::panel_model::SearchScope::All => {
                             s.pool.search_all(query)
                         }
@@ -2800,7 +2789,7 @@ fn drain_pending_connects(state: &Rc<RefCell<UiState>>) {
             }
         };
         if let Some(pending) = pending {
-                handle_connect_outcome(state, pending);
+            handle_connect_outcome(state, pending);
         }
     }
 }
@@ -2817,7 +2806,7 @@ fn handle_connect_outcome(state: &Rc<RefCell<UiState>>, pending: PendingConnect)
     } = pending;
     match result {
         Ok(workspace) => {
-                let mut s = state.borrow_mut();
+            let mut s = state.borrow_mut();
             s.pool.insert_connected(workspace);
             s.workspace_sockets.insert(id, socket);
             after_activate(&mut s);
