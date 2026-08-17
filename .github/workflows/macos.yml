@@ -62,7 +62,11 @@ jobs:
         run: cargo build --release --no-default-features --features ffi
 
       - name: cargo test macos integration
-        run: cargo test --no-default-features --features ffi --test macos_integration
+        run: cargo test --no-default-features --features ffi --test macos_integration -- --test-threads=1
+        timeout-minutes: 15
+
+      - name: cargo test macos e2e (W13/W14/W16 contracts)
+        run: cargo test --no-default-features --features ffi --test macos_e2e -- --test-threads=1
         timeout-minutes: 15
 
       - name: Link libmuxterm.a into Vendor (Swift links local ./target)
