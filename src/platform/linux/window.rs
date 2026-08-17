@@ -24,7 +24,6 @@ use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::config_edit::set_dotted_key;
 use crate::core::discovery::existing::ExistingEntry;
-use crate::core::discovery::existing::{discover_local_herdr, discover_local_tmux};
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::SplitDir;
 use crate::core::model::state::{BackendStatus, StateChange};
@@ -2418,6 +2417,49 @@ fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
     }
 }
 
+/// C6：Catalog SessionCandidate → 面板 ExistingEntry（socket 按 namespace 推导）。
+fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> ExistingEntry {
+    let runtime = match c.runtime_id.as_str() {
+        "herdr" => TargetRuntime::Herdr,
+        "shell" => TargetRuntime::Shell,
+        _ => TargetRuntime::Tmux,
+    };
+    let transport = if c.transport_id == "ssh" {
+        TargetTransport::Ssh {
+            name: c.target.clone(),
+        }
+    } else {
+        TargetTransport::Local
+    };
+    let herdr_socket = if runtime == TargetRuntime::Herdr {
+        let home = std::env::var("HOME").unwrap_or_default();
+        match c.namespace.as_deref() {
+            Some(ns) if !ns.is_empty() && ns != "default" => {
+                Some(format!("{home}/.config/herdr/sessions/{ns}/herdr.sock"))
+            }
+            _ => Some(format!("{home}/.config/herdr/herdr.sock")),
+        }
+    } else {
+        None
+    };
+    ExistingEntry {
+        title: c.name.clone(),
+        runtime,
+        transport,
+        tmux_session: (runtime == TargetRuntime::Tmux).then(|| c.name.clone()),
+        herdr_session: (runtime == TargetRuntime::Herdr).then(|| {
+            c.namespace
+                .clone()
+                .filter(|ns| !ns.is_empty())
+                .unwrap_or_else(|| "default".to_string())
+        }),
+        herdr_workspace_id: (runtime == TargetRuntime::Herdr)
+            .then(|| c.extra.clone())
+            .filter(|s| !s.is_empty()),
+        herdr_socket,
+    }
+}
+
 /// W20：SSH 已有的连接探测（tmux + Herdr），后台线程，最多 4 路并发。
 fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
     {
@@ -2438,17 +2480,13 @@ fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
         let results: Vec<(String, Vec<ExistingEntry>)> = aliases
             .into_iter()
             .map(|alias| {
-                let mut entries = crate::core::discovery::existing::discover_ssh_tmux(
-                    &alias,
-                    None,
-                    None,
-                    std::time::Duration::from_secs(2),
-                );
-                entries.extend(crate::core::discovery::existing::discover_ssh_herdr(
-                    &alias,
-                    None,
-                    std::time::Duration::from_secs(2),
-                ));
+                let mut catalog = crate::core::catalog::Catalog::with_builtins();
+                let entries = catalog
+                    .discover_sessions("ssh", &alias)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(candidate_to_existing)
+                    .collect();
                 (alias, entries)
             })
             .collect();
@@ -2701,11 +2739,17 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let st = state.clone();
         let workspaces = build_root_items(&store, current.as_ref());
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
-        // W20：本地已有的连接（tmux 只读默认 server + Herdr socket JSON）。
+        // W20/C6：本地已有的连接走 Catalog::discover_sessions 扇出
+        // （tmux + herdr），platform 不再直接调 discovery::existing。
         {
+            let mut catalog = crate::core::catalog::Catalog::with_builtins();
             let mut ex = s.existing.borrow_mut();
-            ex.locals = discover_local_tmux(None);
-            ex.locals.extend(discover_local_herdr(None));
+            ex.locals = catalog
+                .discover_sessions("local", "")
+                .unwrap_or_default()
+                .iter()
+                .map(candidate_to_existing)
+                .collect();
         }
         let ws = active_workspace_id(&s);
         let active_pane = s.active_pane;
@@ -2940,6 +2984,7 @@ fn open_target_config(
 ) {
     let store = state.borrow().qc_store.clone();
     let hosts = CoreBridge::discover_ssh_hosts().unwrap_or_default();
+    let runtimes = crate::core::catalog::Catalog::with_builtins().runtime_list();
     let st = state.clone();
     let win = window.clone();
     crate::platform::linux::target_config_window::show(
@@ -2947,6 +2992,7 @@ fn open_target_config(
         editing,
         store,
         hosts,
+        runtimes,
         {
             let st = st.clone();
             let win = win.clone();

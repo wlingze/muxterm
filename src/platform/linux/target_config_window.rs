@@ -15,6 +15,7 @@ use gtk4::{
     ToggleButton, Window,
 };
 
+use crate::core::catalog::driver::RuntimeInfo;
 use crate::core::transport::ssh::probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::ffi_bridge::{CoreBridge, SshHostEntry};
@@ -60,6 +61,7 @@ pub fn show(
     editing: Option<TargetConfig>,
     store: QuickConnectStore,
     ssh_hosts: Vec<SshHostEntry>,
+    runtimes: Vec<RuntimeInfo>,
     on_save: impl Fn(TargetConfig) + 'static,
     on_cancel: impl Fn() + 'static,
 ) -> Window {
@@ -111,27 +113,26 @@ pub fn show(
         .orientation(Orientation::Horizontal)
         .spacing(10)
         .build();
-    let tmux_btn = option_card(
-        "muxterm-runtime-tmux",
-        "tmux",
-        &i18n::tr(Key::AttachCreateTmux),
-        state.borrow().selection.runtime == TargetRuntime::Tmux,
-    );
-    let shell_btn = option_card(
-        "muxterm-runtime-shell",
-        "shell",
-        &i18n::tr(Key::PlainShell),
-        state.borrow().selection.runtime == TargetRuntime::Shell,
-    );
-    let herdr_btn = option_card(
-        "muxterm-runtime-herdr",
-        "herdr",
-        &i18n::tr(Key::AttachCreateHerdr),
-        state.borrow().selection.runtime == TargetRuntime::Herdr,
-    );
-    runtime_row.append(&tmux_btn);
-    runtime_row.append(&shell_btn);
-    runtime_row.append(&herdr_btn);
+    // C6：卡从 Catalog::runtime_list 画，不硬编码三张卡的存在性。
+    // widget_name 保持 muxterm-runtime-{id}（W20 测试依赖）。
+    let runtime_buttons: Vec<gtk4::ToggleButton> = runtimes
+        .iter()
+        .map(|r| {
+            let subtitle = match r.id.as_str() {
+                "tmux" => i18n::tr(Key::AttachCreateTmux),
+                "herdr" => i18n::tr(Key::AttachCreateHerdr),
+                _ => r.name.clone(),
+            };
+            let btn = option_card(
+                &format!("muxterm-runtime-{}", r.id),
+                &r.id,
+                &subtitle,
+                state.borrow().selection.runtime.as_str() == r.id,
+            );
+            runtime_row.append(&btn);
+            btn
+        })
+        .collect();
     root.append(&runtime_row);
 
     root.append(&section_label(&i18n::tr(Key::Transport)));
@@ -338,54 +339,28 @@ pub fn show(
 
     {
         let state = state.clone();
-        let tmux_btn = tmux_btn.clone();
-        let shell_btn = shell_btn.clone();
-        let herdr_btn = herdr_btn.clone();
-        tmux_btn.connect_toggled({
+        let buttons = runtime_buttons.clone();
+        for (i, btn) in buttons.iter().enumerate() {
             let state = state.clone();
-            let shell_btn = shell_btn.clone();
-            let herdr_btn = herdr_btn.clone();
-            move |btn| {
-                if btn.is_active() {
-                    state
-                        .borrow_mut()
-                        .selection
-                        .select_runtime(TargetRuntime::Tmux);
-                    shell_btn.set_active(false);
-                    herdr_btn.set_active(false);
+            let runtimes = runtimes.clone();
+            let others: Vec<gtk4::ToggleButton> = buttons
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, b)| b.clone())
+                .collect();
+            let btn = btn.clone();
+            btn.connect_toggled(move |b| {
+                if b.is_active() {
+                    state.borrow_mut().selection.select_runtime(
+                        TargetRuntime::from_str(&runtimes[i].id).unwrap_or(TargetRuntime::Shell),
+                    );
+                    for other in &others {
+                        other.set_active(false);
+                    }
                 }
-            }
-        });
-        shell_btn.connect_toggled({
-            let state = state.clone();
-            let tmux_btn = tmux_btn.clone();
-            let herdr_btn = herdr_btn.clone();
-            move |btn| {
-                if btn.is_active() {
-                    state
-                        .borrow_mut()
-                        .selection
-                        .select_runtime(TargetRuntime::Shell);
-                    tmux_btn.set_active(false);
-                    herdr_btn.set_active(false);
-                }
-            }
-        });
-        herdr_btn.connect_toggled({
-            let state = state.clone();
-            let tmux_btn = tmux_btn.clone();
-            let shell_btn = shell_btn.clone();
-            move |btn| {
-                if btn.is_active() {
-                    state
-                        .borrow_mut()
-                        .selection
-                        .select_runtime(TargetRuntime::Herdr);
-                    tmux_btn.set_active(false);
-                    shell_btn.set_active(false);
-                }
-            }
-        });
+            });
+        }
     }
 
     {

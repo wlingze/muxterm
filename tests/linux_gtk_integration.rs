@@ -73,6 +73,7 @@ fn assert_target_config_ssh_toggle_after_debounce() {
             port: 22,
             user: "wlz".into(),
         }],
+        muxterm::core::catalog::Catalog::with_builtins().runtime_list(),
         |_| {},
         || {},
     );
@@ -113,6 +114,7 @@ fn assert_target_config_herdr_card_saves() {
         None,
         QuickConnectStore::new(None),
         vec![],
+        muxterm::core::catalog::Catalog::with_builtins().runtime_list(),
         move |cfg| {
             *s.borrow_mut() = Some(cfg.runtime);
         },
