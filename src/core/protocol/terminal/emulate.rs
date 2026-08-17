@@ -120,11 +120,15 @@ impl AttrState {
 pub struct ScrollbackLine {
     pub text: String,
     pub seq: u64,
+    /// 该行是否因软换行（写满末列后自动折行）产生；搜索时与下一行拼回逻辑行。
+    pub soft_wrapped: bool,
 }
 
 /// 无头终端状态。
 pub struct TerminalState {
     grid: Vec<Vec<Cell>>,
+    /// 每行是否因软换行折行（与 grid 平行；搜索拼回逻辑行用）。
+    grid_soft_wrapped: Vec<bool>,
     cursor_row: usize,
     cursor_col: usize,
     attr: AttrState,
@@ -185,7 +189,17 @@ pub struct TerminalState {
     osc_pending: Option<Vec<u8>>,
     /// 当前激活字符集（SI/SO 切换）。
     pub active_charset: CharsetIndex,
+    /// W18：OSC 133 命令回合（滚动条刻度）。Codex 必须在 A/B/C/D 时写入，不要永远空。
+    command_marks: Vec<CommandMark>,
     processor: Processor,
+}
+
+/// 一条 shell 命令刻度：副本行号 + 命令文本 + 退出码（红/绿）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandMark {
+    pub seq: u64,
+    pub command: String,
+    pub exit_code: Option<u8>,
 }
 
 /// 标准 16 色终端调色板（ANSI + bright）。
@@ -264,6 +278,7 @@ impl TerminalState {
         let rows = rows.max(1);
         Self {
             grid: vec![vec![Cell::blank(); cols]; rows],
+            grid_soft_wrapped: vec![false; rows],
             cursor_row: 0,
             cursor_col: 0,
             attr: AttrState::default(),
@@ -300,8 +315,14 @@ impl TerminalState {
             last_raw_bytes: Vec::new(),
             osc_esc_seen: false,
             osc_pending: None,
+            command_marks: Vec::new(),
             processor: Processor::default(),
         }
+    }
+
+    /// W18：已完成的 OSC 133 命令回合（滚动条刻度数据源）。
+    pub fn command_marks(&self) -> &[CommandMark] {
+        &self.command_marks
     }
 
     pub fn cols(&self) -> usize {
@@ -575,7 +596,7 @@ impl TerminalState {
         if self.wrap_pending {
             self.wrap_pending = false;
             if self.line_wrap {
-                self.linefeed();
+                self.linefeed_soft();
                 self.carriage_return();
             }
         }
@@ -598,6 +619,9 @@ impl TerminalState {
             } else if self.line_wrap {
                 // 末列只挂起 wrap，等下一个可打印字符（CUP/CR/LF 会取消）。
                 self.wrap_pending = true;
+                if let Some(flag) = self.grid_soft_wrapped.get_mut(self.cursor_row) {
+                    *flag = true;
+                }
             } else {
                 break;
             }
@@ -605,6 +629,15 @@ impl TerminalState {
     }
 
     fn linefeed(&mut self) {
+        self.linefeed_inner(false);
+    }
+
+    /// 软换行（写满末列后自动折行）：滚出的行标记 soft_wrapped，搜索可拼回。
+    fn linefeed_soft(&mut self) {
+        self.linefeed_inner(true);
+    }
+
+    fn linefeed_inner(&mut self, soft: bool) {
         self.wrap_pending = false;
         if self.cursor_row < self.scroll_bottom {
             self.cursor_row += 1;
@@ -616,17 +649,26 @@ impl TerminalState {
                 if let Some(evicted) = self.grid.first() {
                     let s: String = evicted.iter().map(|c| c.ch).collect();
                     // 去掉行尾空白，保持 scrollback 可读
-                    self.push_scrollback(s.trim_end().to_string());
+                    let was_soft = self
+                        .grid_soft_wrapped
+                        .first()
+                        .copied()
+                        .unwrap_or(false);
+                    self.push_scrollback(s.trim_end().to_string(), soft || was_soft);
                 }
                 // 先取列数：rows=1 时 remove(0) 会让 grid 暂时为空，cols() 返回 0。
                 let cols = self.cols();
                 self.grid.remove(0);
+                self.grid_soft_wrapped.remove(0);
                 self.grid.push(vec![Cell::blank(); cols]);
+                self.grid_soft_wrapped.push(false);
             } else if top < self.rows() && bottom < self.rows() {
                 // 部分滚动区域（DECSTBM）：区域顶行滚出、区域底行补空，
                 // 区域外的行不能动。htop 正是靠这个固定表头/表尾只滚动正文。
                 self.grid.remove(top);
+                self.grid_soft_wrapped.remove(top);
                 self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
+                self.grid_soft_wrapped.insert(bottom, false);
             }
         }
     }
@@ -637,14 +679,14 @@ impl TerminalState {
     }
 
     /// 把一行推入 scrollback（按 `with_scrollback` 上限截断，seq 单调递增）。
-    fn push_scrollback(&mut self, line: String) {
+    fn push_scrollback(&mut self, line: String, soft_wrapped: bool) {
         if self.scrollback.len() >= self.scrollback_max {
             self.scrollback.pop_front();
         }
         let seq = self.next_seq;
         self.next_seq += 1;
         self.scrollback
-            .push_back(ScrollbackLine { text: line, seq });
+            .push_back(ScrollbackLine { text: line, seq, soft_wrapped });
     }
 
     /// scrollback 行数。
@@ -673,18 +715,45 @@ impl TerminalState {
         if query.is_empty() {
             return Vec::new();
         }
-        let mut out: Vec<(u64, String)> = self
-            .scrollback
-            .iter()
-            .filter(|l| l.text.contains(query))
-            .map(|l| (l.seq, l.text.clone()))
-            .collect();
-        let mut seq = self.next_seq;
-        for line in self.snapshot_trimmed() {
-            if line.contains(query) {
-                out.push((seq, line));
-                seq += 1;
+        let mut out: Vec<(u64, String)> = Vec::new();
+        // scrollback：软换行拼回逻辑行再匹配（W18g 长 token 折行后仍可搜到）。
+        let mut logical = String::new();
+        let mut logical_seq = 0u64;
+        for l in &self.scrollback {
+            if logical.is_empty() {
+                logical_seq = l.seq;
             }
+            logical.push_str(&l.text);
+            if !l.soft_wrapped {
+                if logical.contains(query) {
+                    out.push((logical_seq, logical.clone()));
+                }
+                logical.clear();
+            }
+        }
+        if !logical.is_empty() && logical.contains(query) {
+            out.push((logical_seq, logical.clone()));
+        }
+        // 可见屏：软换行拼回逻辑行再匹配。
+        let mut seq = self.next_seq;
+        let mut logical = String::new();
+        let mut logical_seq = seq;
+        for (i, line) in self.snapshot_trimmed().into_iter().enumerate() {
+            if logical.is_empty() {
+                logical_seq = seq;
+            }
+            logical.push_str(&line);
+            let soft = self.grid_soft_wrapped.get(i).copied().unwrap_or(false);
+            seq += 1;
+            if !soft {
+                if logical.contains(query) {
+                    out.push((logical_seq, logical.clone()));
+                }
+                logical.clear();
+            }
+        }
+        if !logical.is_empty() && logical.contains(query) {
+            out.push((logical_seq, logical.clone()));
         }
         out
     }
@@ -2299,6 +2368,31 @@ mod attention_signal_tests {
         assert_eq!(
             t.take_attention_signals(),
             vec![AttentionSignal::CommandDone { exit_code: Some(0) }]
+        );
+    }
+
+    #[test]
+    fn osc133_records_command_marks_with_exit_and_text() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;A\x07\x1b]133;B\x07cmd_ok\r\n\x1b]133;C\x07out_ok\r\n\x1b]133;D;0\x07");
+        t.feed(
+            b"\x1b]133;A\x07\x1b]133;B\x07cmd_fail\r\n\x1b]133;C\x07out_fail\r\n\x1b]133;D;1\x07",
+        );
+        let marks = t.command_marks();
+        assert_eq!(
+            marks.len(),
+            2,
+            "OSC 133 两个回合必须记成两条命令刻度，不能只当 Attention 信号丢掉文本"
+        );
+        assert_eq!(marks[0].command, "cmd_ok");
+        assert_eq!(marks[0].exit_code, Some(0));
+        assert_eq!(marks[1].command, "cmd_fail");
+        assert_eq!(marks[1].exit_code, Some(1));
+        assert!(
+            marks[0].seq < marks[1].seq,
+            "刻度 seq 必须随回合前进。got {} then {}",
+            marks[0].seq,
+            marks[1].seq
         );
     }
 

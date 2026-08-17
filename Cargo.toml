@@ -191,6 +191,11 @@ path = "tests/linux_search_scope_e2e.rs"
 required-features = ["gtk"]
 
 [[test]]
+name = "linux_last_seen_e2e"
+path = "tests/linux_last_seen_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
 name = "linux_jump_count_e2e"
 path = "tests/linux_jump_count_e2e.rs"
 required-features = ["gtk"]
