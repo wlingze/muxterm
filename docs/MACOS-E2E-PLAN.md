@@ -2,6 +2,7 @@
 
 > 日期：2026-08-17（本机 `2026-08-17T13:08:54+08:00`）
 > 续工（Cmd-P 三 tab / pane-cmd / agent 色与光标）：[`MACOS-LINUX-PARITY-PLAN.md`](MACOS-LINUX-PARITY-PLAN.md)
+> 本轮（主题 / SSH 列表 / 连接进度 / 注意力 UX / status-right / tab 手势）：[`MACOS-W19-PLAN.md`](MACOS-W19-PLAN.md)
 > 工作目录：`/Users/wlz/Developer/self/muxterm`
 > 分支：`feature/quickconnect-attach-ui`（**不 push**）
 > 先读：`docs/FEATURE-E2E-PLAN.md`、`docs/W16-PLAN.md`、`AGENTS.md`
@@ -22,7 +23,7 @@ Linux 用 in-process GTK `AppWindow::test_*` 锁死了 W13–W16 用户路径。
 
 1. `MainWindow` 对 `BackendStatus::Exited` (pane_id=4) 调 `closeSessionWindow()`。Linux W16b：tmux 死后留最后一帧 + 水印，不关窗。
 2. 状态点 popover 文案不是 `type=ssh` / `1.5 KB/s` / `1.5 KB` + `56 B`。
-3. 注意力面板没有 `muxterm.attention.peek` 小终端。
+3. 注意力面板列表不再渲染 `muxterm.attention.peek`（W19：Enter 跳转，Cmd-Enter 独立 overlay）。
 4. FFI `AttentionEngine` 用 `AttentionConfig::default()`，不读 `config.toml` 的 `blocked_regex`（W16c 正则点亮会红）。
 5. Alt+Enter zoom：core 可能已 zoom，GUI leaf 必须变成 1。
 
@@ -103,9 +104,9 @@ if ev.paneId == 4 {
 
 `jumpToPane` 不要写 `if tabId != 0`。tmux window id 可以是 0。命中行 activate 必须 `requestSwitchTab` + `switchPane` + 关搜索面板。
 
-### 4.3 peek
+### 4.3 peek → overlay（W19）
 
-注意力面板选中行后必须有 identifier `muxterm.attention.peek` 的小 `MuxTerminalView`，喂该 pane 的 `getPaneOutput`。快速回复走和 VTE 同一条 `sendInput` / `on_user_input`。
+注意力列表现在 **不得** 渲染 `muxterm.attention.peek`。Enter 跳转关面板；Cmd-Enter 打开独立 `muxterm.replyOverlay` replica。详见 [`MACOS-W19-PLAN.md`](MACOS-W19-PLAN.md)。
 
 ### 4.4 正则 blocked
 

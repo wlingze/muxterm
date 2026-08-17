@@ -91,7 +91,7 @@ if ev.name.hasPrefix("muxterm.pane-cmd") {
 - 三个 tab 按钮：`muxterm.panel.tab.workspaces|attention|search`。
 - 状态用已有 `PanelModel`。Tab / Shift+Tab 在面板是 key window 时 `cycleTab`；Esc 关。
 - Workspaces = 现在 QuickConnect 列表（含 SSH 灯如果 Linux 有）。
-- Attention = 现在 AttentionPanel（peek `muxterm.attention.peek`、跳转、mute）。切到该 tab 才显示 peek。
+- Attention = 现在 AttentionPanel（跳转、mute）。**W19 起不要 peek**（`muxterm.attention.peek` 必须消失；Cmd-Enter 走 `muxterm.replyOverlay`）。
 - Search = 现在 SearchPanel（`muxterm.search.hit-*`，activate 关面板 + 切 tab/pane）。
 - query 跨 tab 保留（`PanelModel.query`）。
 - 红点点击：有 blocked 则打开面板并停在 Attention，否则 Workspaces（Linux `window.rs` 同一套）。
