@@ -139,6 +139,10 @@ struct UiState {
     /// 当前 pane 内查找条（W18f：Ctrl+F / test_open_pane_find 同一条生产路径）。
     pane_find: gtk4::Box,
     pane_find_entry: gtk4::Entry,
+    /// 上次看到这里（W18g）：(workspace, pane) → 离开时的最后一行文本。
+    last_seen: std::collections::HashMap<(String, u32), String>,
+    /// 上次看到这里标记（客户端覆盖层，不改 pane 字节）。
+    last_seen_mark: gtk4::Button,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -354,9 +358,17 @@ impl AppWindow {
         pane_find_entry.set_placeholder_text(Some("find in pane…"));
         pane_find.append(&pane_find_entry);
         pane_find.set_visible(false);
+        let last_seen_mark = gtk4::Button::with_label("上次看到这里");
+        last_seen_mark.set_widget_name("muxterm-last-seen");
+        last_seen_mark.set_halign(gtk4::Align::Start);
+        last_seen_mark.set_valign(gtk4::Align::Center);
+        last_seen_mark.set_margin_start(4);
+        last_seen_mark.add_css_class("muxterm-last-seen");
+        last_seen_mark.set_visible(false);
         layout_overlay.add_overlay(&pane_find);
         layout_overlay.add_overlay(&search_highlight);
         layout_overlay.add_overlay(&disconnect_overlay);
+        layout_overlay.add_overlay(&last_seen_mark);
         layout_overlay.add_overlay(&jump_latest);
         root.append(&layout_overlay);
         root.append(&status.container);
@@ -415,6 +427,8 @@ impl AppWindow {
             search_highlight,
             pane_find,
             pane_find_entry,
+            last_seen: std::collections::HashMap::new(),
+            last_seen_mark,
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -431,6 +445,29 @@ impl AppWindow {
                     let mut s = st.borrow_mut();
                     request_switch_tab(&mut s, tab_id);
                 });
+        }
+
+        // 上次看到这里：点击滚回离开时的那一行（W18g）。
+        {
+            let st = state.clone();
+            state.borrow().last_seen_mark.connect_clicked(move |_| {
+                let s = st.borrow();
+                let ws = active_workspace_id(&s);
+                let pane = s.active_pane;
+                if let Some(text) = s.last_seen.get(&(ws.clone(), pane)).cloned() {
+                    let lines = s
+                        .active_workspace()
+                        .pane_last_n_lines(PaneId(pane), 10_000);
+                    if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
+                        if let Some(view) = s.active_layout().pane(pane).cloned() {
+                            if let Some(adj) = view.terminal().vadjustment() {
+                                adj.set_value(adj.lower() + row as f64);
+                            }
+                        }
+                    }
+                }
+                s.last_seen_mark.set_visible(false);
+            });
         }
 
         // 当前 pane 内查找：输入即滚到第一个命中（W18f）。
@@ -1623,9 +1660,26 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
             refresh_ui(s);
         }
         StateChange::ActivePaneChanged { pane, .. } => {
-            s.active_pane = pane.0;
+            // W18g：离开当前 pane 前记下副本 seq（上次看到这里）。
             let ws = active_workspace_id(s);
+            let old = s.active_pane;
+            if old != pane.0 {
+                let (last_line, _) = s.active_workspace().pane_last_line_seq(PaneId(old));
+                s.last_seen.insert((ws.clone(), old), last_line);
+            }
+            s.active_pane = pane.0;
             s.attention.on_became_visible(&ws, pane.0);
+            // 回到有未读输出的 pane：显示标记。
+            let has_unseen = s
+                .last_seen
+                .get(&(ws.clone(), pane.0))
+                .is_some_and(|seen| {
+                    s.active_workspace()
+                        .pane_last_line_seq(PaneId(pane.0))
+                        .0
+                        != *seen
+                });
+            s.last_seen_mark.set_visible(has_unseen);
         }
         StateChange::TabClosed { tab } => {
             s.tab_gate.on_tab_closed(tab.0);
