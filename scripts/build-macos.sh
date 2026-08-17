@@ -67,15 +67,36 @@ fi
 # 组装 .app（GUI bundle，仅被 `muxterm gui` 用 open 启动 / 双击）
 APP="$OUT_DIR/Muxterm.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/i18n"
 cp -f "$SWIFT_BIN" "$APP/Contents/MacOS/Muxterm"
 chmod +x "$APP/Contents/MacOS/Muxterm"
+
+# SPM 资源包必须放在 Contents/Resources（.app 根目录再放文件会
+# codesign: unsealed contents present in the bundle root）。
+# 不要用生成的 Bundle.module：它查的是 app 根 + 编译机绝对 .build 路径。
+SWIFT_BIN_DIR="$(dirname "$SWIFT_BIN")"
+copy_spm_bundle() {
+  local name="$1"
+  local src="$SWIFT_BIN_DIR/${name}.bundle"
+  if [[ ! -d "$src" ]]; then
+    echo "ERROR: missing SPM resource bundle: $src" >&2
+    exit 1
+  fi
+  rm -rf "$APP/Contents/Resources/${name}.bundle"
+  cp -R "$src" "$APP/Contents/Resources/${name}.bundle"
+}
+copy_spm_bundle "MuxtermApp_MuxtermAppLib"
+copy_spm_bundle "SwiftTerm_SwiftTerm"
+
+# 源码 catalog：给 Bundle.main / Contents/Resources/i18n 查找（不依赖 SPM bundle 名）
+cp -f "$MACOS_DIR/Resources/i18n/"*.json "$APP/Contents/Resources/i18n/"
+
 xattr -cr "$APP" 2>/dev/null || true
 cp -f "$MACOS_DIR/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Muxterm" "$APP/Contents/Info.plist" 2>/dev/null \
   || true
 chmod +x "$APP/Contents/MacOS/Muxterm"
-chmod 755 "$APP" "$APP/Contents" "$APP/Contents/MacOS"
+chmod 755 "$APP" "$APP/Contents" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 CODESIGN_IDENTITY="${MUXTERM_CODESIGN_IDENTITY:--}"
 codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP"

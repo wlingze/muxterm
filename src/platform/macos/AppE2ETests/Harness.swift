@@ -63,6 +63,26 @@ enum AppE2E {
         pump(200)
         return wc
     }
+
+    /// SSH attach：alias 走 `sshAlias`，`socket` 只给隔离远端 `-L`。
+    static func attachSshWindow(
+        alias: String,
+        remoteSocket: String,
+        session: String
+    ) throws -> MainWindowController {
+        ensureApp()
+        let bridge = try CoreBridge.connect(
+            backendType: "ssh",
+            socket: remoteSocket,
+            session: session,
+            sshAlias: alias
+        )
+        let wc = MainWindowController(bridge: bridge, debug: true)
+        wc.window?.setFrame(NSRect(x: 40, y: 40, width: 1280, height: 800), display: true)
+        wc.window?.orderFront(nil)
+        pump(200)
+        return wc
+    }
 }
 
 enum Tmux {

@@ -216,7 +216,12 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 当前连接是否由 tmux 控制 client 管理尺寸。
     var usesClientResize: Bool {
-        bridge?.backendType == "tmux" || bridge?.backendType == "ssh"
+        switch bridge?.backendType {
+        case "tmux", "ssh", "tmux-ssh":
+            return true
+        default:
+            return false
+        }
     }
 
     /// 前端是否为 pane PTY 的直接终端模拟器。

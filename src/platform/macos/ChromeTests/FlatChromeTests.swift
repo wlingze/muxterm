@@ -809,6 +809,18 @@ final class QuickConnectModelTests: XCTestCase {
         XCTAssertEqual(entries.count, 2) // local 与 ryzen 是不同目标
         XCTAssertEqual(entries.map { $0.config.transport.label }, ["local", "ryzen"])
     }
+
+    func testSshAttachBackendDoesNotPutAliasInSocket() {
+        let ssh = TargetTransport.ssh(name: "ryzen").attachBackend
+        XCTAssertEqual(ssh.type, "ssh")
+        XCTAssertNil(ssh.socket, "Host alias 不得塞进 socket，否则远端 tmux -L ryzen")
+        XCTAssertEqual(ssh.sshAlias, "ryzen")
+
+        let local = TargetTransport.local.attachBackend
+        XCTAssertEqual(local.type, "tmux")
+        XCTAssertNil(local.socket)
+        XCTAssertNil(local.sshAlias)
+    }
 }
 
 final class QuickConnectStoreTests: XCTestCase {

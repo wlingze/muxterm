@@ -304,6 +304,30 @@ impl TmuxRuntime {
         backend
     }
 
+    /// 解析 SSH attach 的 Host alias 与远端 tmux `-L`。
+    ///
+    /// `muxterm_new("ssh", socket=alias, session)` 没有单独 alias 参数，
+    /// 此时 `socket` **就是** `~/.ssh/config` Host 名，禁止再当成远端 `-L`
+    /// （否则会变成日志里的 `ssh ryzen -- tmux -L ryzen -CC attach`）。
+    /// `muxterm_new_connect` 才把 `ssh_alias` 和 `-L socket` 分开。
+    pub fn ssh_alias_and_tmux_socket(
+        sock: Option<&str>,
+        alias: Option<&str>,
+    ) -> Option<(String, Option<String>)> {
+        let nonempty = |s: &str| {
+            let trimmed = s.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_string())
+        };
+        let alias = alias.and_then(nonempty);
+        let sock = sock.and_then(nonempty);
+        match (alias, sock) {
+            (Some(a), Some(s)) if a == s => Some((a, None)),
+            (Some(a), s) => Some((a, s)),
+            (None, Some(a)) => Some((a, None)),
+            (None, None) => None,
+        }
+    }
+
     /// 通过 SSH alias 在远端启动 tmux -CC（new-session 模式）。
     ///
     /// `ssh_alias` 是 `~/.ssh/config` 里的 Host 名；`socket` 是远端 tmux 的 `-L` socket 名（可选）。
@@ -331,6 +355,18 @@ impl TmuxRuntime {
     #[cfg(test)]
     pub fn test_connect_mode(&self) -> Option<&ConnectMode> {
         self.config.mode.as_ref()
+    }
+
+    /// 测试用：传给 tmux 的二进制级参数（含 `-L`）。
+    #[cfg(test)]
+    pub fn test_extra_args(&self) -> &[String] {
+        &self.config.extra_args
+    }
+
+    /// 测试用：SSH Host alias。
+    #[cfg(test)]
+    pub fn test_ssh_alias(&self) -> Option<&str> {
+        self.config.ssh_alias.as_deref()
     }
 
     /// 创建新 session，并指定起始工作目录（session 名由 tmux 自动生成）。
@@ -2184,6 +2220,50 @@ fn key_event_to_tmux_key(ev: &crate::core::protocol::terminal::input::KeyEvent) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muxterm_new_ssh_socket_is_alias_not_remote_dash_l() {
+        let (alias, socket) = TmuxRuntime::ssh_alias_and_tmux_socket(Some("ryzen"), None).unwrap();
+        assert_eq!(alias, "ryzen");
+        assert_eq!(
+            socket, None,
+            "muxterm_new 的 socket=ryzen 不得变成 tmux -L ryzen"
+        );
+        let rt = TmuxRuntime::new_ssh_attach(&alias, socket.as_deref(), "yaklang-workspace");
+        assert_eq!(rt.test_ssh_alias(), Some("ryzen"));
+        assert!(
+            !rt.test_extra_args()
+                .windows(2)
+                .any(|w| w == ["-L", "ryzen"]),
+            "远端命令必须是 `tmux -CC attach -t yaklang-workspace`，不能带 -L ryzen: {:?}",
+            rt.test_extra_args()
+        );
+    }
+
+    #[test]
+    fn muxterm_new_connect_keeps_isolated_remote_socket() {
+        let (alias, socket) = TmuxRuntime::ssh_alias_and_tmux_socket(
+            Some("muxterm-test-remote-feat"),
+            Some("test-feat-ssh"),
+        )
+        .unwrap();
+        assert_eq!(alias, "test-feat-ssh");
+        assert_eq!(socket.as_deref(), Some("muxterm-test-remote-feat"));
+        let rt = TmuxRuntime::new_ssh_attach(&alias, socket.as_deref(), "featssh");
+        assert_eq!(rt.test_extra_args(), ["-L", "muxterm-test-remote-feat"]);
+        assert!(!rt.test_extra_args().iter().any(|a| a == "test-feat-ssh"));
+    }
+
+    #[test]
+    fn identical_alias_and_socket_is_not_dash_l() {
+        let (alias, socket) =
+            TmuxRuntime::ssh_alias_and_tmux_socket(Some("ryzen"), Some("ryzen")).unwrap();
+        assert_eq!(alias, "ryzen");
+        assert_eq!(
+            socket, None,
+            "alias 被同时塞进 socket 时仍不得生成 -L ryzen（macOS CoreBridge.init 旧路径）"
+        );
+    }
 
     #[test]
     fn parse_list_windows_line_keeps_full_layout_with_commas() {

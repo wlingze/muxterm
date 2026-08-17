@@ -24,6 +24,17 @@ public enum TargetTransport: Equatable, Sendable {
         if case .ssh = self { return true }
         return false
     }
+
+    /// SSH attach 的 FFI 参数：Host 走 `sshAlias`，`socket` 只给真正的远端 `-L`。
+    /// 禁止把 alias 塞进 socket（否则远端变成 `tmux -L ryzen`）。
+    public var attachBackend: (type: String, socket: String?, sshAlias: String?) {
+        switch self {
+        case .local:
+            return ("tmux", nil, nil)
+        case .ssh(let name):
+            return ("ssh", nil, name)
+        }
+    }
 }
 
 /// 快速连接条目上的小标记：标识该目标同时是 Recent 和/或 Project。

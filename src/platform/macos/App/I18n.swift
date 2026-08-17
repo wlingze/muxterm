@@ -392,25 +392,96 @@ final class MuxtermI18n {
     private func catalog(for language: MuxtermLanguage) -> [String: String] {
         let tag = language == .system ? MuxtermLanguage.systemResolved.catalogTag : language.catalogTag
         if let catalog = catalogs[tag] { return catalog }
-        let catalog = loadCatalog(tag: tag)
+        let catalog = MuxtermI18nLocator.loadCatalog(tag: tag, roots: MuxtermI18nLocator.searchRoots())
         catalogs[tag] = catalog
         return catalog
     }
+}
 
-    private func loadCatalog(tag: String) -> [String: String] {
-        let bundle: Bundle
-        #if SWIFT_PACKAGE
-        bundle = Bundle.module
-        #else
-        bundle = Bundle.main
-        #endif
-        guard let url = bundle.url(forResource: tag, withExtension: "json", subdirectory: "i18n"),
-              let data = try? Data(contentsOf: url),
-              let catalog = try? JSONDecoder().decode([String: String].self, from: data)
-        else {
-            return [:]
+/// 查找 JSON catalog，**绝不**走 SPM 生成的 `Bundle.module`。
+///
+/// `swift build` 把 `Bundle.module` 写成：先查 `.app` 根下的 `<name>.bundle`
+/// （该位置无法 codesign），再查编译机上的绝对 `.build/...` 路径；
+/// 路径不存在就 `fatalError`。装到 `/Applications` 后一旦本地 `.build`
+/// 被清掉，启动会在 `StatusBarView.init` → `tr` 上 SIGTRAP。
+/// 打包脚本把 catalog 放到 `Contents/Resources/`，这里按同样路径查找。
+enum MuxtermI18nLocator {
+    static let spmBundleNames = [
+        "MuxtermApp_MuxtermAppLib",
+        "MuxtermAppLib_MuxtermAppLib",
+        "MuxtermApp_MuxtermApp",
+    ]
+
+    static func searchRoots(main: Bundle = .main) -> [URL] {
+        var roots: [URL] = []
+        var seen = Set<String>()
+        func add(_ url: URL?) {
+            guard let url else { return }
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return }
+            roots.append(url)
         }
-        return catalog
+
+        add(main.bundleURL)
+        add(main.resourceURL)
+        add(main.executableURL?.deletingLastPathComponent())
+        add(main.bundleURL.appendingPathComponent("Contents/Resources"))
+        add(main.bundleURL.appendingPathComponent("Contents/MacOS"))
+        // SPM 把 resource bundle 放在 .app / .xctest 旁边，不在 bundle 内部。
+        add(main.bundleURL.deletingLastPathComponent())
+
+        let owner = Bundle(for: MuxtermI18n.self)
+        add(owner.bundleURL)
+        add(owner.resourceURL)
+        add(owner.executableURL?.deletingLastPathComponent())
+        add(owner.bundleURL.deletingLastPathComponent())
+
+        if let argv0 = CommandLine.arguments.first {
+            add(URL(fileURLWithPath: argv0).deletingLastPathComponent())
+        }
+        return roots
+    }
+
+    static func catalogFileURLs(tag: String, roots: [URL]) -> [URL] {
+        var urls: [URL] = []
+        for root in roots {
+            for name in spmBundleNames {
+                let bundle = root.appendingPathComponent("\(name).bundle")
+                urls.append(bundle.appendingPathComponent("i18n/\(tag).json"))
+                urls.append(bundle.appendingPathComponent("\(tag).json"))
+            }
+            urls.append(root.appendingPathComponent("i18n/\(tag).json"))
+            urls.append(root.appendingPathComponent("\(tag).json"))
+            urls.append(root.appendingPathComponent("Resources/i18n/\(tag).json"))
+        }
+        return urls
+    }
+
+    static func loadCatalog(tag: String, roots: [URL]) -> [String: String] {
+        for url in catalogFileURLs(tag: tag, roots: roots) {
+            guard let data = try? Data(contentsOf: url),
+                  let catalog = try? JSONDecoder().decode([String: String].self, from: data),
+                  !catalog.isEmpty
+            else { continue }
+            return catalog
+        }
+        return [:]
+    }
+
+    static func localizedString(
+        key: MuxtermTextKey,
+        language: MuxtermLanguage,
+        arguments: [String: String] = [:],
+        roots: [URL]
+    ) -> String {
+        let tag = language.catalogTag
+        let primary = loadCatalog(tag: tag, roots: roots)
+        let english = tag == "en" ? primary : loadCatalog(tag: "en", roots: roots)
+        var value = primary[key.id] ?? english[key.id] ?? key.id
+        for (name, replacement) in arguments {
+            value = value.replacingOccurrences(of: "{{\(name)}}", with: replacement)
+        }
+        return value
     }
 }
 

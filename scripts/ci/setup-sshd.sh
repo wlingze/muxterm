@@ -80,7 +80,7 @@ Host test-smoke
 SMOKECFG
 chmod 600 "$TMP_DIR/.ssh/config"
 
-if ! timeout 10 ssh -F "$TMP_DIR/.ssh/config" test-smoke "echo ok" >/dev/null 2>&1; then
+if ! ssh -o ConnectTimeout=10 -F "$TMP_DIR/.ssh/config" test-smoke "echo ok" >/dev/null 2>&1; then
     echo "ERROR: sshd smoke test 失败" >&2
     cat "$TMP_DIR/sshd.log" >&2
     exit 1
