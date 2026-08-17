@@ -307,6 +307,66 @@ fn cup_storm_feeds_only_last_frame(view: &PaneView) {
     assert_eq!(trace.feeds, 1, "CUP 风暴应只 feed 一次");
 }
 
+/// W21b：主屏滚轮走生产 test_emit_scroll（禁止测试里 adj.set_value）。
+fn wheel_scrolls_vte_history(view: &PaneView) {
+    // 清掉前面场景累积的 scrollback，保证 200 行是唯一历史。
+    view.terminal().reset(true, true);
+    pump_main_loop(40);
+    let mut bytes = Vec::new();
+    for i in 0..200 {
+        bytes.extend_from_slice(format!("line-{i}\r\n").as_bytes());
+    }
+    view.feed_output(&bytes);
+    view.flush_pending_feed();
+    pump_main_loop(80);
+    let text = view.visible_text();
+    assert!(text.contains("line-199"), "首屏应含 line-199: {text}");
+    assert!(!text.contains("line-0"), "首屏不应含 line-0: {text}");
+
+    // 生产滚轮路径：一格 3 行，200 行历史需要多次滚轮事件。
+    for _ in 0..100 {
+        view.test_emit_scroll(-1.0);
+    }
+    pump_main_loop(80);
+    let text = view.visible_text();
+    assert!(text.contains("line-0"), "滚轮向上应出现 line-0: {text}");
+    assert!(
+        !text.contains("line-199"),
+        "滚轮向上后不应再显示 line-199: {text}"
+    );
+
+    // 滚回底部。
+    for _ in 0..100 {
+        view.test_emit_scroll(1.0);
+    }
+    pump_main_loop(80);
+    let text = view.visible_text();
+    assert!(text.contains("line-199"), "滚轮向下应恢复 line-199: {text}");
+}
+
+/// W21c：alt-screen 滚轮走 input_cb 发 CSI A，禁止 vte.reset。
+fn wheel_alt_screen_sends_csi_arrows(view: &PaneView) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let received = Rc::new(RefCell::new(Vec::<u8>::new()));
+    let r = received.clone();
+    view.connect_input(move |_pid, data| {
+        r.borrow_mut().extend_from_slice(data);
+    });
+    view.feed_output(b"\x1b[?1049h");
+    view.flush_pending_feed();
+    pump_main_loop(40);
+    view.test_emit_scroll(-1.0);
+    pump_main_loop(40);
+    let got = received.borrow().clone();
+    assert!(
+        got.starts_with(b"\x1b[A"),
+        "alt-screen 滚轮必须发 CSI A: {got:?}"
+    );
+    let trace = view.render_trace();
+    assert_eq!(trace.resets, 0, "滚轮不得 reset VTE");
+}
+
 #[test]
 fn render_e2e_s3_s4() {
     if skip_no_display() {
@@ -351,6 +411,8 @@ fn render_e2e_s3_s4() {
         cup_storm_feeds_only_last_frame(&view);
         url_click_records_https_uri(&view);
         scroll_up_reveals_vte_scrollback(&view);
+        wheel_scrolls_vte_history(&view);
+        wheel_alt_screen_sends_csi_arrows(&view);
         view.ensure_grid_size(80, 24);
         pump_main_loop(80);
         codex_tui_fixture_keeps_header_and_prompt(&view);

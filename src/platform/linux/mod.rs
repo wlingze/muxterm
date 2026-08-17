@@ -18,6 +18,7 @@ pub mod quick_pick;
 pub mod quickconnect;
 pub mod quickconnect_panel;
 pub mod renderer;
+pub mod scroll_policy;
 pub mod scrollback_view;
 pub mod status_bar;
 pub mod tab_bar;

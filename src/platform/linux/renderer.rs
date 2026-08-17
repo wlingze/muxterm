@@ -74,7 +74,9 @@ impl VteRenderer {
         if !is_tmux_mirror {
             return;
         }
-        self.terminal.set_enable_fallback_scrolling(false);
+        // W21：不再关 fallback scrolling——滚轮由 PaneView 的
+        // EventControllerScroll 接管（主屏滚历史 / alt-screen 发 CSI），
+        // 默认 true 留给非我们控制器的路径。
         self.terminal.set_scroll_on_output(false);
         self.terminal.set_scroll_on_insert(false);
         self.terminal.set_enable_bidi(false);

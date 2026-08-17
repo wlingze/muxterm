@@ -21,6 +21,7 @@ use crate::core::protocol::terminal::mirror::{
 use crate::core::url_detect::UrlOpener;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
+use crate::platform::linux::scroll_policy::{wheel_action, WheelAction};
 
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;
@@ -106,7 +107,59 @@ impl PaneView {
             render_trace: RefCell::new(RenderTrace::default()),
             url_opener: RefCell::new(None),
         });
-        PaneView { inner }
+        let view = PaneView { inner };
+        view.attach_scroll_controller();
+        view
+    }
+
+    /// W21：生产滚轮路径。主屏滚 VTE 历史；alt-screen 发 CSI 方向键。
+    /// 与 EventControllerScroll 同一函数（测试 test_emit_scroll 也走这里）。
+    fn handle_scroll(&self, delta_y: f64) {
+        let alternate_screen = self.inner.reply_state.borrow().alternate_screen;
+        let Some(action) = wheel_action(alternate_screen, delta_y) else {
+            return;
+        };
+        match action {
+            WheelAction::ScrollHistory { lines } => {
+                if let Some(adj) = self.inner.renderer.terminal().vadjustment() {
+                    let step = adj.step_increment().max(1.0);
+                    let target = adj.value() + lines as f64 * step;
+                    let lower = adj.lower();
+                    let upper = (adj.upper() - adj.page_size()).max(lower);
+                    adj.set_value(target.clamp(lower, upper));
+                }
+            }
+            WheelAction::SendToApp { bytes } => {
+                if let Some(cb) = self.inner.input_cb.borrow().as_ref() {
+                    cb(self.inner.pane_id.get(), &bytes);
+                }
+            }
+        }
+    }
+
+    /// 挂垂直滚轮控制器（生产路径；测试经 test_emit_scroll 走同一函数）。
+    fn attach_scroll_controller(&self) {
+        let weak = Rc::downgrade(&self.inner);
+        let controller =
+            gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        controller.connect_scroll(move |_c, _dx, dy| {
+            if let Some(inner) = weak.upgrade() {
+                let view = PaneView { inner };
+                view.handle_scroll(dy);
+            }
+            glib::Propagation::Stop
+        });
+        self.widget().add_controller(controller);
+    }
+
+    /// W21 测试钩子：模拟一次滚轮（与生产 EventControllerScroll 同一函数）。
+    pub fn test_emit_scroll(&self, delta_y: f64) {
+        self.handle_scroll(delta_y);
+    }
+
+    /// W21 测试钩子：当前 reply_state 是否在 alt-screen。
+    pub fn test_alternate_screen(&self) -> bool {
+        self.inner.reply_state.borrow().alternate_screen
     }
 
     /// 是否已经用完整快照播种。

@@ -137,6 +137,8 @@ struct UiState {
     /// W20：SSH 已有连接探测结果队列。
     pending_existing_ssh:
         std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
+    /// W21 测试钩子：最近一次经 PaneView input_cb 的原始输入。
+    last_raw_input: Vec<u8>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
     reconnecting: bool,
     /// 重连失败退避：下一次允许发起重连的时刻。
@@ -465,6 +467,7 @@ impl AppWindow {
             existing: Rc::new(RefCell::new(ExistingPanelState::default())),
             existing_ssh_probing: false,
             pending_existing_ssh: std::collections::VecDeque::new(),
+            last_raw_input: Vec::new(),
             reconnecting: false,
             reconnect_retry_at: None,
             reconnect_attempts: 0,
@@ -784,6 +787,14 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
         }
     }
 
+    /// W21 测试钩子：向指定 pane 的生产滚轮路径发一次滚动。
+    pub fn test_emit_scroll(&self, pane: u32, delta_y: f64) {
+        let s = self._state.borrow();
+        if let Some(view) = s.active_layout().pane(pane).cloned() {
+            view.test_emit_scroll(delta_y);
+        }
+    }
+
     /// 测试用：向当前激活 pane 发送原始输入（如 `echo hi\n` / `\x04` Ctrl+D）。
     pub fn test_send_input(&self, data: &[u8]) {
         let mut s = self._state.borrow_mut();
@@ -962,6 +973,21 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
             self._state.borrow_mut().quit_requested = true;
             self.window.close();
         }
+    }
+
+    /// W21 测试钩子：最近一次经 PaneView input_cb 的原始输入。
+    pub fn test_last_raw_input(&self) -> Vec<u8> {
+        self._state.borrow().last_raw_input.clone()
+    }
+
+    /// W21 测试钩子：指定 pane 的 reply_state 是否在 alt-screen。
+    pub fn test_pane_alternate_screen(&self, pane: u32) -> bool {
+        self._state
+            .borrow()
+            .active_layout()
+            .pane(pane)
+            .map(|v| v.test_alternate_screen())
+            .unwrap_or(false)
     }
 
     /// W19e 测试钩子：注入一次 fault（report + 弹窗），进程必须继续。
@@ -2051,6 +2077,7 @@ fn refresh_ui(s: &mut UiState) {
         let state_ptr = s as *mut UiState;
         let input_cb = move |pane_id: u32, data: &[u8]| {
             let s = unsafe { &mut *state_ptr };
+            s.last_raw_input = data.to_vec();
             let _ = s.active_workspace_mut().execute(Task::WriteRaw {
                 target: PaneId(pane_id),
                 data: data.to_vec(),
