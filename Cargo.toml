@@ -157,6 +157,11 @@ path = "tests/linux_herdr_worktree_e2e.rs"
 required-features = ["gtk"]
 
 [[test]]
+name = "linux_fault_e2e"
+path = "tests/linux_fault_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
 name = "linux_ssh_e2e"
 path = "tests/linux_ssh_e2e.rs"
 required-features = ["gtk"]

@@ -427,7 +427,16 @@ fn feed_reply_state(inner: &PaneViewInner, data: &[u8]) {
         return;
     }
     let mut state = inner.reply_state.borrow_mut();
-    state.feed(data);
+    // W19e：emulate 热路径不许 panic 穿 glib；失败则重建干净状态，
+    // 不留半坏 grid（grid 与 grid_soft_wrapped 可能已不同步）。
+    let fed = crate::platform::linux::fault_gtk::run("pane_view.feed_reply_state", || {
+        state.feed(data);
+    });
+    if fed.is_none() {
+        let (cols, rows) = (state.cols(), state.rows());
+        *state = TerminalState::new(cols.max(1), rows.max(1));
+        return;
+    }
     let replies = state.take_reply();
     if should_forward_parser_response(true, inner.is_tmux_mirror.get()) && !replies.is_empty() {
         inner

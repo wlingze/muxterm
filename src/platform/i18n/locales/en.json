@@ -185,5 +185,14 @@
   "mute_1h": "Mute 1h",
   "attention_jump": "Jump",
   "attention_zoom": "Zoom",
-  "search_placeholder_phase_c": "Search scrollback (phase C)"
+  "search_placeholder_phase_c": "Search scrollback (phase C)",
+  "attach_create_herdr": "attach / create Herdr workspace",
+  "internal_error": "Internal error",
+  "internal_error_logged": "Details were written to the log",
+  "existing_connections": "Existing connections",
+  "existing_local": "Local",
+  "existing_ssh": "SSH",
+  "existing_back": "Back",
+  "existing_empty": "No running tmux or Herdr",
+  "existing_probing": "Checking remotes…"
 }

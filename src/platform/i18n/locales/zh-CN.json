@@ -185,5 +185,14 @@
   "mute_1h": "静音 1 小时",
   "attention_jump": "跳转",
   "attention_zoom": "放大",
-  "search_placeholder_phase_c": "搜索历史（阶段 C）"
+  "search_placeholder_phase_c": "搜索历史（阶段 C）",
+  "attach_create_herdr": "attach / 创建 Herdr workspace",
+  "internal_error": "内部错误",
+  "internal_error_logged": "详情已写入日志",
+  "existing_connections": "已有的连接",
+  "existing_local": "本地",
+  "existing_ssh": "SSH",
+  "existing_back": "返回",
+  "existing_empty": "没有正在运行的 tmux 或 Herdr",
+  "existing_probing": "正在检查远程…"
 }

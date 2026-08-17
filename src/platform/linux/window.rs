@@ -684,75 +684,81 @@ impl AppWindow {
             let st_weak = Rc::downgrade(&state);
             let win_weak = window.downgrade();
             let id = glib::timeout_add_local(Duration::from_millis(16), move || {
-                if win_weak.upgrade().is_none() {
-                    return glib::ControlFlow::Break;
-                }
-                let Some(st) = st_weak.upgrade() else {
-                    return glib::ControlFlow::Break;
-                };
-                let pending_close = {
-                    drain_pending_connects(&st);
-                    drain_ssh_probes(&st);
-                    drain_pending_reconnects(&st);
-                    maybe_schedule_reconnect(&st);
-                    let mut s = st.borrow_mut();
-                    // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
-                    // 喂好，这里只把注意力信号应用到引擎，不重建前台。
-                    for (wid, events) in s.pool.poll_background() {
-                        let ws = workspace_replica_id(&wid);
-                        for ev in &events {
-                            if let StateChange::PaneOutput { pane, .. }
-                            | StateChange::PaneSnapshot { pane, .. } = ev
-                            {
-                                apply_attention_from_workspace(&mut s, &wid, &ws, pane.0);
+// W19e：glib trampoline 不能 unwind；panic 先在这里接住，
+// 报告 + 弹窗后继续轮询（Break 会让轮询停掉 = 假死）。
+let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
+    if win_weak.upgrade().is_none() {
+        return glib::ControlFlow::Break;
+    }
+    let Some(st) = st_weak.upgrade() else {
+        return glib::ControlFlow::Break;
+    };
+    let pending_close = {
+        drain_pending_connects(&st);
+        drain_ssh_probes(&st);
+        drain_pending_reconnects(&st);
+        maybe_schedule_reconnect(&st);
+        let mut s = st.borrow_mut();
+        // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
+        // 喂好，这里只把注意力信号应用到引擎，不重建前台。
+        for (wid, events) in s.pool.poll_background() {
+            let ws = workspace_replica_id(&wid);
+            for ev in &events {
+                if let StateChange::PaneOutput { pane, .. }
+                | StateChange::PaneSnapshot { pane, .. } = ev
+                {
+                    apply_attention_from_workspace(&mut s, &wid, &ws, pane.0);
                             }
                         }
-                    }
-                    s.pool.evict_expired();
-                    for wid in s.pool.take_evicted() {
-                        s.pixel_cache.remove(&wid);
-                    }
-                    let events = s.active_workspace_mut().refresh();
-                    let mut structural = false;
-                    for ev in &events {
-                        if matches!(
-                            ev,
-                            StateChange::TabAdded { .. }
-                                | StateChange::TabClosed { .. }
-                                | StateChange::LayoutChanged { .. }
-                                | StateChange::PaneAdded { .. }
-                                | StateChange::PaneClosed { .. }
-                        ) {
-                            structural = true;
+                        s.pool.evict_expired();
+                        for wid in s.pool.take_evicted() {
+                            s.pixel_cache.remove(&wid);
+                        }
+                        let events = s.active_workspace_mut().refresh();
+                        let mut structural = false;
+                        for ev in &events {
+                            if matches!(
+                                ev,
+                                StateChange::TabAdded { .. }
+                                    | StateChange::TabClosed { .. }
+                                    | StateChange::LayoutChanged { .. }
+                                    | StateChange::PaneAdded { .. }
+                                    | StateChange::PaneClosed { .. }
+                            ) {
+                                structural = true;
+                            }
+                        }
+                        dispatch_event_batch(&mut s, events);
+                        // blocked 与 done 通知都要在 16ms poll 里收编（W17d）：
+                        // test_poll_once 的 drain 可能在 16ms poll 应用信号之前运行，
+                        // 只 drain blocked 会让后台 Done 的通知永远等不到下一次 poll。
+                        drain_attention_notifications(&mut s);
+                        sync_pane_outputs(&mut s);
+                        sync_window_size(&mut s);
+                        maybe_refresh_status(&mut s, structural);
+                        refresh_connection_summary(&mut s);
+                        update_command_marks(&s);
+                        update_jump_latest(&s);
+                        if let Some(w) = win_weak.upgrade() {
+                            refresh_attention_chrome(&s, &w);
+                        }
+                        let close = s.pending_close;
+                        if close {
+                            s.pending_close = false;
+                        }
+                        close
+                    };
+                    if pending_close {
+                        st.borrow_mut().quit_requested = true;
+                        if let Some(w) = win_weak.upgrade() {
+                            w.close();
                         }
                     }
-                    dispatch_event_batch(&mut s, events);
-                    // blocked 与 done 通知都要在 16ms poll 里收编（W17d）：
-                    // test_poll_once 的 drain 可能在 16ms poll 应用信号之前运行，
-                    // 只 drain blocked 会让后台 Done 的通知永远等不到下一次 poll。
-                    drain_attention_notifications(&mut s);
-                    sync_pane_outputs(&mut s);
-                    sync_window_size(&mut s);
-                    maybe_refresh_status(&mut s, structural);
-                    refresh_connection_summary(&mut s);
-                    update_command_marks(&s);
-                    update_jump_latest(&s);
-                    if let Some(w) = win_weak.upgrade() {
-                        refresh_attention_chrome(&s, &w);
-                    }
-                    let close = s.pending_close;
-                    if close {
-                        s.pending_close = false;
-                    }
-                    close
-                };
-                if pending_close {
-                    st.borrow_mut().quit_requested = true;
-                    if let Some(w) = win_weak.upgrade() {
-                        w.close();
-                    }
-                }
-                glib::ControlFlow::Continue
+                    glib::ControlFlow::Continue
+                });
+                // 接住 panic 后进程必须继续：fault_gtk::run 已弹窗，
+                // 这里统一 Continue（不 Break，避免轮询停掉）。
+                outcome.unwrap_or(glib::ControlFlow::Continue)
             });
             state.borrow_mut().poll_source = Some(id);
         }
@@ -939,6 +945,11 @@ impl AppWindow {
             self._state.borrow_mut().quit_requested = true;
             self.window.close();
         }
+    }
+
+    /// W19e 测试钩子：注入一次 fault（report + 弹窗），进程必须继续。
+    pub fn test_inject_fault(&self, token: &str) {
+        crate::platform::linux::fault_gtk::inject_fault(token);
     }
 
     /// 测试用：主窗口本身（供 widget 树断言）。
