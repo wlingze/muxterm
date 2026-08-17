@@ -122,6 +122,8 @@ struct UiState {
     jump_latest: gtk4::Button,
     /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
     disconnect_overlay: gtk4::Label,
+    /// 搜索命中高亮（W17c：客户端覆盖层，不改 pane 字节）。
+    search_highlight: gtk4::Label,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -309,6 +311,14 @@ impl AppWindow {
         disconnect_overlay.set_valign(gtk4::Align::Center);
         disconnect_overlay.add_css_class("muxterm-disconnect-overlay");
         disconnect_overlay.set_visible(false);
+        let search_highlight = gtk4::Label::new(Some("▮"));
+        search_highlight.set_widget_name("muxterm-search-highlight");
+        search_highlight.set_halign(gtk4::Align::Start);
+        search_highlight.set_valign(gtk4::Align::Center);
+        search_highlight.set_margin_start(4);
+        search_highlight.add_css_class("muxterm-search-highlight");
+        search_highlight.set_visible(false);
+        layout_overlay.add_overlay(&search_highlight);
         layout_overlay.add_overlay(&disconnect_overlay);
         layout_overlay.add_overlay(&jump_latest);
         root.append(&layout_overlay);
@@ -360,6 +370,7 @@ impl AppWindow {
             layout_overlay,
             jump_latest,
             disconnect_overlay,
+            search_highlight,
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -1329,6 +1340,10 @@ fn update_jump_latest(s: &UiState) {
         })
         .unwrap_or(true);
     s.jump_latest.set_visible(!at_bottom);
+    // 回到尾部时搜索高亮不再有意义（W17c）。
+    if at_bottom {
+        s.search_highlight.set_visible(false);
+    }
 }
 
 /// 把当前连接摘要刷到状态点 popover（C7.7）。
@@ -1983,8 +1998,8 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             },
             on_jump_pane: {
                 let st = st.clone();
-                std::boxed::Box::new(move |ws, pane| {
-                    jump_to_attention_pane(&st, &ws, pane);
+                std::boxed::Box::new(move |ws, pane, seq| {
+                    jump_to_attention_pane(&st, &ws, pane, seq);
                 })
             },
             on_send_input: {
@@ -2050,7 +2065,8 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
 
 /// 跳到注意力 pane：若目标工作区不是当前前台连接，先切连接；
 /// 命中在别的 tab 时先 `SwitchTab` 再 `SwitchPane`（W15b）。
-fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32) {
+/// `seq` 是搜索命中的 PaneBuf 行号（W17c）：切完后把 VTE 滚到该行并显示高亮。
+fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, seq: u64) {
     let mut s = state.borrow_mut();
     activate_attention_workspace(&mut s, ws);
     // 按 pane 查所在 tab（SearchRow 已带 tab_id，但回调只传 ws/pane；
@@ -2072,6 +2088,20 @@ fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32) {
     let _ = s.active_workspace_mut().execute(Task::SwitchPane {
         target: PaneId(pane),
     });
+    // 搜索命中：滚到该行并显示客户端高亮（W17c）。
+    if seq > 0 {
+        let row = s
+            .active_workspace()
+            .pane_line_index_by_seq(PaneId(pane), seq);
+        if let Some(row) = row {
+            if let Some(view) = s.active_layout().pane(pane).cloned() {
+                if let Some(adj) = view.terminal().vadjustment() {
+                    adj.set_value(adj.lower() + row as f64);
+                }
+                s.search_highlight.set_visible(true);
+            }
+        }
+    }
     // 跳转完成后面板关闭（W15b；独立面板测试不经过这里，面板保持打开）。
     drop(s);
     crate::platform::linux::quickconnect_panel::close_current();

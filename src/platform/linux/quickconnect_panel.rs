@@ -131,7 +131,9 @@ pub struct PanelShowArgs {
     pub on_connect: Box<dyn Fn(TargetConfig)>,
     pub on_edit: Box<dyn Fn(TargetConfig)>,
     pub on_new_project: Box<dyn Fn()>,
-    pub on_jump_pane: Box<dyn Fn(String, u32)>,
+    /// 跳转回调：`(ws, pane, seq)`。seq 是搜索命中的 PaneBuf 行号（W17c），
+    /// Attention 跳转没有搜索语义传 0。
+    pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
     /// 小 VTE 按键 → 目标 pane 输入。
     pub on_send_input: SendInputCb,
     /// 禁止提醒：`(ws, pane, duration)`。
@@ -647,7 +649,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         gesture.connect_released(move |_g, n_press, _x, _y| {
             if n_press == 2 {
                 if let Some((ws, pane)) = selected.borrow().clone() {
-                    (callbacks.on_jump_pane)(ws, pane);
+                    (callbacks.on_jump_pane)(ws, pane, 0);
                 }
             }
         });
@@ -660,7 +662,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let selected = selected.clone();
         jump_button.connect_clicked(move |_| {
             if let Some((ws, pane)) = selected.borrow().clone() {
-                (callbacks.on_jump_pane)(ws, pane);
+                (callbacks.on_jump_pane)(ws, pane, 0);
             }
         });
     }
@@ -763,6 +765,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         (callbacks.on_jump_pane)(
                             row.attention.workspace_id.clone(),
                             row.attention.pane_id,
+                            0,
                         );
                     }
                 }
@@ -770,7 +773,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     let hits = (callbacks.search)(&model.borrow().query);
                     let (rows, _) = search_rows(&model.borrow().query, hits);
                     if let Some(row) = rows.get(idx) {
-                        (callbacks.on_jump_pane)(row.workspace_id.clone(), row.pane_id);
+                        // 面板关闭由 window 侧 jump_to_attention_pane 的
+                        // close_current 负责；独立面板测试要留着面板量宽度。
+                        (callbacks.on_jump_pane)(row.workspace_id.clone(), row.pane_id, row.seq);
                     }
                 }
             }

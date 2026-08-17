@@ -106,6 +106,13 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// 某 pane 的 scrollback 中指定 seq 的行索引（W17c 搜索跳转用）。
+    pub fn pane_line_index_by_seq(&self, pane: PaneId, seq: u64) -> Option<usize> {
+        self.panes
+            .get(&pane)
+            .and_then(|t| t.line_index_by_seq(seq))
+    }
+
     /// 某 pane 的最近 n 行。
     pub fn pane_last_n_lines(&self, pane: PaneId, n: usize) -> Vec<String> {
         self.panes

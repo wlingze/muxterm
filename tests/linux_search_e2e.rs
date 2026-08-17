@@ -68,7 +68,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 on_connect: Box::new(|_| {}),
                 on_edit: Box::new(|_| {}),
                 on_new_project: Box::new(|| {}),
-                on_jump_pane: Box::new(move |ws, pane| j.borrow_mut().push((ws, pane))),
+                on_jump_pane: Box::new(move |ws, pane, _seq| j.borrow_mut().push((ws, pane))),
                 on_send_input: Box::new(|_, _, _| {}),
                 on_mute: Box::new(|_, _, _| {}),
                 peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
