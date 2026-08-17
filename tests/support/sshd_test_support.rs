@@ -207,3 +207,216 @@ pub fn ssh_client_available() -> bool {
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
+
+/// 本机 `sshd` 二进制（W18：测试自己拉起隔离 daemon，不连用户 22 端口）。
+pub fn sshd_binary() -> Option<PathBuf> {
+    for candidate in ["sshd", "/usr/sbin/sshd", "/usr/bin/sshd"] {
+        if candidate.starts_with('/') {
+            let p = PathBuf::from(candidate);
+            if p.is_file() {
+                return Some(p);
+            }
+        } else if let Ok(out) = Command::new("command").args(["-v", candidate]).output() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if out.status.success() && !s.is_empty() {
+                return Some(PathBuf::from(s));
+            }
+        }
+        if let Ok(out) = Command::new("which").arg(candidate).output() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if out.status.success() && !s.is_empty() {
+                let p = PathBuf::from(s);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 能自启 loopback sshd + ssh 客户端。
+pub fn loopback_sshd_available() -> bool {
+    sshd_binary().is_some() && ssh_client_available()
+}
+
+fn free_loopback_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+    port
+}
+
+/// 测试进程内隔离 sshd：随机端口、自签密钥、Drop 只杀这个 daemon。
+///
+/// **禁止**连用户 22 端口 / 真实 `~/.ssh/config`。远端 tmux 一律另用 `-L muxterm-test-*`。
+pub struct LoopbackSshd {
+    tmp: PathBuf,
+    pid: u32,
+    pub port: u16,
+    pub user: String,
+    pub client_key: PathBuf,
+    pub config_path: PathBuf,
+    pub alias: String,
+}
+
+impl LoopbackSshd {
+    /// 启动隔离 sshd，并做一次 `echo ok` smoke。
+    pub fn start(label: &str) -> anyhow::Result<Self> {
+        let sshd = sshd_binary().ok_or_else(|| anyhow::anyhow!("无 sshd 二进制"))?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("muxterm-sshd-{}-{}", label, nanos));
+        fs::create_dir_all(&tmp)?;
+        let host_ed = tmp.join("host_ed25519");
+        let client = tmp.join("client_ed25519");
+        run_ssh_keygen(&host_ed)?;
+        run_ssh_keygen(&client)?;
+        let client_pub = PathBuf::from(format!("{}.pub", client.display()));
+        let pub_bytes = fs::read(&client_pub)?;
+        let authorized = tmp.join("authorized_keys");
+        fs::write(&authorized, pub_bytes)?;
+        fs::set_permissions(&authorized, PermissionsExt::from_mode(0o600))?;
+
+        let port = free_loopback_port();
+        let user = env::var("USER").unwrap_or_else(|_| "wlz".into());
+        let pid_file = tmp.join("sshd.pid");
+        let log_file = tmp.join("sshd.log");
+        let cfg_path = tmp.join("sshd_config");
+        let config = format!(
+            "Port {port}\n\
+             ListenAddress 127.0.0.1\n\
+             HostKey {host}\n\
+             PidFile {pid}\n\
+             AuthorizedKeysFile {auth}\n\
+             PasswordAuthentication no\n\
+             PubkeyAuthentication yes\n\
+             PermitRootLogin no\n\
+             UsePAM no\n\
+             StrictModes no\n\
+             Subsystem sftp internal-sftp\n",
+            host = host_ed.display(),
+            pid = pid_file.display(),
+            auth = authorized.display(),
+        );
+        fs::write(&cfg_path, config)?;
+
+        let output = Command::new(&sshd)
+            .args([
+                "-f",
+                &cfg_path.to_string_lossy(),
+                "-E",
+                &log_file.to_string_lossy(),
+            ])
+            .output()?;
+        if !output.status.success() {
+            let log = fs::read_to_string(&log_file).unwrap_or_default();
+            anyhow::bail!(
+                "sshd 启动失败: status={:?} stderr={} log={log}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let mut pid = 0u32;
+        for _ in 0..50 {
+            if let Ok(s) = fs::read_to_string(&pid_file) {
+                if let Ok(p) = s.trim().parse() {
+                    pid = p;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if pid == 0 {
+            let log = fs::read_to_string(&log_file).unwrap_or_default();
+            anyhow::bail!("sshd 未写 pid 文件。log={log}");
+        }
+
+        let ssh_dir = tmp.join("client-ssh");
+        fs::create_dir_all(&ssh_dir)?;
+        fs::set_permissions(&ssh_dir, PermissionsExt::from_mode(0o700))?;
+        let alias = format!("muxterm-loop-{label}-{nanos}");
+        let ssh_config_path = ssh_dir.join("config");
+        fs::write(
+            &ssh_config_path,
+            format!(
+                "Host {alias}\n\
+                 HostName 127.0.0.1\n\
+                 Port {port}\n\
+                 User {user}\n\
+                 IdentityFile {key}\n\
+                 IdentitiesOnly yes\n\
+                 BatchMode yes\n\
+                 StrictHostKeyChecking no\n\
+                 UserKnownHostsFile /dev/null\n\
+                 LogLevel ERROR\n",
+                key = client.display(),
+            ),
+        )?;
+        fs::set_permissions(&ssh_config_path, PermissionsExt::from_mode(0o600))?;
+
+        let mut smoke = Command::new("ssh");
+        smoke
+            .arg("-F")
+            .arg(&ssh_config_path)
+            .arg(&alias)
+            .arg("echo ok");
+        let smoke_out = smoke.output()?;
+        if !smoke_out.status.success() || !String::from_utf8_lossy(&smoke_out.stdout).contains("ok")
+        {
+            let log = fs::read_to_string(&log_file).unwrap_or_default();
+            anyhow::bail!(
+                "loopback ssh smoke 失败: stderr={} log={log}",
+                String::from_utf8_lossy(&smoke_out.stderr)
+            );
+        }
+
+        Ok(Self {
+            tmp,
+            pid,
+            port,
+            user,
+            client_key: client,
+            config_path: ssh_config_path,
+            alias,
+        })
+    }
+
+    /// 让 `TmuxRuntime` SSH 路径读这份 `-F` config（禁止用户真实 ~/.ssh/config）。
+    pub fn apply_ssh_config_env(&self) {
+        std::env::set_var("MUXTERM_SSH_CONFIG_PATH", &self.config_path);
+    }
+
+    pub fn ssh_cmd(&self) -> Command {
+        let mut cmd = Command::new("ssh");
+        cmd.arg("-F").arg(&self.config_path).arg(&self.alias);
+        cmd
+    }
+
+    pub fn remote_exec(&self, remote_cmd: &str) -> (bool, String, String) {
+        let mut cmd = self.ssh_cmd();
+        cmd.arg(remote_cmd);
+        let output = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("SSH 远端执行失败: {e}"));
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    }
+
+    pub fn remote_tmux(&self, socket: &str, args: &str) -> (bool, String, String) {
+        self.remote_exec(&format!("tmux -L {socket} {args}"))
+    }
+}
+
+impl Drop for LoopbackSshd {
+    fn drop(&mut self) {
+        let _ = Command::new("kill").arg(self.pid.to_string()).output();
+        let _ = fs::remove_dir_all(&self.tmp);
+    }
+}
