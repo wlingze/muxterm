@@ -657,6 +657,15 @@ impl AppWindow {
             });
         }
 
+        // worktree 创建按钮 → 对话框（仅 support() 含 WorktreeList 时可见）。
+        {
+            let st = state.clone();
+            let win = window.clone();
+            state.borrow().status.connect_worktree_create(move || {
+                show_worktree_create_dialog(&st, &win);
+            });
+        }
+
         // 快捷键
         {
             let st = state.clone();
@@ -4226,6 +4235,146 @@ fn drain_pending_worktree_creates(state: &Rc<RefCell<UiState>>) {
 
 /// W20：SSH 已有连接探测结果（alias → 该 host 的 tmux/Herdr 行）。
 type ExistingSshProbeResult = Vec<(String, Vec<ExistingEntry>)>;
+
+/// worktree 创建对话框：分支 + 路径，Create 后后台建 checkout 并开新格。
+fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Window) {
+    let dialog = gtk4::Window::builder()
+        .title("新建 worktree")
+        .modal(true)
+        .transient_for(parent)
+        .default_width(460)
+        .build();
+    let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    vbox.set_margin_top(12);
+    vbox.set_margin_bottom(12);
+    vbox.set_margin_start(12);
+    vbox.set_margin_end(12);
+    let branch = gtk4::Entry::builder()
+        .placeholder_text("分支名（如 feat/xxx）")
+        .build();
+    branch.set_widget_name("muxterm-worktree-create-branch");
+    let path = gtk4::Entry::builder()
+        .placeholder_text("checkout 路径（如 /tmp/muxterm-test-herdr-wt-1）")
+        .build();
+    path.set_widget_name("muxterm-worktree-create-path");
+    let create = gtk4::Button::with_label("创建");
+    create.set_widget_name("muxterm-worktree-create-confirm");
+    let cancel = gtk4::Button::with_label("取消");
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    row.append(&cancel);
+    row.append(&create);
+    vbox.append(&branch);
+    vbox.append(&path);
+    vbox.append(&row);
+    dialog.set_child(Some(&vbox));
+
+    let dlg = dialog.clone();
+    cancel.connect_clicked(move |_| dlg.close());
+    let st = state.clone();
+    let dlg = dialog.clone();
+    create.connect_clicked(move |_| {
+        let branch_text = branch.text().to_string();
+        let path_text = path.text().to_string();
+        if branch_text.trim().is_empty() || path_text.trim().is_empty() {
+            return;
+        }
+        spawn_worktree_create(
+            &st,
+            branch_text.trim().to_string(),
+            path_text.trim().to_string(),
+        );
+        dlg.close();
+    });
+    dialog.present();
+}
+
+/// 后台线程：Herdr worktree.create + 新格 connect，结果走队列收编。
+fn spawn_worktree_create(state: &Rc<RefCell<UiState>>, branch: String, path: String) {
+    let (session, source_ws, session_name, socket) = {
+        let s = state.borrow();
+        let Some(ws) = s.pool.active() else {
+            return;
+        };
+        let Some(rt) = ws.runtime().as_any().downcast_ref::<HerdrRuntime>() else {
+            return;
+        };
+        (
+            rt.session_arc().clone(),
+            rt.workspace_id().to_string(),
+            rt.session().name().to_string(),
+            rt.session().socket_path().to_string_lossy().to_string(),
+        )
+    };
+    let handle = state.borrow().rt.handle().clone();
+    let (tx, rx) = std::sync::mpsc::channel::<anyhow::Result<Workspace>>();
+    state.borrow_mut().pending_worktree_creates.push_back(rx);
+    std::thread::spawn(move || {
+        let result = (|| -> anyhow::Result<Workspace> {
+            let record = session.worktree_create(&source_ws, &branch, &path, None, None)?;
+            let new_ws = record
+                .open_workspace_id
+                .ok_or_else(|| anyhow!("worktree.create 未返回 workspace_id"))?;
+            let spec = WorkspaceSpec::herdr(session_name, new_ws, socket);
+            let id = spec.id();
+            let name = spec.name();
+            let mut runtime = spec.build_runtime();
+            handle.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(10), runtime.connect())
+                    .await
+                    .map_err(|_| anyhow!("worktree connect 超时"))?
+            })?;
+            Ok(Workspace::new(id, name, runtime))
+        })();
+        let _ = tx.send(result);
+    });
+}
+
+/// 收编后台 worktree 创建结果：成功 insert_connected，失败进 notification_log。
+fn drain_pending_worktree_creates(state: &Rc<RefCell<UiState>>) {
+    let mut done = false;
+    while !done {
+        let pending = {
+            let mut s = state.borrow_mut();
+            let Some(rx) = s.pending_worktree_creates.front() else {
+                break;
+            };
+            match rx.try_recv() {
+                Ok(r) => {
+                    s.pending_worktree_creates.pop_front();
+                    Some(r)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    done = true;
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    s.pending_worktree_creates.pop_front();
+                    None
+                }
+            }
+        };
+        if let Some(result) = pending {
+            match result {
+                Ok(workspace) => {
+                    let mut s = state.borrow_mut();
+                    s.pool.insert_connected(workspace);
+                    after_activate(&mut s);
+                }
+                Err(e) => {
+                    let detail = e.to_string();
+                    tracing::error!(
+                        target = "muxterm::linux",
+                        "worktree create failed: {detail}"
+                    );
+                    state
+                        .borrow_mut()
+                        .notification_log
+                        .push(format!("worktree create failed: {detail}"));
+                }
+            }
+        }
+    }
+}
 
 /// 后台连接结果（W15c：open_spec 离开 GTK 线程）。
 struct PendingConnect {
