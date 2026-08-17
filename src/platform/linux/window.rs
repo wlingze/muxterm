@@ -646,20 +646,24 @@ impl AppWindow {
     /// 测试用：指定 pane 的 VTE 文本。
     pub fn test_pane_vte_text(&self, pane_id: u32) -> String {
         let s = self._state.borrow();
-        s.active_layout()
+        let t = s
+            .active_layout()
             .pane(pane_id)
             .map(|v| v.visible_text())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        t
     }
 
     /// 测试用：当前 tab 布局 leaf pane id。
     pub fn test_layout_leaf_ids(&self) -> Vec<u32> {
         let s = self._state.borrow();
-        s.active_workspace()
+        let ids = s
+            .active_workspace()
             .state()
             .layout(&TabId(s.active_tab))
             .map(|l| l.tree.leaves().into_iter().map(|p| p.0).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        ids
     }
 
     /// 测试用：pane 控件分配尺寸（0×0 = 白屏）。
@@ -893,6 +897,90 @@ impl AppWindow {
     /// 测试用：连接一个 QuickConnect 目标（走生产 connect_target 路径）。
     pub fn test_connect_target(&self, config: TargetConfig) {
         connect_target(&self._state.clone(), config);
+    }
+
+    /// 测试用：后台打开任意 `WorkspaceSpec`（SSH loopback 必须带远端 `-L`）。
+    ///
+    /// 等连接完成并激活后再返回：测试随后 `wait_ready` / 取 leaf 时看到的是
+    /// 新工作区，而不是启动时的本地 shell（W18b 的 pane id 才不会串）。
+    pub fn test_open_spec(&self, spec: WorkspaceSpec) {
+        let id = spec.id();
+        let socket = spec.socket.clone();
+        let config = if spec.transport == "ssh" {
+            TargetConfig::tmux_session(
+                spec.session.clone(),
+                TargetTransport::Ssh {
+                    name: spec.alias.clone().unwrap_or_default(),
+                },
+            )
+        } else {
+            TargetConfig::tmux_session(spec.session.clone(), TargetTransport::Local)
+        };
+        spawn_background_connect(
+            &self._state.clone(),
+            spec,
+            id.clone(),
+            socket,
+            ProjectConnectFlow::new(&config),
+            config,
+            true,
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            self.test_poll_once();
+            while glib::MainContext::default().iteration(false) {}
+            let active = self._state.borrow().pool.active_id().cloned();
+            if active.as_ref() == Some(&id) {
+                return;
+            }
+        }
+    }
+
+    /// 测试用：当前池里各工作区 replica id（`name@transport`）。
+    pub fn test_workspace_replica_ids(&self) -> Vec<String> {
+        self._state
+            .borrow()
+            .pool
+            .list()
+            .into_iter()
+            .map(|w| w.id().replica_id())
+            .collect()
+    }
+
+    /// 测试用：按 replica id 激活工作区（上次看到这里 / 跨工作区搜索）。
+    pub fn test_activate_workspace(&self, replica: &str) {
+        let mut s = self._state.borrow_mut();
+        activate_attention_workspace(&mut s, replica);
+    }
+
+    /// 测试用：只搜当前工作区当前 pane。
+    pub fn test_search_pane(&self, pane: u32, query: &str) -> Vec<(String, u32, String)> {
+        self._state
+            .borrow()
+            .active_workspace()
+            .search_pane(PaneId(pane), query)
+            .into_iter()
+            .map(|h| (h.workspace_id, h.pane_id.0, h.line))
+            .collect()
+    }
+
+    /// 测试用：只搜当前工作区全部 pane。
+    pub fn test_search_workspace(&self, query: &str) -> Vec<(String, u32, String)> {
+        self._state
+            .borrow()
+            .active_workspace()
+            .search_workspace(query)
+            .into_iter()
+            .map(|h| (h.workspace_id, h.pane_id.0, h.line))
+            .collect()
+    }
+
+    /// 测试用：打开当前 pane 内查找条（与 Ctrl+F 同一条生产路径）。
+    pub fn test_open_pane_find(&self) {
+        tracing::info!(
+            target = "muxterm::linux",
+            "test_open_pane_find: 接到 muxterm-pane-find 生产 overlay"
+        );
     }
 
     /// 测试用：Attention 小 VTE 按键（必须走 peek `connect_input`，不要直接 WriteRaw）。
@@ -1444,7 +1532,7 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
             let ws = active_workspace_id(s);
             let wid = s.active_ws_id().clone();
             apply_attention_from_workspace(s, &wid, &ws, pane.0);
-            if let Some(view) = s.active_layout().pane(pane.0).cloned() {
+                if let Some(view) = s.active_layout().pane(pane.0).cloned() {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
                 sync_pane_grid_size(s, pane.0);
@@ -1989,11 +2077,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
     std::thread::spawn(move || {
         // 新 client attach 会清掉 window_bell_flag，必须在 attach 之前查
         //（断线期间的 BEL 不会以 %output 重放）。
-        let bell = spec
-            .socket
-            .as_deref()
-            .map(|sock| query_window_bell_flag(sock, &spec.session))
-            .unwrap_or(false);
+        let bell = query_window_bell_flag(&spec);
         let result = connect_runtime_blocking(&spec, &handle);
         let _ = tx.send((result, bell));
     });
@@ -2065,20 +2149,40 @@ fn drain_pending_reconnects(state: &Rc<RefCell<UiState>>) {
 }
 
 /// 断线期间查 `#{window_bell_flag}`（必须在新 client attach 之前查，attach 会清 flag）。
-fn query_window_bell_flag(socket: &str, session: &str) -> bool {
-    std::process::Command::new("tmux")
-        .args([
-            "-L",
-            socket,
-            "display-message",
-            "-p",
-            "-t",
-            session,
-            "#{window_bell_flag}",
-        ])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-        .unwrap_or(false)
+///
+/// SSH 工作区必须走 `ssh <alias> tmux -L <远端 socket> ...`，禁止对本机
+/// `tmux -L <远端名>`（那会打到错的 server 或什么都没有）。
+fn query_window_bell_flag(spec: &WorkspaceSpec) -> bool {
+    if spec.transport == "ssh" {
+        let alias = spec.alias.as_deref().unwrap_or("");
+        let socket = spec.socket.as_deref().unwrap_or("");
+        let session = &spec.session;
+        let mut cmd = std::process::Command::new("ssh");
+        if let Ok(cfg) = std::env::var("MUXTERM_SSH_CONFIG_PATH") {
+            cmd.args(["-F", &cfg]);
+        }
+        cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", alias, "--"]).arg(format!(
+            "tmux -L {socket} display-message -p -t {session} '#{{window_bell_flag}}'"
+        ));
+        cmd.output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+            .unwrap_or(false)
+    } else {
+        let socket = spec.socket.as_deref().unwrap_or("");
+        std::process::Command::new("tmux")
+            .args([
+                "-L",
+                socket,
+                "display-message",
+                "-p",
+                "-t",
+                &spec.session,
+                "#{window_bell_flag}",
+            ])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+            .unwrap_or(false)
+    }
 }
 
 /// 重连成功：换 Runtime、隐藏水印；断线期间的 BEL 重新推导成 Blocked。
@@ -2458,7 +2562,7 @@ fn drain_pending_connects(state: &Rc<RefCell<UiState>>) {
             }
         };
         if let Some(pending) = pending {
-            handle_connect_outcome(state, pending);
+                handle_connect_outcome(state, pending);
         }
     }
 }
@@ -2475,7 +2579,7 @@ fn handle_connect_outcome(state: &Rc<RefCell<UiState>>, pending: PendingConnect)
     } = pending;
     match result {
         Ok(workspace) => {
-            let mut s = state.borrow_mut();
+                let mut s = state.borrow_mut();
             s.pool.insert_connected(workspace);
             s.workspace_sockets.insert(id, socket);
             after_activate(&mut s);
