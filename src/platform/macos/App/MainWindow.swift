@@ -19,7 +19,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var terminalManager: TerminalManager
     let content: ContentView
     private let discovery = ConnectionDiscovery()
-    private var commandPalette: CommandPaletteController!
+    var commandPalette: CommandPaletteController!
     var unifiedPanel: UnifiedPanelController!
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
@@ -32,6 +32,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var isClosing = false
     /// e2e 记录桌面通知文案（不依赖系统通知权限）。
     private(set) var recordedNotifications: [String] = []
+    /// 注意力 Cmd-Enter 的 replica overlay（W19-E）。
+    private var replyOverlayView: MuxTerminalView?
+    var replyOverlayPaneId: UInt32?
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
     private(set) var lastPaneOutputEventCount: Int = 0
     private var languageObserver: NSObjectProtocol?
@@ -74,6 +77,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     init(bridge: CoreBridge, debug: Bool = false) {
+        discovery.attachedLocalSocket = bridge.socket
+        discovery.attachedRemoteSocket = bridge.socket
         let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8)
         if let toml {
             customKeybindings = KeyBindingsConfig.parse(toml: toml)
@@ -119,6 +124,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.center()
         window.contentView = content
         window.setAccessibilityIdentifier("muxterm.mainWindow")
+        // 启动即按当前主题设置 chrome 外观（默认 light → aqua），
+        // 否则 headless/深色系统下 effectiveAppearance 默认是 dark。
+        let initialAppearance = NSAppearance(
+            named: MuxtermTheme.from(
+                name: UserDefaults.standard.string(forKey: Self.themePreferenceKey)
+            ) == .dark ? .darkAqua : .aqua
+        )
+        window.appearance = initialAppearance
+        content.appearance = initialAppearance
 
         // QuickConnect 持久化：存到 ~/.config/muxterm/quickconnect.toml（TOML，
         // 与主 config.toml 同一目录，方便用户手改/备份）。
@@ -355,7 +369,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 当前主题：运行期选择优先，其次 config `[theme] name`，缺省浅色。
-    private func currentTheme() -> MuxtermTheme {
+    func currentTheme() -> MuxtermTheme {
         let saved = UserDefaults.standard.string(forKey: Self.themePreferenceKey)
         let config = (try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8))
             .flatMap { MuxtermTerminalColors.themeName(from: $0) }
@@ -367,6 +381,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func applyTheme(_ theme: MuxtermTheme) {
         UserDefaults.standard.set(theme.rawValue, forKey: Self.themePreferenceKey)
         MuxtermTerminalColors.activePalette = theme.palette
+        // Chrome 外观必须跟着主题走（light=aqua, dark=darkAqua），
+        // 不能只写 UserDefaults（W19-A：主题切换失败）。
+        let appearance = NSAppearance(
+            named: theme == .dark ? .darkAqua : .aqua
+        )
+        window?.appearance = appearance
+        content.appearance = appearance
+        NSApp.appearance = appearance
+        // 强制外观立即传播（headless 下 effectiveAppearance 可能延迟）。
+        window?.contentView?.viewDidChangeEffectiveAppearance()
+        window?.displayIfNeeded()
         // 终端默认色固定深色（OSC 10/11 代答浅字深底）；主题只改 chrome。
         terminalManager.applyTheme(
             fgHex: MuxtermTerminalColors.foregroundHex,
@@ -385,7 +410,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func toggleTheme() {
+    func toggleTheme() {
         let next: MuxtermTheme = currentTheme() == .light ? .dark : .light
         applyTheme(next)
         commandPalette.update(
@@ -486,6 +511,53 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = true
     }
 
+    /// 注意力面板 Cmd-Enter：打开/关闭独立 replica overlay（W19-E）。
+    /// overlay 用选中 pane 的 snapshot 渲染，I/O 走 overlay，不改主布局。
+    func toggleReplyOverlay() {
+        if let overlay = replyOverlayView, !content.replyOverlayContainer.isHidden {
+            overlay.removeFromSuperview()
+            replyOverlayView = nil
+            replyOverlayPaneId = nil
+            content.replyOverlayContainer.isHidden = true
+            content.replyOverlayContainer.setAccessibilityValue("0")
+            return
+        }
+        guard unifiedPanel?.modelTab == .attention,
+              let row = unifiedPanel?.testSelectedAttentionRow()
+        else {
+            return
+        }
+        let paneId = row.pane.paneId
+        let overlay = MuxTerminalView(paneId: paneId, frame: .zero)
+        overlay.setAccessibilityIdentifier(CmdEnterRouting.overlayIdentifier)
+        overlay.setAccessibilityElement(true)
+        overlay.inputHandler = self
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        content.replyOverlayContainer.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: content.replyOverlayContainer.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: content.replyOverlayContainer.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: content.replyOverlayContainer.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: content.replyOverlayContainer.bottomAnchor),
+        ])
+        replyOverlayView = overlay
+        replyOverlayPaneId = paneId
+        content.replyOverlayContainer.isHidden = false
+        // 手动布局（不依赖容器 Auto Layout，headless 下容器高度可能为 0）。
+        window?.layoutIfNeeded()
+        content.layoutSubtreeIfNeeded()
+        let overlayFrame = content.bounds.insetBy(dx: 24, dy: 24)
+        content.replyOverlayContainer.frame = overlayFrame
+        overlay.frame = content.replyOverlayContainer.bounds
+        overlay.layoutSubtreeIfNeeded()
+        _ = overlay.syncSizeToPty(notifyResize: false)
+        let data = bridge.getPaneOutput(paneId: paneId)
+        if !data.isEmpty {
+            overlay.feedOutput(data, isSnapshot: true)
+        }
+        content.replyOverlayContainer.setAccessibilityValue("1")
+    }
+
     /// 回底：把当前 pane 的 viewport 重置到最新（W16a jump-latest）。
     @objc func jumpToLatest() {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
@@ -504,7 +576,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func applyPaneViewport(paneId: UInt32, offset: UInt32) {
         let view = terminalManager.view(for: paneId)
         if offset > 0 {
-            let rows = UInt32(max(24, view.getTerminal().getDims().rows))
+            let term = view.getTerminal()
+            let dims = term.getDims()
+            // 用 tmux 报告的 pane 实际行列喂滚动帧（mock-codex 30 行帧，
+            // 24 行视口看不到底行 prompt）。
+            let paneInfo = lastSnapshot.panes.first(where: { $0.id == paneId })
+            let rows = UInt32(max(24, Int(paneInfo?.rows ?? 0), dims.rows))
+            let cols = UInt32(max(2, paneInfo?.cols ?? 80))
+            if dims.cols != Int(cols) || dims.rows != Int(rows) {
+                term.resize(cols: Int(cols), rows: Int(rows))
+            }
             let ansi = bridge.paneScrollANSI(paneId: paneId, offset: offset, rows: rows)
             if !ansi.isEmpty {
                 view.feedOutput(ansi, isSnapshot: true)
@@ -521,6 +602,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// shell runtime → 本地/远程 shell 在 path 启动。
     func connect(config: TargetConfig) {
         unifiedPanel.dismiss()
+        content.setConnectProgress(stage: .resolving)
         // recents 由连接池派生：连接成功后 pool.acquire 会更新最近列表。
         switch config.runtime {
         case .tmux:
@@ -555,9 +637,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 case .success:
                     box.flow.attachExistingSucceeded()
                     self.activeProjectFlow = nil
+                    self.content.setConnectProgress(stage: nil)
                     // attachTmux 内部已通过 connectionPool 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachExistingFailed(message: error.localizedDescription)
+                    self.content.setConnectProgress(stage: nil)
                     self.runProjectFlow(box, config: config)
                 }
             }
@@ -600,10 +684,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 case .success:
                     box.flow.attachCreatedSucceeded()
                     self.activeProjectFlow = nil
+                    self.content.setConnectProgress(stage: nil)
                     // attachTmux 内部已通过 connectionPool 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachCreatedFailed(message: error.localizedDescription)
                     self.activeProjectFlow = nil
+                    self.content.setConnectProgress(stage: nil)
                     self.showError(error, prefix: "attach created session failed")
                 }
             }
@@ -1091,7 +1177,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func showSessions(for target: ConnectionTarget) {
+    func showSessions(for target: ConnectionTarget) {
         commandPalette.update(
             items: [PaletteItem(
                 title: MuxtermI18n.shared.tr(.newSession),
@@ -1127,8 +1213,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     placeholder: MuxtermI18n.shared.tr(.chooseTmuxSession)
                 )
             case .failure(let error):
-                self.commandPalette.dismiss()
-                self.showError(error)
+                // W19-B：异步失败不得把面板关成只剩 New session；
+                // 保留列表并显示错误，用户仍可重试/新建。
+                self.content.setConnectProgress(stage: nil)
+                self.reportStatusError(error.localizedDescription)
             }
         }
 
@@ -1436,6 +1524,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 注意力引擎：更新状态栏红点 + 弹出 blocked/done 通知。
     private func refreshAttentionChrome() {
         guard !isClosing, terminalManager.usesClientResize else { return }
+        // 前台 pane 输出视为已看见：CommandDone 清成 Idle（Linux 同款），
+        // 前台 `sleep && echo` 不弹完成通知。
+        let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
+            ?? lastSnapshot.panes.first?.id
+        if let activePane {
+            _ = bridge.attentionOnBecameVisible(paneId: activePane)
+        }
         if let json = bridge.attentionSnapshotJSON(),
            let data = json.data(using: .utf8),
            let snapshot = AttentionSnapshot.decode(data) {
@@ -1630,6 +1725,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         isClosing = true
         // 统一面板是独立 NSPanel：不关会留在 NSApp.windows 里干扰后续测试。
         unifiedPanel?.dismiss()
+        // 主题外观复位，避免后续测试读到残留 dark appearance。
+        window?.appearance = nil
+        content.appearance = nil
+        NSApp.appearance = nil
         pollTimer?.invalidate()
         pollTimer = nil
         trafficMonitorTimer?.invalidate()
@@ -1693,6 +1792,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 返回 true 表示已消费事件。in-process e2e 经 `testDispatchKeyEvent` 调用。
     func handleKey(_ event: NSEvent) -> Bool {
+        let eventFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isReturn = event.keyCode == 36 || event.keyCode == 76
         // Cmd-P 统一面板可见时，Tab/Shift+Tab/Esc/Enter 走面板。
         // （headless e2e 里 key window 可能为 nil，用 isVisible 判断。）
         if unifiedPanel?.window?.isVisible == true {
@@ -1704,13 +1805,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 unifiedPanel.cycleTabForTest(back: event.modifierFlags.contains(.shift))
                 return true
             case 36, 76: // Return / keypad Enter
+                if eventFlags.contains(.command) {
+                    // Cmd-Enter：注意力面板 → replica overlay；否则主窗口 zoom。
+                    toggleReplyOverlay()
+                    return true
+                }
                 unifiedPanel.activateForTest()
                 return true
             default:
                 break
             }
         }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // overlay 已打开：再按 Cmd-Enter 关掉。
+        if !content.replyOverlayContainer.isHidden, eventFlags.contains(.command), isReturn {
+            toggleReplyOverlay()
+            return true
+        }
+        if isReturn {
+            // 落到下面的 KeyChord 匹配（Cmd-Enter 主窗口 zoom）。
+        }
+        let flags = eventFlags
         // macOS 的 Delete/Backspace 可能在 SwiftTerm 的 NSTextInputClient 路径
         // 中被吞掉；明确转成 DEL，保证 shell 和 tmux 收到基础编辑键。
         if event.keyCode == 51,
@@ -1800,5 +1914,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             pollTimer = nil
             bridge.shutdown()
         }
+    }
+}
+
+// MARK: - TerminalInputHandler（reply overlay 输入）
+
+extension MainWindowController: TerminalInputHandler {
+    func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
+        let paneId = replyOverlayPaneId ?? view.paneId
+        // W19-E：overlay 快速回复不清 Blocked（注意力行保留，Enter 仍可跳转）。
+        _ = bridge.sendInputQuiet(paneId: paneId, data: Data(data))
+    }
+
+    func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {
+        // overlay 不写回 tmux 尺寸（不改主布局 PTY）。
     }
 }

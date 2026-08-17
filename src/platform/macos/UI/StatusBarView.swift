@@ -139,21 +139,32 @@ final class StatusBarView: NSView {
             lessThanOrEqualTo: widthAnchor, multiplier: StatusBarLayoutPolicy.sideMaxFraction
         )
 
+        let tabMaxWidth = tabStack.widthAnchor.constraint(
+            lessThanOrEqualTo: widthAnchor,
+            constant: -(StatusBarTabOverflow.statusRightMinWidth
+                + StatusBarTabOverflow.chromeWidth + 16)
+        )
+        let rightMinWidth = rightLabel.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: StatusBarTabOverflow.statusRightMinWidth
+        )
+
         NSLayoutConstraint.activate([
             heightConstraint,
 
-            // tab 列表从最左侧开始。
+            // tab 列表从最左侧开始；最大宽度给 right+chrome 留空间（W19-F）。
             tabStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
             tabStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            tabMaxWidth,
 
             // tmux-left 在 tab 右侧。
             leftLabel.leadingAnchor.constraint(equalTo: tabStack.trailingAnchor, constant: 8),
             leftLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            // tmux-right。
+            // tmux-right：最小 64pt，不能被 tab 挤没。
             rightLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
             rightLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             rightLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusDot.leadingAnchor, constant: -6),
+            rightMinWidth,
 
             // 最右侧三个图标：状态点 → 通知 → 新建。
             newTabButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
@@ -430,6 +441,10 @@ final class StatusBarView: NSView {
                 index: UInt32(position + 1),
                 name: item.name
             )
+            // W19-F：固定 tab 宽度（溢出裁剪），不得无限变宽挤掉 status-right。
+            button.widthAnchor.constraint(
+                equalToConstant: StatusBarTabOverflow.fixedTabWidth
+            ).isActive = true
             button.tag = Int(item.id)
             button.target = self
             button.action = #selector(tabClicked(_:))
@@ -597,6 +612,26 @@ final class StatusBarView: NSView {
 
     func testAttentionCountLabel() -> String {
         attentionCountLabel.stringValue
+    }
+
+    func testStatusRightWidth() -> CGFloat {
+        layoutSubtreeIfNeeded()
+        return rightLabel.isHidden ? 0 : rightLabel.frame.width
+    }
+
+    func testStatusRightMaxX() -> CGFloat {
+        layoutSubtreeIfNeeded()
+        return rightLabel.isHidden ? 0 : rightLabel.frame.maxX
+    }
+
+    func testTabButtonWidths() -> [CGFloat] {
+        layoutSubtreeIfNeeded()
+        return tabStack.arrangedSubviews.map(\.frame.width)
+    }
+
+    func testChromeMinX() -> CGFloat {
+        layoutSubtreeIfNeeded()
+        return statusDot.frame.minX
     }
 }
 

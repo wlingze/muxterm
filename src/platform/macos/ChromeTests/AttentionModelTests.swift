@@ -118,3 +118,22 @@ final class AttentionNotificationsDecodeTests: XCTestCase {
         XCTAssertNil(AttentionNotifications.decode(Data(#"{"ok": false}"#.utf8)))
     }
 }
+
+final class AttentionRowLabelTests: XCTestCase {
+    func testJoinsProcessTransportAndPath() {
+        let title = AttentionRowLabel.display(
+            process: "sleep",
+            transport: "ssh",
+            path: "/home/wlz/yaklang-workspace"
+        )
+        XCTAssertEqual(title, "sleep  ssh  /home/wlz/yaklang-workspace")
+        XCTAssertFalse(title.contains("aa"))
+    }
+
+    func testEmptyProcessBecomesQuestionMark() {
+        XCTAssertEqual(
+            AttentionRowLabel.display(process: "  ", transport: "local", path: "~"),
+            "?  local  ~"
+        )
+    }
+}

@@ -11,6 +11,10 @@ final class ContentView: NSView {
     let disconnectOverlay = NSTextField(labelWithString: "")
     /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
     let jumpLatestButton = NSButton()
+    /// 连接进度全窗口覆盖（W19-C：不是小对话框）。
+    let connectProgressOverlay = NSTextField(labelWithString: "")
+    /// 注意力 Cmd-Enter 的独立 replica overlay（W19-E）。
+    let replyOverlayContainer = NSView()
 
     private var topConstraints: [NSLayoutConstraint] = []
     private var bottomConstraints: [NSLayoutConstraint] = []
@@ -33,6 +37,22 @@ final class ContentView: NSView {
         disconnectOverlay.setAccessibilityIdentifier("muxterm.disconnectOverlay")
         disconnectOverlay.setAccessibilityElement(true)
 
+        connectProgressOverlay.translatesAutoresizingMaskIntoConstraints = false
+        connectProgressOverlay.font = NSFont.systemFont(ofSize: 20, weight: .medium)
+        connectProgressOverlay.textColor = .labelColor
+        connectProgressOverlay.alignment = .center
+        connectProgressOverlay.wantsLayer = true
+        connectProgressOverlay.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
+        connectProgressOverlay.isHidden = true
+        connectProgressOverlay.setAccessibilityIdentifier(ConnectProgress.identifier)
+        connectProgressOverlay.setAccessibilityElement(true)
+        connectProgressOverlay.setAccessibilityRole(.staticText)
+
+        replyOverlayContainer.translatesAutoresizingMaskIntoConstraints = false
+        replyOverlayContainer.wantsLayer = true
+        replyOverlayContainer.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        replyOverlayContainer.isHidden = true
+
         jumpLatestButton.translatesAutoresizingMaskIntoConstraints = false
         jumpLatestButton.title = "↓"
         jumpLatestButton.bezelStyle = .rounded
@@ -44,6 +64,8 @@ final class ContentView: NSView {
         addSubview(statusBar)
         addSubview(disconnectOverlay)
         addSubview(jumpLatestButton)
+        addSubview(connectProgressOverlay)
+        addSubview(replyOverlayContainer)
 
         NSLayoutConstraint.activate([
             disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -117,6 +139,23 @@ final class ContentView: NSView {
 
     func refreshLocalization() {
         statusBar.refreshLocalization()
+    }
+
+    /// 连接进度覆盖层：stage 为 nil 时隐藏。
+    /// 不用 Auto Layout 全约束（NSTextField 的 intrinsic 高度会压扁窗口），
+    /// 手动铺满。
+    func setConnectProgress(stage: ConnectProgressStage?) {
+        guard let stage else {
+            connectProgressOverlay.isHidden = true
+            return
+        }
+        layoutSubtreeIfNeeded()
+        connectProgressOverlay.frame = bounds
+        connectProgressOverlay.isHidden = false
+        connectProgressOverlay.stringValue = stage.rawValue
+        connectProgressOverlay.setAccessibilityValue(ConnectProgress.accessibilityValue(stage: stage))
+        connectProgressOverlay.toolTip = stage.rawValue
+        needsLayout = true
     }
 
     /// 断线水印：tmux server 死后保留最后一帧 + 覆盖提示。

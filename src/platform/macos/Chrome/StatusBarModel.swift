@@ -90,6 +90,31 @@ public enum StatusBarLayoutPolicy {
     }
 }
 
+/// tab 过多时的溢出策略：固定 tab 宽，status-right 与 chrome 永远可见。
+///
+/// Linux `status_bar.rs`：`right.set_hexpand(true)`，tab 不抢右侧。
+/// macOS 当前把 tab 放在最左且未限宽，长窗口名会把 `muxterm.statusRight` 挤成 0。
+public enum StatusBarTabOverflow {
+    /// 单个 tab 按钮固定宽度（超出省略号）。
+    public static let fixedTabWidth: CGFloat = 96
+    /// status-right 最少可见宽度。
+    public static let statusRightMinWidth: CGFloat = 64
+    /// 状态点 18 + 铃铛 ~22 + 加号 28 + 间距。
+    public static let chromeWidth: CGFloat = 80
+
+    /// 放不下的 tab 数量（>0 必须滚动/溢出，不得压缩 right+chrome）。
+    public static func overflowCount(
+        tabCount: Int,
+        barWidth: CGFloat,
+        leftWidth: CGFloat
+    ) -> Int {
+        let reserved = statusRightMinWidth + chromeWidth + max(0, leftWidth) + 16
+        let available = max(0, barWidth - reserved)
+        let fit = Int(floor(available / fixedTabWidth))
+        return max(0, tabCount - max(fit, 0))
+    }
+}
+
 /// 提醒位（文档 §B.1）：状态栏上一个常驻位置，面积趋近于零；
 /// count > 0 时变红点，表示「我是瓶颈」的工作区数量（绝不因新输出点亮）。
 /// 消息弹窗 / 通知列表后续复用这个位置，这里先预留。
