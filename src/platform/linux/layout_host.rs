@@ -171,7 +171,12 @@ impl LayoutHost {
         }
 
         let widget = self.build_widget(&effective);
+        // 后挂载的布局（SSH attach 切工作区）也要让 VTE 撑满 root_box：
+        // 显式 expand + queue_resize，避免新 child 在已分配 Box 里拿 0 尺寸。
+        widget.set_hexpand(true);
+        widget.set_vexpand(true);
         self.root_box.append(&widget);
+        self.root_box.queue_resize();
         true
     }
 

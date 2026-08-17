@@ -1,77 +1,94 @@
-//! loopback SSH + 远端隔离 tmux e2e（LINUX-PLAN §5.4 S12）。
+//! W18：loopback SSH attach 的 GTK 路径，断言与本地 attach 一致。
 //!
-//! 需要 sshd：先 `eval "$(./scripts/ci/setup-sshd.sh)"`。无 sshd 时 `#[ignore]`，
-//! 默认门禁不跑，不算失败。远端 tmux 一律 `-L <remote_socket>`。
+//! 本 crate 只构造一个 AppWindow。禁止 MockRuntime。无 sshd 二进制 skip。
 
 #![cfg(feature = "gtk")]
 
 mod support;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use support::sshd_test_support::{sshd_available, SshTestEnv};
+use gtk4::prelude::*;
+use support::linux_gtk::*;
+use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT};
+use support::tmux_test_support::tmux_available;
 
-use muxterm::core::model::backend::mock::MockRuntime;
-use muxterm::core::types::PaneId;
-use muxterm::core::workspace::id::WorkspaceId;
-use muxterm::core::workspace::workspace::Workspace;
-use muxterm::platform::linux::ffi_bridge::CoreBridge;
+use muxterm::core::config::Config;
+use muxterm::core::workspace::spec::WorkspaceSpec;
+use muxterm::platform::linux::window::AppWindow;
 
-/// S12：远端隔离 tmux echo 到达 replica；status summary 是 ssh。
+fn wait_ready(app: &AppWindow) -> bool {
+    let deadline = Instant::now() + SSH_TIMEOUT;
+    while Instant::now() < deadline {
+        app.test_poll_once();
+        pump_main_loop(30);
+        if !app.test_layout_leaf_ids().is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+/// SSH attach 已有 `/bin/cat` 画面：VTE 与 search_all 都能看到 token。
 #[test]
-#[ignore = "需要 loopback sshd（scripts/ci/setup-sshd.sh）"]
-fn loopback_ssh_isolated_tmux_echo() {
-    if !sshd_available() {
-        eprintln!("skip: 无 sshd（先 eval \"$(./scripts/ci/setup-sshd.sh)\"）");
+fn linux_ssh_attach_shows_preexist_token() {
+    if skip_no_display() {
         return;
     }
-    let env = SshTestEnv::setup("s12").expect("SSH 测试环境");
-    // 远端隔离 tmux：new-session -d -s s（带 -L）。
-    let (ok, _, err) = env.remote_tmux("new-session -d -s s -x 80 -y 24");
-    assert!(ok, "远端 tmux new-session 失败: {err}");
+    if !tmux_available() {
+        eprintln!("skip: 无 tmux");
+        return;
+    }
+    if !ssh_tmux_available() {
+        eprintln!("skip: 无 sshd 二进制");
+        return;
+    }
+    gtk4::test_synced(|| {
+        gtk_test_framework_smoke();
+        let fx = build_remote_one_pane("gtk-ssh-att");
+        fx.apply_ssh_config_env();
 
-    // Muxterm SSH attach（CoreBridge 等价路径；ssh config 走 MUXTERM_SSH_CONFIG_PATH）。
-    std::env::set_var("MUXTERM_SSH_CONFIG_PATH", &env.ssh_config_path);
-    let bridge = CoreBridge::connect(
-        "tmux-ssh",
-        Some(&env.remote_tmux_socket),
-        Some("s"),
-        Some(&env.alias),
-        Some("/tmp"),
-    )
-    .expect("SSH attach 应成功");
-    let _ = bridge.poll_events();
+        let cfg = Config::default();
+        let app = AppWindow::new(cfg, load_theme());
+        app.window.set_default_size(1280, 800);
+        app.window.present();
+        gtk4::test_widget_wait_for_draw(&app.window);
+        pump_main_loop(120);
 
-    // 远端 echo token。
-    let (ok, _, err) = env.remote_tmux("send-keys -t s 'echo MUXTERM_SSH_TOKEN' Enter");
-    assert!(ok, "远端 send-keys 失败: {err}");
+        app.test_open_spec(WorkspaceSpec::ssh_tmux(
+            fx.sshd.alias.clone(),
+            Some(fx.session.clone()),
+            Some(fx.socket.clone()),
+        ));
 
-    // 轮询：工作区 PaneBuf 与远端 capture-pane 都含 token。
-    let mut ws = Workspace::new(
-        WorkspaceId::new("ssh", Some("s12"), "s", "tmux", ""),
-        "s".into(),
-        std::boxed::Box::new(MockRuntime::with_single_pane()),
-    );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut ok = false;
-    while Instant::now() < deadline {
-        for ev in bridge.poll_events() {
-            if ev.type_ == muxterm::core::protocol::ffi::types::STATE_PANE_OUTPUT {
-                ws.feed_pane_bytes(PaneId(ev.pane_id), &ev.data, 80, 24);
+        assert!(wait_ready(&app), "SSH attach 后应有 pane");
+        let pane = *app.test_layout_leaf_ids().first().expect("pane");
+        let deadline = Instant::now() + SSH_TIMEOUT;
+        let mut ok = false;
+        while Instant::now() < deadline {
+            app.test_poll_once();
+            pump_main_loop(30);
+            app.test_flush_feeds();
+            if app.test_pane_vte_text(pane).contains(&fx.token)
+                && !app.test_search_all(&fx.token).is_empty()
+            {
+                ok = true;
+                break;
             }
         }
-        let replica = ws.pane_last_n_lines(PaneId(0), 5).join("\n");
-        let (_, capture, _) = env.remote_tmux("capture-pane -p -t s");
-        if replica.contains("MUXTERM_SSH_TOKEN") && capture.contains("MUXTERM_SSH_TOKEN") {
-            ok = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    assert!(ok, "10s 内 SSH echo 应到达 replica 与远端 capture-pane");
-
-    // 清理：远端 tmux -L kill-server（禁止不带 -L）。
-    let (ok, _, err) = env.remote_tmux("kill-server");
-    assert!(ok, "远端 kill-server 失败: {err}");
-    drop(bridge);
+        assert!(
+            ok,
+            "SSH attach 后 VTE 与 search_all 必须含 {}（与本地 linux_feature_e2e 同级）。vte={:?} search={:?}",
+            fx.token,
+            app.test_pane_vte_text(pane),
+            app.test_search_all(&fx.token)
+        );
+        assert!(
+            app.test_workspace_replica_ids()
+                .iter()
+                .any(|id| id.contains(&fx.sshd.alias)),
+            "池里必须是 SSH 工作区（replica 含 loopback alias），不能误开成本地。ids={:?}",
+            app.test_workspace_replica_ids()
+        );
+    });
 }
