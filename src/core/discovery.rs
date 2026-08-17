@@ -437,6 +437,80 @@ pub fn create_ssh_tmux_session(
     }
 }
 
+fn run_ssh_discovery_command(
+    program: &str,
+    args: &[String],
+    timeout: std::time::Duration,
+) -> anyhow::Result<(i32, String)> {
+    // 短命令：ssh Command + stdout，禁止 PTY（-tt 会灌 MOTD/提示符）。
+    use std::process::Command;
+    use std::time::Instant;
+
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut stdout = child.stdout.take().expect("stdout 已 piped");
+    let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let result = std::io::Read::read_to_end(&mut stdout, &mut buf).map(|_| buf);
+        let _ = tx.send(result);
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(Ok(bytes)) => {
+                let status = child.wait()?;
+                return Ok((
+                    status.code().unwrap_or(124),
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                ));
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok((124, String::new()));
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let status = child.wait()?;
+                return Ok((status.code().unwrap_or(124), String::new()));
+            }
+        }
+    }
+}
+
+/// 通过 discovery 短命令在远端执行 `tmux list-sessions`，解析结果。
+///
+/// 走 `build_ssh_command_for_discovery`（BatchMode + ConnectTimeout=2，无 -tt）
+/// + `run_ssh_discovery_command`（ssh Command + stdout），禁止 attach PTY。
+pub fn list_ssh_tmux_sessions(
+    alias: &str,
+    ssh_config_path: Option<&str>,
+    remote_socket: Option<&str>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Vec<TmuxSessionInfo>> {
+    let remote_tmux = if let Some(sk) = remote_socket {
+        format!("tmux -L {} list-sessions -F '#{{session_name}},#{{session_windows}},#{{session_attached}},#{{session_created}}'", sk)
+    } else {
+        "tmux list-sessions -F '#{session_name},#{session_windows},#{session_attached},#{session_created}'".to_string()
+    };
+    let (program, args) = build_ssh_command_for_discovery(alias, &remote_tmux, ssh_config_path);
+    let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
+    if exit_code == 255 {
+        return Err(anyhow::anyhow!(
+            "SSH connection failed (exit {exit_code}): {}",
+            output.trim()
+        ));
+    }
+    // exit 1 from tmux = no sessions, return empty list (not error)
+    Ok(parse_tmux_session_output(&output))
+}
+
 fn parse_tmux_session_output(text: &str) -> Vec<TmuxSessionInfo> {
     text.lines()
         .filter_map(|line| {
@@ -459,196 +533,35 @@ fn build_ssh_command_for_discovery(
     remote_command: &str,
     ssh_config_path: Option<&str>,
 ) -> (String, Vec<String>) {
-    crate::core::transport::ssh::build_ssh_command(alias, remote_command, ssh_config_path)
+    // 列出/探活是短命令：BatchMode + ConnectTimeout=2，不要 -tt（那是 attach）。
+    let program = "ssh".to_string();
+    let mut args = Vec::new();
+    if let Some(path) = ssh_config_path {
+        args.push("-F".to_string());
+        args.push(path.to_string());
+    }
+    args.push("-o".to_string());
+    args.push("BatchMode=yes".to_string());
+    args.push("-o".to_string());
+    args.push("ConnectTimeout=2".to_string());
+    args.push(alias.to_string());
+    if !remote_command.is_empty() {
+        args.push("--".to_string());
+        args.push(remote_command.to_string());
+    }
+    (program, args)
 }
 
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn run_ssh_discovery_command(
-    program: &str,
-    args: &[String],
-    timeout: std::time::Duration,
-) -> anyhow::Result<(i32, String)> {
-    use crate::core::transport::ssh::SshProcessTransport;
-    use crate::core::transport::{PtySize, Transport, TransportSignal};
-    use std::sync::mpsc as std_mpsc;
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut transport = SshProcessTransport::new();
-    transport.spawn_exec(program, &arg_refs, PtySize::new(80, 24))?;
-    let transport = Arc::new(Mutex::new(transport));
-    let (tx, rx) = std_mpsc::channel::<Vec<u8>>();
-    let reader_transport = Arc::clone(&transport);
-    let reader = std::thread::spawn(move || loop {
-        let mut transport = reader_transport.lock().unwrap();
-        match transport.read() {
-            Ok(Some(data)) => {
-                drop(transport);
-                if tx.send(data).is_err() {
-                    break;
-                }
-            }
-            Ok(None) => {
-                drop(transport);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Err(_) => break,
-        }
-    });
-
-    let deadline = Instant::now() + timeout;
-    let mut output = Vec::new();
-    let mut exit_code = None;
-    while Instant::now() < deadline {
-        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(data) => output.extend_from_slice(&data),
-            Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                let mut transport = transport.lock().unwrap();
-                if let Some(code) = transport.try_wait()? {
-                    exit_code = Some(code as i32);
-                    break;
-                }
-            }
-            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    if exit_code.is_none() {
-        let mut transport = transport.lock().unwrap();
-        let _ = transport.kill(TransportSignal::Term);
-    }
-    let _ = reader.join();
-    while let Ok(data) = rx.try_recv() {
-        output.extend_from_slice(&data);
-    }
-    if exit_code.is_none() {
-        let mut transport = transport.lock().unwrap();
-        exit_code = transport.try_wait()?.map(|code| code as i32);
-    }
-
-    Ok((
-        exit_code.unwrap_or(124),
-        String::from_utf8_lossy(&output).into_owned(),
-    ))
-}
-
-/// 通过 SSH transport 在远端执行 `tmux list-sessions`，解析结果。
-///
-/// 使用 muxterm 自己的 `SshProcessTransport`（spawn `ssh <alias> -- tmux list-sessions`），
-/// 不直接调用 `ssh` 子进程作为产品路径。transport 的 read 非阻塞，
-/// 用后台线程收集输出，有硬超时。
-pub fn list_ssh_tmux_sessions(
-    alias: &str,
-    ssh_config_path: Option<&str>,
-    remote_socket: Option<&str>,
-    timeout: std::time::Duration,
-) -> anyhow::Result<Vec<TmuxSessionInfo>> {
-    use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
-    use crate::core::transport::{PtySize, Transport, TransportSignal};
-    use std::sync::mpsc as std_mpsc;
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-
-    let remote_tmux = if let Some(sk) = remote_socket {
-        format!("tmux -L {} list-sessions -F '#{{session_name}},#{{session_windows}},#{{session_attached}},#{{session_created}}'", sk)
-    } else {
-        "tmux list-sessions -F '#{session_name},#{session_windows},#{session_attached},#{session_created}'".to_string()
-    };
-    let (program, args) = build_ssh_command(alias, &remote_tmux, ssh_config_path);
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
-    let mut transport = SshProcessTransport::new();
-    transport
-        .spawn_exec(&program, &arg_refs, PtySize::new(80, 24))
-        .map_err(|e| anyhow::anyhow!("SSH transport spawn 失败: {e}"))?;
-
-    let transport = Arc::new(Mutex::new(transport));
-
-    // 后台线程读 transport 输出
-    let (tx, rx) = std_mpsc::channel::<Vec<u8>>();
-    let read_transport = transport.clone();
-    let read_handle = std::thread::spawn(move || loop {
-        let mut t = read_transport.lock().unwrap();
-        match t.read() {
-            Ok(Some(data)) => {
-                drop(t);
-                if tx.send(data).is_err() {
-                    break;
-                }
-            }
-            Ok(None) => {
-                drop(t);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Err(_) => break,
-        }
-    });
-
-    // 收集输出直到超时或子进程退出
-    let deadline = Instant::now() + timeout;
-    let mut all_output = Vec::new();
-    while Instant::now() < deadline {
-        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(data) => all_output.extend_from_slice(&data),
-            Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                // 检查子进程是否已退出
-                let mut t = transport.lock().unwrap();
-                if let Ok(Some(_)) = t.try_wait() {
-                    drop(t);
-                    break;
-                }
-            }
-            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    // kill 子进程，等读线程结束（会把剩余 pty 输出投递到 channel），再一次性收尾。
-    {
-        let mut t = transport.lock().unwrap();
-        let _ = t.kill(TransportSignal::Term);
-    }
-    let _ = read_handle.join();
-    // 读线程已退出并关闭 channel：此刻的 rx.try_recv 能取到「最后一块」输出，
-    // 避免旧实现只 try_recv 一次就 break 而丢掉尾部数据（CI 负载下偶发空列表）。
-    while let Ok(data) = rx.try_recv() {
-        all_output.extend_from_slice(&data);
-    }
-
-    // Check child exit code: nonzero = SSH or remote command failed
-    let exit_code = {
-        let mut t = transport.lock().unwrap();
-        t.try_wait().ok().flatten()
-    };
-    if let Some(code) = exit_code {
-        if code != 0 {
-            let text = String::from_utf8_lossy(&all_output);
-            let stderr = text.to_string();
-            // tmux list-sessions returns exit 1 when no server running — that's "no sessions"
-            // ssh connection failures return 255
-            if code == 255 {
-                return Err(anyhow::anyhow!(
-                    "SSH connection failed (exit {code}): {stderr}"
-                ));
-            }
-            // exit 1 from tmux = no sessions, return empty list (not error)
-        }
-    }
-
-    Ok(parse_tmux_session_output(&String::from_utf8_lossy(
-        &all_output,
-    )))
-}
+pub type SshPaneInfo = (u32, bool, u16, u16, String);
 
 /// 通过 SSH transport 在远端执行 `tmux list-panes`，解析结果。
 ///
 /// 使用 muxterm 自己的 `SshProcessTransport`，不直接调用 raw ssh。
 /// SSH 远端 pane 信息：(pane_id, active, cols, rows, title)
-pub type SshPaneInfo = (u32, bool, u16, u16, String);
-
 pub fn list_ssh_tmux_panes(
     alias: &str,
     ssh_config_path: Option<&str>,

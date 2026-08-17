@@ -136,6 +136,9 @@ struct UiState {
     /// W20：SSH 已有连接探测结果队列。
     pending_existing_ssh:
         std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
+    /// C7：本地已有连接探测结果队列（open_panel 不阻塞 GTK）。
+    pending_local_existing:
+        std::collections::VecDeque<std::sync::mpsc::Receiver<Vec<ExistingEntry>>>,
     /// W21 测试钩子：最近一次经 PaneView input_cb 的原始输入。
     last_raw_input: Vec<u8>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
@@ -466,6 +469,7 @@ impl AppWindow {
             existing: Rc::new(RefCell::new(ExistingPanelState::default())),
             existing_ssh_probing: false,
             pending_existing_ssh: std::collections::VecDeque::new(),
+            pending_local_existing: std::collections::VecDeque::new(),
             last_raw_input: Vec::new(),
             reconnecting: false,
             reconnect_retry_at: None,
@@ -899,6 +903,7 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
         drain_pending_worktree_creates(&self._state);
         drain_ssh_probes(&self._state);
         drain_existing_ssh(&self._state);
+        drain_local_existing(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
         let (n, pending_close) = {
@@ -966,6 +971,7 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
         drain_pending_worktree_creates(&self._state);
         drain_ssh_probes(&self._state);
         drain_existing_ssh(&self._state);
+        drain_local_existing(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
         let pending_close = {
@@ -2477,6 +2483,53 @@ fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> 
     }
 }
 
+/// C7：本地已有的连接探测（Catalog::discover_sessions("local","")）后台跑。
+fn spawn_local_existing_probe(s: &mut UiState) {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<ExistingEntry>>();
+    s.pending_local_existing.push_back(rx);
+    std::thread::spawn(move || {
+        let mut catalog = crate::core::catalog::Catalog::with_builtins();
+        let entries = catalog
+            .discover_sessions("local", "")
+            .unwrap_or_default()
+            .iter()
+            .map(candidate_to_existing)
+            .collect();
+        let _ = tx.send(entries);
+    });
+}
+
+/// 收编本地已有连接探测结果（16ms poll 与 test_poll_once 共用）。
+fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
+    let mut done = false;
+    while !done {
+        let result = {
+            let mut s = state.borrow_mut();
+            let Some(rx) = s.pending_local_existing.front() else {
+                break;
+            };
+            match rx.try_recv() {
+                Ok(r) => {
+                    s.pending_local_existing.pop_front();
+                    Some(r)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    done = true;
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    s.pending_local_existing.pop_front();
+                    None
+                }
+            }
+        };
+        if let Some(entries) = result {
+            state.borrow().existing.borrow_mut().locals = entries;
+            crate::platform::linux::quickconnect_panel::refresh_current();
+        }
+    }
+}
+
 /// W20：SSH 已有的连接探测（tmux + Herdr），后台线程，最多 4 路并发。
 fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
     {
@@ -2485,6 +2538,7 @@ fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
             return;
         }
         s.existing_ssh_probing = true;
+        s.existing.borrow_mut().probe_inflight = true;
     }
     let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(None)
         .unwrap_or_default()
@@ -2494,17 +2548,31 @@ fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
     let (tx, rx) = std::sync::mpsc::channel::<Vec<(String, Vec<ExistingEntry>)>>();
     state.borrow_mut().pending_existing_ssh.push_back(rx);
     std::thread::spawn(move || {
+        // 最多 4 路并发：慢 host 不能把整表拖到串行 10s 级。
         let results: Vec<(String, Vec<ExistingEntry>)> = aliases
-            .into_iter()
-            .map(|alias| {
-                let mut catalog = crate::core::catalog::Catalog::with_builtins();
-                let entries = catalog
-                    .discover_sessions("ssh", &alias)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(candidate_to_existing)
-                    .collect();
-                (alias, entries)
+            .chunks(4)
+            .flat_map(|chunk| {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = chunk
+                        .iter()
+                        .map(|alias| {
+                            scope.spawn(move || {
+                                let mut catalog = crate::core::catalog::Catalog::with_builtins();
+                                let entries = catalog
+                                    .discover_sessions("ssh", alias)
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(candidate_to_existing)
+                                    .collect();
+                                (alias.clone(), entries)
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| h.join().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                })
             })
             .collect();
         let _ = tx.send(results);
@@ -2524,6 +2592,7 @@ fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
                 Ok(r) => {
                     s.pending_existing_ssh.pop_front();
                     s.existing_ssh_probing = false;
+                    s.existing.borrow_mut().probe_inflight = false;
                     Some(r)
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -2533,6 +2602,7 @@ fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     s.pending_existing_ssh.pop_front();
                     s.existing_ssh_probing = false;
+                    s.existing.borrow_mut().probe_inflight = false;
                     None
                 }
             }
@@ -2756,18 +2826,9 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let st = state.clone();
         let workspaces = build_root_items(&store, current.as_ref());
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
-        // W20/C6：本地已有的连接走 Catalog::discover_sessions 扇出
-        // （tmux + herdr），platform 不再直接调 discovery::existing。
-        {
-            let mut catalog = crate::core::catalog::Catalog::with_builtins();
-            let mut ex = s.existing.borrow_mut();
-            ex.locals = catalog
-                .discover_sessions("local", "")
-                .unwrap_or_default()
-                .iter()
-                .map(candidate_to_existing)
-                .collect();
-        }
+        // C7：本地列出搬后台线程（GTK 线程禁止 ssh / 扫 herdr socket），
+        // 结果经 16ms poll 收编，和 SSH probe 同一模式。
+        spawn_local_existing_probe(&mut s);
         let ws = active_workspace_id(&s);
         let active_pane = s.active_pane;
         let attention: Vec<PaneAttention> = s

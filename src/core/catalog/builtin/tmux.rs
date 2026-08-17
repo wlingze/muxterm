@@ -45,10 +45,13 @@ impl RuntimeDriver for TmuxDriver {
     fn list(&self, connect: &Connect, _namespace: Option<&str>) -> Result<Vec<SessionCandidate>> {
         let ssh_config = Self::ssh_config();
         let sessions = if connect.transport_id() == "ssh" {
+            // 测试隔离远端 tmux：MUXTERM_TEST_REMOTE_TMUX_SOCKET（对标
+            // HERDR_SOCKET_PATH）。生产不设 = 远端默认 server。
+            let remote_socket = std::env::var("MUXTERM_TEST_REMOTE_TMUX_SOCKET").ok();
             crate::core::discovery::list_ssh_tmux_sessions(
                 connect.target(),
                 ssh_config.as_deref(),
-                None,
+                remote_socket.as_deref(),
                 Duration::from_secs(2),
             )
             .unwrap_or_default()

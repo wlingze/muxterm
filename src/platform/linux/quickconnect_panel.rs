@@ -60,6 +60,8 @@ pub struct ExistingPanelState {
     pub locals: Vec<ExistingEntry>,
     pub hosts: Vec<String>,
     pub remote: std::collections::HashMap<String, Vec<ExistingEntry>>,
+    /// SSH 探测是否在跑：空 host + inflight → Loading；空 + 完成 → Empty。
+    pub probe_inflight: bool,
 }
 
 /// 测试/生产共用：让当前面板按最新状态重建列表（SSH 探测回来再填）。
@@ -206,6 +208,7 @@ pub fn existing_items(
     nav: ExistingNav,
     locals: &[ExistingEntry],
     hosts: &[String],
+    probe_inflight: bool,
     remote_of_alias: impl Fn(&str) -> Vec<ExistingEntry>,
 ) -> Vec<PanelItem> {
     let mut items = vec![PanelItem::Back];
@@ -231,7 +234,13 @@ pub fn existing_items(
         }
         ExistingNav::SshHosts => {
             if hosts.is_empty() {
-                items.push(PanelItem::Loading);
+                if probe_inflight {
+                    items.push(PanelItem::Loading);
+                } else {
+                    items.push(PanelItem::Empty {
+                        title: i18n::tr(TextKey::ExistingEmpty),
+                    });
+                }
             } else {
                 items.extend(hosts.iter().map(|alias| PanelItem::Host {
                     alias: alias.clone(),
@@ -634,9 +643,13 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 if ex.nav == ExistingNav::Root {
                     (*all).clone()
                 } else {
-                    existing_items(ex.nav.clone(), &ex.locals, &ex.hosts, |alias| {
-                        ex.remote.get(alias).cloned().unwrap_or_default()
-                    })
+                    existing_items(
+                        ex.nav.clone(),
+                        &ex.locals,
+                        &ex.hosts,
+                        ex.probe_inflight,
+                        |alias| ex.remote.get(alias).cloned().unwrap_or_default(),
+                    )
                 }
             };
             tab_workspaces.set_active(tab == PanelTab::Workspaces);
@@ -1035,9 +1048,13 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         if ex.nav == ExistingNav::Root {
                             (*all).clone()
                         } else {
-                            existing_items(ex.nav.clone(), &ex.locals, &ex.hosts, |alias| {
-                                ex.remote.get(alias).cloned().unwrap_or_default()
-                            })
+                            existing_items(
+                                ex.nav.clone(),
+                                &ex.locals,
+                                &ex.hosts,
+                                ex.probe_inflight,
+                                |alias| ex.remote.get(alias).cloned().unwrap_or_default(),
+                            )
                         }
                     };
                     let visible = filter_panel_items(&all, &model.borrow().query);
@@ -1383,7 +1400,7 @@ mod tests {
     /// W20c：Home 含 Back + Local + SSH 两个 Folder。
     #[test]
     fn existing_items_home_has_local_and_ssh_folders() {
-        let items = existing_items(ExistingNav::Home, &[], &[], |_| vec![]);
+        let items = existing_items(ExistingNav::Home, &[], &[], false, |_| vec![]);
         assert!(matches!(items[0], PanelItem::Back));
         assert!(matches!(
             &items[1],
@@ -1404,7 +1421,7 @@ mod tests {
     /// W20c：Local 空 → Empty；有行 → Existing 行。
     #[test]
     fn existing_items_local_lists_entries_or_empty() {
-        let empty = existing_items(ExistingNav::Local, &[], &[], |_| vec![]);
+        let empty = existing_items(ExistingNav::Local, &[], &[], false, |_| vec![]);
         assert!(matches!(empty[1], PanelItem::Empty { .. }));
 
         let entry = ExistingEntry {
@@ -1416,18 +1433,18 @@ mod tests {
             herdr_workspace_id: Some("w1".into()),
             herdr_socket: Some("/tmp/x.sock".into()),
         };
-        let rows = existing_items(ExistingNav::Local, &[entry], &[], |_| vec![]);
+        let rows = existing_items(ExistingNav::Local, &[entry], &[], false, |_| vec![]);
         assert!(matches!(rows[1], PanelItem::Existing(_)));
     }
 
     /// W20c：SshHosts 空 → Loading；有 host → Host 行；SshHost 显示远端行。
     #[test]
     fn existing_items_ssh_hosts_and_remote_rows() {
-        let loading = existing_items(ExistingNav::SshHosts, &[], &[], |_| vec![]);
+        let loading = existing_items(ExistingNav::SshHosts, &[], &[], false, |_| vec![]);
         assert!(matches!(loading[1], PanelItem::Loading));
 
         let hosts = vec!["ryzen".to_string()];
-        let rows = existing_items(ExistingNav::SshHosts, &[], &hosts, |_| vec![]);
+        let rows = existing_items(ExistingNav::SshHosts, &[], &hosts, false, |_| vec![]);
         assert!(matches!(&rows[1], PanelItem::Host { alias } if alias == "ryzen"));
 
         let remote = vec![ExistingEntry {
@@ -1447,6 +1464,7 @@ mod tests {
             },
             &[],
             &[],
+            false,
             |_| remote.clone(),
         );
         assert!(matches!(host_rows[1], PanelItem::Existing(_)));
