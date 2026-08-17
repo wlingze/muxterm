@@ -341,7 +341,7 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 | 29 | 几何 visible_ansi ASCII 底行 | ✅ C8.1 snapshot | ✅ C8.2/C8.5 ASCII PROMPT | ⚠️ 不够测 Codex |
 | 30 | replica 滚动历史 | ✅ scroll_history | ✅ linux_render_e2e C8.3 | — |
 | 31 | 真隔离 tmux echo | ✅ replica | ⚠️ S8 contains TOKEN | ✅ capture-pane |
-| 32 | loopback SSH 远端 tmux | ✅ TmuxRuntime SSH | ❌ linux_ssh_e2e（W18，自启 sshd） | ✅ 远端 -L |
+| 32 | loopback SSH 远端 tmux | ✅ TmuxRuntime SSH | ✅ linux_ssh_e2e（W18，自启 sshd） | ✅ 远端 -L |
 | 33 | Codex TUI UTF-8+真彩播种 | ❌ `ch as u8`（E1） | ❌ 待 E2 | ✅ codex-tui-sanitized.txt |
 | 34 | CUP 半帧不打烂 VTE | ❌ 仍 feed last_visible_frame（E3） | ❌ 待 E3 | 1854 len 1365/2730 |
 | 35 | SSH popover 上下行 | ❌ 无计数 | ❌ 待 E4 | — |
@@ -349,16 +349,16 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 | 37 | 前台 ls 不进 attention | ✅ Done+BecameVisible | ⚠️ feature e2e 后台 Done；前台路径靠 apply 后 on_became_visible | ✅ OSC 133 |
 | 38 | attention 小 VTE + mute 下拉 | ✅ engine mute | ✅ linux_panel_e2e；live 回复见 W15e | ✅ 隔离 tmux |
 | 39 | attach 离屏历史 | ✅ `capture_pane_with_history` | ✅ linux_attach_history_e2e | ✅ 夹具 `-S -` vs `-p` |
-| 40 | 回底按钮 | — | ✅ muxterm-jump-latest；❌ +N linux_jump_count_e2e | — |
+| 40 | 回底按钮 | — | ✅ muxterm-jump-latest + linux_jump_count_e2e | — |
 | 41 | 断线水印 | — | ✅ linux_disconnect_e2e | ✅ 隔离 kill-server |
 | 42 | blocked 看见不熄 / 正则 live | ✅ state 穷举表 | ✅ linux_attention_semantics_e2e | ✅ 真 BEL + NEED_INPUT |
-| 43 | 自动重连 + 断线不漏 | — | ✅ linux_reconnect_e2e；❌ SSH linux_ssh_reconnect_e2e | ✅ detach-client 保 session |
+| 43 | 自动重连 + 断线不漏 | — | ✅ linux_reconnect_e2e + linux_ssh_reconnect_e2e | ✅ detach-client 保 session |
 | 44 | scroll lock | — | ✅ linux_scroll_lock_e2e | ✅ 离屏历史夹具 |
 | 45 | 搜索滚到命中 + 高亮 | — | ✅ linux_search_highlight_e2e | ✅ 离屏 token |
 | 46 | 前台 Done 静默 / 看见即熄 / 静音 | ✅ 转移表 | ✅ linux_attention_1_0_e2e | ✅ osc133_d_only.py |
-| 47 | 搜索范围 pane/ws/all + pane 查找 | ✅ search_pane/workspace/all | ❌ linux_search_scope_e2e | ✅ 两工作区 token |
-| 48 | 上次看到这里 | — | ❌ linux_last_seen_e2e | ✅ 切 pane |
-| 49 | 命令刻度红绿跳转 | ❌ command_marks 空 | ❌ linux_command_marks_e2e | ✅ osc133_rounds.py |
+| 47 | 搜索范围 pane/ws/all + pane 查找 | ✅ search_pane/workspace/all | ✅ linux_search_scope_e2e | ✅ 两工作区 token |
+| 48 | 上次看到这里 | — | ✅ linux_last_seen_e2e | ✅ 切 pane |
+| 49 | 命令刻度红绿跳转 | ✅ osc133_records_command_marks | ✅ linux_command_marks_e2e | ✅ osc133_rounds.py |
 
 ## 8. 新增功能验收矩阵模板
 
