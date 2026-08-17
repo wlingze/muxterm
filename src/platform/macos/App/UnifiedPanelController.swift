@@ -19,8 +19,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let input = NSSearchField()
     private let table = NSTableView()
     private let scrollView = NSScrollView()
-    private let peekContainer = NSView()
-    private var peekView: MuxTerminalView?
     private var allItems: [QuickConnectItem] = []
     private var visibleItems: [QuickConnectItem] = []
     private var hits: [SearchHit] = []
@@ -299,12 +297,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             ])
         }
 
-        peekContainer.translatesAutoresizingMaskIntoConstraints = false
-        peekContainer.wantsLayer = true
-        peekContainer.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
-        peekContainer.isHidden = true
-        root.addSubview(peekContainer)
-
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -322,12 +314,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 12),
-            scrollView.heightAnchor.constraint(equalToConstant: 220),
-
-            peekContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            peekContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-            peekContainer.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 8),
-            peekContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
+            scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
         ])
     }
 
@@ -368,7 +355,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         for (tab, button) in tabButtons {
             button.state = tab == model.tab ? .on : .off
         }
-        peekContainer.isHidden = model.tab != .attention
         input.placeholderString = placeholder(for: model.tab)
     }
 
@@ -466,11 +452,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 ])
                 return l
             }()
-            let status = row.pane.status == .blocked ? "●" : "✓"
-            let process = row.pane.processName ?? "?"
-            label.stringValue = "\(status) \(row.workspaceId)  pane @\(row.pane.paneId)  \(process)\n\(row.pane.lastLine)"
+            let status = row.pane.status == .blocked ? "● " : "✓ "
+            label.stringValue = status + row.title
             label.font = NSFont.systemFont(ofSize: 12)
-            label.maximumNumberOfLines = 2
+            label.maximumNumberOfLines = 1
             cell.setAccessibilityIdentifier("muxterm.attention.hit-\(row)")
             return cell
         case .search:
@@ -522,39 +507,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
-    // MARK: - peek
+    // MARK: - 选中行（W19：无 peek，预览走 Cmd-Enter overlay）
 
     private func updatePeek() {
-        guard model.tab == .attention, table.selectedRow >= 0, table.selectedRow < rows.count else {
-            peekView?.removeFromSuperview()
-            peekView = nil
-            peekContainer.isHidden = true
-            return
-        }
-        let paneId = rows[table.selectedRow].pane.paneId
-        if peekView?.paneId != paneId {
-            peekView?.removeFromSuperview()
-            let view = MuxTerminalView(paneId: paneId, frame: .zero)
-            view.setAccessibilityIdentifier("muxterm.attention.peek")
-            view.inputHandler = self
-            view.translatesAutoresizingMaskIntoConstraints = false
-            peekContainer.addSubview(view)
-            NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: peekContainer.leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: peekContainer.trailingAnchor),
-                view.topAnchor.constraint(equalTo: peekContainer.topAnchor),
-                view.bottomAnchor.constraint(equalTo: peekContainer.bottomAnchor),
-            ])
-            peekView = view
-        }
-        peekContainer.isHidden = false
-        peekContainer.layoutSubtreeIfNeeded()
-        peekView?.layoutSubtreeIfNeeded()
-        _ = peekView?.syncSizeToPty(notifyResize: false)
-        let data = paneOutput(paneId)
-        if !data.isEmpty {
-            peekView?.feedOutput(data, isSnapshot: true)
-        }
+        // W19-E：注意力列表不再渲染 muxterm.attention.peek。
     }
 
     // MARK: - 测试钩子
@@ -600,20 +556,40 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         guard !rows.isEmpty else { return }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         table.window?.makeFirstResponder(table)
-        updatePeek()
     }
 
     func testPeekView() -> NSView? {
-        window?.contentView?.findSubview { view in
-            view.accessibilityIdentifier() == "muxterm.attention.peek"
-        }
+        // W19-E：peek 已删除，永远返回 nil。
+        nil
     }
 
     func testPeekText() -> String {
-        if let term = testPeekView() as? MuxTerminalView {
-            return term.visibleScreenText()
+        ""
+    }
+
+    var modelTab: PanelTab { model.tab }
+
+    func testSelectedAttentionRow() -> AttentionRow? {
+        guard model.tab == .attention, table.selectedRow >= 0, table.selectedRow < rows.count else {
+            return nil
         }
-        return ""
+        return rows[table.selectedRow]
+    }
+
+    func testSelectRow(offset: Int) {
+        selectRow(offset: offset)
+    }
+
+    func testSelectedRow() -> Int {
+        table.selectedRow
+    }
+
+    func testAttentionRowTitle(_ index: Int) -> String {
+        table.layoutSubtreeIfNeeded()
+        guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? NSTableCellView else {
+            return ""
+        }
+        return cell.textField?.stringValue ?? ""
     }
 }
 

@@ -265,6 +265,27 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
     @objc private func tableActivated() {
         activateSelected()
     }
+
+    // MARK: - 测试钩子
+
+    func testIsPresented() -> Bool {
+        window?.isVisible == true
+    }
+
+    func testVisibleTitles() -> [String] {
+        visibleItems.map(\.title)
+    }
+
+    func testSelect(matching needle: String) {
+        let query = needle.lowercased()
+        guard let index = visibleItems.firstIndex(where: {
+            $0.title.lowercased().contains(query) || $0.keywords.lowercased().contains(query)
+        }) else {
+            return
+        }
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        onSelect?(visibleItems[index])
+    }
 }
 
 private final class PaletteCellView: NSTableCellView {

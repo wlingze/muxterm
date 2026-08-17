@@ -2,7 +2,8 @@ import AppKit
 import XCTest
 @testable import MuxtermAppLib
 
-/// W14：搜索跳转 / BEL 通知 / peek 回复 / Done 通知 / mock-codex 末帧 / tail -f。
+/// W14：搜索跳转 / BEL 通知 / Done 通知 / mock-codex 末帧 / tail -f。
+/// W19：注意力列表不再有 peek；预览改走 Cmd-Enter overlay（见 AttentionNavE2ETests）。
 final class FeatureE2ETests: XCTestCase {
     func testFeatureSearchNotifyCodexTail() throws {
         let fx = TwoPaneCat(label: "gtk-feat")
@@ -54,10 +55,9 @@ final class FeatureE2ETests: XCTestCase {
         XCTAssertGreaterThan(app.testAttentionRowCount(), 0, "应有注意力行")
         app.attentionPanel.testSelectFirstRow()
         AppE2E.pump(80)
-        XCTAssertNotNil(app.attentionPanel.testPeekView(), "选中后必须出现 muxterm.attention.peek 小终端")
-        XCTAssertTrue(
-            app.attentionPanel.testPeekText().contains(fx.bgToken),
-            "选中后小终端必须是该 pane 画面（含 \(fx.bgToken)）。peek=\(app.attentionPanel.testPeekText())"
+        XCTAssertNil(
+            app.attentionPanel.testPeekView(),
+            "W19：注意力列表不得再渲染 muxterm.attention.peek；预览改走 Cmd-Enter overlay"
         )
         // 快速回复必须进后台 pane（对标 linux_feature_e2e W15_REPLY）。
         app.testSwitchPane(UInt32(fx.panes[1].trimmingCharacters(in: CharacterSet(charactersIn: "%"))) ?? 1)

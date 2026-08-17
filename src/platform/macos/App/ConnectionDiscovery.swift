@@ -51,10 +51,18 @@ enum ConnectionDiscoveryError: Error, LocalizedError {
 /// 该类型只负责把 core 的 owned 结果转换成 AppKit 命令面板模型。
 /// SSH config、ssh 进程、tmux 查询和 session 创建均由 Rust core 完成。
 final class ConnectionDiscovery {
+    /// 已 attach 的 tmux `-L` socket（本地）或远端 `-L`（SSH）。
+    /// 传进 discover 才能列出隔离 socket 上的 session。
+    var attachedLocalSocket: String?
+    var attachedRemoteSocket: String?
+
     func listLocalSessions(completion: @escaping (Result<[TmuxSessionInfo], Error>) -> Void) {
+        let socket = attachedLocalSocket
         runAsync({
-            try CoreBridge.discoverTmuxSessions(backendType: "local")
-                .map(Self.sessionInfo)
+            try CoreBridge.discoverTmuxSessions(
+                backendType: "local",
+                socket: socket
+            ).map(Self.sessionInfo)
         }, completion: completion)
     }
 
@@ -65,7 +73,8 @@ final class ConnectionDiscovery {
         runAsync({
             try CoreBridge.discoverTmuxSessions(
                 backendType: "ssh",
-                target: host.alias
+                target: host.alias,
+                socket: self.attachedRemoteSocket
             ).map(Self.sessionInfo)
         }, completion: completion)
     }

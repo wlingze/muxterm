@@ -136,6 +136,15 @@ final class TerminalManager: TerminalInputHandler {
         )
     }
 
+    /// headless/未布局时 SwiftTerm 模型可能只有 0~1 行，喂字节会丢；
+    /// 至少保证 80x24 的合法模型尺寸。
+    private func ensureValidModelSize(_ view: MuxTerminalView) {
+        let dims = view.getTerminal().getDims()
+        if dims.cols < 2 || dims.rows < 2 {
+            view.getTerminal().resize(cols: 80, rows: 24)
+        }
+    }
+
     func handleOutput(paneId: UInt32, data: Data) {
         guard !data.isEmpty else { return }
         // 事件字节就是真实增量（后端先 append 到累计缓冲、再入队事件）。
@@ -147,7 +156,8 @@ final class TerminalManager: TerminalInputHandler {
             return
         }
         let existed = views[paneId] != nil
-        _ = view(for: paneId)
+        let view = view(for: paneId)
+        ensureValidModelSize(view)
         if PaneOutputFeedPolicy.shouldFeedEvent(
             viewExistedBeforeEvent: existed,
             seedCoveredEvent: viewsCreatedThisBatch.contains(paneId)

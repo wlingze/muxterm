@@ -40,6 +40,7 @@ public struct PaneAttention: Equatable, Sendable {
 /// 工作区聚合注意力视图。
 public struct WorkspaceAttention: Equatable, Sendable {
     public let workspaceId: String
+    public let path: String
     public let blocked: Int
     public let done: Int
     public let working: Int
@@ -47,12 +48,14 @@ public struct WorkspaceAttention: Equatable, Sendable {
 
     public init(
         workspaceId: String,
+        path: String = "~",
         blocked: Int,
         done: Int,
         working: Int,
         panes: [PaneAttention]
     ) {
         self.workspaceId = workspaceId
+        self.path = path
         self.blocked = blocked
         self.done = done
         self.working = working
@@ -99,6 +102,7 @@ public struct AttentionSnapshot: Equatable, Sendable {
                     } ?? []
                 return WorkspaceAttention(
                     workspaceId: workspaceId,
+                    path: (ws["path"] as? String) ?? "~",
                     blocked: (ws["blocked"] as? Int) ?? 0,
                     done: (ws["done"] as? Int) ?? 0,
                     working: (ws["working"] as? Int) ?? 0,
@@ -112,11 +116,33 @@ public struct AttentionSnapshot: Equatable, Sendable {
 /// 注意力列表行（过滤 + 排序后的展示条目）。
 public struct AttentionRow: Equatable, Sendable {
     public let workspaceId: String
+    public let transport: String
+    public let path: String
     public let pane: PaneAttention
 
-    public init(workspaceId: String, pane: PaneAttention) {
+    public init(workspaceId: String, transport: String, path: String, pane: PaneAttention) {
         self.workspaceId = workspaceId
+        self.transport = transport
+        self.path = path
         self.pane = pane
+    }
+
+    /// 行标题：进程名 + transport + path，不用 last_line 片段。
+    public var title: String {
+        AttentionRowLabel.display(
+            process: pane.processName,
+            transport: transport,
+            path: path
+        )
+    }
+}
+
+/// 注意力行标题：进程名 + transport + path，不用 last_line 片段。
+public enum AttentionRowLabel {
+    public static func display(process: String?, transport: String, path: String) -> String {
+        let trimmed = process?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = trimmed.isEmpty ? "?" : trimmed
+        return "\(name)  \(transport)  \(path)"
     }
 }
 
@@ -126,6 +152,9 @@ public enum AttentionList {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var rows: [AttentionRow] = []
         for ws in snapshot.workspaces {
+            let transport = ws.workspaceId.contains("@ssh")
+                ? "ssh"
+                : (ws.workspaceId.contains("@") ? "local" : "tmux")
             for pane in ws.panes where pane.status.isListed {
                 guard q.isEmpty
                     || ws.workspaceId.lowercased().contains(q)
@@ -134,7 +163,12 @@ public enum AttentionList {
                 else {
                     continue
                 }
-                rows.append(AttentionRow(workspaceId: ws.workspaceId, pane: pane))
+                rows.append(AttentionRow(
+                    workspaceId: ws.workspaceId,
+                    transport: transport,
+                    path: ws.path,
+                    pane: pane
+                ))
             }
         }
         rows.sort { a, b in

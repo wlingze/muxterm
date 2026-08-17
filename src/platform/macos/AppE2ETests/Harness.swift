@@ -61,6 +61,7 @@ enum AppE2E {
         wc.window?.setFrame(NSRect(x: 40, y: 40, width: 1280, height: 800), display: true)
         wc.window?.orderFront(nil)
         pump(200)
+        FileHandle.standardError.write(Data("DEBUG FRAME after attach: \(wc.window?.frame.size ?? .zero)\n".utf8))
         return wc
     }
 

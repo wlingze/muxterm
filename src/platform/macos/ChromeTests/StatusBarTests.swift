@@ -201,6 +201,32 @@ final class StatusBarLayoutPolicyTests: XCTestCase {
     }
 }
 
+final class StatusBarTabOverflowTests: XCTestCase {
+    func testManyTabsOverflowInsteadOfCrushingRight() {
+        let overflow = StatusBarTabOverflow.overflowCount(
+            tabCount: 20,
+            barWidth: 720,
+            leftWidth: 80
+        )
+        XCTAssertGreaterThan(overflow, 0, "20 个 tab 在 720pt 下必须溢出，不得把 status-right 挤没")
+    }
+
+    func testFewTabsFitWithoutOverflow() {
+        let overflow = StatusBarTabOverflow.overflowCount(
+            tabCount: 2,
+            barWidth: 960,
+            leftWidth: 40
+        )
+        XCTAssertEqual(overflow, 0)
+    }
+
+    func testReservedChromeAndRightStayPositive() {
+        XCTAssertGreaterThan(StatusBarTabOverflow.statusRightMinWidth, 0)
+        XCTAssertGreaterThan(StatusBarTabOverflow.chromeWidth, 0)
+        XCTAssertGreaterThan(StatusBarTabOverflow.fixedTabWidth, 0)
+    }
+}
+
 final class StatusBarAttentionTests: XCTestCase {
     /// 平时是空的：没有「卡在我这里」的工作区就不亮红点。
     func testZeroCountIsInactive() {

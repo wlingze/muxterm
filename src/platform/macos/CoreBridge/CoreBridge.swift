@@ -83,6 +83,12 @@ private struct TmuxSessionsResponse: Decodable {
     let ok: Bool
     let error: String?
     let sessions: [CoreTmuxSession]?
+    let workspaces: [CoreTmuxSession]?
+
+    /// core 返回 `workspaces`（W7 改名），旧字段 `sessions` 兼容。
+    var resolved: [CoreTmuxSession] {
+        sessions ?? workspaces ?? []
+    }
 }
 
 private struct CreatedSessionResponse: Decodable {
@@ -151,6 +157,39 @@ struct MuxTask {
         MuxTask(
             type: TASK_TOGGLE_PANE_FULLSCREEN,
             targetPane: paneId,
+            targetTab: 0,
+            dir: 0,
+            name: nil
+        )
+    }
+
+    /// 重排 window/tab：`move-window -s :from -t :toIndex`。
+    static func moveWindow(from fromTabId: UInt32, toIndex: UInt32) -> MuxTask {
+        MuxTask(
+            type: TASK_MOVE_WINDOW,
+            targetPane: toIndex,
+            targetTab: fromTabId,
+            dir: 0,
+            name: nil
+        )
+    }
+
+    /// 把 pane 拆成新 tab：`break-pane -s %pane`。
+    static func breakPane(_ paneId: UInt32) -> MuxTask {
+        MuxTask(
+            type: TASK_BREAK_PANE,
+            targetPane: paneId,
+            targetTab: 0,
+            dir: 0,
+            name: nil
+        )
+    }
+
+    /// 重新查询 window/pane 列表（外部 tmux 变更后同步 GUI）。
+    static func refreshTabs() -> MuxTask {
+        MuxTask(
+            type: TASK_REFRESH_TABS,
+            targetPane: 0,
             targetTab: 0,
             dir: 0,
             name: nil
@@ -273,7 +312,7 @@ final class CoreBridge {
                 response.error ?? MuxtermI18n.shared.tr(.errorTmuxSessionDiscovery)
             )
         }
-        return response.sessions ?? []
+        return response.resolved
     }
 
     /// 通过 core 创建 detached tmux session。
@@ -585,6 +624,16 @@ final class CoreBridge {
         return data.withUnsafeBytes { raw in
             let ptr = raw.bindMemory(to: UInt8.self).baseAddress
             return muxterm_send_input(handle, paneId, ptr, raw.count)
+        }
+    }
+
+    /// 发送原始输入但不触发注意力 on_user_input（W19-E overlay 快速回复）。
+    @discardableResult
+    func sendInputQuiet(paneId: UInt32, data: Data) -> Int32 {
+        guard let handle, !data.isEmpty else { return 0 }
+        return data.withUnsafeBytes { raw in
+            let ptr = raw.bindMemory(to: UInt8.self).baseAddress
+            return muxterm_send_input_quiet(handle, paneId, ptr, raw.count)
         }
     }
 

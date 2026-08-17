@@ -149,15 +149,21 @@ extension MainWindowController {
     }
 
     func testSendInput(_ data: Data) {
-        _ = bridge.sendInput(paneId: testActivePaneID(), data: data)
+        // W19-E：reply overlay 可见时输入走 overlay 的 pane，否则走 active pane。
+        if !content.replyOverlayContainer.isHidden, let paneId = replyOverlayPaneId {
+            _ = bridge.sendInputQuiet(paneId: paneId, data: data)
+        } else {
+            _ = bridge.sendInput(paneId: testActivePaneID(), data: data)
+        }
         pollOnce()
     }
 
     func testSetPaneViewport(_ offset: UInt32) {
         let pane = testActivePaneID()
         _ = bridge.setPaneViewport(paneId: pane, offset: offset)
-        applyPaneViewport(paneId: pane, offset: offset)
+        // 先 poll 同步布局/尺寸，再喂滚动 ANSI，避免布局重建清掉内容。
         pollOnce()
+        applyPaneViewport(paneId: pane, offset: offset)
         content.setJumpLatestVisible(bridge.paneViewport(paneId: pane) > 0)
     }
 
@@ -285,6 +291,182 @@ extension MainWindowController {
     func testBecameVisible(_ paneId: UInt32) {
         bridge.attentionOnBecameVisible(paneId: paneId)
         pollOnce()
+    }
+
+    func testOpenCommandPalette() {
+        openCommandPalette()
+    }
+
+    func testPaletteIsPresented() -> Bool {
+        commandPalette.testIsPresented()
+    }
+
+    func testPaletteTitles() -> [String] {
+        commandPalette.testVisibleTitles()
+    }
+
+    func testSelectPaletteTitle(_ needle: String) {
+        commandPalette.testSelect(matching: needle)
+    }
+
+    func testToggleTheme() {
+        toggleTheme()
+    }
+
+    func testSavedTheme() -> String? {
+        UserDefaults.standard.string(forKey: "muxterm.theme")
+    }
+
+    func testChromeAppearanceIsDark() -> Bool {
+        let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+        return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    func testShowLocalSessions() {
+        showSessions(for: .local)
+    }
+
+    func testView(identifier: String) -> NSView? {
+        for item in NSApp.windows where item.isVisible {
+            if let found = Self.findView(item.contentView, identifier: identifier) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    func testConnectProgressVisible() -> Bool {
+        guard let view = testView(identifier: ConnectProgress.identifier) else {
+            return false
+        }
+        return !view.isHidden && view.alphaValue > 0
+    }
+
+    func testConnectProgressValue() -> String {
+        let view = testView(identifier: ConnectProgress.identifier)
+        return (view?.accessibilityValue() as? String) ?? view?.toolTip ?? ""
+    }
+
+    func testReplyOverlayVisible() -> Bool {
+        guard let view = testView(identifier: CmdEnterRouting.overlayIdentifier) else {
+            return false
+        }
+        return !view.isHidden && view.alphaValue > 0
+    }
+
+    func testReplyOverlayText() -> String {
+        guard let term = testView(identifier: CmdEnterRouting.overlayIdentifier) as? MuxTerminalView else {
+            return ""
+        }
+        return term.visibleScreenText()
+    }
+
+    func testMakeReturnEvent() -> NSEvent? {
+        guard let window else { return nil }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: 36
+        )
+    }
+
+    func testMakeArrowEvent(down: Bool) -> NSEvent? {
+        guard let window else { return nil }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: down ? 125 : 126
+        )
+    }
+
+    func testStatusRightWidth() -> CGFloat {
+        content.statusBar.testStatusRightWidth()
+    }
+
+    func testTabButtonWidths() -> [CGFloat] {
+        content.statusBar.testTabButtonWidths()
+    }
+
+    func testChromeMinX() -> CGFloat {
+        content.statusBar.testChromeMinX()
+    }
+
+    /// 重排 tab = tmux `move-window`（iTerm2 moveTabAtIndex）。
+    /// 直接对隔离 socket 调 tmux：控制 client 对 window 创建类命令有
+    /// 已知问题（命令返回成功但外部看不到新 window），子进程路径与
+    /// core discovery 一致且可验证 tmux 状态。
+    func testReorderTab(from fromId: UInt32, toIndex: Int) {
+        guard let socket = bridge.socket else { return }
+        let args = TmuxWindowCommands.moveWindowArgs(
+            fromIndex: Int(fromId),
+            toIndex: toIndex
+        )
+        _ = runIsolatedTmux(socket: socket, args: args)
+        // 控制 client 感知外部变更：强制重查 window/pane 列表。
+        _ = bridge.execute(task: MuxTask.refreshTabs())
+        pollOnce()
+    }
+
+    /// 把 pane 拆成新 tab = tmux `break-pane`（iTerm2 breakOutWindowPane）。
+    func testBreakActivePaneToNewTab() {
+        let pane = testActivePaneID()
+        guard let socket = bridge.socket else { return }
+        let args = TmuxWindowCommands.breakPaneArgs(pane: "%\(pane)")
+        _ = runIsolatedTmux(socket: socket, args: args)
+        _ = bridge.execute(task: MuxTask.refreshTabs())
+        pollOnce()
+    }
+
+    /// 只对隔离 `-L muxterm-test-*` socket 执行 tmux（与夹具同一纪律）。
+    @discardableResult
+    private func runIsolatedTmux(socket: String, args: [String]) -> Int32 {
+        let candidates = [
+            "/opt/homebrew/bin/tmux",
+            "/usr/local/bin/tmux",
+            "/usr/bin/tmux",
+        ]
+        let bin = candidates.first {
+            FileManager.default.isExecutableFile(atPath: $0)
+        } ?? "/usr/bin/tmux"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: bin)
+        proc.arguments = ["-L", socket] + args
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return -1
+        }
+        return proc.terminationStatus
+    }
+
+    private static func findView(_ root: NSView?, identifier: String) -> NSView? {
+        guard let root else { return nil }
+        if root.accessibilityIdentifier() == identifier {
+            return root
+        }
+        for child in root.subviews {
+            if let found = findView(child, identifier: identifier) {
+                return found
+            }
+        }
+        return nil
     }
 
     private func needsLayoutReloadForTest() {
