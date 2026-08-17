@@ -3,7 +3,12 @@ import Foundation
 import MuxtermChrome
 
 /// in-process e2e 钩子（对标 Linux `AppWindow::test_*`）。不要删。
+/// 兼容别名：旧测试仍访问 `app.searchPanel` / `app.attentionPanel`，
+/// 现在都指向同一个统一面板（面板内靠 tab 区分）。
 extension MainWindowController {
+    var searchPanel: UnifiedPanelController { unifiedPanel }
+    var attentionPanel: UnifiedPanelController { unifiedPanel }
+
     func testPollOnce() {
         pollOnce()
     }
@@ -68,35 +73,35 @@ extension MainWindowController {
     }
 
     func testOpenSearchPanel() {
-        searchPanel.present()
+        unifiedPanel.present(initial: .search)
     }
 
     func testSearchPanelOpen() -> Bool {
-        searchPanel.testIsPresented()
+        unifiedPanel.testIsPresented()
     }
 
     func testSetSearchQuery(_ query: String) {
-        searchPanel.testSetQuery(query)
+        unifiedPanel.testSetQuery(query)
     }
 
     func testActivateFirstSearchHit() {
-        searchPanel.testActivateFirstHit()
+        unifiedPanel.testActivateFirstHit()
     }
 
     func testSearchHitCount() -> Int {
-        searchPanel.testHitCount()
+        unifiedPanel.testHitCount()
     }
 
     func testOpenAttentionPanel() {
-        attentionPanel.present()
+        unifiedPanel.present(initial: .attention)
     }
 
     func testAttentionPanelOpen() -> Bool {
-        attentionPanel.testIsPresented()
+        unifiedPanel.testIsPresented()
     }
 
     func testAttentionRowCount() -> Int {
-        attentionPanel.testRowCount()
+        unifiedPanel.testRowCount()
     }
 
     func testBlockedCount() -> Int {
@@ -209,6 +214,72 @@ extension MainWindowController {
     func testTogglePaneFullscreen() {
         toggleActivePaneFullscreen()
         pollOnce()
+    }
+
+    /// 走真实 `handleKey`（Cmd-Enter 等），不是直接调 fullscreen 函数。
+    @discardableResult
+    func testDispatchKeyEvent(_ event: NSEvent) -> Bool {
+        handleKey(event)
+    }
+
+    func testMakeCmdEnterEvent() -> NSEvent? {
+        guard let window else { return nil }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: 36
+        )
+    }
+
+    func testMakeTabEvent(shift: Bool) -> NSEvent? {
+        guard let window else { return nil }
+        var flags: NSEvent.ModifierFlags = []
+        if shift { flags.insert(.shift) }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\t",
+            charactersIgnoringModifiers: "\t",
+            isARepeat: false,
+            keyCode: 48
+        )
+    }
+
+    func testAttentionProcessNames() -> [UInt32: String] {
+        guard let json = bridge.attentionSnapshotJSON(),
+              let data = json.data(using: .utf8),
+              let snapshot = AttentionSnapshot.decode(data)
+        else {
+            return [:]
+        }
+        var out: [UInt32: String] = [:]
+        for ws in snapshot.workspaces {
+            for pane in ws.panes {
+                if let name = pane.processName, !name.isEmpty {
+                    out[pane.paneId] = name
+                }
+            }
+        }
+        return out
+    }
+
+    func testThemeHexColors() -> (fg: String, bg: String)? {
+        terminalManager.themeHexColors()
+    }
+
+    func testActiveCaretFrame() -> CGRect {
+        terminalManager.view(for: testActivePaneID()).caretFrame
     }
 
     func testBecameVisible(_ paneId: UInt32) {
