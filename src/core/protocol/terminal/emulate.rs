@@ -855,10 +855,11 @@ impl TerminalState {
         let mut history: Vec<String> = self.scrollback.iter().map(|l| l.text.clone()).collect();
         history.extend(self.snapshot_trimmed());
         let rows = rows.max(1);
-        let offset = offset as usize;
-        if history.len() <= offset {
+        if history.is_empty() {
             return Vec::new();
         }
+        // 滚过头时停在顶部：offset 超过历史长度 → 显示最前 rows 行。
+        let offset = (offset as usize).min(history.len().saturating_sub(rows));
         let end = history.len() - offset;
         let start = end.saturating_sub(rows);
         history[start..end].to_vec()

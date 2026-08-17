@@ -530,11 +530,14 @@ pub extern "C" fn muxterm_new(
         return ptr::null_mut();
     }
 
+    let attention_config = crate::core::config::Config::load()
+        .map(|c| c.attention)
+        .unwrap_or_default();
     Box::into_raw(Box::new(MuxtermHandle {
         pool,
         rt,
         callbacks: FfiCallbacks::default(),
-        attention: AttentionEngine::new(crate::core::config::AttentionConfig::default(), RealClock),
+        attention: AttentionEngine::new(attention_config, RealClock),
         event_data: Vec::new(),
         event_names: Vec::new(),
         tab_names: Vec::new(),
@@ -590,11 +593,14 @@ pub extern "C" fn muxterm_new_connect(
         return ptr::null_mut();
     }
 
+    let attention_config = crate::core::config::Config::load()
+        .map(|c| c.attention)
+        .unwrap_or_default();
     Box::into_raw(Box::new(MuxtermHandle {
         pool,
         rt,
         callbacks: FfiCallbacks::default(),
-        attention: AttentionEngine::new(crate::core::config::AttentionConfig::default(), RealClock),
+        attention: AttentionEngine::new(attention_config, RealClock),
         event_data: Vec::new(),
         event_names: Vec::new(),
         tab_names: Vec::new(),
