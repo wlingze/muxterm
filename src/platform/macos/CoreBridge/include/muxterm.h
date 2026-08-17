@@ -121,6 +121,18 @@ int muxterm_get_panes(struct MuxtermHandle* h, uint32_t tab_id, struct CPane* ou
 int muxterm_get_pane_output(struct MuxtermHandle* h, uint32_t pane_id, uint8_t* buf, size_t buf_len);
 int muxterm_get_layout(struct MuxtermHandle* h, uint32_t tab_id, struct CLayoutNode* out);
 
+// ── 搜索 / 注意力 / 历史（W14/W16 跨平台契约）──
+char* muxterm_search_all(struct MuxtermHandle* h, const char* query);
+char* muxterm_attention_snapshot(struct MuxtermHandle* h);
+char* muxterm_attention_take_notifications(struct MuxtermHandle* h);
+int muxterm_attention_on_became_visible(struct MuxtermHandle* h, uint32_t pane_id);
+int muxterm_attention_set_process_name(struct MuxtermHandle* h, uint32_t pane_id, const char* name);
+int muxterm_attention_mute(struct MuxtermHandle* h, uint32_t pane_id, uint64_t seconds);
+int muxterm_pane_scroll_ansi(struct MuxtermHandle* h, uint32_t pane_id, uint32_t offset, uint32_t rows, uint8_t* buf, size_t buf_len);
+int muxterm_pane_viewport(struct MuxtermHandle* h, uint32_t pane_id);
+int muxterm_set_pane_viewport(struct MuxtermHandle* h, uint32_t pane_id, uint32_t offset);
+char* muxterm_pane_last_n_lines(struct MuxtermHandle* h, uint32_t pane_id, uint32_t n);
+
 // ── 无状态 discovery（由 core 读取 SSH config / 查询 tmux）──
 // 返回 malloc 风格的 JSON 字符串，调用 muxterm_free_string 释放。
 char* muxterm_discover_ssh_hosts_json(const char* config_path);

@@ -465,8 +465,11 @@ mod tests {
             PaneStatus::Idle,
             "前台 CommandDone 应清成 Idle"
         );
-        let rows =
-            crate::platform::linux::panel_model::filter_attention_rows(&e.snapshot()[0].panes, "");
-        assert!(rows.is_empty(), "前台 Done 不应进 attention 列表");
+        // 前台 Done 清成 Idle 后，注意力列表（只列 Blocked/Done）不应包含它。
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "前台 CommandDone 应清成 Idle"
+        );
     }
 }

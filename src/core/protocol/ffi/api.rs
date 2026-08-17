@@ -8,6 +8,8 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
+use crate::core::attention::clock::RealClock;
+use crate::core::attention::engine::AttentionEngine;
 use crate::core::config::parse_hex;
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::model::layout::{LayoutNode, SplitDir};
@@ -41,6 +43,8 @@ pub struct MuxtermHandle {
     pub(crate) pool: WorkspacePool,
     pub(crate) rt: tokio::runtime::Runtime,
     pub(crate) callbacks: FfiCallbacks,
+    /// 注意力引擎（跨工作区聚合；poll 时自动应用 PaneOutput 信号）。
+    pub(crate) attention: AttentionEngine<RealClock>,
     /// `poll_events` 产出的字节 / 字符串，保证指针在下次 poll 前有效。
     event_data: Vec<Vec<u8>>,
     event_names: Vec<CString>,
@@ -83,6 +87,21 @@ impl MuxtermHandle {
         self.event_data.push(data.to_vec());
         let last = self.event_data.last().unwrap();
         (last.as_ptr(), last.len())
+    }
+
+    /// 把一批事件里的 PaneOutput 信号应用到注意力引擎。
+    fn apply_attention_for_events(&mut self, ws_id: &WorkspaceId, events: &[StateChange]) {
+        let Some(ws) = self.pool.get_mut(ws_id) else {
+            return;
+        };
+        for ev in events {
+            if let StateChange::PaneOutput { pane, .. } = ev {
+                let signals = ws.take_attention_signals(*pane);
+                let (last_line, seq) = ws.pane_last_line_seq(*pane);
+                self.attention
+                    .apply(&ws_id.replica_id(), pane.0, &signals, &last_line, seq);
+            }
+        }
     }
 }
 
@@ -515,6 +534,7 @@ pub extern "C" fn muxterm_new(
         pool,
         rt,
         callbacks: FfiCallbacks::default(),
+        attention: AttentionEngine::new(crate::core::config::AttentionConfig::default(), RealClock),
         event_data: Vec::new(),
         event_names: Vec::new(),
         tab_names: Vec::new(),
@@ -574,6 +594,7 @@ pub extern "C" fn muxterm_new_connect(
         pool,
         rt,
         callbacks: FfiCallbacks::default(),
+        attention: AttentionEngine::new(crate::core::config::AttentionConfig::default(), RealClock),
         event_data: Vec::new(),
         event_names: Vec::new(),
         tab_names: Vec::new(),
@@ -1116,11 +1137,17 @@ pub unsafe extern "C" fn muxterm_poll_events(
         handle.clear_event_bufs();
         // 后台工作区事件也拉取（W7：池在 core）。
         let mut fresh: Vec<StateChange> = Vec::new();
-        for (_, events) in handle.pool.poll_background() {
+        for (ws_id, events) in handle.pool.poll_background() {
+            handle.apply_attention_for_events(&ws_id, &events);
             fresh.extend(events);
         }
         if let Some(ws) = handle.active_workspace_mut() {
-            fresh.extend(ws.refresh());
+            let events = ws.refresh();
+            let ws_id = handle.pool.active_id().cloned();
+            if let Some(ws_id) = ws_id {
+                handle.apply_attention_for_events(&ws_id, &events);
+            }
+            fresh.extend(events);
         }
         handle.deferred_events.extend(fresh);
         let n = handle.deferred_events.len().min(max_count as usize);
@@ -1161,10 +1188,20 @@ pub unsafe extern "C" fn muxterm_send_input(
         }
         let handle = &mut *h;
         let bytes = std::slice::from_raw_parts(data, len).to_vec();
-        let Some(ws) = handle.active_workspace_mut() else {
+        let pane = {
+            let Some(ws) = handle.active_workspace() else {
+                return -1;
+            };
+            resolve_c_io_pane(pane_id, ws)
+        };
+        let Some(pane) = pane else {
             return -1;
         };
-        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+        let ws_id = handle.pool.active_id().cloned();
+        if let Some(ws_id) = ws_id {
+            handle.attention.on_user_input(&ws_id.replica_id(), pane.0);
+        }
+        let Some(ws) = handle.active_workspace_mut() else {
             return -1;
         };
         task_result_code(ws.execute(Task::WriteRaw {
@@ -1571,6 +1608,303 @@ fn fixup_layout_pointers(pool: &mut [CLayoutNode]) {
             node.second = unsafe { base.add(b) };
         }
     }
+}
+
+/// 跨全部工作区搜索 pane 文本，返回 JSON 命中列表。
+///
+/// 返回 `{"ok": true, "hits": [{"workspace_id", "tab_id", "pane_id", "seq", "line"}]}`。
+///
+/// # Safety
+/// `h` 有效且未 free；`query` NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_search_all(
+    h: *mut MuxtermHandle,
+    query: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let query = cstr_opt(query).unwrap_or_default();
+        let handle = &*h;
+        let hits: Vec<serde_json::Value> = handle
+            .pool
+            .search_all(&query)
+            .into_iter()
+            .map(|hit| {
+                serde_json::json!({
+                    "workspace_id": hit.workspace_id,
+                    "tab_id": hit.tab_id.0,
+                    "pane_id": hit.pane_id.0,
+                    "seq": hit.seq,
+                    "line": hit.line,
+                })
+            })
+            .collect();
+        json_string(serde_json::json!({ "ok": true, "hits": hits }))
+    }))
+    .unwrap_or_else(|_| json_error("search panic"))
+}
+
+/// 注意力引擎快照，返回 JSON。
+///
+/// 返回 `{"ok": true, "blocked_count": N, "workspaces": [...]}`。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let handle = &*h;
+        let workspaces: Vec<serde_json::Value> = handle
+            .attention
+            .snapshot()
+            .into_iter()
+            .map(|ws| {
+                serde_json::json!({
+                    "workspace_id": ws.workspace_id,
+                    "blocked": ws.blocked,
+                    "done": ws.done,
+                    "working": ws.working,
+                    "panes": ws.panes.iter().map(|p| {
+                        serde_json::json!({
+                            "pane_id": p.pane_id,
+                            "status": format!("{:?}", p.status).to_lowercase(),
+                            "last_line": p.last_line,
+                            "seq": p.seq,
+                            "process_name": p.process_name,
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        json_string(serde_json::json!({
+            "ok": true,
+            "blocked_count": handle.attention.blocked_workspace_count(),
+            "workspaces": workspaces,
+        }))
+    }))
+    .unwrap_or_else(|_| json_error("attention snapshot panic"))
+}
+
+/// 取走本轮新进入 blocked / done 的工作区通知，返回 JSON。
+///
+/// 返回 `{"ok": true, "blocked": [...], "done": [...]}`。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_take_notifications(
+    h: *mut MuxtermHandle,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let handle = &mut *h;
+        let blocked = handle.attention.take_new_blocked_notifications();
+        let done = handle.attention.take_new_done_notifications();
+        json_string(serde_json::json!({
+            "ok": true,
+            "blocked": blocked,
+            "done": done,
+        }))
+    }))
+    .unwrap_or_else(|_| json_error("attention notifications panic"))
+}
+
+/// 标记某 pane 成为前台可见（Done → Idle；Blocked 保持）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_on_became_visible(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(ws_id) = handle.pool.active_id() else {
+            return -1;
+        };
+        handle
+            .attention
+            .on_became_visible(&ws_id.replica_id(), pane_id);
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// 更新某 pane 的进程名（注意力列表展示用）。
+///
+/// # Safety
+/// `h` 有效且未 free；`name` NUL 结尾（可为 NULL）。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_set_process_name(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    name: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(ws_id) = handle.pool.active_id() else {
+            return -1;
+        };
+        handle
+            .attention
+            .set_process_name(&ws_id.replica_id(), pane_id, cstr_opt(name));
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// 静音某 pane 一段时间（秒），不进红点、不通知。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_mute(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    seconds: u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(ws_id) = handle.pool.active_id() else {
+            return -1;
+        };
+        handle.attention.mute_for(
+            &ws_id.replica_id(),
+            pane_id,
+            std::time::Duration::from_secs(seconds),
+        );
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// 读取某 pane 的滚动窗口 ANSI 字节（历史查看用）。
+///
+/// 返回写入字节数（截断到 buf_len），-1=err。
+///
+/// # Safety
+/// `h` 有效且未 free；`buf` 至少 `buf_len` 字节。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_scroll_ansi(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    offset: u32,
+    rows: u32,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || buf.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let bytes = ws.pane_scroll_ansi(pane, offset, rows);
+        let n = bytes.len().min(buf_len);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
+        n as i32
+    }))
+    .unwrap_or(-1)
+}
+
+/// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_viewport(h: *mut MuxtermHandle, pane_id: u32) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        ws.pane_viewport(pane) as i32
+    }))
+    .unwrap_or(-1)
+}
+
+/// 设置某 pane 的 viewport 滚动偏移（跳转历史后恢复）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_set_pane_viewport(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    offset: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        ws.set_pane_viewport(pane, offset);
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// 读取某 pane 最近 n 行文本，返回 JSON 数组。
+///
+/// 返回 `{"ok": true, "lines": [...]}`。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_last_n_lines(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    n: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return json_error("无前台工作区");
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return json_error("pane 不存在");
+        };
+        let lines: Vec<String> = ws.pane_last_n_lines(pane, n.max(1) as usize);
+        json_string(serde_json::json!({ "ok": true, "lines": lines }))
+    }))
+    .unwrap_or_else(|_| json_error("pane last lines panic"))
 }
 
 #[cfg(test)]
