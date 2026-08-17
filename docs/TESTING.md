@@ -115,6 +115,33 @@ cargo test --all-features
 - 默认 `cargo test` 通过只是烟雾信号；最终门是 `--all-features` + 上面两条 GTK e2e。
 - 每次汇报必须区分：默认套件 / GTK e2e / SSH / all-features 各自的真实退出码与失败项。
 
+## 3.7 macOS 测试（镜像 Linux e2e 契约）
+
+macOS 客户端复用同一套 core 契约，测试分三层：
+
+| 层 | 载体 | 说明 |
+|---|---|---|
+| FFI e2e | `tests/macos_e2e.rs` | 镜像 `tmux_attach_contract` / `tmux_feature_contract` / `linux_disconnect_e2e` / `linux_attach_history_e2e`：attach 2tab/3pane、搜索、BEL→blocked、OSC 133 D→done、断线保留末帧、离屏历史 + viewport 回底 |
+| Swift 单测 | `src/platform/macos/ChromeTests/AttentionModelTests.swift`、`SearchModelTests.swift` | 注意力快照解析/过滤/排序、搜索命中解析/过滤、通知 JSON 解析 |
+| XCUITest | `src/platform/macos/MuxtermAppUITests/MuxtermAppUITests.swift` | 搜索命中跳转、BEL 红点、断线水印、历史回底（需 GUI 会话，CI macos runner 跑） |
+
+跑：
+
+```bash
+cargo test --no-default-features --features ffi --test macos_e2e -- --test-threads=1
+cargo test --no-default-features --features ffi --test macos_integration -- --test-threads=1
+cd src/platform/macos && swift test --disable-swift-testing
+# XCUITest（GUI 会话）：
+cd src/platform/macos && xcodegen generate
+xcodebuild test -project Muxterm.xcodeproj -scheme MuxtermApp -destination 'platform=macOS'
+```
+
+FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_snapshot` /
+`muxterm_attention_take_notifications` / `muxterm_attention_on_became_visible` /
+`muxterm_attention_set_process_name` / `muxterm_attention_mute` /
+`muxterm_pane_scroll_ansi` / `muxterm_pane_viewport` / `muxterm_set_pane_viewport` /
+`muxterm_pane_last_n_lines`。
+
 ## 4. 开发流程（TDD 优先）
 
 1. 读文档：`docs/WORKSPACE.md` → `docs/WORKSPACE-PLAN.md` → `PRODUCT.md` → `AGENTS.md` → `docs/SURFACE.md` → 本文档。
