@@ -135,7 +135,8 @@ struct UiState {
     /// W20：SSH 已有连接探测是否在跑（防并发）。
     existing_ssh_probing: bool,
     /// W20：SSH 已有连接探测结果队列。
-    pending_existing_ssh: std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
+    pending_existing_ssh:
+        std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
     reconnecting: bool,
     /// 重连失败退避：下一次允许发起重连的时刻。

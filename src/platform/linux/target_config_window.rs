@@ -112,17 +112,26 @@ pub fn show(
         .spacing(10)
         .build();
     let tmux_btn = option_card(
+        "muxterm-runtime-tmux",
         "tmux",
         &i18n::tr(Key::AttachCreateTmux),
         state.borrow().selection.runtime == TargetRuntime::Tmux,
     );
     let shell_btn = option_card(
+        "muxterm-runtime-shell",
         "shell",
         &i18n::tr(Key::PlainShell),
         state.borrow().selection.runtime == TargetRuntime::Shell,
     );
+    let herdr_btn = option_card(
+        "muxterm-runtime-herdr",
+        "herdr",
+        &i18n::tr(Key::AttachCreateHerdr),
+        state.borrow().selection.runtime == TargetRuntime::Herdr,
+    );
     runtime_row.append(&tmux_btn);
     runtime_row.append(&shell_btn);
+    runtime_row.append(&herdr_btn);
     root.append(&runtime_row);
 
     root.append(&section_label(&i18n::tr(Key::Transport)));
@@ -131,11 +140,13 @@ pub fn show(
         .spacing(10)
         .build();
     let local_btn = option_card(
+        "muxterm-transport-local",
         "local",
         &i18n::tr(Key::LocalTransport),
         matches!(state.borrow().selection.transport, TargetTransport::Local),
     );
     let ssh_btn = option_card(
+        "muxterm-transport-ssh",
         "ssh",
         &i18n::tr(Key::SshTransport),
         state.borrow().selection.transport.is_ssh(),
@@ -284,6 +295,7 @@ pub fn show(
         .build();
     let cancel = Button::with_label(&i18n::tr(Key::Cancel));
     let save = Button::with_label(&i18n::tr(Key::Save));
+    save.set_widget_name("muxterm-target-config-save");
     save.add_css_class("suggested-action");
     buttons.append(&cancel);
     buttons.append(&save);
@@ -328,9 +340,11 @@ pub fn show(
         let state = state.clone();
         let tmux_btn = tmux_btn.clone();
         let shell_btn = shell_btn.clone();
+        let herdr_btn = herdr_btn.clone();
         tmux_btn.connect_toggled({
             let state = state.clone();
             let shell_btn = shell_btn.clone();
+            let herdr_btn = herdr_btn.clone();
             move |btn| {
                 if btn.is_active() {
                     state
@@ -338,16 +352,38 @@ pub fn show(
                         .selection
                         .select_runtime(TargetRuntime::Tmux);
                     shell_btn.set_active(false);
+                    herdr_btn.set_active(false);
                 }
             }
         });
-        shell_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                state
-                    .borrow_mut()
-                    .selection
-                    .select_runtime(TargetRuntime::Shell);
-                tmux_btn.set_active(false);
+        shell_btn.connect_toggled({
+            let state = state.clone();
+            let tmux_btn = tmux_btn.clone();
+            let herdr_btn = herdr_btn.clone();
+            move |btn| {
+                if btn.is_active() {
+                    state
+                        .borrow_mut()
+                        .selection
+                        .select_runtime(TargetRuntime::Shell);
+                    tmux_btn.set_active(false);
+                    herdr_btn.set_active(false);
+                }
+            }
+        });
+        herdr_btn.connect_toggled({
+            let state = state.clone();
+            let tmux_btn = tmux_btn.clone();
+            let shell_btn = shell_btn.clone();
+            move |btn| {
+                if btn.is_active() {
+                    state
+                        .borrow_mut()
+                        .selection
+                        .select_runtime(TargetRuntime::Herdr);
+                    tmux_btn.set_active(false);
+                    shell_btn.set_active(false);
+                }
             }
         });
     }
@@ -568,8 +604,9 @@ fn section_label(text: &str) -> Label {
     l
 }
 
-fn option_card(title: &str, subtitle: &str, active: bool) -> ToggleButton {
+fn option_card(widget_name: &str, title: &str, subtitle: &str, active: bool) -> ToggleButton {
     let btn = ToggleButton::new();
+    btn.set_widget_name(widget_name);
     btn.set_active(active);
     let col = GtkBox::builder()
         .orientation(Orientation::Vertical)

@@ -11,6 +11,8 @@
 
 mod support;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn count_widget_names(root: &impl IsA<Widget>, prefix: &str) -> usize {
@@ -31,6 +33,7 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 
 use muxterm::core::config::Config;
+use muxterm::core::quickconnect::model::TargetRuntime;
 use muxterm::platform::linux::ffi_bridge::{BridgeTab, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
@@ -85,6 +88,59 @@ fn assert_target_config_ssh_toggle_after_debounce() {
     pump_main_loop(80);
     assert!(ssh.is_active(), "点 SSH 后应保持选中");
     assert!(!local.is_active(), "Local 应取消选中");
+
+    dialog.close();
+    dialog.destroy();
+    parent.set_child(None::<&Widget>);
+    parent.destroy();
+    pump_main_loop(40);
+}
+
+/// W20g：新建项目有 Herdr runtime 卡；点它保存后 on_save 收到 Herdr。
+fn assert_target_config_herdr_card_saves() {
+    let parent = gtk4::Window::builder()
+        .title("target-config-herdr-parent")
+        .default_width(320)
+        .default_height(200)
+        .build();
+    parent.present();
+    gtk4::test_widget_wait_for_draw(&parent);
+
+    let saved = Rc::new(RefCell::new(None::<TargetRuntime>));
+    let s = saved.clone();
+    let dialog = target_config_window::show(
+        &parent,
+        None,
+        QuickConnectStore::new(None),
+        vec![],
+        move |cfg| {
+            *s.borrow_mut() = Some(cfg.runtime);
+        },
+        || {},
+    );
+    gtk4::test_widget_wait_for_draw(&dialog);
+    pump_main_loop(80);
+
+    let herdr = find_by_name(&dialog, "muxterm-runtime-herdr")
+        .expect("新建项目必须有 muxterm-runtime-herdr 卡")
+        .downcast::<gtk4::ToggleButton>()
+        .expect("Herdr 卡应是 ToggleButton");
+    assert!(!herdr.is_active());
+    herdr.set_active(true);
+    pump_main_loop(40);
+    assert!(herdr.is_active(), "点 Herdr 卡后应保持选中");
+
+    let save = find_by_name(&dialog, "muxterm-target-config-save")
+        .expect("保存按钮应存在")
+        .downcast::<gtk4::Button>()
+        .expect("Button 类型");
+    save.emit_clicked();
+    pump_main_loop(40);
+    assert_eq!(
+        *saved.borrow(),
+        Some(TargetRuntime::Herdr),
+        "保存后 on_save 必须收到 TargetRuntime::Herdr"
+    );
 
     dialog.close();
     dialog.destroy();
@@ -322,6 +378,7 @@ fn gtk_linux_ui_integration() {
         // 重复建/析构会触发二次析构堆损坏。
         if !HEAVY_TARGET_CONFIG_DONE.load(Ordering::SeqCst) {
             assert_target_config_ssh_toggle_after_debounce();
+            assert_target_config_herdr_card_saves();
             HEAVY_TARGET_CONFIG_DONE.store(true, Ordering::SeqCst);
         }
         // 若 gtk_build_* 已跑过 AppWindow，跳过重段避免二次析构堆损坏

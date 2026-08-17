@@ -1029,6 +1029,17 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             let tab = model.borrow().tab;
             match tab {
                 PanelTab::Workspaces => {
+                    // W20：与 rebuild 同一套 all（非 Root 时来自已有的连接）。
+                    let all: Vec<PanelItem> = {
+                        let ex = existing.borrow();
+                        if ex.nav == ExistingNav::Root {
+                            (*all).clone()
+                        } else {
+                            existing_items(ex.nav.clone(), &ex.locals, &ex.hosts, |alias| {
+                                ex.remote.get(alias).cloned().unwrap_or_default()
+                            })
+                        }
+                    };
                     let visible = filter_panel_items(&all, &model.borrow().query);
                     match visible.get(idx).cloned() {
                         Some(PanelItem::Target(entry, _)) => {

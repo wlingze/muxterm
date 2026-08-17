@@ -307,3 +307,129 @@ fn three_tab_panel_full_flow() {
         pump_main_loop(40);
     });
 }
+
+/// W20f：已有的连接导航——根列表第一项 Folder，点进去 Local/SSH，Back 回根。
+#[test]
+fn existing_connections_navigation() {
+    if skip_no_display() {
+        return;
+    }
+    gtk4::test_synced(|| {
+        gtk_test_framework_smoke();
+        let win = gtk4::Window::builder()
+            .title("panel-existing")
+            .default_width(800)
+            .default_height(600)
+            .build();
+        win.present();
+        gtk4::test_widget_wait_for_draw(&win);
+
+        let existing = Rc::new(RefCell::new(
+            muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+        ));
+        let navs = Rc::new(RefCell::new(Vec::<String>::new()));
+        let n = navs.clone();
+        show(
+            &win,
+            PanelShowArgs {
+                initial_tab: PanelTab::Workspaces,
+                workspaces: vec![
+                    PanelItem::Folder {
+                        id: "existing-connections",
+                        title: "已有的连接".into(),
+                    },
+                    target("muxterm"),
+                    PanelItem::NewProject,
+                ],
+                attention: vec![],
+                theme: Theme::load("light").unwrap_or_else(|_| Theme {
+                    name: "test".into(),
+                    background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
+                    foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
+                    cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
+                    colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+                }),
+                font: FontSettings::default(),
+                on_connect: Box::new(|_| {}),
+                on_edit: Box::new(|_| {}),
+                on_new_project: Box::new(|| {}),
+                on_jump_pane: Box::new(|_, _, _| {}),
+                on_send_input: Box::new(|_, _, _| {}),
+                on_mute: Box::new(|_, _, _| {}),
+                peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
+                search: Box::new(|_, _| vec![]),
+                on_close: Box::new(|| {}),
+                ssh_reach: HashMap::new(),
+                existing: existing.clone(),
+                on_existing_nav: Box::new(move |nav| {
+                    n.borrow_mut().push(format!("{nav:?}"));
+                }),
+            },
+        );
+        pump_main_loop(80);
+
+        // 根列表：第一行是已有的连接 Folder。
+        let list = find_by_name(&win, "muxterm-panel-list")
+            .expect("列表应存在")
+            .downcast::<gtk4::ListBox>()
+            .expect("ListBox 类型");
+        let folder = find_by_name(&win, "muxterm-existing-connections")
+            .expect("根列表第一项必须是 muxterm-existing-connections");
+        assert!(folder.is_visible());
+
+        // 点 Folder → Home：Local + SSH 两个目录 + Back。
+        let row = list.row_at_index(0).expect("Folder 行");
+        row.activate();
+        pump_main_loop(60);
+        assert!(
+            find_by_name(&win, "muxterm-existing-local").is_some(),
+            "Home 应有 muxterm-existing-local"
+        );
+        assert!(
+            find_by_name(&win, "muxterm-existing-ssh").is_some(),
+            "Home 应有 muxterm-existing-ssh"
+        );
+        assert!(
+            find_by_name(&win, "muxterm-existing-back").is_some(),
+            "Home 应有 muxterm-existing-back"
+        );
+
+        // 点 Local → 空目录 Empty（不 panic）。
+        let list = find_by_name(&win, "muxterm-panel-list")
+            .expect("列表应存在")
+            .downcast::<gtk4::ListBox>()
+            .expect("ListBox 类型");
+        let local_row = list.row_at_index(1).expect("Local Folder 行");
+        local_row.activate();
+        pump_main_loop(60);
+        assert!(
+            find_by_name(&win, "muxterm-existing-empty").is_some(),
+            "空本地目录应有 muxterm-existing-empty"
+        );
+
+        // Back 回 Home，再 Back 回根：New Project 还在。
+        let list = find_by_name(&win, "muxterm-panel-list")
+            .expect("列表应存在")
+            .downcast::<gtk4::ListBox>()
+            .expect("ListBox 类型");
+        let back = list.row_at_index(0).expect("Back 行");
+        back.activate();
+        pump_main_loop(60);
+        let back = list.row_at_index(0).expect("Back 行");
+        back.activate();
+        pump_main_loop(60);
+        assert!(
+            find_by_name(&win, "__new_project__").is_some(),
+            "回到根后 New Project 必须还在"
+        );
+        assert!(
+            find_by_name(&win, "muxterm-existing-connections").is_some(),
+            "回到根后已有的连接 Folder 必须还在"
+        );
+        assert!(
+            !navs.borrow().is_empty(),
+            "导航回调应被触发: {:?}",
+            navs.borrow()
+        );
+    });
+}

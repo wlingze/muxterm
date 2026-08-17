@@ -46,12 +46,10 @@ impl IsolatedHerdr {
     /// 启动 `herdr --session NAME server` 并等 socket 出现（~5s）。
     pub fn start(label: &str) -> Self {
         let name = unique_name(label);
-        let base = std::env::var("HERDR_CONFIG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/home/wlz".into());
-                PathBuf::from(home).join(".config/herdr")
-            });
+        // herdr server 固定用 ~/.config/herdr（不认 HERDR_CONFIG_DIR），
+        // 夹具必须按真实位置等 socket。
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/wlz".into());
+        let base = PathBuf::from(home).join(".config/herdr");
         let session_dir = base.join("sessions").join(&name);
         let socket_path = session_dir.join("herdr.sock");
         let client_socket_path = session_dir.join("herdr-client.sock");

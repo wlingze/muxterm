@@ -60,9 +60,11 @@ fn tmux_entry(s: TmuxSessionInfo, transport: TargetTransport) -> ExistingEntry {
 /// 连不上的 socket 跳过，不 panic。
 pub fn discover_local_herdr(config_dir: Option<&Path>) -> Vec<ExistingEntry> {
     let mut sockets: Vec<PathBuf> = Vec::new();
+    // 测试 override：设了 HERDR_SOCKET_PATH 就只扫它，禁止连用户默认。
     if let Ok(env) = std::env::var("HERDR_SOCKET_PATH") {
         if !env.trim().is_empty() {
             sockets.push(PathBuf::from(env));
+            return scan_sockets(sockets, None);
         }
     }
     let base = config_dir.map(Path::to_path_buf).unwrap_or_else(|| {
@@ -81,11 +83,15 @@ pub fn discover_local_herdr(config_dir: Option<&Path>) -> Vec<ExistingEntry> {
             }
         }
     }
+    scan_sockets(sockets, Some(default))
+}
 
+/// 逐个 socket ping + workspace.list，产出 ExistingEntry。
+fn scan_sockets(sockets: Vec<PathBuf>, default: Option<PathBuf>) -> Vec<ExistingEntry> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for socket in sockets {
-        let session_name = if socket == default {
+        let session_name = if default.as_deref() == Some(socket.as_path()) {
             "default".to_string()
         } else {
             socket
