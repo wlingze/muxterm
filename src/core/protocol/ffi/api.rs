@@ -21,6 +21,7 @@ use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
+use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;
@@ -42,7 +43,8 @@ use super::types::{
 /// W7：`muxterm_new()` 建空池；`muxterm_workspace_open` 开工作区。
 /// 旧 `muxterm_new(backend, socket, session)` 是 deprecated 转发（macOS 暂用）。
 pub struct MuxtermHandle {
-    pub(crate) pool: WorkspacePool,
+    /// 进程内一份 backend 总状态（Driver/Transport/Connect/Inventory/Pool）。
+    pub(crate) catalog: crate::core::catalog::Catalog,
     pub(crate) rt: tokio::runtime::Runtime,
     pub(crate) callbacks: FfiCallbacks,
     /// 注意力引擎（跨工作区聚合；poll 时自动应用 PaneOutput 信号）。
@@ -60,14 +62,23 @@ pub struct MuxtermHandle {
 }
 
 impl MuxtermHandle {
+    /// Catalog 里的池。
+    pub(crate) fn pool(&self) -> &WorkspacePool {
+        self.catalog.pool()
+    }
+
+    pub(crate) fn pool_mut(&mut self) -> &mut WorkspacePool {
+        self.catalog.pool_mut()
+    }
+
     /// 当前前台工作区。
     pub(crate) fn active_workspace(&self) -> Option<&Workspace> {
-        self.pool.active()
+        self.pool().active()
     }
 
     /// 当前前台工作区（可变）。
     pub(crate) fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
-        self.pool.active_mut()
+        self.pool_mut().active_mut()
     }
 
     fn clear_event_bufs(&mut self) {
@@ -235,6 +246,113 @@ pub extern "C" fn muxterm_list_dir_json(
     .unwrap_or_else(|_| json_error("directory listing panic"))
 }
 
+/// 新建项目卡数据源：Catalog::runtime_list（登记顺序，含 support / transports）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_runtime_list_json(h: *mut MuxtermHandle) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let list = (*h).catalog.runtime_list();
+        json_string(serde_json::json!({
+            "ok": true,
+            "runtimes": list.iter().map(|r| serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "support": r.support.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>(),
+                "accepted_transports": r.accepted_transports,
+            })).collect::<Vec<_>>(),
+        }))
+    }))
+    .unwrap_or_else(|_| json_error("runtime list panic"))
+}
+
+/// Transport 插件表：Catalog::transport_list。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_transport_list_json(h: *mut MuxtermHandle) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let list = (*h).catalog.transport_list();
+        json_string(serde_json::json!({
+            "ok": true,
+            "transports": list.iter().map(|t| serde_json::json!({
+                "id": t.id,
+                "name": t.name,
+            })).collect::<Vec<_>>(),
+        }))
+    }))
+    .unwrap_or_else(|_| json_error("transport list panic"))
+}
+
+/// 列出某个 Transport 的 target（Local 单例 / SSH hosts）。
+///
+/// # Safety
+/// `h` 有效且未 free；`transport` NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_discover_targets_json(
+    h: *mut MuxtermHandle,
+    transport: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
+        match (*h).catalog.discover_targets(&transport) {
+            Ok(targets) => json_string(serde_json::json!({
+                "ok": true,
+                "targets": targets.iter().map(|t| serde_json::json!({
+                    "id": t.id,
+                    "name": t.name,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(e) => json_error(e),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("discover targets panic"))
+}
+
+/// 扇出发现：该 target 上各 Driver 的可 attach 格子（tmux + herdr）。
+///
+/// # Safety
+/// `h` 有效且未 free；`transport` / `target` NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_discover_sessions_json(
+    h: *mut MuxtermHandle,
+    transport: *const c_char,
+    target: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
+        let target = cstr_opt(target).unwrap_or_default();
+        match (*h).catalog.discover_sessions(&transport, &target) {
+            Ok(rows) => json_string(serde_json::json!({
+                "ok": true,
+                "workspaces": rows.iter().map(|r| serde_json::json!({
+                    "id": format!("{}/{}/{}", r.transport_id, r.runtime_id, r.name),
+                    "name": r.name,
+                    "runtime": r.runtime_id,
+                    "transport": r.transport_id,
+                    "in_pool": false,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(e) => json_error(e),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("discover sessions panic"))
+}
+
 /// 通过 core 发现 local 或 SSH tmux session（W7：workspace 发现）。
 ///
 /// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
@@ -252,30 +370,22 @@ pub extern "C" fn muxterm_discover_workspaces_json(
         let transport = cstr_opt(transport_type)
             .unwrap_or_else(|| "local".into())
             .to_ascii_lowercase();
-        let target = cstr_opt(target);
-        let socket = cstr_opt(socket);
-        let config_path = cstr_opt(config_path);
-        let result = match transport.as_str() {
-            "local" => Ok(crate::core::discovery::list_local_tmux_sessions(
-                socket.as_deref(),
-            )),
-            "ssh" => {
-                let Some(alias) = target.as_deref().filter(|value| !value.trim().is_empty()) else {
-                    return json_error("SSH discovery requires a host alias");
-                };
-                crate::core::discovery::list_ssh_tmux_sessions(
-                    alias,
-                    config_path.as_deref(),
-                    socket.as_deref(),
-                    discovery_timeout(timeout_ms),
-                )
-            }
-            _ => return json_error(format!("unsupported discovery transport: {transport}")),
-        };
-        match result {
-            Ok(sessions) => json_string(serde_json::json!({
+        let target = cstr_opt(target).unwrap_or_default();
+        let _socket = cstr_opt(socket);
+        let _config_path = cstr_opt(config_path);
+        let _timeout_ms = timeout_ms;
+        // C5：走 Catalog::discover_sessions 扇出（tmux + herdr），保持 §6.2 形状。
+        let mut catalog = crate::core::catalog::Catalog::with_builtins();
+        match catalog.discover_sessions(&transport, &target) {
+            Ok(rows) => json_string(serde_json::json!({
                 "ok": true,
-                "workspaces": sessions,
+                "workspaces": rows.iter().map(|r| serde_json::json!({
+                    "id": format!("{}/{}/{}", r.transport_id, r.runtime_id, r.name),
+                    "name": r.name,
+                    "runtime": r.runtime_id,
+                    "transport": r.transport_id,
+                    "in_pool": false,
+                })).collect::<Vec<_>>(),
             })),
             Err(error) => json_error(error),
         }
@@ -523,14 +633,16 @@ pub extern "C" fn muxterm_new(
         Ok(rt) => rt,
         Err(_) => return ptr::null_mut(),
     };
-    let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(5));
+    let mut catalog = crate::core::catalog::Catalog::with_builtins();
 
-    let (id, name, runtime, scrollback_lines) =
-        match legacy_runtime_spec(&kind, sock, sess, None, None) {
-            Some(spec) => spec,
-            None => return ptr::null_mut(),
-        };
-    let fut = pool.open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
+let (id, name, runtime, scrollback_lines) =
+    match legacy_runtime_spec(&kind, sock, sess, None, None) {
+        Some(spec) => spec,
+        None => return ptr::null_mut(),
+    };
+let fut = catalog
+    .pool_mut()
+    .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }
@@ -539,7 +651,7 @@ pub extern "C" fn muxterm_new(
         .map(|c| c.attention)
         .unwrap_or_default();
     Box::into_raw(Box::new(MuxtermHandle {
-        pool,
+        catalog,
         rt,
         callbacks: FfiCallbacks::default(),
         attention: AttentionEngine::new(attention_config, RealClock),
@@ -587,14 +699,16 @@ pub extern "C" fn muxterm_new_connect(
         Ok(rt) => rt,
         Err(_) => return ptr::null_mut(),
     };
-    let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(5));
+    let mut catalog = crate::core::catalog::Catalog::with_builtins();
 
-    let (id, name, runtime, scrollback_lines) =
-        match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
-            Some(spec) => spec,
-            None => return ptr::null_mut(),
-        };
-    let fut = pool.open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
+let (id, name, runtime, scrollback_lines) =
+    match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
+        Some(spec) => spec,
+        None => return ptr::null_mut(),
+    };
+let fut = catalog
+    .pool_mut()
+    .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }
@@ -603,7 +717,7 @@ pub extern "C" fn muxterm_new_connect(
         .map(|c| c.attention)
         .unwrap_or_default();
     Box::into_raw(Box::new(MuxtermHandle {
-        pool,
+        catalog,
         rt,
         callbacks: FfiCallbacks::default(),
         attention: AttentionEngine::new(attention_config, RealClock),
@@ -688,57 +802,6 @@ fn legacy_runtime_spec(
     Some((id, name, runtime, scrollback_lines))
 }
 
-/// 按连接身份构造 Runtime（W7 workspace_open 用）。
-fn runtime_from_workspace_spec(
-    transport: &str,
-    alias: Option<&str>,
-    session: &str,
-    runtime: &str,
-    path: &str,
-    socket: Option<&str>,
-    scrollback_lines: usize,
-) -> std::boxed::Box<dyn crate::core::model::Runtime> {
-    match runtime {
-        "tmux" if transport == "ssh" => {
-            let alias = alias.unwrap_or("");
-            if session.is_empty() {
-                let mut rt = TmuxRuntime::new_ssh(alias, socket);
-                rt.set_scrollback_lines(scrollback_lines as u32);
-                std::boxed::Box::new(rt)
-            } else {
-                let mut rt = TmuxRuntime::new_ssh_attach(alias, socket, session);
-                rt.set_scrollback_lines(scrollback_lines as u32);
-                std::boxed::Box::new(rt)
-            }
-        }
-        "tmux" => {
-            if session.is_empty() {
-                let mut rt = TmuxRuntime::new(socket);
-                rt.set_scrollback_lines(scrollback_lines as u32);
-                std::boxed::Box::new(rt)
-            } else {
-                let mut rt = TmuxRuntime::new_with_attach(socket, session);
-                rt.set_scrollback_lines(scrollback_lines as u32);
-                std::boxed::Box::new(rt)
-            }
-        }
-        "daemon" => {
-            let name = if session.is_empty() {
-                "default"
-            } else {
-                session
-            };
-            let path = if path.is_empty() {
-                DaemonRuntime::default_socket_path(name)
-            } else {
-                std::path::PathBuf::from(path)
-            };
-            std::boxed::Box::new(DaemonRuntime::new(path, name))
-        }
-        _ => std::boxed::Box::new(ShellRuntime::new("$SHELL", path)),
-    }
-}
-
 /// FFI legacy/workspace-open 没有单独的 scrollback 参数时，读取用户配置。
 /// 配置不可读时回退到 core 默认值，不能让 attach 直接失去历史。
 fn configured_scrollback_lines() -> usize {
@@ -777,32 +840,20 @@ pub unsafe extern "C" fn muxterm_workspace_open(
         let path = cstr_opt(path).unwrap_or_default();
         let socket = cstr_opt(socket);
 
-        let id = WorkspaceId::new(&transport, alias.as_deref(), &session, &runtime, &path);
-        let name = if session.is_empty() {
-            crate::core::quickconnect::model::QuickConnect::default_name(&path)
-        } else {
-            session.clone()
-        };
         let handle = &mut *h;
-        let MuxtermHandle { rt, pool, .. } = handle;
-        if pool.get(&id).is_some() {
-            pool.activate(&id);
-            return 0;
-        }
-        let runtime = runtime_from_workspace_spec(
-            &transport,
-            alias.as_deref(),
-            &session,
-            &runtime,
-            &path,
-            socket.as_deref(),
-            configured_scrollback_lines(),
-        );
-        let fut =
-            pool.open_with_scrollback(id.clone(), name, configured_scrollback_lines(), move |_| {
-                runtime
-            });
-        match rt.block_on(fut) {
+// Catalog 路径：未知 runtime / 不接受 transport → -1，不悄悄变 shell。
+let spec = WorkspaceSpec {
+    transport: transport.clone(),
+    alias: alias.clone(),
+    session: session.clone(),
+    runtime: runtime.clone(),
+    path: path.clone(),
+    socket: socket.clone(),
+    create: false,
+    scrollback_lines: configured_scrollback_lines(),
+};
+let fut = handle.catalog.open(&spec);
+match handle.rt.block_on(fut) {
             Ok(_) => 0,
             Err(_) => -1,
         }
@@ -822,7 +873,7 @@ pub unsafe extern "C" fn muxterm_workspace_list(h: *mut MuxtermHandle) -> *mut c
         }
         let handle = &*h;
         let workspaces: Vec<serde_json::Value> = handle
-            .pool
+            .pool()
             .list()
             .into_iter()
             .map(|w| {
@@ -830,7 +881,7 @@ pub unsafe extern "C" fn muxterm_workspace_list(h: *mut MuxtermHandle) -> *mut c
                     "id": w.id().as_str(),
                     "name": w.name(),
                     "runtime": w.state().workspace_runtime(),
-                    "active": handle.pool.active_id() == Some(w.id()),
+                    "active": handle.pool().active_id() == Some(w.id()),
                 })
             })
             .collect();
@@ -859,7 +910,7 @@ pub unsafe extern "C" fn muxterm_workspace_activate(
         };
         let wid = parse_workspace_id(&id);
         let handle = &mut *h;
-        match handle.pool.activate(&wid) {
+        match handle.pool_mut().activate(&wid) {
             Some(_) => 0,
             None => -1,
         }
@@ -882,7 +933,7 @@ pub unsafe extern "C" fn muxterm_workspace_close(h: *mut MuxtermHandle, id: *con
         };
         let wid = parse_workspace_id(&id);
         let handle = &mut *h;
-        if handle.pool.close(&wid) {
+        if handle.pool_mut().close(&wid) {
             0
         } else {
             -1
@@ -917,7 +968,7 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let mut handle = Box::from_raw(h);
-        handle.pool.shutdown_all();
+        handle.pool_mut().shutdown_all();
     }));
 }
 
@@ -932,8 +983,8 @@ pub unsafe extern "C" fn muxterm_connect(h: *mut MuxtermHandle) -> i32 {
             return -1;
         }
         let handle = &mut *h;
-        let MuxtermHandle { rt, pool, .. } = handle;
-        let Some(ws) = pool.active_mut() else {
+        let MuxtermHandle { catalog, rt, .. } = handle;
+        let Some(ws) = catalog.pool_mut().active_mut() else {
             return -1;
         };
         match rt.block_on(ws.connect()) {
@@ -955,7 +1006,7 @@ pub unsafe extern "C" fn muxterm_shutdown(h: *mut MuxtermHandle) -> i32 {
             return -1;
         }
         let handle = &mut *h;
-        handle.pool.shutdown_all();
+        handle.pool_mut().shutdown_all();
         0
     }))
     .unwrap_or(-1)
@@ -1204,8 +1255,8 @@ pub unsafe extern "C" fn muxterm_poll_events(
         handle.clear_event_bufs();
         // 后台工作区事件也拉取（W7：池在 core）。
         let mut fresh: Vec<StateChange> = Vec::new();
-        for (ws_id, events) in handle.pool.poll_background() {
-            handle.apply_attention_for_events(&ws_id, &events);
+for (ws_id, events) in handle.pool_mut().poll_background() {
+    handle.apply_attention_for_events(&ws_id, &events);
             fresh.extend(events);
         }
         if let Some(ws) = handle.active_workspace_mut() {
@@ -2585,7 +2636,51 @@ mod tests {
         }
     }
 
+    /// C5：runtime_list JSON 含 tmux/herdr/shell，不含 daemon。
     #[test]
+    fn ffi_runtime_list_contains_builtins_no_daemon() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            let raw = muxterm_runtime_list_json(h);
+            assert!(!raw.is_null());
+            let value = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            muxterm_free_string(raw);
+            let json: serde_json::Value = serde_json::from_str(&value).unwrap();
+            let ids: Vec<String> = json["runtimes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(ids, ["tmux", "herdr", "shell"]);
+            assert!(!ids.iter().any(|id| id == "daemon"));
+            muxterm_free(h);
+        }
+    }
+
+    /// C5：transport_list JSON 含 local/ssh。
+    #[test]
+    fn ffi_transport_list_contains_local_ssh() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            let raw = muxterm_transport_list_json(h);
+            assert!(!raw.is_null());
+            let value = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            muxterm_free_string(raw);
+            let json: serde_json::Value = serde_json::from_str(&value).unwrap();
+            let ids: Vec<String> = json["transports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["id"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(ids, ["local", "ssh"]);
+            muxterm_free(h);
+        }
+    }
+
     fn ffi_discovery_returns_owned_json_and_can_be_freed() {
         let path =
             std::env::temp_dir().join(format!("muxterm-ffi-ssh-config-{}", std::process::id()));
