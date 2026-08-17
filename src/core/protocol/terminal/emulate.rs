@@ -3517,6 +3517,52 @@ mod resize_tests {
         assert_eq!(t.scroll_bottom, 2);
     }
 
+    /// W19a：resize 变高/变矮后 grid 与 grid_soft_wrapped 必须等长。
+    #[test]
+    fn resize_keeps_soft_wrapped_len_in_lockstep() {
+        let mut t = TerminalState::new(10, 24);
+        t.resize(10, 50);
+        assert_eq!(t.rows(), 50);
+        assert_eq!(t.rows(), t.soft_wrap_row_count());
+        t.resize(10, 23);
+        assert_eq!(t.rows(), 23);
+        assert_eq!(t.rows(), t.soft_wrap_row_count());
+    }
+
+    /// W19a：复现 1903——24 → 38 行 resize 后 DECSTBM 部分滚动区 + LF。
+    #[test]
+    fn resize_then_decstbm_lf_does_not_panic() {
+        let mut t = TerminalState::new(80, 24);
+        t.resize(284, 38);
+        // CSI 2;38 r ：表头固定，正文滚动（htop）
+        t.feed(b"\x1b[2;38r");
+        t.feed(b"\x1b[38;1H\n\n\n");
+        assert_eq!(t.rows(), t.soft_wrap_row_count());
+    }
+
+    /// W19a：复现 1902——50 → 59 行 resize 后 DECSTBM 底部 LF。
+    #[test]
+    fn resize_50_to_59_partial_region_lf_does_not_panic() {
+        let mut t = TerminalState::new(80, 50);
+        t.resize(284, 59);
+        t.feed(b"\x1b[2;58r");
+        t.feed(b"\x1b[58;1H\n");
+        assert_eq!(t.rows(), t.soft_wrap_row_count());
+    }
+
+    /// W19a：先 resize 制造 desync，再 CSI IL / DL，两 vec 仍等长，LF 不得 panic。
+    #[test]
+    fn insert_delete_lines_keep_soft_wrapped_lockstep() {
+        let mut t = TerminalState::new(80, 24);
+        t.resize(284, 38); // 只长 grid 不长 soft → 复现 W19 根因
+        t.feed(b"\x1b[3L");
+        assert_eq!(t.rows(), t.soft_wrap_row_count());
+        t.feed(b"\x1b[3M");
+        assert_eq!(t.rows(), t.soft_wrap_row_count());
+        t.feed(b"\x1b[2;30r\n");
+        assert_eq!(t.rows(), t.soft_wrap_row_count());
+    }
+
     #[test]
     fn resize_same_size_is_noop() {
         let mut t = TerminalState::new(10, 3);
