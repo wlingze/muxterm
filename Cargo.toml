@@ -156,6 +156,11 @@ path = "tests/linux_attention_semantics_e2e.rs"
 required-features = ["gtk"]
 
 [[test]]
+name = "linux_reconnect_e2e"
+path = "tests/linux_reconnect_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
 name = "linux_search_highlight_e2e"
 path = "tests/linux_search_highlight_e2e.rs"
 required-features = ["gtk"]
