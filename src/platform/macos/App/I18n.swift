@@ -90,6 +90,7 @@ enum MuxtermTextKey: CaseIterable {
     case menuPreviousPane
     case menuQuit
     case menuResetFontSize
+    case menuSearchPanes
     case menuSelectAll
     case menuSplitHorizontal
     case menuSplitVertical
@@ -135,6 +136,7 @@ enum MuxtermTextKey: CaseIterable {
     case statusBarModeSwitchTo
     case statusBarModeDetail
     case statusAttention
+    case statusDone
     case tabs
     case tabsAccessibility
     case terminalOutputSnippet
@@ -246,6 +248,7 @@ enum MuxtermTextKey: CaseIterable {
         case .menuPreviousPane: return "menu_previous_pane"
         case .menuQuit: return "menu_quit"
         case .menuResetFontSize: return "menu_reset_font_size"
+        case .menuSearchPanes: return "menu_search_panes"
         case .menuSelectAll: return "menu_select_all"
         case .menuSplitHorizontal: return "menu_split_horizontal"
         case .menuSplitVertical: return "menu_split_vertical"
@@ -291,6 +294,7 @@ enum MuxtermTextKey: CaseIterable {
         case .statusBarModeSwitchTo: return "statusbar_mode_switch_to"
         case .statusBarModeDetail: return "statusbar_mode_detail"
         case .statusAttention: return "status_attention"
+        case .statusDone: return "status_done"
         case .tabs: return "tabs"
         case .tabsAccessibility: return "tabs_accessibility"
         case .terminalOutputSnippet: return "terminal_output_snippet"

@@ -1,6 +1,7 @@
 import AppKit
 import CMuxterm
 import MuxtermChrome
+import UserNotifications
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
 final class MainWindowController: NSWindowController, NSWindowDelegate {
@@ -20,6 +21,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let discovery = ConnectionDiscovery()
     private var commandPalette: CommandPaletteController!
     private var quickConnect: QuickConnectController!
+    private var searchPanel: SearchPanelController!
+    private var attentionPanel: AttentionPanelController!
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private let quickConnectStore: QuickConnectStore
@@ -139,6 +142,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         quickConnect.onEditProject = { [weak self] config in
             self?.editProject(config)
         }
+        searchPanel = SearchPanelController(ownerWindow: window) { [weak self] query in
+            guard let self, let json = self.bridge.searchAllJSON(query: query),
+                  let data = json.data(using: .utf8),
+                  let snapshot = SearchSnapshot.decode(data)
+            else {
+                return []
+            }
+            return snapshot.hits
+        }
+        searchPanel.onJump = { [weak self] tabId, paneId in
+            self?.jumpToPane(tabId: tabId, paneId: paneId)
+        }
+        attentionPanel = AttentionPanelController(ownerWindow: window) { [weak self] in
+            guard let self, let json = self.bridge.attentionSnapshotJSON(),
+                  let data = json.data(using: .utf8)
+            else {
+                return nil
+            }
+            return AttentionSnapshot.decode(data)
+        }
+        attentionPanel.onJump = { [weak self] tabId, paneId in
+            self?.jumpToPane(tabId: tabId, paneId: paneId)
+        }
         languageObserver = NotificationCenter.default.addObserver(
             forName: .muxtermLanguageChanged,
             object: nil,
@@ -172,10 +198,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onSelectWindow = { [weak self] tabId in
             self?.requestSwitchTab(tabId)
         }
-        // 提醒位与 QuickConnect 入口同一位置（文档 §B.1）：点红点打开切换面板。
+        // 提醒位与 QuickConnect 入口同一位置（文档 §B.1）：有红点时打开注意力面板，
+        // 否则打开 QuickConnect。
         content.statusBar.onAttentionClick = { [weak self] in
-            self?.openQuickConnect()
+            guard let self else { return }
+            if let json = self.bridge.attentionSnapshotJSON(),
+               let data = json.data(using: .utf8),
+               let snapshot = AttentionSnapshot.decode(data),
+               snapshot.blockedCount > 0 {
+                self.openAttentionPanel()
+            } else {
+                self.openQuickConnect()
+            }
         }
+        content.jumpLatestButton.target = self
+        content.jumpLatestButton.action = #selector(jumpToLatest)
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
         }
@@ -407,6 +444,49 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } else {
             quickConnect.present()
         }
+    }
+
+    @objc func openSearchPanel() {
+        guard let searchPanel else { return }
+        if searchPanel.window?.isKeyWindow == true {
+            searchPanel.dismiss()
+        } else {
+            searchPanel.present()
+        }
+    }
+
+    @objc func openAttentionPanel() {
+        guard let attentionPanel else { return }
+        if attentionPanel.window?.isKeyWindow == true {
+            attentionPanel.dismiss()
+        } else {
+            attentionPanel.present()
+        }
+    }
+
+    /// 跳转到指定 tab + pane（搜索命中 / 注意力行）。
+    private func jumpToPane(tabId: UInt32, paneId: UInt32) {
+        if tabId != 0 {
+            requestSwitchTab(tabId)
+        }
+        if bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
+            reportStatusError(
+                MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
+            )
+        }
+        needsLayoutReload = true
+    }
+
+    /// 回底：把当前 pane 的 viewport 重置到最新（W16a jump-latest）。
+    @objc func jumpToLatest() {
+        guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
+            ?? lastSnapshot.panes.first?.id
+        else {
+            return
+        }
+        _ = bridge.setPaneViewport(paneId: pane, offset: 0)
+        content.setJumpLatestVisible(false)
+        needsLayoutReload = true
     }
 
     /// 按 QuickConnect 目标连接：tmux 有 name → attach，无 name → 创建；
@@ -1246,6 +1326,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
+                if ev.type == STATE_ACTIVE_PANE_CHANGED {
+                    bridge.attentionOnBecameVisible(paneId: ev.paneId)
+                }
             } else if ev.isBackendStatus {
                 uiStateChanged = true
             } else if ev.type == STATE_STATUS_SUBSCRIPTION {
@@ -1273,10 +1356,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // 标记轻量更新：只在下一轮 poll 时更新 debug 文本。
                 needsLightweightUpdate = true
             }
-            if ev.isBackendStatus, ev.paneId == 4 {
-                // pane_id 复用状态码：4 = exited
-                closeSessionWindow()
-                return
+            if ev.isBackendStatus {
+                if ev.paneId == 4 {
+                    // pane_id 复用状态码：4 = exited
+                    closeSessionWindow()
+                    return
+                }
+                if ev.paneId == 0 || ev.paneId == 4 {
+                    // 0 = disconnected, 4 = exited：保留最后一帧 + 水印。
+                    content.setDisconnected(true)
+                } else {
+                    content.setDisconnected(false)
+                }
             }
         }
         if needsLayoutReload || uiStateChanged {
@@ -1309,6 +1400,52 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for item in pendingOutputs {
             terminalManager.handleOutput(paneId: item.paneId, data: item.data)
         }
+        refreshAttentionChrome()
+    }
+
+    /// 注意力引擎：更新状态栏红点 + 弹出 blocked/done 通知。
+    private func refreshAttentionChrome() {
+        guard !isClosing, terminalManager.usesClientResize else { return }
+        if let json = bridge.attentionSnapshotJSON(),
+           let data = json.data(using: .utf8),
+           let snapshot = AttentionSnapshot.decode(data) {
+            content.statusBar.setAttention(
+                StatusBarAttention(count: snapshot.blockedCount)
+            )
+        }
+        guard let json = bridge.attentionTakeNotificationsJSON(),
+              let data = json.data(using: .utf8),
+              let notifications = AttentionNotifications.decode(data)
+        else {
+            return
+        }
+        for ws in notifications.blocked {
+            postNotification(title: ws, body: MuxtermI18n.shared.tr(.statusAttention))
+        }
+        for ws in notifications.done {
+            postNotification(title: ws, body: MuxtermI18n.shared.tr(.statusDone))
+        }
+    }
+
+    /// 桌面通知（fail-soft：无通知权限时静默）。
+    private func postNotification(title: String, body: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == UNAuthorizationStatus.authorized
+                || settings.authorizationStatus == UNAuthorizationStatus.provisional
+            else {
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            let request = UNNotificationRequest(
+                identifier: "muxterm.attention.\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+            center.add(request)
+        }
     }
 
     private func refreshUI() {
@@ -1329,6 +1466,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         content.statusBar.updateDebugSnapshot(snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
+        if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
+            let viewport = bridge.paneViewport(paneId: activePane)
+            content.setJumpLatestVisible(viewport > 0)
+        }
 
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
             let view = terminalManager.view(for: activePane)
@@ -1557,6 +1698,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             openCommandPalette()
         case .quickConnect:
             openQuickConnect()
+        case .searchPanes:
+            openSearchPanel()
         case .quit:
             NSApp.terminate(nil)
         case .increaseFontSize:

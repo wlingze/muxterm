@@ -153,5 +153,7 @@
   "cmd_preferences": "偏好设置",
   "cmd_switch_tab": "切换到标签页 {{number}}",
   "tab_bar_top_detail": "把标签栏移到顶部",
-  "tab_bar_bottom_detail": "把标签栏移到底部"
+  "tab_bar_bottom_detail": "把标签栏移到底部",
+  "status_done": "任务完成",
+  "menu_search_panes": "搜索 Pane"
 }
