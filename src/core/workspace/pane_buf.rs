@@ -69,6 +69,11 @@ impl PaneBuf {
         self.terminal.last_n_lines(n)
     }
 
+    /// scrollback 中某 seq 的行索引（W17c 搜索跳转滚到命中行用）。
+    pub fn line_index_by_seq(&self, seq: u64) -> Option<usize> {
+        self.terminal.line_index_by_seq(seq)
+    }
+
     /// 有界原始字节环（peek / 小终端播种用）。
     pub fn raw_bytes(&self) -> &[u8] {
         &self.byte_ring

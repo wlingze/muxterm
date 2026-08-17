@@ -690,6 +690,11 @@ impl TerminalState {
     }
 
     /// 最近 n 行：先取可见屏 `snapshot_trimmed()` 尾部，不足再向前取 scrollback。
+    /// scrollback 中某 seq 的行索引（0 = 最老一行）。可见屏行没有稳定 seq，返回 None。
+    pub fn line_index_by_seq(&self, seq: u64) -> Option<usize> {
+        self.scrollback.iter().position(|l| l.seq == seq)
+    }
+
     pub fn last_n_lines(&self, n: usize) -> Vec<String> {
         let mut out: Vec<String> = self.snapshot_trimmed();
         let mut need = n.saturating_sub(out.len());
