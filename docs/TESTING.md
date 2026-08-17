@@ -1,9 +1,10 @@
 # Muxterm 测试与开发规范
 
-> 适用：`/home/wlz/Developer/self/muxterm`（当前 Linux 分支 `feat/linux-quickconnect-ui`）。
+> 适用：`/home/wlz/Developer/self/muxterm`（当前分支 `feature/runtime/support_herdr`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
 > [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)、
 > [RUNTIME.md](RUNTIME.md) / [HERDR-PLAN.md](HERDR-PLAN.md)（Herdr 接入）、
+> [CATALOG.md](CATALOG.md) / [CATALOG-PLAN.md](CATALOG-PLAN.md)（Catalog）、
 > [W19-PLAN.md](W19-PLAN.md)（模拟器不可 panic）、[W21-PLAN.md](W21-PLAN.md)（滚轮）、
 > [W20-PLAN.md](W20-PLAN.md)（已有的连接）、
 > [W18-PLAN.md](W18-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)、
@@ -129,6 +130,8 @@ xvfb-run -a cargo test --features gtk --test linux_scroll_wheel_e2e -- --test-th
 # W20 已有的连接 + Herdr runtime 卡
 cargo test --test existing_ssh_contract -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-threads=1
+# Catalog（内置 Driver 落地后必须绿）
+cargo test --lib catalog:: -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -370,6 +373,27 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 | `muxterm-runtime-herdr` | 新建项目有 Herdr 卡 |
 
 禁止：测试连 `/home/wlz/.config/herdr/herdr.sock`；`herdr server stop`；生产 Runtime 走 `Command::new("herdr")`；GTK 线程同步 ssh；没有 tmux/Herdr 的 SSH host 仍占满列表。
+
+### 5.14 Catalog（Driver / Transport / Connect / Inventory）
+
+规格：[`CATALOG.md`](CATALOG.md)、施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。`trait Runtime` 不负责 `ls`。插件表是**有序数组**，`runtime_list()` 就是登记顺序。
+
+| 测试 | 必须抓住 |
+|---|---|
+| `list_order_follows_registration` | 先登记 shell 再 tmux → 列表就是这个顺序，不要按名字重排 |
+| `with_builtins_runtime_list_is_tmux_herdr_shell` | `["tmux","herdr","shell"]`，无 `daemon` |
+| `with_builtins_transport_list_is_local_ssh` | `["local","ssh"]` |
+| `with_builtins_herdr_reports_worktree_caps` | Herdr 卡带 `WorktreeList` / `WorktreeCreate` |
+| `with_builtins_shell_rejects_ssh_pair` | 错误含 `does not accept transport` |
+| `discover_sessions_fans_out_and_skips_driver_error` | 一个 Driver `Err` 其它仍列出 |
+| `connect_reuses_arc_for_same_target` | 同一 `(ssh, alias)` `Arc::ptr_eq` |
+| `open_rejects_unknown_runtime` | 禁止悄悄变成 shell |
+| `open_uses_driver_not_build_runtime` | mock id 走 Driver.open |
+| `refresh_inventory_marks_unreachable_without_opening` | `Reach::Err` 且 `pool.len()==0` |
+| `pool_must_not_special_case_herdr_runtime_string` | 禁止 `if spec.runtime == "herdr"` |
+| `pool_must_not_hold_herdr_sessions_sidecar` | 禁止 `herdr_sessions` 字段 |
+
+禁止：改断言来绿；测试连用户默认 herdr.sock；为探活 attach Runtime / 开 `-CC`；发明 `TransportDriver`。
 
 ### 5.2 手段（沿用现有 helper）
 

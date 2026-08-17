@@ -1,8 +1,10 @@
 # RUNTIME.md — Runtime 是什么
 
 > 日期：2026-08-17（`2026-08-17T15:26:26+08:00`）
+> 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）。
 > 分支：`feature/runtime/support_herdr`
-> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
+> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md) / [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
+> tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
 > Herdr 接入施工：[`HERDR-PLAN.md`](HERDR-PLAN.md)。已有的连接：[`W20-PLAN.md`](W20-PLAN.md)。像素：[`SURFACE.md`](SURFACE.md)。
 > 愿景里的阶段 D：`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §0.3 / §6 阶段 D。
 >
@@ -55,28 +57,31 @@ Herdr 相对 tmux 多出来的，产品上就两样：worktree 亲缘 + agent �
 platform（Linux GTK / macOS / TUI）
   只画当前 Workspace 的 Tab/Pane
   快捷键 → Task / Pool.activate
-  禁止：ssh、tmux 命令、herdr socket 帧、git worktree add
+  卡和列表来自 Catalog.runtime_list / discover_sessions
+  禁止：ssh、tmux 命令、herdr socket 帧、git worktree add、if runtime == "herdr"
 
 core
-  WorkspacePool     打开 / 列表 / 激活
+  Catalog           Driver/Transport 有序表 + Connect + Inventory + Pool
+  WorkspacePool     已打开的格子
   Workspace         Tab+Pane + PaneBuf
-  trait Runtime     见 §4
-  transport         local / ssh
+  trait Runtime     已 attach，见 §4（没有 list）
+  catalog Transport local / ssh 插件
+  byte transport    spawn_exec / read / write
 
 runtime/tmux        tmux -CC。唯一能出现 $N / %output 的地方
 runtime/shell       自管 PTY。没有远端可 attach
-runtime/herdr       （尚未落地）Herdr socket。唯一能出现 w2:p1 / terminal.frame 的地方
+runtime/herdr       Herdr socket。唯一能出现 w2:p1 / terminal.frame 的地方
 ```
 
 今天代码：
 
 - trait 在 `src/core/model/backend.rs`（名字仍叫 `Runtime`）
-- 实现：`TmuxRuntime`、`ShellRuntime`、`DaemonRuntime`
-- `WorkspaceSpec.runtime` 是 `"tmux"` / `"shell"` / `"daemon"` 字符串
-- `RuntimeMode` 仍是 2×2（local/ssh × shell/tmux），**没有 herdr**
-- `create_runtime()` 里的 ssh-tmux 还是 TODO facade；真正的 SSH tmux 走 `WorkspaceSpec::ssh_tmux` → `TmuxRuntime::new_ssh_attach`
-
-以后：`WorkspaceSpec.runtime = "herdr"`，实现放 `src/core/runtime/herdr/`。platform 仍然只看见产品类型。
+- 实现：`TmuxRuntime`、`ShellRuntime`、`HerdrRuntime`、`DaemonRuntime`
+- `src/core/catalog/` 类型表面已在；`with_builtins()` 还空（施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md)）
+- `WorkspaceSpec.runtime` 是 `"tmux"` / `"shell"` / `"herdr"` / `"daemon"` 字符串
+- `WorkspaceSpec.build_runtime()` 仍是字符串 `match`；Catalog::open **禁止**再走这条
+- `WorkspacePool.herdr_sessions` 仍是 Herdr 旁路表，要迁进 `Catalog.connects`
+- `RuntimeMode` 仍是 2×2 facade；真正打开走 spec / Catalog
 
 ---
 
@@ -268,15 +273,20 @@ Live 路径不因 Runtime 而改：
 
 ## 8. Discovery 与打开
 
+列出发生在 **Driver** 上，不在活 Runtime 上。`RuntimeCapability::Discover` 只是旗标。门面是 Catalog，见 [`CATALOG.md`](CATALOG.md)。
+
 | Runtime | 连接前能列出什么 | 打开 |
 |---|---|---|
-| tmux | 本机或 ssh 上的 session **名**（内部 `list-sessions`） | `WorkspaceSpec::local_tmux` / `ssh_tmux` |
-| herdr | 先连 socket，再 `workspace.list`（id + label + 可选 worktree） | `WorkspaceSpec { runtime: "herdr", session: <herdr session 名>, path: <workspace_id 或 cwd> }` |
-| shell | 目录，不是 session | `WorkspaceSpec::local_shell(path)` |
+| tmux | 本机或 ssh 上的 session **名**（内部 `list-sessions`） | `Catalog::open` ← `TmuxDriver` + Connect |
+| herdr | Connect 上 `workspace.list`（id + label + 可选 worktree） | `Catalog::open` ← `HerdrDriver`；同一 socket 共用 Connect |
+| shell | 目录，不是 session | `Catalog::open` ← `ShellDriver`；只接受 `local` |
 
-QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」（施工 [`W20-PLAN.md`](W20-PLAN.md)）：进去按 **Transport** 分目录（本地 / SSH），目录里 tmux session 和 Herdr workspace 用同一套项目行。Runtime 只是徽章和 `support()` 决定的次级动作（worktree）。
+`discover_targets(transport)` = 怎么到那儿（SSH hosts / Local 单例）。  
+`discover_sessions(transport, target)` = 该 target 上各 Driver 的可 attach 格子。不要叫 `discover-connection`。
 
-远程 Herdr：Transport `ssh` + Runtime `herdr`。列出用 `ssh … herdr session list` / `workspace list`（和 `ssh … tmux list-sessions` 同类）。打开不要 `herdr --remote`（会在远端装/启 server）：把远端 `herdr.sock` Unix 转发到本机，再走现有 `HerdrSession`。没在跑就跳过，不要替用户启动。
+QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」（施工 [`W20-PLAN.md`](W20-PLAN.md)）：进去按 **Transport** 分目录（本地 / SSH），目录里 tmux session 和 Herdr workspace 用同一套项目行。Runtime 只是徽章和 `support()` 决定的次级动作（worktree）。卡的来源改 `runtime_list()`，不要硬编码三张卡的存在性（widget_name 保持 W20 的）。
+
+远程 Herdr：Transport `ssh` + Runtime `herdr`。列出用 `ssh … herdr session list` / `workspace list`（和 `ssh … tmux list-sessions` 同类）。打开不要 `herdr --remote`（会在远端装/启 server）：把远端 `herdr.sock` Unix 转发到本机，再走现有 `HerdrSession`。没在跑就跳过，不要替用户启动。探活进 Inventory，不要写在 `window.rs`。
 
 ---
 
@@ -295,11 +305,12 @@ QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两
 ## 10. 文件落点（实现时）
 
 ```
-src/core/model/backend.rs     trait + RuntimeCapability + support()
-src/core/runtime/mod.rs       导出 Herdr；RuntimeMode 增加 herdr
+src/core/catalog/             Catalog 门面 + Driver/Transport 表 + Connect + Inventory
+src/core/model/backend.rs     trait Runtime + RuntimeCapability + support()
+src/core/runtime/mod.rs       导出 Herdr
 src/core/runtime/herdr/       仅此处出现 herdr.sock / w2:p1 / terminal.frame
-src/core/workspace/spec.rs    WorkspaceSpec::herdr(...)
-src/core/workspace/pool.rs    list/create/open worktree（先查 support()）
+src/core/workspace/spec.rs    WorkspaceSpec（Catalog::open 的入参）
+src/core/workspace/pool.rs    槽位表；不再持有 herdr_sessions
 ```
 
 测试：能力表用单测（假 Runtime 只报 `WorktreeList` 时 Pool 不得调用 create）。Herdr e2e 用**独立 named session**（`herdr --session muxterm-test-<unique>`），不要打用户默认 `herdr.sock`。

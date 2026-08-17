@@ -1,13 +1,13 @@
-//! Discovery 层：连接前的无状态查询能力。
+//! Discovery 层：连接前查询（SSH hosts / tmux sessions / Herdr workspaces / 目录）。
 //!
 //! 设计基线：`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md` §7。
+//! 现行门面：`docs/CATALOG.md`（Driver.list / Transport.list_targets / Inventory）。
+//! platform 不要直接调本模块；走 Catalog。
 //!
-//! Discovery 不建立长连接，不画进主运行时层。
 //! - SSH hosts：只读取 `~/.ssh/config` 的 Host alias，不做 DNS/认证
 //! - tmux sessions：`tmux -L list-sessions` 或 `ssh <alias> tmux list-sessions`
+//! - Herdr：本地 socket JSON；SSH 可用 `ssh … herdr session list`（不是 Runtime）
 //! - 目录列表：`std::fs::read_dir` 或 `ssh <alias> ls`
-//!
-//! v1：先建立最小 facade，不阻塞 local CLI。
 
 use std::path::{Path, PathBuf};
 

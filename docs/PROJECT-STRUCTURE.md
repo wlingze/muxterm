@@ -1,15 +1,55 @@
 # Muxterm 项目结构
 
-> **文档定位**：说明 muxterm 当前目录结构与目标目录结构，标注现有与 proposed。
-> 不创建代码目录，仅记录结构设计。
->
-> **基线**：`/home/wlz/Developer/self/muxterm` main `d69fab2`（2026-07-28）。
-> **2026-08-15：** 目标增加 `src/core/workspace/`（见 [`WORKSPACE.md`](WORKSPACE.md)）；旧 Session/虚拟 Window 目录语义作废。
-> 相关文档：`docs/WORKSPACE.md`、`docs/TRANSPORT-PROTOCOL-ARCHITECTURE.md`、`docs/ARCHITECTURE-PLAN.md`、`ARCHITECTURE.md`。
+> **文档定位**：说明 muxterm 当前目录结构与目标目录结构。
+> **基线（历史）**：main `d69fab2`（2026-07-28）。下面 §0 是 **2026-08-17** 的现行树；§1 起是当时的设计记录，不要当施工单。
+> 产品：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md) / [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
+> Runtime：[`RUNTIME.md`](RUNTIME.md)。像素：[`SURFACE.md`](SURFACE.md)。
 
 ---
 
-## 1. 当前目录结构
+## 0. 当前（2026-08-17，`feature/runtime/support_herdr`）
+
+产品树：`Catalog → WorkspacePool → Workspace → Tab → Pane`。Window 只是 GUI 体现。tmux / Herdr / Shell 是 Driver；Local / SSH 是 Transport 插件。
+
+```
+src/core/
+├── catalog/                 # 总台账（施工中，见 CATALOG-PLAN.md）
+│   ├── mod.rs               #   Catalog：有序 Driver/Transport 表 + Connects + Inventory + Pool
+│   ├── driver.rs            #   RuntimeDriver（list/open；不是活 Runtime）
+│   ├── transport.rs         #   Catalog Transport 插件（Local/SSH）
+│   ├── connect.rs           #   可复用 Arc<Connect>
+│   └── inventory.rs         #   未 attach 的探活快照
+├── workspace/               # Pool / Workspace / PaneBuf / WorkspaceSpec / WorkspaceId
+├── runtime/
+│   ├── tmux/                # -CC / protocol / command；唯一能出现 $N / %output
+│   ├── herdr/               # socket JSON；唯一能出现 w2:p1 / terminal.frame
+│   ├── shell/               # 自管 PTY
+│   └── daemon.rs            # IPC 客户端；不上新建项目卡
+├── transport/               # 字节流 spawn_exec/read/write（与 Catalog Transport 插件同名不同 trait）
+├── discovery.rs + discovery/existing.rs   # 连接前查询；以后只被 Driver.list 调用
+├── model/backend.rs         # trait Runtime + RuntimeCapability
+├── protocol/ffi/            # 目标：handle = Catalog（现仍是裸 WorkspacePool）
+├── quickconnect/            # 预设项目模型
+└── protocol/terminal/       # emulate / scrollback / mirror（live 禁止 visible_ansi dump）
+
+src/platform/linux/          # GTK4 + VTE；禁止 ssh / tmux 命令 / herdr 帧
+tests/                       # IsolatedTmux / IsolatedHerdr / LoopbackSshd；GTK e2e --test-threads=1
+```
+
+**Catalog 目标（本轮要落到代码里的）**
+
+```
+src/core/catalog/builtin/    [proposed]
+  tmux.rs  herdr.rs  shell.rs  local.rs  ssh.rs
+```
+
+FFI 增：`muxterm_runtime_list_json` / `muxterm_transport_list_json` / `muxterm_discover_targets_json` / `muxterm_discover_sessions_json`。`muxterm_discover_workspaces_json` 改为扇出 tmux+herdr。
+
+不要：产品 Session、虚拟 Window、platform 连接池、`TransportDriver` 这个名字。
+
+---
+
+## 1. 当前目录结构（2026-07-28 基线，历史）
 
 ```
 muxterm/

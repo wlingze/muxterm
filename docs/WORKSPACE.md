@@ -1,11 +1,12 @@
 # WORKSPACE.md — Muxterm 产品结构与 Core 边界
 
 > 定名：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）
-> 施工：[`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md)。像素：[`SURFACE.md`](SURFACE.md)（F 已交）。
-> 适配表：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)（只给 `runtime/tmux` 看）。
+> 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）。
+> 施工：[`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md)。Catalog：[`CATALOG.md`](CATALOG.md) / [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
+> 像素：[`SURFACE.md`](SURFACE.md)（F 已交）。适配表：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)（只给 `runtime/tmux` 看）。
 > Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。Herdr 施工：[`HERDR-PLAN.md`](HERDR-PLAN.md)。
 
-**一句话：** Muxterm 自己的结构是 **WorkspacePool → Workspace → Tab → Pane**。GUI **Window 只是某个 Workspace 的体现**。tmux 只是 Runtime 的一种实现，全部关在 `runtime/tmux/`。前端只渲染，不养池、不养连接。
+**一句话：** Muxterm 自己的结构是 **Catalog → WorkspacePool → Workspace → Tab → Pane**。GUI **Window 只是某个 Workspace 的体现**。tmux / Herdr / Shell 是 Driver；SSH 是 Transport。前端只渲染，不养池、不养连接。
 
 ---
 
@@ -14,8 +15,9 @@
 ```
 Muxterm 产品（Core Protocol / FFI / CLI / GUI 都用这一套）
 ─────────────────────────────────────────────────────────
-WorkspacePool                 ← 以前叫连接池；只在 core
-  └── Workspace*              ← 池里一格；一个 Runtime
+Catalog                       ← FFI 持有；Driver/Transport 表 + Connect + Inventory + Pool
+  └── WorkspacePool           ← 已打开的格子；只在 core
+        └── Workspace*        ← 池里一格；一个已 attach 的 Runtime
         ├── Tab*              ← 工作区内部结构（标准）
         │     └── Pane*       ← 最小格子：buffer + 终端画面
         └── PaneBuf / layout  ← 无头状态，给搜索/提醒/快切
@@ -41,8 +43,12 @@ $N、@N、%output、send-keys、-CC 全部停在这里
 | **Workspace** | 池里一格。Muxterm 的工作区。内含 Tab → Pane | tmux session（那是适配器内部） |
 | **Tab** | Workspace 里的一页 | GUI 窗口；tmux window 本体 |
 | **Pane** | 最小格子：有 PaneBuf，前端在这里画终端 | |
-| **WorkspacePool** | 以前的连接池。打开/激活/后台保活/淘汰 | platform 里的 `ConnectionPool` |
-| **Runtime** | 给 Workspace **填** Tab/Pane 的接口。实现：Tmux / Shell / Herdr。问能力用 `support()`，见 [`RUNTIME.md`](RUNTIME.md) | 池；用户切换器 |
+| **Catalog** | backend 总状态。两张插件表 + Connect + Inventory + Pool。见 [`CATALOG.md`](CATALOG.md) | GUI Window |
+| **Driver** | Runtime 插件（`TmuxDriver` / `HerdrDriver` / `ShellDriver`）。负责 list / open | 已经 attach 的 `trait Runtime` |
+| **Connect** | 可复用管道。同一 SSH host / 同一 Herdr socket 一份 `Arc` | 一个 Workspace |
+| **Inventory** | 尚未 attach 的 target/session 台账（探活、灯） | Pool 里已打开格子的 `BackendStatus` |
+| **WorkspacePool** | 已打开的格子。打开/激活/后台保活/淘汰 | 插件表；platform 里的 `ConnectionPool` |
+| **Runtime** | 给 Workspace **填** Tab/Pane 的接口。实现：Tmux / Shell / Herdr。问能力用 `support()`，见 [`RUNTIME.md`](RUNTIME.md) | 池；发现层；用户切换器 |
 | **Window** | GUI 窗口 = **一个 Workspace 的体现** | 产品树节点；tmux window；旧虚拟 `w1` |
 | **Session** | **产品层没有。** 只在 `runtime/tmux` 叫 `TmuxSessionId`（`$N`） | FFI/CLI/GUI 类型 |
 
@@ -76,11 +82,13 @@ $N、@N、%output、send-keys、-CC 全部停在这里
                            │ Core Protocol（Workspace / Tab / Pane）
 ┌──────────────────────────┴───────────────────────────────┐
 │ core                                                      │
-│   WorkspacePool     打开 / 列表 / 激活 / 后台吃字节 / 淘汰  │
+│   Catalog           Driver/Transport 表 + Connect + Inventory│
+│   WorkspacePool     已打开：打开 / 列表 / 激活 / 后台吃字节 │
 │   Workspace         Tab+Pane 拓扑 + PaneBuf + 当前焦点     │
-│   Runtime trait     connect / execute(Task) / events       │
-│   transport         local / ssh（Runtime 用，platform 不用）│
-│   discovery         能 attach 的候选（名字），不是产品 Session│
+│   Runtime trait     已 attach：connect / execute / events  │
+│   catalog Transport local / ssh 插件（list_targets / connect）│
+│   byte Transport    spawn_exec / read / write（现有模块）  │
+│   discovery         被 Driver.list 调用，platform 不直接调 │
 │   attention/search  读 PaneBuf                             │
 │   protocol/ffi + CLI  见 §6                                 │
 └──────────────────────────▲───────────────────────────────┘
@@ -198,12 +206,14 @@ snapshot: tabs, panes, layout
 
 ### 6.2 FFI（W7 已落地）
 
-**一个 handle = 整个 `WorkspacePool`**（进程里 GUI 通常只拿一个）。
+**一个 handle = 整个 `Catalog`**（Pool 在里面；进程里 GUI 通常只拿一个）。施工见 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C5。现在代码仍是裸 `WorkspacePool`，本轮要换。
 
 | 现在 | 说明 |
 |---|---|
-| `muxterm_new()` → 空池 | 不再一个 handle 一条连接 |
-| `muxterm_workspace_open(h, spec)` | spec：runtime / transport / name / socket / ssh / dir |
+| `muxterm_new()` → 空 Catalog | 不再一个 handle 一条连接 |
+| `muxterm_runtime_list_json` / `transport_list_json` | 新建项目卡 / Local·SSH（C5） |
+| `muxterm_discover_targets_json` / `discover_sessions_json` | target = 怎么到那儿；session = 可 attach 格子 |
+| `muxterm_workspace_open(h, spec)` | 走 `Catalog::open`；spec：runtime / transport / name / socket / ssh / dir |
 | `muxterm_workspace_list(h, out)` | **池里的**工作区（旧 session list 的在线部分） |
 | `muxterm_workspace_activate(h, id)` | 当前体现到 GUI Window 上的那一个 |
 | `muxterm_workspace_close(h, id)` | tmux=detach；shell=shutdown |
@@ -256,13 +266,14 @@ CLI 实现放 `src/platform/cli/` 可以，但 **只调 Core**（池 / Task）�
 ## 7. 目标目录
 
 ```
+src/core/catalog/       Catalog + Driver + Transport 插件 + Connect + Inventory
 src/core/workspace/     pool.rs + workspace.rs + pane_buf.rs + id.rs
 src/core/runtime/       trait Runtime
 src/core/runtime/tmux/  全部 tmux（含 list-sessions 实现）
 src/core/runtime/shell/ ShellRuntime
-src/core/runtime/herdr/ 全部 Herdr socket（尚未落地，见 HERDR-PLAN.md）
-src/core/protocol/ffi/  handle = WorkspacePool
-src/core/discovery/     返回 Workspace 候选，不返回 SessionInfo
+src/core/runtime/herdr/ 全部 Herdr socket（H0–H4 已落地）
+src/core/protocol/ffi/  handle = Catalog（现仍是 WorkspacePool，C5 换）
+src/core/discovery/     被 Driver.list 调用；返回 Workspace 候选，不返回产品 Session
 src/platform/linux|macos|tui
   window.rs             体现：bind 当前 WorkspaceId，画 Tab/Pane
   keymap / 面板         只调 FFI

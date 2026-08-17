@@ -12,6 +12,7 @@
 > - `PRODUCT.md` — 产品定位与路线图
 > - `ARCHITECTURE.md` — 现有架构与交互模型
 > - `docs/PROJECT-STRUCTURE.md` — 当前与目标目录结构
+> - `docs/CATALOG.md` — **现行** backend 总状态（Catalog / Driver / Connect / Inventory）
 > - `docs/ARCHITECTURE-PLAN.md` — C ABI 拆分方案与平台前端方案
 > - `docs/ID-SYSTEM.md` — ID 体系（本文 §3 扩展）
 > - `docs/WORKSPACE.md` — **当前产品层级**（Workspace → Tab → Pane）
@@ -448,7 +449,9 @@ Config 变更时发出 `ConfigChanged { key, old, new }` 事件，供前端即�
 
 ## 7. Discovery — 连接前查询能力
 
-Discovery 是无状态查询，不建立长连接，不画进主运行时层。
+> **2026-08-17：** 无状态一次性查询是旧模型。现行门面是 [`CATALOG.md`](CATALOG.md)：Driver.list + Transport.list_targets + Inventory（后台探活、灯）。下面 §7.1–7.3 仍描述查询种类；实现不要再当「完全无状态、不建任何管道」。Connect 可复用，但 **不要**为探活 attach Runtime 或常驻 `-CC`。
+
+Discovery 列出可 open 的候选，不画进主运行时层。
 
 ### 7.1 查询类型
 
