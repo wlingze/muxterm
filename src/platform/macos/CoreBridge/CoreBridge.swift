@@ -316,33 +316,41 @@ final class CoreBridge {
         return response.session ?? session
     }
 
-    /// 创建 handle 并 connect。
-    /// - Parameters:
-    ///   - backendType: `"local"` / `"tmux"` / `"ssh"` / `"daemon"`
-    ///   - socket: tmux `-L` socket 名（可选）
-    ///   - session: session 名（可选）
-    init(backendType: String = "local", socket: String? = nil, session: String? = nil) throws {
-        let normalizedBackendType = backendType.lowercased()
-        self.backendType = normalizedBackendType
-        // SSH 连接：FFI 的 `muxterm_new(socket=alias, session=...)` 把 alias
-        // 放在 socket 参数里；这里拆开存储，status 快照查询才能用正确的
-        // sshAlias 而不是把它当本地 `tmux -L alias`。
+    private init(
+        handle: OpaquePointer,
+        backendType: String,
+        socket: String?,
+        session: String?,
+        sshAlias: String?
+    ) {
+        self.handle = handle
+        self.backendType = backendType.lowercased()
+        // SSH：alias 必须放 sshAlias；socket 只表示真正的远端 `-L`。
         let query = StatusQueryTarget.resolve(
-            backendType: normalizedBackendType,
+            backendType: self.backendType,
             socket: socket,
-            sshAlias: nil
+            sshAlias: sshAlias
         )
         self.socket = query.socket
         self.sshAlias = query.sshAlias
         self.session = session
-        let handle = normalizedBackendType.withCString { btPtr in
+    }
+
+    /// 创建 handle 并 connect。
+    /// - Parameters:
+    ///   - backendType: `"local"` / `"tmux"` / `"ssh"` / `"daemon"`
+    ///   - socket: tmux `-L` socket 名（可选）。SSH 时这里若传入 alias，FFI 不得再把它当 `-L`。
+    ///   - session: session 名（可选）
+    convenience init(backendType: String = "local", socket: String? = nil, session: String? = nil) throws {
+        let normalized = backendType.lowercased()
+        let created: OpaquePointer? = normalized.withCString { btPtr in
             Self.withOptionalCString(socket) { sockPtr in
                 Self.withOptionalCString(session) { sessPtr in
                     muxterm_new(btPtr, sockPtr, sessPtr)
                 }
             }
         }
-        guard let handle else {
+        guard let handle = created else {
             throw BridgeError.createFailed
         }
         let rc = muxterm_connect(handle)
@@ -350,14 +358,20 @@ final class CoreBridge {
             muxterm_free(handle)
             throw BridgeError.connectFailed(rc)
         }
-        self.handle = handle
+        self.init(
+            handle: handle,
+            backendType: normalized,
+            socket: socket,
+            session: session,
+            sshAlias: nil
+        )
     }
 
     /// 一步建连：支持指定起始目录（本地/远程 shell）与 tmux-ssh alias。
-    /// - `backendType`: `"local"` / `"tmux"` / `"tmux-ssh"` / `"daemon"`
-    /// - `socket`: tmux `-L` socket 名（可选）
+    /// - `backendType`: `"local"` / `"tmux"` / `"ssh"` / `"tmux-ssh"` / `"daemon"`
+    /// - `socket`: tmux `-L` socket 名（可选；SSH 时不是 Host alias）
     /// - `session`: session 名（可选；tmux 有 name → attach，无 → 新建）
-    /// - `sshAlias`: tmux-ssh 的 `~/.ssh/config` Host 名（可选）
+    /// - `sshAlias`: `~/.ssh/config` Host 名（SSH 必须走这里，禁止塞进 socket）
     /// - `startDirectory`: 起始工作目录（本地 shell / tmux 新建用）
     static func connect(
         backendType: String,
@@ -367,7 +381,7 @@ final class CoreBridge {
         startDirectory: String? = nil
     ) throws -> CoreBridge {
         let normalized = backendType.lowercased()
-        let handle = normalized.withCString { btPtr in
+        let created: OpaquePointer? = normalized.withCString { btPtr in
             Self.withOptionalCString(socket) { sockPtr in
                 Self.withOptionalCString(session) { sessPtr in
                     Self.withOptionalCString(sshAlias) { aliasPtr in
@@ -378,7 +392,7 @@ final class CoreBridge {
                 }
             }
         }
-        guard let handle else {
+        guard let handle = created else {
             throw BridgeError.createFailed
         }
         let rc = muxterm_connect(handle)
@@ -386,17 +400,13 @@ final class CoreBridge {
             muxterm_free(handle)
             throw BridgeError.connectFailed(rc)
         }
-        let bridge = try CoreBridge()
-        bridge.handle = handle
-        let query = StatusQueryTarget.resolve(
+        return CoreBridge(
+            handle: handle,
             backendType: normalized,
             socket: socket,
+            session: session,
             sshAlias: sshAlias
         )
-        bridge.socket = query.socket
-        bridge.sshAlias = query.sshAlias
-        bridge.session = session
-        return bridge
     }
 
     /// status bar 订阅是否已启用（tmux ≥3.2 `refresh-client -B`）。

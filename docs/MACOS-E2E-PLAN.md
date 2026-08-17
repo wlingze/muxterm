@@ -1,6 +1,7 @@
 # MACOS-E2E-PLAN.md — 把 Linux 功能保真测试复刻到 macOS（交给 Codex）
 
 > 日期：2026-08-17（本机 `2026-08-17T13:08:54+08:00`）
+> 续工（Cmd-P 三 tab / pane-cmd / agent 色与光标）：[`MACOS-LINUX-PARITY-PLAN.md`](MACOS-LINUX-PARITY-PLAN.md)
 > 工作目录：`/Users/wlz/Developer/self/muxterm`
 > 分支：`feature/quickconnect-attach-ui`（**不 push**）
 > 先读：`docs/FEATURE-E2E-PLAN.md`、`docs/W16-PLAN.md`、`AGENTS.md`

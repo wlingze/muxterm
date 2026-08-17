@@ -633,12 +633,13 @@ fn legacy_runtime_spec(
             }
         }
         "ssh" | "tmux-ssh" => {
-            let sock_ref = sock.as_deref();
-            let alias = alias.as_deref().or(sock.as_deref())?;
+            let (alias_name, sock_owned) =
+                TmuxRuntime::ssh_alias_and_tmux_socket(sock.as_deref(), alias.as_deref())?;
+            let sock_ref = sock_owned.as_deref();
             if let Some(name) = sess.as_deref() {
-                std::boxed::Box::new(TmuxRuntime::new_ssh_attach(alias, sock_ref, name))
+                std::boxed::Box::new(TmuxRuntime::new_ssh_attach(&alias_name, sock_ref, name))
             } else {
-                std::boxed::Box::new(TmuxRuntime::new_ssh(alias, sock_ref))
+                std::boxed::Box::new(TmuxRuntime::new_ssh(&alias_name, sock_ref))
             }
         }
         "daemon" => {

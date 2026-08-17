@@ -666,6 +666,47 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[test]
+    fn ssh_attach_argv_without_socket_has_no_dash_l() {
+        let config = TmuxClientConfig {
+            mode: Some(ConnectMode::Attach {
+                target: Some("yaklang-workspace".into()),
+            }),
+            extra_args: Vec::new(),
+            ssh_alias: Some("ryzen".into()),
+            cols: Some(80),
+            rows: Some(24),
+            ..TmuxClientConfig::default()
+        };
+        let argv = build_argv(&config);
+        assert_eq!(
+            argv,
+            vec!["-CC", "attach", "-t", "yaklang-workspace"],
+            "SSH attach 默认远端 socket 必须是 `tmux -CC attach -t <session>`，不能带 -L <alias>"
+        );
+        assert!(!argv.iter().any(|a| a == "ryzen"));
+    }
+
+    #[test]
+    fn ssh_attach_argv_isolated_socket_is_not_alias() {
+        let config = TmuxClientConfig {
+            mode: Some(ConnectMode::Attach {
+                target: Some("featssh".into()),
+            }),
+            extra_args: vec!["-L".into(), "muxterm-test-remote-x".into()],
+            ssh_alias: Some("test-feat".into()),
+            ..TmuxClientConfig::default()
+        };
+        let argv = build_argv(&config);
+        assert_eq!(
+            argv.windows(2)
+                .find(|w| w[0] == "-L")
+                .map(|w| w[1].as_str()),
+            Some("muxterm-test-remote-x")
+        );
+        assert!(!argv.iter().any(|a| a == "test-feat"));
+    }
+
     /// 每次调用递增的全局计数器，保证同一进程内并行线程拿到的测试 socket 名唯一。
     /// 旧实现只用了 `std::process::id()`，在默认并行下多个真实 tmux E2E 会共用
     /// 同一个 `-L` socket，互相 kill-server 导致 CI 卡死（end_to_end_real_tmux 30m 超时）。
