@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
-use crate::core::model::backend::Runtime;
+use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -2006,6 +2006,15 @@ impl State for TmuxRuntime {
 impl Runtime for TmuxRuntime {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn support(&self) -> &'static [RuntimeCapability] {
+        &[
+            RuntimeCapability::PersistDetach,
+            RuntimeCapability::Discover,
+            RuntimeCapability::MultiTab,
+            RuntimeCapability::SplitPane,
+        ]
     }
 
     fn status_subscriptions_active(&self) -> bool {

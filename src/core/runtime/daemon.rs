@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
-use crate::core::model::backend::Runtime;
+use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -297,6 +297,20 @@ impl State for DaemonRuntime {
 impl Runtime for DaemonRuntime {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn support(&self) -> &'static [RuntimeCapability] {
+        // IPC 客户端：能力等于背后那个 Runtime；自己绝不谎报 worktree。
+        match self.workspace_runtime.as_str() {
+            "tmux" => &[
+                RuntimeCapability::PersistDetach,
+                RuntimeCapability::Discover,
+                RuntimeCapability::MultiTab,
+                RuntimeCapability::SplitPane,
+            ],
+            "shell" => &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane],
+            _ => &[],
+        }
     }
 
     async fn connect(&mut self) -> Result<()> {

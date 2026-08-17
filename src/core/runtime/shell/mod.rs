@@ -29,7 +29,7 @@ use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EV
 use crate::core::config::{
     expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
 };
-use crate::core::model::backend::Runtime;
+use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -606,6 +606,10 @@ impl State for ShellRuntime {
 impl Runtime for ShellRuntime {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn support(&self) -> &'static [RuntimeCapability] {
+        &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane]
     }
 
     async fn connect(&mut self) -> Result<()> {

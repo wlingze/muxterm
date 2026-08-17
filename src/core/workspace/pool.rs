@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::core::model::backend::Runtime;
+use crate::core::model::backend::{Runtime, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
 use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
@@ -204,6 +204,57 @@ impl WorkspacePool {
         .await
     }
 
+    /// 列出当前工作区所在仓库的 checkout（需 `WorktreeList`）。
+    ///
+    /// 无能力 → `Err`，零 git、零 socket；有能力的实现（H4 HerdrRuntime）
+    /// 才真正走远端查询。
+    pub async fn list_worktrees(&self, ws: &WorkspaceId) -> anyhow::Result<Vec<WorktreeInfo>> {
+        let Some(slot) = self.slots.get(ws) else {
+            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
+        };
+        let caps = slot.workspace.runtime().support();
+        if !caps.contains(&RuntimeCapability::WorktreeList) {
+            return Err(anyhow::anyhow!("runtime 不支持 WorktreeList"));
+        }
+        Err(anyhow::anyhow!("WorktreeList 尚未实现"))
+    }
+
+    /// 创建 worktree 并作为新工作区开进池里（需 `WorktreeCreate`）。
+    ///
+    /// 无能力 → `Err`，零 git、零 socket。
+    pub async fn create_worktree(
+        &mut self,
+        ws: &WorkspaceId,
+        _spec: &WorktreeCreateSpec,
+    ) -> anyhow::Result<WorkspaceId> {
+        let Some(slot) = self.slots.get(ws) else {
+            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
+        };
+        let caps = slot.workspace.runtime().support();
+        if !caps.contains(&RuntimeCapability::WorktreeCreate) {
+            return Err(anyhow::anyhow!("runtime 不支持 WorktreeCreate"));
+        }
+        Err(anyhow::anyhow!("WorktreeCreate 尚未实现"))
+    }
+
+    /// 打开已有 checkout 并作为新工作区开进池里（需 `WorktreeOpen`）。
+    ///
+    /// 无能力 → `Err`，零 git、零 socket。
+    pub async fn open_worktree(
+        &mut self,
+        ws: &WorkspaceId,
+        _path: &str,
+    ) -> anyhow::Result<WorkspaceId> {
+        let Some(slot) = self.slots.get(ws) else {
+            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
+        };
+        let caps = slot.workspace.runtime().support();
+        if !caps.contains(&RuntimeCapability::WorktreeOpen) {
+            return Err(anyhow::anyhow!("runtime 不支持 WorktreeOpen"));
+        }
+        Err(anyhow::anyhow!("WorktreeOpen 尚未实现"))
+    }
+
     /// 插入一个已在后台线程完成 `connect()` 的工作区并设为前台。
     ///
     /// W15c：SSH 连接不能 `rt.block_on` 堵 GTK 主线程；连接在后台线程完成，
@@ -398,6 +449,33 @@ mod tests {
 
     fn id(name: &str, runtime: &str) -> WorkspaceId {
         WorkspaceId::new("local", None, name, runtime, "")
+    }
+
+    /// H0：Mock 只报 WorktreeList（不报 WorktreeCreate）时，create 必须被拒，
+    /// 且不得触碰任何 git/socket（纯能力检查）。
+    #[tokio::test]
+    async fn pool_create_worktree_rejected_without_capability() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
+        let a = id("a", "tmux");
+        pool.open(a.clone(), "a".into(), |_| {
+            let mut b = MockRuntime::with_single_pane();
+            b.capabilities = &[RuntimeCapability::WorktreeList];
+            Box::new(b)
+        })
+        .await
+        .unwrap();
+        let spec = WorktreeCreateSpec {
+            branch: "muxterm-test-wt-x".into(),
+            path: "/tmp/muxterm-test-herdr-wt-x".into(),
+            base: None,
+            label: None,
+        };
+        let err = pool.create_worktree(&a, &spec).await.unwrap_err();
+        assert!(
+            err.to_string().contains("WorktreeCreate"),
+            "缺 WorktreeCreate 能力必须拒绝: {err}"
+        );
+        assert_eq!(pool.len(), 1, "拒绝时不得新开工作区");
     }
 
     /// 两个 mock workspace：A 前台、B 后台仍吃字节；activate(B) 后 A 仍能读到已索引文本。

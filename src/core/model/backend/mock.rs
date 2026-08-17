@@ -28,6 +28,8 @@ pub struct MockRuntime {
     pub executed: Vec<Task>,
     /// 可选共享执行日志：池淘汰测试在 Workspace 被移出后仍能检查 Detach/Shutdown。
     pub executed_log: Option<Arc<Mutex<Vec<Task>>>>,
+    /// 测试注入的能力切片（默认空，不含 Worktree*）。
+    pub capabilities: &'static [RuntimeCapability],
 }
 
 impl Default for MockRuntime {
@@ -49,6 +51,7 @@ impl MockRuntime {
             events: vec![],
             executed: vec![],
             executed_log: None,
+            capabilities: &[],
         }
     }
 
@@ -122,6 +125,10 @@ impl State for MockRuntime {
 impl Runtime for MockRuntime {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn support(&self) -> &'static [RuntimeCapability] {
+        self.capabilities
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {

@@ -12,6 +12,51 @@ use crate::core::model::state::{BackendStatus, State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
 use async_trait::async_trait;
 
+/// Runtime 能力位：一个实现返回它**真会做**的子集。
+///
+/// GUI / Pool / CLI 只根据 `support()` 切片决定要不要画入口、点了会不会被拒。
+/// 禁止 `if spec.runtime == "herdr"` 之类的实现名判断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeCapability {
+    /// shutdown/关窗后远端还在，能再 attach。
+    PersistDetach,
+    /// 连接前能列出可 open 的候选。
+    Discover,
+    /// `NewTab` / `SwitchTab` 有意义。
+    MultiTab,
+    /// `SplitPane` 有意义。
+    SplitPane,
+    /// 能列出当前仓库的 checkout。
+    WorktreeList,
+    /// 能建 checkout 并打开成新 Workspace。
+    WorktreeCreate,
+    /// 能打开已有 checkout。
+    WorktreeOpen,
+    /// 能 `git worktree remove`（不删分支）。
+    WorktreeRemove,
+}
+
+/// 一个 git worktree（产品能力，不是第三棵树）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: String,
+    pub repo_root: String,
+    /// 池里已打开该 checkout 的 WorkspaceId（Herdr `open_workspace_id` 映射后）。
+    pub open_workspace: Option<crate::core::workspace::id::WorkspaceId>,
+    /// 是否 linked worktree（false = 主 checkout）。
+    pub linked: bool,
+}
+
+/// 创建 worktree 的产品规格（core 层，不拼 git 命令）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeCreateSpec {
+    pub branch: String,
+    pub path: String,
+    pub base: Option<String>,
+    pub label: Option<String>,
+}
+
 /// 终端运行时 trait。
 ///
 /// 一个 Runtime 实例 = 一个 session 来源（本地 tmux / 远程 ssh tmux / 纯本地 shell）。
@@ -45,6 +90,11 @@ pub trait Runtime: State + Send {
         self.status()
     }
 
+    /// 当前 Runtime 真会做的能力子集（GUI/Pool 只据此决策）。
+    fn support(&self) -> &'static [RuntimeCapability] {
+        &[]
+    }
+
     /// 当前运行时是否已启用 status bar 订阅（`refresh-client -B`）。
     /// 非 tmux 运行时 / tmux < 3.2 返回 false，前端回退轮询。
     fn status_subscriptions_active(&self) -> bool {
@@ -62,3 +112,46 @@ pub trait Runtime: State + Send {
 }
 
 pub mod mock;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::runtime::shell::ShellRuntime;
+    use crate::core::runtime::tmux::backend::TmuxRuntime;
+
+    const WORKTREE_CAPS: [RuntimeCapability; 4] = [
+        RuntimeCapability::WorktreeList,
+        RuntimeCapability::WorktreeCreate,
+        RuntimeCapability::WorktreeOpen,
+        RuntimeCapability::WorktreeRemove,
+    ];
+
+    /// H0：tmux 必须报 PersistDetach/Discover/MultiTab/SplitPane，
+    /// 且 v1 绝不报任何 Worktree*（避免 GUI 为假能力画入口）。
+    #[test]
+    fn tmux_runtime_support_has_no_worktree() {
+        let rt = TmuxRuntime::new(None);
+        let caps = rt.support();
+        assert!(caps.contains(&RuntimeCapability::PersistDetach));
+        assert!(caps.contains(&RuntimeCapability::Discover));
+        assert!(caps.contains(&RuntimeCapability::MultiTab));
+        assert!(caps.contains(&RuntimeCapability::SplitPane));
+        for c in WORKTREE_CAPS {
+            assert!(!caps.contains(&c), "tmux 不应支持 {c:?}");
+        }
+    }
+
+    /// H0：shell 只报 MultiTab/SplitPane，不报 PersistDetach/Discover/Worktree*。
+    #[test]
+    fn shell_runtime_support_has_no_worktree() {
+        let rt = ShellRuntime::new("$SHELL", "");
+        let caps = rt.support();
+        assert!(caps.contains(&RuntimeCapability::MultiTab));
+        assert!(caps.contains(&RuntimeCapability::SplitPane));
+        assert!(!caps.contains(&RuntimeCapability::PersistDetach));
+        assert!(!caps.contains(&RuntimeCapability::Discover));
+        for c in WORKTREE_CAPS {
+            assert!(!caps.contains(&c), "shell 不应支持 {c:?}");
+        }
+    }
+}
