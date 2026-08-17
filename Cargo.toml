@@ -162,6 +162,10 @@ path = "tests/linux_fault_e2e.rs"
 required-features = ["gtk"]
 
 [[test]]
+name = "existing_ssh_contract"
+path = "tests/existing_ssh_contract.rs"
+
+[[test]]
 name = "linux_ssh_e2e"
 path = "tests/linux_ssh_e2e.rs"
 required-features = ["gtk"]

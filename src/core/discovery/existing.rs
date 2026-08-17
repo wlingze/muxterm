@@ -156,10 +156,11 @@ pub fn discover_ssh_herdr(
     let mut out = Vec::new();
     for (session_name, socket_path) in sessions {
         let cmd = if session_name == "default" {
-            "env -u HERDR_ENV -u HERDR_SESSION herdr workspace list".to_string()
+            "env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr workspace list"
+                .to_string()
         } else {
             format!(
-                "env -u HERDR_ENV -u HERDR_SESSION herdr --session {session_name} workspace list"
+                "env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr --session {session_name} workspace list"
             )
         };
         let Some(stdout) = ssh_run(alias, ssh_config_path, &cmd, timeout) else {
@@ -205,7 +206,7 @@ fn ssh_herdr_sessions(
     ssh_config_path: Option<&str>,
     timeout: Duration,
 ) -> Option<Vec<(String, String)>> {
-    let cmd = "env -u HERDR_ENV -u HERDR_SESSION herdr session list --json";
+    let cmd = "env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr session list --json";
     let stdout = ssh_run(alias, ssh_config_path, cmd, timeout)?;
     let v: serde_json::Value = serde_json::from_str(&stdout).ok()?;
     let sessions = v.get("sessions").or_else(|| v.get("result"))?;
@@ -225,7 +226,11 @@ fn ssh_herdr_sessions(
             .get("status")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        if status != "running" {
+        let running = s
+            .get("running")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if status != "running" && !running {
             continue;
         }
         let name = s
@@ -245,6 +250,9 @@ fn ssh_herdr_sessions(
 }
 
 /// 跑一条 ssh 只读命令，硬超时；失败返回 None。
+///
+/// 用读线程收 output，主线程只等 channel：`try_wait` 会 reap 子进程，
+/// 之后再 `wait_with_output` 拿不到 stdout。
 fn ssh_run(
     alias: &str,
     ssh_config_path: Option<&str>,
@@ -259,27 +267,35 @@ fn ssh_run(
     cmd.arg(alias).arg("--").arg(remote_cmd);
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    let deadline = Instant::now() + timeout;
     let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let result = std::io::Read::read_to_end(&mut stdout, &mut buf).map(|_| buf);
+        let _ = tx.send(result);
+    });
+    let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            if !status.success() {
-                return None;
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Ok(bytes)) => {
+                let status = child.wait().ok()?;
+                if !status.success() {
+                    return None;
+                }
+                return Some(String::from_utf8_lossy(&bytes).to_string());
             }
-            break;
+            Ok(Err(_)) => return None,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
-    let output = child.wait_with_output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[cfg(test)]
