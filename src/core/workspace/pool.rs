@@ -11,8 +11,10 @@ use crate::core::model::backend::{Runtime, RuntimeCapability, WorktreeCreateSpec
 use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
+use crate::core::runtime::{HerdrRuntime, HerdrSession};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::workspace::Workspace;
+use std::sync::Arc;
 
 /// 池里一个工作区的生命周期。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,9 @@ pub struct WorkspacePool {
     active_id: Option<WorkspaceId>,
     policy: WorkspacePoolPolicy,
     recently_evicted: Vec<WorkspaceId>,
+    /// Herdr named session 共享注册表：(session 名, socket 路径) → Arc<HerdrSession>。
+    /// 同一 socket 上多格 Workspace 必须共享一条连接身份。
+    herdr_sessions: HashMap<(String, String), Arc<HerdrSession>>,
 }
 
 impl Default for WorkspacePool {
@@ -75,6 +80,7 @@ impl WorkspacePool {
             active_id: None,
             policy,
             recently_evicted: Vec::new(),
+            herdr_sessions: HashMap::new(),
         }
     }
 
@@ -200,6 +206,29 @@ impl WorkspacePool {
     ) -> anyhow::Result<&mut Workspace> {
         let id = spec.id();
         let name = spec.name();
+        if spec.runtime == "herdr" {
+            // H3：同一 named session + socket 只建一条 HerdrSession，多格共享。
+            let key = (
+                spec.session.clone(),
+                spec.socket.clone().unwrap_or_default(),
+            );
+            let session = self
+                .herdr_sessions
+                .entry(key)
+                .or_insert_with(|| {
+                    Arc::new(HerdrSession::new(
+                        &spec.session,
+                        spec.socket.clone().unwrap_or_default(),
+                    ))
+                })
+                .clone();
+            let path = spec.path.clone();
+            return self
+                .open(id, name, move |_| {
+                    Box::new(HerdrRuntime::new(session, &path))
+                })
+                .await;
+        }
         // build_runtime 放进 create 闭包：复用已有 slot 时零构造
         // （对得上 reopen_same_id_reuses_without_new_runtime）。
         // HerdrSession 共享已迁到 HerdrSession::shared（不用再按字符串旁路）。
