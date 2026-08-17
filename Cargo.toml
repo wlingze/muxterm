@@ -161,6 +161,11 @@ path = "tests/linux_reconnect_e2e.rs"
 required-features = ["gtk"]
 
 [[test]]
+name = "linux_scroll_lock_e2e"
+path = "tests/linux_scroll_lock_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
 name = "linux_search_highlight_e2e"
 path = "tests/linux_search_highlight_e2e.rs"
 required-features = ["gtk"]
