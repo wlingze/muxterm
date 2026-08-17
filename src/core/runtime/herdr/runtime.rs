@@ -2974,7 +2974,6 @@ impl Runtime for HerdrRuntime {
         ));
         Ok(())
     }
-
     fn list_worktrees(&self) -> Result<Vec<crate::core::model::backend::WorktreeInfo>> {
         self.worktrees()
     }
