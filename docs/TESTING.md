@@ -2,7 +2,7 @@
 
 > 适用：`/home/wlz/Developer/self/muxterm`（当前 Linux 分支 `feat/linux-quickconnect-ui`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**；W15 见 [W15-PLAN.md](W15-PLAN.md)；W16 见 [W16-PLAN.md](W16-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)）、
+> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)（**当前执行计划**；W17 见 [W17-PLAN.md](W17-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)）、
 > [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
 > [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
 > [bugfix-log.md](bugfix-log.md)。
@@ -100,6 +100,11 @@ cargo test --lib runtime::tmux::command::tests::capture_pane_with_history -- --e
 xvfb-run -a cargo test --features gtk --test linux_attach_history_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_disconnect_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_attention_semantics_e2e -- --test-threads=1
+# W17 1.0 门禁
+xvfb-run -a cargo test --features gtk --test linux_reconnect_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_scroll_lock_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_search_highlight_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_attention_1_0_e2e -- --test-threads=1
 cargo test --all-features
 ```
 
@@ -217,6 +222,20 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 
 禁止：用 `test_feed_replica` 冒充 W16c BEL；为了绿把历史断言改成只查可见屏；断线靠关窗或 `vte.reset` 混过去。
 
+### 5.8 W17 Linux tmux 1.0 测试门禁
+
+规格：[`W17-PLAN.md`](W17-PLAN.md)。**这是 1.0 测试完成的定义。**
+
+| crate | 必须抓住 |
+|---|---|
+| `linux_reconnect_e2e` | `detach-client -s` 后 session 还在；15s 内水印消失；搜到断线期间 `GAP_*`；BEL 进 blocked；`resets <= 1` |
+| `linux_scroll_lock_e2e` | 滚到顶后新 `LOCK_NEW_*` 进索引、不进可见区；回底按钮仍在 |
+| `linux_search_highlight_e2e` | 离屏命中：跳转后 VTE 含 token + `muxterm-search-highlight` 可见 |
+| `linux_attention_1_0_e2e` | 前台 D 无 notify；后台 D 看见即熄；`mute-1h` 后再 BEL 不亮 |
+| `gio_sink_without_app` | `GioSink::new(None)` 不 panic |
+
+禁止：用 `osc133_done.py` 冒充无 BEL 的 Done；重连靠新建 Workspace 丢掉 PaneBuf；搜索跳转只切 pane 不滚。
+
 ### 5.2 手段（沿用现有 helper）
 
 - 环境：无 DISPLAY 用 `xvfb-run -a`；`gtk4::test_synced`。无显示就 skip，不要空 assert。
@@ -310,10 +329,14 @@ cargo test --test tmux_ssh_feature_contract -- --ignored --test-threads=1
 | 36 | Search tab 搜 PaneBuf | ✅ `search_all` | ✅ linux_feature_e2e / linux_search_jump_e2e | ✅ 真 attach token |
 | 37 | 前台 ls 不进 attention | ✅ Done+BecameVisible | ⚠️ feature e2e 后台 Done；前台路径靠 apply 后 on_became_visible | ✅ OSC 133 |
 | 38 | attention 小 VTE + mute 下拉 | ✅ engine mute | ✅ linux_panel_e2e；live 回复见 W15e | ✅ 隔离 tmux |
-| 39 | attach 离屏历史 | ⚠️ command 构造器有；backend 播种仍只抓可见屏 | ❌ linux_attach_history_e2e（W16a） | ✅ 夹具 `-S -` vs `-p` |
-| 40 | 回底按钮 | — | ❌ muxterm-jump-latest（W16a） | — |
-| 41 | 断线水印 | — | ❌ linux_disconnect_e2e（W16b） | ✅ 隔离 kill-server |
-| 42 | blocked 看见不熄 / 正则 live | ✅ state 穷举表 | ❌ linux_attention_semantics_e2e（W16c） | ✅ 真 BEL + NEED_INPUT |
+| 39 | attach 离屏历史 | ✅ `capture_pane_with_history` | ✅ linux_attach_history_e2e | ✅ 夹具 `-S -` vs `-p` |
+| 40 | 回底按钮 | — | ✅ muxterm-jump-latest | — |
+| 41 | 断线水印 | — | ✅ linux_disconnect_e2e | ✅ 隔离 kill-server |
+| 42 | blocked 看见不熄 / 正则 live | ✅ state 穷举表 | ✅ linux_attention_semantics_e2e | ✅ 真 BEL + NEED_INPUT |
+| 43 | 自动重连 + 断线不漏 | — | ❌ linux_reconnect_e2e（W17a） | ✅ detach-client 保 session |
+| 44 | scroll lock | — | ❌ linux_scroll_lock_e2e（W17b） | ✅ 离屏历史夹具 |
+| 45 | 搜索滚到命中 + 高亮 | — | ❌ linux_search_highlight_e2e（W17c） | ✅ 离屏 token |
+| 46 | 前台 Done 静默 / 看见即熄 / 静音 | ✅ 转移表 | ❌ linux_attention_1_0_e2e（W17d） | ✅ osc133_d_only.py |
 
 ## 8. 新增功能验收矩阵模板
 
