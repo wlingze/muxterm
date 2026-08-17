@@ -79,7 +79,7 @@ insertion index (is 37) should be <= len (is 23)
 5. **W19e** GTK：`catch_unwind` 包住 16ms poll 和会 `feed` 的 glib 回调；弹 `muxterm-fault-dialog`；**进程继续**。
 6. 回归：已有 emulate 单测 + W13/W18 不要破。一逻辑一英文 commit。
 
-W20（已有的连接面板）在 W19 绿之前不要开工。
+W21（滚轮）在 W19 绿了之后、W20 之前。一逻辑一英文 commit。
 
 ---
 

@@ -4,7 +4,8 @@
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
 > [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)、
 > [RUNTIME.md](RUNTIME.md) / [HERDR-PLAN.md](HERDR-PLAN.md)（Herdr 接入）、
-> [W19-PLAN.md](W19-PLAN.md)（模拟器不可 panic）、[W20-PLAN.md](W20-PLAN.md)（已有的连接）、
+> [W19-PLAN.md](W19-PLAN.md)（模拟器不可 panic）、[W21-PLAN.md](W21-PLAN.md)（滚轮）、
+> [W20-PLAN.md](W20-PLAN.md)（已有的连接）、
 > [W18-PLAN.md](W18-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)、
 > [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
 > [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
@@ -123,6 +124,8 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_worktree_e2e -- --test-
 # W19 模拟器 lockstep + GTK 不可崩溃
 cargo test --lib --features gtk resize_then_decstbm_lf_does_not_panic -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_fault_e2e -- --test-threads=1
+# W21 滚轮（主屏 VTE 历史 / alt-screen 方向键）
+xvfb-run -a cargo test --features gtk --test linux_scroll_wheel_e2e -- --test-threads=1
 # W20 已有的连接 + Herdr runtime 卡
 cargo test --test existing_ssh_contract -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-threads=1
@@ -338,7 +341,21 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 
 禁止：用 `#[should_panic]` 当完成；只 catch_unwind 不修 lockstep；fault hook 里再 panic。
 
-### 5.12 已有的连接 + 新建 Herdr（W20）
+### 5.12 滚轮（W21）
+
+规格：[`W21-PLAN.md`](W21-PLAN.md)。tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shell 和 agent 的滚轮都没人收。旧测试只 `vadjustment.set_value`，抓不住。
+
+| 测试 | 必须抓住 |
+|---|---|
+| `wheel_action` | 主屏 `ScrollHistory`；alt-screen `SendToApp` 含 `CSI A/B` |
+| `test_emit_scroll`（PaneView） | 200 行后滚轮见到 `line-0`，**禁止**测试里 `adj.set_value` |
+| alt-screen `test_emit_scroll` | `input_cb` 收到 `\x1b[A` |
+| `linux_scroll_wheel_e2e` | 真 tmux attach + 生产滚轮路径 |
+| `linux_scroll_lock_e2e` | 回归：不得打开 `scroll_on_output` |
+
+禁止：replica dump 冒充滚动；打开 `scroll_on_output` 来「修」滚轮。
+
+### 5.13 已有的连接 + 新建 Herdr（W20）
 
 规格：[`W20-PLAN.md`](W20-PLAN.md)。一级仍是预设项目；最上固定「已有的连接」；二级本地 / SSH；行样式与 Project 相同。
 
