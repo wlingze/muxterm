@@ -123,9 +123,7 @@ struct UiState {
     /// 连续失败次数（指数退避基数）。
     reconnect_attempts: u32,
     /// 重连结果队列（新 Runtime 回主线程后 swap 进同一个 Workspace）。
-    pending_reconnects: std::collections::VecDeque<
-        std::sync::mpsc::Receiver<(anyhow::Result<std::boxed::Box<dyn Runtime>>, bool)>,
-    >,
+    pending_reconnects: std::collections::VecDeque<std::sync::mpsc::Receiver<ReconnectResult>>,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
     /// 终端区 Overlay：LayoutHost.root_box 是主 child，回底按钮浮在上面。
@@ -1985,8 +1983,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
     let scrollback = s.scrollback_lines;
     let spec = reconnect_spec(&id, socket, scrollback);
     let handle = s.rt.handle().clone();
-    let (tx, rx) =
-        std::sync::mpsc::channel::<(anyhow::Result<std::boxed::Box<dyn Runtime>>, bool)>();
+    let (tx, rx) = std::sync::mpsc::channel::<ReconnectResult>();
     s.reconnecting = true;
     s.pending_reconnects.push_back(rx);
     std::thread::spawn(move || {
@@ -2378,6 +2375,9 @@ fn open_target_config(
         },
     );
 }
+
+/// 重连结果：新 Runtime + 断线期间是否响过 bell（W17a）。
+type ReconnectResult = (anyhow::Result<std::boxed::Box<dyn Runtime>>, bool);
 
 /// 后台连接结果（W15c：open_spec 离开 GTK 线程）。
 struct PendingConnect {
