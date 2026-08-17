@@ -24,6 +24,7 @@ use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::pane_view::PaneView;
 use crate::platform::linux::panel_model::{
     filter_attention_rows, filter_workspace_rows, search_rows, PanelModel, PanelTab, SearchRow,
+    SearchScope,
 };
 use crate::platform::linux::quick_pick;
 use crate::platform::linux::quickconnect::font::FontSettings;
@@ -37,7 +38,7 @@ const NEW_PROJECT_ID: &str = "__new_project__";
 type SendInputCb = Box<dyn Fn(String, u32, &[u8])>;
 type MuteCb = Box<dyn Fn(String, u32, Duration)>;
 type PeekBytesCb = Box<dyn Fn(String, u32) -> (u16, u16, Vec<u8>)>;
-type SearchCb = Box<dyn Fn(&str) -> Vec<SearchRow>>;
+type SearchCb = Box<dyn Fn(&str, SearchScope) -> Vec<SearchRow>>;
 
 thread_local! {
     static PEEK_VIEW: RefCell<Option<Rc<PaneView>>> = const { RefCell::new(None) };
@@ -248,6 +249,25 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     search_status.set_visible(false);
     panel.append(&search_status);
 
+    // W18f：搜索范围（当前 pane / 本工作区 / 全部）。
+    let scope_bar = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(4)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    let scope_pane = gtk4::ToggleButton::with_label("pane");
+    scope_pane.set_widget_name("muxterm-search-scope-pane");
+    let scope_workspace = gtk4::ToggleButton::with_label("workspace");
+    scope_workspace.set_widget_name("muxterm-search-scope-workspace");
+    let scope_all = gtk4::ToggleButton::with_label("all");
+    scope_all.set_widget_name("muxterm-search-scope-all");
+    scope_bar.append(&scope_pane);
+    scope_bar.append(&scope_workspace);
+    scope_bar.append(&scope_all);
+    scope_bar.set_visible(false);
+    panel.append(&scope_bar);
+
     // Attention 小 VTE（E6）：镜像、scrollback 0、replica 播种；仅 Attention tab 显示。
     let peek_view = Rc::new(PaneView::new(0, &theme, &font, true, 0));
     PEEK_VIEW.with(|s| *s.borrow_mut() = Some(peek_view.clone()));
@@ -453,6 +473,10 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let peek_sw = peek_sw.clone();
         let attention_actions = attention_actions.clone();
         let ssh_reach = ssh_reach.clone();
+        let scope_pane = scope_pane.clone();
+        let scope_workspace = scope_workspace.clone();
+        let scope_all = scope_all.clone();
+        let scope_bar = scope_bar.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
@@ -466,6 +490,11 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             tab_attention.set_active(tab == PanelTab::Attention);
             tab_search.set_active(tab == PanelTab::Search);
             search_status.set_visible(tab == PanelTab::Search);
+            scope_bar.set_visible(tab == PanelTab::Search);
+            let scope = model.borrow().scope;
+            scope_pane.set_active(scope == SearchScope::Pane);
+            scope_workspace.set_active(scope == SearchScope::Workspace);
+            scope_all.set_active(scope == SearchScope::All);
             let show_peek = tab == PanelTab::Attention;
             peek_sw.set_visible(show_peek);
             attention_actions.set_visible(show_peek);
@@ -593,7 +622,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     }
                 }
                 PanelTab::Search => {
-                    let hits = (callbacks.search)(&query);
+                    let scope = model.borrow().scope;
+                    let hits = (callbacks.search)(&query, scope);
                     let (rows, placeholder) = search_rows(&query, hits);
                     search_status.set_visible(placeholder);
                     for (i, row) in rows.iter().enumerate() {
@@ -706,6 +736,32 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         });
     }
 
+    // 搜索范围按钮：切换 scope 并重建（W18f）。
+    for (btn, scope) in [
+        (scope_pane.clone(), SearchScope::Pane),
+        (scope_workspace.clone(), SearchScope::Workspace),
+        (scope_all.clone(), SearchScope::All),
+    ] {
+        let model = model.clone();
+        let rebuild = rebuild.clone();
+        btn.connect_toggled(move |b| {
+            if b.is_active() {
+                let changed = {
+                    let mut m = model.borrow_mut();
+                    if m.scope == scope {
+                        false
+                    } else {
+                        m.scope = scope;
+                        true
+                    }
+                };
+                if changed {
+                    rebuild();
+                }
+            }
+        });
+    }
+
     // tab 按钮点击
     for (btn, tab) in [
         (tab_workspaces.clone(), PanelTab::Workspaces),
@@ -770,7 +826,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     }
                 }
                 PanelTab::Search => {
-                    let hits = (callbacks.search)(&model.borrow().query);
+                    let scope = model.borrow().scope;
+                    let hits = (callbacks.search)(&model.borrow().query, scope);
                     let (rows, _) = search_rows(&model.borrow().query, hits);
                     if let Some(row) = rows.get(idx) {
                         // 面板关闭由 window 侧 jump_to_attention_pane 的

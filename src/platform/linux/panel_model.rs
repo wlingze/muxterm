@@ -15,11 +15,19 @@ pub enum PanelTab {
     Search = 2,
 }
 
-/// 面板状态：当前 tab + 共享 query（切 tab 保留）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 搜索范围（W18f）：当前 pane / 本工作区 / 全部已连接工作区。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchScope {
+    #[default]
+    All,
+    Workspace,
+    Pane,
+}
+
 pub struct PanelModel {
     pub tab: PanelTab,
     pub query: String,
+    pub scope: SearchScope,
 }
 
 impl PanelModel {
@@ -28,6 +36,7 @@ impl PanelModel {
         Self {
             tab: initial,
             query: String::new(),
+            scope: SearchScope::All,
         }
     }
 
