@@ -2,6 +2,7 @@
 
 pub mod attention;
 pub mod buffer_cap;
+pub mod catalog;
 pub mod config;
 pub mod config_edit;
 pub mod discovery;
