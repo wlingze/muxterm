@@ -95,6 +95,27 @@ pub trait Runtime: State + Send {
         &[]
     }
 
+    /// 列出当前仓库 checkout（需 `WorktreeList`；无能力默认 Err）。
+    fn list_worktrees(&self) -> anyhow::Result<Vec<WorktreeInfo>> {
+        Err(anyhow::anyhow!("runtime 不支持 WorktreeList"))
+    }
+
+    /// 创建 worktree 并返回新格 spec（需 `WorktreeCreate`；无能力默认 Err）。
+    fn create_worktree_spec(
+        &self,
+        _spec: &WorktreeCreateSpec,
+    ) -> anyhow::Result<crate::core::workspace::spec::WorkspaceSpec> {
+        Err(anyhow::anyhow!("runtime 不支持 WorktreeCreate"))
+    }
+
+    /// 打开已有 checkout 并返回新格 spec（需 `WorktreeOpen`；无能力默认 Err）。
+    fn open_worktree_spec(
+        &self,
+        _path: &str,
+    ) -> anyhow::Result<crate::core::workspace::spec::WorkspaceSpec> {
+        Err(anyhow::anyhow!("runtime 不支持 WorktreeOpen"))
+    }
+
     /// 当前运行时是否已启用 status bar 订阅（`refresh-client -B`）。
     /// 非 tmux 运行时 / tmux < 3.2 返回 false，前端回退轮询。
     fn status_subscriptions_active(&self) -> bool {

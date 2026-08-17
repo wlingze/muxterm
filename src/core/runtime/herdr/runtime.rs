@@ -103,6 +103,69 @@ impl HerdrRuntime {
         &self.session
     }
 
+    /// 产品 worktree 方法：list 走 session.worktree_list（能力已在 support）。
+    pub fn worktrees(&self) -> anyhow::Result<Vec<crate::core::model::backend::WorktreeInfo>> {
+        let list = self.session.worktree_list(&self.workspace_id)?;
+        Ok(list
+            .worktrees
+            .into_iter()
+            .map(|w| crate::core::model::backend::WorktreeInfo {
+                path: w.path,
+                branch: w.branch,
+                repo_root: w.repo_root,
+                // 产品 WorkspaceId 由 session/socket/workspace_id 确定；池层
+                // 再按 slots 过滤「是否已打开」。
+                open_workspace: w.open_workspace_id.as_deref().map(|wid| {
+                    crate::core::workspace::spec::WorkspaceSpec::herdr(
+                        self.session.name(),
+                        wid,
+                        self.session.socket_path().to_string_lossy(),
+                    )
+                    .id()
+                }),
+                linked: w.linked,
+            })
+            .collect())
+    }
+
+    /// 创建 worktree：Herdr 建好后返回新格 WorkspaceSpec。
+    pub fn create_worktree(
+        &self,
+        spec: &crate::core::model::backend::WorktreeCreateSpec,
+    ) -> anyhow::Result<crate::core::workspace::spec::WorkspaceSpec> {
+        let record = self.session.worktree_create(
+            &self.workspace_id,
+            &spec.branch,
+            &spec.path,
+            spec.base.as_deref(),
+            spec.label.as_deref(),
+        )?;
+        let new_ws = record
+            .open_workspace_id
+            .ok_or_else(|| anyhow!("worktree.create 未返回 workspace_id"))?;
+        Ok(crate::core::workspace::spec::WorkspaceSpec::herdr(
+            self.session.name(),
+            new_ws,
+            self.session.socket_path().to_string_lossy(),
+        ))
+    }
+
+    /// 打开已有 checkout：Herdr 返回已有格 WorkspaceSpec。
+    pub fn open_worktree(
+        &self,
+        path: &str,
+    ) -> anyhow::Result<crate::core::workspace::spec::WorkspaceSpec> {
+        let record = self.session.worktree_open(&self.workspace_id, path)?;
+        let new_ws = record
+            .open_workspace_id
+            .ok_or_else(|| anyhow!("worktree.open 未返回 workspace_id"))?;
+        Ok(crate::core::workspace::spec::WorkspaceSpec::herdr(
+            self.session.name(),
+            new_ws,
+            self.session.socket_path().to_string_lossy(),
+        ))
+    }
+
     /// 测试/诊断：当前绑定的 Herdr workspace id。
     pub fn test_workspace_id(&self) -> &str {
         &self.workspace_id
@@ -689,6 +752,24 @@ impl Runtime for HerdrRuntime {
             BackendStatus::Disconnected,
         ));
         Ok(())
+    }
+
+    fn list_worktrees(&self) -> Result<Vec<crate::core::model::backend::WorktreeInfo>> {
+        self.worktrees()
+    }
+
+    fn create_worktree_spec(
+        &self,
+        spec: &crate::core::model::backend::WorktreeCreateSpec,
+    ) -> Result<crate::core::workspace::spec::WorkspaceSpec> {
+        self.create_worktree(spec)
+    }
+
+    fn open_worktree_spec(
+        &self,
+        path: &str,
+    ) -> Result<crate::core::workspace::spec::WorkspaceSpec> {
+        self.open_worktree(path)
     }
 }
 

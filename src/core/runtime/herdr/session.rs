@@ -10,6 +10,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -26,7 +27,33 @@ pub struct HerdrSession {
     client_socket_path: PathBuf,
 }
 
+/// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
+///
+/// 旧 WorkspacePool.herdr_sessions 旁路表迁到这里：Catalog 的 Connect /
+/// Driver.open 与 WorkspaceSpec::build_runtime 都从这里拿，语义相同、位置不同。
+/// 共享 session 缓存类型：(named session, socket) → Arc。
+type SharedSessionMap = std::collections::HashMap<(String, String), Arc<HerdrSession>>;
+
+static SHARED_SESSIONS: std::sync::LazyLock<std::sync::Mutex<SharedSessionMap>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 impl HerdrSession {
+    /// 取（或建）共享 session：同一 `(name, socket)` 返回同一 `Arc`。
+    pub fn shared(name: impl Into<String>, socket_path: impl Into<PathBuf>) -> Arc<Self> {
+        let name = name.into();
+        let socket = socket_path.into().to_string_lossy().to_string();
+        let key = (name.clone(), socket.clone());
+        if let Ok(mut cache) = SHARED_SESSIONS.lock() {
+            if let Some(existing) = cache.get(&key) {
+                return Arc::clone(existing);
+            }
+            let session = Arc::new(Self::new(name, socket));
+            cache.insert(key, Arc::clone(&session));
+            return session;
+        }
+        Arc::new(Self::new(name, socket))
+    }
+
     /// 绑定 named session 名 + API socket 绝对路径。
     pub fn new(name: impl Into<String>, socket_path: impl Into<PathBuf>) -> Self {
         let socket_path = socket_path.into();

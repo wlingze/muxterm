@@ -120,19 +120,17 @@ impl RuntimeDriver for HerdrDriver {
                 std::env::var("MUXTERM_SSH_CONFIG_PATH").ok().as_deref(),
             )?;
             let session =
-                HerdrSession::new(session_name, local_socket.to_string_lossy().to_string());
+                HerdrSession::shared(session_name, local_socket.to_string_lossy().to_string());
             Ok(Box::new(HerdrRuntime::with_forward(
-                Arc::new(session),
-                &spec.path,
-                forward,
+                session, &spec.path, forward,
             )))
         } else {
             let socket = spec.socket.clone().unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_default();
                 format!("{home}/.config/herdr/herdr.sock")
             });
-            let session = HerdrSession::new(session_name, &socket);
-            Ok(Box::new(HerdrRuntime::new(Arc::new(session), &spec.path)))
+            let session = HerdrSession::shared(session_name, &socket);
+            Ok(Box::new(HerdrRuntime::new(session, &spec.path)))
         }
     }
 }

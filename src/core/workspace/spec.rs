@@ -8,7 +8,6 @@
 use crate::core::model::Runtime;
 use crate::core::runtime::{DaemonRuntime, HerdrRuntime, HerdrSession, ShellRuntime, TmuxRuntime};
 use crate::core::workspace::id::WorkspaceId;
-use std::sync::Arc;
 
 /// 打开一个工作区的产品规格（不含 tmux 词）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,9 +172,11 @@ impl WorkspaceSpec {
                 }
             }
             "herdr" => {
+                // 共享 session：同一 (session, socket) 一份 Arc（旧 pool 旁路表迁到
+                // HerdrSession::shared，Catalog Connect/Driver 与这里同源）。
                 let session =
-                    HerdrSession::new(&self.session, self.socket.clone().unwrap_or_default());
-                Box::new(HerdrRuntime::new(Arc::new(session), &self.path))
+                    HerdrSession::shared(&self.session, self.socket.clone().unwrap_or_default());
+                Box::new(HerdrRuntime::new(session, &self.path))
             }
             "daemon" => {
                 let name = if self.session.is_empty() {

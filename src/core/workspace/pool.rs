@@ -12,11 +12,8 @@ use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::runtime::herdr::session::HerdrWorktreeRecord;
-use crate::core::runtime::{HerdrRuntime, HerdrSession};
 use crate::core::workspace::id::WorkspaceId;
-use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
-use std::sync::Arc;
 
 /// 池里一个工作区的生命周期。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,9 +61,6 @@ pub struct WorkspacePool {
     active_id: Option<WorkspaceId>,
     policy: WorkspacePoolPolicy,
     recently_evicted: Vec<WorkspaceId>,
-    /// Herdr named session 共享注册表：(session 名, socket 路径) → Arc<HerdrSession>。
-    /// 同一 socket 上多格 Workspace 必须共享一条连接身份。
-    herdr_sessions: HashMap<(String, String), Arc<HerdrSession>>,
 }
 
 impl Default for WorkspacePool {
@@ -82,7 +76,6 @@ impl WorkspacePool {
             active_id: None,
             policy,
             recently_evicted: Vec::new(),
-            herdr_sessions: HashMap::new(),
         }
     }
 
@@ -204,41 +197,18 @@ impl WorkspacePool {
     ) -> anyhow::Result<&mut Workspace> {
         let id = spec.id();
         let name = spec.name();
-        if spec.runtime == "herdr" {
-            // H3：同一 named session + socket 只建一条 HerdrSession，多格共享。
-            let key = (
-                spec.session.clone(),
-                spec.socket.clone().unwrap_or_default(),
-            );
-            let session = self
-                .herdr_sessions
-                .entry(key)
-                .or_insert_with(|| {
-                    Arc::new(HerdrSession::new(
-                        &spec.session,
-                        spec.socket.clone().unwrap_or_default(),
-                    ))
-                })
-                .clone();
-            let path = spec.path.clone();
-            return self
-                .open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
-                    Box::new(HerdrRuntime::new(session, &path))
-                })
-                .await;
-        }
-        // build_runtime 放进 create 闭包：复用已有 slot 时零构造
-        // （对得上 reopen_same_id_reuses_without_new_runtime）。
-        self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
-            spec.build_runtime()
-        })
-        .await
+// build_runtime 放进 create 闭包：复用已有 slot 时零构造
+// （对得上 reopen_same_id_reuses_without_new_runtime）。
+// HerdrSession 共享已迁到 HerdrSession::shared（不用再按字符串旁路）。
+self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
+    spec.build_runtime()
+})
+.await
     }
 
     /// 列出当前工作区所在仓库的 checkout（需 `WorktreeList`）。
     ///
-    /// 无能力 → `Err`，零 git、零 socket；有能力的实现（H4 HerdrRuntime）
-    /// 才真正走远端查询。
+    /// 无能力 → `Err`，零 git、零 socket；有能力的 Runtime 提供产品方法。
     pub async fn list_worktrees(&self, ws: &WorkspaceId) -> anyhow::Result<Vec<WorktreeInfo>> {
         let Some(slot) = self.slots.get(ws) else {
             return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
@@ -247,21 +217,7 @@ impl WorkspacePool {
         if !caps.contains(&RuntimeCapability::WorktreeList) {
             return Err(anyhow::anyhow!("runtime 不支持 WorktreeList"));
         }
-        let herdr = slot
-            .workspace
-            .runtime()
-            .as_any()
-            .downcast_ref::<HerdrRuntime>()
-            .ok_or_else(|| anyhow::anyhow!("WorktreeList 能力只由 HerdrRuntime 提供"))?;
-        let list = herdr
-            .session()
-            .worktree_list(herdr.workspace_id())
-            .map_err(|e| anyhow::anyhow!("worktree.list 失败: {e}"))?;
-        Ok(list
-            .worktrees
-            .into_iter()
-            .map(|w| self.map_herdr_worktree(herdr, w))
-            .collect())
+        slot.workspace.runtime().list_worktrees()
     }
 
     /// 创建 worktree 并作为新工作区开进池里（需 `WorktreeCreate`）。
@@ -279,29 +235,7 @@ impl WorkspacePool {
         if !caps.contains(&RuntimeCapability::WorktreeCreate) {
             return Err(anyhow::anyhow!("runtime 不支持 WorktreeCreate"));
         }
-        let herdr = slot
-            .workspace
-            .runtime()
-            .as_any()
-            .downcast_ref::<HerdrRuntime>()
-            .ok_or_else(|| anyhow::anyhow!("WorktreeCreate 能力只由 HerdrRuntime 提供"))?;
-        let session = herdr.session_arc().clone();
-        let source_ws = herdr.workspace_id().to_string();
-        let session_name = session.name().to_string();
-        let socket = session.socket_path().to_string_lossy().to_string();
-        let record = session
-            .worktree_create(
-                &source_ws,
-                &spec.branch,
-                &spec.path,
-                spec.base.as_deref(),
-                spec.label.as_deref(),
-            )
-            .map_err(|e| anyhow::anyhow!("worktree.create 失败: {e}"))?;
-        let new_ws = record
-            .open_workspace_id
-            .ok_or_else(|| anyhow::anyhow!("worktree.create 未返回 workspace_id"))?;
-        let new_spec = WorkspaceSpec::herdr(session_name, new_ws, socket);
+        let new_spec = slot.workspace.runtime().create_worktree_spec(spec)?;
         let new_id = new_spec.id();
         self.open_spec(&new_spec).await?;
         Ok(new_id)
@@ -322,50 +256,10 @@ impl WorkspacePool {
         if !caps.contains(&RuntimeCapability::WorktreeOpen) {
             return Err(anyhow::anyhow!("runtime 不支持 WorktreeOpen"));
         }
-        let herdr = slot
-            .workspace
-            .runtime()
-            .as_any()
-            .downcast_ref::<HerdrRuntime>()
-            .ok_or_else(|| anyhow::anyhow!("WorktreeOpen 能力只由 HerdrRuntime 提供"))?;
-        let session = herdr.session_arc().clone();
-        let source_ws = herdr.workspace_id().to_string();
-        let session_name = session.name().to_string();
-        let socket = session.socket_path().to_string_lossy().to_string();
-        let record = session
-            .worktree_open(&source_ws, path)
-            .map_err(|e| anyhow::anyhow!("worktree.open 失败: {e}"))?;
-        let new_ws = record
-            .open_workspace_id
-            .ok_or_else(|| anyhow::anyhow!("worktree.open 未返回 workspace_id"))?;
-        let new_spec = WorkspaceSpec::herdr(session_name, new_ws, socket);
+        let new_spec = slot.workspace.runtime().open_worktree_spec(path)?;
         let new_id = new_spec.id();
         self.open_spec(&new_spec).await?;
         Ok(new_id)
-    }
-
-    /// 把 Herdr worktree 记录映射成产品 WorktreeInfo（open_workspace 查池）。
-    fn map_herdr_worktree(
-        &self,
-        herdr: &HerdrRuntime,
-        record: HerdrWorktreeRecord,
-    ) -> WorktreeInfo {
-        let open_workspace = record.open_workspace_id.as_deref().and_then(|wid| {
-            let spec = WorkspaceSpec::herdr(
-                herdr.session().name(),
-                wid,
-                herdr.session().socket_path().to_string_lossy(),
-            );
-            let id = spec.id();
-            self.slots.contains_key(&id).then_some(id)
-        });
-        WorktreeInfo {
-            path: record.path,
-            branch: record.branch,
-            repo_root: record.repo_root,
-            open_workspace,
-            linked: record.linked,
-        }
     }
 
     /// 插入一个已在后台线程完成 `connect()` 的工作区并设为前台。
