@@ -124,7 +124,7 @@ fn three_tab_panel_full_flow() {
                 peek_bytes: Box::new(|ws, pane| {
                     (80, 24, format!("\x1b[1;1Hpeek-{ws}-{pane}").into_bytes())
                 }),
-                search: Box::new(|_| vec![]),
+                search: Box::new(|_, _| vec![]),
                 on_close: Box::new(|| {}),
                 ssh_reach: HashMap::from([
                     ("ryzen".into(), SshReach::Ok),

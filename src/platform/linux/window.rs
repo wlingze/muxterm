@@ -136,6 +136,9 @@ struct UiState {
     disconnect_overlay: gtk4::Label,
     /// 搜索命中高亮（W17c：客户端覆盖层，不改 pane 字节）。
     search_highlight: gtk4::Label,
+    /// 当前 pane 内查找条（W18f：Ctrl+F / test_open_pane_find 同一条生产路径）。
+    pane_find: gtk4::Box,
+    pane_find_entry: gtk4::Entry,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -335,6 +338,23 @@ impl AppWindow {
         search_highlight.set_margin_start(4);
         search_highlight.add_css_class("muxterm-search-highlight");
         search_highlight.set_visible(false);
+        let pane_find = gtk4::Box::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(6)
+            .margin_top(8)
+            .margin_start(8)
+            .margin_end(8)
+            .build();
+        pane_find.set_widget_name("muxterm-pane-find");
+        pane_find.set_halign(gtk4::Align::Start);
+        pane_find.set_valign(gtk4::Align::Start);
+        pane_find.add_css_class("muxterm-pane-find");
+        let pane_find_entry = gtk4::Entry::new();
+        pane_find_entry.set_widget_name("muxterm-pane-find-entry");
+        pane_find_entry.set_placeholder_text(Some("find in pane…"));
+        pane_find.append(&pane_find_entry);
+        pane_find.set_visible(false);
+        layout_overlay.add_overlay(&pane_find);
         layout_overlay.add_overlay(&search_highlight);
         layout_overlay.add_overlay(&disconnect_overlay);
         layout_overlay.add_overlay(&jump_latest);
@@ -393,6 +413,8 @@ impl AppWindow {
             jump_unseen: 0,
             disconnect_overlay,
             search_highlight,
+            pane_find,
+            pane_find_entry,
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -409,6 +431,32 @@ impl AppWindow {
                     let mut s = st.borrow_mut();
                     request_switch_tab(&mut s, tab_id);
                 });
+        }
+
+        // 当前 pane 内查找：输入即滚到第一个命中（W18f）。
+        {
+            let st = state.clone();
+            state.borrow().pane_find_entry.connect_changed(move |e| {
+                let q = e.text().to_string();
+                if q.is_empty() {
+                    return;
+                }
+                let s = st.borrow();
+                let pane = s.active_pane;
+                let hits = s.active_workspace().search_pane(PaneId(pane), &q);
+                if let Some(hit) = hits.first() {
+                    if let Some(row) = s
+                        .active_workspace()
+                        .pane_line_index_by_seq(PaneId(pane), hit.seq)
+                    {
+                        if let Some(view) = s.active_layout().pane(pane).cloned() {
+                            if let Some(adj) = view.terminal().vadjustment() {
+                                adj.set_value(adj.lower() + row as f64);
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         // 回底按钮：把当前激活 pane 的 VTE 滚回尾部（W16a）。
@@ -491,6 +539,14 @@ impl AppWindow {
                 }
                 if action == Action::Search {
                     open_panel(&st, &window_for_palette, PanelTab::Search);
+                    return glib::Propagation::Stop;
+                }
+                // W18f：Ctrl+F = 当前 pane 内查找（生产路径，与 test_open_pane_find 同）。
+                if keyval == gdk::Key::f
+                    && mods.contains(gdk::ModifierType::CONTROL_MASK)
+                    && !mods.contains(gdk::ModifierType::SHIFT_MASK)
+                {
+                    open_pane_find(&st, &window_for_palette);
                     return glib::Propagation::Stop;
                 }
                 let mut s = st.borrow_mut();
@@ -981,10 +1037,7 @@ impl AppWindow {
 
     /// 测试用：打开当前 pane 内查找条（与 Ctrl+F 同一条生产路径）。
     pub fn test_open_pane_find(&self) {
-        tracing::info!(
-            target = "muxterm::linux",
-            "test_open_pane_find: 接到 muxterm-pane-find 生产 overlay"
-        );
+        open_pane_find(&self._state.clone(), &self.window);
     }
 
     /// 测试用：Attention 小 VTE 按键（必须走 peek `connect_input`，不要直接 WriteRaw）。
@@ -2237,6 +2290,13 @@ fn handle_reconnect_success(
     }
 }
 
+/// 打开当前 pane 内查找条（W18f：Ctrl+F 与 test_open_pane_find 共用）。
+fn open_pane_find(state: &Rc<RefCell<UiState>>, _window: &Window) {
+    let s = state.borrow();
+    s.pane_find.set_visible(true);
+    s.pane_find_entry.grab_focus();
+}
+
 fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
     open_panel(state, window, PanelTab::Workspaces);
 }
@@ -2348,13 +2408,20 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             },
             search: {
                 let st = st.clone();
-                std::boxed::Box::new(move |query| {
+                std::boxed::Box::new(move |query, scope| {
                     let s = st.borrow();
-                    s.pool
-                        .search_all(query)
-                        .into_iter()
-                        .map(Into::into)
-                        .collect()
+                    let hits = match scope {
+                        crate::platform::linux::panel_model::SearchScope::Pane => s
+                            .active_workspace()
+                            .search_pane(PaneId(s.active_pane), query),
+                        crate::platform::linux::panel_model::SearchScope::Workspace => s
+                            .active_workspace()
+                            .search_workspace(query),
+                        crate::platform::linux::panel_model::SearchScope::All => {
+                            s.pool.search_all(query)
+                        }
+                    };
+                    hits.into_iter().map(Into::into).collect()
                 })
             },
             on_close: {

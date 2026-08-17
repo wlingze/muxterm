@@ -72,7 +72,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 on_send_input: Box::new(|_, _, _| {}),
                 on_mute: Box::new(|_, _, _| {}),
                 peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
-                search: Box::new(move |query| {
+                search: Box::new(move |query, _scope| {
                     s.borrow()
                         .search_workspace(query)
                         .into_iter()
