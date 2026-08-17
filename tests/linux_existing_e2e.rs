@@ -68,8 +68,7 @@ fn linux_existing_panel_click_attaches_herdr() {
             .expect("面板列表应存在")
             .downcast::<gtk4::ListBox>()
             .expect("ListBox 类型");
-        find_by_name(&app.window, "muxterm-existing-connections")
-            .expect("根列表应有已有的连接");
+        find_by_name(&app.window, "muxterm-existing-connections").expect("根列表应有已有的连接");
         let row = list.row_at_index(0).expect("Folder 行");
         row.activate();
         pump_main_loop(60);
@@ -86,8 +85,7 @@ fn linux_existing_panel_click_attaches_herdr() {
 
         // 本地目录 → Herdr 行（widget_name 契约）。
         let row_name = format!("muxterm-existing-row-herdr-{ws}");
-        find_by_name(&app.window, &row_name)
-            .unwrap_or_else(|| panic!("本地目录应有 {row_name}"));
+        find_by_name(&app.window, &row_name).unwrap_or_else(|| panic!("本地目录应有 {row_name}"));
         let list = find_by_name(&app.window, "muxterm-panel-list")
             .expect("面板列表应存在")
             .downcast::<gtk4::ListBox>()
