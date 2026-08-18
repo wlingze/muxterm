@@ -4054,11 +4054,22 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
     let st = state.clone();
     let hosts = CoreBridge::discover_ssh_hosts().unwrap_or_default();
     let runtimes = crate::core::catalog::Catalog::with_builtins().runtime_list();
+    let callback_path = path.clone();
     crate::platform::linux::preferences_window::show(
         window,
         path,
         std::boxed::Box::new(move || {
             let mut s = st.borrow_mut();
+            // 快捷键编辑保存后立即重建 keymap：菜单/命令面板/快捷键共享同一
+            // Core Action Catalog 与 effective binding。
+            if let Ok(service) = SettingsService::open(&callback_path) {
+                let shortcuts = service.document().shortcuts.clone();
+                let bindings =
+                    crate::core::config_service::action_catalog::resolve_effective_keybindings(
+                        &shortcuts,
+                    );
+                s.keymap = KeyMap::from_bindings(&bindings);
+            }
             if let Ok(cfg) = Config::load() {
                 s.attention.set_config(cfg.attention.clone());
                 s.config_font_size = cfg.font.size;
