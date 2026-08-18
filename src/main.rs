@@ -215,6 +215,12 @@ enum CliSubcommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Inspect and edit the core configuration document
+    #[command(alias = "settings", disable_help_flag = true)]
+    Config {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Launch the TUI frontend
     Tui {
         /// tmux socket name (`-L`)
@@ -308,6 +314,7 @@ fn main() -> anyhow::Result<()> {
             CliSubcommand::DisplayMessage { args } => dispatch("display-message", args),
             CliSubcommand::DumpState { args } => dispatch("dump-state", args),
             CliSubcommand::Tmux { args } => dispatch("tmux", args),
+            CliSubcommand::Config { args } => dispatch("config", args),
             CliSubcommand::Tui { socket, session } => {
                 run_tui_inner(socket.clone(), session.clone())
             }
@@ -554,5 +561,25 @@ mod tests {
             cli.cmd,
             Some(CliSubcommand::ListWorkspaces { .. })
         ));
+    }
+
+    #[test]
+    fn subcommand_config_captures_nested_arguments() {
+        let cli = Cli::try_parse_from([
+            "muxterm",
+            "config",
+            "set",
+            "font.size",
+            "15",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Some(CliSubcommand::Config { args }) => {
+                assert_eq!(args, vec!["set", "font.size", "15", "--format", "json"])
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

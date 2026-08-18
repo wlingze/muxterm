@@ -19,6 +19,16 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
         .map(|s| OutputFormat::from_str(&s))
         .unwrap_or(OutputFormat::Json);
 
+    if let CliCommand::Config { args } = &cmd {
+        return match crate::platform::cli::config::run(args, format) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::exit(crate::platform::cli::config::exit_code(&error));
+            }
+        };
+    }
+
     let socket = extract_socket_arg(args);
     let session_name = extract_session_name(&cmd, args);
 

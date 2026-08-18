@@ -19,6 +19,8 @@ pub fn cli_command_to_task(
     use CliCommand::*;
 
     match cmd {
+        Config { .. } => None,
+
         // Workspace
         NewWorkspace { .. } => None,
         CloseWorkspace { .. } => Some(Task::Shutdown),

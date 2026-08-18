@@ -28,6 +28,12 @@ impl std::error::Error for CliError {}
 /// CLI 命令（已解析的结构化表示）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CliCommand {
+    /// Core configuration commands. The subcommand parser remains in the CLI
+    /// adapter so the Core service itself stays GUI/CLI agnostic.
+    Config {
+        args: Vec<String>,
+    },
+
     // Workspace
     NewWorkspace {
         name: Option<String>,
@@ -145,6 +151,10 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
     let rest = &filtered[1..];
 
     let command = match cmd {
+        "config" | "settings" => CliCommand::Config {
+            args: rest.to_vec(),
+        },
+
         // Workspace
         "new-workspace" | "new-session" | "new" => CliCommand::NewWorkspace {
             name: get_opt_arg(rest, "-n"),
