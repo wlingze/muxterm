@@ -130,6 +130,16 @@ char* muxterm_workspace_list(struct MuxtermHandle* h);
 int muxterm_workspace_activate(struct MuxtermHandle* h, const char* id);
 int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
 
+// ── Core-owned configuration transactions ──
+char* muxterm_config_describe_json(struct MuxtermHandle* h);
+char* muxterm_config_begin_json(struct MuxtermHandle* h);
+char* muxterm_config_patch_json(
+    struct MuxtermHandle* h, const char* transaction, const char* patch_json);
+char* muxterm_config_commit_json(struct MuxtermHandle* h, const char* transaction);
+char* muxterm_config_cancel_json(struct MuxtermHandle* h, const char* transaction);
+char* muxterm_config_reload_json(struct MuxtermHandle* h);
+char* muxterm_config_events_json(struct MuxtermHandle* h);
+
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
 int muxterm_send_input(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
