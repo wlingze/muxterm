@@ -144,6 +144,9 @@ run_macos() {
         mkdir -p src/platform/macos/Vendor
         ln -sfn "$PWD/target/release/libmuxterm.a" src/platform/macos/Vendor/libmuxterm.a
         (cd src/platform/macos && ../../../scripts/patch-swiftterm.sh)
+        # 先构建 AppKit executable，再跑 headless tests；否则 SettingsWindow 等
+        # app-only 源文件的语法错误可能被 swift test 的测试目标选择漏掉。
+        (cd src/platform/macos && swift build)
         (cd src/platform/macos && swift test --disable-swift-testing)
     else
         echo "run macos 需要 macOS；跳过 Swift 测试" >&2
