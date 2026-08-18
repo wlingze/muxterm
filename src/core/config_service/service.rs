@@ -5,10 +5,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::core::config_service::schema::ConfigDocument;
-use crate::core::config_service::storage::{atomic_write, preserve_toml_metadata, revision_for, ConfigRevision, ConfigSnapshot};
 use crate::core::config_service::action_catalog::action_catalog;
 use crate::core::config_service::migration::import_legacy_projects;
+use crate::core::config_service::schema::ConfigDocument;
+use crate::core::config_service::storage::{
+    atomic_write, preserve_toml_metadata, revision_for, ConfigRevision, ConfigSnapshot,
+};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonPatchOperation {
     pub op: String,
@@ -522,7 +524,6 @@ fn merge_optional(
         (Some(_), None, Some(_)) | (Some(_), Some(_), None) => Err(anyhow!("配置存在并发修改冲突")),
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -525,13 +525,11 @@ pub fn parse_config_toml(raw: &str) -> Result<Config> {
     Ok(cfg)
 }
 
-
 mod shortcut;
 mod theme;
 
 pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
 pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
-
 
 fn dirs_config() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")

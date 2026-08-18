@@ -516,7 +516,6 @@ fn pointer<'a>(value: &'a Value, path: &str) -> Result<&'a Value> {
     Ok(current)
 }
 
-
 /// Map a configuration command failure to the documented CLI exit code:
 /// 2 = argument/validation, 3 = revision/merge conflict, 4 = I/O or migration.
 pub fn exit_code(error: &anyhow::Error) -> i32 {
@@ -602,7 +601,10 @@ mod tests {
 
     #[test]
     fn dotted_pointer_escapes_slash_and_tilde() {
-        assert_eq!(dotted_pointer("extensions.a/b").unwrap(), "/extensions/a~1b");
+        assert_eq!(
+            dotted_pointer("extensions.a/b").unwrap(),
+            "/extensions/a~1b"
+        );
         assert_eq!(dotted_pointer("extensions.~").unwrap(), "/extensions/~0");
     }
 

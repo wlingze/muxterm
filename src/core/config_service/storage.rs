@@ -75,7 +75,9 @@ pub fn atomic_write(path: &Path, raw: &str) -> Result<()> {
             .unwrap_or("config"),
         stamp
     ));
-    let existing_mode = fs::metadata(path).ok().map(|metadata| metadata.permissions());
+    let existing_mode = fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
     let mut file =
         fs::File::create(&temp).with_context(|| format!("写入临时配置失败: {}", temp.display()))?;
     file.write_all(raw.as_bytes())
@@ -102,7 +104,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("muxterm-config-storage-{name}-{}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "muxterm-config-storage-{name}-{}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -115,21 +120,16 @@ mod tests {
     fn atomic_write_creates_file_and_replaces_content() {
         let path = temp_path("write");
         atomic_write(&path, "config_version = 1\n").unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "config_version = 1\n"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "config_version = 1\n");
         atomic_write(&path, "config_version = 2\n").unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "config_version = 2\n"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "config_version = 2\n");
         let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn preserve_toml_metadata_keeps_comments_and_unknown_extensions() {
-        let original = "# keep me\n[font]\nfamily = \"Monospace\"\n\n[extensions.vendor]\nflag = true\n";
+        let original =
+            "# keep me\n[font]\nfamily = \"Monospace\"\n\n[extensions.vendor]\nflag = true\n";
         let serialized = "[font]\nfamily = \"JetBrains Mono\"\n";
         let merged = preserve_toml_metadata(original, serialized).unwrap();
         assert!(merged.contains("# keep me"));

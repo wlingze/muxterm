@@ -167,7 +167,11 @@ pub fn validate_preset_chords(bindings: &[ShortcutBinding]) -> Result<(), String
     for binding in bindings {
         let mut modifiers = binding.modifiers.clone();
         modifiers.sort();
-        let chord = format!("{}+{}", modifiers.join("+"), binding.key.to_ascii_lowercase());
+        let chord = format!(
+            "{}+{}",
+            modifiers.join("+"),
+            binding.key.to_ascii_lowercase()
+        );
         if !seen.insert(chord.clone()) {
             return Err(format!("快捷键冲突: {chord}"));
         }
@@ -187,7 +191,10 @@ mod tests {
         assert!(find("k"), "Alt+N physical position should be k in Colemak");
         assert!(find("g"), "Alt+T physical position should be g in Colemak");
         assert!(find("r"), "Alt+S physical position should be r in Colemak");
-        assert!(find("semicolon"), "Alt+P physical position should be semicolon");
+        assert!(
+            find("semicolon"),
+            "Alt+P physical position should be semicolon"
+        );
         assert!(find("1"), "digit keys stay at the same physical position");
     }
 
@@ -208,7 +215,9 @@ mod tests {
         assert!(quick.modifiers.contains(&"control".to_string()));
         let quit = bindings
             .iter()
-            .find(|binding| binding.key == "q" && binding.modifiers.contains(&"control".to_string()))
+            .find(|binding| {
+                binding.key == "q" && binding.modifiers.contains(&"control".to_string())
+            })
             .expect("quit binding");
         assert!(quit.modifiers.contains(&"control".to_string()));
         let copy = bindings
@@ -250,30 +259,36 @@ mod tests {
     }
 }
 
-    #[test]
-    fn resolve_effective_keybindings_applies_primary_and_overrides() {
-        let mut shortcuts = ShortcutConfig::default();
-        shortcuts.primary_key = "control".into();
-        let bindings = resolve_effective_keybindings(&shortcuts);
-        let quick = bindings
-            .iter()
-            .find(|binding| binding.action == "quick_connect")
-            .expect("quick connect binding");
-        assert!(quick.mods.contains(&"control".to_string()));
+#[test]
+fn resolve_effective_keybindings_applies_primary_and_overrides() {
+    let mut shortcuts = ShortcutConfig {
+        primary_key: "control".into(),
+        ..Default::default()
+    };
+    let bindings = resolve_effective_keybindings(&shortcuts);
+    let quick = bindings
+        .iter()
+        .find(|binding| binding.action == "quick_connect")
+        .expect("quick connect binding");
+    assert!(quick.mods.contains(&"control".to_string()));
 
-        shortcuts.overrides.push(crate::core::config_service::schema::ShortcutOverride {
+    shortcuts
+        .overrides
+        .push(crate::core::config_service::schema::ShortcutOverride {
             action: "quick_connect".into(),
             bindings: Vec::new(),
         });
-        let bindings = resolve_effective_keybindings(&shortcuts);
-        assert!(!bindings.iter().any(|binding| binding.action == "quick_connect"));
+    let bindings = resolve_effective_keybindings(&shortcuts);
+    assert!(!bindings
+        .iter()
+        .any(|binding| binding.action == "quick_connect"));
 
-        shortcuts.preset = "colemak".into();
-        shortcuts.overrides.clear();
-        let bindings = resolve_effective_keybindings(&shortcuts);
-        let new_window = bindings
-            .iter()
-            .find(|binding| binding.action == "new_window")
-            .expect("new window binding");
-        assert_eq!(new_window.key, "k");
-    }
+    shortcuts.preset = "colemak".into();
+    shortcuts.overrides.clear();
+    let bindings = resolve_effective_keybindings(&shortcuts);
+    let new_window = bindings
+        .iter()
+        .find(|binding| binding.action == "new_window")
+        .expect("new window binding");
+    assert_eq!(new_window.key, "k");
+}

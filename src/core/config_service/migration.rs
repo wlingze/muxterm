@@ -146,6 +146,9 @@ mod tests {
         assert_eq!(project.runtime.session.as_deref(), Some("demo-session"));
         assert_eq!(project.runtime.socket.as_deref(), Some("muxterm-test"));
         assert_eq!(project.command, vec!["zsh", "-l"]);
-        assert_eq!(project.env.get("RUST_LOG").map(String::as_str), Some("info"));
+        assert_eq!(
+            project.env.get("RUST_LOG").map(String::as_str),
+            Some("info")
+        );
     }
 }

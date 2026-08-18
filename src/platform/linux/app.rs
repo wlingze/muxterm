@@ -20,7 +20,10 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
         .build();
 
     if let Err(error) = crate::platform::linux::font_registry::register_bundled_fonts() {
-        tracing::warn!(target = "muxterm::app", "bundled font registration failed: {error}");
+        tracing::warn!(
+            target = "muxterm::app",
+            "bundled font registration failed: {error}"
+        );
     }
 
     app.connect_activate(move |a| {
@@ -38,7 +41,10 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
                     target = "muxterm::app",
                     "加载配置失败，用现代默认值: {error}"
                 );
-                (default_document.config.clone(), default_document.shortcuts.clone())
+                (
+                    default_document.config.clone(),
+                    default_document.shortcuts.clone(),
+                )
             }
         };
         if let Some(ref sock) = socket {
