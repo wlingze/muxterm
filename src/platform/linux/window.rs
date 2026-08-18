@@ -54,7 +54,7 @@ use crate::platform::linux::quickconnect::project_flow::{
     ProjectConnectFlow, ProjectConnectIntent, ProjectConnectState,
 };
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
-use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
+use crate::platform::linux::quickconnect::store::QuickConnectStore;
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::platform::linux::quickconnect_panel::{
     build_root_items, ExistingNav, ExistingPanelState, PanelItem,
@@ -454,7 +454,8 @@ impl AppWindow {
         window.set_child(Some(&root));
 
         let keymap = KeyMap::from_bindings(&cfg.keybindings);
-        let qc_store = QuickConnectStore::new(user_quickconnect_path());
+        let qc_store =
+            QuickConnectStore::new_unified(crate::core::config::Config::user_config_path());
         let state = Rc::new(RefCell::new(UiState {
             pool,
             pixel_cache,

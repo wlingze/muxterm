@@ -2,7 +2,7 @@
 //!
 //! - Recent：最近连接过的目标（最多 20 条），去重，最近的在最前；
 //!   recents 不落盘，由连接池在运行时派生。
-//! - Project：用户配置的预设目标，落盘 `~/.config/muxterm/quickconnect.toml`。
+//! - Project：用户配置的预设目标，首选落盘统一的 `config.toml`。
 //!
 //! 格式与 macOS Chrome/QuickConnectStore.swift 一致，便于两边共用同一份
 //! 用户配置文件。
@@ -17,6 +17,7 @@ pub struct QuickConnectStore {
     pub recents: Vec<TargetConfig>,
     pub projects: Vec<TargetConfig>,
     file_url: Option<PathBuf>,
+    unified_config: bool,
 }
 
 /// 最近连接记录条数上限。
@@ -38,6 +39,40 @@ impl QuickConnectStore {
             if missing {
                 store.persist();
             }
+        }
+        store
+    }
+
+    /// Create a store backed by Core's unified `config.toml` Project array.
+    /// The legacy QuickConnect file is imported by SettingsService when present.
+    pub fn new_unified(config_path: Option<PathBuf>) -> Self {
+        let Some(path) = config_path else {
+            return Self::default();
+        };
+        let mut store = QuickConnectStore {
+            file_url: Some(path.clone()),
+            unified_config: true,
+            ..Default::default()
+        };
+        match crate::core::config_service::SettingsService::open(&path) {
+            Ok(mut service) => {
+                if let Err(error) = service.migrate_legacy_quickconnect() {
+                    tracing::warn!(
+                        target = "muxterm::config",
+                        "QuickConnect 迁移未完成: {error}"
+                    );
+                }
+                store.projects = service
+                    .document()
+                    .projects
+                    .iter()
+                    .filter_map(|project| project.to_target().ok())
+                    .collect();
+            }
+            Err(error) => tracing::warn!(
+                target = "muxterm::config",
+                "读取统一 Project 配置失败: {error}"
+            ),
         }
         store
     }
@@ -161,6 +196,37 @@ impl QuickConnectStore {
         let Some(file_url) = &self.file_url else {
             return;
         };
+        if self.unified_config {
+            let Ok(mut service) = crate::core::config_service::SettingsService::open(file_url)
+            else {
+                return;
+            };
+            let transaction = service.begin();
+            let value = serde_json::Value::Array(
+                self.projects
+                    .iter()
+                    .map(|project| {
+                        crate::core::config_service::ProjectDocument::from_target(project)
+                    })
+                    .filter_map(|project| serde_json::to_value(project).ok())
+                    .collect(),
+            );
+            let operation = crate::core::config_service::JsonPatchOperation {
+                op: "replace".into(),
+                path: "/projects".into(),
+                value: Some(value),
+            };
+            if let Err(error) = service
+                .patch(&transaction, &[operation])
+                .and_then(|_| service.commit(&transaction).map(|_| ()))
+            {
+                tracing::warn!(
+                    target = "muxterm::config",
+                    "写入统一 Project 配置失败: {error}"
+                );
+            }
+            return;
+        }
         if let Some(parent) = file_url.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 tracing::warn!(
