@@ -27,7 +27,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var commandPalette: CommandPaletteController!
     var unifiedPanel: UnifiedPanelController!
     private var settingsWindow: SettingsWindowController?
-    private var quickConnect: QuickConnectController!
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private let quickConnectStore: QuickConnectStore
@@ -99,22 +98,48 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let connectionPool: ConnectionPool<WarmConnectionSlot>
     /// 终端字体配置（config.toml `[font]`；Cmd +/- 缩放时保留 family）。
     private var terminalFontSettings: MuxtermTerminalFont.Settings
-    /// Cmd +/- / Cmd 0 的字号持久化键（用户偏好覆盖 config 基础字号）。
-    private static let fontSizePreferenceKey = "muxterm.terminalFontSize"
-    /// 运行时主题持久化键（用户偏好覆盖 config `[theme] name`）。
-    private static let themePreferenceKey = "muxterm.theme"
-    /// 运行时 status bar 模式持久化键（覆盖 config `[statusbar] mode`）。
-    private static let statusBarModePreferenceKey = "muxterm.statusbarMode"
+    /// Cmd +/- / Cmd 0 只写 Core `[font] size`；不再使用 UserDefaults 覆盖。
+    private var configuredFontSize: CGFloat = MuxtermTerminalFont.defaultSize
 
-    private static func savedTerminalFontSize() -> CGFloat? {
-        guard let saved = UserDefaults.standard.object(forKey: fontSizePreferenceKey) as? Double else {
-            return nil
-        }
-        return CGFloat(saved)
+    /// Core 解析后的配置快照（`configDescribeJSON` → `data.values`）。
+    private struct ResolvedSettings {
+        var fontFamily = MuxtermTerminalFont.defaultFamily
+        var fontSize = MuxtermTerminalFont.defaultSize
+        var themeName = "light"
+        var statusBarMode = StatusBarMode.tmux
+        var tabBarPosition = TabBarPosition.bottom
+        var poolMaxSlots = 4
     }
 
-    private func currentTerminalFontSize() -> CGFloat {
-        Self.savedTerminalFontSize() ?? terminalFontSettings.size
+    private static func resolvedSettings(from bridge: CoreBridge) -> ResolvedSettings {
+        var resolved = ResolvedSettings()
+        guard let text = bridge.configDescribeJSON(),
+              let data = text.data(using: .utf8),
+              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = envelope["data"] as? [String: Any],
+              let values = payload["values"] as? [String: Any]
+        else { return resolved }
+        if let font = values["font"] as? [String: Any] {
+            resolved.fontFamily = font["family"] as? String ?? resolved.fontFamily
+            resolved.fontSize = CGFloat(font["size"] as? Double ?? Double(resolved.fontSize))
+        }
+        if let theme = values["theme"] as? [String: Any] {
+            resolved.themeName = theme["name"] as? String ?? resolved.themeName
+        }
+        if let statusbar = values["statusbar"] as? [String: Any],
+           let mode = statusbar["mode"] as? String,
+           let parsed = StatusBarMode(rawValue: mode) {
+            resolved.statusBarMode = parsed
+        }
+        if let ui = values["ui"] as? [String: Any],
+           let position = ui["tab_bar_position"] as? String,
+           let parsed = TabBarPosition(rawValue: position) {
+            resolved.tabBarPosition = parsed
+        }
+        if let pool = values["pool"] as? [String: Any] {
+            resolved.poolMaxSlots = pool["max_slots"] as? Int ?? resolved.poolMaxSlots
+        }
+        return resolved
     }
 
     init(
@@ -124,21 +149,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     ) {
         discovery.attachedLocalSocket = bridge.sshAlias == nil ? bridge.socket : nil
         discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
-        let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8)
-        if let toml {
-            customKeybindings = KeyBindingsConfig.parse(toml: toml)
-        }
-        // 终端调色板跟随 [theme] name（默认浅色；运行期切换会覆盖）。
-        let configTheme = toml.flatMap { MuxtermTerminalColors.themeName(from: $0) }
-        let savedTheme = UserDefaults.standard.string(forKey: Self.themePreferenceKey)
+        // 统一配置：初始值来自 Core 解析后的快照，不再手写解析 TOML 或读 UserDefaults。
+        let resolved = Self.resolvedSettings(from: bridge)
         MuxtermTerminalColors.activePalette = MuxtermTheme.from(
-            name: savedTheme ?? configTheme
+            name: resolved.themeName
         ).palette
-        let baseFont = MuxtermTerminalFont.settings(from: toml)
-        let savedSize = Self.savedTerminalFontSize() ?? baseFont.size
+        configuredFontSize = MuxtermTerminalFont.clamp(resolved.fontSize)
         terminalFontSettings = MuxtermTerminalFont.Settings(
-            family: baseFont.family,
-            size: MuxtermTerminalFont.clamp(savedSize)
+            family: resolved.fontFamily,
+            size: configuredFontSize
         )
         self.bridge = bridge
         self.terminalManager = TerminalManager(
@@ -148,13 +167,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         self.content = ContentView(terminalManager: terminalManager)
         content.statusBar.setDebug(debug)
-        // status bar 配色来源：默认 GUI 黑白；`[statusbar] color_mode = "tmux"`
-        // 时完全采用 tmux 样式。
-        content.statusBar.colorMode = Self.currentStatusBarMode(
-            configToml: toml
-        )
+        content.statusBar.colorMode = resolved.statusBarMode
+        content.applyTabBarPosition(resolved.tabBarPosition)
         connectionPool = ConnectionPool(
-            policy: ConnectionPoolPolicy(maxSlots: MuxtermConfig.poolMaxSlots(from: toml))
+            policy: ConnectionPoolPolicy(maxSlots: resolved.poolMaxSlots)
         )
 
         let window = NSWindow(
@@ -172,9 +188,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 启动即按当前主题设置 chrome 外观（默认 light → aqua），
         // 否则 headless/深色系统下 effectiveAppearance 默认是 dark。
         let initialAppearance = NSAppearance(
-            named: MuxtermTheme.from(
-                name: UserDefaults.standard.string(forKey: Self.themePreferenceKey)
-            ) == .dark ? .darkAqua : .aqua
+            named: MuxtermTheme.from(name: resolved.themeName) == .dark ? .darkAqua : .aqua
         )
         window.appearance = initialAppearance
         content.appearance = initialAppearance
@@ -629,19 +643,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func resetTerminalFontSize(_ sender: Any?) {
-        UserDefaults.standard.removeObject(forKey: Self.fontSizePreferenceKey)
+        let base = MuxtermTerminalFont.clamp(configuredFontSize)
+        persistConfig([["op": "replace", "path": "/font/size", "value": Double(base)]])
+        terminalFontSettings.size = base
         terminalManager.setFont(
             family: terminalFontSettings.family,
-            size: terminalFontSettings.size,
+            size: base,
             container: content.paneLayout
         )
     }
 
     private func adjustTerminalFontSize(delta: Int) {
-        let current = currentTerminalFontSize()
+        let current = terminalFontSettings.size
         let next = MuxtermTerminalFont.zoomed(current, direction: delta)
         guard next != current else { return }
-        UserDefaults.standard.set(Double(next), forKey: Self.fontSizePreferenceKey)
+        persistConfig([["op": "replace", "path": "/font/size", "value": Double(next)]])
+        terminalFontSettings.size = next
         terminalManager.setFont(
             family: terminalFontSettings.family,
             size: next,
@@ -649,18 +666,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// 当前主题：运行期选择优先，其次 config `[theme] name`，缺省浅色。
+    /// 当前主题：从 Core 解析后的快照读取，缺省浅色。
     func currentTheme() -> MuxtermTheme {
-        let saved = UserDefaults.standard.string(forKey: Self.themePreferenceKey)
-        let config = (try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8))
-            .flatMap { MuxtermTerminalColors.themeName(from: $0) }
-        return MuxtermTheme.from(name: saved ?? config)
+        MuxtermTheme.from(name: Self.resolvedSettings(from: bridge).themeName)
     }
 
     /// 应用主题并持久化：更新终端默认色、重报 tmux 颜色，命令面板标题会
     /// 在下次打开时显示当前主题。
     private func applyTheme(_ theme: MuxtermTheme) {
-        UserDefaults.standard.set(theme.rawValue, forKey: Self.themePreferenceKey)
+        let name = theme == .dark ? "black" : "white"
+        persistConfig([["op": "replace", "path": "/theme/name", "value": name]])
         MuxtermTerminalColors.activePalette = theme.palette
         // Chrome 外观必须跟着主题走（light=aqua, dark=darkAqua），
         // 不能只写 UserDefaults（W19-A：主题切换失败）。
@@ -701,18 +716,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// 当前 status bar 模式：运行期选择优先，其次 config，缺省 tmux。
-    private static func currentStatusBarMode(configToml: String?) -> StatusBarMode {
-        let saved = UserDefaults.standard.string(forKey: statusBarModePreferenceKey)
-        if let saved, let mode = StatusBarMode(rawValue: saved) {
-            return mode
-        }
-        return StatusBarMode.from(toml: configToml)
-    }
-
     private func toggleStatusBarMode() {
         let next: StatusBarMode = content.statusBar.colorMode == .tmux ? .theme : .tmux
-        UserDefaults.standard.set(next.rawValue, forKey: Self.statusBarModePreferenceKey)
+        persistConfig([["op": "replace", "path": "/statusbar/mode", "value": next.rawValue]])
         content.statusBar.colorMode = next
         if statusBarSnapshot != nil {
             content.applyStatusBar(statusBarSnapshot)
@@ -724,12 +730,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func setTabBarTop(_ sender: Any?) {
-        TabBarPosition.set(.top)
+        persistConfig([["op": "replace", "path": "/ui/tab_bar_position", "value": "top"]])
         content.applyTabBarPosition(.top)
     }
 
     @objc func setTabBarBottom(_ sender: Any?) {
-        TabBarPosition.set(.bottom)
+        persistConfig([["op": "replace", "path": "/ui/tab_bar_position", "value": "bottom"]])
         content.applyTabBarPosition(.bottom)
     }
 
@@ -1458,7 +1464,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 避免旧 slot 还是切换前的小字体。字号没变就不要 resetFont，那会清选区。
         terminalManager.setFont(
             family: terminalFontSettings.family,
-            size: currentTerminalFontSize(),
+            size: terminalFontSettings.size,
             container: content.paneLayout
         )
         // warm slot 的视图沿用当前主题 palette（终端跟随主题）。
@@ -2901,6 +2907,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let snap = bridge.snapshot()
         if snap.tabs.isEmpty && snap.panes.isEmpty {
             closeSessionWindow()
+        }
+    }
+
+    /// 通过 Core SettingsService 事务写配置；失败只提示，不直接改文件。
+    private func persistConfig(_ operations: [[String: Any]]) {
+        do {
+            let transaction = try bridge.configBegin()
+            try bridge.configPatch(transaction: transaction, operations: operations)
+            try bridge.configCommit(transaction: transaction)
+        } catch {
+            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
         }
     }
 

@@ -1,17 +1,8 @@
 import AppKit
 
-/// Tab 栏位置（UserDefaults: `muxterm.tabBarPosition`）。
-/// 现在控制统一 StatusBar 的位置（顶部/底部）。
+/// Tab 栏位置。值来自统一 config.toml 的 `[ui] tab_bar_position`，由
+/// MainWindow 在启动和切换时通过 Core 事务读写；这里不再使用 UserDefaults。
 enum TabBarPosition: String {
     case top
     case bottom
-
-    static var current: TabBarPosition {
-        let raw = UserDefaults.standard.string(forKey: "muxterm.tabBarPosition") ?? "bottom"
-        return TabBarPosition(rawValue: raw) ?? .top
-    }
-
-    static func set(_ position: TabBarPosition) {
-        UserDefaults.standard.set(position.rawValue, forKey: "muxterm.tabBarPosition")
-    }
 }
