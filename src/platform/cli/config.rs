@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use super::format::OutputFormat;
 use crate::core::config_service::{
-    ConfigDocument, JsonPatchOperation, ProjectDocument, ProjectRuntime, ProjectTransport,
-    SettingsService, ShortcutBinding, ShortcutOverride,
+    dotted_pointer, ConfigDocument, JsonPatchOperation, ProjectDocument, ProjectRuntime,
+    ProjectTransport, SettingsService, ShortcutBinding, ShortcutOverride,
 };
 
 pub fn run(args: &[String], format: OutputFormat) -> Result<()> {
@@ -490,19 +490,6 @@ fn parse_value(raw: &str, force_string: bool) -> Result<Value> {
         }
     }
     Ok(Value::String(raw.to_string()))
-}
-
-fn dotted_pointer(path: &str) -> Result<String> {
-    if path.trim().is_empty() {
-        return Err(anyhow!("配置路径不能为空"));
-    }
-    Ok(format!(
-        "/{}",
-        path.split('.')
-            .map(|part| part.replace('~', "~0").replace('/', "~1"))
-            .collect::<Vec<_>>()
-            .join("/")
-    ))
 }
 
 fn pointer<'a>(value: &'a Value, path: &str) -> Result<&'a Value> {

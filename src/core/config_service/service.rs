@@ -358,6 +358,21 @@ impl SettingsService {
     }
 }
 
+/// Convert a dotted config path (`font.size`) to an RFC 6902 JSON Pointer
+/// (`/font/size`), escaping `~` and `/` in each segment.
+pub fn dotted_pointer(path: &str) -> Result<String> {
+    if path.trim().is_empty() {
+        return Err(anyhow!("配置路径不能为空"));
+    }
+    Ok(format!(
+        "/{}",
+        path.split('.')
+            .map(|part| part.replace('~', "~0").replace('/', "~1"))
+            .collect::<Vec<_>>()
+            .join("/")
+    ))
+}
+
 fn apply_patch_operation(document: &mut Value, operation: &JsonPatchOperation) -> Result<()> {
     let tokens = pointer_tokens(&operation.path)?;
     if tokens.is_empty() {

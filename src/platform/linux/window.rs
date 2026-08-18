@@ -24,7 +24,7 @@ use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::catalog::ResolveIntent;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
-use crate::core::config_edit::set_dotted_key;
+use crate::core::config_service::SettingsService;
 use crate::core::discovery::existing::ExistingEntry;
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir};
@@ -1775,17 +1775,36 @@ fn toggle_fullscreen(s: &mut UiState) {
     }
 }
 
-/// 把 dotted key 写回 config.toml（唯一事实源；不再写 preferences.toml）。
-pub fn persist_config(dotted: &str, value: toml_edit::Item) {
+/// 通过 Core SettingsService 事务写回 config.toml（唯一事实源）。
+/// 平台禁止直接解析或写 TOML；失败只记日志，不覆盖用户文件。
+pub fn persist_config(dotted: &str, value: serde_json::Value) {
     let Some(path) = Config::user_config_path() else {
         return;
     };
-    let raw = std::fs::read_to_string(&path).unwrap_or_default();
-    if let Ok(out) = set_dotted_key(&raw, dotted, value) {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+    let mut service = match SettingsService::open(&path) {
+        Ok(service) => service,
+        Err(error) => {
+            tracing::warn!(target = "muxterm::config", "打开配置事务失败: {error}");
+            return;
         }
-        let _ = std::fs::write(&path, out);
+    };
+    let Ok(pointer) = crate::core::config_service::dotted_pointer(dotted) else {
+        return;
+    };
+    let transaction = service.begin();
+    if let Err(error) = service
+        .patch(
+            &transaction,
+            &[crate::core::config_service::JsonPatchOperation {
+                op: "replace".into(),
+                path: pointer,
+                value: Some(value),
+            }],
+        )
+        .and_then(|_| service.commit(&transaction).map(|_| ()))
+    {
+        tracing::warn!(target = "muxterm::config", "保存设置失败: {error}");
+        let _ = service.cancel(&transaction);
     }
 }
 
@@ -1802,7 +1821,7 @@ fn schedule_font_persist(size: f32) {
         glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
             let current = FONT_PERSIST_GEN.with(|g| g.get());
             if current == my_gen {
-                persist_config("font.size", toml_edit::value(f64::from(size)));
+                persist_config("font.size", serde_json::Value::from(f64::from(size)));
             }
             glib::ControlFlow::Break
         });
@@ -1827,7 +1846,10 @@ fn reset_font(s: &mut UiState) {
     for layout in s.pixel_cache.values_mut() {
         layout.set_font(&font);
     }
-    persist_config("font.size", toml_edit::value(f64::from(s.config_font_size)));
+    persist_config(
+        "font.size",
+        serde_json::Value::from(f64::from(s.config_font_size)),
+    );
 }
 
 fn toggle_theme(s: &mut UiState) {
@@ -1846,7 +1868,10 @@ fn toggle_theme(s: &mut UiState) {
     }
     s.status.apply_theme(&theme);
     apply_chrome_css(&theme);
-    persist_config("theme.name", toml_edit::value(next_name.to_string()));
+    persist_config(
+        "theme.name",
+        serde_json::Value::String(next_name.to_string()),
+    );
     report_all_pane_colours(s);
 }
 
@@ -1859,7 +1884,7 @@ fn toggle_status_mode(s: &mut UiState) {
     s.status.set_mode(next);
     persist_config(
         "statusbar.mode",
-        toml_edit::value(next.as_str().to_string()),
+        serde_json::Value::String(next.as_str().to_string()),
     );
     maybe_refresh_status(s, true);
 }
