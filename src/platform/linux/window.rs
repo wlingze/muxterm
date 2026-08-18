@@ -4052,6 +4052,8 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
         return;
     };
     let st = state.clone();
+    let hosts = CoreBridge::discover_ssh_hosts().unwrap_or_default();
+    let runtimes = crate::core::catalog::Catalog::with_builtins().runtime_list();
     crate::platform::linux::preferences_window::show(
         window,
         path,
@@ -4076,6 +4078,7 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                 maybe_refresh_status(&mut s, true);
             }
         }),
+        Some((runtimes, hosts)),
     );
 }
 

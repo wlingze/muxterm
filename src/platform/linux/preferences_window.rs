@@ -9,16 +9,18 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, ComboBoxText, Entry, Label, Orientation, SearchEntry, SpinButton,
-    TextView, Window,
+    Align, Box as GtkBox, Button, ComboBoxText, Entry, Label, ListBox, Orientation, ScrolledWindow,
+    SearchEntry, SpinButton, TextView, Window,
 };
 use serde_json::Value;
 
 use crate::core::config_service::{JsonPatchOperation, SettingsService};
 use crate::platform::i18n::{self, Key as TextKey};
+use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
 enum ControlKind {
     Switch(gtk4::Switch),
@@ -28,7 +30,7 @@ enum ControlKind {
     MultiLine(TextView),
     Select(ComboBoxText),
     FontPicker(gtk4::FontButton),
-    Summary(Label),
+    Summary(gtk4::Button),
 }
 
 struct FieldControl {
@@ -205,8 +207,15 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             row.append(&widget);
             Some(tracked_field(path, ControlKind::StringList(widget)))
         }
-        "project_editor" | "shortcut_editor" => {
-            let widget = Label::new(Some("Managed by the dedicated editor"));
+        "project_editor" => {
+            let widget = Button::with_label("Manage projects…");
+            widget.set_widget_name(&widget_name);
+            widget.set_halign(Align::Start);
+            row.append(&widget);
+            Some(tracked_field(path, ControlKind::Summary(widget)))
+        }
+        "shortcut_editor" => {
+            let widget = Button::with_label("Manage shortcuts…");
             widget.set_widget_name(&widget_name);
             widget.set_halign(Align::Start);
             row.append(&widget);
@@ -229,6 +238,10 @@ pub fn show(
     parent: &impl IsA<Window>,
     config_path: PathBuf,
     on_saved: Box<dyn Fn() + 'static>,
+    project_editor: Option<(
+        Vec<crate::core::catalog::driver::RuntimeInfo>,
+        Vec<crate::platform::linux::ffi_bridge::SshHostEntry>,
+    )>,
 ) -> Window {
     let win = Window::builder()
         .title(i18n::tr(TextKey::CmdPreferences))
@@ -304,6 +317,40 @@ pub fn show(
     let on_saved = Rc::new(on_saved);
     let controls = Rc::new(RefCell::new(controls));
     let allow_close = Rc::new(Cell::new(false));
+
+    // 专用编辑器：项目 / 快捷键按钮在独立窗口中编辑，保存后刷新主窗口。
+    {
+        let editor_window = win.clone();
+        for control in controls.borrow().iter() {
+            if let ControlKind::Summary(button) = &control.kind {
+                let config_path = config_path.clone();
+                let on_saved = on_saved.clone();
+                let project_editor = project_editor.clone();
+                let editor_window = editor_window.clone();
+                if control.path == "/projects" {
+                    button.connect_clicked(move |_| {
+                        if let Some((runtimes, hosts)) = &project_editor {
+                            show_project_manager(
+                                &editor_window,
+                                config_path.clone(),
+                                runtimes.clone(),
+                                hosts.clone(),
+                                on_saved.clone(),
+                            );
+                        }
+                    });
+                } else if control.path == "/shortcuts/overrides" {
+                    button.connect_clicked(move |_| {
+                        show_shortcut_manager(
+                            &editor_window,
+                            config_path.clone(),
+                            on_saved.clone(),
+                        );
+                    });
+                }
+            }
+        }
+    }
 
     search.connect_search_changed(move |search| {
         let query = search.text().to_ascii_lowercase();
@@ -476,6 +523,506 @@ fn confirm_discard(parent: &impl IsA<Window>, on_discard: impl Fn() + 'static) {
     dialog.present();
 }
 
+fn show_project_manager(
+    parent: &impl IsA<Window>,
+    config_path: PathBuf,
+    runtimes: Vec<crate::core::catalog::driver::RuntimeInfo>,
+    hosts: Vec<crate::platform::linux::ffi_bridge::SshHostEntry>,
+    on_changed: Rc<Box<dyn Fn() + 'static>>,
+) {
+    let win = Window::builder()
+        .title("Projects")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(560)
+        .default_height(480)
+        .build();
+    win.set_widget_name("muxterm-projects-window");
+    let root = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(10)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+
+    let list = ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::Single);
+    let sw = ScrolledWindow::builder()
+        .min_content_height(280)
+        .child(&list)
+        .build();
+    root.append(&sw);
+
+    let actions = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .halign(Align::End)
+        .build();
+    let add = Button::with_label("New project…");
+    let close = Button::with_label("Close");
+    actions.append(&add);
+    actions.append(&close);
+    root.append(&actions);
+    win.set_child(Some(&root));
+
+    let refresh = {
+        let list = list.clone();
+        let config_path = config_path.clone();
+        let win_for_rows = win.clone();
+        let hosts_for_rows = hosts.clone();
+        let runtimes_for_rows = runtimes.clone();
+        let on_changed_for_rows = on_changed.clone();
+        move || {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            let mut service = match SettingsService::open(&config_path) {
+                Ok(service) => service,
+                Err(_) => return,
+            };
+            if let Err(error) = service.migrate_legacy_quickconnect() {
+                tracing::warn!(
+                    target = "muxterm::config",
+                    "QuickConnect 迁移未完成: {error}"
+                );
+            }
+            let projects = service.document().projects.clone();
+            for project in &projects {
+                let row = GtkBox::builder()
+                    .orientation(Orientation::Horizontal)
+                    .spacing(8)
+                    .build();
+                let label = Label::new(Some(&project.name));
+                label.set_hexpand(true);
+                label.set_halign(Align::Start);
+                row.append(&label);
+                let edit = Button::with_label("Edit…");
+                let remove = Button::with_label("Remove");
+                let project_for_edit = project.clone();
+                let config_for_edit = config_path.clone();
+                let on_changed = on_changed_for_rows.clone();
+                let win = win_for_rows.clone();
+                let hosts = hosts_for_rows.clone();
+                let runtimes = runtimes_for_rows.clone();
+                edit.connect_clicked(move |_| {
+                    let store = Rc::new(RefCell::new(QuickConnectStore::new_unified(Some(
+                        config_for_edit.clone(),
+                    ))));
+                    let target = match project_for_edit.to_target() {
+                        Ok(target) => target,
+                        Err(error) => {
+                            tracing::error!(
+                                target = "muxterm::config",
+                                "Project 解析失败: {error}"
+                            );
+                            return;
+                        }
+                    };
+                    let store_inner = store.clone();
+                    let on_changed = on_changed.clone();
+                    crate::platform::linux::target_config_window::show(
+                        &win,
+                        Some(target),
+                        store.borrow().clone(),
+                        hosts.clone(),
+                        runtimes.clone(),
+                        move |saved| {
+                            store_inner.borrow_mut().upsert_project(&saved);
+                            on_changed();
+                        },
+                        || {},
+                    );
+                });
+                let project_for_remove = project.clone();
+                let config_for_remove = config_path.clone();
+                let on_changed = on_changed_for_rows.clone();
+                remove.connect_clicked(move |_| {
+                    let mut service = match SettingsService::open(&config_for_remove) {
+                        Ok(service) => service,
+                        Err(error) => {
+                            tracing::error!(target = "muxterm::config", "打开配置失败: {error}");
+                            return;
+                        }
+                    };
+                    let transaction = service.begin();
+                    let index = service
+                        .document()
+                        .projects
+                        .iter()
+                        .position(|item| item.id == project_for_remove.id);
+                    if let Some(index) = index {
+                        let operation = JsonPatchOperation {
+                            op: "remove".into(),
+                            path: format!("/projects/{index}"),
+                            value: None,
+                        };
+                        if service
+                            .patch(&transaction, &[operation])
+                            .and_then(|_| service.commit(&transaction).map(|_| ()))
+                            .is_ok()
+                        {
+                            on_changed();
+                        }
+                    }
+                });
+                row.append(&edit);
+                row.append(&remove);
+                list.append(&row);
+            }
+        }
+    };
+    let refresh = Rc::new(RefCell::new(refresh));
+    refresh.borrow()();
+
+    // 文件变更（含本窗口的编辑/删除）后自动重建列表，避免自引用闭包。
+    if let Ok(monitor) = gtk4::gio::File::for_path(&config_path).monitor_file(
+        gtk4::gio::FileMonitorFlags::NONE,
+        gtk4::gio::Cancellable::NONE,
+    ) {
+        let refresh = refresh.clone();
+        monitor.connect_changed(move |_, _, _, _| refresh.borrow()());
+    }
+
+    {
+        let win = win.clone();
+        close.connect_clicked(move |_| win.close());
+    }
+    {
+        let win = win.clone();
+        let hosts = hosts.clone();
+        let runtimes = runtimes.clone();
+        let on_changed = on_changed.clone();
+        let refresh = refresh.clone();
+        add.connect_clicked(move |_| {
+            let config_path = config_path.clone();
+            let store = Rc::new(RefCell::new(QuickConnectStore::new_unified(Some(
+                config_path.clone(),
+            ))));
+            let store_inner = store.clone();
+            let refresh = refresh.clone();
+            let on_changed = on_changed.clone();
+            crate::platform::linux::target_config_window::show(
+                &win,
+                None,
+                store.borrow().clone(),
+                hosts.clone(),
+                runtimes.clone(),
+                move |saved| {
+                    store_inner.borrow_mut().upsert_project(&saved);
+                    on_changed();
+                    refresh.borrow()();
+                },
+                || {},
+            );
+        });
+    }
+    win.present();
+}
+
+fn show_shortcut_manager(
+    app: &impl IsA<Window>,
+    config_path: PathBuf,
+    on_changed: Rc<Box<dyn Fn() + 'static>>,
+) {
+    let win = Window::builder()
+        .title("Shortcuts")
+        .transient_for(app)
+        .modal(true)
+        .default_width(720)
+        .default_height(560)
+        .build();
+    win.set_widget_name("muxterm-shortcuts-window");
+    let root = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(10)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+
+    let list = ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    let sw = ScrolledWindow::builder()
+        .min_content_height(360)
+        .child(&list)
+        .build();
+    root.append(&sw);
+
+    let actions = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .halign(Align::End)
+        .build();
+    let close = Button::with_label("Close");
+    actions.append(&close);
+    root.append(&actions);
+    win.set_child(Some(&root));
+
+    let refresh = {
+        let list = list.clone();
+        let config_path = config_path.clone();
+        let win_for_rows = win.clone();
+        let on_changed_for_rows = on_changed.clone();
+        move || {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            let mut service = match SettingsService::open(&config_path) {
+                Ok(service) => service,
+                Err(_) => return,
+            };
+            if let Err(error) = service.migrate_legacy_quickconnect() {
+                tracing::warn!(
+                    target = "muxterm::config",
+                    "QuickConnect 迁移未完成: {error}"
+                );
+            }
+            let shortcuts = service.document().shortcuts.clone();
+            let catalog = crate::core::config_service::action_catalog();
+            for action in &catalog {
+                let override_item = shortcuts
+                    .overrides
+                    .iter()
+                    .find(|item| item.action == action.id);
+                let row = GtkBox::builder()
+                    .orientation(Orientation::Horizontal)
+                    .spacing(8)
+                    .build();
+                let label = Label::new(Some(&action.title_key));
+                label.set_hexpand(true);
+                label.set_halign(Align::Start);
+                row.append(&label);
+                let summary = Label::new(Some(
+                    &override_item
+                        .map(|item| {
+                            if item.bindings.is_empty() {
+                                "disabled".into()
+                            } else {
+                                item.bindings
+                                    .iter()
+                                    .map(|b| format!("{} {}", b.modifiers.join("+"), b.key))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            }
+                        })
+                        .unwrap_or_else(|| "default".into()),
+                ));
+                summary.set_halign(Align::Start);
+                summary.set_hexpand(true);
+                row.append(&summary);
+
+                let bind = Button::with_label("Bind…");
+                let unbind = Button::with_label("Unbind");
+                let action_id = action.id.to_string();
+                let config_for_bind = config_path.clone();
+                let win_for_capture = win_for_rows.clone();
+                let on_changed = on_changed_for_rows.clone();
+                bind.connect_clicked(move |_| {
+                    let action_id = action_id.clone();
+                    capture_shortcut(&win_for_capture, {
+                        let config_path = config_for_bind.clone();
+                        let on_changed = on_changed.clone();
+                        move |key, modifiers| {
+                            let mut service = match SettingsService::open(&config_path) {
+                                Ok(service) => service,
+                                Err(error) => {
+                                    tracing::error!(
+                                        target = "muxterm::config",
+                                        "打开配置事务失败: {error}"
+                                    );
+                                    return;
+                                }
+                            };
+                            let transaction = service.begin();
+                            let mut overrides = service.document().shortcuts.overrides.clone();
+                            overrides.retain(|item| item.action != action_id);
+                            overrides.push(crate::core::config_service::ShortcutOverride {
+                                action: action_id.clone(),
+                                bindings: vec![crate::core::config_service::ShortcutBinding {
+                                    key,
+                                    modifiers,
+                                }],
+                            });
+                            let value =
+                                serde_json::to_value(overrides).unwrap_or(Value::Array(Vec::new()));
+                            let operation = JsonPatchOperation {
+                                op: "replace".into(),
+                                path: "/shortcuts/overrides".into(),
+                                value: Some(value),
+                            };
+                            if service
+                                .patch(&transaction, &[operation])
+                                .and_then(|_| service.commit(&transaction).map(|_| ()))
+                                .is_ok()
+                            {
+                                on_changed();
+                            }
+                        }
+                    });
+                });
+                let action_id = action.id.to_string();
+                let config_for_unbind = config_path.clone();
+                let on_changed = on_changed_for_rows.clone();
+                unbind.connect_clicked(move |_| {
+                    let mut service = match SettingsService::open(&config_for_unbind) {
+                        Ok(service) => service,
+                        Err(error) => {
+                            tracing::error!(
+                                target = "muxterm::config",
+                                "打开配置事务失败: {error}"
+                            );
+                            return;
+                        }
+                    };
+                    let transaction = service.begin();
+                    let mut overrides = service.document().shortcuts.overrides.clone();
+                    overrides.retain(|item| item.action != action_id);
+                    let value = serde_json::to_value(overrides).unwrap_or(Value::Array(Vec::new()));
+                    let operation = JsonPatchOperation {
+                        op: "replace".into(),
+                        path: "/shortcuts/overrides".into(),
+                        value: Some(value),
+                    };
+                    if service
+                        .patch(&transaction, &[operation])
+                        .and_then(|_| service.commit(&transaction).map(|_| ()))
+                        .is_ok()
+                    {
+                        on_changed();
+                    }
+                });
+                row.append(&bind);
+                row.append(&unbind);
+                list.append(&row);
+            }
+        }
+    };
+    let refresh = Rc::new(RefCell::new(refresh));
+    refresh.borrow()();
+
+    // 文件变更（含本窗口的绑定/解绑）后自动重建列表。
+    if let Ok(monitor) = gtk4::gio::File::for_path(&config_path).monitor_file(
+        gtk4::gio::FileMonitorFlags::NONE,
+        gtk4::gio::Cancellable::NONE,
+    ) {
+        let refresh = refresh.clone();
+        monitor.connect_changed(move |_, _, _, _| refresh.borrow()());
+    }
+
+    {
+        let win = win.clone();
+        close.connect_clicked(move |_| win.close());
+    }
+    win.present();
+}
+
+/// 打开按键捕获窗口：下一次非 Escape 按键返回 (key, modifiers)。
+fn capture_shortcut(parent: &impl IsA<Window>, on_capture: impl Fn(String, Vec<String>) + 'static) {
+    let win = Window::builder()
+        .title("Bind shortcut")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(360)
+        .default_height(140)
+        .build();
+    win.set_widget_name("muxterm-shortcut-capture");
+    let root = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+    let label = Label::new(Some("Press the key combination…"));
+    label.set_halign(Align::Start);
+    root.append(&label);
+    let cancel = Button::with_label("Cancel");
+    cancel.set_halign(Align::End);
+    root.append(&cancel);
+    win.set_child(Some(&root));
+
+    let finished = Rc::new(Cell::new(false));
+    {
+        let win = win.clone();
+        let finished = finished.clone();
+        cancel.connect_clicked(move |_| {
+            if !finished.replace(true) {
+                win.close();
+            }
+        });
+    }
+    {
+        let win = win.clone();
+        let finished = finished.clone();
+        win.connect_close_request(move |_| {
+            finished.set(true);
+            glib::Propagation::Proceed
+        });
+    }
+    {
+        let controller = gtk4::EventControllerKey::new();
+        let win_for_keys = win.clone();
+        let finished = finished.clone();
+        let on_capture = Rc::new(RefCell::new(Some(on_capture)));
+        controller.connect_key_pressed(move |_, keyval, _keycode, mods| {
+            if !finished.replace(true) {
+                if keyval != gdk::Key::Escape {
+                    if let Some((key, modifiers)) = gdk_key_to_binding(keyval, mods) {
+                        if let Some(callback) = on_capture.borrow_mut().take() {
+                            callback(key, modifiers);
+                        }
+                    }
+                }
+                win_for_keys.close();
+            }
+            glib::Propagation::Stop
+        });
+        win.add_controller(controller);
+    }
+    win.present();
+}
+
+/// GDK 按键 + 修饰键 → (key, modifiers)。大小写/特殊键归一化与 keymap 一致。
+fn gdk_key_to_binding(keyval: gdk::Key, mods: gdk::ModifierType) -> Option<(String, Vec<String>)> {
+    let mut modifiers = Vec::new();
+    if mods.contains(gdk::ModifierType::CONTROL_MASK) {
+        modifiers.push("control".to_string());
+    }
+    if mods.contains(gdk::ModifierType::SHIFT_MASK)
+        || keyval.to_unicode().is_some_and(|c| c.is_ascii_uppercase())
+    {
+        modifiers.push("shift".to_string());
+    }
+    if mods.contains(gdk::ModifierType::ALT_MASK) {
+        modifiers.push("alt".to_string());
+    }
+    if mods.contains(gdk::ModifierType::SUPER_MASK) {
+        modifiers.push("super".to_string());
+    }
+    let key = match keyval.name() {
+        Some(name) => {
+            let lower = name.to_ascii_lowercase();
+            match lower.as_str() {
+                "bracketleft" => "[".to_string(),
+                "bracketright" => "]".to_string(),
+                _ => match keyval.to_unicode() {
+                    Some(c) => c.to_ascii_lowercase().to_string(),
+                    None => lower,
+                },
+            }
+        }
+        None => keyval.to_unicode()?.to_ascii_lowercase().to_string(),
+    };
+    if key.is_empty() {
+        return None;
+    }
+    Some((key, modifiers))
+}
+
 fn section(title: &str) -> GtkBox {
     let box_ = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -536,6 +1083,7 @@ mod tests {
                 &parent,
                 PathBuf::from("/tmp/nonexistent-config.toml"),
                 Box::new(|| {}),
+                None,
             );
             assert_eq!(win.widget_name(), "muxterm-prefs-window");
             win.close();

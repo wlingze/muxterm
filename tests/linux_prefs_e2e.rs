@@ -75,6 +75,7 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
             Box::new(move || {
                 *saved_cb.borrow_mut() = true;
             }),
+            None,
         );
         pump_main_loop(80);
 
@@ -120,6 +121,62 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
         let cfg = parse_config_toml(&raw).unwrap();
         assert_eq!(cfg.font.size, 14.0);
         assert_eq!(cfg.font.family, "Monospace");
+
+        win.close();
+        win.destroy();
+        parent.destroy();
+        pump_main_loop(40);
+        let _ = std::fs::remove_dir_all(&tmp);
+    });
+}
+
+/// 设置窗口内项目/快捷键专用编辑器入口必须渲染为可点击按钮（同一
+/// GTK 进程内只打开设置窗口，不构造 AppWindow）。
+#[test]
+fn prefs_window_exposes_project_and_shortcut_editors() {
+    if skip_no_display() {
+        return;
+    }
+    gtk4::test_synced(|| {
+        gtk_test_framework_smoke();
+        let tmp =
+            std::env::temp_dir().join(format!("muxterm-prefs-editors-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("muxterm")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        let config_path = tmp.join("muxterm").join("config.toml");
+        std::fs::write(&config_path, "config_version = 1\n").unwrap();
+
+        let parent = gtk4::Window::builder().build();
+        parent.present();
+        gtk4::test_widget_wait_for_draw(&parent);
+
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(false));
+        let saved_cb = saved.clone();
+        let win = show(
+            &parent,
+            config_path.clone(),
+            Box::new(move || {
+                *saved_cb.borrow_mut() = true;
+            }),
+            None,
+        );
+        pump_main_loop(80);
+
+        let projects = find_by_name(&win, "muxterm-prefs-projects")
+            .expect("project editor 入口应存在")
+            .downcast::<gtk4::Button>()
+            .expect("project editor 应是 Button");
+        let shortcuts = find_by_name(&win, "muxterm-prefs-shortcuts-overrides")
+            .expect("shortcut editor 入口应存在")
+            .downcast::<gtk4::Button>()
+            .expect("shortcut editor 应是 Button");
+        assert!(projects
+            .label()
+            .is_some_and(|label| label.contains("Manage projects")));
+        assert!(shortcuts
+            .label()
+            .is_some_and(|label| label.contains("Manage shortcuts")));
 
         win.close();
         win.destroy();
