@@ -4060,17 +4060,17 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
         path,
         std::boxed::Box::new(move || {
             let mut s = st.borrow_mut();
-            // 快捷键编辑保存后立即重建 keymap：菜单/命令面板/快捷键共享同一
-            // Core Action Catalog 与 effective binding。
+            // 保存后重新打开 Core 事务中的文档，重建 keymap 并刷新可由
+            // SettingsService 验证过的运行期状态；platform 不直接读 config.toml。
             if let Ok(service) = SettingsService::open(&callback_path) {
-                let shortcuts = service.document().shortcuts.clone();
+                let document = service.document();
+                let cfg = &document.config;
+                let shortcuts = &document.shortcuts;
                 let bindings =
                     crate::core::config_service::action_catalog::resolve_effective_keybindings(
-                        &shortcuts,
+                        shortcuts,
                     );
                 s.keymap = KeyMap::from_bindings(&bindings);
-            }
-            if let Ok(cfg) = Config::load() {
                 s.attention.set_config(cfg.attention.clone());
                 s.config_font_size = cfg.font.size;
                 s.font.size = FontSettings::clamp_size(cfg.font.size);
