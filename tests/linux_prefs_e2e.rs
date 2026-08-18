@@ -25,7 +25,7 @@ fn ctrl_equal_increases_font_and_writes_config_toml() {
     std::fs::write(&config_path, "[font]\nsize = 12.0\n").unwrap();
 
     // 与生产 adjust_font 相同的持久化路径。
-    muxterm::platform::linux::window::persist_config("font.size", toml_edit::value(13.0f64));
+    muxterm::platform::linux::window::persist_config("font.size", serde_json::json!(13.0f64));
     let raw = std::fs::read_to_string(&config_path).unwrap();
     assert!(raw.contains("size = 13.0"), "config.toml 应写 13.0: {raw}");
     assert!(
@@ -55,7 +55,7 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
         let config_path = tmp.join("muxterm").join("config.toml");
         std::fs::write(
             &config_path,
-            "# 字体配置\n[font]\nfamily = \"Monospace\"\nsize = 12.0\n\n[foo]\nbar = 1\n",
+            "# 字体配置\n[font]\nfamily = \"Monospace\"\nsize = 12.0\n\n[extensions.test]\nnote = 1\n",
         )
         .unwrap();
 
@@ -84,7 +84,7 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
             .downcast::<gtk4::SpinButton>()
             .expect("SpinButton 类型");
         assert!(
-            find_by_name(&win, "muxterm-prefs-theme").is_some(),
+            find_by_name(&win, "muxterm-prefs-theme-name").is_some(),
             "theme Combo 应有 name"
         );
         assert!(
@@ -92,11 +92,11 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
             "font-family Entry 应有 name"
         );
         assert!(
-            find_by_name(&win, "muxterm-prefs-status-mode").is_some(),
+            find_by_name(&win, "muxterm-prefs-statusbar-mode").is_some(),
             "status-mode Combo 应有 name"
         );
         assert!(
-            find_by_name(&win, "muxterm-prefs-scrollback").is_some(),
+            find_by_name(&win, "muxterm-prefs-scrollback-lines").is_some(),
             "scrollback SpinButton 应有 name"
         );
         font_size.set_value(14.0);
@@ -113,8 +113,8 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
         assert!(*saved.borrow(), "保存回调应触发");
         let raw = std::fs::read_to_string(&config_path).unwrap();
         assert!(raw.contains("# 字体配置"), "注释应保留: {raw}");
-        assert!(raw.contains("[foo]"), "未知表应保留: {raw}");
-        assert!(raw.contains("bar = 1"), "未知键应保留: {raw}");
+        assert!(raw.contains("[extensions.test]"), "扩展表应保留: {raw}");
+        assert!(raw.contains("note = 1"), "扩展键应保留: {raw}");
         assert!(raw.contains("size = 14.0"), "font.size 应写入: {raw}");
 
         let cfg = parse_config_toml(&raw).unwrap();
