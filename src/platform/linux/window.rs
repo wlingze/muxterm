@@ -48,7 +48,7 @@ use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
 use crate::platform::linux::pane_view::PaneView;
 use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
-use crate::platform::linux::quickconnect::font::{FontSettings, Preferences};
+use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::platform::linux::quickconnect::project_flow::{
     ProjectConnectFlow, ProjectConnectIntent, ProjectConnectState,
@@ -106,7 +106,6 @@ struct UiState {
     pending_client_size: Option<(u16, u16)>,
     pending_client_hits: u8,
     tab_gate: TabSwitchGate,
-    preferences: Preferences,
     on_last_pane_exit: OnLastPaneExit,
     /// 事件分发里不能同步 `window.close()`（可能正握着 RefCell）。
     pending_close: bool,
@@ -356,28 +355,16 @@ impl AppWindow {
             .build();
         root.add_css_class("muxterm-root");
 
-        let preferences = Preferences::load();
-        let theme_name = preferences
-            .theme
-            .clone()
-            .unwrap_or_else(|| cfg.theme.name.clone())
-            .to_ascii_lowercase();
+        let theme_name = cfg.theme.name.clone().to_ascii_lowercase();
         let theme = Theme::load(&theme_name).unwrap_or(theme);
         apply_chrome_css(&theme);
         let config_font_size = cfg.font.size;
-        let mut font = FontSettings {
+        let font = FontSettings {
             family: cfg.font.family.clone(),
             size: cfg.font.size,
             fallback: cfg.font.fallback.clone(),
         };
-        if let Some(size) = preferences.font_size {
-            font.size = FontSettings::clamp_size(size);
-        }
-        let status_mode = preferences
-            .statusbar_mode
-            .as_deref()
-            .map(|m| StatusBarMode::from_toml(Some(m)))
-            .unwrap_or_else(|| StatusBarMode::from_toml(Some(&cfg.statusbar.mode)));
+        let status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
 
         let uses_tmux = matches!(
             pool.active().map(|w| w.state().workspace_runtime()),
@@ -498,7 +485,6 @@ impl AppWindow {
             pending_client_size: None,
             pending_client_hits: 0,
             tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
-            preferences,
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
             attention: AttentionEngine::new(cfg.attention.clone(), RealClock),

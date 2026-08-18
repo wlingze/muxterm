@@ -33,6 +33,12 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
                 if let Err(error) = service.migrate_legacy_quickconnect() {
                     tracing::warn!(target = "muxterm::app", "QuickConnect 迁移未完成: {error}");
                 }
+                if let Err(error) = service.migrate_legacy_linux_preferences() {
+                    tracing::warn!(
+                        target = "muxterm::app",
+                        "Linux preferences 迁移未完成: {error}"
+                    );
+                }
                 let document = service.document();
                 (document.config.clone(), document.shortcuts.clone())
             }

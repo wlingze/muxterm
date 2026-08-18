@@ -83,6 +83,12 @@ fn open_settings_service() -> SettingsService {
                     "QuickConnect 迁移未完成: {error}"
                 );
             }
+            if let Err(error) = service.migrate_legacy_linux_preferences() {
+                tracing::warn!(
+                    target = "muxterm::config",
+                    "Linux preferences 迁移未完成: {error}"
+                );
+            }
             service
         }
         Err(error) => {

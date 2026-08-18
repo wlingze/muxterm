@@ -1,8 +1,8 @@
-//! 终端字体设置与缩放、运行期偏好持久化（纯逻辑）。
+//! 终端字体设置与缩放（纯逻辑）。
 //!
-//! `[font] family/size` 来自 config.toml；运行期 Ctrl+/-/0 缩放字号并把
-//! 结果存到 `~/.config/muxterm/preferences.toml`（与 config.toml 分离，
-//! 避免重写用户配置）。
+//! `[font] family/size` 来自统一 config.toml；运行期 Ctrl+/-/0 缩放字号
+//! 通过 Core SettingsService 写回 config.toml。`Preferences` 类型只保留
+//! 旧 `preferences.toml` 的解析形状，供 Core 迁移读取，不再作为运行期来源。
 
 use std::path::PathBuf;
 

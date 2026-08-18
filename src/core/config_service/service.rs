@@ -293,6 +293,57 @@ impl SettingsService {
 
     /// Reload only when the on-disk revision differs from the current one.
     /// Frontends can call this from their platform file-monitor/debounce loop.
+    /// Import legacy Linux `preferences.toml` overrides into the unified
+    /// document. Theme, statusbar mode, and font size are migrated once; the
+    /// legacy file is retained as a recoverable backup.
+    pub fn migrate_legacy_linux_preferences(&mut self) -> Result<usize> {
+        let Some(parent) = self.path.parent() else {
+            return Ok(0);
+        };
+        let legacy_path = parent.join("preferences.toml");
+        if !legacy_path.exists() {
+            return Ok(0);
+        }
+        let raw = fs::read_to_string(&legacy_path)
+            .with_context(|| format!("读取旧 preferences 配置失败: {}", legacy_path.display()))?;
+        #[derive(Deserialize, Default)]
+        struct LegacyPreferences {
+            theme: Option<String>,
+            statusbar_mode: Option<String>,
+            font_size: Option<f32>,
+        }
+        let legacy: LegacyPreferences = toml::from_str(&raw).unwrap_or_default();
+        let mut operations = Vec::new();
+        if let Some(theme) = legacy.theme {
+            operations.push(JsonPatchOperation {
+                op: "replace".into(),
+                path: "/theme/name".into(),
+                value: Some(Value::String(theme)),
+            });
+        }
+        if let Some(mode) = legacy.statusbar_mode {
+            operations.push(JsonPatchOperation {
+                op: "replace".into(),
+                path: "/statusbar/mode".into(),
+                value: Some(Value::String(mode)),
+            });
+        }
+        if let Some(size) = legacy.font_size {
+            operations.push(JsonPatchOperation {
+                op: "replace".into(),
+                path: "/font/size".into(),
+                value: Some(Value::from(f64::from(size))),
+            });
+        }
+        if operations.is_empty() {
+            return Ok(0);
+        }
+        let transaction = self.begin();
+        self.patch(&transaction, &operations)?;
+        self.commit(&transaction)?;
+        Ok(operations.len())
+    }
+
     pub fn reload_if_changed(&mut self) -> Result<bool> {
         if !self.path.exists() {
             return Ok(false);
@@ -618,5 +669,49 @@ mod tests {
         assert!(snapshot.raw["font"]["family"].is_null());
         assert_eq!(snapshot.values["font"]["family"], "JetBrains Mono");
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migrate_legacy_linux_preferences_merges_overrides() {
+        let dir = std::env::temp_dir().join(format!(
+            "muxterm-config-service-legacy-merge-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let legacy = dir.join("preferences.toml");
+        fs::write(
+            &legacy,
+            "theme = \"black\"\nstatusbar_mode = \"theme\"\nfont_size = 15.0\n",
+        )
+        .unwrap();
+        let mut service = SettingsService::open(&path).unwrap();
+        let migrated = service.migrate_legacy_linux_preferences().unwrap();
+        assert_eq!(migrated, 3);
+        assert_eq!(service.document().config.theme.name, "black");
+        assert_eq!(service.document().config.statusbar.mode, "theme");
+        assert_eq!(service.document().config.font.size, 15.0);
+        // 旧文件保留为可恢复备份，不删除。
+        assert!(legacy.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_legacy_linux_preferences_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "muxterm-config-service-legacy-idem-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let legacy = dir.join("preferences.toml");
+        fs::write(&legacy, "font_size = 14.0\n").unwrap();
+        let mut service = SettingsService::open(&path).unwrap();
+        assert_eq!(service.migrate_legacy_linux_preferences().unwrap(), 1);
+        assert_eq!(service.migrate_legacy_linux_preferences().unwrap(), 1);
+        assert_eq!(service.document().config.font.size, 14.0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
