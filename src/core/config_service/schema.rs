@@ -267,9 +267,9 @@ impl ConfigDocument {
                     {"path":"/font/family","control":"font_picker","apply":"immediate","title_key":"settings.font.family"},
                     {"path":"/font/size","control":"number","apply":"immediate","title_key":"settings.font.size"},
                     {"path":"/font/fallback","control":"font_fallback","apply":"immediate","title_key":"settings.font.fallback"},
-                    {"path":"/theme/name","control":"theme_picker","apply":"immediate","title_key":"settings.theme"},
-                    {"path":"/theme/light","control":"theme_picker","apply":"immediate","title_key":"settings.theme.light"},
-                    {"path":"/theme/dark","control":"theme_picker","apply":"immediate","title_key":"settings.theme.dark"},
+                    {"path":"/theme/name","control":"theme_picker","options":["system","black","white"],"apply":"immediate","title_key":"settings.theme"},
+                    {"path":"/theme/light","control":"theme_picker","options":["white","black"],"apply":"immediate","title_key":"settings.theme.light"},
+                    {"path":"/theme/dark","control":"theme_picker","options":["black","white"],"apply":"immediate","title_key":"settings.theme.dark"},
                     {"path":"/statusbar/mode","control":"select","options":["tmux","theme"],"apply":"immediate","title_key":"settings.statusbar"}
                 ]},
                 {"id":"runtime","title_key":"settings.runtime","fields":[
