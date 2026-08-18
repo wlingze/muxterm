@@ -8,8 +8,8 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-use crate::core::config::default_keybindings;
-use crate::core::config_service::schema::ShortcutBinding;
+use crate::core::config::{default_keybindings, KeyBinding};
+use crate::core::config_service::schema::{ShortcutBinding, ShortcutConfig};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ActionDescriptor {
@@ -120,6 +120,46 @@ pub fn resolve_preset_bindings(
         .collect()
 }
 
+/// Resolve preset + primary key + overrides into the effective key binding
+/// table used by platform key maps and dispatchers.
+pub fn resolve_effective_keybindings(shortcuts: &ShortcutConfig) -> Vec<KeyBinding> {
+    let colemak = shortcuts.preset.eq_ignore_ascii_case("colemak");
+    let map = colemak_key_map();
+    let primary = primary_modifier(&shortcuts.primary_key, cfg!(target_os = "macos")).to_string();
+    let mut bindings: Vec<KeyBinding> = default_keybindings();
+    for binding in &mut bindings {
+        if colemak {
+            if let Some(key) = map.get(binding.key.as_str()) {
+                binding.key = (*key).to_string();
+            }
+        }
+        if binding.mods.iter().any(|modifier| modifier == "alt") {
+            binding.mods = binding
+                .mods
+                .iter()
+                .map(|modifier| {
+                    if modifier == "alt" {
+                        primary.clone()
+                    } else {
+                        modifier.clone()
+                    }
+                })
+                .collect();
+        }
+    }
+    for override_item in &shortcuts.overrides {
+        bindings.retain(|binding| binding.action != override_item.action);
+        for binding in &override_item.bindings {
+            bindings.push(KeyBinding {
+                key: binding.key.clone(),
+                mods: binding.modifiers.clone(),
+                action: override_item.action.clone(),
+            });
+        }
+    }
+    bindings
+}
+
 /// Ensure the resolved preset has no duplicate chords. Overrides are applied by
 /// the caller before invoking this when needed.
 pub fn validate_preset_chords(bindings: &[ShortcutBinding]) -> Result<(), String> {
@@ -209,3 +249,31 @@ mod tests {
         assert_eq!(Action::from_str("nonsense"), Action::Unknown);
     }
 }
+
+    #[test]
+    fn resolve_effective_keybindings_applies_primary_and_overrides() {
+        let mut shortcuts = ShortcutConfig::default();
+        shortcuts.primary_key = "control".into();
+        let bindings = resolve_effective_keybindings(&shortcuts);
+        let quick = bindings
+            .iter()
+            .find(|binding| binding.action == "quick_connect")
+            .expect("quick connect binding");
+        assert!(quick.mods.contains(&"control".to_string()));
+
+        shortcuts.overrides.push(crate::core::config_service::schema::ShortcutOverride {
+            action: "quick_connect".into(),
+            bindings: Vec::new(),
+        });
+        let bindings = resolve_effective_keybindings(&shortcuts);
+        assert!(!bindings.iter().any(|binding| binding.action == "quick_connect"));
+
+        shortcuts.preset = "colemak".into();
+        shortcuts.overrides.clear();
+        let bindings = resolve_effective_keybindings(&shortcuts);
+        let new_window = bindings
+            .iter()
+            .find(|binding| binding.action == "new_window")
+            .expect("new window binding");
+        assert_eq!(new_window.key, "k");
+    }

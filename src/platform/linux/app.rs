@@ -24,19 +24,21 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
     }
 
     app.connect_activate(move |a| {
-        let mut cfg = match SettingsService::default_user() {
+        let default_document = ConfigDocument::default();
+        let (mut cfg, shortcuts) = match SettingsService::default_user() {
             Ok(mut service) => {
                 if let Err(error) = service.migrate_legacy_quickconnect() {
                     tracing::warn!(target = "muxterm::app", "QuickConnect 迁移未完成: {error}");
                 }
-                service.document().config.clone()
+                let document = service.document();
+                (document.config.clone(), document.shortcuts.clone())
             }
             Err(error) => {
                 tracing::warn!(
                     target = "muxterm::app",
                     "加载配置失败，用现代默认值: {error}"
                 );
-                ConfigDocument::default().config
+                (default_document.config.clone(), default_document.shortcuts.clone())
             }
         };
         if let Some(ref sock) = socket {
@@ -66,7 +68,9 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
                 Theme::load("white").unwrap_or_else(|_| fallback_theme())
             }
         };
-        let win = crate::platform::linux::window::AppWindow::new(cfg, theme);
+        let win = crate::platform::linux::window::AppWindow::new_with_effective_keybindings(
+            cfg, theme, &shortcuts,
+        );
         a.add_window(&win.window);
         win.window.present();
     });

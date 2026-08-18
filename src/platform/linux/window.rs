@@ -23,7 +23,7 @@ use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::catalog::ResolveIntent;
-use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
+use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
 use crate::core::config_edit::set_dotted_key;
 use crate::core::discovery::existing::ExistingEntry;
 use crate::core::model::backend::{Runtime, RuntimeCapability};
@@ -273,6 +273,22 @@ impl AppWindow {
     }
 
     pub fn new(cfg: Config, theme: Theme) -> Self {
+        Self::new_with_keybindings(cfg.clone(), theme, cfg.keybindings.clone())
+    }
+
+    /// Construct the window with shortcuts resolved from the Core shortcut
+    /// config (preset + primary key + overrides) instead of the legacy list.
+    pub fn new_with_effective_keybindings(
+        cfg: Config,
+        theme: Theme,
+        shortcuts: &crate::core::config_service::ShortcutConfig,
+    ) -> Self {
+        let keybindings =
+            crate::core::config_service::action_catalog::resolve_effective_keybindings(shortcuts);
+        Self::new_with_keybindings(cfg, theme, keybindings)
+    }
+
+    fn new_with_keybindings(cfg: Config, theme: Theme, keybindings: Vec<KeyBinding>) -> Self {
         let window = ApplicationWindow::builder()
             .title("muxterm")
             .default_width(960)
@@ -454,7 +470,7 @@ impl AppWindow {
         root.append(&status.container);
         window.set_child(Some(&root));
 
-        let keymap = KeyMap::from_bindings(&cfg.keybindings);
+        let keymap = KeyMap::from_bindings(&keybindings);
         let qc_store =
             QuickConnectStore::new_unified(crate::core::config::Config::user_config_path());
         let state = Rc::new(RefCell::new(UiState {
