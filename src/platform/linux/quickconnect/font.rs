@@ -1,10 +1,8 @@
 //! 终端字体设置与缩放（纯逻辑）。
 //!
 //! `[font] family/size` 来自统一 config.toml；运行期 Ctrl+/-/0 缩放字号
-//! 通过 Core SettingsService 写回 config.toml。`Preferences` 类型只保留
-//! 旧 `preferences.toml` 的解析形状，供 Core 迁移读取，不再作为运行期来源。
-
-use std::path::PathBuf;
+//! 通过 Core SettingsService 写回 config.toml。旧 `preferences.toml` 由
+//! Core 迁移读取，platform 不再读写该文件。
 
 /// 终端字体设置。
 #[derive(Debug, Clone, PartialEq)]
@@ -39,50 +37,6 @@ impl FontSettings {
     }
 }
 
-/// 运行期偏好（主题 / status bar 模式 / 字号），覆盖 config.toml。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct Preferences {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub statusbar_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font_size: Option<f32>,
-}
-
-/// 用户偏好文件路径：`~/.config/muxterm/preferences.toml`。
-pub fn user_preferences_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("muxterm").join("preferences.toml"))
-}
-
-impl Preferences {
-    pub fn load() -> Self {
-        let Some(path) = user_preferences_path() else {
-            return Preferences::default();
-        };
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return Preferences::default();
-        };
-        toml::from_str(&raw).unwrap_or_default()
-    }
-
-    pub fn save(&self) {
-        let Some(path) = user_preferences_path() else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let Ok(raw) = toml::to_string_pretty(self) else {
-            return;
-        };
-        let _ = std::fs::write(&path, raw);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,29 +46,6 @@ mod tests {
         assert_eq!(FontSettings::zoomed(12.0, 1), 13.0);
         assert_eq!(FontSettings::zoomed(36.0, 1), 36.0);
         assert_eq!(FontSettings::zoomed(9.0, -1), 9.0);
-    }
-
-    #[test]
-    fn preferences_roundtrip_toml() {
-        let p = Preferences {
-            theme: Some("dark".into()),
-            statusbar_mode: Some("theme".into()),
-            font_size: Some(14.0),
-        };
-        let raw = toml::to_string_pretty(&p).unwrap();
-        let back: Preferences = toml::from_str(&raw).unwrap();
-        assert_eq!(back, p);
-    }
-
-    #[test]
-    fn preferences_default_omits_optional_fields() {
-        let p = Preferences::default();
-        let raw = toml::to_string_pretty(&p).unwrap();
-        assert!(!raw.contains("theme"), "{raw}");
-        assert!(!raw.contains("statusbar_mode"), "{raw}");
-        assert!(!raw.contains("font_size"), "{raw}");
-        let back: Preferences = toml::from_str(&raw).unwrap();
-        assert_eq!(back, p);
     }
 
     #[test]
