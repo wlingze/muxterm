@@ -26,6 +26,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let discovery = ConnectionDiscovery()
     var commandPalette: CommandPaletteController!
     var unifiedPanel: UnifiedPanelController!
+    private var settingsWindow: SettingsWindowController?
+    private var quickConnect: QuickConnectController!
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private let quickConnectStore: QuickConnectStore
@@ -746,6 +748,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } else {
             commandPalette.present(items: rootPaletteItems())
         }
+    }
+
+    /// Open the Core Schema/Manifest-backed settings window.
+    @objc func openPreferences() {
+        if let settingsWindow {
+            settingsWindow.showWindow(self)
+            return
+        }
+        let controller = SettingsWindowController(bridge: bridge)
+        settingsWindow = controller
+        controller.showWindow(self)
     }
 
     @objc func openQuickConnect() {

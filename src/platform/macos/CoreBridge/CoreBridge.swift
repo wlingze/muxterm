@@ -737,6 +737,56 @@ final class CoreBridge {
         return String(cString: p)
     }
 
+    // MARK: - Core configuration transactions
+
+    /// Return the Schema/Manifest snapshot. The AppKit settings window renders
+    /// controls from this JSON and never reads config.toml directly.
+    func configDescribeJSON() -> String? {
+        guard let handle else { return nil }
+        return configString { muxterm_config_describe_json(handle) }
+    }
+
+    func configBegin() throws -> String {
+        guard let handle, let text = configString({ muxterm_config_begin_json(handle) }),
+              let data = text.data(using: .utf8),
+              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = envelope["data"] as? [String: Any],
+              let transaction = payload["transaction"] as? String
+        else {
+            throw CoreBridgeDiscoveryError.message("config begin failed")
+        }
+        return transaction
+    }
+
+    func configPatch(transaction: String, operations: [[String: Any]]) throws {
+        guard let handle else { throw CoreBridgeDiscoveryError.message("config handle unavailable") }
+        let data = try JSONSerialization.data(withJSONObject: operations)
+        guard let patch = String(data: data, encoding: .utf8) else {
+            throw CoreBridgeDiscoveryError.message("config patch encoding failed")
+        }
+        let result = transaction.withCString { transaction in
+            patch.withCString { patch in
+                configString { muxterm_config_patch_json(handle, transaction, patch) }
+            }
+        }
+        try ensureConfigSuccess(result)
+    }
+
+    func configCommit(transaction: String) throws {
+        guard let handle else { throw CoreBridgeDiscoveryError.message("config handle unavailable") }
+        let result = transaction.withCString { transaction in
+            configString { muxterm_config_commit_json(handle, transaction) }
+        }
+        try ensureConfigSuccess(result)
+    }
+
+    func configCancel(transaction: String) {
+        guard let handle else { return }
+        _ = transaction.withCString { transaction in
+            configString { muxterm_config_cancel_json(handle, transaction) }
+        }
+    }
+
     deinit {
         shutdownAndFree()
     }
@@ -985,6 +1035,28 @@ final class CoreBridge {
                 )
             )
         }
+    }
+
+    private func configString(_ call: () -> UnsafeMutablePointer<CChar>?) -> String? {
+        guard let pointer = call() else { return nil }
+        defer { muxterm_free_string(pointer) }
+        return String(cString: pointer)
+    }
+
+    private func ensureConfigSuccess(_ text: String?) throws {
+        guard let text, let data = text.data(using: .utf8),
+              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw CoreBridgeDiscoveryError.message("invalid config response")
+        }
+        if envelope["ok"] as? Bool == true { return }
+        let error: String
+        if let structured = envelope["error"] as? [String: Any] {
+            error = structured["message"] as? String ?? "config operation failed"
+        } else {
+            error = (envelope["error"] as? String) ?? "config operation failed"
+        }
+        throw CoreBridgeDiscoveryError.message(error)
     }
 
     private static func string(from ptr: UnsafePointer<CChar>?) -> String {

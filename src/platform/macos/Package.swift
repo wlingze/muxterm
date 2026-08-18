@@ -37,6 +37,7 @@ let appLibSources = [
     "App/AttentionPanelController.swift",
     "App/UnifiedPanelController.swift",
     "App/TargetConfigWindow.swift",
+    "App/SettingsWindow.swift",
     "Terminal/TerminalView.swift",
     "Terminal/TerminalManager.swift",
     "UI/TabBar.swift",

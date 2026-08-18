@@ -246,6 +246,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
+        let preferences = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.cmdPreferences),
+            action: #selector(MainWindowController.openPreferences),
+            keyEquivalent: ","
+        )
+        preferences.keyEquivalentModifierMask = .command
+        preferences.target = windowController
+        appMenu.addItem(preferences)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(
             withTitle: MuxtermI18n.shared.tr(.menuQuit),
