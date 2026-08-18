@@ -4,6 +4,7 @@
 > **基线（历史）**：main `d69fab2`（2026-07-28）。下面 §0 是 **2026-08-17** 的现行树；§1 起是当时的设计记录，不要当施工单。
 > 产品：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md)。
 > Runtime：[`RUNTIME.md`](RUNTIME.md)。像素：[`SURFACE.md`](SURFACE.md)。
+> Config：[`CONFIG.md`](CONFIG.md)（配置唯一权威契约）。
 
 ---
 

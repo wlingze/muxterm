@@ -400,50 +400,14 @@ pub trait Transport: Send {
 ## 6. Config — 横切配置层
 
 Config 不是 Runtime 或 Transport 的子层，而是横切整个项目的统一配置服务。
+完整字段、Schema、Manifest、事务、迁移、CLI 和 FFI 契约见
+[`CONFIG.md`](CONFIG.md)。本节只保留分层原则：
 
-### 6.1 Config API（草案）
-
-```rust
-pub trait ConfigService {
-    fn get(&self, key: &str) -> Option<ConfigValue>;
-    fn list(&self, prefix: &str) -> Vec<(String, ConfigValue)>;
-    fn set(&mut self, key: &str, value: ConfigValue) -> Result<()>;
-    fn reset(&mut self, key: &str) -> Result<()>;
-    fn subscribe(&self, callback: ConfigChangeCallback);
-}
-```
-
-### 6.2 配置文件位置与格式
-
-| 路径 | 说明 |
-|------|------|
-| `~/.config/muxterm/config.toml` | 用户主配置（Alacritty 风格 TOML） |
-| `~/.config/muxterm/themes/<name>.toml` | 用户主题 |
-| `configs/themes/<name>.toml` | 内置主题（随包分发） |
-
-格式见 `ARCHITECTURE.md` §3.2 与现有 `config/`：`[font]`/`[theme]`/`[tmux]`/`[ssh]`/`[scrollback]`/`[ui]`/`[pane]`/`[behavior]`/`[[keybindings]]`。
-
-### 6.3 变更事件
-
-Config 变更时发出 `ConfigChanged { key, old, new }` 事件，供前端即时刷新（主题切换、字号调整等）。
-
-### 6.4 默认值
-
-所有字段有默认值，空配置 = 正常运行。解析失败静默降级（warning）。
-
-### 6.5 UI 配置 vs 核心连接配置的边界
-
-| 类别 | 字段示例 | 谁读 |
-|------|---------|------|
-| UI 配置 | `font`/`theme`/`ui`/`keybindings` | 前端层 |
-| 核心连接配置 | `ssh.host`/`ssh.port`/`tmux.default_session` | Runtime/Transport |
-| 行为配置 | `pane.default_command`/`behavior.*` | Runtime |
-
-### 6.6 CLI / FFI 共享
-
-- CLI `settings get/set`（reserved）读写 Config。
-- FFI `muxterm_config_get/set`（草案）读写 Config。
-- Config 不依赖任何 GUI 框架（`config/` 已无 gtk4 依赖，移到 platform 层）。
+- `src/core/config/` 负责类型、默认值、校验、迁移、事务、原子持久化和变更事件。
+- platform 只渲染 Core 返回的 JSON Schema/Settings Manifest，不直接读写 TOML。
+- Project、快捷键、字体和主题都属于主 `config.toml`；`quickconnect.toml` 只作为一次迁移输入。
+- 解析失败不得静默降级或覆盖坏文件；设置窗口必须展示结构化诊断。
+- CLI 与 FFI 复用同一个 `SettingsService`，不再保留 reserved 草案 API。
 
 ---
 
