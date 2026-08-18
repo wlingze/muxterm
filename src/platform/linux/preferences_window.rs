@@ -27,6 +27,7 @@ enum ControlKind {
     StringList(Entry),
     MultiLine(TextView),
     Select(ComboBoxText),
+    FontPicker(gtk4::FontButton),
     Summary(Label),
 }
 
@@ -74,6 +75,10 @@ impl FieldControl {
             ControlKind::Select(widget) => {
                 widget.active_id().map(|id| Value::String(id.to_string()))
             }
+            ControlKind::FontPicker(widget) => widget
+                .font_desc()
+                .and_then(|desc| desc.family())
+                .map(|family| Value::String(family.to_string())),
             ControlKind::Summary(_) => None,
         }
     }
@@ -154,7 +159,18 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             row.append(&widget);
             Some(tracked_field(path, ControlKind::MultiLine(widget)))
         }
-        "select" | "theme_picker" | "font_picker" => {
+        "font_picker" => {
+            let widget = gtk4::FontButton::new();
+            widget.set_widget_name(&widget_name);
+            widget.set_use_size(false);
+            let family = current.and_then(Value::as_str).unwrap_or_default();
+            if !family.is_empty() {
+                widget.set_font(&format!("{family} 12"));
+            }
+            row.append(&widget);
+            Some(tracked_field(path, ControlKind::FontPicker(widget)))
+        }
+        "select" | "theme_picker" => {
             let widget = ComboBoxText::new();
             widget.set_widget_name(&widget_name);
             if let Some(options) = field["options"].as_array() {
