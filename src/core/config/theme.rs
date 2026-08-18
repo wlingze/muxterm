@@ -28,6 +28,9 @@ impl Rgb {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ThemeFile {
+    /// 主题格式版本；缺省视为 v1（旧内置主题没有版本头）。
+    #[serde(default = "default_theme_version")]
+    theme_version: u32,
     name: String,
     background: String,
     foreground: String,
@@ -123,8 +126,18 @@ impl Theme {
     }
 }
 
+fn default_theme_version() -> u32 {
+    1
+}
+
 pub fn parse_theme_toml(raw: &str) -> Result<Theme> {
     let f: ThemeFile = toml::from_str(raw).context("主题 TOML 反序列化失败")?;
+    if f.theme_version != 1 {
+        anyhow::bail!(
+            "不支持的 theme_version: {}（当前仅支持 1）",
+            f.theme_version
+        );
+    }
     let colors = [
         parse_hex(&f.color0)?,
         parse_hex(&f.color1)?,
@@ -163,4 +176,34 @@ pub fn parse_hex(s: &str) -> Result<Rgb> {
     let g = u8::from_str_radix(&s[2..4], 16)?;
     let b = u8::from_str_radix(&s[4..6], 16)?;
     Ok(Rgb(r, g, b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_theme(version: u32) -> String {
+        format!(
+            "theme_version = {version}\nname = \"Test\"\nbackground = \"#000000\"\nforeground = \"#ffffff\"\ncursor = \"#ffffff\"\ncolor0 = \"#000000\"\ncolor1 = \"#000000\"\ncolor2 = \"#000000\"\ncolor3 = \"#000000\"\ncolor4 = \"#000000\"\ncolor5 = \"#000000\"\ncolor6 = \"#000000\"\ncolor7 = \"#000000\"\ncolor8 = \"#000000\"\ncolor9 = \"#000000\"\ncolor10 = \"#000000\"\ncolor11 = \"#000000\"\ncolor12 = \"#000000\"\ncolor13 = \"#000000\"\ncolor14 = \"#000000\"\ncolor15 = \"#000000\"\n"
+        )
+    }
+
+    #[test]
+    fn theme_version_one_parses() {
+        let theme = parse_theme_toml(&minimal_theme(1)).unwrap();
+        assert_eq!(theme.name, "Test");
+    }
+
+    #[test]
+    fn missing_theme_version_defaults_to_one() {
+        let raw = minimal_theme(1).replacen("theme_version = 1\n", "", 1);
+        let theme = parse_theme_toml(&raw).unwrap();
+        assert_eq!(theme.name, "Test");
+    }
+
+    #[test]
+    fn unsupported_theme_version_is_rejected() {
+        let error = parse_theme_toml(&minimal_theme(2)).unwrap_err();
+        assert!(error.to_string().contains("theme_version"), "{error}");
+    }
 }
