@@ -1734,6 +1734,60 @@ final class KeyBindingsConfigTests: XCTestCase {
         XCTAssertTrue(KeyBindingsConfig.parse(toml: toml).isEmpty)
     }
 
+    func testCoreProjectsConvertToTargetConfigs() {
+        let projects: [[String: Any]] = [
+            [
+                "id": "yaklang@tmux",
+                "name": "yaklang",
+                "path": "~/Developer/yaklang-workspace",
+                "runtime": ["id": "tmux"],
+                "transport": ["id": "ssh", "target": "ryzen"],
+                "command": [],
+                "env": [:],
+            ],
+            [
+                "id": "local@shell",
+                "name": "local",
+                "path": "~/work",
+                "runtime": ["id": "shell"],
+                "transport": ["id": "local", "target": ""],
+                "command": [],
+                "env": [:],
+            ],
+        ]
+        let configs = QuickConnectStore.targetConfigs(from: projects)
+        XCTAssertEqual(configs.count, 2)
+        XCTAssertEqual(configs[0].name, "yaklang")
+        XCTAssertEqual(configs[0].runtime, .tmux)
+        if case .ssh(let alias) = configs[0].transport {
+            XCTAssertEqual(alias, "ryzen")
+        } else {
+            XCTFail("expected ssh transport")
+        }
+        XCTAssertEqual(configs[1].runtime, .shell)
+        if case .local = configs[1].transport {
+        } else {
+            XCTFail("expected local transport")
+        }
+    }
+
+    func testTargetConfigsSerializeToCoreProjectJSON() {
+        let config = TargetConfig(
+            name: "demo",
+            runtime: .tmux,
+            transport: .ssh(name: "ryzen"),
+            path: "~/p"
+        )
+        let json = QuickConnectStore.projectJSON(from: [config])
+        XCTAssertEqual(json.count, 1)
+        let project = json[0]
+        XCTAssertEqual(project["name"] as? String, "demo")
+        XCTAssertEqual(project["path"] as? String, "~/p")
+        XCTAssertEqual((project["runtime"] as? [String: Any])?["id"] as? String, "tmux")
+        XCTAssertEqual((project["transport"] as? [String: Any])?["id"] as? String, "ssh")
+        XCTAssertEqual((project["transport"] as? [String: Any])?["target"] as? String, "ryzen")
+    }
+
     func testCustomTakesPrecedenceOverDefault() {
         let toml = """
         [[keybindings]]
