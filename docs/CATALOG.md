@@ -1,6 +1,6 @@
 # CATALOG.md — Catalog 是 backend 总状态
 
-> 日期：2026-08-18（`2026-08-18T01:50:34+08:00`）
+> 日期：2026-08-19（`2026-08-19T01:41:31+08:00`）；C9 connect name / 扁平已有的连接。C7/C8 仍有效。
 > 工作目录：`/home/wlz/Developer/self/muxterm`
 > 分支：`feature/runtime/support_herdr`
 > 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。施工：[`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
@@ -45,7 +45,7 @@ Driver 打开 Runtime 时，用 `Connect` 再 spawn 字节流（本机 PTY 或 `
 |---|---|---|
 | Local **Transport** | `"local"` | `discover_targets("local")` → 单例，target id 是 `""` |
 | SSH **Host alias** | 用户 `~/.ssh/config` 的 `Host` 名，**可以就叫 `local`** | `discover_targets("ssh")` 含 `id == "local"`；格子走 `discover_sessions("ssh", "local")` |
-| 可连接 Runtime 列表 | `"tmux"` / `"herdr"` / `"shell"` | `runtime_list()`，**不是** SSH host 表 |
+| 可连接 Runtime **插件**表 | `"tmux"` / `"herdr"` / `"shell"` | `runtime_list()`，**不是** SSH host 表，也**不是**可 attach 行 |
 
 `discover_sessions("local", "")` 是本机。`discover_sessions("ssh", "local")` 是 SSH Host 名叫 `local` 的那台。两者禁止串。
 
@@ -55,7 +55,23 @@ Driver 打开 Runtime 时，用 `Connect` 再 spawn 字节流（本机 PTY 或 `
 
 列出 session / 探活是短命令：`ssh -o BatchMode=yes -o ConnectTimeout=2`，**不要 `-tt`，不要 SshProcessTransport PTY**。和 W15 `ssh_probe_args`、W20 `ssh_run` 同一条。`-tt` 会灌 MOTD / `\r` / 提示符，`list-sessions` 解析成空，面板就把有 session 的 host 丢掉。
 
-测试用隔离远端 tmux：`MUXTERM_TEST_REMOTE_TMUX_SOCKET`（只测，对标 `HERDR_SOCKET_PATH`）。生产不设，列出远端默认 server。禁止测用户默认 `tmux` / `herdr.sock`。
+测试用隔离 tmux：`MUXTERM_TEST_LOCAL_TMUX_SOCKET`（本地 Driver.list）和 `MUXTERM_TEST_REMOTE_TMUX_SOCKET`（SSH Driver.list），对标 `HERDR_SOCKET_PATH`。双份测试把两个 env 指到**同一个** `-L muxterm-test-*`。生产不设 = 默认 server。禁止测用户默认 `tmux` / `herdr.sock`。不要求测 `archmini` / `cd`。
+
+### 1.4 connect name（机器）和 runtime list（可 attach 行）
+
+产品里并列的「机器」叫 **connect name**：本机 `local` + 每个 SSH Host alias（`self` / `archmini` / `cd`）。这是 `Connect` 的身份，**不是** `transport_list()` 的插件 id（插件只有 `local` | `ssh`）。
+
+| 调用 | 含义 |
+|---|---|
+| `discover_sessions("local", "")` | connect name `local` 上的 tmux + herdr |
+| `discover_sessions("ssh", "self")` | connect name `self`（SSH Host）上的 tmux + herdr |
+| `discover_sessions("all", "")` | 扇出所有 connect name，拼成一张表。写法同搜索 scope 的 `all` |
+
+同一台机器既是 local 又被 SSH 指回来（测试里 LoopbackSshd **Host `self`** → 127.0.0.1）时，**同一 session 出现两行**：`tmux @ local` 和 `tmux @ self`。这是要的，不是去重 bug。
+
+SSH Host 也可以叫 `local`（C7）。connect name 表里本机永远是 `local`；Host `local` 的行用 `ssh:local` 或继续走 `discover_sessions("ssh","local")` 的 target 字段区分，禁止把 Host `local` 当成 Transport `"local"`。
+
+用户说的「runtime list」= `discover_sessions` 的行。`runtime_list()` 仍是新建项目三张卡。
 
 ---
 
@@ -197,7 +213,7 @@ W15 的 `SshReach` + `ConnectTimeout=2` 是原型，**层错了**。本轮把灯
 | `runtime_list()` | id + 显示名 + 静态 caps → 新建项目卡 |
 | `transport_list()` | Local / SSH |
 | `discover_targets(transport)` | SSH hosts；Local 单例 |
-| `discover_sessions(transport, target)` | 该 target 上各 Driver 的可 attach 格子 |
+| `discover_sessions(transport, target)` | 该 connect 上各 Driver 的可 attach 格子。`transport="all"` 扇出全部 connect name |
 | `inventory_snapshot()` | 灯 |
 | `open(spec)` | 进 Pool |
 
@@ -208,7 +224,7 @@ W15 的 `SshReach` + `ConnectTimeout=2` 是原型，**层错了**。本轮把灯
 - **target** = 怎么到那儿
 - **session** = 可 attach 的格子（JSON 里仍用产品字段 `workspaces` 也可以，但参数名不要叫 connection）
 
-现有 `muxterm_discover_workspaces_json` 仍是 tmux-only，本轮改为走 `Catalog::discover_sessions` 的扇出（tmux + herdr）。JSON 形状保持 [`WORKSPACE.md`](WORKSPACE.md) §6.2 的 `workspaces: [{id,name,runtime,transport,in_pool}]`。
+现有 `muxterm_discover_workspaces_json` 走 `Catalog::discover_sessions` 的扇出（tmux + herdr）。JSON 形状见 [`WORKSPACE.md`](WORKSPACE.md) §6.2：必须带 **`target`（connect name）**。`id` 含 connect name，避免两台机器同名 session 撞车。
 
 macOS：必须吃这套 FFI。Swift **禁止**长 Herdr 协议。卡从 `runtime_list()` 来，worktree 从 `support()` 来。不是「零 UI 改动」：少硬编码，多绑数据。
 

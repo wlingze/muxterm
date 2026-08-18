@@ -134,11 +134,28 @@ impl Catalog {
     }
 
     /// 扇出到接受该 transport 的 Driver。单个 Driver 失败则跳过，不让整表失败。
+    ///
+    /// `transport_id == "all"` 时，对 local 单例 + 每个 SSH target 各扇出一次，
+    /// 拼接成一张表（同一 session 经 local 和 ssh-self 出现两行，禁止去重）。
     pub fn discover_sessions(
         &mut self,
         transport_id: &str,
         target: &str,
     ) -> anyhow::Result<Vec<SessionCandidate>> {
+        if transport_id == "all" {
+            let mut out = Vec::new();
+            for (tid, tgt) in self.all_connect_names() {
+                let mut rows = self.discover_sessions(&tid, &tgt)?;
+                // 本地 connect name 规范化为 "local"（即使 Catalog target id 是 ""）。
+                if tid == "local" {
+                    for row in &mut rows {
+                        row.target = "local".to_string();
+                    }
+                }
+                out.append(&mut rows);
+            }
+            return Ok(out);
+        }
         let connect = match self.connect(transport_id, target) {
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
@@ -154,6 +171,19 @@ impl Catalog {
             }
         }
         Ok(out)
+    }
+
+    /// C9：connect name 表 = local 单例 + 每个 SSH Host alias。
+    fn all_connect_names(&self) -> Vec<(String, String)> {
+        let mut names = vec![("local".to_string(), "".to_string())];
+        if let Some(ssh) = self.transport("ssh") {
+            if let Ok(targets) = ssh.list_targets() {
+                for t in targets {
+                    names.push(("ssh".to_string(), t.id));
+                }
+            }
+        }
+        names
     }
 
     /// 按 spec 打开工作区：查 Driver → 复用 Connect → Driver.open → 进 Pool。

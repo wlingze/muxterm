@@ -300,3 +300,57 @@ Commit：`fix(catalog): list ssh sessions without attach pty`
 Commit：`fix(linux): debounce font zoom off the gtk key path`
 
 C7 绿之前不要开始 C8。C8 不要动 SSH 列出。每步 `cargo fmt`。禁止 `git add -A`。禁止 push。禁止 `herdr server stop`。禁止不带 `-L muxterm-test-*` 的 `kill-server`。`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。
+
+---
+
+## C9 — 扁平已有的连接 + connect name `all`
+
+> 日期：2026-08-19（`2026-08-19T01:41:31+08:00`）
+> 契约：[`CATALOG.md`](CATALOG.md) §1.4、[`W20-PLAN.md`](W20-PLAN.md) §0、[`TESTING.md`](TESTING.md) §5.16。
+> C0–C8 已在 HEAD `9767e2c`。**不要重做 C7/C8。** 不要 GNU Screen。不要弱化 W13 常量。
+
+用户：快速连接「已有的连接」不要多层目录，进去就是可 attach 的 runtime list。命令面板先列机器（connect name：`local` 与 SSH alias 并列），点进去才是该机器的 runtime list。测试只锁 **local + ssh-self 双份**；不要求 archmini/cd。
+
+### 根因
+
+1. W20 锁死 已有的连接 → 本地 / SSH → Host → session。点 SSH 看到的是 host 名，不是可 attach 行。搜索只滤当前层。
+2. `muxterm_runtime_list_json` 是插件卡，不是可 attach 行。可 attach 行是 `discover_sessions(transport, target)`，没有 `"all"`。
+3. FFI JSON `transport` 是插件 id `"ssh"`，**丢掉 `SessionCandidate.target`（connect name）**。`id` 是 `ssh/tmux/name`，两机同名会撞。
+4. 命令面板 SSH Connect 第一层 host 看得到；第二层 `CoreBridge::discover_workspaces` 仍按旧字段 `windows/attached/created` 解 C5 JSON，失败后空表。
+
+### 要绿的测试（Cursor 已写下，禁止改断言）
+
+| 测试 | 现在为什么红 |
+|---|---|
+| `discover_sessions_all_fans_out_local_and_ssh_targets` | `"all"` 不是 Transport 插件 → 空表 |
+| `tmux_driver_list_honors_test_local_socket_env` | 本地 list 不读 `MUXTERM_TEST_LOCAL_TMUX_SOCKET` |
+| `catalog_all_lists_local_and_ssh_self_duplicates` | 没有 `all`；本地打到用户默认 server |
+| `ffi_discover_sessions_json_includes_target_and_all` | JSON 无 `target`；不接受 `all` |
+| `existing_items_home_is_flat_local_and_ssh_self` | Home 仍是 local/ssh Folder |
+| `existing_row_widget_includes_connect_name` | widget 仍是 `muxterm-existing-row-{runtime}-{id}` |
+| `connect_pick_items_lists_local_then_ssh_aliases` | 只有 SSH host，没有并列的 `local` |
+| `existing_connections_navigation` | 仍断言 local/ssh 目录 |
+| `linux_catalog_ssh_e2e` | 仍点 SSH → Host local |
+| `linux_existing_e2e` | 仍点 `muxterm-existing-local`；widget 无 connect name |
+
+C7 的 `catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list` **保持绿**（API 仍支持 `discover_sessions("ssh","local")`）。
+
+### 实现要点
+
+- `Catalog::discover_sessions`：`transport_id == "all"` 时，对 `local` 的单例 target + 每个 SSH target 各 `discover_sessions` 一次，拼接。单个 connect 失败跳过。**不是**注册名叫 `all` 的 Transport。
+- JSON：`target` = connect name（本地用 `"local"`，即使 Catalog target id 是 `""`）；`id` = `{transport}/{target}/{runtime}/{name}`。`muxterm_discover_sessions_json` 与 `muxterm_discover_workspaces_json` 同一形状。
+- `TmuxDriver::list` 本地分支读 `MUXTERM_TEST_LOCAL_TMUX_SOCKET`（对标 REMOTE env）。生产不设。
+- 已有的连接：`existing_items(Home)` = Back + 扁平 Existing 行（local 行 + 各 SSH 行）。禁止 Folder `existing-local`/`existing-ssh`，禁止 `PanelItem::Host`。探测用 `discover_sessions("all")` 后台线程；`probe_inflight` 空表 → Loading，完成空 → Empty。
+- widget_name = `muxterm-existing-row-{runtime}-{connect}-{id}`。connect = `local` 或 SSH alias。
+- 命令面板：`connect_pick_items` 第一项 `local`，后面 SSH alias。点 `local` → `discover_sessions("local","")`；点 alias → `discover_sessions("ssh", alias)`。第二层 detail 含 `runtime @ connect`。`CoreBridge::discover_workspaces` 必须能解 C5+target JSON（旧 `windows` 字段 `#[serde(default)]`）。
+- `open_panel` / GTK 线程仍禁止同步 `ssh` / 扫 herdr socket。
+- 不要去重 local 与 ssh-self。不要测用户默认 sock。不要 `herdr server stop`。不要不带 `-L muxterm-test-*` 的 `kill-server`。
+
+夹具：`LoopbackSshd::start_with_alias(..., "self")`；两 env 指向同一 `-L muxterm-test-*`；`apply_ssh_config_env`（测试 ssh config **只有** Host `self`，不会碰到用户的 archmini/cd）。`HERDR_SOCKET_PATH` 指空/隔离，禁止连用户 `herdr.sock`。无 sshd eprintln skip，禁止 `#[ignore]`。
+
+Commit（建议拆两刀）：
+
+1. `feat(catalog): fan out discover_sessions all with connect name`
+2. `feat(linux): flatten existing connections into attachable rows`
+
+`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。

@@ -284,7 +284,7 @@ Live 路径不因 Runtime 而改：
 `discover_targets(transport)` = 怎么到那儿（SSH hosts / Local 单例）。  
 `discover_sessions(transport, target)` = 该 target 上各 Driver 的可 attach 格子。不要叫 `discover-connection`。
 
-QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」（施工 [`W20-PLAN.md`](W20-PLAN.md)）：进去按 **Transport** 分目录（本地 / SSH），目录里 tmux session 和 Herdr workspace 用同一套项目行。Runtime 只是徽章和 `support()` 决定的次级动作（worktree）。卡的来源改 `runtime_list()`，不要硬编码三张卡的存在性（widget_name 保持 W20 的）。
+QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」：点进去是**扁平** runtime list（`discover_sessions("all")`），每一行可直接 attach，**不要**本地 / SSH / Host 多层目录。同一 session 在 local 和 ssh-self 上出现两行（`tmux @ local` / `tmux @ self`）。命令面板先列 connect name（`local` 与 SSH alias 并列），点进去才是该机器的 runtime list。Runtime 只是徽章和 `support()` 决定的次级动作。新建项目卡仍来自 `runtime_list()`。施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C9；W20 多层目录作废。
 
 远程 Herdr：Transport `ssh` + Runtime `herdr`。列出用 `ssh … herdr session list` / `workspace list`（和 `ssh … tmux list-sessions` 同类）。打开不要 `herdr --remote`（会在远端装/启 server）：把远端 `herdr.sock` Unix 转发到本机，再走现有 `HerdrSession`。没在跑就跳过，不要替用户启动。探活进 Inventory，不要写在 `window.rs`。
 

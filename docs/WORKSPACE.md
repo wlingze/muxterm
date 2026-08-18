@@ -232,13 +232,22 @@ Discovery 的 JSON 形状（产品）：
 
 ```json
 { "workspaces": [
-    { "id": "local/tmux/yaklang-workspace",
+    { "id": "local/local/tmux/yaklang-workspace",
       "name": "yaklang-workspace",
       "runtime": "tmux",
       "transport": "local",
+      "target": "local",
+      "in_pool": false },
+    { "id": "ssh/self/tmux/yaklang-workspace",
+      "name": "yaklang-workspace",
+      "runtime": "tmux",
+      "transport": "ssh",
+      "target": "self",
       "in_pool": false }
 ]}
 ```
+
+`transport` = 插件 id（`local` / `ssh`）。`target` = **connect name**（本机 `local`，或 SSH Host alias）。禁止把 Host 名写进 `transport` 然后丢掉插件 id。
 
 不要 `{ "sessions": [ { "id": "$4" } ] }`。
 

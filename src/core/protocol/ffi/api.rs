@@ -336,16 +336,25 @@ pub unsafe extern "C" fn muxterm_discover_sessions_json(
         }
         let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
         let target = cstr_opt(target).unwrap_or_default();
+        // transport=all 时 Catalog 扇出全部 connect name（local + SSH alias）。
         match (*h).catalog.discover_sessions(&transport, &target) {
             Ok(rows) => json_string(serde_json::json!({
                 "ok": true,
-                "workspaces": rows.iter().map(|r| serde_json::json!({
-                    "id": format!("{}/{}/{}", r.transport_id, r.runtime_id, r.name),
-                    "name": r.name,
-                    "runtime": r.runtime_id,
-                    "transport": r.transport_id,
-                    "in_pool": false,
-                })).collect::<Vec<_>>(),
+                "workspaces": rows.iter().map(|r| {
+                    let target = if r.transport_id == "local" {
+                        "local".to_string()
+                    } else {
+                        r.target.clone()
+                    };
+                    serde_json::json!({
+                        "id": format!("{}/{}/{}/{}", r.transport_id, target, r.runtime_id, r.name),
+                        "name": r.name,
+                        "runtime": r.runtime_id,
+                        "transport": r.transport_id,
+                        "target": target,
+                        "in_pool": false,
+                    })
+                }).collect::<Vec<_>>(),
             })),
             Err(e) => json_error(e),
         }
@@ -379,13 +388,7 @@ pub extern "C" fn muxterm_discover_workspaces_json(
         match catalog.discover_sessions(&transport, &target) {
             Ok(rows) => json_string(serde_json::json!({
                 "ok": true,
-                "workspaces": rows.iter().map(|r| serde_json::json!({
-                    "id": format!("{}/{}/{}", r.transport_id, r.runtime_id, r.name),
-                    "name": r.name,
-                    "runtime": r.runtime_id,
-                    "transport": r.transport_id,
-                    "in_pool": false,
-                })).collect::<Vec<_>>(),
+                "workspaces": rows.iter().map(session_candidate_json).collect::<Vec<_>>(),
             })),
             Err(error) => json_error(error),
         }
@@ -405,6 +408,22 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
     muxterm_discover_workspaces_json(transport_type, target, socket, config_path, timeout_ms)
 }
 
+/// C9：SessionCandidate → §6.2 JSON（target = connect name；id 含 connect name）。
+fn session_candidate_json(r: &crate::core::catalog::driver::SessionCandidate) -> serde_json::Value {
+    let target = if r.transport_id == "local" {
+        "local".to_string()
+    } else {
+        r.target.clone()
+    };
+    serde_json::json!({
+        "id": format!("{}/{}/{}/{}", r.transport_id, target, r.runtime_id, r.name),
+        "name": r.name,
+        "runtime": r.runtime_id,
+        "transport": r.transport_id,
+        "target": target,
+        "in_pool": false,
+    })
+}
 /// 抓取 status bar 快照（tmux 兼容：`show -g` / `show -w -g` + `display-message`）。
 ///
 /// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是
@@ -2743,5 +2762,28 @@ mod tests {
         assert_eq!(sub["is_dir"], true);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// C9：discover_sessions JSON 必须带 connect name（`target`），并接受 `all`。
+    #[test]
+    fn ffi_discover_sessions_json_includes_target_and_all() {
+        let src = include_str!("api.rs");
+        let start = src
+            .find("pub unsafe extern \"C\" fn muxterm_discover_sessions_json")
+            .expect("muxterm_discover_sessions_json 应存在");
+        let rest = &src[start..];
+        let end = rest
+            .find("pub unsafe extern \"C\" fn muxterm_discover_workspaces_json")
+            .or_else(|| rest.find("\n/// 通过 core 发现"))
+            .unwrap_or(rest.len().min(2500));
+        let body = &rest[..end];
+        assert!(
+            body.contains("\"target\""),
+            "JSON 必须带 target=connect name，否则面板副标题只能是插件 id ssh: {body}"
+        );
+        assert!(
+            body.contains("all"),
+            "discover_sessions_json 必须把 transport=all 交给 Catalog: {body}"
+        );
     }
 }

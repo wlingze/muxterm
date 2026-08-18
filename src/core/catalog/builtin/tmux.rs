@@ -56,7 +56,9 @@ impl RuntimeDriver for TmuxDriver {
             )
             .unwrap_or_default()
         } else {
-            crate::core::discovery::list_local_tmux_sessions(None)
+            // 测试隔离本地 tmux：MUXTERM_TEST_LOCAL_TMUX_SOCKET（对标 REMOTE env）。
+            let local_socket = std::env::var("MUXTERM_TEST_LOCAL_TMUX_SOCKET").ok();
+            crate::core::discovery::list_local_tmux_sessions(local_socket.as_deref())
         };
         Ok(sessions
             .into_iter()

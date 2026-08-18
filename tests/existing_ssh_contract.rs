@@ -242,6 +242,64 @@ fn catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list() {
     );
 }
 
+/// C9：同一隔离 tmux 经 local 和 SSH Host `self` 必须两行。不测 archmini/cd。
+#[test]
+fn catalog_all_lists_local_and_ssh_self_duplicates() {
+    if !loopback_sshd_available() {
+        eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
+        return;
+    }
+    if !tmux_available() {
+        eprintln!("skip: 无 tmux 二进制");
+        return;
+    }
+    let sshd = LoopbackSshd::start_with_alias("cat-self", "self").expect("启动 Host self sshd");
+    sshd.apply_ssh_config_env();
+    assert_eq!(sshd.alias, "self");
+
+    let socket = unique_socket("cat-self-tmux");
+    create_session(&socket, "mux-dup", 80, 24);
+    let _tmux_guard = TmuxGuard {
+        socket: socket.clone(),
+    };
+    std::env::set_var("MUXTERM_TEST_LOCAL_TMUX_SOCKET", &socket);
+    std::env::set_var("MUXTERM_TEST_REMOTE_TMUX_SOCKET", &socket);
+    std::env::set_var(
+        "HERDR_SOCKET_PATH",
+        format!("/tmp/muxterm-no-herdr-{}", std::process::id()),
+    );
+    struct EnvGuard;
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("MUXTERM_TEST_LOCAL_TMUX_SOCKET");
+            std::env::remove_var("MUXTERM_TEST_REMOTE_TMUX_SOCKET");
+            std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
+            std::env::remove_var("HERDR_SOCKET_PATH");
+        }
+    }
+    let _env = EnvGuard;
+
+    let mut cat = Catalog::with_builtins();
+    let sessions = cat
+        .discover_sessions("all", "")
+        .expect("discover_sessions(all) 不应 Err");
+    assert!(
+        sessions.iter().any(|s| {
+            s.runtime_id == "tmux" && s.transport_id == "local" && s.name == "mux-dup"
+        }),
+        "all 必须含 local 的 mux-dup: {sessions:?}"
+    );
+    assert!(
+        sessions.iter().any(|s| {
+            s.runtime_id == "tmux"
+                && s.transport_id == "ssh"
+                && s.target == "self"
+                && s.name == "mux-dup"
+        }),
+        "all 必须含 ssh-self 的 mux-dup（双份）: {sessions:?}"
+    );
+}
+
 /// 隔离 tmux 清理（只杀自己的 -L server）。
 struct TmuxGuard {
     socket: String,

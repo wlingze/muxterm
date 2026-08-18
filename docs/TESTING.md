@@ -365,7 +365,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 
 ### 5.13 已有的连接 + 新建 Herdr（W20）
 
-规格：[`W20-PLAN.md`](W20-PLAN.md)。一级仍是预设项目；最上固定「已有的连接」；二级本地 / SSH；行样式与 Project 相同。
+规格：[`W20-PLAN.md`](W20-PLAN.md) §0（C9 扁平列表）。一级仍是预设项目；最上固定「已有的连接」；点进去就是可 attach 行，不要本地 / SSH 目录。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -373,8 +373,8 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 | `build_root_items` | 第 0 项 `muxterm-existing-connections` 对应 Folder |
 | IsolatedHerdr discover | 含测试 workspace；**不含**用户默认 `w2` |
 | `existing_ssh_contract` | LoopbackSshd：远端 tmux **和** Herdr 都能列出 |
-| `linux_panel_e2e` | click 已有的连接 → local/ssh 目录 → Back |
-| `linux_existing_e2e` | 面板 click 本地 Herdr 行 → VTE 含 token |
+| `linux_panel_e2e` | click 已有的连接 → **没有** local/ssh 目录；Back 回根 |
+| `linux_existing_e2e` | 面板 click `muxterm-existing-row-herdr-local-<ws>` → VTE 含 token |
 | `muxterm-runtime-herdr` | 新建项目有 Herdr 卡 |
 
 禁止：测试连 `/home/wlz/.config/herdr/herdr.sock`；`herdr server stop`；生产 Runtime 走 `Command::new("herdr")`；GTK 线程同步 ssh；没有 tmux/Herdr 的 SSH host 仍占满列表。
@@ -415,13 +415,44 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 | `ssh_hosts_empty_after_probe_must_not_stay_loading` | `ExistingPanelState.probe_inflight`：探测完空表是 Empty，不是永远 Loading |
 | `spawn_existing_ssh_probe_must_fan_out` | 最多 4 路并发，禁止串行 map |
 | `open_panel_must_not_discover_sessions_on_caller` | GTK/`open_panel` 禁止同步 `discover_sessions` |
-| `linux_catalog_ssh_e2e` | 面板：已有的连接 → SSH → `muxterm-existing-host-local` → `muxterm-existing-row-tmux-mux-ssh-local` |
+| `linux_catalog_ssh_e2e` | 扁平已有的连接：`muxterm-existing-row-tmux-local-mux-dup` **和** `muxterm-existing-row-tmux-self-mux-dup` |
 | `adjust_font_must_not_persist_config_synchronously` | `fn adjust_font` 禁止同步 `persist_config` |
 | `linux_zoom_input_e2e` | attach 后 `test_increase_font` / Enter 立刻把控制权还给 GTK |
 
-夹具：`LoopbackSshd::start_with_alias(..., "local")`；隔离 `-L muxterm-test-*`；`apply_ssh_config_env`。无 sshd eprintln skip，禁止 `#[ignore]`。
+夹具：C7 仍用 `LoopbackSshd::start_with_alias(..., "local")`。C9 双份用 Host `self`，见 §5.16。隔离 `-L muxterm-test-*`；`apply_ssh_config_env`。无 sshd eprintln skip，禁止 `#[ignore]`。
 
 禁止：列出走 `-tt` / `ConnectTimeout=10`；测用户默认 tmux/herdr.sock；把 Host `local` 当成 Local Transport；改断言把 Loading 算成功；缩放热路径同步写 `config.toml`。
+
+### 5.16 扁平已有的连接 + connect name `all`（C9）
+
+规格：[`CATALOG.md`](CATALOG.md) §1.4，施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C9。W20 多层目录作废。
+
+connect name = `local` + SSH Host alias。`discover_sessions("all","")` 扇出。同一隔离 tmux 经 local 和 Host `self` 必须**两行**。不要求 `archmini` / `cd`。
+
+| 测试 | 必须抓住 |
+|---|---|
+| `discover_sessions_all_fans_out_local_and_ssh_targets` | mock：`all` 返回 local 行 + ssh/`self` 行，同名 |
+| `tmux_driver_list_honors_test_local_socket_env` | `MUXTERM_TEST_LOCAL_TMUX_SOCKET` → 本地 `tmux -L` |
+| `catalog_all_lists_local_and_ssh_self_duplicates` | LoopbackSshd Host `self`；两 env 同一 `-L`；`mux-dup` 两份 |
+| `ffi_discover_sessions_json_includes_target_and_all` | JSON 有 `target`；源码接受 `all` |
+| `existing_items_home_is_flat_local_and_ssh_self` | Home = Back + 两行 Existing，禁止 local/ssh Folder、禁止 Host 行 |
+| `existing_row_widget_includes_connect_name` | `muxterm-existing-row-tmux-local-mux-dup` / `…-tmux-self-mux-dup` |
+| `connect_pick_items_lists_local_then_ssh_aliases` | 命令面板机器表：`local` 然后 `self` |
+| `linux_panel_e2e` `existing_connections_navigation` | 无 `muxterm-existing-local` / `muxterm-existing-ssh` |
+| `linux_catalog_ssh_e2e` | 点已有的连接后两行都在；禁止再点 SSH 目录 |
+| `linux_existing_e2e` | `muxterm-existing-row-herdr-local-<ws>`，不要先点本地目录 |
+
+门禁：
+
+```
+cargo test --lib catalog:: -- --test-threads=1
+cargo test --test existing_ssh_contract -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_catalog_ssh_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_panel_e2e -- --test-threads=1
+```
+
+禁止：去重掉 ssh-self；测用户默认 tmux/herdr.sock；强求 archmini/cd；恢复多层目录把测试改回去。
 
 门禁（C7/C8 之后）：
 
