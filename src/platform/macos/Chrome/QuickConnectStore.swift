@@ -1,22 +1,12 @@
 import Foundation
 
-/// QuickConnect 数据（Recent + Project）的持久化与列表管理（纯逻辑，便于单测）。
+/// QuickConnect 数据（Recent + Project）的列表管理（纯逻辑，便于单测）。
 ///
-/// - Recent：最近连接过的目标（最多 N 条），去重，最近的在最前。
-/// - Project：用户配置的预设目标。
-/// 二者共用同一个 [`TargetConfig`] 结构与显示逻辑。
-///
-/// 落盘格式为 TOML（`~/.config/muxterm/quickconnect.toml`），**只保存
-/// projects**；recents 由连接池（ConnectionPool）在运行时派生，不落盘。
-/// ```toml
-/// [[projects]]
-/// name = "yaklang"
-/// runtime = "tmux"
-/// transport = "ssh"
-/// transport_name = "ryzen"
-/// path = "~/Developer/yaklang-workspace"
-/// ...
-/// ```
+/// - Recent：最近连接过的目标（最多 N 条），去重，最近的在最前；由连接池
+///   在运行时派生，不落盘。
+/// - Project：用户配置的预设目标，保存在统一 `config.toml` 的 `[[projects]]`。
+///   本类不再编码 TOML；持久化通过注入的 `persistProjects` 闭包交给调用方
+///   （macOS App 使用 CoreBridge 事务写 Core）。
 public final class QuickConnectStore {
     /// 最近连接记录条数上限。
     public static let maxRecent = 20
@@ -24,11 +14,28 @@ public final class QuickConnectStore {
     public private(set) var recents: [TargetConfig]
     public private(set) var projects: [TargetConfig]
 
-    /// 文件 URL 注入点（测试用）；nil 时不落盘。
+    /// 项目变更时的持久化回调；nil 表示不落盘（纯内存/测试）。
+    private let persistProjects: (([TargetConfig]) -> Void)?
+
+    /// 遗留 `quickconnect.toml` 文件注入点（测试/迁移用）。
     private let fileURL: URL?
 
+    /// Core-backed store：初始 projects 来自 `configDescribeJSON` 快照，变更
+    /// 通过 `persistProjects` 写回统一配置。
+    public init(
+        projects initial: [TargetConfig] = [],
+        persistProjects: @escaping ([TargetConfig]) -> Void
+    ) {
+        self.recents = []
+        self.projects = initial
+        self.persistProjects = persistProjects
+        self.fileURL = nil
+    }
+
+    /// 纯内存 store（测试用）。
     public init(fileURL: URL? = nil) {
         self.fileURL = fileURL
+        self.persistProjects = nil
         self.recents = []
         self.projects = []
         if let fileURL {
@@ -58,11 +65,11 @@ public final class QuickConnectStore {
         let id = QuickConnect.uniqueID(for: config)
         if let idx = projects.firstIndex(where: { QuickConnect.uniqueID(for: $0) == id }) {
             projects[idx] = config
-            persist()
+            persistProjects?(projects)
             return false
         }
         projects.append(config)
-        persist()
+        persistProjects?(projects)
         return true
     }
 
@@ -70,13 +77,12 @@ public final class QuickConnectStore {
     public func removeProject(config: TargetConfig) {
         let id = QuickConnect.uniqueID(for: config)
         projects.removeAll { QuickConnect.uniqueID(for: $0) == id }
-        persist()
+        persistProjects?(projects)
     }
 
-    /// 清空 recent。
+    /// 清空 recent（recent 不落盘；项目原样保留）。
     public func clearRecents() {
         recents.removeAll()
-        persist()
     }
 
     /// 序列化（TOML）：只写 projects，recent 不持久化。
@@ -138,13 +144,42 @@ public final class QuickConnectStore {
         decode(data)
     }
 
-    private func persist() {
-        guard let fileURL else { return }
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? encode().write(to: fileURL, options: .atomic)
+    /// Core project 数组 ↔ TargetConfig 转换（与 Rust `ProjectDocument` 对齐）。
+    public static func targetConfigs(from projects: [[String: Any]]) -> [TargetConfig] {
+        projects.compactMap { project in
+            guard let name = project["name"] as? String,
+                  let path = project["path"] as? String,
+                  let runtimeRaw = (project["runtime"] as? [String: Any])?["id"] as? String,
+                  let runtime = TargetRuntime(rawValue: runtimeRaw)
+            else { return nil }
+            let transportRaw = (project["transport"] as? [String: Any])?["id"] as? String ?? "local"
+            let target = (project["transport"] as? [String: Any])?["target"] as? String ?? ""
+            let transport: TargetTransport = transportRaw == "ssh" ? .ssh(name: target) : .local
+            return TargetConfig(name: name, runtime: runtime, transport: transport, path: path)
+        }
+    }
+
+    /// TargetConfig 数组 → Core `[[projects]]` JSON（Rust `ProjectDocument` 形状）。
+    public static func projectJSON(from projects: [TargetConfig]) -> [[String: Any]] {
+        projects.map { project in
+            let transport: [String: Any]
+            switch project.transport {
+            case .local:
+                transport = ["id": "local", "target": ""]
+            case .ssh(let name):
+                transport = ["id": "ssh", "target": name]
+            }
+            let transportID = transport["id"] as? String ?? "local"
+            return [
+                "id": "\(project.name)@\(transportID)",
+                "name": project.name,
+                "path": project.path,
+                "runtime": ["id": project.runtime.rawValue],
+                "transport": transport,
+                "command": [],
+                "env": [:]
+            ]
+        }
     }
 
     // MARK: - TOML 编码

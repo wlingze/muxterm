@@ -109,6 +109,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var statusBarMode = StatusBarMode.tmux
         var tabBarPosition = TabBarPosition.bottom
         var poolMaxSlots = 4
+        var projects: [TargetConfig] = []
     }
 
     private static func resolvedSettings(from bridge: CoreBridge) -> ResolvedSettings {
@@ -138,6 +139,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         if let pool = values["pool"] as? [String: Any] {
             resolved.poolMaxSlots = pool["max_slots"] as? Int ?? resolved.poolMaxSlots
+        }
+        if let projects = values["projects"] as? [[String: Any]] {
+            resolved.projects = QuickConnectStore.targetConfigs(from: projects)
         }
         return resolved
     }
@@ -193,13 +197,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.appearance = initialAppearance
         content.appearance = initialAppearance
 
-        // QuickConnect 持久化：存到 ~/.config/muxterm/quickconnect.toml（TOML，
-        // 与主 config.toml 同一目录，方便用户手改/备份）。
-        let configDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/muxterm", isDirectory: true)
-        quickConnectStore = injectedQuickConnectStore ?? QuickConnectStore(
-            fileURL: configDir.appendingPathComponent("quickconnect.toml")
-        )
+        // Project 列表来自 Core 快照；变更通过 CoreBridge 事务写回统一
+        // config.toml（`[[projects]]`），不再读写 quickconnect.toml。
+        if let injectedQuickConnectStore {
+            quickConnectStore = injectedQuickConnectStore
+        } else {
+            let configBridge = bridge
+            quickConnectStore = QuickConnectStore(projects: resolved.projects) { updated in
+                do {
+                    let transaction = try configBridge.configBegin()
+                    try configBridge.configPatch(
+                        transaction: transaction,
+                        operations: [[
+                            "op": "replace",
+                            "path": "/projects",
+                            "value": QuickConnectStore.projectJSON(from: updated),
+                        ]]
+                    )
+                    try configBridge.configCommit(transaction: transaction)
+                } catch {
+                    // 失败时保留内存列表，不覆盖用户文件；下次启动仍读 Core 快照。
+                    NSLog("muxterm: failed to persist projects: %@", error.localizedDescription)
+                }
+            }
+        }
         super.init(window: window)
         window.delegate = self
         wireTerminalManagerCallbacks()
