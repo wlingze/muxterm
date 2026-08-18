@@ -149,9 +149,9 @@ public final class QuickConnectStore {
         projects.compactMap { project in
             guard let name = project["name"] as? String,
                   let path = project["path"] as? String,
-                  let runtimeRaw = (project["runtime"] as? [String: Any])?["id"] as? String,
-                  let runtime = TargetRuntime(rawValue: runtimeRaw)
+                  let runtimeRaw = (project["runtime"] as? [String: Any])?["id"] as? String
             else { return nil }
+            guard let runtime = TargetRuntime(rawValue: runtimeRaw) else { return nil }
             let transportRaw = (project["transport"] as? [String: Any])?["id"] as? String ?? "local"
             let target = (project["transport"] as? [String: Any])?["target"] as? String ?? ""
             let transport: TargetTransport = transportRaw == "ssh" ? .ssh(name: target) : .local

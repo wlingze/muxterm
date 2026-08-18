@@ -4,6 +4,7 @@ import Foundation
 public enum TargetRuntime: String, Equatable, Sendable, CaseIterable {
     case shell
     case tmux
+    case herdr
 
     public var label: String { rawValue }
 }
