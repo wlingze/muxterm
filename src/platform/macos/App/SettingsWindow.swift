@@ -7,7 +7,7 @@ import Foundation
 /// field only needs a manifest entry to appear here. Controls are keyed by JSON
 /// Pointer and are always written back through `SettingsService` transactions,
 /// never by parsing or rewriting `config.toml` in Swift.
-final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSControlTextEditingDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private let bridge: CoreBridge
     private var controls: [String: NSView] = [:]
     private var baselines: [String: Any] = [:]
