@@ -1,7 +1,7 @@
-//! C7：面板 click SSH Host `local` → 隔离 tmux 行出现。
+//! C9：面板 click 已有的连接 → 扁平列表同时有 local 与 ssh-self 双份隔离 tmux。
 //!
 //! 本 crate 只构造一个 AppWindow。走面板 click，不直接 test_open_spec 冒充。
-//! Host alias 固定 `local`（连 127.0.0.1），不是 Local Transport。
+//! Host alias 固定 `self`（连 127.0.0.1）。不要求 archmini/cd。
 //! 隔离 `-L muxterm-test-*`；无 sshd eprintln skip，禁止 #[ignore]。
 
 #![cfg(feature = "gtk")]
@@ -48,9 +48,9 @@ fn activate_named(app: &AppWindow, name: &str) {
     row.activate();
 }
 
-/// 已有的连接 → SSH → Host local → 隔离 tmux session 行。
+/// 已有的连接（扁平）→ local + ssh-self 各一行同一隔离 session。
 #[test]
-fn linux_catalog_panel_lists_ssh_host_local_tmux() {
+fn linux_catalog_panel_lists_local_and_ssh_self_duplicates() {
     if skip_no_display() {
         return;
     }
@@ -65,14 +65,19 @@ fn linux_catalog_panel_lists_ssh_host_local_tmux() {
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
         let sshd =
-            LoopbackSshd::start_with_alias("gtk-cat-local", "local").expect("启动 Host local sshd");
+            LoopbackSshd::start_with_alias("gtk-cat-self", "self").expect("启动 Host self sshd");
         sshd.apply_ssh_config_env();
-        let socket = unique_socket("gtk-cat-local");
-        create_session(&socket, "mux-ssh-local", 80, 24);
+        let socket = unique_socket("gtk-cat-self");
+        create_session(&socket, "mux-dup", 80, 24);
         let _tmux = TmuxGuard {
             socket: socket.clone(),
         };
+        std::env::set_var("MUXTERM_TEST_LOCAL_TMUX_SOCKET", &socket);
         std::env::set_var("MUXTERM_TEST_REMOTE_TMUX_SOCKET", &socket);
+        std::env::set_var(
+            "HERDR_SOCKET_PATH",
+            format!("/tmp/muxterm-no-herdr-{}", std::process::id()),
+        );
 
         let cfg = Config::default();
         let app = AppWindow::new(cfg, load_theme());
@@ -89,34 +94,43 @@ fn linux_catalog_panel_lists_ssh_host_local_tmux() {
         activate_named(&app, "muxterm-existing-connections");
         pump_main_loop(60);
 
-        find_by_name(&app.window, "muxterm-existing-ssh").expect("Home 应有 SSH 目录");
-        activate_named(&app, "muxterm-existing-ssh");
-        pump_main_loop(40);
-
         let deadline = Instant::now() + PROBE_TIMEOUT;
-        let mut saw_host = false;
+        let mut saw_local = false;
+        let mut saw_self = false;
         while Instant::now() < deadline {
             app.test_poll_once();
             pump_main_loop(40);
-            if find_by_name(&app.window, "muxterm-existing-host-local").is_some() {
-                saw_host = true;
+            saw_local |=
+                find_by_name(&app.window, "muxterm-existing-row-tmux-local-mux-dup").is_some();
+            saw_self |=
+                find_by_name(&app.window, "muxterm-existing-row-tmux-self-mux-dup").is_some();
+            if saw_local && saw_self {
                 break;
             }
         }
         assert!(
-            saw_host,
-            "SSH 目录必须出现 Host local（muxterm-existing-host-local）。loading={:?}",
+            find_by_name(&app.window, "muxterm-existing-local").is_none(),
+            "禁止再出现 SSH/本地目录"
+        );
+        assert!(
+            find_by_name(&app.window, "muxterm-existing-ssh").is_none(),
+            "禁止再出现 SSH 目录；runtime list 必须扁平"
+        );
+        assert!(
+            find_by_name(&app.window, "muxterm-existing-host-self").is_none()
+                && find_by_name(&app.window, "muxterm-existing-host-local").is_none(),
+            "禁止 Host 行；点已有的连接就应看到 session"
+        );
+        assert!(
+            saw_local && saw_self,
+            "local + ssh-self 必须双份 mux-dup。local={saw_local} self={saw_self} loading={:?}",
             find_by_name(&app.window, "muxterm-existing-ssh-loading").is_some()
         );
 
-        activate_named(&app, "muxterm-existing-host-local");
-        pump_main_loop(60);
-        find_by_name(&app.window, "muxterm-existing-row-tmux-mux-ssh-local").unwrap_or_else(|| {
-            panic!("Host local 下必须有隔离 tmux 行 muxterm-existing-row-tmux-mux-ssh-local")
-        });
-
+        std::env::remove_var("MUXTERM_TEST_LOCAL_TMUX_SOCKET");
         std::env::remove_var("MUXTERM_TEST_REMOTE_TMUX_SOCKET");
         std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
+        std::env::remove_var("HERDR_SOCKET_PATH");
         app.shutdown();
         pump_main_loop(80);
     });

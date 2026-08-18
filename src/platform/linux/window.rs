@@ -137,8 +137,7 @@ struct UiState {
     pending_existing_ssh:
         std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
     /// C7：本地已有连接探测结果队列（open_panel 不阻塞 GTK）。
-    pending_local_existing:
-        std::collections::VecDeque<std::sync::mpsc::Receiver<Vec<ExistingEntry>>>,
+    pending_local_probe: std::collections::VecDeque<std::sync::mpsc::Receiver<Vec<ExistingEntry>>>,
     /// W21 测试钩子：最近一次经 PaneView input_cb 的原始输入。
     last_raw_input: Vec<u8>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
@@ -469,7 +468,7 @@ impl AppWindow {
             existing: Rc::new(RefCell::new(ExistingPanelState::default())),
             existing_ssh_probing: false,
             pending_existing_ssh: std::collections::VecDeque::new(),
-            pending_local_existing: std::collections::VecDeque::new(),
+            pending_local_probe: std::collections::VecDeque::new(),
             last_raw_input: Vec::new(),
             reconnecting: false,
             reconnect_retry_at: None,
@@ -2505,12 +2504,14 @@ fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> 
 
 /// C7：本地已有的连接探测（Catalog::discover_sessions("local","")）后台跑。
 fn spawn_local_existing_probe(s: &mut UiState) {
+    // C9：一张扁平 runtime list = discover_sessions("all")（local + 每个 SSH）。
+    s.existing.borrow_mut().probe_inflight = true;
     let (tx, rx) = std::sync::mpsc::channel::<Vec<ExistingEntry>>();
-    s.pending_local_existing.push_back(rx);
+    s.pending_local_probe.push_back(rx);
     std::thread::spawn(move || {
         let mut catalog = crate::core::catalog::Catalog::with_builtins();
         let entries = catalog
-            .discover_sessions("local", "")
+            .discover_sessions("all", "")
             .unwrap_or_default()
             .iter()
             .map(candidate_to_existing)
@@ -2525,12 +2526,12 @@ fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
     while !done {
         let result = {
             let mut s = state.borrow_mut();
-            let Some(rx) = s.pending_local_existing.front() else {
+            let Some(rx) = s.pending_local_probe.front() else {
                 break;
             };
             match rx.try_recv() {
                 Ok(r) => {
-                    s.pending_local_existing.pop_front();
+                    s.pending_local_probe.pop_front();
                     Some(r)
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -2538,13 +2539,33 @@ fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
                     None
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    s.pending_local_existing.pop_front();
+                    s.pending_local_probe.pop_front();
                     None
                 }
             }
         };
         if let Some(entries) = result {
-            state.borrow().existing.borrow_mut().locals = entries;
+            let s = state.borrow();
+            let mut ex = s.existing.borrow_mut();
+            ex.locals = entries
+                .iter()
+                .filter(|e| !matches!(&e.transport, TargetTransport::Ssh { .. }))
+                .cloned()
+                .collect();
+            let mut hosts = Vec::new();
+            let mut remote = std::collections::HashMap::new();
+            for e in entries {
+                if let TargetTransport::Ssh { name } = &e.transport {
+                    if !hosts.contains(name) {
+                        hosts.push(name.clone());
+                    }
+                    remote.entry(name.clone()).or_insert_with(Vec::new).push(e);
+                }
+            }
+            ex.hosts = hosts;
+            ex.remote = remote;
+            ex.probe_inflight = false;
+            drop(ex);
             crate::platform::linux::quickconnect_panel::refresh_current();
         }
     }
@@ -3799,7 +3820,7 @@ fn open_ssh_connect(state: &Rc<RefCell<UiState>>, parent: &Window) {
             return;
         }
     };
-    let items = tmux_dialog::ssh_host_pick_items(&hosts);
+    let items = tmux_dialog::connect_pick_items(&hosts);
     let st = state.clone();
     let win = parent.clone();
     crate::platform::linux::quick_pick::show(
@@ -3810,16 +3831,24 @@ fn open_ssh_connect(state: &Rc<RefCell<UiState>>, parent: &Window) {
             let Some(item) = picked else {
                 return;
             };
-            open_ssh_sessions(&st, &win, item.id);
+            open_connect_sessions(&st, &win, item.id);
         },
     );
 }
 
-fn open_ssh_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, alias: String) {
-    let sessions = CoreBridge::discover_workspaces("ssh", Some(&alias), None).unwrap_or_default();
-    let items = tmux_dialog::tmux_session_pick_items(&sessions);
+/// C9：命令面板第二层 = 该 connect 的 runtime list（local 或 SSH alias）。
+fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect: String) {
+    let (transport, target) = if connect == "local" {
+        ("local", "")
+    } else {
+        ("ssh", connect.as_str())
+    };
+    let sessions =
+        CoreBridge::discover_workspaces(transport, Some(target), None).unwrap_or_default();
+    let items = tmux_dialog::connect_session_pick_items(&sessions, &connect);
     let st = state.clone();
     let win = parent.clone();
+    let connect_for_attach = connect.clone();
     crate::platform::linux::quick_pick::show(
         parent,
         &i18n::tr(Key::ChooseWorkspace),
@@ -3829,20 +3858,30 @@ fn open_ssh_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, alias: Strin
                 return;
             };
             if tmux_dialog::is_create_session_id(&item.id) {
-                let alias = alias.clone();
+                let connect = connect_for_attach.clone();
                 let st = st.clone();
                 crate::platform::linux::pane_switcher::show_rename(&win, "muxterm", move |name| {
                     let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    match CoreBridge::create_workspace("ssh", Some(&alias), None, &name, &dir) {
-                        Ok(created) => connect_target(
-                            &st,
-                            TargetConfig::tmux_session(
-                                created,
-                                TargetTransport::Ssh {
-                                    name: alias.clone(),
-                                },
-                            ),
-                        ),
+                    let transport = if connect == "local" { "local" } else { "ssh" };
+                    let target = if connect == "local" {
+                        None
+                    } else {
+                        Some(connect.as_str())
+                    };
+                    match CoreBridge::create_workspace(transport, target, None, &name, &dir) {
+                        Ok(created) => {
+                            let cfg = if connect == "local" {
+                                TargetConfig::tmux_session(created, TargetTransport::Local)
+                            } else {
+                                TargetConfig::tmux_session(
+                                    created,
+                                    TargetTransport::Ssh {
+                                        name: connect.clone(),
+                                    },
+                                )
+                            };
+                            connect_target(&st, cfg);
+                        }
                         Err(e) => tracing::error!(
                             target = "muxterm::linux",
                             "create remote tmux session: {e}"
@@ -3850,15 +3889,17 @@ fn open_ssh_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, alias: Strin
                     }
                 });
             } else {
-                connect_target(
-                    &st,
+                let cfg = if connect_for_attach == "local" {
+                    TargetConfig::tmux_session(item.id, TargetTransport::Local)
+                } else {
                     TargetConfig::tmux_session(
                         item.id,
                         TargetTransport::Ssh {
-                            name: alias.clone(),
+                            name: connect_for_attach.clone(),
                         },
-                    ),
-                );
+                    )
+                };
+                connect_target(&st, cfg);
             }
         },
     );
@@ -4020,6 +4061,18 @@ mod tests {
         assert!(
             body.contains("chunks(") || spawns >= 2,
             "spawn_existing_ssh_probe 必须 4 路并发（chunks / scope / 每 host spawn），禁止串行 discover_sessions。body={body}"
+        );
+    }
+
+    /// C9：已有的连接探测必须走 discover_sessions("all")，才能一张表同时有 local 和 ssh-self。
+    #[test]
+    fn existing_probe_uses_discover_sessions_all() {
+        let src = include_str!("window.rs");
+        let local = fn_src(src, "spawn_local_existing_probe");
+        let ssh = fn_src(src, "spawn_existing_ssh_probe");
+        assert!(
+            local.contains("discover_sessions(\"all\"") || ssh.contains("discover_sessions(\"all\""),
+            "spawn_local_existing_probe 或 spawn_existing_ssh_probe 必须调用 discover_sessions(\"all\")"
         );
     }
 

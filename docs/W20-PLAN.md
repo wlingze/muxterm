@@ -12,7 +12,9 @@
 
 ---
 
-## 0. 交互（锁死，不要自作主张改层级）
+## 0. 交互（C9 起：扁平列表。本地 / SSH / Host 多层目录作废）
+
+施工与门禁：[`CATALOG-PLAN.md`](CATALOG-PLAN.md) C9。下面覆盖本节旧的「本地 / SSH 两个目录」。
 
 ```
 工作区 tab
@@ -22,32 +24,23 @@
 
 点「已有的连接」
   ← 返回              muxterm-existing-back
-  本地                muxterm-existing-local
-  SSH                 muxterm-existing-ssh
-
-点「本地」
-  ← 返回
-  每一行 = 本机一条活着的 tmux session 或 Herdr workspace
-  展示与 Project 行相同（title + subtitle `tmux @ local` / `herdr @ local`）
-  widget_name = muxterm-existing-row-<runtime>-<id>
-  空：dim label muxterm-existing-empty，不要 panic
-
-点「SSH」
-  ← 返回
-  只列出「探测到至少一条 tmux 或 Herdr」的 Host
-  行样式对齐现在的 SSH 选择（含 W15 可达性灯）
-  widget_name = muxterm-existing-host-<alias>
-  探测中：muxterm-existing-ssh-loading，列表可先空，回来再填
+  每一行 = 一条可直接 attach 的 tmux session 或 Herdr workspace
+  来源：discover_sessions("all")
+  展示：title + subtitle `tmux @ local` / `tmux @ self` / `herdr @ local` …
+  widget_name = muxterm-existing-row-<runtime>-<connect>-<id>
+  探测中：muxterm-existing-ssh-loading；空：muxterm-existing-empty
+  禁止 muxterm-existing-local / muxterm-existing-ssh / muxterm-existing-host-*
   禁止在 GTK 线程里同步 ssh
 
-点某个 Host
-  ← 返回
-  该机上的 tmux session + Herdr workspace，副标题 `tmux @ <alias>` / `herdr @ <alias>`
+同一隔离 session 经 local 和 LoopbackSshd Host `self` 列出 = 两行（双份）。
+不要求列表里出现 archmini / cd。
 ```
 
 点活 session 行 = **只 attach**，不要走 ProjectConnectFlow 的「没有就 create」。失败：日志 + 已有错误路径，不许 panic。
 
-搜索框：在子目录里只过滤当前层。`已有的连接` 自己要能被「已有」「existing」搜到。
+搜索框：过滤这张扁平表（title + subtitle）。`已有的连接` 自己要能被「已有」「existing」搜到。
+
+命令面板：先列 connect name（`local` 与 SSH alias 并列），点进去才是该机器的 runtime list（带 `runtime @ connect name`）。
 
 ---
 
@@ -204,12 +197,12 @@ ssh -nNT -o BatchMode=yes -o ExitOnForwardFailure=yes \
 |---|---|---|
 | W20a | `src/core/quickconnect/model.rs` | `TargetRuntime::Herdr`；`from_str("herdr")`；`subtitle` 含 `herdr @` |
 | W20b | `quickconnect_panel.rs` 单测 | `build_root_items` 第 0 项 Folder existing-connections；第末 NewProject |
-| W20c | 同文件 | `existing_items(Home)` 含 Local + SSH 两个 Folder + Back |
+| W20c | 同文件 | `existing_items(Home)` = Back + 扁平 Existing 行（local + ssh-self 双份），禁止 local/ssh Folder |
 | W20d | `src/core/discovery/existing.rs` 或单测 | IsolatedHerdr：local discover 含刚 create 的 workspace_id；**不含**用户默认 w2 |
 | W20e | `tests/existing_ssh_contract.rs` | LoopbackSshd + 远端 `-L muxterm-test-*` tmux session 出现在 discover；再加 IsolatedHerdr 出现 herdr 行 |
-| W20f | `tests/linux_panel_e2e.rs`（同一 Window 生命周期） | `find_by_name(..., "muxterm-existing-connections")`；click 后有 `muxterm-existing-local` 和 `muxterm-existing-ssh`；Back 回到根且 New Project 还在 |
+| W20f | `tests/linux_panel_e2e.rs` | click 已有的连接后**没有** `muxterm-existing-local` / `muxterm-existing-ssh`；有 Back；Back 回到根且 New Project 还在 |
 | W20g | `tests/linux_target_config_e2e.rs` 或 panel crate | `muxterm-runtime-herdr` 存在；点它后保存出 `TargetRuntime::Herdr` |
-| W20h | `tests/linux_existing_e2e.rs` | 一个 AppWindow：IsolatedHerdr 播种 token → 面板本地目录出现该 workspace → click → VTE/`search_all` 含 token |
+| W20h | `tests/linux_existing_e2e.rs` | 一个 AppWindow：IsolatedHerdr 播种 token → 扁平列表 `muxterm-existing-row-herdr-local-<ws>` → click → VTE/`search_all` 含 token |
 
 W20f 继续遵守 `linux_panel_e2e`「整个 crate 一个 Window」；不要新开第二个 present。
 

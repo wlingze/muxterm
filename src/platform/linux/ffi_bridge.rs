@@ -482,11 +482,27 @@ pub struct SshHostEntry {
 }
 
 /// core discovery 返回的工作区候选摘要（产品名，不是 tmux session）。
+///
+/// C9：JSON 带 `target`（connect name）+ 新 id 形状；旧 `windows/attached/created`
+/// 字段保留并默认缺省，老调用方不炸。
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct WorkspaceCandidate {
     pub name: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub runtime: String,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub in_pool: bool,
+    #[serde(default)]
     pub windows: u32,
+    #[serde(default)]
     pub attached: bool,
+    #[serde(default)]
     pub created: u64,
 }
 

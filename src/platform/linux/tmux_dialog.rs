@@ -49,6 +49,17 @@ pub fn ssh_host_pick_items(hosts: &[SshHostEntry]) -> Vec<QuickPickItem> {
         .collect()
 }
 
+/// C9：命令面板机器表。connect name = `local` + SSH Host alias 并列。
+pub fn connect_pick_items(hosts: &[SshHostEntry]) -> Vec<QuickPickItem> {
+    let mut items = vec![QuickPickItem {
+        id: "local".into(),
+        label: "local".into(),
+        detail: Some("本机".into()),
+    }];
+    items.extend(ssh_host_pick_items(hosts));
+    items
+}
+
 /// 工作区候选列表（首行永远是新建）。
 pub fn tmux_session_pick_items(sessions: &[WorkspaceCandidate]) -> Vec<QuickPickItem> {
     let mut items = Vec::with_capacity(sessions.len() + 1);
@@ -78,6 +89,34 @@ pub fn tmux_session_pick_items(sessions: &[WorkspaceCandidate]) -> Vec<QuickPick
                     &[("count", &s.windows.to_string())],
                 )
             )),
+        });
+    }
+    items
+}
+
+/// C9：命令面板第二层 = 该 connect 的 runtime list，detail 带 `runtime @ connect`。
+pub fn connect_session_pick_items(
+    sessions: &[WorkspaceCandidate],
+    connect: &str,
+) -> Vec<QuickPickItem> {
+    let mut items = Vec::with_capacity(sessions.len() + 1);
+    items.push(QuickPickItem {
+        id: CREATE_ID.into(),
+        label: crate::platform::i18n::tr(crate::platform::i18n::Key::TmuxCreateNew),
+        detail: Some(crate::platform::i18n::tr(
+            crate::platform::i18n::Key::TmuxCreateDetail,
+        )),
+    });
+    for s in sessions {
+        let runtime = if s.runtime.is_empty() {
+            "tmux"
+        } else {
+            &s.runtime
+        };
+        items.push(QuickPickItem {
+            id: s.name.clone(),
+            label: s.name.clone(),
+            detail: Some(format!("{runtime} @ {connect}")),
         });
     }
     items
@@ -263,10 +302,35 @@ mod tests {
         assert!(items[0].detail.as_ref().unwrap().contains("192.168.5.6"));
     }
 
+    /// C9：机器表第一项是 local，然后才是 SSH alias（测试用 self，不要求 archmini）。
+    #[test]
+    fn connect_pick_items_lists_local_then_ssh_aliases() {
+        let hosts = vec![SshHostEntry {
+            alias: "self".into(),
+            hostname: "127.0.0.1".into(),
+            port: 22,
+            user: "wlz".into(),
+        }];
+        let items = connect_pick_items(&hosts);
+        assert!(
+            items.first().is_some_and(|i| i.id == "local"),
+            "第一项必须是 connect name local: {items:?}"
+        );
+        assert!(
+            items.iter().any(|i| i.id == "self"),
+            "必须含 SSH Host self: {items:?}"
+        );
+    }
+
     #[test]
     fn workspace_candidate_pick_items_start_with_create() {
         let sessions = vec![WorkspaceCandidate {
             name: "legion".into(),
+            id: String::new(),
+            runtime: "tmux".into(),
+            transport: "local".into(),
+            target: "local".into(),
+            in_pool: false,
             windows: 4,
             attached: false,
             created: 0,

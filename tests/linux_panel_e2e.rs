@@ -308,7 +308,7 @@ fn three_tab_panel_full_flow() {
     });
 }
 
-/// W20f：已有的连接导航——根列表第一项 Folder，点进去 Local/SSH，Back 回根。
+/// W20f / C9：已有的连接导航——点进去扁平列表，Back 回根。
 #[test]
 fn existing_connections_navigation() {
     if skip_no_display() {
@@ -377,44 +377,28 @@ fn existing_connections_navigation() {
             .expect("根列表第一项必须是 muxterm-existing-connections");
         assert!(folder.is_visible());
 
-        // 点 Folder → Home：Local + SSH 两个目录 + Back。
+        // 点 Folder → 扁平列表：Back，禁止本地/SSH 目录。
         let row = list.row_at_index(0).expect("Folder 行");
         row.activate();
         pump_main_loop(60);
         assert!(
-            find_by_name(&win, "muxterm-existing-local").is_some(),
-            "Home 应有 muxterm-existing-local"
+            find_by_name(&win, "muxterm-existing-local").is_none(),
+            "已有的连接禁止再出现 muxterm-existing-local 目录"
         );
         assert!(
-            find_by_name(&win, "muxterm-existing-ssh").is_some(),
-            "Home 应有 muxterm-existing-ssh"
+            find_by_name(&win, "muxterm-existing-ssh").is_none(),
+            "已有的连接禁止再出现 muxterm-existing-ssh 目录"
         );
         assert!(
             find_by_name(&win, "muxterm-existing-back").is_some(),
-            "Home 应有 muxterm-existing-back"
+            "扁平列表应有 muxterm-existing-back"
         );
 
-        // 点 Local → 空目录 Empty（不 panic）。
+        // Back 回根：New Project 还在。
         let list = find_by_name(&win, "muxterm-panel-list")
             .expect("列表应存在")
             .downcast::<gtk4::ListBox>()
             .expect("ListBox 类型");
-        let local_row = list.row_at_index(1).expect("Local Folder 行");
-        local_row.activate();
-        pump_main_loop(60);
-        assert!(
-            find_by_name(&win, "muxterm-existing-empty").is_some(),
-            "空本地目录应有 muxterm-existing-empty"
-        );
-
-        // Back 回 Home，再 Back 回根：New Project 还在。
-        let list = find_by_name(&win, "muxterm-panel-list")
-            .expect("列表应存在")
-            .downcast::<gtk4::ListBox>()
-            .expect("ListBox 类型");
-        let back = list.row_at_index(0).expect("Back 行");
-        back.activate();
-        pump_main_loop(60);
         let back = list.row_at_index(0).expect("Back 行");
         back.activate();
         pump_main_loop(60);

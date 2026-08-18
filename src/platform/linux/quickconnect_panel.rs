@@ -159,7 +159,7 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
             }
             PanelItem::Folder { title, .. } => title.to_lowercase().contains(&q),
             PanelItem::Back => true,
-            PanelItem::Existing(entry) => format!("{} {}", entry.title, entry.subtitle())
+            PanelItem::Existing(e) => format!("{} {}", e.title, e.subtitle())
                 .to_lowercase()
                 .contains(&q),
             PanelItem::Host { alias } => alias.to_lowercase().contains(&q),
@@ -214,14 +214,22 @@ pub fn existing_items(
     let mut items = vec![PanelItem::Back];
     match nav {
         ExistingNav::Root | ExistingNav::Home => {
-            items.push(PanelItem::Folder {
-                id: "existing-local",
-                title: i18n::tr(TextKey::ExistingLocal),
-            });
-            items.push(PanelItem::Folder {
-                id: "existing-ssh",
-                title: i18n::tr(TextKey::ExistingSsh),
-            });
+            // C9：扁平 runtime list。locals + 每个 connect 的远端行，双份不去重。
+            let mut rows: Vec<ExistingEntry> = locals.to_vec();
+            for host in hosts {
+                rows.extend(remote_of_alias(host));
+            }
+            if rows.is_empty() {
+                if probe_inflight {
+                    items.push(PanelItem::Loading);
+                } else {
+                    items.push(PanelItem::Empty {
+                        title: i18n::tr(TextKey::ExistingEmpty),
+                    });
+                }
+            } else {
+                items.extend(rows.into_iter().map(PanelItem::Existing));
+            }
         }
         ExistingNav::Local => {
             if locals.is_empty() {
@@ -750,8 +758,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                             }
                             PanelItem::Existing(entry) => {
                                 row_widget.set_widget_name(&format!(
-                                    "muxterm-existing-row-{}-{}",
+                                    "muxterm-existing-row-{}-{}-{}",
                                     entry.runtime.as_str(),
+                                    existing_connect_name(entry),
                                     entry
                                         .herdr_workspace_id
                                         .as_deref()
@@ -1245,6 +1254,14 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
 }
 
 /// W20：已有的连接行（title + `runtime @ transport` 副标题，与 Project 行同款）。
+/// C9：connect name：本机 "local" / SSH Host alias。
+fn existing_connect_name(entry: &ExistingEntry) -> String {
+    match &entry.transport {
+        TargetTransport::Local => "local".to_string(),
+        TargetTransport::Ssh { name } => name.clone(),
+    }
+}
+
 fn existing_row(entry: &ExistingEntry) -> GtkBox {
     let col = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -1272,7 +1289,8 @@ fn existing_row(entry: &ExistingEntry) -> GtkBox {
     name.set_halign(Align::Start);
     name.add_css_class("qc-name");
     title_row.append(&name);
-    let sub = Label::new(Some(&entry.subtitle()));
+    let connect = existing_connect_name(entry);
+    let sub = Label::new(Some(&format!("{} @ {}", entry.runtime.as_str(), connect)));
     sub.set_halign(Align::Start);
     sub.add_css_class("qc-sub");
     col.append(&title_row);
@@ -1397,77 +1415,90 @@ mod tests {
         assert!(matches!(items[2], PanelItem::NewProject));
     }
 
-    /// W20c：Home 含 Back + Local + SSH 两个 Folder。
+    /// C9：Home 是扁平 runtime list，不是 local/SSH 目录。
     #[test]
-    fn existing_items_home_has_local_and_ssh_folders() {
-        let items = existing_items(ExistingNav::Home, &[], &[], false, |_| vec![]);
-        assert!(matches!(items[0], PanelItem::Back));
-        assert!(matches!(
-            &items[1],
-            PanelItem::Folder {
-                id: "existing-local",
-                ..
-            }
-        ));
-        assert!(matches!(
-            &items[2],
-            PanelItem::Folder {
-                id: "existing-ssh",
-                ..
-            }
-        ));
-    }
-
-    /// W20c：Local 空 → Empty；有行 → Existing 行。
-    #[test]
-    fn existing_items_local_lists_entries_or_empty() {
-        let empty = existing_items(ExistingNav::Local, &[], &[], false, |_| vec![]);
-        assert!(matches!(empty[1], PanelItem::Empty { .. }));
-
-        let entry = ExistingEntry {
-            title: "w1".into(),
-            runtime: TargetRuntime::Herdr,
-            transport: TargetTransport::Local,
-            tmux_session: None,
-            herdr_session: Some("default".into()),
-            herdr_workspace_id: Some("w1".into()),
-            herdr_socket: Some("/tmp/x.sock".into()),
-        };
-        let rows = existing_items(ExistingNav::Local, &[entry], &[], false, |_| vec![]);
-        assert!(matches!(rows[1], PanelItem::Existing(_)));
-    }
-
-    /// W20c：SshHosts 空 → Loading；有 host → Host 行；SshHost 显示远端行。
-    #[test]
-    fn existing_items_ssh_hosts_and_remote_rows() {
-        let loading = existing_items(ExistingNav::SshHosts, &[], &[], false, |_| vec![]);
-        assert!(matches!(loading[1], PanelItem::Loading));
-
-        let hosts = vec!["ryzen".to_string()];
-        let rows = existing_items(ExistingNav::SshHosts, &[], &hosts, false, |_| vec![]);
-        assert!(matches!(&rows[1], PanelItem::Host { alias } if alias == "ryzen"));
-
-        let remote = vec![ExistingEntry {
-            title: "legion".into(),
+    fn existing_items_home_is_flat_local_and_ssh_self() {
+        let local = ExistingEntry {
+            title: "mux-dup".into(),
             runtime: TargetRuntime::Tmux,
-            transport: TargetTransport::Ssh {
-                name: "ryzen".into(),
-            },
-            tmux_session: Some("legion".into()),
+            transport: TargetTransport::Local,
+            tmux_session: Some("mux-dup".into()),
             herdr_session: None,
             herdr_workspace_id: None,
             herdr_socket: None,
-        }];
-        let host_rows = existing_items(
-            ExistingNav::SshHost {
-                alias: "ryzen".into(),
+        };
+        let ssh_self = ExistingEntry {
+            title: "mux-dup".into(),
+            runtime: TargetRuntime::Tmux,
+            transport: TargetTransport::Ssh {
+                name: "self".into(),
             },
-            &[],
-            &[],
+            tmux_session: Some("mux-dup".into()),
+            herdr_session: None,
+            herdr_workspace_id: None,
+            herdr_socket: None,
+        };
+        let items = existing_items(
+            ExistingNav::Home,
+            &[local],
+            &["self".to_string()],
             false,
-            |_| remote.clone(),
+            |_| vec![ssh_self.clone()],
         );
-        assert!(matches!(host_rows[1], PanelItem::Existing(_)));
+        assert!(matches!(items[0], PanelItem::Back));
+        assert!(
+            !items.iter().any(|i| matches!(
+                i,
+                PanelItem::Folder {
+                    id: "existing-local" | "existing-ssh",
+                    ..
+                }
+            )),
+            "禁止本地/SSH 目录: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|i| matches!(i, PanelItem::Host { .. })),
+            "禁止 Host 行: {items:?}"
+        );
+        let existing: Vec<&ExistingEntry> = items
+            .iter()
+            .filter_map(|i| match i {
+                PanelItem::Existing(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(existing.len(), 2, "local + ssh-self 必须双份: {items:?}");
+        assert!(existing
+            .iter()
+            .any(|e| { e.title == "mux-dup" && matches!(e.transport, TargetTransport::Local) }));
+        assert!(existing.iter().any(|e| {
+            e.title == "mux-dup"
+                && matches!(&e.transport, TargetTransport::Ssh { name } if name == "self")
+        }));
+    }
+
+    /// C9：widget_name 含 connect name，双份行才能共存。
+    #[test]
+    fn existing_row_widget_includes_connect_name() {
+        let src = include_str!("quickconnect_panel.rs");
+        let start = src
+            .find("PanelItem::Existing(entry)")
+            .expect("Existing 行渲染应存在");
+        let chunk = &src[start..start + 800];
+        assert!(
+            chunk.contains("muxterm-existing-row-{}-{}-{}"),
+            "Existing 行 widget_name 必须是 runtime-connect-id: {chunk}"
+        );
+    }
+
+    /// C9：Home 空 + 探测中 → Loading；探测完空 → Empty；有行 → Existing。
+    #[test]
+    fn existing_items_home_empty_or_loading() {
+        let loading = existing_items(ExistingNav::Home, &[], &[], true, |_| vec![]);
+        assert!(matches!(loading[1], PanelItem::Loading));
+
+        let empty = existing_items(ExistingNav::Home, &[], &[], false, |_| vec![]);
+        assert!(matches!(empty[1], PanelItem::Empty { .. }));
     }
 
     /// W20：filter 对 Folder/Existing/Back 生效，Back 始终保留。
