@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::config_service::schema::ConfigDocument;
 use crate::core::config_service::storage::{atomic_write, preserve_toml_metadata, revision_for, ConfigRevision, ConfigSnapshot};
+use crate::core::config_service::action_catalog::action_catalog;
 use crate::core::config_service::migration::import_legacy_projects;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonPatchOperation {
@@ -132,6 +133,8 @@ impl SettingsService {
             defaults,
             schema: ConfigDocument::schema_json(),
             manifest: ConfigDocument::manifest_json(),
+            action_catalog: serde_json::to_value(action_catalog())
+                .unwrap_or(Value::Array(Vec::new())),
         }
     }
 

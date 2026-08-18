@@ -21,6 +21,7 @@ pub struct ConfigSnapshot {
     pub defaults: Value,
     pub schema: Value,
     pub manifest: Value,
+    pub action_catalog: Value,
 }
 
 /// Update known keys in a TOML document while retaining comments, formatting
