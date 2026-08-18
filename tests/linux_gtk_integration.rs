@@ -66,7 +66,7 @@ fn assert_target_config_ssh_toggle_after_debounce() {
     let dialog = target_config_window::show(
         &parent,
         None,
-        QuickConnectStore::new(None),
+        QuickConnectStore::in_memory(),
         vec![SshHostEntry {
             alias: "ryzen".into(),
             hostname: "192.168.5.6".into(),
@@ -112,7 +112,7 @@ fn assert_target_config_herdr_card_saves() {
     let dialog = target_config_window::show(
         &parent,
         None,
-        QuickConnectStore::new(None),
+        QuickConnectStore::in_memory(),
         vec![],
         muxterm::core::catalog::Catalog::with_builtins().runtime_list(),
         move |cfg| {

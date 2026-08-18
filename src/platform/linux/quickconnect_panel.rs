@@ -1401,7 +1401,7 @@ mod tests {
 
     #[test]
     fn build_items_marks_current_and_appends_new_project() {
-        let mut store = QuickConnectStore::new(None);
+        let mut store = QuickConnectStore::in_memory();
         let recent = cfg("recent");
         let project = cfg("project");
         store.recents.push(recent.clone());
@@ -1421,7 +1421,7 @@ mod tests {
 
     #[test]
     fn build_items_dedupes_recent_and_project() {
-        let mut store = QuickConnectStore::new(None);
+        let mut store = QuickConnectStore::in_memory();
         let dup = cfg("dup");
         store.recents.push(dup.clone());
         store.projects.push(dup.clone());
@@ -1434,7 +1434,7 @@ mod tests {
     /// W20b：根列表第 0 项是「已有的连接」Folder，末项 New Project。
     #[test]
     fn build_root_items_puts_existing_connections_first() {
-        let mut store = QuickConnectStore::new(None);
+        let mut store = QuickConnectStore::in_memory();
         let project = cfg("project");
         store.projects.push(project.clone());
         let items = build_root_items(&store, None);
