@@ -342,6 +342,12 @@ impl TerminalState {
         self.grid.len()
     }
 
+    /// 测试钩子：`grid_soft_wrapped` 必须与 `grid` 同行数，否则 DECSTBM/LF 会 panic。
+    #[cfg(test)]
+    pub(crate) fn soft_wrap_row_count(&self) -> usize {
+        self.grid_soft_wrapped.len()
+    }
+
     /// 当前光标行（0 基）。
     pub fn cursor_row(&self) -> usize {
         self.cursor_row
@@ -390,15 +396,26 @@ impl TerminalState {
 
         if rows > old_rows {
             self.grid.resize(rows, vec![Cell::blank(); cols]);
+            // 同步软换行标记：新行默认未软换行。
+            self.grid_soft_wrapped.resize(rows, false);
         } else if rows < old_rows {
             if self.cursor_row >= old_rows.saturating_sub(1) {
                 // 光标在底行：保留屏幕底部（多数终端 resize 行为）。
                 let start = old_rows - rows;
                 self.grid.drain(..start);
+                if self.grid_soft_wrapped.len() > start {
+                    self.grid_soft_wrapped.drain(..start);
+                }
                 self.cursor_row = rows - 1;
             } else {
                 self.grid.truncate(rows);
+                self.grid_soft_wrapped.truncate(rows);
             }
+        }
+        // 任何 resize 路径都要保证 soft-wrap 行数与 grid 一致，
+        // 否则 agent 部分 DECSTBM + LF 会越界 panic（test-2026-0818-1114）。
+        if self.grid_soft_wrapped.len() != self.grid.len() {
+            self.grid_soft_wrapped.resize(self.grid.len(), false);
         }
 
         // 滚动区域：整屏区域随高度伸缩；部分区域收缩到底部后复位为整屏。
@@ -709,13 +726,26 @@ impl TerminalState {
                 self.grid_soft_wrapped.remove(0);
                 self.grid.push(vec![Cell::blank(); cols]);
                 self.grid_soft_wrapped.push(false);
-            } else if top < self.rows() && bottom < self.rows() {
+            } else {
                 // 部分滚动区域（DECSTBM）：区域顶行滚出、区域底行补空，
                 // 区域外的行不能动。htop 正是靠这个固定表头/表尾只滚动正文。
-                self.grid.remove(top);
-                self.grid_soft_wrapped.remove(top);
-                self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
-                self.grid_soft_wrapped.insert(bottom, false);
+                // index 必须先 clamp 到 grid/soft 的实际行数，防止 resize
+                // 时序（soft 未同步 / 缩到更小）越界 panic。
+                let rows = self.grid.len();
+                let soft_len = self.grid_soft_wrapped.len();
+                let top = top
+                    .min(rows.saturating_sub(1))
+                    .min(soft_len.saturating_sub(1));
+                let bottom = bottom
+                    .min(rows.saturating_sub(1))
+                    .min(soft_len.saturating_sub(1))
+                    .max(top);
+                if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
+                    self.grid.remove(top);
+                    self.grid_soft_wrapped.remove(top);
+                    self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
+                    self.grid_soft_wrapped.insert(bottom, false);
+                }
             }
         }
     }
@@ -944,10 +974,22 @@ impl TerminalState {
         let span = self.scroll_bottom.saturating_sub(self.scroll_top) + 1;
         let n = n.min(span);
         for _ in 0..n {
-            if self.scroll_top < self.rows() {
-                self.grid.remove(self.scroll_top);
-                self.grid
-                    .insert(self.scroll_bottom, vec![Cell::blank(); self.cols()]);
+            let rows = self.grid.len();
+            let soft_len = self.grid_soft_wrapped.len();
+            let top = self
+                .scroll_top
+                .min(rows.saturating_sub(1))
+                .min(soft_len.saturating_sub(1));
+            let bottom = self
+                .scroll_bottom
+                .min(rows.saturating_sub(1))
+                .min(soft_len.saturating_sub(1))
+                .max(top);
+            if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
+                self.grid.remove(top);
+                self.grid_soft_wrapped.remove(top);
+                self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
+                self.grid_soft_wrapped.insert(bottom, false);
             }
         }
     }
@@ -956,10 +998,22 @@ impl TerminalState {
         let span = self.scroll_bottom.saturating_sub(self.scroll_top) + 1;
         let n = n.min(span);
         for _ in 0..n {
-            if self.scroll_top < self.rows() {
-                self.grid.remove(self.scroll_bottom);
-                self.grid
-                    .insert(self.scroll_top, vec![Cell::blank(); self.cols()]);
+            let rows = self.grid.len();
+            let soft_len = self.grid_soft_wrapped.len();
+            let top = self
+                .scroll_top
+                .min(rows.saturating_sub(1))
+                .min(soft_len.saturating_sub(1));
+            let bottom = self
+                .scroll_bottom
+                .min(rows.saturating_sub(1))
+                .min(soft_len.saturating_sub(1))
+                .max(top);
+            if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
+                self.grid.remove(bottom);
+                self.grid_soft_wrapped.remove(bottom);
+                self.grid.insert(top, vec![Cell::blank(); self.cols()]);
+                self.grid_soft_wrapped.insert(top, false);
             }
         }
     }
@@ -1071,21 +1125,43 @@ impl TerminalState {
     fn insert_blank_lines(&mut self, n: usize) {
         let n = n.min(self.rows());
         for _ in 0..n {
-            if self.grid.len() > self.scroll_bottom {
-                self.grid.remove(self.scroll_bottom);
+            let rows = self.grid.len();
+            let soft_len = self.grid_soft_wrapped.len();
+            let top = self.scroll_top.min(rows).min(soft_len);
+            let bottom = self
+                .scroll_bottom
+                .min(rows.saturating_sub(1))
+                .min(soft_len.saturating_sub(1));
+            if soft_len > bottom && bottom < rows {
+                self.grid.remove(bottom);
+                self.grid_soft_wrapped.remove(bottom);
             }
-            self.grid
-                .insert(self.scroll_top, vec![Cell::blank(); self.cols()]);
+            if top <= rows && top <= soft_len {
+                self.grid.insert(top, vec![Cell::blank(); self.cols()]);
+                self.grid_soft_wrapped.insert(top, false);
+            }
         }
     }
 
     fn delete_lines(&mut self, n: usize) {
         let n = n.min(self.rows());
         for _ in 0..n {
-            if self.scroll_top < self.rows() && self.scroll_bottom < self.rows() {
-                self.grid.remove(self.scroll_top);
-                self.grid
-                    .insert(self.scroll_bottom, vec![Cell::blank(); self.cols()]);
+            let rows = self.grid.len();
+            let soft_len = self.grid_soft_wrapped.len();
+            let top = self
+                .scroll_top
+                .min(rows.saturating_sub(1))
+                .min(soft_len.saturating_sub(1));
+            let bottom = self
+                .scroll_bottom
+                .min(rows.saturating_sub(1))
+                .min(soft_len.saturating_sub(1))
+                .max(top);
+            if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
+                self.grid.remove(top);
+                self.grid_soft_wrapped.remove(top);
+                self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
+                self.grid_soft_wrapped.insert(bottom, false);
             }
         }
     }
@@ -2986,6 +3062,67 @@ mod resize_tests {
         t.resize(10, 6);
         assert_eq!(t.scroll_bottom, 5);
         assert_eq!(snap(&t), vec!["x"]);
+        assert_eq!(
+            t.soft_wrap_row_count(),
+            t.rows(),
+            "resize 长高后 grid_soft_wrapped 必须与 grid 同行数"
+        );
+    }
+
+    /// test-2026-0818-1114.log：insertion index 26 <= len 15。
+    /// PaneBuf 每次 %output 都 resize 到 tmux 当前行列；窗口变高后
+    /// `grid` 变 27 行而 `grid_soft_wrapped` 仍 15，agent DECSTBM+LF panic，
+    /// `muxterm_poll_events` catch_unwind 丢掉整批事件，SwiftTerm 只收到半截。
+    #[test]
+    fn resize_grow_then_partial_decstbm_lf_does_not_panic() {
+        let mut t = TerminalState::new(80, 15);
+        t.resize(80, 27);
+        assert_eq!(
+            t.soft_wrap_row_count(),
+            t.rows(),
+            "15→27 后 soft-wrap 行数必须是 27，不能停在 15"
+        );
+        // 1 基：top=2 bottom=27 → 0 基 1..26，不是整屏，走 linefeed 部分滚动分支。
+        t.feed(b"\x1b[2;27r");
+        t.feed(b"\x1b[27;1H");
+        t.feed(b"HEAD\nBODY\nTAIL\n");
+        t.feed(b"PROMPT");
+        let snap = t.snapshot().join("\n");
+        assert!(
+            snap.contains("PROMPT"),
+            "resize 后 DECSTBM+LF 必须还能写完画面。snap={snap:?}"
+        );
+        assert_eq!(t.soft_wrap_row_count(), t.rows());
+    }
+
+    /// 同一日志后半段：removal index 11 < len 11（soft-wrap 比 grid 短）。
+    #[test]
+    fn resize_shrink_then_decstbm_lf_does_not_panic() {
+        let mut t = TerminalState::new(80, 27);
+        t.feed(b"\x1b[2;27r");
+        t.resize(80, 11);
+        assert_eq!(t.soft_wrap_row_count(), t.rows());
+        t.feed(b"\x1b[1;11r");
+        t.feed(b"\x1b[11;1H\n\nFOOT");
+        let snap = t.snapshot().join("\n");
+        assert!(
+            snap.contains("FOOT"),
+            "缩小后滚动区域 LF 不得 panic。snap={snap:?}"
+        );
+        assert_eq!(t.soft_wrap_row_count(), t.rows());
+    }
+
+    /// CSI L / M 也必须同步 soft-wrap 行，否则下一次 LF 仍会越界。
+    #[test]
+    fn insert_and_delete_lines_keep_soft_wrap_len() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b[5L");
+        assert_eq!(t.soft_wrap_row_count(), t.rows());
+        t.feed(b"\x1b[3M");
+        assert_eq!(t.soft_wrap_row_count(), t.rows());
+        t.feed(b"\x1b[10;20r\x1b[20;1H\nOK");
+        assert!(t.snapshot().join("\n").contains("OK"));
+        assert_eq!(t.soft_wrap_row_count(), t.rows());
     }
 }
 
