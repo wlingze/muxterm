@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use muxterm::platform::linux::ffi_bridge::{tasks, CoreBridge};
 use muxterm::platform::linux::pane_view::should_forward_replies;
-use muxterm::platform::linux::quickconnect::font::{FontSettings, Preferences};
+use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use muxterm::platform::linux::quickconnect::project_flow::{
     ProjectConnectFlow, ProjectConnectState,
@@ -258,15 +258,8 @@ fn mirror_mode_drops_parser_query_replies() {
 }
 
 #[test]
-fn font_theme_preferences_roundtrip() {
-    let p = Preferences {
-        theme: Some("light".into()),
-        statusbar_mode: Some("tmux".into()),
-        font_size: Some(FontSettings::zoomed(12.0, 1)),
-    };
-    let raw = toml::to_string_pretty(&p).unwrap();
-    let back: Preferences = toml::from_str(&raw).unwrap();
-    assert_eq!(back.theme.as_deref(), Some("light"));
-    assert_eq!(back.statusbar_mode.as_deref(), Some("tmux"));
-    assert_eq!(back.font_size, Some(13.0));
+fn font_zoom_contract_unchanged() {
+    // 旧 preferences.toml 迁移已收归 Core（config_service::migrate_legacy_
+    // linux_preferences）；platform 只保留字体缩放纯逻辑。
+    assert_eq!(FontSettings::zoomed(12.0, 1), 13.0);
 }
