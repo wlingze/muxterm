@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -5,7 +6,7 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 
 /// 一条快捷键绑定。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct KeyBinding {
     pub key: String,
     #[serde(default)]

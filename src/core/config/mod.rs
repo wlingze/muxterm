@@ -20,21 +20,16 @@
 //! 定义 ANSI 16 色 + 背景/前景/光标。解析逻辑是纯函数，附单元测试。
 
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-mod shortcut;
-mod theme;
-
-pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
-pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
 
 // ============================================================================
 // 顶层配置
 // ============================================================================
 
 /// 顶层配置（Alacritty 风格）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Config {
     #[serde(default)]
     pub font: FontConfig,
@@ -63,12 +58,15 @@ pub struct Config {
 }
 
 /// `[font]`。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct FontConfig {
     #[serde(default = "default_font_family")]
     pub family: String,
     #[serde(default = "default_font_size")]
     pub size: f32,
+    /// Optional fallback families, ordered from most to least preferred.
+    #[serde(default)]
+    pub fallback: Vec<String>,
 }
 fn default_font_family() -> String {
     "Monospace".into()
@@ -81,29 +79,44 @@ impl Default for FontConfig {
         FontConfig {
             family: default_font_family(),
             size: default_font_size(),
+            fallback: Vec::new(),
         }
     }
 }
 
 /// `[theme]`。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ThemeConfig {
     #[serde(default = "default_theme")]
     pub name: String,
+    /// Theme selected for a light system appearance when `name = "system"`.
+    #[serde(default = "default_light_theme")]
+    pub light: String,
+    /// Theme selected for a dark system appearance when `name = "system"`.
+    #[serde(default = "default_dark_theme")]
+    pub dark: String,
 }
 fn default_theme() -> String {
     "light".into()
+}
+fn default_light_theme() -> String {
+    "white".into()
+}
+fn default_dark_theme() -> String {
+    "black".into()
 }
 impl Default for ThemeConfig {
     fn default() -> Self {
         ThemeConfig {
             name: default_theme(),
+            light: default_light_theme(),
+            dark: default_dark_theme(),
         }
     }
 }
 
 /// `[statusbar]`：muxterm 状态栏渲染模式。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct StatusbarConfig {
     /// `tmux`（默认）= 有 tmux 就跟 tmux 的 status 配置与颜色一致；
     /// `theme` = 只用 muxterm 主题黑/白渲染，忽略 tmux 配色。
@@ -122,7 +135,7 @@ impl Default for StatusbarConfig {
 }
 
 /// `[pool]`：QuickConnect warm connection pool 上限。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct PoolConfig {
     /// 同时保留的 warm 连接数（同时决定 Recent 显示条数上限）。
     #[serde(default = "default_pool_max_slots")]
@@ -140,7 +153,7 @@ impl Default for PoolConfig {
 }
 
 /// `[tmux]`。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TmuxConfig {
     /// attach 后自动 `set -g mouse on`。
     #[serde(default = "default_auto_mouse")]
@@ -179,7 +192,7 @@ impl TmuxConfig {
 }
 
 /// `[ssh]`：远程 tmux -CC 默认连接参数。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SshFileConfig {
     #[serde(default)]
     pub host: String,
@@ -228,7 +241,7 @@ impl SshFileConfig {
 }
 
 /// `[scrollback]`。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ScrollbackConfig {
     #[serde(default = "default_scrollback")]
     pub lines: u32,
@@ -245,7 +258,7 @@ impl Default for ScrollbackConfig {
 }
 
 /// `[attention]`：阶段 B 注意力聚合配置。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct AttentionConfig {
     #[serde(default = "default_attention_enabled")]
     pub enabled: bool,
@@ -271,7 +284,7 @@ impl Default for AttentionConfig {
 }
 
 /// `[ui]`：极简布局相关。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct UiConfig {
     /// tab 栏位置：`"bottom"`（默认，像 tmux）或 `"top"`。
     #[serde(default = "default_tab_bar_position")]
@@ -314,7 +327,7 @@ impl UiConfig {
 }
 
 /// `[pane]`：本地 pane 默认程序与工作目录。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct PaneConfig {
     /// 默认启动命令（支持 `$SHELL`）。
     #[serde(default = "default_pane_command")]
@@ -339,7 +352,7 @@ impl Default for PaneConfig {
 }
 
 /// 最后 pane/tab 全部退出后的行为。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OnLastPaneExit {
     /// 关闭窗口（默认）。
@@ -352,7 +365,7 @@ pub enum OnLastPaneExit {
 }
 
 /// 程序异常退出（非 0）时的附加行为。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OnProgramExitAbnormal {
     /// 关 pane，并在状态栏提示（默认）。
@@ -365,7 +378,7 @@ pub enum OnProgramExitAbnormal {
 }
 
 /// `[behavior]`。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct BehaviorConfig {
     #[serde(default)]
     pub on_last_pane_exit: OnLastPaneExit,
@@ -478,17 +491,6 @@ pub fn user_config_dir() -> Option<PathBuf> {
     dirs_config()
 }
 
-fn dirs_config() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|d| d.join("muxterm"))
-}
-
-fn dirs_themes() -> Option<PathBuf> {
-    dirs_config().map(|d| d.join("themes"))
-}
-
 impl Config {
     /// 用户配置文件路径：`~/.config/muxterm/config.toml`。
     pub fn user_config_path() -> Option<PathBuf> {
@@ -521,6 +523,23 @@ pub fn parse_config_toml(raw: &str) -> Result<Config> {
         cfg.keybindings = default_keybindings();
     }
     Ok(cfg)
+}
+
+mod shortcut;
+mod theme;
+
+pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
+pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
+
+fn dirs_config() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|d| d.join("muxterm"))
+}
+
+fn dirs_themes() -> Option<PathBuf> {
+    dirs_config().map(|d| d.join("themes"))
 }
 
 #[allow(unused_imports)]
