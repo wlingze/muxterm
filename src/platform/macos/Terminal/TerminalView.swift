@@ -231,10 +231,10 @@ final class MuxTerminalView: TerminalView {
     /// 主题只影响 chrome；这里保持深色并重绘，避免浅色主题把 OSC 10/11
     /// 代答成黑字白底。
     func setThemeColors(fgHex: String, bgHex: String) {
-        _ = fgHex
-        _ = bgHex
-        nativeForegroundColor = Self.color(hex: MuxtermTerminalColors.foregroundHex)
-        nativeBackgroundColor = Self.color(hex: MuxtermTerminalColors.backgroundHex)
+        // W20-C：主题切换必须真的把传入 hex 写进终端（light=黑字白底，
+        // dark=浅字深底），不能固定写死 cdd6f4/1e1e2e。
+        nativeForegroundColor = Self.color(hex: fgHex)
+        nativeBackgroundColor = Self.color(hex: bgHex)
         forceRedraw()
     }
 

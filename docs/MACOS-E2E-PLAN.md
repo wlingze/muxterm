@@ -2,7 +2,7 @@
 
 > 日期：2026-08-17（本机 `2026-08-17T13:08:54+08:00`）
 > 续工（Cmd-P 三 tab / pane-cmd / agent 色与光标）：[`MACOS-LINUX-PARITY-PLAN.md`](MACOS-LINUX-PARITY-PLAN.md)
-> 本轮（主题 / SSH 列表 / 连接进度 / 注意力 UX / status-right / tab 手势）：[`MACOS-W19-PLAN.md`](MACOS-W19-PLAN.md)
+> 本轮（agent 半截 / emulate panic / 主题跟终端色）：[`MACOS-W20-PLAN.md`](MACOS-W20-PLAN.md)
 > 工作目录：`/Users/wlz/Developer/self/muxterm`
 > 分支：`feature/quickconnect-attach-ui`（**不 push**）
 > 先读：`docs/FEATURE-E2E-PLAN.md`、`docs/W16-PLAN.md`、`AGENTS.md`

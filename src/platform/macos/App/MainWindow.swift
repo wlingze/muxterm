@@ -392,17 +392,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 强制外观立即传播（headless 下 effectiveAppearance 可能延迟）。
         window?.contentView?.viewDidChangeEffectiveAppearance()
         window?.displayIfNeeded()
-        // 终端默认色固定深色（OSC 10/11 代答浅字深底）；主题只改 chrome。
+        // W20-C：主题切换后终端 SwiftTerm 默认色与 OSC 10/11 都跟随
+        // theme.palette（light=000000/ffffff, dark=cdd6f4/1e1e2e）。
         terminalManager.applyTheme(
-            fgHex: MuxtermTerminalColors.foregroundHex,
-            bgHex: MuxtermTerminalColors.backgroundHex
+            fgHex: theme.palette.fg,
+            bgHex: theme.palette.bg
         )
         // 主题色变化后必须给**所有** pane 重新上报，tmux 才会用新颜色代答
         // OSC 10/11；只报当前 tab 会让后台 tab 的 codex 输入框沿用旧色。
         reportedColourPanes.removeAll()
         _ = bridge.reportAllPaneColours(
-            fgHex: MuxtermTerminalColors.foregroundHex,
-            bgHex: MuxtermTerminalColors.backgroundHex
+            fgHex: theme.palette.fg,
+            bgHex: theme.palette.bg
         )
         // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
         if statusBarSnapshot != nil {
@@ -822,16 +823,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             size: currentTerminalFontSize(),
             container: content.paneLayout
         )
-        // warm slot 的视图也要沿用终端深色色板（agent 输入框契约）。
+        // warm slot 的视图沿用当前主题 palette（W20-C 终端跟随主题）。
         terminalManager.applyTheme(
-            fgHex: MuxtermTerminalColors.foregroundHex,
-            bgHex: MuxtermTerminalColors.backgroundHex
+            fgHex: MuxtermTerminalColors.activePalette.fg,
+            bgHex: MuxtermTerminalColors.activePalette.bg
         )
         // 连接建立/切换后给全部 pane 上报一次颜色，避免后台 tab 的 codex
         // 输入框使用 tmux 默认（或上一个连接）的颜色代答。
         _ = bridge.reportAllPaneColours(
-            fgHex: MuxtermTerminalColors.foregroundHex,
-            bgHex: MuxtermTerminalColors.backgroundHex
+            fgHex: MuxtermTerminalColors.activePalette.fg,
+            bgHex: MuxtermTerminalColors.activePalette.bg
         )
         lastSnapshot = slot.lastSnapshot
         // 切连接后旧 status bar 属于上一个 tmux：先清掉，等新快照到达再显示。

@@ -113,6 +113,45 @@ final class AgentRenderE2ETests: XCTestCase {
         XCTAssertGreaterThan(caret.width, 1, "attach 后活动 pane 必须有可见 caret。frame=\(caret)")
         XCTAssertGreaterThan(caret.height, 1, "attach 后活动 pane 必须有可见 caret。frame=\(caret)")
     }
+
+    /// 窗口先矮后高：PaneBuf.resize 与 agent DECSTBM 同框。
+    /// 若 soft-wrap 不同步，poll panic，SwiftTerm 看不到 FULL_AGENT_FRAME。
+    func testDecstbmFrameAfterWindowGrowReachesSwiftTerm() throws {
+        let fx = OnePaneCat(label: "decstbm")
+        let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        app.window?.setFrame(NSRect(x: 40, y: 40, width: 520, height: 280), display: true)
+        AppE2E.pump(120)
+        app.testPollOnce()
+        app.window?.setFrame(NSRect(x: 40, y: 40, width: 1280, height: 860), display: true)
+        AppE2E.pump(200)
+        for _ in 0..<20 {
+            app.testPollOnce()
+            AppE2E.pump(20)
+        }
+
+        let py = AppE2E.repoRoot.appendingPathComponent("tests/scripts/agent_decstbm_frame.py")
+        XCTAssertTrue(FileManager.default.isReadableFile(atPath: py.path), "缺少 \(py.path)")
+        Tmux.ok(socket: fx.socket, args: [
+            "respawn-pane", "-k", "-t", fx.pane, "python3 -u \(py.path)",
+        ])
+        Tmux.waitCapture(
+            socket: fx.socket,
+            target: fx.pane,
+            needle: "FULL_AGENT_FRAME",
+            timeout: AppE2E.featureTimeout
+        )
+        XCTAssertTrue(
+            app.waitTerminalContains("FULL_AGENT_FRAME", timeout: AppE2E.featureTimeout),
+            "DECSTBM 画面必须进 SwiftTerm（poll 不得因 emulate panic 丢事件）。vte=\(app.testActivePaneTerminalText())"
+        )
+        XCTAssertTrue(
+            app.waitTerminalContains("AGENT_TOP", timeout: 3),
+            "顶部 AGENT_TOP 必须还在，不能只剩输入行。vte=\(app.testActivePaneTerminalText())"
+        )
+    }
 }
 
 private func luminance(_ hex: String) -> Int {
