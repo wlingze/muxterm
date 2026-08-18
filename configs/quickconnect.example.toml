@@ -1,18 +1,26 @@
-# Muxterm QuickConnect 配置示例
-# 实际文件：~/.config/muxterm/quickconnect.toml（应用会自动读写）
+# Legacy Muxterm QuickConnect migration input
+# 实际文件：~/.config/muxterm/quickconnect.toml
+# 新版本会将 projects 合并到同目录 config.toml 的 [[projects]]，并保留本文件
+# 作为可恢复备份；Recent 不落盘。
 # recents 不落盘：由连接池（ConnectionPool）在运行时派生，显示最近打开的
 # warm 连接；这里只配置 projects（QuickConnect 面板「Edit Project」管理）。
 # projects：预设目标（QuickConnect 面板「Edit Project」管理）
 
 [[projects]]
+id = "muxterm@local"
 name = "muxterm"
 runtime = "shell"
 transport = "local"
 path = "~/Developer/self/muxterm"
+command = ["$SHELL", "-l"]
+env = { RUST_LOG = "info" }
 
 [[projects]]
+id = "server@ssh"
 name = "server"
 runtime = "tmux"
 transport = "ssh"
 transport_name = "ryzen"
 path = "~/work"
+session = "server"
+socket = ""

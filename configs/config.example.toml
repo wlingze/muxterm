@@ -1,14 +1,14 @@
-# Muxterm 配置示例（Alacritty 风格）
+# Muxterm unified configuration example
 # 复制到 ~/.config/muxterm/config.toml 即可生效。
 #
-# QuickConnect 的 projects 单独存于同目录 quickconnect.toml
-# （格式见 configs/quickconnect.example.toml），应用自动读写。
-# recents 不落盘：由连接池在运行时派生（最近打开的 warm 连接）。
+# Project、主题、字体和快捷键都在这一份文档中；旧 quickconnect.toml
+# 只作为一次迁移输入，Recent 不落盘，由连接池运行时派生。
 
 # 字体
 [font]
-family = "Menlo"
-size = 18.0
+family = "JetBrains Mono"
+size = 13.0
+fallback = ["Noto Sans Mono", "monospace"]
 
 # status bar 模式：tmux = 有 tmux 就跟 tmux 完全一致（默认）；
 # theme = 用 muxterm 主题黑/白渲染（忽略 tmux 配色）
@@ -21,7 +21,37 @@ max_slots = 5
 
 # 主题（对应 configs/themes/<name>.toml）
 [theme]
-name = "light"  # 或 dark
+name = "system" # system / black / white
+light = "white"
+dark = "black"
+
+# Project 是 Workspace 的启动规格；runtime/transport 由 Core Catalog 解释。
+[[projects]]
+id = "muxterm@local"
+name = "Muxterm"
+path = "~/Developer/self/muxterm"
+command = ["$SHELL", "-l"]
+env = { RUST_LOG = "info" }
+
+[projects.runtime]
+id = "tmux"
+session = "muxterm"
+socket = ""
+
+[projects.transport]
+id = "local"
+target = ""
+
+# Shortcut preset + 用户覆盖。旧 [[keybindings]] 仍可读取并迁移。
+[shortcuts]
+preset = "qwerty"
+primary_key = "auto" # Linux=Alt，macOS=Command
+
+[[shortcuts.overrides]]
+action = "quick_connect"
+[[shortcuts.overrides.bindings]]
+key = "KeyP"
+modifiers = ["primary"]
 
 # tmux
 [tmux]

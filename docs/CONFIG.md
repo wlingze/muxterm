@@ -1,6 +1,6 @@
 # Muxterm Config Contract
 
-> 状态：目标配置契约（`config_version = 1`）。
+> 状态：已实现契约（`config_version = 1`）。本文描述的字段、Schema/Manifest、事务、FFI/CLI 和 Linux/macOS 设置窗口均已落地；macOS 侧仍需在 macOS runner 上编译与 XCTest。
 >
 > 本文是 Muxterm 配置系统的权威文档。代码、CLI、FFI、Linux GTK 和 macOS AppKit
 > 都必须以本文的字段语义和事务行为为准；其他架构文档只保留摘要和链接。
@@ -165,7 +165,7 @@ preset = "qwerty"
 primary_key = "auto"
 
 [[shortcuts.overrides]]
-action = "workspace.quick_connect"
+action = "quick_connect"
 bindings = [{ key = "KeyP", modifiers = ["primary"] }]
 ```
 
