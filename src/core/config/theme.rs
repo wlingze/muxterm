@@ -52,6 +52,7 @@ struct ThemeFile {
 
 impl Theme {
     pub fn load(name: &str) -> Result<Self> {
+        let name = Self::resolve_name(name);
         if let Some(dir) = super::dirs_themes() {
             let p = dir.join(format!("{name}.toml"));
             if p.exists() {
@@ -66,7 +67,7 @@ impl Theme {
                 .with_context(|| format!("读取内置主题失败: {}", builtin.display()))?;
             return parse_theme_toml(&raw);
         }
-        if let Some(raw) = Self::embedded(name) {
+        if let Some(raw) = Self::embedded(&name) {
             return parse_theme_toml(raw);
         }
         anyhow::bail!("找不到主题: {name}")
@@ -77,16 +78,47 @@ impl Theme {
         match name.trim().to_ascii_lowercase().as_str() {
             "light" => Some(include_str!("../../../configs/themes/light.toml")),
             "dark" => Some(include_str!("../../../configs/themes/dark.toml")),
+            "white" => Some(include_str!("../../../configs/themes/white.toml")),
+            "black" => Some(include_str!("../../../configs/themes/black.toml")),
             _ => None,
         }
     }
 
+    /// Resolve the portable `system` name without coupling core to GTK/AppKit.
+    /// Platform launchers can set `MUXTERM_THEME=black|white` when they know
+    /// the native appearance; Linux also honours the conventional GTK_THEME.
+    pub fn resolve_name(name: &str) -> String {
+        let normalized = name.trim().to_ascii_lowercase();
+        if normalized != "system" {
+            return normalized;
+        }
+        if let Ok(value) = std::env::var("MUXTERM_THEME") {
+            let value = value.trim().to_ascii_lowercase();
+            if matches!(value.as_str(), "black" | "dark") {
+                return "black".into();
+            }
+            if matches!(value.as_str(), "white" | "light") {
+                return "white".into();
+            }
+        }
+        if let Ok(value) = std::env::var("GTK_THEME") {
+            if value.to_ascii_lowercase().contains("dark") {
+                return "black".into();
+            }
+        }
+        // White is the deterministic fallback when no platform appearance is
+        // available (headless CLI, first launch, or a minimal environment).
+        "white".into()
+    }
+
     /// 主题切换目标：dark ↔ light（大小写不敏感）。未知名当作 light 侧。
     pub fn toggle_target(current: &str) -> &'static str {
-        if current.trim().eq_ignore_ascii_case("dark") {
-            "light"
-        } else {
-            "dark"
+        match current.trim().to_ascii_lowercase().as_str() {
+            "black" => "white",
+            "white" => "black",
+            "dark" => "light",
+            "light" => "dark",
+            _ => "dark",
         }
     }
 }
@@ -132,6 +164,3 @@ pub fn parse_hex(s: &str) -> Result<Rgb> {
     let b = u8::from_str_radix(&s[4..6], 16)?;
     Ok(Rgb(r, g, b))
 }
-
-
-

@@ -404,6 +404,7 @@ fn render_e2e_s3_s4() {
             &FontSettings {
                 family: "Monospace".into(),
                 size: 10.0,
+                fallback: Vec::new(),
             },
             true,
             10_000,

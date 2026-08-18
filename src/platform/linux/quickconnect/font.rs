@@ -11,13 +11,15 @@ use std::path::PathBuf;
 pub struct FontSettings {
     pub family: String,
     pub size: f32,
+    pub fallback: Vec<String>,
 }
 
 impl Default for FontSettings {
     fn default() -> Self {
         FontSettings {
-            family: "Monospace".into(),
+            family: "JetBrains Mono".into(),
             size: 12.0,
+            fallback: vec!["Noto Sans Mono".into(), "monospace".into()],
         }
     }
 }

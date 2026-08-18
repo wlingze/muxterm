@@ -108,7 +108,15 @@ impl VteRenderer {
         use gtk4::pango;
         let mut desc = pango::FontDescription::new();
         if !font.family.is_empty() {
-            desc.set_family(&font.family);
+            let mut families = Vec::with_capacity(1 + font.fallback.len());
+            families.push(font.family.clone());
+            families.extend(
+                font.fallback
+                    .iter()
+                    .filter(|name| !name.trim().is_empty())
+                    .cloned(),
+            );
+            desc.set_family(&families.join(", "));
         }
         desc.set_size((font.size * pango::SCALE as f32) as i32);
         self.terminal.set_font_desc(Some(&desc));

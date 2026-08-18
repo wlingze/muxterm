@@ -352,6 +352,7 @@ impl AppWindow {
         let mut font = FontSettings {
             family: cfg.font.family.clone(),
             size: cfg.font.size,
+            fallback: cfg.font.fallback.clone(),
         };
         if let Some(size) = preferences.font_size {
             font.size = FontSettings::clamp_size(size);

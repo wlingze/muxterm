@@ -8,7 +8,7 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-use crate::core::config::{default_keybindings, Action};
+use crate::core::config::default_keybindings;
 use crate::core::config_service::schema::ShortcutBinding;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -138,6 +138,7 @@ pub fn validate_preset_chords(bindings: &[ShortcutBinding]) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::Action;
 
     #[test]
     fn colemak_preset_keeps_physical_positions() {

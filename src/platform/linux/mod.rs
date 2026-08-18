@@ -5,6 +5,7 @@ pub mod attention_ui;
 pub mod command_palette;
 pub mod fault_gtk;
 pub mod ffi_bridge;
+pub mod font_registry;
 pub mod input_bar;
 pub mod keymap;
 pub mod layout_host;

@@ -525,11 +525,13 @@ pub fn parse_config_toml(raw: &str) -> Result<Config> {
     Ok(cfg)
 }
 
+
 mod shortcut;
 mod theme;
 
 pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
 pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
+
 
 fn dirs_config() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -864,6 +866,30 @@ key_path = "~/.ssh/id_rsa"
         assert_eq!(dark.background, parse_hex("#1e1e2e").unwrap());
         let loaded = Theme::load("light").unwrap();
         assert_eq!(loaded.background, light.background);
+    }
+
+    #[test]
+    fn modern_black_white_themes_are_embedded() {
+        let black = Theme::load("black").unwrap();
+        let white = Theme::load("white").unwrap();
+        assert_eq!(black.name, "Black");
+        assert_eq!(white.name, "White");
+        assert_ne!(black.background, white.background);
+    }
+
+    #[test]
+    fn system_theme_uses_deterministic_white_without_hint() {
+        let previous_muxterm = std::env::var_os("MUXTERM_THEME");
+        let previous_gtk = std::env::var_os("GTK_THEME");
+        std::env::remove_var("MUXTERM_THEME");
+        std::env::remove_var("GTK_THEME");
+        assert_eq!(Theme::resolve_name("system"), "white");
+        if let Some(value) = previous_muxterm {
+            std::env::set_var("MUXTERM_THEME", value);
+        }
+        if let Some(value) = previous_gtk {
+            std::env::set_var("GTK_THEME", value);
+        }
     }
 
     #[test]

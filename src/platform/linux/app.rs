@@ -5,7 +5,8 @@
 use gtk4::prelude::*;
 use gtk4::Application;
 
-use crate::core::config::Config;
+use crate::core::config::Theme;
+use crate::core::config_service::{ConfigDocument, SettingsService};
 
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 
@@ -18,26 +19,51 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
+    if let Err(error) = crate::platform::linux::font_registry::register_bundled_fonts() {
+        tracing::warn!(target = "muxterm::app", "bundled font registration failed: {error}");
+    }
+
     app.connect_activate(move |a| {
-        let mut cfg = Config::load().unwrap_or_else(|e| {
-            tracing::warn!(target = "muxterm::app", "加载配置失败，用默认: {e}");
-            Config::default()
-        });
+        let mut cfg = match SettingsService::default_user() {
+            Ok(mut service) => {
+                if let Err(error) = service.migrate_legacy_quickconnect() {
+                    tracing::warn!(target = "muxterm::app", "QuickConnect 迁移未完成: {error}");
+                }
+                service.document().config.clone()
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::app",
+                    "加载配置失败，用现代默认值: {error}"
+                );
+                ConfigDocument::default().config
+            }
+        };
         if let Some(ref sock) = socket {
             let sock = sock.trim();
             if !sock.is_empty() {
                 cfg.tmux.socket = sock.to_string();
             }
         }
-        let theme = match crate::core::config::Theme::load(&cfg.theme.name) {
+        let requested_theme = if cfg.theme.name.eq_ignore_ascii_case("system") {
+            let resolved = Theme::resolve_name("system");
+            if resolved == "black" {
+                cfg.theme.dark.clone()
+            } else {
+                cfg.theme.light.clone()
+            }
+        } else {
+            cfg.theme.name.clone()
+        };
+        let theme = match Theme::load(&requested_theme) {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(
                     target = "muxterm::app",
                     "加载主题 {} 失败，用内置 light: {e}",
-                    cfg.theme.name
+                    requested_theme
                 );
-                crate::core::config::Theme::load("light").unwrap_or_else(|_| fallback_theme())
+                Theme::load("white").unwrap_or_else(|_| fallback_theme())
             }
         };
         let win = crate::platform::linux::window::AppWindow::new(cfg, theme);
@@ -55,7 +81,7 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
 }
 
 fn fallback_theme() -> crate::core::config::Theme {
-    let raw = crate::core::config::Theme::embedded("light").expect("embedded light");
+    let raw = crate::core::config::Theme::embedded("white").expect("embedded white");
     crate::core::config::parse_theme_toml(raw).expect("embedded light 可解析")
 }
 
@@ -64,15 +90,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fallback_theme_is_embedded_light_not_dark() {
+    fn fallback_theme_is_embedded_white_not_black() {
         let t = fallback_theme();
         assert_eq!(
             t.background,
-            crate::core::config::parse_hex("#eff1f5").unwrap()
+            crate::core::config::parse_hex("#ffffff").unwrap()
         );
         assert_ne!(
             t.background,
-            crate::core::config::parse_hex("#1e1e2e").unwrap()
+            crate::core::config::parse_hex("#0b0d10").unwrap()
         );
     }
 }

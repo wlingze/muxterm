@@ -41,6 +41,10 @@ async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
 
+# 可选：Linux bundled font registration
+[target.'cfg(target_os = "linux")'.dependencies]
+yeslogic-fontconfig-sys = "6"
+
 # 可选：GTK4 前端
 gtk4 = { version = "0.9", optional = true }
 # v0_76：Terminal::text_format，GTK 测试校验 VTE 可见文本（防分割后黑屏）
