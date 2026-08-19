@@ -93,7 +93,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         Self.savedTerminalFontSize() ?? terminalFontSettings.size
     }
 
-    init(bridge: CoreBridge, debug: Bool = false) {
+    init(
+        bridge: CoreBridge,
+        debug: Bool = false,
+        quickConnectStore injectedQuickConnectStore: QuickConnectStore? = nil
+    ) {
         discovery.attachedLocalSocket = bridge.socket
         discovery.attachedRemoteSocket = bridge.socket
         let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8)
@@ -155,7 +159,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 与主 config.toml 同一目录，方便用户手改/备份）。
         let configDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/muxterm", isDirectory: true)
-        quickConnectStore = QuickConnectStore(
+        quickConnectStore = injectedQuickConnectStore ?? QuickConnectStore(
             fileURL: configDir.appendingPathComponent("quickconnect.toml")
         )
         super.init(window: window)
@@ -265,6 +269,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.onError = { [weak self] message in
             self?.reportStatusError(message)
         }
+
+        // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
+        // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
+        // workspace 既不在 Recent，也无法在切走后保持 warm。
+        let initialKey = ConnectionKey(
+            transport: bridge.sshAlias == nil ? "local" : "ssh",
+            alias: bridge.sshAlias,
+            session: bridge.session ?? "",
+            runtime: terminalManager.usesClientResize ? "tmux" : "shell",
+            path: bridge.startDirectory ?? ""
+        )
+        let initialSlot = WarmConnectionSlot(
+            key: initialKey,
+            bridge: bridge,
+            terminalManager: terminalManager,
+            now: 0
+        )
+        connectionPool.acquire(key: initialKey) { _ in initialSlot }
 
         installKeyEquivalents()
         applyTheme(currentTheme())
