@@ -8,6 +8,7 @@ public enum KeyAction: Equatable, Sendable {
     case closeWindow
     case closePane
     case switchTab(Int) // 1-based
+    case switchLastTab
     case nextPane
     case prevPane
     /// 在 OSC 133 命令刻度之间向前/向后跳转；不向 pane 发送按键。
@@ -136,6 +137,7 @@ public enum KeyBindings {
             if key == "v" { return .splitVertical }
             if key == "[" { return .prevPane }
             if key == "]" { return .nextPane }
+            if key == "0" { return .switchLastTab }
             if let n = Int(key), (1...9).contains(n) {
                 return .switchTab(n)
             }

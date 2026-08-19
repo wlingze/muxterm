@@ -4,13 +4,21 @@ enum PaletteCommand: Equatable {
     case local
     case ssh
     case newTab
+    case quickConnect
+    case searchPanes
     case renameTab
     case renameWorkspace
+    case moveTabLeft
+    case moveTabRight
+    case switchTab(Int)
+    case switchLastTab
     case movePaneToNewTab
     case splitHorizontal
     case splitVertical
     case nextPane
     case prevPane
+    case previousCommand
+    case nextCommand
     case closePane
     case closeTab
     case closeWindow
@@ -21,6 +29,9 @@ enum PaletteCommand: Equatable {
     case tabBarTop
     case tabBarBottom
     case togglePaneFullscreen
+    case increaseFontSize
+    case decreaseFontSize
+    case resetFontSize
     case quit
 }
 

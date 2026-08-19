@@ -61,6 +61,13 @@ final class FlatChromeTests: XCTestCase {
 }
 
 final class KeyBindingsTests: XCTestCase {
+    func testAltZeroSwitchesToLastTab() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(option: true, key: "0")),
+            .switchLastTab
+        )
+    }
+
     func testCmdBracketPaneSwitchMapping() {
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "[")),
@@ -1285,10 +1292,16 @@ final class KeyBindingsConfigTests: XCTestCase {
         key = "p"
         mods = ["command"]
         action = "quick_connect"
+
+        [[keybindings]]
+        key = "0"
+        mods = ["option"]
+        action = "switch_tab_last"
         """
         let map = KeyBindingsConfig.parse(toml: toml)
         XCTAssertEqual(map[KeyChord(command: true, key: "1")], .switchTab(3))
         XCTAssertEqual(map[KeyChord(command: true, key: "p")], .quickConnect)
+        XCTAssertEqual(map[KeyChord(option: true, key: "0")], .switchLastTab)
     }
 
     func testParseFontZoomBindings() {

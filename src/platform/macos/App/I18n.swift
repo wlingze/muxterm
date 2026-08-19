@@ -122,6 +122,20 @@ enum MuxtermTextKey: CaseIterable {
     case paneAccessibility
     case previousPane
     case previousPaneDetail
+    case previousCommand
+    case previousCommandDetail
+    case nextCommand
+    case nextCommandDetail
+    case quickConnect
+    case quickConnectDetail
+    case searchPanesDetail
+    case increaseFontSizeDetail
+    case decreaseFontSizeDetail
+    case resetFontSizeDetail
+    case moveTabLeftDetail
+    case moveTabRightDetail
+    case switchLastTab
+    case switchLastTabDetail
     case quitMuxterm
     case quitMuxtermDetail
     case rename
@@ -289,6 +303,20 @@ enum MuxtermTextKey: CaseIterable {
         case .paneAccessibility: return "pane_accessibility"
         case .previousPane: return "previous_pane"
         case .previousPaneDetail: return "previous_pane_detail"
+        case .previousCommand: return "previous_command"
+        case .previousCommandDetail: return "previous_command_detail"
+        case .nextCommand: return "next_command"
+        case .nextCommandDetail: return "next_command_detail"
+        case .quickConnect: return "quick_connect"
+        case .quickConnectDetail: return "quick_connect_detail"
+        case .searchPanesDetail: return "search_panes_detail"
+        case .increaseFontSizeDetail: return "increase_font_size_detail"
+        case .decreaseFontSizeDetail: return "decrease_font_size_detail"
+        case .resetFontSizeDetail: return "reset_font_size_detail"
+        case .moveTabLeftDetail: return "move_tab_left_detail"
+        case .moveTabRightDetail: return "move_tab_right_detail"
+        case .switchLastTab: return "switch_last_tab"
+        case .switchLastTabDetail: return "switch_last_tab_detail"
         case .quitMuxterm: return "quit_muxterm"
         case .quitMuxtermDetail: return "quit_muxterm_detail"
         case .rename: return "rename"

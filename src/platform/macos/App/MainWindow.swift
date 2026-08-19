@@ -507,6 +507,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         requestSwitchTab(tabId)
     }
 
+    @objc func switchToLastTab() {
+        switchToTabIndex(lastSnapshot.tabs.count)
+    }
+
     @objc func splitHorizontal() {
         splitActivePane(horizontal: true)
     }
@@ -1252,6 +1256,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.ssh)
             ),
             PaletteItem(
+                title: i18n.tr(.quickConnect),
+                detail: i18n.tr(.quickConnectDetail),
+                keywords: "quick connect workspace attention search 快速连接 工作区 提醒 搜索",
+                kind: .command(.quickConnect)
+            ),
+            PaletteItem(
                 title: i18n.tr(.newTab),
                 detail: i18n.tr(.newTabDetail),
                 keywords: "new tab 新建 标签页",
@@ -1268,6 +1278,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 detail: i18n.tr(.renameWorkspaceDetail),
                 keywords: "rename workspace title 重命名 工作区",
                 kind: .command(.renameWorkspace)
+            ),
+            PaletteItem(
+                title: i18n.tr(.moveTabLeft),
+                detail: i18n.tr(.moveTabLeftDetail),
+                keywords: "move tab left reorder 向左 移动 标签页",
+                kind: .command(.moveTabLeft)
+            ),
+            PaletteItem(
+                title: i18n.tr(.moveTabRight),
+                detail: i18n.tr(.moveTabRightDetail),
+                keywords: "move tab right reorder 向右 移动 标签页",
+                kind: .command(.moveTabRight)
             ),
             PaletteItem(
                 title: i18n.tr(.splitPaneHorizontal),
@@ -1300,6 +1322,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.prevPane)
             ),
             PaletteItem(
+                title: i18n.tr(.previousCommand),
+                detail: i18n.tr(.previousCommandDetail),
+                keywords: "previous command mark timeline history 上一条 命令",
+                kind: .command(.previousCommand)
+            ),
+            PaletteItem(
+                title: i18n.tr(.nextCommand),
+                detail: i18n.tr(.nextCommandDetail),
+                keywords: "next command mark timeline history 下一条 命令",
+                kind: .command(.nextCommand)
+            ),
+            PaletteItem(
+                title: i18n.tr(.menuSearchPanes),
+                detail: i18n.tr(.searchPanesDetail),
+                keywords: "search find pane terminal history 搜索 查找",
+                kind: .command(.searchPanes)
+            ),
+            PaletteItem(
                 title: i18n.tr(.closePane),
                 detail: i18n.tr(.closePaneDetail),
                 keywords: "close pane 关闭",
@@ -1322,6 +1362,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 detail: i18n.tr(.languageDetail),
                 keywords: "language locale 语言",
                 kind: .command(.language)
+            ),
+            PaletteItem(
+                title: i18n.tr(.menuIncreaseFontSize),
+                detail: i18n.tr(.increaseFontSizeDetail),
+                keywords: "font size increase zoom text 字体 放大",
+                kind: .command(.increaseFontSize)
+            ),
+            PaletteItem(
+                title: i18n.tr(.menuDecreaseFontSize),
+                detail: i18n.tr(.decreaseFontSizeDetail),
+                keywords: "font size decrease zoom text 字体 缩小",
+                kind: .command(.decreaseFontSize)
+            ),
+            PaletteItem(
+                title: i18n.tr(.menuResetFontSize),
+                detail: i18n.tr(.resetFontSizeDetail),
+                keywords: "font size reset default 字体 重置",
+                kind: .command(.resetFontSize)
             ),
             PaletteItem(
                 title: i18n.tr(
@@ -1364,6 +1422,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ),
         ]
 
+        let tabItems = lastSnapshot.tabs.enumerated().map { index, tab in
+            PaletteItem(
+                title: i18n.tr(.menuSwitchTab, arguments: ["number": "\(index + 1)"]),
+                detail: tab.name,
+                keywords: "switch tab \(index + 1) \(tab.name) 切换 标签页",
+                kind: .command(.switchTab(index + 1))
+            )
+        }
+        if !tabItems.isEmpty {
+            let insertion = min(8, items.count)
+            items.insert(contentsOf: tabItems, at: insertion)
+            if tabItems.count > 1 {
+                items.insert(
+                    PaletteItem(
+                        title: i18n.tr(.switchLastTab),
+                        detail: i18n.tr(.switchLastTabDetail),
+                        keywords: "switch last final tab 0 最后 标签页",
+                        kind: .command(.switchLastTab)
+                    ),
+                    at: insertion + tabItems.count
+                )
+            }
+        }
+
         // detach 只对 tmux/SSH 控制 client 有意义；local shell 不能显示这个命令。
         // 关闭窗口时 CoreBridge.shutdown() 会发送 detach-client，保留 tmux session。
         if terminalManager.usesClientResize {
@@ -1398,12 +1480,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.newTab):
             commandPalette.dismiss()
             newTab()
+        case .command(.quickConnect):
+            commandPalette.dismiss()
+            openQuickConnect()
+        case .command(.searchPanes):
+            commandPalette.dismiss()
+            openSearchPanel()
         case .command(.renameTab):
             commandPalette.dismiss()
             renameActiveTab()
         case .command(.renameWorkspace):
             commandPalette.dismiss()
             renameCurrentWorkspace()
+        case .command(.moveTabLeft):
+            commandPalette.dismiss()
+            moveActiveTabLeft()
+        case .command(.moveTabRight):
+            commandPalette.dismiss()
+            moveActiveTabRight()
+        case .command(.switchTab(let oneBased)):
+            commandPalette.dismiss()
+            switchToTabIndex(oneBased)
+        case .command(.switchLastTab):
+            commandPalette.dismiss()
+            switchToLastTab()
         case .command(.movePaneToNewTab):
             commandPalette.dismiss()
             moveActivePaneToNewTab()
@@ -1422,6 +1522,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.prevPane):
             commandPalette.dismiss()
             prevPane()
+        case .command(.previousCommand):
+            commandPalette.dismiss()
+            jumpToPreviousCommand()
+        case .command(.nextCommand):
+            commandPalette.dismiss()
+            jumpToNextCommand()
         case .command(.closePane):
             commandPalette.dismiss()
             closeActivePane()
@@ -1436,6 +1542,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             detachSessionWindow()
         case .command(.language):
             showLanguageOptions()
+        case .command(.increaseFontSize):
+            commandPalette.dismiss()
+            increaseTerminalFontSize(nil)
+        case .command(.decreaseFontSize):
+            commandPalette.dismiss()
+            decreaseTerminalFontSize(nil)
+        case .command(.resetFontSize):
+            commandPalette.dismiss()
+            resetTerminalFontSize(nil)
         case .language(let language):
             _ = MuxtermI18n.shared.setLanguage(language)
             commandPalette.present(items: rootPaletteItems())
@@ -2310,6 +2425,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             closeActivePane()
         case .switchTab(let n):
             switchToTabIndex(n)
+        case .switchLastTab:
+            switchToLastTab()
         case .nextPane:
             nextPane()
         case .prevPane:
