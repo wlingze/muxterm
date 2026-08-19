@@ -73,6 +73,27 @@ struct CoreFsEntry: Decodable, Equatable {
     let is_dir: Bool
 }
 
+/// Core OSC 133 command timeline entry. `historyOffset == nil` means the
+/// referenced line was evicted between two snapshots and must not be treated
+/// as a jump to the live bottom.
+struct CoreCommandMark: Decodable, Equatable {
+    let seq: UInt64
+    let command: String
+    let exitCode: Int?
+    let historyOffset: UInt32?
+
+    enum CodingKeys: String, CodingKey {
+        case seq, command
+        case exitCode = "exit_code"
+        case historyOffset = "history_offset"
+    }
+}
+
+private struct CoreCommandMarksResponse: Decodable {
+    let ok: Bool
+    let marks: [CoreCommandMark]?
+}
+
 private struct SSHHostsResponse: Decodable {
     let ok: Bool
     let error: String?
@@ -558,6 +579,25 @@ final class CoreBridge {
         return Data(buf.prefix(Int(n)))
     }
 
+    /// 读取某 pane 的一次性 Surface seed（历史 + 当前屏）。
+    /// C 接口先返回完整长度，再按精确长度读取，避免历史超过固定缓冲后被截断。
+    func paneSurfaceSeedANSI(paneId: UInt32) -> Data {
+        guard let handle else { return Data() }
+        let required = muxterm_pane_surface_seed_ansi(handle, paneId, nil, 0)
+        guard required > 0 else { return Data() }
+        var buf = [UInt8](repeating: 0, count: Int(required))
+        let copied = buf.withUnsafeMutableBytes { raw in
+            muxterm_pane_surface_seed_ansi(
+                handle,
+                paneId,
+                raw.bindMemory(to: UInt8.self).baseAddress,
+                raw.count
+            )
+        }
+        guard copied >= required else { return Data() }
+        return Data(buf)
+    }
+
     /// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
     func paneViewport(paneId: UInt32) -> Int32 {
         guard let handle else { return -1 }
@@ -569,6 +609,39 @@ final class CoreBridge {
     func setPaneViewport(paneId: UInt32, offset: UInt32) -> Int32 {
         guard let handle else { return -1 }
         return muxterm_set_pane_viewport(handle, paneId, offset)
+    }
+
+    /// 还能往历史上滚的最大 offset（0 = 没有离屏历史；<0 = err）。
+    func paneHistoryMaxOffset(paneId: UInt32, rows: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_pane_history_max_offset(handle, paneId, rows)
+    }
+
+    /// 读取 OSC 133 命令刻度 JSON。
+    func paneCommandMarksJSON(paneId: UInt32) -> String? {
+        guard let handle else { return nil }
+        guard let p = muxterm_pane_command_marks_json(handle, paneId) else { return nil }
+        defer { muxterm_free_string(p) }
+        return String(cString: p)
+    }
+
+    /// 读取 OSC 133 命令时间线；已淘汰的刻度由 core 直接移除，
+    /// 解析失败或 pane 不存在时返回空数组。
+    func paneCommandMarks(paneId: UInt32) -> [CoreCommandMark] {
+        guard let json = paneCommandMarksJSON(paneId: paneId),
+              let data = json.data(using: .utf8),
+              let response = try? JSONDecoder().decode(CoreCommandMarksResponse.self, from: data),
+              response.ok
+        else {
+            return []
+        }
+        return response.marks ?? []
+    }
+
+    /// 读取某 pane 最新稳定行 ID。
+    func paneLatestLineSeq(paneId: UInt32) -> Int64 {
+        guard let handle else { return -1 }
+        return muxterm_pane_latest_line_seq(handle, paneId)
     }
 
     /// 搜索命中 seq 对应的 viewport 偏移（0 = 可见屏 / 未找到；-1 = err）。

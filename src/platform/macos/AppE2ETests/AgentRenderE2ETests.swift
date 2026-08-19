@@ -192,6 +192,119 @@ final class AgentRenderE2ETests: XCTestCase {
         window.orderOut(nil)
     }
 
+    /// Surface seed 后历史属于 SwiftTerm 原生 scrollback；用户上划时继续 feed
+    /// live，不得通过 reset/RIS 覆盖当前历史位置。
+    func testNativeScrollbackKeepsHistoryWhileLiveContinues() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 240))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        view.getTerminal().resize(cols: 60, rows: 8)
+        var seed = Data()
+        for i in 0..<24 {
+            seed.append(contentsOf: Array("HISTORY_NATIVE_\(i)\r\n".utf8))
+        }
+        seed.append(contentsOf: Array(String(repeating: "\r\n", count: 8).utf8))
+        seed.append(contentsOf: Array("\u{1b}[H\u{1b}[1;1HLIVE_SCREEN\u{1b}[8;1HPROMPT>\u{1b}[8;9H".utf8))
+        view.feedOutput(seed, isSnapshot: true)
+        AppE2E.pump(40)
+        XCTAssertTrue(view.canScroll, "seed 后必须存在 native scrollback")
+
+        view.scrollUp(lines: 6)
+        let position = view.scrollPosition
+        XCTAssertLessThan(position, 0.999, "上划后 native position 必须离开底部")
+        view.feedOutput(Data("LIVE_AFTER_SCROLL\r\n".utf8))
+        AppE2E.pump(40)
+        XCTAssertLessThan(view.scrollPosition, 0.999, "live feed 不能把用户强制拉回底部")
+        XCTAssertTrue(view.visibleScreenText().contains("HISTORY_NATIVE_"), "历史视口必须保持可读")
+
+        view.scrollToLatest()
+        XCTAssertGreaterThanOrEqual(view.scrollPosition, 0.999)
+        XCTAssertTrue(view.visibleScreenText().contains("LIVE_AFTER_SCROLL"), "回底后必须看到新输出")
+        window.orderOut(nil)
+    }
+
+    /// 真实 AppKit 事件路径回归：不能只调用 `scrollUp()`，必须由
+    /// `NSWindow.sendEvent` 命中 terminal view 后进入 SwiftTerm 的
+    /// `scrollWheel(with:)`。
+    func testAppKitScrollWheelReachesTerminalView() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 2,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 240)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
+        view.getTerminal().resize(cols: 60, rows: 8)
+
+        var seed = Data()
+        for i in 0..<32 {
+            seed.append(contentsOf: Array("APPKIT_HISTORY_\(i)\r\n".utf8))
+        }
+        seed.append(contentsOf: Array(String(repeating: "\r\n", count: 8).utf8))
+        seed.append(contentsOf: Array("\u{1b}[H\u{1b}[1;1HAPPKIT_LIVE\u{1b}[8;1HPROMPT>".utf8))
+        view.feedOutput(seed, isSnapshot: true)
+        AppE2E.pump(40)
+        XCTAssertTrue(view.canScroll, "seed 后必须有 native scrollback")
+
+        let localPoint = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+        let screenPoint = view.convert(localPoint, to: nil)
+        guard let cgEvent = CGEvent(
+            scrollWheelEvent2Source: CGEventSource(stateID: .hidSystemState),
+            units: .line,
+            wheelCount: 1,
+            wheel1: 6,
+            wheel2: 0,
+            wheel3: 0
+        ) else {
+            XCTFail("无法构造 AppKit scroll wheel CGEvent")
+            window.orderOut(nil)
+            return
+        }
+        cgEvent.setIntegerValueField(
+            .mouseEventWindowUnderMousePointer,
+            value: Int64(window.windowNumber)
+        )
+        cgEvent.setIntegerValueField(
+            .mouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+            value: Int64(window.windowNumber)
+        )
+        let displayMaxY = NSScreen.screens
+            .first(where: { $0.frame.contains(screenPoint) })?
+            .frame
+            .maxY ?? 0
+        // CGEvent uses a top-left origin while AppKit screen points use a
+        // bottom-left origin.
+        cgEvent.location = CGPoint(x: screenPoint.x, y: displayMaxY - screenPoint.y)
+        guard let event = NSEvent(cgEvent: cgEvent) else {
+            XCTFail("无法把 CGEvent 转成 NSEvent")
+            window.orderOut(nil)
+            return
+        }
+        window.sendEvent(event)
+        AppE2E.pump(40)
+
+        XCTAssertLessThan(
+            view.scrollPosition,
+            0.999,
+            "真实 AppKit 滚轮上划后必须离开 native scrollback 底部"
+        )
+        window.orderOut(nil)
+    }
+
     func testLightThemeOscReportsTrueBlackNotGray() {
         let osc = ColorContrast.oscColors(fg: MuxtermPalette.light.fg, bg: MuxtermPalette.light.bg)
         XCTAssertEqual(osc.bg.lowercased(), MuxtermPalette.light.bg)

@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import MuxtermChrome
 
@@ -53,6 +54,7 @@ extension MainWindowController {
     func testPaneTerminalText(_ paneId: UInt32) -> String {
         terminalManager.view(for: paneId).visibleScreenText()
     }
+
 
     func testActivePaneTerminalText() -> String {
         testPaneTerminalText(testActivePaneID())
@@ -167,9 +169,71 @@ extension MainWindowController {
         content.setJumpLatestVisible(bridge.paneViewport(paneId: pane) > 0)
     }
 
+    /// 触控板/native scrollback 生产路径：模拟 TerminalView 的滚轮。
+    func testScrollHistory(deltaLines: Int) {
+        let pane = testActivePaneID()
+        pollOnce()
+        terminalManager.scrollPaneHistory(paneId: pane, deltaLines: deltaLines)
+        content.setJumpLatestVisible(bridge.paneViewport(paneId: pane) > 0)
+    }
+
+    /// 通过真实 NSWindow/AppKit 事件分发滚轮；与 `testScrollHistory` 不同，
+    /// 这里必须经过 hit-test 和 SwiftTerm 的 `scrollWheel(with:)`。
+    /// CGEvent 使用左上角原点，AppKit screen point 使用左下角原点，
+    /// 因此发送前要做一次 y 轴转换。
+    @discardableResult
+    func testDispatchScrollWheel(deltaLines: Int32) -> Bool {
+        guard let window else { return false }
+        let pane = testActivePaneID()
+        let terminal = terminalManager.view(for: pane)
+        window.layoutIfNeeded()
+        terminal.layoutSubtreeIfNeeded()
+        guard terminal.bounds.width > 1, terminal.bounds.height > 1 else { return false }
+
+        let screenPoint = terminal.convert(
+            NSPoint(x: terminal.bounds.midX, y: terminal.bounds.midY),
+            to: nil
+        )
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: CGEventSource(stateID: .hidSystemState),
+            units: .line,
+            wheelCount: 1,
+            wheel1: deltaLines,
+            wheel2: 0,
+            wheel3: 0
+        ) else {
+            return false
+        }
+        event.setIntegerValueField(
+            .mouseEventWindowUnderMousePointer,
+            value: Int64(window.windowNumber)
+        )
+        event.setIntegerValueField(
+            .mouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+            value: Int64(window.windowNumber)
+        )
+        let displayMaxY = NSScreen.screens
+            .first(where: { $0.frame.contains(screenPoint) })?
+            .frame
+            .maxY ?? NSScreen.main?.frame.maxY ?? 0
+        event.location = CGPoint(x: screenPoint.x, y: displayMaxY - screenPoint.y)
+        guard let nsEvent = NSEvent(cgEvent: event) else { return false }
+        window.sendEvent(nsEvent)
+        return true
+    }
+
+    func testNativeScrollPosition() -> Double {
+        terminalManager.view(for: testActivePaneID()).scrollPosition
+    }
+
+    func testNativeCanScroll() -> Bool {
+        terminalManager.view(for: testActivePaneID()).canScroll
+    }
+
     func testPaneViewport() -> UInt32 {
         UInt32(max(0, bridge.paneViewport(paneId: testActivePaneID())))
     }
+
 
     func testClickJumpLatest() {
         jumpToLatest()
@@ -178,6 +242,29 @@ extension MainWindowController {
 
     func testJumpLatestVisible() -> Bool {
         !content.jumpLatestButton.isHidden
+    }
+
+    func testJumpLatestTitle() -> String {
+        content.jumpLatestButton.title
+    }
+
+    func testLastSeenVisible() -> Bool {
+        !content.lastSeenButton.isHidden
+    }
+
+    func testCommandMarkVisible() -> (ok: Bool, fail: Bool) {
+        (!content.commandMarkOKButton.isHidden, !content.commandMarkFailButton.isHidden)
+    }
+
+    /// 测试命令时间线的前后跳转（对应 Cmd+Option+↑/↓ 生产快捷键）。
+    func testPreviousCommand() {
+        jumpToPreviousCommand()
+        pollOnce()
+    }
+
+    func testNextCommand() {
+        jumpToNextCommand()
+        pollOnce()
     }
 
     func testDisconnectOverlayVisible() -> Bool {

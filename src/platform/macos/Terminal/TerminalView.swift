@@ -12,6 +12,10 @@ final class MuxTerminalView: TerminalView {
     private var fontFamily: String
     private(set) var fontSize: CGFloat
     weak var inputHandler: TerminalInputHandler?
+    /// 原生 SwiftTerm scrollback 位置变化；TerminalManager 将其镜像到 core。
+    var onScrollPositionChanged: ((UInt32, Double, Bool) -> Void)?
+    /// 诊断/回归测试：Surface seed 之外不允许发生 reset。
+    private(set) var snapshotResetCount = 0
     /// tmux 控制模式下，SwiftTerm 解析 pane 输出时生成的查询应答（OSC 10/11、
     /// CSI DA/DSR、DCS 等）必须丢弃：tmux 拥有 pane 的 PTY 与终端协议，应答
     /// 经 `send-keys -l` 回写会被 pane 回显并执行，造成 `git lg` 的
@@ -42,6 +46,10 @@ final class MuxTerminalView: TerminalView {
     /// 上一次按像素驱动后的模型行列，用于检测窗口 resize 这一瞬间。
     private var lastModelCols = 0
     private var lastModelRows = 0
+    /// headless/布局过渡期间 AppKit 可能短暂给 pane 一个 0~2 列的 frame；
+    /// tmux 报告的字符格是模型的下限，不能让它被临时像素尺寸缩成 2×1。
+    private var minimumModelCols = 2
+    private var minimumModelRows = 1
 
     init(
         paneId: UInt32,
@@ -55,11 +63,11 @@ final class MuxTerminalView: TerminalView {
         super.init(frame: frame)
         // SwiftTerm 为每条可见滚动条预留 ~16pt，模型列数会比 tmux pane 少
         // 1–2 列（`processSizeChange` 用 getEffectiveWidth 扣掉滚动条宽度）。
-        // agent 帧按 pane 宽度折行，SwiftTerm 提前折行，erase-up 行数对不上，
-        // 换行后输入区/提示内容被擦掉（1721/1740/1745 同族根因）。Muxterm
-        // 不需要可见滚动条指示器（触控板/滚轮滚动照常），隐藏它让模型宽度
-        // = pane 宽度，与 `refresh-client -C` 发给 tmux 的列数一致。
+        // 隐藏滚动条让模型宽度 = pane 宽度，与 `refresh-client -C` 列数一致。
+        // 触控板交给 SwiftTerm：htop/Cursor 在 alt-screen 里自己消化滚动；
+        // 普通 shell 滚 attach 之后的本地 scrollback。禁止 RIS 喂历史 dump。
         subviews.first(where: { $0 is NSScroller })?.isHidden = true
+        getTerminal().changeHistorySize(10_000)
         terminalDelegate = self
         wantsLayer = true
         font = Self.makeFont(family: fontFamily, size: self.fontSize)
@@ -90,8 +98,9 @@ final class MuxTerminalView: TerminalView {
     func feedOutput(_ data: Data, isSnapshot: Bool = false) {
         guard !data.isEmpty else { return }
         if isSnapshot {
-            // 快照替换当前屏：清掉误喂的 capture 历史，避免滚动条里
-            // 一万行旧输出、切 tab 时从很早刷到现在。
+            // 只允许新建 Surface 的一次性 seed reset；历史 seed 随后进入
+            // SwiftTerm 原生 scrollback，不能在 live/滚轮路径重复调用。
+            snapshotResetCount += 1
             getTerminal().resetToInitialState()
         }
         let cursorBefore = getTerminal().getCursorLocation()
@@ -121,6 +130,46 @@ final class MuxTerminalView: TerminalView {
         if now.timeIntervalSince(lastAccessibilityUpdate) >= Self.accessibilityUpdateInterval {
             lastAccessibilityUpdate = now
             updateAccessibilityOutput()
+        }
+    }
+
+    /// 当前 native VT 是否位于最新输出尾部。
+    func isAtLatest() -> Bool {
+        !canScroll || scrollPosition >= 0.999
+    }
+
+    /// 将 core 的历史 offset 映射到 SwiftTerm 原生 scrollback。
+    func scrollToHistoryOffset(_ offset: UInt32, maxOffset: UInt32) {
+        guard maxOffset > 0 else {
+            scroll(toPosition: 1.0)
+            return
+        }
+        let clamped = min(offset, maxOffset)
+        let position = 1.0 - (Double(clamped) / Double(maxOffset))
+        scroll(toPosition: position)
+    }
+
+    func scrollToLatest() {
+        scroll(toPosition: 1.0)
+    }
+
+    func scrollLines(_ lines: Int) {
+        if lines > 0 {
+            scrollUp(lines: lines)
+        } else if lines < 0 {
+            scrollDown(lines: -lines)
+        }
+    }
+
+    func setMinimumModelSize(cols: Int, rows: Int) {
+        minimumModelCols = max(2, cols)
+        minimumModelRows = max(1, rows)
+        let dims = getTerminal().getDims()
+        if dims.cols < minimumModelCols || dims.rows < minimumModelRows {
+            getTerminal().resize(
+                cols: max(dims.cols, minimumModelCols),
+                rows: max(dims.rows, minimumModelRows)
+            )
         }
     }
 
@@ -230,13 +279,29 @@ final class MuxTerminalView: TerminalView {
         let size = bounds.size
         guard size.width >= 40, size.height >= 24 else { return false }
 
+        let positionBeforeResize = scrollPosition
+        let atLatestBeforeResize = isAtLatest()
+
         // SwiftTerm setFrameSize 会 processSizeChange；这里只调用一次，避免重复回调。
         if frame.size != size {
             setFrameSize(size)
         }
 
         let term = getTerminal()
+        let modelCols = max(term.cols, minimumModelCols)
+        let modelRows = max(term.rows, minimumModelRows)
+        if term.cols != modelCols || term.rows != modelRows {
+            term.resize(cols: modelCols, rows: modelRows)
+        }
         guard term.cols >= 2, term.rows >= 1 else { return false }
+        // AppKit 初次挂载/窗口 resize 可能让 SwiftTerm 的 Buffer 把 yDisp
+        // 暂时归零。若用户原来在底部，恢复到最新；若用户正在看历史，
+        // 保留原来的相对位置，不能被尺寸同步偷偷拉到底部或顶端。
+        if atLatestBeforeResize {
+            scroll(toPosition: 1.0)
+        } else if positionBeforeResize > 0 {
+            scroll(toPosition: positionBeforeResize)
+        }
         // 窗口 resize 时模型行列变化才做一次全屏重绘：清除 resize 后的残留行。
         // SwiftTerm 的 queuePendingDisplay 是 internal 无法跨模块调用，
         // 所以用 setNeedsDisplay 触发 AppKit 渲染循环（只在 resize 时，
@@ -350,7 +415,9 @@ extension MuxTerminalView: TerminalViewDelegate {
         inputHandler?.terminal(self, send: data)
     }
 
-    func scrolled(source: TerminalView, position: Double) {}
+    func scrolled(source: TerminalView, position: Double) {
+        onScrollPositionChanged?(paneId, position, isAtLatest())
+    }
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         if let url = URL(string: link) {

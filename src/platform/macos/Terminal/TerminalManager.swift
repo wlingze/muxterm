@@ -52,6 +52,15 @@ final class TerminalManager: TerminalInputHandler {
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
     var onError: ((String) -> Void)?
+    /// viewport 变化（滚轮 / 回底）：窗口用来显示跳转最新按钮。
+    var onViewportChanged: ((UInt32, UInt32) -> Void)?
+    /// 离开底部期间新增的行数变化；窗口用来显示 `↓ +N`。
+    var onUnseenLinesChanged: ((UInt32, UInt32) -> Void)?
+
+    private var unseenLines: [UInt32: UInt32] = [:]
+    /// `applyViewport`/回底是程序主动改变 native scroll position，回调只做
+    /// 重绘通知，不再把 native 的浮点位置反算回 core，避免搜索跳转漂移。
+    private var applyingNativeScroll = Set<UInt32>()
 
     deinit {
         clientResizeWorkItem?.cancel()
@@ -94,6 +103,8 @@ final class TerminalManager: TerminalInputHandler {
         trafficTimestamps.removeAll()
         trafficByteCounts.removeAll()
         trafficRate = 0
+        unseenLines.removeAll()
+        applyingNativeScroll.removeAll()
         onOutputSnippetChanged?(recentOutputSnippet)
     }
 
@@ -108,6 +119,9 @@ final class TerminalManager: TerminalInputHandler {
             fontSize: fontSize
         )
         view.inputHandler = self
+        view.onScrollPositionChanged = { [weak self] paneId, position, _ in
+            self?.handleNativeScroll(paneId: paneId, position: position)
+        }
         // 非直接 PTY 终端模拟器（tmux 控制模式 / daemon 代理）下禁止把
         // SwiftTerm 解析 pane 输出时生成的查询应答回写 pane。
         view.suppressOutputDrivenResponses = !isDirectPtyTerminal
@@ -116,21 +130,38 @@ final class TerminalManager: TerminalInputHandler {
         // 先按 pane 真实尺寸 resize 模型：codex/cursor 的 erase-up 重绘按
         // 实际列数生成，模型宽度不一致会折行导致输入行逐帧漂移。
         if let size = expectedPaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
+            view.setMinimumModelSize(cols: size.cols, rows: size.rows)
             view.getTerminal().resize(cols: size.cols, rows: size.rows)
         }
-        // 首屏只喂内置 VT 的可见网格，禁止把 256KB 环 / capture 历史当录像重放。
+        // 首屏把内置 VT 的带样式历史一次性种进 SwiftTerm 原生 scrollback。
+        // 之后只喂 `%output` 增量；滚轮/搜索不再拿历史 dump 重置屏幕。
         let rows = expectedPaneSizes[paneId]?.rows ?? 24
-        let visible = bridge?.paneVisibleANSI(paneId: paneId) ?? Data()
-        let raw = bridge?.getPaneOutput(paneId: paneId) ?? Data()
-        let snapshot = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: rows)
+        let seed = bridge?.paneSurfaceSeedANSI(paneId: paneId) ?? Data()
+        let snapshot: Data
+        let hasSurfaceSeed = !seed.isEmpty
+        if seed.isEmpty {
+            let visible = bridge?.paneVisibleANSI(paneId: paneId) ?? Data()
+            let raw = bridge?.getPaneOutput(paneId: paneId) ?? Data()
+            snapshot = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: rows)
+        } else {
+            snapshot = seed
+        }
         if !snapshot.isEmpty {
             view.feedOutput(snapshot, isSnapshot: true)
-            swiftTermSeeded.insert(paneId)
             appendSnippet(snapshot)
-            if inEventBatch {
-                viewsCreatedThisBatch.insert(paneId)
-            } else {
-                pendingSeedPanes.insert(paneId)
+            if hasSurfaceSeed {
+                // 写入大量历史行时 SwiftTerm 的 yDisp 在某些 resize/布局
+                // 时序会停在最上方；Surface 新建完成的契约是从 live 尾部开始。
+                applyingNativeScroll.insert(paneId)
+                view.scrollToLatest()
+                applyingNativeScroll.remove(paneId)
+                _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+                swiftTermSeeded.insert(paneId)
+                if inEventBatch {
+                    viewsCreatedThisBatch.insert(paneId)
+                } else {
+                    pendingSeedPanes.insert(paneId)
+                }
             }
         }
         return view
@@ -142,6 +173,9 @@ final class TerminalManager: TerminalInputHandler {
         expectedPaneSizes = Dictionary(
             uniqueKeysWithValues: panes.map { ($0.id, (Int($0.cols), Int($0.rows))) }
         )
+        for (paneId, size) in expectedPaneSizes {
+            views[paneId]?.setMinimumModelSize(cols: size.cols, rows: size.rows)
+        }
     }
 
     /// headless/未布局时 SwiftTerm 模型可能只有 0~1 行，喂字节会丢；
@@ -175,20 +209,35 @@ final class TerminalManager: TerminalInputHandler {
             // 首包：可见网格 / 末屏。attach 的 capture 历史绝不能当录像重放。
             // 之后的 live `%output` 即使很长（Codex 刷 GitHub 地址）也必须
             // 原样增量喂入，不能再 RIS 清屏。
-            let visible = bridge?.paneVisibleANSI(paneId: paneId) ?? Data()
-            let painted = PanePaintPolicy.firstPaint(
-                visible: visible,
-                raw: data,
-                rows: rows
-            )
+            let surface = bridge?.paneSurfaceSeedANSI(paneId: paneId) ?? Data()
+            let painted: Data
+            if !surface.isEmpty {
+                painted = surface
+            } else {
+                let visible = bridge?.paneVisibleANSI(paneId: paneId) ?? Data()
+                painted = PanePaintPolicy.firstPaint(
+                    visible: visible,
+                    raw: data,
+                    rows: rows
+                )
+            }
             if !painted.isEmpty {
                 view.feedOutput(painted, isSnapshot: true)
+                if !surface.isEmpty {
+                    applyingNativeScroll.insert(paneId)
+                    view.scrollToLatest()
+                    applyingNativeScroll.remove(paneId)
+                    _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+                }
             }
             swiftTermSeeded.insert(paneId)
             appendSnippet(painted)
             recordTraffic(bytes: data.count)
             return
         }
+        // 即使用户正在看历史也必须继续 feed。SwiftTerm 的 native VT 会在
+        // `userScrolling` 状态下保持当前 yDisp，同时把新行留在 scrollback；
+        // 丢弃这里的数据会冻结 Cursor/htop/shell。
         if PaneOutputFeedPolicy.shouldFeedEvent(
             viewExistedBeforeEvent: existed,
             seedCoveredEvent: viewsCreatedThisBatch.contains(paneId)
@@ -226,7 +275,20 @@ final class TerminalManager: TerminalInputHandler {
         pendingFeeds.removeAll()
         for (paneId, data) in feeds {
             let rows = expectedPaneSizes[paneId]?.rows ?? 24
-            views[paneId]?.feedOutput(PanePaintPolicy.live(data, visibleRows: rows))
+            guard let view = views[paneId] else { continue }
+            if !view.isAtLatest() {
+                let added = UInt32(data.reduce(into: 0) { count, byte in
+                    if byte == 0x0a { count += 1 }
+                })
+                if added > 0 {
+                    let current = unseenLines[paneId] ?? 0
+                    unseenLines[paneId] = current.addingReportingOverflow(added).overflow
+                        ? UInt32.max
+                        : current + added
+                    onUnseenLinesChanged?(paneId, unseenLines[paneId] ?? 0)
+                }
+            }
+            view.feedOutput(PanePaintPolicy.live(data, visibleRows: rows))
         }
     }
 
@@ -254,6 +316,8 @@ final class TerminalManager: TerminalInputHandler {
         viewsCreatedThisBatch.remove(paneId)
         pendingSeedPanes.remove(paneId)
         swiftTermSeeded.remove(paneId)
+        unseenLines.removeValue(forKey: paneId)
+        applyingNativeScroll.remove(paneId)
         lastPtySize.removeValue(forKey: paneId)
     }
 
@@ -412,6 +476,62 @@ final class TerminalManager: TerminalInputHandler {
         if bridge?.sendInput(paneId: view.paneId, data: Data(data)) != 0 {
             onError?(MuxtermI18n.shared.tr(.errorSendInput, arguments: ["id": "\(view.paneId)"]))
         }
+    }
+
+    /// 测试/无障碍路径模拟 native SwiftTerm 的滚轮；生产滚轮直接由
+    /// `TerminalView.scrollWheel` 处理。这里绝不能再喂 PaneBuf dump。
+    func scrollPaneHistory(paneId: UInt32, deltaLines: Int) {
+        guard let view = views[paneId] else { return }
+        view.scrollLines(deltaLines)
+    }
+
+    /// 把 core viewport 映射到 SwiftTerm 原生 scrollback。只改变 yDisp，
+    /// 不 reset、不 feed snapshot，因此不会破坏 live VT 状态。
+    func applyViewport(paneId: UInt32, offset: UInt32) {
+        let view = view(for: paneId)
+        let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? view.getTerminal().rows))
+        let rawMax = bridge?.paneHistoryMaxOffset(paneId: paneId, rows: rows) ?? -1
+        let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
+        _ = bridge?.setPaneViewport(paneId: paneId, offset: offset)
+        applyingNativeScroll.insert(paneId)
+        view.scrollToHistoryOffset(offset, maxOffset: maxOffset)
+        applyingNativeScroll.remove(paneId)
+        if offset == 0 {
+            unseenLines[paneId] = 0
+            onUnseenLinesChanged?(paneId, 0)
+        }
+        onViewportChanged?(paneId, offset)
+    }
+
+    func scrollToLatest(paneId: UInt32) {
+        applyingNativeScroll.insert(paneId)
+        views[paneId]?.scrollToLatest()
+        applyingNativeScroll.remove(paneId)
+        unseenLines[paneId] = 0
+        onUnseenLinesChanged?(paneId, 0)
+        _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+        onViewportChanged?(paneId, 0)
+    }
+
+    func unseenLineCount(paneId: UInt32) -> UInt32 {
+        unseenLines[paneId] ?? 0
+    }
+
+    private func handleNativeScroll(paneId: UInt32, position: Double) {
+        guard !applyingNativeScroll.contains(paneId) else { return }
+        let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? 24))
+        let rawMax = bridge?.paneHistoryMaxOffset(paneId: paneId, rows: rows) ?? -1
+        let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
+        let clamped = min(max(position, 0), 1)
+        let offset = clamped >= 0.999 || maxOffset == 0
+            ? 0
+            : UInt32((Double(maxOffset) * (1 - clamped)).rounded())
+        _ = bridge?.setPaneViewport(paneId: paneId, offset: offset)
+        if offset == 0 {
+            unseenLines[paneId] = 0
+            onUnseenLinesChanged?(paneId, 0)
+        }
+        onViewportChanged?(paneId, offset)
     }
 
     /// 给窗口级快捷键监视器发送已经编码好的终端控制字节。

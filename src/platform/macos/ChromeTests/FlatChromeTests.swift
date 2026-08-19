@@ -59,6 +59,19 @@ final class KeyBindingsTests: XCTestCase {
         )
     }
 
+    func testCommandTimelineShortcutsUseOnlyCommandOptionArrows() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, option: true, key: "up")),
+            .previousCommand
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, option: true, key: "down")),
+            .nextCommand
+        )
+        XCTAssertNil(KeyBindings.action(for: KeyChord(command: true, key: "up")))
+        XCTAssertNil(KeyBindings.action(for: KeyChord(option: true, key: "down")))
+    }
+
     func testCommonCmdShortcutsUnchanged() {
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "t")), .newTab)
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "d")), .splitVertical)
@@ -335,6 +348,14 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         ))
     }
 
+    func testLiveFeedContinuesWhileReadingHistory() {
+        XCTAssertTrue(PaneOutputFeedPolicy.shouldFeedLive(viewport: 0))
+        XCTAssertTrue(
+            PaneOutputFeedPolicy.shouldFeedLive(viewport: 12),
+            "native scrollback 位置不能成为丢弃 live 增量的门禁"
+        )
+    }
+
     /// 回归：视图刚创建且播种快照非空（覆盖了后端已入队事件）时，事件必须
     /// 跳过，否则同一批字节双写（输入/回显重复、状态区堆叠）。
     func testNewViewWithSeedSkipsAlreadyCoveredEvents() {
@@ -506,6 +527,98 @@ final class PanePaintPolicyTests: XCTestCase {
         let text = String(data: painted, encoding: .utf8) ?? ""
         XCTAssertTrue(text.contains("repo-0"), "Codex 刷出的地址不能被 live 裁掉")
         XCTAssertTrue(text.contains("repo-79"))
+    }
+}
+
+final class PaneHistoryScrollPolicyTests: XCTestCase {
+    func testNativeScrollbackOwnsTrackpadAndPageKeys() {
+        XCTAssertFalse(
+            PaneHistoryScrollPolicy.stealsLiveTrackpad,
+            "1124：拦触控板再 RIS 历史 dump 会把 Cursor/htop/echo 弄死"
+        )
+        XCTAssertFalse(
+            PaneHistoryScrollPolicy.stealsLivePageKeys,
+            "PageUp 必须留给 htop/Cursor，不能改 viewport"
+        )
+        XCTAssertFalse(
+            PaneHistoryScrollPolicy.shouldReplaceLiveScreen(isSearchJump: false),
+            "非搜索跳转不得整屏替换 live"
+        )
+        XCTAssertFalse(
+            PaneHistoryScrollPolicy.shouldReplaceLiveScreen(isSearchJump: true),
+            "搜索跳转也必须只移动 native viewport，不能喂历史帧"
+        )
+    }
+
+    func testWheelUpIncreasesOffsetUntilMax() {
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.nextOffset(current: 0, deltaLines: 3, maxOffset: 40),
+            3
+        )
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.nextOffset(current: 38, deltaLines: 10, maxOffset: 40),
+            40
+        )
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.nextOffset(current: 5, deltaLines: -8, maxOffset: 40),
+            0
+        )
+    }
+
+    func testPreciseTrackpadAccumulatesPartialCells() {
+        var acc: CGFloat = 0
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.lines(
+                deltaY: 10,
+                precise: true,
+                cellHeight: 16,
+                accumulator: &acc
+            ),
+            0
+        )
+        XCTAssertEqual(acc, 10)
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.lines(
+                deltaY: 10,
+                precise: true,
+                cellHeight: 16,
+                accumulator: &acc
+            ),
+            1
+        )
+        XCTAssertEqual(acc, 4)
+    }
+
+    func testPreciseTrackpadHandlesNegativePixelsAndClampsToWholeCells() {
+        var acc: CGFloat = 0
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.lines(
+                deltaY: -8,
+                precise: true,
+                cellHeight: 16,
+                accumulator: &acc
+            ),
+            0
+        )
+        XCTAssertEqual(acc, -8)
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.lines(
+                deltaY: -8,
+                precise: true,
+                cellHeight: 16,
+                accumulator: &acc
+            ),
+            -1
+        )
+        XCTAssertEqual(acc, 0)
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.nextOffset(current: 0, deltaLines: -1, maxOffset: 40),
+            0
+        )
+        XCTAssertEqual(
+            PaneHistoryScrollPolicy.nextOffset(current: 40, deltaLines: 1, maxOffset: 40),
+            40
+        )
     }
 }
 
@@ -1181,6 +1294,29 @@ final class KeyBindingsConfigTests: XCTestCase {
         """
         let map = KeyBindingsConfig.parse(toml: toml)
         XCTAssertEqual(map[KeyChord(command: true, key: "\r")], .togglePaneFullscreen)
+    }
+
+    func testParseCommandTimelineBindings() {
+        let toml = """
+        [[keybindings]]
+        key = "up"
+        mods = ["command", "option"]
+        action = "previous_command"
+
+        [[keybindings]]
+        key = "down"
+        mods = ["command", "option"]
+        action = "next_command"
+        """
+        let map = KeyBindingsConfig.parse(toml: toml)
+        XCTAssertEqual(
+            map[KeyChord(command: true, option: true, key: "up")],
+            .previousCommand
+        )
+        XCTAssertEqual(
+            map[KeyChord(command: true, option: true, key: "down")],
+            .nextCommand
+        )
     }
 
     func testUnknownActionIgnored() {
