@@ -27,10 +27,10 @@ final class SshAttachE2ETests: XCTestCase {
             "SSH attach 后 SwiftTerm 必须含播种 token \(fx.token)。got=\(app.testAllVisibleTerminalText())"
         )
         XCTAssertEqual(app.bridge.sshAlias, fx.alias, "sshAlias 必须是 Host 名")
-        XCTAssertNotEqual(
+        XCTAssertEqual(
             app.bridge.socket,
-            fx.alias,
-            "socket 不得等于 Host alias（否则远端 tmux -L \(fx.alias)）"
+            fx.remoteSocket,
+            "显式 sshAlias 存在时必须保留真正的远端 -L socket"
         )
     }
 }
@@ -119,9 +119,6 @@ private final class SshPaintedSession {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = ["-F", configPath, alias, remote]
-        proc.environment = ProcessInfo.processInfo.environment.merging([
-            "HOME": homeDir.path,
-        ]) { _, new in new }
         let out = Pipe()
         let err = Pipe()
         proc.standardOutput = out
