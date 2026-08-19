@@ -133,6 +133,7 @@ final class TerminalManager: TerminalInputHandler {
             view.setMinimumModelSize(cols: size.cols, rows: size.rows)
             view.getTerminal().resize(cols: size.cols, rows: size.rows)
         }
+        syncHistoryCapacity(paneId: paneId, view: view)
         // 首屏把内置 VT 的带样式历史一次性种进 SwiftTerm 原生 scrollback。
         // 之后只喂 `%output` 增量；滚轮/搜索不再拿历史 dump 重置屏幕。
         let rows = expectedPaneSizes[paneId]?.rows ?? 24
@@ -175,7 +176,24 @@ final class TerminalManager: TerminalInputHandler {
         )
         for (paneId, size) in expectedPaneSizes {
             views[paneId]?.setMinimumModelSize(cols: size.cols, rows: size.rows)
+            if let view = views[paneId] {
+                syncHistoryCapacity(paneId: paneId, view: view)
+            }
         }
+    }
+
+    /// SwiftTerm 的 native scrollback 必须至少覆盖 core 当前可滚动窗口。
+    /// `history_max_offset` 是“离底行数”，加上 pane 行数后可覆盖 core
+    /// 可能保留的空尾行；输出继续增长时在 flush 前再次扩容。只扩不缩，
+    /// 因此不会因为 core 快照暂时变短而破坏用户当前历史视口。
+    private func syncHistoryCapacity(paneId: UInt32, view: MuxTerminalView) {
+        guard let bridge else { return }
+        let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? view.getTerminal().rows))
+        let rawMax = bridge.paneHistoryMaxOffset(paneId: paneId, rows: rows)
+        guard rawMax >= 0 else { return }
+        let (sum, overflow) = Int(rawMax).addingReportingOverflow(Int(rows))
+        let desired = overflow ? Int.max : sum
+        view.ensureHistoryCapacity(atLeast: max(1, desired))
     }
 
     /// headless/未布局时 SwiftTerm 模型可能只有 0~1 行，喂字节会丢；
@@ -276,6 +294,7 @@ final class TerminalManager: TerminalInputHandler {
         for (paneId, data) in feeds {
             let rows = expectedPaneSizes[paneId]?.rows ?? 24
             guard let view = views[paneId] else { continue }
+            syncHistoryCapacity(paneId: paneId, view: view)
             if !view.isAtLatest() {
                 let added = UInt32(data.reduce(into: 0) { count, byte in
                     if byte == 0x0a { count += 1 }
