@@ -1,15 +1,58 @@
 import AppKit
 import MuxtermChrome
 
+/// 与命令行 `-h` 相同的 1024 进位展示，覆盖长期 SSH 会话的 GB/TB 累计值。
+enum StatusTrafficFormatter {
+    private static let units = ["B", "KB", "MB", "GB", "TB"]
+
+    static func bytes(_ bytes: UInt64) -> String {
+        var value = Double(bytes)
+        var unit = 0
+        while value >= 1024, unit < units.count - 1 {
+            value /= 1024
+            unit += 1
+        }
+        guard unit > 0 else { return "\(bytes) B" }
+        let number = value < 10
+            ? String(format: "%.1f", value)
+            : String(format: "%.0f", value)
+        return "\(number) \(units[unit])"
+    }
+
+    static func rate(_ bytesPerSecond: UInt64) -> String {
+        "\(bytes(bytesPerSecond))/s"
+    }
+}
+
+/// 按状态栏的一秒采样间隔计算真实吞吐；无新增字节时下一帧立即归零。
+struct TrafficRateSampler {
+    private var previous: (bytes: UInt64, time: TimeInterval)?
+
+    mutating func reset() {
+        previous = nil
+    }
+
+    mutating func sample(totalBytes: UInt64, now: TimeInterval) -> UInt64 {
+        defer { previous = (totalBytes, now) }
+        guard let previous,
+              totalBytes >= previous.bytes,
+              now > previous.time
+        else {
+            return 0
+        }
+        return UInt64(Double(totalBytes - previous.bytes) / (now - previous.time))
+    }
+}
+
 /// 统一状态栏（tab + tmux status + 状态/通知/新建，一个 bar 全装下）。
 ///
 /// 布局（从左到右）：
 /// ```
-/// [tab1][tab2]...  [tmux-left]  [tmux-right]  [●状态点][🔔通知][+新建]
+/// [tab1][tab2]...  [tmux-left]  [tmux-right]  [连接状态][通知铃铛][+新建]
 /// ```
 /// - tab 列表从左侧排过来（tmux 窗口列表 = tab，或本地 tab 列表）
 /// - tmux status-left/right 在 tab 右侧（tmux 有时才显示）
-/// - 最右侧三个图标：状态点（点击展开 debug 信息）、通知红点、新建 tab
+/// - 最右侧三个图标：连接状态（点击展开详情）、通知铃铛、新建 tab
 ///
 /// 渲染纪律：高频输出时只更新状态点颜色，不重建 tab 列表。
 final class StatusBarView: NSView {
@@ -41,15 +84,14 @@ final class StatusBarView: NSView {
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
     private let statusDot = StatusDotButton()
-    private let attentionSlot = NSView()
-    private let attentionDot = CALayer()
-    private let attentionCountLabel = NSTextField(labelWithString: "")
+    private let attentionButton = AttentionBellButton()
     private let newTabButton = NSButton()
     private let edgeLine = CALayer()
 
     // 状态点弹出框（点击展开 debug 信息）
     private var statusPopover: NSPopover?
-    private var statusInfoView: NSTextField?
+    private var statusPopoverText = ""
+    private var statusPopoverValues: [String: NSTextField] = [:]
 
     private var justifyConstraints: [NSLayoutConstraint] = []
     private var heightConstraint: NSLayoutConstraint!
@@ -109,29 +151,14 @@ final class StatusBarView: NSView {
         // 状态点（绿/黄/红）—— 自身就是 NSButton，保证点击热区 18×18。
         statusDot.target = self
         statusDot.action = #selector(statusDotClicked)
-        statusDot.toolTip = "Click for connection details"
         statusDot.translatesAutoresizingMaskIntoConstraints = false
 
-        // 通知红点
-        attentionSlot.wantsLayer = true
-        attentionSlot.layer?.backgroundColor = NSColor.clear.cgColor
-        attentionSlot.setAccessibilityIdentifier("muxterm.statusAttention")
-        attentionSlot.setAccessibilityElement(true)
-        attentionSlot.setAccessibilityRole(.button)
-        attentionSlot.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
-        attentionDot.frame = CGRect(x: 0, y: 0, width: 8, height: 8)
-        attentionDot.cornerRadius = 4
-        attentionDot.backgroundColor = NSColor.systemRed.cgColor
-        attentionDot.isHidden = true
-        attentionSlot.layer?.addSublayer(attentionDot)
-        attentionCountLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
-        attentionCountLabel.textColor = NSColor.systemRed
-        attentionCountLabel.alignment = .center
-        attentionCountLabel.translatesAutoresizingMaskIntoConstraints = false
-        attentionCountLabel.isHidden = true
-        attentionSlot.addSubview(attentionCountLabel)
-        let attClick = NSClickGestureRecognizer(target: self, action: #selector(attentionClicked))
-        attentionSlot.addGestureRecognizer(attClick)
+        // 原生通知铃铛：始终可发现；有消息时变红并显示数量。
+        attentionButton.target = self
+        attentionButton.action = #selector(attentionClicked)
+        attentionButton.setAccessibilityIdentifier("muxterm.statusAttention")
+        attentionButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
+        attentionButton.translatesAutoresizingMaskIntoConstraints = false
 
         // 「+」新建 tab
         newTabButton.title = "+"
@@ -144,7 +171,7 @@ final class StatusBarView: NSView {
         newTabButton.setAccessibilityIdentifier("muxterm.newTabButton")
         newTabButton.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [tabStack, leftLabel, rightLabel, statusDot, attentionSlot, newTabButton] {
+        for view in [tabStack, leftLabel, rightLabel, statusDot, attentionButton, newTabButton] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -188,21 +215,19 @@ final class StatusBarView: NSView {
             newTabButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             newTabButton.widthAnchor.constraint(equalToConstant: FlatChrome.newTabButtonWidth),
 
-            attentionSlot.trailingAnchor.constraint(equalTo: newTabButton.leadingAnchor, constant: -2),
-            attentionSlot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            attentionSlot.widthAnchor.constraint(equalToConstant: 22),
+            attentionButton.trailingAnchor.constraint(equalTo: newTabButton.leadingAnchor, constant: -2),
+            attentionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            attentionButton.widthAnchor.constraint(equalToConstant: 24),
+            attentionButton.heightAnchor.constraint(equalToConstant: 20),
 
-            statusDot.trailingAnchor.constraint(equalTo: attentionSlot.leadingAnchor, constant: -2),
+            statusDot.trailingAnchor.constraint(equalTo: attentionButton.leadingAnchor, constant: -2),
             statusDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             statusDot.widthAnchor.constraint(equalToConstant: 18),
             statusDot.heightAnchor.constraint(equalToConstant: 18),
 
-            attentionCountLabel.leadingAnchor.constraint(equalTo: attentionSlot.leadingAnchor),
-            attentionCountLabel.trailingAnchor.constraint(equalTo: attentionSlot.trailingAnchor),
-            attentionCountLabel.centerYAnchor.constraint(equalTo: attentionSlot.centerYAnchor),
-
             leftMaxWidth, rightMaxWidth,
         ])
+        refreshLocalization()
     }
 
     @available(*, unavailable)
@@ -214,10 +239,6 @@ final class StatusBarView: NSView {
         super.layout()
         let y: CGFloat = edgeAtBottom ? bounds.height - 1 : 0
         edgeLine.frame = CGRect(x: 0, y: y, width: bounds.width, height: 1)
-        attentionDot.frame = CGRect(
-            x: attentionSlot.bounds.midX - 4, y: attentionSlot.bounds.midY - 4,
-            width: 8, height: 8
-        )
     }
 
     func setEdgeLineAtBottom(_ atBottom: Bool) {
@@ -337,58 +358,140 @@ final class StatusBarView: NSView {
 
     private func updateStatusDotColor() {
         let color: NSColor
+        let symbolName: String
         if let errorText {
-            color = NSColor.systemRed
-            statusDot.toolTip = "Error: \(errorText) — click for details"
+            color = .systemRed
+            symbolName = "exclamationmark.circle.fill"
+            statusDot.toolTip = "\(MuxtermI18n.shared.tr(.statusError)): \(errorText) · \(MuxtermI18n.shared.tr(.statusShowConnectionDetails))"
         } else {
             switch connectionSummary.status {
             case "connected":
                 // SSH 时按流量速率变色：高速=黄，否则=绿。
                 if connectionSummary.type == "ssh" && trafficRate > 1_000_000 {
-                    color = NSColor.systemYellow
-                    statusDot.toolTip = "SSH \(connectionSummary.host ?? "") — high traffic ↓\(formatTraffic(trafficRate))/s — click for details"
+                    color = .systemYellow
                 } else {
-                    color = NSColor.systemGreen
-                    statusDot.toolTip = "\(connectionSummary.type) \(connectionSummary.host ?? "") — connected — click for details"
+                    color = .systemGreen
                 }
+                symbolName = connectionSummary.type == "ssh" ? "network" : "circle.fill"
             case "connecting":
-                color = NSColor.systemYellow
-                statusDot.toolTip = "Connecting... — click for details"
+                color = .systemYellow
+                symbolName = "ellipsis.circle.fill"
             case "disconnected", "exited":
-                color = NSColor.systemRed
-                statusDot.toolTip = "\(connectionSummary.status) — click for details"
+                color = .systemRed
+                symbolName = "xmark.circle.fill"
             default:
-                color = NSColor.tertiaryLabelColor
+                color = .tertiaryLabelColor
+                symbolName = "questionmark.circle"
             }
+            var summary = [transportDisplayName]
+            if let host = connectionSummary.host, !host.isEmpty { summary.append(host) }
+            summary.append(localizedStatus(connectionSummary.status))
+            if connectionSummary.type == "ssh", connectionSummary.status == "connected" {
+                summary.append(StatusTrafficFormatter.rate(trafficRate))
+            }
+            summary.append(MuxtermI18n.shared.tr(.statusShowConnectionDetails))
+            statusDot.toolTip = summary.joined(separator: " · ")
         }
-        statusDot.setDotColor(color)
+        statusDot.setPresentation(color: color, symbolName: symbolName)
         statusDot.setAccessibilityLabel(statusDotAccessibilityLabel)
     }
 
     private var statusDotAccessibilityLabel: String {
-        if let errorText { return "Status: error - \(errorText)" }
-        var lines = [
-            "type=\(connectionSummary.type)",
-            "host=\(connectionSummary.host ?? "")",
-            "status=\(connectionSummary.status)",
-        ]
-        if connectionSummary.type == "ssh" {
-            lines.append("↓\(formatTraffic(trafficRate))/s  ↑\(formatTraffic(upRate))/s")
-            lines.append("↓\(formatTraffic(totalBytes))  ↑\(formatTraffic(upBytes))")
-        }
+        var lines = connectionDetailRows().map { "\($0.label): \($0.value)" }
         if isDebug && !debugText.isEmpty {
             lines.append(debugText)
         }
         return lines.joined(separator: "\n")
     }
 
-    /// 点击状态点 → 弹出 debug 信息（连接状态 + SSH 流量 + debug tabs/panes）。
+    private var transportDisplayName: String {
+        switch connectionSummary.type.lowercased() {
+        case "ssh": return "SSH"
+        case "tmux": return "tmux"
+        case "local": return MuxtermI18n.shared.tr(.statusTransportLocal)
+        default: return connectionSummary.type
+        }
+    }
+
+    private struct ConnectionDetailRow {
+        let label: String
+        let value: String
+        let identifier: String
+        let isError: Bool
+    }
+
+    private func connectionDetailRows() -> [ConnectionDetailRow] {
+        var rows = [
+            ConnectionDetailRow(
+                label: MuxtermI18n.shared.tr(.statusTransport),
+                value: transportDisplayName,
+                identifier: "muxterm.statusPopover.transport",
+                isError: false
+            ),
+        ]
+        if let host = connectionSummary.host, !host.isEmpty {
+            rows.append(ConnectionDetailRow(
+                label: MuxtermI18n.shared.tr(.statusHost),
+                value: host,
+                identifier: "muxterm.statusPopover.host",
+                isError: false
+            ))
+        }
+        rows.append(ConnectionDetailRow(
+            label: MuxtermI18n.shared.tr(.statusState),
+            value: localizedStatus(connectionSummary.status),
+            identifier: "muxterm.statusPopover.state",
+            isError: false
+        ))
+        if connectionSummary.type == "ssh" {
+            rows.append(ConnectionDetailRow(
+                label: MuxtermI18n.shared.tr(.statusReceiveRate),
+                value: StatusTrafficFormatter.rate(trafficRate),
+                identifier: "muxterm.statusPopover.receiveRate",
+                isError: false
+            ))
+            rows.append(ConnectionDetailRow(
+                label: MuxtermI18n.shared.tr(.statusReceived),
+                value: StatusTrafficFormatter.bytes(totalBytes),
+                identifier: "muxterm.statusPopover.received",
+                isError: false
+            ))
+            // 上行只有 transport 真正提供计数时才展示，不能把缺失数据伪装成 0 B/s。
+            if upRate > 0 || upBytes > 0 {
+                rows.append(ConnectionDetailRow(
+                    label: MuxtermI18n.shared.tr(.statusSendRate),
+                    value: StatusTrafficFormatter.rate(upRate),
+                    identifier: "muxterm.statusPopover.sendRate",
+                    isError: false
+                ))
+                rows.append(ConnectionDetailRow(
+                    label: MuxtermI18n.shared.tr(.statusSent),
+                    value: StatusTrafficFormatter.bytes(upBytes),
+                    identifier: "muxterm.statusPopover.sent",
+                    isError: false
+                ))
+            }
+        }
+        if let errorText {
+            rows.append(ConnectionDetailRow(
+                label: MuxtermI18n.shared.tr(.statusErrorDetails),
+                value: errorText,
+                identifier: "muxterm.statusPopover.error",
+                isError: true
+            ))
+        }
+        return rows
+    }
+
+    /// 点击连接图标 → 原生键值弹层（连接状态 + SSH 流量 + 可选 debug 信息）。
     @objc private func statusDotClicked() {
         // 如果已有弹出框，先关闭再开（避免重复）。
         statusPopover?.close()
         statusPopover = nil
 
-        let info = statusDotAccessibilityLabel
+        let rows = connectionDetailRows()
+        statusPopoverText = statusDotAccessibilityLabel
+        statusPopoverValues.removeAll()
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
@@ -397,24 +500,72 @@ final class StatusBarView: NSView {
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
-        // 多行文本：连接类型 + host + 状态 + 流量 + debug 信息 + 错误。
-        let field = NSTextField(wrappingLabelWithString: info)
-        field.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        field.textColor = NSColor.labelColor
-        field.preferredMaxLayoutWidth = 280
-        field.isEditable = false
-        field.isSelectable = true
-        field.drawsBackground = false
-        field.setAccessibilityIdentifier("muxterm.statusPopoverLabel")
         container.setAccessibilityIdentifier("muxterm.statusPopover")
-        container.addSubview(field)
+
+        let root = NSStackView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 9
+        container.addSubview(root)
+
+        let icon = NSImageView()
+        icon.image = NSImage(
+            systemSymbolName: statusDot.symbolName,
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        icon.contentTintColor = statusDot.contentTintColor
+        let title = NSTextField(labelWithString: MuxtermI18n.shared.tr(.statusConnectionDetails))
+        title.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        let header = NSStackView(views: [icon, title])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 7
+        root.addArrangedSubview(header)
+
+        let gridRows: [[NSView]] = rows.map { row in
+            let key = NSTextField(labelWithString: row.label)
+            key.font = NSFont.systemFont(ofSize: 11)
+            key.textColor = .secondaryLabelColor
+            key.alignment = .right
+            let value = NSTextField(wrappingLabelWithString: row.value)
+            value.font = row.identifier.hasSuffix("Rate") || row.identifier.hasSuffix("received")
+                || row.identifier.hasSuffix("sent")
+                ? NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+                : NSFont.systemFont(ofSize: 11)
+            value.textColor = row.isError ? .systemRed : .labelColor
+            value.isSelectable = true
+            value.setAccessibilityIdentifier(row.identifier)
+            statusPopoverValues[row.identifier] = value
+            return [key, value]
+        }
+        let grid = NSGridView(views: gridRows)
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 5
+        grid.columnSpacing = 12
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).xPlacement = .leading
+        root.addArrangedSubview(grid)
+
+        if isDebug, !debugText.isEmpty {
+            let separator = NSBox()
+            separator.boxType = .separator
+            root.addArrangedSubview(separator)
+            separator.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+            let debug = NSTextField(wrappingLabelWithString: debugText)
+            debug.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+            debug.textColor = .secondaryLabelColor
+            debug.setAccessibilityIdentifier("muxterm.statusPopover.debug")
+            root.addArrangedSubview(debug)
+        }
 
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            field.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            field.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            field.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-            container.widthAnchor.constraint(equalToConstant: 320),
+            root.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            root.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            root.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            root.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+            grid.widthAnchor.constraint(equalTo: root.widthAnchor),
+            container.widthAnchor.constraint(equalToConstant: 300),
         ])
 
         let vc = NSViewController()
@@ -422,19 +573,12 @@ final class StatusBarView: NSView {
         popover.contentViewController = vc
         container.layoutSubtreeIfNeeded()
         let fitting = container.fittingSize
-        popover.contentSize = NSSize(width: 320, height: max(48, fitting.height))
+        popover.contentSize = NSSize(width: 300, height: max(64, fitting.height))
 
         // 底栏向上弹，顶栏向下弹，避免 popover 画到屏幕外看起来像「点了没反应」。
         let edge: NSRectEdge = edgeAtBottom ? .minY : .maxY
         popover.show(relativeTo: statusDot.bounds, of: statusDot, preferredEdge: edge)
         statusPopover = popover
-        statusInfoView = field
-    }
-
-    private func formatTraffic(_ rate: UInt64) -> String {
-        if rate < 1024 { return "\(rate) B" }
-        if rate < 1024 * 1024 { return String(format: "%.1f KB", Double(rate) / 1024) }
-        return String(format: "%.1f MB", Double(rate) / (1024 * 1024))
     }
 
     // MARK: - tab 重建
@@ -578,11 +722,8 @@ final class StatusBarView: NSView {
     }
 
     func setAttention(_ attention: StatusBarAttention) {
-        attentionDot.isHidden = !attention.isActive
-        attentionCountLabel.isHidden = attention.count <= 1
-        attentionCountLabel.stringValue = "\(attention.count)"
-        attentionSlot.setAccessibilityValue(attention.isActive ? "\(attention.count)" : "0")
-        attentionSlot.needsLayout = true
+        attentionButton.setCount(attention.count)
+        updateAttentionAccessibility()
     }
 
     func applySubscription(name: String, value: String) {
@@ -607,9 +748,19 @@ final class StatusBarView: NSView {
     }
 
     func refreshLocalization() {
-        attentionSlot.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
+        attentionButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
+        updateAttentionAccessibility()
         newTabButton.toolTip = MuxtermI18n.shared.tr(.newTabTooltip)
         layoutSyncMessage = MuxtermI18n.shared.tr(.layoutSyncing)
+        updateStatusDotColor()
+    }
+
+    private func updateAttentionAccessibility() {
+        let count = attentionButton.count
+        attentionButton.setAccessibilityValue("\(count)")
+        attentionButton.toolTip = count > 0
+            ? MuxtermI18n.shared.tr(.statusAttentionCount, arguments: ["count": "\(count)"])
+            : MuxtermI18n.shared.tr(.statusAttentionNone)
     }
 
     @objc private func attentionClicked() {
@@ -687,7 +838,19 @@ final class StatusBarView: NSView {
     }
 
     func testPopoverText() -> String {
-        statusInfoView?.stringValue ?? statusDotAccessibilityLabel
+        statusPopoverText.isEmpty ? statusDotAccessibilityLabel : statusPopoverText
+    }
+
+    func testPopoverValue(_ identifier: String) -> String? {
+        statusPopoverValues[identifier]?.stringValue
+    }
+
+    func testPopoverContentView() -> NSView? {
+        statusPopover?.contentViewController?.view
+    }
+
+    func testStatusSymbolName() -> String {
+        statusDot.symbolName
     }
 
     func testTabTitle(_ tabId: UInt32) -> String {
@@ -710,7 +873,15 @@ final class StatusBarView: NSView {
     }
 
     func testAttentionCountLabel() -> String {
-        attentionCountLabel.stringValue
+        attentionButton.countText
+    }
+
+    func testAttentionSymbolName() -> String {
+        attentionButton.symbolName
+    }
+
+    func testClickAttention() {
+        attentionButton.performClick(nil)
     }
 
     func testStatusRightWidth() -> CGFloat {
@@ -736,7 +907,7 @@ final class StatusBarView: NSView {
 
 /// 状态点：固定 18×18 可点击按钮，避免 NSView 高度塌缩导致点不到。
 private final class StatusDotButton: NSButton {
-    private let dotLayer = CALayer()
+    private(set) var symbolName = "circle.fill"
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -745,11 +916,10 @@ private final class StatusDotButton: NSButton {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         focusRingType = .none
-        dotLayer.cornerRadius = 4
-        dotLayer.backgroundColor = NSColor.systemGreen.cgColor
-        layer?.addSublayer(dotLayer)
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        setPresentation(color: .systemGreen, symbolName: symbolName)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("Connection status")
         setAccessibilityIdentifier("muxterm.statusDot")
     }
 
@@ -766,20 +936,71 @@ private final class StatusDotButton: NSButton {
         NSSize(width: 18, height: 18)
     }
 
-    override func layout() {
-        super.layout()
-        let side: CGFloat = 8
-        dotLayer.frame = CGRect(
-            x: (bounds.width - side) / 2,
-            y: (bounds.height - side) / 2,
-            width: side,
-            height: side
-        )
+    func setPresentation(color: NSColor, symbolName: String) {
+        self.symbolName = symbolName
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
+        contentTintColor = color
+    }
+}
+
+/// 24pt 原生铃铛；数量大于 1 时在右上角叠加紧凑红色 badge。
+private final class AttentionBellButton: NSButton {
+    private let badgeLabel = NSTextField(labelWithString: "")
+    private(set) var count = 0
+    private(set) var symbolName = "bell"
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        title = ""
+        isBordered = false
+        focusRingType = .none
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        setAccessibilityRole(.button)
+
+        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .bold)
+        badgeLabel.textColor = .white
+        badgeLabel.alignment = .center
+        badgeLabel.wantsLayer = true
+        badgeLabel.layer?.backgroundColor = NSColor.systemRed.cgColor
+        badgeLabel.layer?.cornerRadius = 5.5
+        badgeLabel.isHidden = true
+        addSubview(badgeLabel)
+        NSLayoutConstraint.activate([
+            badgeLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            badgeLabel.topAnchor.constraint(equalTo: topAnchor),
+            badgeLabel.heightAnchor.constraint(equalToConstant: 11),
+            badgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 11),
+        ])
+        setCount(0)
     }
 
-    func setDotColor(_ color: NSColor) {
-        dotLayer.backgroundColor = color.cgColor
-        needsDisplay = true
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    var countText: String {
+        count > 1 ? badgeLabel.stringValue : (count == 1 ? "1" : "")
+    }
+
+    func setCount(_ count: Int) {
+        self.count = max(0, count)
+        let active = self.count > 0
+        symbolName = active ? "bell.fill" : "bell"
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
+        contentTintColor = active ? .systemRed : .secondaryLabelColor
+        badgeLabel.stringValue = self.count > 99 ? "99+" : "\(self.count)"
+        badgeLabel.isHidden = self.count <= 1
     }
 }
 

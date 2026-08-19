@@ -68,6 +68,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var statusRefreshWorkItem: DispatchWorkItem?
     /// SSH 连接状态 + 流量监控刷新定时器（每秒更新一次显示）。
     private var trafficMonitorTimer: Timer?
+    private var trafficRateSampler = TrafficRateSampler()
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
@@ -1211,6 +1212,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         connectionPool.acquire(key: slot.key) { _ in slot }
         bridge = slot.bridge
         terminalManager = slot.terminalManager
+        trafficRateSampler.reset()
         lastSeenLineSeq.removeAll()
         lastSeenJump = nil
         commandTimelineCursor.removeAll()
@@ -1916,10 +1918,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func updateTrafficMonitor() {
         guard !isClosing else { return }
         let summary = terminalManager.connectionSummary
+        let totalBytes = terminalManager.totalBytesReceived
         content.updateConnectionStatus(
             summary,
-            trafficRate: terminalManager.trafficRate,
-            totalBytes: terminalManager.totalBytesReceived
+            trafficRate: trafficRateSampler.sample(
+                totalBytes: totalBytes,
+                now: ProcessInfo.processInfo.systemUptime
+            ),
+            totalBytes: totalBytes
         )
     }
 

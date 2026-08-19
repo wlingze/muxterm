@@ -25,6 +25,7 @@ final class AttentionBadgeE2ETests: XCTestCase {
         AppE2E.pump(40)
         let value = app.content.statusBar.findAttentionValue()
         XCTAssertNotEqual(value, "0", "状态栏注意力位必须激活，value=\(value)")
+        XCTAssertEqual(app.content.statusBar.testAttentionSymbolName(), "bell.fill")
     }
 }
 
