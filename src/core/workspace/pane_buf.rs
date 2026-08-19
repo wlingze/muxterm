@@ -43,6 +43,10 @@ impl PaneBuf {
             .resize(usize::from(cols.max(1)), usize::from(rows.max(1)));
         append_capped(&mut self.byte_ring, bytes, MAX_PANE_OUTPUT_BYTES);
         self.terminal.feed(bytes);
+        // resize/新输出可能改变可见行数，旧 viewport 不能悬空到历史范围之外。
+        self.viewport = self
+            .viewport
+            .min(self.history_max_offset(self.terminal.rows() as u32));
         Vec::new()
     }
 
@@ -189,7 +193,12 @@ impl PaneBuf {
 
     /// 设置 viewport 滚动偏移（跳转后恢复）。
     pub fn set_viewport(&mut self, offset: u32) {
-        self.viewport = offset;
+        self.viewport = offset.min(self.history_max_offset(self.terminal.rows() as u32));
+    }
+
+    /// 当前 TerminalState 实例配置的最大 scrollback 行数。
+    pub fn scrollback_capacity(&self) -> usize {
+        self.terminal.scrollback_capacity()
     }
 
     pub fn cols(&self) -> usize {

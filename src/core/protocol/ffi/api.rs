@@ -16,6 +16,7 @@ use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::StateChange;
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
+use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
@@ -521,11 +522,12 @@ pub extern "C" fn muxterm_new(
     };
     let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(5));
 
-    let (id, name, runtime) = match legacy_runtime_spec(&kind, sock, sess, None, None) {
-        Some(spec) => spec,
-        None => return ptr::null_mut(),
-    };
-    let fut = pool.open(id.clone(), name, move |_| runtime);
+    let (id, name, runtime, scrollback_lines) =
+        match legacy_runtime_spec(&kind, sock, sess, None, None) {
+            Some(spec) => spec,
+            None => return ptr::null_mut(),
+        };
+    let fut = pool.open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }
@@ -584,11 +586,12 @@ pub extern "C" fn muxterm_new_connect(
     };
     let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(5));
 
-    let (id, name, runtime) = match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
-        Some(spec) => spec,
-        None => return ptr::null_mut(),
-    };
-    let fut = pool.open(id.clone(), name, move |_| runtime);
+    let (id, name, runtime, scrollback_lines) =
+        match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
+            Some(spec) => spec,
+            None => return ptr::null_mut(),
+        };
+    let fut = pool.open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }
@@ -620,27 +623,33 @@ fn legacy_runtime_spec(
     WorkspaceId,
     String,
     std::boxed::Box<dyn crate::core::model::Runtime>,
+    usize,
 )> {
+    let scrollback_lines = configured_scrollback_lines();
     let runtime: std::boxed::Box<dyn crate::core::model::Runtime> = match kind {
         "tmux" => {
             let sock_ref = sock.as_deref();
-            if let Some(name) = sess.as_deref() {
-                std::boxed::Box::new(TmuxRuntime::new_with_attach(sock_ref, name))
+            let mut tmux = if let Some(name) = sess.as_deref() {
+                TmuxRuntime::new_with_attach(sock_ref, name)
             } else if let Some(dir) = start_dir.as_deref() {
-                std::boxed::Box::new(TmuxRuntime::new_with_cwd(sock_ref, Some(dir)))
+                TmuxRuntime::new_with_cwd(sock_ref, Some(dir))
             } else {
-                std::boxed::Box::new(TmuxRuntime::new(sock_ref))
-            }
+                TmuxRuntime::new(sock_ref)
+            };
+            tmux.set_scrollback_lines(scrollback_lines as u32);
+            std::boxed::Box::new(tmux)
         }
         "ssh" | "tmux-ssh" => {
             let (alias_name, sock_owned) =
                 TmuxRuntime::ssh_alias_and_tmux_socket(sock.as_deref(), alias.as_deref())?;
             let sock_ref = sock_owned.as_deref();
-            if let Some(name) = sess.as_deref() {
-                std::boxed::Box::new(TmuxRuntime::new_ssh_attach(&alias_name, sock_ref, name))
+            let mut tmux = if let Some(name) = sess.as_deref() {
+                TmuxRuntime::new_ssh_attach(&alias_name, sock_ref, name)
             } else {
-                std::boxed::Box::new(TmuxRuntime::new_ssh(&alias_name, sock_ref))
-            }
+                TmuxRuntime::new_ssh(&alias_name, sock_ref)
+            };
+            tmux.set_scrollback_lines(scrollback_lines as u32);
+            std::boxed::Box::new(tmux)
         }
         "daemon" => {
             let name = sess.clone().unwrap_or_else(|| "default".into());
@@ -673,7 +682,7 @@ fn legacy_runtime_spec(
     } else {
         session.clone()
     };
-    Some((id, name, runtime))
+    Some((id, name, runtime, scrollback_lines))
 }
 
 /// 按连接身份构造 Runtime（W7 workspace_open 用）。
@@ -684,21 +693,30 @@ fn runtime_from_workspace_spec(
     runtime: &str,
     path: &str,
     socket: Option<&str>,
+    scrollback_lines: usize,
 ) -> std::boxed::Box<dyn crate::core::model::Runtime> {
     match runtime {
         "tmux" if transport == "ssh" => {
             let alias = alias.unwrap_or("");
             if session.is_empty() {
-                std::boxed::Box::new(TmuxRuntime::new_ssh(alias, socket))
+                let mut rt = TmuxRuntime::new_ssh(alias, socket);
+                rt.set_scrollback_lines(scrollback_lines as u32);
+                std::boxed::Box::new(rt)
             } else {
-                std::boxed::Box::new(TmuxRuntime::new_ssh_attach(alias, socket, session))
+                let mut rt = TmuxRuntime::new_ssh_attach(alias, socket, session);
+                rt.set_scrollback_lines(scrollback_lines as u32);
+                std::boxed::Box::new(rt)
             }
         }
         "tmux" => {
             if session.is_empty() {
-                std::boxed::Box::new(TmuxRuntime::new(socket))
+                let mut rt = TmuxRuntime::new(socket);
+                rt.set_scrollback_lines(scrollback_lines as u32);
+                std::boxed::Box::new(rt)
             } else {
-                std::boxed::Box::new(TmuxRuntime::new_with_attach(socket, session))
+                let mut rt = TmuxRuntime::new_with_attach(socket, session);
+                rt.set_scrollback_lines(scrollback_lines as u32);
+                std::boxed::Box::new(rt)
             }
         }
         "daemon" => {
@@ -718,11 +736,20 @@ fn runtime_from_workspace_spec(
     }
 }
 
+/// FFI legacy/workspace-open 没有单独的 scrollback 参数时，读取用户配置。
+/// 配置不可读时回退到 core 默认值，不能让 attach 直接失去历史。
+fn configured_scrollback_lines() -> usize {
+    crate::core::config::Config::load()
+        .map(|config| config.scrollback.lines.max(1) as usize)
+        .unwrap_or(DEFAULT_SCROLLBACK_LINES)
+}
+
 /// 打开一个工作区并设为前台。0=ok，-1=err。
 ///
 /// `transport`：`"local"` / `"ssh"`；`runtime`：`"tmux"` / `"shell"` / `"daemon"`。
 /// `alias`：SSH 的 `~/.ssh/config` Host 名；`session`：tmux session 名；
 /// `path`：shell 工作目录 / daemon socket 路径；`socket`：tmux `-L` socket 名。
+/// tmux 的 capture 与 Workspace/PaneBuf 历史上限统一读取 `[scrollback].lines`。
 ///
 /// # Safety
 /// `h` 有效且未 free；字符串参数 NUL 结尾。
@@ -766,8 +793,12 @@ pub unsafe extern "C" fn muxterm_workspace_open(
             &runtime,
             &path,
             socket.as_deref(),
+            configured_scrollback_lines(),
         );
-        let fut = pool.open(id.clone(), name, move |_| runtime);
+        let fut =
+            pool.open_with_scrollback(id.clone(), name, configured_scrollback_lines(), move |_| {
+                runtime
+            });
         match rt.block_on(fut) {
             Ok(_) => 0,
             Err(_) => -1,
