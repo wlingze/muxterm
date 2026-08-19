@@ -15,7 +15,12 @@ public struct StatusQueryTarget: Equatable, Sendable {
     ) -> StatusQueryTarget {
         let normalized = backendType.lowercased()
         if normalized == "ssh" {
-            return StatusQueryTarget(socket: nil, sshAlias: sshAlias ?? socket)
+            // 旧调用把 alias 放在 socket；新接口显式传 sshAlias 时，socket
+            // 就是真正的远端 tmux `-L`，必须保留给 status/discovery 查询。
+            if let sshAlias {
+                return StatusQueryTarget(socket: socket, sshAlias: sshAlias)
+            }
+            return StatusQueryTarget(socket: nil, sshAlias: socket)
         }
         return StatusQueryTarget(socket: socket, sshAlias: sshAlias)
     }
