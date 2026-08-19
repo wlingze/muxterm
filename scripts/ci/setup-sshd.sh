@@ -64,23 +64,17 @@ if ! python3 -c "import socket; socket.socket().connect(('127.0.0.1', $PORT))" 2
 fi
 
 # ── smoke test ──
-export HOME="$TMP_DIR"
-mkdir -p "$TMP_DIR/.ssh"
-cat > "$TMP_DIR/.ssh/config" << SMOKECFG
-Host test-smoke
-    HostName 127.0.0.1
-    Port $PORT
-    User $(whoami)
-    IdentityFile $TMP_DIR/client_ed25519
-    IdentitiesOnly yes
-    BatchMode yes
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    LogLevel ERROR
-SMOKECFG
-chmod 600 "$TMP_DIR/.ssh/config"
-
-if ! ssh -o ConnectTimeout=10 -F "$TMP_DIR/.ssh/config" test-smoke "echo ok" >/dev/null 2>&1; then
+# 不覆盖 HOME，也不读取用户 ~/.ssh/config；所有测试参数显式传入。
+if ! ssh -F /dev/null \
+    -p "$PORT" \
+    -i "$TMP_DIR/client_ed25519" \
+    -o IdentitiesOnly=yes \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    -o ConnectTimeout=10 \
+    "$(whoami)@127.0.0.1" "echo ok" >/dev/null 2>&1; then
     echo "ERROR: sshd smoke test 失败" >&2
     cat "$TMP_DIR/sshd.log" >&2
     exit 1

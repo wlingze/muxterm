@@ -43,11 +43,24 @@ final class PaletteSessionListE2ETests: XCTestCase {
         let probe = try SshPaletteProbe()
         defer { probe.cleanup() }
 
-        AppE2E.requireTmux()
-        let fx = OnePaneCat(label: "pal-ssh")
-        let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
+        let app = try AppE2E.attachSshWindow(
+            alias: probe.alias,
+            remoteSocket: probe.remoteSocket,
+            session: probe.session
+        )
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady())
+        XCTAssertEqual(app.bridge.socket, probe.remoteSocket)
+        let directSessions = try CoreBridge.discoverTmuxSessions(
+            backendType: "ssh",
+            target: probe.alias,
+            socket: probe.remoteSocket,
+            configPath: ProcessInfo.processInfo.environment["MUXTERM_SSH_CONFIG_PATH"]
+        )
+        XCTAssertTrue(
+            directSessions.contains(where: { $0.name == probe.session }),
+            "core discovery 必须先能看到隔离远端 session: \(directSessions.map(\.name))"
+        )
 
         app.testOpenCommandPalette()
         AppE2E.pump(40)
@@ -69,10 +82,11 @@ final class PaletteSessionListE2ETests: XCTestCase {
     }
 }
 
-/// loopback sshd 默认 socket 上建一个远端 session（只 kill-session，不 kill-server）。
+/// loopback sshd 上建立独立远端 `-L muxterm-test-*` server。
 /// ssh config 走 `MUXTERM_SSH_CONFIG_PATH`，不改进程 HOME。
 private final class SshPaletteProbe {
     let alias: String
+    let remoteSocket: String
     let session: String
     private let configPath: String
     private let homeDir: URL
@@ -99,6 +113,7 @@ private final class SshPaletteProbe {
         let sshDir = homeDir.appendingPathComponent(".ssh")
         try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true)
         alias = "palette-\(nanos % 100_000)"
+        remoteSocket = Tmux.uniqueSocket("pal-ssh")
         session = "muxterm-test-pal-\(nanos % 100_000)"
         configPath = sshDir.appendingPathComponent("config").path
         let config = """
@@ -120,7 +135,9 @@ private final class SshPaletteProbe {
         )
         setenv("MUXTERM_SSH_CONFIG_PATH", configPath, 1)
 
-        let created = ssh("tmux new-session -d -s \(session) /bin/cat")
+        let created = ssh(
+            "tmux -L \(remoteSocket) -f /dev/null new-session -d -s \(session) /bin/cat"
+        )
         if created.status != 0 {
             unsetenv("MUXTERM_SSH_CONFIG_PATH")
             try? FileManager.default.removeItem(at: homeDir)
@@ -129,7 +146,7 @@ private final class SshPaletteProbe {
     }
 
     func cleanup() {
-        _ = ssh("tmux kill-session -t \(session)")
+        _ = ssh("tmux -L \(remoteSocket) kill-server")
         unsetenv("MUXTERM_SSH_CONFIG_PATH")
         try? FileManager.default.removeItem(at: homeDir)
     }
