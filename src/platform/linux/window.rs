@@ -2761,7 +2761,12 @@ fn connect_workspace_blocking(
             .await
             .map_err(|_| anyhow::anyhow!("connect timed out after 10s"))?
     })?;
-    Ok(Workspace::new(id, name, runtime))
+    Ok(Workspace::new_with_scrollback(
+        id,
+        name,
+        runtime,
+        spec.scrollback_lines as usize,
+    ))
 }
 
 /// 收编后台连接结果（16ms poll 与 test_poll_once 共用）。

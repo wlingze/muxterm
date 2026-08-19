@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::core::model::backend::Runtime;
 use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
+use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::workspace::Workspace;
 
@@ -127,6 +128,21 @@ impl WorkspacePool {
         name: String,
         create: impl FnOnce(&WorkspaceId) -> Box<dyn Runtime>,
     ) -> anyhow::Result<&mut Workspace> {
+        self.open_with_scrollback(id, name, DEFAULT_SCROLLBACK_LINES, create)
+            .await
+    }
+
+    /// 打开工作区并为其 PaneBuf 指定 scrollback 上限。
+    ///
+    /// `open` 保留默认值给旧调用方；WorkspaceSpec/FFI 走此入口，确保
+    /// tmux capture 与 core 索引面使用同一配置。
+    pub async fn open_with_scrollback(
+        &mut self,
+        id: WorkspaceId,
+        name: String,
+        scrollback_lines: usize,
+        create: impl FnOnce(&WorkspaceId) -> Box<dyn Runtime>,
+    ) -> anyhow::Result<&mut Workspace> {
         let now = Instant::now();
         if self.slots.contains_key(&id) {
             if let Some(active_id) = self.active_id.clone() {
@@ -153,7 +169,8 @@ impl WorkspacePool {
             }
         }
         let runtime = create(&id);
-        let mut workspace = Workspace::new(id.clone(), name, runtime);
+        let mut workspace =
+            Workspace::new_with_scrollback(id.clone(), name, runtime, scrollback_lines);
         workspace.connect().await?;
         self.slots.insert(
             id.clone(),
@@ -181,7 +198,10 @@ impl WorkspacePool {
         let name = spec.name();
         // build_runtime 放进 create 闭包：复用已有 slot 时零构造
         // （对得上 reopen_same_id_reuses_without_new_runtime）。
-        self.open(id, name, move |_| spec.build_runtime()).await
+        self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
+            spec.build_runtime()
+        })
+        .await
     }
 
     /// 插入一个已在后台线程完成 `connect()` 的工作区并设为前台。

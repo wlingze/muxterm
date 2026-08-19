@@ -871,6 +871,11 @@ impl TerminalState {
         self.scrollback.len()
     }
 
+    /// 当前实例配置的 scrollback 最大行数。
+    pub fn scrollback_capacity(&self) -> usize {
+        self.scrollback_max
+    }
+
     /// 取第 idx 行 scrollback（0 = 最早）。
     pub fn scrollback_line(&self, idx: usize) -> Option<&str> {
         self.scrollback.get(idx).map(|s| s.text.as_str())

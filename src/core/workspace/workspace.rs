@@ -31,16 +31,32 @@ pub struct Workspace {
     name: String,
     model: TerminalModel,
     panes: HashMap<PaneId, PaneBuf>,
+    /// 本工作区 PaneBuf 的统一 scrollback 上限（行数）。
+    ///
+    /// Runtime（例如 tmux capture）与索引面必须使用同一上限，否则 attach
+    /// 能播种的历史会比搜索/viewport 实际保留的历史更长或更短。
+    scrollback_lines: usize,
 }
 
 impl Workspace {
     /// 创建工作区，接管给定 backend（W4 改名为 Runtime）。
     pub fn new(id: WorkspaceId, name: String, runtime: Box<dyn Runtime>) -> Self {
+        Self::new_with_scrollback(id, name, runtime, DEFAULT_SCROLLBACK_LINES)
+    }
+
+    /// 创建工作区并指定 PaneBuf 的 scrollback 上限。
+    pub fn new_with_scrollback(
+        id: WorkspaceId,
+        name: String,
+        runtime: Box<dyn Runtime>,
+        scrollback_lines: usize,
+    ) -> Self {
         Self {
             id,
             name,
             model: TerminalModel::new(runtime),
             panes: HashMap::new(),
+            scrollback_lines: scrollback_lines.max(1),
         }
     }
 
@@ -52,6 +68,11 @@ impl Workspace {
     /// 用户可见的工作区名。
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// 本工作区 PaneBuf 使用的 scrollback 上限。
+    pub fn scrollback_lines(&self) -> usize {
+        self.scrollback_lines
     }
 
     /// 只读访问底层 Runtime。
@@ -107,7 +128,7 @@ impl Workspace {
     pub fn pane_text(&self, pane: PaneId) -> String {
         self.panes
             .get(&pane)
-            .map(|t| t.last_n_lines(DEFAULT_SCROLLBACK_LINES).join("\n"))
+            .map(|t| t.last_n_lines(self.scrollback_lines).join("\n"))
             .unwrap_or_default()
     }
 
@@ -243,6 +264,14 @@ impl Workspace {
             .unwrap_or(0)
     }
 
+    /// 某 pane 的配置 scrollback 上限（主要供容量合同测试/诊断）。
+    pub fn pane_scrollback_capacity(&self, pane: PaneId) -> usize {
+        self.panes
+            .get(&pane)
+            .map(|t| t.scrollback_capacity())
+            .unwrap_or(self.scrollback_lines)
+    }
+
     /// 某 pane 的滚动窗口 ANSI。
     pub fn pane_scroll_ansi(&self, pane: PaneId, offset: u32, rows: u32) -> Vec<u8> {
         self.panes
@@ -297,12 +326,9 @@ impl Workspace {
 
     /// 测试/注入用：直接向某 pane 的 PaneBuf 喂字节（绕过 Runtime）。
     pub fn feed_pane_bytes(&mut self, pane: PaneId, bytes: &[u8], cols: u16, rows: u16) {
+        let scrollback_lines = self.scrollback_lines;
         let buf = self.panes.entry(pane).or_insert_with(|| {
-            PaneBuf::new(
-                usize::from(cols),
-                usize::from(rows),
-                DEFAULT_SCROLLBACK_LINES,
-            )
+            PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
         });
         buf.feed(bytes, cols, rows);
     }
@@ -350,12 +376,9 @@ impl Workspace {
                         .pane(pane)
                         .map(|p| (p.cols, p.rows))
                         .unwrap_or((80, 24));
+                    let scrollback_lines = self.scrollback_lines;
                     let buf = self.panes.entry(*pane).or_insert_with(|| {
-                        PaneBuf::new(
-                            usize::from(cols),
-                            usize::from(rows),
-                            DEFAULT_SCROLLBACK_LINES,
-                        )
+                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
                     });
                     buf.feed(data, cols, rows);
                 }
@@ -470,9 +493,48 @@ mod tests {
     fn pane_viewport_roundtrip() {
         let mut w = workspace("demo");
         w.feed_pane_bytes(PaneId(1), b"line\r\n", 80, 24);
+        for i in 0..40 {
+            w.feed_pane_bytes(PaneId(1), format!("pad-{i:02}\r\n").as_bytes(), 80, 24);
+        }
         assert_eq!(w.pane_viewport(PaneId(1)), 0);
         w.set_pane_viewport(PaneId(1), 12);
         assert_eq!(w.pane_viewport(PaneId(1)), 12);
+    }
+
+    #[test]
+    fn pane_viewport_is_clamped_to_available_history() {
+        let mut w = workspace("demo");
+        w.feed_pane_bytes(PaneId(1), b"line\r\n", 80, 24);
+        w.set_pane_viewport(PaneId(1), u32::MAX);
+        assert_eq!(
+            w.pane_viewport(PaneId(1)),
+            w.pane_history_max_offset(PaneId(1), 24),
+            "viewport 不能超过 core 实际历史范围"
+        );
+    }
+
+    #[test]
+    fn configured_scrollback_capacity_reaches_beyond_default() {
+        let id = WorkspaceId::new("local", None, "large-history", "tmux", "");
+        let mut w = Workspace::new_with_scrollback(
+            id,
+            "large-history".into(),
+            Box::new(MockRuntime::with_single_pane()),
+            DEFAULT_SCROLLBACK_LINES + 200,
+        );
+        let mut lines = Vec::new();
+        for i in 0..(DEFAULT_SCROLLBACK_LINES + 100) {
+            lines.extend_from_slice(format!("line-{i}\r\n").as_bytes());
+        }
+        w.feed_pane_bytes(PaneId(1), &lines, 80, 2);
+        assert_eq!(
+            w.pane_scrollback_capacity(PaneId(1)),
+            DEFAULT_SCROLLBACK_LINES + 200
+        );
+        assert!(
+            w.pane_history_max_offset(PaneId(1), 2) > DEFAULT_SCROLLBACK_LINES as u32,
+            "配置大于默认值时 core 必须保留超过 10000 行历史"
+        );
     }
 
     /// 滚出可见区之后，history_max_offset + scroll_ansi 必须仍能读到离屏 token。
