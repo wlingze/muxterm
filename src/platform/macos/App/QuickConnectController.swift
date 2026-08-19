@@ -402,6 +402,10 @@ final class QuickTargetCellView: NSTableCellView {
         titleLabel.stringValue
     }
 
+    func testIsCurrent() -> Bool {
+        isCurrent
+    }
+
     func testBadgeDotSizes() -> [CGSize] {
         badgeStack.layoutSubtreeIfNeeded()
         return badgeStack.arrangedSubviews.map { view in

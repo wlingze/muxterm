@@ -16,10 +16,15 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     /// 最近一次后台 poll 后的快照（只读缓存，避免后台刷新 UI）。
     private(set) var lastSnapshot = FrameSnapshot()
 
-    init(key: ConnectionKey, bridge: CoreBridge, now: UInt64) {
+    init(
+        key: ConnectionKey,
+        bridge: CoreBridge,
+        terminalManager: TerminalManager? = nil,
+        now: UInt64
+    ) {
         self.key = key
         self.bridge = bridge
-        self.terminalManager = TerminalManager(bridge: bridge)
+        self.terminalManager = terminalManager ?? TerminalManager(bridge: bridge)
         self.lastUsedAt = now
     }
 

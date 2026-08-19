@@ -240,6 +240,8 @@ final class CoreBridge {
     var socket: String?
     /// tmux session 名（可选）。
     var session: String?
+    /// 本地 shell / 新建 tmux 工作区的起始目录（可选）。
+    let startDirectory: String?
     /// SSH `~/.ssh/config` alias（可选；用于 status 快照的只读查询）。
     var sshAlias: String?
     /// 最近一次 BackendStatus（pane_id 字段复用状态码）。
@@ -381,7 +383,8 @@ final class CoreBridge {
         backendType: String,
         socket: String?,
         session: String?,
-        sshAlias: String?
+        sshAlias: String?,
+        startDirectory: String?
     ) {
         self.handle = handle
         self.backendType = backendType.lowercased()
@@ -394,6 +397,7 @@ final class CoreBridge {
         self.socket = query.socket
         self.sshAlias = query.sshAlias
         self.session = session
+        self.startDirectory = startDirectory
     }
 
     /// 创建 handle 并 connect。
@@ -423,7 +427,8 @@ final class CoreBridge {
             backendType: normalized,
             socket: socket,
             session: session,
-            sshAlias: nil
+            sshAlias: nil,
+            startDirectory: nil
         )
     }
 
@@ -465,7 +470,8 @@ final class CoreBridge {
             backendType: normalized,
             socket: socket,
             session: session,
-            sshAlias: sshAlias
+            sshAlias: sshAlias,
+            startDirectory: startDirectory
         )
     }
 
