@@ -195,6 +195,16 @@ impl HerdrRuntime {
         &self.workspace_id
     }
 
+    /// 测试/诊断：产品 TabId 对应的 Herdr public tab id。
+    pub fn test_herdr_tab_id(&self, tab: TabId) -> Option<&str> {
+        self.tab_to_herdr_tab.get(&tab).map(String::as_str)
+    }
+
+    /// 测试/诊断：产品 PaneId 对应的 Herdr public pane id。
+    pub fn test_herdr_pane_id(&self, pane: PaneId) -> Option<&str> {
+        self.pane_to_herdr_pane.get(&pane).map(String::as_str)
+    }
+
     /// 把 snapshot 里属于本 workspace 的 tab/pane/layout 填进产品状态。
     fn apply_snapshot(&mut self, snap: &SessionSnapshot, initial: bool) -> bool {
         let Some(ws) = snap
