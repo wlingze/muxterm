@@ -58,19 +58,34 @@ final class QuickConnectE2ETests: XCTestCase {
         }()
         XCTAssertTrue(snapshot.windows.contains(where: \.current), "应有当前窗口标记")
 
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 5) {
+                _ = bridge.pollEvents()
+                let readyTabs = bridge.getTabs()
+                guard let tab = readyTabs.first(where: \.isActive)
+                    ?? readyTabs.first
+                else {
+                    return false
+                }
+                return !bridge.getPanes(tabId: tab.id).isEmpty
+            },
+            "执行 pane 操作前 core 拓扑必须就绪"
+        )
         let tabs = bridge.getTabs()
-        let active = tabs.first(where: \.isActive)?.id ?? 0
+        let active = try XCTUnwrap(tabs.first(where: \.isActive) ?? tabs.first).id
         let panes = bridge.getPanes(tabId: active)
-        let paneId = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
+        let paneId = try XCTUnwrap(panes.first(where: \.isActive) ?? panes.first).id
         XCTAssertEqual(bridge.execute(task: MuxTask.splitPane(targetPane: paneId, horizontal: true)), 0)
-        _ = AppE2E.wait(timeout: 2) {
-            _ = bridge.pollEvents()
-            return bridge.getPanes(tabId: active).count >= 2
-                || tabs.contains { bridge.getPanes(tabId: $0.id).count >= 2 }
-        }
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 5) {
+                _ = bridge.pollEvents()
+                return bridge.getPanes(tabId: active).count >= 2
+            },
+            "fullscreen 前 split-pane 必须完成并同步到 core"
+        )
         XCTAssertEqual(bridge.execute(task: MuxTask.togglePaneFullscreen(paneId)), 0, "resize-pane -Z 应成功")
         XCTAssertTrue(
-            AppE2E.wait(timeout: 2) {
+            AppE2E.wait(timeout: 5) {
                 Tmux.out(socket: socket, args: ["display-message", "-p", "-t", "stat", "#{window_zoomed_flag}"]) == "1"
             },
             "tmux window_zoomed_flag 应为 1"
