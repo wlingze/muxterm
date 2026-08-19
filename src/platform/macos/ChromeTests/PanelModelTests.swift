@@ -22,4 +22,49 @@ final class PanelModelTests: XCTestCase {
         XCTAssertEqual(model.tab, .attention)
         XCTAssertEqual(model.query, "legion")
     }
+
+    func testSearchScopeDefaultsToAllAndSurvivesTabChange() {
+        var model = PanelModel.open(.search)
+        XCTAssertEqual(model.scope, .all)
+        model.scope = .pane
+        model.cycleTab(back: false)
+        model.cycleTab(back: true)
+        XCTAssertEqual(model.scope, .pane)
+    }
+
+    func testSearchScopeFiltersCurrentPaneAndWorkspace() {
+        let hits = [
+            SearchHit(workspaceId: "one", tabId: 10, paneId: 1, seq: 1, line: "one"),
+            SearchHit(workspaceId: "one", tabId: 10, paneId: 2, seq: 2, line: "two"),
+            SearchHit(workspaceId: "two", tabId: 20, paneId: 2, seq: 3, line: "collision"),
+            SearchHit(workspaceId: "two", tabId: 20, paneId: 3, seq: 4, line: "three"),
+        ]
+        XCTAssertEqual(
+            SearchScope.pane.filter(
+                hits,
+                activePane: 2,
+                workspaceId: "one",
+                workspacePaneIDs: [1, 2]
+            ).map(\.paneId),
+            [2]
+        )
+        XCTAssertEqual(
+            SearchScope.workspace.filter(
+                hits,
+                activePane: 2,
+                workspaceId: "one",
+                workspacePaneIDs: [1, 2]
+            ).map(\.paneId),
+            [1, 2]
+        )
+        XCTAssertEqual(
+            SearchScope.all.filter(
+                hits,
+                activePane: 2,
+                workspaceId: "one",
+                workspacePaneIDs: [1, 2]
+            ).map(\.paneId),
+            [1, 2, 2, 3]
+        )
+    }
 }

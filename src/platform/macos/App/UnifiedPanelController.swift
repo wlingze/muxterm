@@ -12,25 +12,36 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onConnect: ((TargetConfig) -> Void)?
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
-    var onJump: ((UInt32?, UInt32, UInt64, String) -> Void)? // (tabId, paneId, seq, query)
+    var onJump: ((String?, UInt32?, UInt32, UInt64, String) -> Void)?
+    // (workspaceId, tabId, paneId, seq, query)
+    var onPreview: ((String, UInt32) -> Void)? // (workspaceId, paneId)
+    var onMute: ((String, UInt32, UInt64) -> Void)? // (workspaceId, paneId, seconds)
     var currentConfig: TargetConfig?
 
     private let store: QuickConnectStore
     private let input = NSSearchField()
     private let table = NSTableView()
     private let scrollView = MuxtermFillWidthScrollView()
+    private let accessoryContainer = NSView()
+    private let scopeBar = NSStackView()
+    private let attentionActions = NSStackView()
+    private let attentionJumpButton = NSButton(title: "Jump", target: nil, action: nil)
+    private let attentionOpenButton = NSButton(title: "Open", target: nil, action: nil)
+    private let attentionMuteButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private var allItems: [QuickConnectItem] = []
     private var visibleItems: [QuickConnectItem] = []
     private var hits: [SearchHit] = []
     private var rows: [AttentionRow] = []
     private var model = PanelModel.open(.workspaces)
     private var tabButtons: [PanelTab: NSButton] = [:]
+    private var scopeButtons: [SearchScope: NSButton] = [:]
+    private var accessoryHeightConstraint: NSLayoutConstraint?
     private var keyMonitor: Any?
     private weak var ownerWindow: NSWindow?
     private let snapshot: () -> AttentionSnapshot?
     private let paneOutput: (UInt32) -> Data
     private let sendInput: (UInt32, Data) -> Void
-    private let search: (String) -> [SearchHit]
+    private let search: (String, SearchScope) -> [SearchHit]
 
     init(
         store: QuickConnectStore,
@@ -38,7 +49,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         snapshot: @escaping () -> AttentionSnapshot?,
         paneOutput: @escaping (UInt32) -> Data,
         sendInput: @escaping (UInt32, Data) -> Void,
-        search: @escaping (String) -> [SearchHit]
+        search: @escaping (String, SearchScope) -> [SearchHit]
     ) {
         self.store = store
         self.ownerWindow = ownerWindow
@@ -85,6 +96,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         // Linux `PanelModel::open(initial)` 语义：重新打开时 query 清空，
         // query 只在本次打开期间跨 tab 保留。
         model.query = ""
+        model.scope = .all
         input.stringValue = ""
         reload()
         guard let window else { return }
@@ -131,15 +143,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         allItems.append(.newProject)
         applyFilter()
         rows = snapshot().map { AttentionList.rows(from: $0, query: model.query) } ?? []
-        hits = model.query.isEmpty ? [] : search(model.query)
+        hits = model.query.isEmpty ? [] : search(model.query, model.scope)
         table.reloadData()
-        if !rows.isEmpty {
+        let rowCount = numberOfRows(in: table)
+        if rowCount > 0 {
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             table.scrollRowToVisible(0)
-        }
-        if !hits.isEmpty {
-            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            table.scrollRowToVisible(0)
+        } else {
+            table.deselectAll(nil)
         }
         updatePeek()
         QuickConnectTableLayout.fit(table)
@@ -180,12 +191,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .attention:
             guard table.selectedRow < rows.count else { return }
             let row = rows[table.selectedRow]
-            onJump?(nil, row.pane.paneId, 0, "")
+            onJump?(row.workspaceId, nil, row.pane.paneId, 0, "")
             dismiss()
         case .search:
             guard table.selectedRow < hits.count else { return }
             let hit = hits[table.selectedRow]
-            onJump?(hit.tabId, hit.paneId, hit.seq, model.query)
+            onJump?(hit.workspaceId, hit.tabId, hit.paneId, hit.seq, model.query)
             dismiss()
         }
     }
@@ -263,6 +274,19 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             attentionAlias.bottomAnchor.constraint(equalTo: input.bottomAnchor),
         ])
 
+        buildSearchScopeBar()
+        buildAttentionActions()
+        accessoryContainer.translatesAutoresizingMaskIntoConstraints = false
+        accessoryContainer.addSubview(scopeBar)
+        accessoryContainer.addSubview(attentionActions)
+        root.addSubview(accessoryContainer)
+        NSLayoutConstraint.activate([
+            scopeBar.leadingAnchor.constraint(equalTo: accessoryContainer.leadingAnchor),
+            scopeBar.centerYAnchor.constraint(equalTo: accessoryContainer.centerYAnchor),
+            attentionActions.leadingAnchor.constraint(equalTo: accessoryContainer.leadingAnchor),
+            attentionActions.centerYAnchor.constraint(equalTo: accessoryContainer.centerYAnchor),
+        ])
+
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("panel"))
         table.addTableColumn(column)
         QuickConnectTableLayout.configure(table, column: column)
@@ -317,9 +341,80 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 12),
+            accessoryContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+            accessoryContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
+            accessoryContainer.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 6),
+
+            scrollView.topAnchor.constraint(equalTo: accessoryContainer.bottomAnchor, constant: 6),
             scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
         ])
+        let accessoryHeight = accessoryContainer.heightAnchor.constraint(equalToConstant: 0)
+        accessoryHeight.isActive = true
+        accessoryHeightConstraint = accessoryHeight
+    }
+
+    private func buildSearchScopeBar() {
+        scopeBar.translatesAutoresizingMaskIntoConstraints = false
+        scopeBar.orientation = .horizontal
+        scopeBar.alignment = .centerY
+        scopeBar.spacing = 8
+        for (scope, title, id, tag) in [
+            (SearchScope.pane, "Pane", "muxterm.search.scope.pane", 0),
+            (.workspace, "Workspace", "muxterm.search.scope.workspace", 1),
+            (.all, "All", "muxterm.search.scope.all", 2),
+        ] {
+            let button = NSButton(title: title, target: self, action: #selector(searchScopeClicked(_:)))
+            button.setButtonType(.radio)
+            button.controlSize = .small
+            button.tag = tag
+            button.setAccessibilityIdentifier(id)
+            scopeButtons[scope] = button
+            scopeBar.addArrangedSubview(button)
+        }
+    }
+
+    private func buildAttentionActions() {
+        attentionActions.translatesAutoresizingMaskIntoConstraints = false
+        attentionActions.orientation = .horizontal
+        attentionActions.alignment = .centerY
+        attentionActions.spacing = 8
+
+        attentionJumpButton.target = self
+        attentionJumpButton.action = #selector(jumpSelectedAttention)
+        attentionJumpButton.controlSize = .small
+        attentionJumpButton.bezelStyle = .rounded
+        attentionJumpButton.setAccessibilityIdentifier("muxterm.attention.jump")
+
+        attentionOpenButton.target = self
+        attentionOpenButton.action = #selector(openSelectedAttention)
+        attentionOpenButton.controlSize = .small
+        attentionOpenButton.bezelStyle = .rounded
+        attentionOpenButton.setAccessibilityIdentifier("muxterm.attention.open")
+
+        attentionMuteButton.controlSize = .small
+        attentionMuteButton.setAccessibilityIdentifier("muxterm.attention.mute")
+        attentionMuteButton.addItem(withTitle: "Mute")
+        for (title, seconds) in [
+            ("5m", 300),
+            ("10m", 600),
+            ("30m", 1_800),
+            ("1h", 3_600),
+            ("4h", 14_400),
+            ("24h", 86_400),
+        ] {
+            let item = NSMenuItem(
+                title: title,
+                action: #selector(muteMenuItemSelected(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.tag = seconds
+            attentionMuteButton.menu?.addItem(item)
+        }
+
+        attentionActions.addArrangedSubview(attentionJumpButton)
+        attentionActions.addArrangedSubview(attentionOpenButton)
+        attentionActions.addArrangedSubview(attentionMuteButton)
     }
 
     private func aliasLabel(_ id: String) -> NSView {
@@ -359,7 +454,29 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         for (tab, button) in tabButtons {
             button.state = tab == model.tab ? .on : .off
         }
+        for (scope, button) in scopeButtons {
+            button.state = scope == model.scope ? .on : .off
+        }
+        let showsScope = model.tab == .search
+        let showsAttentionActions = model.tab == .attention
+        scopeBar.isHidden = !showsScope
+        attentionActions.isHidden = !showsAttentionActions
+        accessoryHeightConstraint?.constant = (showsScope || showsAttentionActions) ? 24 : 0
         input.placeholderString = placeholder(for: model.tab)
+        updatePeek()
+    }
+
+    @objc private func searchScopeClicked(_ sender: NSButton) {
+        let scope: SearchScope
+        switch sender.tag {
+        case 0: scope = .pane
+        case 1: scope = .workspace
+        default: scope = .all
+        }
+        guard model.scope != scope else { return }
+        model.scope = scope
+        applyTab()
+        reload()
     }
 
     private func placeholder(for tab: PanelTab) -> String {
@@ -511,10 +628,46 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
-    // MARK: - 选中行（W19：无 peek，预览走 Cmd-Enter overlay）
+    // MARK: - Attention 动作（W19：无内嵌 peek，预览走独立 overlay）
 
     private func updatePeek() {
-        // W19-E：注意力列表不再渲染 muxterm.attention.peek。
+        let hasSelection = model.tab == .attention
+            && table.selectedRow >= 0
+            && table.selectedRow < rows.count
+        attentionJumpButton.isEnabled = hasSelection
+        attentionOpenButton.isEnabled = hasSelection
+        attentionMuteButton.isEnabled = hasSelection
+    }
+
+    @objc private func jumpSelectedAttention() {
+        guard let row = selectedAttentionRow() else { return }
+        onJump?(row.workspaceId, nil, row.pane.paneId, 0, "")
+        dismiss()
+    }
+
+    @objc private func openSelectedAttention() {
+        guard let row = selectedAttentionRow() else { return }
+        onPreview?(row.workspaceId, row.pane.paneId)
+    }
+
+    @objc private func muteMenuItemSelected(_ sender: NSMenuItem) {
+        muteSelected(seconds: UInt64(sender.tag))
+    }
+
+    private func muteSelected(seconds: UInt64) {
+        guard let row = selectedAttentionRow(), seconds > 0 else { return }
+        onMute?(row.workspaceId, row.pane.paneId, seconds)
+        reload()
+    }
+
+    private func selectedAttentionRow() -> AttentionRow? {
+        guard model.tab == .attention,
+              table.selectedRow >= 0,
+              table.selectedRow < rows.count
+        else {
+            return nil
+        }
+        return rows[table.selectedRow]
     }
 
     // MARK: - 测试钩子
@@ -552,6 +705,20 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         hits.count
     }
 
+    func testSearchHitPaneIDs() -> [UInt32] {
+        hits.map(\.paneId)
+    }
+
+    func testSearchHitWorkspaceIDs() -> [String] {
+        hits.map(\.workspaceId)
+    }
+
+    func testSetSearchScope(_ scope: SearchScope) {
+        model.scope = scope
+        applyTab()
+        reload()
+    }
+
     func testRowCount() -> Int {
         rows.count
     }
@@ -578,10 +745,15 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var modelTab: PanelTab { model.tab }
 
     func testSelectedAttentionRow() -> AttentionRow? {
-        guard model.tab == .attention, table.selectedRow >= 0, table.selectedRow < rows.count else {
-            return nil
-        }
-        return rows[table.selectedRow]
+        selectedAttentionRow()
+    }
+
+    func testOpenSelectedAttention() {
+        openSelectedAttention()
+    }
+
+    func testMuteSelected(seconds: UInt64) {
+        muteSelected(seconds: seconds)
     }
 
     func testSelectRow(offset: Int) {
