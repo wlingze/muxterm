@@ -61,6 +61,7 @@ struct CLayoutNode {
 #define STATE_WORKSPACE_RENAMED   12u
 #define STATE_POOL_CHANGED        13u
 #define STATE_PANE_SNAPSHOT       14u
+#define STATE_PANE_AGENT_CHANGED  15u
 #define STATE_OTHER               99u
 
 #define TASK_SPLIT_PANE  0u
@@ -116,6 +117,7 @@ int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
 int muxterm_send_input(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
+int muxterm_send_input_quiet(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
 int muxterm_report_pane_colours(struct MuxtermHandle* h, uint32_t pane_id, const char* fg_hex, const char* bg_hex);
 int muxterm_report_all_pane_colours(struct MuxtermHandle* h, const char* fg_hex, const char* bg_hex);
 int muxterm_resize_pane(struct MuxtermHandle* h, uint32_t pane_id, uint16_t cols, uint16_t rows);
@@ -131,6 +133,25 @@ int muxterm_get_tabs(struct MuxtermHandle* h, struct CTab* out, int max_count);
 int muxterm_get_panes(struct MuxtermHandle* h, uint32_t tab_id, struct CPane* out, int max_count);
 int muxterm_get_pane_output(struct MuxtermHandle* h, uint32_t pane_id, uint8_t* buf, size_t buf_len);
 int muxterm_get_layout(struct MuxtermHandle* h, uint32_t tab_id, struct CLayoutNode* out);
+
+// ── 搜索 / 注意力 / 历史（W14/W16 跨平台契约）──
+char* muxterm_search_all(struct MuxtermHandle* h, const char* query);
+char* muxterm_attention_snapshot(struct MuxtermHandle* h);
+char* muxterm_attention_take_notifications(struct MuxtermHandle* h);
+int muxterm_attention_on_became_visible(struct MuxtermHandle* h, uint32_t pane_id);
+int muxterm_attention_acknowledge(struct MuxtermHandle* h, uint32_t pane_id);
+int muxterm_attention_set_process_name(struct MuxtermHandle* h, uint32_t pane_id, const char* name);
+int muxterm_attention_mute(struct MuxtermHandle* h, uint32_t pane_id, uint64_t seconds);
+int muxterm_pane_scroll_ansi(struct MuxtermHandle* h, uint32_t pane_id, uint32_t offset, uint32_t rows, uint8_t* buf, size_t buf_len);
+int muxterm_pane_visible_ansi(struct MuxtermHandle* h, uint32_t pane_id, uint8_t* buf, size_t buf_len);
+int muxterm_pane_surface_seed_ansi(struct MuxtermHandle* h, uint32_t pane_id, uint8_t* buf, size_t buf_len);
+int muxterm_pane_viewport(struct MuxtermHandle* h, uint32_t pane_id);
+int muxterm_set_pane_viewport(struct MuxtermHandle* h, uint32_t pane_id, uint32_t offset);
+int muxterm_pane_history_max_offset(struct MuxtermHandle* h, uint32_t pane_id, uint32_t rows);
+char* muxterm_pane_command_marks_json(struct MuxtermHandle* h, uint32_t pane_id);
+int64_t muxterm_pane_latest_line_seq(struct MuxtermHandle* h, uint32_t pane_id);
+int muxterm_pane_viewport_for_seq(struct MuxtermHandle* h, uint32_t pane_id, uint64_t seq);
+char* muxterm_pane_last_n_lines(struct MuxtermHandle* h, uint32_t pane_id, uint32_t n);
 
 // ── 无状态 discovery（由 core 读取 SSH config / 查询 tmux）──
 // 返回 malloc 风格的 JSON 字符串，调用 muxterm_free_string 释放。

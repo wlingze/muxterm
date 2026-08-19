@@ -7,6 +7,8 @@
 //! - 前端只读 `State` 做渲染；状态变更通过 `StateChange` 推送。
 //! - pane 输出是字节流（`&[u8]`），因为可能含非 UTF-8 的 ANSI 序列。
 //! - 所有方法返回 `Option` / `&` 引用，不 clone，便于高频渲染。
+use std::collections::BTreeMap;
+
 use crate::core::types::{PaneId, TabId};
 
 /// 工作区元信息（Runtime 侧可知的部分：名字与 runtime 种类）。
@@ -41,6 +43,66 @@ pub struct PaneInfo {
     /// pane 的字符格尺寸（由 Runtime 从 tmux layout 或 vte4 同步）。
     pub cols: u16,
     pub rows: u16,
+}
+
+/// Runtime 已识别的 agent 生命周期状态。
+///
+/// 这是产品/Runtime 公共语义，不是 Herdr wire enum；tmux、shell 或其它
+/// Runtime 以后也可以提供同一份状态，而无需让 Workspace/GUI 识别来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneAgentStatus {
+    Idle,
+    Working,
+    Blocked,
+    Done,
+    Unknown,
+}
+
+/// Agent 会话引用的通用种类。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneAgentSessionKind {
+    Id,
+    Path,
+    /// Runtime 新增了 Muxterm 尚未认识的种类；保留原文，不丢整个 agent。
+    Unknown(String),
+}
+
+/// Runtime 提供的可恢复 agent 会话引用。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneAgentSession {
+    pub source: String,
+    pub agent: String,
+    pub kind: PaneAgentSessionKind,
+    pub value: String,
+}
+
+/// 某 pane 上由 Runtime 识别出的完整 agent 信息。
+///
+/// 字段只使用产品语言；Herdr 的事件名、public id 和 socket JSON 停在
+/// `core/runtime/herdr`。未知/缺失字段保留为 `None` 或空 map。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneAgentInfo {
+    pub terminal_id: Option<String>,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub title: Option<String>,
+    pub terminal_title: Option<String>,
+    pub terminal_title_stripped: Option<String>,
+    pub display_name: Option<String>,
+    pub status: PaneAgentStatus,
+    pub screen_detection_skipped: bool,
+    pub state_labels: BTreeMap<String, String>,
+    pub tokens: BTreeMap<String, String>,
+    pub session: Option<PaneAgentSession>,
+    pub focused: bool,
+    pub launch_pending: bool,
+    pub interactive_ready: bool,
+    pub state_change_seq: u64,
+    pub cwd: Option<String>,
+    pub foreground_cwd: Option<String>,
+    pub revision: u64,
 }
 
 /// 状态变更事件（Runtime → TerminalModel → 前端）。
@@ -80,6 +142,15 @@ pub enum StateChange {
     PaneClosed { pane: PaneId },
     /// pane 标题变化。
     PaneTitleChanged { pane: PaneId, title: String },
+    /// Runtime 识别到的 pane agent 完整快照发生变化。
+    ///
+    /// `None` 表示 agent authority 已释放；`initial` 表示 attach 或 authority
+    /// handoff bootstrap，可用于建立当前 UI 状态，但不得伪造一次新的桌面通知。
+    PaneAgentChanged {
+        pane: PaneId,
+        agent: Option<Box<PaneAgentInfo>>,
+        initial: bool,
+    },
     /// pane 尺寸变化。
     PaneResized { pane: PaneId, cols: u16, rows: u16 },
     /// 激活的 pane 变化。
@@ -146,6 +217,11 @@ pub trait State {
 
     /// 某 pane 的元信息。
     fn pane(&self, pane: &PaneId) -> Option<&PaneInfo>;
+
+    /// 某 pane 上 Runtime 识别出的 agent；不支持时默认没有。
+    fn pane_agent(&self, _pane: &PaneId) -> Option<&PaneAgentInfo> {
+        None
+    }
 
     /// pane 的累计输出字节流（scrollback + 当前可见）。
     /// 返回的是累积快照；前端可自行维护增量。

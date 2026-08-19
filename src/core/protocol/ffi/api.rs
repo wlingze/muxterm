@@ -30,12 +30,13 @@ use super::types::{
     BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
-    STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT,
-    STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION,
-    STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE,
-    TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE,
-    TASK_PREV_PANE, TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN,
-    TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED,
+STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED,
+STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED,
+STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH,
+TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS, TASK_RENAME_TAB,
+TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
+TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
@@ -1218,6 +1219,24 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             out.data = p;
             out.data_len = n;
         }
+        StateChange::PaneAgentChanged {
+            pane,
+            agent,
+            initial,
+        } => {
+            out.type_ = STATE_PANE_AGENT_CHANGED;
+            out.pane_id = pane.0;
+            // FFI 只暴露 Runtime-neutral 产品模型；Herdr event 名/public id
+            // 已在 Runtime 内归一化，macOS/TUI 不需要识别来源。
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "initial": initial,
+                "agent": agent,
+            }))
+            .unwrap_or_else(|_| b"{\"initial\":false,\"agent\":null}".to_vec());
+            let (ptr, len) = handle.push_data(&payload);
+            out.data = ptr;
+            out.data_len = len;
+        }
         StateChange::StatusBarSubscription { name, value, pane } => {
             out.type_ = STATE_STATUS_SUBSCRIPTION;
             out.pane_id = pane.map(|p| p.0).unwrap_or(0);
@@ -2325,9 +2344,67 @@ pub unsafe extern "C" fn muxterm_pane_last_n_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::state::{
+        PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
+    };
     use crate::core::protocol::ffi::muxterm_set_callbacks;
     use crate::core::protocol::ffi::types::DIR_HORIZONTAL;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn ffi_pane_agent_event_uses_runtime_neutral_json() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            let agent = PaneAgentInfo {
+                terminal_id: Some("term-1".into()),
+                name: Some("reviewer".into()),
+                kind: Some("codex".into()),
+                title: Some("Approve command".into()),
+                terminal_title: Some("codex".into()),
+                terminal_title_stripped: Some("codex".into()),
+                display_name: Some("Codex reviewer".into()),
+                status: PaneAgentStatus::Blocked,
+                screen_detection_skipped: true,
+                state_labels: BTreeMap::from([("blocked".into(), "Needs approval".into())]),
+                tokens: BTreeMap::from([("context".into(), "73%".into())]),
+                session: Some(PaneAgentSession {
+                    source: "herdr:codex".into(),
+                    agent: "codex".into(),
+                    kind: PaneAgentSessionKind::Id,
+                    value: "session-1".into(),
+                }),
+                focused: false,
+                launch_pending: false,
+                interactive_ready: true,
+                state_change_seq: 8,
+                cwd: Some("/repo".into()),
+                foreground_cwd: Some("/repo/src".into()),
+                revision: 12,
+            };
+            let event = StateChange::PaneAgentChanged {
+                pane: PaneId(17),
+                agent: Some(Box::new(agent)),
+                initial: true,
+            };
+            let c_event = state_change_to_c(&mut *h, &event);
+            assert_eq!(c_event.type_, STATE_PANE_AGENT_CHANGED);
+            assert_eq!(c_event.pane_id, 17);
+            let payload = std::slice::from_raw_parts(c_event.data, c_event.data_len);
+            let json: serde_json::Value = serde_json::from_slice(payload).unwrap();
+            assert_eq!(json["initial"], true);
+            assert_eq!(json["agent"]["status"], "blocked");
+            assert_eq!(json["agent"]["kind"], "codex");
+            assert_eq!(json["agent"]["tokens"]["context"], "73%");
+            assert_eq!(json["agent"]["session"]["kind"], "id");
+            assert!(
+                !String::from_utf8_lossy(payload).contains("pane.agent_status_changed"),
+                "FFI payload 禁止泄漏 Herdr wire event 名"
+            );
+            muxterm_free(h);
+        }
+    }
 
     #[test]
     fn ffi_local_new_connect_split_poll_free() {
