@@ -4,6 +4,8 @@ enum PaletteCommand: Equatable {
     case local
     case ssh
     case newTab
+    case renameTab
+    case renameWorkspace
     case splitHorizontal
     case splitVertical
     case nextPane

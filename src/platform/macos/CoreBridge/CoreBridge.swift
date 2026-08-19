@@ -49,6 +49,8 @@ struct StateChange: Equatable {
     var isPaneClosed: Bool { type == STATE_PANE_CLOSED }
     var isTabClosed: Bool { type == STATE_TAB_CLOSED }
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }
+    var isWorkspaceRenamed: Bool { type == STATE_WORKSPACE_RENAMED }
+    var isPoolChanged: Bool { type == STATE_POOL_CHANGED }
 }
 
 /// core SSH discovery 返回的 owned 条目。
@@ -214,6 +216,26 @@ struct MuxTask {
             targetTab: 0,
             dir: 0,
             name: nil
+        )
+    }
+
+    static func renameTab(_ tabId: UInt32, name: String) -> MuxTask {
+        MuxTask(
+            type: TASK_RENAME_TAB,
+            targetPane: 0,
+            targetTab: tabId,
+            dir: 0,
+            name: name
+        )
+    }
+
+    static func renameWorkspace(_ name: String) -> MuxTask {
+        MuxTask(
+            type: TASK_RENAME_WORKSPACE,
+            targetPane: 0,
+            targetTab: 0,
+            dir: 0,
+            name: name
         )
     }
 }

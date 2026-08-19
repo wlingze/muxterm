@@ -30,10 +30,11 @@ use super::types::{
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
     STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT,
-    STATE_PANE_RESIZED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED,
-    STATE_TAB_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH,
-    TASK_MOVE_WINDOW, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
-    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    STATE_PANE_RESIZED, STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED,
+    STATE_TAB_CLOSED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE,
+    TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_WINDOW, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
+    TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE,
+    TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
@@ -1033,6 +1034,11 @@ fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
             Some(Task::BreakPane { target: pane })
         }
         TASK_REFRESH_TABS => Some(Task::RefreshTabs),
+        TASK_RENAME_TAB => name.map(|name| Task::RenameTab {
+            target: TabId(task.target_tab),
+            name,
+        }),
+        TASK_RENAME_WORKSPACE => name.map(|name| Task::RenameWorkspace { name }),
         _ => None,
     }
 }
@@ -1140,6 +1146,13 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             out.data = ptr;
             out.data_len = len;
         }
+        StateChange::WorkspaceRenamed { name } => {
+            out.type_ = STATE_WORKSPACE_RENAMED;
+            out.name = handle.push_name(name);
+        }
+        StateChange::PoolChanged => {
+            out.type_ = STATE_POOL_CHANGED;
+        }
         StateChange::BackendStatusChanged(status) => {
             out.type_ = STATE_BACKEND_STATUS;
             out.pane_id = match status {
@@ -1156,9 +1169,6 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             out.type_ = STATE_OTHER;
             out.pane_id = pane.0;
             out.name = handle.push_name(title);
-        }
-        _ => {
-            out.type_ = STATE_OTHER;
         }
     }
     out
@@ -2310,6 +2320,62 @@ mod tests {
             };
             assert_eq!(muxterm_execute(h, &task), -1);
             assert_eq!(muxterm_detach(h), -1);
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_rename_tasks_update_tab_and_workspace_names() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            assert_eq!(muxterm_connect(h), 0);
+            let mut events = [CStateChange::default(); 32];
+            let _ = muxterm_poll_events(h, events.as_mut_ptr(), 32);
+
+            let mut tabs = [CTab {
+                id: 0,
+                name: ptr::null(),
+                is_active: 0,
+            }; 4];
+            assert!(muxterm_get_tabs(h, tabs.as_mut_ptr(), 4) >= 1);
+            let tab_id = tabs[0].id;
+
+            let tab_name = CString::new("renamed-tab").unwrap();
+            let rename_tab = CTask {
+                type_: TASK_RENAME_TAB,
+                target_pane: 0,
+                target_tab: tab_id,
+                dir: 0,
+                name: tab_name.as_ptr(),
+            };
+            assert_eq!(muxterm_execute(h, &rename_tab), 0);
+            let _ = muxterm_poll_events(h, events.as_mut_ptr(), 32);
+            assert!(muxterm_get_tabs(h, tabs.as_mut_ptr(), 4) >= 1);
+            let renamed = CStr::from_ptr(tabs[0].name).to_string_lossy();
+            assert_eq!(renamed, "renamed-tab");
+
+            let workspace_name = CString::new("renamed-workspace").unwrap();
+            let rename_workspace = CTask {
+                type_: TASK_RENAME_WORKSPACE,
+                target_pane: 0,
+                target_tab: 0,
+                dir: 0,
+                name: workspace_name.as_ptr(),
+            };
+            assert_eq!(muxterm_execute(h, &rename_workspace), 0);
+            let count = muxterm_poll_events(h, events.as_mut_ptr(), 32);
+            assert!(count >= 1);
+            assert!(events[..count as usize]
+                .iter()
+                .any(|event| event.type_ == STATE_WORKSPACE_RENAMED));
+
+            let list = muxterm_workspace_list(h);
+            assert!(!list.is_null());
+            let json = CStr::from_ptr(list).to_string_lossy().into_owned();
+            muxterm_free_string(list);
+            assert!(json.contains("renamed-workspace"), "workspace list: {json}");
+
             muxterm_free(h);
         }
     }

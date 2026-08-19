@@ -101,6 +101,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         newTab.target = windowController
         fileMenu.addItem(newTab)
 
+        let renameWorkspace = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.renameWorkspace),
+            action: #selector(MainWindowController.renameCurrentWorkspace),
+            keyEquivalent: ""
+        )
+        renameWorkspace.target = windowController
+        fileMenu.addItem(renameWorkspace)
+
         let closePane = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuClosePane),
             action: #selector(MainWindowController.closeActivePane),
@@ -122,6 +130,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuWindow))
         windowMenuItem.submenu = windowMenu
+        let renameTab = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.renameTab),
+            action: #selector(MainWindowController.renameActiveTab),
+            keyEquivalent: ""
+        )
+        renameTab.target = windowController
+        windowMenu.addItem(renameTab)
+        windowMenu.addItem(NSMenuItem.separator())
         for i in 1...9 {
             let item = NSMenuItem(
                 title: MuxtermI18n.shared.tr(.menuSwitchTab, arguments: ["number": "\(i)"]),

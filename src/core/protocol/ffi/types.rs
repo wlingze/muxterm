@@ -17,6 +17,8 @@ pub const STATE_TAB_RENAMED: u32 = 8;
 pub const STATE_PANE_RESIZED: u32 = 9;
 pub const STATE_BACKEND_STATUS: u32 = 10;
 pub const STATE_STATUS_SUBSCRIPTION: u32 = 11;
+pub const STATE_WORKSPACE_RENAMED: u32 = 12;
+pub const STATE_POOL_CHANGED: u32 = 13;
 pub const STATE_OTHER: u32 = 99;
 
 // ── BackendStatus 编码到 CStateChange.pane_id ──────────────
@@ -41,6 +43,8 @@ pub const TASK_TOGGLE_PANE_FULLSCREEN: u32 = 10;
 pub const TASK_MOVE_WINDOW: u32 = 11;
 pub const TASK_BREAK_PANE: u32 = 12;
 pub const TASK_REFRESH_TABS: u32 = 13;
+pub const TASK_RENAME_TAB: u32 = 14;
+pub const TASK_RENAME_WORKSPACE: u32 = 15;
 
 // ── Split dir / layout node ────────────────────────────────
 pub const DIR_HORIZONTAL: u32 = 0;
