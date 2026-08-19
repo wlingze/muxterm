@@ -8,9 +8,13 @@ mod support;
 use std::time::{Duration, Instant};
 
 use muxterm::core::runtime::TmuxRuntime;
+use muxterm::core::types::PaneId;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;
-use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT};
+use support::ssh_tmux_contract::{
+    build_remote_offscreen_history, build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT,
+};
+#[cfg(feature = "ffi")]
 use support::sshd_test_support::{sshd_available, SshTestEnv};
 use support::tmux_test_support::tmux_available;
 
@@ -57,6 +61,66 @@ fn ssh_attach_preexist_token_reaches_workspace() {
         "SSH attach 后 PaneBuf 必须含播种 token {}。禁止另建 MockRuntime 喂字节冒充。hits={hits}",
         fx.token
     );
+}
+
+/// SSH attach 必须与本地 attach 暴露同一套 core history contract：离屏
+/// token 可由 scroll_ansi 取回，尾标仍在 offset=0，且 viewport 可回到底部。
+#[test]
+fn ssh_attach_history_scroll_matches_local_contract() {
+    if !tmux_available() {
+        eprintln!("skip: 无 tmux");
+        return;
+    }
+    if !ssh_tmux_available() {
+        eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
+        return;
+    }
+    let (fx, tail) = build_remote_offscreen_history("history-parity");
+    fx.apply_ssh_config_env();
+
+    let runtime = TmuxRuntime::new_ssh_attach(&fx.sshd.alias, Some(&fx.socket), &fx.session);
+    let mut ws = Workspace::new(
+        WorkspaceId::new("ssh", Some(&fx.sshd.alias), &fx.session, "tmux", ""),
+        fx.session.clone(),
+        Box::new(runtime),
+    );
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .expect("tokio");
+    rt.block_on(ws.connect()).expect("SSH history attach 失败");
+
+    let deadline = Instant::now() + SSH_TIMEOUT;
+    let pane = PaneId(fx.pane);
+    while Instant::now() < deadline {
+        let _ = ws.refresh();
+        if !ws.search_workspace(&fx.token).is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !ws.search_workspace(&fx.token).is_empty(),
+        "SSH PaneBuf 必须含离屏 token"
+    );
+
+    let max = ws.pane_history_max_offset(pane, 24);
+    assert!(max > 0, "SSH 离屏历史必须有非零 max offset: {max}");
+    let top_bytes = ws.pane_scroll_ansi(pane, max, 24);
+    let top = String::from_utf8_lossy(&top_bytes);
+    assert!(
+        top.contains(&fx.token),
+        "SSH scroll_ansi(max) 必须含离屏 token: {top:?}"
+    );
+    let live_bytes = ws.pane_scroll_ansi(pane, 0, 24);
+    let live = String::from_utf8_lossy(&live_bytes);
+    assert!(live.contains(&tail), "SSH offset=0 必须回到尾标: {live:?}");
+    ws.set_pane_viewport(pane, max);
+    assert_eq!(ws.pane_viewport(pane), max);
+    ws.set_pane_viewport(pane, 0);
+    assert_eq!(ws.pane_viewport(pane), 0);
+    let _ = rt.block_on(ws.shutdown());
 }
 
 /// macOS ProjectConnectFlow：discovery 创建 session 后再 FFI attach。
