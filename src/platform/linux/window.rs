@@ -27,7 +27,7 @@ use crate::core::discovery::existing::ExistingEntry;
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::SplitDir;
 use crate::core::model::state::{BackendStatus, StateChange};
-use crate::core::model::task::Task;
+use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::HerdrRuntime;
 use crate::core::runtime::HerdrSession;
@@ -859,15 +859,12 @@ impl AppWindow {
             .contains(&capability)
     }
 
-    /// 测试用：对当前 Runtime 执行真实 detach。仅在 `PersistDetach` 为真时调用。
-    pub fn test_detach_active_workspace(&self) -> bool {
-        matches!(
-            self._state
-                .borrow_mut()
-                .active_workspace_mut()
-                .execute(Task::Detach),
-            Ok(crate::core::model::task::TaskOutcome::Done)
-        )
+    /// 测试用：对当前 Runtime 执行真实 detach，并保留精确 outcome。
+    pub fn test_detach_active_workspace_outcome(&self) -> anyhow::Result<TaskOutcome> {
+        self._state
+            .borrow_mut()
+            .active_workspace_mut()
+            .execute(Task::Detach)
     }
 
     /// 测试用：走生产 `adjust_font(+1)`（Ctrl+= 热路径）。

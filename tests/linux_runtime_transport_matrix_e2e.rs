@@ -20,6 +20,7 @@ use gtk4::prelude::*;
 use muxterm::core::catalog::Catalog;
 use muxterm::core::config::{Action, Config};
 use muxterm::core::model::backend::RuntimeCapability;
+use muxterm::core::model::task::TaskOutcome;
 use muxterm::platform::linux::window::AppWindow;
 
 use support::herdr_test_support::herdr_available;
@@ -477,11 +478,39 @@ fn verify_supported_reattach(
             runtime == "shell",
             "没有 PersistDetach 的内置 Runtime 应只有 shell，实际 {runtime}"
         );
+        let workspace_before = app.test_active_workspace_replica_id();
+        let pane_before = app.test_active_pane_id();
+        let outcome = app.test_detach_active_workspace_outcome()?;
+        ensure!(
+            matches!(outcome, TaskOutcome::Rejected { .. }),
+            "shell 必须明确拒绝 detach，不能跳过或伪造成功，实际 {outcome:?}"
+        );
+        ensure!(
+            app.test_active_workspace_replica_id() == workspace_before
+                && app
+                    .test_workspace_replica_ids()
+                    .iter()
+                    .any(|id| id == &workspace_before),
+            "shell detach 被拒绝后原 Workspace 必须继续留在 WorkspacePool"
+        );
+        let continued = execute_printf(
+            app,
+            &format!(
+                "GTK_{}_DETACH_REJECTED_CONTINUES",
+                matrix_label(runtime, transport)
+            ),
+            transport == "ssh",
+        )?;
+        ensure!(
+            continued.0 == pane_before,
+            "shell detach 被拒绝后输入必须继续落在原 active pane: before={pane_before}, after={}",
+            continued.0
+        );
         return Ok(());
     }
 
     ensure!(
-        app.test_detach_active_workspace(),
+        app.test_detach_active_workspace_outcome()? == TaskOutcome::Done,
         "声明 PersistDetach 后 Task::Detach 必须成功"
     );
     app.test_open_spec(fixture.spec.clone());
