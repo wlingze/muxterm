@@ -9,6 +9,8 @@ import MuxtermChrome
 final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     NSTableViewDataSource, NSTableViewDelegate
 {
+    private static let preferredContentSize = NSSize(width: 640, height: 420)
+
     var onConnect: ((TargetConfig) -> Void)?
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
@@ -22,19 +24,21 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let input = NSSearchField()
     private let table = NSTableView()
     private let scrollView = MuxtermFillWidthScrollView()
+    private let emptyLabel = NSTextField(labelWithString: "")
+    private let tabControl = NSSegmentedControl()
     private let accessoryContainer = NSView()
     private let scopeBar = NSStackView()
+    private let scopeControl = NSSegmentedControl()
     private let attentionActions = NSStackView()
-    private let attentionJumpButton = NSButton(title: "Jump", target: nil, action: nil)
-    private let attentionOpenButton = NSButton(title: "Open", target: nil, action: nil)
+    private let attentionJumpButton = NSButton(title: "", target: nil, action: nil)
+    private let attentionOpenButton = NSButton(title: "", target: nil, action: nil)
     private let attentionMuteButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var selectionAliases: [String: PanelAccessibilityAliasButton] = [:]
     private var allItems: [QuickConnectItem] = []
     private var visibleItems: [QuickConnectItem] = []
     private var hits: [SearchHit] = []
     private var rows: [AttentionRow] = []
     private var model = PanelModel.open(.workspaces)
-    private var tabButtons: [PanelTab: NSButton] = [:]
-    private var scopeButtons: [SearchScope: NSButton] = [:]
     private var accessoryHeightConstraint: NSLayoutConstraint?
     private var keyMonitor: Any?
     private weak var ownerWindow: NSWindow?
@@ -59,12 +63,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.search = search
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
+            contentRect: NSRect(origin: .zero, size: Self.preferredContentSize),
             styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        panel.title = "Quick Connect"
+        panel.title = MuxtermI18n.shared.tr(.quickConnect)
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
@@ -100,16 +104,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         input.stringValue = ""
         reload()
         guard let window else { return }
-        if let ownerWindow {
-            window.level = .floating
-            let ownerFrame = ownerWindow.frame
-            window.setFrameOrigin(NSPoint(
-                x: ownerFrame.midX - window.frame.width / 2,
-                y: ownerFrame.midY - window.frame.height / 2
-            ))
-        } else {
-            window.center()
-        }
+        window.level = .floating
+        CompactPanelLayout.prepare(window, owner: ownerWindow, preferred: Self.preferredContentSize)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         applyTab()
@@ -153,6 +149,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             table.deselectAll(nil)
         }
         updatePeek()
+        updateEmptyState()
         QuickConnectTableLayout.fit(table)
     }
 
@@ -212,42 +209,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         content.addSubview(root)
 
-        // 三个 tab 按钮（Linux `muxterm-panel-tab-*` 同款）。
-        let tabStack = NSStackView()
-        tabStack.translatesAutoresizingMaskIntoConstraints = false
-        tabStack.orientation = .horizontal
-        tabStack.alignment = .centerY
-        tabStack.spacing = 8
-        root.addSubview(tabStack)
-
-        let workspaces = makeTabButton(
-            title: "Workspaces",
-            id: "muxterm.panel.tab.workspaces",
-            linuxId: "muxterm-panel-tab-workspaces",
-            tag: PanelTab.workspaces.rawValue
-        )
-        let attention = makeTabButton(
-            title: "Attention",
-            id: "muxterm.panel.tab.attention",
-            linuxId: "muxterm-panel-tab-attention",
-            tag: PanelTab.attention.rawValue
-        )
-        let search = makeTabButton(
-            title: "Search",
-            id: "muxterm.panel.tab.search",
-            linuxId: "muxterm-panel-tab-search",
-            tag: PanelTab.search.rawValue
-        )
-        tabButtons[.workspaces] = workspaces
-        tabButtons[.attention] = attention
-        tabButtons[.search] = search
-        tabStack.addArrangedSubview(workspaces)
-        tabStack.addArrangedSubview(attention)
-        tabStack.addArrangedSubview(search)
+        buildTabControl()
+        root.addSubview(tabControl)
 
         input.translatesAutoresizingMaskIntoConstraints = false
-        input.font = NSFont.systemFont(ofSize: 18)
-        input.placeholderString = "Quick Connect"
+        input.font = NSFont.systemFont(ofSize: 14)
+        input.controlSize = .large
+        input.placeholderString = MuxtermI18n.shared.tr(.quickConnect)
         input.focusRingType = .none
         input.delegate = self
         // 统一 identifier + 旧面板别名（AX 子视图标签，旧测试按名字查找）。
@@ -294,6 +262,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         table.rowHeight = QuickTargetCellView.preferredRowHeight
         table.intercellSpacing = NSSize(width: 0, height: 1)
         table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
+        table.selectionHighlightStyle = .regular
+        table.style = .plain
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -306,7 +277,17 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
         root.addSubview(scrollView)
+
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        emptyLabel.font = NSFont.systemFont(ofSize: 13)
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.alignment = .center
+        emptyLabel.setAccessibilityIdentifier("muxterm.panel.empty")
+        emptyLabel.isHidden = true
+        root.addSubview(emptyLabel)
 
         // 旧面板 identifier 别名：放在 scrollView 内部，与 scrollView 同祖先。
         let listAliases = [
@@ -331,45 +312,78 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             root.topAnchor.constraint(equalTo: content.topAnchor),
             root.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
-            tabStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
-            tabStack.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
+            tabControl.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            tabControl.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
 
-            input.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
-            input.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
-            input.topAnchor.constraint(equalTo: tabStack.bottomAnchor, constant: 10),
-            input.heightAnchor.constraint(equalToConstant: 34),
+            input.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            input.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+            input.topAnchor.constraint(equalTo: tabControl.bottomAnchor, constant: 8),
+            input.heightAnchor.constraint(equalToConstant: 28),
 
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            accessoryContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
-            accessoryContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
-            accessoryContainer.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 6),
+            accessoryContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            accessoryContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+            accessoryContainer.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 4),
 
-            scrollView.topAnchor.constraint(equalTo: accessoryContainer.bottomAnchor, constant: 6),
-            scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
+            scrollView.topAnchor.constraint(equalTo: accessoryContainer.bottomAnchor, constant: 4),
+            scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+
+            emptyLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
+            emptyLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            emptyLabel.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
         ])
         let accessoryHeight = accessoryContainer.heightAnchor.constraint(equalToConstant: 0)
         accessoryHeight.isActive = true
         accessoryHeightConstraint = accessoryHeight
     }
 
+    private func buildTabControl() {
+        tabControl.translatesAutoresizingMaskIntoConstraints = false
+        tabControl.segmentCount = PanelTab.allCases.count
+        tabControl.trackingMode = .selectOne
+        tabControl.segmentStyle = .rounded
+        tabControl.controlSize = .small
+        tabControl.target = self
+        tabControl.action = #selector(tabClicked(_:))
+        tabControl.setAccessibilityIdentifier("muxterm.panel.tabs")
+        tabControl.setLabel(MuxtermI18n.shared.tr(.panelWorkspaces), forSegment: 0)
+        tabControl.setLabel(MuxtermI18n.shared.tr(.panelAttention), forSegment: 1)
+        tabControl.setLabel(MuxtermI18n.shared.tr(.panelSearch), forSegment: 2)
+        for id in [
+            "muxterm.panel.tab.workspaces",
+            "muxterm-panel-tab-workspaces",
+            "muxterm.panel.tab.attention",
+            "muxterm-panel-tab-attention",
+            "muxterm.panel.tab.search",
+            "muxterm-panel-tab-search",
+        ] {
+            addAlias(id, to: tabControl)
+        }
+    }
+
     private func buildSearchScopeBar() {
         scopeBar.translatesAutoresizingMaskIntoConstraints = false
         scopeBar.orientation = .horizontal
         scopeBar.alignment = .centerY
-        scopeBar.spacing = 8
-        for (scope, title, id, tag) in [
-            (SearchScope.pane, "Pane", "muxterm.search.scope.pane", 0),
-            (.workspace, "Workspace", "muxterm.search.scope.workspace", 1),
-            (.all, "All", "muxterm.search.scope.all", 2),
+        scopeBar.spacing = 0
+        scopeControl.segmentCount = SearchScope.allCases.count
+        scopeControl.trackingMode = .selectOne
+        scopeControl.segmentStyle = .rounded
+        scopeControl.controlSize = .small
+        scopeControl.target = self
+        scopeControl.action = #selector(searchScopeClicked(_:))
+        scopeControl.setAccessibilityIdentifier("muxterm.search.scope")
+        scopeControl.setLabel(MuxtermI18n.shared.tr(.searchScopePane), forSegment: 0)
+        scopeControl.setLabel(MuxtermI18n.shared.tr(.searchScopeWorkspace), forSegment: 1)
+        scopeControl.setLabel(MuxtermI18n.shared.tr(.searchScopeAll), forSegment: 2)
+        scopeBar.addArrangedSubview(scopeControl)
+        for id in [
+            "muxterm.search.scope.pane",
+            "muxterm.search.scope.workspace",
+            "muxterm.search.scope.all",
         ] {
-            let button = NSButton(title: title, target: self, action: #selector(searchScopeClicked(_:)))
-            button.setButtonType(.radio)
-            button.controlSize = .small
-            button.tag = tag
-            button.setAccessibilityIdentifier(id)
-            scopeButtons[scope] = button
-            scopeBar.addArrangedSubview(button)
+            addAlias(id, to: scopeControl)
         }
     }
 
@@ -383,17 +397,19 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         attentionJumpButton.action = #selector(jumpSelectedAttention)
         attentionJumpButton.controlSize = .small
         attentionJumpButton.bezelStyle = .rounded
+        attentionJumpButton.title = MuxtermI18n.shared.tr(.attentionJump)
         attentionJumpButton.setAccessibilityIdentifier("muxterm.attention.jump")
 
         attentionOpenButton.target = self
         attentionOpenButton.action = #selector(openSelectedAttention)
         attentionOpenButton.controlSize = .small
         attentionOpenButton.bezelStyle = .rounded
+        attentionOpenButton.title = MuxtermI18n.shared.tr(.attentionOpen)
         attentionOpenButton.setAccessibilityIdentifier("muxterm.attention.open")
 
         attentionMuteButton.controlSize = .small
         attentionMuteButton.setAccessibilityIdentifier("muxterm.attention.mute")
-        attentionMuteButton.addItem(withTitle: "Mute")
+        attentionMuteButton.addItem(withTitle: MuxtermI18n.shared.tr(.attentionMute))
         for (title, seconds) in [
             ("5m", 300),
             ("10m", 600),
@@ -418,45 +434,39 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func aliasLabel(_ id: String) -> NSView {
-        let view = NSView()
+        let view = PanelAccessibilityAliasView()
         view.translatesAutoresizingMaskIntoConstraints = false
         view.setAccessibilityIdentifier(id)
         view.setAccessibilityElement(true)
         return view
     }
 
-    private func makeTabButton(title: String, id: String, linuxId: String, tag: Int) -> NSButton {
-        let button = NSButton(title: title, target: self, action: #selector(tabClicked(_:)))
-        button.setButtonType(.radio)
-        button.tag = tag
-        button.setAccessibilityIdentifier(id)
-        // Linux 别名：独立 AX 标签，避免覆盖主 identifier。
-        let alias = aliasLabel(linuxId)
-        button.addSubview(alias)
+    private func addAlias(_ id: String, to control: NSView) {
+        let alias = PanelAccessibilityAliasButton()
+        alias.translatesAutoresizingMaskIntoConstraints = false
+        alias.setAccessibilityIdentifier(id)
+        alias.setAccessibilityElement(true)
+        selectionAliases[id] = alias
+        control.addSubview(alias)
         NSLayoutConstraint.activate([
-            alias.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-            alias.trailingAnchor.constraint(equalTo: button.trailingAnchor),
-            alias.topAnchor.constraint(equalTo: button.topAnchor),
-            alias.bottomAnchor.constraint(equalTo: button.bottomAnchor),
+            alias.leadingAnchor.constraint(equalTo: control.leadingAnchor),
+            alias.trailingAnchor.constraint(equalTo: control.trailingAnchor),
+            alias.topAnchor.constraint(equalTo: control.topAnchor),
+            alias.bottomAnchor.constraint(equalTo: control.bottomAnchor),
         ])
-        return button
     }
 
-    @objc private func tabClicked(_ sender: NSButton) {
-        guard let tab = PanelTab(rawValue: sender.tag) else { return }
+    @objc private func tabClicked(_ sender: NSSegmentedControl) {
+        guard let tab = PanelTab(rawValue: sender.selectedSegment) else { return }
         model.tab = tab
         applyTab()
         reload()
     }
 
     private func applyTab() {
-        // 更新三个 tab 按钮的选中态。
-        for (tab, button) in tabButtons {
-            button.state = tab == model.tab ? .on : .off
-        }
-        for (scope, button) in scopeButtons {
-            button.state = scope == model.scope ? .on : .off
-        }
+        tabControl.selectedSegment = model.tab.rawValue
+        scopeControl.selectedSegment = scopeSegment(model.scope)
+        updateSelectionAliases()
         let showsScope = model.tab == .search
         let showsAttentionActions = model.tab == .attention
         scopeBar.isHidden = !showsScope
@@ -464,11 +474,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         accessoryHeightConstraint?.constant = (showsScope || showsAttentionActions) ? 24 : 0
         input.placeholderString = placeholder(for: model.tab)
         updatePeek()
+        updateEmptyState()
     }
 
-    @objc private func searchScopeClicked(_ sender: NSButton) {
+    @objc private func searchScopeClicked(_ sender: NSSegmentedControl) {
         let scope: SearchScope
-        switch sender.tag {
+        switch sender.selectedSegment {
         case 0: scope = .pane
         case 1: scope = .workspace
         default: scope = .all
@@ -479,11 +490,76 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         reload()
     }
 
+    private func scopeSegment(_ scope: SearchScope) -> Int {
+        switch scope {
+        case .pane: return 0
+        case .workspace: return 1
+        case .all: return 2
+        }
+    }
+
     private func placeholder(for tab: PanelTab) -> String {
         switch tab {
-        case .workspaces: return "Quick Connect"
-        case .attention: return "Attention"
-        case .search: return "Search panes"
+        case .workspaces: return MuxtermI18n.shared.tr(.quickConnect)
+        case .attention: return MuxtermI18n.shared.tr(.panelAttentionPlaceholder)
+        case .search: return MuxtermI18n.shared.tr(.panelSearchPlaceholder)
+        }
+    }
+
+    func refreshLocalization() {
+        window?.title = MuxtermI18n.shared.tr(.quickConnect)
+        tabControl.setLabel(MuxtermI18n.shared.tr(.panelWorkspaces), forSegment: 0)
+        tabControl.setLabel(MuxtermI18n.shared.tr(.panelAttention), forSegment: 1)
+        tabControl.setLabel(MuxtermI18n.shared.tr(.panelSearch), forSegment: 2)
+        scopeControl.setLabel(MuxtermI18n.shared.tr(.searchScopePane), forSegment: 0)
+        scopeControl.setLabel(MuxtermI18n.shared.tr(.searchScopeWorkspace), forSegment: 1)
+        scopeControl.setLabel(MuxtermI18n.shared.tr(.searchScopeAll), forSegment: 2)
+        attentionJumpButton.title = MuxtermI18n.shared.tr(.attentionJump)
+        attentionOpenButton.title = MuxtermI18n.shared.tr(.attentionOpen)
+        attentionMuteButton.item(at: 0)?.title = MuxtermI18n.shared.tr(.attentionMute)
+        applyTab()
+        table.reloadData()
+    }
+
+    private func updateEmptyState() {
+        let isEmpty = numberOfRows(in: table) == 0
+        let key: MuxtermTextKey
+        switch model.tab {
+        case .workspaces:
+            key = .panelNoWorkspaces
+        case .attention:
+            key = .panelNoAttention
+        case .search:
+            key = model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .panelSearchPrompt
+                : .panelNoResults
+        }
+        emptyLabel.stringValue = MuxtermI18n.shared.tr(key)
+        emptyLabel.isHidden = !isEmpty
+        scrollView.isHidden = isEmpty
+    }
+
+    /// 旧版 E2E 和辅助功能脚本会按每个选项的 AX identifier 查询状态。
+    /// 原生 NSSegmentedControl 只有一个控件节点，因此保留不可点击的轻量按钮别名。
+    private func updateSelectionAliases() {
+        let tabAliases: [[String]] = [
+            ["muxterm.panel.tab.workspaces", "muxterm-panel-tab-workspaces"],
+            ["muxterm.panel.tab.attention", "muxterm-panel-tab-attention"],
+            ["muxterm.panel.tab.search", "muxterm-panel-tab-search"],
+        ]
+        for (index, ids) in tabAliases.enumerated() {
+            for id in ids {
+                selectionAliases[id]?.state = model.tab.rawValue == index ? .on : .off
+            }
+        }
+
+        let selectedScope = scopeSegment(model.scope)
+        for (index, id) in [
+            "muxterm.search.scope.pane",
+            "muxterm.search.scope.workspace",
+            "muxterm.search.scope.all",
+        ].enumerated() {
+            selectionAliases[id]?.state = selectedScope == index ? .on : .off
         }
     }
 
@@ -547,11 +623,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 return cell
             case .newProject:
                 let id = NSUserInterfaceItemIdentifier("QuickNew")
-                let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTextField
-                    ?? NSTextField(labelWithString: "")
-                cell.identifier = id
-                cell.stringValue = "＋ New Project"
-                cell.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.title = "＋ " + MuxtermI18n.shared.tr(.panelNewProject)
                 return cell
             }
         case .attention:
@@ -598,8 +672,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 ])
                 return l
             }()
-            label.stringValue = "\(hit.workspaceId)  tab \(hit.tabId)  pane @\(hit.paneId)\n\(hit.line)"
-            label.font = NSFont.systemFont(ofSize: 12)
+            label.stringValue = "\(hit.workspaceId)  \(MuxtermI18n.shared.tr(.tab)) \(hit.tabId)  \(MuxtermI18n.shared.tr(.pane)) @\(hit.paneId)\n\(hit.line)"
+            label.font = NSFont.systemFont(ofSize: 11.5)
             label.maximumNumberOfLines = 2
             cell.setAccessibilityIdentifier("muxterm.search.hit-\(row)")
             return cell
@@ -782,6 +856,30 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         table.layoutSubtreeIfNeeded()
         return table.view(atColumn: 0, row: row, makeIfNecessary: true) as? QuickTargetCellView
     }
+
+    func testContentSize() -> NSSize {
+        window?.contentView?.bounds.size ?? .zero
+    }
+
+    func testSearchFontSize() -> CGFloat {
+        input.font?.pointSize ?? 0
+    }
+
+    func testRowHeight() -> CGFloat {
+        table.rowHeight
+    }
+
+    func testEmptyStateVisible() -> Bool {
+        !emptyLabel.isHidden
+    }
+
+    func testEmptyStateText() -> String {
+        emptyLabel.stringValue
+    }
+
+    func testUsesSegmentedNavigation() -> Bool {
+        tabControl.segmentCount == 3 && scopeControl.segmentCount == 3
+    }
 }
 
 extension UnifiedPanelController: TerminalInputHandler {
@@ -801,5 +899,33 @@ private extension NSView {
             if let found = child.findSubview(pred) { return found }
         }
         return nil
+    }
+}
+
+private final class PanelAccessibilityAliasView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+private final class PanelAccessibilityAliasButton: NSButton {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        title = ""
+        isBordered = false
+        isTransparent = true
+    }
+
+    convenience init() {
+        self.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }

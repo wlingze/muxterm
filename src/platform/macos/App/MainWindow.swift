@@ -2203,6 +2203,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshLocalizedUI() {
         commandPalette.refreshLocalization()
+        unifiedPanel.refreshLocalization()
         content.refreshLocalization()
         refreshUI()
     }

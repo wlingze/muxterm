@@ -246,11 +246,9 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
             return cell
         case .newProject:
             let id = NSUserInterfaceItemIdentifier("QuickNew")
-            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTextField
-                ?? NSTextField(labelWithString: "")
-            cell.identifier = id
-            cell.stringValue = "＋ New Project"
-            cell.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                ?? QuickActionCellView(identifier: id)
+            cell.title = "＋ New Project"
             return cell
         }
     }
@@ -278,15 +276,42 @@ enum QuickConnectItem {
     case newProject
 }
 
-/// 三行目标 cell：主行完整 name + 8pt 色块徽章，下一行 subtitle，再下一行 path。
+/// Quick Connect 的轻量动作行，与目标行共享 14pt 左边距。
+final class QuickActionCellView: NSTableCellView {
+    private let label = NSTextField(labelWithString: "")
+
+    var title: String {
+        get { label.stringValue }
+        set { label.stringValue = newValue }
+    }
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+}
+
+/// 紧凑两行目标 cell：完整 name + 8pt 色块徽章，下一行 runtime/transport/path。
 /// 名称绝不截断；徽章缩成小色块，不跟名字抢宽度。
 final class QuickTargetCellView: NSTableCellView {
-    static let preferredRowHeight: CGFloat = 58
+    static let preferredRowHeight: CGFloat = 46
     static let badgeDotSize: CGFloat = 8
 
     private let titleLabel = NSTextField(labelWithString: "")
-    private let subtitleLabel = NSTextField(labelWithString: "")
-    private let pathLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
     private let badgeStack = NSStackView()
 
     var config: TargetConfig? {
@@ -308,7 +333,7 @@ final class QuickTargetCellView: NSTableCellView {
         // 不要把 title 赋给 NSTableCellView.textField：AppKit 会按默认
         // image/text 模板重排，把名字压成一个字母。
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         titleLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         titleLabel.setContentHuggingPriority(.required, for: .horizontal)
         // `maximumNumberOfLines = 1` + truncatingTail 会把
@@ -320,17 +345,12 @@ final class QuickTargetCellView: NSTableCellView {
         titleLabel.cell?.wraps = false
         titleLabel.cell?.isScrollable = false
         titleLabel.allowsDefaultTighteningForTruncation = false
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtitleLabel.font = NSFont.systemFont(ofSize: 11)
-        subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        subtitleLabel.lineBreakMode = .byTruncatingTail
-        subtitleLabel.maximumNumberOfLines = 1
-        pathLabel.translatesAutoresizingMaskIntoConstraints = false
-        pathLabel.font = NSFont.systemFont(ofSize: 11)
-        pathLabel.textColor = .tertiaryLabelColor
-        pathLabel.lineBreakMode = .byTruncatingTail
-        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = NSFont.systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detailLabel.lineBreakMode = .byTruncatingMiddle
+        detailLabel.maximumNumberOfLines = 1
         badgeStack.translatesAutoresizingMaskIntoConstraints = false
         badgeStack.orientation = .horizontal
         badgeStack.alignment = .centerY
@@ -338,21 +358,17 @@ final class QuickTargetCellView: NSTableCellView {
         badgeStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         badgeStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(titleLabel)
-        addSubview(subtitleLabel)
-        addSubview(pathLabel)
+        addSubview(detailLabel)
         addSubview(badgeStack)
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
             badgeStack.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            subtitleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
-            pathLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            pathLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            pathLabel.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 1),
-            pathLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+            detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
         ])
     }
 
@@ -365,8 +381,10 @@ final class QuickTargetCellView: NSTableCellView {
         guard let config else { return }
         titleLabel.stringValue = config.name
         titleLabel.toolTip = config.name
-        subtitleLabel.stringValue = QuickConnect.subtitle(for: config)
-        pathLabel.stringValue = config.path
+        let path = config.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        detailLabel.stringValue = path.isEmpty
+            ? QuickConnect.subtitle(for: config)
+            : "\(QuickConnect.subtitle(for: config))  ·  \(path)"
 
         for view in badgeStack.arrangedSubviews {
             badgeStack.removeArrangedSubview(view)
@@ -497,7 +515,7 @@ final class MuxtermFillWidthScrollView: NSScrollView {
 enum QuickConnectTableLayout {
     static func configure(_ table: NSTableView, column: NSTableColumn) {
         column.minWidth = 240
-        column.width = 680
+        column.width = 640
         column.resizingMask = .autoresizingMask
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.autoresizingMask = [.width, .height]
