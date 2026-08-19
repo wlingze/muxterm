@@ -96,4 +96,18 @@ final class I18nResourceBundleTests: XCTestCase {
         )
         XCTAssertFalse(value.isEmpty)
     }
+
+    func testEveryTypedKeyExistsInBothShippingCatalogs() {
+        let roots = MuxtermI18nLocator.searchRoots()
+        for language in [MuxtermLanguage.english, .simplifiedChinese] {
+            let catalog = MuxtermI18nLocator.loadCatalog(tag: language.catalogTag, roots: roots)
+            for key in MuxtermTextKey.allCases {
+                XCTAssertNotNil(catalog[key.id], "\(language.catalogTag) catalog is missing \(key.id)")
+                XCTAssertFalse(
+                    catalog[key.id]?.isEmpty ?? true,
+                    "\(language.catalogTag) catalog has an empty \(key.id)"
+                )
+            }
+        }
+    }
 }

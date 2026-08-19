@@ -2,6 +2,9 @@ import Foundation
 
 /// JSON catalog 的 typed id。业务代码只能引用这个 enum，避免手写 key。
 enum MuxtermTextKey: CaseIterable {
+    case attentionJump
+    case attentionMute
+    case attentionOpen
     case cancel
     case chooseDirectoryMessage
     case chooseRemoteDirectory
@@ -30,6 +33,7 @@ enum MuxtermTextKey: CaseIterable {
     case cmdTmuxDetach
     case cmdTmuxNew
     case commandPalette
+    case commandPaletteNoResults
     case commandPalettePlaceholder
     case createAndAttach
     case detach
@@ -112,6 +116,16 @@ enum MuxtermTextKey: CaseIterable {
     case newTabTooltip
     case nextPane
     case nextPaneDetail
+    case panelAttention
+    case panelAttentionPlaceholder
+    case panelNewProject
+    case panelNoAttention
+    case panelNoResults
+    case panelNoWorkspaces
+    case panelSearch
+    case panelSearchPlaceholder
+    case panelSearchPrompt
+    case panelWorkspaces
     case pane
     case paneRenameAction
     case paneRenameCancel
@@ -129,6 +143,9 @@ enum MuxtermTextKey: CaseIterable {
     case quickConnect
     case quickConnectDetail
     case searchPanesDetail
+    case searchScopeAll
+    case searchScopePane
+    case searchScopeWorkspace
     case increaseFontSizeDetail
     case decreaseFontSizeDetail
     case resetFontSizeDetail
@@ -160,6 +177,7 @@ enum MuxtermTextKey: CaseIterable {
     case statusBarModeDetail
     case statusAttention
     case statusDone
+    case tab
     case tabs
     case tabsAccessibility
     case terminalOutputSnippet
@@ -183,6 +201,9 @@ enum MuxtermTextKey: CaseIterable {
 
     var id: String {
         switch self {
+        case .attentionJump: return "attention_jump"
+        case .attentionMute: return "attention_mute"
+        case .attentionOpen: return "attention_open"
         case .cancel: return "cancel"
         case .chooseDirectoryMessage: return "choose_directory_message"
         case .chooseRemoteDirectory: return "choose_remote_directory"
@@ -211,6 +232,7 @@ enum MuxtermTextKey: CaseIterable {
         case .cmdTmuxDetach: return "cmd_tmux_detach"
         case .cmdTmuxNew: return "cmd_tmux_new"
         case .commandPalette: return "command_palette"
+        case .commandPaletteNoResults: return "command_palette_no_results"
         case .commandPalettePlaceholder: return "command_palette_placeholder"
         case .createAndAttach: return "create_and_attach"
         case .detach: return "detach"
@@ -293,6 +315,16 @@ enum MuxtermTextKey: CaseIterable {
         case .newTabTooltip: return "new_tab_tooltip"
         case .nextPane: return "next_pane"
         case .nextPaneDetail: return "next_pane_detail"
+        case .panelAttention: return "panel_attention"
+        case .panelAttentionPlaceholder: return "panel_attention_placeholder"
+        case .panelNewProject: return "panel_new_project"
+        case .panelNoAttention: return "panel_no_attention"
+        case .panelNoResults: return "panel_no_results"
+        case .panelNoWorkspaces: return "panel_no_workspaces"
+        case .panelSearch: return "panel_search"
+        case .panelSearchPlaceholder: return "panel_search_placeholder"
+        case .panelSearchPrompt: return "panel_search_prompt"
+        case .panelWorkspaces: return "panel_workspaces"
         case .pane: return "pane"
         case .paneRenameAction: return "pane_rename_action"
         case .paneRenameCancel: return "pane_rename_cancel"
@@ -310,6 +342,9 @@ enum MuxtermTextKey: CaseIterable {
         case .quickConnect: return "quick_connect"
         case .quickConnectDetail: return "quick_connect_detail"
         case .searchPanesDetail: return "search_panes_detail"
+        case .searchScopeAll: return "search_scope_all"
+        case .searchScopePane: return "search_scope_pane"
+        case .searchScopeWorkspace: return "search_scope_workspace"
         case .increaseFontSizeDetail: return "increase_font_size_detail"
         case .decreaseFontSizeDetail: return "decrease_font_size_detail"
         case .resetFontSizeDetail: return "reset_font_size_detail"
@@ -341,6 +376,7 @@ enum MuxtermTextKey: CaseIterable {
         case .statusBarModeDetail: return "statusbar_mode_detail"
         case .statusAttention: return "status_attention"
         case .statusDone: return "status_done"
+        case .tab: return "tab"
         case .tabs: return "tabs"
         case .tabsAccessibility: return "tabs_accessibility"
         case .terminalOutputSnippet: return "terminal_output_snippet"
