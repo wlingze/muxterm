@@ -115,6 +115,8 @@ macOS 端的正确显示路径是“一个 SwiftTerm Surface”：attach 只 see
 | `AgentRenderE2ETests` | seed once、历史位置继续 feed、真实 AppKit scroll wheel、主题/光标 |
 | `ChromeTests` | KeyBindings、scroll policy、feed policy、查询应答门禁 |
 | core workspace capacity tests | 配置 scrollback 超过 10,000 行仍保留完整历史；viewport offset 有界钳制 |
+| core OSC 133 parser tests | 合法 B→C→D 补退出码；孤立/重复 D 不污染上一条刻度 |
+| `FlatChromeTests` | stale last-seen seq 清除旧跳转目标；没有新行时不显示按钮 |
 | SSH history parity | loopback SSH 与本地 tmux 的历史/viewport 合同 |
 
 ## 5. 验收门禁
@@ -159,6 +161,6 @@ swift test --disable-swift-testing
 - [x] 鼠标/触控板上划能显示 attach 前历史；下划/回底能显示最新输出。
 - [x] 历史位置不会冻结 live 输出，也不会用 dump/reset 覆盖用户视口。
 - [x] `[scrollback].lines` 已贯通 tmux capture、Workspace/PaneBuf、legacy FFI 和 Linux SSH 收编路径；native capacity 按 core 范围只增不缩。
-- [x] core 与 macOS 支持稳定行 seq、last-seen、命令刻度和 stale 防护。
+- [x] core 与 macOS 支持稳定行 seq、last-seen、命令刻度和 stale 防护（包括 stale last-seen 目标清除、孤立 OSC 133 D 隔离）。
 - [x] 本地 tmux、loopback SSH、真实 AppKit 滚轮和真实快捷键回归已覆盖。
 - [ ] 若要求 attach 前完整命令刻度，完成 §6.1 的 shell marker side-channel（独立后续阶段）。

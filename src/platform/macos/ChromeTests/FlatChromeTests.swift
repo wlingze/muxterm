@@ -29,6 +29,35 @@ final class FlatChromeTests: XCTestCase {
         XCTAssertFalse(text.contains("tab:"))
         XCTAssertFalse(text.contains("|"))
     }
+
+    func testLastSeenTargetClearsWhenCoreSeqIsStale() {
+        XCTAssertNil(
+            LastSeenNavigation.targetOffset(
+                latest: 200,
+                seen: 100,
+                rawOffset: -1
+            ),
+            "旧 seq 被淘汰后不能沿用缓存 offset"
+        )
+    }
+
+    func testLastSeenTargetRequiresNewerLine() {
+        XCTAssertNil(
+            LastSeenNavigation.targetOffset(
+                latest: 100,
+                seen: 100,
+                rawOffset: 12
+            )
+        )
+        XCTAssertEqual(
+            LastSeenNavigation.targetOffset(
+                latest: 101,
+                seen: 100,
+                rawOffset: 12
+            ),
+            12
+        )
+    }
 }
 
 final class KeyBindingsTests: XCTestCase {

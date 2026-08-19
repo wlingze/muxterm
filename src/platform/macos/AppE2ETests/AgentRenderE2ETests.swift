@@ -192,6 +192,35 @@ final class AgentRenderE2ETests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testNativeHistoryCapacityCanGrowToConfiguredCoreRange() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 9,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 240)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        view.getTerminal().resize(cols: 60, rows: 8)
+        view.feedOutput(Data("HISTORY_CAPACITY_SEED\r\n".utf8), isSnapshot: true)
+        let configured = 100_000
+        view.ensureHistoryCapacity(atLeast: configured)
+        XCTAssertGreaterThanOrEqual(
+            view.historyCapacity,
+            configured,
+            "native scrollback 必须能覆盖 core 配置的 100000 行范围"
+        )
+        view.feedOutput(Data("HISTORY_CAPACITY_LIVE\r\n".utf8))
+        XCTAssertEqual(view.snapshotResetCount, 1, "扩容和 live feed 不能 reset VT")
+        XCTAssertGreaterThanOrEqual(view.historyCapacity, configured)
+        window.orderOut(nil)
+    }
+
     /// Surface seed 后历史属于 SwiftTerm 原生 scrollback；用户上划时继续 feed
     /// live，不得通过 reset/RIS 覆盖当前历史位置。
     func testNativeScrollbackKeepsHistoryWhileLiveContinues() {
@@ -215,6 +244,7 @@ final class AgentRenderE2ETests: XCTestCase {
         view.feedOutput(seed, isSnapshot: true)
         AppE2E.pump(40)
         XCTAssertTrue(view.canScroll, "seed 后必须存在 native scrollback")
+        XCTAssertEqual(view.snapshotResetCount, 1, "Surface seed 只能 reset 一次")
 
         view.scrollUp(lines: 6)
         let position = view.scrollPosition
@@ -223,6 +253,7 @@ final class AgentRenderE2ETests: XCTestCase {
         AppE2E.pump(40)
         XCTAssertLessThan(view.scrollPosition, 0.999, "live feed 不能把用户强制拉回底部")
         XCTAssertTrue(view.visibleScreenText().contains("HISTORY_NATIVE_"), "历史视口必须保持可读")
+        XCTAssertEqual(view.snapshotResetCount, 1, "live feed/滚动不能再次 reset VT")
 
         view.scrollToLatest()
         XCTAssertGreaterThanOrEqual(view.scrollPosition, 0.999)
