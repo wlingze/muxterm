@@ -8,7 +8,7 @@
 #![cfg(unix)]
 
 mod support;
-use support::sshd_test_support::{sshd_available, SshTestEnv};
+use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available};
 
 use std::ffi::CString;
 use std::ptr;
@@ -65,26 +65,21 @@ fn ssh_connect_attach(
     }
 }
 
-/// 需要真实 loopback sshd（CI setup 或本地）。
+/// 使用测试进程自建的 loopback sshd 与远端隔离 tmux socket。
 #[test]
 fn ssh_wizard_attach_remote_session() {
-    if !sshd_available() {
-        eprintln!("skip: 无 loopback sshd（未设置 MUXTERM_TEST_SSH_*）");
+    if !ssh_tmux_available() {
+        eprintln!("skip: 无法启动 loopback sshd 或缺少 tmux");
         return;
     }
-    let env = SshTestEnv::setup("wizard-ssh").expect("SshTestEnv::setup 失败");
-    let session_name = format!("wiz-ssh-{}", std::process::id());
-    // 在远端创建独立 tmux session（独立 socket + 命名 session）
-    let (ok, _, err) = env.remote_tmux(&format!("new-session -d -s {} -x 100 -y 30", session_name));
-    assert!(ok, "远端 tmux new-session 失败: {err}");
-    std::thread::sleep(Duration::from_millis(500));
+    let fixture = build_remote_one_pane("wizard-ssh");
 
     // 用 tmux-ssh 后端 attach（模拟向导 ssh+attach）
     let ok = ssh_connect_attach(
-        &env.alias,
-        &env.ssh_config_path.to_string_lossy(),
-        &env.remote_tmux_socket,
-        &session_name,
+        &fixture.sshd.alias,
+        &fixture.sshd.config_path.to_string_lossy(),
+        &fixture.socket,
+        &fixture.session,
     );
     assert!(ok, "SSH 向导 attach 应成功建连并读到远端 tab");
 }
