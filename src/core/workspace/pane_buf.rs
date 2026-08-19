@@ -74,19 +74,61 @@ impl PaneBuf {
         self.terminal.line_index_by_seq(seq)
     }
 
-    /// 搜索命中 seq 对应的 viewport 偏移（0 = 已在可见屏 / 未找到）。
+    /// 搜索命中 seq 对应的 viewport 偏移；`None` 表示该稳定行已被淘汰。
     ///
     /// 偏移让该行出现在滚动窗口顶部，与 `scroll_window(offset, rows)` 对齐。
+    pub fn viewport_offset_for_seq_checked(&self, seq: u64) -> Option<u32> {
+        let index = self.terminal.line_index_by_seq(seq)?;
+        let total = self.terminal.scrollback_lines() + self.terminal.visible_snapshot().len();
+        Some(total.saturating_sub(index + self.terminal.rows()) as u32)
+    }
+
+    /// 兼容旧调用方的 viewport 查询（0 = 可见屏或未找到）。
     pub fn viewport_offset_for_seq(&self, seq: u64) -> u32 {
-        let Some(index) = self.terminal.line_index_by_seq(seq) else {
-            return 0;
-        };
-        self.terminal.scrollback_lines().saturating_sub(index) as u32
+        self.viewport_offset_for_seq_checked(seq).unwrap_or(0)
     }
 
     /// OSC 133 命令刻度（W18h）。
     pub fn command_marks(&self) -> &[crate::core::protocol::terminal::emulate::CommandMark] {
         self.terminal.command_marks()
+    }
+
+    /// 当前刻度之前最近的一条命令（`0` 表示从尾部开始）。
+    pub fn previous_command_mark(
+        &self,
+        current_seq: u64,
+    ) -> Option<&crate::core::protocol::terminal::emulate::CommandMark> {
+        self.terminal.previous_command_mark(current_seq)
+    }
+
+    /// 当前刻度之后最近的一条命令（`0` 表示从头部开始）。
+    pub fn next_command_mark(
+        &self,
+        current_seq: u64,
+    ) -> Option<&crate::core::protocol::terminal::emulate::CommandMark> {
+        self.terminal.next_command_mark(current_seq)
+    }
+
+    pub fn last_successful_command(
+        &self,
+    ) -> Option<&crate::core::protocol::terminal::emulate::CommandMark> {
+        self.terminal.last_successful_command()
+    }
+
+    pub fn last_failed_command(
+        &self,
+    ) -> Option<&crate::core::protocol::terminal::emulate::CommandMark> {
+        self.terminal.last_failed_command()
+    }
+
+    /// 一次性 Surface seed：历史和当前屏进入同一个原生 VT。
+    pub fn surface_seed_ansi(&self) -> Vec<u8> {
+        self.terminal.surface_seed_ansi()
+    }
+
+    /// 当前终端最新稳定行 ID（可见屏也包含）。
+    pub fn latest_line_seq(&self) -> u64 {
+        self.terminal.latest_line_seq()
     }
 
     /// 有界原始字节环（peek / 小终端播种用）。
@@ -102,6 +144,15 @@ impl PaneBuf {
     /// 可见网格 ANSI（首屏播种用；禁止当 live 显示）。
     pub fn visible_ansi(&self) -> Vec<u8> {
         self.terminal.visible_ansi()
+    }
+
+    /// 还能往历史上滚的最大 offset（与 `scroll_window` 对齐：0=底部）。
+    ///
+    /// 首屏只播种可见网格不等于丢掉历史：GUI 滚轮必须用这个上限喂
+    /// `scroll_ansi`，而不是依赖 VTE/SwiftTerm 本地 scrollback。
+    pub fn history_max_offset(&self, rows: u32) -> u32 {
+        let n = self.terminal.scrollback_lines() + self.terminal.visible_snapshot().len();
+        n.saturating_sub(rows.max(1) as usize) as u32
     }
 
     /// 滚动窗口的几何 ANSI（offset 行前、rows 行；0=底部直播）。
@@ -147,5 +198,39 @@ impl PaneBuf {
 
     pub fn rows(&self) -> usize {
         self.terminal.rows()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 首屏丢掉 capture 重放之后，离屏 token 必须仍能从 scroll_ansi 读到。
+    #[test]
+    fn history_max_offset_keeps_offscreen_token_in_scroll_ansi() {
+        let mut buf = PaneBuf::new(80, 24, 1000);
+        buf.feed(b"HIST_TOKEN\r\n", 80, 24);
+        for i in 0..40 {
+            buf.feed(format!("pad-{i:02}\r\n").as_bytes(), 80, 24);
+        }
+        buf.feed(b"HIST_TAIL\r\n", 80, 24);
+
+        let max = buf.history_max_offset(24);
+        assert!(max > 0, "40 行 pad 必须能滚离底部, max={max}");
+
+        let top_bytes = buf.scroll_ansi(max, 24);
+        let top = String::from_utf8_lossy(&top_bytes);
+        assert!(
+            top.contains("HIST_TOKEN"),
+            "滚到顶必须看见离屏 token。got={top}"
+        );
+
+        let live_bytes = buf.scroll_ansi(0, 24);
+        let live = String::from_utf8_lossy(&live_bytes);
+        assert!(live.contains("HIST_TAIL"), "底部必须是尾标。got={live}");
+        assert!(
+            !live.contains("HIST_TOKEN"),
+            "底部直播不得含离屏 token。got={live}"
+        );
     }
 }

@@ -151,6 +151,13 @@ pub struct TmuxRuntime {
     /// 直接丢弃会丢数据。这里暂存它们，快照返回后拼接到快照尾部，从而既保留完整
     /// 屏幕又不错过查询期间的实时增量。
     initial_capture_buf: HashMap<PaneId, Vec<u8>>,
+    /// `%begin` 之后、capture 响应结束之前到达的输出。这个边界由 tmux
+    /// control-mode response number 定义，不再用内容子串猜测重复。
+    initial_capture_tail: HashMap<PaneId, Vec<u8>>,
+    /// 已经看到 capture 查询 `%begin` 的 pane。`initial_capture_buf` 中的
+    /// 字节可能是请求前排队的通知，成功 capture 时不应再次重放；tail 则
+    /// 明确属于响应边界之后，必须保留。
+    capture_response_seen: HashSet<PaneId>,
     /// 是否支持 `refresh-client -r`（OSC 10/11 颜色上报；tmux < 3.2 不支持）。
     colour_report_supported: bool,
     colour_report_warned: bool,
@@ -263,6 +270,8 @@ impl TmuxRuntime {
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             initial_capture_buf: HashMap::new(),
+            initial_capture_tail: HashMap::new(),
+            capture_response_seen: HashSet::new(),
             colour_report_supported: true,
             colour_report_warned: false,
             status_subscription_supported: false,
@@ -661,7 +670,14 @@ impl TmuxRuntime {
                     // 只是启动期提示；等 query_capture_pane 真正发出查询后再
                     // 开始缓冲，避免把启动 prompt 与屏幕内容混在一起。
                     if self.initial_capture_pending.contains(&pane) {
-                        let buf = self.initial_capture_buf.entry(pane).or_default();
+                        // `%begin` 是 tmux 对 capture 命令的确定性边界：边界
+                        // 之前的通知可能已经被 capture-pane 包含，边界之后的
+                        // 字节则一定是快照之后的 live 增量。
+                        let buf = if self.capture_response_seen.contains(&pane) {
+                            self.initial_capture_tail.entry(pane).or_default()
+                        } else {
+                            self.initial_capture_buf.entry(pane).or_default()
+                        };
                         append_capped(buf, &content, MAX_PANE_OUTPUT_BYTES);
                         tracing::trace!(
                             target: "muxterm::tmux",
@@ -899,6 +915,11 @@ impl TmuxRuntime {
                                 if let Some(q) = self.pending_queries.pop_front() {
                                     self.pending_by_number.insert(b.number, q);
                                 }
+                                if let Some(PendingQuery::CapturePane { pane }) =
+                                    self.pending_by_number.get(&b.number)
+                                {
+                                    self.capture_response_seen.insert(*pane);
+                                }
                             }
                             NotificationKind::End => {
                                 let lines =
@@ -1004,13 +1025,21 @@ impl TmuxRuntime {
                     if self.is_attach_mode() {
                         self.initial_capture_pending.remove(&pane);
                         self.initial_capture_done.insert(pane);
-                        // 把查询期间暂存的实时增量拼到快照尾部：快照是查询瞬间
-                        // 的完整屏幕，实时增量是其后到达的追加输出，二者按序拼接
-                        // 才不会丢数据、也不会把屏幕内容错位。
-                        if let Some(live) = self.initial_capture_buf.remove(&pane) {
-                            if !live.is_empty() {
-                                data.extend_from_slice(&live);
-                            }
+                        let before_response =
+                            self.initial_capture_buf.remove(&pane).unwrap_or_default();
+                        let after_response =
+                            self.initial_capture_tail.remove(&pane).unwrap_or_default();
+                        let response_seen = self.capture_response_seen.remove(&pane);
+                        // 真实 control-mode 流中 `%begin` 已经给出边界：
+                        // - begin 前的通知可能已被 capture-pane 包含，丢弃以免历史重复；
+                        // - begin 后的字节属于快照之后的 live，必须追加。
+                        // 直接调用 dispatch_response 的单元测试没有 `%begin`，
+                        // 仍按旧的“查询期间暂存”语义保留 before_response。
+                        if response_seen {
+                            data.extend_from_slice(&after_response);
+                        } else {
+                            data.extend_from_slice(&before_response);
+                            data.extend_from_slice(&after_response);
                         }
                         let snapshot = if data.len() > MAX_PANE_OUTPUT_BYTES {
                             data[data.len() - MAX_PANE_OUTPUT_BYTES..].to_vec()
@@ -1070,18 +1099,40 @@ impl TmuxRuntime {
     /// 处理一条命令响应的 `%error` 边界。
     ///
     /// 出错时移除按 number 登记的查询，并确保 attach 的 capture 失败不会永久
-    /// 抑制该 pane 的实时输出（否则会黑屏）。实时输出缓冲也随之清空。
+    /// 抑制该 pane 的实时输出（否则会黑屏）。capture 期间已经收到的字节不能
+    /// 丢掉：它们是唯一可能包含真实 live 输出的 fallback seed。
     fn handle_response_error(&mut self, number: i64) {
         let _err_lines = self.response_accum.remove(&number).unwrap_or_default();
         if let Some(q) = self.pending_by_number.remove(&number) {
             match q {
                 PendingQuery::CapturePane { pane } => {
-                    // capture 失败时不能永久抑制该 pane 的后续输出；让实时流
-                    // 继续恢复渲染。已暂存的实时增量在 `%output` 缓冲里，这里
-                    // 直接丢弃（避免与后续 live 输出重复拼接）。
                     self.initial_capture_pending.remove(&pane);
                     self.initial_capture_done.insert(pane);
-                    self.initial_capture_buf.remove(&pane);
+                    let before_response =
+                        self.initial_capture_buf.remove(&pane).unwrap_or_default();
+                    let after_response =
+                        self.initial_capture_tail.remove(&pane).unwrap_or_default();
+                    let response_seen = self.capture_response_seen.remove(&pane);
+                    // 与成功响应保持相同的边界语义：%begin 之前的通知可能已经
+                    // 被 capture-pane 包含，只有响应边界之后的字节才是可靠的
+                    // live fallback。没有看到 %begin 的单元测试/老 tmux 路径仍
+                    // 保留 before_response，避免 capture 失败后黑屏。
+                    let fallback = if response_seen {
+                        after_response
+                    } else {
+                        let mut combined = before_response;
+                        combined.extend_from_slice(&after_response);
+                        combined
+                    };
+                    if !fallback.is_empty() {
+                        tracing::warn!(
+                            target: "muxterm::tmux",
+                            pane = pane.0,
+                            bytes = fallback.len(),
+                            "capture 失败，交付暂存 live fallback"
+                        );
+                        self.push_pane_output(pane, fallback);
+                    }
                     tracing::warn!(
                         target: "muxterm::tmux",
                         "tmux 命令 {number} 的 pane @{} 屏幕恢复失败",
@@ -1265,6 +1316,9 @@ impl TmuxRuntime {
         // 历史搜不到、滚不到。N = 配置的 scrollback 上限（默认 10000）。
         let line = cmd::capture_pane_with_history(pane, self.scrollback_lines).to_line();
         if self.dispatch_command(line).is_ok() {
+            self.initial_capture_buf.remove(&pane);
+            self.initial_capture_tail.remove(&pane);
+            self.capture_response_seen.remove(&pane);
             self.initial_capture_pending.insert(pane);
             self.replace_last_pending(PendingQuery::CapturePane { pane });
         }
@@ -2669,6 +2723,29 @@ mod tests {
     }
 
     #[test]
+    fn capture_response_boundary_drops_prequeued_bytes_but_keeps_repeated_live_tail() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(8);
+        b.initial_capture_pending.insert(pane);
+        // 请求响应开始前已经排队的通知可能与 snapshot 完全相同，不能
+        // 再用内容子串猜测；它们由 response boundary 明确归类为 stale。
+        b.initial_capture_buf.insert(pane, b"same\r\n".to_vec());
+        // begin 之后的合法 live 输出即使恰好重复 snapshot，也必须保留。
+        b.initial_capture_tail.insert(pane, b"same\r\n".to_vec());
+        b.capture_response_seen.insert(pane);
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+
+        b.dispatch_response(1, vec!["same".into()]);
+
+        assert_eq!(
+            b.outputs.get(&pane).unwrap(),
+            b"samesame\r\n",
+            "边界之后的重复文本也是合法 live，不能按子串误删"
+        );
+    }
+
+    #[test]
     fn attach_initial_output_waits_for_full_capture_snapshot() {
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(3);
@@ -2825,14 +2902,19 @@ mod tests {
         let pane = PaneId(6);
 
         b.initial_capture_pending.insert(pane);
+        b.initial_capture_buf
+            .insert(pane, b"live-during-failed-capture\r\n".to_vec());
         // %error 而不是 %end：capture 失败。
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
-        b.dispatch_response(1, vec!["error".into()]);
         b.handle_response_error(1);
 
         // 失败后不能永久抑制 pane 输出：后续实时输出必须照常渲染。
         assert!(b.initial_capture_done.contains(&pane));
+        assert!(b
+            .outputs
+            .get(&pane)
+            .is_some_and(|data| data.starts_with(b"live-during-failed-capture\r\n")));
         b.handle_message(Message::Output {
             pane,
             content: b"live-after-error\r\n".to_vec(),
