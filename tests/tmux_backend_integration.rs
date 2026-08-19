@@ -1189,12 +1189,7 @@ fn bug2_positive_alt_switch_tab() {
         s.tabs().len() >= 2 && s.active_tab().map(|t| t.id) != tab1 && s.active_tab().is_some()
     });
 
-    // 应有 2 个 tab；Window 仍是虚拟的 1 个
-    assert_eq!(
-        model.state().tabs().len(),
-        1,
-        "muxterm Window 应永远只有 1 个"
-    );
+    // 产品模型没有虚拟 Window：tmux window 直接体现为 Tab。
     let tabs = model.state().tabs();
     assert!(tabs.len() >= 2, "应有 >= 2 个 tab: {}", tabs.len());
     let first_tab = tabs[0].id;
@@ -2555,18 +2550,11 @@ fn bug7_positive_attach_existing_session() {
         "attach 后应有 session"
     );
 
-    // 等待 tabs 和 panes 到达（Window 永远只有 1 个虚拟 Window）
+    // 等待 tabs 和 panes 到达（tmux window 直接体现为产品 Tab）。
     wait_for(&mut model, Duration::from_secs(10), |s| {
         s.tabs().len() >= 2 && s.active_pane().is_some()
     });
 
-    assert_eq!(
-        model.state().tabs().len(),
-        1,
-        "attach 后 muxterm Window 应只有 1 个"
-    );
-
-    let aw = model.state().active_tab().unwrap().id;
     let tabs = model.state().tabs();
     assert!(tabs.len() >= 2, "attach 后应有 >= 2 个 tab: {}", tabs.len());
 
@@ -2723,29 +2711,13 @@ fn bug7_positive_list_sessions_shows_all() {
         .status()
         .unwrap();
 
-    // 用 TmuxRuntime 连接（new-session 模式，会创建第三个 session）
-    let backend = TmuxRuntime::new(Some(&socket));
-    let mut model = TerminalModel::new(Box::new(backend));
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .build()
-        .unwrap();
-    rt.block_on(model.connect()).unwrap();
-    let _ = model.poll_events();
-    std::mem::forget(rt);
+    // 发现层应列出两个可打开的 Workspace 候选，不建立第三条控制连接。
+    let sessions = muxterm::core::discovery::list_local_tmux_sessions(Some(&socket));
+    let names: Vec<&str> = sessions.iter().map(|item| item.name.as_str()).collect();
+    assert_eq!(names.len(), 2, "应只发现两个已有工作区: {names:?}");
+    assert!(names.contains(&"sess1"), "发现结果缺少 sess1: {names:?}");
+    assert!(names.contains(&"sess2"), "发现结果缺少 sess2: {names:?}");
 
-    // attach 后 workspace name 应为目标 session
-    wait_for(&mut model, Duration::from_secs(10), |s| {
-        !s.workspace_name().is_empty()
-    });
-    assert!(
-        model.state().workspace_name() == "sess1" || model.state().workspace_name() == "sess2",
-        "workspace name 应为 sess1/sess2: {}",
-        model.state().workspace_name()
-    );
-
-    let _ = model.shutdown();
     cleanup(&socket);
 }
 
