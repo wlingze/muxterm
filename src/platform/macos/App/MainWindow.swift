@@ -1799,15 +1799,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshHistoryChrome(for paneId: UInt32) {
         let latest = bridge.paneLatestLineSeq(paneId: paneId)
-        if latest >= 0,
-           let seen = lastSeenLineSeq[paneId], UInt64(latest) > seen
-        {
-            let rawOffset = bridge.paneViewportOffsetForSeq(paneId: paneId, seq: seen)
-            if rawOffset >= 0 {
-                lastSeenJump = (paneId, UInt32(rawOffset))
-                content.setLastSeenVisible(true)
-            }
+        let seen = lastSeenLineSeq[paneId]
+        let rawOffset = seen.map {
+            bridge.paneViewportOffsetForSeq(paneId: paneId, seq: $0)
+        } ?? -1
+        if let offset = LastSeenNavigation.targetOffset(
+            latest: latest,
+            seen: seen,
+            rawOffset: rawOffset
+        ) {
+            lastSeenJump = (paneId, offset)
+            content.setLastSeenVisible(true)
         } else {
+            // latest 没有前进、seq 已 stale 或 core 查询失败时，都必须
+            // 清掉旧目标，不能保留上一轮可用的 offset。
             lastSeenJump = nil
             content.setLastSeenVisible(false)
         }

@@ -495,6 +495,27 @@ public enum PaneHistoryScrollPolicy {
     }
 }
 
+/// last-seen 跳转的纯状态判定。
+///
+/// `rawOffset == -1` 表示 core 已经淘汰了旧 seq；此时必须清掉按钮，
+/// 不能沿用上一轮缓存的 offset 误跳到历史或 live 尾部。
+public enum LastSeenNavigation {
+    public static func targetOffset(
+        latest: Int64,
+        seen: UInt64?,
+        rawOffset: Int32
+    ) -> UInt32? {
+        guard latest >= 0,
+              let seen,
+              UInt64(latest) > seen,
+              rawOffset >= 0
+        else {
+            return nil
+        }
+        return UInt32(rawOffset)
+    }
+}
+
 /// 首屏 / 直播喂给 SwiftTerm 的字节：内置 VT 只交出可见缓冲，禁止把
 /// `capture-pane -S -10000` 或 256KB 环当历史重放（iTerm2 也不会这么做）。
 ///
