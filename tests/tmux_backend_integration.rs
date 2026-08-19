@@ -636,7 +636,7 @@ fn scenario4_raw_control_byte_reaches_tmux_pty() {
 /// 不能把 `\e` 变成字面文本，否则 shell 会把 `10;rgb:...` 当命令执行
 /// （`zsh: command not found: 10`）。
 #[test]
-fn write_raw_osC_csi_query_reply_preserves_esc_bytes() {
+fn write_raw_osc_csi_query_reply_preserves_esc_bytes() {
     if !tmux_available() {
         eprintln!("skip: tmux 不可用");
         return;
