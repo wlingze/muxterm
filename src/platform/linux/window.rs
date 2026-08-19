@@ -895,6 +895,32 @@ impl AppWindow {
         ids
     }
 
+    /// 测试用：按先序返回当前 GTK 布局里每个 GtkPaned 的真实方向。
+    ///
+    /// 不能只断言 core LayoutNode；这里要保证 Herdr 的上下分割最终确实
+    /// 变成 GTK Vertical，而不是在 platform 边界再次被翻成左右分割。
+    pub fn test_gtk_paned_orientations(&self) -> Vec<gtk4::Orientation> {
+        fn collect(widget: &gtk4::Widget, out: &mut Vec<gtk4::Orientation>) {
+            let Ok(paned) = widget.clone().downcast::<gtk4::Paned>() else {
+                return;
+            };
+            out.push(paned.orientation());
+            if let Some(child) = paned.start_child() {
+                collect(&child, out);
+            }
+            if let Some(child) = paned.end_child() {
+                collect(&child, out);
+            }
+        }
+
+        let s = self._state.borrow();
+        let mut orientations = Vec::new();
+        if let Some(root) = s.active_layout().root_box.first_child() {
+            collect(&root, &mut orientations);
+        }
+        orientations
+    }
+
     /// 测试用：pane 控件分配尺寸（0×0 = 白屏）。
     pub fn test_pane_allocation(&self, pane_id: u32) -> (i32, i32) {
         let s = self._state.borrow();
@@ -2345,10 +2371,11 @@ fn forward_parser_replies(s: &mut UiState, pane_id: u32) {
     }
 }
 
-/// 把窗口内容区的新字符格尺寸同步给后端。
+/// 把窗口内容区的新字符格尺寸同步给 Runtime。
 ///
-/// tmux/SSH 模式只发一次 client resize（`refresh-client -C`），避免逐个
-/// pane 触发布局反馈；local 模式 resize 当前激活 pane 的 pty。
+/// 共享 client viewport 的 Runtime（tmux）收到整个 Workspace 的尺寸；
+/// 其它 Runtime（shell / Herdr）收到当前 Surface 的实际字符格尺寸。
+/// platform 只问 capability，不按实现名字分支。
 fn sync_window_size(s: &mut UiState) {
     let Some(view) = s.active_layout().pane(s.active_pane) else {
         return;
@@ -2371,20 +2398,35 @@ fn sync_window_size(s: &mut UiState) {
         .panes(&TabId(s.active_tab))
         .len()
         > 1;
-    let cols = match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane)
-    {
-        Some(c) => c,
-        None => return,
-    };
-    let rows = match ClientSizePolicy::rows(root_h, ch) {
-        Some(r) => r,
-        None => return,
+    let shared_client_resize = s
+        .active_workspace()
+        .runtime()
+        .support()
+        .contains(&RuntimeCapability::SharedClientResize);
+    let (cols, rows) = if shared_client_resize {
+        let cols =
+            match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane) {
+                Some(cols) => cols,
+                None => return,
+            };
+        let rows = match ClientSizePolicy::rows(root_h, ch) {
+            Some(rows) => rows,
+            None => return,
+        };
+        (cols, rows)
+    } else {
+        if !allocated {
+            return;
+        }
+        let cols = (i64::from(term.width()) / cw).clamp(2, i64::from(u16::MAX)) as u16;
+        let rows = (i64::from(term.height()) / ch).clamp(1, i64::from(u16::MAX)) as u16;
+        (cols, rows)
     };
     if s.last_client_size == Some((cols, rows)) {
         return;
     }
     s.last_client_size = Some((cols, rows));
-    if s.uses_tmux() {
+    if shared_client_resize {
         let _ = s
             .active_workspace_mut()
             .execute(Task::ResizeClient { cols, rows });

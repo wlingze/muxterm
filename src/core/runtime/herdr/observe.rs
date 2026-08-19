@@ -41,6 +41,7 @@ pub enum ObserveEvent {
 /// 一条 pane 的 observe 流：持有 reader 线程 + 共享 channel。
 pub struct ObserveStream {
     pane: PaneId,
+    shutdown_stream: Option<UnixStream>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -93,6 +94,9 @@ impl ObserveStream {
             target: target.to_string(),
         };
         write_message(&mut stream, &observe).context("写 ObserveTerminal 失败")?;
+        let shutdown_stream = stream
+            .try_clone()
+            .context("复制 Herdr observe socket 失败")?;
 
         let handle = std::thread::spawn(move || {
             let mut stream = stream;
@@ -130,6 +134,7 @@ impl ObserveStream {
 
         Ok(Self {
             pane,
+            shutdown_stream: Some(shutdown_stream),
             handle: Some(handle),
         })
     }
@@ -141,8 +146,12 @@ impl ObserveStream {
 
 impl Drop for ObserveStream {
     fn drop(&mut self) {
-        // 不 join：reader 可能阻塞在 30s 读超时上；drop JoinHandle 即 detach，
-        // server 关闭后线程自然 EOF 退出。
+        // 主线程持有同一 socket 的 clone；shutdown 会打断 reader 的阻塞读，
+        // 这样 resize 时替换 observer 不会留下重复流。仍不 join，避免 Drop
+        // 因平台 socket 行为阻塞 GTK 线程。
+        if let Some(stream) = self.shutdown_stream.take() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
         self.handle.take();
     }
 }

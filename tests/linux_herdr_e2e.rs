@@ -46,12 +46,18 @@ fn linux_herdr_attach_shows_preexist_token() {
         let herdr = IsolatedHerdr::start("gtk-att");
         // 真实用户 session 已出现 pP/pQ/pR。构造同样的三 pane，旧实现会
         // 生成重复 L0:L0，并触发 gtk_paned_set_end_child critical。
-        let (ws, _tab, [pane_p, _pane_q, _pane_r]) =
+        let (ws, _tab, [pane_p, pane_q, pane_r]) =
             herdr.create_alpha_split_workspace("/tmp", "mux-h2-gtk");
         // 三分屏后最窄 VTE 约 27 列；token 必须保持 HERDR_LIVE_* 且能在
         // 单行完整出现，避免把正常换行误判成字节丢失。
-        let token = "HERDR_LIVE_GA";
-        herdr.paint(&pane_p, token);
+        let pane_tokens = [
+            (pane_p.as_str(), "HERDR_LIVE_GA"),
+            (pane_q.as_str(), "HERDR_LIVE_GB"),
+            (pane_r.as_str(), "HERDR_LIVE_GC"),
+        ];
+        for (pane, token) in pane_tokens {
+            herdr.paint(pane, token);
+        }
 
         let cfg = Config::default();
         let app = AppWindow::new(cfg, load_theme());
@@ -76,29 +82,40 @@ fn linux_herdr_attach_shows_preexist_token() {
             "pP/pQ/pR 必须是三个唯一 VTE，禁止同一 child 挂两次: {leaves:?}"
         );
         assert!(leaves.iter().all(|pane| *pane != 0));
+        assert_eq!(
+            app.test_gtk_paned_orientations(),
+            vec![gtk4::Orientation::Horizontal, gtk4::Orientation::Vertical],
+            "pP 先 right 再 down 必须渲染成 H(V(pP,pR),pQ) 的真实 GtkPaned"
+        );
         let deadline = Instant::now() + HERDR_TIMEOUT;
         let mut ok = false;
         while Instant::now() < deadline {
             app.test_poll_once();
             pump_main_loop(30);
             app.test_flush_feeds();
-            if leaves
+            let texts = leaves
                 .iter()
-                .any(|pane| app.test_pane_vte_text(*pane).contains(token))
-                && !app.test_search_all(token).is_empty()
-            {
+                .map(|pane| app.test_pane_vte_text(*pane))
+                .collect::<Vec<_>>();
+            if pane_tokens.iter().all(|(_, token)| {
+                texts.iter().filter(|text| text.contains(token)).count() == 1
+                    && !app.test_search_all(token).is_empty()
+            }) {
                 ok = true;
                 break;
             }
         }
         assert!(
             ok,
-            "Herdr attach 后 VTE 与 search_all 必须含 {token}。vte={:?} search={:?}",
+            "Herdr attach 后三个 VTE 必须各自只含自己的 token，且 search_all 都可命中。vte={:?} search={:?}",
             leaves
                 .iter()
                 .map(|pane| app.test_pane_vte_text(*pane))
                 .collect::<Vec<_>>(),
-            app.test_search_all(token)
+            pane_tokens
+                .iter()
+                .map(|(_, token)| (token, app.test_search_all(token)))
+                .collect::<Vec<_>>()
         );
 
         // 模拟 VTE commit：逐字输入、再单独 Enter。引号把输入回显中的 token

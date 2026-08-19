@@ -307,6 +307,7 @@ impl Runtime for DaemonRuntime {
                 RuntimeCapability::Discover,
                 RuntimeCapability::MultiTab,
                 RuntimeCapability::SplitPane,
+                RuntimeCapability::SharedClientResize,
             ],
             "shell" => &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane],
             _ => &[],

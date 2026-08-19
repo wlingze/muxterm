@@ -26,6 +26,9 @@ pub enum RuntimeCapability {
     MultiTab,
     /// `SplitPane` 有意义。
     SplitPane,
+    /// Runtime 的全部 pane 共享一个 client viewport；窗口 resize 应发
+    /// `ResizeClient`，而不是按每个 Surface 发 `ResizePane`。
+    SharedClientResize,
     /// 能列出当前仓库的 checkout。
     WorktreeList,
     /// 能建 checkout 并打开成新 Workspace。
@@ -157,6 +160,7 @@ mod tests {
         assert!(caps.contains(&RuntimeCapability::Discover));
         assert!(caps.contains(&RuntimeCapability::MultiTab));
         assert!(caps.contains(&RuntimeCapability::SplitPane));
+        assert!(caps.contains(&RuntimeCapability::SharedClientResize));
         for c in WORKTREE_CAPS {
             assert!(!caps.contains(&c), "tmux 不应支持 {c:?}");
         }
@@ -169,6 +173,7 @@ mod tests {
         let caps = rt.support();
         assert!(caps.contains(&RuntimeCapability::MultiTab));
         assert!(caps.contains(&RuntimeCapability::SplitPane));
+        assert!(!caps.contains(&RuntimeCapability::SharedClientResize));
         assert!(!caps.contains(&RuntimeCapability::PersistDetach));
         assert!(!caps.contains(&RuntimeCapability::Discover));
         for c in WORKTREE_CAPS {

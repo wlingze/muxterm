@@ -19,7 +19,9 @@ use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::types::{PaneId, TabId};
 
 use super::observe::{ObserveEvent, ObserveStream};
-use super::session::{HerdrSession, SessionSnapshot};
+use super::session::{
+    HerdrSession, LayoutRecord, LayoutRect, LayoutSplitDirection, SessionSnapshot,
+};
 
 /// HerdrRuntime 支持的能力（v1 不含 WorktreeRemove）。
 const HERDR_CAPABILITIES: &[RuntimeCapability] = &[
@@ -50,6 +52,7 @@ pub struct HerdrRuntime {
     tab_to_herdr_tab: HashMap<TabId, String>,
     pane_to_herdr_pane: HashMap<PaneId, String>,
     observe_rx: Option<mpsc::Receiver<ObserveEvent>>,
+    observe_tx: Option<mpsc::Sender<ObserveEvent>>,
     observe_streams: Vec<ObserveStream>,
     /// SSH 远端 socket 转发进程（Drop/shutdown 时杀掉）。
     forward: Option<std::process::Child>,
@@ -75,6 +78,7 @@ impl HerdrRuntime {
             tab_to_herdr_tab: HashMap::new(),
             pane_to_herdr_pane: HashMap::new(),
             observe_rx: None,
+            observe_tx: None,
             observe_streams: vec![],
             forward: None,
         }
@@ -186,6 +190,8 @@ impl HerdrRuntime {
         self.tabs.clear();
         self.panes.clear();
         self.layouts.clear();
+        self.active_tab = None;
+        self.active_pane = None;
         self.herdr_tab_to_tab.clear();
         self.herdr_pane_to_pane.clear();
         self.tab_to_herdr_tab.clear();
@@ -218,11 +224,19 @@ impl HerdrRuntime {
                 .unwrap_or(TabId(1));
             self.herdr_pane_to_pane.insert(pane.pane_id.clone(), id);
             self.pane_to_herdr_pane.insert(id, pane.pane_id.clone());
-            let (cols, rows) = snap
+            let pane_rect = snap
                 .layouts
                 .iter()
                 .find(|l| l.tab_id == pane.tab_id)
-                .map(|l| (l.width, l.height))
+                .and_then(|layout| {
+                    layout
+                        .panes
+                        .iter()
+                        .find(|candidate| candidate.pane_id == pane.pane_id)
+                })
+                .map(|pane| pane.rect);
+            let (cols, rows) = pane_rect
+                .map(|rect| (rect.width, rect.height))
                 .unwrap_or((80, 24));
             self.panes.push(PaneInfo {
                 id,
@@ -244,46 +258,15 @@ impl HerdrRuntime {
             });
         }
 
-        // 布局：单 pane 直接 leaf；多 pane 按顺序水平兜底。
+        // Herdr 的 PaneLayoutSnapshot 已包含完整 BSP split 路径、方向、ratio
+        // 和每个 pane rect；这里必须按权威树重建，不能把多 pane 猜成水平。
+        let workspace_id = self.workspace_id.clone();
         for layout in snap
             .layouts
             .iter()
-            .filter(|l| l.workspace_id == self.workspace_id)
+            .filter(|l| l.workspace_id == workspace_id)
         {
-            let tab = self
-                .herdr_tab_to_tab
-                .get(&layout.tab_id)
-                .copied()
-                .unwrap_or(TabId(1));
-            let mut leaves: Vec<PaneId> = layout
-                .panes
-                .iter()
-                .filter_map(|p| self.herdr_pane_to_pane.get(p).copied())
-                .collect();
-            if leaves.is_empty() {
-                leaves = self
-                    .panes
-                    .iter()
-                    .filter(|p| p.tab == tab)
-                    .map(|p| p.id)
-                    .collect();
-            }
-            let tree = if leaves.is_empty() {
-                LayoutNode::leaf(PaneId(0))
-            } else {
-                let mut tree = LayoutNode::leaf(leaves[0]);
-                for p in &leaves[1..] {
-                    tree.split_at(leaves[0], *p, SplitDir::Horizontal);
-                }
-                tree
-            };
-            let active = snap
-                .focused_pane_id
-                .as_deref()
-                .and_then(|f| self.herdr_pane_to_pane.get(f).copied())
-                .filter(|p| leaves.contains(p))
-                .unwrap_or(leaves[0]);
-            self.layouts.insert(tab, TabLayout { tab, tree, active });
+            self.apply_layout_record(layout, false);
         }
 
         // active 标记。
@@ -335,6 +318,62 @@ impl HerdrRuntime {
         }
     }
 
+    /// 把一条 Herdr PaneLayoutSnapshot 应用到现有 id 映射与产品状态。
+    fn apply_layout_record(&mut self, layout: &LayoutRecord, emit_event: bool) -> bool {
+        let Some(tab) = self.herdr_tab_to_tab.get(&layout.tab_id).copied() else {
+            return false;
+        };
+
+        for source_pane in &layout.panes {
+            let Some(pane) = self.herdr_pane_to_pane.get(&source_pane.pane_id).copied() else {
+                continue;
+            };
+            if let Some(info) = self.panes.iter_mut().find(|info| info.id == pane) {
+                info.cols = source_pane.rect.width;
+                info.rows = source_pane.rect.height;
+            }
+        }
+
+        let leaves: Vec<PaneId> = layout
+            .panes
+            .iter()
+            .filter_map(|pane| self.herdr_pane_to_pane.get(&pane.pane_id).copied())
+            .collect();
+        if leaves.is_empty() {
+            return false;
+        }
+
+        let tree = match layout_tree_from_record(layout, &self.herdr_pane_to_pane) {
+            Some(tree) => tree,
+            None => {
+                if !layout.splits.is_empty() {
+                    tracing::warn!(
+                        target = "muxterm::herdr",
+                        tab = %layout.tab_id,
+                        splits = ?layout.splits,
+                        "Herdr split tree invalid; using legacy horizontal fallback"
+                    );
+                }
+                legacy_horizontal_tree(&leaves)
+            }
+        };
+        let active = self
+            .herdr_pane_to_pane
+            .get(&layout.focused_pane_id)
+            .copied()
+            .filter(|pane| tree.contains(*pane))
+            .unwrap_or(leaves[0]);
+        let product_layout = TabLayout { tab, tree, active };
+        self.layouts.insert(tab, product_layout.clone());
+        if emit_event {
+            self.events.push_back(StateChange::LayoutChanged {
+                tab,
+                layout: product_layout,
+            });
+        }
+        true
+    }
+
     /// 用 `pane.read` 播种 attach 快照（禁止当直播轮询）。
     fn seed_pane_read(&mut self) {
         let panes: Vec<(PaneId, String)> = self
@@ -374,6 +413,7 @@ impl HerdrRuntime {
     fn start_observe_streams(&mut self) {
         let (tx, rx) = mpsc::channel::<ObserveEvent>();
         self.observe_rx = Some(rx);
+        self.observe_tx = Some(tx.clone());
         let socket = self.session.client_socket_path().to_path_buf();
         let panes: Vec<(PaneId, String, u16, u16)> = self
             .panes
@@ -398,6 +438,33 @@ impl HerdrRuntime {
                 }
             }
         }
+    }
+
+    /// 以新的 Surface 字符格重建一个只读 observer。Herdr observer 本身
+    /// 不能 resize；重连会先发一帧与 VTE 网格一致的 full frame。
+    fn replace_observe_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
+        let herdr_pane = self
+            .pane_to_herdr_pane
+            .get(&pane)
+            .cloned()
+            .ok_or_else(|| anyhow!("pane {pane} 缺 Herdr id"))?;
+        let tx = self
+            .observe_tx
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("Herdr observe channel 未启动"))?;
+        let stream = ObserveStream::start(
+            self.session.client_socket_path(),
+            &herdr_pane,
+            pane,
+            cols,
+            rows,
+            tx,
+        )?;
+        self.observe_streams
+            .retain(|existing| existing.pane() != pane);
+        self.observe_streams.push(stream);
+        Ok(())
     }
 
     /// 取 observe 事件并转成 StateChange。
@@ -516,6 +583,112 @@ fn numeric_suffix(id: &str) -> u32 {
             })
         })
         .unwrap_or(0)
+}
+
+#[derive(Clone, Copy)]
+struct MappedLayoutPane {
+    id: PaneId,
+    rect: LayoutRect,
+}
+
+/// 用 Herdr split path 重建 BSP 树。path false/true 分别表示 first/second；
+/// pane 没有显式 path，因此按权威 split rect + ratio 将 pane rect 分区。
+fn layout_tree_from_record(
+    layout: &LayoutRecord,
+    pane_ids: &HashMap<String, PaneId>,
+) -> Option<LayoutNode> {
+    let panes: Vec<MappedLayoutPane> = layout
+        .panes
+        .iter()
+        .filter_map(|pane| {
+            pane_ids
+                .get(&pane.pane_id)
+                .copied()
+                .map(|id| MappedLayoutPane {
+                    id,
+                    rect: pane.rect,
+                })
+        })
+        .collect();
+    if panes.is_empty() {
+        return None;
+    }
+    if panes.len() == 1 {
+        return Some(LayoutNode::Leaf(panes[0].id));
+    }
+
+    let mut splits = HashMap::new();
+    for split in &layout.splits {
+        if splits.insert(split.path.clone(), split).is_some() {
+            return None;
+        }
+    }
+    build_layout_subtree(&[], &panes, &splits)
+}
+
+fn build_layout_subtree(
+    path: &[bool],
+    panes: &[MappedLayoutPane],
+    splits: &HashMap<Vec<bool>, &super::session::LayoutSplitRecord>,
+) -> Option<LayoutNode> {
+    if panes.len() == 1 {
+        return Some(LayoutNode::Leaf(panes[0].id));
+    }
+    let split = splits.get(path)?;
+    let dir = match split.direction {
+        LayoutSplitDirection::Right => SplitDir::Horizontal,
+        LayoutSplitDirection::Down => SplitDir::Vertical,
+        LayoutSplitDirection::Unknown(_) => return None,
+    };
+    let ratio = if split.ratio.is_finite() {
+        split.ratio.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let first_span = match dir {
+        SplitDir::Horizontal => (f32::from(split.rect.width) * ratio).round() as u16,
+        SplitDir::Vertical => (f32::from(split.rect.height) * ratio).round() as u16,
+    };
+    let boundary_twice = match dir {
+        SplitDir::Horizontal => u32::from(split.rect.x.saturating_add(first_span)) * 2,
+        SplitDir::Vertical => u32::from(split.rect.y.saturating_add(first_span)) * 2,
+    };
+    let mut first_panes = Vec::new();
+    let mut second_panes = Vec::new();
+    for pane in panes {
+        let center_twice = match dir {
+            SplitDir::Horizontal => u32::from(pane.rect.x) * 2 + u32::from(pane.rect.width),
+            SplitDir::Vertical => u32::from(pane.rect.y) * 2 + u32::from(pane.rect.height),
+        };
+        if center_twice < boundary_twice {
+            first_panes.push(*pane);
+        } else {
+            second_panes.push(*pane);
+        }
+    }
+    if first_panes.is_empty() || second_panes.is_empty() {
+        return None;
+    }
+
+    let mut first_path = path.to_vec();
+    first_path.push(false);
+    let mut second_path = path.to_vec();
+    second_path.push(true);
+    Some(LayoutNode::Split {
+        dir,
+        ratio: (ratio * 1000.0).round() as u16,
+        first: Box::new(build_layout_subtree(&first_path, &first_panes, splits)?),
+        second: Box::new(build_layout_subtree(&second_path, &second_panes, splits)?),
+    })
+}
+
+/// 兼容旧录制快照：没有 splits 时保留原先的确定性水平兜底。
+fn legacy_horizontal_tree(leaves: &[PaneId]) -> LayoutNode {
+    let mut tree = LayoutNode::leaf(leaves[0]);
+    for pane in &leaves[1..] {
+        tree.split_at(leaves[0], *pane, SplitDir::Horizontal);
+    }
+    tree
 }
 
 impl State for HerdrRuntime {
@@ -642,6 +815,38 @@ impl Runtime for HerdrRuntime {
                     .map_err(|e| anyhow!("pane.send_keys 失败: {e}"))?;
                 Ok(TaskOutcome::Done)
             }
+            Task::ResizePane { target, cols, rows } => {
+                if !self.panes.iter().any(|pane| pane.id == *target) {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                }
+                let cols = (*cols).max(2);
+                let rows = (*rows).max(1);
+                let unchanged = self
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == *target)
+                    .is_some_and(|pane| pane.cols == cols && pane.rows == rows);
+                if unchanged {
+                    return Ok(TaskOutcome::Done);
+                }
+                self.replace_observe_stream(*target, cols, rows)
+                    .map_err(|err| anyhow!("Herdr pane observer resize 失败: {err}"))?;
+                if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == *target) {
+                    pane.cols = cols;
+                    pane.rows = rows;
+                }
+                self.events.push_back(StateChange::PaneResized {
+                    pane: *target,
+                    cols,
+                    rows,
+                });
+                Ok(TaskOutcome::Done)
+            }
+            Task::ResizeClient { .. } => Ok(TaskOutcome::Rejected {
+                reason: "HerdrRuntime 使用 pane Surface resize".into(),
+            }),
             Task::SwitchPane { target } => {
                 let Some(pane) = self.panes.iter().find(|p| p.id == *target) else {
                     return Ok(TaskOutcome::Rejected {
@@ -735,9 +940,19 @@ impl Runtime for HerdrRuntime {
                 workdir: _,
             } => {
                 let target = target.unwrap_or_else(|| self.active_pane.unwrap_or(PaneId(1)));
-                let Some(herdr_pane) = self.herdr_pane(target) else {
+                let Some(tab) = self
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == target)
+                    .map(|pane| pane.tab)
+                else {
                     return Ok(TaskOutcome::Rejected {
                         reason: format!("pane {target} 不存在"),
+                    });
+                };
+                let Some(herdr_pane) = self.herdr_pane(target).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 缺 Herdr id"),
                     });
                 };
                 let direction = match dir {
@@ -754,7 +969,23 @@ impl Runtime for HerdrRuntime {
                         }),
                     )
                     .map_err(|e| anyhow!("pane.split 失败: {e}"))?;
-                self.apply_split_pane(&result);
+                let authoritative_layout = result
+                    .get("pane")
+                    .and_then(|pane| pane.get("pane_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|pane_id| match self.session.pane_layout(pane_id) {
+                        Ok(layout) => Some(layout),
+                        Err(err) => {
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane_id,
+                                error = %err,
+                                "pane.split 后读取权威 layout 失败"
+                            );
+                            None
+                        }
+                    });
+                self.apply_split_pane(&result, tab, *dir, authoritative_layout.as_ref());
                 Ok(TaskOutcome::Done)
             }
             Task::Detach => {
@@ -783,6 +1014,7 @@ impl Runtime for HerdrRuntime {
 
     async fn shutdown(&mut self) -> Result<()> {
         self.observe_streams.clear();
+        self.observe_tx = None;
         self.observe_rx = None;
         self.stop_forward();
         self.status = BackendStatus::Disconnected;
@@ -814,6 +1046,7 @@ impl Runtime for HerdrRuntime {
 impl Drop for HerdrRuntime {
     fn drop(&mut self) {
         self.observe_streams.clear();
+        self.observe_tx = None;
         self.observe_rx = None;
         self.stop_forward();
     }
@@ -884,7 +1117,13 @@ impl HerdrRuntime {
     }
 
     /// pane.split 响应 → 新 pane 进状态。
-    fn apply_split_pane(&mut self, result: &serde_json::Value) {
+    fn apply_split_pane(
+        &mut self,
+        result: &serde_json::Value,
+        tab: TabId,
+        dir: SplitDir,
+        layout: Option<&LayoutRecord>,
+    ) {
         let Some(pane_id) = result
             .get("pane")
             .and_then(|p| p.get("pane_id"))
@@ -896,38 +1135,78 @@ impl HerdrRuntime {
         if self.herdr_pane_to_pane.contains_key(pane_id) {
             return;
         }
-        let tab = self.active_tab.unwrap_or(TabId(1));
         self.herdr_pane_to_pane.insert(pane_id.to_string(), pid);
         self.pane_to_herdr_pane.insert(pid, pane_id.to_string());
+        let rect = layout.and_then(|layout| {
+            layout
+                .panes
+                .iter()
+                .find(|candidate| candidate.pane_id == pane_id)
+                .map(|candidate| candidate.rect)
+        });
         self.panes.push(PaneInfo {
             id: pid,
             tab,
             active: true,
             title: "herdr".into(),
-            cols: 80,
-            rows: 24,
+            cols: rect.map(|rect| rect.width).unwrap_or(80),
+            rows: rect.map(|rect| rect.height).unwrap_or(24),
         });
-        if let Some(l) = self.layouts.get_mut(&tab) {
-            let base = l.active;
-            l.tree.split_at(base, pid, SplitDir::Horizontal);
-            l.active = pid;
-        }
         self.events
             .push_back(StateChange::PaneAdded { pane: pid, tab });
-        if let Some(l) = self.layouts.get(&tab) {
-            self.events.push_back(StateChange::LayoutChanged {
-                tab,
-                layout: l.clone(),
-            });
+
+        let applied_authoritative = layout
+            .map(|layout| self.apply_layout_record(layout, true))
+            .unwrap_or(false);
+        if !applied_authoritative {
+            if let Some(product_layout) = self.layouts.get_mut(&tab) {
+                let base = product_layout.active;
+                product_layout.tree.split_at(base, pid, dir);
+                product_layout.active = pid;
+            }
+            if let Some(product_layout) = self.layouts.get(&tab) {
+                self.events.push_back(StateChange::LayoutChanged {
+                    tab,
+                    layout: product_layout.clone(),
+                });
+            }
         }
+
+        let active = self
+            .layouts
+            .get(&tab)
+            .map(|layout| layout.active)
+            .unwrap_or(pid);
+        for pane in self.panes.iter_mut().filter(|pane| pane.tab == tab) {
+            pane.active = pane.id == active;
+        }
+        self.active_pane = Some(active);
         self.events
-            .push_back(StateChange::ActivePaneChanged { tab, pane: pid });
+            .push_back(StateChange::ActivePaneChanged { tab, pane: active });
+
+        if self.observe_tx.is_some() {
+            let (cols, rows) = self
+                .panes
+                .iter()
+                .find(|pane| pane.id == pid)
+                .map(|pane| (pane.cols, pane.rows))
+                .unwrap_or((80, 24));
+            if let Err(err) = self.replace_observe_stream(pid, cols, rows) {
+                tracing::warn!(
+                    target = "muxterm::herdr",
+                    pane = %pane_id,
+                    error = %err,
+                    "新 split pane 的 observe 流启动失败"
+                );
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::numeric_suffix;
+    use super::*;
+    use crate::core::runtime::herdr::session::{LayoutPaneRecord, LayoutSplitRecord};
 
     /// Herdr public ids 使用 bijective base-32，不是十进制。用户真实 session
     /// 已出现 pP/pQ/pR；它们绝不能全部退化成 PaneId(0)。
@@ -941,5 +1220,75 @@ mod tests {
         assert_eq!(numeric_suffix("w2:pR"), 24);
         assert_eq!(numeric_suffix("w2:p0"), 32);
         assert_eq!(numeric_suffix("w2:p11"), 33);
+    }
+
+    #[test]
+    fn herdr_layout_paths_preserve_nested_directions_and_ratios() {
+        let rect = |x, y, width, height| LayoutRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let layout = LayoutRecord {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            zoomed: false,
+            area: rect(0, 0, 100, 40),
+            focused_pane_id: "w1:p2".into(),
+            panes: vec![
+                LayoutPaneRecord {
+                    pane_id: "w1:p1".into(),
+                    focused: false,
+                    rect: rect(0, 0, 30, 10),
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p2".into(),
+                    focused: true,
+                    rect: rect(0, 10, 30, 30),
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p3".into(),
+                    focused: false,
+                    rect: rect(30, 0, 70, 40),
+                },
+            ],
+            splits: vec![
+                LayoutSplitRecord {
+                    id: "split_0_root".into(),
+                    path: vec![],
+                    direction: LayoutSplitDirection::Right,
+                    ratio: 0.3,
+                    rect: rect(0, 0, 100, 40),
+                },
+                LayoutSplitRecord {
+                    id: "split_1_0".into(),
+                    path: vec![false],
+                    direction: LayoutSplitDirection::Down,
+                    ratio: 0.25,
+                    rect: rect(0, 0, 30, 40),
+                },
+            ],
+        };
+        let pane_ids = HashMap::from([
+            ("w1:p1".into(), PaneId(1)),
+            ("w1:p2".into(), PaneId(2)),
+            ("w1:p3".into(), PaneId(3)),
+        ]);
+
+        assert_eq!(
+            layout_tree_from_record(&layout, &pane_ids),
+            Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 300,
+                first: Box::new(LayoutNode::Split {
+                    dir: SplitDir::Vertical,
+                    ratio: 250,
+                    first: Box::new(LayoutNode::Leaf(PaneId(1))),
+                    second: Box::new(LayoutNode::Leaf(PaneId(2))),
+                }),
+                second: Box::new(LayoutNode::Leaf(PaneId(3))),
+            })
+        );
     }
 }

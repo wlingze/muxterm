@@ -134,6 +134,15 @@ impl HerdrSession {
         SessionSnapshot::from_json(snap)
     }
 
+    /// `pane.layout`：取得 pane 所在 tab 的权威布局快照。
+    pub fn pane_layout(&self, pane_id: &str) -> Result<LayoutRecord> {
+        let result = self.call("pane.layout", serde_json::json!({ "pane_id": pane_id }))?;
+        let layout = result
+            .get("layout")
+            .ok_or_else(|| anyhow!("pane.layout 缺 layout: {result}"))?;
+        LayoutRecord::from_json(layout).ok_or_else(|| anyhow!("pane.layout 布局解析失败: {result}"))
+    }
+
     /// `pane.read`：attach 快照（source=visible, format=ansi），返回原始 ANSI 字节。
     pub fn pane_read_ansi(&self, pane_id: &str) -> Result<Vec<u8>> {
         let result = self.call(
@@ -257,7 +266,7 @@ pub(crate) fn client_socket_path_from_api(api_socket_path: &Path) -> PathBuf {
 }
 
 /// `session.snapshot` 的产品视图（Herdr id 保持字符串，映射在 HerdrRuntime）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionSnapshot {
     pub version: String,
     pub protocol: u64,
@@ -389,36 +398,166 @@ impl PaneRecord {
     }
 }
 
-/// Herdr tab layout 记录（面积 + pane 列表）。
+/// Herdr 布局矩形（字符格坐标）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutRect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl LayoutRect {
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            x: v.get("x").and_then(Value::as_u64).unwrap_or(0) as u16,
+            y: v.get("y").and_then(Value::as_u64).unwrap_or(0) as u16,
+            width: v.get("width")?.as_u64()? as u16,
+            height: v.get("height")?.as_u64()? as u16,
+        })
+    }
+}
+
+/// Herdr layout 中一个 pane 的位置与焦点。
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutPaneRecord {
+    pub pane_id: String,
+    pub focused: bool,
+    pub rect: LayoutRect,
+}
+
+/// Herdr wire 的 split 方向。未知值保留原文，避免静默误判为左右分割。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutSplitDirection {
+    Right,
+    Down,
+    Unknown(String),
+}
+
+impl LayoutSplitDirection {
+    fn from_wire(value: &str) -> Self {
+        match value {
+            "right" => Self::Right,
+            "down" => Self::Down,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+}
+
+/// Herdr layout 中一个 BSP split；`path` 的 false/true 分别表示 first/second。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutSplitRecord {
+    pub id: String,
+    pub path: Vec<bool>,
+    pub direction: LayoutSplitDirection,
+    pub ratio: f32,
+    pub rect: LayoutRect,
+}
+
+/// Herdr tab 的完整 `PaneLayoutSnapshot`。
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayoutRecord {
     pub workspace_id: String,
     pub tab_id: String,
-    pub width: u16,
-    pub height: u16,
-    pub panes: Vec<String>,
+    pub zoomed: bool,
+    pub area: LayoutRect,
+    pub focused_pane_id: String,
+    pub panes: Vec<LayoutPaneRecord>,
+    pub splits: Vec<LayoutSplitRecord>,
 }
 
 impl LayoutRecord {
     fn from_json(v: &Value) -> Option<Self> {
-        let area = v.get("area")?;
+        let area = LayoutRect::from_json(v.get("area")?)?;
+        let panes: Vec<LayoutPaneRecord> = v
+            .get("panes")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|pane| {
+                        Some(LayoutPaneRecord {
+                            pane_id: pane.get("pane_id")?.as_str()?.to_string(),
+                            focused: pane
+                                .get("focused")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            // 协议 19 总有 rect；旧录制夹具缺失时用整个 area
+                            // 保持兼容，但 Runtime 只在现代快照上按 rect 分配。
+                            rect: pane
+                                .get("rect")
+                                .and_then(LayoutRect::from_json)
+                                .unwrap_or(area),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let focused_pane_id = v
+            .get("focused_pane_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                panes
+                    .iter()
+                    .find(|pane| pane.focused)
+                    .map(|pane| pane.pane_id.clone())
+            })
+            .or_else(|| panes.first().map(|pane| pane.pane_id.clone()))
+            .unwrap_or_default();
+        let splits = v
+            .get("splits")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|split| {
+                        let id = split.get("id")?.as_str()?.to_string();
+                        Some(LayoutSplitRecord {
+                            path: split_path_from_id(&id)?,
+                            id,
+                            direction: LayoutSplitDirection::from_wire(
+                                split.get("direction")?.as_str()?,
+                            ),
+                            ratio: split.get("ratio").and_then(Value::as_f64).unwrap_or(0.5) as f32,
+                            rect: split
+                                .get("rect")
+                                .and_then(LayoutRect::from_json)
+                                .unwrap_or(area),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(Self {
             workspace_id: v.get("workspace_id")?.as_str()?.to_string(),
             tab_id: v.get("tab_id")?.as_str()?.to_string(),
-            width: area.get("width").and_then(Value::as_u64).unwrap_or(80) as u16,
-            height: area.get("height").and_then(Value::as_u64).unwrap_or(24) as u16,
-            panes: v
-                .get("panes")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|p| p.get("pane_id").and_then(Value::as_str))
-                        .map(ToOwned::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            zoomed: v.get("zoomed").and_then(Value::as_bool).unwrap_or(false),
+            area,
+            focused_pane_id,
+            panes,
+            splits,
         })
     }
+}
+
+/// `split_<idx>_root` 或 `split_<idx>_<01 path>` → BSP path。
+fn split_path_from_id(id: &str) -> Option<Vec<bool>> {
+    let mut parts = id.splitn(3, '_');
+    if parts.next()? != "split" {
+        return None;
+    }
+    parts.next()?.parse::<usize>().ok()?;
+    let encoded = parts.next()?;
+    if encoded == "root" {
+        return Some(Vec::new());
+    }
+    encoded
+        .bytes()
+        .map(|byte| match byte {
+            b'0' => Some(false),
+            b'1' => Some(true),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `worktree.list` 的完整响应（source + worktrees）。
@@ -527,13 +666,41 @@ mod tests {
     #[test]
     fn snapshot_parses_known_shape() {
         let v: Value = serde_json::from_str(
-            r#"{"version":"0.8.0","protocol":19,"focused_workspace_id":"w1","focused_tab_id":"w1:t1","focused_pane_id":"w1:p1","workspaces":[{"workspace_id":"w1","label":"probe1","active_tab_id":"w1:t1"}],"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"1"}],"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/tmp"}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","area":{"width":54,"height":23},"panes":[{"pane_id":"w1:p1"}]}]}"#,
+            r#"{"version":"0.8.0","protocol":19,"focused_workspace_id":"w1","focused_tab_id":"w1:t1","focused_pane_id":"w1:p1","workspaces":[{"workspace_id":"w1","label":"probe1","active_tab_id":"w1:t1"}],"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"1"}],"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/tmp"},{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1","cwd":"/tmp"}],"layouts":[{"workspace_id":"w1","tab_id":"w1:t1","zoomed":false,"area":{"x":2,"y":3,"width":54,"height":23},"focused_pane_id":"w1:p2","panes":[{"pane_id":"w1:p1","focused":false,"rect":{"x":2,"y":3,"width":54,"height":11}},{"pane_id":"w1:p2","focused":true,"rect":{"x":2,"y":14,"width":54,"height":12}}],"splits":[{"id":"split_0_root","direction":"down","ratio":0.48,"rect":{"x":2,"y":3,"width":54,"height":23}}]}]}"#,
         )
         .unwrap();
         let snap = SessionSnapshot::from_json(&v).unwrap();
         assert_eq!(snap.workspaces[0].workspace_id, "w1");
         assert_eq!(snap.panes[0].pane_id, "w1:p1");
-        assert_eq!(snap.layouts[0].width, 54);
-        assert_eq!(snap.layouts[0].panes, vec!["w1:p1".to_string()]);
+        assert_eq!(
+            snap.layouts[0].area,
+            LayoutRect {
+                x: 2,
+                y: 3,
+                width: 54,
+                height: 23,
+            }
+        );
+        assert_eq!(snap.layouts[0].focused_pane_id, "w1:p2");
+        assert_eq!(snap.layouts[0].panes[0].rect.height, 11);
+        assert_eq!(snap.layouts[0].panes[1].rect.y, 14);
+        assert_eq!(snap.layouts[0].splits[0].path, Vec::<bool>::new());
+        assert_eq!(
+            snap.layouts[0].splits[0].direction,
+            LayoutSplitDirection::Down
+        );
+        assert!((snap.layouts[0].splits[0].ratio - 0.48).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn split_ids_decode_root_and_binary_paths() {
+        assert_eq!(split_path_from_id("split_0_root"), Some(vec![]));
+        assert_eq!(split_path_from_id("split_1_0"), Some(vec![false]));
+        assert_eq!(
+            split_path_from_id("split_12_011"),
+            Some(vec![false, true, true])
+        );
+        assert_eq!(split_path_from_id("split_bad_root"), None);
+        assert_eq!(split_path_from_id("split_1_02"), None);
     }
 }

@@ -35,6 +35,7 @@ impl RuntimeDriver for TmuxDriver {
             RuntimeCapability::Discover,
             RuntimeCapability::MultiTab,
             RuntimeCapability::SplitPane,
+            RuntimeCapability::SharedClientResize,
         ]
     }
 
