@@ -20,22 +20,17 @@ where
     run_with_timeout(Duration::from_secs(secs), label, f)
 }
 
-fn sshd_ready() -> bool {
-    sshd_available()
-}
-
-fn ssh_env(label: &str) -> SshTestEnv {
-    SshTestEnv::setup(label).expect("SSH 测试环境创建失败")
-}
-
 /// 阶段化 echo marker 测试：每步打印标记，定位卡在哪。
 #[test]
 fn ssh_transport_echo_marker_staged() {
     bounded(20, "echo-staged", || {
-        assert!(sshd_ready(), "需要共享 sshd");
-        let env = ssh_env("echo-staged");
+        assert!(
+            loopback_sshd_available(),
+            "需要 ssh/sshd 二进制来启动隔离 loopback fixture"
+        );
+        let sshd = LoopbackSshd::start("echo-staged").expect("隔离 loopback sshd 启动失败");
 
-        let config_path = &env.ssh_config_path;
+        let config_path = &sshd.config_path;
         assert!(
             config_path.exists(),
             "config 不存在: {}",
@@ -43,7 +38,7 @@ fn ssh_transport_echo_marker_staged() {
         );
 
         let (program, args) = build_ssh_command(
-            &env.alias,
+            &sshd.alias,
             "echo STAGED_MARKER_42",
             Some(&config_path.to_string_lossy()),
         );
