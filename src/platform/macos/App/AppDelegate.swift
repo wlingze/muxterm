@@ -137,6 +137,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         renameTab.target = windowController
         windowMenu.addItem(renameTab)
+        let moveTabLeft = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.moveTabLeft),
+            action: #selector(MainWindowController.moveActiveTabLeft),
+            keyEquivalent: ""
+        )
+        moveTabLeft.target = windowController
+        windowMenu.addItem(moveTabLeft)
+        let moveTabRight = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.moveTabRight),
+            action: #selector(MainWindowController.moveActiveTabRight),
+            keyEquivalent: ""
+        )
+        moveTabRight.target = windowController
+        windowMenu.addItem(moveTabRight)
         windowMenu.addItem(NSMenuItem.separator())
         for i in 1...9 {
             let item = NSMenuItem(
@@ -181,6 +195,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         splitH.keyEquivalentModifierMask = [.command, .shift]
         splitH.target = windowController
         viewMenu.addItem(splitH)
+
+        let movePaneToNewTab = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.movePaneToNewTab),
+            action: #selector(MainWindowController.moveActivePaneToNewTab),
+            keyEquivalent: ""
+        )
+        movePaneToNewTab.target = windowController
+        viewMenu.addItem(movePaneToNewTab)
 
         let fullscreen = NSMenuItem(
             title: MuxtermI18n.shared.tr(.togglePaneFullscreen),

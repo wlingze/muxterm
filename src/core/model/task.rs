@@ -48,8 +48,12 @@ pub enum Task {
     },
     /// 切换 pane 全屏（tmux `resize-pane -Z`；本地 shell 由前端布局实现）。
     TogglePaneFullscreen { target: PaneId },
-    /// 重排 window/tab：把 from window 移到目标 index（tmux `move-window -s :i -t :j`）。
-    MoveWindow { from: TabId, to_index: u32 },
+    /// 重排 tab：把 `from` 插到 `target` 前或后。
+    MoveTab {
+        from: TabId,
+        target: TabId,
+        before: bool,
+    },
     /// 把 pane 拆成新 window/tab（tmux `break-pane -s %pane`）。
     BreakPane { target: PaneId },
     /// 重新查询 window/pane 列表（外部 tmux 变更后同步 GUI）。

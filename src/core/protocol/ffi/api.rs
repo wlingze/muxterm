@@ -32,7 +32,7 @@ use super::types::{
     STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT,
     STATE_PANE_RESIZED, STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED,
     STATE_TAB_CLOSED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE,
-    TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_WINDOW, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
+    TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
     TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE,
     TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
@@ -1025,9 +1025,10 @@ fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
             let pane = resolve_c_task_pane(task.target_pane, ws);
             Some(Task::TogglePaneFullscreen { target: pane })
         }
-        TASK_MOVE_WINDOW => Some(Task::MoveWindow {
+        TASK_MOVE_TAB => Some(Task::MoveTab {
             from: TabId(task.target_tab),
-            to_index: task.target_pane,
+            target: TabId(task.target_pane),
+            before: task.dir == super::types::TAB_MOVE_BEFORE,
         }),
         TASK_BREAK_PANE => {
             let pane = resolve_c_task_pane(task.target_pane, ws);

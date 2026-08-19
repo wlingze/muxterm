@@ -193,7 +193,7 @@ impl DaemonRuntime {
             }),
             Task::SwitchPane { target } => Some(CliCommand::SelectPane { target: *target }),
             Task::TogglePaneFullscreen { .. }
-            | Task::MoveWindow { .. }
+            | Task::MoveTab { .. }
             | Task::BreakPane { .. }
             | Task::RefreshTabs => None, // daemon CLI 暂不支持 zoom
             Task::NewTab { name, .. } => Some(CliCommand::NewTab { name: name.clone() }),
