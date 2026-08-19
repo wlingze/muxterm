@@ -324,7 +324,7 @@ impl Runtime for MockRuntime {
             }
             Task::ReportPaneColours { .. } => TaskOutcome::Done,
             Task::TogglePaneFullscreen { .. }
-            | Task::MoveWindow { .. }
+            | Task::MoveTab { .. }
             | Task::BreakPane { .. }
             | Task::RefreshTabs => TaskOutcome::Done,
             Task::ResizePane { target, cols, rows } => {

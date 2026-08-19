@@ -19,8 +19,9 @@ final class BreakPaneE2ETests: XCTestCase {
                 app.testPollOnce()
                 AppE2E.pump(40)
                 return app.testTabAndPaneCounts().tabs == 2
+                    && app.testLayoutLeafIDs().count == 1
             },
-            "break-pane 后必须变成 2 个 tab。got=\(app.testTabAndPaneCounts())"
+            "break-pane 后必须变成 2 个 tab，且新 tab 布局完成。got=\(app.testTabAndPaneCounts()) leaves=\(app.testLayoutLeafIDs())"
         )
         XCTAssertEqual(
             app.testLayoutLeafIDs().count,
@@ -34,6 +35,6 @@ final class BreakPaneE2ETests: XCTestCase {
         )
         .split(whereSeparator: \.isNewline)
         .filter { !$0.isEmpty }
-        XCTAssertEqual(windows.count, 2, "tmux 必须真的 \(TmuxWindowCommands.paneToNewWindow)，got=\(windows)")
+        XCTAssertEqual(windows.count, 2, "tmux 必须真的执行 break-pane，got=\(windows)")
     }
 }

@@ -18,7 +18,22 @@ final class StatusBarView: NSView {
     var onNewTab: (() -> Void)?
     var onRenameTab: ((UInt32) -> Void)?
     var onCloseTab: ((UInt32) -> Void)?
+    var onMoveTab: ((UInt32, UInt32, Bool) -> Void)?
     var onAttentionClick: (() -> Void)?
+    var allowsTabReordering = false {
+        didSet {
+            guard allowsTabReordering != oldValue else { return }
+            if tmuxStatusEnabled, let snapshot = lastTmuxSnapshot {
+                rebuildTabButtons(snapshot.windows.map { win in
+                    TabBarItem(id: win.windowId, name: win.name, active: win.current)
+                })
+            } else {
+                rebuildTabButtons(currentTabs.map {
+                    TabBarItem(id: $0.id, name: $0.name, active: $0.isActive)
+                })
+            }
+        }
+    }
     var colorMode: StatusBarMode = .tmux
 
     // 左→右：tab 列表 → tmux-left → tmux-right → 状态点 → 通知 → 新建
@@ -455,6 +470,12 @@ final class StatusBarView: NSView {
             button.onDoubleClick = { [weak self] in
                 self?.onRenameTab?(item.id)
             }
+            if allowsTabReordering {
+                button.onDragEnd = { [weak self, weak button] location in
+                    guard let self, let button else { return }
+                    self.finishTabDrag(source: button, locationInWindow: location)
+                }
+            }
             button.applyStyle()
             let menu = NSMenu()
             let rename = NSMenuItem(
@@ -465,6 +486,29 @@ final class StatusBarView: NSView {
             rename.tag = Int(item.id)
             rename.target = self
             menu.addItem(rename)
+            if allowsTabReordering, position > 0 {
+                let moveLeft = StatusTabMoveMenuItem(
+                    title: MuxtermI18n.shared.tr(.moveTabLeft),
+                    from: item.id,
+                    target: items[position - 1].id,
+                    before: true
+                )
+                moveLeft.target = self
+                moveLeft.action = #selector(moveTabFromMenu(_:))
+                menu.addItem(moveLeft)
+            }
+            if allowsTabReordering, position + 1 < items.count {
+                let moveRight = StatusTabMoveMenuItem(
+                    title: MuxtermI18n.shared.tr(.moveTabRight),
+                    from: item.id,
+                    target: items[position + 1].id,
+                    before: false
+                )
+                moveRight.target = self
+                moveRight.action = #selector(moveTabFromMenu(_:))
+                menu.addItem(moveRight)
+            }
+            menu.addItem(NSMenuItem.separator())
             let close = NSMenuItem(
                 title: MuxtermI18n.shared.tr(.closeTab),
                 action: #selector(closeTabFromMenu(_:)),
@@ -476,6 +520,21 @@ final class StatusBarView: NSView {
             button.menu = menu
             tabStack.addArrangedSubview(button)
         }
+    }
+
+    private func finishTabDrag(source: StatusTabButton, locationInWindow: NSPoint) {
+        let point = tabStack.convert(locationInWindow, from: nil)
+        let buttons = tabStack.arrangedSubviews.compactMap { $0 as? StatusTabButton }
+        guard let target = buttons.min(by: {
+            abs($0.frame.midX - point.x) < abs($1.frame.midX - point.x)
+        }), target !== source else {
+            return
+        }
+        onMoveTab?(
+            UInt32(source.tag),
+            UInt32(target.tag),
+            point.x < target.frame.midX
+        )
     }
 
     @objc private func tabClicked(_ sender: NSButton) {
@@ -496,6 +555,10 @@ final class StatusBarView: NSView {
 
     @objc private func closeTabFromMenu(_ sender: NSMenuItem) {
         onCloseTab?(UInt32(sender.tag))
+    }
+
+    @objc private func moveTabFromMenu(_ sender: StatusTabMoveMenuItem) {
+        onMoveTab?(sender.from, sender.destination, sender.before)
     }
 
     func markCurrentWindow(_ windowId: UInt32) {
@@ -633,6 +696,11 @@ final class StatusBarView: NSView {
             .title ?? ""
     }
 
+    func testMoveTab(from: UInt32, target: UInt32, before: Bool) {
+        guard allowsTabReordering else { return }
+        onMoveTab?(from, target, before)
+    }
+
     func testLeftText() -> String {
         leftLabel.stringValue
     }
@@ -718,6 +786,7 @@ private final class StatusDotButton: NSButton {
 /// iTerm2 风格 GUI tab：圆角色块 + 系统字体，不用 tmux 格式串。
 private final class StatusTabButton: NSButton {
     var onDoubleClick: (() -> Void)?
+    var onDragEnd: ((NSPoint) -> Void)?
     var isActiveTab = false {
         didSet { applyStyle() }
     }
@@ -757,7 +826,39 @@ private final class StatusTabButton: NSButton {
             onDoubleClick?()
             return
         }
-        super.mouseDown(with: event)
+        guard let window, onDragEnd != nil else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let start = event.locationInWindow
+        var dragged = false
+        while let next = window.nextEvent(
+            matching: [.leftMouseDragged, .leftMouseUp],
+            until: .distantFuture,
+            inMode: .eventTracking,
+            dequeue: true
+        ) {
+            switch next.type {
+            case .leftMouseDragged:
+                let dx = next.locationInWindow.x - start.x
+                let dy = next.locationInWindow.y - start.y
+                if !dragged, hypot(dx, dy) >= 4 {
+                    dragged = true
+                    alphaValue = 0.65
+                }
+            case .leftMouseUp:
+                alphaValue = 1
+                if dragged {
+                    onDragEnd?(next.locationInWindow)
+                } else {
+                    performClick(nil)
+                }
+                return
+            default:
+                continue
+            }
+        }
     }
 
     func applyStyle() {
@@ -775,5 +876,23 @@ private final class StatusTabButton: NSButton {
             ? NSColor.controlAccentColor.withAlphaComponent(0.22)
             : NSColor.labelColor.withAlphaComponent(0.06)
         ).cgColor
+    }
+}
+
+private final class StatusTabMoveMenuItem: NSMenuItem {
+    let from: UInt32
+    let destination: UInt32
+    let before: Bool
+
+    init(title: String, from: UInt32, target: UInt32, before: Bool) {
+        self.from = from
+        self.destination = target
+        self.before = before
+        super.init(title: title, action: nil, keyEquivalent: "")
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
     }
 }

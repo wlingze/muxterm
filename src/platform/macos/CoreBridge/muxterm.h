@@ -73,7 +73,8 @@ struct CLayoutNode {
 #define TASK_SWITCH_PANE 8u
 #define TASK_DETACH      9u
 #define TASK_TOGGLE_PANE_FULLSCREEN 10u
-#define TASK_MOVE_WINDOW 11u
+#define TASK_MOVE_TAB 11u
+#define TASK_MOVE_WINDOW TASK_MOVE_TAB
 #define TASK_BREAK_PANE 12u
 #define TASK_REFRESH_TABS 13u
 #define TASK_RENAME_TAB 14u
@@ -81,6 +82,8 @@ struct CLayoutNode {
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u
+#define TAB_MOVE_BEFORE 0u
+#define TAB_MOVE_AFTER  1u
 
 #define LAYOUT_LEAF    0u
 #define LAYOUT_SPLIT_H 1u

@@ -186,13 +186,13 @@ struct MuxTask {
         )
     }
 
-    /// 重排 window/tab：`move-window -s :from -t :toIndex`。
-    static func moveWindow(from fromTabId: UInt32, toIndex: UInt32) -> MuxTask {
+    /// 重排 tab：把源稳定 TabId 插到目标 TabId 前或后。
+    static func moveTab(from fromTabId: UInt32, target targetTabId: UInt32, before: Bool) -> MuxTask {
         MuxTask(
-            type: TASK_MOVE_WINDOW,
-            targetPane: toIndex,
+            type: TASK_MOVE_TAB,
+            targetPane: targetTabId,
             targetTab: fromTabId,
-            dir: 0,
+            dir: before ? TAB_MOVE_BEFORE : TAB_MOVE_AFTER,
             name: nil
         )
     }

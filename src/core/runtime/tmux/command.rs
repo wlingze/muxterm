@@ -286,9 +286,17 @@ pub fn zoom_pane(pane: PaneId) -> TmuxCommand {
     build(&[format!("-Z {}", pane_target(pane))], "resize-pane")
 }
 
-/// 把 window 移到目标 index（iTerm2 拖 tab 排序 → tmux `move-window`）。
-pub fn move_window(from: TabId, to_index: u32) -> TmuxCommand {
-    build(&[format!("-s :{} -t :{}", from.0, to_index)], "move-window")
+/// 把源 window 插到目标 window 前/后（iTerm2 拖 tab 排序 → tmux `move-window`）。
+/// 两端都使用稳定的 tmux window id（`@N`），不依赖可变 index。
+pub fn move_window(from: TabId, target: TabId, before: bool) -> TmuxCommand {
+    let position = if before { "-b" } else { "-a" };
+    build(
+        &[
+            position.to_string(),
+            format!("-s @{} -t @{}", from.0, target.0),
+        ],
+        "move-window",
+    )
 }
 
 /// 把 pane 拆成新 window/tab（iTerm2 breakOutWindowPane → tmux `break-pane`）。
@@ -673,6 +681,18 @@ mod tests {
     fn zoom_pane_toggles_fullscreen() {
         let c = zoom_pane(PaneId(1));
         assert_eq!(c.as_str(), "resize-pane -Z -t %1");
+    }
+
+    #[test]
+    fn move_window_uses_stable_window_ids_and_relative_position() {
+        assert_eq!(
+            move_window(TabId(42), TabId(7), true).as_str(),
+            "move-window -b -s @42 -t @7"
+        );
+        assert_eq!(
+            move_window(TabId(42), TabId(7), false).as_str(),
+            "move-window -a -s @42 -t @7"
+        );
     }
 
     #[test]

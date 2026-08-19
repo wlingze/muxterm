@@ -20,6 +20,14 @@ final class PaneLayoutView: NSView {
     private var geometrySyncScheduled = false
     private var pendingGeometryPaneIds: Set<UInt32>?
     var onActivatePane: ((UInt32) -> Void)?
+    var onMovePaneToNewTab: ((UInt32) -> Void)?
+    var allowsPaneBreak = false {
+        didSet {
+            for host in hostByPane.values {
+                host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
+            }
+        }
+    }
     /// 分隔条释放后提交：pane、横向（宽度）/纵向（高度）、字符格尺寸。
     var onResizeDivider: ((UInt32, Bool, UInt16) -> Void)?
 
@@ -138,6 +146,9 @@ final class PaneLayoutView: NSView {
 
         let ids = Set(collectPaneIds(tree))
         currentPaneIds = ids
+        for host in hostByPane.values {
+            host.setAllowsMoveToNewTab(allowsPaneBreak && ids.count > 1)
+        }
 
         let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
         markActivePane(active)
@@ -154,6 +165,10 @@ final class PaneLayoutView: NSView {
 
     func testPaneAllocation(_ paneId: UInt32) -> NSSize {
         hostByPane[paneId]?.bounds.size ?? .zero
+    }
+
+    func testMovePaneToNewTab(_ paneId: UInt32) {
+        hostByPane[paneId]?.triggerMoveToNewTab()
     }
 
     /// 本地 shell：切换 pane 全屏（再次调用恢复）。tmux 模式走 core zoom，
@@ -217,6 +232,10 @@ final class PaneLayoutView: NSView {
             wrap.onActivate = { [weak self] id in
                 self?.onActivatePane?(id)
             }
+            wrap.onMoveToNewTab = { [weak self] id in
+                self?.onMovePaneToNewTab?(id)
+            }
+            wrap.setAllowsMoveToNewTab(false)
             hostByPane[paneId] = wrap
             return wrap
 
@@ -277,10 +296,19 @@ final class PaneLayoutView: NSView {
 final class PaneHostView: NSView {
     let paneId: UInt32
     var onActivate: ((UInt32) -> Void)?
+    var onMoveToNewTab: ((UInt32) -> Void)?
     private var isPaneActive = false
+    private let moveToNewTabItem: NSMenuItem
+    private let moveSeparator: NSMenuItem
 
     init(paneId: UInt32, terminal: MuxTerminalView) {
         self.paneId = paneId
+        self.moveToNewTabItem = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.movePaneToNewTab),
+            action: #selector(moveToNewTab(_:)),
+            keyEquivalent: ""
+        )
+        self.moveSeparator = NSMenuItem.separator()
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
@@ -305,6 +333,28 @@ final class PaneHostView: NSView {
             terminal.topAnchor.constraint(equalTo: topAnchor),
             terminal.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+
+        let contextMenu = NSMenu()
+        contextMenu.addItem(
+            withTitle: MuxtermI18n.shared.tr(.menuCopy),
+            action: #selector(NSText.copy(_:)),
+            keyEquivalent: ""
+        )
+        contextMenu.addItem(
+            withTitle: MuxtermI18n.shared.tr(.menuPaste),
+            action: #selector(NSText.paste(_:)),
+            keyEquivalent: ""
+        )
+        contextMenu.addItem(
+            withTitle: MuxtermI18n.shared.tr(.menuSelectAll),
+            action: #selector(NSText.selectAll(_:)),
+            keyEquivalent: ""
+        )
+        contextMenu.addItem(moveSeparator)
+        moveToNewTabItem.target = self
+        contextMenu.addItem(moveToNewTabItem)
+        menu = contextMenu
+        terminal.menu = contextMenu
         publishGeometry()
     }
 
@@ -320,6 +370,21 @@ final class PaneHostView: NSView {
         layer?.borderColor = active ? NSColor.controlAccentColor.cgColor : nil
         layer?.cornerRadius = 0
         publishGeometry()
+    }
+
+    func setAllowsMoveToNewTab(_ allowed: Bool) {
+        moveSeparator.isHidden = !allowed
+        moveToNewTabItem.isHidden = !allowed
+    }
+
+    func triggerMoveToNewTab() {
+        guard !moveToNewTabItem.isHidden else { return }
+        onActivate?(paneId)
+        onMoveToNewTab?(paneId)
+    }
+
+    @objc private func moveToNewTab(_ sender: Any?) {
+        triggerMoveToNewTab()
     }
 
     func publishGeometry() {

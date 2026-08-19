@@ -521,54 +521,17 @@ extension MainWindowController {
     }
 
     /// 重排 tab = tmux `move-window`（iTerm2 moveTabAtIndex）。
-    /// 直接对隔离 socket 调 tmux：控制 client 对 window 创建类命令有
-    /// 已知问题（命令返回成功但外部看不到新 window），子进程路径与
-    /// core discovery 一致且可验证 tmux 状态。
-    func testReorderTab(from fromId: UInt32, toIndex: Int) {
-        guard let socket = bridge.socket else { return }
-        let args = TmuxWindowCommands.moveWindowArgs(
-            fromIndex: Int(fromId),
-            toIndex: toIndex
-        )
-        _ = runIsolatedTmux(socket: socket, args: args)
-        // 控制 client 感知外部变更：强制重查 window/pane 列表。
-        _ = bridge.execute(task: MuxTask.refreshTabs())
+    /// E2E 必须走与生产 UI 相同的 FFI/Core Task，禁止测试直调 tmux。
+    func testReorderTab(from fromId: UInt32, target targetId: UInt32, before: Bool) {
+        content.statusBar.testMoveTab(from: fromId, target: targetId, before: before)
         pollOnce()
     }
 
     /// 把 pane 拆成新 tab = tmux `break-pane`（iTerm2 breakOutWindowPane）。
     func testBreakActivePaneToNewTab() {
         let pane = testActivePaneID()
-        guard let socket = bridge.socket else { return }
-        let args = TmuxWindowCommands.breakPaneArgs(pane: "%\(pane)")
-        _ = runIsolatedTmux(socket: socket, args: args)
-        _ = bridge.execute(task: MuxTask.refreshTabs())
+        content.paneLayout.testMovePaneToNewTab(pane)
         pollOnce()
-    }
-
-    /// 只对隔离 `-L muxterm-test-*` socket 执行 tmux（与夹具同一纪律）。
-    @discardableResult
-    private func runIsolatedTmux(socket: String, args: [String]) -> Int32 {
-        let candidates = [
-            "/opt/homebrew/bin/tmux",
-            "/usr/local/bin/tmux",
-            "/usr/bin/tmux",
-        ]
-        let bin = candidates.first {
-            FileManager.default.isExecutableFile(atPath: $0)
-        } ?? "/usr/bin/tmux"
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: bin)
-        proc.arguments = ["-L", socket] + args
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-        } catch {
-            return -1
-        }
-        return proc.terminationStatus
     }
 
     private static func findView(_ root: NSView?, identifier: String) -> NSView? {

@@ -229,6 +229,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onCloseTab = { [weak self] tabId in
             self?.closeTab(tabId)
         }
+        content.statusBar.onMoveTab = { [weak self] from, target, before in
+            _ = self?.moveTab(from: from, target: target, before: before)
+        }
+        content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
             if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
@@ -237,6 +241,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 )
             }
         }
+        content.paneLayout.onMovePaneToNewTab = { [weak self] paneId in
+            _ = self?.movePaneToNewTab(paneId)
+        }
+        content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
         content.paneLayout.onResizeDivider = { [weak self] paneId, horizontal, size in
             guard let self, self.terminalManager.usesClientResize else { return }
             _ = self.terminalManager.resizePaneAxis(
@@ -407,6 +415,60 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             rekeySession: terminalManager.usesClientResize
         )
         window?.title = "\(name) — Muxterm"
+    }
+
+    @discardableResult
+    func moveTab(from: UInt32, target: UInt32, before: Bool) -> Bool {
+        guard terminalManager.usesClientResize, from != target else { return false }
+        guard bridge.execute(
+            task: MuxTask.moveTab(from: from, target: target, before: before)
+        ) == 0 else {
+            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+            return false
+        }
+        needsLayoutReload = true
+        scheduleStatusBarRefresh()
+        return true
+    }
+
+    @objc func moveActiveTabLeft() {
+        moveActiveTab(offset: -1)
+    }
+
+    @objc func moveActiveTabRight() {
+        moveActiveTab(offset: 1)
+    }
+
+    private func moveActiveTab(offset: Int) {
+        guard let index = lastSnapshot.tabs.firstIndex(where: \.isActive) else { return }
+        let destination = index + offset
+        guard lastSnapshot.tabs.indices.contains(destination) else { return }
+        _ = moveTab(
+            from: lastSnapshot.tabs[index].id,
+            target: lastSnapshot.tabs[destination].id,
+            before: offset < 0
+        )
+    }
+
+    @objc func moveActivePaneToNewTab() {
+        guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
+            ?? lastSnapshot.panes.first?.id else { return }
+        _ = movePaneToNewTab(pane)
+    }
+
+    @discardableResult
+    func movePaneToNewTab(_ paneId: UInt32) -> Bool {
+        guard terminalManager.usesClientResize,
+              lastSnapshot.panes.count > 1,
+              lastSnapshot.panes.contains(where: { $0.id == paneId })
+        else { return false }
+        guard bridge.execute(task: MuxTask.breakPane(paneId)) == 0 else {
+            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+            return false
+        }
+        needsLayoutReload = true
+        scheduleStatusBarRefresh()
+        return true
     }
 
     @objc func closeActivePane() {
@@ -1044,6 +1106,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandNavigationPanes.removeAll()
         wireTerminalManagerCallbacks()
         content.paneLayout.replaceTerminalManager(slot.terminalManager)
+        content.statusBar.allowsTabReordering = terminalManager.usesClientResize
+        content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
         // warm slot 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
         // 避免旧 slot 还是切换前的小字体。
         terminalManager.setFont(
@@ -1305,6 +1369,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if terminalManager.usesClientResize {
             items.insert(
                 PaletteItem(
+                    title: i18n.tr(.movePaneToNewTab),
+                    detail: i18n.tr(.movePaneToNewTabDetail),
+                    keywords: "move break pane new tab 移动 拆分 窗格 标签页",
+                    kind: .command(.movePaneToNewTab)
+                ),
+                at: 5
+            )
+            items.insert(
+                PaletteItem(
                     title: i18n.tr(.detach),
                     detail: i18n.tr(.detachDetail),
                     keywords: "detach tmux session 分离连接",
@@ -1331,6 +1404,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.renameWorkspace):
             commandPalette.dismiss()
             renameCurrentWorkspace()
+        case .command(.movePaneToNewTab):
+            commandPalette.dismiss()
+            moveActivePaneToNewTab()
         case .command(.splitHorizontal):
             commandPalette.dismiss()
             splitHorizontal()

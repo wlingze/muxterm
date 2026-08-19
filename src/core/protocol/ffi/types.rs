@@ -40,7 +40,9 @@ pub const TASK_SHUTDOWN: u32 = 7;
 pub const TASK_SWITCH_PANE: u32 = 8;
 pub const TASK_DETACH: u32 = 9;
 pub const TASK_TOGGLE_PANE_FULLSCREEN: u32 = 10;
-pub const TASK_MOVE_WINDOW: u32 = 11;
+pub const TASK_MOVE_TAB: u32 = 11;
+/// ABI compatibility for pre-workspace macOS builds.
+pub const TASK_MOVE_WINDOW: u32 = TASK_MOVE_TAB;
 pub const TASK_BREAK_PANE: u32 = 12;
 pub const TASK_REFRESH_TABS: u32 = 13;
 pub const TASK_RENAME_TAB: u32 = 14;
@@ -49,6 +51,8 @@ pub const TASK_RENAME_WORKSPACE: u32 = 15;
 // ── Split dir / layout node ────────────────────────────────
 pub const DIR_HORIZONTAL: u32 = 0;
 pub const DIR_VERTICAL: u32 = 1;
+pub const TAB_MOVE_BEFORE: u32 = 0;
+pub const TAB_MOVE_AFTER: u32 = 1;
 
 pub const LAYOUT_LEAF: u32 = 0;
 pub const LAYOUT_SPLIT_H: u32 = 1;

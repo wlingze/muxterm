@@ -1249,6 +1249,7 @@ impl TmuxRuntime {
     /// 解析 `list-windows -t <session> -F '#{window_id},#{window_name},#{window_active},#{window_layout},#{window_panes},#{window_zoomed_flag}'` 的响应。
     fn handle_list_windows_response(&mut self, lines: Vec<String>) {
         // tmux list-windows 返回所有 tmux window → 每个创建/更新一个 muxterm Tab
+        let mut order = HashMap::new();
         for line in lines {
             let line = line.trim();
             if line.is_empty() {
@@ -1261,6 +1262,7 @@ impl TmuxRuntime {
                 tracing::warn!(target: "muxterm::tmux", "list-windows 行解析失败: {line}");
                 continue;
             };
+            order.insert(tab, order.len());
             self.window_layouts.insert(tab, layout_str);
             if zoomed {
                 self.window_zoomed.insert(tab);
@@ -1285,6 +1287,10 @@ impl TmuxRuntime {
             // 主动查询该 tmux window 的 panes
             self.query_list_panes(tab);
         }
+        // TabId 是稳定的 @window_id；用户拖动 tab 只会改变 tmux index，
+        // 因此必须按 list-windows 的返回顺序重排，不能保留旧 Vec 顺序。
+        self.tabs
+            .sort_by_key(|tab| order.get(&tab.id).copied().unwrap_or(usize::MAX));
     }
 
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
@@ -1950,13 +1956,23 @@ impl Runtime for TmuxRuntime {
                 }
                 TaskOutcome::Done
             }
-            Task::MoveWindow { from, to_index } => {
-                let c = cmd::move_window(*from, *to_index);
+            Task::MoveTab {
+                from,
+                target,
+                before,
+            } => {
+                if from == target {
+                    return Ok(TaskOutcome::Done);
+                }
+                let c = cmd::move_window(*from, *target, *before);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
                     });
                 }
+                // move-window 可能只推 unlink 通知；紧随 mutation 的权威查询
+                // 恢复被临时移除的 tab，并同步新的 index 顺序。
+                self.query_list_windows();
                 TaskOutcome::Done
             }
             Task::BreakPane { target } => {
@@ -1966,6 +1982,9 @@ impl Runtime for TmuxRuntime {
                         reason: "发送命令失败".into(),
                     });
                 }
+                // break-pane 会同时改变 window 与 pane 归属；按命令队列顺序
+                // 查询，响应里再为每个 tab 查询 panes。
+                self.query_list_windows();
                 TaskOutcome::Done
             }
             Task::RefreshTabs => {
@@ -3482,6 +3501,30 @@ mod tests {
         // 产品层无 Window：State 只暴露 workspace/tab/pane
         assert_eq!(b.workspace_name(), "demo");
         assert_eq!(b.workspace_runtime(), "tmux");
+    }
+
+    #[test]
+    fn list_windows_response_reorders_tabs_by_tmux_index() {
+        let mut b = TmuxRuntime::new(None);
+        b.handle_list_windows_response(vec![
+            "@0,first,1,aaaa,80x24,0,0,1,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0".into(),
+        ]);
+        assert_eq!(
+            b.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![TabId(0), TabId(1),]
+        );
+
+        b.handle_list_windows_response(vec![
+            "@1,second,1,bbbb,80x24,0,0,1,0".into(),
+            "@0,first,0,aaaa,80x24,0,0,1,0".into(),
+        ]);
+
+        assert_eq!(
+            b.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![TabId(1), TabId(0)],
+            "Tab 顺序必须跟随 list-windows 返回的 tmux index 顺序"
+        );
     }
 
     /// 回归：未指定 workdir 的 split 先查当前 pane 路径，再用该路径 split -c，

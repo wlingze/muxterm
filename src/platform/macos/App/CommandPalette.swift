@@ -6,6 +6,7 @@ enum PaletteCommand: Equatable {
     case newTab
     case renameTab
     case renameWorkspace
+    case movePaneToNewTab
     case splitHorizontal
     case splitVertical
     case nextPane
