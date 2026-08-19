@@ -30,6 +30,7 @@ public enum KeyBindingsConfig {
         case "decrease_font_size": return .decreaseFontSize
         case "reset_font_size": return .resetFontSize
         case "toggle_pane_fullscreen": return .togglePaneFullscreen
+        case "switch_tab_last": return .switchLastTab
         default:
             // switch_tab_N
             if name.hasPrefix("switch_tab_"),

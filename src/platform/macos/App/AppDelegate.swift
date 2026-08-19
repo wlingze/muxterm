@@ -163,6 +163,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             item.keyEquivalentModifierMask = .command
             windowMenu.addItem(item)
         }
+        let lastTab = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.switchLastTab),
+            action: #selector(MainWindowController.switchToLastTab),
+            keyEquivalent: "0"
+        )
+        lastTab.target = windowController
+        lastTab.keyEquivalentModifierMask = .option
+        windowMenu.addItem(lastTab)
 
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
@@ -229,6 +237,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         prevPane.target = windowController
         viewMenu.addItem(prevPane)
 
+        let previousCommand = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.previousCommand),
+            action: #selector(MainWindowController.jumpToPreviousCommand),
+            keyEquivalent: "\u{F700}"
+        )
+        previousCommand.keyEquivalentModifierMask = [.command, .option]
+        previousCommand.target = windowController
+        viewMenu.addItem(previousCommand)
+
+        let nextCommand = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.nextCommand),
+            action: #selector(MainWindowController.jumpToNextCommand),
+            keyEquivalent: "\u{F701}"
+        )
+        nextCommand.keyEquivalentModifierMask = [.command, .option]
+        nextCommand.target = windowController
+        viewMenu.addItem(nextCommand)
+
         let increaseFont = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuIncreaseFontSize),
             action: #selector(MainWindowController.increaseTerminalFontSize(_:)),
@@ -259,7 +285,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(NSMenuItem.separator())
 
         let quickConnectItem = NSMenuItem(
-            title: "Quick Connect",
+            title: MuxtermI18n.shared.tr(.quickConnect),
             action: #selector(MainWindowController.openQuickConnect),
             keyEquivalent: "p"
         )
