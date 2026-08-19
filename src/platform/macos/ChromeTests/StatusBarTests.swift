@@ -67,14 +67,14 @@ final class StatusQueryTargetTests: XCTestCase {
         XCTAssertEqual(target.sshAlias, "ryzen")
     }
 
-    func testSshWithExplicitAliasWins() {
+    func testSshWithExplicitAliasPreservesRemoteSocket() {
         let target = StatusQueryTarget.resolve(
             backendType: "ssh",
-            socket: "ryzen",
-            sshAlias: "other"
+            socket: "muxterm-test-remote",
+            sshAlias: "ryzen"
         )
-        XCTAssertNil(target.socket)
-        XCTAssertEqual(target.sshAlias, "other")
+        XCTAssertEqual(target.socket, "muxterm-test-remote")
+        XCTAssertEqual(target.sshAlias, "ryzen")
     }
 }
 

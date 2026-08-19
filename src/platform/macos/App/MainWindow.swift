@@ -98,8 +98,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         debug: Bool = false,
         quickConnectStore injectedQuickConnectStore: QuickConnectStore? = nil
     ) {
-        discovery.attachedLocalSocket = bridge.socket
-        discovery.attachedRemoteSocket = bridge.socket
+        discovery.attachedLocalSocket = bridge.sshAlias == nil ? bridge.socket : nil
+        discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
         let toml = try? String(contentsOf: KeyBindingsConfig.defaultConfigURL, encoding: .utf8)
         if let toml {
             customKeybindings = KeyBindingsConfig.parse(toml: toml)
@@ -1726,6 +1726,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func showSessions(for target: ConnectionTarget) {
+        let targetSocket = ConnectionDiscoverySocketPolicy.socket(
+            for: target,
+            currentSSHHost: bridge.sshAlias,
+            currentSocket: bridge.socket
+        )
+        switch target {
+        case .local:
+            discovery.attachedLocalSocket = targetSocket
+        case .ssh:
+            discovery.attachedRemoteSocket = targetSocket
+        }
         commandPalette.update(
             items: [PaletteItem(
                 title: MuxtermI18n.shared.tr(.newSession),

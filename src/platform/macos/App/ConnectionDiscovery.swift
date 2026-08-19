@@ -29,6 +29,23 @@ enum ConnectionTarget: Equatable {
     }
 }
 
+/// 只有查询目标就是当前连接时才能复用其 tmux `-L` socket。
+/// 本地 socket 绝不能泄漏到 SSH host，不同 SSH host 之间也不能串用。
+enum ConnectionDiscoverySocketPolicy {
+    static func socket(
+        for target: ConnectionTarget,
+        currentSSHHost: String?,
+        currentSocket: String?
+    ) -> String? {
+        switch target {
+        case .local:
+            return currentSSHHost == nil ? currentSocket : nil
+        case .ssh(let host):
+            return currentSSHHost == host.alias ? currentSocket : nil
+        }
+    }
+}
+
 enum ConnectionDiscoveryError: Error, LocalizedError {
     case commandFailed(String)
     case sshConfigUnreadable
@@ -55,6 +72,12 @@ final class ConnectionDiscovery {
     /// 传进 discover 才能列出隔离 socket 上的 session。
     var attachedLocalSocket: String?
     var attachedRemoteSocket: String?
+    /// 测试/显式启动可指定 SSH config；普通应用启动保持 nil，继续用系统默认配置。
+    private let sshConfigPath: String?
+
+    init(sshConfigPath: String? = ProcessInfo.processInfo.environment["MUXTERM_SSH_CONFIG_PATH"]) {
+        self.sshConfigPath = sshConfigPath
+    }
 
     func listLocalSessions(completion: @escaping (Result<[TmuxSessionInfo], Error>) -> Void) {
         let socket = attachedLocalSocket
@@ -74,7 +97,8 @@ final class ConnectionDiscovery {
             try CoreBridge.discoverTmuxSessions(
                 backendType: "ssh",
                 target: host.alias,
-                socket: self.attachedRemoteSocket
+                socket: self.attachedRemoteSocket,
+                configPath: self.sshConfigPath
             ).map(Self.sessionInfo)
         }, completion: completion)
     }
@@ -82,7 +106,7 @@ final class ConnectionDiscovery {
     /// 列出当前用户已有 SSH 配置中的 alias。
     func sshHosts() -> Result<[SSHHostInfo], Error> {
         do {
-            let hosts = try CoreBridge.discoverSSHHosts()
+            let hosts = try CoreBridge.discoverSSHHosts(configPath: sshConfigPath)
             let mapped = hosts.map {
                 SSHHostInfo(
                     alias: $0.alias,
@@ -131,6 +155,7 @@ final class ConnectionDiscovery {
             try CoreBridge.createTmuxSession(
                 backendType: backend,
                 target: alias,
+                configPath: self.sshConfigPath,
                 session: session,
                 directory: directory
             )
