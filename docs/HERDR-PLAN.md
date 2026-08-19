@@ -191,7 +191,24 @@ socket    = Some(绝对路径 …/sessions/<NAME>/herdr.sock)
 
 GTK：`tests/linux_herdr_worktree_e2e.rs`。当前格 `support()` 含 `WorktreeList` 时，`muxterm-worktree-create` **存在且可点**（或面板入口可见）。另开一个 **tmux** `AppWindow` 路径（可与现有 `linux_feature_e2e` 回归一起保证）：**找不到** `muxterm-worktree-create`。不要为 tmux 实现假 worktree。
 
-`WorktreeRemove`、agent 通知：**本轮不做。**
+`WorktreeRemove` 本轮不做；agent 的通用 attention 接入由后续 H5 扩展。
+
+### H5 — 完整 agent snapshot / event → 通用 Runtime 状态
+
+后续用户验收扩展；仍遵守 H0–H4 分层：
+
+1. `session.snapshot.agents[]` 的协议 19 字段在 `runtime/herdr` 完整解析，包括
+   display metadata、state labels、tokens、agent session、cwd、revision 与未知 wire 值。
+2. `events.subscribe` 的 dot subscription 与 snake global event 都只在
+   `runtime/herdr/events.rs` 出现；结构变化后刷新 snapshot，再 diff 成通用
+   `StateChange::PaneAgentChanged`。
+3. Workspace 缓存通用 `PaneAgentInfo` 并生成 authoritative attention signal；attach
+   初始 blocked/done 不通知，后续 blocked/done 每个 workspace 转换只通知一次，
+   `None` 后恢复 OSC/BEL/正则；hook 与 screen detector 切换的第一帧按 authority
+   bootstrap 处理，不能把 detector settling 的瞬时 Done 当成第二次完成通知。
+4. GTK、FFI 只消费通用事件，禁止按 `runtime == "herdr"` 或 event 名分支。
+5. local/SSH 都用真实 named session；SSH 必须经过 API + client 双 Unix socket
+   forward。输入 `echo` 与 agent transition 都要保留真实契约。
 
 ---
 
@@ -263,7 +280,8 @@ cargo clippy --all-targets -- -D warnings
 
 ## 7. 明确不做
 
-- Herdr 专用侧边栏、agent 列表、插件、graphics、`WorktreeRemove`
+- Herdr 专用侧边栏、agent 列表、插件、graphics、`WorktreeRemove`（通用 attention 的
+  agent 状态接入见 H5，不属于专用 UI）
 - `pane.agent_status_changed` 当身份（tmux OSC/BEL 留下；agent 以后再喂现有 attention）
 - `herdr --remote`
 - TmuxRuntime 报 `Worktree*`

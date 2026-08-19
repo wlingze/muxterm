@@ -323,11 +323,15 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 | `support()` 单测 | Tmux/Shell **不含** `Worktree*`；无能力时 create 被拒 |
 | `herdr_session_contract` | 隔离 session；snapshot 含刚 create 的 workspace |
 | `herdr_feature_contract` | 先涂 `HERDR_LIVE_*` 再 attach；local 逐字 `WriteRaw` + Enter 真执行 `echo` |
+| `herdr_feature_contract` agent lifecycle | 真实 pi；完整 metadata/session/tokens；working→blocked→release 进入通用 `PaneAgentChanged` |
 | `existing_ssh_contract::ssh_herdr_forward_attach_contract` | SSH 双 socket forward；逐字输入后远端 `echo` 真执行 |
+| 同一 SSH contract 的 agent lifecycle | agent working/blocked/release 与完整 metadata 也必须经双 socket forward 到 Workspace |
 | `linux_herdr_e2e` | GTK local：真实 VTE commit 后 VTE + `search_all` 含执行输出 |
+| `linux_herdr_agent_e2e` | GTK 只认通用事件；hook→detector handoff 不伪造 Done；真实后台 pi blocked/done 各通知一次；release 清状态 |
 | `linux_herdr_ssh_e2e` | GTK SSH：真实 VTE commit 经远端 Herdr 执行并 observe 回来 |
 | `herdr_multi_workspace_contract` / `linux_herdr_switch_e2e` | 同一 socket 两格，切过去 token 还在 |
 | `herdr_worktree_contract` / `linux_herdr_worktree_e2e` | list/create/open；`muxterm-worktree-create` 仅 Herdr 格出现 |
+| Herdr session/events 单测 + FFI 单测 | 协议 19 agent 全字段、全部 event dot/snake、unknown 保留；FFI 输出通用 agent JSON |
 
 ```bash
 cargo test --test herdr_feature_contract -- --test-threads=1

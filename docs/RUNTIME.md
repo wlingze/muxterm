@@ -155,6 +155,22 @@ v1 **不要**把这些放进枚举（有需求再加，避免 GUI 为假能力�
 
 和 [`WORKSPACE.md`](WORKSPACE.md) §5 一样。另外：看不见 `worktree.create`、`terminal.frame`、`w2:p1`、`$N`、`%output`。那些停在对应 `runtime/*` 里，翻译成 Task / StateChange / Pool 上的 worktree 操作。
 
+### 4.3 Runtime 权威 agent 状态
+
+Agent lifecycle 不是 Herdr 专属产品类型，也不新增 `RuntimeCapability`。能提供结构化
+状态的 Runtime 统一实现：
+
+```text
+State::pane_agent(PaneId) -> Option<&PaneAgentInfo>
+StateChange::PaneAgentChanged { pane, agent, initial }
+```
+
+`PaneAgentInfo` 保存通用 status、显示名、标题、state labels、tokens、可恢复 session
+引用、cwd、revision 等；不得含 Herdr public pane id 或 event 名。`initial=true` 只播种
+attach 或 authority handoff 的现状，不制造 blocked/done 通知；`agent=None` 释放权威
+来源，Workspace 恢复 OSC/BEL/正则启发式。Workspace/attention/GTK/FFI 只消费上述
+通用模型。
+
 ---
 
 ## 5. Worktree（产品能力，不是第三棵树）
@@ -246,7 +262,12 @@ Shell 同理：进程组不是 git 宿主，也不报 `Worktree*`。
 | `terminal session observe\|control` 的 `terminal.frame`（base64 ANSI） | `PaneOutput` 原始字节 → VTE `feed` |
 | `workspace.*` / `tab.*` / `pane.*` / `layout.updated` | `StateChange` |
 | `worktree.*` | §5 Pool API；workspace 记录上的 provenance 只是提示 |
-| `pane.agent_status_changed` | **以后**喂现有 attention，不新造 UI。v1 可以不订 |
+| `session.snapshot.agents` / `pane.agent_status_changed` / `pane.updated` | Runtime 归一化为 `PaneAgentChanged`，Workspace 喂现有 attention，不新造 Herdr UI |
+
+协议 19 的 headless/background workspace 在尚无前台 viewport 时可能给出零尺寸 layout
+rect。零值是 Herdr wire sentinel：`HerdrRuntime` 必须保留上一份有效 pane geometry 与
+split tree；没有历史时才用 80×24 播种 observer。`PaneInfo` / Workspace 不得看到 0×0，
+也不得因无法定位 pane 而退化成错误的水平分割。
 
 Herdr 文档原话：`session.snapshot` 是给「自己缓存 runtime 状态的客户端」的一次性 bootstrap；之后靠事件。第三方只要终端字节：`terminal session observe`。这和 Muxterm「自己是客户端，不养 session」对齐。
 
