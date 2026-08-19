@@ -35,6 +35,7 @@ pub struct RenderTrace {
     pub resets: u32,
     pub feeds: u32,
     pub bytes_fed: usize,
+    pub seeds: u32,
 }
 
 /// 一个 pane 的 GTK 视图（薄包装；内部用 Rc 供合并定时器弱引用）。
@@ -212,20 +213,14 @@ impl PaneView {
             .renderer
             .terminal()
             .set_size(cols as i64, rows as i64);
-        if self.inner.is_tmux_mirror.get() && self.inner.seeded.get() {
-            // 对齐 macOS updateFullScreen：关掉 rewrap 后旧 CUP 会留在新网格里。
-            self.inner.renderer.terminal().reset(false, true);
-            *self.inner.reply_state.borrow_mut() = TerminalState::new(cols as usize, rows as usize);
-            // 重置已清空 VTE：标记未播种，由下一轮 sync_pane_outputs 从 core
-            // pane_output 重新播种（1820 白屏：ResizeClient 后 tmux 重排会
-            // 触发这里，若只 reset 不重播，attach 快照就永远丢了）。
-            self.inner.seeded.set(false);
-        } else {
-            self.inner
-                .reply_state
-                .borrow_mut()
-                .resize(cols as usize, rows as usize);
-        }
+        // Surface 在 resize 时必须保留已有像素状态。tmux 与 Herdr 都会在
+        // 新尺寸下继续发送 CUP/diff/full ANSI；主动 reset 会把隐藏 tab 的
+        // 唯一 VT 清空，并让“切得动但内容没了”依赖下一次偶然重播才能恢复。
+        // 这里只调整两个终端模型的网格，不清屏、不改变 seed 状态。
+        self.inner
+            .reply_state
+            .borrow_mut()
+            .resize(cols as usize, rows as usize);
     }
 
     /// 输出事件入队合并（同一 pane 短窗口内一次 feed）。
@@ -265,6 +260,11 @@ impl PaneView {
             self.resize_to(cols, rows);
         }
         self.inner.renderer.terminal().reset(true, true);
+        {
+            let mut trace = self.inner.render_trace.borrow_mut();
+            trace.resets += 1;
+            trace.seeds += 1;
+        }
         *self.inner.reply_state.borrow_mut() =
             TerminalState::new(cols.max(2) as usize, rows.max(1) as usize);
         if !data.is_empty() {
@@ -302,12 +302,23 @@ impl PaneView {
                 apply_mirror_mouse_policy(&self.inner);
             });
         }
+        self.inner.render_trace.borrow_mut().seeds += 1;
         self.inner.seeded.set(true);
     }
 
     /// 渲染痕迹（测试断言不刷屏）。
     pub fn render_trace(&self) -> RenderTrace {
         *self.inner.render_trace.borrow()
+    }
+
+    /// 测试/诊断：Surface 自己记录的字符格尺寸。
+    pub fn grid_size(&self) -> (u16, u16) {
+        (self.inner.grid_cols.get(), self.inner.grid_rows.get())
+    }
+
+    /// 测试/诊断：尚未 flush 到 VTE 的原始字节数。
+    pub fn pending_feed_len(&self) -> usize {
+        self.inner.pending_feed.borrow().len()
     }
 
     /// 清空渲染痕迹（测试在独立场景前调用）。

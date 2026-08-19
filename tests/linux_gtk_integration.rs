@@ -228,7 +228,7 @@ fn assert_tab_bar_renders() {
 }
 
 fn assert_pane_layout_widget() {
-    let mut host = LayoutHost::new(load_theme(), FontSettings::default(), false, 10_000);
+    let mut host = LayoutHost::new(load_theme(), FontSettings::default(), true, 10_000);
     use muxterm::core::model::layout::{LayoutNode, SplitDir};
     use muxterm::core::types::PaneId;
     let layout = LayoutNode::Split {
@@ -238,7 +238,7 @@ fn assert_pane_layout_widget() {
         second: std::boxed::Box::new(LayoutNode::Leaf(PaneId(2))),
     };
     let on_input = |_pid: u32, _data: &[u8]| {};
-    assert!(host.apply_layout(&layout, &on_input));
+    assert!(host.apply_layout(1, &layout, &on_input));
     let win = gtk4::Window::builder()
         .title("pane-layout-test")
         .default_width(640)
@@ -249,10 +249,44 @@ fn assert_pane_layout_widget() {
     gtk4::test_widget_wait_for_draw(&win);
     let paned = find_first_paned(&host.root_box).expect("Paned");
     assert_eq!(paned.orientation(), Orientation::Horizontal);
+
+    // 两个 tab 的完整 GTK 根必须同时常驻；切换只改 Stack visible child，
+    // 不能 unparent/reparent VTE 后把已显示内容弄空。
+    host.pane(1)
+        .expect("tab 1 pane")
+        .feed_output(b"TAB_ONE_SURFACE\r\n");
+    host.flush_all_feeds();
+    pump_main_loop(40);
+    assert!(host
+        .pane(1)
+        .expect("tab 1 pane")
+        .visible_text()
+        .contains("TAB_ONE_SURFACE"));
+    let tab2 = LayoutNode::Leaf(PaneId(3));
+    assert!(host.apply_layout(2, &tab2, &on_input));
+    pump_main_loop(40);
+    host.pane(3)
+        .expect("tab 2 pane")
+        .feed_output(b"TAB_TWO_SURFACE\r\n");
+    host.flush_all_feeds();
+    pump_main_loop(40);
+    // Surface 回归：镜像 pane 已有内容后发生后端网格变化，再切 tab，
+    // 不能清空 VTE 并依赖偶然的下一轮事件把内容补回来。
+    host.pane(1).expect("tab 1 pane").ensure_grid_size(100, 30);
+    assert!(!host.apply_layout(1, &layout, &on_input));
+    pump_main_loop(40);
+    host.flush_all_feeds();
+    assert!(
+        host.pane(1)
+            .expect("tab 1 pane")
+            .visible_text()
+            .contains("TAB_ONE_SURFACE"),
+        "切回 tab 1 后 VTE 内容必须保留"
+    );
+    host.reset(false);
     while let Some(child) = host.root_box.first_child() {
         host.root_box.remove(&child);
     }
-    host.panes_mut().clear();
     win.set_child(None::<&Widget>);
     win.destroy();
     pump_main_loop(40);

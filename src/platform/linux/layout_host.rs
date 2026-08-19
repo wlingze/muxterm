@@ -16,17 +16,22 @@ use crate::platform::linux::quickconnect::font::FontSettings;
 /// 布局根：持有 pane_id → PaneView，以及当前根 widget。
 pub struct LayoutHost {
     pub root_box: gtk4::Box,
+    /// 每个 tab 的完整 GTK 树常驻 Stack；切 tab 只 show/hide，不拆 VTE。
+    stack: gtk4::Stack,
+    tab_roots: HashMap<u32, Widget>,
+    tab_leaves: HashMap<u32, Vec<u32>>,
+    active_tab: Option<u32>,
     panes: HashMap<u32, Rc<PaneView>>,
     theme: Theme,
     font: FontSettings,
     is_tmux_mirror: bool,
     scrollback_lines: u32,
     /// 当前布局签名，用于 damage tracking（只在变化时重建）。
-    last_sig: String,
+    last_sig: HashMap<u32, String>,
     /// 当前布局结构签名（不含 ratio），用于区分「结构变化」与「仅 ratio 变化」。
-    last_structure_sig: String,
+    last_structure_sig: HashMap<u32, String>,
     /// 每个 Paned 当前 ratio（permille），供 resize 绑定与 in-place 更新共享。
-    split_ratios: HashMap<Paned, Rc<Cell<u32>>>,
+    split_ratios: HashMap<u32, HashMap<Paned, Rc<Cell<u32>>>>,
     /// 本地 shell 模式的全屏 pane（tmux 模式由 resize-pane -Z 处理）。
     fullscreen_pane: Option<u32>,
 }
@@ -43,15 +48,25 @@ impl LayoutHost {
             .hexpand(true)
             .vexpand(true)
             .build();
+        let stack = gtk4::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .transition_type(gtk4::StackTransitionType::None)
+            .build();
+        root_box.append(&stack);
         Self {
             root_box,
+            stack,
+            tab_roots: HashMap::new(),
+            tab_leaves: HashMap::new(),
+            active_tab: None,
             panes: HashMap::new(),
             theme,
             font,
             is_tmux_mirror,
             scrollback_lines,
-            last_sig: String::new(),
-            last_structure_sig: String::new(),
+            last_sig: HashMap::new(),
+            last_structure_sig: HashMap::new(),
             split_ratios: HashMap::new(),
             fullscreen_pane: None,
         }
@@ -86,9 +101,16 @@ impl LayoutHost {
     pub fn set_fullscreen_pane(&mut self, pane: Option<u32>) {
         if self.fullscreen_pane != pane {
             self.fullscreen_pane = pane;
-            self.last_sig.clear(); // 强制重建
+            // 强制当前 tab 重建；其它 tab 下次显示时也按正常布局校正。
+            self.last_sig.clear();
             self.last_structure_sig.clear();
         }
+    }
+
+    /// 当前显示 tab 的 GTK 根节点（测试和 ratio 更新都只看这一棵）。
+    pub fn active_root_widget(&self) -> Option<Widget> {
+        self.active_tab
+            .and_then(|tab| self.tab_roots.get(&tab).cloned())
     }
 
     pub fn ensure_pane<F>(&mut self, id: u32, on_input: &F) -> Rc<PaneView>
@@ -120,7 +142,7 @@ impl LayoutHost {
     /// 重建会 unparent/reparent VTE widget（unrealize → VTE 停止处理已排队
     /// 的 feed），所以 ratio 变化不能走重建：tmux 每次 ResizeClient 都会微调
     /// split ratio，重建会让 attach 快照永远停在 VTE 队列里（1820 白屏）。
-    pub fn apply_layout<F>(&mut self, layout: &LayoutNode, on_input: &F) -> bool
+    pub fn apply_layout<F>(&mut self, tab_id: u32, layout: &LayoutNode, on_input: &F) -> bool
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
     {
@@ -147,38 +169,54 @@ impl LayoutHost {
         }
         let sig = layout_signature(&effective);
         let structure_sig = layout_structure_signature(&effective);
-        if structure_sig == self.last_structure_sig {
-            if sig != self.last_sig {
+        if self.last_structure_sig.get(&tab_id) == Some(&structure_sig) {
+            if self.last_sig.get(&tab_id) != Some(&sig) {
                 // 仅 ratio 变化：更新 Paned 位置，不重建 GTK 树。
                 tracing::info!(
                     target: "muxterm::layout",
+                    tab = tab_id,
                     sig = %sig,
                     "layout ratio update (no rebuild)"
                 );
-                self.last_sig = sig;
-                self.update_split_positions(&effective);
+                self.last_sig.insert(tab_id, sig);
+                self.update_split_positions(tab_id, &effective);
+            }
+            if let Some(root) = self.tab_roots.get(&tab_id) {
+                self.stack.set_visible_child(root);
+                self.active_tab = Some(tab_id);
             }
             return false;
         }
         tracing::info!(
             target: "muxterm::layout",
+            tab = tab_id,
             sig = %sig,
             "layout rebuild"
         );
-        self.last_sig = sig;
-        self.last_structure_sig = structure_sig;
-        self.split_ratios.clear();
+        self.last_sig.insert(tab_id, sig);
+        self.last_structure_sig.insert(tab_id, structure_sig);
+        self.split_ratios.remove(&tab_id);
 
-        // 先把 pane widget 从旧 Paned 摘掉，再清空根（顺序反了会触发 unparent 断言）
-        for view in self.panes.values() {
-            let w = view.widget();
-            if w.parent().is_some() {
-                w.unparent();
+        // 只拆当前 tab 的旧树；其它 tab 完整留在 Stack 中，切换只 show/hide。
+        // 先通过 GtkStack API 移除 page，再从旧 Paned 摘 leaf。叶子本身就是
+        // page root 时不能直接 unparent，否则 StackPage 会残留同名 child。
+        let old_root = self.tab_roots.remove(&tab_id);
+        if let Some(root) = old_root.as_ref() {
+            if root.parent().is_some() {
+                self.stack.remove(root);
             }
         }
-        while let Some(child) = self.root_box.first_child() {
-            self.root_box.remove(&child);
+        if let Some(previous_leaves) = self.tab_leaves.remove(&tab_id) {
+            for pane in previous_leaves {
+                if let Some(view) = self.panes.get(&pane) {
+                    let widget = view.widget();
+                    if widget.parent().is_some() {
+                        widget.unparent();
+                    }
+                }
+            }
         }
+        drop(old_root);
 
         // 收集新树需要的 pane id，缺失的创建；已有的一律保留（跨 tab 像素缓存）。
         let mut needed = Vec::new();
@@ -187,13 +225,20 @@ impl LayoutHost {
             self.ensure_pane(*id, on_input);
         }
 
-        let widget = self.build_widget(&effective);
+        let mut ratios = HashMap::new();
+        let widget = self.build_widget(&effective, &mut ratios);
         // 后挂载的布局（SSH attach 切工作区）也要让 VTE 撑满 root_box：
         // 显式 expand + queue_resize，避免新 child 在已分配 Box 里拿 0 尺寸。
         widget.set_hexpand(true);
         widget.set_vexpand(true);
-        self.root_box.append(&widget);
-        self.root_box.queue_resize();
+        let name = format!("muxterm-tab-{tab_id}");
+        self.stack.add_named(&widget, Some(&name));
+        self.stack.set_visible_child(&widget);
+        self.tab_roots.insert(tab_id, widget);
+        self.tab_leaves.insert(tab_id, needed);
+        self.split_ratios.insert(tab_id, ratios);
+        self.active_tab = Some(tab_id);
+        self.stack.queue_resize();
         true
     }
 
@@ -204,6 +249,12 @@ impl LayoutHost {
         self.last_sig.clear();
         self.last_structure_sig.clear();
         self.split_ratios.clear();
+        self.active_tab = None;
+        for (_, root) in self.tab_roots.drain() {
+            if root.parent().is_some() {
+                self.stack.remove(&root);
+            }
+        }
         for view in self.panes.values() {
             let w = view.widget();
             if w.parent().is_some() {
@@ -211,9 +262,7 @@ impl LayoutHost {
             }
         }
         self.panes.clear();
-        while let Some(child) = self.root_box.first_child() {
-            self.root_box.remove(&child);
-        }
+        self.tab_leaves.clear();
     }
 
     /// 运行期切换主题：所有已有 pane 的 VTE 调色板同步更新。
@@ -245,13 +294,19 @@ impl LayoutHost {
     }
 
     /// 仅 ratio 变化时，沿现有 GTK 树更新 Paned 位置（不重建、不 unparent）。
-    fn update_split_positions(&self, layout: &LayoutNode) {
-        if let Some(root) = self.root_box.first_child() {
-            update_split_positions_walk(&root, layout, &self.split_ratios);
+    fn update_split_positions(&self, tab_id: u32, layout: &LayoutNode) {
+        if let (Some(root), Some(ratios)) =
+            (self.tab_roots.get(&tab_id), self.split_ratios.get(&tab_id))
+        {
+            update_split_positions_walk(root, layout, ratios);
         }
     }
 
-    fn build_widget(&mut self, layout: &LayoutNode) -> Widget {
+    fn build_widget(
+        &self,
+        layout: &LayoutNode,
+        ratios: &mut HashMap<Paned, Rc<Cell<u32>>>,
+    ) -> Widget {
         match layout {
             LayoutNode::Leaf(pane_id) => self
                 .panes
@@ -275,8 +330,8 @@ impl LayoutHost {
                 let paned = Paned::new(orient);
                 paned.set_hexpand(true);
                 paned.set_vexpand(true);
-                let w1 = self.build_widget(first);
-                let w2 = self.build_widget(second);
+                let w1 = self.build_widget(first, ratios);
+                let w2 = self.build_widget(second, ratios);
                 paned.set_start_child(Some(&w1));
                 paned.set_end_child(Some(&w2));
                 paned.set_resize_start_child(true);
@@ -284,7 +339,7 @@ impl LayoutHost {
                 paned.set_shrink_start_child(false);
                 paned.set_shrink_end_child(false);
                 let ratio_cell = Rc::new(Cell::new(u32::from(*ratio)));
-                self.split_ratios.insert(paned.clone(), ratio_cell.clone());
+                ratios.insert(paned.clone(), ratio_cell.clone());
                 bind_split_position(&paned, horizontal, ratio_cell);
                 paned.upcast()
             }
@@ -448,11 +503,13 @@ mod tests {
                 first: Box::new(LayoutNode::Leaf(PaneId(7))),
                 second: Box::new(LayoutNode::Leaf(PaneId(7))),
             };
-            let rebuilt = host.apply_layout(&duplicate, &|_, _| {});
+            let rebuilt = host.apply_layout(1, &duplicate, &|_, _| {});
             assert!(!rebuilt, "重复 pane leaf 必须在 GTK parenting 前被拒绝");
+            // root_box 恒有 stack（new 时 append）；拒绝后 stack 里不得出现
+            // 任何 tab 树，即没有把重复 leaf 的 VTE 塞进任何 Paned。
             assert!(
-                host.root_box.first_child().is_none(),
-                "无旧布局时拒绝重复 leaf 后 root 必须保持空"
+                host.stack.first_child().is_none(),
+                "无旧布局时拒绝重复 leaf 后 stack 必须保持空"
             );
         });
     }

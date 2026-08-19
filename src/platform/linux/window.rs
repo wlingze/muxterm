@@ -228,10 +228,10 @@ impl AppWindow {
             }
             s.pool.shutdown_all();
             for layout in s.pixel_cache.values_mut() {
+                layout.reset(false);
                 while let Some(child) = layout.root_box.first_child() {
                     layout.root_box.remove(&child);
                 }
-                layout.panes_mut().clear();
             }
             // Popover 挂在状态点按钮上：先解除父子关系，避免 dot 销毁时
             // popover 仍引用它（finalize-with-children 堆损坏）。
@@ -827,6 +827,49 @@ impl AppWindow {
         true
     }
 
+    /// 测试用：调用生产快捷键动作分发，禁止集成测试绕过 `handle_action`
+    /// 直接构造 `Task`。
+    pub fn test_handle_action(&self, action: Action) {
+        let mut s = self._state.borrow_mut();
+        handle_action(&mut s, action, &self.window, &self._state);
+    }
+
+    /// 测试用：当前工作区的稳定 replica id，供 `WorkspacePool` 切换断言。
+    pub fn test_active_workspace_replica_id(&self) -> String {
+        active_workspace_id(&self._state.borrow())
+    }
+
+    /// 测试用：当前工作区 Runtime id。
+    pub fn test_active_workspace_runtime(&self) -> String {
+        self._state
+            .borrow()
+            .active_workspace()
+            .runtime()
+            .workspace_runtime()
+            .to_string()
+    }
+
+    /// 测试用：能力判断必须走 Runtime 契约，不能按 runtime 名字分支。
+    pub fn test_active_runtime_supports(&self, capability: RuntimeCapability) -> bool {
+        self._state
+            .borrow()
+            .active_workspace()
+            .runtime()
+            .support()
+            .contains(&capability)
+    }
+
+    /// 测试用：对当前 Runtime 执行真实 detach。仅在 `PersistDetach` 为真时调用。
+    pub fn test_detach_active_workspace(&self) -> bool {
+        matches!(
+            self._state
+                .borrow_mut()
+                .active_workspace_mut()
+                .execute(Task::Detach),
+            Ok(crate::core::model::task::TaskOutcome::Done)
+        )
+    }
+
     /// 测试用：走生产 `adjust_font(+1)`（Ctrl+= 热路径）。
     pub fn test_increase_font(&self) {
         let mut s = self._state.borrow_mut();
@@ -917,10 +960,40 @@ impl AppWindow {
 
         let s = self._state.borrow();
         let mut orientations = Vec::new();
-        if let Some(root) = s.active_layout().root_box.first_child() {
+        if let Some(root) = s.active_layout().active_root_widget() {
             collect(&root, &mut orientations);
         }
         orientations
+    }
+
+    /// 测试用：真实 GTK 子树签名。`H(L,V(L,L))` 表示左侧单 pane，右侧
+    /// 再上下分割；可抓住把 Herdr Vertical 错画成 Horizontal 的回归。
+    pub fn test_gtk_layout_signature(&self) -> String {
+        fn signature(widget: &gtk4::Widget) -> String {
+            let Ok(paned) = widget.clone().downcast::<gtk4::Paned>() else {
+                return "L".to_string();
+            };
+            let direction = match paned.orientation() {
+                gtk4::Orientation::Horizontal => "H",
+                gtk4::Orientation::Vertical => "V",
+                _ => "?",
+            };
+            let start = paned
+                .start_child()
+                .map(|child| signature(&child))
+                .unwrap_or_else(|| "_".to_string());
+            let end = paned
+                .end_child()
+                .map(|child| signature(&child))
+                .unwrap_or_else(|| "_".to_string());
+            format!("{direction}({start},{end})")
+        }
+
+        let s = self._state.borrow();
+        s.active_layout()
+            .active_root_widget()
+            .map(|root| signature(&root))
+            .unwrap_or_default()
     }
 
     /// 测试用：pane 控件分配尺寸（0×0 = 白屏）。
@@ -1220,8 +1293,11 @@ impl AppWindow {
         while Instant::now() < deadline {
             self.test_poll_once();
             while glib::MainContext::default().iteration(false) {}
-            let active = self._state.borrow().pool.active_id().cloned();
-            if active.as_ref() == Some(&id) {
+            let (active, connecting) = {
+                let s = self._state.borrow();
+                (s.pool.active_id().cloned(), !s.pending_connects.is_empty())
+            };
+            if active.as_ref() == Some(&id) && !connecting {
                 return;
             }
         }
@@ -2199,7 +2275,9 @@ fn refresh_ui(s: &mut UiState) {
                 data: data.to_vec(),
             });
         };
-        s.active_layout_mut().apply_layout(&tree, &input_cb);
+        let layout_tab = s.active_tab;
+        s.active_layout_mut()
+            .apply_layout(layout_tab, &tree, &input_cb);
 
         for (pane_id, cols, rows, active) in panes {
             if let Some(view) = s.active_layout().pane(pane_id).cloned() {
@@ -3741,8 +3819,19 @@ fn after_activate(s: &mut UiState) {
                 .expect("layout 必须存在")
                 .set_font(&font);
         }
-        let layout = s.pixel_cache.get(&id).expect("layout 必须存在");
-        s.layout_overlay.set_child(Some(&layout.root_box));
+        let root = s
+            .pixel_cache
+            .get(&id)
+            .expect("layout 必须存在")
+            .root_box
+            .clone();
+        // GtkOverlay 的旧主 child 必须先显式摘下；直接用新 child 覆盖时，
+        // 嵌套 GtkStack 在部分 GTK4 版本会先 set_parent(new) 再清旧 parent，
+        // 触发 gtk_widget_set_parent critical。
+        if s.layout_overlay.child().as_ref() != Some(root.upcast_ref()) {
+            s.layout_overlay.set_child(None::<&gtk4::Widget>);
+            s.layout_overlay.set_child(Some(&root));
+        }
         s.mounted_ws = Some(id);
     }
     s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
