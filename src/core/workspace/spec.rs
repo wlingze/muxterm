@@ -91,6 +91,19 @@ impl WorkspaceSpec {
         }
     }
 
+    pub fn ssh_shell(alias: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            transport: "ssh".into(),
+            alias: Some(alias.into()),
+            session: String::new(),
+            runtime: "shell".into(),
+            path: path.into(),
+            socket: None,
+            create: false,
+            scrollback_lines: 10_000,
+        }
+    }
+
     /// SSH Herdr：远端 socket 已转发到本机 `socket_path` 后 attach。
     pub fn ssh_herdr(
         alias: impl Into<String>,
@@ -178,6 +191,12 @@ impl WorkspaceSpec {
                     HerdrSession::shared(&self.session, self.socket.clone().unwrap_or_default());
                 Box::new(HerdrRuntime::new(session, &self.path))
             }
+            "shell" if self.transport == "ssh" => Box::new(ShellRuntime::new_ssh(
+                self.alias.as_deref().unwrap_or_default(),
+                "$SHELL",
+                &self.path,
+            )),
+            "shell" => Box::new(ShellRuntime::new("$SHELL", &self.path)),
             "daemon" => {
                 let name = if self.session.is_empty() {
                     "default"
@@ -215,6 +234,24 @@ mod tests {
         assert_eq!(shell.id().path, "/tmp/work");
         assert_eq!(shell.id().runtime, "shell");
         assert!(!shell.name().is_empty());
+
+        let ssh_shell = WorkspaceSpec::ssh_shell("dev", "/srv/project");
+        assert_eq!(ssh_shell.id().transport, "ssh");
+        assert_eq!(ssh_shell.id().alias.as_deref(), Some("dev"));
+        assert_eq!(ssh_shell.id().runtime, "shell");
+        assert_eq!(ssh_shell.id().path, "/srv/project");
+    }
+
+    #[test]
+    fn ssh_shell_builds_shell_runtime_without_local_fallback() {
+        let spec = WorkspaceSpec::ssh_shell("dev", "/srv/project");
+        let runtime = spec.build_runtime();
+        assert_eq!(runtime.workspace_runtime(), "shell");
+        let shell = runtime
+            .as_any()
+            .downcast_ref::<ShellRuntime>()
+            .expect("SSH shell 必须构造 ShellRuntime");
+        assert_eq!(shell.test_ssh_alias(), Some("dev"));
     }
 
     #[test]

@@ -34,6 +34,8 @@ use crate::core::model::layout::{LayoutNode, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
+use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
+use crate::core::transport::{PtySize as TransportPtySize, Transport, TransportSignal};
 use crate::core::types::{PaneId, TabId};
 
 /// 默认字符格尺寸。
@@ -53,17 +55,25 @@ enum PtyMsg {
     },
 }
 
-/// 一个本地 pane 的运行时状态。
+/// pane 进程可能是本地 PTY，也可能是 SSH transport。
+enum PaneProcess {
+    Local {
+        master: Box<dyn portable_pty::MasterPty + Send>,
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+    },
+    Ssh {
+        transport: SshProcessTransport,
+    },
+}
+
+/// 一个 shell pane 的运行时状态。
 struct LocalPane {
     info: PaneInfo,
-    /// pty master（写 / resize / wait）。
-    master: Box<dyn portable_pty::MasterPty + Send>,
-    /// 子进程句柄（kill / reap）。
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    process: PaneProcess,
     /// 累积输出字节流。
     output: Vec<u8>,
-    /// 写端（Arc<Mutex> 供跨线程写）。
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// 本地 PTY 写端；SSH 直接写入 transport。
+    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
     /// pid（用于进程名查询，标题更新）。
     pid: u32,
 }
@@ -93,6 +103,8 @@ pub struct ShellRuntime {
     /// 配置：默认启动命令 + 工作目录。
     default_command: String,
     default_workdir: String,
+    /// None = 本地 PTY；Some(alias) = 每个 pane 经 SSH transport 启动远端 shell。
+    ssh_alias: Option<String>,
 
     workspace_name: String,
     tabs: Vec<LocalTab>,
@@ -119,6 +131,7 @@ impl ShellRuntime {
         Self {
             default_command: default_command.into(),
             default_workdir: default_workdir.into(),
+            ssh_alias: None,
             workspace_name: "local".into(),
             tabs: vec![],
             panes: vec![],
@@ -130,6 +143,24 @@ impl ShellRuntime {
             pty_rx: None,
             intentionally_closed: HashSet::new(),
         }
+    }
+
+    /// 创建 SSH shell Runtime；tab/pane 语义仍由本 Runtime 统一维护。
+    pub fn new_ssh(
+        alias: impl Into<String>,
+        default_command: impl Into<String>,
+        default_workdir: impl Into<String>,
+    ) -> Self {
+        let alias = alias.into();
+        let mut runtime = Self::new(default_command, default_workdir);
+        runtime.workspace_name = alias.clone();
+        runtime.ssh_alias = Some(alias);
+        runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_ssh_alias(&self) -> Option<&str> {
+        self.ssh_alias.as_deref()
     }
 
     /// 用 `Config` 创建。
@@ -145,15 +176,42 @@ impl ShellRuntime {
     /// 子进程 Exit（如 Ctrl+D 退出 shell）：仅剩 1 个 pane 时关闭整个 window；
     /// 否则只关闭该 pane。
     fn drain_pty_output(&mut self) {
-        let Some(rx) = self.pty_rx.as_mut() else {
-            return;
-        };
         let mut outputs = Vec::new();
         let mut exits = Vec::new();
-        while let Ok(msg) = rx.try_recv() {
-            match msg {
-                PtyMsg::Output { pane, data } => outputs.push((pane, data)),
-                PtyMsg::Exit { pane } => exits.push(pane),
+
+        // SSH transport 自带后台 reader；在 Runtime refresh 时非阻塞 drain。
+        for pane in &mut self.panes {
+            let PaneProcess::Ssh { transport } = &mut pane.process else {
+                continue;
+            };
+            loop {
+                match transport.read() {
+                    Ok(Some(data)) => outputs.push((pane.info.id, data)),
+                    Ok(None) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        exits.push(pane.info.id);
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target = "muxterm::shell",
+                            pane = pane.info.id.0,
+                            %error,
+                            "ssh shell read failed"
+                        );
+                        exits.push(pane.info.id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(rx) = self.pty_rx.as_mut() {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    PtyMsg::Output { pane, data } => outputs.push((pane, data)),
+                    PtyMsg::Exit { pane } => exits.push(pane),
+                }
             }
         }
         for (pane, data) in outputs {
@@ -351,6 +409,21 @@ impl ShellRuntime {
             .map(expand_config_value)
             .unwrap_or_else(|| expand_config_value(&self.default_workdir));
 
+        if let Some(alias) = self.ssh_alias.clone() {
+            let use_remote_default_shell =
+                command.is_none() && self.default_command.trim() == "$SHELL";
+            return self.spawn_ssh_pane(
+                &alias,
+                tab,
+                &argv,
+                &workdir,
+                use_remote_default_shell,
+                cols,
+                rows,
+                active,
+            );
+        }
+
         let pty_system = NativePtySystem::default();
         let pair = pty_system
             .openpty(PtySize {
@@ -426,13 +499,79 @@ impl ShellRuntime {
                 cols,
                 rows,
             },
-            master: pair.master,
-            child,
+            process: PaneProcess::Local {
+                master: pair.master,
+                child,
+            },
             output: Vec::new(),
-            writer: Arc::new(Mutex::new(writer)),
+            writer: Some(Arc::new(Mutex::new(writer))),
             pid,
         };
         self.panes.push(pane);
+        Ok(pane_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_ssh_pane(
+        &mut self,
+        alias: &str,
+        tab: TabId,
+        argv: &[String],
+        workdir: &str,
+        use_remote_default_shell: bool,
+        cols: u16,
+        rows: u16,
+        active: bool,
+    ) -> Result<PaneId> {
+        let exec = if use_remote_default_shell {
+            "exec \"${SHELL:-/bin/sh}\"".to_string()
+        } else {
+            let quoted = argv
+                .iter()
+                .map(|arg| crate::core::discovery::shell_quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("exec {quoted}")
+        };
+        let remote_command = if workdir.is_empty() {
+            exec
+        } else {
+            format!(
+                "cd {} && {exec}",
+                crate::core::discovery::shell_quote(workdir)
+            )
+        };
+        let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+        let (program, args) = build_ssh_command(alias, &remote_command, ssh_config.as_deref());
+        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut transport = SshProcessTransport::new();
+        transport
+            .spawn_exec(&program, &arg_refs, TransportPtySize::new(cols, rows))
+            .with_context(|| format!("spawn SSH shell 失败（alias={alias}）"))?;
+        let writer = transport
+            .take_pty_writer()
+            .with_context(|| format!("获取 SSH shell writer 失败（alias={alias}）"))?;
+
+        let pane_id = self.alloc_pane_id();
+        let title = if use_remote_default_shell {
+            "shell".to_string()
+        } else {
+            program_basename(&argv[0])
+        };
+        self.panes.push(LocalPane {
+            info: PaneInfo {
+                id: pane_id,
+                tab,
+                active,
+                title,
+                cols,
+                rows,
+            },
+            process: PaneProcess::Ssh { transport },
+            output: Vec::new(),
+            writer: Some(Arc::new(Mutex::new(writer))),
+            pid: 0,
+        });
         Ok(pane_id)
     }
 
@@ -498,18 +637,25 @@ impl ShellRuntime {
         let idx = self.panes.iter().position(|p| p.info.id == pane)?;
         self.intentionally_closed.insert(pane);
         let mut p = self.panes.remove(idx);
-        // kill 子进程
-        let _ = p.child.kill();
-        // 关 master（drop 即可）
+        match &mut p.process {
+            PaneProcess::Local { child, .. } => {
+                let _ = child.kill();
+            }
+            PaneProcess::Ssh { transport } => {
+                let _ = transport.kill(TransportSignal::Hangup);
+            }
+        }
         Some(p)
     }
 
     /// 把字节写入 pane 的 pty。
     fn write_to_pane(&mut self, pane: PaneId, data: &[u8]) -> bool {
-        let Some(p) = self.panes.iter().find(|p| p.info.id == pane) else {
+        let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) else {
             return false;
         };
-        let writer = p.writer.clone();
+        let Some(writer) = p.writer.clone() else {
+            return false;
+        };
         // 同步写：写量小，用阻塞线程池写避免阻塞 async
         let data = data.to_vec();
         let result = std::thread::spawn(move || {
@@ -525,13 +671,18 @@ impl ShellRuntime {
         let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) else {
             return false;
         };
-        let size = PtySize {
-            rows: rows.max(1),
-            cols: cols.max(1),
-            pixel_width: 0,
-            pixel_height: 0,
+        let resized = match &mut p.process {
+            PaneProcess::Local { master, .. } => master
+                .resize(PtySize {
+                    rows: rows.max(1),
+                    cols: cols.max(1),
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .is_ok(),
+            PaneProcess::Ssh { transport } => transport.resize(cols, rows).is_ok(),
         };
-        if p.master.resize(size).is_err() {
+        if !resized {
             return false;
         }
         p.info.cols = cols;

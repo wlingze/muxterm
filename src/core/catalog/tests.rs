@@ -165,19 +165,15 @@ fn with_builtins_herdr_reports_worktree_caps() {
     assert!(herdr.support.contains(&RuntimeCapability::WorktreeCreate));
 }
 
-#[tokio::test]
-async fn with_builtins_shell_rejects_ssh_pair() {
-    let mut cat = Catalog::with_builtins();
-    let spec = mock_spec("shell", "ssh", Some("host"), "");
-    let err = cat
-        .open(&spec)
-        .await
-        .map(|_| ())
-        .expect_err("shell × ssh 必须拒绝");
-    assert!(
-        err.to_string().contains("does not accept transport"),
-        "拒绝原因必须是 transport 不接受，不是悄悄变 shell: {err}"
-    );
+#[test]
+fn with_builtins_shell_accepts_local_and_ssh() {
+    let cat = Catalog::with_builtins();
+    let shell = cat
+        .runtime_list()
+        .into_iter()
+        .find(|runtime| runtime.id == "shell")
+        .expect("with_builtins 必须登记 shell");
+    assert_eq!(shell.accepted_transports, ["local", "ssh"]);
 }
 
 #[test]
