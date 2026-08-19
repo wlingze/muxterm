@@ -322,14 +322,18 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 |---|---|
 | `support()` 单测 | Tmux/Shell **不含** `Worktree*`；无能力时 create 被拒 |
 | `herdr_session_contract` | 隔离 session；snapshot 含刚 create 的 workspace |
-| `herdr_feature_contract` | 先涂 `HERDR_LIVE_*` 再 attach；`search_workspace` 非空 |
-| `linux_herdr_e2e` | GTK：VTE + `search_all` 含 token；replica runtime 是 herdr |
+| `herdr_feature_contract` | 先涂 `HERDR_LIVE_*` 再 attach；local 逐字 `WriteRaw` + Enter 真执行 `echo` |
+| `existing_ssh_contract::ssh_herdr_forward_attach_contract` | SSH 双 socket forward；逐字输入后远端 `echo` 真执行 |
+| `linux_herdr_e2e` | GTK local：真实 VTE commit 后 VTE + `search_all` 含执行输出 |
+| `linux_herdr_ssh_e2e` | GTK SSH：真实 VTE commit 经远端 Herdr 执行并 observe 回来 |
 | `herdr_multi_workspace_contract` / `linux_herdr_switch_e2e` | 同一 socket 两格，切过去 token 还在 |
 | `herdr_worktree_contract` / `linux_herdr_worktree_e2e` | list/create/open；`muxterm-worktree-create` 仅 Herdr 格出现 |
 
 ```bash
 cargo test --test herdr_feature_contract -- --test-threads=1
+cargo test --test existing_ssh_contract ssh_herdr_forward_attach_contract -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
+xvfb-run -a cargo test --features gtk --test linux_herdr_ssh_e2e -- --test-threads=1
 ```
 
 禁止：MockRuntime 喂 `terminal.frame`；在本仓库 `git worktree add`；为绿把 token 断言改成「非空」。

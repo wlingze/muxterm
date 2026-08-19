@@ -7,20 +7,37 @@
 
 mod support;
 
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use muxterm::core::catalog::Catalog;
 use muxterm::core::discovery::existing::{
     discover_local_herdr, discover_ssh_herdr, discover_ssh_tmux,
 };
+use muxterm::core::model::task::Task;
 use muxterm::core::quickconnect::model::TargetRuntime;
+use muxterm::core::runtime::HerdrRuntime;
+use muxterm::core::workspace::id::WorkspaceId;
+use muxterm::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 use support::tmux_test_support::{create_session, kill_server, tmux_available, unique_socket};
 
+// 本文件的夹具会修改 MUXTERM_SSH_CONFIG_PATH / HERDR_SOCKET_PATH 等
+// 进程级环境变量。Rust 默认并行跑 #[test]，必须串行持有这些变量，否则
+// 一个测试会让另一个 Catalog 读到错误的 SSH alias。
+static PROCESS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_process_env() -> MutexGuard<'static, ()> {
+    PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// W20d：本地 Herdr discover 必须看到测试 workspace，且不得出现用户默认 w2。
 #[test]
 fn discover_local_herdr_sees_isolated_workspace_only() {
+    let _env_lock = lock_process_env();
     if !herdr_available() {
         eprintln!("skip: 无 herdr 二进制");
         return;
@@ -66,6 +83,7 @@ fn discover_local_herdr_sees_isolated_workspace_only() {
 /// W20e：LoopbackSshd 上远端 tmux + Herdr 都能列出。
 #[test]
 fn ssh_discover_lists_remote_tmux_and_herdr() {
+    let _env_lock = lock_process_env();
     if !loopback_sshd_available() {
         eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
         return;
@@ -129,6 +147,7 @@ fn ssh_discover_lists_remote_tmux_and_herdr() {
 /// W20h SSH：远端 herdr.sock 转发到本机后，HerdrSession 能 attach。
 #[test]
 fn ssh_herdr_forward_attach_contract() {
+    let _env_lock = lock_process_env();
     if !loopback_sshd_available() {
         eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
         return;
@@ -140,17 +159,19 @@ fn ssh_herdr_forward_attach_contract() {
     let sshd = LoopbackSshd::start("herdr-fwd").expect("启动 loopback sshd 失败");
     sshd.apply_ssh_config_env();
     let herdr = IsolatedHerdr::start("fwd-attach");
-    let (ws, _tab, _pane) = herdr.create_workspace("/tmp", "mux-fwd");
+    let (ws, _tab, pane) = herdr.create_workspace("/tmp", "mux-fwd");
 
-    let (local_socket, mut forward) =
-        muxterm::core::runtime::herdr::forward::start_herdr_ssh_forward(
-            &sshd.alias,
-            &herdr.socket_path().to_string_lossy(),
-            Some(&sshd.config_path.to_string_lossy()),
-        )
-        .expect("ssh socket 转发应就绪");
+    let (local_socket, forward) = muxterm::core::runtime::herdr::forward::start_herdr_ssh_forward(
+        &sshd.alias,
+        &herdr.socket_path().to_string_lossy(),
+        Some(&sshd.config_path.to_string_lossy()),
+    )
+    .expect("ssh socket 转发应就绪");
 
-    let session = muxterm::core::runtime::HerdrSession::new(herdr.name(), &local_socket);
+    let session = Arc::new(muxterm::core::runtime::HerdrSession::new(
+        herdr.name(),
+        &local_socket,
+    ));
     session.ping().expect("转发后的 HerdrSession 应能 ping");
     let snap = session.snapshot().expect("转发后的 snapshot 应成功");
     assert!(
@@ -158,14 +179,71 @@ fn ssh_herdr_forward_attach_contract() {
         "转发后必须看到远端 workspace {ws}"
     );
 
-    let _ = forward.kill();
-    let _ = forward.wait();
+    // 走产品 Runtime 的逐字 WriteRaw + 单独 Enter。引号把输入回显中的 token
+    // 隔开；只有远端 shell 真执行 echo，双 socket observe 才会返回连续 token。
+    let client_socket = session.client_socket_path().to_path_buf();
+    let runtime = HerdrRuntime::with_forward(Arc::clone(&session), &ws, forward);
+    let mut workspace = Workspace::new(
+        WorkspaceId::new("ssh", Some(&sshd.alias), herdr.name(), "herdr", &ws),
+        "ssh-herdr-input".to_string(),
+        Box::new(runtime),
+    );
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .expect("tokio");
+    rt.block_on(workspace.connect())
+        .expect("SSH Herdr Runtime connect 应成功");
+    let active = workspace
+        .state()
+        .active_pane()
+        .expect("SSH Herdr 应有 active pane")
+        .id;
+    let command = "echo HERDR_EXEC_\"SSH\"";
+    let output_token = "HERDR_EXEC_SSH";
+    assert!(!command.contains(output_token));
+    assert!(workspace.search_workspace(output_token).is_empty());
+    for byte in command.bytes().chain(std::iter::once(b'\r')) {
+        workspace
+            .execute(Task::WriteRaw {
+                target: active,
+                data: vec![byte],
+            })
+            .expect("SSH Herdr 逐字 WriteRaw 应成功");
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        let _ = workspace.refresh();
+        if !workspace.search_workspace(output_token).is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let hits = workspace.search_workspace(output_token);
+    let pane_output = workspace
+        .state()
+        .pane_output(&active)
+        .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+        .unwrap_or_default();
+    rt.block_on(workspace.shutdown())
+        .expect("SSH Herdr shutdown 应成功");
+    assert!(
+        !hits.is_empty(),
+        "SSH Herdr 逐字输入 + Enter 必须真的执行远端命令。token={output_token} pane={pane} output={pane_output:?}"
+    );
+    assert!(!local_socket.exists(), "shutdown 应清理 API forward socket");
+    assert!(
+        !client_socket.exists(),
+        "shutdown 应清理 client forward socket"
+    );
 }
 
 /// C7：SSH Host 名叫 `local`（连 loopback）时，Catalog 必须能列出隔离 tmux，
 /// 且 `runtime_list` 仍是插件表。Host `local` ≠ Transport `"local"`。
 #[test]
 fn catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list() {
+    let _env_lock = lock_process_env();
     if !loopback_sshd_available() {
         eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
         return;
@@ -245,6 +323,7 @@ fn catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list() {
 /// C9：同一隔离 tmux 经 local 和 SSH Host `self` 必须两行。不测 archmini/cd。
 #[test]
 fn catalog_all_lists_local_and_ssh_self_duplicates() {
+    let _env_lock = lock_process_env();
     if !loopback_sshd_available() {
         eprintln!("skip: 无 sshd 二进制，无法自启 loopback sshd");
         return;

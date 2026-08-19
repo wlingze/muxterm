@@ -468,6 +468,30 @@ impl HerdrRuntime {
     fn herdr_pane(&self, pane: PaneId) -> Option<&str> {
         self.pane_to_herdr_pane.get(&pane).map(String::as_str)
     }
+
+    /// 关闭本 Runtime 自己启动的 SSH 转发，并只清理它在系统临时目录下的
+    /// `muxterm-herdr-fwd-*` socket。绝不删除默认 Herdr socket。
+    fn stop_forward(&mut self) {
+        let Some(mut forward) = self.forward.take() else {
+            return;
+        };
+        let _ = forward.kill();
+        let _ = forward.wait();
+        let temp_dir = std::env::temp_dir();
+        for socket in [
+            self.session.socket_path(),
+            self.session.client_socket_path(),
+        ] {
+            let is_ours = socket.parent() == Some(temp_dir.as_path())
+                && socket
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("muxterm-herdr-fwd-"));
+            if is_ours {
+                let _ = std::fs::remove_file(socket);
+            }
+        }
+    }
 }
 
 /// Herdr public id 的 bijective base-32 字母表（协议 19）。
@@ -760,10 +784,7 @@ impl Runtime for HerdrRuntime {
     async fn shutdown(&mut self) -> Result<()> {
         self.observe_streams.clear();
         self.observe_rx = None;
-        if let Some(mut forward) = self.forward.take() {
-            let _ = forward.kill();
-            let _ = forward.wait();
-        }
+        self.stop_forward();
         self.status = BackendStatus::Disconnected;
         self.events.push_back(StateChange::BackendStatusChanged(
             BackendStatus::Disconnected,
@@ -787,6 +808,14 @@ impl Runtime for HerdrRuntime {
         path: &str,
     ) -> Result<crate::core::workspace::spec::WorkspaceSpec> {
         self.open_worktree(path)
+    }
+}
+
+impl Drop for HerdrRuntime {
+    fn drop(&mut self) {
+        self.observe_streams.clear();
+        self.observe_rx = None;
+        self.stop_forward();
     }
 }
 

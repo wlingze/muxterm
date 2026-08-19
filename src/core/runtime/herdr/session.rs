@@ -57,10 +57,7 @@ impl HerdrSession {
     /// 绑定 named session 名 + API socket 绝对路径。
     pub fn new(name: impl Into<String>, socket_path: impl Into<PathBuf>) -> Self {
         let socket_path = socket_path.into();
-        let client_socket_path = socket_path
-            .parent()
-            .map(|d| d.join("herdr-client.sock"))
-            .unwrap_or_else(|| PathBuf::from("herdr-client.sock"));
+        let client_socket_path = client_socket_path_from_api(&socket_path);
         Self {
             name: name.into(),
             socket_path,
@@ -243,6 +240,20 @@ impl HerdrSession {
         )?;
         HerdrWorktreeRecord::from_json(&result)
     }
+}
+
+/// Herdr 的 client socket 与 API socket 同目录，并在 stem 后插入 `-client`。
+///
+/// 标准路径 `herdr.sock` → `herdr-client.sock`；SSH 转发的唯一 API 路径
+/// `muxterm-herdr-fwd-X.sock` → `muxterm-herdr-fwd-X-client.sock`。不能只取
+/// parent 后硬编码 `herdr-client.sock`，否则所有 SSH 连接都会撞到 `/tmp`。
+pub(crate) fn client_socket_path_from_api(api_socket_path: &Path) -> PathBuf {
+    let stem = api_socket_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("herdr");
+    let parent = api_socket_path.parent().unwrap_or_else(|| Path::new(""));
+    parent.join(format!("{stem}-client.sock"))
 }
 
 /// `session.snapshot` 的产品视图（Herdr id 保持字符串，映射在 HerdrRuntime）。
@@ -505,6 +516,12 @@ mod tests {
             Path::new("/home/wlz/.config/herdr/sessions/muxterm-test-herdr-x-1/herdr-client.sock")
         );
         assert_eq!(s.name(), "muxterm-test-herdr-x-1");
+
+        let forwarded = HerdrSession::new("default", "/tmp/muxterm-herdr-fwd-loopback-123.sock");
+        assert_eq!(
+            forwarded.client_socket_path(),
+            Path::new("/tmp/muxterm-herdr-fwd-loopback-123-client.sock")
+        );
     }
 
     #[test]
