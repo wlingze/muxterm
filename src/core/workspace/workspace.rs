@@ -385,6 +385,9 @@ impl Workspace {
                 StateChange::PaneClosed { pane } => {
                     self.panes.remove(pane);
                 }
+                StateChange::WorkspaceRenamed { name } => {
+                    self.name.clone_from(name);
+                }
                 _ => {}
             }
         }
@@ -425,6 +428,22 @@ mod tests {
             }
         )));
         assert!(w.pane_text(PaneId(1)).contains("MUXTERM_TOKEN"));
+    }
+
+    #[test]
+    fn rename_workspace_updates_pool_visible_name() {
+        let mut workspace = workspace("demo");
+        workspace
+            .execute(Task::RenameWorkspace {
+                name: "renamed".into(),
+            })
+            .unwrap();
+        let events = workspace.take_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StateChange::WorkspaceRenamed { name } if name == "renamed"
+        )));
+        assert_eq!(workspace.name(), "renamed");
     }
 
     /// W6：search_pane 命中带 tab_id；同 pane 不同 tab 不串。

@@ -4,7 +4,8 @@ import XCTest
 // MARK: - Test doubles
 
 private final class FakeSlot: ConnectionSlotProtocol {
-    let key: ConnectionKey
+    var key: ConnectionKey
+    var targetConfig: TargetConfig
     var lifecycle: ConnectionLifecycle = .background
     var lastUsedAt: UInt64
     var pollCount = 0
@@ -12,6 +13,7 @@ private final class FakeSlot: ConnectionSlotProtocol {
 
     init(key: ConnectionKey, now: UInt64) {
         self.key = key
+        self.targetConfig = key.targetConfig
         self.lastUsedAt = now
     }
 
@@ -288,6 +290,31 @@ final class ConnectionPoolTests: XCTestCase {
 
         pool.release(key: key)
         XCTAssertNil(pool.currentTargetConfig)
+    }
+
+    func testRenameActiveTargetUpdatesRecentAndTmuxIdentity() {
+        let pool = makePool(maxSlots: 3)
+        let key = makeKey(session: "before", path: "/x")
+        _ = pool.acquire(key: key) { [self] _ in createSlot(key) }
+
+        pool.renameActiveTarget(to: "after", rekeySession: true)
+
+        XCTAssertEqual(pool.currentTargetConfig?.name, "after")
+        XCTAssertEqual(pool.recentTargetConfigs().first?.name, "after")
+        XCTAssertEqual(pool.activeKey?.session, "after")
+        XCTAssertNil(pool.slots[key])
+    }
+
+    func testRenameLocalShellKeepsConnectionIdentity() {
+        let pool = makePool(maxSlots: 3)
+        let key = makeKey(session: "", path: "/x/project", runtime: "shell")
+        _ = pool.acquire(key: key) { [self] _ in createSlot(key) }
+
+        pool.renameActiveTarget(to: "custom", rekeySession: false)
+
+        XCTAssertEqual(pool.currentTargetConfig?.name, "custom")
+        XCTAssertEqual(pool.activeKey, key)
+        XCTAssertNotNil(pool.slots[key])
     }
 
     func testConnectionKeyTargetConfigUsesSessionNameOrPathBasename() {

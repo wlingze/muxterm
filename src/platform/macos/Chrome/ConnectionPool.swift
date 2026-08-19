@@ -56,7 +56,8 @@ public enum ConnectionEvictionReason: Equatable, Sendable {
 
 /// 连接池中一个连接的抽象：真实实现持有 CoreBridge / TerminalManager。
 public protocol ConnectionSlotProtocol: AnyObject {
-    var key: ConnectionKey { get }
+    var key: ConnectionKey { get set }
+    var targetConfig: TargetConfig { get set }
     var lifecycle: ConnectionLifecycle { get set }
     var lastUsedAt: UInt64 { get set }
     /// 后台继续 poll 事件、维护 warm 状态；不得同步 displayIfNeeded。
@@ -99,12 +100,35 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
             .filter { $0.lifecycle != .evicting }
             .sorted { $0.lastUsedAt > $1.lastUsedAt }
             .prefix(limit)
-            .map { $0.key.targetConfig }
+            .map(\.targetConfig)
     }
 
     /// 当前前台连接对应的目标（用于 QuickConnect 行高亮）。
     public var currentTargetConfig: TargetConfig? {
-        activeKey?.targetConfig
+        activeKey.flatMap { slots[$0]?.targetConfig }
+    }
+
+    /// 更新当前 Workspace 的展示名。tmux rename 会改变后续 attach 使用的
+    /// session 名，因此同时重建连接 key；本地 shell 只改展示名。
+    public func renameActiveTarget(to name: String, rekeySession: Bool) {
+        guard let oldKey = activeKey, let slot = slots[oldKey] else { return }
+        var config = slot.targetConfig
+        config.name = name
+        slot.targetConfig = config
+        guard rekeySession else { return }
+
+        let newKey = ConnectionKey(
+            transport: oldKey.transport,
+            alias: oldKey.alias,
+            session: name,
+            runtime: oldKey.runtime,
+            path: oldKey.path
+        )
+        guard newKey != oldKey, slots[newKey] == nil else { return }
+        slots.removeValue(forKey: oldKey)
+        slot.key = newKey
+        slots[newKey] = slot
+        activeKey = newKey
     }
 
     /// 获取目标连接：已存在则复用并提升为 active；不存在则用 `create` 新建。

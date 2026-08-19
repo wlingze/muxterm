@@ -7,7 +7,8 @@ import MuxtermChrome
 /// shutdown；只有淘汰时才 evict。tmux/ssh 淘汰用 detach 保留远端
 /// server/session，local shell 直接 shutdown（前端就是 PTY 模拟器）。
 final class WarmConnectionSlot: ConnectionSlotProtocol {
-    let key: ConnectionKey
+    var key: ConnectionKey
+    var targetConfig: TargetConfig
     let bridge: CoreBridge
     let terminalManager: TerminalManager
     var lifecycle: ConnectionLifecycle = .background
@@ -23,6 +24,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         now: UInt64
     ) {
         self.key = key
+        self.targetConfig = key.targetConfig
         self.bridge = bridge
         self.terminalManager = terminalManager ?? TerminalManager(bridge: bridge)
         self.lastUsedAt = now

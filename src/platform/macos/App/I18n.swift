@@ -120,6 +120,11 @@ enum MuxtermTextKey: CaseIterable {
     case previousPaneDetail
     case quitMuxterm
     case quitMuxtermDetail
+    case rename
+    case renameTab
+    case renameTabDetail
+    case renameWorkspace
+    case renameWorkspaceDetail
     case remoteDirectoryMessage
     case splitPaneHorizontal
     case splitPaneHorizontalDetail
@@ -278,6 +283,11 @@ enum MuxtermTextKey: CaseIterable {
         case .previousPaneDetail: return "previous_pane_detail"
         case .quitMuxterm: return "quit_muxterm"
         case .quitMuxtermDetail: return "quit_muxterm_detail"
+        case .rename: return "rename"
+        case .renameTab: return "rename_tab"
+        case .renameTabDetail: return "rename_tab_detail"
+        case .renameWorkspace: return "rename_workspace"
+        case .renameWorkspaceDetail: return "rename_workspace_detail"
         case .remoteDirectoryMessage: return "remote_directory_message"
         case .splitPaneHorizontal: return "split_pane_horizontal"
         case .splitPaneHorizontalDetail: return "split_pane_horizontal_detail"

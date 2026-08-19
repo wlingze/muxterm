@@ -58,6 +58,8 @@ struct CLayoutNode {
 #define STATE_PANE_RESIZED        9u
 #define STATE_BACKEND_STATUS      10u
 #define STATE_STATUS_SUBSCRIPTION 11u
+#define STATE_WORKSPACE_RENAMED   12u
+#define STATE_POOL_CHANGED        13u
 #define STATE_OTHER               99u
 
 #define TASK_SPLIT_PANE  0u
@@ -71,6 +73,11 @@ struct CLayoutNode {
 #define TASK_SWITCH_PANE 8u
 #define TASK_DETACH      9u
 #define TASK_TOGGLE_PANE_FULLSCREEN 10u
+#define TASK_MOVE_WINDOW 11u
+#define TASK_BREAK_PANE 12u
+#define TASK_REFRESH_TABS 13u
+#define TASK_RENAME_TAB 14u
+#define TASK_RENAME_WORKSPACE 15u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u

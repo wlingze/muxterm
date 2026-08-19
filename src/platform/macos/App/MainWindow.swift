@@ -223,6 +223,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onNewTab = { [weak self] in
             self?.newTab()
         }
+        content.statusBar.onRenameTab = { [weak self] tabId in
+            self?.promptRenameTab(tabId)
+        }
+        content.statusBar.onCloseTab = { [weak self] tabId in
+            self?.closeTab(tabId)
+        }
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
             if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
@@ -322,6 +328,85 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         needsLayoutReload = true
+    }
+
+    @objc func renameActiveTab() {
+        guard let tab = lastSnapshot.tabs.first(where: \.isActive)
+            ?? lastSnapshot.tabs.first else { return }
+        promptRenameTab(tab.id)
+    }
+
+    @objc func renameCurrentWorkspace() {
+        let current = connectionPool.currentTargetConfig?.name
+            ?? bridge.session
+            ?? "workspace"
+        promptForName(title: MuxtermI18n.shared.tr(.renameWorkspace), current: current) {
+            [weak self] name in
+            _ = self?.renameWorkspace(to: name)
+        }
+    }
+
+    @discardableResult
+    func renameTab(_ tabId: UInt32, to name: String) -> Bool {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        guard bridge.execute(task: MuxTask.renameTab(tabId, name: name)) == 0 else {
+            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    func renameWorkspace(to name: String) -> Bool {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        guard bridge.execute(task: MuxTask.renameWorkspace(name)) == 0 else {
+            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+            return false
+        }
+        applyWorkspaceRename(name)
+        return true
+    }
+
+    private func promptRenameTab(_ tabId: UInt32) {
+        guard let tab = lastSnapshot.tabs.first(where: { $0.id == tabId }) else { return }
+        promptForName(title: MuxtermI18n.shared.tr(.renameTab), current: tab.name) {
+            [weak self] name in
+            _ = self?.renameTab(tabId, to: name)
+        }
+    }
+
+    private func promptForName(
+        title: String,
+        current: String,
+        completion: @escaping (String) -> Void
+    ) {
+        guard let ownerWindow = window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        let field = NSTextField(string: current)
+        field.placeholderString = title
+        field.selectText(nil)
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: MuxtermI18n.shared.tr(.rename))
+        alert.addButton(withTitle: MuxtermI18n.shared.tr(.cancel))
+        alert.beginSheetModal(for: ownerWindow) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            completion(field.stringValue)
+        }
+    }
+
+    private func applyWorkspaceRename(_ name: String) {
+        if terminalManager.usesClientResize {
+            bridge.session = name
+        }
+        connectionPool.renameActiveTarget(
+            to: name,
+            rekeySession: terminalManager.usesClientResize
+        )
+        window?.title = "\(name) — Muxterm"
     }
 
     @objc func closeActivePane() {
@@ -1109,6 +1194,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.newTab)
             ),
             PaletteItem(
+                title: i18n.tr(.renameTab),
+                detail: i18n.tr(.renameTabDetail),
+                keywords: "rename tab title 重命名 标签页",
+                kind: .command(.renameTab)
+            ),
+            PaletteItem(
+                title: i18n.tr(.renameWorkspace),
+                detail: i18n.tr(.renameWorkspaceDetail),
+                keywords: "rename workspace title 重命名 工作区",
+                kind: .command(.renameWorkspace)
+            ),
+            PaletteItem(
                 title: i18n.tr(.splitPaneHorizontal),
                 detail: i18n.tr(.splitPaneHorizontalDetail),
                 keywords: "split pane horizontal 水平 分割",
@@ -1228,6 +1325,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.newTab):
             commandPalette.dismiss()
             newTab()
+        case .command(.renameTab):
+            commandPalette.dismiss()
+            renameActiveTab()
+        case .command(.renameWorkspace):
+            commandPalette.dismiss()
+            renameCurrentWorkspace()
         case .command(.splitHorizontal):
             commandPalette.dismiss()
             splitHorizontal()
@@ -1471,9 +1574,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func closeActiveTab() {
         guard lastSnapshot.tabs.contains(where: { $0.id == lastSnapshot.activeTab }) else { return }
-        let tabID = lastSnapshot.activeTab
-        guard bridge.execute(task: MuxTask.closeTab(tabID)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCloseTab, arguments: ["id": "\(tabID)"]))
+        closeTab(lastSnapshot.activeTab)
+    }
+
+    private func closeTab(_ tabId: UInt32) {
+        guard bridge.execute(task: MuxTask.closeTab(tabId)) == 0 else {
+            reportStatusError(MuxtermI18n.shared.tr(.errorCloseTab, arguments: ["id": "\(tabId)"]))
             return
         }
         needsLayoutReload = true
@@ -1618,6 +1724,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // 标题变化只更新 tab 列表文字，不需要全量 snapshot + 布局重建。
                 // 高频输出时 TAB_RENAMED 频繁触发，走 refreshUI 会卡顿。
                 needsTabRefresh = true
+            } else if ev.isWorkspaceRenamed {
+                applyWorkspaceRename(ev.name)
             } else if ev.type == STATE_PANE_RESIZED {
                 // pane 尺寸变化：SwiftTerm 视图按像素自适应（syncSizeToPty），
                 // 不需要 bridge.snapshot() 或布局重建。高频输出时 PANE_RESIZED

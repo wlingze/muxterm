@@ -556,6 +556,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         rows.count
     }
 
+    func testWorkspaceRowCount() -> Int {
+        visibleItems.count
+    }
+
     func testSelectFirstRow() {
         guard !rows.isEmpty else { return }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -602,6 +606,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func testWorkspaceCell(at row: Int) -> QuickTargetCellView? {
+        guard row >= 0, row < table.numberOfRows else { return nil }
         table.layoutSubtreeIfNeeded()
         return table.view(atColumn: 0, row: row, makeIfNecessary: true) as? QuickTargetCellView
     }

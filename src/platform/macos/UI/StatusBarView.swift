@@ -16,6 +16,8 @@ final class StatusBarView: NSView {
     var onSelectWindow: ((UInt32) -> Void)?
     var onSelectTab: ((UInt32) -> Void)?
     var onNewTab: (() -> Void)?
+    var onRenameTab: ((UInt32) -> Void)?
+    var onCloseTab: ((UInt32) -> Void)?
     var onAttentionClick: (() -> Void)?
     var colorMode: StatusBarMode = .tmux
 
@@ -450,7 +452,28 @@ final class StatusBarView: NSView {
             button.action = #selector(tabClicked(_:))
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
             button.isActiveTab = item.active
+            button.onDoubleClick = { [weak self] in
+                self?.onRenameTab?(item.id)
+            }
             button.applyStyle()
+            let menu = NSMenu()
+            let rename = NSMenuItem(
+                title: MuxtermI18n.shared.tr(.renameTab),
+                action: #selector(renameTabFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            rename.tag = Int(item.id)
+            rename.target = self
+            menu.addItem(rename)
+            let close = NSMenuItem(
+                title: MuxtermI18n.shared.tr(.closeTab),
+                action: #selector(closeTabFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            close.tag = Int(item.id)
+            close.target = self
+            menu.addItem(close)
+            button.menu = menu
             tabStack.addArrangedSubview(button)
         }
     }
@@ -465,6 +488,14 @@ final class StatusBarView: NSView {
 
     @objc private func newTabClicked() {
         onNewTab?()
+    }
+
+    @objc private func renameTabFromMenu(_ sender: NSMenuItem) {
+        onRenameTab?(UInt32(sender.tag))
+    }
+
+    @objc private func closeTabFromMenu(_ sender: NSMenuItem) {
+        onCloseTab?(UInt32(sender.tag))
     }
 
     func markCurrentWindow(_ windowId: UInt32) {
@@ -686,6 +717,7 @@ private final class StatusDotButton: NSButton {
 
 /// iTerm2 风格 GUI tab：圆角色块 + 系统字体，不用 tmux 格式串。
 private final class StatusTabButton: NSButton {
+    var onDoubleClick: (() -> Void)?
     var isActiveTab = false {
         didSet { applyStyle() }
     }
@@ -718,6 +750,14 @@ private final class StatusTabButton: NSButton {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         applyStyle()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onDoubleClick?()
+            return
+        }
+        super.mouseDown(with: event)
     }
 
     func applyStyle() {
