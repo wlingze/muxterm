@@ -174,12 +174,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             store: quickConnectStore,
             ownerWindow: window,
             snapshot: { [weak self] in
-                guard let self, let json = self.bridge.attentionSnapshotJSON(),
-                      let data = json.data(using: .utf8)
-                else {
-                    return nil
-                }
-                return AttentionSnapshot.decode(data)
+                self?.attentionSnapshotForPanel()
             },
             paneOutput: { [weak self] paneId in
                 self?.bridge.getPaneOutput(paneId: paneId) ?? Data()
@@ -187,14 +182,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             sendInput: { [weak self] paneId, data in
                 _ = self?.bridge.sendInput(paneId: paneId, data: data)
             },
-            search: { [weak self] query in
-                guard let self, let json = self.bridge.searchAllJSON(query: query),
-                      let data = json.data(using: .utf8),
-                      let snapshot = SearchSnapshot.decode(data)
-                else {
-                    return []
-                }
-                return snapshot.hits
+            search: { [weak self] query, scope in
+                self?.searchHitsForPanel(query: query, scope: scope) ?? []
             }
         )
         unifiedPanel.onConnect = { [weak self] config in
@@ -206,8 +195,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onEditProject = { [weak self] config in
             self?.editProject(config)
         }
-        unifiedPanel.onJump = { [weak self] tabId, paneId, seq, query in
+        unifiedPanel.onJump = { [weak self] workspaceId, tabId, paneId, seq, query in
+            if let workspaceId {
+                _ = self?.activateWorkspaceIfAvailable(workspaceId)
+            }
             self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
+        }
+        unifiedPanel.onPreview = { [weak self] workspaceId, _ in
+            guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
+            self.toggleReplyOverlay()
+        }
+        unifiedPanel.onMute = { [weak self] workspaceId, paneId, seconds in
+            guard let self,
+                  let targetBridge = self.bridge(forWorkspace: workspaceId)
+            else {
+                return
+            }
+            _ = targetBridge.attentionMute(paneId: paneId, seconds: seconds)
         }
         languageObserver = NotificationCenter.default.addObserver(
             forName: .muxtermLanguageChanged,
@@ -697,6 +701,97 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// 统一面板的数据范围覆盖当前 warm 连接；当前 Workspace 固定排在首位，
+    /// 其余按稳定 Workspace ID 排序，避免 Dictionary 顺序导致结果跳动。
+    private func panelBridges() -> [CoreBridge] {
+        var result = [bridge]
+        let background = connectionPool.slots.values
+            .filter { $0.bridge !== bridge && $0.lifecycle != .evicting }
+            .sorted {
+                QuickConnect.uniqueID(for: $0.targetConfig)
+                    < QuickConnect.uniqueID(for: $1.targetConfig)
+            }
+        result.append(contentsOf: background.map(\.bridge))
+        return result
+    }
+
+    private var activeWorkspaceReplicaID: String? {
+        connectionPool.currentTargetConfig.map { QuickConnect.uniqueID(for: $0) }
+    }
+
+    private func attentionSnapshotForPanel() -> AttentionSnapshot? {
+        var workspaces: [WorkspaceAttention] = []
+        var seen = Set<String>()
+        for candidate in panelBridges() {
+            guard let json = candidate.attentionSnapshotJSON(),
+                  let snapshot = AttentionSnapshot.decode(Data(json.utf8))
+            else {
+                continue
+            }
+            for workspace in snapshot.workspaces where seen.insert(workspace.workspaceId).inserted {
+                workspaces.append(workspace)
+            }
+        }
+        guard !workspaces.isEmpty else { return nil }
+        let blockedCount = workspaces.reduce(into: 0) { count, workspace in
+            if workspace.blocked > 0 { count += 1 }
+        }
+        return AttentionSnapshot(blockedCount: blockedCount, workspaces: workspaces)
+    }
+
+    private func searchHitsForPanel(query: String, scope: SearchScope) -> [SearchHit] {
+        let candidates = scope == .all ? panelBridges() : [bridge]
+        var allHits: [SearchHit] = []
+        var seen = Set<String>()
+        for candidate in candidates {
+            guard let json = candidate.searchAllJSON(query: query),
+                  let snapshot = SearchSnapshot.decode(Data(json.utf8))
+            else {
+                continue
+            }
+            for hit in snapshot.hits {
+                let key = "\(hit.workspaceId)\u{1F}\(hit.tabId)\u{1F}\(hit.paneId)\u{1F}\(hit.seq)"
+                if seen.insert(key).inserted {
+                    allHits.append(hit)
+                }
+            }
+        }
+        let workspacePaneIDs = Set(
+            bridge.getTabs().flatMap { bridge.getPanes(tabId: $0.id).map(\.id) }
+        )
+        return scope.filter(
+            allHits,
+            activePane: activePaneID,
+            workspaceId: activeWorkspaceReplicaID,
+            workspacePaneIDs: workspacePaneIDs
+        )
+    }
+
+    private func bridge(forWorkspace workspaceId: String) -> CoreBridge? {
+        if activeWorkspaceReplicaID == workspaceId {
+            return bridge
+        }
+        return connectionPool.slots.values.first {
+            QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
+                && $0.lifecycle != .evicting
+        }?.bridge
+    }
+
+    @discardableResult
+    private func activateWorkspaceIfAvailable(_ workspaceId: String) -> Bool {
+        if activeWorkspaceReplicaID == workspaceId {
+            return true
+        }
+        guard let slot = connectionPool.slots.values.first(where: {
+            QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
+                && $0.lifecycle != .evicting
+        }) else {
+            return false
+        }
+        activate(slot: slot)
+        return true
+    }
+
     /// 跳转到指定 tab + pane（搜索命中 / 注意力行）。
     ///
     /// `tabId` 为 nil 时按 pane 反查（注意力行没有 tab）。tmux window 0
@@ -1099,7 +1194,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 激活一个 warm slot：替换 bridge / TerminalManager / PaneLayout 的渲染源。
     /// 旧 slot 由 ConnectionPool.acquire 自动降为 background，不 shutdown。
-    private func activate(slot: WarmConnectionSlot) {
+    /// 激活已有 warm slot。保持 module-internal，供 in-process E2E 验证跨
+    /// Workspace 搜索/Attention 跳转；产品入口仍由 Quick Connect 驱动。
+    func activate(slot: WarmConnectionSlot) {
         let oldBridge = bridge
         connectionPool.acquire(key: slot.key) { _ in slot }
         bridge = slot.bridge
