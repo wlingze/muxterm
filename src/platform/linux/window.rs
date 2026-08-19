@@ -1024,7 +1024,12 @@ impl AppWindow {
             let events = s.active_workspace_mut().refresh();
             let n = events
                 .iter()
-                .filter(|e| matches!(e, StateChange::PaneOutput { .. }))
+                .filter(|e| {
+                    matches!(
+                        e,
+                        StateChange::PaneOutput { .. } | StateChange::PaneFrame { .. }
+                    )
+                })
                 .count();
             dispatch_event_batch(&mut s, events);
             drain_attention_notifications(&mut s);
@@ -2016,9 +2021,9 @@ fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
 /// 这里故意只识别产品 `StateChange`，不识别 Herdr event 名或 Runtime id。
 fn attention_event_pane(event: &StateChange) -> Option<u32> {
     match event {
-        StateChange::PaneOutput { pane, .. } | StateChange::PaneAgentChanged { pane, .. } => {
-            Some(pane.0)
-        }
+        StateChange::PaneOutput { pane, .. }
+        | StateChange::PaneFrame { pane, .. }
+        | StateChange::PaneAgentChanged { pane, .. } => Some(pane.0),
         _ => None,
     }
 }
@@ -2063,7 +2068,7 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
                 }
             }
         }
-        StateChange::PaneOutput { pane, data } => {
+        StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
             if let Some(view) = s.active_layout().pane(pane.0).cloned() {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
@@ -2949,7 +2954,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         //（断线期间的 BEL 不会以 %output 重放）。
         let bell = query_window_bell_flag(&spec);
         let result = connect_runtime_blocking(&spec, &handle);
-        let _ = tx.send((result, bell));
+        let _ = tx.send((id, result, bell));
     });
 }
 
@@ -3003,9 +3008,9 @@ fn drain_pending_reconnects(state: &Rc<RefCell<UiState>>) {
             }
         }
     };
-    if let Some((Ok(runtime), bell)) = result {
-        handle_reconnect_success(state, runtime, bell);
-    } else if let Some((Err(e), _)) = result {
+    if let Some((id, Ok(runtime), bell)) = result {
+        handle_reconnect_success(state, id, runtime, bell);
+    } else if let Some((_, Err(e), _)) = result {
         let mut s = state.borrow_mut();
         s.reconnect_attempts = s.reconnect_attempts.saturating_add(1);
         let delay = Duration::from_secs(1u64 << s.reconnect_attempts.min(3));
@@ -3057,15 +3062,22 @@ fn query_window_bell_flag(spec: &WorkspaceSpec) -> bool {
 }
 
 /// 重连成功：换 Runtime、隐藏水印；断线期间的 BEL 重新推导成 Blocked。
+///
+/// 只对「仍处于断线状态」的工作区生效：若断线期间用户已重新 attach
+/// （新 Runtime 已插入且 Connected），旧重连结果必须丢弃——否则会换掉
+/// 更新的 Runtime，并丢失其尚未消费的 capture 事件（PaneBuf 空、搜索
+/// 不到断线前 token）。
 fn handle_reconnect_success(
     state: &Rc<RefCell<UiState>>,
+    id: WorkspaceId,
     runtime: std::boxed::Box<dyn Runtime>,
     bell: bool,
 ) {
     let mut s = state.borrow_mut();
-    let id = s.active_ws_id().clone();
     if let Some(ws) = s.pool.get_mut(&id) {
-        ws.swap_runtime(runtime);
+        if ws.runtime().runtime_status() != BackendStatus::Connected {
+            ws.swap_runtime(runtime);
+        }
     }
     s.reconnect_attempts = 0;
     s.reconnect_retry_at = None;
@@ -3384,7 +3396,11 @@ fn open_target_config(
 }
 
 /// 重连结果：新 Runtime + 断线期间是否响过 bell（W17a）。
-type ReconnectResult = (anyhow::Result<std::boxed::Box<dyn Runtime>>, bool);
+type ReconnectResult = (
+    WorkspaceId,
+    anyhow::Result<std::boxed::Box<dyn Runtime>>,
+    bool,
+);
 
 /// worktree 创建对话框：分支 + 路径，Create 后后台建 checkout 并开新格。
 fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Window) {

@@ -207,6 +207,9 @@ fn execute_printf(
         app.test_search_workspace(&token).is_empty(),
         "token {token} 在执行前就已存在"
     );
+    // 命令输出只能原样进入已有 Surface。Herdr 的 full frame、tmux 的
+    // PaneOutput 与 shell PTY 字节都不得借机 reset VTE。
+    app.test_clear_active_pane_render_trace();
     emit_command(app, &command)?;
     wait_for(app, &format!("pane {pane} 输出 {token}"), |app| {
         let hits = app.test_search_workspace(&token);
@@ -221,6 +224,13 @@ fn execute_printf(
     ensure!(
         hit_panes == HashSet::from([pane]),
         "token {token} 的 Workspace 搜索归属错误: {hit_panes:?}"
+    );
+    ensure!(
+        app.test_active_pane_id() == pane && app.test_active_pane_resets() == 0,
+        "命令执行期间不得切走 pane 或 reset Surface: pane={pane}, active={}, resets={} ({})",
+        app.test_active_pane_id(),
+        app.test_active_pane_resets(),
+        diagnostics(app)
     );
     Ok((pane, token))
 }

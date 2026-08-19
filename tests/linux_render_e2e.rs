@@ -266,6 +266,27 @@ fn surface_live_feed_does_not_reset(view: &PaneView) {
     );
 }
 
+/// Herdr `full=true` 仍是可直接送入唯一 Surface 的完整 ANSI 重绘。
+/// 连续 full frame 必须原地替换旧画面，不能 reset VTE 或把旧 token 追加成历史行。
+fn surface_consecutive_full_frames_replace_without_reset(view: &PaneView) {
+    view.feed_output(b"\x1b[2J\x1b[HGTK_FULL_ONE");
+    view.flush_pending_feed();
+    view.clear_render_trace();
+    view.feed_output(b"\x1b[HGTK_FULL_TWO");
+    view.flush_pending_feed();
+    pump_main_loop(80);
+
+    let text = view.visible_text();
+    assert!(text.contains("GTK_FULL_TWO"), "末帧必须可见: {text:?}");
+    assert!(
+        !text.contains("GTK_FULL_ONE"),
+        "旧 full frame 不得残留: {text:?}"
+    );
+    let trace = view.render_trace();
+    assert_eq!(trace.resets, 0, "full frame 不得 reset 唯一 Surface");
+    assert_eq!(trace.feeds, 1, "第二个 full frame 应作为一次原始 feed");
+}
+
 /// F1：Codex fixture 直接 raw feed——头+底+盒线，不经 replica dump。
 fn surface_codex_fixture_raw_feed(view: &PaneView) {
     let raw = include_str!("samples/codex-tui-sanitized.txt");
@@ -421,6 +442,7 @@ fn render_e2e_s3_s4() {
         mini_vte_input_routes_to_send_input(&view);
         surface_typing_overwrites_in_place(&view);
         surface_live_feed_does_not_reset(&view);
+        surface_consecutive_full_frames_replace_without_reset(&view);
         surface_codex_fixture_raw_feed(&view);
 
         win.close();

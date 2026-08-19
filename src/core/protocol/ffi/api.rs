@@ -10,6 +10,7 @@ use std::ptr;
 
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
+use crate::core::attention::signal::AttentionSignal;
 use crate::core::config::parse_hex;
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::model::layout::{LayoutNode, SplitDir};
@@ -30,13 +31,13 @@ use super::types::{
     BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
-STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED,
-STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED,
-STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED,
-STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH,
-TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS, TASK_RENAME_TAB,
-TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
-TASK_TOGGLE_PANE_FULLSCREEN,
+    STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_AGENT_CHANGED,
+    STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
+    STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED,
+    STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB,
+    TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
+    TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE,
+    TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
@@ -105,18 +106,25 @@ impl MuxtermHandle {
 
     /// 把一批事件里的 PaneOutput 信号应用到注意力引擎。
     fn apply_attention_for_events(&mut self, ws_id: &WorkspaceId, events: &[StateChange]) {
-        let Some(ws) = self.pool.get_mut(ws_id) else {
-            return;
-        };
-        for ev in events {
-            if let StateChange::PaneOutput { pane, .. } | StateChange::PaneSnapshot { pane, .. } =
-                ev
-            {
-                let signals = ws.take_attention_signals(*pane);
-                let (last_line, seq) = ws.pane_last_line_seq(*pane);
-                self.attention
-                    .apply(&ws_id.replica_id(), pane.0, &signals, &last_line, seq);
+        let mut pending: Vec<(u32, Vec<AttentionSignal>, String, u64)> = Vec::new();
+        {
+            let Some(ws) = self.pool_mut().get_mut(ws_id) else {
+                return;
+            };
+            for ev in events {
+                if let StateChange::PaneOutput { pane, .. }
+                | StateChange::PaneSnapshot { pane, .. } = ev
+                {
+                    let signals = ws.take_attention_signals(*pane);
+                    let (last_line, seq) = ws.pane_last_line_seq(*pane);
+                    pending.push((pane.0, signals, last_line, seq));
+                }
             }
+        }
+        let ws_name = ws_id.replica_id();
+        for (pane, signals, last_line, seq) in pending {
+            self.attention
+                .apply(&ws_name, pane, &signals, &last_line, seq);
         }
     }
 }
@@ -655,14 +663,15 @@ pub extern "C" fn muxterm_new(
     };
     let mut catalog = crate::core::catalog::Catalog::with_builtins();
 
-let (id, name, runtime, scrollback_lines) =
-    match legacy_runtime_spec(&kind, sock, sess, None, None) {
-        Some(spec) => spec,
-        None => return ptr::null_mut(),
-    };
-let fut = catalog
-    .pool_mut()
-    .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
+    let (id, name, runtime, scrollback_lines) =
+        match legacy_runtime_spec(&kind, sock, sess, None, None) {
+            Some(spec) => spec,
+            None => return ptr::null_mut(),
+        };
+    let fut =
+        catalog
+            .pool_mut()
+            .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }
@@ -721,14 +730,15 @@ pub extern "C" fn muxterm_new_connect(
     };
     let mut catalog = crate::core::catalog::Catalog::with_builtins();
 
-let (id, name, runtime, scrollback_lines) =
-    match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
-        Some(spec) => spec,
-        None => return ptr::null_mut(),
-    };
-let fut = catalog
-    .pool_mut()
-    .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
+    let (id, name, runtime, scrollback_lines) =
+        match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
+            Some(spec) => spec,
+            None => return ptr::null_mut(),
+        };
+    let fut =
+        catalog
+            .pool_mut()
+            .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }
@@ -861,19 +871,19 @@ pub unsafe extern "C" fn muxterm_workspace_open(
         let socket = cstr_opt(socket);
 
         let handle = &mut *h;
-// Catalog 路径：未知 runtime / 不接受 transport → -1，不悄悄变 shell。
-let spec = WorkspaceSpec {
-    transport: transport.clone(),
-    alias: alias.clone(),
-    session: session.clone(),
-    runtime: runtime.clone(),
-    path: path.clone(),
-    socket: socket.clone(),
-    create: false,
-    scrollback_lines: configured_scrollback_lines(),
-};
-let fut = handle.catalog.open(&spec);
-match handle.rt.block_on(fut) {
+        // Catalog 路径：未知 runtime / 不接受 transport → -1，不悄悄变 shell。
+        let spec = WorkspaceSpec {
+            transport: transport.clone(),
+            alias: alias.clone(),
+            session: session.clone(),
+            runtime: runtime.clone(),
+            path: path.clone(),
+            socket: socket.clone(),
+            create: false,
+            scrollback_lines: configured_scrollback_lines() as u32,
+        };
+        let fut = handle.catalog.open(&spec);
+        match handle.rt.block_on(fut) {
             Ok(_) => 0,
             Err(_) => -1,
         }
@@ -1156,7 +1166,7 @@ pub unsafe extern "C" fn muxterm_execute(h: *mut MuxtermHandle, task: *const CTa
 fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChange {
     let mut out = CStateChange::default();
     match ev {
-        StateChange::PaneOutput { pane, data } => {
+        StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
             out.type_ = STATE_PANE_OUTPUT;
             out.pane_id = pane.0;
             let (p, n) = handle.push_data(data);
@@ -1293,13 +1303,13 @@ pub unsafe extern "C" fn muxterm_poll_events(
         handle.clear_event_bufs();
         // 后台工作区事件也拉取（W7：池在 core）。
         let mut fresh: Vec<StateChange> = Vec::new();
-for (ws_id, events) in handle.pool_mut().poll_background() {
-    handle.apply_attention_for_events(&ws_id, &events);
+        for (ws_id, events) in handle.pool_mut().poll_background() {
+            handle.apply_attention_for_events(&ws_id, &events);
             fresh.extend(events);
         }
         if let Some(ws) = handle.active_workspace_mut() {
             let events = ws.refresh();
-            let ws_id = handle.pool.active_id().cloned();
+            let ws_id = handle.pool().active_id().cloned();
             if let Some(ws_id) = ws_id {
                 handle.apply_attention_for_events(&ws_id, &events);
             }
@@ -1312,7 +1322,9 @@ for (ws_id, events) in handle.pool_mut().poll_background() {
         for (i, ev) in ready.iter().enumerate() {
             let c = state_change_to_c(handle, ev);
             // 回调
-            if let StateChange::PaneOutput { pane, data } = ev {
+            if let StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } =
+                ev
+            {
                 if let Some(cb) = handle.callbacks.on_output {
                     cb(pane.0, data.as_ptr(), data.len());
                 }
@@ -1353,7 +1365,7 @@ pub unsafe extern "C" fn muxterm_send_input(
         let Some(pane) = pane else {
             return -1;
         };
-        let ws_id = handle.pool.active_id().cloned();
+        let ws_id = handle.pool().active_id().cloned();
         if let Some(ws_id) = ws_id {
             handle.attention.on_user_input(&ws_id.replica_id(), pane.0);
         }
@@ -1822,7 +1834,7 @@ pub unsafe extern "C" fn muxterm_search_all(
         let query = cstr_opt(query).unwrap_or_default();
         let handle = &*h;
         let hits: Vec<serde_json::Value> = handle
-            .pool
+            .pool()
             .search_all(&query)
             .into_iter()
             .map(|hit| {
@@ -1860,7 +1872,7 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
             .map(|ws| {
                 // 从池里找工作区路径（W19 注意力行标题需要 path）。
                 let path = handle
-                    .pool
+                    .pool()
                     .list()
                     .iter()
                     .find(|w| w.id().replica_id() == ws.workspace_id)
@@ -1960,7 +1972,7 @@ pub unsafe extern "C" fn muxterm_attention_on_became_visible(
             return -1;
         }
         let handle = &mut *h;
-        let Some(ws_id) = handle.pool.active_id() else {
+        let Some(ws_id) = handle.pool().active_id() else {
             return -1;
         };
         handle
@@ -1982,7 +1994,7 @@ pub unsafe extern "C" fn muxterm_attention_acknowledge(h: *mut MuxtermHandle, pa
             return -1;
         }
         let handle = &mut *h;
-        let Some(ws_id) = handle.pool.active_id() else {
+        let Some(ws_id) = handle.pool().active_id() else {
             return -1;
         };
         handle.attention.acknowledge(&ws_id.replica_id(), pane_id);
@@ -2006,7 +2018,7 @@ pub unsafe extern "C" fn muxterm_attention_set_process_name(
             return -1;
         }
         let handle = &mut *h;
-        let Some(ws_id) = handle.pool.active_id() else {
+        let Some(ws_id) = handle.pool().active_id() else {
             return -1;
         };
         handle
@@ -2032,7 +2044,7 @@ pub unsafe extern "C" fn muxterm_attention_mute(
             return -1;
         }
         let handle = &mut *h;
-        let Some(ws_id) = handle.pool.active_id() else {
+        let Some(ws_id) = handle.pool().active_id() else {
             return -1;
         };
         handle.attention.mute_for(

@@ -122,6 +122,11 @@ pub enum StateChange {
     /// 尚未发送的 blocks。此事件让索引面和 GUI 以同一份 snapshot 重新对齐，
     /// 后续 `PaneOutput` 才继续按增量消费。
     PaneSnapshot { pane: PaneId, data: Vec<u8> },
+    /// 某 pane 的完整终端画面帧。
+    ///
+    /// Runtime 用它保留“替换当前 Index 快照”的语义；Surface 仍直接 feed
+    /// 原始 ANSI，不得因此 reset VTE。后续 [`Self::PaneOutput`] 再增量追加。
+    PaneFrame { pane: PaneId, data: Vec<u8> },
     /// tab 被加入。
     TabAdded { tab: TabId },
     /// tab 被关闭。

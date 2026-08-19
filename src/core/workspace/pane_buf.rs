@@ -15,6 +15,7 @@ use crate::core::protocol::terminal::emulate::TerminalState;
 /// 一个 pane 的缓冲（scrollback + byte ring + viewport）。
 pub struct PaneBuf {
     terminal: TerminalState,
+    scrollback_max: usize,
     /// 有界原始字节环（丢最旧；供 peek / 小终端播种）。
     byte_ring: Vec<u8>,
     /// 当前 viewport 滚动偏移（0 = 底部直播）。
@@ -23,12 +24,10 @@ pub struct PaneBuf {
 
 impl PaneBuf {
     pub fn new(cols: usize, rows: usize, scrollback_max: usize) -> Self {
+        let scrollback_max = scrollback_max.max(1);
         Self {
-            terminal: TerminalState::with_scrollback(
-                cols.max(1),
-                rows.max(1),
-                scrollback_max.max(1),
-            ),
+            terminal: TerminalState::with_scrollback(cols.max(1), rows.max(1), scrollback_max),
+            scrollback_max,
             byte_ring: Vec::new(),
             viewport: 0,
         }
@@ -64,6 +63,20 @@ impl PaneBuf {
         self.byte_ring.clear();
         self.viewport = 0;
         let _ = self.feed(bytes, cols, rows);
+    }
+
+    /// 用 Runtime 提供的完整画面帧替换 Index 状态。
+    ///
+    /// 这只重建无头搜索/提醒副本；像素 Surface 仍直接 feed 同一份原始 ANSI。
+    pub fn replace_frame(&mut self, bytes: &[u8], cols: u16, rows: u16) -> Vec<AttentionSignal> {
+        self.terminal = TerminalState::with_scrollback(
+            usize::from(cols.max(1)),
+            usize::from(rows.max(1)),
+            self.scrollback_max,
+        );
+        self.byte_ring.clear();
+        self.viewport = 0;
+        self.feed(bytes, cols, rows)
     }
 
     /// 取走尚未消费的注意力信号（GUI 在 refresh 后调用）。

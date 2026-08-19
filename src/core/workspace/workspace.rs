@@ -416,6 +416,17 @@ impl Workspace {
                     });
                     buf.replace_snapshot(data, cols, rows);
                 }
+                StateChange::PaneFrame { pane, data } => {
+                    let (cols, rows) = self
+                        .state()
+                        .pane(pane)
+                        .map(|p| (p.cols, p.rows))
+                        .unwrap_or((80, 24));
+                    let buf = self.panes.entry(*pane).or_insert_with(|| {
+                        PaneBuf::new(usize::from(cols), usize::from(rows), self.scrollback_lines)
+                    });
+                    buf.replace_frame(data, cols, rows);
+                }
                 StateChange::PaneClosed { pane } => {
                     self.panes.remove(pane);
                     self.agents.remove(pane);
@@ -513,6 +524,40 @@ mod tests {
             StateChange::WorkspaceRenamed { name } if name == "renamed"
         )));
         assert_eq!(workspace.name(), "renamed");
+    }
+
+    /// Runtime 的完整 pane frame 必须替换 Index 状态；后续普通输出才追加。
+    /// Surface 仍由前端直接 feed frame 原始 ANSI，不从 PaneBuf dump 回去。
+    #[test]
+    fn full_pane_frame_replaces_workspace_index_before_incremental_output() {
+        let mut w = workspace("full-frame");
+        let first = b"\x1b[2J\x1b[HWORKSPACE_FULL_ONE".to_vec();
+        w.feed_events(&[StateChange::PaneFrame {
+            pane: PaneId(1),
+            data: first.clone(),
+        }]);
+        assert_eq!(w.pane_raw_bytes(PaneId(1)), first);
+        assert!(w.pane_text(PaneId(1)).contains("WORKSPACE_FULL_ONE"));
+
+        let second = b"\x1b[2J\x1b[HWORKSPACE_FULL_TWO".to_vec();
+        w.feed_events(&[StateChange::PaneFrame {
+            pane: PaneId(1),
+            data: second.clone(),
+        }]);
+        assert_eq!(
+            w.pane_raw_bytes(PaneId(1)),
+            second,
+            "第二个 full frame 必须替换 raw ring，禁止追加 FULL_ONE+FULL_TWO"
+        );
+        assert!(!w.pane_text(PaneId(1)).contains("WORKSPACE_FULL_ONE"));
+        assert!(w.pane_text(PaneId(1)).contains("WORKSPACE_FULL_TWO"));
+
+        w.feed_events(&[StateChange::PaneOutput {
+            pane: PaneId(1),
+            data: b"_DIFF".to_vec(),
+        }]);
+        let raw = w.pane_raw_bytes(PaneId(1));
+        assert!(raw.ends_with(b"WORKSPACE_FULL_TWO_DIFF"));
     }
 
     /// W6：search_pane 命中带 tab_id；同 pane 不同 tab 不串。

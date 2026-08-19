@@ -518,7 +518,7 @@ impl HerdrRuntime {
             Ok(bytes) if !bytes.is_empty() => {
                 self.outputs.insert(pane, bytes.clone());
                 self.events
-                    .push_back(StateChange::PaneOutput { pane, data: bytes });
+                    .push_back(StateChange::PaneFrame { pane, data: bytes });
             }
             Ok(_) => {}
             Err(err) => {
@@ -695,8 +695,13 @@ impl HerdrRuntime {
                             MAX_PANE_OUTPUT_BYTES,
                         );
                     }
-                    self.events
-                        .push_back(StateChange::PaneOutput { pane, data: bytes });
+                    if full {
+                        self.events
+                            .push_back(StateChange::PaneFrame { pane, data: bytes });
+                    } else {
+                        self.events
+                            .push_back(StateChange::PaneOutput { pane, data: bytes });
+                    }
                 }
                 ObserveEvent::Closed { pane, reason } => {
                     tracing::info!(
@@ -2001,18 +2006,19 @@ mod tests {
             .events
             .iter()
             .filter_map(|event| match event {
-                StateChange::PaneOutput { data, .. } => Some(data.as_slice()),
+                StateChange::PaneFrame { data, .. } => Some((true, data.as_slice())),
+                StateChange::PaneOutput { data, .. } => Some((false, data.as_slice())),
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(
             output_events,
             vec![
-                b"FULL_ONE".as_slice(),
-                b"FULL_TWO".as_slice(),
-                b"_DIFF".as_slice()
+                (true, b"FULL_ONE".as_slice()),
+                (true, b"FULL_TWO".as_slice()),
+                (false, b"_DIFF".as_slice())
             ],
-            "live Surface 仍必须按顺序收到每个原始 ANSI frame"
+            "Runtime 必须保留 full/diff 语义，同时按顺序交付每个原始 ANSI frame"
         );
     }
 
