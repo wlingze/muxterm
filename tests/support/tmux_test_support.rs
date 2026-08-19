@@ -169,7 +169,9 @@ pub fn send_keys_line(socket: &str, target: &str, text: &str) {
 /// OSC 133 / BEL 注意力信号必须走 hex 才能原样进 pane）。
 pub fn send_keys_hex(socket: &str, target: &str, bytes: &[u8]) {
     let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    tmux_ok(socket, &["send-keys", "-t", target, "-H", &hex.join(" ")]);
+    let mut args = vec!["send-keys", "-t", target, "-H"];
+    args.extend(hex.iter().map(String::as_str));
+    tmux_ok(socket, &args);
 }
 
 /// 用 `send-keys -l` 发送原始字节（测试用；`-H` 会把控制字节转成 `^[`/`^G`）。
