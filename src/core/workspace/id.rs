@@ -31,10 +31,10 @@ impl WorkspaceId {
         }
     }
 
-    /// ReplicaStore/注意力引擎键：`name@transport`（与 QuickConnect 一致）。
+    /// ReplicaStore/注意力引擎键：`name[:path]@transport`。
     ///
-    /// Herdr 同一 named session 上多格 workspace 靠 `path`（Herdr workspace_id）
-    /// 区分，replica 键必须带上 path，否则注意力引擎无法切换。
+    /// 任意 Runtime 都可能在同一共享 session 下暴露多个 path；这种情况下
+    /// path 是通用 workspace 身份的一部分，不能按 Runtime 名字做特判。
     pub fn replica_id(&self) -> String {
         let name = if self.session.is_empty() {
             crate::core::quickconnect::model::QuickConnect::default_name(&self.path)
@@ -46,7 +46,7 @@ impl WorkspaceId {
         } else {
             "local".into()
         };
-        if self.runtime == "herdr" && !self.path.is_empty() {
+        if !self.session.is_empty() && !self.path.is_empty() {
             format!("{name}:{path}@{transport}", path = self.path)
         } else {
             format!("{name}@{transport}")
@@ -98,5 +98,14 @@ mod tests {
         assert_eq!(local.as_str(), "local//demo/tmux/");
         let ssh = WorkspaceId::new("ssh", Some("ryzen"), "legion", "tmux", "~/work");
         assert_eq!(ssh.as_str(), "ssh/ryzen/legion/tmux/~/work");
+    }
+
+    #[test]
+    fn replica_id_distinguishes_paths_for_any_shared_session_runtime() {
+        let first = WorkspaceId::new("local", None, "shared", "future-runtime", "space-1");
+        let second = WorkspaceId::new("local", None, "shared", "future-runtime", "space-2");
+        assert_eq!(first.replica_id(), "shared:space-1@local");
+        assert_eq!(second.replica_id(), "shared:space-2@local");
+        assert_ne!(first.replica_id(), second.replica_id());
     }
 }
