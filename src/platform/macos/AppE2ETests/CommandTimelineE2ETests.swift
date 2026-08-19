@@ -43,15 +43,17 @@ final class CommandTimelineE2ETests: XCTestCase {
             "OSC 133 成功/失败刻度必须到达 macOS UI"
         )
 
-        // 第一次 previous 选最后一个失败命令；第二次才回到离屏成功命令。
-        app.testPreviousCommand()
-        app.testPreviousCommand()
+        // 第一次 Cmd+Option+↑ 选最后一个失败命令；第二次才回到离屏成功命令。
+        let previous = try XCTUnwrap(app.testMakeCommandTimelineEvent(up: true))
+        XCTAssertTrue(app.testDispatchKeyEvent(previous), "Cmd+Option+↑ 必须被窗口快捷键消费")
+        XCTAssertTrue(app.testDispatchKeyEvent(previous), "第二次 Cmd+Option+↑ 必须继续沿命令轨跳转")
         AppE2E.pump(80)
         XCTAssertGreaterThan(app.testPaneViewport(), 0, "上一条命令应能跳进离屏历史")
 
-        // 下一条命令回到失败刻度，再下一次等价于向下滚动到实时底部。
-        app.testNextCommand()
-        app.testNextCommand()
+        // Cmd+Option+↓ 回到失败刻度，再下一次等价于向下滚动到实时底部。
+        let next = try XCTUnwrap(app.testMakeCommandTimelineEvent(up: false))
+        XCTAssertTrue(app.testDispatchKeyEvent(next), "Cmd+Option+↓ 必须被窗口快捷键消费")
+        XCTAssertTrue(app.testDispatchKeyEvent(next), "末尾 Cmd+Option+↓ 必须回到底部")
         AppE2E.pump(80)
         XCTAssertEqual(app.testPaneViewport(), 0, "命令时间线末尾必须回到底部")
     }

@@ -230,6 +230,10 @@ extension MainWindowController {
         terminalManager.view(for: testActivePaneID()).canScroll
     }
 
+    func testNativeHistoryCapacity() -> Int {
+        terminalManager.view(for: testActivePaneID()).historyCapacity
+    }
+
     func testPaneViewport() -> UInt32 {
         UInt32(max(0, bridge.paneViewport(paneId: testActivePaneID())))
     }
@@ -250,6 +254,10 @@ extension MainWindowController {
 
     func testLastSeenVisible() -> Bool {
         !content.lastSeenButton.isHidden
+    }
+
+    func testClickLastSeen() {
+        content.lastSeenButton.performClick(nil)
     }
 
     func testCommandMarkVisible() -> (ok: Bool, fail: Bool) {
@@ -328,6 +336,26 @@ extension MainWindowController {
             charactersIgnoringModifiers: "\r",
             isARepeat: false,
             keyCode: 36
+        )
+    }
+
+    /// 构造真实命令时间线快捷键事件；生产路径仍由 `handleKey` 解析
+    /// keyCode + Cmd/Option，而不是测试直接调用跳转方法。
+    func testMakeCommandTimelineEvent(up: Bool) -> NSEvent? {
+        guard let window else { return nil }
+        let keyCode: UInt16 = up ? 126 : 125
+        let arrow = up ? "\u{F700}" : "\u{F701}"
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .option],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: arrow,
+            charactersIgnoringModifiers: arrow,
+            isARepeat: false,
+            keyCode: keyCode
         )
     }
 
