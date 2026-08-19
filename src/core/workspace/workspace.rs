@@ -124,6 +124,14 @@ impl Workspace {
             .unwrap_or(0)
     }
 
+    /// 搜索/命令刻度的严格 viewport 查询；`None` 表示 seq 已被有界
+    /// scrollback 淘汰，不能把它误当成 offset=0 的可见行。
+    pub fn pane_viewport_offset_for_seq_checked(&self, pane: PaneId, seq: u64) -> Option<u32> {
+        self.panes
+            .get(&pane)
+            .and_then(|t| t.viewport_offset_for_seq_checked(seq))
+    }
+
     /// 某 pane 的 OSC 133 命令刻度（W18h 滚动条红绿标记）。
     pub fn pane_command_marks(
         &self,
@@ -133,6 +141,66 @@ impl Workspace {
             .get(&pane)
             .map(|t| t.command_marks().to_vec())
             .unwrap_or_default()
+    }
+
+    /// 当前刻度之前最近的一条命令。
+    pub fn pane_previous_command_mark(
+        &self,
+        pane: PaneId,
+        current_seq: u64,
+    ) -> Option<crate::core::protocol::terminal::emulate::CommandMark> {
+        self.panes
+            .get(&pane)
+            .and_then(|t| t.previous_command_mark(current_seq))
+            .cloned()
+    }
+
+    /// 当前刻度之后最近的一条命令。
+    pub fn pane_next_command_mark(
+        &self,
+        pane: PaneId,
+        current_seq: u64,
+    ) -> Option<crate::core::protocol::terminal::emulate::CommandMark> {
+        self.panes
+            .get(&pane)
+            .and_then(|t| t.next_command_mark(current_seq))
+            .cloned()
+    }
+
+    pub fn pane_last_successful_command(
+        &self,
+        pane: PaneId,
+    ) -> Option<crate::core::protocol::terminal::emulate::CommandMark> {
+        self.panes
+            .get(&pane)
+            .and_then(|t| t.last_successful_command())
+            .cloned()
+    }
+
+    pub fn pane_last_failed_command(
+        &self,
+        pane: PaneId,
+    ) -> Option<crate::core::protocol::terminal::emulate::CommandMark> {
+        self.panes
+            .get(&pane)
+            .and_then(|t| t.last_failed_command())
+            .cloned()
+    }
+
+    /// 某 pane 的一次性 Surface seed。
+    pub fn pane_surface_seed_ansi(&self, pane: PaneId) -> Vec<u8> {
+        self.panes
+            .get(&pane)
+            .map(|t| t.surface_seed_ansi())
+            .unwrap_or_default()
+    }
+
+    /// 某 pane 最新稳定行 ID。
+    pub fn pane_latest_line_seq(&self, pane: PaneId) -> u64 {
+        self.panes
+            .get(&pane)
+            .map(|t| t.latest_line_seq())
+            .unwrap_or(0)
     }
 
     /// 某 pane 的最近 n 行。
@@ -165,6 +233,14 @@ impl Workspace {
             .get(&pane)
             .map(|t| t.visible_ansi())
             .unwrap_or_default()
+    }
+
+    /// 某 pane 还能往历史上滚的最大 offset（0 = 没有离屏历史）。
+    pub fn pane_history_max_offset(&self, pane: PaneId, rows: u32) -> u32 {
+        self.panes
+            .get(&pane)
+            .map(|t| t.history_max_offset(rows))
+            .unwrap_or(0)
     }
 
     /// 某 pane 的滚动窗口 ANSI。
@@ -399,6 +475,25 @@ mod tests {
         assert_eq!(w.pane_viewport(PaneId(1)), 12);
     }
 
+    /// 滚出可见区之后，history_max_offset + scroll_ansi 必须仍能读到离屏 token。
+    #[test]
+    fn pane_history_max_offset_exposes_offscreen_token() {
+        let mut w = workspace("demo");
+        w.feed_pane_bytes(PaneId(1), b"HIST_TOKEN\r\n", 80, 24);
+        for i in 0..40 {
+            w.feed_pane_bytes(PaneId(1), format!("pad-{i:02}\r\n").as_bytes(), 80, 24);
+        }
+        w.feed_pane_bytes(PaneId(1), b"HIST_TAIL\r\n", 80, 24);
+        let max = w.pane_history_max_offset(PaneId(1), 24);
+        assert!(max > 0, "必须能滚离底部, max={max}");
+        let top_bytes = w.pane_scroll_ansi(PaneId(1), max, 24);
+        let top = String::from_utf8_lossy(&top_bytes);
+        assert!(
+            top.contains("HIST_TOKEN"),
+            "滚到顶必须看见离屏 token。got={top}"
+        );
+    }
+
     /// 滚出可见区的搜索命中必须给出 >0 的 viewport 偏移，便于 GUI 喂历史帧。
     #[test]
     fn search_hit_seq_maps_to_nonzero_viewport_offset() {
@@ -420,6 +515,11 @@ mod tests {
             w.pane_viewport_offset_for_seq(PaneId(1), live[0].seq),
             0,
             "仍在可见屏的命中偏移应为 0"
+        );
+        assert_eq!(
+            w.pane_viewport_offset_for_seq_checked(PaneId(1), u64::MAX),
+            None,
+            "不存在的 seq 不能伪装成可见屏 offset=0"
         );
     }
 

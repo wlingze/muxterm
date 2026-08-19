@@ -11,7 +11,7 @@
 //! - 不处理完整渲染细节（例如真正绘制颜色），只做「状态层面」的验证：
 //!   屏幕快照、光标位置、模式标志。这样测试可断言终端状态，而不只是文本。
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use vte::ansi::{
@@ -120,6 +120,8 @@ impl AttrState {
 pub struct ScrollbackLine {
     pub text: String,
     pub seq: u64,
+    /// 保留该行的样式 ANSI，供 Surface 首次播种原生 scrollback。
+    pub ansi: Vec<u8>,
     /// 该行是否因软换行（写满末列后自动折行）产生；搜索时与下一行拼回逻辑行。
     pub soft_wrapped: bool,
 }
@@ -127,6 +129,8 @@ pub struct ScrollbackLine {
 /// 无头终端状态。
 pub struct TerminalState {
     grid: Vec<Vec<Cell>>,
+    /// 每个可见行的稳定 ID；行滚入 scrollback 时 ID 原样转移。
+    grid_line_ids: Vec<u64>,
     /// 每行是否因软换行折行（与 grid 平行；搜索拼回逻辑行用）。
     grid_soft_wrapped: Vec<bool>,
     cursor_row: usize,
@@ -176,8 +180,10 @@ pub struct TerminalState {
     pub scrollback: VecDeque<ScrollbackLine>,
     /// scrollback 上限（行数）。
     scrollback_max: usize,
-    /// 下一条 scrollback 行的 seq（从 1 起，淘汰后不回退）。
+    /// 下一条滚出行的 seq（从 1 起，淘汰后不回退）。
     next_seq: u64,
+    /// 新建可见行使用的稳定 ID。
+    next_line_id: u64,
     /// 本次 feed 中累计的注意力信号。
     signals: Vec<AttentionSignal>,
     /// 最近一次 feed 的原始字节（Index 自用；Surface 小终端按同一字节流播种）。
@@ -195,14 +201,13 @@ pub struct TerminalState {
     command_pending: Option<String>,
     /// 命令回合开始时的 seq（刻度跳转用）。
     command_start_seq: u64,
-    /// 命令刻度专用递增序号（随回合前进，不依赖 scrollback 淘汰）。
-    command_seq: u64,
     processor: Processor,
 }
 
 /// 一条 shell 命令刻度：副本行号 + 命令文本 + 退出码（红/绿）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandMark {
+    /// 命令提示符所在的稳定终端行 ID。
     pub seq: u64,
     pub command: String,
     pub exit_code: Option<u8>,
@@ -284,6 +289,7 @@ impl TerminalState {
         let rows = rows.max(1);
         Self {
             grid: vec![vec![Cell::blank(); cols]; rows],
+            grid_line_ids: (1..=rows as u64).collect(),
             grid_soft_wrapped: vec![false; rows],
             cursor_row: 0,
             cursor_col: 0,
@@ -317,6 +323,7 @@ impl TerminalState {
             scrollback: VecDeque::new(),
             scrollback_max: max_lines.max(1),
             next_seq: 1,
+            next_line_id: rows as u64 + 1,
             signals: Vec::new(),
             last_raw_bytes: Vec::new(),
             osc_esc_seen: false,
@@ -324,7 +331,6 @@ impl TerminalState {
             command_marks: Vec::new(),
             command_pending: None,
             command_start_seq: 0,
-            command_seq: 0,
             processor: Processor::default(),
         }
     }
@@ -332,6 +338,61 @@ impl TerminalState {
     /// W18：已完成的 OSC 133 命令回合（滚动条刻度数据源）。
     pub fn command_marks(&self) -> &[CommandMark] {
         &self.command_marks
+    }
+
+    /// 返回当前刻度之前最近的一条命令。
+    /// `current_seq == 0` 表示从时间线尾部开始向前找。
+    pub fn previous_command_mark(&self, current_seq: u64) -> Option<&CommandMark> {
+        if current_seq == 0 {
+            return self.command_marks.last();
+        }
+        self.command_marks
+            .iter()
+            .rev()
+            .find(|mark| mark.seq < current_seq)
+    }
+
+    /// 返回当前刻度之后最近的一条命令。
+    /// `current_seq == 0` 表示从时间线头部开始向后找。
+    pub fn next_command_mark(&self, current_seq: u64) -> Option<&CommandMark> {
+        if current_seq == 0 {
+            return self.command_marks.first();
+        }
+        self.command_marks
+            .iter()
+            .find(|mark| mark.seq > current_seq)
+    }
+
+    /// 最近一次成功命令（退出码为 0）。
+    pub fn last_successful_command(&self) -> Option<&CommandMark> {
+        self.command_marks
+            .iter()
+            .rev()
+            .find(|mark| mark.exit_code == Some(0))
+    }
+
+    /// 最近一次失败命令（存在且非 0 的退出码）。
+    pub fn last_failed_command(&self) -> Option<&CommandMark> {
+        self.command_marks
+            .iter()
+            .rev()
+            .find(|mark| mark.exit_code.is_some_and(|code| code != 0))
+    }
+
+    /// 刻度必须与终端行生命周期一致。
+    ///
+    /// `CommandMark.seq` 指向真实 grid/scrollback 行；行被 bounded
+    /// scrollback 淘汰、resize 删除或 DECSTBM 重排后，继续保留该 mark
+    /// 会让 UI 把 stale seq 错误地当成 offset=0 跳转。
+    fn prune_command_marks(&mut self) {
+        let mut live = HashSet::with_capacity(self.grid_line_ids.len() + self.scrollback.len());
+        live.extend(self.grid_line_ids.iter().copied());
+        live.extend(self.scrollback.iter().map(|line| line.seq));
+        self.command_marks.retain(|mark| live.contains(&mark.seq));
+        if self.command_pending.is_some() && !live.contains(&self.command_start_seq) {
+            self.command_pending = None;
+            self.command_start_seq = 0;
+        }
     }
 
     pub fn cols(&self) -> usize {
@@ -398,6 +459,10 @@ impl TerminalState {
             self.grid.resize(rows, vec![Cell::blank(); cols]);
             // 同步软换行标记：新行默认未软换行。
             self.grid_soft_wrapped.resize(rows, false);
+            while self.grid_line_ids.len() < rows {
+                let id = self.alloc_line_id();
+                self.grid_line_ids.push(id);
+            }
         } else if rows < old_rows {
             if self.cursor_row >= old_rows.saturating_sub(1) {
                 // 光标在底行：保留屏幕底部（多数终端 resize 行为）。
@@ -406,16 +471,27 @@ impl TerminalState {
                 if self.grid_soft_wrapped.len() > start {
                     self.grid_soft_wrapped.drain(..start);
                 }
+                if self.grid_line_ids.len() > start {
+                    self.grid_line_ids.drain(..start);
+                }
                 self.cursor_row = rows - 1;
             } else {
                 self.grid.truncate(rows);
                 self.grid_soft_wrapped.truncate(rows);
+                self.grid_line_ids.truncate(rows);
             }
         }
         // 任何 resize 路径都要保证 soft-wrap 行数与 grid 一致，
         // 否则 agent 部分 DECSTBM + LF 会越界 panic（test-2026-0818-1114）。
         if self.grid_soft_wrapped.len() != self.grid.len() {
             self.grid_soft_wrapped.resize(self.grid.len(), false);
+        }
+        if self.grid_line_ids.len() != self.grid.len() {
+            while self.grid_line_ids.len() < self.grid.len() {
+                let id = self.alloc_line_id();
+                self.grid_line_ids.push(id);
+            }
+            self.grid_line_ids.truncate(self.grid.len());
         }
 
         // 滚动区域：整屏区域随高度伸缩；部分区域收缩到底部后复位为整屏。
@@ -431,6 +507,13 @@ impl TerminalState {
         self.wrap_pending = false;
         self.cursor_row = self.cursor_row.min(rows - 1);
         self.cursor_col = self.cursor_col.min(cols - 1);
+        self.prune_command_marks();
+    }
+
+    fn alloc_line_id(&mut self) -> u64 {
+        let id = self.next_line_id;
+        self.next_line_id = self.next_line_id.saturating_add(1);
+        id
     }
 
     /// 追加待回写的应答字节。
@@ -480,6 +563,7 @@ impl TerminalState {
             processor.advance(self, b);
         }
         self.processor = processor;
+        self.prune_command_marks();
     }
 
     /// 最近一次 feed 的原始字节（未解转义、未重编码）。
@@ -549,7 +633,11 @@ impl TerminalState {
                     Some(b'B') => {
                         // 命令文本从 B 开始收集，到 C 结束（W18h）。
                         self.command_pending = Some(String::new());
-                        self.command_start_seq = self.next_seq;
+                        self.command_start_seq = self
+                            .grid_line_ids
+                            .get(self.cursor_row)
+                            .copied()
+                            .unwrap_or(self.next_seq);
                     }
                     Some(b'C') => {
                         self.signals.push(AttentionSignal::CommandStart);
@@ -558,9 +646,8 @@ impl TerminalState {
                             // 收集时把 C 的 OSC 帧也吞进来了，剥到 `ESC ]` 为止。
                             let cmd = cmd.split("\x1b]").next().unwrap_or("").trim().to_string();
                             if !cmd.is_empty() {
-                                self.command_seq += 1;
                                 self.command_marks.push(CommandMark {
-                                    seq: self.command_seq,
+                                    seq: self.command_start_seq,
                                     command: cmd,
                                     exit_code: None,
                                 });
@@ -582,9 +669,12 @@ impl TerminalState {
                                 last.exit_code = exit;
                             }
                         } else {
-                            self.command_seq += 1;
                             self.command_marks.push(CommandMark {
-                                seq: self.command_seq,
+                                seq: self
+                                    .grid_line_ids
+                                    .get(self.cursor_row)
+                                    .copied()
+                                    .unwrap_or(self.next_seq),
                                 command: String::new(),
                                 exit_code: exit,
                             });
@@ -714,18 +804,21 @@ impl TerminalState {
             let bottom = self.scroll_bottom;
             if top == 0 && bottom == self.rows() - 1 {
                 // 整屏上滚：滚出顶行的内容进入 scrollback
-                if let Some(evicted) = self.grid.first() {
-                    let s: String = evicted.iter().map(|c| c.ch).collect();
+                if let Some(evicted) = self.grid.first().cloned() {
                     // 去掉行尾空白，保持 scrollback 可读
                     let was_soft = self.grid_soft_wrapped.first().copied().unwrap_or(false);
-                    self.push_scrollback(s.trim_end().to_string(), soft || was_soft);
+                    let seq = self.grid_line_ids.first().copied().unwrap_or(self.next_seq);
+                    self.push_scrollback(&evicted, seq, soft || was_soft);
                 }
                 // 先取列数：rows=1 时 remove(0) 会让 grid 暂时为空，cols() 返回 0。
                 let cols = self.cols();
                 self.grid.remove(0);
                 self.grid_soft_wrapped.remove(0);
+                self.grid_line_ids.remove(0);
                 self.grid.push(vec![Cell::blank(); cols]);
                 self.grid_soft_wrapped.push(false);
+                let id = self.alloc_line_id();
+                self.grid_line_ids.push(id);
             } else {
                 // 部分滚动区域（DECSTBM）：区域顶行滚出、区域底行补空，
                 // 区域外的行不能动。htop 正是靠这个固定表头/表尾只滚动正文。
@@ -743,8 +836,11 @@ impl TerminalState {
                 if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
                     self.grid.remove(top);
                     self.grid_soft_wrapped.remove(top);
+                    self.grid_line_ids.remove(top);
                     self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
                     self.grid_soft_wrapped.insert(bottom, false);
+                    let id = self.alloc_line_id();
+                    self.grid_line_ids.insert(bottom, id);
                 }
             }
         }
@@ -756,15 +852,16 @@ impl TerminalState {
     }
 
     /// 把一行推入 scrollback（按 `with_scrollback` 上限截断，seq 单调递增）。
-    fn push_scrollback(&mut self, line: String, soft_wrapped: bool) {
+    fn push_scrollback(&mut self, cells: &[Cell], seq: u64, soft_wrapped: bool) {
         if self.scrollback.len() >= self.scrollback_max {
             self.scrollback.pop_front();
         }
-        let seq = self.next_seq;
-        self.next_seq += 1;
+        self.next_seq = self.next_seq.max(seq.saturating_add(1));
+        let text: String = cells.iter().map(|c| c.ch).collect();
         self.scrollback.push_back(ScrollbackLine {
-            text: line,
+            text: text.trim_end().to_string(),
             seq,
+            ansi: encode_cells_ansi(cells),
             soft_wrapped,
         });
     }
@@ -787,6 +884,16 @@ impl TerminalState {
     /// 最新一条 scrollback 的 seq（无行时为 0）。
     pub fn latest_seq(&self) -> u64 {
         self.scrollback.back().map(|l| l.seq).unwrap_or(0)
+    }
+
+    /// 当前终端中最新的稳定行 ID（可见屏和 scrollback 均考虑）。
+    pub fn latest_line_seq(&self) -> u64 {
+        self.grid_line_ids
+            .iter()
+            .copied()
+            .chain(self.scrollback.iter().map(|line| line.seq))
+            .max()
+            .unwrap_or(0)
     }
 
     /// 大小写敏感子串搜索，返回 (seq, 行文本)；空 query 返回空。
@@ -817,9 +924,8 @@ impl TerminalState {
         // 可见屏：软换行拼回逻辑行再匹配。
         let mut logical = String::new();
         let mut logical_seq = self.next_seq;
-        for (seq, (i, line)) in
-            (self.next_seq..).zip(self.snapshot_trimmed().into_iter().enumerate())
-        {
+        for (i, line) in self.snapshot_trimmed().into_iter().enumerate() {
+            let seq = self.grid_line_ids.get(i).copied().unwrap_or(self.next_seq);
             if logical.is_empty() {
                 logical_seq = seq;
             }
@@ -839,9 +945,15 @@ impl TerminalState {
     }
 
     /// 最近 n 行：先取可见屏 `snapshot_trimmed()` 尾部，不足再向前取 scrollback。
-    /// scrollback 中某 seq 的行索引（0 = 最老一行）。可见屏行没有稳定 seq，返回 None。
+    /// 某 seq 的历史行索引（0 = 最老一行）；可见屏行返回其历史末端索引。
     pub fn line_index_by_seq(&self, seq: u64) -> Option<usize> {
-        self.scrollback.iter().position(|l| l.seq == seq)
+        if let Some(index) = self.scrollback.iter().position(|l| l.seq == seq) {
+            return Some(index);
+        }
+        self.grid_line_ids
+            .iter()
+            .position(|id| *id == seq)
+            .map(|index| self.scrollback.len() + index)
     }
 
     pub fn last_n_lines(&self, n: usize) -> Vec<String> {
@@ -893,6 +1005,47 @@ impl TerminalState {
         let end = history.len() - offset;
         let start = end.saturating_sub(rows);
         history[start..end].to_vec()
+    }
+
+    /// 当前 pane 的一次性 Surface seed：历史行先进入 scrollback，随后是当前屏。
+    /// 这里故意不带 RIS/CUP 风暴；调用方只在新 VT 上 reset 一次后 feed。
+    pub fn surface_seed_ansi(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for line in self.scrollback.iter() {
+            out.extend_from_slice(&line.ansi);
+            if !line.soft_wrapped {
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+        // 每个历史行都必须真正离开 native 可见屏。历史最后一行写完后，
+        // 补 rows 个空换行，正好让 scrollback 行数与 core 一致；随后用
+        // CUP/DECAWM-off 的 overlay 写回当前屏，不能再顺序写 grid 造成
+        // 额外的 scrollback 或把当前屏当历史重复一遍。
+        for _ in 0..self.rows() {
+            out.extend_from_slice(b"\r\n");
+        }
+        // 覆盖当前屏的几何内容，不能清空前面刚建立的 scrollback。
+        out.extend_from_slice(&self.visible_overlay_ansi());
+        out
+    }
+
+    /// 当前网格覆盖 ANSI；与 `visible_ansi` 不同，不执行 RIS/ED。
+    pub fn visible_overlay_ansi(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\x1b[H\x1b[?7l");
+        for (row_idx, row) in self.grid.iter().enumerate() {
+            out.extend_from_slice(format!("\x1b[{};1H", row_idx + 1).as_bytes());
+            out.extend_from_slice(&encode_cells_ansi(row));
+        }
+        out.extend_from_slice(
+            format!(
+                "\x1b[{};{}H\x1b[?7h",
+                self.cursor_row + 1,
+                self.cursor_col + 1
+            )
+            .as_bytes(),
+        );
+        out
     }
 
     /// 网格是否全空（没有任何非空白单元格）。
@@ -988,8 +1141,11 @@ impl TerminalState {
             if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
                 self.grid.remove(top);
                 self.grid_soft_wrapped.remove(top);
+                self.grid_line_ids.remove(top);
                 self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
                 self.grid_soft_wrapped.insert(bottom, false);
+                let id = self.alloc_line_id();
+                self.grid_line_ids.insert(bottom, id);
             }
         }
     }
@@ -1012,8 +1168,11 @@ impl TerminalState {
             if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
                 self.grid.remove(bottom);
                 self.grid_soft_wrapped.remove(bottom);
+                self.grid_line_ids.remove(bottom);
                 self.grid.insert(top, vec![Cell::blank(); self.cols()]);
                 self.grid_soft_wrapped.insert(top, false);
+                let id = self.alloc_line_id();
+                self.grid_line_ids.insert(top, id);
             }
         }
     }
@@ -1135,10 +1294,13 @@ impl TerminalState {
             if soft_len > bottom && bottom < rows {
                 self.grid.remove(bottom);
                 self.grid_soft_wrapped.remove(bottom);
+                self.grid_line_ids.remove(bottom);
             }
             if top <= rows && top <= soft_len {
                 self.grid.insert(top, vec![Cell::blank(); self.cols()]);
                 self.grid_soft_wrapped.insert(top, false);
+                let id = self.alloc_line_id();
+                self.grid_line_ids.insert(top, id);
             }
         }
     }
@@ -1160,8 +1322,11 @@ impl TerminalState {
             if top < rows && bottom < rows && top < soft_len && bottom < soft_len {
                 self.grid.remove(top);
                 self.grid_soft_wrapped.remove(top);
+                self.grid_line_ids.remove(top);
                 self.grid.insert(bottom, vec![Cell::blank(); self.cols()]);
                 self.grid_soft_wrapped.insert(bottom, false);
+                let id = self.alloc_line_id();
+                self.grid_line_ids.insert(bottom, id);
             }
         }
     }
@@ -1557,6 +1722,91 @@ fn sgr_bg(color: &Color) -> Option<String> {
         Color::Indexed(n) => Some(format!("48;5;{n}")),
         Color::Spec(Rgb { r, g, b }) => Some(format!("48;2;{r};{g};{b}")),
     }
+}
+
+/// 把一行 cell 编成可直接喂给另一个 VT 的 ANSI。
+///
+/// 每行从 SGR reset 开始，避免上一行的颜色/样式泄漏；这只用于一次性
+/// Surface seed，不用于 live `%output`。
+fn encode_cells_ansi(cells: &[Cell]) -> Vec<u8> {
+    #[derive(Clone, PartialEq, Eq)]
+    struct Style {
+        fg: Option<Color>,
+        bg: Option<Color>,
+        bold: bool,
+        underline: bool,
+        reverse: bool,
+        strike: bool,
+        hidden: bool,
+        link: Option<String>,
+    }
+
+    let style_of = |cell: &Cell| Style {
+        fg: cell.fg,
+        bg: cell.bg,
+        bold: cell.bold,
+        underline: cell.underline,
+        reverse: cell.reverse,
+        strike: cell.strike,
+        hidden: cell.hidden,
+        link: cell.link.clone(),
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\x1b[0m");
+    let mut previous: Option<Style> = None;
+    for cell in cells {
+        let style = style_of(cell);
+        if previous.as_ref() != Some(&style) {
+            out.extend_from_slice(b"\x1b[0m");
+            let mut attrs = Vec::new();
+            if style.bold {
+                attrs.push("1".to_string());
+            }
+            if style.underline {
+                attrs.push("4".to_string());
+            }
+            if style.reverse {
+                attrs.push("7".to_string());
+            }
+            if style.strike {
+                attrs.push("9".to_string());
+            }
+            if style.hidden {
+                attrs.push("8".to_string());
+            }
+            if let Some(fg) = style.fg.as_ref().and_then(sgr_fg) {
+                attrs.push(fg);
+            }
+            if let Some(bg) = style.bg.as_ref().and_then(sgr_bg) {
+                attrs.push(bg);
+            }
+            if !attrs.is_empty() {
+                out.extend_from_slice(b"\x1b[");
+                out.extend_from_slice(attrs.join(";").as_bytes());
+                out.push(b'm');
+            }
+            if previous.as_ref().and_then(|s| s.link.as_ref()) != style.link.as_ref() {
+                if previous.as_ref().and_then(|s| s.link.as_ref()).is_some() {
+                    out.extend_from_slice(b"\x1b]8;;\x1b\\");
+                }
+                if let Some(link) = &style.link {
+                    out.extend_from_slice(b"\x1b]8;;");
+                    out.extend_from_slice(link.as_bytes());
+                    out.extend_from_slice(b"\x1b\\");
+                }
+            }
+            previous = Some(style);
+        }
+        let ch = if cell.ch == '\0' { ' ' } else { cell.ch };
+        let mut buf = [0u8; 4];
+        out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+    }
+    if previous.as_ref().and_then(|s| s.link.as_ref()).is_some() {
+        out.extend_from_slice(b"\x1b]8;;\x1b\\");
+    }
+    out.extend_from_slice(b"\x1b[0m");
+    out
 }
 
 /// Rgb → xterm 的 `RRRR/GGGG/BBBB` 形式。
@@ -2411,6 +2661,50 @@ mod scrollback_tests {
         assert!(!fresh.snapshot()[0].contains("PROMPT"), "首行不应含 PROMPT");
     }
 
+    /// Surface seed 只在新 VT 上使用：历史进入原生 scrollback，当前屏和样式保留。
+    #[test]
+    fn surface_seed_preserves_history_style_and_current_screen() {
+        let mut old = TerminalState::with_scrollback(24, 4, 100);
+        old.feed(b"\x1b[31mHIST_COLOUR\x1b[0m\r\n");
+        for i in 0..8 {
+            old.feed(format!("pad-{i}\r\n").as_bytes());
+        }
+        old.feed(b"TAIL_VISIBLE");
+
+        let seed = old.surface_seed_ansi();
+        assert!(seed.contains(&b'H'), "seed 必须包含历史文本");
+        assert!(
+            seed.windows(b"\x1b[31m".len()).any(|w| w == b"\x1b[31m"),
+            "seed 必须带样式 SGR"
+        );
+
+        let mut fresh = TerminalState::new(24, 4);
+        fresh.feed(&seed);
+        assert_eq!(fresh.snapshot(), old.snapshot(), "当前屏不能被 seed 改写");
+        assert!(
+            fresh
+                .scrollback
+                .iter()
+                .any(|line| line.text.contains("HIST_COLOUR")),
+            "历史行必须进入新 VT 的 scrollback"
+        );
+    }
+
+    /// OSC 133 mark 的 seq 必须能回到真实可见/历史行，而不是命令 ordinal。
+    #[test]
+    fn command_mark_seq_maps_to_terminal_line() {
+        let mut t = TerminalState::with_scrollback(40, 4, 100);
+        t.feed(
+            b"\x1b]133;A\x07\x1b]133;B\x07echo MARK_ONE\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07",
+        );
+        let mark = t.command_marks().first().expect("command mark");
+        assert!(mark.seq > 0);
+        assert!(
+            t.line_index_by_seq(mark.seq).is_some(),
+            "mark seq 必须能映射到终端行"
+        );
+    }
+
     /// E1：Codex 风格 TUI——visible_ansi 必须保留 UTF-8 盒线与真彩背景，
     /// 往返后网格（含 U+2500）和 `48;2;216;216;216` 都在。
     #[test]
@@ -2521,6 +2815,37 @@ mod attention_signal_tests {
             marks[0].seq,
             marks[1].seq
         );
+    }
+
+    #[test]
+    fn command_marks_support_timeline_navigation_and_scrollback_pruning() {
+        let mut t = TerminalState::with_scrollback(40, 2, 2);
+        t.feed(b"\x1b]133;B\x07cmd_one\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        t.feed(b"\x1b]133;B\x07cmd_two\r\n\x1b]133;C\x07\x1b]133;D;1\x07");
+
+        let marks = t.command_marks();
+        assert_eq!(marks.len(), 2);
+        let first = marks[0].clone();
+        let second = marks[1].clone();
+        assert_eq!(t.previous_command_mark(second.seq), Some(&first));
+        assert_eq!(t.next_command_mark(first.seq), Some(&second));
+        assert_eq!(t.previous_command_mark(0), Some(&second));
+        assert_eq!(t.next_command_mark(0), Some(&first));
+        assert_eq!(t.last_successful_command(), Some(&first));
+        assert_eq!(t.last_failed_command(), Some(&second));
+
+        // 足够多的整屏换行会让第一条刻度所在行离开 bounded scrollback；
+        // stale command mark 必须同步淘汰，不能继续返回 offset=0 的假跳转。
+        for i in 0..12 {
+            t.feed(format!("evict-{i}\r\n").as_bytes());
+        }
+        assert!(
+            t.command_marks().iter().all(|m| m.seq != first.seq),
+            "被 scrollback 淘汰的 command mark 必须同步移除"
+        );
+        assert_eq!(t.line_index_by_seq(first.seq), None);
+        assert_eq!(t.previous_command_mark(0), None);
+        assert_eq!(t.next_command_mark(0), None);
     }
 
     #[test]

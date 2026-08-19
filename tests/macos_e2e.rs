@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use muxterm::core::protocol::ffi::api::{
     muxterm_attention_on_became_visible, muxterm_attention_snapshot,
     muxterm_attention_take_notifications, muxterm_connect, muxterm_execute, muxterm_free,
-    muxterm_get_layout, muxterm_get_pane_output, muxterm_new, muxterm_pane_last_n_lines,
+    muxterm_get_layout, muxterm_get_pane_output, muxterm_new, muxterm_pane_command_marks_json,
+    muxterm_pane_history_max_offset, muxterm_pane_last_n_lines, muxterm_pane_scroll_ansi,
     muxterm_pane_viewport, muxterm_poll_events, muxterm_search_all, muxterm_set_pane_viewport,
 };
 use muxterm::core::protocol::ffi::types::{
@@ -69,10 +70,9 @@ fn tmux_out(socket: &str, args: &[&str]) -> String {
 /// 用 `send-keys -H` 发送原始字节（`-l` 会把 BEL 转成 `^G` 字面量）。
 fn send_keys_hex(socket: &str, target: &str, bytes: &[u8]) {
     let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    assert!(
-        tmux_ok(socket, &["send-keys", "-t", target, "-H", &hex.join(" ")]),
-        "send-keys -H 失败 target={target}"
-    );
+    let mut args = vec!["send-keys", "-t", target, "-H"];
+    args.extend(hex.iter().map(String::as_str));
+    assert!(tmux_ok(socket, &args), "send-keys -H 失败 target={target}");
 }
 
 /// 2tab/3pane 夹具：tab1 = 3 pane（水平 + 竖直），tab2 = 1 pane。
@@ -491,6 +491,19 @@ fn macos_ffi_attach_history_and_jump_latest() {
         "初始 viewport 应为 0"
     );
 
+    let max = unsafe { muxterm_pane_history_max_offset(h, 0, 24) };
+    assert!(max > 0, "离屏 30 行必须能滚, max={max}");
+    let mut ansi = vec![0u8; 256 * 1024];
+    let n =
+        unsafe { muxterm_pane_scroll_ansi(h, 0, max as u32, 24, ansi.as_mut_ptr(), ansi.len()) };
+    assert!(n > 0, "滚到顶必须有历史 ANSI");
+    let top = String::from_utf8_lossy(&ansi[..n as usize]);
+    assert!(
+        top.contains(&offscreen),
+        "scroll_ansi(max) 必须含离屏 token {offscreen}。got={}",
+        top.chars().take(200).collect::<String>()
+    );
+
     // 滚到顶（offset 大值）→ viewport > 0；回底 → 0。
     assert_eq!(unsafe { muxterm_set_pane_viewport(h, 0, 1000) }, 0);
     assert!(
@@ -518,6 +531,69 @@ fn macos_ffi_attach_history_and_jump_latest() {
             .unwrap_or(false));
     }
 
+    unsafe { muxterm_free(h) };
+    let _ = run_tmux(&socket, &["kill-server"]);
+}
+
+/// FFI 必须把 core OSC 133 命令时间线完整暴露给 macOS：文本、退出码和
+/// 可跳转 offset 都不能依赖前端自己重解析 pane 字节。
+#[test]
+fn macos_ffi_command_marks_roundtrip() {
+    require_tmux();
+    let socket = format!("muxterm-e2e-cmd-{}-{}", std::process::id(), rand_suffix());
+    let session = "cmd";
+    let _ = run_tmux(&socket, &["kill-server"]);
+    assert!(tmux_ok(
+        &socket,
+        &[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-x",
+            "80",
+            "-y",
+            "24",
+            "--",
+            "/bin/cat",
+        ]
+    ));
+    let pane = tmux_out(&socket, &["list-panes", "-t", session, "-F", "#{pane_id}"]);
+    let pane = pane.lines().next().unwrap_or("").to_string();
+    let h = connect_attach(&socket, session);
+    let first =
+        b"\x1b]133;A\x07\x1b]133;B\x07echo CMD_OK\r\n\x1b]133;C\x07out-ok\r\n\x1b]133;D;0\x07";
+    let second =
+        b"\x1b]133;A\x07\x1b]133;B\x07false CMD_FAIL\r\n\x1b]133;C\x07out-fail\r\n\x1b]133;D;7\x07";
+    send_keys_hex(&socket, &pane, first);
+    send_keys_hex(&socket, &pane, second);
+
+    let mut last_marks = String::new();
+    let ok = poll_until(h, Duration::from_secs(8), || unsafe {
+        let raw = muxterm_pane_command_marks_json(h, 0);
+        if raw.is_null() {
+            return false;
+        }
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        last_marks = text.clone();
+        muxterm::core::protocol::ffi::api::muxterm_free_string(raw);
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        let marks = value["marks"].as_array();
+        marks.is_some_and(|marks| {
+            marks.len() >= 2
+                && value["marks"].to_string().contains("CMD_OK")
+                && value["marks"].to_string().contains("CMD_FAIL")
+        })
+    });
+    assert!(
+        ok,
+        "FFI command marks 必须含文本与退出码: {last_marks}; output={}",
+        pane_output(h, 0)
+    );
     unsafe { muxterm_free(h) };
     let _ = run_tmux(&socket, &["kill-server"]);
 }

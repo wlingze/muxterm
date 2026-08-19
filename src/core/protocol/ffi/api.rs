@@ -1925,6 +1925,42 @@ pub unsafe extern "C" fn muxterm_pane_visible_ansi(
     .unwrap_or(-1)
 }
 
+/// 读取某 pane 的一次性 Surface seed。
+///
+/// `buf` 为空或 `buf_len == 0` 时只返回所需长度；否则复制最多 `buf_len`
+/// 字节并始终返回完整所需长度，调用方应先查询长度再分配。该 seed 只允许
+/// 在新建 Surface 时使用一次，不能作为 live 输出重播。
+///
+/// # Safety
+/// `h` 有效且未 free；非空 `buf` 至少有 `buf_len` 字节。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_surface_seed_ansi(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let bytes = ws.pane_surface_seed_ansi(pane);
+        if !buf.is_null() && buf_len > 0 {
+            let n = bytes.len().min(buf_len);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
+        }
+        i32::try_from(bytes.len()).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
+}
+
 /// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
 ///
 /// # Safety
@@ -1974,7 +2010,95 @@ pub unsafe extern "C" fn muxterm_set_pane_viewport(
     .unwrap_or(-1)
 }
 
-/// 搜索命中 seq 对应的 viewport 偏移（0 = 已在可见屏 / 未找到；-1 = err）。
+/// 某 pane 还能往历史上滚的最大 offset（0 = 没有离屏历史；-1 = err）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_history_max_offset(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    rows: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        ws.pane_history_max_offset(pane, rows.max(1)) as i32
+    }))
+    .unwrap_or(-1)
+}
+
+/// 读取某 pane 的 OSC 133 命令刻度 JSON。
+///
+/// 返回 `{"ok":true,"marks":[{"seq":...,"command":"...",
+/// "exit_code":...,"history_offset":...}]}`。
+///
+/// # Safety
+/// `h` 有效且未 free；返回字符串由 `muxterm_free_string` 释放。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_command_marks_json(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return json_error("无前台工作区");
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return json_error("pane 不存在");
+        };
+        let marks: Vec<serde_json::Value> = ws
+            .pane_command_marks(pane)
+            .into_iter()
+            .map(|mark| {
+                serde_json::json!({
+                    "seq": mark.seq,
+                    "command": mark.command,
+                    "exit_code": mark.exit_code,
+                    "history_offset": ws.pane_viewport_offset_for_seq_checked(pane, mark.seq),
+                })
+            })
+            .collect();
+        json_string(serde_json::json!({ "ok": true, "marks": marks }))
+    }))
+    .unwrap_or_else(|_| json_error("pane command marks panic"))
+}
+
+/// 读取某 pane 最新稳定行 ID（供“上次看到这里”和未读计数使用）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_latest_line_seq(h: *mut MuxtermHandle, pane_id: u32) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        i64::try_from(ws.pane_latest_line_seq(pane)).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
+}
+
+/// 搜索命中 seq 对应的 viewport 偏移（0 = 已在可见屏；-1 = seq 已淘汰或 err）。
 ///
 /// # Safety
 /// `h` 有效且未 free。
@@ -1995,7 +2119,9 @@ pub unsafe extern "C" fn muxterm_pane_viewport_for_seq(
         let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
             return -1;
         };
-        ws.pane_viewport_offset_for_seq(pane, seq) as i32
+        ws.pane_viewport_offset_for_seq_checked(pane, seq)
+            .and_then(|offset| i32::try_from(offset).ok())
+            .unwrap_or(-1)
     }))
     .unwrap_or(-1)
 }
