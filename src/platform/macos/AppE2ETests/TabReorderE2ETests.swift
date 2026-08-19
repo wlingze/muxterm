@@ -15,12 +15,18 @@ final class TabReorderE2ETests: XCTestCase {
         XCTAssertGreaterThanOrEqual(before.count, 2)
         let first = before[0]
         let last = try XCTUnwrap(before.last)
+        let expectedAfter = Array(before.dropFirst()) + [first]
         app.testReorderTab(from: first, target: last, before: false)
-        app.testPollOnce()
-        AppE2E.pump(120)
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 5) {
+                app.testPollOnce()
+                return app.testTabIDs() == expectedAfter
+            },
+            "向右移动后 GUI 必须等权威列表恢复完整顺序。expected=\(expectedAfter) got=\(app.testTabIDs())"
+        )
 
         let after = app.testTabIDs()
-        XCTAssertNotEqual(after.first, first, "GUI tab 顺序必须跟着拖动变。before=\(before) after=\(after)")
+        XCTAssertEqual(after, expectedAfter, "GUI tab 顺序必须跟着拖动变")
 
         let tmuxOrder = Tmux.out(
             socket: painted.socket,
