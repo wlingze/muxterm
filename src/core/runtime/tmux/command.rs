@@ -420,14 +420,16 @@ pub fn kill_pane(pane: PaneId) -> TmuxCommand {
     build(&[pane_target(pane)], "kill-pane")
 }
 
-/// split-window -t <window> [-h|-v] [-n name] [-c start_dir]。
+/// split-window -t <pane> [-h|-v] [-n name] [-c start_dir]。
+///
+/// 必须精确指向 pane；只传 window 会在焦点事件竞态时分割错误 pane。
 pub fn split_window(
-    window: TabId,
+    pane: PaneId,
     direction: SplitDirection,
     name: Option<&str>,
     start_dir: Option<&str>,
 ) -> TmuxCommand {
-    let mut args = vec![window_target(window)];
+    let mut args = vec![pane_target(pane)];
     match direction {
         SplitDirection::Horizontal => args.push("-h".to_string()),
         SplitDirection::Vertical => args.push("-v".to_string()),
@@ -765,32 +767,43 @@ mod tests {
 
     #[test]
     fn split_window_horizontal() {
-        let c = split_window(TabId(0), SplitDirection::Horizontal, Some("log"), None);
-        assert_eq!(c.as_str(), r#"split-window -t @0 -h -n "log""#);
+        let c = split_window(PaneId(0), SplitDirection::Horizontal, Some("log"), None);
+        assert_eq!(c.as_str(), r#"split-window -t %0 -h -n "log""#);
     }
 
     #[test]
     fn split_window_vertical_no_name() {
-        let c = split_window(TabId(1), SplitDirection::Vertical, None, None);
-        assert_eq!(c.as_str(), "split-window -t @1 -v");
+        let c = split_window(PaneId(1), SplitDirection::Vertical, None, None);
+        assert_eq!(c.as_str(), "split-window -t %1 -v");
     }
 
     /// split 携带起始目录：`-c <path>`（用于继承当前 pane 目录）。
     #[test]
     fn split_window_with_start_dir() {
         let c = split_window(
-            TabId(0),
+            PaneId(0),
             SplitDirection::Horizontal,
             None,
             Some("/home/user/project/sub"),
         );
         assert_eq!(
             c.as_str(),
-            r#"split-window -t @0 -h -c "/home/user/project/sub""#
+            r#"split-window -t %0 -h -c "/home/user/project/sub""#
         );
         // 目录中的引号要转义
-        let c = split_window(TabId(0), SplitDirection::Vertical, None, Some("a\"b\\c"));
-        assert_eq!(c.as_str(), r#"split-window -t @0 -v -c "a\"b\\c""#);
+        let c = split_window(PaneId(0), SplitDirection::Vertical, None, Some("a\"b\\c"));
+        assert_eq!(c.as_str(), r#"split-window -t %0 -v -c "a\"b\\c""#);
+
+        let c = split_window(
+            PaneId(7),
+            SplitDirection::Horizontal,
+            None,
+            Some("#{pane_current_path}"),
+        );
+        assert_eq!(
+            c.as_str(),
+            r##"split-window -t %7 -h -c "#{pane_current_path}""##
+        );
     }
 
     #[test]
@@ -930,8 +943,8 @@ mod tests {
     /// 分割窗口的名字带引号/反斜杠时也要转义。
     #[test]
     fn split_window_escapes_name() {
-        let c = split_window(TabId(0), SplitDirection::Horizontal, Some("a\"b\\c"), None);
-        assert_eq!(c.as_str(), r#"split-window -t @0 -h -n "a\"b\\c""#);
+        let c = split_window(PaneId(0), SplitDirection::Horizontal, Some("a\"b\\c"), None);
+        assert_eq!(c.as_str(), r#"split-window -t %0 -h -n "a\"b\\c""#);
     }
 }
 

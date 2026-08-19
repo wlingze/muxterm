@@ -56,12 +56,6 @@ enum PendingQuery {
     PaneResyncState { pane: PaneId },
     /// resync 的 primary/alternate capture。
     PaneResyncCapture { pane: PaneId, alternate: bool },
-    /// display-message 查询 pane 当前路径后，用该路径执行 split-window -c。
-    SplitPaneInCurrentDir {
-        pane: PaneId,
-        dir: SplitDir,
-        command: Option<Vec<String>>,
-    },
     /// list-sessions：列出 tmux server 上所有 session。
     ListSessions,
 }
@@ -613,9 +607,32 @@ impl TmuxRuntime {
         for t in self.tabs.iter_mut() {
             t.active = t.id == tab_id;
         }
+        let target_pane = self
+            .layouts
+            .get(&tab_id)
+            .map(|layout| layout.active)
+            .filter(|pane| {
+                self.panes
+                    .iter()
+                    .any(|candidate| candidate.id == *pane && candidate.tab == tab_id)
+            });
+        let old_active_pane = self
+            .panes
+            .iter()
+            .find(|pane| pane.active)
+            .map(|pane| pane.id);
+        for pane in &mut self.panes {
+            pane.active = Some(pane.id) == target_pane && pane.tab == tab_id;
+        }
         if current_active != Some(tab_id) {
             self.events
                 .push_back(StateChange::ActiveTabChanged { tab: tab_id });
+        }
+        if old_active_pane != target_pane {
+            if let Some(pane) = target_pane {
+                self.events
+                    .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+            }
         }
     }
 
@@ -894,14 +911,15 @@ impl TmuxRuntime {
                     t.active = false;
                 }
             }
-            self.layouts.insert(
-                tab,
-                TabLayout {
-                    tab,
-                    tree: LayoutNode::leaf(PaneId(0)),
-                    active: PaneId(0),
-                },
-            );
+            // 新 window 的 pane 尚未由 list-panes 返回；不能继续把旧 tab pane
+            // 暴露为全局 active，否则紧接着的 split/input 会串到旧 tab。
+            for pane in &mut self.panes {
+                pane.active = false;
+            }
+            // list-panes 返回前没有任何可发布的真实 PaneId。禁止用 PaneId(0)
+            // 占位：它通常属于旧 tab，会让 Workspace/GTK 把同一 pane 挂进
+            // 两个 tab，造成数据串 pane 与 gtk_widget_set_parent critical。
+            self.layouts.remove(&tab);
             self.events.push_back(StateChange::TabAdded { tab });
         }
         // 主动查询该 tmux window 的 pane
@@ -1129,16 +1147,24 @@ impl TmuxRuntime {
             Message::WindowPaneChanged { window, pane } => {
                 // tmux window 对应 muxterm tab（TabId(window.0)）
                 let tab_id = TabId(window.0);
-                for p in self.panes.iter_mut() {
-                    if p.tab == tab_id {
-                        p.active = p.id == pane;
-                    }
-                }
                 if let Some(tl) = self.layouts.get_mut(&tab_id) {
                     tl.active = pane;
                 }
-                self.events
-                    .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+                let tab_is_active = self
+                    .tabs
+                    .iter()
+                    .any(|candidate| candidate.id == tab_id && candidate.active);
+                if tab_is_active {
+                    for candidate in self.panes.iter_mut() {
+                        candidate.active = candidate.id == pane && candidate.tab == tab_id;
+                    }
+                    self.events
+                        .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+                } else {
+                    for candidate in self.panes.iter_mut().filter(|p| p.tab == tab_id) {
+                        candidate.active = false;
+                    }
+                }
             }
             Message::SessionWindowChanged { session, window } => {
                 // 控制模式会收到整台 server 上其它 session 的切换通知
@@ -1353,22 +1379,6 @@ impl TmuxRuntime {
                     }
                     if alternate {
                         self.finish_pane_resync(pane);
-                    }
-                }
-                PendingQuery::SplitPaneInCurrentDir { pane, dir, command } => {
-                    // 单行响应即当前 pane 路径；用它作为新 pane 的起始目录，
-                    // 实现「split 到当前目录（a/b）而不是窗口根目录（a）」。
-                    if let Some(path) = lines.first().map(|s| s.trim().to_string()) {
-                        if !path.is_empty() {
-                            let tab_id = self.pane(&pane).map(|p| p.tab).unwrap_or(TabId(0));
-                            let direction = match dir {
-                                SplitDir::Horizontal => cmd::SplitDirection::Horizontal,
-                                SplitDir::Vertical => cmd::SplitDirection::Vertical,
-                            };
-                            let name = command.as_ref().and_then(|c| c.first()).map(|s| s.as_str());
-                            let c = cmd::split_window(tab_id, direction, name, Some(&path));
-                            let _ = self.dispatch_tmux_command(&c);
-                        }
                     }
                 }
                 PendingQuery::CapturePane { pane } => {
@@ -1599,16 +1609,35 @@ impl TmuxRuntime {
                 return;
             }
         }
+        let tab_is_active = self
+            .tabs
+            .iter()
+            .any(|candidate| candidate.id == tab_id && candidate.active);
+        let authoritative_active = new_panes
+            .iter()
+            .find(|pane| pane.active)
+            .map(|pane| pane.id);
+        let old_global_active = self
+            .panes
+            .iter()
+            .find(|pane| pane.active)
+            .map(|pane| pane.id);
+        if tab_is_active {
+            for pane in &mut self.panes {
+                pane.active = false;
+            }
+        }
         let mut changed = false;
         for np in &new_panes {
+            let globally_active = tab_is_active && np.active;
             if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
                 if existing.cols != np.cols
                     || existing.rows != np.rows
-                    || existing.active != np.active
+                    || existing.active != globally_active
                 {
                     existing.cols = np.cols;
                     existing.rows = np.rows;
-                    existing.active = np.active;
+                    existing.active = globally_active;
                     self.events.push_back(StateChange::PaneResized {
                         pane: np.id,
                         cols: np.cols,
@@ -1616,7 +1645,9 @@ impl TmuxRuntime {
                     });
                 }
             } else {
-                self.panes.push(np.clone());
+                let mut pane = np.clone();
+                pane.active = globally_active;
+                self.panes.push(pane);
                 self.events.push_back(StateChange::PaneAdded {
                     pane: np.id,
                     tab: tab_id,
@@ -1638,6 +1669,12 @@ impl TmuxRuntime {
         }
         if changed || !new_panes.is_empty() {
             self.rebuild_layout(tab_id, &new_panes);
+        }
+        if tab_is_active && old_global_active != authoritative_active {
+            if let Some(pane) = authoritative_active {
+                self.events
+                    .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+            }
         }
         // attach 的控制模式不一定会把当前屏幕历史作为 %output 推送；对尚无
         // 累计输出的 pane 查询一次可见屏幕。查询结果通过同一个事件队列回流，
@@ -2188,9 +2225,11 @@ impl Runtime for TmuxRuntime {
             } => {
                 let target =
                     target.unwrap_or_else(|| self.active_pane().map(|p| p.id).unwrap_or(PaneId(0)));
-                // tmux split-window 用 target pane 所在 tmux window
-                // tab_id.0 = tmux window index → tmux @N
-                let tab_id = self.pane(&target).map(|p| p.tab).unwrap_or(TabId(0));
+                if self.pane(&target).is_none() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                }
                 let direction = match dir {
                     SplitDir::Horizontal => cmd::SplitDirection::Horizontal,
                     SplitDir::Vertical => cmd::SplitDirection::Vertical,
@@ -2199,7 +2238,13 @@ impl Runtime for TmuxRuntime {
                 match workdir {
                     Some(dir) => {
                         // 显式指定目录：直接 split -c。
-                        let c = cmd::split_window(tab_id, direction, name, Some(dir));
+                        let c = cmd::split_window(target, direction, name, Some(dir));
+                        tracing::debug!(
+                            target: "muxterm::tmux",
+                            pane = target.0,
+                            command = %c.as_str(),
+                            "dispatch split pane"
+                        );
                         if self.dispatch_tmux_command(&c).is_err() {
                             return Ok(TaskOutcome::Rejected {
                                 reason: "发送命令失败".into(),
@@ -2207,19 +2252,25 @@ impl Runtime for TmuxRuntime {
                         }
                     }
                     None => {
-                        // 未指定目录：先查当前 pane 路径，再以该路径 split。
-                        // 保证从 a/b 切分出来的新 pane 也在 a/b，而不是窗口根目录 a。
-                        let q = cmd::display_message(target, "#{pane_current_path}");
-                        if self.dispatch_tmux_command(&q).is_err() {
+                        // tmux 会按精确 target pane 展开此 format；一条命令同时锁定
+                        // pane 与 cwd，避免异步 display-message 回来时焦点/映射已变化。
+                        let c = cmd::split_window(
+                            target,
+                            direction,
+                            name,
+                            Some("#{pane_current_path}"),
+                        );
+                        tracing::debug!(
+                            target: "muxterm::tmux",
+                            pane = target.0,
+                            command = %c.as_str(),
+                            "dispatch split pane"
+                        );
+                        if self.dispatch_tmux_command(&c).is_err() {
                             return Ok(TaskOutcome::Rejected {
                                 reason: "发送命令失败".into(),
                             });
                         }
-                        self.replace_last_pending(PendingQuery::SplitPaneInCurrentDir {
-                            pane: target,
-                            dir: *dir,
-                            command: command.clone(),
-                        });
                     }
                 }
                 TaskOutcome::Done
@@ -2864,6 +2915,19 @@ mod tests {
             .events
             .iter()
             .any(|e| matches!(e, StateChange::TabClosed { tab } if *tab == TabId(1))));
+    }
+
+    #[test]
+    fn window_add_waits_for_real_panes_instead_of_publishing_fake_layout() {
+        let mut backend = TmuxRuntime::new(None);
+        backend.handle_message(Message::WindowAdd { window: TabId(7) });
+
+        assert!(backend.tabs.iter().any(|tab| tab.id == TabId(7)));
+        assert!(
+            !backend.layouts.contains_key(&TabId(7)),
+            "list-panes 返回前不得发布假的 PaneId(0) layout"
+        );
+        assert!(backend.panes.iter().all(|pane| pane.tab != TabId(7)));
     }
 
     #[test]
@@ -4152,10 +4216,10 @@ mod tests {
         );
     }
 
-    /// 回归：未指定 workdir 的 split 先查当前 pane 路径，再用该路径 split -c，
-    /// 保证从 a/b 切分出来的新 pane 也在 a/b 而不是窗口根目录 a。
+    /// 回归：未指定 workdir 的 split 用同一条命令精确锁定 pane 并展开其 cwd，
+    /// 避免两步查询期间焦点变化后 split 到其它 tab。
     #[test]
-    fn split_inherits_current_pane_directory() {
+    fn split_inherits_target_pane_directory_atomically() {
         use crate::core::model::layout::SplitDir;
         use crate::core::model::task::Task;
         use tokio::sync::mpsc;
@@ -4180,7 +4244,7 @@ mod tests {
         b.cmd_tx = Some(tx);
         b.status = crate::core::model::state::BackendStatus::Connected;
 
-        // execute SplitPane（workdir=None）→ 应发送 display-message 查询
+        // execute SplitPane（workdir=None）→ 一条原子 split 命令。
         let outcome = b
             .execute(&Task::SplitPane {
                 target: Some(crate::core::types::PaneId(3)),
@@ -4190,21 +4254,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(outcome, crate::core::model::task::TaskOutcome::Done);
-        let sent = rx.try_recv().expect("应发送 display-message");
-        assert!(
-            sent.contains("display-message") && sent.contains("#{pane_current_path}"),
-            "应查询当前 pane 路径: {sent}"
-        );
-
-        // 模拟 %begin：把 pending 查询按 number 登记，再响应 display-message
-        let pending = b.pending_queries.pop_front().expect("应有 pending 查询");
-        b.pending_by_number.insert(1, pending);
-        b.dispatch_response(1, vec!["/home/user/project/sub".into()]);
         let split = rx.try_recv().expect("应发送 split-window");
+        assert_eq!(
+            split, "split-window -t %3 -h -c \"#{pane_current_path}\"\n",
+            "必须同时锁定目标 pane 与它的 cwd"
+        );
         assert!(
-            split.starts_with("split-window -t @7 -h")
-                && split.contains(r#"-c "/home/user/project/sub""#),
-            "split 应带当前目录 -c: {split}"
+            rx.try_recv().is_err(),
+            "原子 split 不得再发送异步 display-message"
         );
     }
 

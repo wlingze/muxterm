@@ -333,67 +333,65 @@ fn split_cli_parse_produces_correct_command() {
 /// ── Layer 3: command builder split-window 正确 target ──
 #[test]
 fn split_window_command_uses_correct_target() {
-    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, TabId};
+    use muxterm::core::runtime::tmux::command::{split_window, PaneId, SplitDirection};
 
-    // TabId(0) → @0 in tmux (first window)
-    let cmd = split_window(TabId(0), SplitDirection::Horizontal, None, None);
+    // PaneId(0) → %0 in tmux；精确 pane target 防止 split 到同 window 的其它 pane。
+    let cmd = split_window(PaneId(0), SplitDirection::Horizontal, None, None);
     let line = cmd.to_line();
     assert!(
         line.contains("split-window"),
         "命令应含 split-window: {line}"
     );
     assert!(line.contains("-h"), "水平分割应含 -h: {line}");
-    assert!(line.contains("@0"), "target 应含 tmux window id @0: {line}");
+    assert!(line.contains("%0"), "target 应含 tmux pane id %0: {line}");
 }
 
-/// ── Layer 3b: PaneId → TabId → TabId 映射 ──
-/// 验证 backend 从 pane 查找 tab_id 再转 TabId 的映射链正确。
-/// 用真实 tmux 验证 #{window_id} 是 @N 格式（不是 window_index）。
+/// ── Layer 3b: PaneId 精确映射 ──
+/// 用真实 tmux 验证命令始终携带 `%N`，不异步反查并退化到错误 `@0`。
 #[test]
-fn paneid_to_tabid_to_windowid_mapping_matches_tmux_window_id() {
-    use muxterm::core::runtime::tmux::command::{split_window, SplitDirection, TabId};
+fn paneid_target_matches_real_tmux_pane_id() {
+    use muxterm::core::runtime::tmux::command::{split_window, PaneId, SplitDirection};
 
     let socket = unique_socket("layer3b");
     let session = format!("map-test-{}", rand_suffix());
     create_session(&socket, &session);
     std::thread::sleep(Duration::from_millis(300));
 
-    // 从真实 tmux 获取 window_id
+    // 从真实 tmux 获取 pane_id
     let output = Command::new("tmux")
         .args([
             "-L",
             &socket,
-            "list-windows",
+            "list-panes",
             "-t",
             &session,
             "-F",
-            "#{window_id}",
+            "#{pane_id}",
         ])
         .output()
         .unwrap();
-    let tmux_window_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let tmux_pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert!(
-        tmux_window_id.starts_with('@'),
-        "tmux window_id 应以 @ 开头: {tmux_window_id}"
+        tmux_pane_id.starts_with('%'),
+        "tmux pane_id 应以 % 开头: {tmux_pane_id}"
     );
-    let win_num: u32 = tmux_window_id[1..].parse().expect("window_id 数字");
+    let pane_num: u32 = tmux_pane_id[1..].parse().expect("pane_id 数字");
 
-    // 验证 split_window(TabId(win_num), ...) 生成的命令 target 是正确的 @N
-    let cmd = split_window(TabId(win_num), SplitDirection::Horizontal, None, None);
+    let cmd = split_window(PaneId(pane_num), SplitDirection::Horizontal, None, None);
     let line = cmd.to_line();
     assert!(
-        line.contains(&tmux_window_id),
-        "split-window 命令应含真实 tmux window_id {tmux_window_id}: {line}"
+        line.contains(&tmux_pane_id),
+        "split-window 命令应含真实 tmux pane_id {tmux_pane_id}: {line}"
     );
 
     // 验证该 target 在真实 tmux 上能执行 split
     let output = Command::new("tmux")
-        .args(["-L", &socket, "split-window", "-h", "-t", &tmux_window_id])
+        .args(["-L", &socket, "split-window", "-h", "-t", &tmux_pane_id])
         .output()
         .unwrap();
     assert!(
         output.status.success(),
-        "tmux split-window -t {tmux_window_id} 失败: {}",
+        "tmux split-window -t {tmux_pane_id} 失败: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -429,6 +427,8 @@ fn backend_split_actually_creates_pane_in_tmux() {
             "80",
             "-y",
             "24",
+            "-c",
+            "/tmp",
         ])
         .output()
         .expect("创建 tmux session 失败");
@@ -482,6 +482,133 @@ fn backend_split_actually_creates_pane_in_tmux() {
     assert_eq!(
         panes_after, 2,
         "backend split 后原生 tmux 应有 2 panes，实际 {panes_after}"
+    );
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "list-panes",
+            "-t",
+            &session,
+            "-F",
+            "#{pane_current_path}",
+        ])
+        .output()
+        .expect("读取 split 后 pane cwd 失败");
+    let paths = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec!["/tmp", "/tmp"],
+        "未指定 workdir 时，新 pane 必须继承精确 target pane 的 cwd"
+    );
+
+    let _ = rt.block_on(model.shutdown());
+    kill_server(&socket);
+}
+
+/// 两个 session 共用同一隔离 server 时，在新 tab 里 split 必须仍精确命中
+/// 新 tab 的 pane，不能因异步 cwd/焦点竞态退化到第一个 window。
+#[test]
+fn backend_split_new_tab_targets_its_pane_with_second_session_present() {
+    use muxterm::core::model::layout::SplitDir;
+    use muxterm::core::model::task::Task;
+    use muxterm::core::model::TerminalModel;
+    use muxterm::core::runtime::TmuxRuntime;
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("muxterm::tmux=debug")
+        .with_test_writer()
+        .try_init();
+    let socket = unique_socket("new-tab-exact-pane");
+    let session = format!("new-tab-primary-{}", rand_suffix());
+    let alternate = format!("new-tab-alternate-{}", rand_suffix());
+    create_session(&socket, &session);
+    create_session(&socket, &alternate);
+
+    let mut model = TerminalModel::new(Box::new(TmuxRuntime::new_with_attach(
+        Some(&socket),
+        &session,
+    )));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .expect("build runtime");
+    rt.block_on(model.connect()).expect("connect 失败");
+
+    model
+        .execute(Task::NewTab {
+            name: Some("second".into()),
+            command: None,
+            workdir: None,
+        })
+        .expect("NewTab 执行失败");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let _ = model.refresh();
+        if model.state().tabs().len() == 2
+            && model.state().active_pane().is_some()
+            && model
+                .state()
+                .active_tab()
+                .is_some_and(|tab| model.state().panes(&tab.id).len() == 1)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let tab = model.state().active_tab().expect("新 tab 必须 active").id;
+    let pane = model
+        .state()
+        .active_pane()
+        .expect("新 tab 必须有 active pane")
+        .id;
+    model
+        .execute(Task::SplitPane {
+            target: Some(pane),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        })
+        .expect("SplitPane 执行失败");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let _ = model.refresh();
+        if model.state().panes(&tab).len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name} #{window_id} #{pane_id}",
+        ])
+        .output()
+        .expect("list-panes -a 失败");
+    let native = String::from_utf8_lossy(&output.stdout);
+    let target = format!("@{}", tab.0);
+    let target_count = native
+        .lines()
+        .filter(|line| line.starts_with(&session) && line.contains(&target))
+        .count();
+    assert_eq!(
+        target_count, 2,
+        "split 必须落在新 tab {target}，原生 pane:\n{native}"
+    );
+    assert_eq!(
+        model.state().panes(&tab).len(),
+        2,
+        "Runtime 必须同步新 tab 的第二个 pane，原生 pane:\n{native}"
     );
 
     let _ = rt.block_on(model.shutdown());
