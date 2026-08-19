@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 /// 检查 herdr 二进制是否可用。
 pub fn herdr_available() -> bool {
     Command::new("herdr")
@@ -32,6 +35,81 @@ pub fn unique_name(label: &str) -> String {
 pub fn default_socket_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/wlz".into());
     PathBuf::from(home).join(".config/herdr/herdr.sock")
+}
+
+/// 在系统临时目录创建一个可被 Herdr 真实进程检测识别的短命 agent。
+/// Drop 只删除自己创建的 `muxterm-test-herdr-agent-*` 目录。
+pub struct TempAgentCommand {
+    dir: PathBuf,
+    invocation: String,
+    done_file: PathBuf,
+    stop_file: PathBuf,
+}
+
+impl TempAgentCommand {
+    pub fn pi(label: &str) -> Self {
+        let dir = std::env::temp_dir().join(unique_name(&format!("agent-{label}")));
+        std::fs::create_dir_all(&dir).expect("创建临时 agent 目录失败");
+        let command = dir.join("pi");
+        let done_file = dir.join("agent-done");
+        let stop_file = dir.join("agent-stop");
+        std::fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\nprintf 'Working...\\n'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nprintf '\\033[2J\\033[Hdone\\n'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\n",
+                done_file.display(),
+                stop_file.display(),
+            ),
+        )
+        .expect("写临时 pi agent 失败");
+        #[cfg(unix)]
+        {
+            let mut permissions = std::fs::metadata(&command)
+                .expect("读取临时 pi agent 权限失败")
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&command, permissions).expect("设置临时 pi agent 权限失败");
+        }
+        Self {
+            dir,
+            invocation: "./pi".into(),
+            done_file,
+            stop_file,
+        }
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn invocation(&self) -> &str {
+        &self.invocation
+    }
+
+    /// 让真实 pi 进程画出 Herdr 的 Done 识别帧，但保持进程存活。
+    pub fn mark_done(&self) {
+        std::fs::write(&self.done_file, "done\n").expect("触发临时 pi done 失败");
+    }
+
+    /// 让临时 pi 正常退出。
+    pub fn stop(&self) {
+        std::fs::write(&self.stop_file, "stop\n").expect("停止临时 pi 失败");
+    }
+}
+
+impl Drop for TempAgentCommand {
+    fn drop(&mut self) {
+        let temp_dir = std::env::temp_dir();
+        let safe = self.dir.parent() == Some(temp_dir.as_path())
+            && self
+                .dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("muxterm-test-herdr-agent-"));
+        if safe {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
 }
 
 /// 独立 Herdr named session 夹具。

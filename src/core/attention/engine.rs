@@ -67,6 +67,9 @@ pub struct AttentionEngine<C: Clock> {
     /// 结构化通知按 pane 去重；workspace 级旧 API 保留兼容。
     notified_blocked_panes: HashSet<(String, u32)>,
     notified_done_panes: HashSet<(String, u32)>,
+    /// Runtime 已提供结构化权威状态的 pane；这些 pane 的 OSC/BEL/正则只
+    /// 继续更新文本索引，不覆盖 agent lifecycle。
+    authoritative_panes: HashSet<(String, u32)>,
     /// 正则缓存：编译失败时记录该条并跳过。
     regex_cache: HashMap<String, Option<Regex>>,
 }
@@ -81,6 +84,7 @@ impl<C: Clock> AttentionEngine<C> {
             notified_done: HashSet::new(),
             notified_blocked_panes: HashSet::new(),
             notified_done_panes: HashSet::new(),
+            authoritative_panes: HashSet::new(),
             regex_cache: HashMap::new(),
         }
     }
@@ -117,21 +121,74 @@ impl<C: Clock> AttentionEngine<C> {
         seq: u64,
     ) {
         let now = self.clock.now();
+        let key = (ws.to_string(), pane);
+        let mut authoritative = self.authoritative_panes.contains(&key);
+        let mut status = self.entry_mut(ws, pane).status;
+        let mut initial_status = None;
+
+        for sig in signals {
+            match sig {
+                AttentionSignal::AuthoritativeStatus {
+                    status: next,
+                    initial,
+                } => {
+                    authoritative = true;
+                    if *initial {
+                        initial_status = Some(*next);
+                    } else if status != *next {
+                        // 同一轮里 bootstrap 之后又发生了真实转换时，
+                        // bootstrap 只抑制自己的状态，不能吞掉最终转换。
+                        initial_status = None;
+                    }
+                    status = *next;
+                }
+                AttentionSignal::ClearAuthoritativeStatus => {
+                    authoritative = false;
+                    status = PaneStatus::Unknown;
+                    initial_status = None;
+                }
+                AttentionSignal::CommandStart if !authoritative => {
+                    status = transition(status, PaneEvent::CommandStart);
+                }
+                AttentionSignal::CommandDone { exit_code } if !authoritative => {
+                    status = transition(
+                        status,
+                        PaneEvent::CommandDone {
+                            exit_code: *exit_code,
+                        },
+                    );
+                }
+                AttentionSignal::AttentionRequest { .. } if !authoritative => {
+                    status = transition(status, PaneEvent::AttentionRequest);
+                }
+                _ => {}
+            }
+        }
+
+        if authoritative {
+            self.authoritative_panes.insert(key.clone());
+        } else {
+            self.authoritative_panes.remove(&key);
+        }
         {
             let entry = self.entry_mut(ws, pane);
             entry.last_line = last_line.to_string();
             entry.seq = seq;
-
-            for sig in signals {
-                let event = match sig {
-                    AttentionSignal::CommandStart => PaneEvent::CommandStart,
-                    AttentionSignal::CommandDone { exit_code } => PaneEvent::CommandDone {
-                        exit_code: *exit_code,
-                    },
-                    AttentionSignal::AttentionRequest { .. } => PaneEvent::AttentionRequest,
-                };
-                entry.status = transition(entry.status, event);
+            entry.status = status;
+        }
+        // Runtime bootstrap（attach 或 authority handoff）只播种现状。把
+        // 初始 blocked/done 记为已经通知，防止伪造一条「新转换」通知；
+        // workspace 级与 pane 级两级去重同时预置。
+        match initial_status {
+            Some(PaneStatus::Blocked) => {
+                self.notified_blocked.insert(ws.to_string());
+                self.notified_blocked_panes.insert((ws.to_string(), pane));
             }
+            Some(PaneStatus::Done) => {
+                self.notified_done.insert(ws.to_string());
+                self.notified_done_panes.insert((ws.to_string(), pane));
+            }
+            _ => {}
         }
         self.maybe_eval_regex(ws, pane, now);
         self.sync_notified(ws, pane, now);
@@ -140,6 +197,9 @@ impl<C: Clock> AttentionEngine<C> {
     /// 用户输入：Blocked → Idle（输入才算处理）。
     pub fn on_user_input(&mut self, ws: &str, pane: u32) {
         let now = self.clock.now();
+        if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
+            return;
+        }
         let entry = self.entry_mut(ws, pane);
         entry.status = transition(entry.status, PaneEvent::UserInput);
         self.sync_notified(ws, pane, now);
@@ -148,6 +208,9 @@ impl<C: Clock> AttentionEngine<C> {
     /// 该 pane 成为前台可见（仅当前台 pane，后台不触发）。
     pub fn on_became_visible(&mut self, ws: &str, pane: u32) {
         let now = self.clock.now();
+        if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
+            return;
+        }
         let entry = self.entry_mut(ws, pane);
         entry.status = transition(entry.status, PaneEvent::BecameVisible);
         self.sync_notified(ws, pane, now);
@@ -159,6 +222,9 @@ impl<C: Clock> AttentionEngine<C> {
     /// 该显式入口只把两种已列出的状态转换为 Idle，不影响 Working。
     pub fn acknowledge(&mut self, ws: &str, pane: u32) {
         let now = self.clock.now();
+        if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
+            return;
+        }
         let entry = self.entry_mut(ws, pane);
         entry.status = match entry.status {
             PaneStatus::Blocked => transition(entry.status, PaneEvent::UserInput),
@@ -261,6 +327,16 @@ impl<C: Clock> AttentionEngine<C> {
             .unwrap_or(value)
             .trim_matches(|c: char| c == '\'' || c == '"');
         Some(basename.to_string())
+    }
+
+    /// pane 已从 Workspace 拓扑删除：同时清理状态、权威来源和 workspace
+    /// 通知去重，避免关闭的 blocked/done agent 永久留在红点里。
+    pub fn remove_pane(&mut self, ws: &str, pane: u32) {
+        let now = self.clock.now();
+        let key = (ws.to_string(), pane);
+        self.panes.remove(&key);
+        self.authoritative_panes.remove(&key);
+        self.sync_notified(ws, pane, now);
     }
 
     /// 静音一段时间：不进红点、不通知；peek/答复仍可用。
@@ -399,6 +475,9 @@ impl<C: Clock> AttentionEngine<C> {
     }
 
     fn maybe_eval_regex(&mut self, ws: &str, pane: u32, now: Instant) {
+        if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
+            return;
+        }
         let (enabled, patterns, debounce) = {
             (
                 self.config.enabled,
@@ -447,19 +526,35 @@ impl<C: Clock> AttentionEngine<C> {
         }
     }
 
-    /// 同步 notified_blocked：清除的 workspace 移除标记，便于重亮再通知。
+    /// 同步通知去重标记（两级）：
+    /// - pane 级：pane 离开对应状态（或静音）就清自己的去重标记；
+    /// - workspace 级：只有整个 workspace 都不再有未静音的对应状态 pane
+    ///   时，才允许该 workspace 下一次重新通知（另一个 idle pane 的
+    ///   转换不能重置仍 blocked pane 的 workspace 标记）。
+    ///
+    /// pane 可能已被 remove_pane 移除：此时只做 workspace 级聚合清理。
     fn sync_notified(&mut self, ws: &str, pane: u32, now: Instant) {
-        let Some(entry) = self.panes.get(&(ws.to_string(), pane)) else {
-            return;
-        };
-        let muted = entry.mute_until.map(|m| m > now).unwrap_or(false);
-        if entry.status != PaneStatus::Blocked || muted {
-            self.notified_blocked.remove(ws);
-            self.notified_blocked_panes.remove(&(ws.to_string(), pane));
+        if let Some(entry) = self.panes.get(&(ws.to_string(), pane)) {
+            let muted = entry.mute_until.map(|m| m > now).unwrap_or(false);
+            if entry.status != PaneStatus::Blocked || muted {
+                self.notified_blocked_panes.remove(&(ws.to_string(), pane));
+            }
+            if entry.status != PaneStatus::Done || muted {
+                self.notified_done_panes.remove(&(ws.to_string(), pane));
+            }
         }
-        if entry.status != PaneStatus::Done || muted {
+        let has_unmuted = |status| {
+            self.panes.values().any(|entry| {
+                entry.workspace_id == ws
+                    && entry.status == status
+                    && !entry.mute_until.map(|m| m > now).unwrap_or(false)
+            })
+        };
+        if !has_unmuted(PaneStatus::Blocked) {
+            self.notified_blocked.remove(ws);
+        }
+        if !has_unmuted(PaneStatus::Done) {
             self.notified_done.remove(ws);
-            self.notified_done_panes.remove(&(ws.to_string(), pane));
         }
     }
 }
@@ -581,6 +676,227 @@ mod tests {
         let snap = e.snapshot();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].blocked, 2);
+    }
+
+    #[test]
+    fn idle_pane_does_not_rearm_blocked_workspace_notification() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "blocked",
+            1,
+        );
+        assert_eq!(e.take_new_blocked_notifications(), vec!["ws"]);
+
+        // 同一 workspace 的另一个 pane 没有 blocked，不能把 workspace 级
+        // 去重标记清掉，否则 pane 1 未离开 blocked 也会重复通知。
+        e.apply("ws", 2, &[], "idle", 1);
+        assert!(e.take_new_blocked_notifications().is_empty());
+    }
+
+    #[test]
+    fn initial_authoritative_blocked_and_done_are_not_notifications() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "blocked-ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Blocked,
+                initial: true,
+            }],
+            "waiting",
+            1,
+        );
+        e.apply("blocked-ws", 2, &[], "shell", 1);
+        e.apply(
+            "done-ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Done,
+                initial: true,
+            }],
+            "finished",
+            1,
+        );
+        e.apply("done-ws", 2, &[], "shell", 1);
+
+        assert!(e.take_new_blocked_notifications().is_empty());
+        assert!(e.take_new_done_notifications().is_empty());
+    }
+
+    #[test]
+    fn authoritative_transition_notifies_once_and_ignores_heuristics() {
+        let cfg = AttentionConfig {
+            blocked_regex: vec!["approve".into()],
+            ..AttentionConfig::default()
+        };
+        let mut e = AttentionEngine::new(cfg, clock());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Working,
+                initial: true,
+            }],
+            "running",
+            1,
+        );
+        e.apply(
+            "ws",
+            1,
+            &[
+                AttentionSignal::AttentionRequest {
+                    source: AttentionSource::Bel,
+                },
+                AttentionSignal::CommandDone { exit_code: Some(0) },
+            ],
+            "approve now",
+            2,
+        );
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
+        assert!(e.take_new_blocked_notifications().is_empty());
+        assert!(e.take_new_done_notifications().is_empty());
+
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Blocked,
+                initial: false,
+            }],
+            "approve now",
+            3,
+        );
+        assert_eq!(e.take_new_blocked_notifications(), vec!["ws"]);
+        assert!(e.take_new_blocked_notifications().is_empty());
+
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Done,
+                initial: false,
+            }],
+            "finished",
+            4,
+        );
+        assert_eq!(e.take_new_done_notifications(), vec!["ws"]);
+        assert!(e.take_new_done_notifications().is_empty());
+    }
+
+    #[test]
+    fn coalesced_source_handoff_does_not_hide_final_done_transition() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Blocked,
+                initial: false,
+            }],
+            "waiting",
+            1,
+        );
+        assert_eq!(e.take_new_blocked_notifications(), vec!["ws"]);
+
+        // GUI 的一次 poll 可以合并 hook release 后的 detector bootstrap、
+        // settling 和最终完成帧。只有第一帧是 bootstrap；最后的 Done
+        // 仍是一个必须通知的真实 Working -> Done 转换。
+        e.apply(
+            "ws",
+            1,
+            &[
+                AttentionSignal::AuthoritativeStatus {
+                    status: PaneStatus::Done,
+                    initial: true,
+                },
+                AttentionSignal::AuthoritativeStatus {
+                    status: PaneStatus::Working,
+                    initial: false,
+                },
+                AttentionSignal::AuthoritativeStatus {
+                    status: PaneStatus::Done,
+                    initial: false,
+                },
+            ],
+            "finished",
+            4,
+        );
+
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+        assert_eq!(e.take_new_done_notifications(), vec!["ws"]);
+        assert!(e.take_new_done_notifications().is_empty());
+    }
+
+    #[test]
+    fn clearing_authoritative_status_restores_byte_heuristics() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Working,
+                initial: true,
+            }],
+            "running",
+            1,
+        );
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::ClearAuthoritativeStatus],
+            "released",
+            2,
+        );
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "waiting",
+            3,
+        );
+
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Blocked);
+        assert_eq!(e.take_new_blocked_notifications(), vec!["ws"]);
+    }
+
+    #[test]
+    fn removing_authoritative_pane_clears_workspace_attention() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            7,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Blocked,
+                initial: false,
+            }],
+            "waiting",
+            1,
+        );
+        assert_eq!(e.blocked_workspace_count(), 1);
+        assert_eq!(e.take_new_blocked_notifications(), vec!["ws"]);
+
+        e.remove_pane("ws", 7);
+        assert_eq!(e.blocked_workspace_count(), 0);
+        assert!(e.snapshot().is_empty());
+
+        // 同名 workspace 后续的新 pane 仍可产生一条新的转换通知。
+        e.apply(
+            "ws",
+            8,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "new pane",
+            1,
+        );
+        assert_eq!(e.take_new_blocked_notifications(), vec!["ws"]);
     }
 
     #[test]

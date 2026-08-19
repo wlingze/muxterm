@@ -1,5 +1,7 @@
 //! 注意力信号：OSC 133 / BEL / 通知类 OSC 的语义化事件。
 
+use super::state::PaneStatus;
+
 /// 信号来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttentionSource {
@@ -20,4 +22,12 @@ pub enum AttentionSignal {
     CommandDone { exit_code: Option<u8> },
     /// BEL 或通知类 OSC：需要关注 → Blocked。
     AttentionRequest { source: AttentionSource },
+    /// Runtime 提供的权威 pane 状态（例如结构化 agent lifecycle）。
+    ///
+    /// `initial=true` 只建立 attach / authority handoff 的 bootstrap 现状，
+    /// 不产生一条新的通知；后续结构化状态优先于同 pane 字节流里的
+    /// OSC/BEL 猜测。
+    AuthoritativeStatus { status: PaneStatus, initial: bool },
+    /// Runtime 表示该 pane 已不再有权威结构化状态，恢复字节信号判断。
+    ClearAuthoritativeStatus,
 }

@@ -6,13 +6,16 @@ mod support;
 use std::sync::Arc;
 use std::time::Instant;
 
+use muxterm::core::attention::signal::AttentionSignal;
+use muxterm::core::attention::state::PaneStatus;
 use muxterm::core::model::layout::{LayoutNode, SplitDir};
+use muxterm::core::model::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
 use muxterm::core::model::task::Task;
-use muxterm::core::runtime::herdr::session::HerdrSession;
+use muxterm::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
 use muxterm::core::runtime::HerdrRuntime;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;
-use support::herdr_test_support::{herdr_available, IsolatedHerdr};
+use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 
 /// 与 SSH 契约同量级（15s）。
 const HERDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -404,4 +407,264 @@ fn herdr_local_write_raw_executes_echo_command() {
     panic!(
         "本地 Herdr 逐字输入 + Enter 必须执行 echo。token={output_token} output={pane_output:?}"
     );
+}
+
+/// Herdr 的 agent snapshot 与订阅事件必须先在 Runtime 层翻译成统一的
+/// PaneAgent/Attention 语义，再由 Workspace 缓存和转交；上层不能解析
+/// `pane.agent_status_changed` 或 Herdr public pane id。
+#[test]
+fn herdr_agent_snapshot_and_transitions_reach_workspace_with_full_metadata() {
+    if !herdr_available() {
+        eprintln!("skip: 无 herdr 二进制");
+        return;
+    }
+
+    let agent_command = TempAgentCommand::pi("events");
+    let herdr = IsolatedHerdr::start("agent-events");
+    let (ws, _tab, herdr_pane) = herdr.create_workspace(
+        agent_command
+            .cwd()
+            .to_str()
+            .expect("临时 agent cwd 不是 UTF-8"),
+        "mux-agent-events",
+    );
+    let session = Arc::new(HerdrSession::new(herdr.name(), herdr.socket_path()));
+    // `herdr:pi` is a protocol-defined full-lifecycle authority. Sources such
+    // as `herdr:codex` report session identity only and therefore cannot drive
+    // this real working -> blocked transition fixture.
+    let source = "herdr:pi";
+    let agent_session_path = agent_command.cwd().join("pi-session.jsonl");
+    std::fs::write(&agent_session_path, "{}").expect("创建临时 pi session 失败");
+
+    herdr.paint(&herdr_pane, agent_command.invocation());
+    let deadline = Instant::now() + HERDR_TIMEOUT;
+    loop {
+        let snapshot = session
+            .snapshot()
+            .expect("等待 pi detection 时读取 snapshot 失败");
+        if snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.pane_id == herdr_pane && agent.agent.as_deref() == Some("pi"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Herdr 未识别隔离 pane 里的真实 pi agent: {snapshot:#?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    session
+        .call(
+            "pane.report_agent_session",
+            serde_json::json!({
+                "pane_id": herdr_pane,
+                "source": source,
+                "agent": "pi",
+                "seq": 1,
+                "agent_session_path": agent_session_path,
+                "session_start_source": "startup",
+            }),
+        )
+        .expect("应能报告完整 pi agent session 引用");
+    session
+        .call(
+            "pane.report_agent",
+            serde_json::json!({
+                "pane_id": herdr_pane,
+                "source": source,
+                "agent": "pi",
+                "state": "working",
+                "message": "implementing runtime events",
+                "seq": 2,
+                "agent_session_path": agent_session_path,
+            }),
+        )
+        .expect("应能在隔离 Herdr pane 上报告 working agent");
+    session
+        .call(
+            "pane.report_metadata",
+            serde_json::json!({
+                "pane_id": herdr_pane,
+                "source": "muxterm-test:display",
+                "agent": "pi",
+                "applies_to_source": source,
+                "title": "Implement runtime events",
+                "display_agent": "Pi reviewer",
+                "state_labels": {
+                    "working": "Implementing",
+                    "blocked": "Needs approval"
+                },
+                "tokens": {
+                    "phase": "tests",
+                    "context": "73%"
+                },
+                "seq": 1,
+            }),
+        )
+        .expect("应能报告完整 agent display metadata");
+
+    let runtime = HerdrRuntime::new(Arc::clone(&session), &ws);
+    let mut workspace = Workspace::new(
+        WorkspaceId::new("local", None, herdr.name(), "herdr", &ws),
+        "herdr-agent-events".to_string(),
+        Box::new(runtime),
+    );
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .expect("tokio");
+    rt.block_on(workspace.connect())
+        .expect("Herdr agent Runtime connect 应成功");
+
+    let pane = workspace
+        .state()
+        .active_pane()
+        .expect("agent workspace 应有 active pane")
+        .id;
+    let initial_events = workspace.take_events();
+    assert!(
+        initial_events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneAgentChanged {
+                pane: event_pane,
+                agent: Some(agent),
+                initial: true,
+            } if *event_pane == pane && agent.status == PaneAgentStatus::Working
+        )),
+        "initial agent event missing: {initial_events:#?}"
+    );
+    let agent = workspace
+        .pane_agent(pane)
+        .expect("Workspace 应缓存 agent 快照");
+    assert_eq!(agent.kind.as_deref(), Some("pi"));
+    assert_eq!(agent.title.as_deref(), Some("Implement runtime events"));
+    assert_eq!(agent.display_name.as_deref(), Some("Pi reviewer"));
+    assert_eq!(
+        agent.state_labels.get("blocked").map(String::as_str),
+        Some("Needs approval")
+    );
+    assert_eq!(agent.tokens.get("phase").map(String::as_str), Some("tests"));
+    let agent_session = agent
+        .session
+        .as_ref()
+        .expect("完整快照应保留 agent session");
+    assert_eq!(agent_session.kind, PaneAgentSessionKind::Path);
+    assert_eq!(agent_session.value, agent_session_path.to_string_lossy());
+    assert!(workspace.take_attention_signals(pane).iter().any(|signal| {
+        matches!(
+            signal,
+            AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Working,
+                initial: true,
+            }
+        )
+    }));
+
+    session
+        .call(
+            "pane.report_agent",
+            serde_json::json!({
+                "pane_id": herdr_pane,
+                "source": source,
+                "agent": "pi",
+                "state": "blocked",
+                "message": "approve the command",
+                "seq": 3,
+                "agent_session_path": agent_session_path,
+            }),
+        )
+        .expect("应能报告 blocked transition");
+    let direct_snapshot = session
+        .snapshot()
+        .expect("blocked 后应能读取 Herdr snapshot");
+    assert!(
+        direct_snapshot.agents.iter().any(|agent| {
+            agent.pane_id == herdr_pane && agent.agent_status == HerdrAgentStatus::Blocked
+        }),
+        "Herdr fixture itself did not reach blocked: {direct_snapshot:#?}"
+    );
+
+    let deadline = Instant::now() + HERDR_TIMEOUT;
+    let mut blocked_event = false;
+    while Instant::now() < deadline {
+        let events = workspace.refresh();
+        blocked_event |= events.iter().any(|event| {
+            matches!(
+                event,
+                StateChange::PaneAgentChanged {
+                    pane: event_pane,
+                    agent: Some(agent),
+                    initial: false,
+                } if *event_pane == pane && agent.status == PaneAgentStatus::Blocked
+            )
+        });
+        if blocked_event {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        blocked_event,
+        "真实 Herdr blocked 事件必须进入统一 StateChange"
+    );
+    assert_eq!(
+        workspace.pane_agent(pane).map(|agent| agent.status),
+        Some(PaneAgentStatus::Blocked)
+    );
+    assert!(workspace.take_attention_signals(pane).iter().any(|signal| {
+        matches!(
+            signal,
+            AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Blocked,
+                initial: false,
+            }
+        )
+    }));
+
+    session
+        .call(
+            "pane.release_agent",
+            serde_json::json!({
+                "pane_id": herdr_pane,
+                "source": source,
+                "agent": "pi",
+                "seq": 4,
+            }),
+        )
+        .expect("应能释放测试 agent authority");
+    session
+        .pane_send_keys(&herdr_pane, &["ctrl+c".to_string()])
+        .expect("应能停止隔离 pi agent");
+    let deadline = Instant::now() + HERDR_TIMEOUT;
+    let mut released = false;
+    while Instant::now() < deadline {
+        let events = workspace.refresh();
+        released |= events.iter().any(|event| {
+            matches!(
+                event,
+                StateChange::PaneAgentChanged {
+                    pane: event_pane,
+                    agent: None,
+                    initial: false,
+                } if *event_pane == pane
+            )
+        });
+        if released {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(released, "agent release 必须清除 Workspace 的 pane agent");
+    assert!(workspace.pane_agent(pane).is_none());
+    assert!(workspace
+        .take_attention_signals(pane)
+        .iter()
+        .any(|signal| matches!(signal, AttentionSignal::ClearAuthoritativeStatus)));
+
+    rt.block_on(workspace.shutdown())
+        .expect("Herdr agent contract shutdown 应成功");
 }

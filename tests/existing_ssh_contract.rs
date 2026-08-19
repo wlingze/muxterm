@@ -10,16 +10,19 @@ mod support;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use muxterm::core::attention::signal::AttentionSignal;
+use muxterm::core::attention::state::PaneStatus;
 use muxterm::core::catalog::Catalog;
 use muxterm::core::discovery::existing::{
     discover_local_herdr, discover_ssh_herdr, discover_ssh_tmux,
 };
+use muxterm::core::model::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
 use muxterm::core::model::task::Task;
 use muxterm::core::quickconnect::model::TargetRuntime;
 use muxterm::core::runtime::HerdrRuntime;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;
-use support::herdr_test_support::{herdr_available, IsolatedHerdr};
+use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 use support::tmux_test_support::{create_session, kill_server, tmux_available, unique_socket};
 
@@ -158,6 +161,7 @@ fn ssh_herdr_forward_attach_contract() {
     }
     let sshd = LoopbackSshd::start("herdr-fwd").expect("启动 loopback sshd 失败");
     sshd.apply_ssh_config_env();
+    let agent_command = TempAgentCommand::pi("ssh-forward");
     let herdr = IsolatedHerdr::start("fwd-attach");
     let (ws, _tab, pane) = herdr.create_workspace("/tmp", "mux-fwd");
 
@@ -226,12 +230,273 @@ fn ssh_herdr_forward_attach_contract() {
         .pane_output(&active)
         .map(|bytes| String::from_utf8_lossy(bytes).to_string())
         .unwrap_or_default();
-    rt.block_on(workspace.shutdown())
-        .expect("SSH Herdr shutdown 应成功");
     assert!(
         !hits.is_empty(),
         "SSH Herdr 逐字输入 + Enter 必须真的执行远端命令。token={output_token} pane={pane} output={pane_output:?}"
     );
+
+    // 同一条 SSH API forward 上启动真实 pi，并通过结构化 API 报告完整
+    // agent metadata；Runtime 必须把远端 wire 统一成 PaneAgentChanged。
+    let agent_executable = agent_command.cwd().join("pi");
+    session
+        .pane_send_text(&pane, &agent_executable.to_string_lossy())
+        .expect("SSH forward 应能启动真实 pi");
+    session
+        .pane_send_keys(&pane, &["enter".to_string()])
+        .expect("SSH forward 应能提交 pi 命令");
+    let detection_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let snapshot = session.snapshot().expect("SSH forward 读取 agent snapshot");
+        if snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.pane_id == pane && agent.agent.as_deref() == Some("pi"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < detection_deadline,
+            "SSH forward 未识别真实 pi: {snapshot:#?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // 先让已连接的 Runtime 明确消费 screen detector 状态。若把 detector
+    // 与后面的 hook report 放在同一个 poll 里，authority handoff 是否成为
+    // 首个可见事件取决于线程调度，测试就会错误地要求固定 initial 值。
+    let detector_deadline = Instant::now() + Duration::from_secs(15);
+    let mut detector_event = false;
+    loop {
+        let events = workspace.refresh();
+        detector_event |= events.iter().any(|event| {
+            matches!(
+                event,
+                StateChange::PaneAgentChanged {
+                    pane,
+                    agent: Some(agent),
+                    initial: false,
+                } if *pane == active
+                    && agent.status == PaneAgentStatus::Working
+                    && !agent.screen_detection_skipped
+            )
+        });
+        let complete = workspace.pane_agent(active).is_some_and(|agent| {
+            agent.status == PaneAgentStatus::Working && !agent.screen_detection_skipped
+        });
+        if detector_event && complete {
+            break;
+        }
+        assert!(
+            Instant::now() < detector_deadline,
+            "SSH screen detector Working 未进入 Workspace: {:?}",
+            workspace.pane_agent(active)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(workspace
+        .take_attention_signals(active)
+        .iter()
+        .any(|signal| {
+            matches!(
+                signal,
+                AttentionSignal::AuthoritativeStatus {
+                    status: PaneStatus::Working,
+                    initial: false,
+                }
+            )
+        }));
+
+    let source = "herdr:pi";
+    let agent_session_path = agent_command.cwd().join("pi-session.jsonl");
+    std::fs::write(&agent_session_path, "{}\n").expect("创建 SSH pi session fixture");
+    session
+        .call(
+            "pane.report_agent_session",
+            serde_json::json!({
+                "pane_id": pane,
+                "source": source,
+                "agent": "pi",
+                "seq": 1,
+                "agent_session_path": agent_session_path,
+                "session_start_source": "startup",
+            }),
+        )
+        .expect("SSH forward 报告 agent session");
+    let session_snapshot = session
+        .snapshot()
+        .expect("SSH forward 读取 agent session snapshot");
+    assert!(
+        session_snapshot.agents.iter().any(|agent| {
+            agent.pane_id == pane
+                && agent.agent_session.as_ref().is_some_and(|session| {
+                    session.kind == "path"
+                        && session.value == agent_session_path.to_string_lossy().as_ref()
+                })
+        }),
+        "SSH API snapshot 必须保留 agent session: {session_snapshot:#?}"
+    );
+
+    session
+        .call(
+            "pane.report_agent",
+            serde_json::json!({
+                "pane_id": pane,
+                "source": source,
+                "agent": "pi",
+                "state": "working",
+                "message": "testing SSH runtime normalization",
+                "seq": 2,
+                "agent_session_path": agent_session_path,
+            }),
+        )
+        .expect("SSH forward 报告 working");
+    session
+        .call(
+            "pane.report_metadata",
+            serde_json::json!({
+                "pane_id": pane,
+                "source": "muxterm-test:ssh-display",
+                "agent": "pi",
+                "applies_to_source": source,
+                "title": "SSH runtime agent",
+                "display_agent": "Pi over SSH",
+                "state_labels": { "blocked": "Remote approval" },
+                "tokens": { "transport": "ssh", "context": "41%" },
+                "seq": 1,
+            }),
+        )
+        .expect("SSH forward 报告 agent metadata");
+
+    // Working 与 session-only report 都不改变 detector 已有的 Working 状态；
+    // metadata 的 pane.updated 让 Runtime 看到完整 hook authority。这个
+    // detector -> hook 切换是 bootstrap，必须携带完整 metadata/session，
+    // 但不能制造用户通知。
+    let handoff_deadline = Instant::now() + Duration::from_secs(15);
+    let mut handoff_event = false;
+    loop {
+        let events = workspace.refresh();
+        handoff_event |= events.iter().any(|event| {
+            matches!(
+                event,
+                StateChange::PaneAgentChanged {
+                    pane,
+                    agent: Some(agent),
+                    initial: true,
+                } if *pane == active
+                    && agent.status == PaneAgentStatus::Working
+                    && agent.screen_detection_skipped
+                    && agent.display_name.as_deref() == Some("Pi over SSH")
+                    && agent.session.as_ref().is_some_and(|session| {
+                        session.kind == PaneAgentSessionKind::Path
+                    })
+            )
+        });
+        let complete = workspace.pane_agent(active).is_some_and(|agent| {
+            agent.status == PaneAgentStatus::Working
+                && agent.screen_detection_skipped
+                && agent.display_name.as_deref() == Some("Pi over SSH")
+                && agent.tokens.get("transport").map(String::as_str) == Some("ssh")
+                && agent.session.as_ref().is_some_and(|session| {
+                    session.kind == PaneAgentSessionKind::Path
+                        && session.value == agent_session_path.to_string_lossy().as_ref()
+                })
+        });
+        if handoff_event && complete {
+            break;
+        }
+        assert!(
+            Instant::now() < handoff_deadline,
+            "SSH agent hook handoff/metadata 未进入 Workspace: {:?}",
+            workspace.pane_agent(active)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(workspace
+        .take_attention_signals(active)
+        .iter()
+        .any(|signal| {
+            matches!(
+                signal,
+                AttentionSignal::AuthoritativeStatus {
+                    status: PaneStatus::Working,
+                    initial: true,
+                }
+            )
+        }));
+
+    session
+        .call(
+            "pane.report_agent",
+            serde_json::json!({
+                "pane_id": pane,
+                "source": source,
+                "agent": "pi",
+                "state": "blocked",
+                "message": "approve SSH command",
+                "seq": 3,
+                "agent_session_path": agent_session_path,
+            }),
+        )
+        .expect("SSH forward 报告 blocked");
+    let blocked_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let _ = workspace.refresh();
+        if workspace.pane_agent(active).map(|agent| agent.status) == Some(PaneAgentStatus::Blocked)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < blocked_deadline,
+            "SSH agent blocked 未进入 Workspace: {:?}",
+            workspace.pane_agent(active)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(workspace
+        .take_attention_signals(active)
+        .iter()
+        .any(|signal| {
+            matches!(
+                signal,
+                AttentionSignal::AuthoritativeStatus {
+                    status: PaneStatus::Blocked,
+                    initial: false,
+                }
+            )
+        }));
+
+    session
+        .call(
+            "pane.clear_agent_authority",
+            serde_json::json!({
+                "pane_id": pane,
+                "source": source,
+                "seq": 4,
+            }),
+        )
+        .expect("SSH forward 清除 agent authority");
+    agent_command.mark_done();
+    agent_command.stop();
+    let release_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let _ = workspace.refresh();
+        if workspace.pane_agent(active).is_none() {
+            break;
+        }
+        assert!(
+            Instant::now() < release_deadline,
+            "SSH agent 退出后未清除 Workspace agent: {:?}",
+            workspace.pane_agent(active)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(workspace
+        .take_attention_signals(active)
+        .iter()
+        .any(|signal| matches!(signal, AttentionSignal::ClearAuthoritativeStatus)));
+
+    rt.block_on(workspace.shutdown())
+        .expect("SSH Herdr shutdown 应成功");
     assert!(!local_socket.exists(), "shutdown 应清理 API forward socket");
     assert!(
         !client_socket.exists(),

@@ -6,8 +6,10 @@
 
 use std::collections::HashMap;
 
+use crate::core::attention::signal::AttentionSignal;
+use crate::core::attention::state::PaneStatus;
 use crate::core::model::backend::Runtime;
-use crate::core::model::state::{State, StateChange};
+use crate::core::model::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
@@ -36,6 +38,8 @@ pub struct Workspace {
     /// Runtime（例如 tmux capture）与索引面必须使用同一上限，否则 attach
     /// 能播种的历史会比搜索/viewport 实际保留的历史更长或更短。
     scrollback_lines: usize,
+    agents: HashMap<PaneId, PaneAgentInfo>,
+    runtime_attention: HashMap<PaneId, Vec<AttentionSignal>>,
 }
 
 impl Workspace {
@@ -57,6 +61,8 @@ impl Workspace {
             model: TerminalModel::new(runtime),
             panes: HashMap::new(),
             scrollback_lines: scrollback_lines.max(1),
+            agents: HashMap::new(),
+            runtime_attention: HashMap::new(),
         }
     }
 
@@ -293,6 +299,11 @@ impl Workspace {
             .unwrap_or(false)
     }
 
+    /// Runtime 归一化后的 pane agent 完整快照。
+    pub fn pane_agent(&self, pane: PaneId) -> Option<&PaneAgentInfo> {
+        self.agents.get(&pane)
+    }
+
     /// 某 pane 的 viewport 滚动偏移。
     pub fn pane_viewport(&self, pane: PaneId) -> u32 {
         self.panes.get(&pane).map(|t| t.viewport()).unwrap_or(0)
@@ -310,10 +321,17 @@ impl Workspace {
         &mut self,
         pane: PaneId,
     ) -> Vec<crate::core::attention::signal::AttentionSignal> {
-        self.panes
+        let mut signals = self
+            .panes
             .get_mut(&pane)
             .map(|t| t.take_attention_signals())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // 结构化 Runtime 状态放在字节启发式之后，保证同一批里权威状态
+        // 最终生效；AttentionEngine 会继续记住该 pane 的权威来源。
+        if let Some(runtime) = self.runtime_attention.remove(&pane) {
+            signals.extend(runtime);
+        }
+        signals
     }
 
     /// 某 pane 最近一次 feed 的 seq + 最后非空行。
@@ -400,6 +418,31 @@ impl Workspace {
                 }
                 StateChange::PaneClosed { pane } => {
                     self.panes.remove(pane);
+                    self.agents.remove(pane);
+                    self.runtime_attention.remove(pane);
+                }
+                StateChange::PaneAgentChanged {
+                    pane,
+                    agent,
+                    initial,
+                } => {
+                    let signal = match agent {
+                        Some(agent) => {
+                            self.agents.insert(*pane, agent.as_ref().clone());
+                            AttentionSignal::AuthoritativeStatus {
+                                status: pane_agent_status(agent.status),
+                                initial: *initial,
+                            }
+                        }
+                        None => {
+                            self.agents.remove(pane);
+                            AttentionSignal::ClearAuthoritativeStatus
+                        }
+                    };
+                    self.runtime_attention
+                        .entry(*pane)
+                        .or_default()
+                        .push(signal);
                 }
                 StateChange::WorkspaceRenamed { name } => {
                     self.name.clone_from(name);
@@ -407,6 +450,16 @@ impl Workspace {
                 _ => {}
             }
         }
+    }
+}
+
+fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
+    match status {
+        PaneAgentStatus::Idle => PaneStatus::Idle,
+        PaneAgentStatus::Working => PaneStatus::Working,
+        PaneAgentStatus::Blocked => PaneStatus::Blocked,
+        PaneAgentStatus::Done => PaneStatus::Done,
+        PaneAgentStatus::Unknown => PaneStatus::Unknown,
     }
 }
 
