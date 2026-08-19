@@ -133,8 +133,10 @@ int muxterm_attention_on_became_visible(struct MuxtermHandle* h, uint32_t pane_i
 int muxterm_attention_set_process_name(struct MuxtermHandle* h, uint32_t pane_id, const char* name);
 int muxterm_attention_mute(struct MuxtermHandle* h, uint32_t pane_id, uint64_t seconds);
 int muxterm_pane_scroll_ansi(struct MuxtermHandle* h, uint32_t pane_id, uint32_t offset, uint32_t rows, uint8_t* buf, size_t buf_len);
+int muxterm_pane_visible_ansi(struct MuxtermHandle* h, uint32_t pane_id, uint8_t* buf, size_t buf_len);
 int muxterm_pane_viewport(struct MuxtermHandle* h, uint32_t pane_id);
 int muxterm_set_pane_viewport(struct MuxtermHandle* h, uint32_t pane_id, uint32_t offset);
+int muxterm_pane_viewport_for_seq(struct MuxtermHandle* h, uint32_t pane_id, uint64_t seq);
 char* muxterm_pane_last_n_lines(struct MuxtermHandle* h, uint32_t pane_id, uint32_t n);
 
 // ── 无状态 discovery（由 core 读取 SSH config / 查询 tmux）──

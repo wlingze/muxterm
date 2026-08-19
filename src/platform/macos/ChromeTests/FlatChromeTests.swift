@@ -152,9 +152,10 @@ final class TerminalMirrorPolicyTests: XCTestCase {
         ))
     }
 
-    /// tmux 镜像在 feed 之外（鼠标 / 焦点等用户驱动事件）：保持转发。
-    func testTmuxMirrorForwardsOutsideFeed() {
-        XCTAssertTrue(TerminalMirrorPolicy.shouldForwardParserResponse(
+    /// tmux 镜像：SwiftTerm 解析器应答一律丢弃（不区分 feed 内外）。
+    /// 用户按键走另一条 send(source: TerminalView) 通道。
+    func testTmuxMirrorDropsParserResponseOutsideFeed() {
+        XCTAssertFalse(TerminalMirrorPolicy.shouldForwardParserResponse(
             duringRemoteOutputFeed: false,
             isTmuxMirror: true
         ))
@@ -222,6 +223,12 @@ final class MuxtermThemeTests: XCTestCase {
             MuxtermTheme.dark.palette.bg,
             MuxtermTerminalColors.backgroundHex
         )
+        XCTAssertEqual(MuxtermPalette.light.ansi.count, 16)
+        XCTAssertEqual(MuxtermPalette.dark.ansi.count, 16)
+        XCTAssertEqual(MuxtermPalette.light.cursor, "dc8a78")
+        XCTAssertEqual(MuxtermPalette.dark.cursor, "f5e0dc")
+        XCTAssertNotEqual(MuxtermPalette.light.ansi[0], MuxtermPalette.dark.ansi[0])
+        XCTAssertEqual(MuxtermTerminalColors.activePalette.bg, MuxtermPalette.light.bg)
     }
 }
 
@@ -413,6 +420,141 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         }
         XCTAssertEqual(fed, frame)
         XCTAssertEqual(fed.flatMap { $0 }, frame.flatMap { $0 })
+    }
+}
+
+final class PanePaintPolicyTests: XCTestCase {
+    func testFirstPaintPrefersVisibleGridOverRawHistory() {
+        var raw = Data()
+        for i in 0..<200 {
+            raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
+        }
+        let visible = Data("\u{1b}[H\u{1b}[2JVISIBLE-TAIL".utf8)
+        let painted = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: 24)
+        let text = String(data: painted, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("VISIBLE-TAIL"))
+        XCTAssertFalse(text.contains("line-0"), "不得重放 200 行历史。got=\(text.prefix(80))")
+    }
+
+    func testFirstPaintHistoryDumpKeepsOnlyLastScreen() {
+        var raw = Data()
+        for i in 0..<200 {
+            raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
+        }
+        let painted = PanePaintPolicy.firstPaint(visible: Data(), raw: raw, rows: 24)
+        let text = String(data: painted, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("line-199"), "末屏应含最后一行。got=\(text.suffix(80))")
+        XCTAssertFalse(text.contains("line-0"), "末屏不得含最早行（iTerm2 也不会重放）。got=\(text.prefix(80))")
+        XCTAssertLessThan(painted.count, raw.count / 2, "首屏字节必须远小于整段 history")
+    }
+
+    func testLiveCupStormKeepsOnlyLastFrame() {
+        var raw = Data()
+        for i in 0..<20 {
+            raw.append(contentsOf: Array("\u{1b}[H\u{1b}[2Jframe-\(i)".utf8))
+        }
+        let painted = PanePaintPolicy.live(raw)
+        let text = String(data: painted, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("frame-19"))
+        XCTAssertFalse(text.contains("frame-0"))
+        XCTAssertFalse(text.contains("frame-18"))
+    }
+
+    func testLooksLikeHistoryDumpForCaptureReplay() {
+        var raw = Data()
+        for i in 0..<200 {
+            raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
+        }
+        XCTAssertTrue(
+            PanePaintPolicy.looksLikeHistoryDump(raw, rows: 24),
+            "200 行 capture 必须当成历史录像"
+        )
+        var frames = Data()
+        for i in 0..<8 {
+            frames.append(contentsOf: Array("\u{1b}[H\u{1b}[2Jframe-\(i)".utf8))
+        }
+        XCTAssertFalse(
+            PanePaintPolicy.looksLikeHistoryDump(frames, rows: 24),
+            "CUP 风暴是 live TUI，不能当历史丢掉中间帧以外的处理路径"
+        )
+    }
+
+    func testPaintOfSeededViewKeepsLiveStream() {
+        var raw = Data()
+        for i in 0..<200 {
+            raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
+        }
+        let visible = Data("\u{1b}[H\u{1b}[2JVISIBLE-TAIL".utf8)
+        let painted = PanePaintPolicy.paint(
+            seeded: true,
+            visible: visible,
+            incoming: raw,
+            rows: 24
+        )
+        let text = String(data: painted, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("line-0"), "已播种后不得丢掉 live 开头。got=\(text.prefix(80))")
+        XCTAssertTrue(text.contains("line-199"), "live 末行必须在。got=\(text.suffix(80))")
+        XCTAssertFalse(text.contains("VISIBLE-TAIL"), "已播种后不得用可见网格整屏替换")
+    }
+
+    func testLiveStreamingTextIsNotTrimmed() {
+        var raw = Data()
+        for i in 0..<80 {
+            raw.append(contentsOf: Array("https://github.com/example/repo-\(i)\r\n".utf8))
+        }
+        let painted = PanePaintPolicy.live(raw, visibleRows: 24)
+        let text = String(data: painted, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("repo-0"), "Codex 刷出的地址不能被 live 裁掉")
+        XCTAssertTrue(text.contains("repo-79"))
+    }
+}
+
+final class ColorContrastTests: XCTestCase {
+    func testBlackOnWhiteIsUnchanged() {
+        let fg = ColorContrast.ensureReadable(fg: "000000", bg: "ffffff")
+        XCTAssertEqual(fg, "000000")
+        XCTAssertGreaterThan(ColorContrast.contrastRatio(fg: fg, bg: "ffffff"), 10)
+    }
+
+    func testBlackOnBlackIsLightened() {
+        let fg = ColorContrast.ensureReadable(fg: "000000", bg: "000000")
+        XCTAssertNotEqual(fg, "000000", "黑底黑字必须把前景往白推")
+        XCTAssertGreaterThan(
+            ColorContrast.contrastRatio(fg: fg, bg: "000000"),
+            ColorContrast.minimumRatio - 0.05,
+            "调整后必须可读。fg=\(fg)"
+        )
+        let lum = ColorContrast.parse(fg).map { ColorContrast.relativeLuminance($0) } ?? 0
+        XCTAssertGreaterThan(lum, 0.05, "前景应明显变亮。fg=\(fg)")
+        let rgb = ColorContrast.ensureReadable(
+            fg: ColorContrast.RGB(r: 0, g: 0, b: 0),
+            bg: ColorContrast.RGB(r: 0, g: 0, b: 0)
+        )
+        XCTAssertGreaterThan(rgb.r + rgb.g + rgb.b, 0.3)
+    }
+
+    func testWhiteOnWhiteIsDarkened() {
+        let fg = ColorContrast.ensureReadable(fg: "ffffff", bg: "ffffff")
+        XCTAssertNotEqual(fg, "ffffff")
+        XCTAssertGreaterThan(
+            ColorContrast.contrastRatio(fg: fg, bg: "ffffff"),
+            ColorContrast.minimumRatio - 0.05,
+            "白底白字必须把前景往黑推。fg=\(fg)"
+        )
+    }
+
+    func testOscColorsFollowThemeWithoutGrayHack() {
+        let osc = ColorContrast.oscColors(fg: "000000", bg: "ffffff")
+        XCTAssertEqual(osc.fg, "000000", "浅色 OSC 10 必须是黑，不能报灰污染 tmux session")
+        XCTAssertEqual(osc.bg, "ffffff", "浅色背景保持白")
+        let dark = ColorContrast.oscColors(fg: "cdd6f4", bg: "1e1e2e")
+        XCTAssertEqual(dark.fg, "cdd6f4")
+        XCTAssertEqual(dark.bg, "1e1e2e")
+    }
+
+    func testLightPaletteContrastedKeepsBlackOnWhite() {
+        XCTAssertEqual(MuxtermPalette.light.contrasted().fg, MuxtermPalette.light.fg)
+        XCTAssertEqual(MuxtermPalette.light.contrasted().bg, MuxtermPalette.light.bg)
     }
 }
 
@@ -911,6 +1053,37 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertEqual(store.projects.count, 1)
         XCTAssertEqual(store.projects.first?.runtime, .shell)
         XCTAssertEqual(store.projects.first?.path, "/tmp/project")
+    }
+
+    func testDecodeKeepsHyphenatedProjectNames() {
+        let toml = """
+        [[projects]]
+        name = "archmini-home"
+        runtime = "tmux"
+        transport = "ssh"
+        transport_name = "archmini"
+        path = "~"
+
+        [[projects]]
+        name = "pc-home"
+        runtime = "tmux"
+        transport = "ssh"
+        transport_name = "pc"
+        path = "~"
+
+        [[projects]]
+        name = "ubuntu-home"
+        runtime = "tmux"
+        transport = "ssh"
+        transport_name = "cd"
+        path = "/home/ubuntu"
+        """
+        let store = QuickConnectStore()
+        store.decode(Data(toml.utf8))
+        XCTAssertEqual(
+            store.projects.map(\.name),
+            ["archmini-home", "pc-home", "ubuntu-home"]
+        )
     }
 
     func testReplaceRecentsStaysInMemoryOnly() {

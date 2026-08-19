@@ -7,7 +7,7 @@ import MuxtermChrome
 final class SearchPanelController: NSWindowController, NSSearchFieldDelegate,
     NSTableViewDataSource, NSTableViewDelegate
 {
-    var onJump: ((UInt32, UInt32) -> Void)? // (tabId, paneId)
+    var onJump: ((UInt32?, UInt32, UInt64, String) -> Void)? // (tabId, paneId, seq, query)
 
     private let input = NSSearchField()
     private let table = NSTableView()
@@ -133,7 +133,7 @@ final class SearchPanelController: NSWindowController, NSSearchFieldDelegate,
     private func activateSelected() {
         guard table.selectedRow >= 0, table.selectedRow < hits.count else { return }
         let hit = hits[table.selectedRow]
-        onJump?(hit.tabId, hit.paneId)
+        onJump?(hit.tabId, hit.paneId, hit.seq, input.stringValue)
         dismiss()
     }
 

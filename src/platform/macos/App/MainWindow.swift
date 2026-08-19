@@ -15,6 +15,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private struct PendingSearchJump {
+        let paneId: UInt32
+        let seq: UInt64
+        let query: String
+    }
+
     var bridge: CoreBridge
     var terminalManager: TerminalManager
     let content: ContentView
@@ -35,6 +41,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 注意力 Cmd-Enter 的 replica overlay（W19-E）。
     private var replyOverlayView: MuxTerminalView?
     var replyOverlayPaneId: UInt32?
+    /// 搜索跳转：切 tab 完成后再滚到命中行。
+    private var pendingSearchJump: PendingSearchJump?
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
     private(set) var lastPaneOutputEventCount: Int = 0
     private var languageObserver: NSObjectProtocol?
@@ -184,8 +192,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onEditProject = { [weak self] config in
             self?.editProject(config)
         }
-        unifiedPanel.onJump = { [weak self] tabId, paneId in
-            self?.jumpToPane(tabId: tabId, paneId: paneId)
+        unifiedPanel.onJump = { [weak self] tabId, paneId, seq, query in
+            self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
         }
         languageObserver = NotificationCenter.default.addObserver(
             forName: .muxtermLanguageChanged,
@@ -243,6 +251,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         installKeyEquivalents()
+        applyTheme(currentTheme())
         startPolling()
         DispatchQueue.main.async { [weak self] in
             self?.refreshUI()
@@ -392,18 +401,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 强制外观立即传播（headless 下 effectiveAppearance 可能延迟）。
         window?.contentView?.viewDidChangeEffectiveAppearance()
         window?.displayIfNeeded()
-        // W20-C：主题切换后终端 SwiftTerm 默认色与 OSC 10/11 都跟随
-        // theme.palette（light=000000/ffffff, dark=cdd6f4/1e1e2e）。
-        terminalManager.applyTheme(
-            fgHex: theme.palette.fg,
-            bgHex: theme.palette.bg
-        )
+        // 主题色变化后终端 SwiftTerm 默认色、光标、ANSI 16 色与 OSC 10/11
+        // 都跟随 theme.palette（light=黑字白底，dark=浅字深底）。
+        terminalManager.applyPalette(theme.palette)
         // 主题色变化后必须给**所有** pane 重新上报，tmux 才会用新颜色代答
-        // OSC 10/11；只报当前 tab 会让后台 tab 的 codex 输入框沿用旧色。
+        // OSC 10/11；只报当前 tab 会让后台 tab 的 agent 沿用旧色。
+        // 必须报主题真值（浅色=黑字白底）。不能报灰色：会污染整个
+        // tmux session，普通 `tmux attach` 里字也会变白。
         reportedColourPanes.removeAll()
+        let osc = ColorContrast.oscColors(fg: theme.palette.fg, bg: theme.palette.bg)
         _ = bridge.reportAllPaneColours(
-            fgHex: theme.palette.fg,
-            bgHex: theme.palette.bg
+            fgHex: osc.fg,
+            bgHex: osc.bg
         )
         // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
         if statusBarSnapshot != nil {
@@ -500,9 +509,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 跳转到指定 tab + pane（搜索命中 / 注意力行）。
-    func jumpToPane(tabId: UInt32, paneId: UInt32) {
-        if tabId != 0 {
-            requestSwitchTab(tabId)
+    ///
+    /// `tabId` 为 nil 时按 pane 反查（注意力行没有 tab）。tmux window 0
+    /// 是真实 tab，不能当哨兵跳过。`seq>0` 时把历史滚到命中行。
+    func jumpToPane(tabId: UInt32?, paneId: UInt32, seq: UInt64 = 0, query: String = "") {
+        let resolvedTab = tabId ?? bridge.tabId(containingPane: paneId)
+        if let resolvedTab {
+            requestSwitchTab(resolvedTab)
         }
         if bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
             reportStatusError(
@@ -510,6 +523,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
         }
         needsLayoutReload = true
+        if seq > 0 || !query.isEmpty {
+            pendingSearchJump = PendingSearchJump(paneId: paneId, seq: seq, query: query)
+            applyPendingSearchJumpIfReady()
+        }
     }
 
     /// 注意力面板 Cmd-Enter：打开/关闭独立 replica overlay（W19-E）。
@@ -533,6 +550,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.setAccessibilityIdentifier(CmdEnterRouting.overlayIdentifier)
         overlay.setAccessibilityElement(true)
         overlay.inputHandler = self
+        overlay.applyPalette(MuxtermTerminalColors.activePalette)
         overlay.translatesAutoresizingMaskIntoConstraints = false
         content.replyOverlayContainer.addSubview(overlay)
         NSLayoutConstraint.activate([
@@ -552,7 +570,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
         _ = overlay.syncSizeToPty(notifyResize: false)
-        let data = bridge.getPaneOutput(paneId: paneId)
+        let visible = bridge.paneVisibleANSI(paneId: paneId)
+        let raw = bridge.getPaneOutput(paneId: paneId)
+        let data = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: 24)
         if !data.isEmpty {
             overlay.feedOutput(data, isSnapshot: true)
         }
@@ -592,7 +612,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 view.feedOutput(ansi, isSnapshot: true)
             }
         } else {
-            let data = bridge.getPaneOutput(paneId: paneId)
+            let paneInfo = lastSnapshot.panes.first(where: { $0.id == paneId })
+            let rows = max(24, Int(paneInfo?.rows ?? 0))
+            let visible = bridge.paneVisibleANSI(paneId: paneId)
+            let raw = bridge.getPaneOutput(paneId: paneId)
+            let data = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: rows)
             if !data.isEmpty {
                 view.feedOutput(data, isSnapshot: true)
             }
@@ -823,16 +847,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             size: currentTerminalFontSize(),
             container: content.paneLayout
         )
-        // warm slot 的视图沿用当前主题 palette（W20-C 终端跟随主题）。
-        terminalManager.applyTheme(
-            fgHex: MuxtermTerminalColors.activePalette.fg,
-            bgHex: MuxtermTerminalColors.activePalette.bg
-        )
+        // warm slot 的视图沿用当前主题 palette（终端跟随主题）。
+        terminalManager.applyPalette(MuxtermTerminalColors.activePalette)
         // 连接建立/切换后给全部 pane 上报一次颜色，避免后台 tab 的 codex
         // 输入框使用 tmux 默认（或上一个连接）的颜色代答。
+        let osc = ColorContrast.oscColors(
+            fg: MuxtermTerminalColors.activePalette.fg,
+            bg: MuxtermTerminalColors.activePalette.bg
+        )
         _ = bridge.reportAllPaneColours(
-            fgHex: MuxtermTerminalColors.activePalette.fg,
-            bgHex: MuxtermTerminalColors.activePalette.bg
+            fgHex: osc.fg,
+            bgHex: osc.bg
         )
         lastSnapshot = slot.lastSnapshot
         // 切连接后旧 status bar 属于上一个 tmux：先清掉，等新快照到达再显示。
@@ -1620,6 +1645,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 window?.makeFirstResponder(view)
             }
         }
+        applyPendingSearchJumpIfReady()
+    }
+
+    /// 切 tab/pane 完成后：按 seq 喂历史帧，并用 SwiftTerm findNext 高亮 query。
+    private func applyPendingSearchJumpIfReady() {
+        guard let jump = pendingSearchJump else { return }
+        guard tabSwitchGate.isReleased() else { return }
+        guard lastSnapshot.panes.contains(where: { $0.id == jump.paneId }) else { return }
+        pendingSearchJump = nil
+        if jump.seq > 0 {
+            let offset = max(0, bridge.paneViewportOffsetForSeq(paneId: jump.paneId, seq: jump.seq))
+            if offset > 0 {
+                let uoff = UInt32(offset)
+                _ = bridge.setPaneViewport(paneId: jump.paneId, offset: uoff)
+                applyPaneViewport(paneId: jump.paneId, offset: uoff)
+                content.setJumpLatestVisible(true)
+            }
+        }
+        let q = jump.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !q.isEmpty {
+            let view = terminalManager.view(for: jump.paneId)
+            view.clearSearch()
+            _ = view.findNext(q)
+        }
     }
 
     private func refreshLocalizedUI() {
@@ -1645,9 +1694,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func reportPaneColoursIfNeeded(_ panes: [Pane]) {
         guard terminalManager.usesClientResize else { return }
         let fresh = Set(panes.map(\.id)).subtracting(reportedColourPanes)
-        guard !fresh.isEmpty, let colors = terminalManager.themeHexColors() else { return }
+        guard !fresh.isEmpty else { return }
+        let osc = ColorContrast.oscColors(
+            fg: MuxtermTerminalColors.activePalette.fg,
+            bg: MuxtermTerminalColors.activePalette.bg
+        )
         for id in fresh {
-            if bridge.reportPaneColours(paneId: id, fgHex: colors.fg, bgHex: colors.bg) == 0 {
+            if bridge.reportPaneColours(paneId: id, fgHex: osc.fg, bgHex: osc.bg) == 0 {
                 reportedColourPanes.insert(id)
             }
         }
@@ -1829,7 +1882,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // macOS 的 Delete/Backspace 可能在 SwiftTerm 的 NSTextInputClient 路径
         // 中被吞掉；明确转成 DEL，保证 shell 和 tmux 收到基础编辑键。
         if event.keyCode == 51,
-           !flags.contains(.command),
            !flags.contains(.option),
            let view = window?.firstResponder as? MuxTerminalView
         {
@@ -1838,8 +1890,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if view.hasMarkedText() {
                 return false
             }
-            terminalManager.sendRawInput(to: view, byte: TerminalInputEncoding.backspaceByte)
-            return true
+            if flags.contains(.command), !flags.contains(.control) {
+                // Cmd+Backspace → 删到行首（Ctrl-U）。不交给 SwiftTerm，
+                // 否则落到 Unhandle selector deleteToBeginningOfLine:。
+                terminalManager.sendRawInput(to: view, byte: 0x15)
+                return true
+            }
+            if !flags.contains(.command) {
+                terminalManager.sendRawInput(to: view, byte: TerminalInputEncoding.backspaceByte)
+                return true
+            }
         }
         // Return / keypad Enter 在带修饰键时 charactersIgnoringModifiers
         // 可能为空，不能靠字符匹配，否则 Cmd/Alt+Enter 永远进不了全屏。

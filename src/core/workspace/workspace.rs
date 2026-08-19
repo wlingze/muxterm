@@ -116,6 +116,14 @@ impl Workspace {
         self.panes.get(&pane).and_then(|t| t.line_index_by_seq(seq))
     }
 
+    /// 搜索命中 seq 对应的 viewport 偏移（0 = 可见屏 / 未找到）。
+    pub fn pane_viewport_offset_for_seq(&self, pane: PaneId, seq: u64) -> u32 {
+        self.panes
+            .get(&pane)
+            .map(|t| t.viewport_offset_for_seq(seq))
+            .unwrap_or(0)
+    }
+
     /// 某 pane 的 OSC 133 命令刻度（W18h 滚动条红绿标记）。
     pub fn pane_command_marks(
         &self,
@@ -389,6 +397,30 @@ mod tests {
         assert_eq!(w.pane_viewport(PaneId(1)), 0);
         w.set_pane_viewport(PaneId(1), 12);
         assert_eq!(w.pane_viewport(PaneId(1)), 12);
+    }
+
+    /// 滚出可见区的搜索命中必须给出 >0 的 viewport 偏移，便于 GUI 喂历史帧。
+    #[test]
+    fn search_hit_seq_maps_to_nonzero_viewport_offset() {
+        let mut w = workspace("demo");
+        w.feed_pane_bytes(PaneId(1), b"HIST_TOKEN\r\n", 80, 24);
+        for i in 0..40 {
+            w.feed_pane_bytes(PaneId(1), format!("pad-{i:02}\r\n").as_bytes(), 80, 24);
+        }
+        let hits = w.search_pane(PaneId(1), "HIST_TOKEN");
+        assert_eq!(hits.len(), 1);
+        let offset = w.pane_viewport_offset_for_seq(PaneId(1), hits[0].seq);
+        assert!(
+            offset > 0,
+            "滚出可见区的命中必须给出 >0 的 viewport 偏移, got {offset}"
+        );
+        let live = w.search_pane(PaneId(1), "pad-39");
+        assert!(!live.is_empty());
+        assert_eq!(
+            w.pane_viewport_offset_for_seq(PaneId(1), live[0].seq),
+            0,
+            "仍在可见屏的命中偏移应为 0"
+        );
     }
 
     /// 两个 Workspace、同一 PaneId 数字 → 文本互不污染。

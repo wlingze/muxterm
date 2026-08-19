@@ -527,13 +527,29 @@ final class CoreBridge {
     /// 读取某 pane 的滚动窗口 ANSI 字节（历史查看用）。
     func paneScrollANSI(paneId: UInt32, offset: UInt32, rows: UInt32) -> Data {
         guard let handle else { return Data() }
-        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        var buf = [UInt8](repeating: 0, count: 256 * 1024)
         let n = buf.withUnsafeMutableBytes { raw in
             muxterm_pane_scroll_ansi(
                 handle,
                 paneId,
                 offset,
                 rows,
+                raw.bindMemory(to: UInt8.self).baseAddress,
+                raw.count
+            )
+        }
+        guard n > 0 else { return Data() }
+        return Data(buf.prefix(Int(n)))
+    }
+
+    /// 读取某 pane 内置 VT 的可见网格 ANSI（首屏播种，不是 256KB 历史环）。
+    func paneVisibleANSI(paneId: UInt32) -> Data {
+        guard let handle else { return Data() }
+        var buf = [UInt8](repeating: 0, count: 1024 * 1024)
+        let n = buf.withUnsafeMutableBytes { raw in
+            muxterm_pane_visible_ansi(
+                handle,
+                paneId,
                 raw.bindMemory(to: UInt8.self).baseAddress,
                 raw.count
             )
@@ -553,6 +569,22 @@ final class CoreBridge {
     func setPaneViewport(paneId: UInt32, offset: UInt32) -> Int32 {
         guard let handle else { return -1 }
         return muxterm_set_pane_viewport(handle, paneId, offset)
+    }
+
+    /// 搜索命中 seq 对应的 viewport 偏移（0 = 可见屏 / 未找到；-1 = err）。
+    func paneViewportOffsetForSeq(paneId: UInt32, seq: UInt64) -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_pane_viewport_for_seq(handle, paneId, seq)
+    }
+
+    /// 按 pane id 反查所在 tab（注意力跳转没有带 tab_id 时用）。
+    func tabId(containingPane paneId: UInt32) -> UInt32? {
+        for tab in getTabs() {
+            if getPanes(tabId: tab.id).contains(where: { $0.id == paneId }) {
+                return tab.id
+            }
+        }
+        return nil
     }
 
     /// 读取某 pane 最近 n 行文本 JSON（`muxterm_pane_last_n_lines`）。

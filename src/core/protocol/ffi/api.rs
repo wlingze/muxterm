@@ -1893,6 +1893,38 @@ pub unsafe extern "C" fn muxterm_pane_scroll_ansi(
     .unwrap_or(-1)
 }
 
+/// 读取某 pane 内置 VT 的可见网格 ANSI（首屏播种：只给当前屏，不重放 history）。
+///
+/// 返回写入字节数（截断到 buf_len），-1=err。
+///
+/// # Safety
+/// `h` 有效且未 free；`buf` 至少 `buf_len` 字节。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_visible_ansi(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || buf.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let bytes = ws.pane_visible_ansi(pane);
+        let n = bytes.len().min(buf_len);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
+        n as i32
+    }))
+    .unwrap_or(-1)
+}
+
 /// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
 ///
 /// # Safety
@@ -1938,6 +1970,32 @@ pub unsafe extern "C" fn muxterm_set_pane_viewport(
         };
         ws.set_pane_viewport(pane, offset);
         0
+    }))
+    .unwrap_or(-1)
+}
+
+/// 搜索命中 seq 对应的 viewport 偏移（0 = 已在可见屏 / 未找到；-1 = err）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_pane_viewport_for_seq(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    seq: u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        ws.pane_viewport_offset_for_seq(pane, seq) as i32
     }))
     .unwrap_or(-1)
 }

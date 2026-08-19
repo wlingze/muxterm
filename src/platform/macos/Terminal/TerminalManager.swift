@@ -14,6 +14,9 @@ final class TerminalManager: TerminalInputHandler {
     /// 本轮 poll 批次内新建的视图：播种快照已覆盖该批次所有已入队的
     /// PaneOutput 事件，本批次剩余事件必须跳过，否则同一批字节会双写。
     private var viewsCreatedThisBatch = Set<UInt32>()
+    /// 已经用可见网格 / 末屏给 SwiftTerm 做过首屏的 pane。
+    /// 之后再来的 capture 历史必须走 firstPaint，不能当 live 重放。
+    private var swiftTermSeeded = Set<UInt32>()
     /// 两次 poll 之间（批次外）新建的视图：其播种快照覆盖了队列里尚未派发的
     /// 事件，下一批开始时要把它们结转到 `viewsCreatedThisBatch` 继续抑制。
     private var pendingSeedPanes = Set<UInt32>()
@@ -74,6 +77,7 @@ final class TerminalManager: TerminalInputHandler {
         expectedPaneSizes.removeAll()
         viewsCreatedThisBatch.removeAll()
         pendingSeedPanes.removeAll()
+        swiftTermSeeded.removeAll()
         inEventBatch = false
         lastPtySize.removeAll()
         lastClientSize = nil
@@ -108,16 +112,20 @@ final class TerminalManager: TerminalInputHandler {
         // SwiftTerm 解析 pane 输出时生成的查询应答回写 pane。
         view.suppressOutputDrivenResponses = !isDirectPtyTerminal
         views[paneId] = view
+        view.applyPalette(MuxtermTerminalColors.activePalette)
         // 先按 pane 真实尺寸 resize 模型：codex/cursor 的 erase-up 重绘按
         // 实际列数生成，模型宽度不一致会折行导致输入行逐帧漂移。
         if let size = expectedPaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
             view.getTerminal().resize(cols: size.cols, rows: size.rows)
         }
-        // 首次创建时用最近快照播种（FFI 返回最近 256KB）。播种覆盖了后端已
-        // 入队但尚未派发的事件，这些事件必须在接下来的批次里跳过。
-        let snapshot = bridge?.getPaneOutput(paneId: paneId) ?? Data()
+        // 首屏只喂内置 VT 的可见网格，禁止把 256KB 环 / capture 历史当录像重放。
+        let rows = expectedPaneSizes[paneId]?.rows ?? 24
+        let visible = bridge?.paneVisibleANSI(paneId: paneId) ?? Data()
+        let raw = bridge?.getPaneOutput(paneId: paneId) ?? Data()
+        let snapshot = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: rows)
         if !snapshot.isEmpty {
             view.feedOutput(snapshot, isSnapshot: true)
+            swiftTermSeeded.insert(paneId)
             appendSnippet(snapshot)
             if inEventBatch {
                 viewsCreatedThisBatch.insert(paneId)
@@ -157,7 +165,30 @@ final class TerminalManager: TerminalInputHandler {
         }
         let existed = views[paneId] != nil
         let view = view(for: paneId)
+        // view(for:) 可能刚用可见网格播种；同一批 capture 事件必须丢掉。
+        if viewsCreatedThisBatch.contains(paneId) {
+            return
+        }
         ensureValidModelSize(view)
+        let rows = expectedPaneSizes[paneId]?.rows ?? 24
+        if !swiftTermSeeded.contains(paneId) {
+            // 首包：可见网格 / 末屏。attach 的 capture 历史绝不能当录像重放。
+            // 之后的 live `%output` 即使很长（Codex 刷 GitHub 地址）也必须
+            // 原样增量喂入，不能再 RIS 清屏。
+            let visible = bridge?.paneVisibleANSI(paneId: paneId) ?? Data()
+            let painted = PanePaintPolicy.firstPaint(
+                visible: visible,
+                raw: data,
+                rows: rows
+            )
+            if !painted.isEmpty {
+                view.feedOutput(painted, isSnapshot: true)
+            }
+            swiftTermSeeded.insert(paneId)
+            appendSnippet(painted)
+            recordTraffic(bytes: data.count)
+            return
+        }
         if PaneOutputFeedPolicy.shouldFeedEvent(
             viewExistedBeforeEvent: existed,
             seedCoveredEvent: viewsCreatedThisBatch.contains(paneId)
@@ -194,7 +225,8 @@ final class TerminalManager: TerminalInputHandler {
         let feeds = pendingFeeds
         pendingFeeds.removeAll()
         for (paneId, data) in feeds {
-            views[paneId]?.feedOutput(data)
+            let rows = expectedPaneSizes[paneId]?.rows ?? 24
+            views[paneId]?.feedOutput(PanePaintPolicy.live(data, visibleRows: rows))
         }
     }
 
@@ -221,6 +253,7 @@ final class TerminalManager: TerminalInputHandler {
         views.removeValue(forKey: paneId)
         viewsCreatedThisBatch.remove(paneId)
         pendingSeedPanes.remove(paneId)
+        swiftTermSeeded.remove(paneId)
         lastPtySize.removeValue(forKey: paneId)
     }
 
@@ -331,6 +364,13 @@ final class TerminalManager: TerminalInputHandler {
     func forceRedraw(paneIds: Set<UInt32>) {
         for id in paneIds {
             views[id]?.forceRedraw()
+        }
+    }
+
+    /// 运行期切换主题：更新所有终端视图的默认色、光标、ANSI 16 色。
+    func applyPalette(_ palette: MuxtermPalette) {
+        for view in views.values {
+            view.applyPalette(palette)
         }
     }
 

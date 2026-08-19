@@ -41,8 +41,8 @@ public struct SearchSnapshot: Equatable, Sendable {
         let hits: [SearchHit] = (json["hits"] as? [[String: Any]])?
             .compactMap { h in
                 guard let workspaceId = h["workspace_id"] as? String,
-                      let tabId = (h["tab_id"] as? NSNumber)?.uint32Value,
-                      let paneId = (h["pane_id"] as? NSNumber)?.uint32Value
+                      let tabId = JSONNumber.uint32(h["tab_id"]),
+                      let paneId = JSONNumber.uint32(h["pane_id"])
                 else {
                     return nil
                 }
@@ -50,7 +50,7 @@ public struct SearchSnapshot: Equatable, Sendable {
                     workspaceId: workspaceId,
                     tabId: tabId,
                     paneId: paneId,
-                    seq: (h["seq"] as? NSNumber)?.uint64Value ?? 0,
+                    seq: JSONNumber.uint64(h["seq"]) ?? 0,
                     line: (h["line"] as? String) ?? ""
                 )
             } ?? []
@@ -68,5 +68,24 @@ public enum SearchList {
                 || h.workspaceId.lowercased().contains(q)
         }
         return (rows, rows.isEmpty)
+    }
+}
+
+/// JSONSerialization 数字可能是 `NSNumber` / `Int` / `UInt32`；tab_id==0 也是合法 tab。
+enum JSONNumber {
+    static func uint32(_ value: Any?) -> UInt32? {
+        if let n = value as? UInt32 { return n }
+        if let n = value as? Int, n >= 0 { return UInt32(n) }
+        if let n = value as? Int64, n >= 0 { return UInt32(clamping: n) }
+        if let n = value as? NSNumber { return n.uint32Value }
+        return nil
+    }
+
+    static func uint64(_ value: Any?) -> UInt64? {
+        if let n = value as? UInt64 { return n }
+        if let n = value as? Int, n >= 0 { return UInt64(n) }
+        if let n = value as? Int64, n >= 0 { return UInt64(n) }
+        if let n = value as? NSNumber { return n.uint64Value }
+        return nil
     }
 }
