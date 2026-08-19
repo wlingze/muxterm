@@ -66,15 +66,18 @@ final class ChromeE2ETests: XCTestCase {
         bar.onAttentionClick = { clicks += 1 }
         bar.setAttention(StatusBarAttention(count: 2))
         AppE2E.pump(40)
+        try? writeSnapshot(bar, name: "status-bar-attention")
+        XCTAssertEqual(bar.testAttentionSymbolName(), "bell.fill")
         XCTAssertTrue(
             bar.testAttentionCountLabel().contains("2"),
             "n=2 时按钮文本应含 2: \(bar.testAttentionCountLabel())"
         )
-        find(bar, "muxterm.statusAttention")?.gestureRecognizers.forEach { rec in
-            _ = rec.target?.perform(rec.action, with: rec)
-        }
+        bar.testClickAttention()
         AppE2E.pump(40)
         XCTAssertEqual(clicks, 1, "点击应触发回调一次")
+
+        bar.setAttention(StatusBarAttention(count: 0))
+        XCTAssertEqual(bar.testAttentionSymbolName(), "bell")
     }
 
     func testClickStatusTabInvokesSwitchWithWindowId() {
@@ -117,14 +120,76 @@ final class ChromeE2ETests: XCTestCase {
 
         bar.testClickStatusDot()
         AppE2E.pump(40)
+        try? writeSnapshot(bar.testPopoverContentView(), name: "status-popover-ssh")
         XCTAssertTrue(bar.testPopoverVisible(), "点状态点后 popover 应可见")
         let text = bar.testPopoverText()
-        XCTAssertTrue(text.contains("type=ssh"), "应含 type=ssh: \(text)")
-        XCTAssertTrue(text.contains("host=127.0.0.1"), "应含 host: \(text)")
-        XCTAssertTrue(text.contains("status=connected"), "应含 status: \(text)")
+        XCTAssertEqual(bar.testStatusSymbolName(), "network")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.transport"), "SSH")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.host"), "127.0.0.1")
+        XCTAssertEqual(
+            bar.testPopoverValue("muxterm.statusPopover.state"),
+            MuxtermI18n.shared.tr(.statusConnected)
+        )
         XCTAssertFalse(text.contains("1536B/s") || text.contains("1234B/s"), "禁止把累计字节标成 B/s: \(text)")
-        XCTAssertTrue(text.contains("1.5 KB/s"), "必须有人类可读速率 1.5 KB/s: \(text)")
-        XCTAssertTrue(text.contains("1.5 KB") && text.contains("56 B"), "必须有人类可读累计（1.5 KB 和 56 B）: \(text)")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.receiveRate"), "1.5 KB/s")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.received"), "1.5 KB")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.sendRate"), "56 B/s")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.sent"), "56 B")
+    }
+
+    func testSshPopoverDoesNotInventUnavailableUploadMetrics() {
+        let bar = StatusBarView(frame: .zero)
+        window.contentView = bar
+        window.orderFront(nil)
+        bar.updateConnectionStatus(
+            (type: "ssh", host: "build-host", status: "connected"),
+            trafficRate: 1_048_576,
+            totalBytes: 1_099_511_627_776
+        )
+        bar.testClickStatusDot()
+        AppE2E.pump(40)
+
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.receiveRate"), "1.0 MB/s")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.received"), "1.0 TB")
+        XCTAssertNil(bar.testPopoverValue("muxterm.statusPopover.sendRate"))
+        XCTAssertNil(bar.testPopoverValue("muxterm.statusPopover.sent"))
+    }
+
+    func testConnectionErrorUsesNativeErrorIconAndDetailRow() {
+        let bar = StatusBarView(frame: .zero)
+        window.contentView = bar
+        window.orderFront(nil)
+        bar.updateConnectionStatus(
+            (type: "ssh", host: "offline-host", status: "disconnected"),
+            trafficRate: 0,
+            totalBytes: 0
+        )
+        bar.showError("connection refused")
+        bar.testClickStatusDot()
+        AppE2E.pump(40)
+
+        XCTAssertEqual(bar.testStatusSymbolName(), "exclamationmark.circle.fill")
+        XCTAssertEqual(
+            bar.testPopoverValue("muxterm.statusPopover.error"),
+            "connection refused"
+        )
+    }
+
+    func testHumanReadableTrafficFormatterCoversLargeSessions() {
+        XCTAssertEqual(StatusTrafficFormatter.bytes(0), "0 B")
+        XCTAssertEqual(StatusTrafficFormatter.rate(1536), "1.5 KB/s")
+        XCTAssertEqual(StatusTrafficFormatter.bytes(1_073_741_824), "1.0 GB")
+        XCTAssertEqual(StatusTrafficFormatter.bytes(1_099_511_627_776), "1.0 TB")
+    }
+
+    func testTrafficSamplerReportsCurrentIntervalAndReturnsToZero() {
+        var sampler = TrafficRateSampler()
+        XCTAssertEqual(sampler.sample(totalBytes: 100, now: 10), 0)
+        XCTAssertEqual(sampler.sample(totalBytes: 1636, now: 11), 1536)
+        XCTAssertEqual(sampler.sample(totalBytes: 1636, now: 12), 0)
+        XCTAssertEqual(sampler.sample(totalBytes: 8, now: 13), 0, "连接切换后累计值归零")
+        sampler.reset()
+        XCTAssertEqual(sampler.sample(totalBytes: 4096, now: 14), 0, "warm workspace 切换后重建基线")
     }
 
     private func find(_ root: NSView, _ id: String) -> NSView? {
@@ -133,6 +198,24 @@ final class ChromeE2ETests: XCTestCase {
             if let found = find(child, id) { return found }
         }
         return nil
+    }
+
+    /// 与面板快照相同：仅设置环境变量时落盘，常规 E2E 不产生文件。
+    private func writeSnapshot(_ view: NSView?, name: String) throws {
+        guard let directory = ProcessInfo.processInfo.environment["MUXTERM_UI_SNAPSHOT_DIR"],
+              let view,
+              !view.bounds.isEmpty,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+        else {
+            return
+        }
+        view.layoutSubtreeIfNeeded()
+        view.displayIfNeeded()
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        let root = URL(fileURLWithPath: directory, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try png.write(to: root.appendingPathComponent("\(name).png"), options: .atomic)
     }
 
     private static func snapshot(left: String, right: String, windows: [StatusBarWindow]) -> StatusBarSnapshot {

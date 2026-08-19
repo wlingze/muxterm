@@ -176,7 +176,20 @@ enum MuxtermTextKey: CaseIterable {
     case statusBarModeSwitchTo
     case statusBarModeDetail
     case statusAttention
+    case statusAttentionCount
+    case statusAttentionNone
+    case statusConnectionDetails
     case statusDone
+    case statusErrorDetails
+    case statusHost
+    case statusReceiveRate
+    case statusReceived
+    case statusSendRate
+    case statusSent
+    case statusShowConnectionDetails
+    case statusState
+    case statusTransport
+    case statusTransportLocal
     case tab
     case tabs
     case tabsAccessibility
@@ -375,7 +388,20 @@ enum MuxtermTextKey: CaseIterable {
         case .statusBarModeSwitchTo: return "statusbar_mode_switch_to"
         case .statusBarModeDetail: return "statusbar_mode_detail"
         case .statusAttention: return "status_attention"
+        case .statusAttentionCount: return "status_attention_count"
+        case .statusAttentionNone: return "status_attention_none"
+        case .statusConnectionDetails: return "status_connection_details"
         case .statusDone: return "status_done"
+        case .statusErrorDetails: return "status_error_details"
+        case .statusHost: return "status_host"
+        case .statusReceiveRate: return "status_receive_rate"
+        case .statusReceived: return "status_received"
+        case .statusSendRate: return "status_send_rate"
+        case .statusSent: return "status_sent"
+        case .statusShowConnectionDetails: return "status_show_connection_details"
+        case .statusState: return "status_state"
+        case .statusTransport: return "status_transport"
+        case .statusTransportLocal: return "status_transport_local"
         case .tab: return "tab"
         case .tabs: return "tabs"
         case .tabsAccessibility: return "tabs_accessibility"
