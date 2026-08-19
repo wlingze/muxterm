@@ -65,7 +65,7 @@ Driver 打开 Runtime 时，用 `Connect` 再 spawn 字节流（本机 PTY 或 `
 |---|---|
 | `discover_sessions("local", "")` | connect name `local` 上的 tmux + herdr |
 | `discover_sessions("ssh", "self")` | connect name `self`（SSH Host）上的 tmux + herdr |
-| `discover_sessions("all", "")` | 扇出所有 connect name，拼成一张表。写法同搜索 scope 的 `all` |
+| `discover_sessions("all", "")` | 扇出所有 connect name，拼成一张表。写法同搜索 scope 的 `all`。实现上最多 4 路并发；GTK 已有的连接先 `local` 再并行 SSH，不等整表返回才刷新。后台结果必须由生产 16ms poll 收进面板，测试不得用 `test_poll_once()` 代替这条接线。 |
 
 同一台机器既是 local 又被 SSH 指回来（测试里 LoopbackSshd **Host `self`** → 127.0.0.1）时，**同一 session 出现两行**：`tmux @ local` 和 `tmux @ self`。这是要的，不是去重 bug。
 

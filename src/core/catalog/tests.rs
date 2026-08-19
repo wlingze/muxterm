@@ -439,3 +439,88 @@ fn discover_sessions_all_fans_out_local_and_ssh_targets() {
         "all 必须含 ssh-self 行 mux-dup（双份，禁止去重）: {rows:?}"
     );
 }
+
+/// C9：`all` 禁止串行等每个 SSH host；慢 host 不能把整表拖成超时之和。
+#[test]
+fn discover_sessions_all_must_fan_out_in_parallel() {
+    struct SlowListDriver {
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
+    impl RuntimeDriver for SlowListDriver {
+        fn id(&self) -> &'static str {
+            "slow"
+        }
+
+        fn name(&self) -> &'static str {
+            "slow"
+        }
+
+        fn support(&self) -> &'static [RuntimeCapability] {
+            &[RuntimeCapability::Discover]
+        }
+
+        fn accepted_transports(&self) -> &'static [&'static str] {
+            &["local", "ssh"]
+        }
+
+        fn list(
+            &self,
+            connect: &Connect,
+            _namespace: Option<&str>,
+        ) -> anyhow::Result<Vec<SessionCandidate>> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(vec![SessionCandidate {
+                runtime_id: "slow".into(),
+                transport_id: connect.transport_id().into(),
+                target: connect.target().into(),
+                namespace: None,
+                name: "candidate".into(),
+                extra: String::new(),
+            }])
+        }
+
+        fn open(
+            &self,
+            _connect: Arc<Connect>,
+            _spec: &WorkspaceSpec,
+        ) -> anyhow::Result<Box<dyn Runtime>> {
+            Ok(Box::new(MockRuntime::with_single_pane()))
+        }
+    }
+
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "local")],
+    }));
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: (0..4)
+            .map(|n| TargetInfo::new(format!("host-{n}"), format!("host-{n}")))
+            .collect(),
+    }));
+    cat.register_runtime(Box::new(SlowListDriver {
+        active,
+        max_active: max_active.clone(),
+    }));
+
+    let rows = cat.discover_sessions("all", "").expect("all 不应 Err");
+    assert_eq!(rows.len(), 5, "local + 4 SSH host 都必须返回: {rows:?}");
+    assert!(
+        max_active.load(Ordering::SeqCst) >= 2,
+        "必须观察到多个 connect 同时 list；源码里出现 thread/scope 不算行为证据"
+    );
+}

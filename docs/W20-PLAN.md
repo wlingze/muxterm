@@ -25,7 +25,7 @@
 点「已有的连接」
   ← 返回              muxterm-existing-back
   每一行 = 一条可直接 attach 的 tmux session 或 Herdr workspace
-  来源：discover_sessions("all")
+  来源：后台先 local 再并行 SSH（语义同 discover_sessions("all")，但禁止等整表）；生产 16ms poll 收 channel 后逐批刷新
   展示：title + subtitle `tmux @ local` / `tmux @ self` / `herdr @ local` …
   widget_name = muxterm-existing-row-<runtime>-<connect>-<id>
   探测中：muxterm-existing-ssh-loading；空：muxterm-existing-empty
@@ -202,7 +202,7 @@ ssh -nNT -o BatchMode=yes -o ExitOnForwardFailure=yes \
 | W20e | `tests/existing_ssh_contract.rs` | LoopbackSshd + 远端 `-L muxterm-test-*` tmux session 出现在 discover；再加 IsolatedHerdr 出现 herdr 行 |
 | W20f | `tests/linux_panel_e2e.rs` | click 已有的连接后**没有** `muxterm-existing-local` / `muxterm-existing-ssh`；有 Back；Back 回到根且 New Project 还在 |
 | W20g | `tests/linux_target_config_e2e.rs` 或 panel crate | `muxterm-runtime-herdr` 存在；点它后保存出 `TargetRuntime::Herdr` |
-| W20h | `tests/linux_existing_e2e.rs` | 一个 AppWindow：IsolatedHerdr 播种 token → 扁平列表 `muxterm-existing-row-herdr-local-<ws>` → click → VTE/`search_all` 含 token |
+| W20h | `tests/linux_existing_e2e.rs` | 一个 AppWindow：IsolatedHerdr 播种 token → 只靠生产 GLib poll 出现扁平行 `muxterm-existing-row-herdr-local-<ws>` → click → VTE/`search_all` 含 token |
 
 W20f 继续遵守 `linux_panel_e2e`「整个 crate 一个 Window」；不要新开第二个 present。
 

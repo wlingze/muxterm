@@ -13,6 +13,7 @@ pub mod transport;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread;
 
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::spec::WorkspaceSpec;
@@ -137,22 +138,47 @@ impl Catalog {
     ///
     /// `transport_id == "all"` 时，对 local 单例 + 每个 SSH target 各扇出一次，
     /// 拼接成一张表（同一 session 经 local 和 ssh-self 出现两行，禁止去重）。
+    /// SSH host 最多 4 路并发，慢/死 host 不能把整表拖成串行超时之和。
     pub fn discover_sessions(
         &mut self,
         transport_id: &str,
         target: &str,
     ) -> anyhow::Result<Vec<SessionCandidate>> {
         if transport_id == "all" {
+            let names = self.all_connect_names();
+            let mut jobs: Vec<(String, Option<Arc<Connect>>)> = Vec::new();
+            for (tid, tgt) in names {
+                let connect = self.connect(&tid, &tgt).ok();
+                jobs.push((tid, connect));
+            }
+            let runtimes = &self.runtimes;
             let mut out = Vec::new();
-            for (tid, tgt) in self.all_connect_names() {
-                let mut rows = self.discover_sessions(&tid, &tgt)?;
-                // 本地 connect name 规范化为 "local"（即使 Catalog target id 是 ""）。
-                if tid == "local" {
-                    for row in &mut rows {
-                        row.target = "local".to_string();
+            for chunk in jobs.chunks(4) {
+                thread::scope(|scope| {
+                    let handles: Vec<_> = chunk
+                        .iter()
+                        .map(|(tid, connect)| {
+                            let transport_id = tid.as_str();
+                            let connect = connect.clone();
+                            scope.spawn(move || {
+                                let Some(connect) = connect else {
+                                    return Vec::new();
+                                };
+                                let mut rows =
+                                    list_sessions_on_connect(runtimes, transport_id, &connect);
+                                if transport_id == "local" {
+                                    for row in &mut rows {
+                                        row.target = "local".to_string();
+                                    }
+                                }
+                                rows
+                            })
+                        })
+                        .collect();
+                    for handle in handles {
+                        out.append(&mut handle.join().unwrap_or_default());
                     }
-                }
-                out.append(&mut rows);
+                });
             }
             return Ok(out);
         }
@@ -160,17 +186,11 @@ impl Catalog {
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
         };
-        let mut out = Vec::new();
-        for driver in &self.runtimes {
-            if !driver.accepted_transports().contains(&transport_id) {
-                continue;
-            }
-            match driver.list(&connect, None) {
-                Ok(mut rows) => out.append(&mut rows),
-                Err(_) => continue,
-            }
-        }
-        Ok(out)
+        Ok(list_sessions_on_connect(
+            &self.runtimes,
+            transport_id,
+            &connect,
+        ))
     }
 
     /// C9：connect name 表 = local 单例 + 每个 SSH Host alias。
@@ -276,6 +296,26 @@ impl Catalog {
     pub fn pool_mut(&mut self) -> &mut WorkspacePool {
         &mut self.pool
     }
+}
+
+/// 对一条 Connect 扇出所有接受该 transport 的 Driver。
+/// tmux 与 herdr 并行，避免死 SSH host 把 2s+2s 串成 4s。
+fn list_sessions_on_connect(
+    runtimes: &[Box<dyn RuntimeDriver>],
+    transport_id: &str,
+    connect: &Connect,
+) -> Vec<SessionCandidate> {
+    thread::scope(|scope| {
+        let handles: Vec<_> = runtimes
+            .iter()
+            .filter(|driver| driver.accepted_transports().contains(&transport_id))
+            .map(|driver| scope.spawn(|| driver.list(connect, None).unwrap_or_default()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    })
 }
 
 #[cfg(test)]

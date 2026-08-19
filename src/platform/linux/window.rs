@@ -137,7 +137,7 @@ struct UiState {
     pending_existing_ssh:
         std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
     /// C7：本地已有连接探测结果队列（open_panel 不阻塞 GTK）。
-    pending_local_probe: std::collections::VecDeque<std::sync::mpsc::Receiver<Vec<ExistingEntry>>>,
+    pending_local_probe: std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingProbeMsg>>,
     /// W21 测试钩子：最近一次经 PaneView input_cb 的原始输入。
     last_raw_input: Vec<u8>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
@@ -220,6 +220,7 @@ impl UiState {
 impl AppWindow {
     /// 有序关闭：停轮询 → 摘掉子树 → destroy 窗口，避免与 PaneView 持有的 VTE 交叉销毁。
     pub fn shutdown(self) {
+        crate::platform::linux::quickconnect_panel::clear_panel_hooks();
         {
             let mut s = self._state.borrow_mut();
             if let Some(id) = s.poll_source.take() {
@@ -704,30 +705,31 @@ impl AppWindow {
             let st_weak = Rc::downgrade(&state);
             let win_weak = window.downgrade();
             let id = glib::timeout_add_local(Duration::from_millis(16), move || {
-// W19e：glib trampoline 不能 unwind；panic 先在这里接住，
-// 报告 + 弹窗后继续轮询（Break 会让轮询停掉 = 假死）。
-let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
-    if win_weak.upgrade().is_none() {
-        return glib::ControlFlow::Break;
-    }
-    let Some(st) = st_weak.upgrade() else {
-        return glib::ControlFlow::Break;
-    };
-    let pending_close = {
-        drain_pending_connects(&st);
-        drain_ssh_probes(&st);
-        drain_pending_reconnects(&st);
-        maybe_schedule_reconnect(&st);
-        let mut s = st.borrow_mut();
-        // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
-        // 喂好，这里只把注意力信号应用到引擎，不重建前台。
-        for (wid, events) in s.pool.poll_background() {
-            let ws = workspace_replica_id(&wid);
-            for ev in &events {
-                if let StateChange::PaneOutput { pane, .. }
-                | StateChange::PaneSnapshot { pane, .. } = ev
-                {
-                    apply_attention_from_workspace(&mut s, &wid, &ws, pane.0);
+                // W19e：glib trampoline 不能 unwind；panic 先在这里接住，
+                // 报告 + 弹窗后继续轮询（Break 会让轮询停掉 = 假死）。
+                let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
+                    if win_weak.upgrade().is_none() {
+                        return glib::ControlFlow::Break;
+                    }
+                    let Some(st) = st_weak.upgrade() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    let pending_close = {
+                        drain_pending_connects(&st);
+                        drain_ssh_probes(&st);
+                        drain_local_existing(&st);
+                        drain_pending_reconnects(&st);
+                        maybe_schedule_reconnect(&st);
+                        let mut s = st.borrow_mut();
+                        // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
+                        // 喂好，这里只把注意力信号应用到引擎，不重建前台。
+                        for (wid, events) in s.pool.poll_background() {
+                            let ws = workspace_replica_id(&wid);
+                            for ev in &events {
+                                if let StateChange::PaneOutput { pane, .. }
+                                | StateChange::PaneSnapshot { pane, .. } = ev
+                                {
+                                    apply_attention_from_workspace(&mut s, &wid, &ws, pane.0);
                             }
                         }
                         s.pool.evict_expired();
@@ -1050,6 +1052,12 @@ let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
     /// 测试用：当前激活 tab id。
     pub fn test_active_tab_id(&self) -> u32 {
         self._state.borrow().active_tab
+    }
+
+    /// 测试用：已有的连接探测线程是否已收完（local-first 流式结束后 idle）。
+    pub fn test_existing_probe_idle(&self) -> bool {
+        let s = self._state.borrow();
+        s.pending_local_probe.is_empty() && !s.existing.borrow().probe_inflight
     }
 
     /// 测试用：以指定 tab 打开面板（0=workspaces / 1=attention / 2=search）。
@@ -2502,71 +2510,152 @@ fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> 
     }
 }
 
-/// C7：本地已有的连接探测（Catalog::discover_sessions("local","")）后台跑。
+/// 已有的连接探测增量：先推 local 行，SSH 完成后再推；Done 才清 inflight。
+enum ExistingProbeMsg {
+    Rows(Vec<ExistingEntry>),
+    Done,
+}
+
+fn merge_existing_entries(ex: &mut ExistingPanelState, entries: Vec<ExistingEntry>) {
+    for e in entries {
+        match &e.transport {
+            TargetTransport::Ssh { name } => {
+                if !ex.hosts.contains(name) {
+                    ex.hosts.push(name.clone());
+                }
+                let bucket = ex.remote.entry(name.clone()).or_default();
+                if !bucket.contains(&e) {
+                    bucket.push(e);
+                }
+            }
+            TargetTransport::Local => {
+                if !ex.locals.contains(&e) {
+                    ex.locals.push(e);
+                }
+            }
+        }
+    }
+}
+
+/// C7/C9：已有的连接探测。先 `discover_sessions("local")` 立刻推表，
+/// 再按 SSH host 最多 4 路并发。禁止等 `all` 串完才刷新（archmini 上 cd/mac 会冻 Loading）。
 fn spawn_local_existing_probe(s: &mut UiState) {
-    // C9：一张扁平 runtime list = discover_sessions("all")（local + 每个 SSH）。
     s.existing.borrow_mut().probe_inflight = true;
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<ExistingEntry>>();
+    let (tx, rx) = std::sync::mpsc::channel::<ExistingProbeMsg>();
     s.pending_local_probe.push_back(rx);
     std::thread::spawn(move || {
         let mut catalog = crate::core::catalog::Catalog::with_builtins();
-        let entries = catalog
-            .discover_sessions("all", "")
+        tracing::debug!(target = "muxterm::linux", "existing probe: local start");
+        let local: Vec<ExistingEntry> = catalog
+            .discover_sessions("local", "")
             .unwrap_or_default()
             .iter()
             .map(candidate_to_existing)
             .collect();
-        let _ = tx.send(entries);
+        tracing::debug!(
+            target = "muxterm::linux",
+            n = local.len(),
+            "existing probe: local done"
+        );
+        let _ = tx.send(ExistingProbeMsg::Rows(local));
+
+        let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|h| h.alias)
+            .collect();
+        tracing::debug!(
+            target = "muxterm::linux",
+            hosts = ?aliases,
+            "existing probe: ssh hosts"
+        );
+        for chunk in aliases.chunks(4) {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|alias| {
+                        let alias = alias.clone();
+                        scope.spawn(move || {
+                            tracing::debug!(
+                                target = "muxterm::linux",
+                                alias = %alias,
+                                "existing probe: ssh start"
+                            );
+                            let mut catalog = crate::core::catalog::Catalog::with_builtins();
+                            let entries: Vec<ExistingEntry> = catalog
+                                .discover_sessions("ssh", &alias)
+                                .unwrap_or_default()
+                                .iter()
+                                .map(candidate_to_existing)
+                                .collect();
+                            tracing::debug!(
+                                target = "muxterm::linux",
+                                alias = %alias,
+                                n = entries.len(),
+                                "existing probe: ssh done"
+                            );
+                            entries
+                        })
+                    })
+                    .collect();
+                for handle in handles {
+                    if let Ok(entries) = handle.join() {
+                        if !entries.is_empty() {
+                            let _ = tx.send(ExistingProbeMsg::Rows(entries));
+                        }
+                    }
+                }
+            });
+        }
+        let _ = tx.send(ExistingProbeMsg::Done);
     });
 }
 
-/// 收编本地已有连接探测结果（16ms poll 与 test_poll_once 共用）。
+/// 收编已有连接探测结果（16ms poll 与 test_poll_once 共用）。
 fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
-    let mut done = false;
-    while !done {
-        let result = {
+    let mut wait = false;
+    while !wait {
+        let msg = {
             let mut s = state.borrow_mut();
             let Some(rx) = s.pending_local_probe.front() else {
                 break;
             };
             match rx.try_recv() {
-                Ok(r) => {
+                Ok(ExistingProbeMsg::Rows(rows)) => Some(Ok(rows)),
+                Ok(ExistingProbeMsg::Done) => {
                     s.pending_local_probe.pop_front();
-                    Some(r)
+                    Some(Err(()))
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    done = true;
+                    wait = true;
                     None
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     s.pending_local_probe.pop_front();
-                    None
+                    Some(Err(()))
                 }
             }
         };
-        if let Some(entries) = result {
-            let s = state.borrow();
-            let mut ex = s.existing.borrow_mut();
-            ex.locals = entries
-                .iter()
-                .filter(|e| !matches!(&e.transport, TargetTransport::Ssh { .. }))
-                .cloned()
-                .collect();
-            let mut hosts = Vec::new();
-            let mut remote = std::collections::HashMap::new();
-            for e in entries {
-                if let TargetTransport::Ssh { name } = &e.transport {
-                    if !hosts.contains(name) {
-                        hosts.push(name.clone());
-                    }
-                    remote.entry(name.clone()).or_insert_with(Vec::new).push(e);
-                }
+        match msg {
+            Some(Ok(entries)) => {
+                let n = entries.len();
+                let s = state.borrow();
+                let mut ex = s.existing.borrow_mut();
+                merge_existing_entries(&mut ex, entries);
+                drop(ex);
+                tracing::debug!(
+                    target = "muxterm::linux",
+                    n,
+                    "existing probe: ui rows applied"
+                );
+                crate::platform::linux::quickconnect_panel::refresh_current();
             }
-            ex.hosts = hosts;
-            ex.remote = remote;
-            ex.probe_inflight = false;
-            drop(ex);
-            crate::platform::linux::quickconnect_panel::refresh_current();
+            Some(Err(())) => {
+                state.borrow().existing.borrow_mut().probe_inflight = false;
+                tracing::debug!(target = "muxterm::linux", "existing probe: ui done");
+                crate::platform::linux::quickconnect_panel::refresh_current();
+            }
+            None => {}
         }
     }
 }
@@ -4064,15 +4153,54 @@ mod tests {
         );
     }
 
-    /// C9：已有的连接探测必须走 discover_sessions("all")，才能一张表同时有 local 和 ssh-self。
+    /// C9：已有的连接必须先出 local 行，SSH host 再 4 路并发。
+    /// 禁止只调一次 `discover_sessions("all")` 再一次性 send（慢 host 会冻 Loading）。
     #[test]
-    fn existing_probe_uses_discover_sessions_all() {
+    fn spawn_local_existing_probe_must_stream_local_then_parallel_ssh() {
         let src = include_str!("window.rs");
-        let local = fn_src(src, "spawn_local_existing_probe");
-        let ssh = fn_src(src, "spawn_existing_ssh_probe");
+        let body = fn_src(src, "spawn_local_existing_probe");
+        let local_at = body
+            .find("discover_sessions(\"local\"")
+            .expect("必须先 discover_sessions(\"local\")");
+        let ssh_at = body
+            .find("discover_sessions(\"ssh\"")
+            .expect("SSH 侧必须 discover_sessions(\"ssh\", alias)");
         assert!(
-            local.contains("discover_sessions(\"all\"") || ssh.contains("discover_sessions(\"all\""),
-            "spawn_local_existing_probe 或 spawn_existing_ssh_probe 必须调用 discover_sessions(\"all\")"
+            local_at < ssh_at,
+            "local 必须排在 ssh 扇出之前。body={body}"
+        );
+        let send_at = body.find("tx.send").expect("必须 send 探测结果");
+        assert!(
+            send_at < ssh_at,
+            "必须先把 local 行 send 再扇出 SSH。body={body}"
+        );
+        let spawns = body.matches("thread::spawn").count() + body.matches("thread::scope").count();
+        assert!(
+            body.contains("chunks(") || spawns >= 2,
+            "SSH host 必须 4 路并发（chunks / scope）。body={body}"
+        );
+        assert!(
+            !body.contains("discover_sessions(\"all\""),
+            "面板探测禁止等 discover_sessions(\"all\") 整表；FFI/Catalog 的 all 仍并行扇出。body={body}"
+        );
+    }
+
+    /// C9 回归：后台只负责算结果，生产 16ms poll 必须把 channel 收进面板。
+    /// GTK e2e 还会只驱动 GLib 主循环，禁止靠 `test_poll_once` 掩盖漏接线。
+    #[test]
+    fn production_poll_must_drain_existing_probe_results() {
+        let src = include_str!("window.rs");
+        let start = src
+            .find("let id = glib::timeout_add_local")
+            .expect("应有生产 16ms poll");
+        let rest = &src[start..];
+        let end = rest
+            .find("state.borrow_mut().poll_source = Some(id)")
+            .expect("应保存生产 poll SourceId");
+        let body = &rest[..end];
+        assert!(
+            body.contains("drain_local_existing(&st)"),
+            "生产 16ms poll 必须收编已有连接探测结果，测试钩子收编不算。body={body}"
         );
     }
 

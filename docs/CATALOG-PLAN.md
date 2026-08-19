@@ -340,7 +340,7 @@ C7 的 `catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list` **保
 - `Catalog::discover_sessions`：`transport_id == "all"` 时，对 `local` 的单例 target + 每个 SSH target 各 `discover_sessions` 一次，拼接。单个 connect 失败跳过。**不是**注册名叫 `all` 的 Transport。
 - JSON：`target` = connect name（本地用 `"local"`，即使 Catalog target id 是 `""`）；`id` = `{transport}/{target}/{runtime}/{name}`。`muxterm_discover_sessions_json` 与 `muxterm_discover_workspaces_json` 同一形状。
 - `TmuxDriver::list` 本地分支读 `MUXTERM_TEST_LOCAL_TMUX_SOCKET`（对标 REMOTE env）。生产不设。
-- 已有的连接：`existing_items(Home)` = Back + 扁平 Existing 行（local 行 + 各 SSH 行）。禁止 Folder `existing-local`/`existing-ssh`，禁止 `PanelItem::Host`。探测用 `discover_sessions("all")` 后台线程；`probe_inflight` 空表 → Loading，完成空 → Empty。
+- 已有的连接：`existing_items(Home)` = Back + 扁平 Existing 行（local 行 + 各 SSH 行）。禁止 Folder `existing-local`/`existing-ssh`，禁止 `PanelItem::Host`。探测**先** `discover_sessions("local")` 推表，再按 SSH host `chunks(4)` 并发；`probe_inflight` 空表 → Loading，完成空 → Empty。生产 16ms poll 必须调用 `drain_local_existing` 收 channel 并触发 `refresh_current`；GTK e2e 只驱动 GLib 主循环，禁止用 `test_poll_once()` 冒充生产接线。`Catalog::discover_sessions("all")` 本身也最多 4 路并发（FFI 用）。
 - widget_name = `muxterm-existing-row-{runtime}-{connect}-{id}`。connect = `local` 或 SSH alias。
 - 命令面板：`connect_pick_items` 第一项 `local`，后面 SSH alias。点 `local` → `discover_sessions("local","")`；点 alias → `discover_sessions("ssh", alias)`。第二层 detail 含 `runtime @ connect`。`CoreBridge::discover_workspaces` 必须能解 C5+target JSON（旧 `windows` 字段 `#[serde(default)]`）。
 - `open_panel` / GTK 线程仍禁止同步 `ssh` / 扫 herdr socket。

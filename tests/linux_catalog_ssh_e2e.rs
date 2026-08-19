@@ -2,6 +2,7 @@
 //!
 //! 本 crate 只构造一个 AppWindow。走面板 click，不直接 test_open_spec 冒充。
 //! Host alias 固定 `self`（连 127.0.0.1）。不要求 archmini/cd。
+//! 另加 Host `slow` → 192.0.2.1，断言 local 行 1s 内出现。
 //! 隔离 `-L muxterm-test-*`；无 sshd eprintln skip，禁止 #[ignore]。
 
 #![cfg(feature = "gtk")]
@@ -19,6 +20,7 @@ use muxterm::core::config::Config;
 use muxterm::platform::linux::window::AppWindow;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCAL_FIRST_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct TmuxGuard {
     socket: String,
@@ -48,7 +50,30 @@ fn activate_named(app: &AppWindow, name: &str) {
     row.activate();
 }
 
+fn append_blackhole_ssh_host(config_path: &std::path::Path) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(config_path)
+        .expect("append Host slow");
+    writeln!(
+        file,
+        "\nHost slow\n\
+         HostName 192.0.2.1\n\
+         User nobody\n\
+         BatchMode yes\n\
+         ConnectTimeout 2\n\
+         StrictHostKeyChecking no\n\
+         UserKnownHostsFile /dev/null\n"
+    )
+    .expect("write Host slow");
+}
+
 /// 已有的连接（扁平）→ local + ssh-self 各一行同一隔离 session。
+/// Host `slow`(192.0.2.1) 不能把 local 行拖过 1s。
+///
+/// 这里只驱动 GLib 主循环，禁止调用 `test_poll_once()` 替生产 16ms poll
+/// 收 channel；否则生产漏接探测结果时测试仍会假绿。
 #[test]
 fn linux_catalog_panel_lists_local_and_ssh_self_duplicates() {
     if skip_no_display() {
@@ -67,6 +92,7 @@ fn linux_catalog_panel_lists_local_and_ssh_self_duplicates() {
         let sshd =
             LoopbackSshd::start_with_alias("gtk-cat-self", "self").expect("启动 Host self sshd");
         sshd.apply_ssh_config_env();
+        append_blackhole_ssh_host(&sshd.config_path);
         let socket = unique_socket("gtk-cat-self");
         create_session(&socket, "mux-dup", 80, 24);
         let _tmux = TmuxGuard {
@@ -88,23 +114,33 @@ fn linux_catalog_panel_lists_local_and_ssh_self_duplicates() {
 
         app.test_open_panel(0);
         pump_main_loop(80);
-        app.test_poll_once();
 
         find_by_name(&app.window, "muxterm-existing-connections").expect("根列表应有已有的连接");
         activate_named(&app, "muxterm-existing-connections");
         pump_main_loop(60);
 
-        let deadline = Instant::now() + PROBE_TIMEOUT;
+        let local_deadline = Instant::now() + LOCAL_FIRST_TIMEOUT;
         let mut saw_local = false;
+        while Instant::now() < local_deadline {
+            pump_main_loop(20);
+            if find_by_name(&app.window, "muxterm-existing-row-tmux-local-mux-dup").is_some() {
+                saw_local = true;
+                break;
+            }
+        }
+        assert!(
+            saw_local,
+            "有 Host slow(192.0.2.1) 时 local mux-dup 必须在 1s 内出现，不能一直 Loading。loading={:?}",
+            find_by_name(&app.window, "muxterm-existing-ssh-loading").is_some()
+        );
+
+        let deadline = Instant::now() + PROBE_TIMEOUT;
         let mut saw_self = false;
         while Instant::now() < deadline {
-            app.test_poll_once();
             pump_main_loop(40);
-            saw_local |=
-                find_by_name(&app.window, "muxterm-existing-row-tmux-local-mux-dup").is_some();
             saw_self |=
                 find_by_name(&app.window, "muxterm-existing-row-tmux-self-mux-dup").is_some();
-            if saw_local && saw_self {
+            if saw_self {
                 break;
             }
         }
@@ -125,6 +161,18 @@ fn linux_catalog_panel_lists_local_and_ssh_self_duplicates() {
             saw_local && saw_self,
             "local + ssh-self 必须双份 mux-dup。local={saw_local} self={saw_self} loading={:?}",
             find_by_name(&app.window, "muxterm-existing-ssh-loading").is_some()
+        );
+
+        let idle_deadline = Instant::now() + PROBE_TIMEOUT;
+        while Instant::now() < idle_deadline {
+            pump_main_loop(40);
+            if app.test_existing_probe_idle() {
+                break;
+            }
+        }
+        assert!(
+            app.test_existing_probe_idle(),
+            "生产 poll 必须收完已有连接探测并清除 Loading"
         );
 
         std::env::remove_var("MUXTERM_TEST_LOCAL_TMUX_SOCKET");

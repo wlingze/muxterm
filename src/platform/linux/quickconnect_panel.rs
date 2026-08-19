@@ -82,6 +82,13 @@ pub fn close_current() {
             dismiss();
         }
     });
+    clear_panel_hooks();
+}
+
+/// 窗口销毁前拆掉 thread_local 回调，避免探测线程 refresh 已死 GTK 控件。
+pub fn clear_panel_hooks() {
+    PANEL_REFRESH.with(|slot| *slot.borrow_mut() = None);
+    PANEL_DISMISS.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// 测试用：向当前面板的 Attention 小 VTE 注入按键（走 `connect_input` → `on_send_input`）。

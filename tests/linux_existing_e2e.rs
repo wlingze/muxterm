@@ -2,6 +2,7 @@
 //!
 //! 本 crate 只构造一个 AppWindow。走面板 click，不直接 test_open_spec 冒充。
 //! HERDR_CONFIG_DIR 指向临时目录，禁止连用户默认 herdr.sock。
+//! runtime list 的等待只驱动 GLib 主循环，禁止 `test_poll_once()` 替生产 poll 收结果。
 
 #![cfg(feature = "gtk")]
 
@@ -61,7 +62,6 @@ fn linux_existing_panel_click_attaches_herdr() {
 
         app.test_open_panel(0);
         pump_main_loop(80);
-        app.test_poll_once();
 
         // 根 → 已有的连接（扁平列表，不要再点本地目录）。
         let list = find_by_name(&app.window, "muxterm-panel-list")
@@ -77,7 +77,6 @@ fn linux_existing_panel_click_attaches_herdr() {
         let deadline = Instant::now() + HERDR_TIMEOUT;
         let mut saw = false;
         while Instant::now() < deadline {
-            app.test_poll_once();
             pump_main_loop(40);
             if find_by_name(&app.window, &row_name).is_some() {
                 saw = true;

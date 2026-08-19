@@ -374,7 +374,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 | IsolatedHerdr discover | 含测试 workspace；**不含**用户默认 `w2` |
 | `existing_ssh_contract` | LoopbackSshd：远端 tmux **和** Herdr 都能列出 |
 | `linux_panel_e2e` | click 已有的连接 → **没有** local/ssh 目录；Back 回根 |
-| `linux_existing_e2e` | 面板 click `muxterm-existing-row-herdr-local-<ws>` → VTE 含 token |
+| `linux_existing_e2e` | 只驱动 GLib 主循环出现 `muxterm-existing-row-herdr-local-<ws>`；面板 click 后 VTE 含 token |
 | `muxterm-runtime-herdr` | 新建项目有 Herdr 卡 |
 
 禁止：测试连 `/home/wlz/.config/herdr/herdr.sock`；`herdr server stop`；生产 Runtime 走 `Command::new("herdr")`；GTK 线程同步 ssh；没有 tmux/Herdr 的 SSH host 仍占满列表。
@@ -415,7 +415,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_e2e -- --test-threads=1
 | `ssh_hosts_empty_after_probe_must_not_stay_loading` | `ExistingPanelState.probe_inflight`：探测完空表是 Empty，不是永远 Loading |
 | `spawn_existing_ssh_probe_must_fan_out` | 最多 4 路并发，禁止串行 map |
 | `open_panel_must_not_discover_sessions_on_caller` | GTK/`open_panel` 禁止同步 `discover_sessions` |
-| `linux_catalog_ssh_e2e` | 扁平已有的连接：`muxterm-existing-row-tmux-local-mux-dup` **和** `muxterm-existing-row-tmux-self-mux-dup` |
+| `linux_catalog_ssh_e2e` | 不调用 `test_poll_once()`，只靠生产 timer 出现 `muxterm-existing-row-tmux-local-mux-dup` **和** `muxterm-existing-row-tmux-self-mux-dup` |
 | `adjust_font_must_not_persist_config_synchronously` | `fn adjust_font` 禁止同步 `persist_config` |
 | `linux_zoom_input_e2e` | attach 后 `test_increase_font` / Enter 立刻把控制权还给 GTK |
 
@@ -439,8 +439,11 @@ connect name = `local` + SSH Host alias。`discover_sessions("all","")` 扇出�
 | `existing_row_widget_includes_connect_name` | `muxterm-existing-row-tmux-local-mux-dup` / `…-tmux-self-mux-dup` |
 | `connect_pick_items_lists_local_then_ssh_aliases` | 命令面板机器表：`local` 然后 `self` |
 | `linux_panel_e2e` `existing_connections_navigation` | 无 `muxterm-existing-local` / `muxterm-existing-ssh` |
-| `linux_catalog_ssh_e2e` | 点已有的连接后两行都在；禁止再点 SSH 目录 |
-| `linux_existing_e2e` | `muxterm-existing-row-herdr-local-<ws>`，不要先点本地目录 |
+| `linux_catalog_ssh_e2e` | 点已有的连接后两行都在；只驱动 GLib 主循环；Host `slow`→192.0.2.1 时 local 行 1s 内出现；结束时 Loading 清除 |
+| `spawn_local_existing_probe_must_stream_local_then_parallel_ssh` | 先 send local，SSH `chunks(4)`；禁止等 `all` |
+| `production_poll_must_drain_existing_probe_results` | 生产 16ms poll 必须收 channel；只有测试钩子会收不算 |
+| `discover_sessions_all_must_fan_out_in_parallel` | 慢 Driver 的并发计数必须大于 1，不能只检查源码出现 `thread::scope` |
+| `linux_existing_e2e` | 只靠生产 timer 出现 `muxterm-existing-row-herdr-local-<ws>`，不要先点本地目录 |
 
 门禁：
 
