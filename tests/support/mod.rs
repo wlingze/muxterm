@@ -13,6 +13,7 @@ pub mod feature_e2e_contract;
 pub mod herdr_test_support;
 #[cfg(feature = "gtk")]
 pub mod linux_gtk;
+pub mod runtime_transport_matrix;
 pub mod ssh_tmux_contract;
 pub mod sshd_test_support;
 pub mod tmux_test_support;

@@ -287,6 +287,15 @@ path = "tests/four_mode_integration.rs"
 required-features = ["ffi"]
 
 [[test]]
+name = "runtime_transport_matrix_contract"
+path = "tests/runtime_transport_matrix_contract.rs"
+
+[[test]]
+name = "linux_runtime_transport_matrix_e2e"
+path = "tests/linux_runtime_transport_matrix_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
 name = "tui_wizard_ssh_ffi_regression"
 path = "tests/tui_wizard_ssh_ffi_regression.rs"
 required-features = ["ffi"]
