@@ -607,9 +607,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = true
     }
 
-    @objc private func jumpToLastSeen() {
+    @objc func jumpToLastSeen() {
         guard let target = lastSeenJump else { return }
         applyPaneViewport(paneId: target.paneId, offset: target.offset)
+        // 点击后把当前 core 尾部记为新的已读基线。这样按钮不会在下一轮
+        // 60Hz poll 里立刻复现；之后再有新行时仍会按这个基线重新出现。
+        let latest = bridge.paneLatestLineSeq(paneId: target.paneId)
+        if latest >= 0 {
+            lastSeenLineSeq[target.paneId] = UInt64(latest)
+        }
+        lastSeenJump = nil
         content.setLastSeenVisible(false)
     }
 
@@ -1531,6 +1538,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 uiStateChanged = true
                 needsLayoutReload = true
                 if ev.type == STATE_ACTIVE_TAB_CHANGED {
+                    // 切 tab 也意味着旧 pane 暂时离开可见 Surface。先在
+                    // 过渡快照上记录旧 active pane 的稳定行 seq；否则只有
+                    // Cmd+[ / Cmd+] 切 pane 会产生 last-seen，切 tab 回来
+                    // 永远没有“上次看到这里”入口。
+                    if let oldPane = lastSnapshot.panes.first(where: \.isActive)?.id {
+                        recordLastSeen(for: oldPane)
+                    }
                     tabSwitchGate.onTabChanged(to: ev.tabId)
                     // 前端驱动高亮：立即把 statusbar 高亮移到目标 tab，
                     // 不等子进程快照查询（用户要求：tmux 不同步就前端控制）。

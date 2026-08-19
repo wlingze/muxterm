@@ -51,6 +51,11 @@ final class MuxTerminalView: TerminalView {
     private var minimumModelCols = 2
     private var minimumModelRows = 1
 
+    /// 视图尚未拿到 core pane 配置时的兜底历史容量。tmux/SSH surface
+    /// 创建后由 `TerminalManager` 按 core 的实际历史上限动态扩容；local
+    /// PTY 没有这个查询，继续保留原来的 10k 行体验。
+    private static let fallbackHistoryCapacity = 10_000
+
     init(
         paneId: UInt32,
         fontFamily: String = MuxtermTerminalFont.defaultFamily,
@@ -67,7 +72,7 @@ final class MuxTerminalView: TerminalView {
         // 触控板交给 SwiftTerm：htop/Cursor 在 alt-screen 里自己消化滚动；
         // 普通 shell 滚 attach 之后的本地 scrollback。禁止 RIS 喂历史 dump。
         subviews.first(where: { $0 is NSScroller })?.isHidden = true
-        getTerminal().changeHistorySize(10_000)
+        getTerminal().changeHistorySize(Self.fallbackHistoryCapacity)
         terminalDelegate = self
         wantsLayer = true
         font = Self.makeFont(family: fontFamily, size: self.fontSize)
@@ -159,6 +164,20 @@ final class MuxTerminalView: TerminalView {
         } else if lines < 0 {
             scrollDown(lines: -lines)
         }
+    }
+
+    /// 当前 normal VT buffer 的 scrollback 容量（alternate screen 不使用）。
+    var historyCapacity: Int {
+        getTerminal().options.scrollback
+    }
+
+    /// 增大原生 scrollback 容量而不 reset / 重播 Surface。SwiftTerm 的
+    /// `changeHistorySize` 只扩容时会保留现有行，适合 core 历史继续增长；
+    /// 缩容永远不在 live 路径做，避免用户正在上划时丢掉视口。
+    func ensureHistoryCapacity(atLeast minimum: Int) {
+        let desired = max(1, minimum)
+        guard desired > historyCapacity else { return }
+        getTerminal().changeHistorySize(desired)
     }
 
     func setMinimumModelSize(cols: Int, rows: Int) {
