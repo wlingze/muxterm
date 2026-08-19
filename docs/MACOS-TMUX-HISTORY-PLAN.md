@@ -67,6 +67,18 @@ macOS 端的正确显示路径是“一个 SwiftTerm Surface”：attach 只 see
 
 验收：attach 前 40 行离屏 token 可以鼠标上划看到；停在历史期间追加 live 行后，历史画面不被覆盖；下划到底部能看到最新 token；配置 100,000 行时 native scrollback 仍能覆盖 core 返回的范围。
 
+实现约束：
+
+- `[scrollback].lines` 是 core 的单一配置源。macOS 仍使用的 deprecated FFI
+  `muxterm_new` / `muxterm_new_connect` / `muxterm_workspace_open` 会在 core
+  读取该配置，并同时设置 tmux `capture-pane -S -N` 与 Workspace/PaneBuf 的
+  scrollback 上限；不会出现 capture 有历史而索引面只保留固定 10,000 行的分叉。
+- 新的 `WorkspaceSpec::with_scrollback_lines` 和 Linux 异步 SSH 收编路径也使用
+  同一上限。PaneBuf 的 viewport setter 在 core 内钳制到真实可用范围，前端传入
+  过大的 offset 只能落在顶部，不能伪造 stale 位置。
+- native capacity 只增不缩；core 配置超过 10,000 行时，容量回归会用超过默认上限
+  的历史行验证，不以“固定 10,000 足够”作为通过条件。
+
 ### 阶段 C：last-seen 与搜索定位
 
 1. pane 离开可见 Surface（切 pane 或切 tab）时记录 `paneLatestLineSeq`。
@@ -102,6 +114,7 @@ macOS 端的正确显示路径是“一个 SwiftTerm Surface”：attach 只 see
 | `LastSeenE2ETests` | 切 tab 离开、旧 pane 继续输出、切回 last-seen、点击定位 |
 | `AgentRenderE2ETests` | seed once、历史位置继续 feed、真实 AppKit scroll wheel、主题/光标 |
 | `ChromeTests` | KeyBindings、scroll policy、feed policy、查询应答门禁 |
+| core workspace capacity tests | 配置 scrollback 超过 10,000 行仍保留完整历史；viewport offset 有界钳制 |
 | SSH history parity | loopback SSH 与本地 tmux 的历史/viewport 合同 |
 
 ## 5. 验收门禁
@@ -145,6 +158,7 @@ swift test --disable-swift-testing
 - [x] macOS attach seed 一次，live `%output` 持续 feed。
 - [x] 鼠标/触控板上划能显示 attach 前历史；下划/回底能显示最新输出。
 - [x] 历史位置不会冻结 live 输出，也不会用 dump/reset 覆盖用户视口。
+- [x] `[scrollback].lines` 已贯通 tmux capture、Workspace/PaneBuf、legacy FFI 和 Linux SSH 收编路径；native capacity 按 core 范围只增不缩。
 - [x] core 与 macOS 支持稳定行 seq、last-seen、命令刻度和 stale 防护。
 - [x] 本地 tmux、loopback SSH、真实 AppKit 滚轮和真实快捷键回归已覆盖。
 - [ ] 若要求 attach 前完整命令刻度，完成 §6.1 的 shell marker side-channel（独立后续阶段）。
