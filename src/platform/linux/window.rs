@@ -695,7 +695,12 @@ impl AppWindow {
         // 首次刷新 + 窗口级 16ms 轮询（切连接后仍打到当前 active slot）
         {
             let mut s = state.borrow_mut();
-            let _ = s.active_workspace_mut().refresh();
+            let events = s.active_workspace_mut().refresh();
+            let wid = s.active_ws_id().clone();
+            let ws = workspace_replica_id(&wid);
+            for event in &events {
+                apply_attention_event_from_workspace(&mut s, &wid, &ws, event);
+            }
             refresh_ui(&mut s);
             report_all_pane_colours(&mut s);
             maybe_refresh_status(&mut s, true);
@@ -726,10 +731,7 @@ impl AppWindow {
                         for (wid, events) in s.pool.poll_background() {
                             let ws = workspace_replica_id(&wid);
                             for ev in &events {
-                                if let StateChange::PaneOutput { pane, .. }
-                                | StateChange::PaneSnapshot { pane, .. } = ev
-                                {
-                                    apply_attention_from_workspace(&mut s, &wid, &ws, pane.0);
+                                apply_attention_event_from_workspace(&mut s, &wid, &ws, ev);
                             }
                         }
                         s.pool.evict_expired();
@@ -1936,7 +1938,35 @@ fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
     s.snapshot_seeded_this_batch.clear();
 }
 
+/// 会让 Workspace 产生 attention 信号的通用 Runtime 事件。
+///
+/// 这里故意只识别产品 `StateChange`，不识别 Herdr event 名或 Runtime id。
+fn attention_event_pane(event: &StateChange) -> Option<u32> {
+    match event {
+        StateChange::PaneOutput { pane, .. } | StateChange::PaneAgentChanged { pane, .. } => {
+            Some(pane.0)
+        }
+        _ => None,
+    }
+}
+
+fn apply_attention_event_from_workspace(
+    s: &mut UiState,
+    wid: &WorkspaceId,
+    ws: &str,
+    event: &StateChange,
+) {
+    if let StateChange::PaneClosed { pane } = event {
+        s.attention.remove_pane(ws, pane.0);
+    } else if let Some(pane) = attention_event_pane(event) {
+        apply_attention_from_workspace(s, wid, ws, pane);
+    }
+}
+
 fn dispatch_event(s: &mut UiState, ev: &StateChange) {
+    let ws = active_workspace_id(s);
+    let wid = s.active_ws_id().clone();
+    apply_attention_event_from_workspace(s, &wid, &ws, ev);
     match ev {
         StateChange::PaneSnapshot { pane, data } => {
             let ws = active_workspace_id(s);
@@ -1961,9 +1991,6 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
             }
         }
         StateChange::PaneOutput { pane, data } => {
-            let ws = active_workspace_id(s);
-            let wid = s.active_ws_id().clone();
-            apply_attention_from_workspace(s, &wid, &ws, pane.0);
             if let Some(view) = s.active_layout().pane(pane.0).cloned() {
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
@@ -4165,6 +4192,30 @@ mod tests {
         assert!(should_poll_status(false, last, now, Duration::from_secs(1)));
         // 无订阅但未到间隔 → 不轮询
         assert!(!should_poll_status(false, now, now, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn attention_updates_are_runtime_neutral_state_changes() {
+        assert_eq!(
+            attention_event_pane(&StateChange::PaneOutput {
+                pane: PaneId(7),
+                data: vec![b'x'],
+            }),
+            Some(7)
+        );
+        assert_eq!(
+            attention_event_pane(&StateChange::PaneAgentChanged {
+                pane: PaneId(9),
+                agent: None,
+                initial: false,
+            }),
+            Some(9)
+        );
+        assert_eq!(
+            attention_event_pane(&StateChange::PoolChanged),
+            None,
+            "platform 只消费通用 StateChange，不按 Runtime 名称分支"
+        );
     }
 
     #[test]
