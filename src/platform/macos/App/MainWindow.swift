@@ -1,7 +1,6 @@
 import AppKit
 import CMuxterm
 import MuxtermChrome
-import UserNotifications
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
 final class MainWindowController: NSWindowController, NSWindowDelegate {
@@ -699,6 +698,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } else {
             unifiedPanel.present(initial: .attention)
         }
+    }
+
+    /// 点击系统通知时始终回到主窗口并显示 Attention，不复用 toggle 语义。
+    func revealAttentionFromSystemNotification() {
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        guard unifiedPanel.window?.isVisible != true || unifiedPanel.modelTab != .attention else {
+            unifiedPanel.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        unifiedPanel.present(initial: .attention)
     }
 
     /// 统一面板的数据范围覆盖当前 warm 连接；当前 Workspace 固定排在首位，
@@ -2112,30 +2122,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ? "done"
             : "blocked"
         recordedNotifications.append("\(title): \(kind)")
-        // swift test / XCTest 进程没有 app bundle，UNUserNotificationCenter.current()
-        // 会抛 NSException 崩溃；只记录，不弹系统通知。
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
-        {
-            return
-        }
-        let center = UNUserNotificationCenter.current()
-        center.getNotificationSettings { settings in
-            guard settings.authorizationStatus == UNAuthorizationStatus.authorized
-                || settings.authorizationStatus == UNAuthorizationStatus.provisional
-            else {
-                return
-            }
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            let request = UNNotificationRequest(
-                identifier: "muxterm.attention.\(UUID().uuidString)",
-                content: content,
-                trigger: nil
-            )
-            center.add(request)
-        }
+        NativeNotificationService.shared.post(title: title, body: body)
     }
 
     private func refreshUI() {
