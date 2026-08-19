@@ -1,4 +1,121 @@
 import AppKit
+import UserNotifications
+
+/// 系统通知授权状态的纯策略，避免把权限弹窗带进 XCTest / XCUITest。
+enum NativeNotificationAuthorizationPolicy {
+    static func shouldRequest(_ status: UNAuthorizationStatus) -> Bool {
+        status == .notDetermined
+    }
+
+    static func canDeliver(_ status: UNAuthorizationStatus) -> Bool {
+        switch status {
+        case .authorized, .provisional:
+            return true
+        case .notDetermined, .denied:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+}
+
+/// macOS 原生通知入口：启动时请求一次权限，前台也显示 banner，点击后回到 Attention。
+final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = NativeNotificationService()
+
+    private var onActivate: (() -> Void)?
+
+    static var isSuppressedProcess: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["MUXTERM_UITEST"] == "1"
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    func configure(onActivate: @escaping () -> Void) {
+        self.onActivate = onActivate
+        guard !Self.isSuppressedProcess else { return }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.getNotificationSettings { settings in
+            guard NativeNotificationAuthorizationPolicy.shouldRequest(
+                settings.authorizationStatus
+            ) else {
+                return
+            }
+            Self.requestAuthorization(on: center)
+        }
+    }
+
+    func post(title: String, body: String) {
+        guard !Self.isSuppressedProcess else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            if NativeNotificationAuthorizationPolicy.canDeliver(settings.authorizationStatus) {
+                Self.deliver(title: title, body: body, on: center)
+            } else if NativeNotificationAuthorizationPolicy.shouldRequest(
+                settings.authorizationStatus
+            ) {
+                Self.requestAuthorization(on: center) { granted in
+                    guard granted else { return }
+                    Self.deliver(title: title, body: body, on: center)
+                }
+            }
+        }
+    }
+
+    private static func requestAuthorization(
+        on center: UNUserNotificationCenter,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error {
+                NSLog("muxterm: notification authorization failed: %@", error.localizedDescription)
+            }
+            completion?(granted)
+        }
+    }
+
+    private static func deliver(
+        title: String,
+        body: String,
+        on center: UNUserNotificationCenter
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.threadIdentifier = "muxterm.attention"
+        let request = UNNotificationRequest(
+            identifier: "muxterm.attention.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        center.add(request) { error in
+            if let error {
+                NSLog("muxterm: notification delivery failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onActivate?()
+        }
+        completionHandler()
+    }
+}
 
 /// NSApplication 入口：解析启动参数、创建 CoreBridge、打开主窗口。
 public final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -34,6 +151,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let wc = MainWindowController(bridge: bridge, debug: options.debug)
             mainWindow = wc
+            NativeNotificationService.shared.configure { [weak wc] in
+                wc?.revealAttentionFromSystemNotification()
+            }
             buildMenu(windowController: wc)
             languageObserver = NotificationCenter.default.addObserver(
                 forName: .muxtermLanguageChanged,
