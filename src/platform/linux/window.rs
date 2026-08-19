@@ -811,6 +811,20 @@ impl AppWindow {
         s.attention.on_user_input(&ws, pane);
     }
 
+    /// 测试用：向当前 VTE 发出生产 `commit` 信号。与 `test_send_input` 不同，
+    /// 这里必须经过 PaneView.connect_input → 当前 Runtime 的完整输入路径。
+    pub fn test_emit_active_pane_commit(&self, text: &str) -> bool {
+        let view = {
+            let s = self._state.borrow();
+            s.active_layout().pane(s.active_pane).cloned()
+        };
+        let Some(view) = view else {
+            return false;
+        };
+        view.test_emit_commit(text);
+        true
+    }
+
     /// 测试用：走生产 `adjust_font(+1)`（Ctrl+= 热路径）。
     pub fn test_increase_font(&self) {
         let mut s = self._state.borrow_mut();

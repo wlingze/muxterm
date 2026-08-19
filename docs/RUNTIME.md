@@ -267,7 +267,11 @@ Live 路径不因 Runtime 而改：
 - PaneBuf / 搜索 / 提醒吃同一份 feed
 - Herdr `pane.read` 可以当 attach 快照（类似 `capture-pane`），不要当直播
 
-输入：tmux `send-keys` / Herdr `terminal.input` 或 `pane.send_input`。控制权：Herdr control 同一终端同时只有一个 controller；Muxterm 前台 pane 用 control，后台用 observe。
+输入：tmux `send-keys`；Herdr 的 `WriteRaw` / VTE commit 必须走原样写字节的
+`pane.send_text`，语义按键走 `pane.send_keys`。禁止逐键调用 `pane.send_input`：
+它会按终端状态自动添加 bracketed-paste 包装，使 Enter 只插入换行而不执行。
+控制权：Herdr control 同一终端同时只有一个 controller；Muxterm 前台 pane 用
+control，后台用 observe。
 
 ---
 

@@ -395,6 +395,15 @@ impl PaneView {
         }
     }
 
+    /// 测试用：发出 VTE 的 `commit` 信号，覆盖生产 `connect_commit` 过滤与
+    /// 输入回调，不直接调用 Runtime。用于验证逐字输入和 Enter 的真实路由。
+    pub fn test_emit_commit(&self, text: &str) {
+        self.inner
+            .renderer
+            .terminal()
+            .emit_by_name::<()>("commit", &[&text, &(text.len() as u32)]);
+    }
+
     pub fn copy_clipboard(&self) {
         self.inner
             .renderer

@@ -128,6 +128,23 @@ impl LayoutHost {
             Some(id) => LayoutNode::Leaf(PaneId(id)),
             None => layout.clone(),
         };
+        // GtkWidget 同一时刻只能有一个 parent。Runtime 给出重复 leaf 时保留
+        // 当前好布局并拒绝这帧，避免 gtk_paned_set_end_child critical。
+        let mut leaf_ids = Vec::new();
+        collect_pane_ids(&effective, &mut leaf_ids);
+        let unique_leaf_count = leaf_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        if unique_leaf_count != leaf_ids.len() {
+            tracing::error!(
+                target: "muxterm::layout",
+                leaves = ?leaf_ids,
+                "reject layout with duplicate pane leaves"
+            );
+            return false;
+        }
         let sig = layout_signature(&effective);
         let structure_sig = layout_structure_signature(&effective);
         if structure_sig == self.last_structure_sig {
@@ -397,6 +414,7 @@ fn layout_structure_signature(layout: &LayoutNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::Rgb;
 
     #[test]
     fn split_position_uses_ratio_not_one_pixel() {
@@ -405,5 +423,37 @@ mod tests {
         assert_eq!(split_position_px(100, 0), 1);
         assert_eq!(split_position_px(100, 1000), 99);
         assert_ne!(split_position_px(640, 500), 1);
+    }
+
+    /// Runtime 边界若意外给出重复 leaf，LayoutHost 必须保留旧树并拒绝，
+    /// 不能把同一个 VTE 同时塞进 GtkPaned 两边触发 GTK critical。
+    #[test]
+    fn duplicate_pane_layout_is_rejected_before_gtk_parenting() {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            eprintln!("skip: 无 DISPLAY");
+            return;
+        }
+        gtk4::test_synced(|| {
+            let theme = Theme {
+                name: "test".into(),
+                background: Rgb(0, 0, 0),
+                foreground: Rgb(255, 255, 255),
+                cursor: Rgb(255, 255, 255),
+                colors: [Rgb(0, 0, 0); 16],
+            };
+            let mut host = LayoutHost::new(theme, FontSettings::default(), true, 100);
+            let duplicate = LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 500,
+                first: Box::new(LayoutNode::Leaf(PaneId(7))),
+                second: Box::new(LayoutNode::Leaf(PaneId(7))),
+            };
+            let rebuilt = host.apply_layout(&duplicate, &|_, _| {});
+            assert!(!rebuilt, "重复 pane leaf 必须在 GTK parenting 前被拒绝");
+            assert!(
+                host.root_box.first_child().is_none(),
+                "无旧布局时拒绝重复 leaf 后 root 必须保持空"
+            );
+        });
     }
 }

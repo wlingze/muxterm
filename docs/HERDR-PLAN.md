@@ -152,7 +152,7 @@ socket    = Some(绝对路径 …/sessions/<NAME>/herdr.sock)
 
 `spec.build_runtime()` 构造绑定该 workspace 的 `HerdrRuntime`（内部持有共享 `HerdrSession` 也行，H3 再强制共享）。
 
-直播：`terminal.frame` 解 base64 ANSI → `StateChange::PaneOutput`。attach 快照可用 `pane.read`，**直播不要只靠 pane.read 轮询**。走 [observe 流](https://herdr.dev/docs/persistence-remote/)（`terminal session observe` 那种 NDJSON）。输入：socket `pane.send_input` / `pane.send_keys`。
+直播：`terminal.frame` 解 base64 ANSI → `StateChange::PaneOutput`。attach 快照可用 `pane.read`，**直播不要只靠 pane.read 轮询**。走 [observe 流](https://herdr.dev/docs/persistence-remote/)（`terminal session observe` 那种 NDJSON）。输入：VTE commit / `WriteRaw` 走 socket `pane.send_text`，语义按键走 `pane.send_keys`；禁止逐键调用会自动添加 bracketed-paste 包装的 `pane.send_input`。
 
 **core 测试** `tests/herdr_feature_contract.rs`：
 

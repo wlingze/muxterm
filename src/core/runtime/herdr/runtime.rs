@@ -2,7 +2,8 @@
 //!
 //! 一个 `HerdrSession`（Arc）可被多个 `HerdrRuntime` 共享；每个 Runtime
 //! 只填一个 Muxterm Workspace。直播字节走 observe 流（client socket），
-//! attach 快照用 `pane.read`，输入走 API socket `pane.send_input/keys`。
+//! attach 快照用 `pane.read`；原始键盘字节走 `pane.send_text`，语义按键走
+//! `pane.send_keys`。逐键输入禁止走会自动包 bracketed-paste 的 `pane.send_input`。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Arc};
@@ -469,11 +470,27 @@ impl HerdrRuntime {
     }
 }
 
-/// `w1:t1` / `w1:p1` 的数字后缀 → 产品 id（后缀是 `t1`/`p1`，要去掉字母）。
+/// Herdr public id 的 bijective base-32 字母表（协议 19）。
+const HERDR_PUBLIC_ID_ALPHABET: &[u8; 32] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
+
+/// `w1:t1` / `w1:pR` 的 public 后缀 → 产品 id。
+///
+/// 后缀不是十进制：pA=10、pR=24、p0=32、p11=33。解析失败才返回
+/// 保留值 0；合法字母 ID 绝不能彼此碰撞成 PaneId(0)。
 fn numeric_suffix(id: &str) -> u32 {
     id.rsplit(':')
         .next()
-        .and_then(|s| s.trim_start_matches(['t', 'p']).parse().ok())
+        .and_then(|value| value.strip_prefix(['t', 'p']))
+        .and_then(|encoded| {
+            encoded.bytes().try_fold(0u32, |decoded, byte| {
+                let digit = HERDR_PUBLIC_ID_ALPHABET
+                    .iter()
+                    .position(|candidate| *candidate == byte)?;
+                decoded
+                    .checked_mul(HERDR_PUBLIC_ID_ALPHABET.len() as u32)?
+                    .checked_add(u32::try_from(digit).ok()? + 1)
+            })
+        })
         .unwrap_or(0)
 }
 
@@ -585,8 +602,8 @@ impl Runtime for HerdrRuntime {
                 };
                 let text = String::from_utf8_lossy(data);
                 self.session
-                    .pane_send_input(herdr_pane, &text)
-                    .map_err(|e| anyhow!("pane.send_input 失败: {e}"))?;
+                    .pane_send_text(herdr_pane, &text)
+                    .map_err(|e| anyhow!("pane.send_text 失败: {e}"))?;
                 Ok(TaskOutcome::Done)
             }
             Task::SendKeys { target, keys } => {
@@ -876,5 +893,24 @@ impl HerdrRuntime {
         }
         self.events
             .push_back(StateChange::ActivePaneChanged { tab, pane: pid });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::numeric_suffix;
+
+    /// Herdr public ids 使用 bijective base-32，不是十进制。用户真实 session
+    /// 已出现 pP/pQ/pR；它们绝不能全部退化成 PaneId(0)。
+    #[test]
+    fn herdr_public_id_suffix_decodes_alphanumeric_ids() {
+        assert_eq!(numeric_suffix("w2:p1"), 1);
+        assert_eq!(numeric_suffix("w2:p9"), 9);
+        assert_eq!(numeric_suffix("w2:pA"), 10);
+        assert_eq!(numeric_suffix("w2:pP"), 22);
+        assert_eq!(numeric_suffix("w2:pQ"), 23);
+        assert_eq!(numeric_suffix("w2:pR"), 24);
+        assert_eq!(numeric_suffix("w2:p0"), 32);
+        assert_eq!(numeric_suffix("w2:p11"), 33);
     }
 }

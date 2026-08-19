@@ -1,7 +1,7 @@
 //! HerdrSession：一条 Herdr named session 的 socket 连接身份。
 //!
 //! - API socket（`herdr.sock`）：JSON `{"id","method","params"}` 请求/响应
-//!   （ping / session.snapshot / pane.read / pane.send_input / worktree.*）。
+//!   （ping / session.snapshot / pane.read / pane.send_text / worktree.*）。
 //! - client socket（`herdr-client.sock`）：observe 流（H2 起用）。
 //!
 //! 一个 `HerdrSession` 可被多个 `HerdrRuntime` 共享（`Arc`），
@@ -156,10 +156,13 @@ impl HerdrSession {
         Ok(text.as_bytes().to_vec())
     }
 
-    /// `pane.send_input`：写原始文本（粘贴/WriteRaw）。
-    pub fn pane_send_input(&self, pane_id: &str, text: &str) -> Result<()> {
+    /// `pane.send_text`：原样写终端字节对应的文本（键盘 commit / WriteRaw）。
+    ///
+    /// 不能用 `pane.send_input` 代替：后者会在终端启用 bracketed-paste 时
+    /// 自动包 `ESC[200~...ESC[201~`，逐键调用会让 Enter 变成粘贴换行而不执行。
+    pub fn pane_send_text(&self, pane_id: &str, text: &str) -> Result<()> {
         self.call(
-            "pane.send_input",
+            "pane.send_text",
             serde_json::json!({ "pane_id": pane_id, "text": text }),
         )?;
         Ok(())

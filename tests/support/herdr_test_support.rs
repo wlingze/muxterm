@@ -158,6 +158,76 @@ impl IsolatedHerdr {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    /// 在指定 pane 上真实执行 `pane split`，返回新 pane 的 public id。
+    pub fn split_pane(&self, pane_id: &str, direction: &str) -> String {
+        let out = self
+            .cli()
+            .args([
+                "pane",
+                "split",
+                pane_id,
+                "--direction",
+                direction,
+                "--no-focus",
+            ])
+            .output()
+            .expect("pane split 失败");
+        assert!(
+            out.status.success(),
+            "pane split 失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("pane split 输出不是 JSON");
+        v["result"]["pane"]["pane_id"]
+            .as_str()
+            .expect("pane split 缺 result.pane.pane_id")
+            .to_string()
+    }
+
+    /// 关闭隔离 session 里的指定 pane（只供 public-id 夹具推进计数）。
+    pub fn close_pane(&self, pane_id: &str) {
+        let out = self
+            .cli()
+            .args(["pane", "close", pane_id])
+            .output()
+            .expect("pane close 失败");
+        assert!(
+            out.status.success(),
+            "pane close 失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// 在同一 workspace 内把 public pane id 推进到 pP，再保留 pP/pQ/pR
+    /// 三个真实 pane。对应用户日志里出现字母后缀后的布局场景。
+    pub fn create_alpha_split_workspace(
+        &self,
+        cwd: &str,
+        label: &str,
+    ) -> (String, String, [String; 3]) {
+        let (workspace, tab, mut current) = self.create_workspace(cwd, label);
+        // p1 -> ... -> pP：每轮 split 后关闭旧 pane，保持布局浅且计数继续。
+        for _ in 1..22 {
+            let next = self.split_pane(&current, "right");
+            self.close_pane(&current);
+            current = next;
+        }
+        let pane_p = current;
+        let pane_q = self.split_pane(&pane_p, "right");
+        let pane_r = self.split_pane(&pane_p, "down");
+        assert!(pane_p.ends_with(":pP"), "应推进到 pP，实际 {pane_p}");
+        assert!(
+            pane_q.ends_with(":pQ"),
+            "第一个保留 split 应是 pQ，实际 {pane_q}"
+        );
+        assert!(
+            pane_r.ends_with(":pR"),
+            "第二个保留 split 应是 pR，实际 {pane_r}"
+        );
+        (workspace, tab, [pane_p, pane_q, pane_r])
+    }
 }
 
 impl Drop for IsolatedHerdr {
