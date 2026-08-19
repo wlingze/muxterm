@@ -1,5 +1,5 @@
-//! Herdr observe 流：连 client socket，Hello 握手后 `ObserveTerminal`，
-//! 后台线程把 `terminal.frame` 的 ANSI 字节送进 channel。
+//! Herdr pane control 流：连 client socket，Hello 后取得终端控制权；同一
+//! socket 发送原始输入/resize，并把 `terminal.frame` ANSI 送进 channel。
 //!
 //! 生产代码**不** `Command::new("herdr")`；这里直接实现 herdr 0.8.0
 //! （协议 19）的 bincode 线协议（参考 `~/Developer/terminal/herdr`）。
@@ -41,6 +41,7 @@ pub enum ObserveEvent {
 /// 一条 pane 的 observe 流：持有 reader 线程 + 共享 channel。
 pub struct ObserveStream {
     pane: PaneId,
+    command_stream: Option<UnixStream>,
     shutdown_stream: Option<UnixStream>,
     handle: Option<JoinHandle<()>>,
 }
@@ -90,13 +91,17 @@ impl ObserveStream {
             other => bail!("Herdr 握手响应不是 Welcome: {other:?}"),
         }
 
-        let observe = ClientMessage::ObserveTerminal {
+        let control = ClientMessage::ControlTerminal {
             target: target.to_string(),
+            takeover: true,
         };
-        write_message(&mut stream, &observe).context("写 ObserveTerminal 失败")?;
+        write_message(&mut stream, &control).context("写 ControlTerminal 失败")?;
+        let command_stream = stream
+            .try_clone()
+            .context("复制 Herdr control 写 socket 失败")?;
         let shutdown_stream = stream
             .try_clone()
-            .context("复制 Herdr observe socket 失败")?;
+            .context("复制 Herdr control shutdown socket 失败")?;
 
         let handle = std::thread::spawn(move || {
             let mut stream = stream;
@@ -134,6 +139,7 @@ impl ObserveStream {
 
         Ok(Self {
             pane,
+            command_stream: Some(command_stream),
             shutdown_stream: Some(shutdown_stream),
             handle: Some(handle),
         })
@@ -142,10 +148,44 @@ impl ObserveStream {
     pub fn pane(&self) -> PaneId {
         self.pane
     }
+
+    pub fn send_input(&mut self, data: &[u8]) -> Result<()> {
+        let stream = self
+            .command_stream
+            .as_mut()
+            .context("Herdr control stream 已关闭")?;
+        write_message(
+            stream,
+            &ClientMessage::Input {
+                data: data.to_vec(),
+            },
+        )
+        .context("写 Herdr terminal input 失败")
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        let stream = self
+            .command_stream
+            .as_mut()
+            .context("Herdr control stream 已关闭")?;
+        write_message(
+            stream,
+            &ClientMessage::Resize {
+                cols: cols.max(2),
+                rows: rows.max(1),
+                cell_width_px: 0,
+                cell_height_px: 0,
+            },
+        )
+        .context("写 Herdr terminal resize 失败")
+    }
 }
 
 impl Drop for ObserveStream {
     fn drop(&mut self) {
+        if let Some(mut stream) = self.command_stream.take() {
+            let _ = write_message(&mut stream, &ClientMessage::Detach);
+        }
         // 主线程持有同一 socket 的 clone；shutdown 会打断 reader 的阻塞读，
         // 这样 resize 时替换 observer 不会留下重复流。仍不 join，避免 Drop
         // 因平台 socket 行为阻塞 GTK 线程。

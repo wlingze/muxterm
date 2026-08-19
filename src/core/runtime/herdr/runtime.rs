@@ -11,6 +11,7 @@ use std::sync::{mpsc, Arc};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 
+use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{
@@ -505,10 +506,7 @@ impl HerdrRuntime {
     fn seed_one_pane(&mut self, pane: PaneId, herdr_pane: &str) {
         match self.session.pane_read_ansi(herdr_pane) {
             Ok(bytes) if !bytes.is_empty() => {
-                self.outputs
-                    .entry(pane)
-                    .or_default()
-                    .extend_from_slice(&bytes);
+                self.outputs.insert(pane, bytes.clone());
                 self.events
                     .push_back(StateChange::PaneOutput { pane, data: bytes });
             }
@@ -599,8 +597,8 @@ impl HerdrRuntime {
         }
     }
 
-    /// 以新的 Surface 字符格重建一个只读 observer。Herdr observer 本身
-    /// 不能 resize；重连会先发一帧与 VTE 网格一致的 full frame。
+    /// 以新的 Surface 字符格重建 pane control stream。新连接会取得该 pane
+    /// 的输入/resize 权并先发一帧与 VTE 网格一致的 full frame。
     fn replace_observe_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
         let (cols, rows) = normalize_pane_size(cols, rows, None);
         let herdr_pane = self
@@ -627,6 +625,39 @@ impl HerdrRuntime {
         Ok(())
     }
 
+    fn send_control_input(&mut self, pane: PaneId, data: &[u8]) -> Result<()> {
+        if !self
+            .observe_streams
+            .iter()
+            .any(|stream| stream.pane() == pane)
+        {
+            let (cols, rows) = self
+                .panes
+                .iter()
+                .find(|candidate| candidate.id == pane)
+                .map(|candidate| (candidate.cols, candidate.rows))
+                .ok_or_else(|| anyhow!("pane {pane} 不存在"))?;
+            self.replace_observe_stream(pane, cols, rows)?;
+        }
+        self.observe_streams
+            .iter_mut()
+            .find(|stream| stream.pane() == pane)
+            .ok_or_else(|| anyhow!("pane {pane} control stream 未启动"))?
+            .send_input(data)
+    }
+
+    fn resize_control_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
+        if let Some(stream) = self
+            .observe_streams
+            .iter_mut()
+            .find(|stream| stream.pane() == pane)
+        {
+            stream.resize(cols, rows)
+        } else {
+            self.replace_observe_stream(pane, cols, rows)
+        }
+    }
+
     /// 取 observe 事件并转成 StateChange。
     fn drain_observe(&mut self) {
         let Some(rx) = &self.observe_rx else {
@@ -639,16 +670,21 @@ impl HerdrRuntime {
                     bytes,
                     width,
                     height,
-                    full: _,
+                    full,
                 } => {
                     if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
                         (p.cols, p.rows) =
                             normalize_pane_size(width, height, Some((p.cols, p.rows)));
                     }
-                    self.outputs
-                        .entry(pane)
-                        .or_default()
-                        .extend_from_slice(&bytes);
+                    if full {
+                        self.outputs.insert(pane, bytes.clone());
+                    } else {
+                        append_capped(
+                            self.outputs.entry(pane).or_default(),
+                            &bytes,
+                            MAX_PANE_OUTPUT_BYTES,
+                        );
+                    }
                     self.events
                         .push_back(StateChange::PaneOutput { pane, data: bytes });
                 }
@@ -1296,15 +1332,13 @@ impl Runtime for HerdrRuntime {
         }
         match task {
             Task::WriteRaw { target, data } => {
-                let Some(herdr_pane) = self.herdr_pane(*target) else {
+                if self.herdr_pane(*target).is_none() {
                     return Ok(TaskOutcome::Rejected {
                         reason: format!("pane {target} 不存在"),
                     });
-                };
-                let text = String::from_utf8_lossy(data);
-                self.session
-                    .pane_send_text(herdr_pane, &text)
-                    .map_err(|e| anyhow!("pane.send_text 失败: {e}"))?;
+                }
+                self.send_control_input(*target, data)
+                    .map_err(|e| anyhow!("terminal control input 失败: {e}"))?;
                 Ok(TaskOutcome::Done)
             }
             Task::SendKeys { target, keys } => {
@@ -1335,8 +1369,8 @@ impl Runtime for HerdrRuntime {
                 if unchanged {
                     return Ok(TaskOutcome::Done);
                 }
-                self.replace_observe_stream(*target, cols, rows)
-                    .map_err(|err| anyhow!("Herdr pane observer resize 失败: {err}"))?;
+                self.resize_control_stream(*target, cols, rows)
+                    .map_err(|err| anyhow!("Herdr pane control resize 失败: {err}"))?;
                 if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == *target) {
                     pane.cols = cols;
                     pane.rows = rows;
@@ -1358,15 +1392,29 @@ impl Runtime for HerdrRuntime {
                     });
                 };
                 let tab = pane.tab;
+                let Some(herdr_pane) = self.herdr_pane(*target).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 缺 Herdr id"),
+                    });
+                };
+                self.session
+                    .call("pane.focus", serde_json::json!({ "pane_id": herdr_pane }))
+                    .map_err(|e| anyhow!("pane.focus 失败: {e}"))?;
+                let tab_changed = self.active_tab != Some(tab);
+                for t in self.tabs.iter_mut() {
+                    t.active = t.id == tab;
+                }
+                self.active_tab = Some(tab);
                 for p in self.panes.iter_mut() {
-                    if p.tab == tab {
-                        p.active = p.id == *target;
-                    }
+                    p.active = p.id == *target;
                 }
                 if let Some(l) = self.layouts.get_mut(&tab) {
                     l.active = *target;
                 }
                 self.active_pane = Some(*target);
+                if tab_changed {
+                    self.events.push_back(StateChange::ActiveTabChanged { tab });
+                }
                 self.events
                     .push_back(StateChange::ActivePaneChanged { tab, pane: *target });
                 Ok(TaskOutcome::Done)
@@ -1377,10 +1425,26 @@ impl Runtime for HerdrRuntime {
                         reason: format!("tab {target} 不存在"),
                     });
                 }
+                let Some(herdr_tab) = self.tab_to_herdr_tab.get(target).cloned() else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {target} 缺 Herdr id"),
+                    });
+                };
+                self.session
+                    .call("tab.focus", serde_json::json!({ "tab_id": herdr_tab }))
+                    .map_err(|e| anyhow!("tab.focus 失败: {e}"))?;
                 for t in self.tabs.iter_mut() {
                     t.active = t.id == *target;
                 }
                 self.active_tab = Some(*target);
+                if let Some(pane) = self.layouts.get(target).map(|layout| layout.active) {
+                    for candidate in self.panes.iter_mut() {
+                        candidate.active = candidate.id == pane;
+                    }
+                    self.active_pane = Some(pane);
+                    self.events
+                        .push_back(StateChange::ActivePaneChanged { tab: *target, pane });
+                }
                 self.events
                     .push_back(StateChange::ActiveTabChanged { tab: *target });
                 Ok(TaskOutcome::Done)
@@ -1431,6 +1495,7 @@ impl Runtime for HerdrRuntime {
                         serde_json::json!({
                             "workspace_id": self.workspace_id,
                             "label": name.clone().unwrap_or_default(),
+                            "focus": true,
                         }),
                     )
                     .map_err(|e| anyhow!("tab.create 失败: {e}"))?;
@@ -1473,11 +1538,17 @@ impl Runtime for HerdrRuntime {
                         }),
                     )
                     .map_err(|e| anyhow!("pane.split 失败: {e}"))?;
-                let authoritative_layout = result
+                let created_herdr_pane = result
                     .get("pane")
                     .and_then(|pane| pane.get("pane_id"))
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|pane_id| match self.session.pane_layout(pane_id) {
+                    .and_then(serde_json::Value::as_str);
+                if let Some(pane_id) = created_herdr_pane {
+                    self.session
+                        .call("pane.focus", serde_json::json!({ "pane_id": pane_id }))
+                        .map_err(|e| anyhow!("pane.split 后 pane.focus 失败: {e}"))?;
+                }
+                let authoritative_layout = created_herdr_pane.and_then(|pane_id| {
+                    match self.session.pane_layout(pane_id) {
                         Ok(layout) => Some(layout),
                         Err(err) => {
                             tracing::warn!(
@@ -1488,7 +1559,8 @@ impl Runtime for HerdrRuntime {
                             );
                             None
                         }
-                    });
+                    }
+                });
                 self.apply_split_pane(&result, tab, *dir, authoritative_layout.as_ref());
                 Ok(TaskOutcome::Done)
             }
@@ -1577,6 +1649,12 @@ impl HerdrRuntime {
         if self.herdr_tab_to_tab.contains_key(tab_id) {
             return;
         }
+        for tab in &mut self.tabs {
+            tab.active = false;
+        }
+        for pane in &mut self.panes {
+            pane.active = false;
+        }
         self.herdr_tab_to_tab.insert(tab_id.to_string(), id);
         self.tab_to_herdr_tab.insert(id, tab_id.to_string());
         self.tabs.push(TabInfo {
@@ -1624,6 +1702,8 @@ impl HerdrRuntime {
                 .push_back(StateChange::ActiveTabChanged { tab: id });
             self.events
                 .push_back(StateChange::ActivePaneChanged { tab: id, pane: pid });
+            self.active_tab = Some(id);
+            self.active_pane = Some(pid);
         }
     }
 
@@ -1847,6 +1927,83 @@ mod tests {
             .panes
             .iter()
             .all(|pane| (pane.cols, pane.rows) == (90, 30)));
+    }
+
+    /// `terminal.frame(full=true)` 是 observer 当前屏幕的完整 ANSI 重绘，
+    /// 不是可追加的历史增量。Surface 仍需收到原始帧，但 Runtime 的 attach
+    /// seed 快照必须替换旧 full frame，否则切 tab 会把数 MB 重复画面重灌 VTE。
+    #[test]
+    fn full_observe_frame_replaces_seed_buffer_before_incremental_bytes() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        let (tx, rx) = super::super::observe::channel();
+        runtime.observe_rx = Some(rx);
+
+        tx.send(ObserveEvent::Frame {
+            pane,
+            bytes: b"FULL_ONE".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        })
+        .unwrap();
+        runtime.drain_observe();
+        assert_eq!(runtime.outputs.get(&pane).unwrap(), b"FULL_ONE");
+
+        tx.send(ObserveEvent::Frame {
+            pane,
+            bytes: b"FULL_TWO".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        })
+        .unwrap();
+        runtime.drain_observe();
+        assert_eq!(
+            runtime.outputs.get(&pane).unwrap(),
+            b"FULL_TWO",
+            "第二个 full frame 必须替换 seed buffer，禁止 FULL_ONEFULL_TWO"
+        );
+
+        tx.send(ObserveEvent::Frame {
+            pane,
+            bytes: b"_DIFF".to_vec(),
+            width: 80,
+            height: 24,
+            full: false,
+        })
+        .unwrap();
+        runtime.drain_observe();
+        assert_eq!(runtime.outputs.get(&pane).unwrap(), b"FULL_TWO_DIFF");
+
+        let output_events = runtime
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                StateChange::PaneOutput { data, .. } => Some(data.as_slice()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            output_events,
+            vec![
+                b"FULL_ONE".as_slice(),
+                b"FULL_TWO".as_slice(),
+                b"_DIFF".as_slice()
+            ],
+            "live Surface 仍必须按顺序收到每个原始 ANSI frame"
+        );
     }
 
     #[test]

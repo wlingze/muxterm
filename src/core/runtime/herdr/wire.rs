@@ -107,6 +107,10 @@ pub enum ClientMessage {
     ObserveTerminal {
         target: String,
     },
+    ControlTerminal {
+        target: String,
+        takeover: bool,
+    },
 }
 
 /// Terminal ANSI 帧。
@@ -252,6 +256,18 @@ mod tests {
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).unwrap();
         assert_eq!(buf, b"\x07\x00\x00\x00\x08\x05w1:p1");
+    }
+
+    /// ControlTerminal 紧跟 ObserveTerminal，协议 19 变体索引 = 9。
+    #[test]
+    fn control_terminal_encodes_variant_9() {
+        let msg = ClientMessage::ControlTerminal {
+            target: "w1:p1".into(),
+            takeover: true,
+        };
+        let mut buf = Vec::new();
+        write_message(&mut buf, &msg).unwrap();
+        assert_eq!(buf, b"\x08\x00\x00\x00\x09\x05w1:p1\x01");
     }
 
     /// Welcome 响应（协议 19）：`00 13 01 00`。
