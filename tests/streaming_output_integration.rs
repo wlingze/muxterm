@@ -16,6 +16,7 @@ use muxterm::core::model::TerminalModel;
 use muxterm::core::protocol::terminal::input::KeyEvent;
 use muxterm::core::runtime::TmuxRuntime;
 use muxterm::core::types::PaneId;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -33,6 +34,42 @@ fn cleanup(socket: &str) {
     let _ = Command::new("tmux")
         .args(["-L", socket, "kill-server"])
         .output();
+}
+
+/// 即使断言失败也只清理本测试的隔离 tmux server。
+struct IsolatedTmuxGuard(String);
+
+impl IsolatedTmuxGuard {
+    fn new(socket: &str) -> Self {
+        Self(socket.to_owned())
+    }
+}
+
+impl Drop for IsolatedTmuxGuard {
+    fn drop(&mut self) {
+        cleanup(&self.0);
+    }
+}
+
+/// 断言失败时也删除测试创建的临时文件。
+struct TempFileGuard(PathBuf);
+
+impl TempFileGuard {
+    fn write(path: impl Into<PathBuf>, contents: &str) -> Self {
+        let path = path.into();
+        std::fs::write(&path, contents).expect("write utf8 file");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 fn tmux_available() -> bool {
@@ -256,21 +293,43 @@ fn unicode_and_special_chars_output() {
         return;
     }
     let socket = unique_socket();
+    let _socket_guard = IsolatedTmuxGuard::new(&socket);
     let mut model = connect_tmux(&socket);
-    wait_for(&mut model, Duration::from_secs(5), |s| {
+    let pane_ready = wait_for(&mut model, Duration::from_secs(5), |s| {
         s.active_pane().is_some()
     });
+    assert!(pane_ready, "UTF-8 测试应先发现 active pane");
     let pane = model.state().active_pane().unwrap().id;
+
+    // active pane 拓扑可能先于 shell 输入通道就绪。先用纯 ASCII 标记完成一次
+    // 输入/输出往返，避免紧接 connect 的 UTF-8 cat 命令偶发丢失。
+    const READY_MARKER: &str = "MUXTERM_UTF8_SHELL_READY_81723";
+    // 命令文本刻意不含完整 marker，防止终端本地回显造成假阳性。
+    type_command(
+        &mut model,
+        pane,
+        "printf 'MUXTERM_UTF8_SHELL_%s\\n' 'READY_81723'",
+    );
+    let shell_ready = wait_for(&mut model, Duration::from_secs(15), |s| {
+        s.pane_output(&pane)
+            .map(|output| String::from_utf8_lossy(output).contains(READY_MARKER))
+            .unwrap_or(false)
+    });
+    let ready_output = output_str(&mut model, pane);
+    assert!(
+        shell_ready,
+        "UTF-8 测试的 shell 输入通道未就绪，pane={pane:?}, output={ready_output:?}"
+    );
 
     // 写一个真实 UTF-8 文件（Rust 端写入真实多字节字节），然后 cat 它。
     // 命令本身是纯 ASCII，多字节字节从文件流经 tmux %output 协议层，验证字节保留。
     let tmp = format!("/tmp/muxterm-utf8-{}.txt", std::process::id());
-    std::fs::write(&tmp, "中文测试 emoji😀 宽字𠀀\n").expect("write utf8 file");
+    let tmp = TempFileGuard::write(tmp, "中文测试 emoji😀 宽字𠀀\n");
 
-    type_command(&mut model, pane, &format!("cat {}", tmp));
+    type_command(&mut model, pane, &format!("cat {}", tmp.path().display()));
 
     // 等输出真正包含文件内容（命令回显本身也可能先到，所以按内容匹配）
-    let got = wait_for(&mut model, Duration::from_secs(6), |s| {
+    let got = wait_for(&mut model, Duration::from_secs(10), |s| {
         s.pane_output(&pane)
             .map(|o| {
                 let t = String::from_utf8_lossy(o);
@@ -278,8 +337,12 @@ fn unicode_and_special_chars_output() {
             })
             .unwrap_or(false)
     });
-    assert!(got, "输出应含文件内容");
     let out = output_str(&mut model, pane);
+    assert!(
+        got,
+        "输出应含文件内容，pane={pane:?}, path={}, output={out:?}",
+        tmp.path().display()
+    );
     assert!(out.contains("中文"), "输出应含真实 UTF-8 中文: {:?}", out);
     assert!(out.contains("emoji"), "应含 emoji 文本: {:?}", out);
     // 输出里应是真实多字节字节，而非未解码的 \u 字面转义
@@ -289,10 +352,7 @@ fn unicode_and_special_chars_output() {
         out
     );
 
-    let _ = std::fs::remove_file(&tmp);
-
     let _ = model.shutdown();
-    cleanup(&socket);
 }
 
 // ============================================================================
