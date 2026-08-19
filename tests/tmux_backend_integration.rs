@@ -1189,9 +1189,13 @@ fn bug2_positive_alt_switch_tab() {
         s.tabs().len() >= 2 && s.active_tab().map(|t| t.id) != tab1 && s.active_tab().is_some()
     });
 
-    // 产品模型没有虚拟 Window：tmux window 直接体现为 Tab。
+    // 产品层已经是 Workspace → Tab → Pane；新建后必须精确有 2 个 Tab。
+    assert_eq!(
+        model.state().tabs().len(),
+        2,
+        "新建第二个 tmux window 后应映射为 2 个 Muxterm Tab"
+    );
     let tabs = model.state().tabs();
-    assert!(tabs.len() >= 2, "应有 >= 2 个 tab: {}", tabs.len());
     let first_tab = tabs[0].id;
     let second_tab = tabs[1].id;
 
@@ -2555,8 +2559,13 @@ fn bug7_positive_attach_existing_session() {
         s.tabs().len() >= 2 && s.active_pane().is_some()
     });
 
+    assert_eq!(
+        model.state().tabs().len(),
+        2,
+        "attach 两个 tmux window 后应精确映射为 2 个 Muxterm Tab"
+    );
+
     let tabs = model.state().tabs();
-    assert!(tabs.len() >= 2, "attach 后应有 >= 2 个 tab: {}", tabs.len());
 
     // 正向：按 pane 数区分 — 一个 tab 3 pane，另一个 1 pane
     let pane_counts: Vec<usize> = tabs
