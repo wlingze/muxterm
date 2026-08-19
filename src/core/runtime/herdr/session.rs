@@ -7,6 +7,7 @@
 //! 一个 `HerdrSession` 可被多个 `HerdrRuntime` 共享（`Arc`），
 //! 不要每个 Workspace 再开一条 API socket。
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -277,6 +278,7 @@ pub struct SessionSnapshot {
     pub tabs: Vec<TabRecord>,
     pub panes: Vec<PaneRecord>,
     pub layouts: Vec<LayoutRecord>,
+    pub agents: Vec<AgentRecord>,
 }
 
 impl SessionSnapshot {
@@ -300,6 +302,11 @@ impl SessionSnapshot {
             .get("layouts")
             .and_then(Value::as_array)
             .map(|arr| arr.iter().filter_map(LayoutRecord::from_json).collect())
+            .unwrap_or_default();
+        let agents = v
+            .get("agents")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(AgentRecord::from_json).collect())
             .unwrap_or_default();
         Ok(Self {
             version: v
@@ -327,6 +334,7 @@ impl SessionSnapshot {
             tabs,
             panes,
             layouts,
+            agents,
         })
     }
 }
@@ -335,23 +343,76 @@ impl SessionSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRecord {
     pub workspace_id: String,
+    pub number: usize,
     pub label: String,
+    pub focused: bool,
+    pub pane_count: usize,
+    pub tab_count: usize,
     pub active_tab_id: Option<String>,
+    pub agent_status: HerdrAgentStatus,
+    pub tokens: BTreeMap<String, String>,
+    pub worktree: Option<WorkspaceWorktreeRecord>,
 }
 
 impl WorkspaceRecord {
     fn from_json(v: &Value) -> Option<Self> {
         Some(Self {
             workspace_id: v.get("workspace_id")?.as_str()?.to_string(),
+            number: v.get("number").and_then(Value::as_u64).unwrap_or(0) as usize,
             label: v
                 .get("label")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            focused: v.get("focused").and_then(Value::as_bool).unwrap_or(false),
+            pane_count: v.get("pane_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+            tab_count: v.get("tab_count").and_then(Value::as_u64).unwrap_or(0) as usize,
             active_tab_id: v
                 .get("active_tab_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
+            agent_status: HerdrAgentStatus::from_value(v.get("agent_status")),
+            tokens: string_map(v.get("tokens")),
+            worktree: v
+                .get("worktree")
+                .and_then(WorkspaceWorktreeRecord::from_json),
+        })
+    }
+}
+
+/// Herdr workspace 上的 worktree provenance（不是产品树的新层级）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceWorktreeRecord {
+    pub repo_key: String,
+    pub repo_name: String,
+    pub repo_root: String,
+    pub checkout_path: String,
+    pub linked: bool,
+}
+
+impl WorkspaceWorktreeRecord {
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            repo_key: v.get("repo_key")?.as_str()?.to_string(),
+            repo_name: v
+                .get("repo_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            repo_root: v
+                .get("repo_root")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            checkout_path: v
+                .get("checkout_path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            linked: v
+                .get("is_linked_worktree")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
     }
 }
@@ -361,7 +422,11 @@ impl WorkspaceRecord {
 pub struct TabRecord {
     pub tab_id: String,
     pub workspace_id: String,
+    pub number: usize,
     pub label: String,
+    pub focused: bool,
+    pub pane_count: usize,
+    pub agent_status: HerdrAgentStatus,
 }
 
 impl TabRecord {
@@ -369,11 +434,15 @@ impl TabRecord {
         Some(Self {
             tab_id: v.get("tab_id")?.as_str()?.to_string(),
             workspace_id: v.get("workspace_id")?.as_str()?.to_string(),
+            number: v.get("number").and_then(Value::as_u64).unwrap_or(0) as usize,
             label: v
                 .get("label")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            focused: v.get("focused").and_then(Value::as_bool).unwrap_or(false),
+            pane_count: v.get("pane_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+            agent_status: HerdrAgentStatus::from_value(v.get("agent_status")),
         })
     }
 }
@@ -382,20 +451,198 @@ impl TabRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneRecord {
     pub pane_id: String,
+    pub terminal_id: Option<String>,
     pub workspace_id: String,
     pub tab_id: String,
+    pub focused: bool,
     pub cwd: Option<String>,
+    pub foreground_cwd: Option<String>,
+    pub label: Option<String>,
+    pub agent: Option<String>,
+    pub title: Option<String>,
+    pub terminal_title: Option<String>,
+    pub terminal_title_stripped: Option<String>,
+    pub display_agent: Option<String>,
+    pub agent_status: HerdrAgentStatus,
+    pub state_labels: BTreeMap<String, String>,
+    pub tokens: BTreeMap<String, String>,
+    pub agent_session: Option<AgentSessionRecord>,
+    pub scroll: Option<PaneScrollRecord>,
+    pub revision: u64,
 }
 
 impl PaneRecord {
     fn from_json(v: &Value) -> Option<Self> {
         Some(Self {
             pane_id: v.get("pane_id")?.as_str()?.to_string(),
+            terminal_id: optional_string(v, "terminal_id"),
             workspace_id: v.get("workspace_id")?.as_str()?.to_string(),
             tab_id: v.get("tab_id")?.as_str()?.to_string(),
-            cwd: v.get("cwd").and_then(Value::as_str).map(ToOwned::to_owned),
+            focused: v.get("focused").and_then(Value::as_bool).unwrap_or(false),
+            cwd: optional_string(v, "cwd"),
+            foreground_cwd: optional_string(v, "foreground_cwd"),
+            label: optional_string(v, "label"),
+            agent: optional_string(v, "agent"),
+            title: optional_string(v, "title"),
+            terminal_title: optional_string(v, "terminal_title"),
+            terminal_title_stripped: optional_string(v, "terminal_title_stripped"),
+            display_agent: optional_string(v, "display_agent"),
+            agent_status: HerdrAgentStatus::from_value(v.get("agent_status")),
+            state_labels: string_map(v.get("state_labels")),
+            tokens: string_map(v.get("tokens")),
+            agent_session: v
+                .get("agent_session")
+                .and_then(AgentSessionRecord::from_json),
+            scroll: v.get("scroll").and_then(PaneScrollRecord::from_json),
+            revision: v.get("revision").and_then(Value::as_u64).unwrap_or(0),
         })
     }
+}
+
+/// Herdr agent status wire 值。未知值保留原文，产品层统一映射为 Unknown。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HerdrAgentStatus {
+    Idle,
+    Working,
+    Blocked,
+    Done,
+    Unknown(String),
+}
+
+impl HerdrAgentStatus {
+    fn from_value(value: Option<&Value>) -> Self {
+        match value.and_then(Value::as_str).unwrap_or("unknown") {
+            "idle" => Self::Idle,
+            "working" => Self::Working,
+            "blocked" => Self::Blocked,
+            "done" => Self::Done,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+}
+
+/// Herdr agent session 引用；kind 仍保留未知 wire 值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSessionRecord {
+    pub source: String,
+    pub agent: String,
+    pub kind: String,
+    pub value: String,
+}
+
+impl AgentSessionRecord {
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            source: v.get("source")?.as_str()?.to_string(),
+            agent: v.get("agent")?.as_str()?.to_string(),
+            kind: v.get("kind")?.as_str()?.to_string(),
+            value: v.get("value")?.as_str()?.to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneScrollRecord {
+    pub offset_from_bottom: u64,
+    pub max_offset_from_bottom: u64,
+    pub viewport_rows: u64,
+}
+
+impl PaneScrollRecord {
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            offset_from_bottom: v.get("offset_from_bottom")?.as_u64()?,
+            max_offset_from_bottom: v.get("max_offset_from_bottom")?.as_u64()?,
+            viewport_rows: v.get("viewport_rows")?.as_u64()?,
+        })
+    }
+}
+
+/// `session.snapshot.agents[]` 的完整协议 19 记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRecord {
+    pub terminal_id: Option<String>,
+    pub name: Option<String>,
+    pub agent: Option<String>,
+    pub title: Option<String>,
+    pub terminal_title: Option<String>,
+    pub terminal_title_stripped: Option<String>,
+    pub display_agent: Option<String>,
+    pub agent_status: HerdrAgentStatus,
+    pub screen_detection_skipped: bool,
+    pub state_labels: BTreeMap<String, String>,
+    pub tokens: BTreeMap<String, String>,
+    pub agent_session: Option<AgentSessionRecord>,
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub pane_id: String,
+    pub focused: bool,
+    pub launch_pending: bool,
+    pub interactive_ready: bool,
+    pub state_change_seq: u64,
+    pub cwd: Option<String>,
+    pub foreground_cwd: Option<String>,
+    pub revision: u64,
+}
+
+impl AgentRecord {
+    pub(crate) fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            terminal_id: optional_string(v, "terminal_id"),
+            name: optional_string(v, "name"),
+            agent: optional_string(v, "agent"),
+            title: optional_string(v, "title"),
+            terminal_title: optional_string(v, "terminal_title"),
+            terminal_title_stripped: optional_string(v, "terminal_title_stripped"),
+            display_agent: optional_string(v, "display_agent"),
+            agent_status: HerdrAgentStatus::from_value(v.get("agent_status")),
+            screen_detection_skipped: v
+                .get("screen_detection_skipped")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            state_labels: string_map(v.get("state_labels")),
+            tokens: string_map(v.get("tokens")),
+            agent_session: v
+                .get("agent_session")
+                .and_then(AgentSessionRecord::from_json),
+            workspace_id: v.get("workspace_id")?.as_str()?.to_string(),
+            tab_id: v.get("tab_id")?.as_str()?.to_string(),
+            pane_id: v.get("pane_id")?.as_str()?.to_string(),
+            focused: v.get("focused").and_then(Value::as_bool).unwrap_or(false),
+            launch_pending: v
+                .get("launch_pending")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            interactive_ready: v
+                .get("interactive_ready")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            state_change_seq: v
+                .get("state_change_seq")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            cwd: optional_string(v, "cwd"),
+            foreground_cwd: optional_string(v, "foreground_cwd"),
+            revision: v.get("revision").and_then(Value::as_u64).unwrap_or(0),
+        })
+    }
+}
+
+fn optional_string(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+fn string_map(value: Option<&Value>) -> BTreeMap<String, String> {
+    value
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Herdr 布局矩形（字符格坐标）。
@@ -467,7 +714,7 @@ pub struct LayoutRecord {
 }
 
 impl LayoutRecord {
-    fn from_json(v: &Value) -> Option<Self> {
+    pub(crate) fn from_json(v: &Value) -> Option<Self> {
         let area = LayoutRect::from_json(v.get("area")?)?;
         let panes: Vec<LayoutPaneRecord> = v
             .get("panes")
@@ -690,6 +937,185 @@ mod tests {
             LayoutSplitDirection::Down
         );
         assert!((snap.layouts[0].splits[0].ratio - 0.48).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn snapshot_preserves_every_protocol_19_agent_field() {
+        let v = serde_json::json!({
+            "version": "0.8.0",
+            "protocol": 19,
+            "workspaces": [{
+                "workspace_id": "w7",
+                "number": 7,
+                "label": "agent-workspace",
+                "focused": true,
+                "pane_count": 1,
+                "tab_count": 1,
+                "active_tab_id": "w7:tA",
+                "agent_status": "blocked",
+                "tokens": { "context": "73%" },
+                "worktree": {
+                    "repo_key": "/repo/.git",
+                    "repo_name": "repo",
+                    "repo_root": "/repo",
+                    "checkout_path": "/repo-wt",
+                    "is_linked_worktree": true
+                }
+            }],
+            "tabs": [{
+                "tab_id": "w7:tA",
+                "workspace_id": "w7",
+                "number": 10,
+                "label": "agent-tab",
+                "focused": true,
+                "pane_count": 1,
+                "agent_status": "blocked"
+            }],
+            "panes": [{
+                "pane_id": "w7:pR",
+                "terminal_id": "term-agent",
+                "workspace_id": "w7",
+                "tab_id": "w7:tA",
+                "focused": true,
+                "cwd": "/repo-wt",
+                "foreground_cwd": "/repo-wt/src",
+                "label": "review",
+                "agent": "codex",
+                "title": "Approve command",
+                "terminal_title": "codex --full-auto",
+                "terminal_title_stripped": "codex",
+                "display_agent": "Codex reviewer",
+                "agent_status": "blocked",
+                "state_labels": { "blocked": "Needs approval" },
+                "tokens": { "context": "73%", "model": "gpt-5" },
+                "agent_session": {
+                    "source": "herdr:codex",
+                    "agent": "codex",
+                    "kind": "id",
+                    "value": "session-123"
+                },
+                "scroll": {
+                    "offset_from_bottom": 2,
+                    "max_offset_from_bottom": 20,
+                    "viewport_rows": 42
+                },
+                "revision": 91
+            }],
+            "layouts": [],
+            "agents": [{
+                "terminal_id": "term-agent",
+                "name": "reviewer-1",
+                "agent": "codex",
+                "title": "Approve command",
+                "terminal_title": "codex --full-auto",
+                "terminal_title_stripped": "codex",
+                "display_agent": "Codex reviewer",
+                "agent_status": "blocked",
+                "screen_detection_skipped": true,
+                "state_labels": {
+                    "working": "Implementing",
+                    "blocked": "Needs approval"
+                },
+                "tokens": {
+                    "context": "73%",
+                    "model": "gpt-5"
+                },
+                "agent_session": {
+                    "source": "herdr:codex",
+                    "agent": "codex",
+                    "kind": "id",
+                    "value": "session-123"
+                },
+                "workspace_id": "w7",
+                "tab_id": "w7:tA",
+                "pane_id": "w7:pR",
+                "focused": true,
+                "launch_pending": true,
+                "interactive_ready": true,
+                "state_change_seq": 44,
+                "cwd": "/repo-wt",
+                "foreground_cwd": "/repo-wt/src",
+                "revision": 91
+            }]
+        });
+
+        let snap = SessionSnapshot::from_json(&v).unwrap();
+        let workspace = &snap.workspaces[0];
+        assert_eq!(workspace.number, 7);
+        assert!(workspace.focused);
+        assert_eq!(workspace.pane_count, 1);
+        assert_eq!(workspace.tab_count, 1);
+        assert_eq!(workspace.agent_status, HerdrAgentStatus::Blocked);
+        assert_eq!(workspace.tokens["context"], "73%");
+        let worktree = workspace.worktree.as_ref().unwrap();
+        assert_eq!(worktree.repo_key, "/repo/.git");
+        assert_eq!(worktree.repo_name, "repo");
+        assert_eq!(worktree.repo_root, "/repo");
+        assert_eq!(worktree.checkout_path, "/repo-wt");
+        assert!(worktree.linked);
+
+        let pane = &snap.panes[0];
+        assert_eq!(pane.terminal_id.as_deref(), Some("term-agent"));
+        assert_eq!(pane.foreground_cwd.as_deref(), Some("/repo-wt/src"));
+        assert_eq!(pane.display_agent.as_deref(), Some("Codex reviewer"));
+        assert_eq!(pane.state_labels["blocked"], "Needs approval");
+        assert_eq!(pane.tokens["model"], "gpt-5");
+        assert_eq!(pane.agent_session.as_ref().unwrap().kind, "id");
+        assert_eq!(pane.scroll.unwrap().viewport_rows, 42);
+        assert_eq!(pane.revision, 91);
+
+        let agent = &snap.agents[0];
+        assert_eq!(agent.terminal_id.as_deref(), Some("term-agent"));
+        assert_eq!(agent.name.as_deref(), Some("reviewer-1"));
+        assert_eq!(agent.agent.as_deref(), Some("codex"));
+        assert_eq!(agent.title.as_deref(), Some("Approve command"));
+        assert_eq!(agent.terminal_title.as_deref(), Some("codex --full-auto"));
+        assert_eq!(agent.terminal_title_stripped.as_deref(), Some("codex"));
+        assert_eq!(agent.display_agent.as_deref(), Some("Codex reviewer"));
+        assert_eq!(agent.agent_status, HerdrAgentStatus::Blocked);
+        assert!(agent.screen_detection_skipped);
+        assert_eq!(agent.state_labels["working"], "Implementing");
+        assert_eq!(agent.tokens["context"], "73%");
+        let session = agent.agent_session.as_ref().unwrap();
+        assert_eq!(session.source, "herdr:codex");
+        assert_eq!(session.agent, "codex");
+        assert_eq!(session.kind, "id");
+        assert_eq!(session.value, "session-123");
+        assert_eq!(agent.workspace_id, "w7");
+        assert_eq!(agent.tab_id, "w7:tA");
+        assert_eq!(agent.pane_id, "w7:pR");
+        assert!(agent.focused);
+        assert!(agent.launch_pending);
+        assert!(agent.interactive_ready);
+        assert_eq!(agent.state_change_seq, 44);
+        assert_eq!(agent.cwd.as_deref(), Some("/repo-wt"));
+        assert_eq!(agent.foreground_cwd.as_deref(), Some("/repo-wt/src"));
+        assert_eq!(agent.revision, 91);
+    }
+
+    #[test]
+    fn agent_parser_preserves_unknown_wire_status_and_session_kind() {
+        let agent = AgentRecord::from_json(&serde_json::json!({
+            "terminal_id": "term-future",
+            "agent_status": "paused_for_policy",
+            "agent_session": {
+                "source": "future:agent",
+                "agent": "future",
+                "kind": "uri",
+                "value": "agent://session/1"
+            },
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": false,
+            "revision": 1
+        }))
+        .unwrap();
+        assert_eq!(
+            agent.agent_status,
+            HerdrAgentStatus::Unknown("paused_for_policy".into())
+        );
+        assert_eq!(agent.agent_session.unwrap().kind, "uri");
     }
 
     #[test]

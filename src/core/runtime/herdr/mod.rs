@@ -5,6 +5,7 @@
 //! 生产代码**禁止** `Command::new("herdr")`：API 走 socket JSON，
 //! 直播字节走 client socket 的 observe 流（bincode 帧）。
 
+pub mod events;
 pub mod forward;
 pub mod observe;
 pub mod runtime;

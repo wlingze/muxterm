@@ -5,7 +5,7 @@
 //! attach 快照用 `pane.read`；原始键盘字节走 `pane.send_text`，语义按键走
 //! `pane.send_keys`。逐键输入禁止走会自动包 bracketed-paste 的 `pane.send_input`。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{mpsc, Arc};
 
 use anyhow::{anyhow, Context, Result};
@@ -13,14 +13,19 @@ use async_trait::async_trait;
 
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
+use crate::core::model::state::{
+    BackendStatus, PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
+    PaneInfo, State, StateChange, TabInfo,
+};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::types::{PaneId, TabId};
 
+use super::events::{EventStream, EventStreamEvent};
 use super::observe::{ObserveEvent, ObserveStream};
 use super::session::{
-    HerdrSession, LayoutRecord, LayoutRect, LayoutSplitDirection, SessionSnapshot,
+    AgentRecord, HerdrAgentStatus, HerdrSession, LayoutRecord, LayoutRect, LayoutSplitDirection,
+    SessionSnapshot,
 };
 
 /// HerdrRuntime 支持的能力（v1 不含 WorktreeRemove）。
@@ -34,6 +39,11 @@ const HERDR_CAPABILITIES: &[RuntimeCapability] = &[
     RuntimeCapability::WorktreeOpen,
 ];
 
+/// Herdr headless/background snapshots use zero-sized rects until a client
+/// provides a viewport. Keep that wire sentinel inside this adapter.
+const DEFAULT_HERDR_COLS: u16 = 80;
+const DEFAULT_HERDR_ROWS: u16 = 24;
+
 /// 绑定一个 Herdr workspace 的 Runtime。
 pub struct HerdrRuntime {
     session: Arc<HerdrSession>,
@@ -43,6 +53,7 @@ pub struct HerdrRuntime {
     panes: Vec<PaneInfo>,
     layouts: HashMap<TabId, TabLayout>,
     outputs: HashMap<PaneId, Vec<u8>>,
+    agents: HashMap<PaneId, PaneAgentInfo>,
     status: BackendStatus,
     active_tab: Option<TabId>,
     active_pane: Option<PaneId>,
@@ -54,6 +65,9 @@ pub struct HerdrRuntime {
     observe_rx: Option<mpsc::Receiver<ObserveEvent>>,
     observe_tx: Option<mpsc::Sender<ObserveEvent>>,
     observe_streams: Vec<ObserveStream>,
+    event_rx: Option<mpsc::Receiver<EventStreamEvent>>,
+    event_tx: Option<mpsc::Sender<EventStreamEvent>>,
+    event_stream: Option<EventStream>,
     /// SSH 远端 socket 转发进程（Drop/shutdown 时杀掉）。
     forward: Option<std::process::Child>,
 }
@@ -69,6 +83,7 @@ impl HerdrRuntime {
             panes: vec![],
             layouts: HashMap::new(),
             outputs: HashMap::new(),
+            agents: HashMap::new(),
             status: BackendStatus::Disconnected,
             active_tab: None,
             active_pane: None,
@@ -80,6 +95,9 @@ impl HerdrRuntime {
             observe_rx: None,
             observe_tx: None,
             observe_streams: vec![],
+            event_rx: None,
+            event_tx: None,
+            event_stream: None,
             forward: None,
         }
     }
@@ -177,19 +195,33 @@ impl HerdrRuntime {
     }
 
     /// 把 snapshot 里属于本 workspace 的 tab/pane/layout 填进产品状态。
-    fn apply_snapshot(&mut self, snap: &SessionSnapshot) {
+    fn apply_snapshot(&mut self, snap: &SessionSnapshot, initial: bool) -> bool {
         let Some(ws) = snap
             .workspaces
             .iter()
             .find(|w| w.workspace_id == self.workspace_id)
         else {
-            return;
+            return false;
         };
         self.workspace_name = ws.label.clone();
+        let previous_pane_sizes = self
+            .panes
+            .iter()
+            .filter_map(|pane| {
+                self.pane_to_herdr_pane
+                    .get(&pane.id)
+                    .map(|herdr_pane| (herdr_pane.clone(), (pane.cols, pane.rows)))
+            })
+            .collect::<HashMap<_, _>>();
+        let previous_layouts = std::mem::take(&mut self.layouts);
+        // `focused_*` at snapshot root belongs to the globally focused Herdr
+        // workspace. A Muxterm Runtime may bind a background workspace, so its
+        // active tab must come from that workspace record instead.
+        let active_herdr_tab = ws.active_tab_id.clone();
 
         self.tabs.clear();
         self.panes.clear();
-        self.layouts.clear();
+        self.agents.clear();
         self.active_tab = None;
         self.active_pane = None;
         self.herdr_tab_to_tab.clear();
@@ -235,27 +267,50 @@ impl HerdrRuntime {
                         .find(|candidate| candidate.pane_id == pane.pane_id)
                 })
                 .map(|pane| pane.rect);
+            let previous = previous_pane_sizes.get(&pane.pane_id).copied();
             let (cols, rows) = pane_rect
-                .map(|rect| (rect.width, rect.height))
-                .unwrap_or((80, 24));
+                .map(|rect| normalize_pane_size(rect.width, rect.height, previous))
+                .unwrap_or_else(|| normalize_pane_size(0, 0, previous));
             self.panes.push(PaneInfo {
                 id,
                 tab,
                 active: false,
                 title: pane
-                    .cwd
-                    .as_deref()
-                    .map(|c| {
-                        c.rsplit('/')
-                            .next()
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("herdr")
-                            .to_string()
+                    .label
+                    .as_ref()
+                    .or(pane.title.as_ref())
+                    .or(pane.terminal_title_stripped.as_ref())
+                    .or(pane.terminal_title.as_ref())
+                    .cloned()
+                    .or_else(|| {
+                        pane.cwd.as_deref().map(|c| {
+                            c.rsplit('/')
+                                .next()
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or("herdr")
+                                .to_string()
+                        })
                     })
                     .unwrap_or_else(|| "herdr".into()),
                 cols,
                 rows,
             });
+        }
+
+        let current_tabs = self.tabs.iter().map(|tab| tab.id).collect::<HashSet<_>>();
+        self.layouts = previous_layouts
+            .into_iter()
+            .filter(|(tab, _)| current_tabs.contains(tab))
+            .collect();
+
+        for agent in snap
+            .agents
+            .iter()
+            .filter(|agent| agent.workspace_id == self.workspace_id)
+        {
+            if let Some(pane) = self.herdr_pane_to_pane.get(&agent.pane_id).copied() {
+                self.agents.insert(pane, product_agent(agent));
+            }
         }
 
         // Herdr 的 PaneLayoutSnapshot 已包含完整 BSP split 路径、方向、ratio
@@ -269,53 +324,75 @@ impl HerdrRuntime {
             self.apply_layout_record(layout, false);
         }
 
-        // active 标记。
-        if let Some(focused) = snap.focused_tab_id.as_deref() {
-            if let Some(tab) = self.herdr_tab_to_tab.get(focused) {
-                self.active_tab = Some(*tab);
-                for t in self.tabs.iter_mut() {
-                    t.active = t.id == *tab;
-                }
-            }
-        }
-        if let Some(focused) = snap.focused_pane_id.as_deref() {
-            if let Some(pane) = self.herdr_pane_to_pane.get(focused) {
-                self.active_pane = Some(*pane);
-                for p in self.panes.iter_mut() {
-                    p.active = p.id == *pane;
-                }
-            }
-        }
-        if self.active_tab.is_none() {
-            self.active_tab = self.tabs.first().map(|t| t.id);
-        }
-        if self.active_pane.is_none() {
-            self.active_pane = self.panes.first().map(|p| p.id);
+        // active 标记。每个 layout 自带该 tab 的 focused pane；只取绑定
+        // workspace 的 active tab 对应值，不能误用其它 workspace 的全局焦点。
+        self.active_tab = active_herdr_tab
+            .as_deref()
+            .and_then(|tab| self.herdr_tab_to_tab.get(tab).copied())
+            .or_else(|| {
+                self.tabs
+                    .iter()
+                    .find(|tab| {
+                        snap.tabs.iter().any(|source| {
+                            source.workspace_id == self.workspace_id
+                                && source.tab_id == self.tab_to_herdr_tab[&tab.id]
+                                && source.focused
+                        })
+                    })
+                    .map(|tab| tab.id)
+            })
+            .or_else(|| self.tabs.first().map(|tab| tab.id));
+        for tab in &mut self.tabs {
+            tab.active = Some(tab.id) == self.active_tab;
         }
 
-        // 事件：拓扑 + 激活。
-        for tab in &self.tabs {
-            self.events.push_back(StateChange::TabAdded { tab: tab.id });
-        }
-        for pane in &self.panes {
-            self.events.push_back(StateChange::PaneAdded {
-                pane: pane.id,
-                tab: pane.tab,
+        self.active_pane = self
+            .active_tab
+            .and_then(|tab| self.layouts.get(&tab).map(|layout| layout.active))
+            .or_else(|| {
+                let active_tab = self.active_tab?;
+                self.panes
+                    .iter()
+                    .find(|pane| pane.tab == active_tab)
+                    .map(|pane| pane.id)
             });
+        for pane in &mut self.panes {
+            pane.active = Some(pane.id) == self.active_pane;
         }
-        for (tab, layout) in &self.layouts {
-            self.events.push_back(StateChange::LayoutChanged {
-                tab: *tab,
-                layout: layout.clone(),
-            });
+
+        if initial {
+            // 事件：拓扑 + 激活 + agent bootstrap。
+            for tab in &self.tabs {
+                self.events.push_back(StateChange::TabAdded { tab: tab.id });
+            }
+            for pane in &self.panes {
+                self.events.push_back(StateChange::PaneAdded {
+                    pane: pane.id,
+                    tab: pane.tab,
+                });
+            }
+            for (tab, layout) in &self.layouts {
+                self.events.push_back(StateChange::LayoutChanged {
+                    tab: *tab,
+                    layout: layout.clone(),
+                });
+            }
+            for (pane, agent) in &self.agents {
+                self.events.push_back(StateChange::PaneAgentChanged {
+                    pane: *pane,
+                    agent: Some(Box::new(agent.clone())),
+                    initial: true,
+                });
+            }
+            if let Some(tab) = self.active_tab {
+                self.events.push_back(StateChange::ActiveTabChanged { tab });
+            }
+            if let Some((tab, pane)) = self.active_tab.zip(self.active_pane) {
+                self.events
+                    .push_back(StateChange::ActivePaneChanged { tab, pane });
+            }
         }
-        if let Some(tab) = self.active_tab {
-            self.events.push_back(StateChange::ActiveTabChanged { tab });
-        }
-        if let Some((tab, pane)) = self.active_tab.zip(self.active_pane) {
-            self.events
-                .push_back(StateChange::ActivePaneChanged { tab, pane });
-        }
+        true
     }
 
     /// 把一条 Herdr PaneLayoutSnapshot 应用到现有 id 映射与产品状态。
@@ -329,8 +406,13 @@ impl HerdrRuntime {
                 continue;
             };
             if let Some(info) = self.panes.iter_mut().find(|info| info.id == pane) {
-                info.cols = source_pane.rect.width;
-                info.rows = source_pane.rect.height;
+                let (cols, rows) = normalize_pane_size(
+                    source_pane.rect.width,
+                    source_pane.rect.height,
+                    Some((info.cols, info.rows)),
+                );
+                info.cols = cols;
+                info.rows = rows;
             }
         }
 
@@ -341,6 +423,35 @@ impl HerdrRuntime {
             .collect();
         if leaves.is_empty() {
             return false;
+        }
+
+        // Protocol 19 reports zero-area layouts for background workspaces that
+        // have no foreground viewport. Those records contain split metadata but
+        // no pane placement, so rebuilding would incorrectly hit the horizontal
+        // legacy fallback. Preserve the last authoritative tree and only accept
+        // the focused pane when it is still one of that tree's leaves.
+        if !layout_has_usable_geometry(layout) {
+            if let Some(existing) = self.layouts.get(&tab).cloned() {
+                let existing_leaves = existing.tree.leaves().into_iter().collect::<HashSet<_>>();
+                let incoming_leaves = leaves.iter().copied().collect::<HashSet<_>>();
+                if existing_leaves == incoming_leaves {
+                    let active = self
+                        .herdr_pane_to_pane
+                        .get(&layout.focused_pane_id)
+                        .copied()
+                        .filter(|pane| existing.tree.contains(*pane))
+                        .unwrap_or(existing.active);
+                    let product_layout = TabLayout { active, ..existing };
+                    self.layouts.insert(tab, product_layout.clone());
+                    if emit_event {
+                        self.events.push_back(StateChange::LayoutChanged {
+                            tab,
+                            layout: product_layout,
+                        });
+                    }
+                    return true;
+                }
+            }
         }
 
         let tree = match layout_tree_from_record(layout, &self.herdr_pane_to_pane) {
@@ -387,30 +498,38 @@ impl HerdrRuntime {
             })
             .collect();
         for (pane, herdr_pane) in panes {
-            match self.session.pane_read_ansi(&herdr_pane) {
-                Ok(bytes) if !bytes.is_empty() => {
-                    self.outputs
-                        .entry(pane)
-                        .or_default()
-                        .extend_from_slice(&bytes);
-                    self.events
-                        .push_back(StateChange::PaneOutput { pane, data: bytes });
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    tracing::warn!(
-                        target = "muxterm::herdr",
-                        pane = %herdr_pane,
-                        error = %err,
-                        "pane.read 快照失败"
-                    );
-                }
+            self.seed_one_pane(pane, &herdr_pane);
+        }
+    }
+
+    fn seed_one_pane(&mut self, pane: PaneId, herdr_pane: &str) {
+        match self.session.pane_read_ansi(herdr_pane) {
+            Ok(bytes) if !bytes.is_empty() => {
+                self.outputs
+                    .entry(pane)
+                    .or_default()
+                    .extend_from_slice(&bytes);
+                self.events
+                    .push_back(StateChange::PaneOutput { pane, data: bytes });
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(
+                    target = "muxterm::herdr",
+                    pane = %herdr_pane,
+                    error = %err,
+                    "pane.read 快照失败"
+                );
             }
         }
     }
 
     /// 为每个 pane 起 observe 流（直播字节）。
     fn start_observe_streams(&mut self) {
+        for pane in &mut self.panes {
+            (pane.cols, pane.rows) =
+                normalize_pane_size(pane.cols, pane.rows, Some((pane.cols, pane.rows)));
+        }
         let (tx, rx) = mpsc::channel::<ObserveEvent>();
         self.observe_rx = Some(rx);
         self.observe_tx = Some(tx.clone());
@@ -440,9 +559,50 @@ impl HerdrRuntime {
         }
     }
 
+    /// Subscribe to the complete global event set plus one scoped agent-status
+    /// subscription per pane. The reader performs snapshot refreshes off the UI
+    /// thread and sends only normalized data back to Runtime.
+    fn start_event_stream(&mut self) -> Result<()> {
+        if self.event_tx.is_none() {
+            let (tx, rx) = mpsc::channel::<EventStreamEvent>();
+            self.event_tx = Some(tx);
+            self.event_rx = Some(rx);
+        }
+        let tx = self
+            .event_tx
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("Herdr event channel 未启动"))?;
+        let pane_ids = self
+            .panes
+            .iter()
+            .filter_map(|pane| self.pane_to_herdr_pane.get(&pane.id).cloned())
+            .collect::<Vec<_>>();
+        self.event_stream = Some(EventStream::start(
+            Arc::clone(&self.session),
+            &self.workspace_id,
+            &pane_ids,
+            tx,
+        )?);
+        Ok(())
+    }
+
+    fn restart_event_stream(&mut self) {
+        self.event_stream = None;
+        if let Err(err) = self.start_event_stream() {
+            tracing::warn!(
+                target = "muxterm::herdr",
+                workspace = %self.workspace_id,
+                error = %err,
+                "重建 Herdr event subscription 失败"
+            );
+        }
+    }
+
     /// 以新的 Surface 字符格重建一个只读 observer。Herdr observer 本身
     /// 不能 resize；重连会先发一帧与 VTE 网格一致的 full frame。
     fn replace_observe_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
+        let (cols, rows) = normalize_pane_size(cols, rows, None);
         let herdr_pane = self
             .pane_to_herdr_pane
             .get(&pane)
@@ -482,8 +642,8 @@ impl HerdrRuntime {
                     full: _,
                 } => {
                     if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
-                        p.cols = width;
-                        p.rows = height;
+                        (p.cols, p.rows) =
+                            normalize_pane_size(width, height, Some((p.cols, p.rows)));
                     }
                     self.outputs
                         .entry(pane)
@@ -509,6 +669,261 @@ impl HerdrRuntime {
                     );
                 }
             }
+        }
+    }
+
+    fn drain_event_stream(&mut self) {
+        let pending = self
+            .event_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for event in pending {
+            match event {
+                EventStreamEvent::Snapshot { cause, snapshot } => {
+                    tracing::trace!(
+                        target = "muxterm::herdr",
+                        workspace = %self.workspace_id,
+                        event = ?cause,
+                        "apply Herdr event snapshot"
+                    );
+                    self.reconcile_snapshot(&snapshot);
+                }
+                EventStreamEvent::Layout(layout) => {
+                    self.apply_layout_record(&layout, true);
+                }
+                EventStreamEvent::Closed => {
+                    tracing::info!(
+                        target = "muxterm::herdr",
+                        workspace = %self.workspace_id,
+                        "Herdr event subscription closed"
+                    );
+                }
+                EventStreamEvent::Error(message) => {
+                    tracing::warn!(
+                        target = "muxterm::herdr",
+                        workspace = %self.workspace_id,
+                        error = %message,
+                        "Herdr event subscription error"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Apply a post-connect session snapshot as a diff in the shared Runtime
+    /// model. Structural events, titles, focus, layouts and full agent records
+    /// all converge here; no Herdr event spelling escapes this module.
+    fn reconcile_snapshot(&mut self, snap: &SessionSnapshot) {
+        let old_name = self.workspace_name.clone();
+        let old_tabs: HashMap<TabId, TabInfo> =
+            self.tabs.iter().cloned().map(|tab| (tab.id, tab)).collect();
+        let old_panes: HashMap<PaneId, PaneInfo> = self
+            .panes
+            .iter()
+            .cloned()
+            .map(|pane| (pane.id, pane))
+            .collect();
+        let old_layouts = self.layouts.clone();
+        let old_agents = self.agents.clone();
+        let old_active_tab = self.active_tab;
+        let old_active_pane = self.active_pane;
+
+        if !snap
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.workspace_id == self.workspace_id)
+        {
+            for pane in old_agents.keys() {
+                self.events.push_back(StateChange::PaneAgentChanged {
+                    pane: *pane,
+                    agent: None,
+                    initial: false,
+                });
+            }
+            for pane in old_panes.keys() {
+                self.events
+                    .push_back(StateChange::PaneClosed { pane: *pane });
+            }
+            for tab in old_tabs.keys() {
+                self.events.push_back(StateChange::TabClosed { tab: *tab });
+            }
+            self.tabs.clear();
+            self.panes.clear();
+            self.layouts.clear();
+            self.agents.clear();
+            self.outputs.clear();
+            self.herdr_tab_to_tab.clear();
+            self.herdr_pane_to_pane.clear();
+            self.tab_to_herdr_tab.clear();
+            self.pane_to_herdr_pane.clear();
+            self.active_tab = None;
+            self.active_pane = None;
+            self.observe_streams.clear();
+            self.restart_event_stream();
+            return;
+        }
+
+        if !self.apply_snapshot(snap, false) {
+            return;
+        }
+
+        let new_tabs: HashMap<TabId, TabInfo> =
+            self.tabs.iter().cloned().map(|tab| (tab.id, tab)).collect();
+        let new_panes: HashMap<PaneId, PaneInfo> = self
+            .panes
+            .iter()
+            .cloned()
+            .map(|pane| (pane.id, pane))
+            .collect();
+        let old_pane_ids = old_panes.keys().copied().collect::<HashSet<_>>();
+        let new_pane_ids = new_panes.keys().copied().collect::<HashSet<_>>();
+
+        if old_name != self.workspace_name {
+            self.events.push_back(StateChange::WorkspaceRenamed {
+                name: self.workspace_name.clone(),
+            });
+        }
+
+        for pane in old_panes
+            .keys()
+            .filter(|pane| !new_panes.contains_key(pane))
+        {
+            self.events
+                .push_back(StateChange::PaneClosed { pane: *pane });
+        }
+        for tab in old_tabs.keys().filter(|tab| !new_tabs.contains_key(tab)) {
+            self.events.push_back(StateChange::TabClosed { tab: *tab });
+        }
+        for tab in self
+            .tabs
+            .iter()
+            .filter(|tab| !old_tabs.contains_key(&tab.id))
+        {
+            self.events.push_back(StateChange::TabAdded { tab: tab.id });
+        }
+        for tab in &self.tabs {
+            if let Some(old) = old_tabs.get(&tab.id) {
+                if old.name != tab.name {
+                    self.events.push_back(StateChange::TabRenamed {
+                        tab: tab.id,
+                        name: tab.name.clone(),
+                    });
+                }
+            }
+        }
+        for pane in &self.panes {
+            match old_panes.get(&pane.id) {
+                None => self.events.push_back(StateChange::PaneAdded {
+                    pane: pane.id,
+                    tab: pane.tab,
+                }),
+                Some(old) if old.tab != pane.tab => {
+                    self.events
+                        .push_back(StateChange::PaneClosed { pane: pane.id });
+                    self.events.push_back(StateChange::PaneAdded {
+                        pane: pane.id,
+                        tab: pane.tab,
+                    });
+                }
+                Some(old) => {
+                    if old.title != pane.title {
+                        self.events.push_back(StateChange::PaneTitleChanged {
+                            pane: pane.id,
+                            title: pane.title.clone(),
+                        });
+                    }
+                    if old.cols != pane.cols || old.rows != pane.rows {
+                        self.events.push_back(StateChange::PaneResized {
+                            pane: pane.id,
+                            cols: pane.cols,
+                            rows: pane.rows,
+                        });
+                    }
+                }
+            }
+        }
+        for (tab, layout) in &self.layouts {
+            if old_layouts.get(tab) != Some(layout) {
+                self.events.push_back(StateChange::LayoutChanged {
+                    tab: *tab,
+                    layout: layout.clone(),
+                });
+            }
+        }
+
+        let all_agent_panes = old_agents
+            .keys()
+            .chain(self.agents.keys())
+            .copied()
+            .collect::<HashSet<_>>();
+        for pane in all_agent_panes {
+            if old_agents.get(&pane) != self.agents.get(&pane) {
+                // Switching between a lifecycle hook and screen detection is a
+                // new authority bootstrap, not a user-visible agent transition.
+                // Herdr can briefly report Done while the detector settles to
+                // Working; marking the handoff initial prevents that transient
+                // state from generating a duplicate completion notification.
+                let initial = agent_source_handoff_is_bootstrap(
+                    old_agents
+                        .get(&pane)
+                        .map(|agent| agent.screen_detection_skipped),
+                    self.agents
+                        .get(&pane)
+                        .map(|agent| agent.screen_detection_skipped),
+                );
+                self.events.push_back(StateChange::PaneAgentChanged {
+                    pane,
+                    agent: self.agents.get(&pane).cloned().map(Box::new),
+                    initial,
+                });
+            }
+        }
+        if old_active_tab != self.active_tab {
+            if let Some(tab) = self.active_tab {
+                self.events.push_back(StateChange::ActiveTabChanged { tab });
+            }
+        }
+        if old_active_pane != self.active_pane {
+            if let Some((tab, pane)) = self.active_tab.zip(self.active_pane) {
+                self.events
+                    .push_back(StateChange::ActivePaneChanged { tab, pane });
+            }
+        }
+
+        self.outputs.retain(|pane, _| new_pane_ids.contains(pane));
+        self.observe_streams
+            .retain(|stream| new_pane_ids.contains(&stream.pane()));
+        for pane in new_pane_ids.difference(&old_pane_ids).copied() {
+            let Some(herdr_pane) = self.pane_to_herdr_pane.get(&pane).cloned() else {
+                continue;
+            };
+            self.seed_one_pane(pane, &herdr_pane);
+            let (cols, rows) = new_panes
+                .get(&pane)
+                .map(|pane| (pane.cols, pane.rows))
+                .unwrap_or((80, 24));
+            if let Some(tx) = self.observe_tx.as_ref().cloned() {
+                match ObserveStream::start(
+                    self.session.client_socket_path(),
+                    &herdr_pane,
+                    pane,
+                    cols,
+                    rows,
+                    tx,
+                ) {
+                    Ok(stream) => self.observe_streams.push(stream),
+                    Err(err) => tracing::warn!(
+                        target = "muxterm::herdr",
+                        pane = %herdr_pane,
+                        error = %err,
+                        "新 pane observe 流启动失败"
+                    ),
+                }
+            }
+        }
+        if old_pane_ids != new_pane_ids {
+            self.restart_event_stream();
         }
     }
 
@@ -583,6 +998,84 @@ fn numeric_suffix(id: &str) -> u32 {
             })
         })
         .unwrap_or(0)
+}
+
+/// 把 Herdr 的零尺寸 wire sentinel 收敛成通用 Runtime 可用的终端尺寸。
+fn normalize_pane_size(width: u16, height: u16, previous: Option<(u16, u16)>) -> (u16, u16) {
+    let previous = previous.unwrap_or((DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS));
+    let previous_cols = if previous.0 == 0 {
+        DEFAULT_HERDR_COLS
+    } else {
+        previous.0
+    };
+    let previous_rows = if previous.1 == 0 {
+        DEFAULT_HERDR_ROWS
+    } else {
+        previous.1
+    };
+    (
+        if width == 0 { previous_cols } else { width },
+        if height == 0 { previous_rows } else { height },
+    )
+}
+
+fn layout_has_usable_geometry(layout: &LayoutRecord) -> bool {
+    layout.area.width > 0
+        && layout.area.height > 0
+        && layout
+            .panes
+            .iter()
+            .all(|pane| pane.rect.width > 0 && pane.rect.height > 0)
+        && layout
+            .splits
+            .iter()
+            .all(|split| split.rect.width > 0 && split.rect.height > 0)
+}
+
+fn product_agent(agent: &AgentRecord) -> PaneAgentInfo {
+    PaneAgentInfo {
+        terminal_id: agent.terminal_id.clone(),
+        name: agent.name.clone(),
+        kind: agent.agent.clone(),
+        title: agent.title.clone(),
+        terminal_title: agent.terminal_title.clone(),
+        terminal_title_stripped: agent.terminal_title_stripped.clone(),
+        display_name: agent.display_agent.clone(),
+        status: match &agent.agent_status {
+            HerdrAgentStatus::Idle => PaneAgentStatus::Idle,
+            HerdrAgentStatus::Working => PaneAgentStatus::Working,
+            HerdrAgentStatus::Blocked => PaneAgentStatus::Blocked,
+            HerdrAgentStatus::Done => PaneAgentStatus::Done,
+            HerdrAgentStatus::Unknown(_) => PaneAgentStatus::Unknown,
+        },
+        screen_detection_skipped: agent.screen_detection_skipped,
+        state_labels: agent.state_labels.clone(),
+        tokens: agent.tokens.clone(),
+        session: agent
+            .agent_session
+            .as_ref()
+            .map(|session| PaneAgentSession {
+                source: session.source.clone(),
+                agent: session.agent.clone(),
+                kind: match session.kind.as_str() {
+                    "id" => PaneAgentSessionKind::Id,
+                    "path" => PaneAgentSessionKind::Path,
+                    other => PaneAgentSessionKind::Unknown(other.to_string()),
+                },
+                value: session.value.clone(),
+            }),
+        focused: agent.focused,
+        launch_pending: agent.launch_pending,
+        interactive_ready: agent.interactive_ready,
+        state_change_seq: agent.state_change_seq,
+        cwd: agent.cwd.clone(),
+        foreground_cwd: agent.foreground_cwd.clone(),
+        revision: agent.revision,
+    }
+}
+
+fn agent_source_handoff_is_bootstrap(old: Option<bool>, new: Option<bool>) -> bool {
+    matches!((old, new), (Some(old), Some(new)) if old != new)
 }
 
 #[derive(Clone, Copy)]
@@ -734,6 +1227,10 @@ impl State for HerdrRuntime {
         self.panes.iter().find(|p| &p.id == pane)
     }
 
+    fn pane_agent(&self, pane: &PaneId) -> Option<&PaneAgentInfo> {
+        self.agents.get(pane)
+    }
+
     fn pane_output(&self, pane: &PaneId) -> Option<&[u8]> {
         self.outputs.get(pane).map(Vec::as_slice)
     }
@@ -768,7 +1265,12 @@ impl Runtime for HerdrRuntime {
             .session
             .snapshot()
             .context("Herdr session.snapshot 失败")?;
-        self.apply_snapshot(&snap);
+        if !self.apply_snapshot(&snap, true) {
+            return Err(anyhow!(
+                "Herdr workspace {} 不在 session.snapshot 中",
+                self.workspace_id
+            ));
+        }
         if self.panes.is_empty() {
             return Err(anyhow!(
                 "Herdr workspace {} 在 snapshot 里没有 pane",
@@ -777,6 +1279,8 @@ impl Runtime for HerdrRuntime {
         }
         self.seed_pane_read();
         self.start_observe_streams();
+        self.start_event_stream()
+            .context("Herdr events.subscribe 失败")?;
 
         self.status = BackendStatus::Connected;
         self.events
@@ -1008,11 +1512,15 @@ impl Runtime for HerdrRuntime {
     }
 
     fn take_events(&mut self) -> Vec<StateChange> {
+        self.drain_event_stream();
         self.drain_observe();
         self.events.drain(..).collect()
     }
 
     async fn shutdown(&mut self) -> Result<()> {
+        self.event_stream = None;
+        self.event_tx = None;
+        self.event_rx = None;
         self.observe_streams.clear();
         self.observe_tx = None;
         self.observe_rx = None;
@@ -1045,6 +1553,9 @@ impl Runtime for HerdrRuntime {
 
 impl Drop for HerdrRuntime {
     fn drop(&mut self) {
+        self.event_stream = None;
+        self.event_tx = None;
+        self.event_rx = None;
         self.observe_streams.clear();
         self.observe_tx = None;
         self.observe_rx = None;
@@ -1144,13 +1655,18 @@ impl HerdrRuntime {
                 .find(|candidate| candidate.pane_id == pane_id)
                 .map(|candidate| candidate.rect)
         });
+        let (cols, rows) = normalize_pane_size(
+            rect.map(|rect| rect.width).unwrap_or(0),
+            rect.map(|rect| rect.height).unwrap_or(0),
+            None,
+        );
         self.panes.push(PaneInfo {
             id: pid,
             tab,
             active: true,
             title: "herdr".into(),
-            cols: rect.map(|rect| rect.width).unwrap_or(80),
-            rows: rect.map(|rect| rect.height).unwrap_or(24),
+            cols,
+            rows,
         });
         self.events
             .push_back(StateChange::PaneAdded { pane: pid, tab });
@@ -1220,6 +1736,117 @@ mod tests {
         assert_eq!(numeric_suffix("w2:pR"), 24);
         assert_eq!(numeric_suffix("w2:p0"), 32);
         assert_eq!(numeric_suffix("w2:p11"), 33);
+    }
+
+    /// Herdr protocol 19 uses a zero pane rect for a background workspace
+    /// before that workspace has a foreground viewport. The normalized
+    /// Runtime model must never expose that wire sentinel to Workspace.
+    #[test]
+    fn zero_sized_background_layout_uses_last_or_default_terminal_size() {
+        assert_eq!(normalize_pane_size(0, 0, None), (80, 24));
+        assert_eq!(normalize_pane_size(0, 0, Some((132, 41))), (132, 41));
+        assert_eq!(normalize_pane_size(54, 23, Some((132, 41))), (54, 23));
+        assert_eq!(normalize_pane_size(0, 0, Some((0, 0))), (80, 24));
+    }
+
+    #[test]
+    fn agent_detection_source_handoff_is_a_notification_free_bootstrap() {
+        assert!(agent_source_handoff_is_bootstrap(Some(true), Some(false)));
+        assert!(agent_source_handoff_is_bootstrap(Some(false), Some(true)));
+        assert!(!agent_source_handoff_is_bootstrap(Some(false), Some(false)));
+        assert!(!agent_source_handoff_is_bootstrap(Some(true), Some(true)));
+        assert!(!agent_source_handoff_is_bootstrap(None, Some(false)));
+        assert!(!agent_source_handoff_is_bootstrap(Some(false), None));
+    }
+
+    /// A zero-area background snapshot carries no pane placement information.
+    /// It may update focus, but must not turn an existing vertical split into
+    /// the legacy horizontal fallback or erase the last usable pane sizes.
+    #[test]
+    fn zero_sized_background_layout_preserves_existing_tree_and_geometry() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let tab = TabId(1);
+        let first = PaneId(1);
+        let second = PaneId(2);
+        runtime.herdr_tab_to_tab.insert("w1:t1".into(), tab);
+        runtime.herdr_pane_to_pane.insert("w1:p1".into(), first);
+        runtime.herdr_pane_to_pane.insert("w1:p2".into(), second);
+        runtime.panes = vec![
+            PaneInfo {
+                id: first,
+                tab,
+                active: true,
+                title: "first".into(),
+                cols: 90,
+                rows: 30,
+            },
+            PaneInfo {
+                id: second,
+                tab,
+                active: false,
+                title: "second".into(),
+                cols: 90,
+                rows: 30,
+            },
+        ];
+        let expected_tree = LayoutNode::Split {
+            dir: SplitDir::Vertical,
+            ratio: 500,
+            first: Box::new(LayoutNode::Leaf(first)),
+            second: Box::new(LayoutNode::Leaf(second)),
+        };
+        runtime.layouts.insert(
+            tab,
+            TabLayout {
+                tab,
+                tree: expected_tree.clone(),
+                active: first,
+            },
+        );
+        let zero = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let layout = LayoutRecord {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            zoomed: false,
+            area: zero,
+            focused_pane_id: "w1:p2".into(),
+            panes: vec![
+                LayoutPaneRecord {
+                    pane_id: "w1:p1".into(),
+                    focused: false,
+                    rect: zero,
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p2".into(),
+                    focused: true,
+                    rect: zero,
+                },
+            ],
+            splits: vec![LayoutSplitRecord {
+                id: "split_0_root".into(),
+                path: vec![],
+                direction: LayoutSplitDirection::Down,
+                ratio: 0.5,
+                rect: zero,
+            }],
+        };
+
+        assert!(runtime.apply_layout_record(&layout, false));
+        let normalized = runtime.layouts.get(&tab).expect("layout must remain");
+        assert_eq!(normalized.tree, expected_tree);
+        assert_eq!(normalized.active, second);
+        assert!(runtime
+            .panes
+            .iter()
+            .all(|pane| (pane.cols, pane.rows) == (90, 30)));
     }
 
     #[test]
