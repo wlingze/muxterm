@@ -428,6 +428,71 @@ public enum PaneOutputFeedPolicy {
     ) -> Bool {
         viewExistedBeforeEvent || !seedCoveredEvent
     }
+
+    /// native SwiftTerm scrollback 在 `userScrolling` 状态下仍须接收 live。
+    /// viewport 只决定显示 yDisp，不能成为丢弃 `%output` 的门禁。
+    public static func shouldFeedLive(viewport: UInt32) -> Bool {
+        _ = viewport
+        return true
+    }
+}
+
+/// 历史查看策略：触控板/PageUp 交给 SwiftTerm 或前台 TUI；应用自身不拦截
+/// 事件，也不通过 PaneBuf dump 替换 live 屏幕。
+public enum PaneHistoryScrollPolicy {
+    /// 禁止从 live TUI 手里抢触控板/滚轮。
+    public static let stealsLiveTrackpad = false
+
+    /// 禁止 PageUp/PageDown 改 viewport（htop/Cursor 自己要这些键）。
+    public static let stealsLivePageKeys = false
+
+    /// 搜索跳转也只移动 native scroll position；不能把 core 历史帧重播到
+    /// 正在工作的 VT，否则会清掉 live 光标/alternate-screen 状态。
+    public static func shouldReplaceLiveScreen(isSearchJump: Bool) -> Bool {
+        _ = isSearchJump
+        return false
+    }
+
+    /// `deltaLines > 0` 往历史上滚（macOS `scrollingDeltaY > 0`）。
+    public static func nextOffset(
+        current: UInt32,
+        deltaLines: Int,
+        maxOffset: UInt32
+    ) -> UInt32 {
+        let next = Int64(current) + Int64(deltaLines)
+        if next <= 0 {
+            return 0
+        }
+        if next >= Int64(maxOffset) {
+            return maxOffset
+        }
+        return UInt32(next)
+    }
+
+    /// 把滚轮/触控板 delta 收成整数行，余数留在 accumulator。
+    public static func lines(
+        deltaY: CGFloat,
+        precise: Bool,
+        cellHeight: CGFloat,
+        accumulator: inout CGFloat
+    ) -> Int {
+        if deltaY == 0 {
+            return 0
+        }
+        let cell = max(cellHeight, 1)
+        if precise {
+            accumulator += deltaY
+            let n = Int(accumulator / cell)
+            accumulator -= CGFloat(n) * cell
+            return n
+        }
+        accumulator = 0
+        let rounded = Int(deltaY.rounded())
+        if rounded != 0 {
+            return rounded
+        }
+        return deltaY > 0 ? 1 : -1
+    }
 }
 
 /// 首屏 / 直播喂给 SwiftTerm 的字节：内置 VT 只交出可见缓冲，禁止把

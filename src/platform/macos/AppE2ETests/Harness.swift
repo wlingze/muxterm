@@ -154,8 +154,8 @@ enum Tmux {
     }
 
     static func sendHex(socket: String, target: String, bytes: [UInt8]) {
-        let hex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-        ok(socket: socket, args: ["send-keys", "-t", target, "-H", hex])
+        let hex = bytes.map { String(format: "%02x", $0) }
+        ok(socket: socket, args: ["send-keys", "-t", target, "-H"] + hex)
     }
 
     static func waitCapture(

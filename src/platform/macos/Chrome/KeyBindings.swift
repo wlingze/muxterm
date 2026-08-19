@@ -10,6 +10,9 @@ public enum KeyAction: Equatable, Sendable {
     case switchTab(Int) // 1-based
     case nextPane
     case prevPane
+    /// 在 OSC 133 命令刻度之间向前/向后跳转；不向 pane 发送按键。
+    case previousCommand
+    case nextCommand
     case commandPalette
     case quickConnect
     case searchPanes
@@ -81,6 +84,15 @@ public enum KeyBindings {
         }
         if chord.command, !chord.shift, !chord.option, key == "]" {
             return .nextPane
+        }
+
+        // Cmd+Option+↑/↓：在 shell 命令时间线中前后跳转。保留普通
+        // ↑/↓、Cmd+↑/↓ 给 SwiftTerm / shell，避免破坏 TUI 输入语义。
+        if chord.command, chord.option, !chord.shift, !chord.control, key == "up" {
+            return .previousCommand
+        }
+        if chord.command, chord.option, !chord.shift, !chord.control, key == "down" {
+            return .nextCommand
         }
 
         // Cmd+P：QuickConnect 面板（Recent + Project）。

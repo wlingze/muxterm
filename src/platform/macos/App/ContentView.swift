@@ -11,6 +11,11 @@ final class ContentView: NSView {
     let disconnectOverlay = NSTextField(labelWithString: "")
     /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
     let jumpLatestButton = NSButton()
+    /// 最近一次离开 pane 时的行位置。
+    let lastSeenButton = NSButton()
+    /// 当前 pane 最近一次成功/失败命令的刻度。
+    let commandMarkOKButton = NSButton()
+    let commandMarkFailButton = NSButton()
     /// 连接进度全窗口覆盖（W19-C：不是小对话框）。
     let connectProgressOverlay = NSTextField(labelWithString: "")
     /// 注意力 Cmd-Enter 的独立 replica overlay（W19-E）。
@@ -60,9 +65,33 @@ final class ContentView: NSView {
         jumpLatestButton.setAccessibilityIdentifier("muxterm.jumpLatest")
         jumpLatestButton.setAccessibilityElement(true)
 
+        lastSeenButton.translatesAutoresizingMaskIntoConstraints = false
+        lastSeenButton.title = "上次看到这里"
+        lastSeenButton.bezelStyle = .rounded
+        lastSeenButton.isHidden = true
+        lastSeenButton.setAccessibilityIdentifier("muxterm.lastSeen")
+        lastSeenButton.setAccessibilityElement(true)
+        lastSeenButton.toolTip = "跳回上次离开 pane 的位置"
+
+        for button in [commandMarkOKButton, commandMarkFailButton] {
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.bezelStyle = .rounded
+            button.isHidden = true
+            button.setAccessibilityElement(true)
+        }
+        commandMarkOKButton.title = "✓"
+        commandMarkOKButton.setAccessibilityIdentifier("muxterm.cmdMark.ok")
+        commandMarkFailButton.title = "✗"
+        commandMarkFailButton.setAccessibilityIdentifier("muxterm.cmdMark.fail")
+        commandMarkOKButton.contentTintColor = .systemGreen
+        commandMarkFailButton.contentTintColor = .systemRed
+
         addSubview(paneLayout)
         addSubview(statusBar)
         addSubview(disconnectOverlay)
+        addSubview(lastSeenButton)
+        addSubview(commandMarkOKButton)
+        addSubview(commandMarkFailButton)
         addSubview(jumpLatestButton)
         addSubview(connectProgressOverlay)
         addSubview(replyOverlayContainer)
@@ -70,6 +99,12 @@ final class ContentView: NSView {
         NSLayoutConstraint.activate([
             disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
             disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor),
+            lastSeenButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            lastSeenButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            commandMarkFailButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            commandMarkFailButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            commandMarkOKButton.trailingAnchor.constraint(equalTo: commandMarkFailButton.leadingAnchor, constant: -4),
+            commandMarkOKButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             jumpLatestButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             jumpLatestButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
             jumpLatestButton.widthAnchor.constraint(equalToConstant: 32),
@@ -165,9 +200,39 @@ final class ContentView: NSView {
         needsLayout = true
     }
 
-    /// 回底按钮：viewport 滚离底部时显示。
-    func setJumpLatestVisible(_ visible: Bool) {
+    /// 回底按钮：viewport 滚离底部时显示；有未读行时显示 `↓ +N`。
+    func setJumpLatestVisible(_ visible: Bool, unseenLines: UInt32 = 0) {
         jumpLatestButton.isHidden = !visible
+        jumpLatestButton.title = unseenLines > 0 ? "↓ +\(unseenLines)" : "↓"
+        jumpLatestButton.toolTip = unseenLines > 0
+            ? "回到底部（\(unseenLines) 行新输出）"
+            : "回到底部"
+        needsLayout = true
+    }
+
+    func setLastSeenVisible(_ visible: Bool) {
+        lastSeenButton.isHidden = !visible
+        needsLayout = true
+    }
+
+    func setCommandMarks(ok: (command: String, exitCode: Int, offset: UInt32)?,
+                         fail: (command: String, exitCode: Int, offset: UInt32)?) {
+        commandMarkOKButton.isHidden = ok == nil
+        commandMarkFailButton.isHidden = fail == nil
+        if let ok {
+            commandMarkOKButton.toolTip = "成功：\(ok.command)（退出码 \(ok.exitCode)）"
+            commandMarkOKButton.setAccessibilityValue(ok.command)
+        } else {
+            commandMarkOKButton.toolTip = nil
+            commandMarkOKButton.setAccessibilityValue(nil)
+        }
+        if let fail {
+            commandMarkFailButton.toolTip = "失败：\(fail.command)（退出码 \(fail.exitCode)）"
+            commandMarkFailButton.setAccessibilityValue(fail.command)
+        } else {
+            commandMarkFailButton.toolTip = nil
+            commandMarkFailButton.setAccessibilityValue(nil)
+        }
         needsLayout = true
     }
 }

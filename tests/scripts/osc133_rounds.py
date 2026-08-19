@@ -18,6 +18,7 @@ def osc(payload: str) -> None:
 
 def main() -> None:
     suffix = os.environ.get("MUXTERM_CMD_SUFFIX", "x")
+    pad_lines = int(os.environ.get("MUXTERM_CMD_PAD_LINES", "0"))
     ok = f"CMD_OK_{suffix}"
     fail = f"CMD_FAIL_{suffix}"
     osc("133;A")
@@ -26,6 +27,9 @@ def main() -> None:
     osc("133;C")
     sys.stdout.write("out_ok\r\n")
     osc("133;D;0")
+    for i in range(pad_lines):
+        sys.stdout.write(f"PAD_{i}_{suffix}\r\n")
+    sys.stdout.flush()
     osc("133;A")
     osc("133;B")
     sys.stdout.write(fail + "\r\n")

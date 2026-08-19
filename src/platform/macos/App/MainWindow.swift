@@ -43,6 +43,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var replyOverlayPaneId: UInt32?
     /// 搜索跳转：切 tab 完成后再滚到命中行。
     private var pendingSearchJump: PendingSearchJump?
+    /// pane → 最近一次离开时的稳定行 ID。连接切换时清空，避免把不同
+    /// workspace 的 seq 混用。
+    private var lastSeenLineSeq: [UInt32: UInt64] = [:]
+    private var lastSeenJump: (paneId: UInt32, offset: UInt32)?
+    /// 当前 pane 在命令时间线中的游标；手动滚轮/搜索会清掉游标，
+    /// Cmd+Option+↑/↓ 则按此游标前后移动。
+    private var commandTimelineCursor: [UInt32: UInt64] = [:]
+    /// 程序化命令跳转触发 native scroll callback 时保留游标一次。
+    private var commandNavigationPanes = Set<UInt32>()
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
     private(set) var lastPaneOutputEventCount: Int = 0
     private var languageObserver: NSObjectProtocol?
@@ -151,6 +160,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         super.init(window: window)
         window.delegate = self
+        wireTerminalManagerCallbacks()
 
         commandPalette = CommandPaletteController(ownerWindow: window)
         commandPalette.onSelect = { [weak self] item in
@@ -243,6 +253,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         content.jumpLatestButton.target = self
         content.jumpLatestButton.action = #selector(jumpToLatest)
+        content.lastSeenButton.target = self
+        content.lastSeenButton.action = #selector(jumpToLastSeen)
+        content.commandMarkOKButton.target = self
+        content.commandMarkOKButton.action = #selector(jumpToLastSuccessfulCommand)
+        content.commandMarkFailButton.target = self
+        content.commandMarkFailButton.action = #selector(jumpToLastFailedCommand)
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
         }
@@ -586,40 +602,109 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         else {
             return
         }
-        _ = bridge.setPaneViewport(paneId: pane, offset: 0)
-        applyPaneViewport(paneId: pane, offset: 0)
-        content.setJumpLatestVisible(false)
+        terminalManager.scrollToLatest(paneId: pane)
+        content.setJumpLatestVisible(false, unseenLines: 0)
         needsLayoutReload = true
+    }
+
+    @objc private func jumpToLastSeen() {
+        guard let target = lastSeenJump else { return }
+        applyPaneViewport(paneId: target.paneId, offset: target.offset)
+        content.setLastSeenVisible(false)
+    }
+
+    @objc private func jumpToLastSuccessfulCommand() {
+        guard let pane = activePaneID,
+              let mark = commandMarks(for: pane).reversed().first(where: { $0.exitCode == 0 })
+        else { return }
+        jumpToCommandMark(mark, paneId: pane)
+    }
+
+    @objc private func jumpToLastFailedCommand() {
+        guard let pane = activePaneID,
+              let mark = commandMarks(for: pane).reversed().first(where: {
+                  guard let code = $0.exitCode else { return false }
+                  return code != 0
+              })
+        else { return }
+        jumpToCommandMark(mark, paneId: pane)
+    }
+
+    /// 按 OSC 133 时间线跳到当前命令之前最近的一条命令。
+    @objc func jumpToPreviousCommand() {
+        guard let pane = activePaneID else { return }
+        let marks = commandMarks(for: pane)
+        guard !marks.isEmpty else { return }
+        let target: CoreCommandMark?
+        if let current = commandTimelineCursor[pane] {
+            target = marks.last(where: { $0.seq < current })
+        } else {
+            target = marks.last
+        }
+        if let target {
+            jumpToCommandMark(target, paneId: pane)
+        }
+    }
+
+    /// 按 OSC 133 时间线跳到当前命令之后最近的一条命令；已经在末尾时
+    /// 清掉游标并回到实时底部，和向下滚动到底部的语义一致。
+    @objc func jumpToNextCommand() {
+        guard let pane = activePaneID else { return }
+        let marks = commandMarks(for: pane)
+        if let current = commandTimelineCursor[pane],
+           let target = marks.first(where: { $0.seq > current })
+        {
+            jumpToCommandMark(target, paneId: pane)
+        } else {
+            commandTimelineCursor.removeValue(forKey: pane)
+            terminalManager.scrollToLatest(paneId: pane)
+        }
+    }
+
+    private func commandMarks(for paneId: UInt32) -> [CoreCommandMark] {
+        bridge.paneCommandMarks(paneId: paneId)
+            .filter { $0.exitCode != nil && $0.historyOffset != nil }
+    }
+
+    private func jumpToCommandMark(_ mark: CoreCommandMark, paneId: UInt32) {
+        guard let offset = mark.historyOffset else { return }
+        commandTimelineCursor[paneId] = mark.seq
+        commandNavigationPanes.insert(paneId)
+        applyPaneViewport(paneId: paneId, offset: offset)
+    }
+
+    private var activePaneID: UInt32? {
+        lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id
     }
 
     /// 把 core 的 viewport 滚动偏移应用到 SwiftTerm 可见区：
     /// offset>0 时喂滚动窗口 ANSI（历史），offset==0 时恢复 live 输出。
     func applyPaneViewport(paneId: UInt32, offset: UInt32) {
-        let view = terminalManager.view(for: paneId)
-        if offset > 0 {
-            let term = view.getTerminal()
-            let dims = term.getDims()
-            // 用 tmux 报告的 pane 实际行列喂滚动帧（mock-codex 30 行帧，
-            // 24 行视口看不到底行 prompt）。
-            let paneInfo = lastSnapshot.panes.first(where: { $0.id == paneId })
-            let rows = UInt32(max(24, Int(paneInfo?.rows ?? 0), dims.rows))
-            let cols = UInt32(max(2, paneInfo?.cols ?? 80))
-            if dims.cols != Int(cols) || dims.rows != Int(rows) {
-                term.resize(cols: Int(cols), rows: Int(rows))
+        terminalManager.applyViewport(paneId: paneId, offset: offset)
+        content.setJumpLatestVisible(
+            offset > 0,
+            unseenLines: terminalManager.unseenLineCount(paneId: paneId)
+        )
+    }
+
+    private func wireTerminalManagerCallbacks() {
+        terminalManager.onViewportChanged = { [weak self] paneId, offset in
+            guard let self else { return }
+            // 用户滚轮/触控板改变视口时，下一次命令导航应从当前状态重新开始；
+            // 程序化 command jump 只保留刚设置的游标一次。
+            if self.commandNavigationPanes.remove(paneId) == nil {
+                self.commandTimelineCursor.removeValue(forKey: paneId)
             }
-            let ansi = bridge.paneScrollANSI(paneId: paneId, offset: offset, rows: rows)
-            if !ansi.isEmpty {
-                view.feedOutput(ansi, isSnapshot: true)
-            }
-        } else {
-            let paneInfo = lastSnapshot.panes.first(where: { $0.id == paneId })
-            let rows = max(24, Int(paneInfo?.rows ?? 0))
-            let visible = bridge.paneVisibleANSI(paneId: paneId)
-            let raw = bridge.getPaneOutput(paneId: paneId)
-            let data = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: rows)
-            if !data.isEmpty {
-                view.feedOutput(data, isSnapshot: true)
-            }
+            self.content.setJumpLatestVisible(
+                offset > 0,
+                unseenLines: self.terminalManager.unseenLineCount(paneId: paneId)
+            )
+            self.refreshHistoryChrome(for: paneId)
+        }
+        terminalManager.onUnseenLinesChanged = { [weak self] paneId, count in
+            guard let self, paneId == self.activePaneID else { return }
+            let offset = max(0, self.bridge.paneViewport(paneId: paneId))
+            self.content.setJumpLatestVisible(offset > 0, unseenLines: count)
         }
     }
 
@@ -839,6 +924,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         connectionPool.acquire(key: slot.key) { _ in slot }
         bridge = slot.bridge
         terminalManager = slot.terminalManager
+        lastSeenLineSeq.removeAll()
+        lastSeenJump = nil
+        commandTimelineCursor.removeAll()
+        commandNavigationPanes.removeAll()
+        wireTerminalManagerCallbacks()
         content.paneLayout.replaceTerminalManager(slot.terminalManager)
         // warm slot 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
         // 避免旧 slot 还是切换前的小字体。
@@ -1458,6 +1548,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
                 if ev.type == STATE_ACTIVE_PANE_CHANGED {
+                    recordLastSeen(for: lastSnapshot.activePane)
                     bridge.attentionOnBecameVisible(paneId: ev.paneId)
                 }
             } else if ev.isBackendStatus {
@@ -1545,6 +1636,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             terminalManager.handleOutput(paneId: item.paneId, data: item.data)
         }
         refreshAttentionChrome()
+        if let activePane = activePaneID {
+            refreshHistoryChrome(for: activePane)
+        }
     }
 
     /// 注意力引擎：更新状态栏红点 + 弹出 blocked/done 通知。
@@ -1632,7 +1726,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
             let viewport = bridge.paneViewport(paneId: activePane)
-            content.setJumpLatestVisible(viewport > 0)
+            content.setJumpLatestVisible(
+                viewport > 0,
+                unseenLines: terminalManager.unseenLineCount(paneId: activePane)
+            )
+            refreshHistoryChrome(for: activePane)
         }
 
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
@@ -1675,6 +1773,45 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandPalette.refreshLocalization()
         content.refreshLocalization()
         refreshUI()
+    }
+
+    /// 记录离开 pane 时最后一条稳定终端行；回到该 pane 后若 seq 前进，
+    /// 显示“上次看到这里”按钮，并用 core 行索引跳回，而不是猜文本位置。
+    private func recordLastSeen(for paneId: UInt32) {
+        let seq = bridge.paneLatestLineSeq(paneId: paneId)
+        guard seq >= 0 else { return }
+        lastSeenLineSeq[paneId] = UInt64(seq)
+    }
+
+    private func refreshHistoryChrome(for paneId: UInt32) {
+        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        if latest >= 0,
+           let seen = lastSeenLineSeq[paneId], UInt64(latest) > seen
+        {
+            let rawOffset = bridge.paneViewportOffsetForSeq(paneId: paneId, seq: seen)
+            if rawOffset >= 0 {
+                lastSeenJump = (paneId, UInt32(rawOffset))
+                content.setLastSeenVisible(true)
+            }
+        } else {
+            lastSeenJump = nil
+            content.setLastSeenVisible(false)
+        }
+
+        var ok: (command: String, exitCode: Int, offset: UInt32)?
+        var fail: (command: String, exitCode: Int, offset: UInt32)?
+        for mark in bridge.paneCommandMarks(paneId: paneId).reversed() {
+                // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
+                // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
+                guard let code = mark.exitCode, let offset = mark.historyOffset else { continue }
+                if code == 0, ok == nil {
+                    ok = (mark.command, code, offset)
+                } else if code != 0, fail == nil {
+                    fail = (mark.command, code, offset)
+                }
+                if ok != nil, fail != nil { break }
+        }
+        content.setCommandMarks(ok: ok, fail: fail)
     }
 
     /// session/window 已空时关闭 NSWindow。
@@ -1906,6 +2043,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let key: String
         if event.keyCode == 36 || event.keyCode == 76 {
             key = "\r"
+        } else if event.keyCode == 126 {
+            key = "up"
+        } else if event.keyCode == 125 {
+            key = "down"
         } else if let raw = event.charactersIgnoringModifiers, let first = raw.first {
             key = String(first)
         } else {
@@ -1948,6 +2089,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             nextPane()
         case .prevPane:
             prevPane()
+        case .previousCommand:
+            jumpToPreviousCommand()
+        case .nextCommand:
+            jumpToNextCommand()
         case .commandPalette:
             openCommandPalette()
         case .quickConnect:
