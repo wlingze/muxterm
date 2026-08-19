@@ -57,4 +57,121 @@ final class QuickConnectE2ETests: XCTestCase {
         )
         _ = bridge.execute(task: MuxTask.togglePaneFullscreen(paneId))
     }
+
+    func testUnifiedPanelShowsFullHyphenatedNamesAsColorDots() {
+        AppE2E.ensureApp()
+        let store = QuickConnectStore()
+        store.upsertProject(TargetConfig(
+            name: "archmini-home",
+            runtime: .tmux,
+            transport: .ssh(name: "archmini"),
+            path: "~"
+        ))
+        store.upsertProject(TargetConfig(
+            name: "pc-home",
+            runtime: .tmux,
+            transport: .ssh(name: "pc"),
+            path: "~"
+        ))
+        store.upsertProject(TargetConfig(
+            name: "ubuntu-home",
+            runtime: .tmux,
+            transport: .ssh(name: "cd"),
+            path: "~"
+        ))
+        let panel = UnifiedPanelController(
+            store: store,
+            ownerWindow: nil,
+            snapshot: { nil },
+            paneOutput: { _ in Data() },
+            sendInput: { _, _ in },
+            search: { _ in [] }
+        )
+        panel.present()
+        AppE2E.pump(80)
+        panel.window?.layoutIfNeeded()
+        XCTAssertGreaterThan(
+            panel.testTableColumnWidth(),
+            600,
+            "统一面板列必须跟 720pt 窗口，不能停在 100pt。width=\(panel.testTableColumnWidth())"
+        )
+        let expected = ["archmini-home", "pc-home", "ubuntu-home"]
+        for (index, name) in expected.enumerated() {
+            let cell = panel.testWorkspaceCell(at: index)
+            XCTAssertNotNil(cell, "row \(index) 必须是 QuickTargetCellView（\(name)）")
+            guard let cell else { continue }
+            XCTAssertEqual(cell.testTitleText(), name)
+            let needed = cell.testTitleTextWidth()
+            let got = cell.testTitleBoundsWidth()
+            XCTAssertGreaterThan(needed, 30, "\(name) 文字宽度不能退化成一个字形")
+            XCTAssertGreaterThanOrEqual(
+                got,
+                needed - 1,
+                "\(name) 必须完整显示。needed=\(needed) got=\(got)"
+            )
+            let dots = cell.testBadgeDotSizes()
+            XCTAssertEqual(dots.count, 1, "\(name) 应有一个 Project 色块")
+            XCTAssertEqual(dots.first?.width ?? 0, QuickTargetCellView.badgeDotSize, accuracy: 0.5)
+        }
+        panel.dismiss()
+    }
+
+    func testFillWidthScrollViewStretchesDefaultHundredPointColumn() {
+        AppE2E.ensureApp()
+        let scroll = MuxtermFillWidthScrollView(frame: NSRect(x: 0, y: 0, width: 720, height: 200))
+        let table = NSTableView()
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("panel"))
+        column.width = 100
+        column.minWidth = 40
+        table.addTableColumn(column)
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        scroll.documentView = table
+        scroll.layoutSubtreeIfNeeded()
+        scroll.tile()
+        let width = column.width
+        XCTAssertEqual(width, scroll.contentView.bounds.width, accuracy: 1.5)
+        XCTAssertGreaterThan(
+            width,
+            600,
+            "列必须跟 clip view（720），不能停在默认 100pt。width=\(width) clip=\(scroll.contentView.bounds.width)"
+        )
+    }
+
+    func testHyphenatedProjectNameStaysFullyVisibleBesideBadgeDots() {
+        AppE2E.ensureApp()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: QuickTargetCellView.preferredRowHeight))
+        let cell = QuickTargetCellView(identifier: NSUserInterfaceItemIdentifier("qc"))
+        cell.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(cell)
+        NSLayoutConstraint.activate([
+            cell.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            cell.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            cell.topAnchor.constraint(equalTo: host.topAnchor),
+            cell.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        cell.config = TargetConfig(
+            name: "archmini-home",
+            runtime: .tmux,
+            transport: .ssh(name: "archmini"),
+            path: "~"
+        )
+        cell.badges = [.recent, .project]
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.testTitleText(), "archmini-home")
+        let needed = cell.testTitleTextWidth()
+        let got = cell.testTitleBoundsWidth()
+        XCTAssertGreaterThan(needed, 40, "archmini-home 的文字宽度不能退化成一个字形。needed=\(needed)")
+        XCTAssertGreaterThanOrEqual(
+            got,
+            needed - 1,
+            "名称必须完整显示，不能截成 a。needed=\(needed) got=\(got)"
+        )
+        let dots = cell.testBadgeDotSizes()
+        XCTAssertEqual(dots.count, 2)
+        for size in dots {
+            XCTAssertEqual(size.width, QuickTargetCellView.badgeDotSize, accuracy: 0.5)
+            XCTAssertEqual(size.height, QuickTargetCellView.badgeDotSize, accuracy: 0.5)
+            XCTAssertLessThan(size.width, 20, "徽章必须是小色块，不能是 42pt PROJECT 胶囊。size=\(size)")
+        }
+    }
 }

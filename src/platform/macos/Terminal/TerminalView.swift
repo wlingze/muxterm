@@ -63,13 +63,9 @@ final class MuxTerminalView: TerminalView {
         terminalDelegate = self
         wantsLayer = true
         font = Self.makeFont(family: fontFamily, size: self.fontSize)
-        // 固定深色主题：codex/cursor 的输入框是深色，默认前景必须是浅色，
-        // 否则黑字黑框看不见；同时也作为 OSC 10/11 上报给 tmux 的颜色。
-        // 终端始终用深色色板（浅字深底）：codex/cursor 输入框按 OSC 10/11
-        // 画深色背景，正文/光标用「默认前景」→ 必须浅字才能看见。AppKit 的
-        // 浅色 chrome 主题只影响 status bar，不绑定终端默认色。
-        nativeForegroundColor = Self.color(hex: MuxtermTerminalColors.foregroundHex)
-        nativeBackgroundColor = Self.color(hex: MuxtermTerminalColors.backgroundHex)
+        // 主题与终端内所有颜色绑定：新建视图用当前 activePalette
+        // （默认浅色白底黑字；dark 才是 Mocha 深色）。
+        applyPalette(MuxtermTerminalColors.activePalette)
         // 关闭 SwiftTerm 的 mouse reporting 转发，保证鼠标点击/拖拽优先做文本
         // 选择（选中复制）。codex/htop 等应用启用 mouse 协议后，SwiftTerm 默认
         // 会把点击/拖拽当 mouse 序列发给程序，导致「选不中、一直闪烁」。需要
@@ -93,6 +89,11 @@ final class MuxTerminalView: TerminalView {
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
     func feedOutput(_ data: Data, isSnapshot: Bool = false) {
         guard !data.isEmpty else { return }
+        if isSnapshot {
+            // 快照替换当前屏：清掉误喂的 capture 历史，避免滚动条里
+            // 一万行旧输出、切 tab 时从很早刷到现在。
+            getTerminal().resetToInitialState()
+        }
         let cursorBefore = getTerminal().getCursorLocation()
         let bytes = [UInt8](data)
         // SwiftTerm 同步解析输出：查询应答经 `Terminal.sendResponse` 在 feed
@@ -150,6 +151,41 @@ final class MuxTerminalView: TerminalView {
         )
         accessibilityOutput = lines.joined(separator: "\n")
         setAccessibilityValue(accessibilityOutput)
+    }
+
+    /// 测试用：把当前视图画进 bitmap，扫第一行字符格的亮度范围。
+    /// 黑底黑字未抬亮时 max≈0；对比度修正后字形像素会明显亮于背景。
+    func sampleFirstRowLuminanceRange() -> (min: Int, max: Int)? {
+        layoutSubtreeIfNeeded()
+        displayIfNeeded()
+        let bounds = self.bounds
+        guard bounds.width > 8, bounds.height > 8 else { return nil }
+        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        cacheDisplay(in: bounds, to: rep)
+        let cellH = max(8, terminalCellSizeInPixels()?.height ?? 16)
+        let height = min(cellH, rep.pixelsHigh)
+        guard height > 0, rep.pixelsWide > 0 else { return nil }
+        func scan(from y0: Int, to y1: Int) -> (min: Int, max: Int) {
+            var minL = 255 * 3
+            var maxL = 0
+            for y in y0..<y1 {
+                for x in 0..<rep.pixelsWide {
+                    guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else {
+                        continue
+                    }
+                    let s = Int((color.redComponent * 255).rounded())
+                        + Int((color.greenComponent * 255).rounded())
+                        + Int((color.blueComponent * 255).rounded())
+                    minL = min(minL, s)
+                    maxL = max(maxL, s)
+                }
+            }
+            return (minL, maxL)
+        }
+        let top = scan(from: 0, to: height)
+        let bottom = scan(from: max(0, rep.pixelsHigh - height), to: rep.pixelsHigh)
+        // 黑底行更暗；bitmap 原点可能在顶部或底部。
+        return top.min <= bottom.min ? top : bottom
     }
 
     /// 当前 SwiftTerm 字符格的 backing pixel 尺寸。
@@ -227,15 +263,42 @@ final class MuxTerminalView: TerminalView {
         }
     }
 
-    /// 运行期切换主题（浅色/深色）：终端默认色固定为深色（agent 输入框契约），
-    /// 主题只影响 chrome；这里保持深色并重绘，避免浅色主题把 OSC 10/11
-    /// 代答成黑字白底。
-    func setThemeColors(fgHex: String, bgHex: String) {
-        // W20-C：主题切换必须真的把传入 hex 写进终端（light=黑字白底，
-        // dark=浅字深底），不能固定写死 cdd6f4/1e1e2e。
-        nativeForegroundColor = Self.color(hex: fgHex)
-        nativeBackgroundColor = Self.color(hex: bgHex)
+    /// 运行期切换主题：把默认前景/背景/光标/选区/ANSI 16 色全部写成当前 palette。
+    func applyPalette(_ palette: MuxtermPalette) {
+        let painted = palette.contrasted()
+        nativeForegroundColor = Self.color(hex: painted.fg)
+        nativeBackgroundColor = Self.color(hex: painted.bg)
+        caretColor = Self.color(hex: painted.cursor)
+        caretTextColor = Self.color(hex: painted.bg)
+        selectedTextBackgroundColor = Self.color(hex: painted.cursor)
+            .withAlphaComponent(0.35)
+        layer?.backgroundColor = nativeBackgroundColor.cgColor
+        let ansi = painted.ansi.prefix(16).map { Self.terminalColor(hex: $0) }
+        if ansi.count == 16 {
+            installColors(Array(ansi))
+        }
         forceRedraw()
+    }
+
+    /// 运行期切换主题（浅色/深色）：把传入 hex 写进终端默认色并重绘。
+    func setThemeColors(fgHex: String, bgHex: String) {
+        let pair = ColorContrast.themeColors(fg: fgHex, bg: bgHex)
+        nativeForegroundColor = Self.color(hex: pair.fg)
+        nativeBackgroundColor = Self.color(hex: pair.bg)
+        layer?.backgroundColor = nativeBackgroundColor.cgColor
+        forceRedraw()
+    }
+
+    private static func terminalColor(hex: String) -> Color {
+        let ns = color(hex: hex)
+        guard let c = ns.usingColorSpace(.sRGB) else {
+            return Color(red: 0, green: 0, blue: 0)
+        }
+        return Color(
+            red: UInt16((c.redComponent * 65535.0).rounded()),
+            green: UInt16((c.greenComponent * 65535.0).rounded()),
+            blue: UInt16((c.blueComponent * 65535.0).rounded())
+        )
     }
 
     /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。

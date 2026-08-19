@@ -4,11 +4,11 @@ import XCTest
 import MuxtermChrome
 
 /// 生产日志 `test-2026-0817-1457.log`：attach 后 `refresh-client -r` 上报
-/// OSC 10/11 = 黑字白底。cursor/codex 按查询色画深色输入框，再用「默认前景」
-/// 画正文和 ▌，结果文字/光标时有时无。
+/// OSC 10/11。主题与终端颜色绑定：默认浅色是黑字白底；深色才是浅字深底。
 final class AgentRenderE2ETests: XCTestCase {
-    func testReportedOscColorsAreLightTextOnDarkBackground() throws {
+    func testReportedOscColorsFollowActivePalette() throws {
         AppE2E.ensureApp()
+        MuxtermTerminalColors.activePalette = .light
         let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
@@ -21,22 +21,32 @@ final class AgentRenderE2ETests: XCTestCase {
         AppE2E.pump(40)
 
         let colors = view.themeHexColors()
+        XCTAssertEqual(
+            colors.fg.lowercased(),
+            MuxtermPalette.light.fg,
+            "未切主题时 OSC 10 必须是浅色前景。got fg=\(colors.fg)"
+        )
+        XCTAssertEqual(
+            colors.bg.lowercased(),
+            MuxtermPalette.light.bg,
+            "未切主题时 OSC 11 必须是浅色背景（白色）。got bg=\(colors.bg)"
+        )
         let fg = luminance(colors.fg)
         let bg = luminance(colors.bg)
         XCTAssertGreaterThan(
-            fg,
             bg,
-            "上报给 tmux 的 OSC 10 必须比 OSC 11 亮（agent 深色输入框 + 默认前景）。got fg=\(colors.fg) bg=\(colors.bg)"
+            fg,
+            "浅色主题必须是深字浅底。got fg=\(colors.fg) bg=\(colors.bg)"
         )
-        XCTAssertNotEqual(
-            colors.fg.lowercased(),
-            MuxtermTerminalColors.lightForegroundHex,
-            "禁止把浅色主题的 000000 前景报给 tmux 代答 OSC 10"
-        )
-        XCTAssertNotEqual(
-            colors.bg.lowercased(),
-            MuxtermTerminalColors.lightBackgroundHex,
-            "禁止把浅色主题的 ffffff 背景报给 tmux 代答 OSC 11"
+
+        view.applyPalette(.dark)
+        let dark = view.themeHexColors()
+        XCTAssertEqual(dark.fg.lowercased(), MuxtermPalette.dark.fg)
+        XCTAssertEqual(dark.bg.lowercased(), MuxtermPalette.dark.bg)
+        XCTAssertGreaterThan(
+            luminance(dark.fg),
+            luminance(dark.bg),
+            "深色主题必须是浅字深底。got fg=\(dark.fg) bg=\(dark.bg)"
         )
         window.orderOut(nil)
     }
@@ -152,6 +162,102 @@ final class AgentRenderE2ETests: XCTestCase {
             "顶部 AGENT_TOP 必须还在，不能只剩输入行。vte=\(app.testActivePaneTerminalText())"
         )
     }
+
+    func testFirstPaintOfLongHistoryDoesNotReplayOldestLines() {
+        AppE2E.ensureApp()
+        var raw = Data()
+        for i in 0..<200 {
+            raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
+        }
+        let painted = PanePaintPolicy.firstPaint(visible: Data(), raw: raw, rows: 24)
+        XCTAssertFalse(
+            String(data: painted, encoding: .utf8)?.contains("line-0") ?? true,
+            "策略层就必须丢掉最早行，不能把 200 行历史交给 SwiftTerm"
+        )
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 800, height: 400))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        view.getTerminal().resize(cols: 80, rows: 24)
+        view.feedOutput(painted, isSnapshot: true)
+        AppE2E.pump(40)
+        let text = view.visibleScreenText()
+        XCTAssertTrue(text.contains("line-199"), "应停在最近缓冲。got=\(text.suffix(80))")
+        XCTAssertFalse(text.contains("line-0"), "不得刷出最早输出。got=\(text.prefix(80))")
+        window.orderOut(nil)
+    }
+
+    func testLightThemeOscReportsTrueBlackNotGray() {
+        let osc = ColorContrast.oscColors(fg: MuxtermPalette.light.fg, bg: MuxtermPalette.light.bg)
+        XCTAssertEqual(osc.bg.lowercased(), MuxtermPalette.light.bg)
+        XCTAssertEqual(
+            osc.fg.lowercased(),
+            MuxtermPalette.light.fg,
+            "OSC 10 必须是主题黑字，不能报 595959 污染普通 tmux attach。got=\(osc.fg)"
+        )
+    }
+
+    func testBlackOnBlackCellsAreDrawnReadable() {
+        AppE2E.ensureApp()
+        MuxtermTerminalColors.activePalette = .light
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        view.applyPalette(.light)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        AppE2E.pump(40)
+        view.getTerminal().resize(cols: 40, rows: 12)
+        // 黑底 + 显式黑字：OSC 10 改不了这种格子，必须在绘制时抬亮。
+        let line = "\u{1b}[40m\u{1b}[30m" + String(repeating: "X", count: 40) + "\u{1b}[0m\r\n"
+        view.feedOutput(Data(line.utf8))
+        view.forceRedraw()
+        AppE2E.pump(80)
+        guard let range = view.sampleFirstRowLuminanceRange() else {
+            XCTFail("无法采样终端像素")
+            window.orderOut(nil)
+            return
+        }
+        XCTAssertGreaterThan(
+            range.max,
+            80 * 3,
+            "黑底黑字必须被抬亮，否则 Cursor 输入框看不见。range=\(range)"
+        )
+        XCTAssertLessThan(
+            range.min,
+            80,
+            "黑底本身应仍接近黑。range=\(range)"
+        )
+        window.orderOut(nil)
+    }
+
+    func testDeleteToBeginningOfLineSendsCtrlU() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let handler = RecordingInputHandler()
+        view.inputHandler = handler
+        view.doCommand(by: Selector(("deleteToBeginningOfLine:")))
+        XCTAssertEqual(handler.bytes, [0x15], "Ctrl-U 必须发给 pane，不能 Unhandle selector")
+        view.doCommand(by: Selector(("noop:")))
+        XCTAssertEqual(handler.bytes, [0x15], "noop 必须静默忽略")
+    }
+}
+
+private final class RecordingInputHandler: TerminalInputHandler {
+    var bytes: [UInt8] = []
+    func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
+        bytes.append(contentsOf: data)
+    }
+    func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {}
 }
 
 private func luminance(_ hex: String) -> Int {

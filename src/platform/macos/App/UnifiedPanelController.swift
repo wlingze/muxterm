@@ -12,13 +12,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onConnect: ((TargetConfig) -> Void)?
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
-    var onJump: ((UInt32, UInt32) -> Void)? // (tabId, paneId)
+    var onJump: ((UInt32?, UInt32, UInt64, String) -> Void)? // (tabId, paneId, seq, query)
     var currentConfig: TargetConfig?
 
     private let store: QuickConnectStore
     private let input = NSSearchField()
     private let table = NSTableView()
-    private let scrollView = NSScrollView()
+    private let scrollView = MuxtermFillWidthScrollView()
     private var allItems: [QuickConnectItem] = []
     private var visibleItems: [QuickConnectItem] = []
     private var hits: [SearchHit] = []
@@ -101,6 +101,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         applyTab()
+        window.layoutIfNeeded()
+        QuickConnectTableLayout.fit(table)
         window.makeFirstResponder(input)
     }
 
@@ -140,6 +142,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             table.scrollRowToVisible(0)
         }
         updatePeek()
+        QuickConnectTableLayout.fit(table)
     }
 
     private func applyFilter() {
@@ -177,12 +180,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .attention:
             guard table.selectedRow < rows.count else { return }
             let row = rows[table.selectedRow]
-            onJump?(0, row.pane.paneId)
+            onJump?(nil, row.pane.paneId, 0, "")
             dismiss()
         case .search:
             guard table.selectedRow < hits.count else { return }
             let hit = hits[table.selectedRow]
-            onJump?(hit.tabId, hit.paneId)
+            onJump?(hit.tabId, hit.paneId, hit.seq, model.query)
             dismiss()
         }
     }
@@ -261,10 +264,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         ])
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("panel"))
-        column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
+        QuickConnectTableLayout.configure(table, column: column)
         table.headerView = nil
-        table.rowHeight = 48
+        table.rowHeight = QuickTargetCellView.preferredRowHeight
         table.intercellSpacing = NSSize(width: 0, height: 1)
         table.usesAlternatingRowBackgroundColors = false
         table.dataSource = self
@@ -277,6 +280,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = table
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         root.addSubview(scrollView)
 
@@ -590,6 +594,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             return ""
         }
         return cell.textField?.stringValue ?? ""
+    }
+
+    func testTableColumnWidth() -> CGFloat {
+        table.enclosingScrollView?.tile()
+        return table.tableColumns.first?.width ?? 0
+    }
+
+    func testWorkspaceCell(at row: Int) -> QuickTargetCellView? {
+        table.layoutSubtreeIfNeeded()
+        return table.view(atColumn: 0, row: row, makeIfNecessary: true) as? QuickTargetCellView
     }
 }
 

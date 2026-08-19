@@ -5,8 +5,7 @@ import MuxtermChrome
 
 /// 用户切换主题后终端配色必须跟着走（不再固定 1e1e2e 黑底）。
 ///
-/// Agent 默认（未 applyTheme 的裸 MuxTerminalView）仍由
-/// `AgentRenderE2ETests` 锁深色 OSC；本测试锁的是 **MainWindow 主题路径**。
+/// 默认（未切主题）就是浅色 palette；深色只在用户切到 dark 之后。
 final class ThemeToggleE2ETests: XCTestCase {
     func testToggleThemeChangesChromeAndTerminalPalette() throws {
         AppE2E.requireTmux()
@@ -26,6 +25,18 @@ final class ThemeToggleE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady())
+
+        let initialOsc = try XCTUnwrap(app.testThemeHexColors(), "启动必须能读到终端色")
+        XCTAssertEqual(
+            initialOsc.fg.lowercased(),
+            MuxtermPalette.light.fg.lowercased(),
+            "默认主题必须是浅色终端前景，不能再写死 cdd6f4"
+        )
+        XCTAssertEqual(
+            initialOsc.bg.lowercased(),
+            MuxtermPalette.light.bg.lowercased(),
+            "默认主题必须是浅色终端背景（白色），不能再写死 1e1e2e"
+        )
 
         let beforeDark = app.testChromeAppearanceIsDark()
         let beforeSaved = app.currentTheme()
@@ -81,7 +92,12 @@ final class ThemeToggleE2ETests: XCTestCase {
 
     func testSetThemeColorsUsesProvidedHex() {
         AppE2E.ensureApp()
+        MuxtermTerminalColors.activePalette = .light
         let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let def = view.themeHexColors()
+        XCTAssertEqual(def.fg.lowercased(), MuxtermPalette.light.fg)
+        XCTAssertEqual(def.bg.lowercased(), MuxtermPalette.light.bg)
+
         view.setThemeColors(
             fgHex: MuxtermTerminalColors.lightForegroundHex,
             bgHex: MuxtermTerminalColors.lightBackgroundHex

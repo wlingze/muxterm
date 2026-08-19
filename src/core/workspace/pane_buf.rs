@@ -74,6 +74,16 @@ impl PaneBuf {
         self.terminal.line_index_by_seq(seq)
     }
 
+    /// 搜索命中 seq 对应的 viewport 偏移（0 = 已在可见屏 / 未找到）。
+    ///
+    /// 偏移让该行出现在滚动窗口顶部，与 `scroll_window(offset, rows)` 对齐。
+    pub fn viewport_offset_for_seq(&self, seq: u64) -> u32 {
+        let Some(index) = self.terminal.line_index_by_seq(seq) else {
+            return 0;
+        };
+        self.terminal.scrollback_lines().saturating_sub(index) as u32
+    }
+
     /// OSC 133 命令刻度（W18h）。
     pub fn command_marks(&self) -> &[crate::core::protocol::terminal::emulate::CommandMark] {
         self.terminal.command_marks()

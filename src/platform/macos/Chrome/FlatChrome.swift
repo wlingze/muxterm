@@ -43,29 +43,73 @@ public enum FlatChrome {
     }
 }
 
-/// Muxterm 终端默认外观颜色（深色主题，与 configs/themes/dark.toml 一致）。
+/// 一套完整终端调色板：默认前景/背景/光标 + ANSI 16 色（与 `configs/themes/*.toml` 对齐）。
 ///
-/// codex / cursor agent 的输入框固定用深色背景，并把输入文字画成「默认前景色」；
-/// 终端必须上报浅色前景，文字才能在灰/黑输入框上清晰可见（与 iTerm 深色下的
-/// 渲染一致）。这套颜色同时作为 OSC 10/11 上报给 tmux 代答。
+/// 主题与终端内所有颜色绑定：浅色 chrome 必须配浅色终端（白底黑字），
+/// 不能只改边框而把 SwiftTerm 留在深色默认上。
+public struct MuxtermPalette: Equatable, Sendable {
+    public let fg: String
+    public let bg: String
+    public let cursor: String
+    /// 16 个 ANSI 色，hex 不含 `#`。
+    public let ansi: [String]
+
+    public init(fg: String, bg: String, cursor: String, ansi: [String]) {
+        self.fg = fg
+        self.bg = bg
+        self.cursor = cursor
+        self.ansi = ansi
+    }
+
+    /// 浅色：黑字白底 + Catppuccin Latte ANSI 16 色。
+    public static let light = MuxtermPalette(
+        fg: MuxtermTerminalColors.lightForegroundHex,
+        bg: MuxtermTerminalColors.lightBackgroundHex,
+        cursor: "dc8a78",
+        ansi: [
+            "bcc0cc", "d20f39", "40a02b", "df8e1d",
+            "1e66f5", "ea76cb", "179299", "5c5f77",
+            "6c6f85", "d20f39", "40a02b", "df8e1d",
+            "1e66f5", "ea76cb", "179299", "acb0be",
+        ]
+    )
+
+    /// 深色：Catppuccin Mocha（`configs/themes/dark.toml`）。
+    public static let dark = MuxtermPalette(
+        fg: MuxtermTerminalColors.foregroundHex,
+        bg: MuxtermTerminalColors.backgroundHex,
+        cursor: "f5e0dc",
+        ansi: [
+            "45475a", "f38ba8", "a6e3a1", "f9e2af",
+            "89b4fa", "f5c2e7", "94e2d5", "bac2de",
+            "585b70", "f38ba8", "a6e3a1", "f9e2af",
+            "89b4fa", "f5c2e7", "94e2d5", "a6adc8",
+        ]
+    )
+}
+
+/// Muxterm 终端默认外观颜色。
+///
+/// 浅色是默认：白底黑字，跟 light chrome 绑定。深色用 Catppuccin Mocha，
+/// 同时作为 OSC 10/11 上报给 tmux 代答。
 public enum MuxtermTerminalColors {
-    /// 前景（默认文字）`#cdd6f4`。
+    /// 深色前景（默认文字）`#cdd6f4`。
     public static let foregroundHex = "cdd6f4"
-    /// 背景 `#1e1e2e`。
+    /// 深色背景 `#1e1e2e`。
     public static let backgroundHex = "1e1e2e"
     /// 浅色主题前景/背景（默认）。
     public static let lightForegroundHex = "000000"
     public static let lightBackgroundHex = "ffffff"
     /// 当前生效调色板（默认浅色；可在 config.toml `[theme] name` 切换）。
-    public static var activePalette: (fg: String, bg: String) = (lightForegroundHex, lightBackgroundHex)
+    public static var activePalette: MuxtermPalette = .light
 
     /// 根据 `[theme] name` 返回调色板；dark 用浅字深底，其它/缺省用黑字白底。
-    public static func palette(forThemeName name: String?) -> (fg: String, bg: String) {
+    public static func palette(forThemeName name: String?) -> MuxtermPalette {
         switch name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "dark":
-            return (foregroundHex, backgroundHex)
+            return .dark
         default:
-            return (lightForegroundHex, lightBackgroundHex)
+            return .light
         }
     }
 
@@ -102,7 +146,7 @@ public enum MuxtermTheme: String, CaseIterable, Sendable {
         }
     }
 
-    public var palette: (fg: String, bg: String) {
+    public var palette: MuxtermPalette {
         MuxtermTerminalColors.palette(forThemeName: rawValue)
     }
 
@@ -217,21 +261,20 @@ public enum MuxtermConfig {
 ///
 /// tmux / daemon 代理拥有 pane 的 PTY 与终端协议，且 tmux 自己会代答
 /// OSC 10/11/12、CSI DA/DSR 等查询（颜色来自客户端用 `refresh-client -r`
-/// 上报的 `control_fg`/`control_bg`）。前端只是渲染镜像：SwiftTerm 在
-/// feed 远端 pane 输出期间生成的查询应答**一律丢弃**，否则经
-/// `send-keys -l` 回写会被 pane 回显并执行，泄漏成 `git lg` 的
-/// `10;rgb:...` / `65;...c` 字面命令。
+/// 上报的 `control_fg`/`control_bg`）。前端只是渲染镜像：SwiftTerm 的
+/// `send(source: Terminal)` **只有解析器应答**（没有用户按键），tmux
+/// 镜像下必须一律丢弃。否则 OSC/DA 经 `send-keys` 写进 pane，zsh 会
+/// 把 `10;rgb:...` 当命令执行，prompt_subst / Pure 模板也会被打乱。
 ///
-/// 用户输入（键盘/kitty/粘贴）与鼠标上报不在 feed 窗口内，不受影响；
+/// 用户输入走 `send(source: TerminalView)`，不受这条策略影响；
 /// 仅 local 模式（前端就是该 PTY 的终端模拟器）保持转发。
 public enum TerminalMirrorPolicy {
     public static func shouldForwardParserResponse(
         duringRemoteOutputFeed: Bool,
         isTmuxMirror: Bool
     ) -> Bool {
-        // tmux 镜像在 feed 远端输出期间，解析器应答一律丢弃：tmux 自己
-        // 代答查询，前端回写只会被 pane 回显（git lg 字面乱码）。
-        !isTmuxMirror || !duringRemoteOutputFeed
+        _ = duringRemoteOutputFeed
+        return !isTmuxMirror
     }
 }
 
@@ -384,6 +427,279 @@ public enum PaneOutputFeedPolicy {
         seedCoveredEvent: Bool
     ) -> Bool {
         viewExistedBeforeEvent || !seedCoveredEvent
+    }
+}
+
+/// 首屏 / 直播喂给 SwiftTerm 的字节：内置 VT 只交出可见缓冲，禁止把
+/// `capture-pane -S -10000` 或 256KB 环当历史重放（iTerm2 也不会这么做）。
+///
+/// Cursor/Codex 每帧 `CSI H`+`CSI 2J`；一整段重放就是「从很早刷到现在」。
+public enum PanePaintPolicy {
+    /// 优先用 PaneBuf 的可见网格 ANSI；没有再从原始字节抽末帧 / 末 N 行。
+    public static func firstPaint(visible: Data, raw: Data, rows: Int) -> Data {
+        if !visible.isEmpty {
+            return visible
+        }
+        return lastScreen(raw, visibleRows: max(rows, 1))
+    }
+
+    /// 已有视图收到事件：只走 live。禁止把 Codex/htop 的增量当 capture
+    /// 再 `RIS`+可见网格替换，否则正在刷的 GitHub 地址 / htop 画面会被擦掉。
+    public static func paint(
+        seeded: Bool,
+        visible: Data,
+        incoming: Data,
+        rows: Int
+    ) -> Data {
+        if !seeded {
+            return firstPaint(visible: visible, raw: incoming, rows: rows)
+        }
+        return live(incoming, visibleRows: max(rows, 1))
+    }
+
+    /// `capture-pane -S -10000` 一类录像：行数远超一屏。仅用于首屏策略测试。
+    public static func looksLikeHistoryDump(_ data: Data, rows: Int) -> Bool {
+        if data.isEmpty {
+            return false
+        }
+        if frameCount(data) >= 2 {
+            return false
+        }
+        let rowCount = max(rows, 1)
+        let lines = splitLines(data)
+        if lines.count > rowCount * 2 {
+            return true
+        }
+        return data.count > 64 * 1024 && lines.count > rowCount
+    }
+
+    /// 直播增量：CUP 风暴只留最后一帧。普通换行输出必须原样喂入，
+    /// 不能按「末 N 行」裁，否则 Codex 刷出的地址会从屏幕上消失。
+    public static func live(_ data: Data, visibleRows: Int = 24) -> Data {
+        _ = visibleRows
+        if data.isEmpty {
+            return data
+        }
+        if frameCount(data) >= 2 {
+            return lastVisibleFrame(data)
+        }
+        return data
+    }
+
+    /// 首屏且没有可见网格时：丢掉 capture 历史，只留末屏。
+    public static func lastScreen(_ data: Data, visibleRows: Int) -> Data {
+        if data.isEmpty {
+            return data
+        }
+        if frameCount(data) >= 2 {
+            return lastVisibleFrame(data)
+        }
+        let rows = max(visibleRows, 1)
+        let lines = splitLines(data)
+        if lines.count > rows {
+            return joinLines(Array(lines.suffix(rows)))
+        }
+        return data
+    }
+
+    /// 从最后一个帧起点（CSI H / CSI 2J / alt-screen）切到末尾。
+    public static func lastVisibleFrame(_ data: Data) -> Data {
+        let bytes = [UInt8](data)
+        var last: Int?
+        var i = 0
+        while i < bytes.count {
+            if isFrameStart(bytes, i) {
+                last = i
+            }
+            i += 1
+        }
+        guard let start = last else { return data }
+        return Data(bytes[start...])
+    }
+
+    static func frameCount(_ data: Data) -> Int {
+        let bytes = [UInt8](data)
+        var starts = 0
+        var seenContent = false
+        var i = 0
+        while i < bytes.count {
+            if isFrameStart(bytes, i) {
+                if starts == 0 || seenContent {
+                    starts += 1
+                }
+                seenContent = false
+                i += 2
+                let rest = bytes[i...]
+                for (j, b) in rest.enumerated() {
+                    if b == UInt8(ascii: "H") || b == UInt8(ascii: "J")
+                        || b == UInt8(ascii: "h") || b == UInt8(ascii: "l")
+                    {
+                        i += j + 1
+                        break
+                    }
+                }
+                continue
+            }
+            if bytes[i] != 0x1b {
+                seenContent = true
+            }
+            i += 1
+        }
+        return starts
+    }
+
+    private static func isFrameStart(_ bytes: [UInt8], _ i: Int) -> Bool {
+        guard i + 1 < bytes.count, bytes[i] == 0x1b, bytes[i + 1] == UInt8(ascii: "[") else {
+            return false
+        }
+        let rest = bytes[(i + 2)...]
+        if rest.starts(with: [UInt8(ascii: "H")]) { return true }
+        if rest.starts(with: [UInt8(ascii: "1"), UInt8(ascii: ";"), UInt8(ascii: "1"), UInt8(ascii: "H")]) {
+            return true
+        }
+        if rest.starts(with: [UInt8(ascii: "2"), UInt8(ascii: "J")]) { return true }
+        if rest.starts(with: Array("?1049h".utf8)) { return true }
+        if rest.starts(with: Array("?1049l".utf8)) { return true }
+        return false
+    }
+
+    private static func splitLines(_ data: Data) -> [Data] {
+        var lines: [Data] = []
+        var current = Data()
+        for b in data {
+            current.append(b)
+            if b == 0x0a {
+                lines.append(current)
+                current = Data()
+            }
+        }
+        if !current.isEmpty {
+            lines.append(current)
+        }
+        return lines
+    }
+
+    private static func joinLines(_ lines: [Data]) -> Data {
+        var out = Data()
+        out.reserveCapacity(lines.reduce(0) { $0 + $1.count })
+        for line in lines {
+            out.append(line)
+        }
+        return out
+    }
+}
+
+/// 前景相对背景对比度不够时，把前景往黑或往白推（对标 iTerm2 Minimum Contrast）。
+///
+/// 浅色主题 000000/ffffff 本身对比充足，不会改。Cursor 输入框常用黑底 + 默认前景：
+/// 若把 OSC 10 报成纯黑，字就叠在黑底上；上报前再对黑底做一次保证。
+public enum ColorContrast {
+    public static let minimumRatio: Double = 3.0
+
+    public struct RGB: Equatable {
+        public var r: Double
+        public var g: Double
+        public var b: Double
+    }
+
+    public static func parse(_ hex: String) -> RGB? {
+        let value = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).lowercased()
+        guard value.count == 6, let n = UInt32(value, radix: 16) else { return nil }
+        return RGB(
+            r: Double((n >> 16) & 0xff) / 255.0,
+            g: Double((n >> 8) & 0xff) / 255.0,
+            b: Double(n & 0xff) / 255.0
+        )
+    }
+
+    public static func hex(_ rgb: RGB) -> String {
+        let r = Int((rgb.r * 255.0).rounded())
+        let g = Int((rgb.g * 255.0).rounded())
+        let b = Int((rgb.b * 255.0).rounded())
+        return String(format: "%02x%02x%02x", max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
+    }
+
+    public static func relativeLuminance(_ c: RGB) -> Double {
+        func lin(_ v: Double) -> Double {
+            v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    }
+
+    public static func contrastRatio(fg: String, bg: String) -> Double {
+        guard let a = parse(fg), let b = parse(bg) else { return 1 }
+        return contrastRatio(a, b)
+    }
+
+    public static func contrastRatio(_ a: RGB, _ b: RGB) -> Double {
+        let l1 = relativeLuminance(a)
+        let l2 = relativeLuminance(b)
+        let hi = max(l1, l2)
+        let lo = min(l1, l2)
+        return (hi + 0.05) / (lo + 0.05)
+    }
+
+    public static func ensureReadable(
+        fg: String,
+        bg: String,
+        minRatio: Double = minimumRatio
+    ) -> String {
+        guard let f = parse(fg), let b = parse(bg) else { return fg }
+        return hex(ensureReadable(fg: f, bg: b, minRatio: minRatio))
+    }
+
+    public static func ensureReadable(
+        fg: RGB,
+        bg: RGB,
+        minRatio: Double = minimumRatio
+    ) -> RGB {
+        if contrastRatio(fg, bg) >= minRatio {
+            return fg
+        }
+        let target = relativeLuminance(bg) < 0.5
+            ? RGB(r: 1, g: 1, b: 1)
+            : RGB(r: 0, g: 0, b: 0)
+        var lo = 0.0
+        var hi = 1.0
+        var best = target
+        for _ in 0..<14 {
+            let t = (lo + hi) / 2
+            let mixed = RGB(
+                r: fg.r + (target.r - fg.r) * t,
+                g: fg.g + (target.g - fg.g) * t,
+                b: fg.b + (target.b - fg.b) * t
+            )
+            if contrastRatio(mixed, bg) >= minRatio {
+                best = mixed
+                hi = t
+            } else {
+                lo = t
+            }
+        }
+        return best
+    }
+
+    /// 终端默认色：只保证相对主题背景可读（浅色仍是黑字白底）。
+    public static func themeColors(fg: String, bg: String) -> (fg: String, bg: String) {
+        (ensureReadable(fg: fg, bg: bg), bg)
+    }
+
+    /// 上报给 tmux 的 OSC 10/11：必须是主题色本身。
+    ///
+    /// 不能为了 Cursor 黑底输入框把前景改成灰色：`refresh-client -r`
+    /// 会写进 session，普通 `tmux attach` 里默认字也会变成白/灰。
+    /// 黑底黑字只在 SwiftTerm 绘制时做 Minimum Contrast。
+    public static func oscColors(fg: String, bg: String) -> (fg: String, bg: String) {
+        themeColors(fg: fg, bg: bg)
+    }
+}
+
+extension MuxtermPalette {
+    /// 主题色若前景/背景过近，只推前景。
+    public func contrasted() -> MuxtermPalette {
+        let pair = ColorContrast.themeColors(fg: fg, bg: bg)
+        guard pair.fg != fg else { return self }
+        return MuxtermPalette(fg: pair.fg, bg: pair.bg, cursor: cursor, ansi: ansi)
     }
 }
 

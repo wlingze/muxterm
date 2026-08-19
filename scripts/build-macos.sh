@@ -47,6 +47,9 @@ if [[ ! -f "$LIBMUXTERM" ]]; then
 fi
 ln -sfn "$(cd "$(dirname "$LIBMUXTERM")" && pwd)/libmuxterm.a" "$MACOS_DIR/Vendor/libmuxterm.a"
 
+echo "==> patch SwiftTerm min-contrast"
+"$ROOT/scripts/patch-swiftterm.sh"
+
 echo "==> swift build -c release"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 cd "$MACOS_DIR"

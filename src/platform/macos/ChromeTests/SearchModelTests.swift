@@ -17,7 +17,23 @@ final class SearchSnapshotDecodeTests: XCTestCase {
         XCTAssertEqual(snapshot.hits[0].workspaceId, "legion@local")
         XCTAssertEqual(snapshot.hits[0].tabId, 1)
         XCTAssertEqual(snapshot.hits[0].paneId, 1)
+        XCTAssertEqual(snapshot.hits[0].seq, 3)
         XCTAssertEqual(snapshot.hits[0].line, "TOKEN_BODY example")
+    }
+
+    func testDecodesTabIdZero() throws {
+        let json = """
+        {
+          "ok": true,
+          "hits": [
+            {"workspace_id": "ws@local", "tab_id": 0, "pane_id": 1, "seq": 9, "line": "on-tab-zero"}
+          ]
+        }
+        """
+        let snapshot = try XCTUnwrap(SearchSnapshot.decode(Data(json.utf8)))
+        XCTAssertEqual(snapshot.hits.count, 1)
+        XCTAssertEqual(snapshot.hits[0].tabId, 0)
+        XCTAssertEqual(snapshot.hits[0].seq, 9)
     }
 
     func testDecodeFailureReturnsNil() {
