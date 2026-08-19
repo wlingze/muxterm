@@ -201,6 +201,11 @@ pub struct TerminalState {
     command_pending: Option<String>,
     /// 命令回合开始时的 seq（刻度跳转用）。
     command_start_seq: u64,
+    /// 最近一次已完成 C、等待 D 补退出码的命令刻度 seq。
+    ///
+    /// 不能只看 `command_marks.last_mut()`：异常/重复 D 可能把退出码
+    /// 错写到上一条合法命令上。
+    command_mark_seq: Option<u64>,
     processor: Processor,
 }
 
@@ -331,6 +336,7 @@ impl TerminalState {
             command_marks: Vec::new(),
             command_pending: None,
             command_start_seq: 0,
+            command_mark_seq: None,
             processor: Processor::default(),
         }
     }
@@ -389,6 +395,11 @@ impl TerminalState {
         live.extend(self.grid_line_ids.iter().copied());
         live.extend(self.scrollback.iter().map(|line| line.seq));
         self.command_marks.retain(|mark| live.contains(&mark.seq));
+        if let Some(seq) = self.command_mark_seq {
+            if !live.contains(&seq) || !self.command_marks.iter().any(|mark| mark.seq == seq) {
+                self.command_mark_seq = None;
+            }
+        }
         if self.command_pending.is_some() && !live.contains(&self.command_start_seq) {
             self.command_pending = None;
             self.command_start_seq = 0;
@@ -633,6 +644,7 @@ impl TerminalState {
                     Some(b'B') => {
                         // 命令文本从 B 开始收集，到 C 结束（W18h）。
                         self.command_pending = Some(String::new());
+                        self.command_mark_seq = None;
                         self.command_start_seq = self
                             .grid_line_ids
                             .get(self.cursor_row)
@@ -642,6 +654,7 @@ impl TerminalState {
                     Some(b'C') => {
                         self.signals.push(AttentionSignal::CommandStart);
                         // B..C 之间的那一行就是命令文本；C 之后清空待收集。
+                        self.command_mark_seq = None;
                         if let Some(cmd) = self.command_pending.take() {
                             // 收集时把 C 的 OSC 帧也吞进来了，剥到 `ESC ]` 为止。
                             let cmd = cmd.split("\x1b]").next().unwrap_or("").trim().to_string();
@@ -651,6 +664,7 @@ impl TerminalState {
                                     command: cmd,
                                     exit_code: None,
                                 });
+                                self.command_mark_seq = Some(self.command_start_seq);
                             }
                         }
                     }
@@ -663,21 +677,17 @@ impl TerminalState {
                         });
                         self.signals
                             .push(AttentionSignal::CommandDone { exit_code: exit });
-                        // 给 C 时已入队的刻度补退出码；没有 C 的 D 也补一条。
-                        if let Some(last) = self.command_marks.last_mut() {
-                            if last.exit_code.is_none() {
-                                last.exit_code = exit;
+                        // 只给同一个 B→C 回合产生的刻度补退出码。孤立/重复
+                        // D 仍可作为 Attention 信号，但不能污染上一条命令，
+                        // 也不能凭空制造可跳转刻度。
+                        if let Some(seq) = self.command_mark_seq.take() {
+                            if let Some(mark) =
+                                self.command_marks.iter_mut().find(|mark| mark.seq == seq)
+                            {
+                                if mark.exit_code.is_none() {
+                                    mark.exit_code = exit;
+                                }
                             }
-                        } else {
-                            self.command_marks.push(CommandMark {
-                                seq: self
-                                    .grid_line_ids
-                                    .get(self.cursor_row)
-                                    .copied()
-                                    .unwrap_or(self.next_seq),
-                                command: String::new(),
-                                exit_code: exit,
-                            });
                         }
                     }
                     Some(b'A' | b'P') => {
@@ -2860,6 +2870,23 @@ mod attention_signal_tests {
         assert_eq!(
             t.take_attention_signals(),
             vec![AttentionSignal::CommandDone { exit_code: None }]
+        );
+        assert!(
+            t.command_marks().is_empty(),
+            "孤立 D 只能产生注意力信号，不能凭空制造命令刻度"
+        );
+    }
+
+    #[test]
+    fn osc133_orphan_d_does_not_rewrite_previous_mark() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;B\x07cmd\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        t.feed(b"\x1b]133;D;7\x07");
+        assert_eq!(t.command_marks().len(), 1);
+        assert_eq!(
+            t.command_marks()[0].exit_code,
+            Some(0),
+            "孤立 D 不能改写上一条合法命令的退出码"
         );
     }
 
