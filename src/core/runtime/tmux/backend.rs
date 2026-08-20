@@ -183,6 +183,15 @@ pub struct TmuxRuntime {
     window_zoomed: HashSet<TabId>,
     /// 每个 tab 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
     expected_panes_per_window: HashMap<TabId, usize>,
+    /// 已收到 `%window-close` 但尚未经权威 `list-windows` 确认的 tab。
+    ///
+    /// tmux `move-window` 会先 unlink 再 link 窗口，控制模式下可能产生
+    /// `%window-add` / `%session-window-changed` / `%window-close` 组合，且
+    /// close 通知偶尔会晚于 `list-windows` 响应到达。此时不能立即删 tab，
+    /// 否则权威响应已确认存在的窗口会被迟到的 close 永久删掉（tab 丢失）。
+    /// 收到 close 后发起一次权威查询，响应里存在的 tab 取消关闭，真正不存在
+    /// 的才发 TabClosed/PaneClosed。
+    pending_close_tabs: HashSet<TabId>,
     /// attach 初始快照查询中的 pane。初始 `%output` 不能先喂给前端，
     /// 否则随后 capture-pane 只能追加，已有屏幕内容会重复或缺失。
     initial_capture_pending: HashSet<PaneId>,
@@ -470,6 +479,7 @@ impl TmuxRuntime {
             window_layouts: HashMap::new(),
             window_zoomed: HashSet::new(),
             expected_panes_per_window: HashMap::new(),
+            pending_close_tabs: HashSet::new(),
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
             paused_panes: HashSet::new(),
@@ -870,6 +880,9 @@ impl TmuxRuntime {
     /// tmux window → muxterm Tab。处理 `%window-add`；
     /// `%unlinked-window-add` 是其它 session 的窗口，不进入当前 tab 列表。
     fn add_window_tab(&mut self, tab: TabId) {
+        // move-window 的 unlink→link 组合里，`%window-add` 是窗口已重新 link
+        // 的明确信号；若此前 close 已挂起，立即取消，不必等下一次权威查询。
+        self.pending_close_tabs.remove(&tab);
         if !self.tabs.iter().any(|t| t.id == tab) {
             self.tabs.push(TabInfo {
                 id: tab,
@@ -897,10 +910,9 @@ impl TmuxRuntime {
 
     /// tmux window 关闭 → muxterm Tab 关闭。
     /// `%window-close` 与 `%unlinked-window-close` 共用。
-    fn close_window_tab(&mut self, tab: TabId) {
-        // 先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
-        // 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在
-        // PaneClosed 时移除）。
+    /// 真正关闭一个 tab：先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
+    /// 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在 PaneClosed 时移除）。
+    fn remove_window_tab(&mut self, tab: TabId) {
         for p in self.panes.iter().filter(|p| p.tab == tab) {
             self.events
                 .push_back(StateChange::PaneClosed { pane: p.id });
@@ -909,6 +921,41 @@ impl TmuxRuntime {
         self.layouts.remove(&tab);
         self.tabs.retain(|t| t.id != tab);
         self.events.push_back(StateChange::TabClosed { tab });
+    }
+
+    fn close_window_tab(&mut self, tab: TabId) {
+        if !self.tabs.iter().any(|t| t.id == tab) {
+            return;
+        }
+        // 同一 tab 已挂起等待权威裁决时，不重复发查询。
+        if self.pending_close_tabs.contains(&tab) {
+            return;
+        }
+        // 先挂起：move-window 的 unlink/link 会产生 add+close 通知组合，
+        // close 可能晚于权威 list-windows 响应到达；立即删除会把已确认存在
+        // 的窗口删掉。立即发起权威查询，由响应裁决是否真正关闭；发不出
+        // 查询（如单测/未连接）时只能按通知直接关闭。
+        self.pending_close_tabs.insert(tab);
+        if !self.query_list_windows() {
+            self.pending_close_tabs.remove(&tab);
+            self.remove_window_tab(tab);
+        }
+    }
+
+    /// 权威 `list-windows` 响应裁决挂起的关闭：响应里仍存在的窗口取消关闭
+    /// （move-window 重新 link），确实不存在的窗口才发 TabClosed/PaneClosed。
+    fn settle_pending_close_tabs(&mut self, confirmed_tabs: &HashSet<TabId>) {
+        let pending: Vec<TabId> = self.pending_close_tabs.iter().copied().collect();
+        for tab in pending {
+            if confirmed_tabs.contains(&tab) {
+                // move-window 已把窗口 link 回来：取消挂起，保留 tab。
+                self.pending_close_tabs.remove(&tab);
+                continue;
+            }
+            // 真正关闭
+            self.remove_window_tab(tab);
+            self.pending_close_tabs.remove(&tab);
+        }
     }
 
     /// tmux window 重命名 → muxterm Tab 重命名。
@@ -1645,6 +1692,9 @@ impl TmuxRuntime {
         // 因此必须按 list-windows 的返回顺序重排，不能保留旧 Vec 顺序。
         self.tabs
             .sort_by_key(|tab| order.get(&tab.id).copied().unwrap_or(usize::MAX));
+        // 权威列表已到：裁决 move-window 等临时 unlink 产生的挂起 close。
+        let confirmed_tabs: HashSet<TabId> = order.keys().copied().collect();
+        self.settle_pending_close_tabs(&confirmed_tabs);
     }
 
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
@@ -1771,10 +1821,10 @@ impl TmuxRuntime {
     }
 
     /// 发送 list-windows 查询。
-    fn query_list_windows(&mut self) {
+    fn query_list_windows(&mut self) -> bool {
         let sess = self.list_windows_session_target();
         if sess.is_empty() {
-            return;
+            return false;
         }
         let line = format!(
             "list-windows -t {} -F \"#{{window_id}},#{{window_name}},#{{window_active}},#{{window_layout}},#{{window_panes}},#{{window_zoomed_flag}}\"\n",
@@ -1783,7 +1833,9 @@ impl TmuxRuntime {
 
         if self.dispatch_command(line).is_ok() {
             self.replace_last_pending(PendingQuery::ListWindows);
+            return true;
         }
+        false
     }
 
     /// 用 parse_layout_tree 重建 LayoutNode 树。
@@ -3942,6 +3994,84 @@ mod tests {
         assert!(
             b.panes.iter().all(|p| p.tab != tab),
             "window 关闭后 pane 应全部移除"
+        );
+    }
+
+    /// move-window 竞态回归：权威 list-windows 已确认窗口存在后，迟到的
+    /// `%window-close` 不得把 tab 永久删掉；挂起关闭必须等下一次权威响应
+    /// 裁决，确认仍存在时取消关闭（tmux unlink→link 的 add+close 组合）。
+    #[test]
+    fn late_window_close_after_authoritative_list_keeps_tab() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::{Message, TmuxSessionId};
+        use crate::core::types::TabId;
+
+        let mut b = TmuxRuntime::new(None);
+        b.active_session = Some(TmuxSessionId(0));
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+
+        // 权威列表先确认两个 window（@0/@1），其中 @1 是 move-window 的目标。
+        b.handle_list_windows_response(vec![
+            "@0,first,1,aaaa,80x24,0,0,1,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0".into(),
+        ]);
+        b.panes.push(crate::core::model::state::PaneInfo {
+            id: crate::core::types::PaneId(7),
+            tab: TabId(1),
+            cols: 40,
+            rows: 24,
+            active: false,
+            title: "p7".into(),
+        });
+
+        // 迟到的 close：只挂起，并发出权威查询。
+        b.handle_message(Message::WindowClose { window: TabId(1) });
+        assert!(
+            b.tabs.iter().any(|t| t.id == TabId(1)),
+            "close 通知到达但权威查询未返回前不得删除 tab"
+        );
+        assert!(
+            b.panes
+                .iter()
+                .any(|p| p.id == crate::core::types::PaneId(7)),
+            "close 挂起期间 pane 不得提前移除"
+        );
+        assert!(
+            b.pending_close_tabs.contains(&TabId(1)),
+            "close 应挂起待裁决"
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "close 应立即发起权威 list-windows 查询"
+        );
+
+        // 下一次权威响应仍包含 @1：move-window 已重新 link，取消关闭。
+        b.handle_list_windows_response(vec![
+            "@0,first,0,aaaa,80x24,0,0,1,0".into(),
+            "@1,second,1,bbbb,80x24,0,0,1,0".into(),
+        ]);
+
+        assert!(
+            b.tabs.iter().any(|t| t.id == TabId(1)),
+            "权威确认后 tab 必须保留"
+        );
+        assert!(
+            b.panes
+                .iter()
+                .any(|p| p.id == crate::core::types::PaneId(7)),
+            "权威确认后 pane 必须保留"
+        );
+        assert!(
+            !b.events
+                .iter()
+                .any(|e| matches!(e, StateChange::TabClosed { tab: t } if *t == TabId(1))),
+            "move-window 的迟到 close 不得产生 TabClosed"
+        );
+        assert!(
+            !b.pending_close_tabs.contains(&TabId(1)),
+            "裁决后不应残留挂起关闭"
         );
     }
 
