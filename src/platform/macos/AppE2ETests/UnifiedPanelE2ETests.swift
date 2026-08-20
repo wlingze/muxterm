@@ -50,6 +50,32 @@ final class UnifiedPanelE2ETests: XCTestCase {
         AppE2E.pump(80)
         XCTAssertTrue(isOn(workspaces), "Shift+Tab 必须回到 Workspaces")
     }
+
+    func testPanelShortcutsSwitchTabsWithoutClosingPanel() throws {
+        let painted = PaintedWorkspace(label: "panel-shortcuts")
+        let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minTabs: 2))
+
+        app.openQuickConnect()
+        AppE2E.pump(40)
+        let panel = app.unifiedPanel.window
+        XCTAssertTrue(panel?.isVisible == true)
+
+        app.openAttentionPanel() // Cmd-R
+        AppE2E.pump(40)
+        XCTAssertTrue(panel?.isVisible == true, "Cmd-R 不应关闭已打开的统一面板")
+        XCTAssertEqual(app.unifiedPanel.modelTab, .attention)
+
+        app.openWorkspaceSearchPanel() // Cmd-F
+        AppE2E.pump(40)
+        XCTAssertTrue(panel?.isVisible == true, "Cmd-F 不应关闭已打开的统一面板")
+        XCTAssertEqual(app.unifiedPanel.modelTab, .search)
+
+        app.openGlobalSearchPanel() // Cmd-Shift-F
+        AppE2E.pump(40)
+        XCTAssertEqual(app.unifiedPanel.modelTab, .search)
+    }
 }
 
 private extension UnifiedPanelE2ETests {

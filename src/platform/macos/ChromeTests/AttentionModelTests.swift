@@ -117,6 +117,44 @@ final class AttentionNotificationsDecodeTests: XCTestCase {
     func testDecodeFailureReturnsNil() {
         XCTAssertNil(AttentionNotifications.decode(Data(#"{"ok": false}"#.utf8)))
     }
+
+    func testDecodesStructuredPaneNotificationAndKeepsLegacyArrays() throws {
+        let json = """
+        {
+          "ok": true,
+          "notifications": [
+            {
+              "workspace_id": "legion@local",
+              "pane_id": 9,
+              "kind": "blocked",
+              "process_name": "node /opt/codex",
+              "last_line": "Approve?",
+              "seq": 42
+            }
+          ],
+          "blocked": ["legion@local"],
+          "done": []
+        }
+        """
+        let notifications = try XCTUnwrap(
+            AttentionNotifications.decode(Data(json.utf8))
+        )
+        XCTAssertEqual(notifications.blocked, ["legion@local"])
+        XCTAssertEqual(notifications.notifications.count, 1)
+        let record = notifications.notifications[0]
+        XCTAssertEqual(record.paneId, 9)
+        XCTAssertEqual(record.kind, .blocked)
+        XCTAssertEqual(record.displayProcessName, "codex")
+        XCTAssertEqual(record.lastLine, "Approve?")
+        XCTAssertEqual(record.seq, 42)
+    }
+
+    func testLegacyNotificationArraysBecomeCompatibilityRecords() throws {
+        let json = #"{"ok": true, "blocked": ["a@local"], "done": ["b@local"]}"#
+        let notifications = try XCTUnwrap(AttentionNotifications.decode(Data(json.utf8)))
+        XCTAssertEqual(notifications.notifications.map(\.workspaceId), ["a@local", "b@local"])
+        XCTAssertNil(notifications.notifications[0].paneId)
+    }
 }
 
 final class AttentionRowLabelTests: XCTestCase {
@@ -134,6 +172,17 @@ final class AttentionRowLabelTests: XCTestCase {
         XCTAssertEqual(
             AttentionRowLabel.display(process: "  ", transport: "local", path: "~"),
             "?  local  ~"
+        )
+    }
+
+    func testNormalizesKnownAgentWrapper() {
+        XCTAssertEqual(
+            AttentionRowLabel.normalizedProcess("node /opt/codex-cli"),
+            "codex"
+        )
+        XCTAssertEqual(
+            AttentionRowLabel.display(process: "npx @openai/codex", transport: "local", path: "~"),
+            "codex  local  ~"
         )
     }
 }

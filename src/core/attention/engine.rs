@@ -38,6 +38,23 @@ pub struct WorkspaceAttention {
     pub panes: Vec<PaneAttention>,
 }
 
+/// 一次需要展示给前端的 pane 通知。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionNotification {
+    pub workspace_id: String,
+    pub pane_id: u32,
+    pub kind: AttentionNotificationKind,
+    pub process_name: Option<String>,
+    pub last_line: String,
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionNotificationKind {
+    Blocked,
+    Done,
+}
+
 /// 注意力引擎（跨工作区聚合）。
 pub struct AttentionEngine<C: Clock> {
     panes: HashMap<(String, u32), PaneAttention>,
@@ -47,6 +64,9 @@ pub struct AttentionEngine<C: Clock> {
     notified_blocked: HashSet<String>,
     /// 已对哪些 workspace 发过「后台任务完成」通知（状态离开 Done 后删除）。
     notified_done: HashSet<String>,
+    /// 结构化通知按 pane 去重；workspace 级旧 API 保留兼容。
+    notified_blocked_panes: HashSet<(String, u32)>,
+    notified_done_panes: HashSet<(String, u32)>,
     /// 正则缓存：编译失败时记录该条并跳过。
     regex_cache: HashMap<String, Option<Regex>>,
 }
@@ -59,6 +79,8 @@ impl<C: Clock> AttentionEngine<C> {
             clock,
             notified_blocked: HashSet::new(),
             notified_done: HashSet::new(),
+            notified_blocked_panes: HashSet::new(),
+            notified_done_panes: HashSet::new(),
             regex_cache: HashMap::new(),
         }
     }
@@ -131,6 +153,21 @@ impl<C: Clock> AttentionEngine<C> {
         self.sync_notified(ws, pane, now);
     }
 
+    /// 用户从通知跳转/打开 pane 后确认已读。
+    ///
+    /// Blocked 仍遵循“输入才清除”的状态语义，Done 遵循“变为可见即清除”；
+    /// 该显式入口只把两种已列出的状态转换为 Idle，不影响 Working。
+    pub fn acknowledge(&mut self, ws: &str, pane: u32) {
+        let now = self.clock.now();
+        let entry = self.entry_mut(ws, pane);
+        entry.status = match entry.status {
+            PaneStatus::Blocked => transition(entry.status, PaneEvent::UserInput),
+            PaneStatus::Done => transition(entry.status, PaneEvent::BecameVisible),
+            status => status,
+        };
+        self.sync_notified(ws, pane, now);
+    }
+
     /// 交互 shell 的 basename（pane-cmd 回到 shell = 命令结束）。
     fn is_shell(name: &str) -> bool {
         let base = name.rsplit('/').next().unwrap_or(name).to_lowercase();
@@ -151,11 +188,18 @@ impl<C: Clock> AttentionEngine<C> {
             .panes
             .get(&(ws.to_string(), pane))
             .and_then(|p| p.process_name.clone());
+        let normalized = name.and_then(|value| Self::normalize_process_name(&value));
         {
             let entry = self.entry_mut(ws, pane);
-            entry.process_name = name.clone();
+            // shell 只是容器，不应覆盖刚完成的 codex/cursor/agent 名称。
+            // 但首次订阅通常先到 shell（zsh/bash）；记录它作为竞态期间的
+            // 可靠兜底，避免 Attention 行在后台 Done 先到时显示成 `?`。
+            let is_initial_process = entry.process_name.is_none();
+            if normalized.as_deref().map(Self::is_shell) != Some(true) || is_initial_process {
+                entry.process_name = normalized.clone();
+            }
         }
-        if let (Some(prev), Some(next)) = (previous, name) {
+        if let (Some(prev), Some(next)) = (previous, normalized) {
             if !Self::is_shell(&prev) && Self::is_shell(&next) {
                 let shell_ok = {
                     let entry = self.panes.get(&(ws.to_string(), pane));
@@ -167,18 +211,56 @@ impl<C: Clock> AttentionEngine<C> {
                     )
                 };
                 if shell_ok {
+                    let (last_line, seq) = self
+                        .panes
+                        .get(&(ws.to_string(), pane))
+                        .map(|entry| (entry.last_line.clone(), entry.seq))
+                        .unwrap_or_default();
                     self.apply(
                         ws,
                         pane,
                         &[AttentionSignal::CommandDone { exit_code: None }],
-                        "",
-                        0,
+                        &last_line,
+                        seq,
                     );
                     return;
                 }
             }
         }
         let _ = now;
+    }
+
+    fn normalize_process_name(name: &str) -> Option<String> {
+        let value = name.trim();
+        if value.is_empty() {
+            return None;
+        }
+        // tmux 通常只给 pane_current_command（例如 `node`），但某些
+        // transports/fixtures 会传完整 argv。优先从整条命令中识别 agent，
+        // 避免把 npx/node/wrapper 当成用户真正执行的 Codex/Cursor。
+        const KNOWN_AGENTS: &[&str] = &[
+            "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline",
+            "goose", "amp", "grok", "windsurf", "kiro",
+        ];
+        for token in value.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))) {
+            if token.is_empty() {
+                continue;
+            }
+            let lower = token.to_ascii_lowercase();
+            if let Some(agent) = KNOWN_AGENTS.iter().find(|agent| {
+                lower == **agent
+                    || lower.starts_with(&format!("{}-", agent))
+                    || lower.starts_with(&format!("{}_", agent))
+            }) {
+                return Some((*agent).to_string());
+            }
+        }
+        let basename = value
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(value)
+            .trim_matches(|c: char| c == '\'' || c == '"');
+        Some(basename.to_string())
     }
 
     /// 静音一段时间：不进红点、不通知；peek/答复仍可用。
@@ -274,6 +356,48 @@ impl<C: Clock> AttentionEngine<C> {
         out
     }
 
+    /// 取走结构化 pane 通知；Blocked/Done 分别按 pane 去重。
+    pub fn take_notifications(&mut self) -> Vec<AttentionNotification> {
+        let now = self.clock.now();
+        let mut out = Vec::new();
+        for pane in self.panes.values() {
+            let key = (pane.workspace_id.clone(), pane.pane_id);
+            let muted = pane.mute_until.map(|m| m > now).unwrap_or(false);
+            match pane.status {
+                PaneStatus::Blocked if !muted && !self.notified_blocked_panes.contains(&key) => {
+                    self.notified_blocked_panes.insert(key);
+                    out.push(AttentionNotification {
+                        workspace_id: pane.workspace_id.clone(),
+                        pane_id: pane.pane_id,
+                        kind: AttentionNotificationKind::Blocked,
+                        process_name: pane.process_name.clone(),
+                        last_line: pane.last_line.clone(),
+                        seq: pane.seq,
+                    });
+                }
+                PaneStatus::Done if !muted && !self.notified_done_panes.contains(&key) => {
+                    self.notified_done_panes.insert(key);
+                    out.push(AttentionNotification {
+                        workspace_id: pane.workspace_id.clone(),
+                        pane_id: pane.pane_id,
+                        kind: AttentionNotificationKind::Done,
+                        process_name: pane.process_name.clone(),
+                        last_line: pane.last_line.clone(),
+                        seq: pane.seq,
+                    });
+                }
+                _ => {}
+            }
+        }
+        out.sort_by(|a, b| {
+            a.workspace_id
+                .cmp(&b.workspace_id)
+                .then(a.pane_id.cmp(&b.pane_id))
+                .then(a.seq.cmp(&b.seq))
+        });
+        out
+    }
+
     fn maybe_eval_regex(&mut self, ws: &str, pane: u32, now: Instant) {
         let (enabled, patterns, debounce) = {
             (
@@ -331,9 +455,11 @@ impl<C: Clock> AttentionEngine<C> {
         let muted = entry.mute_until.map(|m| m > now).unwrap_or(false);
         if entry.status != PaneStatus::Blocked || muted {
             self.notified_blocked.remove(ws);
+            self.notified_blocked_panes.remove(&(ws.to_string(), pane));
         }
         if entry.status != PaneStatus::Done || muted {
             self.notified_done.remove(ws);
+            self.notified_done_panes.remove(&(ws.to_string(), pane));
         }
     }
 }
@@ -515,5 +641,86 @@ mod tests {
             PaneStatus::Idle,
             "前台 CommandDone 应清成 Idle"
         );
+    }
+
+    #[test]
+    fn process_name_normalizes_agent_wrappers() {
+        assert_eq!(
+            AttentionEngine::<FakeClock>::normalize_process_name("node /opt/bin/codex"),
+            Some("codex".into())
+        );
+        assert_eq!(
+            AttentionEngine::<FakeClock>::normalize_process_name("npx @openai/codex-cli"),
+            Some("codex".into())
+        );
+        assert_eq!(
+            AttentionEngine::<FakeClock>::normalize_process_name(
+                "/Applications/Cursor.app/cursor-agent"
+            ),
+            Some("cursor".into())
+        );
+        assert_eq!(
+            AttentionEngine::<FakeClock>::normalize_process_name("/bin/zsh"),
+            Some("zsh".into())
+        );
+    }
+
+    #[test]
+    fn process_name_keeps_shell_fallback_without_overwriting_command() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("/bin/zsh".into()));
+        assert_eq!(
+            e.snapshot()[0].panes[0].process_name.as_deref(),
+            Some("zsh")
+        );
+
+        e.set_process_name("ws", 1, Some("sleep".into()));
+        e.set_process_name("ws", 1, Some("zsh".into()));
+        assert_eq!(
+            e.snapshot()[0].panes[0].process_name.as_deref(),
+            Some("sleep")
+        );
+    }
+
+    #[test]
+    fn structured_notifications_include_process_and_pane() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 7, Some("node /opt/codex".into()));
+        e.apply(
+            "ws",
+            7,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "approve?",
+            42,
+        );
+        let notifications = e.take_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].workspace_id, "ws");
+        assert_eq!(notifications[0].pane_id, 7);
+        assert_eq!(notifications[0].process_name.as_deref(), Some("codex"));
+        assert_eq!(notifications[0].last_line, "approve?");
+        assert_eq!(notifications[0].seq, 42);
+        assert!(e.take_notifications().is_empty());
+    }
+
+    #[test]
+    fn acknowledge_clears_listed_status_and_notification_deduplication() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            3,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "approve",
+            1,
+        );
+        assert_eq!(e.take_notifications().len(), 1);
+        e.acknowledge("ws", 3);
+        assert_eq!(e.blocked_workspace_count(), 0);
+        assert!(e.snapshot()[0].panes[0].status == PaneStatus::Idle);
+        assert!(e.take_notifications().is_empty());
     }
 }

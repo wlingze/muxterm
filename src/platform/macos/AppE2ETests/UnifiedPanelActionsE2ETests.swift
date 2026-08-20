@@ -100,7 +100,10 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         app.testSetSearchQuery(token)
         AppE2E.pump(80)
         let firstWorkspace = "\(first.session)@local"
-        XCTAssertTrue(app.unifiedPanel.testSearchHitWorkspaceIDs().contains(firstWorkspace))
+        XCTAssertFalse(
+            app.unifiedPanel.testSearchHitWorkspaceIDs().contains(firstWorkspace),
+            "Cmd-F 默认只搜索当前 Workspace；后台 Workspace 只能由 Cmd-Shift-F 全局搜索命中"
+        )
 
         app.unifiedPanel.testSetSearchScope(.workspace)
         XCTAssertEqual(app.testSearchHitCount(), 0, "Workspace 范围不能混入后台连接")

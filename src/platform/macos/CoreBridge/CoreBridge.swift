@@ -557,6 +557,13 @@ final class CoreBridge {
         return muxterm_attention_on_became_visible(handle, paneId)
     }
 
+    /// 显式确认某 pane 的通知已读（Blocked/Done → Idle）。
+    @discardableResult
+    func attentionAcknowledge(paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return muxterm_attention_acknowledge(handle, paneId)
+    }
+
     /// 更新某 pane 的进程名。
     @discardableResult
     func attentionSetProcessName(paneId: UInt32, name: String?) -> Int32 {

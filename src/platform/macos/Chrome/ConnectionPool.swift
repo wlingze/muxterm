@@ -96,11 +96,28 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
 
     /// 最近打开的目标（按 lastUsedAt 倒序），供 QuickConnect 的 Recent 列表。
     public func recentTargetConfigs(limit: Int = 5) -> [TargetConfig] {
-        slots.values
-            .filter { $0.lifecycle != .evicting }
-            .sorted { $0.lastUsedAt > $1.lastUsedAt }
-            .prefix(limit)
-            .map(\.targetConfig)
+        guard limit > 0 else { return [] }
+        let active = activeKey.flatMap { key in
+            slots[key].flatMap { slot in
+                slot.lifecycle == .evicting ? nil : slot
+            }
+        }
+        let activeKey = active.map(\.key)
+        var ordered: [Slot] = []
+        if let active {
+            // 当前 Workspace 必须稳定出现在 Recent 首位，即使它刚创建时
+            // 的时间戳比历史连接旧（例如启动时登记的 local workspace）。
+            ordered.append(active)
+        }
+        ordered.append(contentsOf: slots.values
+            .filter { $0.lifecycle != .evicting && $0.key != activeKey }
+            .sorted {
+                if $0.lastUsedAt != $1.lastUsedAt {
+                    return $0.lastUsedAt > $1.lastUsedAt
+                }
+                return $0.key.session < $1.key.session
+            })
+        return ordered.prefix(limit).map(\.targetConfig)
     }
 
     /// 当前前台连接对应的目标（用于 QuickConnect 行高亮）。
