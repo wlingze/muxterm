@@ -575,6 +575,7 @@ fn parse_line_inner(line: &[u8], line_str: &str) -> Option<Message> {
 
     match keyword {
         b"output" => parse_output_bytes(rest).map(Some),
+        b"extended-output" => parse_extended_output_bytes(rest).map(Some),
         _ => {
             // 其它通知的字段都是 ASCII/UTF-8，复用原有字符串解析
             parse_line_known_keyword(line_str)
@@ -637,10 +638,12 @@ fn parse_output_line_bytes(line: &[u8]) -> Option<Message> {
         Some(i) => (&line[..i], &line[i + 1..]),
         None => (line, &[][..]),
     };
-    if keyword != b"output" {
-        return None;
-    }
-    match parse_output_bytes(rest) {
+    let parsed = match keyword {
+        b"output" => parse_output_bytes(rest),
+        b"extended-output" => parse_extended_output_bytes(rest),
+        _ => return None,
+    };
+    match parsed {
         Ok(m) => Some(m),
         Err(e) => {
             tracing::warn!(target = "muxterm::protocol", "解析失败: {e}");
@@ -770,26 +773,42 @@ fn parse_pause_continue(rest: &str, is_pause: bool) -> Result<Message, ProtocolE
 fn parse_extended_output(rest: &str) -> Result<Message, ProtocolError> {
     // %extended-output <pane-id> <age> [future...] : <value>
     // value 与 %output 一样是 C 转义字符串，用同一个解码器还原原始字节。
-    let Some((meta, value)) = rest.split_once(" : ") else {
+    parse_extended_output_bytes(rest.as_bytes())
+}
+
+/// 字节版 `%extended-output` 解析。
+///
+/// tmux control mode 的 value 与 `%output` 相同，允许原始高位字节混在
+/// C 转义字符串中。不能先把整行转换成 UTF-8，否则 htop/Cursor 的一个
+/// 非 UTF-8 字节就会吞掉整条输出事件。
+fn parse_extended_output_bytes(rest: &[u8]) -> Result<Message, ProtocolError> {
+    let Some((meta, value)) = rest
+        .windows(3)
+        .position(|w| w == b" : ")
+        .map(|i| (&rest[..i], &rest[i + 3..]))
+    else {
         return Err(ProtocolError::MalformedField(
             "extended-output 缺 : 分隔符".into(),
         ));
     };
-    let mut it = meta.splitn(2, ' ');
-    let pid = it
-        .next()
+    let mut fields = meta.split(|b| *b == b' ' || *b == b'\t');
+    let pid_bytes = fields
+        .find(|field| !field.is_empty())
         .ok_or_else(|| ProtocolError::MalformedField("extended-output 缺 pane id".into()))?;
+    let pid = std::str::from_utf8(pid_bytes)
+        .map_err(|_| ProtocolError::MalformedField("extended-output pane id 非 ASCII".into()))?;
     // tmux 3.3+ 的 %extended-output 与 %output 一样用 %N / @N / N 三种 id 形式。
     let pane = parse_pane_id_lenient(pid)?;
-    let age_ms = it
-        .next()
-        .and_then(|a| a.trim().parse::<u64>().ok())
+    let age_ms = fields
+        .find(|field| !field.is_empty())
+        .and_then(|a| std::str::from_utf8(a).ok())
+        .and_then(|a| a.parse::<u64>().ok())
         .unwrap_or(0);
     // value 与 %output 一样是双引号包裹的 C 转义字符串。
-    let inner = strip_c_string(value)?;
-    let raw_content = inner.to_string();
+    let inner = strip_c_string_bytes(value)?;
+    let raw_content = String::from_utf8_lossy(inner).into_owned();
     let content = ControlEscapeDecoder::new()
-        .decode(inner)
+        .decode_bytes(inner)
         .map_err(ProtocolError::EscapeError)?;
     Ok(Message::ExtendedOutput {
         pane,
@@ -2010,6 +2029,21 @@ mod tests {
                 age_ms: 42,
                 content: b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\".to_vec(),
                 raw_content: "\\033]8;;https://example.com\\033\\\\link\\033]8;;\\033\\\\".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_extended_output_preserves_invalid_utf8_bytes() {
+        let line = b"%extended-output %7 17 : \"A\\033[2KB\x94\\200C\"";
+        let m = parse_line_bytes(line).expect("extended output with high bytes must parse");
+        assert_eq!(
+            m,
+            Message::ExtendedOutput {
+                pane: PaneId(7),
+                age_ms: 17,
+                content: b"A\x1b[2KB\x94\x80C".to_vec(),
+                raw_content: "A\\033[2KB\u{fffd}\\200C".into(),
             }
         );
     }
