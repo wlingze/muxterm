@@ -19,6 +19,8 @@ pub const STATE_BACKEND_STATUS: u32 = 10;
 pub const STATE_STATUS_SUBSCRIPTION: u32 = 11;
 pub const STATE_WORKSPACE_RENAMED: u32 = 12;
 pub const STATE_POOL_CHANGED: u32 = 13;
+/// Pane snapshot replacement (not an incremental PaneOutput).
+pub const STATE_PANE_SNAPSHOT: u32 = 14;
 pub const STATE_OTHER: u32 = 99;
 
 // ── BackendStatus 编码到 CStateChange.pane_id ──────────────

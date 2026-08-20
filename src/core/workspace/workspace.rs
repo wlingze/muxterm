@@ -382,6 +382,18 @@ impl Workspace {
                     });
                     buf.feed(data, cols, rows);
                 }
+                StateChange::PaneSnapshot { pane, data } => {
+                    let (cols, rows) = self
+                        .state()
+                        .pane(pane)
+                        .map(|p| (p.cols, p.rows))
+                        .unwrap_or((80, 24));
+                    let scrollback_lines = self.scrollback_lines;
+                    let buf = self.panes.entry(*pane).or_insert_with(|| {
+                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
+                    });
+                    buf.replace_snapshot(data, cols, rows);
+                }
                 StateChange::PaneClosed { pane } => {
                     self.panes.remove(pane);
                 }

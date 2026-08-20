@@ -50,6 +50,22 @@ impl PaneBuf {
         Vec::new()
     }
 
+    /// 用权威 Surface snapshot 替换当前 pane 状态。
+    ///
+    /// snapshot 不是普通增量：必须清掉旧 terminal、raw ring 和 viewport，
+    /// 否则 pause/resync 后旧的 Cursor 帧会继续污染新屏幕。
+    pub fn replace_snapshot(&mut self, bytes: &[u8], cols: u16, rows: u16) {
+        let scrollback = self.terminal.scrollback_capacity();
+        self.terminal = TerminalState::with_scrollback(
+            usize::from(cols.max(1)),
+            usize::from(rows.max(1)),
+            scrollback.max(1),
+        );
+        self.byte_ring.clear();
+        self.viewport = 0;
+        let _ = self.feed(bytes, cols, rows);
+    }
+
     /// 取走尚未消费的注意力信号（GUI 在 refresh 后调用）。
     pub fn take_attention_signals(&mut self) -> Vec<AttentionSignal> {
         self.terminal.take_attention_signals()
