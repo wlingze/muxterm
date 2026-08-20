@@ -559,16 +559,14 @@ public enum PanePaintPolicy {
         return data.count > 64 * 1024 && lines.count > rowCount
     }
 
-    /// 直播增量：CUP 风暴只留最后一帧。普通换行输出必须原样喂入，
-    /// 不能按「末 N 行」裁，否则 Codex 刷出的地址会从屏幕上消失。
+    /// 直播增量必须保持 tmux `%output` 的原始字节顺序。
+    ///
+    /// 一个事件可能从 alternate-screen 进入、光标定位、清屏和绘制正文
+    /// 中间任意位置开始；按 `CSI H`/`CSI 2J`/`?1049h` 找“最后一帧”会
+    /// 丢掉仍然属于同一 VT 状态机的前缀，Cursor/Codex 就会跳屏或把输入
+    /// 区逐行堆到 scrollback。首屏历史裁剪只允许发生在 `firstPaint`。
     public static func live(_ data: Data, visibleRows: Int = 24) -> Data {
         _ = visibleRows
-        if data.isEmpty {
-            return data
-        }
-        if frameCount(data) >= 2 {
-            return lastVisibleFrame(data)
-        }
         return data
     }
 

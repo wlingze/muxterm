@@ -295,7 +295,8 @@ final class TerminalManager: TerminalInputHandler {
             let rows = expectedPaneSizes[paneId]?.rows ?? 24
             guard let view = views[paneId] else { continue }
             syncHistoryCapacity(paneId: paneId, view: view)
-            if !view.isAtLatest() {
+            let wasAtLatest = view.isAtLatest()
+            if !wasAtLatest {
                 let added = UInt32(data.reduce(into: 0) { count, byte in
                     if byte == 0x0a { count += 1 }
                 })
@@ -308,6 +309,9 @@ final class TerminalManager: TerminalInputHandler {
                 }
             }
             view.feedOutput(PanePaintPolicy.live(data, visibleRows: rows))
+            if wasAtLatest {
+                view.scrollToLatest()
+            }
         }
     }
 
@@ -385,16 +389,13 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 强制把 SwiftTerm 模型行列同步成 tmux 报告的 pane 尺寸。
     ///
-    /// 把 GUI 根容器的 backing pixels 映射为 tmux client 字符格。
+    /// `cellSizeInPixels()` 是 backing pixel，AppKit `bounds` 是 point。
+    /// 先用窗口的 backing scale 归一化成 point，再计算字符格；不能把
+    /// 一个尚未完成 layer 初始化的 scale=1 cell 与 scale=2 container 混算。
     private func syncClientSize(container: NSView, paneIds: Set<UInt32>) {
-        guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
+        guard let size = clientGridSize(container: container, paneIds: paneIds) else {
             return
         }
-        let pixelSize = container.convertToBacking(container.bounds).size
-        let cols = Int(floor(pixelSize.width / CGFloat(cell.width)))
-        let rows = Int(floor(pixelSize.height / CGFloat(cell.height)))
-        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
-        let size = (UInt16(cols), UInt16(rows))
         guard lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1 else { return }
         guard pendingClientSize?.0 != size.0 || pendingClientSize?.1 != size.1 else { return }
 
@@ -413,14 +414,9 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     private func sendClientResize(container: NSView, paneIds: Set<UInt32>) {
-        guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
+        guard let size = clientGridSize(container: container, paneIds: paneIds) else {
             return
         }
-        let pixelSize = container.convertToBacking(container.bounds).size
-        let cols = Int(floor(pixelSize.width / CGFloat(cell.width)))
-        let rows = Int(floor(pixelSize.height / CGFloat(cell.height)))
-        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return }
-        let size = (UInt16(cols), UInt16(rows))
         guard lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1 else { return }
         guard let bridge else { return }
         if bridge.resizeClient(cols: size.0, rows: size.1) == 0 {
@@ -430,6 +426,23 @@ final class TerminalManager: TerminalInputHandler {
             reportedClientResizeFailure = true
             onError?(MuxtermI18n.shared.tr(.errorResizeClient))
         }
+    }
+
+    private func clientGridSize(
+        container: NSView,
+        paneIds: Set<UInt32>
+    ) -> (UInt16, UInt16)? {
+        guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
+            return nil
+        }
+        let scale = max(container.window?.backingScaleFactor ?? 1, 1)
+        let cellWidth = CGFloat(cell.width) / scale
+        let cellHeight = CGFloat(cell.height) / scale
+        let pointSize = container.bounds.size
+        let cols = Int(floor(pointSize.width / cellWidth))
+        let rows = Int(floor(pointSize.height / cellHeight))
+        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return nil }
+        return (UInt16(cols), UInt16(rows))
     }
 
     /// 提交鼠标拖动后的单轴 pane 尺寸；tmux 会把结果保存到其窗口 layout。

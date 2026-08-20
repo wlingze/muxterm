@@ -505,16 +505,19 @@ final class PanePaintPolicyTests: XCTestCase {
         XCTAssertLessThan(painted.count, raw.count / 2, "首屏字节必须远小于整段 history")
     }
 
-    func testLiveCupStormKeepsOnlyLastFrame() {
+    func testLiveCupStormPreservesEveryByteAndFrame() {
         var raw = Data()
         for i in 0..<20 {
             raw.append(contentsOf: Array("\u{1b}[H\u{1b}[2Jframe-\(i)".utf8))
         }
         let painted = PanePaintPolicy.live(raw)
-        let text = String(data: painted, encoding: .utf8) ?? ""
-        XCTAssertTrue(text.contains("frame-19"))
-        XCTAssertFalse(text.contains("frame-0"))
-        XCTAssertFalse(text.contains("frame-18"))
+        XCTAssertEqual(painted, raw, "live VT bytes must not be trimmed between frame boundaries")
+    }
+
+    func testLivePreservesAlternateScreenPrefixAcrossChunks() {
+        let prefix = Data("\u{1b}[?1049h\u{1b}[H\u{1b}[2J".utf8)
+        let body = Data("cursor-agent prompt".utf8)
+        XCTAssertEqual(PanePaintPolicy.live(prefix + body), prefix + body)
     }
 
     func testLooksLikeHistoryDumpForCaptureReplay() {
@@ -560,9 +563,7 @@ final class PanePaintPolicyTests: XCTestCase {
             raw.append(contentsOf: Array("https://github.com/example/repo-\(i)\r\n".utf8))
         }
         let painted = PanePaintPolicy.live(raw, visibleRows: 24)
-        let text = String(data: painted, encoding: .utf8) ?? ""
-        XCTAssertTrue(text.contains("repo-0"), "Codex 刷出的地址不能被 live 裁掉")
-        XCTAssertTrue(text.contains("repo-79"))
+        XCTAssertEqual(painted, raw, "Codex 刷出的地址不能被 live 裁掉")
     }
 }
 
