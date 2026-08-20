@@ -264,6 +264,38 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    /// 处理权威 pane snapshot。快照会重置 SwiftTerm 的 VT 状态、滚动历史
+    /// 和待合并增量；同一批中新建的视图会从 core Surface seed 一次，不能
+    /// 再把这个 event 重新 feed，否则会出现首屏双写。
+    func handleSnapshot(paneId: UInt32, data: Data) {
+        pendingFeeds.removeValue(forKey: paneId)
+        let viewExisted = views[paneId] != nil
+        let view = view(for: paneId)
+        // A structural event may have caused refreshUI() to create and seed
+        // this view from the already-applied core snapshot earlier in the same
+        // poll batch. Feeding that event again would duplicate the seed and
+        // reintroduce the Cursor/htop double-frame bug.
+        let seededByBatch = viewsCreatedThisBatch.contains(paneId)
+        if viewExisted && !seededByBatch {
+            ensureValidModelSize(view)
+            view.feedOutput(data, isSnapshot: true)
+            swiftTermSeeded.insert(paneId)
+            appendSnippet(data)
+            recordTraffic(bytes: data.count)
+        } else if !viewExisted {
+            // view(for:) 已从刚写入 core 的 PaneBuf Surface seed 播种；若
+            // snapshot 为空或 core 尚未完成 seed，保留 event 供当前批处理
+            // 路径之外的下一次 UI refresh 再补种。
+            if !swiftTermSeeded.contains(paneId) && !data.isEmpty {
+                ensureValidModelSize(view)
+                view.feedOutput(data, isSnapshot: true)
+                appendSnippet(data)
+                recordTraffic(bytes: data.count)
+                swiftTermSeeded.insert(paneId)
+            }
+        }
+    }
+
     private func scheduleFeedFlush() {
         guard feedFlushWorkItem == nil else { return }
         let work = DispatchWorkItem { [weak self] in

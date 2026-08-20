@@ -46,6 +46,10 @@ struct StateChange: Equatable {
     let name: String
 
     var isPaneOutput: Bool { type == STATE_PANE_OUTPUT }
+    /// A pane snapshot replaces the terminal surface; it is not an incremental
+    /// `%output` event.  Keeping this distinction at the bridge boundary avoids
+    /// feeding an attach/resync capture twice when a view is created.
+    var isPaneSnapshot: Bool { type == STATE_PANE_SNAPSHOT }
     var isPaneClosed: Bool { type == STATE_PANE_CLOSED }
     var isTabClosed: Bool { type == STATE_TAB_CLOSED }
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }

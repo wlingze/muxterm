@@ -106,13 +106,15 @@ final class MuxTerminalView: TerminalView {
 
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
     func feedOutput(_ data: Data, isSnapshot: Bool = false) {
-        guard !data.isEmpty else { return }
         if isSnapshot {
             // 只允许新建 Surface 的一次性 seed reset；历史 seed 随后进入
             // SwiftTerm 原生 scrollback，不能在 live/滚轮路径重复调用。
             snapshotResetCount += 1
             getTerminal().resetToInitialState()
         }
+        // A zero-byte snapshot is meaningful: it clears an authoritative blank
+        // pane. Incremental empty output remains a no-op.
+        guard !data.isEmpty else { return }
         let cursorBefore = getTerminal().getCursorLocation()
         let bytes = [UInt8](data)
         // SwiftTerm 同步解析输出：查询应答经 `Terminal.sendResponse` 在 feed

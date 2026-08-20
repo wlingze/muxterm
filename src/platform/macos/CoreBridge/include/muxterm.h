@@ -60,6 +60,7 @@ struct CLayoutNode {
 #define STATE_STATUS_SUBSCRIPTION 11u
 #define STATE_WORKSPACE_RENAMED   12u
 #define STATE_POOL_CHANGED        13u
+#define STATE_PANE_SNAPSHOT       14u
 #define STATE_OTHER               99u
 
 #define TASK_SPLIT_PANE  0u
