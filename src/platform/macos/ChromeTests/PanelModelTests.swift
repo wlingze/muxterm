@@ -23,9 +23,9 @@ final class PanelModelTests: XCTestCase {
         XCTAssertEqual(model.query, "legion")
     }
 
-    func testSearchScopeDefaultsToAllAndSurvivesTabChange() {
+    func testSearchScopeDefaultsToWorkspaceAndSurvivesTabChange() {
         var model = PanelModel.open(.search)
-        XCTAssertEqual(model.scope, .all)
+        XCTAssertEqual(model.scope, .workspace)
         model.scope = .pane
         model.cycleTab(back: false)
         model.cycleTab(back: true)

@@ -50,7 +50,7 @@ public struct PanelModel: Equatable, Sendable {
     public init(
         tab: PanelTab = .workspaces,
         query: String = "",
-        scope: SearchScope = .all
+        scope: SearchScope = .workspace
     ) {
         self.tab = tab
         self.query = query
