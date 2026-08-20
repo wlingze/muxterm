@@ -6,7 +6,7 @@
 //! - 退出 → `shutdown()` 或 Drop（`muxterm_free`）
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -66,6 +66,9 @@ struct UiState {
     pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
     /// 当前挂载到窗口的 LayoutHost 对应的工作区。
     mounted_ws: Option<WorkspaceId>,
+    /// 本轮结构事件触发 refresh_ui 后，已经从 core snapshot seed 的 pane。
+    /// 对应的 PaneSnapshot 事件只需作为通知消费一次，不能再次 reset/feed。
+    snapshot_seeded_this_batch: HashSet<u32>,
     /// 供 `WorkspacePool::open` 同步 block_on；后台任务存活到应用退出。
     rt: tokio::runtime::Runtime,
     qc_store: QuickConnectStore,
@@ -404,6 +407,7 @@ impl AppWindow {
             pool,
             pixel_cache,
             mounted_ws: Some(startup_id),
+            snapshot_seeded_this_batch: HashSet::new(),
             rt,
             qc_store,
             poll_source: None,
@@ -681,7 +685,9 @@ impl AppWindow {
                     for (wid, events) in s.pool.poll_background() {
                         let ws = workspace_replica_id(&wid);
                         for ev in &events {
-                            if let StateChange::PaneOutput { pane, .. } = ev {
+                            if let StateChange::PaneOutput { pane, .. }
+                            | StateChange::PaneSnapshot { pane, .. } = ev
+                            {
                                 apply_attention_from_workspace(&mut s, &wid, &ws, pane.0);
                             }
                         }
@@ -1716,13 +1722,72 @@ fn workspace_replica_id(id: &WorkspaceId) -> String {
 }
 
 fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
-    for ev in &events {
-        dispatch_event(s, ev);
+    s.snapshot_seeded_this_batch.clear();
+    // 结构/尺寸事件先更新 core-backed layout，再 reset/feed surface。tmux
+    // 可在同一轮把 resize、snapshot 和 live output 一起送到 UI；按输入顺序
+    // 直接喂会让 CUP/DECSTBM 仍按旧网格解释，正是 htop/Cursor 乱码来源。
+    let defer_surface = events.iter().any(|ev| {
+        matches!(
+            ev,
+            StateChange::TabAdded { .. }
+                | StateChange::TabClosed { .. }
+                | StateChange::LayoutChanged { .. }
+                | StateChange::PaneAdded { .. }
+                | StateChange::PaneClosed { .. }
+                | StateChange::PaneResized { .. }
+        )
+    });
+    if defer_surface {
+        for ev in &events {
+            if !matches!(
+                ev,
+                StateChange::PaneSnapshot { .. } | StateChange::PaneOutput { .. }
+            ) {
+                dispatch_event(s, ev);
+            }
+        }
+        for ev in &events {
+            if matches!(ev, StateChange::PaneSnapshot { .. }) {
+                dispatch_event(s, ev);
+            }
+        }
+        for ev in &events {
+            if matches!(ev, StateChange::PaneOutput { .. }) {
+                dispatch_event(s, ev);
+            }
+        }
+    } else {
+        for ev in &events {
+            dispatch_event(s, ev);
+        }
     }
+    s.snapshot_seeded_this_batch.clear();
 }
 
 fn dispatch_event(s: &mut UiState, ev: &StateChange) {
     match ev {
+        StateChange::PaneSnapshot { pane, data } => {
+            let ws = active_workspace_id(s);
+            let wid = s.active_ws_id().clone();
+            apply_attention_from_workspace(s, &wid, &ws, pane.0);
+            if let Some(view) = s.active_layout().pane(pane.0).cloned() {
+                sync_pane_grid_size(s, pane.0);
+                // Snapshot 是替换而不是增量。只有在 GTK widget 已经有
+                // 有效分配时直接 reset/feed；未 realize 的 pane 留给下一轮
+                // seed_unseeded_pane 从 core Surface 补种，避免白屏。
+                let seeded_from_core = s.snapshot_seeded_this_batch.contains(&pane.0);
+                if !seeded_from_core && view.widget().is_realized() && view.widget().width() > 0 {
+                    let (cols, rows) = s
+                        .active_workspace()
+                        .state()
+                        .pane(pane)
+                        .map(|p| (p.cols, p.rows))
+                        .unwrap_or((80, 24));
+                    view.seed_snapshot(data, cols, rows);
+                    forward_parser_replies(s, pane.0);
+                }
+            }
+        }
         StateChange::PaneOutput { pane, data } => {
             let ws = active_workspace_id(s);
             let wid = s.active_ws_id().clone();
@@ -2082,6 +2147,7 @@ fn seed_unseeded_pane(
             "seed_raw from core pane_output"
         );
         view.seed_raw(&bytes, cols, rows);
+        s.snapshot_seeded_this_batch.insert(pane_id);
     } else {
         tracing::info!(
             target: "muxterm::surface",

@@ -21,7 +21,7 @@ use crate::core::protocol::ffi::api::{
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
-    STATE_PANE_OUTPUT,
+    STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT,
 };
 
 /// 从 FFI 拷贝出的、可在 Rust 侧安全持有的事件。
@@ -414,6 +414,10 @@ impl CoreBridge {
 
     pub fn is_pane_output(ev: &BridgeEvent) -> bool {
         ev.type_ == STATE_PANE_OUTPUT
+    }
+
+    pub fn is_pane_snapshot(ev: &BridgeEvent) -> bool {
+        ev.type_ == STATE_PANE_SNAPSHOT
     }
 }
 
