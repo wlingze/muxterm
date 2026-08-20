@@ -79,7 +79,7 @@ jobs:
       # swift test 直接解析依赖树，必须先 patch 再编译测试目标。
       - name: Patch SwiftTerm before Swift tests
         working-directory: src/platform/macos
-        run: ../../scripts/patch-swiftterm.sh
+        run: ../../../scripts/patch-swiftterm.sh
 
       # Headless Swift unit tests (ChromeTests): keyboard bindings / pane switching /
       # PaneOutputCursor are pure logic and need no GUI. Runs on every PR, guarding
