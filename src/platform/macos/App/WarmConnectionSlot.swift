@@ -41,6 +41,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         for ev in events {
             if ev.isPaneClosed {
                 terminalManager.removePane(ev.paneId)
+            } else if ev.isPaneSnapshot {
+                terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
             } else if ev.isPaneOutput {
                 terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
             } else if ev.type == STATE_STATUS_SUBSCRIPTION,

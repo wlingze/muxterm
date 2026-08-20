@@ -1951,11 +1951,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             types: events.map(\.type),
             requiresLayoutReload: StateEventPolicy.requiresLayoutReload
         )
+        let deferSurfaceEvents = deferOutputs || events.contains(where: {
+            $0.type == STATE_PANE_RESIZED
+        })
+        var pendingSnapshots: [(paneId: UInt32, data: Data)] = []
         var pendingOutputs: [(paneId: UInt32, data: Data)] = []
         for ev in events {
             if ev.isPaneClosed {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
                 terminalManager.removePane(ev.paneId)
+            } else if ev.isPaneSnapshot {
+                // 结构/尺寸事件先同步模型和布局，再 reset + feed snapshot，
+                // 否则 Cursor/htop 的 CUP 会按旧网格重放。
+                if deferSurfaceEvents {
+                    pendingSnapshots.append((paneId: ev.paneId, data: ev.data))
+                } else {
+                    terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
+                }
             } else if ev.isPaneOutput {
                 // 同批有结构事件（如窗口 resize 的 %layout-change）时，htop
                 // 的新尺寸重绘帧会先于模型 resize 到达，必须先收集、等布局
@@ -2082,6 +2094,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             scheduleStatusBarRefresh()
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
+        for item in pendingSnapshots {
+            terminalManager.handleSnapshot(paneId: item.paneId, data: item.data)
+        }
         for item in pendingOutputs {
             terminalManager.handleOutput(paneId: item.paneId, data: item.data)
         }
