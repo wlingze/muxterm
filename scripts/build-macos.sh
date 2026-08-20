@@ -16,6 +16,18 @@ source "$ROOT/scripts/build-common.sh"
 RELEASE="$(parse_release "${1:-}")"
 PROFILE="debug"
 [[ -n "$RELEASE" ]] && PROFILE="release"
+# Development bundles must not share the release LaunchServices identity with
+# an older copy in /Applications (or another worktree). A commit-scoped id
+# lets the freshly built app launch while the stable release id remains usable
+# for normal installs. MUXTERM_BUNDLE_IDENTIFIER is an explicit override.
+if [[ -n "${MUXTERM_BUNDLE_IDENTIFIER:-}" ]]; then
+  BUNDLE_IDENTIFIER="$MUXTERM_BUNDLE_IDENTIFIER"
+elif [[ -n "$RELEASE" ]]; then
+  BUNDLE_IDENTIFIER="dev.muxterm.app"
+else
+  BUNDLE_IDENTIFIER="dev.muxterm.app.debug.$(git rev-parse --short HEAD 2>/dev/null || printf 'local')"
+fi
+BUNDLE_VERSION="$(git rev-parse --short HEAD 2>/dev/null || printf 'local')"
 MACOS_DIR="$ROOT/src/platform/macos"
 OUT_DIR="$(build_os_dir)"   # -> build/macos
 TARGET_DIR="$(cargo_target_dir)"
@@ -98,6 +110,8 @@ xattr -cr "$APP" 2>/dev/null || true
 cp -f "$MACOS_DIR/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Muxterm" "$APP/Contents/Info.plist" 2>/dev/null \
   || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_IDENTIFIER" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUNDLE_VERSION" "$APP/Contents/Info.plist"
 chmod +x "$APP/Contents/MacOS/Muxterm"
 chmod 755 "$APP" "$APP/Contents" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 

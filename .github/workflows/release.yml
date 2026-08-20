@@ -236,7 +236,7 @@ jobs:
           key: release-macos-${{ hashFiles('**/Cargo.toml') }}
 
       - name: Build macOS app
-        run: ./scripts/build-macos.sh
+        run: ./scripts/build-macos.sh --release
 
       - name: Verify binary and app dependencies
         run: |
