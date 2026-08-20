@@ -45,7 +45,7 @@ W15/W16 已经绿：attach 历史、断线水印（杀 server）、blocked 看�
 - pane 用 `/bin/cat`。Done 用 `tests/scripts/osc133_d_only.py`（**禁止**拿 `osc133_done.py`，它在 D 之后又写 BEL，会把 Done 盖成 Blocked）。
 - GTK：无 DISPLAY skip；`xvfb-run -a`；`gtk4::test_synced`；每个 e2e crate **一个** AppWindow。
 - `--test-threads=1`。禁止加长裸 sleep 当修复。
-- 禁止 live `visible_ansi` → `vte.reset`。禁止回滚 `fbc77e4`。禁止把本轮断言标 `#[ignore]`。
+- 禁止 live `visible_ansi` → `vte.reset`。禁止回滚 `d1181679`。禁止把本轮断言标 `#[ignore]`。
 - 不要削弱 `MIN_PANE_PX` / `MAX_OUTPUT_EVENTS_PER_SEC=400`。
 - 重连播种用 `seed_raw`，不要 `seed_snapshot`/`vte.reset`。
 

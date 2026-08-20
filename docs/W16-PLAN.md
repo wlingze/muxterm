@@ -36,7 +36,7 @@ W15 绿的定义：`docs/W15-PLAN.md` 里那些 crate 全绿，断言没被改�
 - pane 用 `/bin/cat`。不要无路径 `cat`。
 - GTK：无 DISPLAY skip；`xvfb-run -a`；`gtk4::test_synced`；每个 e2e crate **一个** AppWindow。
 - `--test-threads=1`。禁止加长裸 sleep 当修复。
-- 禁止 live `visible_ansi` → `vte.reset`。禁止回滚 `fbc77e4`。禁止把本轮断言标 `#[ignore]`。
+- 禁止 live `visible_ansi` → `vte.reset`。禁止回滚 `d1181679`。禁止把本轮断言标 `#[ignore]`。
 - 不要削弱 `MIN_PANE_PX` / `MAX_OUTPUT_EVENTS_PER_SEC=400`。
 - 不要做 Herdr、ET、多窗口、上次看到这里、命令时间轴、像素重写。
 

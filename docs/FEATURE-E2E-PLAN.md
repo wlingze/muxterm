@@ -44,7 +44,7 @@ W14 在这块地基上测 **用户功能**。W12 分层漏项排在两者之后�
 - **先**在 tmux 里画 token / 跑脚本，**再** Muxterm attach。空 session echo 不算。
 - GTK：无 DISPLAY skip；有显示 `xvfb-run -a` + `gtk4::test_synced`。每个 e2e crate **一个** AppWindow。
 - `--test-threads=1`。硬超时轮询，禁止加长裸 sleep 当修复。
-- 禁止 live 路径 `visible_ansi` → `vte.reset`。禁止回滚 `fbc77e4`。禁止 `include_str!` 大 dogfood log。
+- 禁止 live 路径 `visible_ansi` → `vte.reset`。禁止回滚 `d1181679`。禁止 `include_str!` 大 dogfood log。
 - 不要把 Search / Done / flood 标 `#[ignore]`。SSH 套件本来就是 `#[ignore]`（无 sshd）。
 
 ---

@@ -2,16 +2,16 @@
 
 > 日期：2026-08-17（`2026-08-17T22:19:47+08:00`）
 > 工作目录：`/home/wlz/Developer/self/muxterm`
-> 分支：`feature/runtime/support_herdr`（HEAD 在写本文时为 `b739494`）
+> 分支：`feature/runtime/support_herdr`（HEAD 在写本文时为 `30e0bfa`（pre-rebase `b739494`））
 > 契约：[`CATALOG.md`](CATALOG.md)（先读完）。产品树：[`WORKSPACE.md`](WORKSPACE.md) §6。Runtime：[`RUNTIME.md`](RUNTIME.md)。
 > 测试：[`TESTING.md`](TESTING.md) §5.12（W21）+ §5.14（Catalog）+ §5.15（C7/C8 Host `local` / 缩放）。结构：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
 > 滚轮漏项：[`W21-PLAN.md`](W21-PLAN.md)（已在 C0 落地）。
 >
-> **你是实现 agent。每个 Cx 先确认测试是红的，再写最小实现到绿。禁止改断言、token、widget_name、错误文案子串来「绿」。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止连用户默认 Herdr。禁止 `herdr server stop`。禁止对默认 tmux `kill-server`。生产代码禁止 `Command::new("herdr")`。GUI / Pool 禁止 `if spec.runtime == "herdr"`。`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。不要等用户确认。不要提前把 goal 标 complete。**
+> **你是实现 agent。每个 Cx 先确认测试是红的，再写最小实现到绿。禁止改断言、token、widget_name、错误文案子串来「绿」。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止连用户默认 Herdr。禁止 `herdr server stop`。禁止对默认 tmux `kill-server`。生产代码禁止 `Command::new("herdr")`。GUI / Pool 禁止 `if spec.runtime == "herdr"`。`d1181679` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。不要等用户确认。不要提前把 goal 标 complete。**
 >
-> **C0–C6 已在 HEAD `7c74edd`。不要重做 W21 / 内置 Driver / FFI / 项目卡。本 goal 从 C7 开始，C7 绿再 C8。**
+> **C0–C6 已在 HEAD `54c647f`（pre-rebase `7c74edd`）。不要重做 W21 / 内置 Driver / FFI / 项目卡。本 goal 从 C7 开始，C7 绿再 C8。**
 
-Cursor 已经落下 C7/C8 的红测试和文档。C0–C6（W21 滚轮、内置 Driver、FFI、项目卡）已在 `7c74edd`，**不要重做、不要改那些绿测试的断言**。
+Cursor 已经落下 C7/C8 的红测试和文档。C0–C6（W21 滚轮、内置 Driver、FFI、项目卡）已在 `54c647f`（pre-rebase `7c74edd`），**不要重做、不要改那些绿测试的断言**。
 
 W19 / W20 / W21 已在 HEAD。本 goal 只做 C7 然后 C8。
 
@@ -225,7 +225,7 @@ xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-thread
 
 C0 / C6 之后加对应 GTK e2e（`--test-threads=1`，`xvfb-run -a`）。
 
-全绿后再停。汇报：commit hash、哪几个测试从红变绿、`fbc77e4` 仍是祖先。
+全绿后再停。汇报：commit hash、哪几个测试从红变绿、`d1181679` 仍是祖先。
 
 ---
 
@@ -234,7 +234,7 @@ C0 / C6 之后加对应 GTK e2e（`--test-threads=1`，`xvfb-run -a`）。
 > 日期：2026-08-18（`2026-08-18T01:50:34+08:00`）
 > 日志：`test_2026-0818-0133.log`（UTC 17:33–17:37 = +08 01:33–01:37）。用户点「已有的连接 → SSH」拿可连接数据失败。
 
-C0–C6 已在 HEAD `7c74edd`。**不要重做。** 本步只修列出。不要 GNU Screen。不要弱化 W13 常量。
+C0–C6 已在 HEAD `54c647f`（pre-rebase `7c74edd`）。**不要重做。** 本步只修列出。不要 GNU Screen。不要弱化 W13 常量。
 
 ### 根因（已核对日志，不要再猜）
 
@@ -299,7 +299,7 @@ Commit：`fix(catalog): list ssh sessions without attach pty`
 
 Commit：`fix(linux): debounce font zoom off the gtk key path`
 
-C7 绿之前不要开始 C8。C8 不要动 SSH 列出。每步 `cargo fmt`。禁止 `git add -A`。禁止 push。禁止 `herdr server stop`。禁止不带 `-L muxterm-test-*` 的 `kill-server`。`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。
+C7 绿之前不要开始 C8。C8 不要动 SSH 列出。每步 `cargo fmt`。禁止 `git add -A`。禁止 push。禁止 `herdr server stop`。禁止不带 `-L muxterm-test-*` 的 `kill-server`。`d1181679` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。
 
 ---
 
@@ -307,7 +307,7 @@ C7 绿之前不要开始 C8。C8 不要动 SSH 列出。每步 `cargo fmt`。禁
 
 > 日期：2026-08-19（`2026-08-19T01:41:31+08:00`）
 > 契约：[`CATALOG.md`](CATALOG.md) §1.4、[`W20-PLAN.md`](W20-PLAN.md) §0、[`TESTING.md`](TESTING.md) §5.16。
-> C0–C8 已在 HEAD `9767e2c`。**不要重做 C7/C8。** 不要 GNU Screen。不要弱化 W13 常量。
+> C0–C8 已在 HEAD `b08718f`（pre-rebase `9767e2c`）。**不要重做 C7/C8。** 不要 GNU Screen。不要弱化 W13 常量。
 
 用户：快速连接「已有的连接」不要多层目录，进去就是可 attach 的 runtime list。命令面板先列机器（connect name：`local` 与 SSH alias 并列），点进去才是该机器的 runtime list。测试只锁 **local + ssh-self 双份**；不要求 archmini/cd。
 
@@ -353,4 +353,4 @@ Commit（建议拆两刀）：
 1. `feat(catalog): fan out discover_sessions all with connect name`
 2. `feat(linux): flatten existing connections into attachable rows`
 
-`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。
+`d1181679` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。

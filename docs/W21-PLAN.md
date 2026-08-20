@@ -6,7 +6,7 @@
 > 先读：[`W19-PLAN.md`](W19-PLAN.md)（必须先绿）→ 本文件 → [`SURFACE.md`](SURFACE.md) §5.3 滚轮 → `renderer.rs` `apply_mirror_policy` → `pane_view.rs`
 > 对照（只读）：iTerm2 `KEY_ALLOW_ALTERNATE_MOUSE_SCROLL` / `alternateMouseScroll`（alt-screen 滚轮转方向键）；VTE `enable-fallback-scrolling` 默认 **true**。
 >
-> **你是实现 agent。W19 门禁未绿不要开始。W21 在 W20 之前。先红测试再实现。禁止改断言 / widget_name。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止 `visible_ansi` → `vte.reset`。禁止用 replica dump 冒充滚动。`fbc77e4` 必须仍是祖先。**
+> **你是实现 agent。W19 门禁未绿不要开始。W21 在 W20 之前。先红测试再实现。禁止改断言 / widget_name。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止 `visible_ansi` → `vte.reset`。禁止用 replica dump 冒充滚动。`d1181679` 必须仍是祖先。**
 
 用户 2026-08-17 在 Mini 上 dogfood：tmux attach 后，**shell 里上下滚、agent（Codex TUI）里上下滚都有问题**。现有 e2e 绿是因为测的是 `vadjustment.set_value(0)`，**从来没有模拟滚轮**。
 

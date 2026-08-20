@@ -6,7 +6,7 @@
 > 日志：`test_2026-0817-1902.log`、`test_2026-0817-1903.log`（用户 19:02–19:04 CST / 11:02–11:04 UTC）
 > 先读：本文件 → [`TESTING.md`](TESTING.md) §5.11 → `src/core/protocol/terminal/emulate.rs` → `src/platform/linux/window.rs` 16ms poll → `src/platform/linux/pane_view.rs`
 >
-> **你是实现 agent。先红测试，再最小实现到绿。禁止改断言来「绿」。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止 `tmux kill-server` 不带 `-L`。禁止 `herdr server stop`。`fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。**
+> **你是实现 agent。先红测试，再最小实现到绿。禁止改断言来「绿」。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止 `tmux kill-server` 不带 `-L`。禁止 `herdr server stop`。`d1181679` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。**
 
 用户从 Mini 跑 `~/Downloads/muxterm gui --debug --log-file …` 两次，进程直接没了。要求：**可以报错、必须留日志，不许 panic 把 GUI abort。** 先修根因，再加兜底。W20 的面板在这轮绿了之后再做。
 
@@ -208,5 +208,5 @@ xvfb-run -a cargo test --features gtk --test linux_feature_e2e -- --test-threads
 - 不改 W20 面板、不改 Herdr Runtime 行为
 - 不把 `feed` 整段吞掉而不修 lockstep
 - 不 `herdr server stop`、不杀默认 tmux
-- 不 revert `fbc77e4`
+- 不 revert `d1181679`
 - 不把 288KB seed 改成截断来「避免」这次 panic（那是 attach 该播的快照）

@@ -24,7 +24,7 @@
 | 命令刻度 / OSC 133 | `iTerm2/sources/VT100Screen/VT100ScreenState.m`（`commandMarkAt` / `lastCommandMark`）、`iTerm2/sources/VT100/VT100Terminal.m`（OSC 133）、`wezterm/docs/shell-integration.md`、`ghostty/src/terminal/Terminal.zig`（OSC133 单测） |
 | 远程 tmux 播种 | `cmux` 里 `RemoteTmuxPaneSeed` / discard+snapshot+catch-up（搜这个符号） |
 
-Muxterm 纪律不变：live 路径禁止 `visible_ansi` → `vte.reset`；重连 `seed_raw`；`fbc77e4` 仍是祖先。
+Muxterm 纪律不变：live 路径禁止 `visible_ansi` → `vte.reset`；重连 `seed_raw`；`d1181679` 仍是祖先。
 
 ---
 
@@ -113,6 +113,6 @@ W17 crate 必须继续绿。
 - [x] 上表全部绿，断言没改弱，没有 `#[ignore]`（Cursor 独立复跑，`2026-08-17T14:53:48+08:00`）
 - [x] 未连用户 22 端口；未对默认 tmux `kill-server`
 - [x] 英文 commit；本轮 Linux 关账后 push（见分支跟踪）
-- [x] `fbc77e4` 仍是祖先
+- [x] `d1181679` 仍是祖先
 
 仍明确以后再做：ET、合盖一小时人手狗食、多窗口、Herdr。Linux 本轮到此。后续在 macOS 修 bug；分支改名、log/test/文档大清理另做。

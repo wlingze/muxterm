@@ -40,7 +40,7 @@ F1–F6 已把 Linux live 显示改成原始字节进 VTE。接口细节见 [`WO
 
 ### W1 复盘（已做完，后续别再犯）
 
-W1 本体合格：`3f19923` 只加 `src/core/workspace/`，没改 GTK，单测隔离 pane，门禁绿。另有 `fbc77e4`：本机 12pt 字体让 VTE 网格变成 79×21，F 的 80×24 fixture 头滚出可见区，测试改 10pt，**断言没改**。不要回滚这个 commit。
+W1 本体合格：`3f19923` 只加 `src/core/workspace/`，没改 GTK，单测隔离 pane，门禁绿。另有 `d1181679`：本机 12pt 字体让 VTE 网格变成 79×21，F 的 80×24 fixture 头滚出可见区，测试改 10pt，**断言没改**。不要回滚这个 commit。
 
 后续禁止：
 
@@ -50,7 +50,7 @@ W1 本体合格：`3f19923` 只加 `src/core/workspace/`，没改 GTK，单测�
 4. **不要** 为了跑测试再建 `/tmp` worktree；就在当前仓库跑。不要 `git worktree remove --force` 别人的 worktree。
 5. 测 workspace 模块用 `cargo test --lib workspace::`（注意 `::`）。不要 `cargo test --lib workspace`，会把 `replica` 等名字里带 workspace 的测试也算进来。
 6. `WorkspaceId` 里的 `session` 字段是连接身份字符串（和旧 `ConnectionKey` 同构），**不是**产品 Session。W7 可改名叫 `name`，W2 不必改。
-7. **不要回滚** `fbc77e4`。`linux_render_e2e` 字体必须让网格 ≥80×24。
+7. **不要回滚** `d1181679`。`linux_render_e2e` 字体必须让网格 ≥80×24。
 8. **不要** 在 platform 再写一套 ConnectionPool。W2 池进 core；Linux 只 bind。
 9. W2–W4 **不要改** `pane_view.rs` live 路径。W5 只改 layout 挂载/池绑定，禁止 `visible_ansi` dump。
 
@@ -460,7 +460,7 @@ W9–W11 的 `rg` 验收过了，但规格层没做完。真机 attach 白屏/�
 1. 已存在 session：capture 快照必须进 Surface（VTE 非空），禁止只 `feed` 洪水把播种冲掉。
 2. 布局：3 pane 的 `LayoutNode` 必须变成 3 个面积非零的控件，不能整窗一块白。
 3. 流控：忙 pane 必须 `%pause`（`refresh-client -A '%N:pause'`）或等价合并，禁止每条 `%output` 都进 GTK。iTerm2 `pausePanes` / tmux `control.c`。
-4. 禁止 live 路径 `visible_ansi` → `vte.reset`。禁止回滚 `fbc77e4`。禁止杀默认 tmux。
+4. 禁止 live 路径 `visible_ansi` → `vte.reset`。禁止回滚 `d1181679`。禁止杀默认 tmux。
 
 **若大 e2e 红：** 拆小，但最终大 e2e 必须绿。建议顺序：
 
@@ -530,7 +530,7 @@ W9–W11 的 `rg` 验收过了，但规格层没做完。真机 attach 白屏/�
 - 提交 `/home/wlz/Developer/terminal`
 - push、改 git config、杀默认 tmux
 - 顺手大重构 `emulate.rs` / 主题 / attention UX
-- 回滚 `fbc77e4`（render e2e 10pt）
+- 回滚 `d1181679`（render e2e 10pt）
 - 把未提交的架构 docs 混进 W2–W7
 - 做完一个 W 就停下来等用户
 
@@ -572,7 +572,7 @@ next: W?
 继续。不要等我确认。不要把 thread goal 标 complete，直到 W8 门禁全绿。
 
 工作目录 `/home/wlz/Developer/self/muxterm`，分支 `feat/linux-quickconnect-ui`。HEAD 已有：
-- `fbc77e4` test(linux): fit render e2e 80x24 fixture with 10pt font（**不要回滚**）
+- `d1181679` test(linux): fit render e2e 80x24 fixture with 10pt font（**不要回滚**）
 - `3f19923` feat(core): wrap one runtime in Workspace（W1 完成）
 **不要 push。**
 

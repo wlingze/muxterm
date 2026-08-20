@@ -9,7 +9,7 @@
 >
 > **你是实现 agent。每个 H 先写测试（必须先红），再写最小实现到绿。禁止改断言、token、widget_name、阈值来「绿」。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止动用户默认 Herdr / 默认 tmux。**
 >
-> `fbc77e4` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。
+> `d1181679` 必须仍是祖先。live 路径禁止 `visible_ansi` → `vte.reset`。
 
 接入难不难：tab/pane/字节和 tmux `-CC` 是同一套产品树，Herdr 的 snapshot + 事件比 `%output` 好接。真正要小心的是 **隔离 named session**、**一条 socket 上多个 Workspace 共享 `HerdrSession`**、以及 **生产代码不要 `Command::new("herdr")`**。按 H0→H4 做，不要一次铺开 agent 侧边栏。
 
@@ -299,4 +299,4 @@ cargo clippy --all-targets -- -D warnings
 - [ ] GUI 只通过 `support()` 露出 worktree
 - [ ] 生产路径无 `Command::new("herdr")`（夹具除外）
 - [ ] 英文 commit，未 push
-- [ ] `fbc77e4` 仍是祖先；live 无 dump
+- [ ] `d1181679` 仍是祖先；live 无 dump

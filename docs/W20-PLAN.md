@@ -6,7 +6,7 @@
 > 先读：[`W19-PLAN.md`](W19-PLAN.md) 与 [`W21-PLAN.md`](W21-PLAN.md)（都必须先绿）→ 本文件 → [`RUNTIME.md`](RUNTIME.md) §8 → [`TESTING.md`](TESTING.md) §5.13 → `quickconnect_panel.rs` / `target_config_window.rs` / `discovery.rs`
 > 远程 Herdr 核对：官方 [Socket API](https://herdr.dev/docs/socket-api/)（`workspace.list`）、[How to work](https://herdr.dev/docs/how-to-work/)（SSH 上跑 Herdr）、[Persistence](https://herdr.dev/docs/persistence-remote/)（named session 路径）。核对时间 2026-08-17T19:09:11+08:00。
 >
-> **你是实现 agent。W19 与 W21 门禁未绿不要开始本文件。每个 W20x 先红测试再实现。禁止改断言 / widget_name / token。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止连用户默认 Herdr 做测试。禁止 `herdr server stop`。禁止对默认 tmux `kill-server`。生产代码禁止 `Command::new("herdr")`。GUI 禁止 `if runtime == "herdr"`，问 `support()` / `TargetRuntime` 枚举。`fbc77e4` 必须仍是祖先。**
+> **你是实现 agent。W19 与 W21 门禁未绿不要开始本文件。每个 W20x 先红测试再实现。禁止改断言 / widget_name / token。禁止 `#[ignore]`。禁止 `git add -A`。禁止 Co-authored-by。禁止 push。禁止连用户默认 Herdr 做测试。禁止 `herdr server stop`。禁止对默认 tmux `kill-server`。生产代码禁止 `Command::new("herdr")`。GUI 禁止 `if runtime == "herdr"`，问 `support()` / `TargetRuntime` 枚举。`d1181679` 必须仍是祖先。**
 
 用户要的不是两套一级 UI（tmux 一栏、Herdr 一栏）。一级仍是 **预设项目**。最上固定一格目录 **「已有的连接」**。进去按 **本地 / SSH** 两个目录，目录里 tmux session 和 Herdr workspace **同一套项目行**（名字 + `runtime @ transport` 副标题）。新建项目的 runtime 要能选 Herdr。
 
@@ -250,5 +250,5 @@ xvfb-run -a cargo test --features gtk --test linux_ssh_e2e -- --test-threads=1
 - `herdr server stop` / 不带 `-L` 的 `tmux kill-server`
 - 生产 `Command::new("herdr")` 当 Runtime（discovery 的 **远程** `ssh … herdr session list` 可以，和 `ssh … tmux list-sessions` 同类）
 - 远端没在跑 Herdr 就帮用户装/启动（`herdr --remote` 会装，禁止）
-- 改 W13 常量、live `visible_ansi` → reset、revert `fbc77e4`
+- 改 W13 常量、live `visible_ansi` → reset、revert `d1181679`
 - 在 W19 未绿时改 `emulate.rs` 以外的「顺便重构」

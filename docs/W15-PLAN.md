@@ -64,7 +64,7 @@ W15 之后（先别做）：断线水印（VTE 留着、提示重连）；搜索
 - pane 用 `/bin/cat` / `python3 -u tests/scripts/*.py`。不要无路径 `cat`。
 - GTK：无 DISPLAY skip；`xvfb-run -a`；`gtk4::test_synced`；每个 e2e crate **一个** AppWindow。
 - `--test-threads=1`。禁止加长裸 sleep 当修复。
-- 禁止 live `visible_ansi` → `vte.reset`。禁止回滚 `fbc77e4`。禁止把 Search/Done/flood/本轮新断言标 `#[ignore]`。
+- 禁止 live `visible_ansi` → `vte.reset`。禁止回滚 `d1181679`。禁止把 Search/Done/flood/本轮新断言标 `#[ignore]`。
 - 不要削弱 `MIN_PANE_PX` / `MAX_OUTPUT_EVENTS_PER_SEC=400`。
 
 ---
