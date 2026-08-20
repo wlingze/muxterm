@@ -103,6 +103,10 @@ name = "tmux_attach_contract"
 path = "tests/tmux_attach_contract.rs"
 
 [[test]]
+name = "tmux_control_conformance"
+path = "tests/tmux_control_conformance.rs"
+
+[[test]]
 name = "linux_workspace_attach_e2e"
 path = "tests/linux_workspace_attach_e2e.rs"
 required-features = ["gtk"]
@@ -243,4 +247,3 @@ required-features = ["tui"]
 name = "ssh_streaming_integration"
 path = "tests/ssh_streaming_integration.rs"
 required-features = ["ffi"]
-
