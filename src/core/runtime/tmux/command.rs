@@ -381,6 +381,14 @@ pub fn capture_pane_with_history(pane: PaneId, history_lines: u32) -> TmuxComman
     TmuxCommand::from_raw(format!("capture-pane -e -p -S -{n} -t %{}", pane.0))
 }
 
+/// 捕获 tmux 的 inactive screen。`-q` 让未使用 alternate screen 的 pane
+/// 返回空响应，而不是把一次 resync 变成 `%error`；`-S` 保留主屏的 scrollback，
+/// 这样 alternate screen 退出后仍能回到和 tmux 一致的历史。
+pub fn capture_alternate_pane(pane: PaneId, history_lines: u32) -> TmuxCommand {
+    let n = history_lines.max(1);
+    TmuxCommand::from_raw(format!("capture-pane -a -e -p -q -S -{n} -t %{}", pane.0))
+}
+
 /// display-message -p -t <pane> '<format>'。
 pub fn display_message(target: PaneId, format: &str) -> TmuxCommand {
     build(
@@ -1037,6 +1045,14 @@ fn capture_pane_with_history_requests_scrollback() {
     let c = capture_pane_with_history(PaneId(3), 10_000);
     assert_eq!(c.as_str(), "capture-pane -e -p -S -10000 -t %3");
     assert_eq!(c.to_line(), "capture-pane -e -p -S -10000 -t %3\n");
+}
+
+#[test]
+fn capture_alternate_pane_is_quiet_and_escaped() {
+    assert_eq!(
+        capture_alternate_pane(PaneId(3), 10_000).as_str(),
+        "capture-pane -a -e -p -q -S -10000 -t %3"
+    );
 }
 
 #[test]
