@@ -137,6 +137,7 @@ char* muxterm_search_all(struct MuxtermHandle* h, const char* query);
 char* muxterm_attention_snapshot(struct MuxtermHandle* h);
 char* muxterm_attention_take_notifications(struct MuxtermHandle* h);
 int muxterm_attention_on_became_visible(struct MuxtermHandle* h, uint32_t pane_id);
+int muxterm_attention_acknowledge(struct MuxtermHandle* h, uint32_t pane_id);
 int muxterm_attention_set_process_name(struct MuxtermHandle* h, uint32_t pane_id, const char* name);
 int muxterm_attention_mute(struct MuxtermHandle* h, uint32_t pane_id, uint64_t seconds);
 int muxterm_pane_scroll_ansi(struct MuxtermHandle* h, uint32_t pane_id, uint32_t offset, uint32_t rows, uint8_t* buf, size_t buf_len);

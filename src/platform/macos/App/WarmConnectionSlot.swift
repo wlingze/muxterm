@@ -1,4 +1,5 @@
 import AppKit
+import CMuxterm
 import MuxtermChrome
 
 /// ConnectionPool 的真实 slot：持有 CoreBridge + 独立 TerminalManager。
@@ -42,6 +43,15 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
                 terminalManager.removePane(ev.paneId)
             } else if ev.isPaneOutput {
                 terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
+            } else if ev.type == STATE_STATUS_SUBSCRIPTION,
+                      ev.name.hasPrefix("muxterm.pane-cmd") {
+                // 后台 Workspace 也要维护 pane 进程名；否则 Attention 从后台
+                // 触发时只能显示 workspace/node，无法标记 Codex/Cursor。
+                let value = String(data: ev.data, encoding: .utf8) ?? ""
+                _ = bridge.attentionSetProcessName(
+                    paneId: ev.paneId,
+                    name: value.isEmpty ? nil : value
+                )
             } else if ev.isBackendStatus, ev.paneId == 4 {
                 // 后台连接退出：不主动关窗口，交给前台下次激活时处理。
                 continue

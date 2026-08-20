@@ -69,7 +69,9 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
     ) {
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error {
-                NSLog("muxterm: notification authorization failed: %@", error.localizedDescription)
+                // 被用户/系统拒绝不是应用故障；Attention 面板和铃铛仍然可用。
+                // 用“unavailable”而不是“failed”避免把 macOS 设置状态误报成崩溃。
+                NSLog("muxterm: notification authorization unavailable: %@", error.localizedDescription)
             }
             completion?(granted)
         }
@@ -110,6 +112,11 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        // 点击后从通知中心移除已展示的同一条，避免用户已经查看但系统列表
+        // 仍长期保留旧提醒；Attention 面板的状态由 pane acknowledge 负责。
+        let identifier = response.notification.request.identifier
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
         DispatchQueue.main.async { [weak self] in
             self?.onActivate?()
         }

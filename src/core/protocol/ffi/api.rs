@@ -9,7 +9,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use crate::core::attention::clock::RealClock;
-use crate::core::attention::engine::AttentionEngine;
+use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
 use crate::core::config::parse_hex;
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::model::layout::{LayoutNode, SplitDir};
@@ -1798,7 +1798,7 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
 
 /// 取走本轮新进入 blocked / done 的工作区通知，返回 JSON。
 ///
-/// 返回 `{"ok": true, "blocked": [...], "done": [...]}`。
+/// 返回 `{"ok": true, "notifications": [...], "blocked": [...], "done": [...]}`。
 ///
 /// # Safety
 /// `h` 有效且未 free。
@@ -1811,10 +1811,36 @@ pub unsafe extern "C" fn muxterm_attention_take_notifications(
             return json_error("handle 为空");
         }
         let handle = &mut *h;
-        let blocked = handle.attention.take_new_blocked_notifications();
-        let done = handle.attention.take_new_done_notifications();
+        let notifications = handle.attention.take_notifications();
+        let blocked = notifications
+            .iter()
+            .filter(|n| n.kind == AttentionNotificationKind::Blocked)
+            .map(|n| n.workspace_id.clone())
+            .collect::<Vec<_>>();
+        let done = notifications
+            .iter()
+            .filter(|n| n.kind == AttentionNotificationKind::Done)
+            .map(|n| n.workspace_id.clone())
+            .collect::<Vec<_>>();
+        let records = notifications
+            .into_iter()
+            .map(|n| {
+                serde_json::json!({
+                    "workspace_id": n.workspace_id,
+                    "pane_id": n.pane_id,
+                    "kind": match n.kind {
+                        AttentionNotificationKind::Blocked => "blocked",
+                        AttentionNotificationKind::Done => "done",
+                    },
+                    "process_name": n.process_name,
+                    "last_line": n.last_line,
+                    "seq": n.seq,
+                })
+            })
+            .collect::<Vec<_>>();
         json_string(serde_json::json!({
             "ok": true,
+            "notifications": records,
             "blocked": blocked,
             "done": done,
         }))
@@ -1842,6 +1868,26 @@ pub unsafe extern "C" fn muxterm_attention_on_became_visible(
         handle
             .attention
             .on_became_visible(&ws_id.replica_id(), pane_id);
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// 显式确认某 pane 的通知已读（Blocked/Done → Idle）。
+///
+/// # Safety
+/// `h` 有效且未 free。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_acknowledge(h: *mut MuxtermHandle, pane_id: u32) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(ws_id) = handle.pool.active_id() else {
+            return -1;
+        };
+        handle.attention.acknowledge(&ws_id.replica_id(), pane_id);
         0
     }))
     .unwrap_or(-1)

@@ -18,6 +18,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     // (workspaceId, tabId, paneId, seq, query)
     var onPreview: ((String, UInt32) -> Void)? // (workspaceId, paneId)
     var onMute: ((String, UInt32, UInt64) -> Void)? // (workspaceId, paneId, seconds)
+    /// 明确打开 Attention 条目时确认已读；仅切到列表或查看状态不触发。
+    var onAcknowledge: ((String, UInt32) -> Void)? // (workspaceId, paneId)
     var currentConfig: TargetConfig?
 
     private let store: QuickConnectStore
@@ -114,6 +116,29 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         window.makeFirstResponder(input)
     }
 
+    /// 显示指定 tab。面板已打开时只切换内容，不把 Cmd-P/R/F 解释成 toggle。
+    /// 这样连续按快捷键始终是可预测的导航动作；query 在 tab 之间保留。
+    func show(tab: PanelTab, scope: SearchScope? = nil) {
+        if window?.isVisible == true {
+            model.tab = tab
+            if let scope {
+                model.scope = scope
+            }
+            applyTab()
+            reload()
+            window?.makeKeyAndOrderFront(nil)
+            window?.makeFirstResponder(input)
+        } else {
+            present(initial: tab, scope: scope ?? model.scope)
+        }
+    }
+
+    /// 重新读取面板数据但不改变当前 tab、query 或 scope。
+    func refreshData() {
+        guard window?.isVisible == true else { return }
+        reload()
+    }
+
     func dismiss() {
         window?.orderOut(nil)
         ownerWindow?.makeKeyAndOrderFront(nil)
@@ -188,6 +213,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .attention:
             guard table.selectedRow < rows.count else { return }
             let row = rows[table.selectedRow]
+            onAcknowledge?(row.workspaceId, row.pane.paneId)
             onJump?(row.workspaceId, nil, row.pane.paneId, 0, "")
             dismiss()
         case .search:
@@ -715,12 +741,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     @objc private func jumpSelectedAttention() {
         guard let row = selectedAttentionRow() else { return }
+        onAcknowledge?(row.workspaceId, row.pane.paneId)
         onJump?(row.workspaceId, nil, row.pane.paneId, 0, "")
         dismiss()
     }
 
     @objc private func openSelectedAttention() {
         guard let row = selectedAttentionRow() else { return }
+        onAcknowledge?(row.workspaceId, row.pane.paneId)
         onPreview?(row.workspaceId, row.pane.paneId)
     }
 

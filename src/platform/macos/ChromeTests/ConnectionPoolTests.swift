@@ -279,6 +279,29 @@ final class ConnectionPoolTests: XCTestCase {
         XCTAssertEqual(recents.last?.path, "/x/a")
     }
 
+    func testRecentAlwaysKeepsActiveTargetFirst() {
+        let pool = makePool(maxSlots: 6)
+        now = 1
+        let initial = makeKey(session: "initial-local", path: "/tmp/local")
+        _ = pool.acquire(key: initial) { [self] _ in createSlot(initial) }
+        pool.release(key: initial)
+
+        // 模拟历史连接在启动 local workspace 之后被使用，且 Recent 有容量上限。
+        for i in 0..<6 {
+            now = UInt64(100 + i)
+            let key = makeKey(session: "history-\(i)", path: "/tmp/history-\(i)")
+            _ = pool.acquire(key: key) { [self] _ in createSlot(key) }
+            pool.release(key: key)
+        }
+        now = 1_000
+        _ = pool.acquire(key: initial) { [self] _ in createSlot(initial) }
+        pool.slots[initial]?.lastUsedAt = 1
+
+        let recent = pool.recentTargetConfigs(limit: 3)
+        XCTAssertEqual(recent.first?.name, "initial-local")
+        XCTAssertEqual(recent.count, 3)
+    }
+
     func testCurrentTargetConfigMapsActiveKey() {
         let pool = makePool(maxSlots: 3)
         let key = makeKey(

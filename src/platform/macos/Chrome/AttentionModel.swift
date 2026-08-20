@@ -139,8 +139,37 @@ public struct AttentionRow: Equatable, Sendable {
 
 /// 注意力行标题：进程名 + transport + path，不用 last_line 片段。
 public enum AttentionRowLabel {
+    /// 将 pane-cmd/旧快照里的 wrapper 名称收敛成用户真正关心的 agent 名称。
+    /// 例如 `npx @openai/codex`、`/opt/cursor-agent` 都应显示为 codex/cursor，
+    /// 而不是路径或 node wrapper。未知命令仍保留 basename。
+    public static func normalizedProcess(_ process: String?) -> String? {
+        guard let process else { return nil }
+        let value = process.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let known = [
+            "codex", "cursor", "claude", "gemini", "aider", "opencode",
+            "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
+        ]
+        let tokens = value.lowercased().split { character in
+            !(character.isLetter || character.isNumber || character == "-" || character == "_")
+        }
+        for token in tokens {
+            let token = String(token)
+            if let match = known.first(where: {
+                token == $0 || token.hasPrefix($0 + "-") || token.hasPrefix($0 + "_")
+            }) {
+                return match
+            }
+        }
+        let basename = value
+            .split(whereSeparator: { $0 == "/" || $0 == "\\" })
+            .last
+            .map(String.init) ?? value
+        return basename
+    }
+
     public static func display(process: String?, transport: String, path: String) -> String {
-        let trimmed = process?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmed = normalizedProcess(process) ?? ""
         let name = trimmed.isEmpty ? "?" : trimmed
         return "\(name)  \(transport)  \(path)"
     }
@@ -156,8 +185,12 @@ public enum AttentionList {
                 ? "ssh"
                 : (ws.workspaceId.contains("@") ? "local" : "tmux")
             for pane in ws.panes where pane.status.isListed {
+                let processText = AttentionRowLabel.normalizedProcess(pane.processName)
+                    ?? pane.processName
+                    ?? ""
                 guard q.isEmpty
                     || ws.workspaceId.lowercased().contains(q)
+                    || processText.lowercased().contains(q)
                     || (pane.processName ?? "").lowercased().contains(q)
                     || pane.lastLine.lowercased().contains(q)
                 else {
@@ -183,14 +216,51 @@ public enum AttentionList {
     }
 }
 
+/// 单条结构化通知；新版 FFI 提供 pane、进程名和最后一行，旧版可缺失 pane。
+public struct AttentionNotification: Equatable, Sendable {
+    public let workspaceId: String
+    public let paneId: UInt32?
+    public let kind: PaneAttentionStatus
+    public let processName: String?
+    public let lastLine: String
+    public let seq: UInt64
+
+    public init(
+        workspaceId: String,
+        paneId: UInt32?,
+        kind: PaneAttentionStatus,
+        processName: String?,
+        lastLine: String,
+        seq: UInt64
+    ) {
+        self.workspaceId = workspaceId
+        self.paneId = paneId
+        self.kind = kind
+        self.processName = processName
+        self.lastLine = lastLine
+        self.seq = seq
+    }
+
+    public var displayProcessName: String? {
+        AttentionRowLabel.normalizedProcess(processName)
+    }
+}
+
 /// 通知记录（core `muxterm_attention_take_notifications` JSON 的 Swift 视图）。
 public struct AttentionNotifications: Equatable, Sendable {
     public let blocked: [String]
     public let done: [String]
+    /// 新版结构化记录，包含 pane、进程名和最后一行；旧 core 只提供 workspace 数组。
+    public let notifications: [AttentionNotification]
 
-    public init(blocked: [String], done: [String]) {
+    public init(
+        blocked: [String],
+        done: [String],
+        notifications: [AttentionNotification] = []
+    ) {
         self.blocked = blocked
         self.done = done
+        self.notifications = notifications
     }
 
     public static func decode(_ data: Data) -> AttentionNotifications? {
@@ -199,9 +269,65 @@ public struct AttentionNotifications: Equatable, Sendable {
         else {
             return nil
         }
+        let blocked = (json["blocked"] as? [String]) ?? []
+        let done = (json["done"] as? [String]) ?? []
+        let structured: [AttentionNotification] = (json["notifications"] as? [[String: Any]])?
+            .compactMap { item in
+                guard let workspaceId = item["workspace_id"] as? String,
+                      let kindRaw = item["kind"] as? String,
+                      let kind = PaneAttentionStatus(rawValue: kindRaw),
+                      kind == .blocked || kind == .done
+                else {
+                    return nil
+                }
+                let paneId = (item["pane_id"] as? UInt32)
+                    ?? (item["pane_id"] as? NSNumber)?.uint32Value
+                let seq = (item["seq"] as? UInt64)
+                    ?? (item["seq"] as? NSNumber)?.uint64Value
+                    ?? 0
+                return AttentionNotification(
+                    workspaceId: workspaceId,
+                    paneId: paneId,
+                    kind: kind,
+                    processName: item["process_name"] as? String,
+                    lastLine: (item["last_line"] as? String) ?? "",
+                    seq: seq
+                )
+            } ?? []
+        let notifications: [AttentionNotification]
+        if structured.isEmpty {
+            // 与旧 FFI 的 workspace-only 响应兼容；paneId 缺失时前端只做系统通知，
+            // 不会尝试 acknowledge 一个不确定的 pane。
+            notifications = blocked.map {
+                AttentionNotification(
+                    workspaceId: $0,
+                    paneId: nil,
+                    kind: .blocked,
+                    processName: nil,
+                    lastLine: "",
+                    seq: 0
+                )
+            } + done.map {
+                AttentionNotification(
+                    workspaceId: $0,
+                    paneId: nil,
+                    kind: .done,
+                    processName: nil,
+                    lastLine: "",
+                    seq: 0
+                )
+            }
+        } else {
+            notifications = structured
+        }
         return AttentionNotifications(
-            blocked: (json["blocked"] as? [String]) ?? [],
-            done: (json["done"] as? [String]) ?? []
+            blocked: blocked.isEmpty
+                ? structured.filter { $0.kind == .blocked }.map(\.workspaceId)
+                : blocked,
+            done: done.isEmpty
+                ? structured.filter { $0.kind == .done }.map(\.workspaceId)
+                : done,
+            notifications: notifications
         )
     }
 }

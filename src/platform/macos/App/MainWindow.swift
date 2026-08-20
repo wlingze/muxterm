@@ -204,9 +204,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
         }
-        unifiedPanel.onPreview = { [weak self] workspaceId, _ in
+        unifiedPanel.onPreview = { [weak self] workspaceId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.toggleReplyOverlay()
+            self.toggleReplyOverlay(paneId: paneId)
+        }
+        unifiedPanel.onAcknowledge = { [weak self] workspaceId, paneId in
+            guard let self, let targetBridge = self.bridge(forWorkspace: workspaceId) else { return }
+            _ = targetBridge.attentionAcknowledge(paneId: paneId)
+            // Open/Jump 之后列表和 badge 都应立即反映“已读”，不等待下一轮
+            // 60Hz poll；后台 Workspace 也必须走它自己的 bridge。
+            self.unifiedPanel.refreshData()
         }
         unifiedPanel.onMute = { [weak self] workspaceId, paneId, seconds in
             guard let self,
@@ -670,11 +677,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Recent 由连接池派生（最近打开且仍 warm 的连接）；当前连接用于行高亮。
         unifiedPanel.currentConfig = connectionPool.currentTargetConfig
         quickConnectStore.replaceRecents(connectionPool.recentTargetConfigs())
-        if unifiedPanel.window?.isKeyWindow == true {
-            unifiedPanel.dismiss()
-        } else {
-            unifiedPanel.present(initial: .workspaces)
-        }
+        unifiedPanel.show(tab: .workspaces)
     }
 
     @objc func openSearchPanel() {
@@ -691,31 +694,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func openSearchPanel(scope: SearchScope) {
         guard let unifiedPanel else { return }
-        if unifiedPanel.window?.isKeyWindow == true {
-            unifiedPanel.dismiss()
-        } else {
-            unifiedPanel.present(initial: .search, scope: scope)
-        }
+        unifiedPanel.show(tab: .search, scope: scope)
     }
 
     @objc func openAttentionPanel() {
         guard let unifiedPanel else { return }
-        if unifiedPanel.window?.isKeyWindow == true {
-            unifiedPanel.dismiss()
-        } else {
-            unifiedPanel.present(initial: .attention)
-        }
+        unifiedPanel.show(tab: .attention)
     }
 
     /// 点击系统通知时始终回到主窗口并显示 Attention，不复用 toggle 语义。
     func revealAttentionFromSystemNotification() {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-        guard unifiedPanel.window?.isVisible != true || unifiedPanel.modelTab != .attention else {
-            unifiedPanel.window?.makeKeyAndOrderFront(nil)
-            return
-        }
-        unifiedPanel.present(initial: .attention)
+        unifiedPanel.show(tab: .attention)
     }
 
     /// 统一面板的数据范围覆盖当前 warm 连接；当前 Workspace 固定排在首位，
@@ -832,7 +823,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 注意力面板 Cmd-Enter：打开/关闭独立 replica overlay（W19-E）。
     /// overlay 用选中 pane 的 snapshot 渲染，I/O 走 overlay，不改主布局。
-    func toggleReplyOverlay() {
+    func toggleReplyOverlay(paneId: UInt32? = nil) {
         if let overlay = replyOverlayView, !content.replyOverlayContainer.isHidden {
             overlay.removeFromSuperview()
             replyOverlayView = nil
@@ -841,13 +832,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.replyOverlayContainer.setAccessibilityValue("0")
             return
         }
-        guard unifiedPanel?.modelTab == .attention,
-              let row = unifiedPanel?.testSelectedAttentionRow()
-        else {
-            return
-        }
-        let paneId = row.pane.paneId
-        let overlay = MuxTerminalView(paneId: paneId, frame: .zero)
+        guard unifiedPanel?.modelTab == .attention else { return }
+        let targetPaneId = paneId ?? unifiedPanel?.testSelectedAttentionRow()?.pane.paneId
+        guard let targetPaneId else { return }
+        let overlay = MuxTerminalView(paneId: targetPaneId, frame: .zero)
         overlay.setAccessibilityIdentifier(CmdEnterRouting.overlayIdentifier)
         overlay.setAccessibilityElement(true)
         overlay.inputHandler = self
@@ -861,7 +849,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             overlay.bottomAnchor.constraint(equalTo: content.replyOverlayContainer.bottomAnchor),
         ])
         replyOverlayView = overlay
-        replyOverlayPaneId = paneId
+        replyOverlayPaneId = targetPaneId
         content.replyOverlayContainer.isHidden = false
         // 手动布局（不依赖容器 Auto Layout，headless 下容器高度可能为 0）。
         window?.layoutIfNeeded()
@@ -871,8 +859,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
         _ = overlay.syncSizeToPty(notifyResize: false)
-        let visible = bridge.paneVisibleANSI(paneId: paneId)
-        let raw = bridge.getPaneOutput(paneId: paneId)
+        let visible = bridge.paneVisibleANSI(paneId: targetPaneId)
+        let raw = bridge.getPaneOutput(paneId: targetPaneId)
         let data = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: 24)
         if !data.isEmpty {
             overlay.feedOutput(data, isSnapshot: true)
@@ -2020,13 +2008,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 if !ev.name.isEmpty, let value = String(data: ev.data, encoding: .utf8) {
                     if ev.name.hasPrefix("muxterm.pane-cmd") {
                         // pane-cmd 订阅 → AttentionEngine.set_process_name（Linux 同款）。
-                        // FFI 已把 pane 放进 ev.paneId；空 pane id 不误伤。
-                        if ev.paneId != 0 {
-                            _ = bridge.attentionSetProcessName(
-                                paneId: ev.paneId,
-                                name: value.isEmpty ? nil : value
-                            )
-                        }
+                        // pane @0 是合法 tmux pane，不能把 0 当作“无 pane”哨兵。
+                        _ = bridge.attentionSetProcessName(
+                            paneId: ev.paneId,
+                            name: value.isEmpty ? nil : value
+                        )
                     } else {
                         content.statusBar.applySubscription(name: ev.name, value: value)
                         if let snapshot = statusBarSnapshot {
@@ -2115,24 +2101,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if let activePane {
             _ = bridge.attentionOnBecameVisible(paneId: activePane)
         }
-        if let json = bridge.attentionSnapshotJSON(),
-           let data = json.data(using: .utf8),
-           let snapshot = AttentionSnapshot.decode(data) {
-            content.statusBar.setAttention(
-                StatusBarAttention(count: snapshot.blockedCount)
-            )
+        // 红点与系统通知覆盖所有 warm Workspace；后台 bridge 仍在 core
+        // 中维护 Attention 状态，不能只看当前窗口这一条连接。
+        var blockedCount = 0
+        for candidate in panelBridges() {
+            if let json = candidate.attentionSnapshotJSON(),
+               let data = json.data(using: .utf8),
+               let snapshot = AttentionSnapshot.decode(data) {
+                blockedCount += snapshot.blockedCount
+            }
+            drainAttentionNotifications(from: candidate)
         }
-        guard let json = bridge.attentionTakeNotificationsJSON(),
+        content.statusBar.setAttention(StatusBarAttention(count: blockedCount))
+    }
+
+    private func drainAttentionNotifications(from candidate: CoreBridge) {
+        guard let json = candidate.attentionTakeNotificationsJSON(),
               let data = json.data(using: .utf8),
               let notifications = AttentionNotifications.decode(data)
         else {
             return
         }
-        for ws in notifications.blocked {
-            postNotification(title: ws, body: MuxtermI18n.shared.tr(.statusAttention))
-        }
-        for ws in notifications.done {
-            postNotification(title: ws, body: MuxtermI18n.shared.tr(.statusDone))
+        // 新版 FFI 按 pane 提供结构化记录；旧版 decode 会把 workspace-only
+        // 数组转换成同样的兼容记录。通知标题优先使用执行进程名，避免把
+        // `local/node` 之类的 workspace 身份误当成 Codex/Cursor 名称。
+        for notification in notifications.notifications {
+            let title = notification.displayProcessName
+                ?? notification.workspaceId
+            let body = notification.kind == .done
+                ? MuxtermI18n.shared.tr(.statusDone)
+                : MuxtermI18n.shared.tr(.statusAttention)
+            postNotification(title: title, body: body)
         }
     }
 
@@ -2271,7 +2270,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard lastSeenVisiblePane != paneId else { return }
             lastSeenVisiblePane = paneId
         } else {
-            guard lastSeenVisiblePane == paneId else { return }
+            // 清除来自旧 active pane 的 marker 也必须是幂等的。切 tab/pane
+            // 时刷新函数传入的是新 pane，不能因为 paneId 不同而把旧按钮留在
+            // 左上角，造成所有页面闪烁或残留。
+            guard lastSeenVisiblePane != nil else { return }
             lastSeenVisiblePane = nil
         }
         content.setLastSeenVisible(visible)
