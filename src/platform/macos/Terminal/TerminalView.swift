@@ -74,6 +74,11 @@ final class MuxTerminalView: TerminalView {
         subviews.first(where: { $0 is NSScroller })?.isHidden = true
         getTerminal().changeHistorySize(Self.fallbackHistoryCapacity)
         terminalDelegate = self
+        // OSC 133 是 shell/agent 的 FinalTerm command lifecycle 标记。
+        // Attention/index 在 core 侧消费同一字节流；SwiftTerm 只需要吞掉该
+        // 非绘制序列，避免每个命令都打印 `Unknown OSC code: 133`，不能把
+        // 原始字节从 Surface feed 路径移除或改写。
+        getTerminal().registerOscHandler(code: 133) { _ in }
         wantsLayer = true
         font = Self.makeFont(family: fontFamily, size: self.fontSize)
         // 主题与终端内所有颜色绑定：新建视图用当前 activePalette

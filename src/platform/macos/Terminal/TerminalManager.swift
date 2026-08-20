@@ -17,9 +17,6 @@ final class TerminalManager: TerminalInputHandler {
     /// 已经用可见网格 / 末屏给 SwiftTerm 做过首屏的 pane。
     /// 之后再来的 capture 历史必须走 firstPaint，不能当 live 重放。
     private var swiftTermSeeded = Set<UInt32>()
-    /// 两次 poll 之间（批次外）新建的视图：其播种快照覆盖了队列里尚未派发的
-    /// 事件，下一批开始时要把它们结转到 `viewsCreatedThisBatch` 继续抑制。
-    private var pendingSeedPanes = Set<UInt32>()
     private var inEventBatch = false
     /// 最近喂给终端的 UTF-8 片段（供 UITest / 状态栏无障碍查询）。
     private(set) var recentOutputSnippet: String = ""
@@ -85,7 +82,6 @@ final class TerminalManager: TerminalInputHandler {
         views.removeAll()
         expectedPaneSizes.removeAll()
         viewsCreatedThisBatch.removeAll()
-        pendingSeedPanes.removeAll()
         swiftTermSeeded.removeAll()
         inEventBatch = false
         lastPtySize.removeAll()
@@ -160,8 +156,6 @@ final class TerminalManager: TerminalInputHandler {
                 swiftTermSeeded.insert(paneId)
                 if inEventBatch {
                     viewsCreatedThisBatch.insert(paneId)
-                } else {
-                    pendingSeedPanes.insert(paneId)
                 }
             }
         }
@@ -318,9 +312,10 @@ final class TerminalManager: TerminalInputHandler {
     /// 每轮 poll 事件处理前调用，标记批次边界。
     func beginEventBatch() {
         inEventBatch = true
-        // 批次外新建的视图：队列里已入队的事件都被其播种快照覆盖，本批抑制。
-        viewsCreatedThisBatch = pendingSeedPanes
-        pendingSeedPanes.removeAll()
+        // 只有本轮事件处理中创建的 view 才能确定 seed 覆盖了本批事件。
+        // 批次外（例如切回 warm Workspace 后）创建的 view 不应抑制下一轮
+        // 完整 poll，否则 seed 之后产生的新 prompt/token 会被整批丢掉。
+        viewsCreatedThisBatch.removeAll()
     }
 
     /// 本轮 poll 事件处理完毕。
@@ -337,7 +332,6 @@ final class TerminalManager: TerminalInputHandler {
         views[paneId]?.removeFromSuperview()
         views.removeValue(forKey: paneId)
         viewsCreatedThisBatch.remove(paneId)
-        pendingSeedPanes.remove(paneId)
         swiftTermSeeded.remove(paneId)
         unseenLines.removeValue(forKey: paneId)
         applyingNativeScroll.remove(paneId)
