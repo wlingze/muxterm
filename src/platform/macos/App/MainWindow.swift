@@ -46,6 +46,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// workspace 的 seq 混用。
     private var lastSeenLineSeq: [UInt32: UInt64] = [:]
     private var lastSeenJump: (paneId: UInt32, offset: UInt32)?
+    /// 当前 pane 上一次是否已经展示过 last-seen；避免 60Hz poll 重复
+    /// 改变全局 overlay 的可见状态。
+    private var lastSeenVisiblePane: UInt32?
     /// 当前 pane 在命令时间线中的游标；手动滚轮/搜索会清掉游标，
     /// Cmd+Option+↑/↓ 则按此游标前后移动。
     private var commandTimelineCursor: [UInt32: UInt64] = [:]
@@ -889,14 +892,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @objc func jumpToLastSeen() {
         guard let target = lastSeenJump else { return }
         applyPaneViewport(paneId: target.paneId, offset: target.offset)
-        // 点击后把当前 core 尾部记为新的已读基线。这样按钮不会在下一轮
-        // 60Hz poll 里立刻复现；之后再有新行时仍会按这个基线重新出现。
-        let latest = bridge.paneLatestLineSeq(paneId: target.paneId)
-        if latest >= 0 {
-            lastSeenLineSeq[target.paneId] = UInt64(latest)
-        }
+        // 点击后消费这次离开提示；下一次完整的离开→返回才建立新 marker。
+        lastSeenLineSeq.removeValue(forKey: target.paneId)
         lastSeenJump = nil
-        content.setLastSeenVisible(false)
+        setLastSeenVisible(false, paneId: target.paneId)
     }
 
     @objc private func jumpToLastSuccessfulCommand() {
@@ -985,6 +984,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 offset > 0,
                 unseenLines: self.terminalManager.unseenLineCount(paneId: paneId)
             )
+            guard paneId == self.activePaneID else { return }
             self.refreshHistoryChrome(for: paneId)
         }
         terminalManager.onUnseenLinesChanged = { [weak self] paneId, count in
@@ -1215,6 +1215,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         trafficRateSampler.reset()
         lastSeenLineSeq.removeAll()
         lastSeenJump = nil
+        lastSeenVisiblePane = nil
+        content.setLastSeenVisible(false)
         commandTimelineCursor.removeAll()
         commandNavigationPanes.removeAll()
         wireTerminalManagerCallbacks()
@@ -2218,9 +2220,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let seq = bridge.paneLatestLineSeq(paneId: paneId)
         guard seq >= 0 else { return }
         lastSeenLineSeq[paneId] = UInt64(seq)
+        lastSeenJump = lastSeenJump?.paneId == paneId ? nil : lastSeenJump
+        if lastSeenVisiblePane == paneId {
+            setLastSeenVisible(false, paneId: paneId)
+        }
     }
 
     private func refreshHistoryChrome(for paneId: UInt32) {
+        guard paneId == activePaneID else { return }
         let latest = bridge.paneLatestLineSeq(paneId: paneId)
         let seen = lastSeenLineSeq[paneId]
         let rawOffset = seen.map {
@@ -2232,12 +2239,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             rawOffset: rawOffset
         ) {
             lastSeenJump = (paneId, offset)
-            content.setLastSeenVisible(true)
+            setLastSeenVisible(true, paneId: paneId)
         } else {
             // latest 没有前进、seq 已 stale 或 core 查询失败时，都必须
             // 清掉旧目标，不能保留上一轮可用的 offset。
             lastSeenJump = nil
-            content.setLastSeenVisible(false)
+            setLastSeenVisible(false, paneId: paneId)
         }
 
         var ok: (command: String, exitCode: Int, offset: UInt32)?
@@ -2254,6 +2261,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 if ok != nil, fail != nil { break }
         }
         content.setCommandMarks(ok: ok, fail: fail)
+    }
+
+    private func setLastSeenVisible(_ visible: Bool, paneId: UInt32) {
+        if visible {
+            guard lastSeenVisiblePane != paneId else { return }
+            lastSeenVisiblePane = paneId
+        } else {
+            guard lastSeenVisiblePane == paneId else { return }
+            lastSeenVisiblePane = nil
+        }
+        content.setLastSeenVisible(visible)
     }
 
     /// session/window 已空时关闭 NSWindow。
