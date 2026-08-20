@@ -99,8 +99,8 @@ final class ContentView: NSView {
         NSLayoutConstraint.activate([
             disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
             disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor),
-            lastSeenButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            lastSeenButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            lastSeenButton.centerXAnchor.constraint(equalTo: paneLayout.centerXAnchor),
+            lastSeenButton.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 12),
             commandMarkFailButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             commandMarkFailButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             commandMarkOKButton.trailingAnchor.constraint(equalTo: commandMarkFailButton.leadingAnchor, constant: -4),
