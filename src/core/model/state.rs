@@ -54,6 +54,12 @@ pub enum StateChange {
         /// 自上次事件以来的增量字节。
         data: Vec<u8>,
     },
+    /// 某 pane 的权威屏幕快照（重置 VT 后一次性应用，不是增量）。
+    ///
+    /// tmux control mode 在 pause、重连或 attach seed 后可能丢弃控制 client
+    /// 尚未发送的 blocks。此事件让索引面和 GUI 以同一份 snapshot 重新对齐，
+    /// 后续 `PaneOutput` 才继续按增量消费。
+    PaneSnapshot { pane: PaneId, data: Vec<u8> },
     /// tab 被加入。
     TabAdded { tab: TabId },
     /// tab 被关闭。
