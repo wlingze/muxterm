@@ -16,7 +16,9 @@ public enum KeyAction: Equatable, Sendable {
     case nextCommand
     case commandPalette
     case quickConnect
-    case searchPanes
+    case attention
+    case searchWorkspace
+    case searchGlobal
     case quit
     case increaseFontSize
     case decreaseFontSize
@@ -104,9 +106,16 @@ public enum KeyBindings {
         if chord.command, chord.shift, !chord.option, key == "p" {
             return .commandPalette
         }
-        // Cmd+Shift+F：搜索 pane 文本。
+        // Cmd+R：通知 / Attention 面板。
+        if chord.command, !chord.shift, !chord.option, key == "r" {
+            return .attention
+        }
+        // Cmd+F：当前 Workspace；Cmd+Shift+F：所有 warm Workspace。
+        if chord.command, !chord.shift, !chord.option, key == "f" {
+            return .searchWorkspace
+        }
         if chord.command, chord.shift, !chord.option, key == "f" {
-            return .searchPanes
+            return .searchGlobal
         }
         // Cmd+= / Cmd++ 增大字体，Cmd+- 减小，Cmd+0 重置。
         if chord.command, !chord.option {

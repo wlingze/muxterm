@@ -424,12 +424,30 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let searchPanes = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuSearchPanes),
-            action: #selector(MainWindowController.openSearchPanel),
+            action: #selector(MainWindowController.openWorkspaceSearchPanel),
             keyEquivalent: "f"
         )
-        searchPanes.keyEquivalentModifierMask = [.command, .shift]
+        searchPanes.keyEquivalentModifierMask = .command
         searchPanes.target = windowController
         viewMenu.addItem(searchPanes)
+
+        let searchAll = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuSearchPanes),
+            action: #selector(MainWindowController.openGlobalSearchPanel),
+            keyEquivalent: "f"
+        )
+        searchAll.keyEquivalentModifierMask = [.command, .shift]
+        searchAll.target = windowController
+        viewMenu.addItem(searchAll)
+
+        let attention = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.panelAttention),
+            action: #selector(MainWindowController.openAttentionPanel),
+            keyEquivalent: "r"
+        )
+        attention.keyEquivalentModifierMask = .command
+        attention.target = windowController
+        viewMenu.addItem(attention)
 
         viewMenu.addItem(NSMenuItem.separator())
 

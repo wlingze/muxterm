@@ -263,18 +263,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onSelectWindow = { [weak self] tabId in
             self?.requestSwitchTab(tabId)
         }
-        // 提醒位与 QuickConnect 入口同一位置（文档 §B.1）：有红点时打开统一面板
-        // 并停在 Attention，否则停在 Workspaces（Linux 同一套）。
+        // 铃铛始终是 Notifications 入口；Quick Connect 由 Cmd-P / 独立菜单负责。
         content.statusBar.onAttentionClick = { [weak self] in
-            guard let self else { return }
-            if let json = self.bridge.attentionSnapshotJSON(),
-               let data = json.data(using: .utf8),
-               let snapshot = AttentionSnapshot.decode(data),
-               snapshot.blockedCount > 0 {
-                self.openAttentionPanel()
-            } else {
-                self.openQuickConnect()
-            }
+            self?.openAttentionPanel()
         }
         content.jumpLatestButton.target = self
         content.jumpLatestButton.action = #selector(jumpToLatest)
@@ -687,11 +678,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func openSearchPanel() {
+        openSearchPanel(scope: .workspace)
+    }
+
+    @objc func openWorkspaceSearchPanel() {
+        openSearchPanel(scope: .workspace)
+    }
+
+    @objc func openGlobalSearchPanel() {
+        openSearchPanel(scope: .all)
+    }
+
+    func openSearchPanel(scope: SearchScope) {
         guard let unifiedPanel else { return }
         if unifiedPanel.window?.isKeyWindow == true {
             unifiedPanel.dismiss()
         } else {
-            unifiedPanel.present(initial: .search)
+            unifiedPanel.present(initial: .search, scope: scope)
         }
     }
 
@@ -2559,8 +2562,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             openCommandPalette()
         case .quickConnect:
             openQuickConnect()
-        case .searchPanes:
-            openSearchPanel()
+        case .attention:
+            openAttentionPanel()
+        case .searchWorkspace:
+            openSearchPanel(scope: .workspace)
+        case .searchGlobal:
+            openSearchPanel(scope: .all)
         case .quit:
             NSApp.terminate(nil)
         case .increaseFontSize:

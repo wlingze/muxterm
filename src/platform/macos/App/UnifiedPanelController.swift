@@ -95,12 +95,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     // MARK: - 打开 / 关闭
 
-    func present(initial: PanelTab = .workspaces) {
+    func present(initial: PanelTab = .workspaces, scope: SearchScope = .workspace) {
         model.tab = initial
         // Linux `PanelModel::open(initial)` 语义：重新打开时 query 清空，
         // query 只在本次打开期间跨 tab 保留。
         model.query = ""
-        model.scope = .all
+        model.scope = scope
         input.stringValue = ""
         reload()
         guard let window else { return }

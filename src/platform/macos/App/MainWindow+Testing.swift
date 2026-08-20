@@ -75,7 +75,11 @@ extension MainWindowController {
     }
 
     func testOpenSearchPanel() {
-        unifiedPanel.present(initial: .search)
+        unifiedPanel.present(initial: .search, scope: .workspace)
+    }
+
+    func testOpenGlobalSearchPanel() {
+        unifiedPanel.present(initial: .search, scope: .all)
     }
 
     func testSearchPanelOpen() -> Bool {

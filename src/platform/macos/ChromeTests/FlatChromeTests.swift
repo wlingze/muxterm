@@ -1305,6 +1305,21 @@ final class KeyBindingsConfigTests: XCTestCase {
         XCTAssertEqual(map[KeyChord(option: true, key: "0")], .switchLastTab)
     }
 
+    func testPanelShortcutMappingUsesWorkspaceAndGlobalSearch() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "r")),
+            .attention
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "f")),
+            .searchWorkspace
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "f")),
+            .searchGlobal
+        )
+    }
+
     func testParseFontZoomBindings() {
         let toml = """
         [[keybindings]]
