@@ -75,6 +75,12 @@ jobs:
           mkdir -p src/platform/macos/Vendor
           ln -sfn "$PWD/target/release/libmuxterm.a" src/platform/macos/Vendor/libmuxterm.a
 
+      # SwiftTerm 的 Muxterm 补丁（Ctrl-U 等）只在 build-macos.sh 里打过；
+      # swift test 直接解析依赖树，必须先 patch 再编译测试目标。
+      - name: Patch SwiftTerm before Swift tests
+        working-directory: src/platform/macos
+        run: ../../scripts/patch-swiftterm.sh
+
       # Headless Swift unit tests (ChromeTests): keyboard bindings / pane switching /
       # PaneOutputCursor are pure logic and need no GUI. Runs on every PR, guarding
       # against regressions without consuming desktop/disk like XCUITest would.

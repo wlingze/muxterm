@@ -92,12 +92,14 @@ final class AttentionNavE2ETests: XCTestCase {
         app.attentionPanel.window?.makeKeyAndOrderFront(nil)
         let enter = try XCTUnwrap(app.testMakeReturnEvent())
         _ = app.testDispatchKeyEvent(enter)
-        AppE2E.pump(80)
         XCTAssertFalse(app.testAttentionPanelOpen(), "Enter 必须跳转并关掉面板")
-        XCTAssertEqual(
-            app.testActivePaneID(),
-            UInt32(fx.panes[1].trimmingCharacters(in: CharacterSet(charactersIn: "%"))) ?? 1,
-            "Enter 必须切到该注意力 pane"
+        let target = UInt32(fx.panes[1].trimmingCharacters(in: CharacterSet(charactersIn: "%"))) ?? 1
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                return app.testActivePaneID() == target
+            },
+            "Enter 必须切到该注意力 pane（期望 \(target)，当前 \(app.testActivePaneID())）"
         )
     }
 }
