@@ -20,7 +20,9 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::core::protocol::ffi::types::{STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED};
+use crate::core::protocol::ffi::types::{
+    STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
+};
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::core::protocol::terminal::mirror::should_forward_parser_response;
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
@@ -90,6 +92,9 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
             match ev.type_ {
                 STATE_PANE_OUTPUT => {
                     term_mgr.feed_event(ev.pane_id, &ev.data);
+                }
+                STATE_PANE_SNAPSHOT => {
+                    term_mgr.replace_snapshot(ev.pane_id, &ev.data);
                 }
                 STATE_PANE_CLOSED => {
                     // 只有 pane 真正关闭才移除状态；切 tab 不调用 retain。

@@ -165,6 +165,18 @@ impl TerminalManager {
         self.feed(pane_id, cols, rows, data);
     }
 
+    /// 用权威 snapshot 替换已有 pane 的 VT 状态；不可把它当增量 feed，
+    /// 否则 pause/resync 后旧的半截 CUP 帧会继续污染屏幕。
+    pub fn replace_snapshot(&mut self, pane_id: u32, data: &[u8]) {
+        let (cols, rows) = self
+            .panes
+            .get(&pane_id)
+            .map(|p| (p.cols, p.rows))
+            .unwrap_or((80, 24));
+        self.panes.remove(&pane_id);
+        self.seed(pane_id, cols, rows, data);
+    }
+
     /// 取某 pane 的屏幕快照；不存在返回空。
     pub fn screen(&self, pane_id: u32) -> Option<Vec<String>> {
         self.panes.get(&pane_id).map(|p| p.screen())
