@@ -159,6 +159,12 @@ extension MainWindowController {
         pollOnce()
     }
 
+    /// 通过生产 Core task 创建 tab；测试不得直接操作 tmux socket。
+    func testNewTab() {
+        newTab()
+        pollOnce()
+    }
+
     func testSendInput(_ data: Data) {
         // W19-E：reply overlay 可见时输入走 overlay 的 pane，否则走 active pane。
         if !content.replyOverlayContainer.isHidden, let paneId = replyOverlayPaneId {
