@@ -221,6 +221,10 @@ pub enum EventStreamEvent {
 pub struct EventStream {
     shutdown_stream: Option<UnixStream>,
     handle: Option<JoinHandle<()>>,
+    /// Drop 时置位：reader 据此把「主动 shutdown 造成的 EOF/Error」静默
+    /// 掉，不向 Runtime 误报订阅死亡（否则 restart 替换订阅会残留一个
+    /// 假的 Closed/Error，触发无意义的二次重启）。
+    dropping: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EventStream {
@@ -280,11 +284,15 @@ impl EventStream {
             .context("清除 Herdr event 读超时失败")?;
 
         let workspace_id = workspace_id.to_string();
+        let dropping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_dropping = std::sync::Arc::clone(&dropping);
         let handle = std::thread::spawn(move || loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) => {
-                    let _ = tx.send(EventStreamEvent::Closed);
+                    if !reader_dropping.load(std::sync::atomic::Ordering::Acquire) {
+                        let _ = tx.send(EventStreamEvent::Closed);
+                    }
                     return;
                 }
                 Ok(_) if line.trim().is_empty() => continue,
@@ -292,7 +300,9 @@ impl EventStream {
                     let event = match HerdrEvent::parse_line(line.trim_end()) {
                         Ok(event) => event,
                         Err(err) => {
-                            let _ = tx.send(EventStreamEvent::Error(err.to_string()));
+                            if !reader_dropping.load(std::sync::atomic::Ordering::Acquire) {
+                                let _ = tx.send(EventStreamEvent::Error(err.to_string()));
+                            }
                             continue;
                         }
                     };
@@ -332,7 +342,9 @@ impl EventStream {
                     }
                 }
                 Err(err) => {
-                    let _ = tx.send(EventStreamEvent::Error(err.to_string()));
+                    if !reader_dropping.load(std::sync::atomic::Ordering::Acquire) {
+                        let _ = tx.send(EventStreamEvent::Error(err.to_string()));
+                    }
                     return;
                 }
             }
@@ -341,12 +353,17 @@ impl EventStream {
         Ok(Self {
             shutdown_stream: Some(shutdown_stream),
             handle: Some(handle),
+            dropping,
         })
     }
 }
 
 impl Drop for EventStream {
     fn drop(&mut self) {
+        // 先置位：reader 不再上报 EOF/Error，否则 restart 替换订阅会
+        // 残留一个假的 Closed/Error，触发无限重建循环。
+        self.dropping
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(stream) = self.shutdown_stream.take() {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }

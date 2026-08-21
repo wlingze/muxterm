@@ -44,6 +44,10 @@ pub struct ObserveStream {
     command_stream: Option<UnixStream>,
     shutdown_stream: Option<UnixStream>,
     handle: Option<JoinHandle<()>>,
+    /// Drop/replace 时置位：reader 据此把「主动关闭造成的 EOF/Error」静默
+    /// 掉，不向 Runtime 误报流死亡（否则 replace 替换流会残留一个假的
+    /// Error/Closed，把刚重建的新流也一起删掉）。
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ObserveStream {
@@ -103,9 +107,13 @@ impl ObserveStream {
             .try_clone()
             .context("复制 Herdr control shutdown socket 失败")?;
 
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_dropped = std::sync::Arc::clone(&dropped);
         let handle = std::thread::spawn(move || {
             let mut stream = stream;
             loop {
+                // 主动 shutdown 期间的 EOF/Error 不发，避免误报流死亡。
+                let alive = !reader_dropped.load(std::sync::atomic::Ordering::Acquire);
                 match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
                     Ok(ServerMessage::Terminal(frame)) => {
                         if tx
@@ -122,15 +130,19 @@ impl ObserveStream {
                         }
                     }
                     Ok(ServerMessage::ServerShutdown { reason }) => {
-                        let _ = tx.send(ObserveEvent::Closed { pane, reason });
+                        if alive {
+                            let _ = tx.send(ObserveEvent::Closed { pane, reason });
+                        }
                         return;
                     }
                     Ok(_) => {}
                     Err(err) => {
-                        let _ = tx.send(ObserveEvent::Error {
-                            pane,
-                            message: err.to_string(),
-                        });
+                        if alive {
+                            let _ = tx.send(ObserveEvent::Error {
+                                pane,
+                                message: err.to_string(),
+                            });
+                        }
                         return;
                     }
                 }
@@ -142,6 +154,7 @@ impl ObserveStream {
             command_stream: Some(command_stream),
             shutdown_stream: Some(shutdown_stream),
             handle: Some(handle),
+            dropped,
         })
     }
 
@@ -183,6 +196,9 @@ impl ObserveStream {
 
 impl Drop for ObserveStream {
     fn drop(&mut self) {
+        // 先置位：reader 不再上报 EOF/Error，避免 replace 残留事件误删新流。
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(mut stream) = self.command_stream.take() {
             let _ = write_message(&mut stream, &ClientMessage::Detach);
         }

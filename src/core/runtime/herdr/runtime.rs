@@ -617,6 +617,53 @@ impl HerdrRuntime {
 
     /// 以新的 Surface 字符格重建 pane control stream。新连接会取得该 pane
     /// 的输入/resize 权并先发一帧与 VTE 网格一致的 full frame。
+    /// Error/Closed 后立即重建该 pane 的 observe 流：画面自动恢复，
+    /// 不必等下一次输入（懒 replace 只覆盖有输入的 pane）。pane 已
+    /// 不存在或 server 不可达时静默，等下次事件/输入再试。
+    fn rebuild_dead_observe_stream(&mut self, pane: PaneId) {
+        // detach/shutdown 后不得重建：旧 runtime 还在 pool 里，它的
+        // drain_observe 会收到旧流残留事件；若此时重建会去踢掉 reopen
+        // 后新 runtime 的流（CI 日志：attach/detach 无限循环，服务端
+        // pane 内容被反复重置）。
+        if self.status != BackendStatus::Connected {
+            return;
+        }
+        if !self.panes.iter().any(|candidate| candidate.id == pane) {
+            return;
+        }
+        let Some(tx) = self.observe_tx.as_ref().cloned() else {
+            return;
+        };
+        let Some(herdr_pane) = self.pane_to_herdr_pane.get(&pane).cloned() else {
+            return;
+        };
+        let (cols, rows) = self
+            .panes
+            .iter()
+            .find(|candidate| candidate.id == pane)
+            .map(|candidate| (candidate.cols, candidate.rows))
+            .unwrap_or((80, 24));
+        match ObserveStream::start(
+            self.session.client_socket_path(),
+            &herdr_pane,
+            pane,
+            cols,
+            rows,
+            tx,
+        ) {
+            Ok(stream) => {
+                self.observe_initial.insert(pane);
+                self.observe_streams.push(stream);
+            }
+            Err(err) => tracing::warn!(
+                target = "muxterm::herdr",
+                pane = %herdr_pane,
+                error = %err,
+                "observe 流自动重建失败"
+            ),
+        }
+    }
+
     fn replace_observe_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
         let (cols, rows) = normalize_pane_size(cols, rows, None);
         let herdr_pane = self
@@ -629,6 +676,11 @@ impl HerdrRuntime {
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!("Herdr observe channel 未启动"))?;
+        // 先关旧流（Drop 发 Detach + shutdown socket），再建新流。
+        // 若反过来，旧流 Drop 的 Detach 会落到新流刚拿到的控制权上，
+        // 把服务端 scrollback 一起重置（CI 的 attach/detach 交错时序）。
+        self.observe_streams
+            .retain(|existing| existing.pane() != pane);
         let stream = ObserveStream::start(
             self.session.client_socket_path(),
             &herdr_pane,
@@ -637,8 +689,6 @@ impl HerdrRuntime {
             rows,
             tx,
         )?;
-        self.observe_streams
-            .retain(|existing| existing.pane() != pane);
         self.observe_streams.push(stream);
         Ok(())
     }
@@ -681,6 +731,7 @@ impl HerdrRuntime {
         let Some(rx) = &self.observe_rx else {
             return;
         };
+        let mut rebuild = Vec::new();
         while let Ok(event) = rx.try_recv() {
             match event {
                 ObserveEvent::Frame {
@@ -725,6 +776,10 @@ impl HerdrRuntime {
                         reason = ?reason,
                         "observe 流关闭"
                     );
+                    // 流已死亡：移除对象并**立即重建**，避免画面冻结到下次
+                    // 输入才恢复（懒 replace 只覆盖有输入的 pane）。
+                    self.observe_streams.retain(|stream| stream.pane() != pane);
+                    rebuild.push(pane);
                 }
                 ObserveEvent::Error { pane, message } => {
                     tracing::warn!(
@@ -733,8 +788,14 @@ impl HerdrRuntime {
                         error = %message,
                         "observe 流错误"
                     );
+                    self.observe_streams.retain(|stream| stream.pane() != pane);
+                    rebuild.push(pane);
                 }
             }
+        }
+        // 循环外重建：rx 借用结束，避免与 &mut self 冲突。
+        for pane in rebuild {
+            self.rebuild_dead_observe_stream(pane);
         }
     }
 
@@ -744,6 +805,7 @@ impl HerdrRuntime {
             .as_ref()
             .map(|rx| rx.try_iter().collect::<Vec<_>>())
             .unwrap_or_default();
+        let mut dead = false;
         for event in pending {
             match event {
                 EventStreamEvent::Snapshot { cause, snapshot } => {
@@ -764,6 +826,9 @@ impl HerdrRuntime {
                         workspace = %self.workspace_id,
                         "Herdr event subscription closed"
                     );
+                    // 订阅已死：必须重建，否则 pane.agent_status_changed
+                    // 等事件永久丢失（done/blocked 通知收不到）。
+                    dead = true;
                 }
                 EventStreamEvent::Error(message) => {
                     tracing::warn!(
@@ -772,8 +837,12 @@ impl HerdrRuntime {
                         error = %message,
                         "Herdr event subscription error"
                     );
+                    dead = true;
                 }
             }
+        }
+        if dead {
+            self.restart_event_stream();
         }
     }
 
@@ -1596,6 +1665,12 @@ impl Runtime for HerdrRuntime {
                 Ok(TaskOutcome::Done)
             }
             Task::Detach => {
+                // detach = 客户端断开连接（保留服务端 session）。必须主动
+                // 关闭全部 observe/event 流：否则 reopen 的新 runtime
+                // takeover 杀掉旧流后，旧流的 Error/Closed 会触发自动重建
+                // （新流又被踢掉），流互踢导致服务端内容反复重置。
+                self.event_stream = None;
+                self.observe_streams.clear();
                 self.status = BackendStatus::Disconnected;
                 self.events.push_back(StateChange::BackendStatusChanged(
                     BackendStatus::Disconnected,
@@ -1834,6 +1909,7 @@ impl HerdrRuntime {
 mod tests {
     use super::*;
     use crate::core::runtime::herdr::session::{LayoutPaneRecord, LayoutSplitRecord};
+    use crate::core::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
 
     /// Herdr public ids 使用 bijective base-32，不是十进制。用户真实 session
     /// 已出现 pP/pQ/pR；它们绝不能全部退化成 PaneId(0)。
@@ -2106,5 +2182,127 @@ mod tests {
                 second: Box::new(LayoutNode::Leaf(PaneId(3))),
             })
         );
+    }
+
+    /// herdr server 握手模拟：读 Hello/ControlTerminal，回 Welcome；
+    /// 返回保留缓冲的 reader（后续 Input 用同一 reader 读）。
+    fn mock_observe_handshake(
+        stream: &mut std::os::unix::net::UnixStream,
+    ) -> std::io::BufReader<std::os::unix::net::UnixStream> {
+        use std::io::Write;
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let _hello: ClientMessage =
+            read_message(&mut reader, MAX_FRAME_SIZE).expect("读 Hello 失败");
+        // Welcome bincode payload: [0,19,1,0]（version=19, encoding=TerminalAnsi, error=None）。
+        stream
+            .write_all(b"\x04\x00\x00\x00\x00\x13\x01\x00")
+            .expect("写 Welcome 失败");
+        stream.flush().unwrap();
+        let _control: ClientMessage =
+            read_message(&mut reader, MAX_FRAME_SIZE).expect("读 ControlTerminal 失败");
+        reader
+    }
+
+    /// 共享场景：起一个 mock herdr server，建立真实 observe 流，发
+    /// Error/Closed 事件，断言死流被移除且后续输入触发 replace 重建。
+    fn run_observe_removal_scenario(use_error: bool) {
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc;
+
+        let dir = std::env::temp_dir().join(format!(
+            "muxterm-test-observe-{}-{use_error}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let api_socket = dir.join("herdr.sock");
+        let session = Arc::new(HerdrSession::new("test", &api_socket));
+        let client_socket = session.client_socket_path().to_path_buf();
+        let listener = UnixListener::bind(&client_socket).unwrap();
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            // 第一次连接（初始 observe 流）。
+            let (mut first, _) = listener.accept().expect("accept 初始流失败");
+            let first_reader = mock_observe_handshake(&mut first);
+            ready_tx.send(0usize).unwrap();
+            // 第二次连接：Error/Closed 后**自动重建**（不等任何输入）。
+            let (mut second, _) = listener.accept().expect("accept 重建流失败");
+            let mut second_reader = mock_observe_handshake(&mut second);
+            ready_tx.send(1usize).unwrap();
+            let input: ClientMessage =
+                read_message(&mut second_reader, MAX_FRAME_SIZE).expect("读 Input 失败");
+            assert!(matches!(input, ClientMessage::Input { .. }));
+            // 保持连接，避免测试结束前 reader 线程 EOF。
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            drop(first_reader);
+            drop(second_reader);
+        });
+
+        let mut runtime = HerdrRuntime::new(session, "w1");
+        // 模拟已 connect：rebuild_dead_observe_stream 只在 Connected 时重建
+        //（detach/shutdown 后旧 runtime 必须停止重建，避免与 reopen 互踢）。
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.observe_tx = Some(tx.clone());
+        runtime.observe_rx = Some(rx);
+
+        let stream = ObserveStream::start(&client_socket, "w1:p1", pane, 80, 24, tx.clone())
+            .expect("初始 observe 流启动失败");
+        runtime.observe_streams.push(stream);
+        assert_eq!(
+            ready_rx.recv_timeout(std::time::Duration::from_secs(3)),
+            Ok(0),
+            "server 必须先完成初始握手"
+        );
+        assert_eq!(runtime.observe_streams.len(), 1, "初始流必须就位");
+
+        // 模拟 reader 线程退出：Error（读帧失败）或 Closed（EOF）。
+        let event = if use_error {
+            ObserveEvent::Error {
+                pane,
+                message: "读 Herdr 帧长度失败".into(),
+            }
+        } else {
+            ObserveEvent::Closed {
+                pane,
+                reason: Some("模拟关闭".into()),
+            }
+        };
+        tx.send(event).unwrap();
+        runtime.drain_observe();
+        // Error/Closed 后死流移除并**自动重建**（画面不用等下次输入恢复）。
+        assert_eq!(
+            ready_rx.recv_timeout(std::time::Duration::from_secs(3)),
+            Ok(1),
+            "{} 后必须自动重建：server 应收到第二次连接",
+            if use_error { "Error" } else { "Closed" }
+        );
+        assert_eq!(runtime.observe_streams.len(), 1, "自动重建后新流必须存在");
+
+        // 重建后的流必须能送达输入。
+        runtime.send_control_input(pane, b"x").unwrap();
+
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn observe_error_removes_dead_stream_so_input_replaces() {
+        run_observe_removal_scenario(true);
+    }
+
+    #[test]
+    fn observe_closed_removes_dead_stream_so_input_replaces() {
+        run_observe_removal_scenario(false);
     }
 }
