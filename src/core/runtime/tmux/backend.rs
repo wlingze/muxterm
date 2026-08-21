@@ -600,6 +600,53 @@ impl TmuxRuntime {
         self.scrollback_lines = lines.max(1);
     }
 
+    /// 设置 control client 的初始字符网格。
+    ///
+    /// tmux 在 `-CC` 启动时会用这个尺寸创建窗口；如果先用默认的
+    /// 80x24 启动，Codex/Cursor/htop 的首帧会按错误的列数换行，随后即使
+    /// 收到 resize 也可能把输入框和底栏留在错误的行。最终尺寸仍由前端
+    /// `refresh-client -C` 校准，这里只负责让首屏尽量接近真实窗口。
+    pub fn set_client_size(&mut self, cols: u16, rows: u16) {
+        if cols >= 2 && rows >= 1 {
+            self.config.cols = Some(u32::from(cols));
+            self.config.rows = Some(u32::from(rows));
+        }
+    }
+
+    fn active_tab_id(&self) -> Option<TabId> {
+        self.tabs.iter().find(|tab| tab.active).map(|tab| tab.id)
+    }
+
+    fn tab_is_active(&self, tab: TabId) -> bool {
+        self.active_tab_id() == Some(tab)
+    }
+
+    /// 为一个 tab 的所有 pane 发起一次性 Surface seed。
+    ///
+    /// attach 初始阶段只抓活动 tab，避免后台 tab 的 capture 把连接建立和
+    /// Cmd-Shift-P 卡在大量串行响应上。切 tab 后由同一个入口按需补抓。
+    fn query_capture_tab(&mut self, tab: TabId) {
+        let panes: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|pane| pane.tab == tab)
+            .map(|pane| pane.id)
+            .collect();
+        for pane in panes {
+            self.query_capture_pane(pane);
+        }
+    }
+
+    fn active_tab_topology_ready(&self) -> bool {
+        let Some(tab) = self.active_tab_id() else {
+            return false;
+        };
+        let Some(expected) = self.expected_panes_per_window.get(&tab) else {
+            return false;
+        };
+        self.panes.iter().filter(|pane| pane.tab == tab).count() >= *expected
+    }
+
     /// 测试用：当前 connect 模式（attach / new-session）。
     #[cfg(test)]
     pub fn test_connect_mode(&self) -> Option<&ConnectMode> {
@@ -1187,6 +1234,9 @@ impl TmuxRuntime {
                 // tmux session 的 active window 切换 → muxterm active tab 切换
                 let tab_id = TabId(window.0);
                 self.mark_tab_active(tab_id);
+                // 活动 tab 首次切入时才请求 Surface seed。后台 tab 的原始
+                // `%output` 继续进入索引面，但不会阻塞连接或提前创建 GUI。
+                self.query_capture_tab(tab_id);
                 self.query_panes_if_empty(tab_id);
             }
             Message::SubscriptionChanged { name, value, pane } => {
@@ -1719,11 +1769,13 @@ impl TmuxRuntime {
                     .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
             }
         }
-        // attach 的控制模式不一定会把当前屏幕历史作为 %output 推送；对尚无
-        // 累计输出的 pane 查询一次可见屏幕。查询结果通过同一个事件队列回流，
-        // 不阻塞 pane/layout 状态机。
-        for pane in new_panes {
-            self.query_capture_pane(pane.id);
+        // attach 的控制模式不一定会把当前屏幕历史作为 %output 推送。只对
+        // 活动 tab 发起首屏 capture；其它 tab 在第一次切入时由
+        // `SessionWindowChanged` 触发，避免多窗口 attach 阶段串行抓屏。
+        if self.tab_is_active(tab_id) {
+            for pane in new_panes {
+                self.query_capture_pane(pane.id);
+            }
         }
     }
 
@@ -2290,19 +2342,14 @@ impl Runtime for TmuxRuntime {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        // 现在所有 window 的 pane 查询已发出（handle_list_windows_response 对每个 window 调了 query_list_panes）
-        // 等待所有 window 的 pane 查询响应到达（最多 5 秒）
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // 现在所有 window 的 pane 查询已发出（handle_list_windows_response 对每个
+        // window 调了 query_list_panes）。连接只需要活动 tab 的拓扑即可交给
+        // 前端；其它 tab 的 pane 列表继续在后台响应，不能让一个慢 pane 把
+        // Connect/Cmd-Shift-P 卡住数秒。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             self.pump_events();
-            // 检查是否所有 window 的 pane 都已到达
-            let all_ready = self
-                .expected_panes_per_window
-                .iter()
-                .all(|(tab, expected)| {
-                    self.panes.iter().filter(|p| p.tab == *tab).count() >= *expected
-                });
-            if all_ready {
+            if self.active_tab_topology_ready() {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -2311,30 +2358,15 @@ impl Runtime for TmuxRuntime {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
-        // attach 保真（1820.log 白屏 = 快照没进缓冲）：等所有已知 pane 的
-        // capture-pane 快照完成后再标记 Connected，前端首次取事件即拿到种子。
+        // attach 的 capture 是异步 Surface seed：连接状态不再等待所有 pane
+        // 的历史返回。活动 tab 的查询已经排队，前端在收到 PaneSnapshot 后
+        // 播种；其它 tab 首次激活时再按需查询。
         if is_attach {
-            let capture_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                self.pump_events();
-                let known: Vec<PaneId> = self.panes.iter().map(|p| p.id).collect();
-                if !known.is_empty()
-                    && known
-                        .iter()
-                        .all(|pane| self.initial_capture_done.contains(pane))
-                {
-                    break;
-                }
-                if std::time::Instant::now() >= capture_deadline {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
             tracing::info!(
                 target: "muxterm::tmux::seed",
-                panes = self.initial_capture_done.len(),
-                bytes = self.outputs.values().map(Vec::len).sum::<usize>(),
-                "attach 初始快照已进入 pane_output（Surface 非空）"
+                active_tab = self.active_tab_id().map(|tab| tab.0),
+                pending = self.initial_capture_pending.len(),
+                "attach 首屏 capture 已异步排队"
             );
         }
         self.attach_bootstrap_complete = is_attach;
@@ -3551,6 +3583,44 @@ mod tests {
             !src.contains(old),
             "禁止 attach 播种仍 format 可见屏-only 的 capture-pane（缺 -S）"
         );
+    }
+
+    #[test]
+    fn attach_capture_is_limited_to_active_tab_until_switch() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "background".into(),
+                active: false,
+            },
+        ];
+        b.handle_list_panes_response(TabId(1), vec!["0: [80x24] %0 (active)".into()]);
+        b.handle_list_panes_response(TabId(2), vec!["1: [80x24] %1 (active)".into()]);
+
+        assert!(b.initial_capture_pending.contains(&PaneId(0)));
+        assert!(!b.initial_capture_pending.contains(&PaneId(1)));
+
+        b.mark_tab_active(TabId(2));
+        b.query_capture_tab(TabId(2));
+        assert!(b.initial_capture_pending.contains(&PaneId(1)));
+    }
+
+    #[test]
+    fn client_size_overrides_default_tmux_grid() {
+        let mut b = TmuxRuntime::new(None);
+        assert_eq!(b.config.cols, Some(80));
+        assert_eq!(b.config.rows, Some(24));
+        b.set_client_size(137, 41);
+        assert_eq!(b.config.cols, Some(137));
+        assert_eq!(b.config.rows, Some(41));
     }
 
     #[test]
