@@ -146,11 +146,46 @@ impl HerdrSession {
 
     /// `pane.read`：attach 快照（source=visible, format=ansi），返回原始 ANSI 字节。
     pub fn pane_read_ansi(&self, pane_id: &str) -> Result<Vec<u8>> {
+        self.pane_read_with_source(pane_id, "visible")
+    }
+
+    /// `pane.read`：最近 80 行（source=recent, format=ansi）。
+    ///
+    /// 可见屏幕之外的 scrollback 尾部也包含在内；测试断言「服务端仍持有
+    /// token」时用它，避免 token 滚出可见区后误报丢失。
+    pub fn pane_read_recent_ansi(&self, pane_id: &str) -> Result<Vec<u8>> {
+        self.pane_read_recent_ansi_lines(pane_id, 80)
+    }
+
+    /// `pane.read`：最近 N 行（source=recent, format=ansi）。
+    ///
+    /// CI 的 pane 行数可能比本地多（字体/窗口差异），早期 token 会滚出
+    /// 默认 80 行；断言历史 token 时传大 N 覆盖整个 scrollback 尾部。
+    pub fn pane_read_recent_ansi_lines(&self, pane_id: &str, lines: u32) -> Result<Vec<u8>> {
         let result = self.call(
             "pane.read",
             serde_json::json!({
                 "pane_id": pane_id,
-                "source": "visible",
+                "source": "recent",
+                "lines": lines,
+                "format": "ansi",
+                "strip_ansi": false,
+            }),
+        )?;
+        let text = result
+            .get("read")
+            .and_then(|r| r.get("text"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("pane.read 缺 text: {result}"))?;
+        Ok(text.as_bytes().to_vec())
+    }
+
+    fn pane_read_with_source(&self, pane_id: &str, source: &str) -> Result<Vec<u8>> {
+        let result = self.call(
+            "pane.read",
+            serde_json::json!({
+                "pane_id": pane_id,
+                "source": source,
                 "format": "ansi",
                 "strip_ansi": false,
             }),

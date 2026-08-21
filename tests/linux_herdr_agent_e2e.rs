@@ -186,17 +186,41 @@ fn emit_command(app: &AppWindow, command: &str) -> Result<()> {
     Ok(())
 }
 
+fn server_log_tail(session: &HerdrSession) -> String {
+    let log = session
+        .socket_path()
+        .parent()
+        .map(|dir| dir.join("herdr-server.log"));
+    let Some(log) = log.filter(|p| p.exists()) else {
+        return "（无 herdr-server.log）".into();
+    };
+    match std::fs::read_to_string(&log) {
+        Ok(text) => {
+            let lines: Vec<&str> = text.lines().collect();
+            let tail = lines.len().saturating_sub(40);
+            lines[tail..].join("\n")
+        }
+        Err(err) => format!("（读 herdr-server.log 失败: {err}）"),
+    }
+}
+
 fn assert_bound_token(
     app: &AppWindow,
     session: &HerdrSession,
     pane_map: &HashMap<u32, String>,
     bound: &BoundToken,
 ) -> Result<()> {
+    let server_ok =
+        String::from_utf8_lossy(&session.pane_read_recent_ansi_lines(&bound.wire_pane, 2000)?)
+            .contains(&bound.token);
     ensure!(
-        String::from_utf8_lossy(&session.pane_read_ansi(&bound.wire_pane)?).contains(&bound.token),
-        "服务端 pane.read({}) 缺 {}",
+        server_ok,
+        "服务端 pane.read({}) 缺 {}；服务端内容: {:?}\nherdr-server.log tail:\n{}",
         bound.wire_pane,
-        bound.token
+        bound.token,
+        String::from_utf8_lossy(&session.pane_read_recent_ansi_lines(&bound.wire_pane, 2000)?)
+            .escape_debug(),
+        server_log_tail(session),
     );
     let hit_panes = app
         .test_search_workspace(&bound.token)
@@ -263,7 +287,7 @@ fn execute_and_assert_binding(
     };
     let delivery = wait_for(app, &format!("三方收到 {}", bound.token), |candidate| {
         session
-            .pane_read_ansi(&bound.wire_pane)
+            .pane_read_recent_ansi_lines(&bound.wire_pane, 2000)
             .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(&bound.token))
             && candidate
                 .test_search_workspace(&bound.token)
@@ -275,7 +299,7 @@ fn execute_and_assert_binding(
     });
     if let Err(error) = delivery {
         let server = session
-            .pane_read_ansi(&bound.wire_pane)
+            .pane_read_recent_ansi_lines(&bound.wire_pane, 2000)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .unwrap_or_else(|read_error| format!("pane.read error: {read_error:#}"));
         let vte = app.test_pane_vte_text(bound.product_pane);
@@ -891,6 +915,9 @@ fn run_case(sshd: &LoopbackSshd, transport: &str) -> Result<()> {
         Ok(())
     })();
 
+    if result.is_err() {
+        eprintln!("herdr-server.log tail:\n{}", server_log_tail(&session));
+    }
     app.shutdown();
     result
 }

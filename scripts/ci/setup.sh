@@ -35,7 +35,8 @@ if [ "$OS" = "Linux" ]; then
     libncurses-dev \
     libutempter-dev \
     bison \
-    flex
+    flex \
+    fonts-dejavu-core
   # tmux：ubuntu 仓库只有 3.4，控制模式事件流与本地 3.7b 有差异
   # （detach/reattach 集成测试依赖 3.7b 行为），编译安装 3.7b。
   if ! tmux -V 2>/dev/null | grep -q "3.7b"; then
