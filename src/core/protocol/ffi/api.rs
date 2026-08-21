@@ -707,50 +707,14 @@ pub extern "C" fn muxterm_new(
     socket: *const c_char,
     session: *const c_char,
 ) -> *mut MuxtermHandle {
-    let kind = cstr_opt(runtime_type)
-        .unwrap_or_else(|| "local".into())
-        .to_ascii_lowercase();
-    let sock = cstr_opt(socket);
-    let sess = cstr_opt(session);
-
-    let rt = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(_) => return ptr::null_mut(),
-    };
-    let mut catalog = crate::core::catalog::Catalog::with_builtins();
-
-    let (id, name, runtime, scrollback_lines) =
-        match legacy_runtime_spec(&kind, sock, sess, None, None) {
-            Some(spec) => spec,
-            None => return ptr::null_mut(),
-        };
-    let fut =
-        catalog
-            .pool_mut()
-            .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
-    if rt.block_on(fut).is_err() {
-        return ptr::null_mut();
-    }
-
-    let attention_config = crate::core::config::Config::load()
-        .map(|c| c.attention)
-        .unwrap_or_default();
-    Box::into_raw(Box::new(MuxtermHandle {
-        catalog,
-        rt,
-        callbacks: FfiCallbacks::default(),
-        attention: AttentionEngine::new(attention_config, RealClock),
-        event_data: Vec::new(),
-        event_names: Vec::new(),
-        tab_names: Vec::new(),
-        layout_nodes: Vec::new(),
-        deferred_events: VecDeque::new(),
-        workspace_ids: Vec::new(),
-    }))
+    legacy_new_handle(
+        runtime_type,
+        socket,
+        session,
+        ptr::null(),
+        ptr::null(),
+        None,
+    )
 }
 
 /// 创建 handle 并直接连接（deprecated 转发：开一个工作区）。
@@ -773,6 +737,46 @@ pub extern "C" fn muxterm_new_connect(
     ssh_alias: *const c_char,
     start_directory: *const c_char,
 ) -> *mut MuxtermHandle {
+    legacy_new_handle(
+        runtime_type,
+        socket,
+        session,
+        ssh_alias,
+        start_directory,
+        None,
+    )
+}
+
+/// 与 [`muxterm_new_connect`] 相同，但在 spawn tmux 时提供真实的初始字符网格。
+/// `cols`/`rows` 为 0 时回退到兼容 API 的默认 80x24。
+#[no_mangle]
+pub extern "C" fn muxterm_new_connect_sized(
+    runtime_type: *const c_char,
+    socket: *const c_char,
+    session: *const c_char,
+    ssh_alias: *const c_char,
+    start_directory: *const c_char,
+    cols: u16,
+    rows: u16,
+) -> *mut MuxtermHandle {
+    legacy_new_handle(
+        runtime_type,
+        socket,
+        session,
+        ssh_alias,
+        start_directory,
+        (cols >= 2 && rows >= 1).then_some((cols, rows)),
+    )
+}
+
+fn legacy_new_handle(
+    runtime_type: *const c_char,
+    socket: *const c_char,
+    session: *const c_char,
+    ssh_alias: *const c_char,
+    start_directory: *const c_char,
+    client_size: Option<(u16, u16)>,
+) -> *mut MuxtermHandle {
     let kind = cstr_opt(runtime_type)
         .unwrap_or_else(|| "local".into())
         .to_ascii_lowercase();
@@ -792,7 +796,7 @@ pub extern "C" fn muxterm_new_connect(
     let mut catalog = crate::core::catalog::Catalog::with_builtins();
 
     let (id, name, runtime, scrollback_lines) =
-        match legacy_runtime_spec(&kind, sock, sess, alias, start_dir) {
+        match legacy_runtime_spec(&kind, sock, sess, alias, start_dir, client_size) {
             Some(spec) => spec,
             None => return ptr::null_mut(),
         };
@@ -828,6 +832,7 @@ fn legacy_runtime_spec(
     sess: Option<String>,
     alias: Option<String>,
     start_dir: Option<String>,
+    client_size: Option<(u16, u16)>,
 ) -> Option<(
     WorkspaceId,
     String,
@@ -846,6 +851,9 @@ fn legacy_runtime_spec(
                 TmuxRuntime::new(sock_ref)
             };
             tmux.set_scrollback_lines(scrollback_lines as u32);
+            if let Some((cols, rows)) = client_size {
+                tmux.set_client_size(cols, rows);
+            }
             std::boxed::Box::new(tmux)
         }
         "ssh" | "tmux-ssh" => {
@@ -858,6 +866,9 @@ fn legacy_runtime_spec(
                 TmuxRuntime::new_ssh(&alias_name, sock_ref)
             };
             tmux.set_scrollback_lines(scrollback_lines as u32);
+            if let Some((cols, rows)) = client_size {
+                tmux.set_client_size(cols, rows);
+            }
             std::boxed::Box::new(tmux)
         }
         "daemon" => {

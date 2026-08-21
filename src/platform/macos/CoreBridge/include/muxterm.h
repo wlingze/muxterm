@@ -105,6 +105,12 @@ struct MuxtermHandle* muxterm_new(const char* backend_type, const char* socket, 
 struct MuxtermHandle* muxterm_new_connect(
     const char* backend_type, const char* socket, const char* session,
     const char* ssh_alias, const char* start_directory);
+// 与 muxterm_new_connect 相同；cols/rows 为初始 tmux control-client 网格，
+// 传 0 使用兼容默认值。
+struct MuxtermHandle* muxterm_new_connect_sized(
+    const char* backend_type, const char* socket, const char* session,
+    const char* ssh_alias, const char* start_directory,
+    uint16_t cols, uint16_t rows);
 void muxterm_free(struct MuxtermHandle* h);
 int muxterm_connect(struct MuxtermHandle* h);
 int muxterm_shutdown(struct MuxtermHandle* h);

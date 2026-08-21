@@ -469,7 +469,8 @@ final class CoreBridge {
         socket: String? = nil,
         session: String? = nil,
         sshAlias: String? = nil,
-        startDirectory: String? = nil
+        startDirectory: String? = nil,
+        initialClientSize: (UInt16, UInt16)? = nil
     ) throws -> CoreBridge {
         let normalized = backendType.lowercased()
         let created: OpaquePointer? = normalized.withCString { btPtr in
@@ -477,7 +478,19 @@ final class CoreBridge {
                 Self.withOptionalCString(session) { sessPtr in
                     Self.withOptionalCString(sshAlias) { aliasPtr in
                         Self.withOptionalCString(startDirectory) { dirPtr in
-                            muxterm_new_connect(btPtr, sockPtr, sessPtr, aliasPtr, dirPtr)
+                            if let initialClientSize {
+                                muxterm_new_connect_sized(
+                                    btPtr,
+                                    sockPtr,
+                                    sessPtr,
+                                    aliasPtr,
+                                    dirPtr,
+                                    initialClientSize.0,
+                                    initialClientSize.1
+                                )
+                            } else {
+                                muxterm_new_connect(btPtr, sockPtr, sessPtr, aliasPtr, dirPtr)
+                            }
                         }
                     }
                 }

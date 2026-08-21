@@ -1098,6 +1098,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// 在 tmux -CC spawn 前给出一个接近当前窗口的字符网格。
+    ///
+    /// 首次 attach 时 SwiftTerm 还没有完成 layout，不能依赖终端 cell
+    /// metrics；这里用当前主题的常见等宽字符近似值，连接建立后仍由
+    /// `TerminalManager.syncClientSize` 用真实 cell 尺寸发送最终 refresh。
+    private func initialTmuxClientSizeHint() -> (UInt16, UInt16)? {
+        let bounds = content.paneLayout.bounds
+        guard bounds.width >= 16, bounds.height >= 17 else { return nil }
+        let cols = Int(floor(bounds.width / 8.0))
+        let rows = Int(floor(bounds.height / 17.0))
+        guard cols >= 2, rows >= 1, cols < 10_000, rows < 10_000 else { return nil }
+        return (UInt16(cols), UInt16(rows))
+    }
+
     private func attachTmux(
         config: TargetConfig,
         session: String,
@@ -1112,6 +1126,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         let params = config.transport.attachBackend
+        let initialClientSize = initialTmuxClientSizeHint()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 // SSH：alias 走 sshAlias，socket 不得填 Host 名（否则 `tmux -L ryzen`）。
@@ -1119,7 +1134,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     backendType: params.type,
                     socket: params.socket,
                     session: session,
-                    sshAlias: params.sshAlias
+                    sshAlias: params.sshAlias,
+                    initialClientSize: initialClientSize
                 )
                 DispatchQueue.main.async {
                     guard let self else {
@@ -1871,13 +1887,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         // CoreBridge 的 connect 可能等待远端 tmux 初始化，放到后台线程。
+        let initialClientSize = initialTmuxClientSizeHint()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let nextBridge = try CoreBridge.connect(
                     backendType: params.type,
                     socket: params.socket,
                     session: session,
-                    sshAlias: params.sshAlias
+                    sshAlias: params.sshAlias,
+                    initialClientSize: initialClientSize
                 )
                 DispatchQueue.main.async {
                     guard let self else {
