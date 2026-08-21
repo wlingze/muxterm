@@ -3058,9 +3058,9 @@ impl Runtime for TmuxRuntime {
 ///
 /// 格式：`@N,name,active,LAYOUT,panes,zoomed[,index]`。
 /// LAYOUT 含逗号，因此前三个字段用 `split_once`，尾部字段从右侧解析。
-fn parse_list_windows_line_with_index(
-    line: &str,
-) -> Option<(TabId, String, bool, String, usize, bool, Option<u32>)> {
+type ParsedWindowLineWithIndex = (TabId, String, bool, String, usize, bool, Option<u32>);
+
+fn parse_list_windows_line_with_index(line: &str) -> Option<ParsedWindowLineWithIndex> {
     let (id_str, rest) = line.split_once(',')?;
     let (name, rest) = rest.split_once(',')?;
     let (active_str, rest) = rest.split_once(',')?;
