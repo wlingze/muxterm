@@ -221,19 +221,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self.toggleReplyOverlay(paneId: paneId)
         }
         unifiedPanel.onAcknowledge = { [weak self] workspaceId, paneId in
-            guard let self, let targetBridge = self.bridge(forWorkspace: workspaceId) else { return }
-            _ = targetBridge.attentionAcknowledge(paneId: paneId)
+            guard let self else { return }
+            guard self.withWorkspaceBridge(workspaceId, { targetBridge in
+                _ = targetBridge.attentionAcknowledge(paneId: paneId)
+            }) else {
+                return
+            }
             // Open/Jump 之后列表和 badge 都应立即反映“已读”，不等待下一轮
             // 60Hz poll；后台 Workspace 也必须走它自己的 bridge。
             self.unifiedPanel.refreshData()
         }
         unifiedPanel.onMute = { [weak self] workspaceId, paneId, seconds in
-            guard let self,
-                  let targetBridge = self.bridge(forWorkspace: workspaceId)
-            else {
-                return
+            guard let self else { return }
+            _ = self.withWorkspaceBridge(workspaceId) { targetBridge in
+                _ = targetBridge.attentionMute(paneId: paneId, seconds: seconds)
             }
-            _ = targetBridge.attentionMute(paneId: paneId, seconds: seconds)
         }
         languageObserver = NotificationCenter.default.addObserver(
             forName: .muxtermLanguageChanged,
@@ -756,17 +758,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 统一面板的数据范围覆盖当前 warm 连接；当前 Workspace 固定排在首位，
-    /// 其余按稳定 Workspace ID 排序，避免 Dictionary 顺序导致结果跳动。
-    private func panelBridges() -> [CoreBridge] {
-        var result = [bridge]
+    /// 其余按稳定 Workspace ID 排序。后台 bridge 只能在 slot 锁内访问，
+    /// 避免与后台 poll 并发触碰同一个 C ABI handle。
+    private func forEachPanelBridge(_ body: (CoreBridge) -> Void) {
+        body(bridge)
         let background = connectionPool.slots.values
             .filter { $0.bridge !== bridge && $0.lifecycle != .evicting }
             .sorted {
                 QuickConnect.uniqueID(for: $0.targetConfig)
                     < QuickConnect.uniqueID(for: $1.targetConfig)
             }
-        result.append(contentsOf: background.map(\.bridge))
-        return result
+        for slot in background {
+            _ = slot.withBridge(body)
+        }
     }
 
     private var activeWorkspaceReplicaID: String? {
@@ -776,11 +780,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func attentionSnapshotForPanel() -> AttentionSnapshot? {
         var workspaces: [WorkspaceAttention] = []
         var seen = Set<String>()
-        for candidate in panelBridges() {
+        forEachPanelBridge { candidate in
             guard let json = candidate.attentionSnapshotJSON(),
                   let snapshot = AttentionSnapshot.decode(Data(json.utf8))
             else {
-                continue
+                return
             }
             for workspace in snapshot.workspaces where seen.insert(workspace.workspaceId).inserted {
                 workspaces.append(workspace)
@@ -794,14 +798,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func searchHitsForPanel(query: String, scope: SearchScope) -> [SearchHit] {
-        let candidates = scope == .all ? panelBridges() : [bridge]
         var allHits: [SearchHit] = []
         var seen = Set<String>()
-        for candidate in candidates {
+        let consume: (CoreBridge) -> Void = { candidate in
             guard let json = candidate.searchAllJSON(query: query),
                   let snapshot = SearchSnapshot.decode(Data(json.utf8))
             else {
-                continue
+                return
             }
             for hit in snapshot.hits {
                 let key = "\(hit.workspaceId)\u{1F}\(hit.tabId)\u{1F}\(hit.paneId)\u{1F}\(hit.seq)"
@@ -809,6 +812,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     allHits.append(hit)
                 }
             }
+        }
+        if scope == .all {
+            forEachPanelBridge(consume)
+        } else {
+            consume(bridge)
         }
         let workspacePaneIDs = Set(
             bridge.getTabs().flatMap { bridge.getPanes(tabId: $0.id).map(\.id) }
@@ -821,14 +829,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    private func bridge(forWorkspace workspaceId: String) -> CoreBridge? {
+    @discardableResult
+    private func withWorkspaceBridge(
+        _ workspaceId: String,
+        _ body: (CoreBridge) -> Void
+    ) -> Bool {
         if activeWorkspaceReplicaID == workspaceId {
-            return bridge
+            body(bridge)
+            return true
         }
-        return connectionPool.slots.values.first {
+        guard let slot = connectionPool.slots.values.first(where: {
             QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
                 && $0.lifecycle != .evicting
-        }?.bridge
+        }) else {
+            return false
+        }
+        return slot.withBridge { candidate in
+            body(candidate)
+            return true
+        } ?? false
     }
 
     @discardableResult
@@ -2246,7 +2265,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 红点与系统通知覆盖所有 warm Workspace；后台 bridge 仍在 core
         // 中维护 Attention 状态，不能只看当前窗口这一条连接。
         var blockedCount = 0
-        for candidate in panelBridges() {
+        forEachPanelBridge { candidate in
             if let json = candidate.attentionSnapshotJSON(),
                let data = json.data(using: .utf8),
                let snapshot = AttentionSnapshot.decode(data) {

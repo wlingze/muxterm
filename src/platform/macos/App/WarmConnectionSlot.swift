@@ -98,6 +98,16 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.unlock()
     }
 
+    /// 在后台 slot 上安全访问 CoreBridge。后台 poll、前台激活和淘汰共用
+    /// 同一把锁；不得把 bridge 引用带出闭包，否则 C ABI handle 可能并发。
+    @discardableResult
+    func withBridge<T>(_ body: (CoreBridge) -> T) -> T? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard lifecycleValue != .evicting else { return nil }
+        return body(bridge)
+    }
+
     /// 淘汰：tmux/ssh 先 detach（保留 server/session），再回收 handle；
     /// local shell 直接 shutdown（无独立 server 可保留）。
     func evict(reason: ConnectionEvictionReason) {
