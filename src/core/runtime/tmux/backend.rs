@@ -7,7 +7,7 @@
 //! - `connect()`：spawn tmux -CC new-session，drain 启动事件建立初始 state
 //!   （session / 第一个 window / 第一个 pane）
 //! - 后台 task 持续读 `TmuxEvent`，把 `Message` 转成内部 state 更新 +
-//!   `StateChange` 事件入队；命令响应行（ResponseLine）暂不处理
+//!   `StateChange` 事件入队；命令响应正文由 reader 聚合成 block 后按边界处理
 //! - `execute(Task)`：把 Task 映射成 `TmuxCommand`，通过命令 channel 发给
 //!   后台 sender task 异步 `send_command`（execute 本身是同步 fn）
 //! - `take_events()`：drain 内部事件队列
@@ -29,7 +29,7 @@ use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::runtime::tmux::client::{
-    ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent,
+    ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent, TmuxEventReceiver,
 };
 use crate::core::runtime::tmux::command as cmd;
 use crate::core::runtime::tmux::protocol::{
@@ -54,11 +54,22 @@ enum PendingQuery {
     /// capture-pane -e -p -t <pane>：恢复 attach 时 tmux 已存在的可见屏幕。
     CapturePane { pane: PaneId },
     /// display-message format：查询 resync 时需要重放的 VT 状态。
-    PaneResyncState { pane: PaneId },
+    PaneResyncState { pane: PaneId, generation: u64 },
     /// resync 的 primary/alternate capture。
-    PaneResyncCapture { pane: PaneId, alternate: bool },
+    PaneResyncCapture {
+        pane: PaneId,
+        alternate: bool,
+        generation: u64,
+    },
     /// list-sessions：列出 tmux server 上所有 session。
     ListSessions,
+    /// 新 tab 未指定目录时，先查询当前 pane cwd，再发 new-window -c。
+    NewTabInCurrentDir {
+        pane: PaneId,
+        session: TmuxSessionId,
+        name: Option<String>,
+        command: Option<Vec<String>>,
+    },
 }
 
 /// status bar 订阅名（文档 §B+：`refresh-client -B` 的名字）。
@@ -72,6 +83,10 @@ const PUMP_EVENT_BUDGET: usize = 2_048;
 /// 即使事件数没有达到上限，也要把主线程还给 UI。下一轮 poll 会继续处理
 /// 剩余事件；结构事件仍会被保留在 core 队列中。
 const PUMP_TIME_BUDGET: Duration = Duration::from_millis(4);
+/// Snapshot 是恢复手段，不得把 pane 永久锁在 resyncing；5s 也与 iTerm2 的
+/// tmux unresponsive watchdog 保持同一量级。
+const RESYNC_TIMEOUT: Duration = Duration::from_secs(5);
+const RESYNC_COOLDOWN: Duration = Duration::from_secs(5);
 
 /// 单个 pane 的输出流控状态。
 #[derive(Debug, Default)]
@@ -111,6 +126,8 @@ struct PaneReplayState {
 /// primary + alternate capture 完成，确保前端看到的只有一个可重放边界。
 #[derive(Debug, Default)]
 struct PaneResync {
+    generation: u64,
+    deadline: Option<Instant>,
     state: Option<PaneReplayState>,
     primary: Option<Vec<u8>>,
     alternate: Option<Vec<u8>>,
@@ -129,7 +146,7 @@ struct PaneResync {
 pub struct TmuxRuntime {
     config: TmuxClientConfig,
     handle: Option<TmuxClientHandle>,
-    event_rx: Option<mpsc::Receiver<TmuxEvent>>,
+    event_rx: Option<TmuxEventReceiver>,
     /// 命令发送 channel：execute 把 TmuxCommand 字符串塞进来，
     /// 后台 sender task 异步 send_command。
     cmd_tx: Option<mpsc::UnboundedSender<String>>,
@@ -160,6 +177,9 @@ pub struct TmuxRuntime {
 
     /// 当前命令响应累积的行（%begin..%end 之间），带 number 标识。
     response_accum: HashMap<i64, Vec<String>>,
+    /// reader 在响应过大时保留尾部并标记截断；该响应不能被当成完整
+    /// list/capture 使用，必须走同一套失败释放路径。
+    truncated_responses: HashSet<i64>,
     /// 等待响应的命令回调（number → 处理函数）。简化为存命令类型标记。
     pending_queries: VecDeque<PendingQuery>,
     /// `%begin <number>` 到达时从 pending_queries 队首取出的查询，按 number 登记。
@@ -210,6 +230,10 @@ pub struct TmuxRuntime {
     flow: HashMap<PaneId, PaneFlow>,
     /// 正在进行的 authoritative pane snapshot transaction。
     resyncs: HashMap<PaneId, PaneResync>,
+    /// 每个 pane 的 resync generation，迟到的 query 响应只能命中原 generation。
+    resync_generation: HashMap<PaneId, u64>,
+    /// timeout/error 后的冷却窗口，阻止同一 output gap 立刻重放 capture 风暴。
+    resync_cooldown_until: HashMap<PaneId, Instant>,
     /// 事件队列因有界保护而丢弃了某个 pane 的增量。只有这种“确实丢过
     /// 字节”的情况才需要 authoritative resync；正常的高频 CUP 输出不能
     /// 因为时间/字节阈值被主动重拍。
@@ -505,6 +529,7 @@ impl TmuxRuntime {
             status: BackendStatus::Disconnected,
             events: VecDeque::new(),
             response_accum: HashMap::new(),
+            truncated_responses: HashSet::new(),
             pending_queries: VecDeque::new(),
             pending_by_number: HashMap::new(),
             window_layouts: HashMap::new(),
@@ -521,6 +546,8 @@ impl TmuxRuntime {
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
+            resync_generation: HashMap::new(),
+            resync_cooldown_until: HashMap::new(),
             dropped_output_panes: HashSet::new(),
             initial_capture_buf: HashMap::new(),
             initial_capture_tail: HashMap::new(),
@@ -956,14 +983,22 @@ impl TmuxRuntime {
         initial: bool,
         pause_client: bool,
     ) {
-        if self.resyncs.contains_key(&pane) {
+        if self.resyncs.contains_key(&pane)
+            || self
+                .resync_cooldown_until
+                .get(&pane)
+                .is_some_and(|until| *until > Instant::now())
+        {
             return;
         }
-        // 老的增量已经无法与即将捕获的屏幕建立可靠边界；丢掉它们，
-        // 否则 snapshot reset 后又会被旧帧覆盖。
-        self.events.retain(
-            |event| !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane),
-        );
+        // 不要在 transaction 开始时删除已经排队的 PaneOutput。只有完整 snapshot
+        // 成功时才原子替换旧增量；如果查询堵塞/失败，旧增量仍是唯一可用 fallback。
+        let generation = self
+            .resync_generation
+            .entry(pane)
+            .and_modify(|value| *value = value.saturating_add(1))
+            .or_insert(1);
+        let generation = *generation;
         if let Some(flow) = self.flow.get_mut(&pane) {
             flow.resyncing = true;
             flow.suppressed.clear();
@@ -971,6 +1006,8 @@ impl TmuxRuntime {
         self.resyncs.insert(
             pane,
             PaneResync {
+                generation,
+                deadline: Some(Instant::now() + RESYNC_TIMEOUT),
                 initial,
                 pause_client,
                 ..PaneResync::default()
@@ -989,19 +1026,12 @@ impl TmuxRuntime {
                 .dispatch_tmux_command(&cmd::refresh_client_pause(pane, true))
                 .is_err()
         {
-            // 单元测试/断线窗口没有 command channel；保持状态机可恢复，
-            // 不把 pane 永久卡在 resyncing。
-            self.resyncs.remove(&pane);
-            if let Some(flow) = self.flow.get_mut(&pane) {
-                flow.resyncing = false;
-            }
-            self.paused_panes.remove(&pane);
-            self.initial_capture_pending.remove(&pane);
+            self.abort_pane_resync(pane, "pause-command-failed");
             return;
         }
         let query = cmd::display_message(PaneId(pane.0), PANE_RESYNC_FORMAT);
         if self.dispatch_tmux_command(&query).is_ok() {
-            self.replace_last_pending(PendingQuery::PaneResyncState { pane });
+            self.replace_last_pending(PendingQuery::PaneResyncState { pane, generation });
             tracing::info!(
                 target: "muxterm::tmux::resync",
                 pane = pane.0,
@@ -1009,12 +1039,107 @@ impl TmuxRuntime {
                 "paused pane and requested authoritative state/capture"
             );
         } else {
-            self.resyncs.remove(&pane);
-            if let Some(flow) = self.flow.get_mut(&pane) {
-                flow.resyncing = false;
+            self.abort_pane_resync(pane, "state-query-failed");
+        }
+    }
+
+    fn pending_query_pane(query: &PendingQuery) -> Option<PaneId> {
+        match query {
+            PendingQuery::ReadyProbe { pane }
+            | PendingQuery::DisplayMessage { pane }
+            | PendingQuery::CapturePane { pane }
+            | PendingQuery::PaneResyncState { pane, .. }
+            | PendingQuery::PaneResyncCapture { pane, .. }
+            | PendingQuery::NewTabInCurrentDir { pane, .. } => Some(*pane),
+            PendingQuery::Ignore
+            | PendingQuery::ListPanes { .. }
+            | PendingQuery::ListWindows
+            | PendingQuery::ListSessions => None,
+        }
+    }
+
+    /// 取消某 pane 的所有在途查询但保留 FIFO tombstone。这样 timeout 后迟到的
+    /// `%begin` 仍会消耗原 query 槽位，不会错配到下一次 resync。
+    fn cancel_pending_queries_for_pane(&mut self, pane: PaneId) {
+        for query in &mut self.pending_queries {
+            if Self::pending_query_pane(query) == Some(pane) {
+                *query = PendingQuery::Ignore;
             }
-            self.paused_panes.remove(&pane);
+        }
+        let numbers: Vec<i64> = self
+            .pending_by_number
+            .iter()
+            .filter_map(|(number, query)| {
+                (Self::pending_query_pane(query) == Some(pane)).then_some(*number)
+            })
+            .collect();
+        for number in numbers {
+            self.pending_by_number.insert(number, PendingQuery::Ignore);
+            self.response_accum.remove(&number);
+        }
+    }
+
+    /// 失败/超时时释放 resync。永远不要让旧 pane 画面成为 transaction 成功的
+    /// 唯一前提：能交付的 live bytes 先交付，迟到响应全部按 tombstone 忽略。
+    fn abort_pane_resync(&mut self, pane: PaneId, reason: &'static str) {
+        let Some(resync) = self.resyncs.remove(&pane) else {
+            return;
+        };
+        self.cancel_pending_queries_for_pane(pane);
+        self.dropped_output_panes.remove(&pane);
+        self.resync_cooldown_until
+            .insert(pane, Instant::now() + RESYNC_COOLDOWN);
+
+        let mut fallback = resync.pre_capture;
+        fallback.extend(resync.post_capture);
+        fallback.extend(resync.live);
+        if !fallback.is_empty() {
+            self.push_pane_output(pane, fallback);
+        }
+        let suppressed = if let Some(flow) = self.flow.get_mut(&pane) {
+            flow.resyncing = false;
+            std::mem::take(&mut flow.suppressed)
+        } else {
+            Vec::new()
+        };
+        if !suppressed.is_empty() {
+            self.push_pane_output(pane, suppressed);
+        }
+        if resync.initial {
             self.initial_capture_pending.remove(&pane);
+            self.initial_capture_done.insert(pane);
+            self.background_capture_only.remove(&pane);
+        }
+        self.paused_panes.remove(&pane);
+        if resync.pause_client {
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        }
+        if let Some(receiver) = self.event_rx.as_mut() {
+            receiver.resume_output_pane(pane);
+        }
+        tracing::warn!(
+            target: "muxterm::tmux::resync",
+            pane = pane.0,
+            generation = resync.generation,
+            reason,
+            "pane resync released with live fallback"
+        );
+    }
+
+    fn expire_resyncs(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<PaneId> = self
+            .resyncs
+            .iter()
+            .filter_map(|(pane, resync)| {
+                resync
+                    .deadline
+                    .is_some_and(|deadline| deadline <= now)
+                    .then_some(*pane)
+            })
+            .collect();
+        for pane in expired {
+            self.abort_pane_resync(pane, "deadline");
         }
     }
 
@@ -1440,6 +1565,7 @@ impl TmuxRuntime {
 
     /// drain event_rx 的 TmuxEvent，更新 state。
     fn pump_events(&mut self) {
+        self.expire_resyncs();
         for _ in 0..PUMP_EVENT_BUDGET {
             let message = self
                 .command_error_rx
@@ -1470,6 +1596,7 @@ impl TmuxRuntime {
                         match b.kind {
                             NotificationKind::Begin => {
                                 self.response_accum.insert(b.number, Vec::new());
+                                self.truncated_responses.remove(&b.number);
                                 // tmux 串行执行命令：`%begin <n>` 到达时，队首查询即
                                 // 该命令的响应槽。按 number 登记，end/error 时精确匹配，
                                 // 避免高输出下 FIFO pop 错配。
@@ -1480,9 +1607,13 @@ impl TmuxRuntime {
                                     Some(PendingQuery::CapturePane { pane }) => {
                                         self.capture_response_seen.insert(pane);
                                     }
-                                    Some(PendingQuery::PaneResyncCapture { pane, .. }) => {
+                                    Some(PendingQuery::PaneResyncCapture {
+                                        pane,
+                                        generation,
+                                        ..
+                                    }) => {
                                         if let Some(resync) = self.resyncs.get_mut(&pane) {
-                                            if resync.initial {
+                                            if resync.initial && resync.generation == generation {
                                                 resync.capture_started = true;
                                             }
                                         }
@@ -1493,9 +1624,19 @@ impl TmuxRuntime {
                             NotificationKind::End => {
                                 let lines =
                                     self.response_accum.remove(&b.number).unwrap_or_default();
-                                self.dispatch_response(b.number, lines);
+                                if self.truncated_responses.remove(&b.number) {
+                                    tracing::warn!(
+                                        target = "muxterm::tmux",
+                                        number = b.number,
+                                        "tmux response exceeded the bounded response buffer"
+                                    );
+                                    self.handle_response_error(b.number);
+                                } else {
+                                    self.dispatch_response(b.number, lines);
+                                }
                             }
                             NotificationKind::Error => {
+                                self.truncated_responses.remove(&b.number);
                                 self.handle_response_error(b.number);
                             }
                         }
@@ -1504,10 +1645,26 @@ impl TmuxRuntime {
                     // 所以先 handle_message 处理通知，再在上面处理响应边界。
                     self.handle_message(msg);
                 }
-                TmuxEvent::ResponseLine { number, line, .. } => {
-                    // 累积到对应 number 的响应缓冲（begin 后、end 前的行）
-
-                    self.response_accum.entry(number).or_default().push(line);
+                TmuxEvent::ResponseBlock {
+                    number,
+                    lines,
+                    truncated_prefix,
+                    ..
+                } => {
+                    // reader 已经把 begin/end 之间的正文聚合成一个 block；
+                    // 下一个 ResponseBoundary::End/Error 只负责提交这一块。
+                    self.response_accum.insert(number, lines);
+                    if truncated_prefix {
+                        self.truncated_responses.insert(number);
+                    }
+                }
+                TmuxEvent::OutputGap { pane } => {
+                    // Output lane overflow is an explicit data-loss boundary. Do not
+                    // try to replay a guessed suffix; schedule one bounded snapshot.
+                    if let Some(receiver) = self.event_rx.as_mut() {
+                        receiver.discard_output_pane(pane);
+                    }
+                    self.dropped_output_panes.insert(pane);
                 }
                 TmuxEvent::Exit { .. } => {
                     self.status = BackendStatus::Exited;
@@ -1516,6 +1673,7 @@ impl TmuxRuntime {
                 }
             }
         }
+        self.expire_resyncs();
         self.maybe_start_resyncs();
     }
 
@@ -1549,7 +1707,17 @@ impl TmuxRuntime {
                         }
                     }
                 }
-                PendingQuery::PaneResyncState { pane } => {
+                PendingQuery::PaneResyncState { pane, generation } => {
+                    if self
+                        .resyncs
+                        .get(&pane)
+                        .is_none_or(|resync| resync.generation != generation)
+                    {
+                        // Timeout/error may have released this generation while its
+                        // response was still in the control lane. Never start a new
+                        // capture transaction from a stale state response.
+                        return;
+                    }
                     if let Some(resync) = self.resyncs.get_mut(&pane) {
                         resync.state = lines.first().map(|line| parse_pane_replay_state(line));
                     }
@@ -1560,6 +1728,7 @@ impl TmuxRuntime {
                         self.replace_last_pending(PendingQuery::PaneResyncCapture {
                             pane,
                             alternate: false,
+                            generation,
                         });
                     }
                     let alternate_ok = self.dispatch_tmux_command(&alternate).is_ok();
@@ -1567,13 +1736,27 @@ impl TmuxRuntime {
                         self.replace_last_pending(PendingQuery::PaneResyncCapture {
                             pane,
                             alternate: true,
+                            generation,
                         });
                     }
                     if !primary_ok || !alternate_ok {
-                        self.finish_pane_resync(pane);
+                        self.abort_pane_resync(pane, "capture-command-failed");
                     }
                 }
-                PendingQuery::PaneResyncCapture { pane, alternate } => {
+                PendingQuery::PaneResyncCapture {
+                    pane,
+                    alternate,
+                    generation,
+                } => {
+                    let active_generation = self
+                        .resyncs
+                        .get(&pane)
+                        .is_some_and(|resync| resync.generation == generation);
+                    if !active_generation {
+                        // A response from a timed-out generation must not paint a
+                        // new snapshot or complete the newer transaction.
+                        return;
+                    }
                     if let Some(resync) = self.resyncs.get_mut(&pane) {
                         let data = capture_pane_bytes(&lines);
                         // `capture-pane` returns the currently visible screen;
@@ -1594,6 +1777,26 @@ impl TmuxRuntime {
                     if alternate {
                         self.finish_pane_resync(pane);
                     }
+                }
+                PendingQuery::NewTabInCurrentDir {
+                    pane: _,
+                    session,
+                    name,
+                    command,
+                } => {
+                    // `display-message` returns the path as one response line;
+                    // preserve spaces and pass it through tmux's C quoting.
+                    let path = lines
+                        .first()
+                        .map(|line| line.trim())
+                        .filter(|p| !p.is_empty());
+                    let c = cmd::new_window_with_directory(
+                        session,
+                        name.as_deref(),
+                        path,
+                        command.as_deref(),
+                    );
+                    let _ = self.dispatch_tmux_command(&c);
                 }
                 PendingQuery::CapturePane { pane } => {
                     // capture-pane -p 按行返回当前可见屏幕；拼回 CRLF 后喂给
@@ -1728,6 +1931,9 @@ impl TmuxRuntime {
             data: snapshot,
         });
         self.trim_event_queue();
+        if let Some(receiver) = self.event_rx.as_mut() {
+            receiver.resume_output_pane(pane);
+        }
         // snapshot 入队后再 continue；其后的 tmux 输出会形成下一批增量。
         if pause_client {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
@@ -1784,15 +1990,31 @@ impl TmuxRuntime {
                         pane.0
                     );
                 }
-                PendingQuery::PaneResyncState { pane }
-                | PendingQuery::PaneResyncCapture { pane, .. } => {
+                PendingQuery::PaneResyncState { pane, generation }
+                | PendingQuery::PaneResyncCapture {
+                    pane, generation, ..
+                } => {
                     tracing::warn!(
                         target: "muxterm::tmux::resync",
                         pane = pane.0,
                         number,
                         "pane snapshot query failed; releasing resync"
                     );
-                    self.finish_pane_resync(pane);
+                    if self
+                        .resyncs
+                        .get(&pane)
+                        .is_some_and(|resync| resync.generation == generation)
+                    {
+                        self.abort_pane_resync(pane, "response-error");
+                    }
+                }
+                PendingQuery::NewTabInCurrentDir { pane, .. } => {
+                    tracing::warn!(
+                        target = "muxterm::tmux",
+                        pane = pane.0,
+                        number,
+                        "current pane cwd query failed; new tab was not created"
+                    );
                 }
                 PendingQuery::ReadyProbe { pane } => {
                     self.ready_probe_in_flight.remove(&pane);
@@ -2043,7 +2265,9 @@ impl TmuxRuntime {
                 matches!(
                     query,
                     PendingQuery::CapturePane { pane: pending }
-                        | PendingQuery::PaneResyncState { pane: pending }
+                        | PendingQuery::PaneResyncState {
+                            pane: pending, ..
+                        }
                         | PendingQuery::PaneResyncCapture { pane: pending, .. }
                         if *pending == pane
                 )
@@ -2920,18 +3144,57 @@ impl Runtime for TmuxRuntime {
                 self.query_list_sessions();
                 TaskOutcome::Done
             }
-            Task::NewTab { name, .. } => {
+            Task::NewTab {
+                name,
+                command,
+                workdir,
+            } => {
                 // tmux 的 tab = tmux window，新建 tab = 新建 tmux window
                 let Some(sess) = self.active_session else {
                     return Ok(TaskOutcome::Rejected {
                         reason: "tmux 未连接".into(),
                     });
                 };
-                let c = cmd::new_window(sess, name.as_deref());
-                if self.dispatch_tmux_command(&c).is_err() {
-                    return Ok(TaskOutcome::Rejected {
-                        reason: "发送命令失败".into(),
+                if let Some(dir) = workdir {
+                    let c = cmd::new_window_with_directory(
+                        sess,
+                        name.as_deref(),
+                        Some(dir),
+                        command.as_deref(),
+                    );
+                    if self.dispatch_tmux_command(&c).is_err() {
+                        return Ok(TaskOutcome::Rejected {
+                            reason: "发送命令失败".into(),
+                        });
+                    }
+                } else if let Some(pane) = self.active_pane().map(|pane| pane.id) {
+                    // New tabs inherit the active pane's cwd. Querying tmux is
+                    // authoritative even when the GUI's project path is `~` or
+                    // the shell has changed directory since attach.
+                    let q = cmd::display_message(pane, "#{pane_current_path}");
+                    if self.dispatch_tmux_command(&q).is_err() {
+                        return Ok(TaskOutcome::Rejected {
+                            reason: "发送命令失败".into(),
+                        });
+                    }
+                    self.replace_last_pending(PendingQuery::NewTabInCurrentDir {
+                        pane,
+                        session: sess,
+                        name: name.clone(),
+                        command: command.clone(),
                     });
+                } else {
+                    let c = cmd::new_window_with_directory(
+                        sess,
+                        name.as_deref(),
+                        None,
+                        command.as_deref(),
+                    );
+                    if self.dispatch_tmux_command(&c).is_err() {
+                        return Ok(TaskOutcome::Rejected {
+                            reason: "发送命令失败".into(),
+                        });
+                    }
                 }
                 TaskOutcome::Done
             }
@@ -4280,8 +4543,13 @@ mod tests {
             content: b"live-after-pause".to_vec(),
             raw_content: String::new(),
         });
-        b.pending_by_number
-            .insert(1, PendingQuery::PaneResyncState { pane });
+        b.pending_by_number.insert(
+            1,
+            PendingQuery::PaneResyncState {
+                pane,
+                generation: 1,
+            },
+        );
         b.dispatch_response(
             1,
             vec!["2|1|1|block|0|1|0|0|0|1|0|0|0|0|0|0|0|0|0|1".into()],
@@ -4291,6 +4559,7 @@ mod tests {
             PendingQuery::PaneResyncCapture {
                 pane,
                 alternate: false,
+                generation: 1,
             },
         );
         b.dispatch_response(2, vec!["primary".into()]);
@@ -4299,6 +4568,7 @@ mod tests {
             PendingQuery::PaneResyncCapture {
                 pane,
                 alternate: true,
+                generation: 1,
             },
         );
         b.dispatch_response(3, vec!["alternate".into()]);
@@ -4385,10 +4655,89 @@ mod tests {
         b.dropped_output_panes.insert(pane);
         b.maybe_start_resyncs();
         assert!(b.resyncs.contains_key(&pane));
+        assert!(b.pending_queries.iter().any(
+            |query| matches!(query, PendingQuery::PaneResyncState { pane: p, .. } if *p == pane)
+        ));
+    }
+
+    #[test]
+    fn resync_deadline_releases_live_fallback_and_starts_cooldown() {
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new(None);
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(33);
+        b.flow.entry(pane).or_default().resyncing = true;
+        b.flow
+            .get_mut(&pane)
+            .unwrap()
+            .suppressed
+            .extend_from_slice(b"suppressed\r\n");
+        b.resyncs.insert(
+            pane,
+            PaneResync {
+                deadline: Some(Instant::now() - Duration::from_millis(1)),
+                live: b"live\r\n".to_vec(),
+                pause_client: false,
+                ..PaneResync::default()
+            },
+        );
+
+        b.expire_resyncs();
+
+        assert!(!b.resyncs.contains_key(&pane));
+        assert!(!b.flow.get(&pane).unwrap().resyncing);
+        assert!(b.outputs.get(&pane).is_some_and(|data| {
+            data.windows(b"live\r\n".len())
+                .any(|window| window == b"live\r\n")
+                && data
+                    .windows(b"suppressed\r\n".len())
+                    .any(|window| window == b"suppressed\r\n")
+        }));
+        assert!(b
+            .resync_cooldown_until
+            .get(&pane)
+            .is_some_and(|until| *until > Instant::now()));
+    }
+
+    #[test]
+    fn stale_resync_generation_cannot_paint_or_complete_new_transaction() {
+        let mut b = TmuxRuntime::new(None);
+        let pane = PaneId(34);
+        b.resyncs.insert(
+            pane,
+            PaneResync {
+                generation: 2,
+                ..PaneResync::default()
+            },
+        );
+
+        b.pending_by_number.insert(
+            101,
+            PendingQuery::PaneResyncState {
+                pane,
+                generation: 1,
+            },
+        );
+        b.dispatch_response(101, vec!["0|0|1|block|0|0".into()]);
+        assert_eq!(b.resyncs.get(&pane).unwrap().generation, 2);
         assert!(b
             .pending_queries
             .iter()
-            .any(|query| matches!(query, PendingQuery::PaneResyncState { pane: p } if *p == pane)));
+            .all(|query| !matches!(query, PendingQuery::PaneResyncCapture { .. })));
+
+        b.pending_by_number.insert(
+            102,
+            PendingQuery::PaneResyncCapture {
+                pane,
+                alternate: true,
+                generation: 1,
+            },
+        );
+        b.dispatch_response(102, vec!["stale frame".into()]);
+        assert!(b.resyncs.contains_key(&pane));
+        assert!(!b.events.iter().any(|event| {
+            matches!(event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane)
+        }));
     }
 
     #[test]

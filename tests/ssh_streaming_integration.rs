@@ -12,7 +12,7 @@
 mod support;
 
 use muxterm::core::runtime::tmux::client::{
-    ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent,
+    ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent, TmuxEventReceiver,
 };
 use muxterm::core::runtime::tmux::protocol::Message;
 use std::time::Duration;
@@ -29,10 +29,7 @@ fn ssh_env(label: &str) -> SshTestEnv {
 }
 
 /// 连接远端 tmux -CC，返回句柄 + 事件接收器 + 已收集的 pane id。
-async fn connect_remote(
-    env: &SshTestEnv,
-    name: &str,
-) -> (TmuxClientHandle, tokio::sync::mpsc::Receiver<TmuxEvent>) {
+async fn connect_remote(env: &SshTestEnv, name: &str) -> (TmuxClientHandle, TmuxEventReceiver) {
     let config = TmuxClientConfig {
         mode: Some(ConnectMode::NewSession {
             name: Some(name.into()),

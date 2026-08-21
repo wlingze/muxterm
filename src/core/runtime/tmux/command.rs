@@ -411,9 +411,28 @@ pub fn display_message(target: PaneId, format: &str) -> TmuxCommand {
 
 /// new-window -t <session> -n <name>。
 pub fn new_window(session: TmuxSessionId, name: Option<&str>) -> TmuxCommand {
+    new_window_with_directory(session, name, None, None)
+}
+
+/// new-window -t <session> [-n <name>] [-c <start_dir>] [command ...]。
+///
+/// `-c` 必须在 tmux 命令层显式传递；不应依赖 control client 自身的 cwd，
+/// 因为 GUI 进程和用户选中的 Project 目录通常不是同一个工作目录。
+pub fn new_window_with_directory(
+    session: TmuxSessionId,
+    name: Option<&str>,
+    start_dir: Option<&str>,
+    command: Option<&[String]>,
+) -> TmuxCommand {
     let mut args = vec![session_target(session)];
     if let Some(n) = name {
         args.push(format!("-n {}", quote_c_string(n)));
+    }
+    if let Some(dir) = start_dir {
+        args.push(format!("-c {}", quote_c_string(dir)));
+    }
+    if let Some(command) = command {
+        args.extend(command.iter().map(|arg| quote_c_string(arg)));
     }
     build(&args, "new-window")
 }
@@ -760,6 +779,21 @@ mod tests {
         assert_eq!(
             new_window(TmuxSessionId(0), None).as_str(),
             "new-window -t $0"
+        );
+    }
+
+    #[test]
+    fn new_window_with_directory_quotes_cwd_and_command() {
+        let command = vec!["opencode".to_string(), "--resume".to_string()];
+        assert_eq!(
+            new_window_with_directory(
+                TmuxSessionId(8),
+                Some("editor"),
+                Some("/tmp/project dir"),
+                Some(&command),
+            )
+            .as_str(),
+            r##"new-window -t $8 -n "editor" -c "/tmp/project dir" "opencode" "--resume""##
         );
     }
 

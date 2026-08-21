@@ -7,7 +7,9 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::core::runtime::tmux::client::{feed_bytes_to_lines, process_line, TmuxEvent};
+use crate::core::runtime::tmux::client::{
+    event_channel, feed_bytes_to_lines, process_line, TmuxEvent, TmuxEventReceiver, TmuxEventSink,
+};
 use crate::core::runtime::tmux::command::TmuxCommand;
 
 /// 把字节块渲染成可读的 debug 字符串（可打印字符保留，控制字节转义）。
@@ -180,14 +182,14 @@ impl SshSession {
     pub async fn spawn_tmux_cc(
         &self,
         session_name: &str,
-    ) -> Result<(RemoteTmuxClient, mpsc::Receiver<TmuxEvent>)> {
+    ) -> Result<(RemoteTmuxClient, TmuxEventReceiver)> {
         let cmd = build_tmux_cc_command(session_name);
         tracing::info!(target = "muxterm::ssh", %cmd, "spawn remote tmux -CC");
 
         let (stdout_tx, mut stdout_rx) = mpsc::channel::<Vec<u8>>(256);
         let (stderr_tx, mut stderr_rx) = mpsc::channel::<Vec<u8>>(16);
         let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(64);
-        let (event_tx, event_rx) = mpsc::channel::<TmuxEvent>(256);
+        let (event_tx, event_rx) = event_channel();
 
         let client = self.client.clone();
         let cmd_owned = cmd.clone();
@@ -207,9 +209,7 @@ impl SshSession {
         let parse_tx = event_tx.clone();
         let parse_join = tokio::spawn(async move {
             let mut buf: Vec<u8> = Vec::with_capacity(4096);
-            let mut in_response = false;
-            let mut current_number: i64 = 0;
-            let mut current_is_error = false;
+            let mut response = None;
             while let Some(chunk) = stdout_rx.recv().await {
                 if chunk.is_empty() {
                     continue;
@@ -221,17 +221,10 @@ impl SshSession {
                     "recv remote tmux chunk"
                 );
                 for line_bytes in feed_bytes_to_lines(&mut buf, &chunk) {
-                    process_line(
-                        &line_bytes,
-                        &parse_tx,
-                        &mut in_response,
-                        &mut current_number,
-                        &mut current_is_error,
-                    )
-                    .await;
+                    process_line(&line_bytes, &parse_tx, &mut response).await;
                 }
             }
-            let _ = parse_tx.send(TmuxEvent::Exit { code: None }).await;
+            parse_tx.emit(TmuxEvent::Exit { code: None });
         });
 
         // SSH exec（请求 pty，tmux -CC 需要）
@@ -558,19 +551,17 @@ mod tests {
     async fn ssh_parser_uses_shared_byte_framer_and_preserves_output_bytes() {
         let wire =
             b"\x1bP1000p%begin 10 9 0\r\nresponse\xff\r\n%output %7 \x94\x80\r\n%end 10 9 0\n";
-        let (tx, mut rx) = mpsc::channel(32);
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let mut buf = Vec::new();
-        let mut in_response = false;
-        let mut number = 0;
-        let mut is_error = false;
+        let mut response = None;
 
         for chunk in wire.chunks(1) {
             for line in feed_bytes_to_lines(&mut buf, chunk) {
-                process_line(&line, &tx, &mut in_response, &mut number, &mut is_error).await;
+                process_line(&line, &tx, &mut response).await;
             }
         }
         assert!(buf.is_empty());
-        assert!(!in_response);
+        assert!(response.is_none());
 
         let mut saw_output = false;
         let mut saw_response = false;
@@ -583,10 +574,10 @@ mod tests {
                     assert_eq!(content, b"\x94\x80");
                     saw_output = true;
                 }
-                TmuxEvent::ResponseLine {
-                    number: 9, line, ..
+                TmuxEvent::ResponseBlock {
+                    number: 9, lines, ..
                 } => {
-                    assert!(line.contains('\u{fffd}'));
+                    assert!(lines.iter().any(|line| line.contains('\u{fffd}')));
                     saw_response = true;
                 }
                 _ => {}

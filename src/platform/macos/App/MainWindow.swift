@@ -30,6 +30,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private let quickConnectStore: QuickConnectStore
     private var pollTimer: Timer?
+    /// 主窗口 local key monitor 的 token；独立 NSPanel 的事件不能进入这里。
+    private var keyMonitor: Any?
     var lastSnapshot = FrameSnapshot()
     private var needsLayoutReload = true
     /// tmux tab 切换确认门禁：外部关闭 / 快照缺失 / 超时都会放行。
@@ -346,6 +348,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             bridge.shutdown()
         }
         statusRefreshTimer?.invalidate()
+        removeKeyMonitor()
     }
 
     // MARK: - 公开动作（菜单 / 快捷键）
@@ -1374,6 +1377,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func requestSwitchTab(_ tabId: UInt32) {
         guard tabId != lastSnapshot.activeTab else { return }
+        // AppKit can deliver a button action twice before the next poll updates
+        // lastSnapshot. The gate is the single in-flight command for a target;
+        // coalesce only the same pending target (different targets remain valid
+        // rapid navigation and replace the pending request).
+        if tabSwitchGate.pendingTab == tabId, !tabSwitchGate.isReleased() {
+            return
+        }
         tabSwitchGate.request(tab: tabId)
         needsLayoutReload = true
         guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
@@ -2613,14 +2623,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 快捷键
 
     private func installKeyEquivalents() {
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            return self.handleKey(event) ? nil : event
+            // CommandPalette/UnifiedPanel/ProjectConfig are independent NSPanel
+            // windows. Their text fields own Backspace and other editing keys;
+            // the main terminal shortcut router must never consume those events.
+            if let eventWindow = event.window, eventWindow !== self.window {
+                return event
+            }
+            if self.handleKey(event) {
+                return nil
+            }
+            // Terminal key events are explicitly dispatched exactly once through
+            // SwiftTerm's keyDown implementation. Returning the event here would
+            // let AppKit continue its normal responder walk after the monitor,
+            // which is the source of duplicate Enter/Control callbacks observed
+            // in the tmux command log.
+            if event.window === self.window,
+               let terminal = self.window?.firstResponder as? MuxTerminalView
+            {
+                terminal.dispatchKeyDown(event)
+                return nil
+            }
+            return event
         }
     }
 
     /// 返回 true 表示已消费事件。in-process e2e 经 `testDispatchKeyEvent` 调用。
     func handleKey(_ event: NSEvent) -> Bool {
+        if let eventWindow = event.window, eventWindow !== window {
+            return false
+        }
         let eventFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         // Cmd-P 统一面板可见时，Tab/Shift+Tab/Esc/Enter 走面板。
@@ -2758,12 +2791,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        removeKeyMonitor()
         if !isClosing {
             isClosing = true
             pollTimer?.invalidate()
             pollTimer = nil
             bridge.shutdown()
         }
+    }
+
+    private func removeKeyMonitor() {
+        guard let keyMonitor else { return }
+        NSEvent.removeMonitor(keyMonitor)
+        self.keyMonitor = nil
     }
 }
 

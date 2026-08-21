@@ -118,6 +118,14 @@ final class MuxTerminalView: TerminalView {
         super.scrollWheel(with: event)
     }
 
+    /// MainWindow 的唯一 keyDown monitor 在终端 first responder 上调用这条
+    /// 入口并消费原始 NSEvent，避免 AppKit 再把同一 event 继续派发一次。
+    /// SwiftTerm 自己的 keyDown 实现仍负责 IME、kitty keyboard、Option/Control
+    /// 和 doCommand，因此不会绕过其编码逻辑。
+    func dispatchKeyDown(_ event: NSEvent) {
+        keyDown(with: event)
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         return nil

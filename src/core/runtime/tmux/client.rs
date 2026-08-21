@@ -9,8 +9,8 @@
 //!   是 C 转义后的两个字符，不是真换行），逐行喂给
 //!   [`parse_line_bytes`](super::protocol::parse_line_bytes)，产出 `Message` 事件流。
 //! - [`TmuxClientHandle::send_command`]：把命令字符串写到 tmux stdin（pty）。
-//! - 通过 [`tokio::sync::mpsc`] 输出 `TmuxEvent` 事件，命令响应正文行（夹在
-//!   `%begin`/`%end` 之间的普通行）以 `ResponseLine` 形式分发。
+//! - 通过非阻塞的 [`tokio::sync::mpsc`] 输出 `TmuxEvent` 事件；命令响应正文在
+//!   reader 内聚合成一个 `ResponseBlock`，避免大 `capture-pane` 按行堵塞 reader。
 //! - 优雅关闭：`detach` / `kill`。
 //!
 //! 半行 buffer 处理：tmux 一次 write 到 pty 可能只写半行，必须按真换行符
@@ -20,10 +20,379 @@ use super::command::TmuxCommand;
 use super::protocol::{parse_line_bytes, Message, NotificationKind};
 use super::pty::{self, split_master, PtyChild, PtyReader, PtyWriter};
 use crate::core::buffer_cap::{trim_incomplete_line, MAX_INCOMPLETE_LINE_BYTES};
+use crate::core::types::PaneId;
 use anyhow::{anyhow, Context, Result};
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use tokio::process::{Child, ChildStdout};
 use tokio::sync::mpsc;
+
+/// tmux reader → runtime 的事件发送端。
+///
+/// 控制事件（响应边界、结构通知、错误和退出）走无界 lane，不能因为 UI
+/// 暂时没 poll 就丢失；pane output 走有界 lane，满时丢弃增量并发出一次
+/// [`TmuxEvent::OutputGap`]。这样 reader 仍然持续排空 tmux control stream，
+/// 而不会把持续输出无限堆在内存里。
+#[derive(Debug)]
+struct EventEnvelope {
+    /// Number of accepted output events that were written before this event on
+    /// the wire. Control events use this as a delivery fence; output events use
+    /// `output_ordinal` below.
+    output_watermark: u64,
+    output_ordinal: Option<u64>,
+    event: TmuxEvent,
+}
+
+#[derive(Debug, Default)]
+struct SenderState {
+    accepted_output: u64,
+}
+
+#[derive(Clone)]
+pub struct TmuxEventSender {
+    control_tx: mpsc::UnboundedSender<EventEnvelope>,
+    output_tx: mpsc::Sender<EventEnvelope>,
+    output_gaps: Arc<Mutex<HashSet<PaneId>>>,
+    state: Arc<Mutex<SenderState>>,
+}
+
+/// tmux reader → runtime 的事件接收端。
+///
+/// `try_recv`/`recv` 用 output watermark 恢复两条 lane 的 wire 顺序：控制事件
+/// 只有在它之前已经接受的 output 被交付后才会返回。output lane 允许丢增量；
+/// 收到 OutputGap 后由 backend 发起有界 authoritative resync。
+pub struct TmuxEventReceiver {
+    control_rx: mpsc::UnboundedReceiver<EventEnvelope>,
+    output_rx: mpsc::Receiver<EventEnvelope>,
+    /// Output events drained from the bounded channel while discarding a pane's
+    /// pre-gap suffix. Kept here so other panes retain their FIFO ordering.
+    output_pending: VecDeque<EventEnvelope>,
+    output_gaps: Arc<Mutex<HashSet<PaneId>>>,
+    control_pending: Option<EventEnvelope>,
+    consumed_output: u64,
+    control_open: bool,
+    output_open: bool,
+}
+
+// Keep enough burst headroom for normal repaint traffic while ensuring a
+// stalled UI reaches an explicit OutputGap quickly instead of accumulating an
+// unbounded tail. The gap is recovered by an authoritative pane snapshot.
+const OUTPUT_EVENT_BUFFER: usize = 64;
+
+/// 创建拆分后的 control/output 事件通道。
+pub fn event_channel() -> (TmuxEventSender, TmuxEventReceiver) {
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
+    let (output_tx, output_rx) = mpsc::channel(OUTPUT_EVENT_BUFFER);
+    let output_gaps = Arc::new(Mutex::new(HashSet::new()));
+    let state = Arc::new(Mutex::new(SenderState::default()));
+    (
+        TmuxEventSender {
+            control_tx,
+            output_tx,
+            output_gaps: output_gaps.clone(),
+            state: state.clone(),
+        },
+        TmuxEventReceiver {
+            control_rx,
+            output_rx,
+            output_pending: VecDeque::new(),
+            output_gaps,
+            control_pending: None,
+            consumed_output: 0,
+            control_open: true,
+            output_open: true,
+        },
+    )
+}
+
+impl TmuxEventSender {
+    fn send_event(&self, event: TmuxEvent) {
+        match event {
+            TmuxEvent::Message(
+                message @ (Message::Output { pane, .. } | Message::ExtendedOutput { pane, .. }),
+            ) => self.send_output(pane, TmuxEvent::Message(message)),
+            other => self.send_control(other),
+        }
+    }
+
+    fn send_message(&self, message: Message) {
+        match message {
+            output @ (Message::Output { pane, .. } | Message::ExtendedOutput { pane, .. }) => {
+                self.send_output(pane, TmuxEvent::Message(output));
+            }
+            message => self.send_control(TmuxEvent::Message(message)),
+        }
+    }
+
+    fn send_control(&self, event: TmuxEvent) {
+        // Keep the watermark read and control send under the same mutex as
+        // output acceptance. This preserves the wire order even if a cloned
+        // sender is ever used by more than one parser task.
+        let state = self
+            .state
+            .lock()
+            .expect("event sender state mutex poisoned");
+        let _ = self.control_tx.send(EventEnvelope {
+            output_watermark: state.accepted_output,
+            output_ordinal: None,
+            event,
+        });
+    }
+
+    fn send_output(&self, pane: PaneId, event: TmuxEvent) {
+        // Once a pane has an outstanding gap, its bounded lane is no longer a
+        // useful source of state: the backend will replace it with an
+        // authoritative snapshot.  Drop the suffix immediately instead of
+        // continuing to accept output and advancing the control watermark.
+        // Otherwise a continuously-chatty pane can keep every resync response
+        // behind an ever-growing output fence and make the UI appear hung.
+        if self
+            .output_gaps
+            .lock()
+            .expect("output gap mutex poisoned")
+            .contains(&pane)
+        {
+            return;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .expect("event sender state mutex poisoned");
+        let ordinal = state.accepted_output.saturating_add(1);
+        let envelope = EventEnvelope {
+            output_watermark: ordinal,
+            output_ordinal: Some(ordinal),
+            event,
+        };
+        match self.output_tx.try_send(envelope) {
+            Ok(()) => state.accepted_output = ordinal,
+            Err(mpsc::error::TrySendError::Full(_)) | Err(mpsc::error::TrySendError::Closed(_)) => {
+                let mut gaps = self.output_gaps.lock().expect("output gap mutex poisoned");
+                if gaps.insert(pane) {
+                    let _ = self.control_tx.send(EventEnvelope {
+                        output_watermark: state.accepted_output,
+                        output_ordinal: None,
+                        event: TmuxEvent::OutputGap { pane },
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Internal abstraction keeps parser unit tests on a plain unbounded channel while
+/// production readers use the split bounded channel above.
+pub(crate) trait TmuxEventSink {
+    fn emit(&self, event: TmuxEvent);
+    fn emit_message(&self, message: Message) {
+        self.emit(TmuxEvent::Message(message));
+    }
+}
+
+impl TmuxEventSink for TmuxEventSender {
+    fn emit(&self, event: TmuxEvent) {
+        self.send_event(event);
+    }
+
+    fn emit_message(&self, message: Message) {
+        self.send_message(message);
+    }
+}
+
+impl TmuxEventSink for mpsc::UnboundedSender<TmuxEvent> {
+    fn emit(&self, event: TmuxEvent) {
+        let _ = self.send(event);
+    }
+}
+
+impl TmuxEventReceiver {
+    fn consume_output(&mut self, envelope: EventEnvelope) -> TmuxEvent {
+        if let Some(ordinal) = envelope.output_ordinal {
+            self.consumed_output = self.consumed_output.max(ordinal);
+        }
+        envelope.event
+    }
+
+    fn poll_control(&mut self) {
+        if self.control_pending.is_some() || !self.control_open {
+            return;
+        }
+        match self.control_rx.try_recv() {
+            Ok(envelope) => self.control_pending = Some(envelope),
+            Err(mpsc::error::TryRecvError::Disconnected) => self.control_open = false,
+            Err(mpsc::error::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn poll_output(&mut self) -> Result<TmuxEvent, mpsc::error::TryRecvError> {
+        let envelope = if let Some(envelope) = self.output_pending.pop_front() {
+            envelope
+        } else {
+            match self.output_rx.try_recv() {
+                Ok(envelope) => envelope,
+                Err(err) => {
+                    if matches!(err, mpsc::error::TryRecvError::Disconnected) {
+                        self.output_open = false;
+                    }
+                    return Err(err);
+                }
+            }
+        };
+        Ok(self.consume_output(envelope))
+    }
+
+    pub fn try_recv(&mut self) -> Result<TmuxEvent, mpsc::error::TryRecvError> {
+        loop {
+            self.poll_control();
+            if let Some(envelope) = self.control_pending.take() {
+                if envelope.output_watermark <= self.consumed_output
+                    || (!self.output_open && self.output_pending.is_empty())
+                {
+                    return Ok(envelope.event);
+                }
+                self.control_pending = Some(envelope);
+                match self.poll_output() {
+                    Ok(event) => return Ok(event),
+                    Err(mpsc::error::TryRecvError::Disconnected) => continue,
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        return Err(mpsc::error::TryRecvError::Empty)
+                    }
+                }
+            }
+            if self.output_open {
+                match self.poll_output() {
+                    Ok(event) => return Ok(event),
+                    Err(mpsc::error::TryRecvError::Disconnected)
+                    | Err(mpsc::error::TryRecvError::Empty) => {}
+                }
+            }
+            self.poll_control();
+            if self.control_pending.is_some() {
+                continue;
+            }
+            if !self.control_open && !self.output_open && self.output_pending.is_empty() {
+                return Err(mpsc::error::TryRecvError::Disconnected);
+            }
+            return Err(mpsc::error::TryRecvError::Empty);
+        }
+    }
+
+    pub async fn recv(&mut self) -> Option<TmuxEvent> {
+        loop {
+            if let Ok(event) = self.try_recv() {
+                return Some(event);
+            }
+            if !self.control_open && !self.output_open {
+                return None;
+            }
+            if self.control_pending.is_some() {
+                if let Some(envelope) = self.output_pending.pop_front() {
+                    return Some(self.consume_output(envelope));
+                }
+                if self.output_open {
+                    if let Some(envelope) = self.output_rx.recv().await {
+                        return Some(self.consume_output(envelope));
+                    }
+                    self.output_open = false;
+                }
+                continue;
+            }
+            match (self.control_open, self.output_open) {
+                (true, true) => {
+                    tokio::select! {
+                        biased;
+                        envelope = self.control_rx.recv() => match envelope {
+                            Some(envelope) => {
+                                self.control_pending = Some(envelope);
+                            }
+                            None => self.control_open = false,
+                        },
+                        envelope = self.output_rx.recv() => match envelope {
+                            Some(envelope) => return Some(self.consume_output(envelope)),
+                            None => self.output_open = false,
+                        },
+                    }
+                }
+                (true, false) => match self.control_rx.recv().await {
+                    Some(envelope) => self.control_pending = Some(envelope),
+                    None => self.control_open = false,
+                },
+                (false, true) => match self.output_rx.recv().await {
+                    Some(envelope) => return Some(self.consume_output(envelope)),
+                    None => self.output_open = false,
+                },
+                (false, false) => return None,
+            }
+        }
+    }
+
+    /// Drop queued output for a pane at an authoritative resync boundary.
+    ///
+    /// The output watermark makes `OutputGap` a barrier after all output that
+    /// was accepted before the loss. Bytes accepted after that barrier may
+    /// still be buffered in the bounded lane; they must not be appended after a
+    /// new snapshot for the affected pane. Output belonging to other panes is
+    /// retained.
+    pub fn discard_output_pane(&mut self, pane: PaneId) {
+        let mut retained = VecDeque::new();
+        while let Some(envelope) = self.output_pending.pop_front() {
+            if event_is_output_for_pane(&envelope.event, pane) {
+                if let Some(ordinal) = envelope.output_ordinal {
+                    self.consumed_output = self.consumed_output.max(ordinal);
+                }
+            } else {
+                retained.push_back(envelope);
+            }
+        }
+        loop {
+            match self.output_rx.try_recv() {
+                Ok(envelope) => {
+                    if event_is_output_for_pane(&envelope.event, pane) {
+                        if let Some(ordinal) = envelope.output_ordinal {
+                            self.consumed_output = self.consumed_output.max(ordinal);
+                        }
+                    } else {
+                        retained.push_back(envelope);
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.output_open = false;
+                    break;
+                }
+            }
+        }
+        self.output_pending = retained;
+    }
+
+    /// Resume accepting incremental output after the backend has installed an
+    /// authoritative snapshot (or released a timed-out resync fallback).
+    ///
+    /// The sender deliberately keeps the pane marked as gapped while the
+    /// snapshot query is in flight; clearing it here is the single recovery
+    /// boundary that lets new output enter the bounded lane again.
+    pub fn resume_output_pane(&mut self, pane: PaneId) {
+        if let Ok(mut gaps) = self.output_gaps.lock() {
+            gaps.remove(&pane);
+        }
+    }
+}
+
+fn event_is_output_for_pane(event: &TmuxEvent, pane: PaneId) -> bool {
+    matches!(
+        event,
+        TmuxEvent::Message(
+            Message::Output { pane: event_pane, .. }
+                | Message::ExtendedOutput {
+                    pane: event_pane, ..
+                }
+        ) if *event_pane == pane
+    )
+}
+
+const MAX_RESPONSE_BYTES: usize = crate::core::buffer_cap::MAX_PANE_OUTPUT_BYTES;
 
 /// 客户端连接模式。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,12 +459,18 @@ pub struct TmuxClientHandle {
 pub enum TmuxEvent {
     /// 一条已解析的通知消息。
     Message(Message),
-    /// 命令响应正文行（夹在 %begin/%end 或 %begin/%error 之间，不带 % 前缀）。
-    ResponseLine {
+    /// 一条命令的完整响应正文。reader 在 `%end`/`%error` 前聚合，避免
+    /// `capture-pane -S -10000` 产生上万条 channel 事件。
+    ResponseBlock {
         number: i64,
         is_error: bool,
-        line: String,
+        lines: Vec<String>,
+        /// 超出响应上限时只丢弃完整的前缀行，保留尾部。
+        truncated_prefix: bool,
     },
+    /// 有界 pane-output lane 满时丢弃了增量；backend 必须用 authoritative
+    /// snapshot 恢复该 pane，控制事件本身仍然完整保留。
+    OutputGap { pane: PaneId },
     /// tmux 子进程退出。
     Exit { code: Option<i32> },
 }
@@ -104,9 +479,7 @@ impl TmuxClient {
     /// spawn 一个 tmux -CC 进程并启动后台读循环。
     ///
     /// 默认走 pty 模式（tmux -CC 需要 tty）。
-    pub async fn spawn(
-        config: TmuxClientConfig,
-    ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
+    pub async fn spawn(config: TmuxClientConfig) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         if config.ssh_alias.is_some() {
             Self::spawn_ssh(config).await
         } else {
@@ -120,7 +493,7 @@ impl TmuxClient {
     /// 取其 reader/writer 替代本地 pty。读循环与本地 pty 模式相同。
     pub async fn spawn_ssh(
         config: TmuxClientConfig,
-    ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
+    ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
         use crate::core::transport::Transport;
 
@@ -132,10 +505,7 @@ impl TmuxClient {
         // 构造远端 tmux 命令字符串。
         // 注意 argv 开头是 `-L socket` 等二进制级选项；远端经 shell 执行，必须
         // 以 `tmux` 开头（否则 shell 会把 `-L ...` 当成 shell 自身选项报错）。
-        let argv = build_argv(&config);
-        let mut full = vec!["tmux".to_string()];
-        full.extend_from_slice(&argv);
-        let remote_tmux = full.join(" ");
+        let remote_tmux = build_remote_tmux_command(&config);
         // 复用 CLI 的 MUXTERM_SSH_CONFIG_PATH 约定：显式 -F 指定 ssh config
         // （测试/CI 用生成 config，不读用户真实 ~/.ssh/config）。
         let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
@@ -189,7 +559,7 @@ impl TmuxClient {
 
         // 用 PtyReader::from_channel 包装 read_rx，复用 read_pty_loop
         let reader = PtyReader::from_channel(read_rx);
-        let (tx, rx) = mpsc::channel(config.event_buffer.max(32));
+        let (tx, rx) = event_channel();
         let tx_clone = tx.clone();
         tokio::spawn(async move {
             read_pty_loop(reader, tx_clone).await;
@@ -208,7 +578,7 @@ impl TmuxClient {
     /// pty 模式 spawn（推荐，tmux -CC 需要 tty）。
     pub async fn spawn_pty(
         config: TmuxClientConfig,
-    ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
+    ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         let bin = config
             .tmux_bin
             .clone()
@@ -222,7 +592,7 @@ impl TmuxClient {
             .with_context(|| format!("spawn tmux 失败: {bin}"))?;
 
         let (reader, writer) = split_master(&mut pty_child.master)?;
-        let (tx, rx) = mpsc::channel(config.event_buffer.max(32));
+        let (tx, rx) = event_channel();
         let tx_clone = tx.clone();
         tokio::spawn(async move {
             read_pty_loop(reader, tx_clone).await;
@@ -243,7 +613,7 @@ impl TmuxClient {
     /// 直 spawn 模式（不用 pty）。tmux 在无 tty 下通常会立即退出，仅作兜底/测试。
     pub async fn spawn_direct(
         config: TmuxClientConfig,
-    ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
+    ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         let bin = config
             .tmux_bin
             .clone()
@@ -271,7 +641,7 @@ impl TmuxClient {
             .take()
             .ok_or_else(|| anyhow!("tmux 没有 stdin"))?;
 
-        let (tx, rx) = mpsc::channel(config.event_buffer.max(32));
+        let (tx, rx) = event_channel();
         let tx_clone = tx.clone();
         tokio::spawn(read_stream_loop(stdout, tx_clone));
 
@@ -288,14 +658,12 @@ impl TmuxClient {
     /// 便捷：new-session。
     pub async fn new_session(
         config: TmuxClientConfig,
-    ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
+    ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         Self::spawn(config).await
     }
 
     /// 便捷：attach。
-    pub async fn attach(
-        config: TmuxClientConfig,
-    ) -> Result<(TmuxClientHandle, mpsc::Receiver<TmuxEvent>)> {
+    pub async fn attach(config: TmuxClientConfig) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         Self::spawn(config).await
     }
 }
@@ -346,6 +714,26 @@ pub(crate) fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
         }
     }
     argv
+}
+
+/// Build the single command string interpreted by the remote POSIX shell used
+/// by `ssh`. Every tmux argument is shell-quoted; `-c` paths additionally keep
+/// the conventional remote `~/...` expansion while quoting their suffix.
+pub(crate) fn build_remote_tmux_command(config: &TmuxClientConfig) -> String {
+    let argv = build_argv(config);
+    let mut words = Vec::with_capacity(argv.len() + 1);
+    words.push("tmux".to_string());
+    let mut previous_was_c = false;
+    for arg in argv {
+        let quoted = if previous_was_c {
+            crate::core::discovery::shell_quote_remote_path(&arg)
+        } else {
+            crate::core::discovery::shell_quote(&arg)
+        };
+        previous_was_c = arg == "-c";
+        words.push(quoted);
+    }
+    words.join(" ")
 }
 
 impl TmuxClientHandle {
@@ -506,11 +894,9 @@ pub(crate) fn feed_bytes_to_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8
 }
 
 /// pty 模式读循环：用 `PtyReader::read_chunk` 异步取字节块，按真换行切行。
-async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
+async fn read_pty_loop(mut reader: PtyReader, tx: TmuxEventSender) {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
-    let mut in_response = false;
-    let mut current_number: i64 = 0;
-    let mut current_is_error = false;
+    let mut response = None;
 
     while let Some(chunk_res) = reader.read_chunk().await {
         let chunk = match chunk_res {
@@ -535,43 +921,27 @@ async fn read_pty_loop(mut reader: PtyReader, tx: mpsc::Sender<TmuxEvent>) {
                 line = %String::from_utf8_lossy(&line),
                 "recv line"
             );
-            process_line(
-                &line,
-                &tx,
-                &mut in_response,
-                &mut current_number,
-                &mut current_is_error,
-            )
-            .await;
+            process_line(&line, &tx, &mut response).await;
         }
     }
     tracing::info!(target = "muxterm::client", "tmux pty EOF");
-    let _ = tx.send(TmuxEvent::Exit { code: None }).await;
+    tx.emit(TmuxEvent::Exit { code: None });
 }
 
 /// 直 spawn 模式读循环：ChildStdout 是 AsyncRead。
-async fn read_stream_loop(stdout: ChildStdout, tx: mpsc::Sender<TmuxEvent>) {
+async fn read_stream_loop(stdout: ChildStdout, tx: TmuxEventSender) {
     use tokio::io::AsyncReadExt;
     let mut reader = stdout;
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk = [0u8; 4096];
-    let mut in_response = false;
-    let mut current_number: i64 = 0;
-    let mut current_is_error = false;
+    let mut response = None;
 
     loop {
         match reader.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
                 for line in feed_bytes_to_lines(&mut buf, &chunk[..n]) {
-                    process_line(
-                        &line,
-                        &tx,
-                        &mut in_response,
-                        &mut current_number,
-                        &mut current_is_error,
-                    )
-                    .await;
+                    process_line(&line, &tx, &mut response).await;
                 }
             }
             Err(e) => {
@@ -581,78 +951,99 @@ async fn read_stream_loop(stdout: ChildStdout, tx: mpsc::Sender<TmuxEvent>) {
         }
     }
     tracing::info!(target = "muxterm::client", "tmux stdout EOF");
-    let _ = tx.send(TmuxEvent::Exit { code: None }).await;
+    tx.emit(TmuxEvent::Exit { code: None });
 }
 
-/// 处理单行：解析为 Message 或 ResponseLine，并维护响应状态机。
-///
-/// `pub(crate)`：SSH 远程 client 复用同一套行状态机。
-pub(crate) async fn process_line(
-    line: &[u8],
-    tx: &mpsc::Sender<TmuxEvent>,
-    in_response: &mut bool,
-    current_number: &mut i64,
-    current_is_error: &mut bool,
-) {
-    if let Some(Message::Unknown { .. }) = parse_line_bytes(line) {
-        // 命令响应正文可以合法地以 `%` 开头（例如 list-panes 的 `%0 @0 0`），
-        // 只有在响应边界内才把这种未知通知形状还原为 ResponseLine。
-        if *in_response {
-            let line = String::from_utf8_lossy(line).into_owned();
-            let _ = tx
-                .send(TmuxEvent::ResponseLine {
-                    number: *current_number,
-                    is_error: *current_is_error,
-                    line,
-                })
-                .await;
-            return;
+/// 命令响应正文的有界累积器。大 capture 只保留完整的尾部行，reader 不等待
+/// runtime 消费，也不会把 UTF-8/ANSI 序列从任意字节偏移截断。
+#[derive(Debug, Default)]
+pub(crate) struct ResponseBuffer {
+    number: i64,
+    lines: VecDeque<String>,
+    bytes: usize,
+    truncated_prefix: bool,
+}
+
+impl ResponseBuffer {
+    fn new(number: i64) -> Self {
+        Self {
+            number,
+            ..Self::default()
         }
     }
 
+    fn push(&mut self, line: String) {
+        self.bytes = self.bytes.saturating_add(line.len().saturating_add(1));
+        self.lines.push_back(line);
+        while self.bytes > MAX_RESPONSE_BYTES {
+            let Some(old) = self.lines.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(old.len().saturating_add(1));
+            self.truncated_prefix = true;
+        }
+    }
+
+    fn finish(self, is_error: bool) -> TmuxEvent {
+        TmuxEvent::ResponseBlock {
+            number: self.number,
+            is_error,
+            lines: self.lines.into_iter().collect(),
+            truncated_prefix: self.truncated_prefix,
+        }
+    }
+}
+
+/// 处理单行：解析为 Message 或 ResponseBlock，并维护响应状态机。
+///
+/// `pub(crate)`：SSH 远程 client 复用同一套行状态机。
+pub(crate) async fn process_line<S: TmuxEventSink>(
+    line: &[u8],
+    tx: &S,
+    response: &mut Option<ResponseBuffer>,
+) {
     if let Some(msg) = parse_line_bytes(line) {
         if let Message::ResponseBoundary(b) = &msg {
             match b.kind {
                 NotificationKind::Begin => {
-                    *in_response = true;
-                    *current_number = b.number;
-                    *current_is_error = false;
+                    *response = Some(ResponseBuffer::new(b.number));
+                    tx.emit(TmuxEvent::Message(msg));
                 }
-                NotificationKind::End => {
-                    *in_response = false;
-                }
-                NotificationKind::Error => {
-                    *current_is_error = true;
-                    *in_response = false;
+                NotificationKind::End | NotificationKind::Error => {
+                    let block = response
+                        .take()
+                        .unwrap_or_else(|| ResponseBuffer::new(b.number))
+                        .finish(matches!(b.kind, NotificationKind::Error));
+                    // Runtime 在收到 boundary 时立即 dispatch；block 必须先到。
+                    tx.emit(block);
+                    tx.emit(TmuxEvent::Message(msg));
                 }
             }
+            return;
         }
-        let _ = tx.send(TmuxEvent::Message(msg)).await;
-    } else if line.is_empty() {
-        if *in_response {
-            let _ = tx
-                .send(TmuxEvent::ResponseLine {
-                    number: *current_number,
-                    is_error: *current_is_error,
-                    line: String::new(),
-                })
-                .await;
+        // tmux may defer a known notification until after a response, but if it
+        // appears on the wire here it must remain a notification (not response
+        // text). Unknown `%0 ...` rows are handled by the accumulator below.
+        if response.is_none() || !matches!(&msg, Message::Unknown { .. }) {
+            tx.emit(TmuxEvent::Message(msg));
+            return;
         }
-    } else if *in_response {
+    }
+
+    if response.is_some() {
         let line = String::from_utf8_lossy(line).into_owned();
-        let _ = tx
-            .send(TmuxEvent::ResponseLine {
-                number: *current_number,
-                is_error: *current_is_error,
-                line,
-            })
-            .await;
+        response.as_mut().expect("response checked").push(line);
     } else {
-        tracing::trace!(
-            target = "muxterm::client",
-            line = %String::from_utf8_lossy(line),
-            "响应外普通行被忽略"
-        );
+        // 响应边界之外的普通行不是 control protocol 消息。
+        if let Some(msg) = parse_line_bytes(line) {
+            tx.emit(TmuxEvent::Message(msg));
+        } else {
+            tracing::trace!(
+                target = "muxterm::client",
+                line = %String::from_utf8_lossy(line),
+                "响应外普通行被忽略"
+            );
+        }
     }
 }
 
@@ -707,6 +1098,22 @@ mod tests {
         assert!(!argv.iter().any(|a| a == "test-feat"));
     }
 
+    #[test]
+    fn remote_tmux_command_quotes_cwd_and_preserves_remote_home_expansion() {
+        let config = TmuxClientConfig {
+            mode: Some(ConnectMode::NewSession {
+                name: Some("project name".into()),
+                start_directory: Some("~/Project/my repo".into()),
+            }),
+            extra_args: vec!["-L".into(), "socket with space".into()],
+            ..TmuxClientConfig::default()
+        };
+        assert_eq!(
+            build_remote_tmux_command(&config),
+            "tmux '-L' 'socket with space' '-CC' 'new-session' '-s' 'project name' '-c' $HOME/'Project/my repo'"
+        );
+    }
+
     /// 每次调用递增的全局计数器，保证同一进程内并行线程拿到的测试 socket 名唯一。
     /// 旧实现只用了 `std::process::id()`，在默认并行下多个真实 tmux E2E 会共用
     /// 同一个 `-L` socket，互相 kill-server 导致 CI 卡死（end_to_end_real_tmux 30m 超时）。
@@ -753,46 +1160,22 @@ mod tests {
 
     #[tokio::test]
     async fn process_line_dcs_and_response() {
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut in_resp = false;
-        let mut num = 0i64;
-        let mut is_err = false;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut response = None;
 
-        process_line(
-            b"\x1bP1000p%begin 1784356613 286 1",
-            &tx,
-            &mut in_resp,
-            &mut num,
-            &mut is_err,
-        )
-        .await;
-        assert!(in_resp);
-        assert_eq!(num, 286);
+        process_line(b"\x1bP1000p%begin 1784356613 286 1", &tx, &mut response).await;
+        assert_eq!(response.as_ref().map(|r| r.number), Some(286));
 
-        process_line(
-            b"cmd: 1 windows (created ...)",
-            &tx,
-            &mut in_resp,
-            &mut num,
-            &mut is_err,
-        )
-        .await;
-        process_line(
-            b"%end 1784356613 286 1",
-            &tx,
-            &mut in_resp,
-            &mut num,
-            &mut is_err,
-        )
-        .await;
-        assert!(!in_resp);
+        process_line(b"cmd: 1 windows (created ...)", &tx, &mut response).await;
+        process_line(b"%end 1784356613 286 1", &tx, &mut response).await;
+        assert!(response.is_none());
 
         let mut msgs = Vec::new();
         let mut lines = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 TmuxEvent::Message(m) => msgs.push(m),
-                TmuxEvent::ResponseLine { line, .. } => lines.push(line),
+                TmuxEvent::ResponseBlock { lines: block, .. } => lines.extend(block),
                 _ => {}
             }
         }
@@ -804,18 +1187,9 @@ mod tests {
 
     #[tokio::test]
     async fn process_line_output_with_escaped_newline() {
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut in_resp = false;
-        let mut num = 0;
-        let mut is_err = false;
-        process_line(
-            br#"%output %0 a\nb"#,
-            &tx,
-            &mut in_resp,
-            &mut num,
-            &mut is_err,
-        )
-        .await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut response = None;
+        process_line(br#"%output %0 a\nb"#, &tx, &mut response).await;
         let ev = rx.recv().await.unwrap();
         match ev {
             TmuxEvent::Message(Message::Output { content, .. }) => {
@@ -827,45 +1201,271 @@ mod tests {
 
     #[tokio::test]
     async fn process_line_error_boundary_closes_response() {
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut in_resp = false;
-        let mut num = 0;
-        let mut is_err = false;
-        process_line(b"%begin 1 5 0", &tx, &mut in_resp, &mut num, &mut is_err).await;
-        assert!(in_resp);
-        process_line(b"some error text", &tx, &mut in_resp, &mut num, &mut is_err).await;
-        process_line(b"%error 1 5 0", &tx, &mut in_resp, &mut num, &mut is_err).await;
-        assert!(!in_resp);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut response = None;
+        process_line(b"%begin 1 5 0", &tx, &mut response).await;
+        assert!(response.is_some());
+        process_line(b"some error text", &tx, &mut response).await;
+        process_line(b"%error 1 5 0", &tx, &mut response).await;
+        assert!(response.is_none());
         let mut any_lines = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            if let TmuxEvent::ResponseLine { line, .. } = ev {
-                any_lines.push(line);
+            if let TmuxEvent::ResponseBlock { lines, .. } = ev {
+                any_lines.extend(lines);
             }
         }
         assert!(any_lines.contains(&"some error text".to_string()));
     }
 
     #[tokio::test]
-    async fn process_line_keeps_percent_prefixed_response_rows_as_response_lines() {
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut in_resp = false;
-        let mut number = 0;
-        let mut is_err = false;
+    async fn process_line_keeps_percent_prefixed_response_rows_in_response_block() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut response = None;
 
-        process_line(b"%begin 1 7 0", &tx, &mut in_resp, &mut number, &mut is_err).await;
-        process_line(b"%0 @0 0", &tx, &mut in_resp, &mut number, &mut is_err).await;
-        process_line(b"%end 1 7 0", &tx, &mut in_resp, &mut number, &mut is_err).await;
+        process_line(b"%begin 1 7 0", &tx, &mut response).await;
+        process_line(b"%0 @0 0", &tx, &mut response).await;
+        process_line(b"%end 1 7 0", &tx, &mut response).await;
 
         let mut response_rows = Vec::new();
         while let Ok(event) = rx.try_recv() {
-            if let TmuxEvent::ResponseLine {
-                number: 7, line, ..
+            if let TmuxEvent::ResponseBlock {
+                number: 7, lines, ..
             } = event
             {
-                response_rows.push(line);
+                response_rows.extend(lines);
             }
         }
         assert_eq!(response_rows, vec!["%0 @0 0"]);
+    }
+
+    #[tokio::test]
+    async fn large_response_is_aggregated_without_reader_backpressure() {
+        let (tx, mut rx) = event_channel();
+        let mut response = None;
+        let run = async {
+            process_line(b"%begin 1 99 0", &tx, &mut response).await;
+            for row in 0..10_000 {
+                process_line(
+                    format!("capture-row-{row}-{}", "x".repeat(256)).as_bytes(),
+                    &tx,
+                    &mut response,
+                )
+                .await;
+            }
+            process_line(b"%end 1 99 0", &tx, &mut response).await;
+        };
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), run)
+            .await
+            .expect("大 capture 不得因为 UI 未消费而阻塞 tmux reader");
+
+        let mut block = None;
+        while let Ok(event) = rx.try_recv() {
+            if let TmuxEvent::ResponseBlock {
+                number,
+                lines,
+                truncated_prefix,
+                ..
+            } = event
+            {
+                block = Some((number, lines, truncated_prefix));
+            }
+        }
+        let (number, lines, truncated) = block.expect("应收到单个 ResponseBlock");
+        assert_eq!(number, 99);
+        assert!(truncated, "超过响应上限时应标记被裁掉的完整前缀");
+        assert!(lines
+            .last()
+            .is_some_and(|line| line.starts_with("capture-row-9999-")));
+    }
+
+    #[tokio::test]
+    async fn output_lane_overflow_preserves_control_gap_event() {
+        let (tx, mut rx) = event_channel();
+        let pane = PaneId(77);
+        for _ in 0..(OUTPUT_EVENT_BUFFER + 32) {
+            tx.send_event(TmuxEvent::Message(Message::Output {
+                pane,
+                content: b"x".to_vec(),
+                raw_content: "x".into(),
+            }));
+        }
+        // The control lane remains writable even when output is full, but its
+        // watermark must still preserve the accepted output that preceded it.
+        tx.send_event(TmuxEvent::ResponseBlock {
+            number: 42,
+            is_error: false,
+            lines: vec!["ok".into()],
+            truncated_prefix: false,
+        });
+
+        let mut output_count = 0;
+        let mut saw_gap = false;
+        let mut saw_response = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                TmuxEvent::Message(Message::Output { .. }) => output_count += 1,
+                TmuxEvent::OutputGap { pane: p } => {
+                    assert_eq!(p, pane);
+                    saw_gap = true;
+                }
+                TmuxEvent::ResponseBlock { number: 42, .. } => saw_response = true,
+                _ => {}
+            }
+        }
+        assert_eq!(output_count, OUTPUT_EVENT_BUFFER);
+        assert!(saw_gap && saw_response);
+    }
+
+    #[tokio::test]
+    async fn output_gap_suppresses_same_pane_suffix_until_resumed() {
+        let (tx, mut rx) = event_channel();
+        let pane = PaneId(76);
+        for _ in 0..=OUTPUT_EVENT_BUFFER {
+            tx.send_event(TmuxEvent::Message(Message::Output {
+                pane,
+                content: b"x".to_vec(),
+                raw_content: "x".into(),
+            }));
+        }
+
+        // The first failed send marks the pane gapped. Further output must not
+        // advance the global control watermark while resync is pending.
+        let accepted_before_suffix = tx
+            .state
+            .lock()
+            .expect("event sender state mutex poisoned")
+            .accepted_output;
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane,
+            content: b"dropped".to_vec(),
+            raw_content: "dropped".into(),
+        }));
+        assert_eq!(
+            tx.state
+                .lock()
+                .expect("event sender state mutex poisoned")
+                .accepted_output,
+            accepted_before_suffix
+        );
+
+        loop {
+            match rx.try_recv() {
+                Ok(TmuxEvent::OutputGap { pane: p }) if p == pane => break,
+                Ok(_) => {}
+                Err(error) => panic!("gap must remain deliverable: {error:?}"),
+            }
+        }
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane,
+            content: b"still-dropped".to_vec(),
+            raw_content: "still-dropped".into(),
+        }));
+        assert_eq!(
+            tx.state
+                .lock()
+                .expect("event sender state mutex poisoned")
+                .accepted_output,
+            accepted_before_suffix
+        );
+
+        rx.resume_output_pane(pane);
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane,
+            content: b"resumed".to_vec(),
+            raw_content: "resumed".into(),
+        }));
+        assert_eq!(
+            tx.state
+                .lock()
+                .expect("event sender state mutex poisoned")
+                .accepted_output,
+            accepted_before_suffix + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn output_gap_discards_queued_stale_suffix_for_only_that_pane() {
+        let (tx, mut rx) = event_channel();
+        let stale_pane = PaneId(78);
+        let other_pane = PaneId(79);
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane: stale_pane,
+            content: b"stale".to_vec(),
+            raw_content: "stale".into(),
+        }));
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane: other_pane,
+            content: b"keep".to_vec(),
+            raw_content: "keep".into(),
+        }));
+        tx.send_event(TmuxEvent::OutputGap { pane: stale_pane });
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { pane, .. })) if pane == stale_pane
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { pane, .. })) if pane == other_pane
+        ));
+        assert!(matches!(rx.try_recv(), Ok(TmuxEvent::OutputGap { pane }) if pane == stale_pane));
+        // Output accepted after the gap is the stale suffix that must be
+        // discarded for this pane, while another pane remains FIFO-visible.
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane: stale_pane,
+            content: b"stale-after-gap".to_vec(),
+            raw_content: "stale-after-gap".into(),
+        }));
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane: other_pane,
+            content: b"keep-after-gap".to_vec(),
+            raw_content: "keep-after-gap".into(),
+        }));
+        rx.discard_output_pane(stale_pane);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { pane, content, .. }))
+                if pane == other_pane && content == b"keep-after-gap"
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn control_watermark_preserves_wire_order_across_lanes() {
+        let (tx, mut rx) = event_channel();
+        let pane = PaneId(80);
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane,
+            content: b"before".to_vec(),
+            raw_content: "before".into(),
+        }));
+        tx.send_event(TmuxEvent::ResponseBlock {
+            number: 81,
+            is_error: false,
+            lines: Vec::new(),
+            truncated_prefix: false,
+        });
+        tx.send_event(TmuxEvent::Message(Message::Output {
+            pane,
+            content: b"after".to_vec(),
+            raw_content: "after".into(),
+        }));
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { content, .. })) if content == b"before"
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::ResponseBlock { number: 81, .. })
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { content, .. })) if content == b"after"
+        ));
     }
 
     /// 端到端：真实 spawn tmux -CC（pty），收事件，发命令，验证响应。
@@ -931,8 +1531,11 @@ mod tests {
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => break,
                         ev = rx.recv() => match ev {
-                            Some(TmuxEvent::ResponseLine { line, .. }) => {
-                                if line.trim() == "mxtest" { got_response = true; break; }
+                            Some(TmuxEvent::ResponseBlock { lines, .. }) => {
+                                if lines.iter().any(|line| line.trim() == "mxtest") {
+                                    got_response = true;
+                                    break;
+                                }
                             }
                             Some(TmuxEvent::Exit { .. }) | None => break,
                             _ => {}
@@ -1077,7 +1680,9 @@ mod tests {
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => break,
                         ev = rx.recv() => match ev {
-                            Some(TmuxEvent::ResponseLine { line, .. }) => lines.push(line),
+                            Some(TmuxEvent::ResponseBlock { lines: block, .. }) => {
+                                lines.extend(block)
+                            }
                             Some(TmuxEvent::Exit { .. }) | None => break,
                             _ => {}
                         }
@@ -1410,45 +2015,15 @@ mod tests {
 
     #[tokio::test]
     async fn process_line_preserves_raw_output_and_response_boundary() {
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut in_resp = false;
-        let mut number = 0;
-        let mut is_error = false;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut response = None;
 
-        process_line(
-            b"%begin 10 99 0",
-            &tx,
-            &mut in_resp,
-            &mut number,
-            &mut is_error,
-        )
-        .await;
-        process_line(
-            b"response \xff",
-            &tx,
-            &mut in_resp,
-            &mut number,
-            &mut is_error,
-        )
-        .await;
-        process_line(
-            b"%output %9 \"\x94\x80\"",
-            &tx,
-            &mut in_resp,
-            &mut number,
-            &mut is_error,
-        )
-        .await;
-        process_line(
-            b"%end 10 99 0",
-            &tx,
-            &mut in_resp,
-            &mut number,
-            &mut is_error,
-        )
-        .await;
+        process_line(b"%begin 10 99 0", &tx, &mut response).await;
+        process_line(b"response \xff", &tx, &mut response).await;
+        process_line(b"%output %9 \"\x94\x80\"", &tx, &mut response).await;
+        process_line(b"%end 10 99 0", &tx, &mut response).await;
 
-        assert!(!in_resp);
+        assert!(response.is_none());
         let mut events = Vec::new();
         while let Ok(event) = rx.try_recv() {
             events.push(event);
@@ -1463,7 +2038,8 @@ mod tests {
         )));
         assert!(events.iter().any(|event| matches!(
             event,
-            TmuxEvent::ResponseLine { number: 99, line, .. } if line.contains('\u{fffd}')
+            TmuxEvent::ResponseBlock { number: 99, lines, .. }
+                if lines.iter().any(|line| line.contains('\u{fffd}'))
         )));
     }
 }
