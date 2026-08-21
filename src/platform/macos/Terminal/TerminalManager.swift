@@ -139,6 +139,13 @@ final class TerminalManager: TerminalInputHandler {
         viewCreationEnabled = enabled
     }
 
+    /// 判断 pane 是否已经有可复用的 Surface。后台 tab 的 Core 输出仍会
+    /// 进入索引，但没有当前布局或既有 view 时不能因为一条事件懒建不可见
+    /// 的 AppKit/SwiftTerm 控件。
+    func hasView(for paneId: UInt32) -> Bool {
+        views[paneId] != nil
+    }
+
     /// 将一次 Surface seed 放入主线程分块调度器。
     private func enqueueSeed(
         paneId: UInt32,
