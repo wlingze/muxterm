@@ -66,32 +66,20 @@ pub const STATUS_LEFT_SUBSCRIPTION: &str = "muxterm.status-left";
 const PANE_CMD_SUBSCRIPTION: &str = "muxterm.pane-cmd";
 pub const STATUS_RIGHT_SUBSCRIPTION: &str = "muxterm.status-right";
 
-/// 事件队列在一个 pane 上积压到这个字节数时进入 snapshot/resync。
-///
-/// tmux control mode 的 pause 并不是可靠的 ring buffer：`control.c` 会丢掉
-/// pause 期间尚未发送的 blocks，随后 continue 直接从当前尾部继续。因此
-/// 不能只靠“暂停后合并剩余字节”，必须用 capture-pane + pane state 重新对齐。
-const RESYNC_BACKLOG_BYTES: usize = 256 * 1024;
-/// 输出长期没有被 GUI 消费也要触发 resync，即使单次 chunk 很小。
-const RESYNC_BACKLOG_AGE: Duration = Duration::from_millis(250);
-/// 即使 GUI 每轮都及时 drain，持续的高字节速率也会让 VTE 逐帧落后。
-/// 在短窗口内超过此值时切换成 snapshot，避免只按事件队列大小判断。
-const RESYNC_WINDOW_BYTES: usize = 64 * 1024;
-const RESYNC_WINDOW: Duration = Duration::from_millis(250);
+/// 单轮最多处理的控制模式事件。输出洪峰不能让一次 UI poll 无界排空
+/// channel，否则后台 pane 会把连接/切 tab 的主线程路径拖住。
+const PUMP_EVENT_BUDGET: usize = 2_048;
+/// 即使事件数没有达到上限，也要把主线程还给 UI。下一轮 poll 会继续处理
+/// 剩余事件；结构事件仍会被保留在 core 队列中。
+const PUMP_TIME_BUDGET: Duration = Duration::from_millis(4);
 
 /// 单个 pane 的输出流控状态。
 #[derive(Debug, Default)]
 struct PaneFlow {
     /// 外部 `%pause` 且无法发起查询时的兼容缓冲。
     suppressed: Vec<u8>,
-    /// 当前事件队列中最早一个 live output 的时间。
-    queued_at: Option<Instant>,
     /// 正在进行 authoritative snapshot transaction。
     resyncing: bool,
-    /// 连续 burst 流量（只在真正静默后清零；不能按每轮 poll 清零）。
-    last_output_at: Option<Instant>,
-    window_bytes: usize,
-    overload: bool,
 }
 
 /// tmux pane 的终端状态（由 display-message format 查询）。
@@ -127,6 +115,14 @@ struct PaneResync {
     primary: Option<Vec<u8>>,
     alternate: Option<Vec<u8>>,
     live: Vec<u8>,
+    /// attach 首次播种不暂停 tmux client；capture 开始前的通知可能已经
+    /// 被快照覆盖，capture 边界之后的字节才需要 catch-up。
+    initial: bool,
+    capture_started: bool,
+    pre_capture: Vec<u8>,
+    post_capture: Vec<u8>,
+    /// 普通 resync 需要在 snapshot 入队后 continue；attach seed 不需要。
+    pause_client: bool,
 }
 
 /// tmux -CC 后端。
@@ -173,9 +169,17 @@ pub struct TmuxRuntime {
     pending_by_number: HashMap<i64, PendingQuery>,
     /// 缓存每个 tab（tmux window）的 layout 字符串（从 list-windows 响应获取），用于重建 LayoutNode。
     window_layouts: HashMap<TabId, String>,
+    /// tmux 的可变 window_index。TabInfo 只保存稳定 window id；这里单独
+    /// 记录 index，供权威 list-windows 响应后重排稀疏窗口（如 1,2,3,5,7
+    /// 新建出 6）而不改 FFI ABI。
+    window_indices: HashMap<TabId, u32>,
     /// 当前处于 zoom（`resize-pane -Z` / prefix-z）的 tab。
     /// 此时 tmux 的 `window_layout` 仍是完整 split 树，GUI 必须只渲染 active pane。
     window_zoomed: HashSet<TabId>,
+    /// 最近一次由本地 UI 发出的切 tab 目标。tmux 的旧
+    /// `%session-window-changed` 可能迟到；有新目标 pending 时只接受该
+    /// 目标的确认，避免 @18 → @47 → @18 来回跳。
+    latest_switch_target: Option<TabId>,
     /// 每个 tab 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
     expected_panes_per_window: HashMap<TabId, usize>,
     /// 已收到 `%window-close` 但尚未经权威 `list-windows` 确认的 tab。
@@ -206,6 +210,10 @@ pub struct TmuxRuntime {
     flow: HashMap<PaneId, PaneFlow>,
     /// 正在进行的 authoritative pane snapshot transaction。
     resyncs: HashMap<PaneId, PaneResync>,
+    /// 事件队列因有界保护而丢弃了某个 pane 的增量。只有这种“确实丢过
+    /// 字节”的情况才需要 authoritative resync；正常的高频 CUP 输出不能
+    /// 因为时间/字节阈值被主动重拍。
+    dropped_output_panes: HashSet<PaneId>,
     /// attach 初始快照查询进行期间到达的实时 `%output` 缓冲。
     ///
     /// capture-pane 返回的是查询瞬间的完整屏幕；在「发出 capture-pane」到「收到
@@ -500,7 +508,9 @@ impl TmuxRuntime {
             pending_queries: VecDeque::new(),
             pending_by_number: HashMap::new(),
             window_layouts: HashMap::new(),
+            window_indices: HashMap::new(),
             window_zoomed: HashSet::new(),
+            latest_switch_target: None,
             expected_panes_per_window: HashMap::new(),
             pending_close_tabs: HashSet::new(),
             initial_capture_pending: HashSet::new(),
@@ -511,6 +521,7 @@ impl TmuxRuntime {
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
+            dropped_output_panes: HashSet::new(),
             initial_capture_buf: HashMap::new(),
             initial_capture_tail: HashMap::new(),
             pending_writes: HashMap::new(),
@@ -851,7 +862,9 @@ impl TmuxRuntime {
             else {
                 break;
             };
-            self.events.remove(idx);
+            if let Some(StateChange::PaneOutput { pane, .. }) = self.events.remove(idx) {
+                self.dropped_output_panes.insert(pane);
+            }
         }
         // 仍超限：丢弃最旧的 LayoutChanged（可重建，前端只要最新布局）。
         while self.events.len() > MAX_STATE_EVENTS {
@@ -881,9 +894,9 @@ impl TmuxRuntime {
             .push_back(StateChange::LayoutChanged { tab, layout });
     }
 
-    /// 记录一次 pane 输出。正常情况下原始字节逐块交付；一旦事件队列的
-    /// byte backlog/age 超过阈值，`maybe_start_resyncs` 会移除旧增量并以
-    /// authoritative snapshot 替换，避免把半截 ESC/CUP 帧喂给前端。
+    /// 记录一次 pane 输出。正常情况下原始字节逐块交付；只有事件队列
+    /// 确实丢弃过该 pane 的增量时，`maybe_start_resyncs` 才会启动
+    /// authoritative snapshot。
     fn note_pane_output(&mut self, pane: PaneId, content: &[u8]) {
         if self.resyncs.contains_key(&pane) {
             append_capped(
@@ -894,19 +907,6 @@ impl TmuxRuntime {
             return;
         }
         let flow = self.flow.entry(pane).or_default();
-        let now = Instant::now();
-        if flow
-            .last_output_at
-            .is_none_or(|last| now.duration_since(last) >= RESYNC_WINDOW)
-        {
-            flow.window_bytes = 0;
-            flow.overload = false;
-        }
-        flow.last_output_at = Some(now);
-        flow.window_bytes = flow.window_bytes.saturating_add(content.len());
-        if flow.window_bytes >= RESYNC_WINDOW_BYTES {
-            flow.overload = true;
-        }
         if flow.resyncing {
             append_capped(&mut flow.suppressed, content, MAX_PANE_OUTPUT_BYTES);
         } else {
@@ -927,8 +927,6 @@ impl TmuxRuntime {
         self.events
             .push_back(StateChange::PaneOutput { pane, data });
         self.trim_event_queue();
-        let flow = self.flow.entry(pane).or_default();
-        flow.queued_at.get_or_insert_with(Instant::now);
     }
 
     /// 收到 `%pause`/`%continue` 时把合并缓冲立即交付（暂停期间不丢字节）。
@@ -939,18 +937,25 @@ impl TmuxRuntime {
         }
     }
 
-    fn pane_event_backlog_bytes(&self, pane: PaneId) -> usize {
-        self.events
-            .iter()
-            .filter_map(|event| match event {
-                StateChange::PaneOutput { pane: p, data } if *p == pane => Some(data.len()),
-                _ => None,
-            })
-            .sum()
-    }
-
     /// 启动一次不会丢帧的 pane resync transaction。
     fn begin_pane_resync(&mut self, pane: PaneId, reason: &'static str) {
+        self.begin_pane_snapshot(pane, reason, false, true);
+    }
+
+    /// attach 首次 Surface seed：查询 tmux 的终端模式和 primary/alternate
+    /// 两张屏，但不依赖额外的 pause 能力。capture response 的 `%begin`
+    /// 是 snapshot/catch-up 边界，避免把 attach 期间的旧输出当成新帧重播。
+    fn begin_initial_pane_seed(&mut self, pane: PaneId) {
+        self.begin_pane_snapshot(pane, "initial-seed", true, false);
+    }
+
+    fn begin_pane_snapshot(
+        &mut self,
+        pane: PaneId,
+        reason: &'static str,
+        initial: bool,
+        pause_client: bool,
+    ) {
         if self.resyncs.contains_key(&pane) {
             return;
         }
@@ -961,17 +966,28 @@ impl TmuxRuntime {
         );
         if let Some(flow) = self.flow.get_mut(&pane) {
             flow.resyncing = true;
-            flow.queued_at = None;
             flow.suppressed.clear();
-            flow.window_bytes = 0;
-            flow.overload = false;
         }
-        self.resyncs.insert(pane, PaneResync::default());
-        self.paused_panes.insert(pane);
+        self.resyncs.insert(
+            pane,
+            PaneResync {
+                initial,
+                pause_client,
+                ..PaneResync::default()
+            },
+        );
+        if initial {
+            self.initial_capture_pending.insert(pane);
+            self.initial_capture_done.remove(&pane);
+        }
+        if pause_client {
+            self.paused_panes.insert(pane);
+        }
 
-        if self
-            .dispatch_tmux_command(&cmd::refresh_client_pause(pane, true))
-            .is_err()
+        if pause_client
+            && self
+                .dispatch_tmux_command(&cmd::refresh_client_pause(pane, true))
+                .is_err()
         {
             // 单元测试/断线窗口没有 command channel；保持状态机可恢复，
             // 不把 pane 永久卡在 resyncing。
@@ -980,6 +996,7 @@ impl TmuxRuntime {
                 flow.resyncing = false;
             }
             self.paused_panes.remove(&pane);
+            self.initial_capture_pending.remove(&pane);
             return;
         }
         let query = cmd::display_message(PaneId(pane.0), PANE_RESYNC_FORMAT);
@@ -997,6 +1014,7 @@ impl TmuxRuntime {
                 flow.resyncing = false;
             }
             self.paused_panes.remove(&pane);
+            self.initial_capture_pending.remove(&pane);
         }
     }
 
@@ -1004,23 +1022,14 @@ impl TmuxRuntime {
         if self.cmd_tx.is_none() {
             return;
         }
-        let now = Instant::now();
-        let panes: Vec<PaneId> = self
-            .flow
-            .iter()
-            .filter(|(pane, flow)| {
-                let backlog = self.pane_event_backlog_bytes(**pane);
-                !flow.resyncing
-                    && (flow.overload
-                        || backlog >= RESYNC_BACKLOG_BYTES
-                        || flow
-                            .queued_at
-                            .is_some_and(|at| now.duration_since(at) >= RESYNC_BACKLOG_AGE))
-            })
-            .map(|(pane, _)| *pane)
-            .collect();
+        // 只有 trim_event_queue 确实移除了 PaneOutput，或 tmux 发出明确的
+        // `%pause`，才启动 snapshot。正常的 OMP/CUP burst 即使跨过数十 KB
+        // 也必须原样 feed，不能让 Surface 跳到历史顶部再跳回输入框。
+        let panes: Vec<PaneId> = self.dropped_output_panes.drain().collect();
         for pane in panes {
-            self.begin_pane_resync(pane, "output-backlog");
+            if !self.resyncs.contains_key(&pane) {
+                self.begin_pane_resync(pane, "output-dropped");
+            }
         }
     }
 
@@ -1068,6 +1077,9 @@ impl TmuxRuntime {
         }
         // 主动查询该 tmux window 的 pane
         self.query_list_panes(tab);
+        // `%window-add` 没有携带 window_index。立即补一份权威列表，避免
+        // 新 tab 先 append 到稳定 id 顺序后，Alt-6/Alt-7 与状态栏短暂对调。
+        let _ = self.query_list_windows();
     }
 
     /// tmux window 关闭 → muxterm Tab 关闭。
@@ -1075,12 +1087,16 @@ impl TmuxRuntime {
     /// 真正关闭一个 tab：先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
     /// 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在 PaneClosed 时移除）。
     fn remove_window_tab(&mut self, tab: TabId) {
+        if self.latest_switch_target == Some(tab) {
+            self.latest_switch_target = None;
+        }
         for p in self.panes.iter().filter(|p| p.tab == tab) {
             self.events
                 .push_back(StateChange::PaneClosed { pane: p.id });
         }
         self.panes.retain(|p| p.tab != tab);
         self.layouts.remove(&tab);
+        self.window_indices.remove(&tab);
         self.tabs.retain(|t| t.id != tab);
         self.events.push_back(StateChange::TabClosed { tab });
     }
@@ -1133,12 +1149,15 @@ impl TmuxRuntime {
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Output { pane, content, .. } => {
-                if self.resyncs.contains_key(&pane) {
-                    append_capped(
-                        &mut self.resyncs.entry(pane).or_default().live,
-                        &content,
-                        MAX_PANE_OUTPUT_BYTES,
-                    );
+                if let Some(resync) = self.resyncs.get_mut(&pane) {
+                    let target = if resync.initial && resync.capture_started {
+                        &mut resync.post_capture
+                    } else if resync.initial {
+                        &mut resync.pre_capture
+                    } else {
+                        &mut resync.live
+                    };
+                    append_capped(target, &content, MAX_PANE_OUTPUT_BYTES);
                     return;
                 }
                 // attach 的初始控制流可能先发一个 prompt，再由 list-panes
@@ -1340,8 +1359,20 @@ impl TmuxRuntime {
                     );
                     return;
                 }
-                // tmux session 的 active window 切换 → muxterm active tab 切换
                 let tab_id = TabId(window.0);
+                if let Some(target) = self.latest_switch_target {
+                    if target != tab_id {
+                        tracing::debug!(
+                            target: "muxterm::tmux",
+                            requested = target.0,
+                            stale = tab_id.0,
+                            "忽略迟到的旧 tab 切换确认"
+                        );
+                        return;
+                    }
+                    self.latest_switch_target = None;
+                }
+                // tmux session 的 active window 切换 → muxterm active tab 切换
                 self.mark_tab_active(tab_id);
                 // 活动 tab 首次切入时才请求 Surface seed。后台 tab 的原始
                 // `%output` 继续进入索引面，但不会阻塞连接或提前创建 GUI。
@@ -1355,12 +1386,15 @@ impl TmuxRuntime {
             }
             Message::ExtendedOutput { pane, content, .. } => {
                 self.mark_pane_ready(pane);
-                if self.resyncs.contains_key(&pane) {
-                    append_capped(
-                        &mut self.resyncs.entry(pane).or_default().live,
-                        &content,
-                        MAX_PANE_OUTPUT_BYTES,
-                    );
+                if let Some(resync) = self.resyncs.get_mut(&pane) {
+                    let target = if resync.initial && resync.capture_started {
+                        &mut resync.post_capture
+                    } else if resync.initial {
+                        &mut resync.pre_capture
+                    } else {
+                        &mut resync.live
+                    };
+                    append_capped(target, &content, MAX_PANE_OUTPUT_BYTES);
                     return;
                 }
                 // pause-after 下的 %output 新形式：内容与 %output 一样是 pane
@@ -1406,13 +1440,12 @@ impl TmuxRuntime {
 
     /// drain event_rx 的 TmuxEvent，更新 state。
     fn pump_events(&mut self) {
-        let mut command_errors = Vec::new();
-        if let Some(rx) = self.command_error_rx.as_mut() {
-            while let Ok(message) = rx.try_recv() {
-                command_errors.push(message);
-            }
-        }
-        for message in command_errors {
+        for _ in 0..PUMP_EVENT_BUDGET {
+            let message = self
+                .command_error_rx
+                .as_mut()
+                .and_then(|rx| rx.try_recv().ok());
+            let Some(message) = message else { break };
             tracing::error!(target: "muxterm::tmux", "发送 tmux 命令失败: {message}");
             self.status = BackendStatus::Error;
             self.events
@@ -1421,14 +1454,15 @@ impl TmuxRuntime {
         self.release_deferred_writes();
         self.poll_ready_probes();
 
-        // 先把所有 TmuxEvent drain 到本地 vec，避免与 self 的可变借用冲突。
-        let mut pending = Vec::new();
-        if let Some(rx) = self.event_rx.as_mut() {
-            while let Ok(ev) = rx.try_recv() {
-                pending.push(ev);
-            }
-        }
-        for ev in pending {
+        let started = Instant::now();
+        let mut processed = 0usize;
+        while processed < PUMP_EVENT_BUDGET && started.elapsed() < PUMP_TIME_BUDGET {
+            // 只借用 receiver 取出一个事件，随后立刻释放借用，允许下面的
+            // state/response 处理继续修改 self。剩余事件留在 channel，交给
+            // 下一轮 poll，避免一次 OMP 洪峰独占 UI 线程。
+            let ev = self.event_rx.as_mut().and_then(|rx| rx.try_recv().ok());
+            let Some(ev) = ev else { break };
+            processed += 1;
             match ev {
                 TmuxEvent::Message(msg) => {
                     // 先处理 ResponseBoundary（begin/end 状态机），再处理其他消息。
@@ -1442,10 +1476,18 @@ impl TmuxRuntime {
                                 if let Some(q) = self.pending_queries.pop_front() {
                                     self.pending_by_number.insert(b.number, q);
                                 }
-                                if let Some(PendingQuery::CapturePane { pane }) =
-                                    self.pending_by_number.get(&b.number)
-                                {
-                                    self.capture_response_seen.insert(*pane);
+                                match self.pending_by_number.get(&b.number).cloned() {
+                                    Some(PendingQuery::CapturePane { pane }) => {
+                                        self.capture_response_seen.insert(pane);
+                                    }
+                                    Some(PendingQuery::PaneResyncCapture { pane, .. }) => {
+                                        if let Some(resync) = self.resyncs.get_mut(&pane) {
+                                            if resync.initial {
+                                                resync.capture_started = true;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                             NotificationKind::End => {
@@ -1652,18 +1694,27 @@ impl TmuxRuntime {
         let Some(resync) = self.resyncs.remove(&pane) else {
             return;
         };
+        self.dropped_output_panes.remove(&pane);
         let primary = resync.primary.unwrap_or_default();
         let alternate = resync.alternate.unwrap_or_default();
-        let mut snapshot =
-            build_pane_snapshot(resync.state.as_ref(), &primary, &alternate, &resync.live);
+        let initial = resync.initial;
+        let pause_client = resync.pause_client;
+        let live = if initial {
+            resync.post_capture
+        } else {
+            resync.live
+        };
+        let mut snapshot = build_pane_snapshot(resync.state.as_ref(), &primary, &alternate, &live);
         if snapshot.len() > MAX_PANE_OUTPUT_BYTES {
             snapshot = snapshot[snapshot.len() - MAX_PANE_OUTPUT_BYTES..].to_vec();
         }
         if let Some(flow) = self.flow.get_mut(&pane) {
             flow.resyncing = false;
-            flow.queued_at = None;
-            flow.window_bytes = 0;
-            flow.overload = false;
+        }
+        if initial {
+            self.initial_capture_pending.remove(&pane);
+            self.initial_capture_done.insert(pane);
+            self.background_capture_only.remove(&pane);
         }
         self.paused_panes.remove(&pane);
         // An empty screen is still authoritative: emit a zero-byte snapshot so
@@ -1678,7 +1729,9 @@ impl TmuxRuntime {
         });
         self.trim_event_queue();
         // snapshot 入队后再 continue；其后的 tmux 输出会形成下一批增量。
-        let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        if pause_client {
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        }
     }
 
     /// 处理一条命令响应的 `%error` 边界。
@@ -1909,13 +1962,26 @@ impl TmuxRuntime {
                 continue;
             }
             // window_layout 本身含逗号（如 `d67e,80x24,0,0{...}`），不能用 splitn(5)
-            let Some((tab, name, active, layout_str, panes_count, zoomed)) =
-                parse_list_windows_line(line)
+            let Some((tab, name, active, layout_str, panes_count, zoomed, index)) =
+                parse_list_windows_line_with_index(line).or_else(|| {
+                    parse_list_windows_line(line).map(
+                        |(tab, name, active, layout, panes, zoomed)| {
+                            (tab, name, active, layout, panes, zoomed, None)
+                        },
+                    )
+                })
             else {
                 tracing::warn!(target: "muxterm::tmux", "list-windows 行解析失败: {line}");
                 continue;
             };
-            order.insert(tab, order.len());
+            let fallback_position = order.len();
+            let sort_key = index
+                .map(|index| (index as usize, fallback_position))
+                .unwrap_or((usize::MAX, fallback_position));
+            order.insert(tab, sort_key);
+            if let Some(index) = index {
+                self.window_indices.insert(tab, index);
+            }
             self.window_layouts.insert(tab, layout_str);
             if zoomed {
                 self.window_zoomed.insert(tab);
@@ -1942,8 +2008,12 @@ impl TmuxRuntime {
         }
         // TabId 是稳定的 @window_id；用户拖动 tab 只会改变 tmux index，
         // 因此必须按 list-windows 的返回顺序重排，不能保留旧 Vec 顺序。
-        self.tabs
-            .sort_by_key(|tab| order.get(&tab.id).copied().unwrap_or(usize::MAX));
+        self.tabs.sort_by_key(|tab| {
+            order
+                .get(&tab.id)
+                .copied()
+                .unwrap_or((usize::MAX, usize::MAX))
+        });
         // 权威列表已到：裁决 move-window 等临时 unlink 产生的挂起 close。
         let confirmed_tabs: HashSet<TabId> = order.keys().copied().collect();
         self.settle_pending_close_tabs(&confirmed_tabs);
@@ -1968,22 +2038,24 @@ impl TmuxRuntime {
         if !self.is_attach_mode() {
             return;
         }
-        if self.pending_queries.iter().any(
-            |query| matches!(query, PendingQuery::CapturePane { pane: pending } if *pending == pane),
-        ) || self.initial_capture_done.contains(&pane)
+        if self.resyncs.contains_key(&pane)
+            || self.pending_queries.iter().any(|query| {
+                matches!(
+                    query,
+                    PendingQuery::CapturePane { pane: pending }
+                        | PendingQuery::PaneResyncState { pane: pending }
+                        | PendingQuery::PaneResyncCapture { pane: pending, .. }
+                        if *pending == pane
+                )
+            })
+            || self.initial_capture_done.contains(&pane)
         {
             return;
         }
-        // W16a：attach 播种必须带 scrollback（`-S -N`），否则滚出可见区的
-        // 历史搜不到、滚不到。N = 配置的 scrollback 上限（默认 10000）。
-        let line = cmd::capture_pane_with_history(pane, self.scrollback_lines).to_line();
-        if self.dispatch_command(line).is_ok() {
-            self.initial_capture_buf.remove(&pane);
-            self.initial_capture_tail.remove(&pane);
-            self.capture_response_seen.remove(&pane);
-            self.initial_capture_pending.insert(pane);
-            self.replace_last_pending(PendingQuery::CapturePane { pane });
-        }
+        // W16a：attach 播种必须带 scrollback（`-S -N`），并额外恢复
+        // alternate/cursor/mouse 状态。Surface 不应只拿普通 capture-pane，
+        // 否则 htop/opencode attach 后会回到错误的 normal-screen 模式。
+        self.begin_initial_pane_seed(pane);
     }
 
     /// 发送 attach 首次快照边界前暂存的用户输入。
@@ -2192,7 +2264,7 @@ impl TmuxRuntime {
             return false;
         }
         let line = format!(
-            "list-windows -t {} -F \"#{{window_id}},#{{window_name}},#{{window_active}},#{{window_layout}},#{{window_panes}},#{{window_zoomed_flag}}\"\n",
+            "list-windows -t {} -F \"#{{window_id}},#{{window_name}},#{{window_active}},#{{window_layout}},#{{window_panes}},#{{window_zoomed_flag}},#{{window_index}}\"\n",
             sess
         );
 
@@ -2201,6 +2273,24 @@ impl TmuxRuntime {
             return true;
         }
         false
+    }
+
+    /// attach 的控制 client 默认可能先以 80x24 建立。先把已知的窗口尺寸
+    /// 写入 client，再发 list-windows/list-panes/capture，避免 TUI 首屏按旧
+    /// 网格换行，随后 resize 时输入框被遮住或错位。
+    fn refresh_initial_client_size(&mut self) {
+        let (Some(cols), Some(rows)) = (self.config.cols, self.config.rows) else {
+            return;
+        };
+        let command = cmd::refresh_client_size(cols, rows);
+        if self.dispatch_tmux_command(&command).is_ok() {
+            tracing::debug!(
+                target: "muxterm::tmux::seed",
+                cols,
+                rows,
+                "attach 首屏先同步 control client 尺寸"
+            );
+        }
     }
 
     /// 用 parse_layout_tree 重建 LayoutNode 树。
@@ -2468,6 +2558,14 @@ impl Runtime for TmuxRuntime {
                 if is_attach { "attach" } else { "new-session" },
                 self.isolated_socket_name().unwrap_or("default"),
             );
+        }
+
+        // attach 的 control client 可能已经先按默认 80x24 建立；在任何
+        // capture 之前先同步配置尺寸，避免 Pi/OMP/Cursor/htop 首屏按旧列数
+        // 换行。new-session 的 -x/-y 已在 spawn 参数中设置，这条命令同样
+        // 兼容两种模式且不会改变产品层 ABI。
+        if is_attach {
+            self.refresh_initial_client_size();
         }
 
         // 主动查询所有 window + pane，建立完整初始 state（attach 已有 session 必需）
@@ -2852,6 +2950,7 @@ impl Runtime for TmuxRuntime {
             Task::SwitchTab { target } => {
                 let c = cmd::select_window(*target);
                 if self.dispatch_tmux_command(&c).is_err() {
+                    self.latest_switch_target = None;
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
                     });
@@ -2859,6 +2958,7 @@ impl Runtime for TmuxRuntime {
                 // 乐观更新 active tab：tmux 在输出洪峰下可能延迟回
                 // %session-window-changed，前端等太久会以为切 tab 不生效。
                 // 真正的通知到达后 mark_tab_active 幂等，不会重复切换。
+                self.latest_switch_target = Some(*target);
                 self.mark_tab_active(*target);
                 self.query_panes_if_empty(*target);
                 TaskOutcome::Done
@@ -2918,13 +3018,7 @@ impl Runtime for TmuxRuntime {
 
     fn take_events(&mut self) -> Vec<StateChange> {
         self.pump_events();
-        let events: Vec<StateChange> = self.events.drain(..).collect();
-        if self.events.is_empty() {
-            for flow in self.flow.values_mut() {
-                flow.queued_at = None;
-            }
-        }
-        events
+        self.events.drain(..).collect()
     }
 
     async fn shutdown(&mut self) -> Result<()> {
@@ -2962,16 +3056,22 @@ impl Runtime for TmuxRuntime {
 
 /// 解析 list-windows -F 单行。
 ///
-/// 格式：`@N,name,active,LAYOUT,panes`
-/// LAYOUT 含逗号，因此前三个字段用 `split_once`，最后一个用 `rsplit_once`。
-fn parse_list_windows_line(line: &str) -> Option<(TabId, String, bool, String, usize, bool)> {
+/// 格式：`@N,name,active,LAYOUT,panes,zoomed[,index]`。
+/// LAYOUT 含逗号，因此前三个字段用 `split_once`，尾部字段从右侧解析。
+fn parse_list_windows_line_with_index(
+    line: &str,
+) -> Option<(TabId, String, bool, String, usize, bool, Option<u32>)> {
     let (id_str, rest) = line.split_once(',')?;
     let (name, rest) = rest.split_once(',')?;
     let (active_str, rest) = rest.split_once(',')?;
-    let (layout_and_panes, zoomed_str) = rest.rsplit_once(',')?;
-    let (layout_str, panes_str) = layout_and_panes.rsplit_once(',')?;
     let tab = TabId::parse(id_str).ok()?;
     let active = active_str == "1";
+
+    let mut tail = rest.rsplitn(4, ',');
+    let index = tail.next()?.parse::<u32>().ok()?;
+    let zoomed_str = tail.next()?;
+    let panes_str = tail.next()?;
+    let layout_str = tail.next()?;
     let panes_count = panes_str.parse().ok()?;
     let zoomed = zoomed_str == "1";
     Some((
@@ -2981,6 +3081,26 @@ fn parse_list_windows_line(line: &str) -> Option<(TabId, String, bool, String, u
         layout_str.to_string(),
         panes_count,
         zoomed,
+        Some(index),
+    ))
+}
+
+/// 兼容旧测试样例/调用方的无 index 解析结果。
+fn parse_list_windows_line(line: &str) -> Option<(TabId, String, bool, String, usize, bool)> {
+    let (id_str, rest) = line.split_once(',')?;
+    let (name, rest) = rest.split_once(',')?;
+    let (active_str, rest) = rest.split_once(',')?;
+    let (layout_and_panes, zoomed_str) = rest.rsplit_once(',')?;
+    let (layout_str, panes_str) = layout_and_panes.rsplit_once(',')?;
+    let tab = TabId::parse(id_str).ok()?;
+    let panes_count = panes_str.parse().ok()?;
+    Some((
+        tab,
+        name.to_string(),
+        active_str == "1",
+        layout_str.to_string(),
+        panes_count,
+        zoomed_str == "1",
     ))
 }
 
@@ -3223,6 +3343,20 @@ mod tests {
         assert_eq!(layout, "bbcd,80x24,0,0,1");
         assert_eq!(panes, 1);
         assert!(zoomed);
+    }
+
+    #[test]
+    fn parse_list_windows_line_reads_real_window_index() {
+        let line = "@7,codex,1,bbcd,80x24,0,0,1,1,1,6";
+        let (tab, name, active, layout, panes, zoomed, index) =
+            parse_list_windows_line_with_index(line).unwrap();
+        assert_eq!(tab, TabId(7));
+        assert_eq!(name, "codex");
+        assert!(active);
+        assert_eq!(layout, "bbcd,80x24,0,0,1");
+        assert_eq!(panes, 1);
+        assert!(zoomed);
+        assert_eq!(index, Some(6));
     }
 
     #[test]
@@ -4227,6 +4361,37 @@ mod tests {
     }
 
     #[test]
+    fn normal_cup_burst_does_not_start_resync_by_time_or_byte_rate() {
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new(None);
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(31);
+        for _ in 0..256 {
+            b.note_pane_output(pane, b"\x1b[H\x1b[2Jframe\r\n");
+        }
+        b.maybe_start_resyncs();
+        assert!(
+            !b.resyncs.contains_key(&pane),
+            "正常 OMP/CUP burst 不应因 64KB/250ms 阈值重拍"
+        );
+    }
+
+    #[test]
+    fn dropped_pane_output_starts_authoritative_resync() {
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new(None);
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(32);
+        b.dropped_output_panes.insert(pane);
+        b.maybe_start_resyncs();
+        assert!(b.resyncs.contains_key(&pane));
+        assert!(b
+            .pending_queries
+            .iter()
+            .any(|query| matches!(query, PendingQuery::PaneResyncState { pane: p } if *p == pane)));
+    }
+
+    #[test]
     fn colour_report_requires_tmux_3_2() {
         assert!(!supports_colour_report(Some((3, 1))));
         assert!(supports_colour_report(Some((3, 2))));
@@ -5139,6 +5304,53 @@ mod tests {
         });
         let after = b.events.len();
         assert_eq!(after, before, "幂等通知不应重复产生 ActiveTabChanged");
+    }
+
+    #[test]
+    fn stale_switch_confirmation_cannot_override_latest_target() {
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new(None);
+        b.cmd_tx = Some(tx);
+        b.status = crate::core::model::state::BackendStatus::Connected;
+        let session = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
+        b.active_session = Some(session);
+        for (id, active) in [(18u32, true), (47, false), (52, false)] {
+            b.tabs.push(crate::core::model::state::TabInfo {
+                id: crate::core::types::TabId(id),
+                name: format!("t{id}"),
+                active,
+            });
+        }
+
+        assert!(matches!(
+            b.execute(&Task::SwitchTab {
+                target: crate::core::types::TabId(47),
+            }),
+            Ok(TaskOutcome::Done)
+        ));
+        assert!(matches!(
+            b.execute(&Task::SwitchTab {
+                target: crate::core::types::TabId(52),
+            }),
+            Ok(TaskOutcome::Done)
+        ));
+
+        b.handle_message(Message::SessionWindowChanged {
+            session,
+            window: crate::core::types::TabId(47),
+        });
+        assert_eq!(
+            b.active_tab().map(|tab| tab.id),
+            Some(crate::core::types::TabId(52)),
+            "旧目标确认不能覆盖最新目标"
+        );
+        assert!(b.latest_switch_target.is_some());
+
+        b.handle_message(Message::SessionWindowChanged {
+            session,
+            window: crate::core::types::TabId(52),
+        });
+        assert!(b.latest_switch_target.is_none());
     }
 
     /// %extended-output（hyperlink 等）被安全忽略，不破坏 %output 累积或状态机。
