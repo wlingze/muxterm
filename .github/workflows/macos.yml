@@ -40,13 +40,12 @@ jobs:
           swift --version
           /usr/bin/automationmodetool || true
 
-      - name: Install tools
-        run: |
-          brew list tmux >/dev/null 2>&1 || brew install tmux
-          tmux -V
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tools (tmux / herdr)
+        run: bash scripts/ci/setup.sh
+        timeout-minutes: 20
 
       - name: Cache cargo
         uses: actions/cache@v4

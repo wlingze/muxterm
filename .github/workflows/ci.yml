@@ -4,32 +4,39 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'src/core/**'
-      - 'src/platform/cli/**'
-      - 'src/platform/tui/**'
-      - 'src/platform/mod.rs'
-      - 'src/lib.rs'
-      - 'src/main.rs'
-      - 'tests/cli_integration.rs'
-      - 'tests/four_mode_integration.rs'
-      - 'tests/sendkeys_regression.rs'
-      - 'tests/split_regression.rs'
-      - 'tests/tui_split_ffi_regression.rs'
-      - 'tests/tui_wizard_ffi_regression.rs'
-      - 'tests/tui_wizard_ssh_ffi_regression.rs'
-      - 'tests/ssh_no_fallback.rs'
-      - 'tests/ssh_transport_unit.rs'
-      - 'tests/tmux_backend_integration.rs'
-      - 'tests/tui_integration.rs'
-      - 'tests/support/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/**'
-      - 'scripts/build-cli.sh'
-      - 'scripts/build-common.sh'
-      - 'scripts/build-tui.sh'
-      - 'scripts/ci/**'
-      - '.github/workflows/**'
+      - "src/core/**"
+      - "src/platform/cli/**"
+      - "src/platform/tui/**"
+      - "src/platform/mod.rs"
+      - "src/lib.rs"
+      - "src/main.rs"
+      - "tests/cli_integration.rs"
+      - "tests/four_mode_integration.rs"
+      - "tests/sendkeys_regression.rs"
+      - "tests/split_regression.rs"
+      - "tests/tui_split_ffi_regression.rs"
+      - "tests/tui_wizard_ffi_regression.rs"
+      - "tests/tui_wizard_ssh_ffi_regression.rs"
+      - "tests/ssh_no_fallback.rs"
+      - "tests/ssh_transport_unit.rs"
+      - "tests/tmux_backend_integration.rs"
+      - "tests/tui_integration.rs"
+      - "tests/herdr_session_contract.rs"
+      - "tests/herdr_feature_contract.rs"
+      - "tests/herdr_authority_contract.rs"
+      - "tests/herdr_multi_workspace_contract.rs"
+      - "tests/herdr_worktree_contract.rs"
+      - "tests/existing_ssh_contract.rs"
+      - "tests/runtime_transport_matrix_contract.rs"
+      - "tests/support/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/build-cli.sh"
+      - "scripts/build-common.sh"
+      - "scripts/build-tui.sh"
+      - "scripts/ci/**"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -42,21 +49,14 @@ jobs:
   core_tests:
     name: core / tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
-            tmux \
-            openssh-server \
-            openssh-client \
-            python3
+      - name: Install system dependencies (tmux / herdr / sshd)
+        run: MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup.sh
+        timeout-minutes: 20
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -72,44 +72,10 @@ jobs:
             target
           key: ${{ runner.os }}-core-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
 
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: cargo clippy --no-default-features --features tui -- -D warnings
-
-      - name: Setup shared loopback sshd
-        run: MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup-sshd.sh
-
-      - name: Core unit tests
-        run: cargo test --no-default-features --features tui --lib --bins
-
-      - name: CLI integration tests
-        run: cargo test --no-default-features --features tui --test cli_integration -- --test-threads=1
-
-      - name: Sendkeys regression tests
-        run: cargo test --no-default-features --features ffi --test sendkeys_regression -- --test-threads=1
-
-      - name: Split regression tests
-        run: cargo test --no-default-features --features ffi --test split_regression -- --test-threads=1
-
-      - name: TUI wizard FFI regression tests
-        run: cargo test --no-default-features --features ffi --test tui_split_ffi_regression --test tui_wizard_ffi_regression -- --test-threads=1
-
-      - name: TUI wizard SSH FFI regression (needs sshd)
-        run: cargo test --no-default-features --features ffi --test tui_wizard_ssh_ffi_regression -- --test-threads=1
-
-      - name: SSH no-fallback tests
-        run: cargo test --no-default-features --features ffi --test ssh_no_fallback -- --test-threads=1
-
-      - name: SSH transport tests
-        run: cargo test --no-default-features --features ffi --test ssh_transport_unit -- --test-threads=1
-
-      - name: Tmux backend integration tests
-        run: cargo test --no-default-features --features tui --test tmux_backend_integration -- --test-threads=1
-
-      - name: TUI integration tests
-        run: cargo test --no-default-features --features tui --test tui_integration -- --test-threads=1
+      # 与本地 scripts/test.sh 同一入口：一次编译、一起跑全部测试。
+      # fmt/clippy/全部 target 都在 test.sh 内，避免 CI 与本地两套命令 drift。
+      - name: Run all core tests (one compile)
+        run: bash scripts/test.sh run core
 
       - name: Cleanup sshd
         if: always()

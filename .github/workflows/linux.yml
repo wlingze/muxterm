@@ -4,21 +4,38 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'src/platform/linux/**'
-      - 'src/core/**'
-      - 'src/platform/cli/**'
-      - 'src/platform/mod.rs'
-      - 'src/lib.rs'
-      - 'src/main.rs'
-      - 'tests/linux_gtk_integration.rs'
-      - 'tests/support/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/**'
-      - 'scripts/build-linux.sh'
-      - 'scripts/build-common.sh'
-      - 'scripts/ci/**'
-      - '.github/workflows/**'
+      - "src/platform/linux/**"
+      - "src/core/**"
+      - "src/platform/cli/**"
+      - "src/platform/mod.rs"
+      - "src/lib.rs"
+      - "src/main.rs"
+      - "tests/linux_gtk_integration.rs"
+      - "tests/linux_herdr_e2e.rs"
+      - "tests/linux_herdr_switch_e2e.rs"
+      - "tests/linux_herdr_worktree_e2e.rs"
+      - "tests/linux_herdr_ssh_e2e.rs"
+      - "tests/linux_herdr_agent_e2e.rs"
+      - "tests/linux_herdr_authority_e2e.rs"
+      - "tests/linux_catalog_ssh_e2e.rs"
+      - "tests/linux_existing_e2e.rs"
+      - "tests/linux_fault_e2e.rs"
+      - "tests/linux_scroll_wheel_e2e.rs"
+      - "tests/linux_zoom_input_e2e.rs"
+      - "tests/linux_panel_e2e.rs"
+      - "tests/linux_render_e2e.rs"
+      - "tests/linux_runtime_transport_matrix_e2e.rs"
+      - "tests/linux_attach_history_e2e.rs"
+      - "tests/linux_attention_semantics_e2e.rs"
+      - "tests/linux_search_e2e.rs"
+      - "tests/support/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/build-linux.sh"
+      - "scripts/build-common.sh"
+      - "scripts/ci/**"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -31,22 +48,20 @@ jobs:
   linux_checks:
     name: linux / required
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install GTK / VTE / tmux dependencies
+      - name: Install GTK / VTE / tmux / herdr / sshd dependencies
         run: |
-          sudo apt-get update
+          MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup.sh
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
-            tmux \
             xvfb \
             libgtk-4-dev \
             libvte-2.91-gtk4-dev \
             libssl-dev
+        timeout-minutes: 20
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -62,14 +77,7 @@ jobs:
             target
           key: ${{ runner.os }}-linux-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
 
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy GTK
-        run: cargo clippy --features gtk -- -D warnings
-
-      - name: cargo check GTK
-        run: cargo check --features gtk
-
-      - name: Linux GTK integration tests
-        run: xvfb-run -a cargo test --features gtk --test linux_gtk_integration -- --test-threads=1
+      # 与本地 scripts/test.sh 同一入口：一次编译、一起跑全部 GTK e2e。
+      # fmt/clippy/check/全部 target 都在 test.sh 内，避免 CI 与本地两套命令 drift。
+      - name: Run all Linux GTK e2e tests (one compile)
+        run: xvfb-run -a bash scripts/test.sh run linux
