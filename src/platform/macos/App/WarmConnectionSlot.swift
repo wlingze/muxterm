@@ -34,6 +34,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     /// 后台继续 poll：喂事件给本 slot 的 TerminalManager，保持 SwiftTerm
     /// 状态 warm；不做同步 displayIfNeeded（视图可能不在窗口层级）。
     func pollBackground() {
+        terminalManager.setViewCreationEnabled(false)
+        defer { terminalManager.setViewCreationEnabled(true) }
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
         let events = bridge.pollEvents()

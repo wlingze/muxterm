@@ -11,6 +11,9 @@ final class TerminalManager: TerminalInputHandler {
     private var expectedPaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
     private var fontFamily: String
     private var fontSize: CGFloat
+    /// 后台 Workspace 仍然消费 Core 事件，但不创建不可见的 AppKit/SwiftTerm
+    /// view。切回前台时再由 refreshUI 按当前 tab 懒建 Surface。
+    private var viewCreationEnabled = true
     /// 本轮 poll 批次内新建的视图：播种快照已覆盖该批次所有已入队的
     /// PaneOutput 事件，本批次剩余事件必须跳过，否则同一批字节会双写。
     private var viewsCreatedThisBatch = Set<UInt32>()
@@ -33,6 +36,24 @@ final class TerminalManager: TerminalInputHandler {
     private var pendingFeeds: [UInt32: Data] = [:]
     private var feedFlushWorkItem: DispatchWorkItem?
     private static let feedFlushInterval: TimeInterval = 0.033 // 合并同一 pane 短窗口输出（约 30fps），减少中间态闪烁
+    /// Surface seed 可能包含完整 scrollback；分块投喂，避免一次同步 feed
+    /// 占住主线程，让 connect/Cmd-Shift-P 或 tab 切换出现 beachball。
+    private struct PendingSeed {
+        let view: MuxTerminalView
+        let data: Data
+        var offset: Int
+        let scrollToLatest: Bool
+    }
+    private var pendingSeeds: [UInt32: PendingSeed] = [:]
+    private var seedingPanes = Set<UInt32>()
+    /// 已有 view 进入后台后收到新字节；回到前台时必须从 Core 的最新
+    /// Surface seed 重建一次，不能继续显示旧的 VT 状态。
+    private var needsSurfaceReseed = Set<UInt32>()
+    /// 后台收到的权威 snapshot 延迟到该 pane 再次可见时应用。
+    private var deferredSnapshots: [UInt32: Data] = [:]
+    private var seedFlushWorkItem: DispatchWorkItem?
+    private static let seedChunkBytes = 32 * 1024
+    private static let seedTimeBudget: TimeInterval = 0.004
     /// 同一 pane 的 resize 失败只报告一次，避免轮询/重绘时刷屏。
     private var reportedResizeFailures = Set<UInt32>()
     private var reportedClientResizeFailure = false
@@ -61,6 +82,7 @@ final class TerminalManager: TerminalInputHandler {
 
     deinit {
         clientResizeWorkItem?.cancel()
+        seedFlushWorkItem?.cancel()
     }
 
     init(
@@ -76,6 +98,7 @@ final class TerminalManager: TerminalInputHandler {
     /// 连接面板切换 local / SSH session 后更新桥接对象。
     func updateBridge(_ bridge: CoreBridge) {
         self.bridge = bridge
+        viewCreationEnabled = true
         for view in views.values {
             view.removeFromSuperview()
         }
@@ -92,6 +115,12 @@ final class TerminalManager: TerminalInputHandler {
         feedFlushWorkItem?.cancel()
         feedFlushWorkItem = nil
         pendingFeeds.removeAll()
+        seedFlushWorkItem?.cancel()
+        seedFlushWorkItem = nil
+        pendingSeeds.removeAll()
+        seedingPanes.removeAll()
+        needsSurfaceReseed.removeAll()
+        deferredSnapshots.removeAll()
         reportedResizeFailures.removeAll()
         reportedClientResizeFailure = false
         recentOutputSnippet = ""
@@ -104,9 +133,120 @@ final class TerminalManager: TerminalInputHandler {
         onOutputSnippetChanged?(recentOutputSnippet)
     }
 
+    /// 后台 slot 使用：保留事件/索引消费，但禁止创建 AppKit view。
+    /// 该开关只影响“懒建 Surface”，不影响已有 view 的清理或尺寸缓存。
+    func setViewCreationEnabled(_ enabled: Bool) {
+        viewCreationEnabled = enabled
+    }
+
+    /// 将一次 Surface seed 放入主线程分块调度器。
+    private func enqueueSeed(
+        paneId: UInt32,
+        view: MuxTerminalView,
+        data: Data,
+        scrollToLatest: Bool
+    ) {
+        pendingSeeds[paneId] = PendingSeed(
+            view: view,
+            data: data,
+            offset: 0,
+            scrollToLatest: scrollToLatest
+        )
+        seedingPanes.insert(paneId)
+        scheduleSeedFlush()
+    }
+
+    private func scheduleSeedFlush() {
+        guard seedFlushWorkItem == nil, !pendingSeeds.isEmpty else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.seedFlushWorkItem = nil
+            self?.flushPendingSeeds()
+        }
+        seedFlushWorkItem = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    /// 每次只处理有限字节/时间，把 run loop 让给 AppKit 的输入和 tab 事件。
+    private func flushPendingSeeds() {
+        let started = ProcessInfo.processInfo.systemUptime
+        while let paneId = pendingSeeds.keys.first {
+            guard var seed = pendingSeeds[paneId] else { continue }
+            let remaining = seed.data.count - seed.offset
+            if remaining <= 0 {
+                pendingSeeds.removeValue(forKey: paneId)
+                seedingPanes.remove(paneId)
+                swiftTermSeeded.insert(paneId)
+                if seed.scrollToLatest {
+                    applyingNativeScroll.insert(paneId)
+                    seed.view.scrollToLatest()
+                    applyingNativeScroll.remove(paneId)
+                    _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+                }
+                continue
+            }
+
+            let end = min(seed.offset + Self.seedChunkBytes, seed.data.count)
+            let chunk = Data(seed.data[seed.offset..<end])
+            seed.view.feedOutput(chunk, isSnapshot: seed.offset == 0)
+            seed.offset = end
+            if seed.offset >= seed.data.count {
+                pendingSeeds.removeValue(forKey: paneId)
+                seedingPanes.remove(paneId)
+                swiftTermSeeded.insert(paneId)
+                if seed.scrollToLatest {
+                    applyingNativeScroll.insert(paneId)
+                    seed.view.scrollToLatest()
+                    applyingNativeScroll.remove(paneId)
+                    _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+                }
+            } else {
+                pendingSeeds[paneId] = seed
+            }
+
+            if ProcessInfo.processInfo.systemUptime - started >= Self.seedTimeBudget {
+                break
+            }
+        }
+        if !pendingSeeds.isEmpty {
+            scheduleSeedFlush()
+        } else if !pendingFeeds.isEmpty {
+            // seed 完成后再交付其期间排队的 live `%output`。
+            flushPendingFeeds()
+        }
+    }
+
+    /// 前台重新使用一个曾在后台更新的 Surface 时，先对齐 Core 最新种子。
+    private func resumeDeferredSurfaceIfNeeded(paneId: UInt32, view: MuxTerminalView) {
+        guard viewCreationEnabled, !pendingSeeds.keys.contains(paneId) else { return }
+        if let snapshot = deferredSnapshots.removeValue(forKey: paneId) {
+            pendingFeeds.removeValue(forKey: paneId)
+            swiftTermSeeded.remove(paneId)
+            if snapshot.isEmpty {
+                view.feedOutput(Data(), isSnapshot: true)
+                swiftTermSeeded.insert(paneId)
+            } else {
+                enqueueSeed(paneId: paneId, view: view, data: snapshot, scrollToLatest: true)
+            }
+            needsSurfaceReseed.remove(paneId)
+            return
+        }
+        guard needsSurfaceReseed.remove(paneId) != nil else { return }
+        pendingFeeds.removeValue(forKey: paneId)
+        let seed = bridge?.paneSurfaceSeedANSI(paneId: paneId) ?? Data()
+        swiftTermSeeded.remove(paneId)
+        if seed.isEmpty {
+            view.feedOutput(Data(), isSnapshot: true)
+            swiftTermSeeded.insert(paneId)
+        } else {
+            enqueueSeed(paneId: paneId, view: view, data: seed, scrollToLatest: true)
+            appendSnippet(seed)
+        }
+    }
+
     /// 获取或创建指定 pane 的终端视图。
     func view(for paneId: UInt32) -> MuxTerminalView {
         if let existing = views[paneId] {
+            resumeDeferredSurfaceIfNeeded(paneId: paneId, view: existing)
             return existing
         }
         let view = MuxTerminalView(
@@ -144,19 +284,21 @@ final class TerminalManager: TerminalInputHandler {
             snapshot = seed
         }
         if !snapshot.isEmpty {
-            view.feedOutput(snapshot, isSnapshot: true)
+            // 不要在 view(for:) 内同步 feed 大量 scrollback；seed 会在主
+            // run loop 的小预算内分块完成。期间到达的 live 字节由
+            // `seedingPanes` 保护，等 seed 完成后按序补上。
+            enqueueSeed(
+                paneId: paneId,
+                view: view,
+                data: snapshot,
+                scrollToLatest: hasSurfaceSeed
+            )
             appendSnippet(snapshot)
-            if hasSurfaceSeed {
-                // 写入大量历史行时 SwiftTerm 的 yDisp 在某些 resize/布局
-                // 时序会停在最上方；Surface 新建完成的契约是从 live 尾部开始。
-                applyingNativeScroll.insert(paneId)
-                view.scrollToLatest()
-                applyingNativeScroll.remove(paneId)
-                _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
-                swiftTermSeeded.insert(paneId)
-                if inEventBatch {
-                    viewsCreatedThisBatch.insert(paneId)
-                }
+            if inEventBatch {
+                // core 的 PaneBuf 已经包含当前 poll 批次的快照；本批次同
+                // pane 的 PaneOutput 不能再重复喂。若 seed 尚未完成，
+                // handleOutput 会把严格晚于快照的字节排到 pendingFeeds。
+                viewsCreatedThisBatch.insert(paneId)
             }
         }
         return view
@@ -199,20 +341,40 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    private func queueLiveOutput(_ paneId: UInt32, data: Data) {
+        pendingFeeds[paneId, default: Data()].append(data)
+        appendSnippet(data)
+        recordTraffic(bytes: data.count)
+        scheduleFeedFlush()
+    }
+
     func handleOutput(paneId: UInt32, data: Data) {
         guard !data.isEmpty else { return }
+        guard viewCreationEnabled else {
+            if views[paneId] != nil {
+                needsSurfaceReseed.insert(paneId)
+            }
+            return
+        }
         // 事件字节就是真实增量（后端先 append 到累计缓冲、再入队事件）。
         // 不再拿累计缓冲快照做增量对账：前端缓冲（256KB）小于 pane 累计
         // 输出后，快照只是滑动窗口，按 fed_len 切片会追着陈旧头部，导致
         // codex/htop/agent 这类长运行 pane 冻结或乱码。
         if viewsCreatedThisBatch.contains(paneId) {
-            // 本批次刚创建视图：播种快照已包含本批次所有已入队事件。
+            // 本批次刚创建视图：core Surface seed 已包含本批次所有已入队
+            // 事件。seed 尚未完成时也不能把同批字节再排队，否则会重复。
             return
         }
         let existed = views[paneId] != nil
         let view = view(for: paneId)
         // view(for:) 可能刚用可见网格播种；同一批 capture 事件必须丢掉。
         if viewsCreatedThisBatch.contains(paneId) {
+            return
+        }
+        if seedingPanes.contains(paneId) {
+            // 这是 seed 发出之后到达的真正 live 增量，必须等 seed 完成后
+            // 再喂，保持 snapshot → catch-up 的严格顺序。
+            queueLiveOutput(paneId, data: data)
             return
         }
         ensureValidModelSize(view)
@@ -234,15 +396,13 @@ final class TerminalManager: TerminalInputHandler {
                 )
             }
             if !painted.isEmpty {
-                view.feedOutput(painted, isSnapshot: true)
-                if !surface.isEmpty {
-                    applyingNativeScroll.insert(paneId)
-                    view.scrollToLatest()
-                    applyingNativeScroll.remove(paneId)
-                    _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
-                }
+                enqueueSeed(
+                    paneId: paneId,
+                    view: view,
+                    data: painted,
+                    scrollToLatest: !surface.isEmpty
+                )
             }
-            swiftTermSeeded.insert(paneId)
             appendSnippet(painted)
             recordTraffic(bytes: data.count)
             return
@@ -257,10 +417,7 @@ final class TerminalManager: TerminalInputHandler {
             // 视图早已存在：事件就是增量；或视图刚创建但快照为空（新 pane
             // 首批字节，种子没有覆盖任何事件），必须原样喂入。合并同一
             // pane 短窗口内的字节，减少 SwiftTerm 中间态漂移与重绘频率。
-            pendingFeeds[paneId, default: Data()].append(data)
-            appendSnippet(data)
-            recordTraffic(bytes: data.count)
-            scheduleFeedFlush()
+            queueLiveOutput(paneId, data: data)
         }
     }
 
@@ -268,30 +425,61 @@ final class TerminalManager: TerminalInputHandler {
     /// 和待合并增量；同一批中新建的视图会从 core Surface seed 一次，不能
     /// 再把这个 event 重新 feed，否则会出现首屏双写。
     func handleSnapshot(paneId: UInt32, data: Data) {
-        pendingFeeds.removeValue(forKey: paneId)
+        guard viewCreationEnabled else {
+            if views[paneId] != nil {
+                deferredSnapshots[paneId] = data
+                needsSurfaceReseed.remove(paneId)
+            }
+            return
+        }
         let viewExisted = views[paneId] != nil
+        let seededByBatch = viewsCreatedThisBatch.contains(paneId)
+        // refreshUI() may have just created this view from the already-applied
+        // Core snapshot. Preserve that pending seed; cancelling it here would
+        // leave a blank Surface while the event is intentionally skipped.
+        if !seededByBatch {
+            pendingFeeds.removeValue(forKey: paneId)
+            pendingSeeds.removeValue(forKey: paneId)
+            seedingPanes.remove(paneId)
+        }
         let view = view(for: paneId)
+        if seededByBatch {
+            return
+        }
+        if seedingPanes.contains(paneId) {
+            // view(for:) 已经从 Core 的同一权威快照启动 seed；不要再把
+            // event 作为第二次 reset 排队。
+            return
+        }
         // A structural event may have caused refreshUI() to create and seed
         // this view from the already-applied core snapshot earlier in the same
         // poll batch. Feeding that event again would duplicate the seed and
         // reintroduce the Cursor/htop double-frame bug.
-        let seededByBatch = viewsCreatedThisBatch.contains(paneId)
         if viewExisted && !seededByBatch {
             ensureValidModelSize(view)
-            view.feedOutput(data, isSnapshot: true)
-            swiftTermSeeded.insert(paneId)
+            if data.isEmpty {
+                // 空快照也代表权威 blank pane，必须清空旧 VT；增量空字节
+                // 则仍然是 no-op。
+                view.feedOutput(Data(), isSnapshot: true)
+                swiftTermSeeded.insert(paneId)
+            } else {
+                swiftTermSeeded.remove(paneId)
+                enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
+            }
             appendSnippet(data)
             recordTraffic(bytes: data.count)
         } else if !viewExisted {
             // view(for:) 已从刚写入 core 的 PaneBuf Surface seed 播种；若
             // snapshot 为空或 core 尚未完成 seed，保留 event 供当前批处理
             // 路径之外的下一次 UI refresh 再补种。
-            if !swiftTermSeeded.contains(paneId) && !data.isEmpty {
+            if !swiftTermSeeded.contains(paneId) && data.isEmpty {
+                view.feedOutput(Data(), isSnapshot: true)
+                swiftTermSeeded.insert(paneId)
+            } else if !swiftTermSeeded.contains(paneId) && !data.isEmpty {
                 ensureValidModelSize(view)
-                view.feedOutput(data, isSnapshot: true)
+                enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
                 appendSnippet(data)
                 recordTraffic(bytes: data.count)
-                swiftTermSeeded.insert(paneId)
             }
         }
     }
@@ -319,7 +507,14 @@ final class TerminalManager: TerminalInputHandler {
         pendingFeeds.removeAll()
         for (paneId, data) in feeds {
             let rows = expectedPaneSizes[paneId]?.rows ?? 24
-            guard let view = views[paneId] else { continue }
+            guard let view = views[paneId], !seedingPanes.contains(paneId),
+                  swiftTermSeeded.contains(paneId)
+            else {
+                // Surface seed 尚未完成时保留 live；seed flush 完成后会再次
+                // 调用这里，后台无 view 时则交回 Core 的累计缓冲。
+                pendingFeeds[paneId, default: Data()].append(data)
+                continue
+            }
             syncHistoryCapacity(paneId: paneId, view: view)
             let wasAtLatest = view.isAtLatest()
             if !wasAtLatest {
@@ -361,6 +556,10 @@ final class TerminalManager: TerminalInputHandler {
     /// 切回来重放被截断的累计输出会乱码 / 黑屏）。
     func removePane(_ paneId: UInt32) {
         pendingFeeds.removeValue(forKey: paneId)
+        pendingSeeds.removeValue(forKey: paneId)
+        seedingPanes.remove(paneId)
+        needsSurfaceReseed.remove(paneId)
+        deferredSnapshots.removeValue(forKey: paneId)
         views[paneId]?.removeFromSuperview()
         views.removeValue(forKey: paneId)
         viewsCreatedThisBatch.remove(paneId)
