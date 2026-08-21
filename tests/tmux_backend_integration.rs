@@ -61,6 +61,37 @@ fn native_pane_size(socket: &str, pane: PaneId) -> Option<(u16, u16)> {
         })
 }
 
+fn native_pane_cwd(socket: &str, pane: PaneId) -> Option<String> {
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            socket,
+            "display-message",
+            "-p",
+            "-t",
+            &format!("%{}", pane.0),
+            "#{pane_current_path}",
+        ])
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end_matches(['\r', '\n'])
+            .to_string()
+    })
+}
+
+fn wait_pane_cwd(socket: &str, pane: PaneId, expected: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if native_pane_cwd(socket, pane).as_deref() == Some(expected) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 /// 等待 pane 前台命令变为指定命令（用外部 tmux CLI 查询，不占控制响应槽）。
 fn wait_pane_command(socket: &str, pane: PaneId, command: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
@@ -2271,6 +2302,72 @@ fn bug5_cli_new_window_via_tmux_socket() {
 
     let _ = model.shutdown();
     cleanup(&socket);
+}
+
+#[test]
+fn bug5_new_tab_inherits_active_pane_cwd() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let cwd = format!("/tmp/muxterm-cwd-{}", socket);
+    std::fs::create_dir_all(&cwd).expect("创建隔离 cwd");
+    let expected_cwd = std::fs::canonicalize(&cwd)
+        .expect("解析隔离 cwd")
+        .to_string_lossy()
+        .into_owned();
+
+    let mut model = connect_tmux(&socket);
+    let ready = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.active_pane().is_some()
+    });
+    assert!(ready, "tmux 应有 active pane");
+    let source_pane = model.state().active_pane().unwrap().id;
+
+    let status = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "send-keys",
+            "-t",
+            &format!("%{}", source_pane.0),
+            &format!("cd {}", cwd),
+            "Enter",
+        ])
+        .status()
+        .expect("发送 cd 到隔离 pane");
+    assert!(status.success(), "tmux send-keys cd 应成功");
+    assert!(
+        wait_pane_cwd(&socket, source_pane, &expected_cwd, Duration::from_secs(5)),
+        "source pane 应进入测试 cwd"
+    );
+
+    let old_tab = model.state().active_tab().unwrap().id;
+    let old_tab_count = model.state().tabs().len();
+    model
+        .execute(Task::NewTab {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .expect("NewTab 应成功排入 tmux");
+
+    let switched = wait_for(&mut model, Duration::from_secs(5), |s| {
+        s.tabs().len() > old_tab_count
+            && s.active_tab().is_some_and(|tab| tab.id != old_tab)
+            && s.active_pane().is_some()
+    });
+    assert!(switched, "NewTab 后应切到新 tab");
+    let new_pane = model.state().active_pane().unwrap().id;
+    assert!(
+        wait_pane_cwd(&socket, new_pane, &expected_cwd, Duration::from_secs(5)),
+        "新 tab 的 pane 必须继承 active pane cwd，而不是回到 HOME"
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]

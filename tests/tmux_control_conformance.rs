@@ -52,19 +52,18 @@ fn stalled_control_client_resyncs_to_authoritative_last_frame() {
     let pane = list_pane_ids(&socket, "resync")[0];
     let (mut model, runtime) = connected_model(&socket, "resync");
 
-    // Stop polling long enough to cross the byte/age threshold. tmux may drop
-    // control blocks while paused; muxterm must recover with one snapshot event
-    // rather than replaying a partial ESC/CUP frame.
-    // 5k short frames exceed the short-window byte rate and intentionally fill
-    // the bounded control-event channel before the shell can finish.
+    // Stop polling long enough to fill the bounded pane-output lane. The reader
+    // must keep parsing control boundaries, report an explicit gap, and recover
+    // with one authoritative snapshot rather than replaying a partial ESC/CUP
+    // frame. A large, fast burst makes this deterministic even when tmux
+    // coalesces many short frames into a small number of `%output` blocks.
     let script = "for i in $(seq 1 5000); do printf \"\\033[H\\033[2Jframe-%s\\n\" \"$i\"; done; printf \"FLOOD_DONE\\n\"; exec /bin/cat";
     send_keys_line(&socket, &format!("%{pane}"), script);
     // Do not wait for the shell to finish before polling: the control reader
-    // intentionally stalls here, so its bounded event channel can backpressure
-    // tmux before the script reaches FLOOD_DONE. Once the first poll drains the
-    // channel, the command continues and the authoritative resync must retain
-    // the terminal's eventual last frame.
-    std::thread::sleep(Duration::from_millis(450));
+    // intentionally stalls here while tmux continues running; once the first
+    // poll drains the lane, the authoritative resync must retain the terminal's
+    // eventual last frame.
+    std::thread::sleep(Duration::from_secs(2));
 
     let deadline = Instant::now() + Duration::from_secs(6);
     let mut snapshots = 0usize;

@@ -82,6 +82,10 @@ final class TerminalManager: TerminalInputHandler {
     var onUnseenLinesChanged: ((UInt32, UInt32) -> Void)?
 
     private var unseenLines: [UInt32: UInt32] = [:]
+    /// seed 尚未完成时收到的程序化 viewport 请求。首屏完成会默认回到底部，
+    /// 但命令时间线/搜索可能在这段窗口内要求跳到历史；该请求必须在 seed
+    /// 写完后重新应用，不能被 finishSeed 的默认 scrollToLatest 覆盖。
+    private var pendingViewportOffsets: [UInt32: UInt32] = [:]
     /// `applyViewport`/回底是程序主动改变 native scroll position，回调只做
     /// 重绘通知，不再把 native 的浮点位置反算回 core，避免搜索跳转漂移。
     private var applyingNativeScroll = Set<UInt32>()
@@ -136,6 +140,7 @@ final class TerminalManager: TerminalInputHandler {
         trafficByteCounts.removeAll()
         trafficRate = 0
         unseenLines.removeAll()
+        pendingViewportOffsets.removeAll()
         applyingNativeScroll.removeAll()
         onOutputSnippetChanged?(recentOutputSnippet)
     }
@@ -208,7 +213,17 @@ final class TerminalManager: TerminalInputHandler {
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         swiftTermSeeded.insert(paneId)
-        if seed.scrollToLatest {
+        if let requestedOffset = pendingViewportOffsets.removeValue(forKey: paneId) {
+            // 首屏 feed 完成后再应用 seed 期间排队的显式历史请求；此时
+            // SwiftTerm 已经拥有完整 scrollback，offset 才有真实几何意义。
+            let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? seed.view.getTerminal().rows))
+            let rawMax = bridge?.paneHistoryMaxOffset(paneId: paneId, rows: rows) ?? -1
+            let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
+            applyingNativeScroll.insert(paneId)
+            seed.view.scrollToHistoryOffset(requestedOffset, maxOffset: maxOffset)
+            applyingNativeScroll.remove(paneId)
+            _ = bridge?.setPaneViewport(paneId: paneId, offset: requestedOffset)
+        } else if seed.scrollToLatest {
             applyingNativeScroll.insert(paneId)
             seed.view.scrollToLatest()
             applyingNativeScroll.remove(paneId)
@@ -636,6 +651,7 @@ final class TerminalManager: TerminalInputHandler {
     /// 切回来重放被截断的累计输出会乱码 / 黑屏）。
     func removePane(_ paneId: UInt32) {
         pendingFeeds.removeValue(forKey: paneId)
+        pendingViewportOffsets.removeValue(forKey: paneId)
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         surfaceReadyPanes.remove(paneId)
@@ -831,6 +847,9 @@ final class TerminalManager: TerminalInputHandler {
     /// 不 reset、不 feed snapshot，因此不会破坏 live VT 状态。
     func applyViewport(paneId: UInt32, offset: UInt32) {
         let view = view(for: paneId)
+        if seedingPanes.contains(paneId) {
+            pendingViewportOffsets[paneId] = offset
+        }
         let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? view.getTerminal().rows))
         let rawMax = bridge?.paneHistoryMaxOffset(paneId: paneId, rows: rows) ?? -1
         let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
@@ -846,6 +865,9 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     func scrollToLatest(paneId: UInt32) {
+        if seedingPanes.contains(paneId) {
+            pendingViewportOffsets[paneId] = 0
+        }
         applyingNativeScroll.insert(paneId)
         views[paneId]?.scrollToLatest()
         applyingNativeScroll.remove(paneId)

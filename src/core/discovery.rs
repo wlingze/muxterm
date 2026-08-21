@@ -423,7 +423,7 @@ pub fn create_ssh_tmux_session(
     let remote_command = format!(
         "tmux {socket_args}new-session -d -s {} -c {}",
         shell_quote(session),
-        shell_quote(directory)
+        shell_quote_remote_path(directory)
     );
     let (program, args) = build_ssh_command_for_discovery(alias, &remote_command, ssh_config_path);
     let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
@@ -554,6 +554,22 @@ fn build_ssh_command_for_discovery(
 
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Quote a path for a remote POSIX shell while preserving the conventional
+/// `~/...` spelling used by Project configs. A plain `shell_quote("~/x")`
+/// produces `'~/x'`, where POSIX shells deliberately do not expand `~`.
+///
+/// Only the leading home shorthand is left as an unquoted `$HOME`; every
+/// user-provided suffix remains single-quoted, so spaces/quotes are safe.
+pub fn shell_quote_remote_path(value: &str) -> String {
+    if value == "~" {
+        return "$HOME".to_string();
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return format!("$HOME/{}", shell_quote(rest));
+    }
+    shell_quote(value)
 }
 
 pub type SshPaneInfo = (u32, bool, u16, u16, String);
@@ -757,7 +773,7 @@ pub fn list_remote_dir(
     ssh_config_path: Option<&str>,
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<FsEntry>> {
-    let remote_command = format!("ls -1p {}", shell_quote(path));
+    let remote_command = format!("ls -1p {}", shell_quote_remote_path(path));
     let (program, args) = build_ssh_command_for_discovery(alias, &remote_command, ssh_config_path);
     let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
     if exit_code != 0 {
@@ -998,6 +1014,16 @@ mod tests {
         };
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains("\"is_dir\":false"));
+    }
+
+    #[test]
+    fn remote_path_quote_expands_home_without_losing_safe_suffix_quoting() {
+        assert_eq!(shell_quote_remote_path("~"), "$HOME");
+        assert_eq!(
+            shell_quote_remote_path("~/Project/my repo/it's"),
+            "$HOME/'Project/my repo/it'\\''s'"
+        );
+        assert_eq!(shell_quote_remote_path("/tmp/my repo"), "'/tmp/my repo'");
     }
 
     #[test]
