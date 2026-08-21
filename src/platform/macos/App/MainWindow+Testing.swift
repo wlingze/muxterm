@@ -51,6 +51,11 @@ extension MainWindowController {
         content.paneLayout.testPaneAllocation(paneId)
     }
 
+    func testPaneSurfaceReady(_ paneId: UInt32) -> Bool {
+        terminalManager.isSurfaceReady(for: paneId)
+            && content.paneLayout.testPaneSurfaceVisible(paneId)
+    }
+
     func testPaneTerminalText(_ paneId: UInt32) -> String {
         terminalManager.view(for: paneId).visibleScreenText()
     }
