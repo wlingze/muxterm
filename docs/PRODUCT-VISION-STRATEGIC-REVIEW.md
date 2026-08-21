@@ -2481,7 +2481,7 @@ NDJSON、有 protocol version、官方明写支持第三方 bridge）。**这一
 | 5 | **Agent 依赖导致身份过时**：绑定 Claude/Codex 的具体形态，一旦 agent 搬进 IDE/云端就归零 | 🟠 高 | 阶段 B 只做"pane 行为感知"（OSC 133 + BEL + 用户正则），零 agent-specific 逻辑；一切功能过 §2.12 模型正交判据 |
 | 6 | **搜索膨胀成日志数据库**：一旦开始做持久化索引就回不了头 | 🟡 中 | 搜索只在**已连接**工作区的内存 scrollback 内进行；不落盘、不建索引 |
 | 7 | **持久化模型分裂**：tmux attach / 本地 daemon / warm slot / 2MB 环形缓冲，四套机制没有统一叙事 | 🟡 中 | 明确写死："**工作活在 tmux 里**，其余都是缓存"。任何一个缓存丢了都不该影响用户。三轮补充：scrollback 副本确立为 Core 唯一事实源（§2.11.8） |
-| 8 | **文档与实现漂移**：AppKit/SwiftUI 矛盾、两份互相冲突的 roadmap、ID 体系未收口 | 🟡 中 | 阶段 A 顺手清理；`ARCHITECTURE-PLAN.md` 的历史 roadmap 直接标注作废 |
+| 8 | **文档与实现漂移**：AppKit/SwiftUI 矛盾、两份互相冲突的 roadmap、ID 体系未收口 | 🟡 中 | 阶段 A 顺手清理；ARCHITECTURE-PLAN 的历史 roadmap 直接标注作废 |
 
 ---
 

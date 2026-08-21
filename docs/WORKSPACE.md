@@ -2,9 +2,9 @@
 
 > 定名：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）
 > 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）。
-> 施工：[`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md)。Catalog：[`CATALOG.md`](CATALOG.md) / [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
+> Catalog：[`CATALOG.md`](CATALOG.md)。
 > 像素：[`SURFACE.md`](SURFACE.md)（F 已交）。适配表：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)（只给 `runtime/tmux` 看）。
-> Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。Herdr 施工：[`HERDR-PLAN.md`](HERDR-PLAN.md)。
+> Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。Herdr 接入见 [`RUNTIME.md`](RUNTIME.md)。
 
 **一句话：** Muxterm 自己的结构是 **Catalog → WorkspacePool → Workspace → Tab → Pane**。GUI **Window 只是某个 Workspace 的体现**。tmux / Herdr / Shell 是 Driver；SSH 是 Transport。前端只渲染，不养池、不养连接。
 
@@ -206,7 +206,7 @@ snapshot: tabs, panes, layout
 
 ### 6.2 FFI（W7 已落地）
 
-**一个 handle = 整个 `Catalog`**（Pool 在里面；进程里 GUI 通常只拿一个）。施工见 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C5。现在代码仍是裸 `WorkspacePool`，本轮要换。
+**一个 handle = 整个 `Catalog`**（Pool 在里面；进程里 GUI 通常只拿一个）。见 [`CATALOG.md`](CATALOG.md) C5。现在代码仍是裸 `WorkspacePool`，本轮要换。
 
 | 现在 | 说明 |
 |---|---|
@@ -299,5 +299,5 @@ src/platform/linux|macos|tui
 - platform 实现连接池、ssh、tmux。
 - 把 GUI Window 一对一映射成 tmux window（iTerm2）。
 - 把 WezTerm 的 workspace 标签当产品层。
-- 把 Herdr 做成身份；规划见 [`RUNTIME.md`](RUNTIME.md) / [`HERDR-PLAN.md`](HERDR-PLAN.md)。
+- 把 Herdr 做成身份；规划见 [`RUNTIME.md`](RUNTIME.md)。
 - 破坏 Surface：live 仍只 `vte.feed` 原始字节。

@@ -2,14 +2,9 @@
 
 > 适用：`/home/wlz/Developer/self/muxterm`（当前分支 `feature/runtime/support_herdr`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [WORKSPACE.md](WORKSPACE.md) / [WORKSPACE-PLAN.md](WORKSPACE-PLAN.md)、
-> [RUNTIME.md](RUNTIME.md) / [HERDR-PLAN.md](HERDR-PLAN.md)（Herdr 接入）、
-> [CATALOG.md](CATALOG.md) / [CATALOG-PLAN.md](CATALOG-PLAN.md)（Catalog）、
-> [W19-PLAN.md](W19-PLAN.md)（模拟器不可 panic）、[W21-PLAN.md](W21-PLAN.md)（滚轮）、
-> [W20-PLAN.md](W20-PLAN.md)（已有的连接）、
-> [W18-PLAN.md](W18-PLAN.md) / [VISION-AUDIT.md](VISION-AUDIT.md)、
-> [SURFACE.md](SURFACE.md) / [SURFACE-PLAN.md](SURFACE-PLAN.md)（F 已冻结）、
-> [LINUX-PLAN.md](LINUX-PLAN.md)（Phase E 档案）、[TASKS.md](../TASKS.md)（已冻结）、
+> [WORKSPACE.md](WORKSPACE.md)、[RUNTIME.md](RUNTIME.md)（Herdr 接入）、
+> [CATALOG.md](CATALOG.md)（Catalog）、[VISION-AUDIT.md](VISION-AUDIT.md)、
+> [SURFACE.md](SURFACE.md)（F 已冻结）、[TASKS.md](../TASKS.md)（已冻结）、
 > [bugfix-log.md](bugfix-log.md)。
 
 ## 1. 四条硬性要求（验收红线）
@@ -114,7 +109,7 @@ xvfb-run -a cargo test --features gtk --test linux_jump_count_e2e -- --test-thre
 xvfb-run -a cargo test --features gtk --test linux_search_scope_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_last_seen_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_command_marks_e2e -- --test-threads=1
-# Herdr Runtime（隔离 named session；见 HERDR-PLAN.md）
+# Herdr Runtime（隔离 named session；见 ）
 cargo test --test herdr_session_contract -- --test-threads=1
 cargo test --test herdr_feature_contract -- --test-threads=1
 cargo test --test herdr_multi_workspace_contract -- --test-threads=1
@@ -172,8 +167,8 @@ FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_sn
 
 ## 4. 开发流程（TDD 优先）
 
-1. 读文档：`docs/WORKSPACE.md` → `docs/WORKSPACE-PLAN.md` → `PRODUCT.md` → `AGENTS.md` → `docs/SURFACE.md` → 本文档。
-   `TASKS.md`、`LINUX-PLAN.md`、`SURFACE-PLAN.md` 已冻结，不要当新工作单。F 的 e2e 是回归门，不是本轮要重做的功能。
+1. 读文档：`docs/WORKSPACE.md` →  → `PRODUCT.md` → `AGENTS.md` → `docs/SURFACE.md` → 本文档。
+   `TASKS.md`、 已冻结，不要当新工作单。F 的 e2e 是回归门，不是本轮要重做的功能。
 2. RED：写最小单测或 e2e，先看到失败（真实数据 fixture 优先）。
 3. GREEN：写最小实现，只改本功能相关文件。
 4. 补测试：增加边界、错误路径、真实 tmux 数据复放。
@@ -186,7 +181,7 @@ FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_sn
 ## 5. GUI e2e 编写指南（硬性：不许自创更弱测试）
 
 Phase F 的场景、函数名、断言（`linux_render_e2e` / `linux_live_e2e`）是 **回归门**：W 轮必须保持绿，**不要重写这些用例来迁就 dump**。
-新功能按 [`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md) 写测试（两工作区切回、viewport、带 tab 的搜索）。
+新功能按  写测试（两工作区切回、viewport、带 tab 的搜索）。
 C8 ASCII 几何 / E 的 `visible_ansi` 单测可留作 Index，**不算** Surface 完成，也 **不是** live 显示路径。
 `present_from_replica` 当直播、CUP 风暴 `resets==1`、只 `contains(TOKEN)` 不数次数 **不算**完成。
 
@@ -232,7 +227,7 @@ SSH 场景：测试自己拉起隔离 sshd（`LoopbackSshd`，随机端口），
 
 ### 5.5 功能保真套件（W14）
 
-规格：[`FEATURE-E2E-PLAN.md`](FEATURE-E2E-PLAN.md)。`linux_search_e2e`（Mock PaneBuf）和 `linux_render_e2e`（静态 sample）**保留作回归，不算本套件**。
+`linux_search_e2e`（Mock PaneBuf）和 `linux_render_e2e`（静态 sample）**保留作回归，不算本套件**。
 
 | crate | 层 | 必须抓住 |
 |---|---|---|
@@ -250,7 +245,7 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 
 ### 5.6 W15 dogfood UX + 通知 peek/回复
 
-规格：[`W15-PLAN.md`](W15-PLAN.md)。
+
 
 | crate | 必须抓住 |
 |---|---|
@@ -266,7 +261,7 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 
 ### 5.7 W16 愿景 1.0 缺口（历史 / 断线水印 / 注意力语义）
 
-规格：[`W16-PLAN.md`](W16-PLAN.md)。审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。**W15 绿了再做。**
+审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。**W15 绿了再做。**
 
 | crate | 必须抓住 |
 |---|---|
@@ -280,7 +275,7 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 
 ### 5.8 W17 Linux tmux 1.0 测试门禁
 
-规格：[`W17-PLAN.md`](W17-PLAN.md)。**这是 1.0 测试完成的定义。**
+**这是 1.0 测试完成的定义。**
 
 | crate | 必须抓住 |
 |---|---|
@@ -294,7 +289,7 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 
 ### 5.9 W18 SSH loopback + 地标（范围搜索 / 上次看到这里 / 命令刻度 / 回底 +N）
 
-规格：[`W18-PLAN.md`](W18-PLAN.md)。对照只读克隆：`/home/wlz/Developer/terminal/`。
+对照只读克隆：`/home/wlz/Developer/terminal/`。
 
 | crate | 必须抓住 |
 |---|---|
@@ -312,7 +307,7 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 
 ### 5.10 Herdr Runtime 接入
 
-规格：[`HERDR-PLAN.md`](HERDR-PLAN.md)。契约：[`RUNTIME.md`](RUNTIME.md)。
+契约：[`RUNTIME.md`](RUNTIME.md)。
 
 测试自己拉起 **named session**（`herdr --session muxterm-test-* server`）。socket 在 `~/.config/herdr/sessions/<name>/herdr.sock`。清理：`herdr session stop <name>` 然后 `herdr session delete <name>`。**禁止** `herdr server stop`，禁止连用户默认 `/home/wlz/.config/herdr/herdr.sock`。夹具每条 CLI 必须带 `--session`（本环境常有 `HERDR_ENV=1`，不带就会打到用户 session）。
 
@@ -344,7 +339,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_ssh_e2e -- --test-threa
 
 ### 5.11 终端模拟器不可 panic（W19）
 
-规格：[`W19-PLAN.md`](W19-PLAN.md)。用户日志 `test_2026-0817-1902.log` / `1903.log`：`emulate.rs:718` `insertion index > len`，随后 glib trampoline abort。
+用户日志 `test_2026-0817-1902.log` / `1903.log`：`emulate.rs:718` `insertion index > len`，随后 glib trampoline abort。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -359,7 +354,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_ssh_e2e -- --test-threa
 
 ### 5.12 滚轮（W21）
 
-规格：[`W21-PLAN.md`](W21-PLAN.md)。tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shell 和 agent 的滚轮都没人收。旧测试只 `vadjustment.set_value`，抓不住。
+tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shell 和 agent 的滚轮都没人收。旧测试只 `vadjustment.set_value`，抓不住。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -373,7 +368,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_ssh_e2e -- --test-threa
 
 ### 5.13 已有的连接 + 新建 Herdr（W20）
 
-规格：[`W20-PLAN.md`](W20-PLAN.md) §0（C9 扁平列表）。一级仍是预设项目；最上固定「已有的连接」；点进去就是可 attach 行，不要本地 / SSH 目录。
+规格见 [`CATALOG.md`](CATALOG.md) §0（C9 扁平列表）。一级仍是预设项目；最上固定「已有的连接」；点进去就是可 attach 行，不要本地 / SSH 目录。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -389,7 +384,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_ssh_e2e -- --test-threa
 
 ### 5.14 Catalog（Driver / Transport / Connect / Inventory）
 
-规格：[`CATALOG.md`](CATALOG.md)、施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。`trait Runtime` 不负责 `ls`。插件表是**有序数组**，`runtime_list()` 就是登记顺序。
+规格：[`CATALOG.md`](CATALOG.md)`trait Runtime` 不负责 `ls`。插件表是**有序数组**，`runtime_list()` 就是登记顺序。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -410,7 +405,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_ssh_e2e -- --test-threa
 
 ### 5.15 Catalog SSH Host `local` + 缩放热路径（C7 / C8）
 
-规格：[`CATALOG.md`](CATALOG.md) §1.2–1.3，施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C7/C8。素材：`test_2026-0818-0133.log`（只 `rg`，禁止 `include_str!`）。
+规格：[`CATALOG.md`](CATALOG.md) §1.2–1.3，见 [`CATALOG.md`](CATALOG.md) C7/C8。素材：`test_2026-0818-0133.log`（只 `rg`，禁止 `include_str!`）。
 
 三个都叫 `local`：Transport `"local"`（单例 target `""`）、SSH Host alias `local`（LoopbackSshd 连 127.0.0.1）、`runtime_list()` 的 `"tmux"|"herdr"|"shell"`。测试用 **`Host local`**，走 `discover_sessions("ssh", "local")`。
 
@@ -433,7 +428,7 @@ xvfb-run -a cargo test --features gtk --test linux_herdr_ssh_e2e -- --test-threa
 
 ### 5.16 扁平已有的连接 + connect name `all`（C9）
 
-规格：[`CATALOG.md`](CATALOG.md) §1.4，施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C9。W20 多层目录作废。
+规格：[`CATALOG.md`](CATALOG.md) §1.4，见 [`CATALOG.md`](CATALOG.md) C9。W20 多层目录作废。
 
 connect name = `local` + SSH Host alias。`discover_sessions("all","")` 扇出。同一隔离 tmux 经 local 和 Host `self` 必须**两行**。不要求 `archmini` / `cd`。
 
@@ -488,7 +483,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 
 ### 5.3 怎么跑（Phase F / Surface）
 
-见 `SURFACE-PLAN.md` §0 / §3。继续用已有 crate：`linux_render_e2e`、`linux_live_e2e`。
+继续用已有 crate：`linux_render_e2e`、`linux_live_e2e`。
 动手前必读 `docs/SURFACE.md` 与 `tests/samples/dogfood-2026-0815-2105.txt`；
 原 `.log` 只许 `rg`，禁止 `include_str!`。Codex TUI fixture **raw feed**，禁止经 `visible_ansi`。
 
@@ -499,7 +494,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 - [ ] widget_name + VTE 文本有断言
 - [ ] 持久化写的是 `config.toml`（不是 `preferences.toml`）
 - [ ] 真 tmux 用隔离 `-L`；Drop 带同一 `-L` 的 `kill-server`
-- [ ] 场景函数名与 `SURFACE-PLAN.md` 一致；打字 token **恰好一次**；CUP seed 后 `resets` 不涨
+- [ ] 场景函数名与  一致；打字 token **恰好一次**；CUP seed 后 `resets` 不涨
 - [ ] 几何用例比行号，不只 `contains(TOKEN)`
 - [ ] 状态点走 `clicked`，没有 `popover.popup()` 冒充
 - [ ] 已读 `dogfood-2026-0815-2105.txt` 与 `codex-tui-sanitized.txt`

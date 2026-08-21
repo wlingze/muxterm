@@ -1,7 +1,7 @@
 # PANE-VT.md — 工作区池（讨论稿，已收口）
 
 > **2026-08-15 22:50：本文降为讨论记录。** 权威命名与结构：[`WORKSPACE.md`](WORKSPACE.md)。
-> 施工：[`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md)。映射：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
+> 。映射：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
 > 像素：[`SURFACE.md`](SURFACE.md)（F 已冻结）。
 >
 > 讨论修订：2026-08-15 22:35 CST（`2026-08-15T22:35:07+08:00`）
@@ -148,7 +148,7 @@ WorkspacePool
         viewport                // 滚动位置，切走再回来
 ```
 
-顺序已收进 [`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md) W1–W8，**不要按本节另开施工**。形状备忘：
+顺序已收进 W1–W8，**不要按本节另开施工**。形状备忘：
 
 1. **Core `Workspace` 包一层**  
    现有 `TerminalModel` 放进 Workspace。`ReplicaStore` 的那一层 HashMap 收进 Workspace，不要按 window 全局再扫一遍。单测：两个 Workspace 同时 feed，互不污染。

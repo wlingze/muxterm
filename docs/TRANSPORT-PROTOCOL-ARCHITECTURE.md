@@ -13,7 +13,7 @@
 > - `ARCHITECTURE.md` — 现有架构与交互模型
 > - `docs/PROJECT-STRUCTURE.md` — 当前与目标目录结构
 > - `docs/CATALOG.md` — **现行** backend 总状态（Catalog / Driver / Connect / Inventory）
-> - `docs/ARCHITECTURE-PLAN.md` — C ABI 拆分方案与平台前端方案
+> - `docs/ARCHITECTURE.md` — C ABI 拆分方案与平台前端方案
 > - `docs/ID-SYSTEM.md` — ID 体系（本文 §3 扩展）
 > - `docs/WORKSPACE.md` — **当前产品层级**（Workspace → Tab → Pane）
 > - `docs/LAYER-MAPPING.md` — muxterm↔tmux 映射（已去掉产品 Session / 虚拟 Window）

@@ -3,8 +3,8 @@
 > 这个文件给 Codex / Claude Code / Cursor 等 coding agent 读。
 > 产品文档见 `PRODUCT.md`。产品结构见 `docs/WORKSPACE.md`
 > （WorkspacePool → Workspace → Tab → Pane；Window 只是体现；
-> tmux 全部在 `runtime/tmux`；池在 core）。施工 `docs/WORKSPACE-PLAN.md`。
-> Runtime 契约 `docs/RUNTIME.md`。Herdr 施工 `docs/HERDR-PLAN.md`。
+> tmux 全部在 `runtime/tmux`；池在 core）。
+> Runtime 契约 `docs/RUNTIME.md`。Herdr 接入见 `docs/RUNTIME.md`。
 > 像素契约 `docs/SURFACE.md`。FFI/CLI 以 WORKSPACE.md §6 为准。
 
 ## 角色
@@ -22,8 +22,8 @@
 
 ## 工作原则
 
-1. 先读 `docs/WORKSPACE.md`（含 §6 接口）、`docs/WORKSPACE-PLAN.md`、`PRODUCT.md`，再动代码。
-   动 Runtime / Herdr 还要读 `docs/RUNTIME.md`、`docs/HERDR-PLAN.md`。
+1. 先读 `docs/WORKSPACE.md`（含 §6 接口）、`PRODUCT.md`，再动代码。
+   动 Runtime / Herdr 还要读 `docs/RUNTIME.md`。
    像素路径还要读 `docs/SURFACE.md`。不要实现 Session / 虚拟 Window；不要在 platform 做连接池。
    GUI 问能力用 `support()`，禁止 `if runtime == "herdr"`。
 2. **增量提交**：每个可独立验证的逻辑单元一个 commit。commit 信息 `feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `ci:` / `chore:`。
@@ -39,7 +39,7 @@
    破坏性命令，**一律禁止**直接对默认 server 执行。任何需要 tmux 的测试/验证，
    **必须**用独立隔离 socket（`-L <唯一名>`），且清理时也**必须**带同一个 `-L`。
 10. **绝不停用户默认 Herdr server**：禁止无名字的 `herdr server stop`。Herdr 测试只用
-    named session（`muxterm-test-<唯一后缀>`），见 `docs/HERDR-PLAN.md` §3。
+    named session（`muxterm-test-<唯一后缀>`）。
 
 ## 技术约定
 

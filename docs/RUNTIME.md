@@ -3,16 +3,16 @@
 > 日期：2026-08-17（`2026-08-17T15:26:26+08:00`）
 > 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）。
 > 分支：`feature/runtime/support_herdr`
-> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md) / [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
+> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md)。
 > tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
-> Herdr 接入施工：[`HERDR-PLAN.md`](HERDR-PLAN.md)。已有的连接：[`W20-PLAN.md`](W20-PLAN.md)。像素：[`SURFACE.md`](SURFACE.md)。
+> Herdr 接入见 [`RUNTIME.md`](RUNTIME.md)。像素：[`SURFACE.md`](SURFACE.md)。
 > 愿景里的阶段 D：`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §0.3 / §6 阶段 D。
 >
 > 核对：本机 `herdr 0.8.0`，socket 协议 **19**；官方 [Concepts](https://herdr.dev/docs/concepts/)、[Socket API](https://herdr.dev/docs/socket-api/)、[CLI](https://herdr.dev/docs/cli-reference/)。
 
 **一句话：** Runtime 是给一个 Muxterm Workspace **填** Tab/Pane、收字节、执行 Task 的接口。tmux、本地 shell、Herdr 都是实现。SSH 不是 Runtime，是 Transport。GUI 不许按实现名字写 `if herdr`，只许问 `support()`。
 
-本文是契约。H0–H4 已在 `feature/runtime/support_herdr`。QuickConnect 已有的连接见 [`W20-PLAN.md`](W20-PLAN.md)。
+本文是契约。H0–H4 已在 `feature/runtime/support_herdr`。QuickConnect 已有的连接
 
 ---
 
@@ -77,7 +77,7 @@ runtime/herdr       Herdr socket。唯一能出现 w2:p1 / terminal.frame 的地
 
 - trait 在 `src/core/model/backend.rs`（名字仍叫 `Runtime`）
 - 实现：`TmuxRuntime`、`ShellRuntime`、`HerdrRuntime`、`DaemonRuntime`
-- `src/core/catalog/` 类型表面已在；`with_builtins()` 还空（施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md)）
+- `src/core/catalog/` 类型表面已在；`with_builtins()` 还空（已落地）
 - `WorkspaceSpec.runtime` 是 `"tmux"` / `"shell"` / `"herdr"` / `"daemon"` 字符串
 - `WorkspaceSpec.build_runtime()` 仍是字符串 `match`；Catalog::open **禁止**再走这条
 - `WorkspacePool.herdr_sessions` 仍是 Herdr 旁路表，要迁进 `Catalog.connects`
@@ -309,7 +309,7 @@ control，后台用 observe。
 `discover_targets(transport)` = 怎么到那儿（SSH hosts / Local 单例）。  
 `discover_sessions(transport, target)` = 该 target 上各 Driver 的可 attach 格子。不要叫 `discover-connection`。
 
-QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」：点进去是**扁平** runtime list（`discover_sessions("all")`），每一行可直接 attach，**不要**本地 / SSH / Host 多层目录。同一 session 在 local 和 ssh-self 上出现两行（`tmux @ local` / `tmux @ self`）。命令面板先列 connect name（`local` 与 SSH alias 并列），点进去才是该机器的 runtime list。Runtime 只是徽章和 `support()` 决定的次级动作。新建项目卡仍来自 `runtime_list()`。施工 [`CATALOG-PLAN.md`](CATALOG-PLAN.md) C9；W20 多层目录作废。
+QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」：点进去是**扁平** runtime list（`discover_sessions("all")`），每一行可直接 attach，**不要**本地 / SSH / Host 多层目录。同一 session 在 local 和 ssh-self 上出现两行（`tmux @ local` / `tmux @ self`）。命令面板先列 connect name（`local` 与 SSH alias 并列），点进去才是该机器的 runtime list。Runtime 只是徽章和 `support()` 决定的次级动作。新建项目卡仍来自 `runtime_list()`。见 [`CATALOG.md`](CATALOG.md) C9；W20 多层目录作废。
 
 远程 Herdr：Transport `ssh` + Runtime `herdr`。列出用 `ssh … herdr session list` / `workspace list`（和 `ssh … tmux list-sessions` 同类）。打开不要 `herdr --remote`（会在远端装/启 server）：把远端 `herdr.sock` Unix 转发到本机，再走现有 `HerdrSession`。没在跑就跳过，不要替用户启动。探活进 Inventory，不要写在 `window.rs`。
 

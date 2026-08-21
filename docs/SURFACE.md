@@ -2,8 +2,8 @@
 
 > 机制名：**Surface**（中文：**单面**）
 > 状态：调研定案，2026-08-15 21:26 CST（核查 `2026-08-15T21:26:10+08:00`）
-> 性质：长期保留的架构文档。Linux 像素路径（F1–F6）见 [`SURFACE-PLAN.md`](SURFACE-PLAN.md)（已冻结）。
-> **产品层级与工作区池** 见 [`WORKSPACE.md`](WORKSPACE.md)；施工 [`WORKSPACE-PLAN.md`](WORKSPACE-PLAN.md)。
+> 性质：长期保留的架构文档。Linux 像素路径（F1–F6）已冻结。
+> **产品层级与工作区池** 见 [`WORKSPACE.md`](WORKSPACE.md)。
 > [`PANE-VT.md`](PANE-VT.md) 是讨论稿，以 WORKSPACE.md 为准。
 > 参考树：`/home/wlz/Developer/terminal/`（只读，不进本仓库）
 
@@ -43,7 +43,7 @@ Linux 当前显示路径（Phase C–E 叠出来的）：
 
 Codex 一类 TUI 的一次重绘会被 tmux 切成连续 `%output` 碎片（常见 1365 然后 2730）。它们是 **同一帧的前后半**，必须按序 `vte.feed`。
 
-`last_visible_frame` 丢掉前半；`present_from_replica` 用第二份网格补回来，于是每 25ms `reset` → 白闪。`docs/LINUX-PLAN.md` E-R1 把「VTE 只显示 replica 的 `visible_ansi`」写成正确直播——**那条处方作废**，以本文为准。
+`last_visible_frame` 丢掉前半；`present_from_replica` 用第二份网格补回来，于是每 25ms `reset` → 白闪。旧 E-R1 把「VTE 只显示 replica 的 `visible_ansi`」写成正确直播——**那条处方作废**，以本文为准。
 
 生产代码（HEAD `d802f05`）：
 
@@ -199,7 +199,7 @@ ivyTerm 在 capture 后用若干 `\n` + `ESC[#A` 把视口对齐到底（`scroll
 
 ### 5.2 中：Surface（GTK VTE，无 AppWindow 或一个 Window）
 
-函数名固定，见 `SURFACE-PLAN.md`。
+函数名固定（回归门测试的契约）。
 
 - `surface_live_feed_does_not_reset`：synced 后 20 帧 CUP，`RenderTrace.resets` 不增加；可见 `frame-19`
 - `surface_typing_overwrites_in_place`：`\r` + 更长前缀；完整句在 `visible_text` **恰好一次**

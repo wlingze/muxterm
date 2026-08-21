@@ -2,7 +2,7 @@
 
 > **文档定位**：说明 muxterm 当前目录结构与目标目录结构。
 > **基线（历史）**：main `d69fab2`（2026-07-28）。下面 §0 是 **2026-08-17** 的现行树；§1 起是当时的设计记录，不要当施工单。
-> 产品：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md) / [`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
+> 产品：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md)。
 > Runtime：[`RUNTIME.md`](RUNTIME.md)。像素：[`SURFACE.md`](SURFACE.md)。
 
 ---
@@ -13,7 +13,7 @@
 
 ```
 src/core/
-├── catalog/                 # 总台账（施工中，见 CATALOG-PLAN.md）
+├── catalog/                 # 总台账
 │   ├── mod.rs               #   Catalog：有序 Driver/Transport 表 + Connects + Inventory + Pool
 │   ├── driver.rs            #   RuntimeDriver（list/open；不是活 Runtime）
 │   ├── transport.rs         #   Catalog Transport 插件（Local/SSH）
@@ -129,10 +129,10 @@ muxterm/
 │   ├── config.example.toml
 │   └── themes/{dark,light}.toml
 ├── docs/                         # 文档
-│   ├── ARCHITECTURE-PLAN.md
+
 │   ├── ID-SYSTEM.md
 │   ├── WORKSPACE.md
-│   ├── WORKSPACE-PLAN.md
+
 │   ├── SURFACE.md
 │   ├── LAYER-MAPPING.md
 │   ├── RENDERING-OPTIMIZATION.md

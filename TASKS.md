@@ -1,7 +1,7 @@
 # TASKS.md — macOS UI 功能 → Linux GTK 移植执行计划
 
 > **2026-08-16 01:09：W1 已落地**（`3f19923`）。**Codex 从 W2 做到 W8，中间不要等用户。**
-> 计划 [`docs/WORKSPACE-PLAN.md`](docs/WORKSPACE-PLAN.md)。架构 [`docs/WORKSPACE.md`](docs/WORKSPACE.md) §6。
+> 架构 [`docs/WORKSPACE.md`](docs/WORKSPACE.md) §6。
 > 不要重做 C7/C8/E/F。测试 [`docs/TESTING.md`](docs/TESTING.md)。
 >
 > 基线时间：2026-08-13 19:5x CST（Asia/Shanghai）

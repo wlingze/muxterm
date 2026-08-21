@@ -3,8 +3,8 @@
 > 日期：2026-08-19（`2026-08-19T01:41:31+08:00`）；C9 connect name / 扁平已有的连接。C7/C8 仍有效。
 > 工作目录：`/home/wlz/Developer/self/muxterm`
 > 分支：`feature/runtime/support_herdr`
-> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。施工：[`CATALOG-PLAN.md`](CATALOG-PLAN.md)。
-> 像素：[`SURFACE.md`](SURFACE.md)。已有的连接 UI：[`W20-PLAN.md`](W20-PLAN.md)。
+> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。
+> 像素：[`SURFACE.md`](SURFACE.md)。
 
 **一句话：** FFI 持有一份 **Catalog**。里面是两张插件表（Driver / Transport）、未打开对象的 **Inventory**、可复用管道 **Connect**、以及已经打开的 **WorkspacePool**。`trait Runtime` 只表示**已经 attach** 的那一格，不负责 `ls`。
 
