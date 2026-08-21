@@ -1971,11 +1971,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
+    /// Core 会为后台 tab 继续维护 PaneBuf 并交付输出事件；只有当前布局中
+    /// 的 pane 或已经创建过的隐藏 Surface 才应进入 SwiftTerm。这样 attach
+    /// 初始只 capture 活动 tab 时，后台 pane 的索引不会意外创建不可见 view。
+    private func shouldHandleSurfaceEvent(for paneId: UInt32, activePaneIDs: Set<UInt32>) -> Bool {
+        activePaneIDs.contains(paneId)
+            || terminalManager.hasView(for: paneId)
+    }
+
     func pollOnce() {
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
         connectionPool.pollBackgroundSlots()
         let events = bridge.pollEvents()
+        // Core 已在 pollEvents() 中应用了这些状态变化；读取一次最新 active
+        // tab 的 pane 集合，让同一批刚创建的 foreground pane 也能接收其
+        // 首个 snapshot/output。后台 tab 不在此集合内，仍不会懒建 Surface。
+        let activePaneIDs = Set(lastSnapshot.panes.map(\.id))
+            .union(bridge.snapshot().panes.map(\.id))
         lastPaneOutputEventCount = events.filter(\.isPaneOutput).count
         if let error = bridge.takeError() {
             reportStatusError(error)
@@ -1999,6 +2012,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
                 terminalManager.removePane(ev.paneId)
             } else if ev.isPaneSnapshot {
+                guard shouldHandleSurfaceEvent(for: ev.paneId, activePaneIDs: activePaneIDs) else {
+                    continue
+                }
                 // 结构/尺寸事件先同步模型和布局，再 reset + feed snapshot，
                 // 否则 Cursor/htop 的 CUP 会按旧网格重放。
                 if deferSurfaceEvents {
@@ -2007,6 +2023,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
                 }
             } else if ev.isPaneOutput {
+                guard shouldHandleSurfaceEvent(for: ev.paneId, activePaneIDs: activePaneIDs) else {
+                    continue
+                }
                 // 同批有结构事件（如窗口 resize 的 %layout-change）时，htop
                 // 的新尺寸重绘帧会先于模型 resize 到达，必须先收集、等布局
                 // 同步完再喂；纯输出批次直接喂，避免额外延迟。
@@ -2133,10 +2152,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
         for item in pendingSnapshots {
-            terminalManager.handleSnapshot(paneId: item.paneId, data: item.data)
+            if shouldHandleSurfaceEvent(for: item.paneId, activePaneIDs: activePaneIDs) {
+                terminalManager.handleSnapshot(paneId: item.paneId, data: item.data)
+            }
         }
         for item in pendingOutputs {
-            terminalManager.handleOutput(paneId: item.paneId, data: item.data)
+            if shouldHandleSurfaceEvent(for: item.paneId, activePaneIDs: activePaneIDs) {
+                terminalManager.handleOutput(paneId: item.paneId, data: item.data)
+            }
         }
         refreshAttentionChrome()
         if let activePane = activePaneID {

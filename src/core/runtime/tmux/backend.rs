@@ -192,6 +192,14 @@ pub struct TmuxRuntime {
     initial_capture_pending: HashSet<PaneId>,
     /// 已完成 attach 初始快照的 pane；之后的 `%output` 才是实时增量。
     initial_capture_done: HashSet<PaneId>,
+    /// attach 建立后给后台 tab 做轻量索引播种的开关。它只影响异步的可见
+    /// 屏 capture，不让 connect 等待，也不提前创建前端 Surface。
+    background_index_capture_enabled: bool,
+    /// 最近一次 capture 只取了可见屏；第一次切入该 tab 时要升级成带历史
+    /// 的权威 capture。
+    background_capture_only: HashSet<PaneId>,
+    /// 切 tab 时可见屏 capture 尚未返回，待响应完成后继续发带历史 capture。
+    full_capture_after_pending: HashSet<PaneId>,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
     /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
@@ -497,6 +505,9 @@ impl TmuxRuntime {
             pending_close_tabs: HashSet::new(),
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
+            background_index_capture_enabled: false,
+            background_capture_only: HashSet::new(),
+            full_capture_after_pending: HashSet::new(),
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
@@ -633,7 +644,48 @@ impl TmuxRuntime {
             .map(|pane| pane.id)
             .collect();
         for pane in panes {
+            if self.background_capture_only.contains(&pane) {
+                if self.initial_capture_pending.contains(&pane) {
+                    // 可见屏播种仍在飞行：响应完成后再升级为完整历史
+                    // capture，避免同一 pane 上并发两个查询。
+                    self.full_capture_after_pending.insert(pane);
+                    continue;
+                }
+                self.background_capture_only.remove(&pane);
+                self.initial_capture_done.remove(&pane);
+            }
             self.query_capture_pane(pane);
+        }
+    }
+
+    /// 后台 tab 的轻量首屏 capture：只为 Core 索引提供当前可见内容，响应
+    /// 不参与 connect 就绪判定；第一次切入时 `query_capture_tab` 会升级到
+    /// 带 scrollback 的权威 Surface seed。
+    fn query_background_index_tab(&mut self, tab: TabId) {
+        let panes: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|pane| pane.tab == tab)
+            .map(|pane| pane.id)
+            .collect();
+        for pane in panes {
+            self.query_capture_pane_visible(pane);
+        }
+    }
+
+    fn query_background_index_captures(&mut self) {
+        if !self.background_index_capture_enabled {
+            return;
+        }
+        let active = self.active_tab_id();
+        let tabs: Vec<TabId> = self
+            .tabs
+            .iter()
+            .filter(|tab| Some(tab.id) != active)
+            .map(|tab| tab.id)
+            .collect();
+        for tab in tabs {
+            self.query_background_index_tab(tab);
         }
     }
 
@@ -645,6 +697,46 @@ impl TmuxRuntime {
             return false;
         };
         self.panes.iter().filter(|pane| pane.tab == tab).count() >= *expected
+    }
+
+    /// attach 初始连接交给前端前，确认活动 tab 的 Surface seed 至少已经
+    /// 完成。这里只看活动 tab；后台 tab 的可见屏/历史 capture 仍然异步，
+    /// 避免慢的 scrollback 阻塞 Connect 或命令面板。
+    fn active_tab_capture_ready(&self) -> bool {
+        let Some(tab) = self.active_tab_id() else {
+            return false;
+        };
+        let panes: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|pane| pane.tab == tab)
+            .map(|pane| pane.id)
+            .collect();
+        !panes.is_empty()
+            && panes
+                .iter()
+                .all(|pane| self.initial_capture_done.contains(pane))
+    }
+
+    /// attach 后所有已知 tab 的轻量可见屏索引是否已经完成。后台只用
+    /// `capture-pane -p`，因此这个检查不会把大段 scrollback 带回连接路径。
+    fn attach_visible_captures_ready(&self) -> bool {
+        !self.tabs.is_empty()
+            && self.tabs.iter().all(|tab| {
+                let Some(expected) = self.expected_panes_per_window.get(&tab.id) else {
+                    return false;
+                };
+                let panes: Vec<PaneId> = self
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.tab == tab.id)
+                    .map(|pane| pane.id)
+                    .collect();
+                panes.len() >= *expected
+                    && panes
+                        .iter()
+                        .all(|pane| self.initial_capture_done.contains(pane))
+            })
     }
 
     /// 测试用：当前 connect 模式（attach / new-session）。
@@ -1055,8 +1147,11 @@ impl TmuxRuntime {
                 // 拼到快照尾部；这样既保留完整屏幕又不丢查询期间的输出。
                 if self.is_attach_mode() && !self.initial_capture_done.contains(&pane) {
                     // 若尚未发起 capture 查询（pending 未建立），说明此时
-                    // 只是启动期提示；等 query_capture_pane 真正发出查询后再
-                    // 开始缓冲，避免把启动 prompt 与屏幕内容混在一起。
+                    // 只是启动期提示。活动 pane 在 capture 返回前仍保持
+                    // seed 边界；已知的后台 pane 则直接索引这些输出，保证
+                    // 搜索不会漏掉 attach 前已经写入的 token。前端会过滤
+                    // 没有可见/已有 Surface 的后台 pane，不会因此创建不可见
+                    // 的 SwiftTerm view。
                     if self.initial_capture_pending.contains(&pane) {
                         // `%begin` 是 tmux 对 capture 命令的确定性边界：边界
                         // 之前的通知可能已经被 capture-pane 包含，边界之后的
@@ -1074,11 +1169,25 @@ impl TmuxRuntime {
                             "attach 快照查询期间暂存实时 %output"
                         );
                     } else {
-                        tracing::trace!(
-                            target: "muxterm::tmux",
-                            pane = pane.0,
-                            "attach 启动 prompt 已忽略（等待 capture 快照）"
-                        );
+                        let is_background_pane = self
+                            .panes
+                            .iter()
+                            .find(|candidate| candidate.id == pane)
+                            .is_some_and(|candidate| !self.tab_is_active(candidate.tab));
+                        if is_background_pane {
+                            self.note_pane_output(pane, &content);
+                            tracing::trace!(
+                                target: "muxterm::tmux",
+                                pane = pane.0,
+                                "attach 未 capture 的 pane 输出已进入索引"
+                            );
+                        } else {
+                            tracing::trace!(
+                                target: "muxterm::tmux",
+                                pane = pane.0,
+                                "attach 活动 pane 输出暂存，等待 capture 快照"
+                            );
+                        }
                     }
                     return;
                 }
@@ -1506,6 +1615,11 @@ impl TmuxRuntime {
                             .push_back(StateChange::PaneOutput { pane, data });
                         self.trim_event_queue();
                     }
+                    if self.full_capture_after_pending.remove(&pane) {
+                        self.background_capture_only.remove(&pane);
+                        self.initial_capture_done.remove(&pane);
+                        self.query_capture_pane(pane);
+                    }
                 }
                 PendingQuery::ListSessions => {
                     // list-sessions 默认格式: "demo: 1 windows (created ...)"
@@ -1776,6 +1890,12 @@ impl TmuxRuntime {
             for pane in new_panes {
                 self.query_capture_pane(pane.id);
             }
+        } else if self.background_index_capture_enabled {
+            // 只为后台索引做轻量可见屏 capture；连接状态不等待这些响应，
+            // 且前端没有当前/既有 Surface 时会忽略对应事件。
+            for pane in new_panes {
+                self.query_capture_pane_visible(pane.id);
+            }
         }
     }
 
@@ -1954,6 +2074,29 @@ impl TmuxRuntime {
         }
         self.ready_probe_at.remove(&pane);
         self.dispatch_pending_write(pane);
+    }
+
+    /// 后台索引用的轻量 capture：不读取 scrollback，避免 attach 后多个
+    /// inactive tab 的大历史响应挤占控制流。它复用同一 snapshot 边界状态机，
+    /// 但记录在 `background_capture_only`，切入时会重新请求完整历史。
+    fn query_capture_pane_visible(&mut self, pane: PaneId) {
+        if !self.is_attach_mode()
+            || self.pending_queries.iter().any(|query| {
+                matches!(query, PendingQuery::CapturePane { pane: pending } if *pending == pane)
+            })
+            || self.initial_capture_done.contains(&pane)
+        {
+            return;
+        }
+        let line = cmd::capture_pane_visible(pane).to_line();
+        if self.dispatch_command(line).is_ok() {
+            self.initial_capture_buf.remove(&pane);
+            self.initial_capture_tail.remove(&pane);
+            self.capture_response_seen.remove(&pane);
+            self.initial_capture_pending.insert(pane);
+            self.background_capture_only.insert(pane);
+            self.replace_last_pending(PendingQuery::CapturePane { pane });
+        }
     }
 
     /// 发送 list-sessions 查询（列出 tmux server 上所有 session）。
@@ -2358,10 +2501,40 @@ impl Runtime for TmuxRuntime {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
+        // active tab 的 capture 响应通常紧随 pane 拓扑到达，但不能假设
+        // `connect()` 返回时控制流已经处理完它们：调用方可能只在连接后
+        // 轮询一次事件。给活动 tab 一个很短的 bounded settle，确保 Core
+        // 首屏缓冲可用；后台 tab 的 capture 不在此等待。
+        if is_attach && self.active_tab_topology_ready() {
+            let settle_deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+            while !self.active_tab_capture_ready() && std::time::Instant::now() < settle_deadline {
+                self.pump_events();
+                if self.active_tab_capture_ready() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+
         // attach 的 capture 是异步 Surface seed：连接状态不再等待所有 pane
         // 的历史返回。活动 tab 的查询已经排队，前端在收到 PaneSnapshot 后
-        // 播种；其它 tab 首次激活时再按需查询。
+        // 播种；其它 tab 只做轻量可见屏索引，首次激活时再按需补抓历史。
         if is_attach {
+            self.background_index_capture_enabled = true;
+            self.query_background_index_captures();
+            // 后台 pane 只做可见屏索引；给这些小响应一个 bounded settle，
+            // 让 Core 搜索在 connect 后立即可用。绝不等待后台 scrollback
+            // 历史，也不把后台事件转成不可见的 Surface。
+            let settle_deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+            while !self.attach_visible_captures_ready()
+                && std::time::Instant::now() < settle_deadline
+            {
+                self.pump_events();
+                if self.attach_visible_captures_ready() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
             tracing::info!(
                 target: "muxterm::tmux::seed",
                 active_tab = self.active_tab_id().map(|tab| tab.0),
@@ -3611,6 +3784,45 @@ mod tests {
         b.mark_tab_active(TabId(2));
         b.query_capture_tab(TabId(2));
         assert!(b.initial_capture_pending.contains(&PaneId(1)));
+    }
+
+    #[test]
+    fn attach_output_without_pending_capture_is_kept_for_background_index() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(9);
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "background".into(),
+                active: false,
+            },
+        ];
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: String::new(),
+            cols: 80,
+            rows: 24,
+        });
+        b.handle_message(Message::Output {
+            pane,
+            content: b"background-token\r\n".to_vec(),
+            raw_content: "background-token\\r\\n".into(),
+        });
+
+        assert_eq!(
+            b.outputs.get(&pane),
+            Some(&b"background-token\r\n".to_vec())
+        );
+        assert!(b.events.iter().any(
+            |event| matches!(event, StateChange::PaneOutput { pane: p, data } if *p == pane && data == b"background-token\r\n")
+        ));
     }
 
     #[test]

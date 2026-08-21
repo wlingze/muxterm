@@ -381,6 +381,14 @@ pub fn capture_pane_with_history(pane: PaneId, history_lines: u32) -> TmuxComman
     TmuxCommand::from_raw(format!("capture-pane -e -p -S -{n} -t %{}", pane.0))
 }
 
+/// 后台索引播种：只捕获当前可见屏幕，不读取大段 scrollback。
+///
+/// attach 不应为了搜索而阻塞连接；后台 tab 先用轻量可见屏播种，第一次
+/// 切入时再由 runtime 发起带历史的权威 capture。
+pub fn capture_pane_visible(pane: PaneId) -> TmuxCommand {
+    TmuxCommand::from_raw(format!("capture-pane -e -p -t %{}", pane.0))
+}
+
 /// 捕获 tmux 的 inactive screen。`-q` 让未使用 alternate screen 的 pane
 /// 返回空响应，而不是把一次 resync 变成 `%error`；`-S` 保留主屏的 scrollback，
 /// 这样 alternate screen 退出后仍能回到和 tmux 一致的历史。
@@ -1058,6 +1066,13 @@ fn capture_pane_with_history_requests_scrollback() {
     let c = capture_pane_with_history(PaneId(3), 10_000);
     assert_eq!(c.as_str(), "capture-pane -e -p -S -10000 -t %3");
     assert_eq!(c.to_line(), "capture-pane -e -p -S -10000 -t %3\n");
+}
+
+#[test]
+fn capture_pane_visible_avoids_scrollback_for_background_index_seed() {
+    let c = capture_pane_visible(PaneId(3));
+    assert_eq!(c.as_str(), "capture-pane -e -p -t %3");
+    assert_eq!(c.to_line(), "capture-pane -e -p -t %3\n");
 }
 
 #[test]

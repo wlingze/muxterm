@@ -125,6 +125,7 @@ impl MuxtermHandle {
     /// 把一批事件里的 PaneOutput 信号应用到注意力引擎。
     fn apply_attention_for_events(&mut self, ws_id: &WorkspaceId, events: &[StateChange]) {
         let mut pending: Vec<(u32, Vec<AttentionSignal>, String, u64)> = Vec::new();
+        let mut pending_process_names: Vec<(u32, Option<String>)> = Vec::new();
         {
             let Some(ws) = self.pool_mut().get_mut(ws_id) else {
                 return;
@@ -136,6 +137,19 @@ impl MuxtermHandle {
                     let signals = ws.take_attention_signals(*pane);
                     let (last_line, seq) = ws.pane_last_line_seq(*pane);
                     pending.push((pane.0, signals, last_line, seq));
+                } else if let StateChange::StatusBarSubscription {
+                    name,
+                    value,
+                    pane: Some(pane),
+                } = ev
+                {
+                    // pane-cmd 是 AttentionEngine 的进程名来源。由 Core 在
+                    // poll 时同步消费，避免 Swift 尚未绘制完事件批次时 Done
+                    // 通知先到而 Attention 行短暂显示 `?`。
+                    if name.starts_with("muxterm.pane-cmd") {
+                        pending_process_names
+                            .push((pane.0, (!value.is_empty()).then(|| value.clone())));
+                    }
                 }
             }
         }
@@ -143,6 +157,9 @@ impl MuxtermHandle {
         for (pane, signals, last_line, seq) in pending {
             self.attention
                 .apply(&ws_name, pane, &signals, &last_line, seq);
+        }
+        for (pane, name) in pending_process_names {
+            self.attention.set_process_name(&ws_name, pane, name);
         }
     }
 }
