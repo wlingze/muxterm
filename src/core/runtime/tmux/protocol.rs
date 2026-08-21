@@ -1087,22 +1087,11 @@ impl<'a> LayoutParser<'a> {
         }
         // 子节点。tmux 可以在同一个 `{}` / `[]` 组内放两个以上的
         // child（例如一个 pane 再接三个上下 pane），不能只读取前两个。
-        let dir;
-        let children;
-        match self.chars.peek() {
-            Some('{') => {
-                dir = SplitDir::Horizontal;
-                children = Some(self.parse_group('}')?);
-            }
-            Some('[') => {
-                dir = SplitDir::Vertical;
-                children = Some(self.parse_group(']')?);
-            }
-            _ => {
-                dir = SplitDir::Horizontal;
-                children = None;
-            }
-        }
+        let (dir, children) = match self.chars.peek() {
+            Some('{') => (SplitDir::Horizontal, Some(self.parse_group('}')?)),
+            Some('[') => (SplitDir::Vertical, Some(self.parse_group(']')?)),
+            _ => (SplitDir::Horizontal, None),
+        };
         Ok(LayoutTree {
             cols,
             rows,
