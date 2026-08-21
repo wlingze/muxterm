@@ -12,11 +12,29 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     var targetConfig: TargetConfig
     let bridge: CoreBridge
     let terminalManager: TerminalManager
-    var lifecycle: ConnectionLifecycle = .background
+    private let stateLock = NSLock()
+    private var lifecycleValue: ConnectionLifecycle = .background
+    private var lastSnapshotValue = FrameSnapshot()
+    var lifecycle: ConnectionLifecycle {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return lifecycleValue
+        }
+        set {
+            stateLock.lock()
+            lifecycleValue = newValue
+            stateLock.unlock()
+        }
+    }
     var lastUsedAt: UInt64
 
     /// 最近一次后台 poll 后的快照（只读缓存，避免后台刷新 UI）。
-    private(set) var lastSnapshot = FrameSnapshot()
+    var lastSnapshot: FrameSnapshot {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return lastSnapshotValue
+    }
 
     init(
         key: ConnectionKey,
@@ -34,6 +52,14 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     /// 后台继续 poll：喂事件给本 slot 的 TerminalManager，保持 SwiftTerm
     /// 状态 warm；不做同步 displayIfNeeded（视图可能不在窗口层级）。
     func pollBackground() {
+        // CoreBridge 的 C ABI 句柄不是可并发访问的；同一 slot 的前台切换、
+        // 后台 poll、淘汰必须串行。锁只覆盖该 slot，不会阻塞主窗口其它连接。
+        stateLock.lock()
+        guard lifecycleValue == .background else {
+            stateLock.unlock()
+            return
+        }
+        defer { stateLock.unlock() }
         terminalManager.setViewCreationEnabled(false)
         defer { terminalManager.setViewCreationEnabled(true) }
         terminalManager.beginEventBatch()
@@ -61,13 +87,23 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
                 continue
             }
         }
-        lastSnapshot = bridge.snapshot()
+        lastSnapshotValue = bridge.snapshot()
+    }
+
+    /// 在 MainWindow 使用该 slot 的 bridge 前先切换生命周期。若后台 poll
+    /// 已经开始，这里会等它释放锁，确保 Swift/FFI 不发生并发访问。
+    func prepareForForeground() {
+        stateLock.lock()
+        lifecycleValue = .active
+        stateLock.unlock()
     }
 
     /// 淘汰：tmux/ssh 先 detach（保留 server/session），再回收 handle；
     /// local shell 直接 shutdown（无独立 server 可保留）。
     func evict(reason: ConnectionEvictionReason) {
-        lifecycle = .evicting
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        lifecycleValue = .evicting
         if terminalManager.usesClientResize {
             _ = bridge.detach()
         }
@@ -76,7 +112,9 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
 
     /// 窗口/应用关闭：直接回收 handle，不保留后台连接。
     func shutdown() {
-        lifecycle = .evicting
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        lifecycleValue = .evicting
         bridge.shutdown()
     }
 }

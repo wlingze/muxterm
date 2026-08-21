@@ -77,6 +77,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var trafficMonitorTimer: Timer?
     private var trafficRateSampler = TrafficRateSampler()
     private var activeProjectFlow: ProjectConnectFlowBox?
+    /// 后台 warm slot 的 poll 不能和 UI timer 同步执行：远端控制模式在一轮
+    /// refresh 中可能解析大量事件，阻塞这里会让 Connect/Cmd-Shift-P 出现
+    /// beachball。每个 slot 自身仍用锁串行，主线程只负责投递一次任务。
+    private var backgroundPollInFlight = false
+    private let backgroundPollQueue = DispatchQueue(
+        label: "muxterm.macos.background-poll",
+        qos: .utility
+    )
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
     private let connectionPool: ConnectionPool<WarmConnectionSlot>
@@ -510,15 +518,48 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         switchToTabIndex(n)
     }
 
+    /// 返回快捷键/命令面板使用的 tab 顺序。tmux status 快照包含真实
+    /// window_index；只有快照与 Core 当前 tab 集合完全一致时才采用它，
+    /// 否则在新建/关闭的短暂窗口内回退到 Core 已按 index 排好的列表。
+    private func tabEntriesForSwitching() -> [(index: Int, id: UInt32, name: String)] {
+        let tabs = lastSnapshot.tabs
+        let fallback = tabs.enumerated().map { position, tab in
+            (index: position + 1, id: tab.id, name: tab.name)
+        }
+        guard terminalManager.usesClientResize,
+              let status = statusBarSnapshot
+        else {
+            return fallback
+        }
+        let tabIDs = Set(tabs.map(\.id))
+        let statusWindows = status.windowsByIndex()
+        guard Set(statusWindows.map(\.windowId)) == tabIDs,
+              statusWindows.count == tabs.count
+        else {
+            return fallback
+        }
+        return statusWindows.map {
+            (index: Int($0.index), id: $0.windowId, name: $0.name)
+        }
+    }
+
+    private func tabID(forShortcutIndex oneBased: Int) -> UInt32? {
+        guard oneBased >= 1 else { return nil }
+        let entries = tabEntriesForSwitching()
+        // tmux 模式按真实 window_index 解析；local/过渡状态的 fallback
+        // index 是列表位置（同样保持 Cmd/Alt+1… 的既有行为）。
+        return entries.first(where: { $0.index == oneBased })?.id
+    }
+
     /// 1-based 序号切换 tab。
     func switchToTabIndex(_ oneBased: Int) {
-        guard oneBased >= 1, oneBased <= lastSnapshot.tabs.count else { return }
-        let tabId = lastSnapshot.tabs[oneBased - 1].id
+        guard let tabId = tabID(forShortcutIndex: oneBased) else { return }
         requestSwitchTab(tabId)
     }
 
     @objc func switchToLastTab() {
-        switchToTabIndex(lastSnapshot.tabs.count)
+        guard let tabId = tabEntriesForSwitching().last?.id else { return }
+        requestSwitchTab(tabId)
     }
 
     @objc func splitHorizontal() {
@@ -1221,6 +1262,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Workspace 搜索/Attention 跳转；产品入口仍由 Quick Connect 驱动。
     func activate(slot: WarmConnectionSlot) {
         let oldBridge = bridge
+        slot.prepareForForeground()
         connectionPool.acquire(key: slot.key) { _ in slot }
         bridge = slot.bridge
         terminalManager = slot.terminalManager
@@ -1313,7 +1355,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let view = terminalManager.view(for: activePane)
         terminalManager.focusTarget = view
-        window?.makeFirstResponder(view)
+        // Surface 尚未挂进 hierarchy 时，AppKit 的 makeFirstResponder 会
+        // 触发 IMK mach-port 错误并可能把 Connect/切 tab 路径拖成 beachball。
+        // refreshUI 在 view 真正可见后会再次完成焦点切换。
+        if view.window != nil, window?.firstResponder !== view {
+            window?.makeFirstResponder(view)
+        }
         content.paneLayout.markActivePane(activePane)
     }
 
@@ -1545,12 +1592,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ),
         ]
 
-        let tabItems = lastSnapshot.tabs.enumerated().map { index, tab in
+        let tabItems = tabEntriesForSwitching().map { entry in
             PaletteItem(
-                title: i18n.tr(.menuSwitchTab, arguments: ["number": "\(index + 1)"]),
-                detail: tab.name,
-                keywords: "switch tab \(index + 1) \(tab.name) 切换 标签页",
-                kind: .command(.switchTab(index + 1))
+                title: i18n.tr(.menuSwitchTab, arguments: ["number": "\(entry.index)"]),
+                detail: entry.name,
+                keywords: "switch tab \(entry.index) \(entry.name) 切换 标签页",
+                kind: .command(.switchTab(entry.index))
             )
         }
         if !tabItems.isEmpty {
@@ -1982,7 +2029,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func pollOnce() {
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
-        connectionPool.pollBackgroundSlots()
+        scheduleBackgroundSlotPoll()
         let events = bridge.pollEvents()
         // Core 已在 pollEvents() 中应用了这些状态变化；读取一次最新 active
         // tab 的 pane 集合，让同一批刚创建的 foreground pane 也能接收其
@@ -2164,6 +2211,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshAttentionChrome()
         if let activePane = activePaneID {
             refreshHistoryChrome(for: activePane)
+        }
+    }
+
+    /// 投递后台 warm slot 的事件消费；绝不在 AppKit 主线程同步执行。
+    private func scheduleBackgroundSlotPoll() {
+        guard !backgroundPollInFlight else { return }
+        let slots = connectionPool.slots.values.filter { $0.lifecycle == .background }
+        guard !slots.isEmpty else { return }
+        backgroundPollInFlight = true
+        backgroundPollQueue.async { [weak self] in
+            for slot in slots {
+                slot.pollBackground()
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.backgroundPollInFlight = false
+            }
         }
     }
 

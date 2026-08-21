@@ -256,6 +256,21 @@ public struct StatusBarWindow: Equatable, Decodable, Sendable {
 }
 
 extension StatusBarSnapshot {
+    /// tmux 的窗口列表必须按真实 window_index 排序；window_id 只是稳定的
+    /// 控制模式标识，不能拿来当用户看到的 tab 序号。
+    public func windowsByIndex() -> [StatusBarWindow] {
+        windows.sorted {
+            if $0.index != $1.index { return $0.index < $1.index }
+            return $0.windowId < $1.windowId
+        }
+    }
+
+    /// 按 tmux window_index 解析稳定 window_id。Alt-N / 命令面板使用这条
+    /// 映射，避免稀疏窗口（例如 1,2,3,5,7 新建出 6）错跳到邻 tab。
+    public func windowID(forIndex index: UInt32) -> UInt32? {
+        windows.first(where: { $0.index == index })?.windowId
+    }
+
     /// 前端驱动高亮：把 current 标记移到指定窗口，返回新快照。
     /// 切 tab 时立即调用，不等 tmux 快照查询（文档 §B+ 前端控制选中态）。
     public func updatingCurrentWindow(_ windowId: UInt32) -> StatusBarSnapshot {
