@@ -540,6 +540,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         else {
             return fallback
         }
+        // tmux defaults to base-index 0 when no user config is loaded (as in
+        // the isolated e2e socket), while Muxterm's Cmd/Alt+1…9 contract is
+        // one-based. In that mode keep the shortcut labels one-based; for a
+        // normal base-index 1+ session preserve sparse real indices so a
+        // window 7 never gets mistaken for the sixth tab.
+        if statusWindows.first?.index == 0 {
+            return statusWindows.enumerated().map { position, window in
+                (index: position + 1, id: window.windowId, name: window.name)
+            }
+        }
         return statusWindows.map {
             (index: Int($0.index), id: $0.windowId, name: $0.name)
         }
@@ -2561,6 +2571,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         isClosing = true
         // 统一面板是独立 NSPanel：不关会留在 NSApp.windows 里干扰后续测试。
         unifiedPanel?.dismiss()
+        // 命令面板同样是独立浮动窗口；只关主窗口会让它继续挡住
+        // 后续窗口的键盘事件（尤其是 Cmd-Shift-P / tab 切换）。
+        commandPalette?.window?.orderOut(nil)
         // 主题外观复位，避免后续测试读到残留 dark appearance。
         window?.appearance = nil
         content.appearance = nil
@@ -2581,6 +2594,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func closeSessionWindow() {
         guard !isClosing else { return }
         isClosing = true
+        unifiedPanel?.dismiss()
+        commandPalette?.window?.orderOut(nil)
         pollTimer?.invalidate()
         pollTimer = nil
         trafficMonitorTimer?.invalidate()
@@ -2603,6 +2618,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         isClosing = true
+        unifiedPanel?.dismiss()
+        commandPalette?.window?.orderOut(nil)
         pollTimer?.invalidate()
         pollTimer = nil
         trafficMonitorTimer?.invalidate()
