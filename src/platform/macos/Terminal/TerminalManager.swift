@@ -46,6 +46,9 @@ final class TerminalManager: TerminalInputHandler {
     }
     private var pendingSeeds: [UInt32: PendingSeed] = [:]
     private var seedingPanes = Set<UInt32>()
+    /// Surface seed 完成前，PaneLayout 必须隐藏对应 host，避免用户看到
+    /// scrollback/VT 正在分块恢复的中间帧。空白 Surface 也会显式标记 ready。
+    private var surfaceReadyPanes = Set<UInt32>()
     /// 已有 view 进入后台后收到新字节；回到前台时必须从 Core 的最新
     /// Surface seed 重建一次，不能继续显示旧的 VT 状态。
     private var needsSurfaceReseed = Set<UInt32>()
@@ -69,6 +72,9 @@ final class TerminalManager: TerminalInputHandler {
 
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
+    /// Surface 首帧完成后通知布局层一次性显示 PaneHostView。
+    /// 回调只在主线程触发；后台 slot 不创建/重建 AppKit view。
+    var onSurfaceReadinessChanged: ((UInt32, Bool) -> Void)?
     var onError: ((String) -> Void)?
     /// viewport 变化（滚轮 / 回底）：窗口用来显示跳转最新按钮。
     var onViewportChanged: ((UInt32, UInt32) -> Void)?
@@ -119,6 +125,7 @@ final class TerminalManager: TerminalInputHandler {
         seedFlushWorkItem = nil
         pendingSeeds.removeAll()
         seedingPanes.removeAll()
+        surfaceReadyPanes.removeAll()
         needsSurfaceReseed.removeAll()
         deferredSnapshots.removeAll()
         reportedResizeFailures.removeAll()
@@ -146,6 +153,23 @@ final class TerminalManager: TerminalInputHandler {
         views[paneId] != nil
     }
 
+    /// 判断某 pane 的 Surface 是否已经可以安全显示。
+    /// 未创建或正在 seed 的 pane 一律不可见；空白 pane 在创建时会被标记 ready。
+    func isSurfaceReady(for paneId: UInt32) -> Bool {
+        surfaceReadyPanes.contains(paneId) && !seedingPanes.contains(paneId)
+    }
+
+    private func setSurfaceReady(_ paneId: UInt32, _ ready: Bool) {
+        let changed: Bool
+        if ready {
+            changed = surfaceReadyPanes.insert(paneId).inserted
+        } else {
+            changed = surfaceReadyPanes.remove(paneId) != nil
+        }
+        guard changed else { return }
+        onSurfaceReadinessChanged?(paneId, ready)
+    }
+
     /// 将一次 Surface seed 放入主线程分块调度器。
     private func enqueueSeed(
         paneId: UInt32,
@@ -153,6 +177,7 @@ final class TerminalManager: TerminalInputHandler {
         data: Data,
         scrollToLatest: Bool
     ) {
+        setSurfaceReady(paneId, false)
         pendingSeeds[paneId] = PendingSeed(
             view: view,
             data: data,
@@ -173,22 +198,34 @@ final class TerminalManager: TerminalInputHandler {
         DispatchQueue.main.async(execute: work)
     }
 
+    /// 标记一个 seed 已完整写入 SwiftTerm。ready 通知延迟到同一轮的 live
+    /// catch-up 完成后，避免 host 在快照和增量之间短暂暴露半帧。
+    private func finishSeed(
+        paneId: UInt32,
+        seed: PendingSeed,
+        completed: inout Set<UInt32>
+    ) {
+        pendingSeeds.removeValue(forKey: paneId)
+        seedingPanes.remove(paneId)
+        swiftTermSeeded.insert(paneId)
+        if seed.scrollToLatest {
+            applyingNativeScroll.insert(paneId)
+            seed.view.scrollToLatest()
+            applyingNativeScroll.remove(paneId)
+            _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+        }
+        completed.insert(paneId)
+    }
+
     /// 每次只处理有限字节/时间，把 run loop 让给 AppKit 的输入和 tab 事件。
     private func flushPendingSeeds() {
         let started = ProcessInfo.processInfo.systemUptime
+        var completed = Set<UInt32>()
         while let paneId = pendingSeeds.keys.first {
             guard var seed = pendingSeeds[paneId] else { continue }
             let remaining = seed.data.count - seed.offset
             if remaining <= 0 {
-                pendingSeeds.removeValue(forKey: paneId)
-                seedingPanes.remove(paneId)
-                swiftTermSeeded.insert(paneId)
-                if seed.scrollToLatest {
-                    applyingNativeScroll.insert(paneId)
-                    seed.view.scrollToLatest()
-                    applyingNativeScroll.remove(paneId)
-                    _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
-                }
+                finishSeed(paneId: paneId, seed: seed, completed: &completed)
                 continue
             }
 
@@ -197,15 +234,7 @@ final class TerminalManager: TerminalInputHandler {
             seed.view.feedOutput(chunk, isSnapshot: seed.offset == 0)
             seed.offset = end
             if seed.offset >= seed.data.count {
-                pendingSeeds.removeValue(forKey: paneId)
-                seedingPanes.remove(paneId)
-                swiftTermSeeded.insert(paneId)
-                if seed.scrollToLatest {
-                    applyingNativeScroll.insert(paneId)
-                    seed.view.scrollToLatest()
-                    applyingNativeScroll.remove(paneId)
-                    _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
-                }
+                finishSeed(paneId: paneId, seed: seed, completed: &completed)
             } else {
                 pendingSeeds[paneId] = seed
             }
@@ -216,9 +245,15 @@ final class TerminalManager: TerminalInputHandler {
         }
         if !pendingSeeds.isEmpty {
             scheduleSeedFlush()
-        } else if !pendingFeeds.isEmpty {
+        }
+        if !pendingFeeds.isEmpty {
             // seed 完成后再交付其期间排队的 live `%output`。
             flushPendingFeeds()
+        }
+        // 只有 seed 和同一期间的 live catch-up 都完成后才显示 host。
+        // 多 pane 可在各自 seed 完成的同一轮独立变为 ready。
+        for paneId in completed where !pendingFeeds.keys.contains(paneId) {
+            setSurfaceReady(paneId, true)
         }
     }
 
@@ -231,6 +266,7 @@ final class TerminalManager: TerminalInputHandler {
             if snapshot.isEmpty {
                 view.feedOutput(Data(), isSnapshot: true)
                 swiftTermSeeded.insert(paneId)
+                setSurfaceReady(paneId, true)
             } else {
                 enqueueSeed(paneId: paneId, view: view, data: snapshot, scrollToLatest: true)
             }
@@ -244,6 +280,7 @@ final class TerminalManager: TerminalInputHandler {
         if seed.isEmpty {
             view.feedOutput(Data(), isSnapshot: true)
             swiftTermSeeded.insert(paneId)
+            setSurfaceReady(paneId, true)
         } else {
             enqueueSeed(paneId: paneId, view: view, data: seed, scrollToLatest: true)
             appendSnippet(seed)
@@ -307,6 +344,12 @@ final class TerminalManager: TerminalInputHandler {
                 // handleOutput 会把严格晚于快照的字节排到 pendingFeeds。
                 viewsCreatedThisBatch.insert(paneId)
             }
+        } else {
+            // 空白 snapshot 也是一个完整的首帧：先 reset 成空 Surface，
+            // 再允许 PaneHostView 显示，避免空 pane 永久停留在隐藏状态。
+            view.feedOutput(Data(), isSnapshot: true)
+            swiftTermSeeded.insert(paneId)
+            setSurfaceReady(paneId, true)
         }
         return view
     }
@@ -469,6 +512,7 @@ final class TerminalManager: TerminalInputHandler {
                 // 则仍然是 no-op。
                 view.feedOutput(Data(), isSnapshot: true)
                 swiftTermSeeded.insert(paneId)
+                setSurfaceReady(paneId, true)
             } else {
                 swiftTermSeeded.remove(paneId)
                 enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
@@ -482,6 +526,7 @@ final class TerminalManager: TerminalInputHandler {
             if !swiftTermSeeded.contains(paneId) && data.isEmpty {
                 view.feedOutput(Data(), isSnapshot: true)
                 swiftTermSeeded.insert(paneId)
+                setSurfaceReady(paneId, true)
             } else if !swiftTermSeeded.contains(paneId) && !data.isEmpty {
                 ensureValidModelSize(view)
                 enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
@@ -506,6 +551,34 @@ final class TerminalManager: TerminalInputHandler {
 
     func testFlushFeeds() {
         flushPendingFeeds()
+    }
+
+    /// AppKit 回归测试：模拟 attach/deferred Surface seed，不依赖真实 tmux
+    /// 输出时序。生产路径仍统一经过 `enqueueSeed`。
+    func testQueueSurfaceSeed(
+        paneId: UInt32,
+        view: MuxTerminalView,
+        data: Data,
+        scrollToLatest: Bool = false
+    ) {
+        // 测试夹具直接提供 view；生产路径由 `view(for:)` 完成注册。
+        views[paneId] = view
+        enqueueSeed(
+            paneId: paneId,
+            view: view,
+            data: data,
+            scrollToLatest: scrollToLatest
+        )
+    }
+
+    func testQueueSurfaceLiveOutput(paneId: UInt32, data: Data) {
+        queueLiveOutput(paneId, data: data)
+    }
+
+    func testFlushSurfaceSeeds() {
+        seedFlushWorkItem?.cancel()
+        seedFlushWorkItem = nil
+        flushPendingSeeds()
     }
 
     private func flushPendingFeeds() {
@@ -565,6 +638,7 @@ final class TerminalManager: TerminalInputHandler {
         pendingFeeds.removeValue(forKey: paneId)
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
+        surfaceReadyPanes.remove(paneId)
         needsSurfaceReseed.remove(paneId)
         deferredSnapshots.removeValue(forKey: paneId)
         // Warm slot 的后台 poll 不在 AppKit 主线程；旧 view 已经从前台

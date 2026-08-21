@@ -34,6 +34,7 @@ final class PaneLayoutView: NSView {
     init(terminalManager: TerminalManager) {
         self.terminalManager = terminalManager
         super.init(frame: .zero)
+        bindSurfaceReadiness(to: terminalManager)
         wantsLayer = true
         layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         setAccessibilityIdentifier("muxterm.paneLayout")
@@ -44,6 +45,7 @@ final class PaneLayoutView: NSView {
     /// 不在这里销毁；当前窗口只显示新 slot 的视图。
     func replaceTerminalManager(_ newManager: TerminalManager) {
         guard newManager !== terminalManager else { return }
+        terminalManager.onSurfaceReadinessChanged = nil
         if let rootView {
             NSLayoutConstraint.deactivate(rootConstraints)
             rootConstraints = []
@@ -59,7 +61,19 @@ final class PaneLayoutView: NSView {
         currentPaneIds.removeAll()
         pendingGeometryPaneIds = nil
         terminalManager = newManager
+        bindSurfaceReadiness(to: newManager)
         needsLayout = true
+    }
+
+    private func bindSurfaceReadiness(to manager: TerminalManager) {
+        manager.onSurfaceReadinessChanged = { [weak self] paneId, ready in
+            self?.setSurfaceReady(paneId: paneId, ready: ready)
+        }
+    }
+
+    private func setSurfaceReady(paneId: UInt32, ready: Bool) {
+        guard let host = hostByPane[paneId] else { return }
+        host.setSurfaceReady(ready)
     }
 
     @available(*, unavailable)
@@ -167,6 +181,10 @@ final class PaneLayoutView: NSView {
         hostByPane[paneId]?.bounds.size ?? .zero
     }
 
+    func testPaneSurfaceVisible(_ paneId: UInt32) -> Bool {
+        hostByPane[paneId]?.isHidden == false
+    }
+
     func testMovePaneToNewTab(_ paneId: UInt32) {
         hostByPane[paneId]?.triggerMoveToNewTab()
     }
@@ -229,6 +247,10 @@ final class PaneLayoutView: NSView {
         case .leaf(let paneId):
             let term = terminalManager.view(for: paneId)
             let wrap = PaneHostView(paneId: paneId, terminal: term)
+            // `view(for:)` may have queued a large attach/deferred seed. Keep
+            // this host out of the visible hierarchy until the full seed and
+            // its live catch-up have completed.
+            wrap.setSurfaceReady(terminalManager.isSurfaceReady(for: paneId))
             wrap.onActivate = { [weak self] id in
                 self?.onActivatePane?(id)
             }
@@ -370,6 +392,15 @@ final class PaneHostView: NSView {
         layer?.borderColor = active ? NSColor.controlAccentColor.cgColor : nil
         layer?.cornerRadius = 0
         publishGeometry()
+    }
+
+    /// 首帧 seed 期间隐藏整个 host，而不是让 SwiftTerm 绘制半截 Surface。
+    /// Auto Layout 仍保留 host 的几何尺寸，seed 完成后只需切换可见性。
+    func setSurfaceReady(_ ready: Bool) {
+        isHidden = !ready
+        if ready {
+            needsDisplay = true
+        }
     }
 
     func setAllowsMoveToNewTab(_ allowed: Bool) {

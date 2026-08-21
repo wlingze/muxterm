@@ -1358,7 +1358,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Surface 尚未挂进 hierarchy 时，AppKit 的 makeFirstResponder 会
         // 触发 IMK mach-port 错误并可能把 Connect/切 tab 路径拖成 beachball。
         // refreshUI 在 view 真正可见后会再次完成焦点切换。
-        if view.window != nil, window?.firstResponder !== view {
+        if terminalManager.isSurfaceReady(for: activePane),
+           view.window != nil,
+           window?.firstResponder !== view
+        {
             window?.makeFirstResponder(view)
         }
         content.paneLayout.markActivePane(activePane)
@@ -2318,7 +2321,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.paneLayout.markActivePane(activePane)
             // 只在视图已挂进窗口且焦点确实不同时才切换，避免对未挂载视图
             // 反复 makeFirstResponder 触发 IMK mach port 报错和切换卡顿。
-            if view.window != nil, window?.firstResponder !== view {
+            if terminalManager.isSurfaceReady(for: activePane),
+               view.window != nil,
+               window?.firstResponder !== view
+            {
                 window?.makeFirstResponder(view)
             }
         }
