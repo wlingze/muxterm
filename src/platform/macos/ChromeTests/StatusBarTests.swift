@@ -258,6 +258,38 @@ final class StatusBarTabTitleTests: XCTestCase {
 }
 
 final class StatusBarFrontendSyncTests: XCTestCase {
+    func testWindowIndexLookupUsesStableWindowID() throws {
+        let windows = [
+            StatusBarWindow(windowId: 47, index: 7, name: "seven", flags: "", current: false, text: ""),
+            StatusBarWindow(windowId: 25, index: 6, name: "six", flags: "", current: true, text: ""),
+            StatusBarWindow(windowId: 10, index: 1, name: "one", flags: "", current: false, text: ""),
+        ]
+        let snapshot = StatusBarSnapshot(
+            enabled: true,
+            position: "bottom",
+            justify: "left",
+            interval: 15,
+            left: "",
+            right: "",
+            leftLength: 20,
+            rightLength: 50,
+            statusStyle: "default",
+            leftStyle: "default",
+            rightStyle: "default",
+            separator: " ",
+            windowFormat: "",
+            windowCurrentFormat: "",
+            windowStyle: "default",
+            windowCurrentStyle: "default",
+            windows: windows,
+            error: nil
+        )
+        XCTAssertEqual(snapshot.windowsByIndex().map(\.index), [1, 6, 7])
+        XCTAssertEqual(snapshot.windowID(forIndex: 6), 25)
+        XCTAssertEqual(snapshot.windowID(forIndex: 7), 47)
+        XCTAssertNil(snapshot.windowID(forIndex: 2))
+    }
+
     /// 解码出的快照 current 标记可变：前端驱动高亮的前提。
     func testDecodedWindowsAreMutable() throws {
         let json = """

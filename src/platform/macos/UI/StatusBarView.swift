@@ -67,12 +67,17 @@ final class StatusBarView: NSView {
         didSet {
             guard allowsTabReordering != oldValue else { return }
             if tmuxStatusEnabled, let snapshot = lastTmuxSnapshot {
-                rebuildTabButtons(snapshot.windows.map { win in
-                    TabBarItem(id: win.windowId, name: win.name, active: win.current)
+                rebuildTabButtons(snapshot.windowsByIndex().map { win in
+                    TabBarItem(
+                        id: win.windowId,
+                        index: win.index,
+                        name: win.name,
+                        active: win.current
+                    )
                 })
             } else {
                 rebuildTabButtons(currentTabs.map {
-                    TabBarItem(id: $0.id, name: $0.name, active: $0.isActive)
+                    TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
                 })
             }
         }
@@ -251,7 +256,9 @@ final class StatusBarView: NSView {
     func updateTabs(_ tabs: [Tab]) {
         currentTabs = tabs
         guard !tmuxStatusEnabled else { return }
-        rebuildTabButtons(tabs.map { TabBarItem(id: $0.id, name: $0.name, active: $0.isActive) })
+        rebuildTabButtons(tabs.map {
+            TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
+        })
     }
 
     func applyTmuxSnapshot(_ snapshot: StatusBarSnapshot?, enabled: Bool) {
@@ -279,9 +286,10 @@ final class StatusBarView: NSView {
                 font: rightLabel.font ?? NSFont.systemFont(ofSize: 11),
                 plainForeground: lastPlainForeground
             )
-            rebuildTabButtons(snapshot.windows.map { win in
+            rebuildTabButtons(snapshot.windowsByIndex().map { win in
                 TabBarItem(
                     id: win.windowId,
+                    index: win.index,
                     name: win.name,
                     active: win.current
                 )
@@ -290,7 +298,9 @@ final class StatusBarView: NSView {
             leftLabel.isHidden = true
             rightLabel.isHidden = true
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            rebuildTabButtons(currentTabs.map { TabBarItem(id: $0.id, name: $0.name, active: $0.isActive) })
+            rebuildTabButtons(currentTabs.map {
+                TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
+            })
         }
         needsLayout = true
     }
@@ -585,6 +595,7 @@ final class StatusBarView: NSView {
 
     private struct TabBarItem {
         let id: UInt32
+        let index: UInt32?
         let name: String
         let active: Bool
     }
@@ -597,9 +608,10 @@ final class StatusBarView: NSView {
         tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for (position, item) in items.enumerated() {
             let button = StatusTabButton()
-            // GUI tab 序号 = 列表位置（1-based），不是 tmux window id。
+            // tmux 使用真实 window_index；local shell 没有该字段时才回退
+            // 到列表位置。稳定 window_id 只放在 tag 里用于执行任务。
             button.title = StatusBarTabTitle.display(
-                index: UInt32(position + 1),
+                index: item.index ?? UInt32(position + 1),
                 name: item.name
             )
             // W19-F：固定 tab 宽度（溢出裁剪），不得无限变宽挤掉 status-right。
@@ -711,9 +723,10 @@ final class StatusBarView: NSView {
         guard updated.windows != snapshot.windows else { return }
         lastTmuxSnapshot = updated
         if tmuxStatusEnabled {
-            rebuildTabButtons(updated.windows.map { win in
+            rebuildTabButtons(updated.windowsByIndex().map { win in
                 TabBarItem(
                     id: win.windowId,
+                    index: win.index,
                     name: win.name,
                     active: win.current
                 )

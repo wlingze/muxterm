@@ -567,7 +567,11 @@ final class TerminalManager: TerminalInputHandler {
         seedingPanes.remove(paneId)
         needsSurfaceReseed.remove(paneId)
         deferredSnapshots.removeValue(forKey: paneId)
-        views[paneId]?.removeFromSuperview()
+        // Warm slot 的后台 poll 不在 AppKit 主线程；旧 view 已经从前台
+        // hierarchy 脱离，不能在后台直接调用 removeFromSuperview。
+        if Thread.isMainThread {
+            views[paneId]?.removeFromSuperview()
+        }
         views.removeValue(forKey: paneId)
         viewsCreatedThisBatch.remove(paneId)
         swiftTermSeeded.remove(paneId)
