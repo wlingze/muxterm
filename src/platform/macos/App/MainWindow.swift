@@ -2489,8 +2489,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         lastStatusFetchAt = Date()
         let bridge = self.bridge
+        let slot = connectionPool.slots.values.first { $0.bridge === bridge }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let json = bridge.statusBarSnapshotJSON(),
+            let result: (json: String?, subscriptions: Bool)?
+            if let slot {
+                result = slot.withBridge { candidate in
+                    (
+                        json: candidate.statusBarSnapshotJSON(),
+                        subscriptions: candidate.statusSubscriptionActive()
+                    )
+                }
+            } else {
+                result = (
+                    json: bridge.statusBarSnapshotJSON(),
+                    subscriptions: bridge.statusSubscriptionActive()
+                )
+            }
+            guard let result,
+                  let json = result.json,
                   let data = json.data(using: .utf8),
                   let response = try? JSONDecoder().decode(StatusBarResponse.self, from: data),
                   response.ok,
@@ -2506,7 +2522,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.content.applyStatusBar(snapshot)
                 // 文档 §B+：tmux ≥3.2 用 refresh-client -B 订阅推送（零轮询）；
                 // 只有老版本才保留 status-interval 轮询定时器。
-                if !bridge.statusSubscriptionActive() {
+                if !result.subscriptions {
                     self.scheduleStatusRefresh(snapshot)
                 }
             }
