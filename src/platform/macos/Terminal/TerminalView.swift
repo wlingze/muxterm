@@ -99,6 +99,17 @@ final class MuxTerminalView: TerminalView {
         setAccessibilityValue("")
     }
 
+    /// 选择/拖拽仍保持本地处理，但滚轮在 alternate screen 必须进入应用的
+    /// mouse protocol。opencode/Cursor 等 TUI 不把普通 Up/Down 当作滚动，
+    /// SwiftTerm 在 `allowMouseReporting = false` 时只会发送按键，表现为
+    /// “上下滚动没有用”。仅在滚轮调用栈临时放开上报，不改变点击选择策略。
+    override func scrollWheel(with event: NSEvent) {
+        let previous = allowMouseReporting
+        allowMouseReporting = true
+        super.scrollWheel(with: event)
+        allowMouseReporting = previous
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         return nil

@@ -92,4 +92,32 @@ final class PerEventModelRegressionTests: XCTestCase {
             XCTAssertFalse(visible.contains("\u{fffd}"), "chunkSize=\(chunkSize)")
         }
     }
+
+    /// dogfood fixture：Nerd Font 私用区、Powerline、盒线、Unicode/emoji
+    /// 和 ASCII 必须在同一个字节流里保留；列数由终端 cell width 决定，
+    /// 不能因为字体 fallback 的像素 advance 把 emoji/PUA 当成额外换行。
+    func testNerdFontUnicodeAndAsciiFixturePreservesCellColumns() {
+        let terminal = Terminal(delegate: SilentDelegate())
+        terminal.resize(cols: 80, rows: 8)
+        let fixture = "1 Nerd Font \u{f000} \u{e0b0} │╭─╮ ├─ ◆ ✔ ✖\r\n"
+            + "2 Unicode ✔ ✖ 📁 ⬢ ╭─╮ ├─ • ⠋ →\r\n"
+            + "3 ASCII [ok] [x] > + [D] +-+ |-- * ->\r\n"
+        terminal.feed(byteArray: Array(fixture.utf8))
+
+        var visible = ""
+        for row in 0..<terminal.rows {
+            for col in 0..<terminal.cols {
+                visible.append(terminal.getCharacter(col: col, row: row) ?? " ")
+            }
+        }
+        XCTAssertTrue(visible.contains("Nerd Font"))
+        XCTAssertTrue(visible.contains("Unicode"))
+        XCTAssertTrue(visible.contains("[ok] [x] > + [D]"))
+        XCTAssertFalse(visible.contains("\u{fffd}"), "fixture 不能产生 replacement glyph")
+
+        // SwiftTerm 的 cell 模型把宽 emoji 计为两列；后面的 B 应落在
+        // 第 4 列（0-based x=4），而不是被字体 fallback 的 advance 推偏。
+        terminal.feed(byteArray: Array("\u{1b}[5;1HA📁B".utf8))
+        XCTAssertEqual(terminal.getCursorLocation().x, 4)
+    }
 }

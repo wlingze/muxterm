@@ -2,6 +2,7 @@
 # 给 SwiftTerm 1.15.0 打 Muxterm 补丁：
 # 1) 绘制时 Minimum Contrast（黑底黑字）
 # 2) doCommand 处理 deleteToBeginningOfLine / noop（不再 Unhandle print）
+# 3) 暴露 scrollWheel override，允许 Muxterm 仅对滚轮临时启用 TUI mouse protocol
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACOS_DIR="$ROOT/src/platform/macos"
@@ -125,4 +126,16 @@ if "MUXTERM_DOCOMMAND" not in mac_text:
     print("==> applied SwiftTerm doCommand patch")
 else:
     print("==> SwiftTerm doCommand patch already applied")
+
+mac_text = mac.read_text()
+if "MUXTERM_SCROLL_WHEEL" not in mac_text:
+    old = "    public override func scrollWheel(with event: NSEvent) {\n"
+    new = "    open override func scrollWheel(with event: NSEvent) { // MUXTERM_SCROLL_WHEEL\n"
+    if old not in mac_text:
+        print("ERROR: SwiftTerm scrollWheel declaration changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
+        sys.exit(1)
+    mac.write_text(mac_text.replace(old, new, 1))
+    print("==> applied SwiftTerm scroll-wheel override patch")
+else:
+    print("==> SwiftTerm scroll-wheel override patch already applied")
 PY
