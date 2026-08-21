@@ -42,8 +42,8 @@ final class ChromeE2ETests: XCTestCase {
             left: "L",
             right: "R",
             windows: [
-                Self.wnd(18, name: "code", current: true, text: " 1#[fg=colour237]:#[fg=colour250]code "),
-                Self.wnd(21, name: "other", current: false, text: " 2#[fg=colour237]:#[fg=colour250]other "),
+                Self.wnd(18, index: 1, name: "code", current: true, text: " 1#[fg=colour237]:#[fg=colour250]code "),
+                Self.wnd(21, index: 2, name: "other", current: false, text: " 2#[fg=colour237]:#[fg=colour250]other "),
             ]
         ), enabled: true)
         AppE2E.pump(40)
@@ -90,8 +90,8 @@ final class ChromeE2ETests: XCTestCase {
             left: "L",
             right: "R",
             windows: [
-                Self.wnd(18, name: "code", current: true, text: "1:code"),
-                Self.wnd(21, name: "other", current: false, text: "2:other"),
+                Self.wnd(18, index: 1, name: "code", current: true, text: "1:code"),
+                Self.wnd(21, index: 2, name: "other", current: false, text: "2:other"),
             ]
         )
         bar.applyTmuxSnapshot(snap, enabled: true)
@@ -241,10 +241,16 @@ final class ChromeE2ETests: XCTestCase {
         )
     }
 
-    private static func wnd(_ id: UInt32, name: String, current: Bool, text: String) -> StatusBarWindow {
+    private static func wnd(
+        _ id: UInt32,
+        index: UInt32,
+        name: String,
+        current: Bool,
+        text: String
+    ) -> StatusBarWindow {
         StatusBarWindow(
             windowId: id,
-            index: id,
+            index: index,
             name: name,
             flags: current ? "*" : "",
             current: current,
