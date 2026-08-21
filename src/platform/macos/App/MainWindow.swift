@@ -520,46 +520,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         switchToTabIndex(n)
     }
 
-    /// 返回快捷键/命令面板使用的 tab 顺序。tmux status 快照包含真实
-    /// window_index；只有快照与 Core 当前 tab 集合完全一致时才采用它，
-    /// 否则在新建/关闭的短暂窗口内回退到 Core 已按 index 排好的列表。
+    /// 返回快捷键/命令面板使用的 tab 顺序。
+    ///
+    /// Core snapshot 是跨平台 UI 的唯一拓扑事实源；tmux status 只负责
+    /// left/right 文案和样式，不能再提供第二份窗口列表。TmuxRuntime 已
+    /// 按权威 window index 排好 `tabs`，这里保持该顺序并使用稳定 tab id。
     private func tabEntriesForSwitching() -> [(index: Int, id: UInt32, name: String)] {
-        let tabs = lastSnapshot.tabs
-        let fallback = tabs.enumerated().map { position, tab in
+        lastSnapshot.tabs.enumerated().map { position, tab in
             (index: position + 1, id: tab.id, name: tab.name)
-        }
-        guard terminalManager.usesClientResize,
-              let status = statusBarSnapshot
-        else {
-            return fallback
-        }
-        let tabIDs = Set(tabs.map(\.id))
-        let statusWindows = status.windowsByIndex()
-        guard Set(statusWindows.map(\.windowId)) == tabIDs,
-              statusWindows.count == tabs.count
-        else {
-            return fallback
-        }
-        // tmux defaults to base-index 0 when no user config is loaded (as in
-        // the isolated e2e socket), while Muxterm's Cmd/Alt+1…9 contract is
-        // one-based. In that mode keep the shortcut labels one-based; for a
-        // normal base-index 1+ session preserve sparse real indices so a
-        // window 7 never gets mistaken for the sixth tab.
-        if statusWindows.first?.index == 0 {
-            return statusWindows.enumerated().map { position, window in
-                (index: position + 1, id: window.windowId, name: window.name)
-            }
-        }
-        return statusWindows.map {
-            (index: Int($0.index), id: $0.windowId, name: $0.name)
         }
     }
 
     private func tabID(forShortcutIndex oneBased: Int) -> UInt32? {
         guard oneBased >= 1 else { return nil }
         let entries = tabEntriesForSwitching()
-        // tmux 模式按真实 window_index 解析；local/过渡状态的 fallback
-        // index 是列表位置（同样保持 Cmd/Alt+1… 的既有行为）。
+        // 快捷键编号是 Core tabs 的 1-based 位置；tmux window_index 只在
+        // Runtime 内部用于排序，不泄漏成第二套 UI 编号。
         return entries.first(where: { $0.index == oneBased })?.id
     }
 

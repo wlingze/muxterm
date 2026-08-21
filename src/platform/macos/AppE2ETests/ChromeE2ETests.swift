@@ -38,6 +38,12 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertNotNil(find(bar, "muxterm.statusAttention"), "通知位应存在")
         XCTAssertNotNil(find(bar, "muxterm.newTabButton"), "新建 tab 按钮应存在")
 
+        // Tab 顺序/标题来自 Core snapshot；tmux status fixture 只覆盖
+        // left/right 与样式，不再作为第二份窗口列表。
+        bar.updateTabs([
+            Tab(id: 18, name: "code", isActive: true),
+            Tab(id: 21, name: "other", isActive: false),
+        ])
         bar.applyTmuxSnapshot(Self.snapshot(
             left: "L",
             right: "R",
@@ -94,11 +100,40 @@ final class ChromeE2ETests: XCTestCase {
                 Self.wnd(21, index: 2, name: "other", current: false, text: "2:other"),
             ]
         )
+        bar.updateTabs([
+            Tab(id: 18, name: "code", isActive: true),
+            Tab(id: 21, name: "other", isActive: false),
+        ])
         bar.applyTmuxSnapshot(snap, enabled: true)
         AppE2E.pump(40)
         bar.testClickTab(21)
         AppE2E.pump(40)
         XCTAssertEqual(switched, [21], "回调应收到 21 而不是 1")
+    }
+
+    func testTmuxStatusDoesNotOverrideCoreTabOrder() {
+        let bar = StatusBarView(frame: .zero)
+        window.contentView = bar
+        window.orderFront(nil)
+
+        // Core runtime 的顺序故意与 status 的 window_index 顺序相反；
+        // 渲染仍必须跟随 Core，而不是重新按 status 窗口列表排序。
+        bar.updateTabs([
+            Tab(id: 21, name: "core-first", isActive: true),
+            Tab(id: 18, name: "core-second", isActive: false),
+        ])
+        bar.applyTmuxSnapshot(Self.snapshot(
+            left: "",
+            right: "",
+            windows: [
+                Self.wnd(18, index: 1, name: "tmux-one", current: false, text: "1:tmux-one"),
+                Self.wnd(21, index: 7, name: "tmux-seven", current: true, text: "7:tmux-seven"),
+            ]
+        ), enabled: true)
+        AppE2E.pump(40)
+
+        XCTAssertEqual(bar.testTabTitle(21), "1  core-first")
+        XCTAssertEqual(bar.testTabTitle(18), "2  core-second")
     }
 
     func testStatusDotClickOpensPopoverWithSshSummary() {

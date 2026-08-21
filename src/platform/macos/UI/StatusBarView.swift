@@ -66,20 +66,9 @@ final class StatusBarView: NSView {
     var allowsTabReordering = false {
         didSet {
             guard allowsTabReordering != oldValue else { return }
-            if tmuxStatusEnabled, let snapshot = lastTmuxSnapshot {
-                rebuildTabButtons(snapshot.windowsByIndex().map { win in
-                    TabBarItem(
-                        id: win.windowId,
-                        index: win.index,
-                        name: win.name,
-                        active: win.current
-                    )
-                })
-            } else {
-                rebuildTabButtons(currentTabs.map {
-                    TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
-                })
-            }
+            rebuildTabButtons(currentTabs.map {
+                TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
+            })
         }
     }
     var colorMode: StatusBarMode = .tmux
@@ -255,7 +244,6 @@ final class StatusBarView: NSView {
 
     func updateTabs(_ tabs: [Tab]) {
         currentTabs = tabs
-        guard !tmuxStatusEnabled else { return }
         rebuildTabButtons(tabs.map {
             TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
         })
@@ -286,13 +274,10 @@ final class StatusBarView: NSView {
                 font: rightLabel.font ?? NSFont.systemFont(ofSize: 11),
                 plainForeground: lastPlainForeground
             )
-            rebuildTabButtons(snapshot.windowsByIndex().map { win in
-                TabBarItem(
-                    id: win.windowId,
-                    index: win.index,
-                    name: win.name,
-                    active: win.current
-                )
+            // Tab 拓扑和顺序来自 Core snapshot；tmux status 只提供
+            // left/right 文案与样式，不能在这里重建第二份窗口列表。
+            rebuildTabButtons(currentTabs.map {
+                TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
             })
         } else {
             leftLabel.isHidden = true
@@ -718,20 +703,15 @@ final class StatusBarView: NSView {
     }
 
     func markCurrentWindow(_ windowId: UInt32) {
-        guard let snapshot = lastTmuxSnapshot else { return }
-        let updated = snapshot.updatingCurrentWindow(windowId)
-        guard updated.windows != snapshot.windows else { return }
-        lastTmuxSnapshot = updated
-        if tmuxStatusEnabled {
-            rebuildTabButtons(updated.windowsByIndex().map { win in
-                TabBarItem(
-                    id: win.windowId,
-                    index: win.index,
-                    name: win.name,
-                    active: win.current
-                )
-            })
+        if let snapshot = lastTmuxSnapshot {
+            lastTmuxSnapshot = snapshot.updatingCurrentWindow(windowId)
         }
+        guard tmuxStatusEnabled else { return }
+        // 切换确认事件到达前先更新高亮，但仍沿用 Core 的 tab 顺序、id
+        // 与名称；status snapshot 不能把 UI 排序带回另一套窗口列表。
+        rebuildTabButtons(currentTabs.map {
+            TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.id == windowId)
+        })
     }
 
     func setAttention(_ attention: StatusBarAttention) {
