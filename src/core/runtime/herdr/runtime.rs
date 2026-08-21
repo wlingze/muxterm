@@ -66,6 +66,12 @@ pub struct HerdrRuntime {
     observe_rx: Option<mpsc::Receiver<ObserveEvent>>,
     observe_tx: Option<mpsc::Sender<ObserveEvent>>,
     observe_streams: Vec<ObserveStream>,
+    /// 初始 observe 流建立后尚未收到首个 full frame 的 pane。
+    ///
+    /// Herdr 0.8.0 在 client 连接时先发一帧「新终端初始化」（清屏 + 提示符），
+    /// 不含 pane 历史；若用它覆盖 `pane.read` 的 attach 快照会丢掉 scrollback。
+    /// 首个 full frame 只在没有 seed 时才写入 outputs。
+    observe_initial: HashSet<PaneId>,
     event_rx: Option<mpsc::Receiver<EventStreamEvent>>,
     event_tx: Option<mpsc::Sender<EventStreamEvent>>,
     event_stream: Option<EventStream>,
@@ -96,6 +102,7 @@ impl HerdrRuntime {
             observe_rx: None,
             observe_tx: None,
             observe_streams: vec![],
+            observe_initial: HashSet::new(),
             event_rx: None,
             event_tx: None,
             event_stream: None,
@@ -553,6 +560,7 @@ impl HerdrRuntime {
             })
             .collect();
         for (pane, herdr_pane, cols, rows) in panes {
+            self.observe_initial.insert(pane);
             match ObserveStream::start(&socket, &herdr_pane, pane, cols, rows, tx.clone()) {
                 Ok(stream) => self.observe_streams.push(stream),
                 Err(err) => {
@@ -687,7 +695,14 @@ impl HerdrRuntime {
                             normalize_pane_size(width, height, Some((p.cols, p.rows)));
                     }
                     if full {
-                        self.outputs.insert(pane, bytes.clone());
+                        if self.observe_initial.remove(&pane) {
+                            // 初始 observe 帧是「新 client 终端初始化」（清屏 +
+                            // 提示符），不含 pane 历史；已有 seed（pane.read
+                            // 快照）时保留 seed，避免 attach 历史被清空。
+                            self.outputs.entry(pane).or_insert_with(|| bytes.clone());
+                        } else {
+                            self.outputs.insert(pane, bytes.clone());
+                        }
                     } else {
                         append_capped(
                             self.outputs.entry(pane).or_default(),
@@ -955,6 +970,7 @@ impl HerdrRuntime {
                 .map(|pane| (pane.cols, pane.rows))
                 .unwrap_or((80, 24));
             if let Some(tx) = self.observe_tx.as_ref().cloned() {
+                self.observe_initial.insert(pane);
                 match ObserveStream::start(
                     self.session.client_socket_path(),
                     &herdr_pane,
