@@ -26,6 +26,10 @@ final class MuxTerminalView: TerminalView {
     var suppressOutputDrivenResponses = false
     /// 正在 feed 远端 pane 输出（解析器应答只在这个窗口内产生）。
     private var isFeedingRemoteOutput = false
+    /// `scrollWheel` 临时放行的用户 mouse report。SwiftTerm 把滚轮
+    /// 上报也交给 `send(source: Terminal)`；它不能和 pane 输出解析器应答
+    /// 共用 tmux mirror 的丢弃门禁。
+    private var isSendingUserMouseReport = false
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
@@ -106,8 +110,12 @@ final class MuxTerminalView: TerminalView {
     override func scrollWheel(with event: NSEvent) {
         let previous = allowMouseReporting
         allowMouseReporting = true
+        isSendingUserMouseReport = true
+        defer {
+            isSendingUserMouseReport = false
+            allowMouseReporting = previous
+        }
         super.scrollWheel(with: event)
-        allowMouseReporting = previous
     }
 
     @available(*, unavailable)
@@ -424,6 +432,13 @@ final class MuxTerminalView: TerminalView {
     /// 键盘/粘贴/kitty 用户输入走 `TerminalViewDelegate.send(source: TerminalView)`
     /// 的 `send(data:)` 路径，不受影响。
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        if isSendingUserMouseReport {
+            guard TerminalMirrorPolicy.shouldForwardUserInitiatedMouseReport(
+                isTmuxMirror: suppressOutputDrivenResponses
+            ) else { return }
+            super.send(source: source, data: data)
+            return
+        }
         guard TerminalMirrorPolicy.shouldForwardParserResponse(
             duringRemoteOutputFeed: isFeedingRemoteOutput,
             isTmuxMirror: suppressOutputDrivenResponses

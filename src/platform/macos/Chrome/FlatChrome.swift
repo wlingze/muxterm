@@ -276,6 +276,19 @@ public enum TerminalMirrorPolicy {
         _ = duringRemoteOutputFeed
         return !isTmuxMirror
     }
+
+    /// 用户主动触发的滚轮 mouse report 不属于终端解析器应答。
+    ///
+    /// tmux 镜像必须丢弃 SwiftTerm 解析 pane 输出产生的 OSC/CSI 应答，
+    /// 但 alternate-screen TUI（opencode/Cursor/htop）依赖用户滚轮报告
+    /// 来翻页。两者走的是同一 `Terminal.send` 回调，因此由调用方在滚轮
+    /// 事件的短生命周期内显式标记，再通过这里放行。
+    public static func shouldForwardUserInitiatedMouseReport(
+        isTmuxMirror: Bool
+    ) -> Bool {
+        _ = isTmuxMirror
+        return true
+    }
 }
 
 /// 检测一段 pane 输出里是否包含「终端查询」序列。

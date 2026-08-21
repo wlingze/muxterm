@@ -221,6 +221,19 @@ final class TerminalMirrorPolicyTests: XCTestCase {
             isTmuxMirror: false
         ))
     }
+
+    func testUserMouseReportsRemainForwardedForTmuxMirror() {
+        XCTAssertTrue(
+            TerminalMirrorPolicy.shouldForwardUserInitiatedMouseReport(
+                isTmuxMirror: true
+            )
+        )
+        XCTAssertTrue(
+            TerminalMirrorPolicy.shouldForwardUserInitiatedMouseReport(
+                isTmuxMirror: false
+            )
+        )
+    }
 }
 
 final class MuxtermTerminalColorsTests: XCTestCase {
