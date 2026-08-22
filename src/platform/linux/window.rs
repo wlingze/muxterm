@@ -25,7 +25,7 @@ use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::config_edit::set_dotted_key;
 use crate::core::discovery::existing::ExistingEntry;
 use crate::core::model::backend::{Runtime, RuntimeCapability};
-use crate::core::model::layout::SplitDir;
+use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::quickconnect::model::QuickConnect;
@@ -727,12 +727,10 @@ impl AppWindow {
                         maybe_schedule_reconnect(&st);
                         let mut s = st.borrow_mut();
                         // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
-                        // 喂好，这里只把注意力信号应用到引擎，不重建前台。
+                        // 喂好，这里把注意力信号应用到引擎，并把 Surface 事件
+                        // 按 (WorkspaceId, PaneId) 送进对应 background pixel cache。
                         for (wid, events) in s.pool.poll_background() {
-                            let ws = workspace_replica_id(&wid);
-                            for ev in &events {
-                                apply_attention_event_from_workspace(&mut s, &wid, &ws, ev);
-                            }
+                            dispatch_event_batch_for(&mut s, &wid, events);
                         }
                         s.pool.evict_expired();
                         for wid in s.pool.take_evicted() {
@@ -1973,12 +1971,13 @@ fn workspace_replica_id(id: &WorkspaceId) -> String {
     id.replica_id()
 }
 
-fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
-    s.snapshot_seeded_this_batch.clear();
-    // 结构/尺寸事件先更新 core-backed layout，再 reset/feed surface。tmux
-    // 可在同一轮把 resize、snapshot 和 live output 一起送到 UI；按输入顺序
-    // 直接喂会让 CUP/DECSTBM 仍按旧网格解释，正是 htop/Cursor 乱码来源。
-    let defer_surface = events.iter().any(|ev| {
+/// 批处理顺序计划：结构 →（frame/snapshot）→ output。
+///
+/// 纯函数（L0 可测）：tmux/Herdr 可在同一轮把 resize、snapshot 和 live
+/// output 一起送到 UI；按输入顺序直接喂会让 CUP/DECSTBM 仍按旧网格解释。
+/// 返回三个阶段的索引序列（各阶段内部保持原始顺序）。
+fn batch_order_plan(events: &[StateChange]) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let has_structural = events.iter().any(|ev| {
         matches!(
             ev,
             StateChange::TabAdded { .. }
@@ -1989,33 +1988,245 @@ fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
                 | StateChange::PaneResized { .. }
         )
     });
-    if defer_surface {
-        for ev in &events {
-            if !matches!(
-                ev,
-                StateChange::PaneSnapshot { .. }
-                    | StateChange::PaneOutput { .. }
-                    | StateChange::PaneFrame { .. }
-            ) {
-                dispatch_event(s, ev);
-            }
+    if !has_structural {
+        // 无结构事件：保持原始顺序直接分发。
+        return ((0..events.len()).collect(), Vec::new(), Vec::new());
+    }
+    let mut structure = Vec::new();
+    let mut baseline = Vec::new();
+    let mut output = Vec::new();
+    for (i, ev) in events.iter().enumerate() {
+        match ev {
+            StateChange::PaneSnapshot { .. } | StateChange::PaneFrame { .. } => baseline.push(i),
+            StateChange::PaneOutput { .. } => output.push(i),
+            _ => structure.push(i),
         }
-        for ev in &events {
-            if matches!(
-                ev,
-                StateChange::PaneSnapshot { .. } | StateChange::PaneFrame { .. }
-            ) {
-                dispatch_event(s, ev);
-            }
+    }
+    (structure, baseline, output)
+}
+
+fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
+    s.snapshot_seeded_this_batch.clear();
+    let (structure, baseline, output) = batch_order_plan(&events);
+    if !baseline.is_empty() || !output.is_empty() {
+        for i in &structure {
+            dispatch_event(s, &events[*i]);
         }
-        for ev in &events {
-            if matches!(ev, StateChange::PaneOutput { .. }) {
-                dispatch_event(s, ev);
-            }
+        for i in &baseline {
+            dispatch_event(s, &events[*i]);
+        }
+        for i in &output {
+            dispatch_event(s, &events[*i]);
         }
     } else {
         for ev in &events {
             dispatch_event(s, ev);
+        }
+    }
+    s.snapshot_seeded_this_batch.clear();
+}
+
+/// 按 `(WorkspaceId, PaneId)` 找常驻 PaneView（hidden tab / background
+/// workspace 也必须有）；找不到说明 topology 阶段没建好，属于 lifecycle
+/// failure，不能静默丢帧。
+fn resident_pane_view(
+    s: &UiState,
+    wid: &WorkspaceId,
+    pane: u32,
+) -> Option<std::rc::Rc<crate::platform::linux::pane_view::PaneView>> {
+    s.pixel_cache
+        .get(wid)
+        .and_then(|layout| layout.pane(pane).cloned())
+}
+
+/// workspace-aware 事件分发：`wid` 的目标 LayoutHost 在 pixel_cache 里。
+/// 与 active-only 的 [`dispatch_event`] 共享结构/注意力逻辑，但 Surface
+/// 字节永远按 `(WorkspaceId, PaneId)` 进对应 pixel cache，绝不进错窗口。
+fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
+    let ws = wid.replica_id();
+    apply_attention_event_from_workspace(s, wid, &ws, ev);
+    let is_active = s.pool.active_id() == Some(wid);
+    match ev {
+        StateChange::PaneSnapshot { pane, data } => {
+            let ws = wid.replica_id();
+            apply_attention_from_workspace(s, wid, &ws, pane.0);
+            if let Some(view) = resident_pane_view(s, wid, pane.0) {
+                sync_pane_grid_size_for(s, wid, pane.0);
+                let seeded_from_core = s.snapshot_seeded_this_batch.contains(&pane.0);
+                if !seeded_from_core && view.widget().is_realized() && view.widget().width() > 0 {
+                    let (cols, rows) = s
+                        .pool
+                        .get(wid)
+                        .and_then(|w| w.state().pane(pane))
+                        .map(|p| (p.cols, p.rows))
+                        .unwrap_or((80, 24));
+                    view.seed_snapshot(data, cols, rows);
+                    forward_parser_replies_for(s, wid, pane.0);
+                }
+            }
+        }
+        StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
+            if let Some(view) = resident_pane_view(s, wid, pane.0) {
+                sync_pane_grid_size_for(s, wid, pane.0);
+                view.feed_output(data);
+                if is_active {
+                    // W18e：离开底部期间的新行累计到回底按钮 +N（只在前台）。
+                    if !view_at_bottom(&view) {
+                        s.jump_unseen = s
+                            .jump_unseen
+                            .saturating_add(
+                                data.iter().filter(|&&b| b == b'\n').count() as u32,
+                            );
+                    }
+                    forward_parser_replies_for(s, wid, pane.0);
+                }
+            }
+        }
+        // Index 专属快照：永不进入 Surface。
+        StateChange::PaneIndexSnapshot { .. } => {}
+        StateChange::MutationSettled { .. } => {
+            // 异步 mutation 最终结果：只在前台 workspace 转成可见通知。
+            if is_active {
+                notify_mutation_settled(s, ev);
+            }
+        }
+        StateChange::ActiveTabChanged { tab } => {
+            if is_active {
+                s.tab_gate.on_tab_changed(tab.0);
+                s.active_tab = tab.0;
+                refresh_ui(s);
+            }
+        }
+        StateChange::ActivePaneChanged { pane, .. } => {
+            if is_active {
+                // W18g：离开当前 pane 前记下副本 seq（上次看到这里）。
+                let ws = active_workspace_id(s);
+                let old = s.active_pane;
+                if old != pane.0 {
+                    let (last_line, _) = s.active_workspace().pane_last_line_seq(PaneId(old));
+                    s.last_seen.insert((ws.clone(), old), last_line);
+                }
+                s.active_pane = pane.0;
+                s.attention.on_became_visible(&ws, pane.0);
+                let has_unseen = s.last_seen.get(&(ws.clone(), pane.0)).is_some_and(|seen| {
+                    s.active_workspace().pane_last_line_seq(PaneId(pane.0)).0 != *seen
+                });
+                s.last_seen_mark.set_visible(has_unseen);
+            }
+        }
+        StateChange::TabClosed { tab } => {
+            if is_active {
+                s.tab_gate.on_tab_closed(tab.0);
+                refresh_ui(s);
+                mark_pending_close_if_session_ended(s);
+            }
+        }
+        StateChange::TabAdded { .. } => {
+            // 新 tab 可能已是快照里的 active tab；必须重建 UI 让 active_tab 跟上。
+            if is_active {
+                refresh_ui(s);
+            }
+        }
+        StateChange::LayoutChanged { tab, .. } | StateChange::PaneAdded { tab, .. } => {
+            if is_active && tab.0 == s.active_tab {
+                refresh_ui(s);
+            }
+        }
+        StateChange::PaneClosed { pane } => {
+            if is_active {
+                if s.active_workspace().state().pane(pane).is_none() {
+                    refresh_ui(s);
+                }
+                mark_pending_close_if_session_ended(s);
+            }
+        }
+        StateChange::StatusBarSubscription { name, value, pane } => {
+            if is_active && name.starts_with("muxterm.pane-cmd") {
+                let ws = active_workspace_id(s);
+                s.attention.set_process_name(
+                    &ws,
+                    pane.map(|p| p.0).unwrap_or(0),
+                    Some(value.clone()),
+                );
+            } else if is_active && name == "muxterm.status-left" {
+                s.status_left = Some(value.clone());
+                maybe_refresh_status(s, true);
+            } else if is_active && name == "muxterm.status-right" {
+                s.status_right = Some(value.clone());
+                maybe_refresh_status(s, true);
+            }
+        }
+        StateChange::BackendStatusChanged(status) => {
+            if is_active {
+                s.runtime_status = match status {
+                    BackendStatus::Connected => {
+                        crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED
+                    }
+                    BackendStatus::Connecting => {
+                        crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTING
+                    }
+                    BackendStatus::Disconnected => {
+                        crate::core::protocol::ffi::types::BACKEND_STATUS_DISCONNECTED
+                    }
+                    BackendStatus::Error => {
+                        crate::core::protocol::ffi::types::BACKEND_STATUS_ERROR
+                    }
+                    BackendStatus::Exited => crate::core::protocol::ffi::types::BACKEND_STATUS_EXITED,
+                };
+                // W16b：tmux server 死后保留最后一帧 + 水印。
+                let is_tmux = s.uses_tmux();
+                match status {
+                    BackendStatus::Connected => {
+                        s.disconnect_overlay.set_visible(false);
+                    }
+                    BackendStatus::Disconnected if is_tmux => {
+                        s.disconnect_overlay.set_visible(true);
+                    }
+                    BackendStatus::Exited if is_tmux => {
+                        tracing::info!(
+                            target = "muxterm::linux",
+                            "tmux runtime exited; keep last frame"
+                        );
+                        s.disconnect_overlay.set_visible(true);
+                    }
+                    BackendStatus::Exited => {
+                        tracing::info!(target = "muxterm::linux", "runtime exited");
+                        if should_close_window(true, 0, s.on_last_pane_exit) {
+                            s.pending_close = true;
+                        }
+                    }
+                    _ => {}
+                }
+                maybe_refresh_status(s, true);
+            }
+        }
+        StateChange::PaneResized { pane, cols, rows } => {
+            if let Some(view) = resident_pane_view(s, wid, pane.0) {
+                view.ensure_grid_size(*cols, *rows);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// workspace-aware 四阶段批处理：结构 →（前台一次 refresh）→ frame → output。
+/// background workspace 只更新自己的 pixel cache，不得切窗口当前页。
+fn dispatch_event_batch_for(s: &mut UiState, wid: &WorkspaceId, events: Vec<StateChange>) {
+    s.snapshot_seeded_this_batch.clear();
+    let (structure, baseline, output) = batch_order_plan(&events);
+    if !baseline.is_empty() || !output.is_empty() {
+        for i in &structure {
+            dispatch_event_for(s, wid, &events[*i]);
+        }
+        for i in &baseline {
+            dispatch_event_for(s, wid, &events[*i]);
+        }
+        for i in &output {
+            dispatch_event_for(s, wid, &events[*i]);
+        }
+    } else {
+        for ev in &events {
+            dispatch_event_for(s, wid, ev);
         }
     }
     s.snapshot_seeded_this_batch.clear();
@@ -2289,7 +2500,7 @@ fn drain_attention_notifications(s: &mut UiState) {
 
 fn refresh_ui(s: &mut UiState) {
     // 先取快照数据，释放对 pool 的借用后再改 UI 状态。
-    let (tab_ids, active_tab, layout_tree, panes) = {
+    let (tab_ids, active_tab, layouts, panes) = {
         let state = s.active_workspace().state();
         let tabs = state.tabs();
         let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id.0).collect();
@@ -2298,9 +2509,16 @@ fn refresh_ui(s: &mut UiState) {
             .find(|t| t.active)
             .map(|t| t.id.0)
             .or_else(|| tabs.first().map(|t| t.id.0));
-        let layout_tree = active_tab
-            .and_then(|tid| state.layout(&TabId(tid)))
-            .map(|l| l.tree.clone());
+        // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
+        // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
+        let layouts: Vec<(u32, LayoutNode)> = tabs
+            .iter()
+            .filter_map(|t| {
+                state
+                    .layout(&t.id)
+                    .map(|l| (t.id.0, l.tree.clone()))
+            })
+            .collect();
         let panes: Vec<(u32, u16, u16, bool)> = active_tab
             .map(|tid| {
                 state
@@ -2310,7 +2528,7 @@ fn refresh_ui(s: &mut UiState) {
                     .collect()
             })
             .unwrap_or_default();
-        (tab_ids, active_tab, layout_tree, panes)
+        (tab_ids, active_tab, layouts, panes)
     };
 
     // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
@@ -2325,7 +2543,7 @@ fn refresh_ui(s: &mut UiState) {
     }
 
     // 重建布局（pane 控件跨 tab 保留：像素缓存，不因换 tab 销毁）。
-    if let Some(tree) = layout_tree {
+    if !layouts.is_empty() {
         // Safety: GTK 主线程，UiState 与窗口同寿；回调在 refresh_ui 返回后
         // 才被 PaneView 触发，此时 RefCell 借用已释放。
         let state_ptr = s as *mut UiState;
@@ -2337,9 +2555,14 @@ fn refresh_ui(s: &mut UiState) {
                 data: data.to_vec(),
             });
         };
-        let layout_tab = s.active_tab;
-        s.active_layout_mut()
-            .apply_layout(layout_tab, &tree, &input_cb);
+        for (tab, tree) in &layouts {
+            s.active_layout_mut().apply_layout(*tab, tree, &input_cb);
+        }
+        // 全部 tab 常驻后，把 active tab 放回可见页（apply_layout 会
+        // 依次 set_visible_child，最后一次调用决定显示页）。
+        if let Some(active) = active_tab {
+            s.active_layout_mut().show_tab(active);
+        }
 
         for (pane_id, cols, rows, active) in panes {
             if let Some(view) = s.active_layout().pane(pane_id).cloned() {
@@ -2495,7 +2718,7 @@ fn seed_unseeded_pane(
             target: "muxterm::surface",
             pane = pane_id,
             bytes = bytes.len(),
-            "seed_raw from core pane_output"
+            "surface baseline seed from current-generation frame"
         );
         view.seed_raw(&bytes, cols, rows);
         s.snapshot_seeded_this_batch.insert(pane_id);
@@ -2523,6 +2746,20 @@ fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
     }
 }
 
+/// 按 `(WorkspaceId, PaneId)` 对齐字符格（hidden tab / background 也适用）。
+fn sync_pane_grid_size_for(s: &UiState, wid: &WorkspaceId, pane_id: u32) {
+    let Some(view) = resident_pane_view(s, wid, pane_id) else {
+        return;
+    };
+    let (cols, rows) = s
+        .pool
+        .get(wid)
+        .and_then(|w| w.state().pane(&PaneId(pane_id)))
+        .map(|p| (p.cols, p.rows))
+        .unwrap_or((80, 24));
+    view.ensure_grid_size(cols, rows);
+}
+
 fn forward_parser_replies(s: &mut UiState, pane_id: u32) {
     // 查询应答以工作区 PaneBuf 的 TerminalState 为事实源（LINUX-PLAN §2.5）。
     // tmux/SSH 镜像模式由 refresh-client -r 代答 OSC/DA，不能写回 PTY。
@@ -2532,6 +2769,27 @@ fn forward_parser_replies(s: &mut UiState, pane_id: u32) {
     }
     if !replies.is_empty() {
         let _ = s.active_workspace_mut().execute(Task::WriteRaw {
+            target: PaneId(pane_id),
+            data: replies,
+        });
+    }
+}
+
+/// 按 WorkspaceId 转发 parser replies（background workspace 也 flush）。
+fn forward_parser_replies_for(s: &mut UiState, wid: &WorkspaceId, pane_id: u32) {
+    let Some(ws) = s.pool.get_mut(wid) else {
+        return;
+    };
+    let replies = ws.take_reply(PaneId(pane_id));
+    let is_tmux = ws
+        .runtime()
+        .support()
+        .contains(&RuntimeCapability::SharedClientResize);
+    if is_tmux {
+        return;
+    }
+    if !replies.is_empty() {
+        let _ = ws.execute(Task::WriteRaw {
             target: PaneId(pane_id),
             data: replies,
         });
@@ -4394,6 +4652,82 @@ mod tests {
             "{light_css}"
         );
         assert_ne!(light_css, dark_css);
+    }
+
+    /// W4：同一批 PaneAdded + LayoutChanged + PaneResized + PaneFrame +
+    /// PaneOutput 时，顺序必须是结构 → frame → output（各阶段内部保持原序）。
+    #[test]
+    fn batch_order_plan_puts_structure_before_frames_before_output() {
+        let ev = |kind: &str| match kind {
+            "pane_added" => StateChange::PaneAdded {
+                pane: PaneId(1),
+                tab: TabId(1),
+            },
+            "layout" => StateChange::LayoutChanged {
+                tab: TabId(1),
+                layout: crate::core::model::layout::TabLayout {
+                    tab: TabId(1),
+                    tree: crate::core::model::layout::LayoutNode::leaf(PaneId(1)),
+                    active: PaneId(1),
+                },
+            },
+            "resized" => StateChange::PaneResized {
+                pane: PaneId(1),
+                cols: 80,
+                rows: 24,
+            },
+            "frame" => StateChange::PaneFrame {
+                pane: PaneId(1),
+                data: b"F".to_vec(),
+            },
+            "snapshot" => StateChange::PaneSnapshot {
+                pane: PaneId(1),
+                data: b"S".to_vec(),
+            },
+            "output" => StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"O".to_vec(),
+            },
+            "tab_added" => StateChange::TabAdded { tab: TabId(1) },
+            _ => panic!("unknown kind {kind}"),
+        };
+
+        // 输入顺序故意交错：frame、output 夹在结构事件之间。
+        let kinds = [
+            "pane_added",
+            "frame",
+            "layout",
+            "output",
+            "resized",
+            "snapshot",
+            "output",
+            "tab_added",
+        ];
+        let events: Vec<StateChange> = kinds.iter().map(|k| ev(k)).collect();
+        let (structure, baseline, output) = batch_order_plan(&events);
+        let order: Vec<String> = structure
+            .iter()
+            .chain(baseline.iter())
+            .chain(output.iter())
+            .map(|i| kinds[*i].to_string())
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "pane_added", "layout", "resized", "tab_added", // 结构
+                "frame", "snapshot", // baseline
+                "output", "output", // diff
+            ],
+            "结构必须整体先于 frame/snapshot，再先于 output"
+        );
+
+        // 无结构事件：保持原始顺序（全部在 structure 列表，原序）。
+        let plain = ["frame", "output", "frame", "output"];
+        let events2: Vec<StateChange> = plain.iter().map(|k| ev(k)).collect();
+        let (s2, b2, o2) = batch_order_plan(&events2);
+        assert!(b2.is_empty() && o2.is_empty(), "无结构事件不得重排");
+        let order2: Vec<&str> = s2.iter().map(|i| plain[*i]).collect();
+        assert_eq!(order2, plain, "无结构批次保持原始顺序");
     }
 
     fn fn_src<'a>(src: &'a str, name: &str) -> &'a str {

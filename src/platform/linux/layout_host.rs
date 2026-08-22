@@ -113,6 +113,17 @@ impl LayoutHost {
             .and_then(|tab| self.tab_roots.get(&tab).cloned())
     }
 
+    /// 只切 GtkStack 可见页，不重建任何树（W4：全部 tab 的布局都已常驻，
+    /// 切 tab 只 show/hide，不拆 VTE、不重新播种）。
+    pub fn show_tab(&mut self, tab_id: u32) -> bool {
+        let Some(root) = self.tab_roots.get(&tab_id) else {
+            return false;
+        };
+        self.stack.set_visible_child(root);
+        self.active_tab = Some(tab_id);
+        true
+    }
+
     pub fn ensure_pane<F>(&mut self, id: u32, on_input: &F) -> Rc<PaneView>
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
