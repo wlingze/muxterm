@@ -91,6 +91,14 @@ impl Workspace {
         self.model.swap_runtime(runtime);
     }
 
+    /// Pool 前台/后台切换转发（`Runtime::set_foreground`）。
+    ///
+    /// 只有 Pool 调用（active/background 转换恰好一次）；tmux/shell 默认
+    /// no-op，Herdr 用它决定 active pane 是否持有 writable control。
+    pub fn set_foreground(&mut self, foreground: bool) {
+        self.model.runtime_mut().set_foreground(foreground);
+    }
+
     /// 可变访问底层 Runtime，供测试注入事件。
     pub fn runtime_mut(&mut self) -> &mut dyn Runtime {
         self.model.runtime_mut()

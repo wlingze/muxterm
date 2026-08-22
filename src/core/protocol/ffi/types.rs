@@ -23,6 +23,9 @@ pub const STATE_POOL_CHANGED: u32 = 13;
 pub const STATE_PANE_SNAPSHOT: u32 = 14;
 /// Runtime-neutral agent lifecycle change (not an incremental PaneOutput).
 pub const STATE_PANE_AGENT_CHANGED: u32 = 15;
+/// 异步 mutation（NewTab/SplitPane）的最终 settlement：data 携带
+/// `{"operation_id":..,"kind":..,"result":..}` JSON。
+pub const STATE_MUTATION_SETTLED: u32 = 16;
 pub const STATE_OTHER: u32 = 99;
 
 // ── BackendStatus 编码到 CStateChange.pane_id ──────────────

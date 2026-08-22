@@ -30,6 +30,10 @@ pub struct MockRuntime {
     pub executed_log: Option<Arc<Mutex<Vec<Task>>>>,
     /// 测试注入的能力切片（默认空，不含 Worktree*）。
     pub capabilities: &'static [RuntimeCapability],
+    /// `set_foreground` 调用记录（W1 池前台/后台契约测试）。
+    pub foreground_calls: Vec<bool>,
+    /// 可选共享 foreground 日志：池淘汰/关闭测试在 Workspace 被移出后仍能检查。
+    pub foreground_log: Option<Arc<Mutex<Vec<bool>>>>,
 }
 
 impl Default for MockRuntime {
@@ -52,6 +56,8 @@ impl MockRuntime {
             executed: vec![],
             executed_log: None,
             capabilities: &[],
+            foreground_calls: vec![],
+            foreground_log: None,
         }
     }
 
@@ -129,6 +135,13 @@ impl Runtime for MockRuntime {
 
     fn support(&self) -> &'static [RuntimeCapability] {
         self.capabilities
+    }
+
+    fn set_foreground(&mut self, foreground: bool) {
+        self.foreground_calls.push(foreground);
+        if let Some(log) = &self.foreground_log {
+            log.lock().unwrap().push(foreground);
+        }
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {

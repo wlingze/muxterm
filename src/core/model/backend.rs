@@ -125,6 +125,14 @@ pub trait Runtime: State + Send {
         false
     }
 
+    /// Pool 前台/后台切换通知。默认 no-op；tmux/shell 不需要特殊行为，
+    /// GUI 禁止按 runtime 名判断。
+    ///
+    /// 语义：`foreground=true` 表示本 Runtime 所属 Workspace 成为 Pool 的
+    /// active workspace；`false` 表示降为后台。Herdr 用它决定 active pane
+    /// 是否持有 writable control（其余 pane/workspace 只 observe）。
+    fn set_foreground(&mut self, _foreground: bool) {}
+
     /// 当前连接的读写字节计数 `(down, up)`；非 SSH 运行时默认 0。
     fn traffic_bytes(&self) -> (u64, u64) {
         (0, 0)

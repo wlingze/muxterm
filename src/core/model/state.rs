@@ -127,6 +127,13 @@ pub enum StateChange {
     /// Runtime 用它保留“替换当前 Index 快照”的语义；Surface 仍直接 feed
     /// 原始 ANSI，不得因此 reset VTE。后续 [`Self::PaneOutput`] 再增量追加。
     PaneFrame { pane: PaneId, data: Vec<u8> },
+    /// 某 pane 的无头 Index 快照（attach 时 `pane.read` 等非 Surface 来源）。
+    ///
+    /// 只供 Workspace Index（搜索/attention）消费；platform 的 Surface
+    /// dispatcher 必须明确忽略它，禁止 feed 进 VTE。与 [`Self::PaneSnapshot`]
+    /// 的差别：后者在 tmux 重连路径仍保留 Surface snapshot 语义，前者永远
+    /// 不是像素来源。
+    PaneIndexSnapshot { pane: PaneId, data: Vec<u8> },
     /// tab 被加入。
     TabAdded { tab: TabId },
     /// tab 被关闭。
@@ -172,8 +179,46 @@ pub enum StateChange {
         value: String,
         pane: Option<PaneId>,
     },
+    /// 异步 tab/pane mutation（NewTab/SplitPane）的唯一最终结果事件。
+    ///
+    /// 同一 operation 恰好发送一次：`Completed` 或带阶段的 `Failed`。
+    /// `TaskOutcome::Accepted { operation_id }` 只表示已入队，不能冒充完成。
+    MutationSettled {
+        operation_id: u64,
+        kind: MutationKind,
+        result: MutationResult,
+    },
     /// 后端整体状态变化（连接中 / 已连接 / 断开 / 错误）。
     BackendStatusChanged(BackendStatus),
+}
+
+/// 异步 mutation 的种类（产品语言，不暴露 Herdr wire 名称）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationKind {
+    NewTab,
+    SplitPane,
+}
+
+/// 异步 mutation 的最终结果。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationResult {
+    Completed,
+    Failed {
+        stage: MutationStage,
+        reason: String,
+    },
+}
+
+/// 异步 mutation 的失败阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationStage {
+    Queue,
+    Dispatch,
+    AuthorityConvergence,
+    StreamBootstrap,
 }
 
 /// 后端连接/运行状态。

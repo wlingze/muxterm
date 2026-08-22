@@ -1993,13 +1993,18 @@ fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
         for ev in &events {
             if !matches!(
                 ev,
-                StateChange::PaneSnapshot { .. } | StateChange::PaneOutput { .. }
+                StateChange::PaneSnapshot { .. }
+                    | StateChange::PaneOutput { .. }
+                    | StateChange::PaneFrame { .. }
             ) {
                 dispatch_event(s, ev);
             }
         }
         for ev in &events {
-            if matches!(ev, StateChange::PaneSnapshot { .. }) {
+            if matches!(
+                ev,
+                StateChange::PaneSnapshot { .. } | StateChange::PaneFrame { .. }
+            ) {
                 dispatch_event(s, ev);
             }
         }
@@ -2014,6 +2019,54 @@ fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
         }
     }
     s.snapshot_seeded_this_batch.clear();
+}
+
+/// 异步 mutation 最终结果的可见通知：失败显示 toast，成功只记日志。
+///
+/// `MutationSettled` 是唯一最终事件；GTK 不得因 `Accepted` 手工刷新或
+/// 显示“创建完成”，只有这里的 Failed 才弹用户可见通知。
+fn notify_mutation_settled(s: &mut UiState, ev: &StateChange) {
+    let StateChange::MutationSettled {
+        operation_id,
+        kind,
+        result,
+    } = ev
+    else {
+        return;
+    };
+    let kind_name = match kind {
+        crate::core::model::state::MutationKind::NewTab => "新 tab",
+        crate::core::model::state::MutationKind::SplitPane => "分屏",
+    };
+    match result {
+        crate::core::model::state::MutationResult::Completed => {
+            tracing::info!(
+                target: "muxterm::linux",
+                operation_id = operation_id,
+                kind = ?kind,
+                "异步 mutation 完成"
+            );
+        }
+        crate::core::model::state::MutationResult::Failed { stage, reason } => {
+            tracing::warn!(
+                target: "muxterm::linux",
+                operation_id = operation_id,
+                kind = ?kind,
+                stage = ?stage,
+                error = %reason,
+                "异步 mutation 失败"
+            );
+            let stage_name = match stage {
+                crate::core::model::state::MutationStage::Queue => "排队",
+                crate::core::model::state::MutationStage::Dispatch => "派发",
+                crate::core::model::state::MutationStage::AuthorityConvergence => "权威收敛",
+                crate::core::model::state::MutationStage::StreamBootstrap => "流启动",
+            };
+            let body = format!("{kind_name}失败（{stage_name}）：{reason}");
+            s.notification_sink
+                .notify_done(&active_workspace_id(s), &body);
+        }
+    }
 }
 
 /// 会让 Workspace 产生 attention 信号的通用 Runtime 事件。
@@ -2084,6 +2137,13 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
                 }
                 forward_parser_replies(s, pane.0);
             }
+        }
+        // Index 专属快照（pane.read 等无头来源）：永不进入 Surface。
+        // Workspace 已把它喂进 Index（搜索/attention），这里明确 no-op。
+        StateChange::PaneIndexSnapshot { .. } => {}
+        StateChange::MutationSettled { .. } => {
+            // 异步 mutation 最终结果：转成用户可见通知（W5 接线）。
+            notify_mutation_settled(s, ev);
         }
         StateChange::ActiveTabChanged { tab } => {
             s.tab_gate.on_tab_changed(tab.0);

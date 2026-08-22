@@ -31,13 +31,13 @@ use super::types::{
     BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
-    STATE_LAYOUT_CHANGED, STATE_OTHER, STATE_PANE_ADDED, STATE_PANE_AGENT_CHANGED,
-    STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
-    STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED,
-    STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB,
-    TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
-    TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE,
-    TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    STATE_LAYOUT_CHANGED, STATE_MUTATION_SETTLED, STATE_OTHER, STATE_PANE_ADDED,
+    STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED,
+    STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED,
+    STATE_TAB_CLOSED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE,
+    TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
+    TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE,
+    TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
@@ -1278,6 +1278,29 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             out.type_ = STATE_OTHER;
             out.pane_id = pane.0;
             out.name = handle.push_name(title);
+        }
+        // Index 专属快照：Core 消费后从 FFI 输出过滤（见 poll 路径）。
+        StateChange::PaneIndexSnapshot { .. } => {
+            out.type_ = STATE_OTHER;
+        }
+        StateChange::MutationSettled {
+            operation_id,
+            kind,
+            result,
+        } => {
+            out.type_ = STATE_MUTATION_SETTLED;
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "operation_id": operation_id,
+                "kind": kind,
+                "result": result,
+            }))
+            .unwrap_or_else(|_| {
+                b"{\"operation_id\":0,\"kind\":\"new_tab\",\"result\":{\"stage\":\"queue\"}}"
+                    .to_vec()
+            });
+            let (ptr, len) = handle.push_data(&payload);
+            out.data = ptr;
+            out.data_len = len;
         }
     }
     out

@@ -132,6 +132,26 @@ impl WorkspacePool {
             .await
     }
 
+    /// 把 `new_id` 切为前台、旧前台降为后台，并恰好通知一次
+    /// `Runtime::set_foreground`（旧 false、新 true；无实际转换时零调用）。
+    fn transition_active(&mut self, new_id: &WorkspaceId) {
+        if self.active_id.as_ref() == Some(new_id) {
+            return;
+        }
+        if let Some(active_id) = self.active_id.clone() {
+            if let Some(active) = self.slots.get_mut(&active_id) {
+                active.lifecycle = WorkspaceLifecycle::Background;
+                active.workspace.set_foreground(false);
+            }
+        }
+        if let Some(slot) = self.slots.get_mut(new_id) {
+            slot.lifecycle = WorkspaceLifecycle::Active;
+            slot.last_used_at = Instant::now();
+            slot.workspace.set_foreground(true);
+        }
+        self.active_id = Some(new_id.clone());
+    }
+
     /// 打开工作区并为其 PaneBuf 指定 scrollback 上限。
     ///
     /// `open` 保留默认值给旧调用方；WorkspaceSpec/FFI 走此入口，确保
@@ -145,29 +165,13 @@ impl WorkspacePool {
     ) -> anyhow::Result<&mut Workspace> {
         let now = Instant::now();
         if self.slots.contains_key(&id) {
-            if let Some(active_id) = self.active_id.clone() {
-                if active_id != id {
-                    if let Some(active) = self.slots.get_mut(&active_id) {
-                        active.lifecycle = WorkspaceLifecycle::Background;
-                    }
-                }
-            }
+            self.transition_active(&id);
             let slot = self.slots.get_mut(&id).expect("exists 分支必须命中");
             slot.last_used_at = now;
-            slot.lifecycle = WorkspaceLifecycle::Active;
-            self.active_id = Some(id.clone());
             self.evict_for_capacity();
             return Ok(&mut self.slots.get_mut(&id).expect("slot 必须存在").workspace);
         }
 
-        // 切走旧 active（如果不是同一个 key）。
-        if let Some(active_id) = self.active_id.clone() {
-            if active_id != id {
-                if let Some(active) = self.slots.get_mut(&active_id) {
-                    active.lifecycle = WorkspaceLifecycle::Background;
-                }
-            }
-        }
         let runtime = create(&id);
         let mut workspace =
             Workspace::new_with_scrollback(id.clone(), name, runtime, scrollback_lines);
@@ -180,7 +184,7 @@ impl WorkspacePool {
                 last_used_at: now,
             },
         );
-        self.active_id = Some(id.clone());
+        self.transition_active(&id);
         self.evict_for_capacity();
         Ok(&mut self
             .slots
@@ -268,13 +272,6 @@ impl WorkspacePool {
     pub fn insert_connected(&mut self, workspace: Workspace) -> WorkspaceId {
         let now = Instant::now();
         let id = workspace.id().clone();
-        if let Some(active_id) = self.active_id.clone() {
-            if active_id != id {
-                if let Some(active) = self.slots.get_mut(&active_id) {
-                    active.lifecycle = WorkspaceLifecycle::Background;
-                }
-            }
-        }
         self.slots.insert(
             id.clone(),
             PooledWorkspace {
@@ -283,7 +280,7 @@ impl WorkspacePool {
                 last_used_at: now,
             },
         );
-        self.active_id = Some(id.clone());
+        self.transition_active(&id);
         self.evict_for_capacity();
         id
     }
@@ -293,17 +290,7 @@ impl WorkspacePool {
         if !self.slots.contains_key(id) {
             return None;
         }
-        if let Some(active_id) = self.active_id.clone() {
-            if active_id != *id {
-                if let Some(active) = self.slots.get_mut(&active_id) {
-                    active.lifecycle = WorkspaceLifecycle::Background;
-                }
-            }
-        }
-        let slot = self.slots.get_mut(id).expect("activate 目标必须存在");
-        slot.lifecycle = WorkspaceLifecycle::Active;
-        slot.last_used_at = Instant::now();
-        self.active_id = Some(id.clone());
+        self.transition_active(id);
         Some(
             &mut self
                 .slots
@@ -414,11 +401,12 @@ impl WorkspacePool {
         std::mem::take(&mut self.recently_evicted)
     }
 
-    /// 关闭全部工作区（tmux Detach，shell Shutdown）。
+    /// 关闭全部工作区（PersistDetach → Detach，其余 Shutdown）。
     pub fn shutdown_all(&mut self) {
         let slots: Vec<(WorkspaceId, PooledWorkspace)> = self.slots.drain().collect();
         for (id, mut slot) in slots {
             slot.lifecycle = WorkspaceLifecycle::Evicting;
+            slot.workspace.set_foreground(false);
             release_runtime(&mut slot.workspace, &id);
         }
         self.active_id = None;
@@ -427,6 +415,7 @@ impl WorkspacePool {
     fn evict(&mut self, id: &WorkspaceId, _reason: WorkspaceEvictionReason) {
         let mut slot = self.slots.remove(id).expect("evict 目标必须存在");
         slot.lifecycle = WorkspaceLifecycle::Evicting;
+        slot.workspace.set_foreground(false);
         release_runtime(&mut slot.workspace, id);
         if self.active_id.as_ref() == Some(id) {
             self.active_id = None;
@@ -435,18 +424,19 @@ impl WorkspacePool {
     }
 }
 
-/// 按 runtime 释放：tmux 类 detach 保远端，shell shutdown 结束进程。
+/// 按 Runtime 能力释放：PersistDetach 类 detach 保远端，其余 shutdown 结束进程。
 fn release_runtime(workspace: &mut Workspace, id: &WorkspaceId) {
-    let task = if is_tmux_runtime(&id.runtime) {
+    let persist = workspace
+        .runtime()
+        .support()
+        .contains(&RuntimeCapability::PersistDetach);
+    let task = if persist {
         Task::Detach
     } else {
         Task::Shutdown
     };
     let _ = workspace.execute(task);
-}
-
-fn is_tmux_runtime(runtime: &str) -> bool {
-    matches!(runtime, "tmux" | "ssh" | "tmux-ssh")
+    let _ = id;
 }
 
 #[cfg(test)]
@@ -459,6 +449,14 @@ mod tests {
 
     fn id(name: &str, runtime: &str) -> WorkspaceId {
         WorkspaceId::new("local", None, name, runtime, "")
+    }
+
+    /// 读取某 workspace 的 MockRuntime 收到的 set_foreground 调用序列。
+    fn foreground_calls(pool: &WorkspacePool, id: &WorkspaceId) -> Vec<bool> {
+        pool.get(id)
+            .and_then(|w| w.runtime().as_any().downcast_ref::<MockRuntime>())
+            .map(|rt| rt.foreground_calls.clone())
+            .unwrap_or_default()
     }
 
     /// H0：Mock 只报 WorktreeList（不报 WorktreeCreate）时，create 必须被拒，
@@ -586,12 +584,12 @@ mod tests {
         assert!(pool.search_all("missing").is_empty());
     }
 
-    /// 超容量：tmux mock 计数 detach，shell 计数 shutdown。
+    /// 超容量：PersistDetach mock 计数 detach，非持久 mock 计数 shutdown。
     #[tokio::test]
     async fn over_capacity_evicts_tmux_with_detach_and_shell_with_shutdown() {
         let log = Arc::new(Mutex::new(Vec::new()));
 
-        // tmux：容量 2，开 3 个 → 最早的后台被 Detach。
+        // PersistDetach：容量 2，开 3 个 → 最早的后台被 Detach。
         let mut tmux_pool = WorkspacePool::new(WorkspacePoolPolicy::new(2));
         for n in ["a", "b", "c"] {
             let wid = id(n, "tmux");
@@ -599,6 +597,7 @@ mod tests {
             tmux_pool
                 .open(wid.clone(), n.to_string(), move |_| {
                     let mut b = MockRuntime::with_single_pane();
+                    b.capabilities = &[RuntimeCapability::PersistDetach];
                     b.executed_log = Some(log_cb);
                     Box::new(b)
                 })
@@ -611,11 +610,11 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|t| matches!(t, Task::Detach)),
-            "tmux 淘汰应发 Detach: {:?}",
+            "PersistDetach 淘汰应发 Detach: {:?}",
             log.lock().unwrap()
         );
 
-        // shell：容量 1，开 2 个 → 第一个被 Shutdown。
+        // 非持久：容量 1，开 2 个 → 第一个被 Shutdown。
         let shell_log = Arc::new(Mutex::new(Vec::new()));
         let mut shell_pool = WorkspacePool::new(WorkspacePoolPolicy::new(1));
         for n in ["s1", "s2"] {
@@ -637,8 +636,106 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|t| matches!(t, Task::Shutdown)),
-            "shell 淘汰应发 Shutdown: {:?}",
+            "非持久 runtime 淘汰应发 Shutdown: {:?}",
             shell_log.lock().unwrap()
+        );
+    }
+
+    /// W1：open 第一个 workspace 时 runtime 恰好收到一次 [true]。
+    #[tokio::test]
+    async fn open_first_workspace_sets_foreground_true() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
+        let a = id("a", "tmux");
+        pool.open(a.clone(), "a".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+        assert_eq!(foreground_calls(&pool, &a), vec![true]);
+    }
+
+    /// W1：open/activate 第二个 → 旧 [false]、新 [true]；重复 activate 零新增。
+    #[tokio::test]
+    async fn activate_second_notifies_old_false_new_true_without_repeat() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
+        let a = id("a", "tmux");
+        let b = id("b", "tmux");
+        pool.open(a.clone(), "a".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+        pool.open(b.clone(), "b".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+        assert_eq!(foreground_calls(&pool, &a), vec![true, false]);
+        assert_eq!(foreground_calls(&pool, &b), vec![true]);
+
+        pool.activate(&b);
+        pool.activate(&b);
+        assert_eq!(foreground_calls(&pool, &a), vec![true, false]);
+        assert_eq!(foreground_calls(&pool, &b), vec![true]);
+
+        pool.activate(&a);
+        assert_eq!(foreground_calls(&pool, &a), vec![true, false, true]);
+        assert_eq!(foreground_calls(&pool, &b), vec![true, false]);
+    }
+
+    /// W1：insert_connected 与 activate 同语义（旧 false、新 true）。
+    #[tokio::test]
+    async fn insert_connected_notifies_foreground_like_activate() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
+        let a = id("a", "tmux");
+        pool.open(a.clone(), "a".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+        let b = id("b", "tmux");
+        let workspace = Workspace::new(
+            b.clone(),
+            "b".into(),
+            Box::new(MockRuntime::with_single_pane()),
+        );
+        pool.insert_connected(workspace);
+        assert_eq!(pool.active_id(), Some(&b));
+        assert_eq!(foreground_calls(&pool, &a), vec![true, false]);
+        assert_eq!(foreground_calls(&pool, &b), vec![true]);
+    }
+
+    /// W1：close 先降前台（false）再按能力释放。
+    #[tokio::test]
+    async fn close_notifies_false_before_capability_release() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let fg = Arc::new(Mutex::new(Vec::new()));
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
+        let a = id("a", "tmux");
+        let log_cb = log.clone();
+        let fg_cb = fg.clone();
+        pool.open(a.clone(), "a".into(), move |_| {
+            let mut b = MockRuntime::with_single_pane();
+            b.capabilities = &[RuntimeCapability::PersistDetach];
+            b.executed_log = Some(log_cb);
+            b.foreground_log = Some(fg_cb);
+            Box::new(b)
+        })
+        .await
+        .unwrap();
+        assert_eq!(foreground_calls(&pool, &a), vec![true]);
+        assert!(pool.close(&a));
+        assert_eq!(
+            *fg.lock().unwrap(),
+            vec![true, false],
+            "close 必须先降前台再释放"
+        );
+        assert!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .any(|t| matches!(t, Task::Detach)),
+            "PersistDetach 能力应走 Detach"
         );
     }
 
@@ -707,7 +804,7 @@ mod tests {
         assert_eq!(pool.take_evicted(), vec![a]);
     }
 
-    /// list 返回全部工作区；close 走 tmux Detach。
+    /// list 返回全部工作区；close 走 PersistDetach 能力 Detach。
     #[tokio::test]
     async fn list_and_close() {
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -717,6 +814,7 @@ mod tests {
         let log_cb = log.clone();
         pool.open(a.clone(), "a".into(), move |_| {
             let mut bk = MockRuntime::with_single_pane();
+            bk.capabilities = &[RuntimeCapability::PersistDetach];
             bk.executed_log = Some(log_cb);
             Box::new(bk)
         })
