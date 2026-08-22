@@ -911,6 +911,13 @@ fn herdr_agent_detach_reattach_preserves_content() {
             &ctx.scenario,
             &format!("B{}", ctx.mark),
         )?;
+        // 阶段快照（诊断 reopen 内容丢失用；成功时不打印）。
+        let pane2_wire = ctx.scenario.pane_map[&ctx.scenario.tab2_panes[0]].clone();
+        let snap_b = ctx
+            .session
+            .pane_read_recent_ansi_lines(&pane2_wire, 2000)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_else(|e| format!("read err: {e}"));
         start_agent(ctx)?;
         ensure!(
             String::from_utf8_lossy(&ctx.session.pane_read_ansi(&ctx.wire_pane1)?)
@@ -945,14 +952,26 @@ fn herdr_agent_detach_reattach_preserves_content() {
                 && candidate.test_active_tab_id() == ctx.scenario.tab2
                 && candidate.test_layout_leaf_ids() == ctx.scenario.tab2_panes
         })?;
-        verify_reattach_continuity(
+        let reattach = verify_reattach_continuity(
             &ctx.app,
             &ctx.session,
             &ctx.workspace_id,
             &ctx.scenario,
             &before_tokens,
-        )
-        .context("reattach 后四 pane 内容连续性")?;
+        );
+        if let Err(err) = reattach {
+            let snap_now = ctx
+                .session
+                .pane_read_recent_ansi_lines(&pane2_wire, 2000)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_else(|e| format!("read err: {e}"));
+            eprintln!(
+                "detach/reattach 阶段快照（pane {pane2_wire}）\nB 阶段后: {:?}\nreopen 后: {:?}",
+                snap_b.escape_debug(),
+                snap_now.escape_debug()
+            );
+            return Err(err.context("reattach 后四 pane 内容连续性"));
+        }
         for _ in 0..10 {
             tick(&ctx.app);
         }

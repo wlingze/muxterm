@@ -66,6 +66,7 @@ run_linux() {
         --test linux_herdr_worktree_e2e \
         --test linux_herdr_ssh_e2e \
         --test linux_herdr_agent_e2e \
+        --test herdr_direct_reattach \
         --test linux_herdr_authority_e2e \
         --test linux_catalog_ssh_e2e \
         --test linux_existing_e2e \
