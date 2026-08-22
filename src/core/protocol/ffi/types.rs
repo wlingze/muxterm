@@ -81,6 +81,17 @@ pub struct CStateChange {
     pub name: *const c_char,
 }
 
+/// 带 WorkspaceId 的状态变更事件（`muxterm_poll_workspace_events`）。
+///
+/// `workspace_id` 指向 handle 持有的 CString（下一次 poll/free 前有效）；
+/// `event` 与 `CStateChange` 布局完全一致（`window_id` 继续为 0）。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CWorkspaceStateChange {
+    pub workspace_id: *const c_char,
+    pub event: CStateChange,
+}
+
 /// 平台 → 核心的任务描述。
 #[repr(C)]
 #[derive(Clone, Copy)]

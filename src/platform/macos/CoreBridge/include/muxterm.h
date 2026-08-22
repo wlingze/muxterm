@@ -16,6 +16,12 @@ struct CStateChange {
     const char* name;
 };
 
+// W4：带 WorkspaceId 的 additive 事件 wrapper（window_id 仍为 0）。
+struct CWorkspaceStateChange {
+    const char* workspace_id;
+    struct CStateChange event;
+};
+
 struct CTask {
     uint32_t type_;        // 0=SplitPane, 1=NewTab, 2=SwitchTab, ... 9=Detach
     uint32_t target_pane;
@@ -127,6 +133,7 @@ int muxterm_resize_pane_axis(struct MuxtermHandle* h, uint32_t pane_id, uint32_t
 
 // ── 事件轮询 ──
 int muxterm_poll_events(struct MuxtermHandle* h, struct CStateChange* out, int max_count);
+int muxterm_poll_workspace_events(struct MuxtermHandle* h, struct CWorkspaceStateChange* out, int max_count);
 
 // ── 状态查询 ──
 int muxterm_get_tabs(struct MuxtermHandle* h, struct CTab* out, int max_count);

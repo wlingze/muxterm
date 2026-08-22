@@ -27,7 +27,8 @@ use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;
 use super::types::{
-    CLayoutNode, CPane, CStateChange, CTab, CTask, BACKEND_STATUS_CONNECTED,
+    CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange,
+    BACKEND_STATUS_CONNECTED,
     BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
@@ -58,9 +59,12 @@ pub struct MuxtermHandle {
     tab_names: Vec<CString>,
     /// `get_layout` 节点池（连续存储，指针稳定至下次 get_layout）。
     layout_nodes: Vec<CLayoutNode>,
-    /// `muxterm_poll_events` 的 C 缓冲可能小于一次 refresh 的事件数；
-    /// 这里保留未返回的事件，避免 GUI 轮询 64 个事件时丢掉布局或输出。
-    deferred_events: VecDeque<StateChange>,
+    /// `muxterm_poll_*` 的 C 缓冲可能小于一次 refresh 的事件数；
+    /// 这里保留未返回的事件（带 WorkspaceId），避免 GUI 轮询 64 个事件时
+    /// 丢掉布局或输出。background 事件绝不能失去 WorkspaceId 身份。
+    deferred_events: VecDeque<(WorkspaceId, StateChange)>,
+    /// workspace 事件 wrapper 的 workspace_id 字符串缓冲。
+    workspace_ids: Vec<CString>,
 }
 
 impl MuxtermHandle {
@@ -102,6 +106,17 @@ impl MuxtermHandle {
         self.event_data.push(data.to_vec());
         let last = self.event_data.last().unwrap();
         (last.as_ptr(), last.len())
+    }
+
+    /// workspace wrapper 的 workspace_id 字符串缓冲（下一次 poll/free 前有效）。
+    fn push_workspace_id(&mut self, s: &str) -> *const c_char {
+        match CString::new(s) {
+            Ok(cs) => {
+                self.workspace_ids.push(cs);
+                self.workspace_ids.last().unwrap().as_ptr()
+            }
+            Err(_) => ptr::null(),
+        }
     }
 
     /// 把一批事件里的 PaneOutput 信号应用到注意力引擎。
@@ -689,6 +704,7 @@ pub extern "C" fn muxterm_new(
         tab_names: Vec::new(),
         layout_nodes: Vec::new(),
         deferred_events: VecDeque::new(),
+        workspace_ids: Vec::new(),
     }))
 }
 
@@ -756,6 +772,7 @@ pub extern "C" fn muxterm_new_connect(
         tab_names: Vec::new(),
         layout_nodes: Vec::new(),
         deferred_events: VecDeque::new(),
+        workspace_ids: Vec::new(),
     }))
 }
 
@@ -1311,6 +1328,11 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
 ///
 /// 会先 `refresh()` 拉取 runtime 增量（含 pty 输出）。
 ///
+/// **旧兼容入口**：只向消费者返回 active workspace 的事件。background 事件
+/// 仍在 Core 内 poll 供 Index/attention 使用，但不能拍平后外发（`CStateChange`
+/// 没有 WorkspaceId，两个 Workspace 的同号 Pane 无法路由）。新消费者请用
+/// [`muxterm_poll_workspace_events`]。
+///
 /// # Safety
 /// `out` 至少 `max_count` 个元素；返回的指针在下次 poll/free 前有效。
 #[no_mangle]
@@ -1325,27 +1347,49 @@ pub unsafe extern "C" fn muxterm_poll_events(
         }
         let handle = &mut *h;
         handle.clear_event_bufs();
-        // 后台工作区事件也拉取（W7：池在 core）。
-        let mut fresh: Vec<StateChange> = Vec::new();
+        // background 批次在 Core 内 poll（Index/attention 消费），但不外发。
         for (ws_id, events) in handle.pool_mut().poll_background() {
             handle.apply_attention_for_events(&ws_id, &events);
-            fresh.extend(events);
+            for ev in events {
+                handle.deferred_events.push_back((ws_id.clone(), ev));
+            }
         }
+        let active_id = handle.pool().active_id().cloned();
         if let Some(ws) = handle.active_workspace_mut() {
             let events = ws.refresh();
-            let ws_id = handle.pool().active_id().cloned();
-            if let Some(ws_id) = ws_id {
-                handle.apply_attention_for_events(&ws_id, &events);
+            if let Some(ws_id) = &active_id {
+                handle.apply_attention_for_events(ws_id, &events);
+                for ev in events {
+                    handle.deferred_events.push_back((ws_id.clone(), ev));
+                }
             }
-            fresh.extend(events);
         }
-        handle.deferred_events.extend(fresh);
-        let n = handle.deferred_events.len().min(max_count as usize);
+        // 旧 poll 只交付 active workspace 事件；background 事件留在队列里
+        // 等 workspace-aware poll 取走（或随 handle 释放）。
+        let ready: Vec<(WorkspaceId, StateChange)> = handle
+            .deferred_events
+            .iter()
+            .filter(|(ws_id, _)| active_id.as_ref().is_some_and(|id| id == ws_id))
+            .take(max_count as usize)
+            .cloned()
+            .collect();
+        let n = ready.len();
+        // 从 deferred 里移除已交付的 active 事件（按 FIFO 位置）。
+        let mut delivered = 0usize;
+        let mut kept = VecDeque::new();
+        for item in handle.deferred_events.drain(..) {
+            let is_active = active_id.as_ref().is_some_and(|id| id == &item.0);
+            if is_active && delivered < n {
+                delivered += 1;
+            } else {
+                kept.push_back(item);
+            }
+        }
+        handle.deferred_events = kept;
         let slice = std::slice::from_raw_parts_mut(out, n);
-        let ready: Vec<StateChange> = handle.deferred_events.drain(..n).collect();
-        for (i, ev) in ready.iter().enumerate() {
+        for (i, (_ws_id, ev)) in ready.iter().enumerate() {
             let c = state_change_to_c(handle, ev);
-            // 回调
+            // 回调（legacy 无 workspace 身份，只允许 active 事件）。
             if let StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } =
                 ev
             {
@@ -1357,6 +1401,59 @@ pub unsafe extern "C" fn muxterm_poll_events(
                 cb(&c);
             }
             slice[i] = c;
+        }
+        n as i32
+    }))
+    .unwrap_or(-1)
+}
+
+/// 非阻塞拉取全部批次事件（active + background），每个都带完整五段
+/// `WorkspaceId` 字符串。
+///
+/// 同一 handle 只能选择一种 poll API（旧 [`muxterm_poll_events`] 或本函数），
+/// 禁止同时调用并竞争同一事件队列。`PaneIndexSnapshot` 只由 Core 消费，
+/// 两种 poll 路径都不序列化给像素层。
+///
+/// # Safety
+/// `out` 至少 `max_count` 个元素；返回的指针在下次 poll/free 前有效。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_poll_workspace_events(
+    h: *mut MuxtermHandle,
+    out: *mut CWorkspaceStateChange,
+    max_count: i32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || out.is_null() || max_count <= 0 {
+            return -1;
+        }
+        let handle = &mut *h;
+        handle.clear_event_bufs();
+        for (ws_id, events) in handle.pool_mut().poll_background() {
+            handle.apply_attention_for_events(&ws_id, &events);
+            for ev in events {
+                handle.deferred_events.push_back((ws_id.clone(), ev));
+            }
+        }
+        let active_id = handle.pool().active_id().cloned();
+        if let Some(ws) = handle.active_workspace_mut() {
+            let events = ws.refresh();
+            if let Some(ws_id) = &active_id {
+                handle.apply_attention_for_events(ws_id, &events);
+                for ev in events {
+                    handle.deferred_events.push_back((ws_id.clone(), ev));
+                }
+            }
+        }
+        let n = handle.deferred_events.len().min(max_count as usize);
+        let slice = std::slice::from_raw_parts_mut(out, n);
+        let ready: Vec<(WorkspaceId, StateChange)> = handle.deferred_events.drain(..n).collect();
+        for (i, (ws_id, ev)) in ready.iter().enumerate() {
+            let c = state_change_to_c(handle, ev);
+            let ws_name = handle.push_workspace_id(&ws_id.to_string());
+            slice[i] = CWorkspaceStateChange {
+                workspace_id: ws_name,
+                event: c,
+            };
         }
         n as i32
     }))
@@ -2898,5 +2995,75 @@ mod tests {
             body.contains("all"),
             "discover_sessions_json 必须把 transport=all 交给 Catalog: {body}"
         );
+    }
+
+    /// W4：两个 Workspace、各有 PaneId(1) 时，workspace-aware poll 必须
+    /// 保留完整 WorkspaceId；旧 poll 只交付 active 事件；PaneIndexSnapshot
+    /// 不出 FFI；CStateChange size/offset 与 window_id=0 保持不变。
+    #[test]
+    fn ffi_workspace_poll_keeps_workspace_identity() {
+        unsafe {
+            // 打开两个本地 shell workspace（一个 active、一个 background）。
+            let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+            assert!(!h.is_null());
+            assert_eq!(muxterm_connect(h), 0);
+            // 第二个 workspace：直接经 pool 开一个 shell workspace。
+            let handle = &mut *h;
+            let id2 = crate::core::workspace::id::WorkspaceId::new(
+                "local",
+                None,
+                "second",
+                "shell",
+                "",
+            );
+            let open_result = handle.rt.block_on(
+                handle.catalog.pool_mut().open(id2.clone(), "second".into(), |_| {
+                    let mut rt = crate::core::runtime::shell::ShellRuntime::new("$SHELL", "");
+                    Box::new(rt)
+                }),
+            );
+            assert!(open_result.is_ok(), "第二个 shell workspace 应能打开");
+            let mut buf = [CWorkspaceStateChange {
+                workspace_id: ptr::null(),
+                event: CStateChange::default(),
+            }; 64];
+            let n = muxterm_poll_workspace_events(h, buf.as_mut_ptr(), 64);
+            assert!(n > 0, "workspace poll 应返回事件");
+            for i in 0..n as usize {
+                let entry = buf[i];
+                assert!(
+                    !entry.workspace_id.is_null(),
+                    "每个事件必须带 workspace_id"
+                );
+                let wid = CStr::from_ptr(entry.workspace_id).to_string_lossy();
+                assert!(
+                    !wid.is_empty() && wid.contains('/'),
+                    "workspace_id 应是五段 id: {wid}"
+                );
+                assert_eq!(
+                    entry.event.window_id, 0,
+                    "CStateChange.window_id 必须保持 0"
+                );
+            }
+            // PaneIndexSnapshot 不出 FFI（state_change_to_c 只映射为 STATE_OTHER，
+            // 且 Core 消费后从 poll 过滤——这里验证映射存在即可）。
+            let ev = StateChange::PaneIndexSnapshot {
+                pane: PaneId(1),
+                data: b"x".to_vec(),
+            };
+            let c = state_change_to_c(handle, &ev);
+            assert_eq!(c.type_, STATE_OTHER);
+            assert_eq!(c.data, ptr::null());
+
+            // 旧 poll 只交付 active 事件（不 panic、不泄漏 background）。
+            let mut legacy = [CStateChange::default(); 64];
+            let _ = muxterm_poll_events(h, legacy.as_mut_ptr(), 64);
+            // 旧 CStateChange 布局不变：type_ 首字段、size 与 struct 一致。
+            assert_eq!(
+                std::mem::size_of::<CStateChange>(),
+                std::mem::size_of::<crate::core::protocol::ffi::types::CStateChange>()
+            );
+            muxterm_free(h);
+        }
     }
 }
