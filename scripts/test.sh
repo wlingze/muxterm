@@ -32,6 +32,7 @@ run_core() {
         --test herdr_session_contract \
         --test herdr_feature_contract \
         --test herdr_authority_contract \
+        --test herdr_stability_contract \
         --test herdr_multi_workspace_contract \
         --test herdr_worktree_contract \
         --test existing_ssh_contract \
@@ -101,13 +102,13 @@ run_macos() {
 }
 
 case "${1:-}" in
-    run)
-        case "${2:-}" in
-            core) run_core ;;
-            linux) run_linux ;;
-            macos) run_macos ;;
-            *) usage ;;
-        esac
-        ;;
+run)
+    case "${2:-}" in
+    core) run_core ;;
+    linux) run_linux ;;
+    macos) run_macos ;;
     *) usage ;;
+    esac
+    ;;
+*) usage ;;
 esac

@@ -1,11 +1,20 @@
-//! Herdr pane control 流：连 client socket，Hello 后取得终端控制权；同一
-//! socket 发送原始输入/resize，并把 `terminal.frame` ANSI 送进 channel。
+//! Herdr pane stream：连 client socket，Hello 后取得终端流；同一 socket 发送
+//! 原始输入/resize，并把 `terminal.frame` ANSI 送进 channel。
 //!
 //! 生产代码**不** `Command::new("herdr")`；这里直接实现 herdr 0.8.0
 //! （协议 19）的 bincode 线协议（参考 `~/Developer/terminal/herdr`）。
+//!
+//! 流有两种模式：
+//! - [`StreamMode::Observe`]：只读，可有多个 observer，不拥有输入/resize/takeover 权；
+//! - [`StreamMode::Control`]：可写，一个终端同时只有一个 controller。
+//!
+//! 所有权纪律：reader 事件的每个事件都带 `(pane, generation, event_ordinal)`，
+//! Frame 保留 Herdr wire `seq`；runtime 只接受 current generation 且 ordinal
+//! 严格递增的事件。start/handshake 由 generation-tagged worker 完成，调用线程
+//! 只登记 `Starting`，不能同步等 socket。
 
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
@@ -18,12 +27,32 @@ use super::wire::{
     RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
 
-/// observe 流事件（reader 线程 → runtime）。
+/// 一条 pane 流的模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StreamMode {
+    /// 只读 observer（可有多个；不拥有输入/resize/takeover 权）。
+    Observe,
+    /// 可写 controller（一个终端同时只有一个）。
+    Control,
+}
+
+impl StreamMode {
+    pub fn is_control(&self) -> bool {
+        matches!(self, StreamMode::Control)
+    }
+}
+
+/// observe/control 流事件（reader 线程 → runtime）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ObserveEvent {
+pub enum PaneStreamEvent {
     /// 一帧 ANSI 字节（full=true 是全量重绘，否则是增量 diff）。
     Frame {
         pane: PaneId,
+        generation: u64,
+        /// reader 线程从 1 开始的单调序号（不跨 generation 比较）。
+        event_ordinal: u64,
+        /// Herdr wire 帧序号（原样取自 TerminalFrame.seq；随新流重置）。
+        wire_seq: u64,
         bytes: Vec<u8>,
         width: u16,
         height: u16,
@@ -32,15 +61,38 @@ pub enum ObserveEvent {
     /// server 关闭流。
     Closed {
         pane: PaneId,
+        generation: u64,
+        event_ordinal: u64,
         reason: Option<String>,
     },
     /// 读流出错。
-    Error { pane: PaneId, message: String },
+    Error {
+        pane: PaneId,
+        generation: u64,
+        event_ordinal: u64,
+        message: String,
+    },
 }
 
-/// 一条 pane 的 observe 流：持有 reader 线程 + 共享 channel。
+/// start worker 的完成结果（generation-tagged）。
+pub enum StreamStartResult {
+    Started {
+        pane: PaneId,
+        generation: u64,
+        stream: ObserveStream,
+    },
+    Failed {
+        pane: PaneId,
+        generation: u64,
+        message: String,
+    },
+}
+
+/// 一条 pane 的流：持有 reader 线程 + 共享 channel。
 pub struct ObserveStream {
     pane: PaneId,
+    generation: u64,
+    mode: StreamMode,
     command_stream: Option<UnixStream>,
     shutdown_stream: Option<UnixStream>,
     handle: Option<JoinHandle<()>>,
@@ -51,20 +103,29 @@ pub struct ObserveStream {
 }
 
 impl ObserveStream {
-    /// 连接 client socket、握手、发 `ObserveTerminal`，然后起 reader 线程。
+    /// 连接 client socket、握手、按 mode 发 `ObserveTerminal`/`ControlTerminal`，
+    /// 然后起 reader 线程。**阻塞**：只允许在 start worker 线程里调用。
+    ///
+    /// `takeover` 只对 Control 有意义：只有新的本地 focus edge 或真实 input
+    /// 建立的 intent 首次 promote 才允许 true；open/reattach/activate 的首个
+    /// handshake 必须 false。
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         socket_path: &Path,
         target: &str,
         pane: PaneId,
+        generation: u64,
+        mode: StreamMode,
+        takeover: bool,
         cols: u16,
         rows: u16,
-        tx: Sender<ObserveEvent>,
+        tx: Sender<PaneStreamEvent>,
     ) -> Result<Self> {
         let mut stream = UnixStream::connect(socket_path)
             .with_context(|| format!("连接 Herdr client socket 失败: {}", socket_path.display()))?;
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(30)))
-            .context("设置 observe 读超时失败")?;
+            .context("设置流读超时失败")?;
 
         let hello = ClientMessage::Hello {
             version: HERDR_PROTOCOL_VERSION,
@@ -86,39 +147,52 @@ impl ObserveStream {
                 error,
             } => {
                 if let Some(e) = error {
-                    bail!("Herdr 拒绝 observe 握手（version={version}）: {e}");
+                    bail!("Herdr 拒绝握手（version={version}）: {e}");
                 }
                 if encoding != RenderEncoding::TerminalAnsi {
                     bail!("Herdr 协商了非 ANSI 编码: {encoding:?}");
+                }
+                // 协议 20+ Welcome 或任何 version 不匹配必须明确拒绝，不能
+                // 继续按 protocol-19 解码（wire 变体索引会漂移）。
+                if version != HERDR_PROTOCOL_VERSION {
+                    bail!("Herdr 协议版本不匹配: client 19, server {version}；拒绝继续");
                 }
             }
             other => bail!("Herdr 握手响应不是 Welcome: {other:?}"),
         }
 
-        let control = ClientMessage::ControlTerminal {
-            target: target.to_string(),
-            takeover: true,
+        let message = match mode {
+            StreamMode::Observe => ClientMessage::ObserveTerminal {
+                target: target.to_string(),
+            },
+            StreamMode::Control => ClientMessage::ControlTerminal {
+                target: target.to_string(),
+                takeover,
+            },
         };
-        write_message(&mut stream, &control).context("写 ControlTerminal 失败")?;
-        let command_stream = stream
-            .try_clone()
-            .context("复制 Herdr control 写 socket 失败")?;
+        write_message(&mut stream, &message).context("写 Herdr terminal 请求失败")?;
+        let command_stream = stream.try_clone().context("复制 Herdr 写 socket 失败")?;
         let shutdown_stream = stream
             .try_clone()
-            .context("复制 Herdr control shutdown socket 失败")?;
+            .context("复制 Herdr shutdown socket 失败")?;
 
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_dropped = std::sync::Arc::clone(&dropped);
         let handle = std::thread::spawn(move || {
             let mut stream = stream;
+            let mut event_ordinal: u64 = 0;
             loop {
                 // 主动 shutdown 期间的 EOF/Error 不发，避免误报流死亡。
                 let alive = !reader_dropped.load(std::sync::atomic::Ordering::Acquire);
                 match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
                     Ok(ServerMessage::Terminal(frame)) => {
+                        event_ordinal = event_ordinal.saturating_add(1);
                         if tx
-                            .send(ObserveEvent::Frame {
+                            .send(PaneStreamEvent::Frame {
                                 pane,
+                                generation,
+                                event_ordinal,
+                                wire_seq: frame.seq,
                                 bytes: frame.bytes,
                                 width: frame.width,
                                 height: frame.height,
@@ -131,15 +205,24 @@ impl ObserveStream {
                     }
                     Ok(ServerMessage::ServerShutdown { reason }) => {
                         if alive {
-                            let _ = tx.send(ObserveEvent::Closed { pane, reason });
+                            event_ordinal = event_ordinal.saturating_add(1);
+                            let _ = tx.send(PaneStreamEvent::Closed {
+                                pane,
+                                generation,
+                                event_ordinal,
+                                reason,
+                            });
                         }
                         return;
                     }
                     Ok(_) => {}
                     Err(err) => {
                         if alive {
-                            let _ = tx.send(ObserveEvent::Error {
+                            event_ordinal = event_ordinal.saturating_add(1);
+                            let _ = tx.send(PaneStreamEvent::Error {
                                 pane,
+                                generation,
+                                event_ordinal,
                                 message: err.to_string(),
                             });
                         }
@@ -151,6 +234,8 @@ impl ObserveStream {
 
         Ok(Self {
             pane,
+            generation,
+            mode,
             command_stream: Some(command_stream),
             shutdown_stream: Some(shutdown_stream),
             handle: Some(handle),
@@ -158,8 +243,62 @@ impl ObserveStream {
         })
     }
 
+    /// 在 worker 线程里完成 connect+handshake；结果经 `start_tx` 送回调用线程。
+    /// 调用线程只登记 `Starting`，不能同步等 socket。
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_async(
+        socket_path: PathBuf,
+        target: String,
+        pane: PaneId,
+        generation: u64,
+        mode: StreamMode,
+        takeover: bool,
+        cols: u16,
+        rows: u16,
+        event_tx: Sender<PaneStreamEvent>,
+        start_tx: Sender<StreamStartResult>,
+    ) {
+        std::thread::spawn(move || {
+            let result = Self::start(
+                &socket_path,
+                &target,
+                pane,
+                generation,
+                mode,
+                takeover,
+                cols,
+                rows,
+                event_tx,
+            );
+            match result {
+                Ok(stream) => {
+                    let _ = start_tx.send(StreamStartResult::Started {
+                        pane,
+                        generation,
+                        stream,
+                    });
+                }
+                Err(err) => {
+                    let _ = start_tx.send(StreamStartResult::Failed {
+                        pane,
+                        generation,
+                        message: err.to_string(),
+                    });
+                }
+            }
+        });
+    }
+
     pub fn pane(&self) -> PaneId {
         self.pane
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn mode(&self) -> StreamMode {
+        self.mode
     }
 
     pub fn send_input(&mut self, data: &[u8]) -> Result<()> {
@@ -213,6 +352,6 @@ impl Drop for ObserveStream {
 }
 
 /// 空 channel 工厂（测试用）。
-pub fn channel() -> (Sender<ObserveEvent>, Receiver<ObserveEvent>) {
+pub fn channel() -> (Sender<PaneStreamEvent>, Receiver<PaneStreamEvent>) {
     mpsc::channel()
 }

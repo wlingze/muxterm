@@ -1289,6 +1289,7 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
             result,
         } => {
             out.type_ = STATE_MUTATION_SETTLED;
+            // 既有 data buffer 携带完整 JSON；不扩 struct、不吞异步失败。
             let payload = serde_json::to_vec(&serde_json::json!({
                 "operation_id": operation_id,
                 "kind": kind,

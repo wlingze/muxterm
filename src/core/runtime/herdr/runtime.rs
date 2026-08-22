@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{mpsc, Arc};
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -23,7 +24,11 @@ use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::types::{PaneId, TabId};
 
 use super::events::{EventStream, EventStreamEvent};
-use super::observe::{ObserveEvent, ObserveStream};
+use super::observe::{ObserveStream, PaneStreamEvent, StreamMode, StreamStartResult};
+use super::registry::{
+    classify_stream_end, ControlRearm, FrameDecision, PaneStreamSlot, SlotAction, SlotState,
+    SurfaceBaseline, FULL_FRAME_DEADLINE, INPUT_MAX_BYTES, INPUT_MAX_WRITES,
+};
 use super::session::{
     AgentRecord, HerdrAgentStatus, HerdrSession, LayoutRecord, LayoutRect, LayoutSplitDirection,
     SessionSnapshot,
@@ -50,6 +55,9 @@ pub struct HerdrRuntime {
     session: Arc<HerdrSession>,
     workspace_id: String,
     workspace_name: String,
+    /// Pool 前台/后台状态（`set_foreground` 驱动；决定 active pane 的
+    /// desired mode 是否可以是 Control）。
+    foreground: bool,
     tabs: Vec<TabInfo>,
     panes: Vec<PaneInfo>,
     layouts: HashMap<TabId, TabLayout>,
@@ -63,15 +71,13 @@ pub struct HerdrRuntime {
     herdr_pane_to_pane: HashMap<String, PaneId>,
     tab_to_herdr_tab: HashMap<TabId, String>,
     pane_to_herdr_pane: HashMap<PaneId, String>,
-    observe_rx: Option<mpsc::Receiver<ObserveEvent>>,
-    observe_tx: Option<mpsc::Sender<ObserveEvent>>,
-    observe_streams: Vec<ObserveStream>,
-    /// 初始 observe 流建立后尚未收到首个 full frame 的 pane。
-    ///
-    /// Herdr 0.8.0 在 client 连接时先发一帧「新终端初始化」（清屏 + 提示符），
-    /// 不含 pane 历史；若用它覆盖 `pane.read` 的 attach 快照会丢掉 scrollback。
-    /// 首个 full frame 只在没有 seed 时才写入 outputs。
-    observe_initial: HashSet<PaneId>,
+    /// pane-keyed stream registry（W2：唯一所有权；取代 Vec<ObserveStream>）。
+    stream_slots: HashMap<PaneId, PaneStreamSlot>,
+    stream_rx: Option<mpsc::Receiver<PaneStreamEvent>>,
+    stream_tx: Option<mpsc::Sender<PaneStreamEvent>>,
+    /// start worker 完成结果（generation-tagged）。
+    start_rx: Option<mpsc::Receiver<StreamStartResult>>,
+    start_tx: Option<mpsc::Sender<StreamStartResult>>,
     event_rx: Option<mpsc::Receiver<EventStreamEvent>>,
     event_tx: Option<mpsc::Sender<EventStreamEvent>>,
     event_stream: Option<EventStream>,
@@ -86,6 +92,10 @@ impl HerdrRuntime {
             session,
             workspace_id: workspace_id.into(),
             workspace_name: String::new(),
+            // 独立构造（CLI/测试直连）的 Runtime 就是自己的前台；Pool 打开后会
+            // 立即 set_foreground(true)，后台切换再降 false。默认 true 保证
+            // 直连场景的 active pane 持有 Control。
+            foreground: true,
             tabs: vec![],
             panes: vec![],
             layouts: HashMap::new(),
@@ -99,10 +109,11 @@ impl HerdrRuntime {
             herdr_pane_to_pane: HashMap::new(),
             tab_to_herdr_tab: HashMap::new(),
             pane_to_herdr_pane: HashMap::new(),
-            observe_rx: None,
-            observe_tx: None,
-            observe_streams: vec![],
-            observe_initial: HashSet::new(),
+            stream_slots: HashMap::new(),
+            stream_rx: None,
+            stream_tx: None,
+            start_rx: None,
+            start_tx: None,
             event_rx: None,
             event_tx: None,
             event_stream: None,
@@ -210,6 +221,50 @@ impl HerdrRuntime {
     /// 测试/诊断：产品 PaneId 对应的 Herdr public pane id。
     pub fn test_herdr_pane_id(&self, pane: PaneId) -> Option<&str> {
         self.pane_to_herdr_pane.get(&pane).map(String::as_str)
+    }
+
+    /// 测试/诊断：某 pane 的 stream 启动次数（按 transition 记录统计）。
+    pub fn test_stream_starts(&self, pane: PaneId) -> u64 {
+        self.stream_slots
+            .get(&pane)
+            .map(|slot| {
+                slot.transitions
+                    .iter()
+                    .filter(|t| t.starts_with("start:"))
+                    .count() as u64
+            })
+            .unwrap_or(0)
+    }
+
+    /// 测试/诊断：某 pane 的 control（takeover=true）启动次数。
+    pub fn test_control_takeover_starts(&self, pane: PaneId) -> u64 {
+        self.stream_slots
+            .get(&pane)
+            .map(|slot| {
+                slot.transitions
+                    .iter()
+                    .filter(|t| t.starts_with("start:") && t.contains("takeover=true"))
+                    .count() as u64
+            })
+            .unwrap_or(0)
+    }
+
+    /// 测试/诊断：某 pane 当前是否处于 takeover suppression。
+    pub fn test_takeover_suppressed(&self, pane: PaneId) -> bool {
+        self.stream_slots
+            .get(&pane)
+            .map(|slot| slot.control_rearm == ControlRearm::SuppressedAfterTakeover)
+            .unwrap_or(false)
+    }
+
+    /// 测试/诊断：某 pane 当前实际 stream 模式。
+    pub fn test_actual_mode(&self, pane: PaneId) -> Option<StreamMode> {
+        self.stream_slots.get(&pane).and_then(|s| s.actual_mode)
+    }
+
+    /// 测试/诊断：某 pane 当前 slot 状态。
+    pub fn test_slot_state(&self, pane: PaneId) -> Option<SlotState> {
+        self.stream_slots.get(&pane).map(|s| s.state)
     }
 
     /// 把 snapshot 里属于本 workspace 的 tab/pane/layout 填进产品状态。
@@ -539,42 +594,6 @@ impl HerdrRuntime {
         }
     }
 
-    /// 为每个 pane 起 observe 流（直播字节）。
-    fn start_observe_streams(&mut self) {
-        for pane in &mut self.panes {
-            (pane.cols, pane.rows) =
-                normalize_pane_size(pane.cols, pane.rows, Some((pane.cols, pane.rows)));
-        }
-        let (tx, rx) = mpsc::channel::<ObserveEvent>();
-        self.observe_rx = Some(rx);
-        self.observe_tx = Some(tx.clone());
-        let socket = self.session.client_socket_path().to_path_buf();
-        let panes: Vec<(PaneId, String, u16, u16)> = self
-            .panes
-            .iter()
-            .filter_map(|p| {
-                self.pane_to_herdr_pane
-                    .get(&p.id)
-                    .cloned()
-                    .map(|h| (p.id, h, p.cols, p.rows))
-            })
-            .collect();
-        for (pane, herdr_pane, cols, rows) in panes {
-            self.observe_initial.insert(pane);
-            match ObserveStream::start(&socket, &herdr_pane, pane, cols, rows, tx.clone()) {
-                Ok(stream) => self.observe_streams.push(stream),
-                Err(err) => {
-                    tracing::warn!(
-                        target = "muxterm::herdr",
-                        pane = %herdr_pane,
-                        error = %err,
-                        "observe 流启动失败"
-                    );
-                }
-            }
-        }
-    }
-
     /// Subscribe to the complete global event set plus one scoped agent-status
     /// subscription per pane. The reader performs snapshot refreshes off the UI
     /// thread and sends only normalized data back to Runtime.
@@ -615,144 +634,376 @@ impl HerdrRuntime {
         }
     }
 
-    /// 以新的 Surface 字符格重建 pane control stream。新连接会取得该 pane
-    /// 的输入/resize 权并先发一帧与 VTE 网格一致的 full frame。
-    /// Error/Closed 后立即重建该 pane 的 observe 流：画面自动恢复，
-    /// 不必等下一次输入（懒 replace 只覆盖有输入的 pane）。pane 已
-    /// 不存在或 server 不可达时静默，等下次事件/输入再试。
-    fn rebuild_dead_observe_stream(&mut self, pane: PaneId) {
-        // detach/shutdown 后不得重建：旧 runtime 还在 pool 里，它的
-        // drain_observe 会收到旧流残留事件；若此时重建会去踢掉 reopen
-        // 后新 runtime 的流（CI 日志：attach/detach 无限循环，服务端
-        // pane 内容被反复重置）。
-        if self.status != BackendStatus::Connected {
-            return;
+    /// 初始化 stream channels（幂等）。
+    fn ensure_stream_channels(&mut self) {
+        if self.stream_tx.is_none() {
+            let (tx, rx) = mpsc::channel::<PaneStreamEvent>();
+            self.stream_tx = Some(tx);
+            self.stream_rx = Some(rx);
         }
-        if !self.panes.iter().any(|candidate| candidate.id == pane) {
-            return;
+        if self.start_tx.is_none() {
+            let (tx, rx) = mpsc::channel::<StreamStartResult>();
+            self.start_tx = Some(tx);
+            self.start_rx = Some(rx);
         }
-        let Some(tx) = self.observe_tx.as_ref().cloned() else {
+    }
+
+    /// 期望模式：Pool 前台 active pane = Control；其余 pane/后台 workspace = Observe。
+    fn desired_mode_for(&self, pane: &PaneInfo) -> StreamMode {
+        if self.foreground && Some(pane.id) == self.active_pane {
+            StreamMode::Control
+        } else {
+            StreamMode::Observe
+        }
+    }
+
+    /// 为每个 pane 建 registry slot 并按 foreground/active 计算 desired mode。
+    fn bootstrap_stream_slots(&mut self) {
+        self.ensure_stream_channels();
+        for pane in &self.panes {
+            let Some(herdr_pane) = self.pane_to_herdr_pane.get(&pane.id).cloned() else {
+                continue;
+            };
+            let mode = self.desired_mode_for(pane);
+            self.stream_slots
+                .entry(pane.id)
+                .or_insert_with(|| PaneStreamSlot::new(pane.id, herdr_pane, mode))
+                .desired_mode = mode;
+        }
+        self.reconcile_stream_modes();
+    }
+
+    /// 唯一 mode transition 入口：先算全体 desired mode，再做最小变更。
+    ///
+    /// - 已关闭 pane：slot 直接 Stopped（旧事件不能再启动流）；
+    /// - 新 pane：建 slot（`ensure_pane_initialized` 负责 seed/初始化）；
+    /// - desired 与 actual 不同 → 先递增 generation、关旧流，再启动新流；
+    /// - `SuppressedAfterTakeover` 的 pane effective 保持 Observe，不反抢；
+    /// - `Degraded` 只由新用户 intent 重新武装（new_user_intent 会解除）。
+    fn reconcile_stream_modes(&mut self) {
+        let in_topology: HashSet<PaneId> = self.panes.iter().map(|p| p.id).collect();
+        self.stream_slots.retain(|pane, slot| {
+            if !in_topology.contains(pane) {
+                slot.state = SlotState::Stopped;
+                slot.stream = None;
+                slot.actual_mode = None;
+                slot.drop_pending_input("pane-closed");
+                false
+            } else {
+                true
+            }
+        });
+        for pane in &self.panes {
+            let Some(herdr_pane) = self.pane_to_herdr_pane.get(&pane.id).cloned() else {
+                continue;
+            };
+            let mode = self.desired_mode_for(pane);
+            let slot = self
+                .stream_slots
+                .entry(pane.id)
+                .or_insert_with(|| PaneStreamSlot::new(pane.id, herdr_pane, mode));
+            slot.desired_mode = mode;
+        }
+
+        let transitions: Vec<(PaneId, StreamMode, bool)> = self
+            .panes
+            .iter()
+            .filter_map(|pane| {
+                let slot = self.stream_slots.get(&pane.id)?;
+                if slot.state == SlotState::Stopped
+                    || slot.state == SlotState::Degraded
+                    || slot.has_inflight_start()
+                {
+                    return None;
+                }
+                let effective = if slot.control_rearm == ControlRearm::SuppressedAfterTakeover {
+                    StreamMode::Observe
+                } else {
+                    slot.desired_mode
+                };
+                if slot.actual_mode == Some(effective) && slot.state == SlotState::Live {
+                    return None;
+                }
+                let takeover = effective == StreamMode::Control && slot.may_takeover();
+                Some((pane.id, effective, takeover))
+            })
+            .collect();
+        for (pane, mode, takeover) in transitions {
+            self.start_stream_replacing(pane, mode, takeover);
+        }
+    }
+
+    /// 递增 generation → 关旧流（Drop 发 Detach）→ 启动新流（async worker；
+    /// 调用线程只登记 Starting）。generation 递增必须先于旧流 shutdown。
+    fn start_stream_replacing(&mut self, pane: PaneId, mode: StreamMode, takeover: bool) {
+        let Some(slot) = self.stream_slots.get_mut(&pane) else {
             return;
         };
-        let Some(herdr_pane) = self.pane_to_herdr_pane.get(&pane).cloned() else {
-            return;
-        };
+        slot.generation = slot.generation.saturating_add(1);
+        slot.stream = None;
+        slot.actual_mode = None;
+        slot.state = SlotState::Starting;
+        slot.started_at = Some(Instant::now());
+        slot.last_event_ordinal = 0;
+        slot.last_frame_seq = None;
+        slot.surface_baseline = SurfaceBaseline::AwaitingFull;
+        slot.live_since = None;
+        slot.pre_full.clear();
+        slot.pre_full_bytes = 0;
+        if mode.is_control() && takeover {
+            slot.takeover_attempted = true;
+        }
+        let generation = slot.generation;
+        let target = slot.target.clone();
         let (cols, rows) = self
             .panes
             .iter()
-            .find(|candidate| candidate.id == pane)
-            .map(|candidate| (candidate.cols, candidate.rows))
+            .find(|p| p.id == pane)
+            .map(|p| (p.cols, p.rows))
             .unwrap_or((80, 24));
-        match ObserveStream::start(
-            self.session.client_socket_path(),
-            &herdr_pane,
-            pane,
-            cols,
-            rows,
-            tx,
-        ) {
-            Ok(stream) => {
-                self.observe_initial.insert(pane);
-                self.observe_streams.push(stream);
-            }
-            Err(err) => tracing::warn!(
-                target = "muxterm::herdr",
-                pane = %herdr_pane,
-                error = %err,
-                "observe 流自动重建失败"
-            ),
+        let socket = self.session.client_socket_path().to_path_buf();
+        let (Some(event_tx), Some(start_tx)) = (
+            self.stream_tx.as_ref().cloned(),
+            self.start_tx.as_ref().cloned(),
+        ) else {
+            return;
+        };
+        tracing::info!(
+            target = "muxterm::herdr",
+            workspace = %self.workspace_id,
+            pane = %pane,
+            herdr_pane = %target,
+            generation = generation,
+            mode = ?mode,
+            takeover = takeover,
+            "start pane stream"
+        );
+        if let Some(slot) = self.stream_slots.get_mut(&pane) {
+            slot.transitions.push(format!(
+                "start:mode={mode:?}:takeover={takeover}:gen={generation}"
+            ));
         }
+        ObserveStream::start_async(
+            socket, target, pane, generation, mode, takeover, cols, rows, event_tx, start_tx,
+        );
     }
 
-    fn replace_observe_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
-        let (cols, rows) = normalize_pane_size(cols, rows, None);
-        let herdr_pane = self
-            .pane_to_herdr_pane
-            .get(&pane)
-            .cloned()
-            .ok_or_else(|| anyhow!("pane {pane} 缺 Herdr id"))?;
-        let tx = self
-            .observe_tx
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow!("Herdr observe channel 未启动"))?;
-        // 先关旧流（Drop 发 Detach + shutdown socket），再建新流。
-        // 若反过来，旧流 Drop 的 Detach 会落到新流刚拿到的控制权上，
-        // 把服务端 scrollback 一起重置（CI 的 attach/detach 交错时序）。
-        self.observe_streams
-            .retain(|existing| existing.pane() != pane);
-        let stream = ObserveStream::start(
-            self.session.client_socket_path(),
-            &herdr_pane,
-            pane,
-            cols,
-            rows,
-            tx,
-        )?;
-        self.observe_streams.push(stream);
+    /// 把产品焦点切到某 pane（本地 focus edge：新 control intent，可 takeover）。
+    fn promote_focus_to(&mut self, pane: PaneId) {
+        if let Some(slot) = self.stream_slots.get_mut(&pane) {
+            slot.new_user_intent(true);
+            if slot.state == SlotState::Degraded {
+                slot.state = SlotState::Absent;
+                slot.retry_count = 0;
+                slot.retry_at = None;
+                slot.transitions.push("rearm:focus".into());
+            }
+        }
+        self.reconcile_stream_modes();
+    }
+
+    /// 向 pane 写原始输入：当前 control Live 直接发；Starting/Backoff 期间按
+    /// intent-bound 队列暂存（256 write/64 KiB）；无 control/被 suppression 时
+    /// 建立新 intent（真实 input）并 promote 一次。
+    fn send_control_input(&mut self, pane: PaneId, data: &[u8]) -> Result<()> {
+        // 向非 active pane 写输入前，产品焦点必须先切到该 pane。
+        if self.active_pane != Some(pane) {
+            self.execute(&Task::SwitchPane { target: pane })?;
+        }
+        let needs_reconcile = {
+            let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                return Err(anyhow!("pane {pane} 不存在"));
+            };
+            let queued = match (slot.state, slot.actual_mode, slot.control_rearm) {
+                (SlotState::Live, Some(StreamMode::Control), _) => {
+                    let stream = slot
+                        .stream
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("pane {pane} control stream 缺失"))?;
+                    stream.send_input(data)?;
+                    return Ok(());
+                }
+                (SlotState::Starting | SlotState::Backoff, _, ControlRearm::Armed) => false,
+                _ => {
+                    // suppressed 或没有 control：真实 input 建立新 intent。
+                    slot.new_user_intent(false);
+                    if slot.state == SlotState::Degraded {
+                        slot.state = SlotState::Absent;
+                        slot.retry_count = 0;
+                        slot.retry_at = None;
+                        slot.transitions.push("rearm:input".into());
+                    }
+                    true
+                }
+            };
+            if slot.queue_input(data.to_vec()).is_err() {
+                return Err(anyhow!(
+                    "pane {pane} input 队列溢出（{INPUT_MAX_WRITES} write/{INPUT_MAX_BYTES} B）"
+                ));
+            }
+            queued
+        };
+        if needs_reconcile {
+            self.reconcile_stream_modes();
+        }
         Ok(())
     }
 
-    fn send_control_input(&mut self, pane: PaneId, data: &[u8]) -> Result<()> {
-        if !self
-            .observe_streams
-            .iter()
-            .any(|stream| stream.pane() == pane)
-        {
-            let (cols, rows) = self
-                .panes
-                .iter()
-                .find(|candidate| candidate.id == pane)
-                .map(|candidate| (candidate.cols, candidate.rows))
-                .ok_or_else(|| anyhow!("pane {pane} 不存在"))?;
-            self.replace_observe_stream(pane, cols, rows)?;
-        }
-        self.observe_streams
-            .iter_mut()
-            .find(|stream| stream.pane() == pane)
-            .ok_or_else(|| anyhow!("pane {pane} control stream 未启动"))?
-            .send_input(data)
-    }
-
+    /// resize 只发给 current control；Starting/Backoff 期间 latest-wins 暂存。
     fn resize_control_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
-        if let Some(stream) = self
-            .observe_streams
-            .iter_mut()
-            .find(|stream| stream.pane() == pane)
-        {
-            stream.resize(cols, rows)
-        } else {
-            self.replace_observe_stream(pane, cols, rows)
+        let (cols, rows) = normalize_pane_size(cols, rows, None);
+        let Some(slot) = self.stream_slots.get_mut(&pane) else {
+            return Err(anyhow!("pane {pane} 不存在"));
+        };
+        match (slot.state, slot.actual_mode) {
+            (SlotState::Live, Some(StreamMode::Control)) => {
+                let stream = slot
+                    .stream
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("pane {pane} control stream 缺失"))?;
+                stream.resize(cols, rows)
+            }
+            (SlotState::Starting | SlotState::Backoff, _) => {
+                slot.pending_resize = Some((cols, rows));
+                Ok(())
+            }
+            _ => {
+                let needs_reconcile = self.active_pane == Some(pane);
+                slot.pending_resize = Some((cols, rows));
+                if needs_reconcile {
+                    // active pane 需要 control 才能收 resize；无 intent 时
+                    // open/activate 语义（takeover=false）启动即可。
+                    // 先结束 slot 借用再 reconcile。
+                    return self.resize_pending_then_reconcile(pane, cols, rows);
+                }
+                Ok(())
+            }
         }
     }
 
-    /// 取 observe 事件并转成 StateChange。
-    fn drain_observe(&mut self) {
-        let Some(rx) = &self.observe_rx else {
+    /// 记录 pending resize 后触发 reconcile（避免 &mut 借用与 &mut self 冲突）。
+    fn resize_pending_then_reconcile(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
+        if let Some(slot) = self.stream_slots.get_mut(&pane) {
+            slot.pending_resize = Some((cols, rows));
+        }
+        self.reconcile_stream_modes();
+        Ok(())
+    }
+
+    /// 取 stream 事件：generation/ordinal/seq 过滤 + 退避 + takeover suppression。
+    fn drain_stream(&mut self) {
+        let now = Instant::now();
+        let mut pending_actions: Vec<(PaneId, SlotAction, String)> = Vec::new();
+        let Some(rx) = &self.stream_rx else {
             return;
         };
-        let mut rebuild = Vec::new();
         while let Ok(event) = rx.try_recv() {
             match event {
-                ObserveEvent::Frame {
+                PaneStreamEvent::Frame {
                     pane,
+                    generation,
+                    event_ordinal,
+                    wire_seq,
                     bytes,
                     width,
                     height,
                     full,
                 } => {
+                    let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                        continue;
+                    };
+                    if !slot.is_current(generation) || !slot.accept_ordinal(event_ordinal) {
+                        continue;
+                    }
+                    let decision = slot.decide_frame(wire_seq, full);
+                    match decision {
+                        FrameDecision::DropDuplicate => continue,
+                        FrameDecision::GapFailure => {
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation = generation,
+                                wire_seq = wire_seq,
+                                last_seq = ?slot.last_frame_seq,
+                                "diff wire seq gap：generation 有界失败"
+                            );
+                            slot.state = SlotState::Backoff;
+                            slot.stream = None;
+                            slot.actual_mode = None;
+                            pending_actions.push((pane, SlotAction::Retry, "wire-seq gap".into()));
+                            continue;
+                        }
+                        FrameDecision::GapFullBaseline => {
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation = generation,
+                                wire_seq = wire_seq,
+                                "full frame gap：重建 baseline"
+                            );
+                        }
+                        FrameDecision::Apply => {}
+                    }
                     if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
                         (p.cols, p.rows) =
                             normalize_pane_size(width, height, Some((p.cols, p.rows)));
                     }
                     if full {
-                        if self.observe_initial.remove(&pane) {
-                            // 初始 observe 帧是「新 client 终端初始化」（清屏 +
-                            // 提示符），不含 pane 历史；已有 seed（pane.read
-                            // 快照）时保留 seed，避免 attach 历史被清空。
+                        let first_of_generation =
+                            slot.surface_baseline == SurfaceBaseline::AwaitingFull;
+                        slot.surface_baseline = SurfaceBaseline::Ready;
+                        slot.live_since = Some(now);
+                        if first_of_generation {
+                            // 新连接的初始 full 是「新 client 终端初始化」，不含
+                            // pane 历史；已有 seed/累计历史时保留（or_insert）。
                             self.outputs.entry(pane).or_insert_with(|| bytes.clone());
+                            // 追赶 full 之前缓存的严格连续增量。
+                            match slot.take_catchup_after_full(wire_seq) {
+                                Ok(catchup) => {
+                                    for data in catchup {
+                                        append_capped(
+                                            self.outputs.entry(pane).or_default(),
+                                            &data,
+                                            MAX_PANE_OUTPUT_BYTES,
+                                        );
+                                        self.events
+                                            .push_back(StateChange::PaneOutput { pane, data });
+                                    }
+                                }
+                                Err(_) => {
+                                    slot.state = SlotState::Backoff;
+                                    slot.stream = None;
+                                    slot.actual_mode = None;
+                                    pending_actions.push((
+                                        pane,
+                                        SlotAction::Retry,
+                                        "pre-full catchup gap".into(),
+                                    ));
+                                    continue;
+                                }
+                            }
                         } else {
                             self.outputs.insert(pane, bytes.clone());
+                        }
+                        self.events
+                            .push_back(StateChange::PaneFrame { pane, data: bytes });
+                    } else if slot.surface_baseline == SurfaceBaseline::AwaitingFull {
+                        // full 前 diff：不画进 Surface，只进有界队列。
+                        if slot.queue_pre_full(wire_seq, bytes).is_err() {
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation = generation,
+                                "pre-full 队列溢出：generation 有界失败"
+                            );
+                            slot.state = SlotState::Backoff;
+                            slot.stream = None;
+                            slot.actual_mode = None;
+                            pending_actions.push((
+                                pane,
+                                SlotAction::Retry,
+                                "pre-full overflow".into(),
+                            ));
                         }
                     } else {
                         append_capped(
@@ -760,43 +1011,307 @@ impl HerdrRuntime {
                             &bytes,
                             MAX_PANE_OUTPUT_BYTES,
                         );
-                    }
-                    if full {
-                        self.events
-                            .push_back(StateChange::PaneFrame { pane, data: bytes });
-                    } else {
                         self.events
                             .push_back(StateChange::PaneOutput { pane, data: bytes });
                     }
                 }
-                ObserveEvent::Closed { pane, reason } => {
-                    tracing::info!(
-                        target = "muxterm::herdr",
-                        pane = %pane,
-                        reason = ?reason,
-                        "observe 流关闭"
-                    );
-                    // 流已死亡：移除对象并**立即重建**，避免画面冻结到下次
-                    // 输入才恢复（懒 replace 只覆盖有输入的 pane）。
-                    self.observe_streams.retain(|stream| stream.pane() != pane);
-                    rebuild.push(pane);
+                PaneStreamEvent::Closed {
+                    pane,
+                    generation,
+                    event_ordinal,
+                    reason,
+                } => {
+                    let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                        continue;
+                    };
+                    if !slot.is_current(generation) || !slot.accept_ordinal(event_ordinal) {
+                        continue;
+                    }
+                    let reason_str = reason.clone().unwrap_or_default();
+                    let is_takeover = PaneStreamSlot::is_takeover(&reason_str);
+                    let action = classify_stream_end(slot, is_takeover, false);
+                    slot.stream = None;
+                    slot.actual_mode = None;
+                    match action {
+                        SlotAction::TakenOver => {
+                            slot.control_rearm = ControlRearm::SuppressedAfterTakeover;
+                            slot.drop_pending_input("takeover");
+                            slot.transitions.push("taken-over:suppress".into());
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation = generation,
+                                reason = %reason_str,
+                                "control stream taken over：suppression + 降 Observe"
+                            );
+                            pending_actions.push((pane, SlotAction::TakenOver, reason_str));
+                        }
+                        SlotAction::Retry => {
+                            slot.state = SlotState::Backoff;
+                            pending_actions.push((pane, SlotAction::Retry, reason_str));
+                        }
+                        SlotAction::Degrade => {
+                            slot.state = SlotState::Degraded;
+                            slot.drop_pending_input("degraded");
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation = generation,
+                                reason = %reason_str,
+                                "stream 第五次重试失败：Degraded"
+                            );
+                        }
+                        SlotAction::Stop => {
+                            slot.state = SlotState::Absent;
+                        }
+                    }
                 }
-                ObserveEvent::Error { pane, message } => {
-                    tracing::warn!(
-                        target = "muxterm::herdr",
-                        pane = %pane,
-                        error = %message,
-                        "observe 流错误"
-                    );
-                    self.observe_streams.retain(|stream| stream.pane() != pane);
-                    rebuild.push(pane);
+                PaneStreamEvent::Error {
+                    pane,
+                    generation,
+                    event_ordinal,
+                    message,
+                } => {
+                    let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                        continue;
+                    };
+                    if !slot.is_current(generation) || !slot.accept_ordinal(event_ordinal) {
+                        continue;
+                    }
+                    let is_takeover = PaneStreamSlot::is_takeover(&message);
+                    let action = classify_stream_end(slot, is_takeover, false);
+                    slot.stream = None;
+                    slot.actual_mode = None;
+                    match action {
+                        SlotAction::TakenOver => {
+                            slot.control_rearm = ControlRearm::SuppressedAfterTakeover;
+                            slot.drop_pending_input("takeover");
+                            slot.transitions.push("taken-over:suppress".into());
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation = generation,
+                                error = %message,
+                                "control stream taken over：suppression + 降 Observe"
+                            );
+                            pending_actions.push((pane, SlotAction::TakenOver, message));
+                        }
+                        SlotAction::Retry => {
+                            slot.state = SlotState::Backoff;
+                            pending_actions.push((pane, SlotAction::Retry, message));
+                        }
+                        SlotAction::Degrade => {
+                            slot.state = SlotState::Degraded;
+                            slot.drop_pending_input("degraded");
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation = generation,
+                                error = %message,
+                                "stream 第五次重试失败：Degraded"
+                            );
+                        }
+                        SlotAction::Stop => {
+                            slot.state = SlotState::Absent;
+                        }
+                    }
                 }
             }
         }
-        // 循环外重建：rx 借用结束，避免与 &mut self 冲突。
-        for pane in rebuild {
-            self.rebuild_dead_observe_stream(pane);
+        for (pane, action, reason) in pending_actions {
+            let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                continue;
+            };
+            match action {
+                SlotAction::Retry => {
+                    // 普通故障：有界退避。
+                    if slot.schedule_retry(now).is_none() {
+                        slot.state = SlotState::Degraded;
+                        slot.drop_pending_input("degraded");
+                        tracing::warn!(
+                            target = "muxterm::herdr",
+                            pane = %pane,
+                            reason = %reason,
+                            "自动 retry 次数耗尽：Degraded"
+                        );
+                    } else {
+                        slot.state = SlotState::Backoff;
+                    }
+                }
+                SlotAction::TakenOver => {
+                    // 降 Observe：不反抢；reconcile 会启动 Observe 流。
+                    slot.state = SlotState::Absent;
+                }
+                _ => {}
+            }
         }
+    }
+
+    /// 处理 start worker 完成结果（generation-tagged）。
+    fn drain_start_results(&mut self) {
+        let Some(rx) = &self.start_rx else {
+            return;
+        };
+        let results: Vec<StreamStartResult> = rx.try_iter().collect();
+        for result in results {
+            match result {
+                StreamStartResult::Started {
+                    pane,
+                    generation,
+                    stream,
+                } => {
+                    let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                        continue;
+                    };
+                    if !slot.is_current(generation) || slot.state != SlotState::Starting {
+                        continue;
+                    }
+                    let mode = stream.mode();
+                    tracing::info!(
+                        target = "muxterm::herdr",
+                        workspace = %self.workspace_id,
+                        pane = %pane,
+                        generation = generation,
+                        mode = ?mode,
+                        "pane stream started"
+                    );
+                    slot.stream = Some(stream);
+                    slot.actual_mode = Some(mode);
+                    slot.state = SlotState::Live;
+                    if mode.is_control() {
+                        // 握手成功后：先发 coalesced resize，再 flush input 恰好一次。
+                        let resize = slot.pending_resize.take();
+                        let inputs: Vec<Vec<u8>> = slot.pending_input.drain(..).collect();
+                        slot.pending_input_bytes = 0;
+                        if let Some((cols, rows)) = resize {
+                            if let Some(stream) = slot.stream.as_mut() {
+                                if let Err(err) = stream.resize(cols, rows) {
+                                    tracing::warn!(
+                                        target = "muxterm::herdr",
+                                        pane = %pane,
+                                        error = %err,
+                                        "control handshake 后 resize 失败"
+                                    );
+                                }
+                            }
+                        }
+                        for data in inputs {
+                            if let Some(stream) = slot.stream.as_mut() {
+                                if let Err(err) = stream.send_input(&data) {
+                                    tracing::warn!(
+                                        target = "muxterm::herdr",
+                                        pane = %pane,
+                                        error = %err,
+                                        "control handshake 后 input flush 失败"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                StreamStartResult::Failed {
+                    pane,
+                    generation,
+                    message,
+                } => {
+                    let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                        continue;
+                    };
+                    if !slot.is_current(generation) || slot.state != SlotState::Starting {
+                        continue;
+                    }
+                    tracing::warn!(
+                        target = "muxterm::herdr",
+                        pane = %pane,
+                        generation = generation,
+                        error = %message,
+                        "pane stream start 失败"
+                    );
+                    slot.state = SlotState::Backoff;
+                    slot.actual_mode = None;
+                    if slot.schedule_retry(Instant::now()).is_none() {
+                        slot.state = SlotState::Degraded;
+                        slot.drop_pending_input("degraded");
+                    }
+                }
+            }
+        }
+    }
+
+    /// 每 poll tick：启动到期的自动 retry（含稳定窗口恢复预算）。
+    fn maybe_start_pending_retries(&mut self, now: Instant) {
+        let due: Vec<PaneId> = self
+            .stream_slots
+            .iter()
+            .filter(|(_, s)| {
+                s.state == SlotState::Backoff && s.retry_at.is_some_and(|at| now >= at)
+            })
+            .map(|(p, _)| *p)
+            .collect();
+        for pane in due {
+            let mode = {
+                let slot = self.stream_slots.get_mut(&pane);
+                let Some(slot) = slot else {
+                    continue;
+                };
+                if slot.stable_window_elapsed(now) {
+                    slot.reset_retry_budget();
+                    slot.transitions.push("budget-reset:stable".into());
+                }
+                if slot.control_rearm == ControlRearm::SuppressedAfterTakeover {
+                    StreamMode::Observe
+                } else {
+                    slot.desired_mode
+                }
+            };
+            let takeover = mode.is_control() && {
+                self.stream_slots
+                    .get(&pane)
+                    .is_some_and(|s| s.may_takeover())
+            };
+            self.start_stream_replacing(pane, mode, takeover);
+        }
+    }
+
+    /// 每 poll tick：Starting 且 full 超时 → Degraded（保留旧像素，不 fallback）。
+    fn degrade_stalled_streams(&mut self, now: Instant) {
+        let stalled: Vec<PaneId> = self
+            .stream_slots
+            .iter()
+            .filter(|(_, s)| {
+                s.state == SlotState::Starting
+                    && s.started_at
+                        .is_some_and(|started| now.duration_since(started) >= FULL_FRAME_DEADLINE)
+            })
+            .map(|(p, _)| *p)
+            .collect();
+        for pane in stalled {
+            if let Some(slot) = self.stream_slots.get_mut(&pane) {
+                slot.state = SlotState::Degraded;
+                slot.stream = None;
+                slot.actual_mode = None;
+                slot.drop_pending_input("full-timeout");
+                tracing::warn!(
+                    target = "muxterm::herdr",
+                    pane = %pane,
+                    "首个 full frame 超时：Degraded（保留旧像素）"
+                );
+            }
+        }
+    }
+
+    /// 停止全部流（detach/shutdown/drop）。
+    fn stop_all_streams(&mut self) {
+        for slot in self.stream_slots.values_mut() {
+            slot.state = SlotState::Stopped;
+            slot.stream = None;
+            slot.actual_mode = None;
+            slot.drop_pending_input("detach");
+        }
+        self.stream_tx = None;
+        self.stream_rx = None;
+        self.start_tx = None;
+        self.start_rx = None;
     }
 
     fn drain_event_stream(&mut self) {
@@ -894,7 +1409,7 @@ impl HerdrRuntime {
             self.pane_to_herdr_pane.clear();
             self.active_tab = None;
             self.active_pane = None;
-            self.observe_streams.clear();
+            self.stop_all_streams();
             self.restart_event_stream();
             return;
         }
@@ -1027,37 +1542,24 @@ impl HerdrRuntime {
         }
 
         self.outputs.retain(|pane, _| new_pane_ids.contains(pane));
-        self.observe_streams
-            .retain(|stream| new_pane_ids.contains(&stream.pane()));
         for pane in new_pane_ids.difference(&old_pane_ids).copied() {
             let Some(herdr_pane) = self.pane_to_herdr_pane.get(&pane).cloned() else {
                 continue;
             };
             self.seed_one_pane(pane, &herdr_pane);
-            let (cols, rows) = new_panes
-                .get(&pane)
-                .map(|pane| (pane.cols, pane.rows))
-                .unwrap_or((80, 24));
-            if let Some(tx) = self.observe_tx.as_ref().cloned() {
-                self.observe_initial.insert(pane);
-                match ObserveStream::start(
-                    self.session.client_socket_path(),
-                    &herdr_pane,
-                    pane,
-                    cols,
-                    rows,
-                    tx,
-                ) {
-                    Ok(stream) => self.observe_streams.push(stream),
-                    Err(err) => tracing::warn!(
-                        target = "muxterm::herdr",
-                        pane = %herdr_pane,
-                        error = %err,
-                        "新 pane observe 流启动失败"
-                    ),
-                }
-            }
+            // 新 pane 走统一 registry slot（W2）；mutation 收敛见 W5。
+            let mode = self.desired_mode_for(
+                self.panes
+                    .iter()
+                    .find(|candidate| candidate.id == pane)
+                    .unwrap_or_else(|| panic!("新 pane {pane} 必须已在 panes 里")),
+            );
+            self.stream_slots
+                .entry(pane)
+                .or_insert_with(|| PaneStreamSlot::new(pane, herdr_pane, mode))
+                .desired_mode = mode;
         }
+        self.reconcile_stream_modes();
         if old_pane_ids != new_pane_ids {
             self.restart_event_stream();
         }
@@ -1386,6 +1888,20 @@ impl Runtime for HerdrRuntime {
         HERDR_CAPABILITIES
     }
 
+    fn set_foreground(&mut self, foreground: bool) {
+        if self.foreground == foreground {
+            return;
+        }
+        self.foreground = foreground;
+        tracing::info!(
+            target = "muxterm::herdr",
+            workspace = %self.workspace_id,
+            foreground = foreground,
+            "Pool foreground 切换"
+        );
+        self.reconcile_stream_modes();
+    }
+
     async fn connect(&mut self) -> Result<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
@@ -1414,7 +1930,7 @@ impl Runtime for HerdrRuntime {
             ));
         }
         self.seed_pane_read();
-        self.start_observe_streams();
+        self.bootstrap_stream_slots();
         self.start_event_stream()
             .context("Herdr events.subscribe 失败")?;
 
@@ -1517,6 +2033,8 @@ impl Runtime for HerdrRuntime {
                 }
                 self.events
                     .push_back(StateChange::ActivePaneChanged { tab, pane: *target });
+                // 真实本地 focus edge：新 control intent（可 takeover 一次）。
+                self.promote_focus_to(*target);
                 Ok(TaskOutcome::Done)
             }
             Task::SwitchTab { target } => {
@@ -1547,6 +2065,10 @@ impl Runtime for HerdrRuntime {
                 }
                 self.events
                     .push_back(StateChange::ActiveTabChanged { tab: *target });
+                // tab 切换也是本地 focus edge：新 active pane 获得 control intent。
+                if let Some(pane) = self.active_pane {
+                    self.promote_focus_to(pane);
+                }
                 Ok(TaskOutcome::Done)
             }
             Task::NextPane | Task::PrevPane => {
@@ -1666,11 +2188,11 @@ impl Runtime for HerdrRuntime {
             }
             Task::Detach => {
                 // detach = 客户端断开连接（保留服务端 session）。必须主动
-                // 关闭全部 observe/event 流：否则 reopen 的新 runtime
+                // 关闭全部 stream/event 流：否则 reopen 的新 runtime
                 // takeover 杀掉旧流后，旧流的 Error/Closed 会触发自动重建
                 // （新流又被踢掉），流互踢导致服务端内容反复重置。
                 self.event_stream = None;
-                self.observe_streams.clear();
+                self.stop_all_streams();
                 self.status = BackendStatus::Disconnected;
                 self.events.push_back(StateChange::BackendStatusChanged(
                     BackendStatus::Disconnected,
@@ -1691,7 +2213,12 @@ impl Runtime for HerdrRuntime {
 
     fn take_events(&mut self) -> Vec<StateChange> {
         self.drain_event_stream();
-        self.drain_observe();
+        self.drain_stream();
+        self.drain_start_results();
+        let now = Instant::now();
+        self.degrade_stalled_streams(now);
+        self.maybe_start_pending_retries(now);
+        self.reconcile_stream_modes();
         self.events.drain(..).collect()
     }
 
@@ -1699,9 +2226,7 @@ impl Runtime for HerdrRuntime {
         self.event_stream = None;
         self.event_tx = None;
         self.event_rx = None;
-        self.observe_streams.clear();
-        self.observe_tx = None;
-        self.observe_rx = None;
+        self.stop_all_streams();
         self.stop_forward();
         self.status = BackendStatus::Disconnected;
         self.events.push_back(StateChange::BackendStatusChanged(
@@ -1734,9 +2259,7 @@ impl Drop for HerdrRuntime {
         self.event_stream = None;
         self.event_tx = None;
         self.event_rx = None;
-        self.observe_streams.clear();
-        self.observe_tx = None;
-        self.observe_rx = None;
+        self.stop_all_streams();
         self.stop_forward();
     }
 }
@@ -1886,22 +2409,9 @@ impl HerdrRuntime {
         self.events
             .push_back(StateChange::ActivePaneChanged { tab, pane: active });
 
-        if self.observe_tx.is_some() {
-            let (cols, rows) = self
-                .panes
-                .iter()
-                .find(|pane| pane.id == pid)
-                .map(|pane| (pane.cols, pane.rows))
-                .unwrap_or((80, 24));
-            if let Err(err) = self.replace_observe_stream(pid, cols, rows) {
-                tracing::warn!(
-                    target = "muxterm::herdr",
-                    pane = %pane_id,
-                    error = %err,
-                    "新 split pane 的 observe 流启动失败"
-                );
-            }
-        }
+        // 新 split pane 走统一 slot bootstrap（W2 registry；W5 改为
+        // ensure_pane_initialized + mutation 收敛）。
+        self.bootstrap_stream_slots();
     }
 }
 
@@ -2045,6 +2555,7 @@ mod tests {
             Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
             "w1",
         );
+        runtime.status = BackendStatus::Connected;
         let pane = PaneId(1);
         runtime.panes.push(PaneInfo {
             id: pane,
@@ -2054,44 +2565,63 @@ mod tests {
             cols: 80,
             rows: 24,
         });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
         let (tx, rx) = super::super::observe::channel();
-        runtime.observe_rx = Some(rx);
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 7;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
 
-        tx.send(ObserveEvent::Frame {
+        // generation 7 的首个 full frame（event ordinal 1、wire seq 1）。
+        tx.send(PaneStreamEvent::Frame {
             pane,
+            generation: 7,
+            event_ordinal: 1,
+            wire_seq: 1,
             bytes: b"FULL_ONE".to_vec(),
             width: 80,
             height: 24,
             full: true,
         })
         .unwrap();
-        runtime.drain_observe();
+        runtime.drain_stream();
         assert_eq!(runtime.outputs.get(&pane).unwrap(), b"FULL_ONE");
 
-        tx.send(ObserveEvent::Frame {
+        // 第二个 full（seq 2）：必须替换 seed buffer。
+        tx.send(PaneStreamEvent::Frame {
             pane,
+            generation: 7,
+            event_ordinal: 2,
+            wire_seq: 2,
             bytes: b"FULL_TWO".to_vec(),
             width: 80,
             height: 24,
             full: true,
         })
         .unwrap();
-        runtime.drain_observe();
+        runtime.drain_stream();
         assert_eq!(
             runtime.outputs.get(&pane).unwrap(),
             b"FULL_TWO",
             "第二个 full frame 必须替换 seed buffer，禁止 FULL_ONEFULL_TWO"
         );
 
-        tx.send(ObserveEvent::Frame {
+        // diff（seq 3）：增量追加。
+        tx.send(PaneStreamEvent::Frame {
             pane,
+            generation: 7,
+            event_ordinal: 3,
+            wire_seq: 3,
             bytes: b"_DIFF".to_vec(),
             width: 80,
             height: 24,
             full: false,
         })
         .unwrap();
-        runtime.drain_observe();
+        runtime.drain_stream();
         assert_eq!(runtime.outputs.get(&pane).unwrap(), b"FULL_TWO_DIFF");
 
         let output_events = runtime
@@ -2112,6 +2642,72 @@ mod tests {
             ],
             "Runtime 必须保留 full/diff 语义，同时按顺序交付每个原始 ANSI frame"
         );
+    }
+
+    /// 旧 generation 的 Frame/Closed/Error 全部丢弃（stale 事件零副作用）。
+    #[test]
+    fn stale_generation_events_are_dropped() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 2;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
+
+        // 旧 generation 1 的事件：Frame/Closed/Error 全部不得生效。
+        tx.send(PaneStreamEvent::Frame {
+            pane,
+            generation: 1,
+            event_ordinal: 1,
+            wire_seq: 1,
+            bytes: b"STALE_FRAME".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        })
+        .unwrap();
+        tx.send(PaneStreamEvent::Closed {
+            pane,
+            generation: 1,
+            event_ordinal: 2,
+            reason: Some("stale close".into()),
+        })
+        .unwrap();
+        tx.send(PaneStreamEvent::Error {
+            pane,
+            generation: 1,
+            event_ordinal: 3,
+            message: "stale error".into(),
+        })
+        .unwrap();
+        runtime.drain_stream();
+        assert!(
+            runtime.outputs.get(&pane).is_none(),
+            "stale generation 不得写入 outputs"
+        );
+        assert_eq!(
+            runtime.stream_slots.get(&pane).unwrap().state,
+            SlotState::Live,
+            "stale Closed/Error 不得把 current generation 打进 Backoff"
+        );
+        assert_eq!(runtime.stream_slots.get(&pane).unwrap().retry_count, 0);
     }
 
     #[test]
@@ -2203,11 +2799,13 @@ mod tests {
         reader
     }
 
-    /// 共享场景：起一个 mock herdr server，建立真实 observe 流，发
-    /// Error/Closed 事件，断言死流被移除且后续输入触发 replace 重建。
+    /// 共享场景：起一个 mock herdr server，建立真实 control 流，发
+    /// Error/Closed 事件，断言死流被移除、进入有界退避（不立即重建）、
+    /// retry 到期后自动重建且重建后的流能送达输入。
     fn run_observe_removal_scenario(use_error: bool) {
         use std::os::unix::net::UnixListener;
         use std::sync::mpsc;
+        use std::time::Duration;
 
         let dir = std::env::temp_dir().join(format!(
             "muxterm-test-observe-{}-{use_error}",
@@ -2221,11 +2819,11 @@ mod tests {
 
         let (ready_tx, ready_rx) = mpsc::channel();
         let server = std::thread::spawn(move || {
-            // 第一次连接（初始 observe 流）。
+            // 第一次连接（初始 control 流）。
             let (mut first, _) = listener.accept().expect("accept 初始流失败");
             let first_reader = mock_observe_handshake(&mut first);
             ready_tx.send(0usize).unwrap();
-            // 第二次连接：Error/Closed 后**自动重建**（不等任何输入）。
+            // 第二次连接：retry 到期后的自动重建。
             let (mut second, _) = listener.accept().expect("accept 重建流失败");
             let mut second_reader = mock_observe_handshake(&mut second);
             ready_tx.send(1usize).unwrap();
@@ -2233,15 +2831,14 @@ mod tests {
                 read_message(&mut second_reader, MAX_FRAME_SIZE).expect("读 Input 失败");
             assert!(matches!(input, ClientMessage::Input { .. }));
             // 保持连接，避免测试结束前 reader 线程 EOF。
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(1));
             drop(first_reader);
             drop(second_reader);
         });
 
         let mut runtime = HerdrRuntime::new(session, "w1");
-        // 模拟已 connect：rebuild_dead_observe_stream 只在 Connected 时重建
-        //（detach/shutdown 后旧 runtime 必须停止重建，避免与 reopen 互踢）。
         runtime.status = BackendStatus::Connected;
+        runtime.foreground = true;
         let pane = PaneId(1);
         runtime.panes.push(PaneInfo {
             id: pane,
@@ -2251,45 +2848,103 @@ mod tests {
             cols: 80,
             rows: 24,
         });
+        runtime.active_pane = Some(pane);
         runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
-        let (tx, rx) = super::super::observe::channel();
-        runtime.observe_tx = Some(tx.clone());
-        runtime.observe_rx = Some(rx);
+        runtime.ensure_stream_channels();
+        let tx = runtime.stream_tx.as_ref().cloned().unwrap();
 
-        let stream = ObserveStream::start(&client_socket, "w1:p1", pane, 80, 24, tx.clone())
-            .expect("初始 observe 流启动失败");
-        runtime.observe_streams.push(stream);
+        // 初始 control 流（generation 1；open/activate 语义 takeover=false）。
+        let generation = 1u64;
+        let stream = ObserveStream::start(
+            &client_socket,
+            "w1:p1",
+            pane,
+            generation,
+            StreamMode::Control,
+            false,
+            80,
+            24,
+            tx.clone(),
+        )
+        .expect("初始 control 流启动失败");
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Control);
+        slot.generation = generation;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        slot.stream = Some(stream);
+        runtime.stream_slots.insert(pane, slot);
         assert_eq!(
-            ready_rx.recv_timeout(std::time::Duration::from_secs(3)),
+            ready_rx.recv_timeout(Duration::from_secs(3)),
             Ok(0),
             "server 必须先完成初始握手"
         );
-        assert_eq!(runtime.observe_streams.len(), 1, "初始流必须就位");
 
         // 模拟 reader 线程退出：Error（读帧失败）或 Closed（EOF）。
         let event = if use_error {
-            ObserveEvent::Error {
+            PaneStreamEvent::Error {
                 pane,
+                generation,
+                event_ordinal: 1,
                 message: "读 Herdr 帧长度失败".into(),
             }
         } else {
-            ObserveEvent::Closed {
+            PaneStreamEvent::Closed {
                 pane,
+                generation,
+                event_ordinal: 1,
                 reason: Some("模拟关闭".into()),
             }
         };
         tx.send(event).unwrap();
-        runtime.drain_observe();
-        // Error/Closed 后死流移除并**自动重建**（画面不用等下次输入恢复）。
-        assert_eq!(
-            ready_rx.recv_timeout(std::time::Duration::from_secs(3)),
-            Ok(1),
-            "{} 后必须自动重建：server 应收到第二次连接",
+        runtime.drain_stream();
+        // 死流必须移除并进入有界退避，**不是**立即重建。
+        let slot = runtime.stream_slots.get(&pane).expect("slot 必须存在");
+        assert!(
+            slot.stream.is_none(),
+            "{} 后死流必须移除",
             if use_error { "Error" } else { "Closed" }
         );
-        assert_eq!(runtime.observe_streams.len(), 1, "自动重建后新流必须存在");
+        assert_eq!(
+            slot.state,
+            SlotState::Backoff,
+            "普通故障必须进入 Backoff，不能立即重建"
+        );
+        assert_eq!(slot.retry_count, 1, "第一次普通故障安排一次 retry");
+        assert!(slot.retry_at.is_some(), "retry 必须安排在将来时点");
+        assert!(
+            ready_rx.try_recv().is_err(),
+            "未到 retry 时点前不得重建（禁止无界立即重建）"
+        );
 
-        // 重建后的流必须能送达输入。
+        // 模拟时间流逝：retry_at 到期 → maybe_start_pending_retries 重建。
+        runtime.stream_slots.get_mut(&pane).unwrap().retry_at =
+            Some(Instant::now() - Duration::from_millis(1));
+        runtime.maybe_start_pending_retries(Instant::now());
+        assert_eq!(
+            ready_rx.recv_timeout(Duration::from_secs(3)),
+            Ok(1),
+            "retry 到期后必须自动重建：server 应收到第二次连接"
+        );
+        // worker 的 Started 结果可能稍晚于 server 的 ready 信号：轮询到 Live。
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            runtime.drain_start_results();
+            let slot = runtime.stream_slots.get(&pane).unwrap();
+            if slot.state == SlotState::Live {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "start worker 未在时限内完成（state={:?}）",
+                slot.state
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let slot = runtime.stream_slots.get(&pane).unwrap();
+        assert_eq!(slot.state, SlotState::Live, "重建后新流必须 Live");
+        assert!(slot.stream.is_some(), "重建后新流必须存在");
+
+        // 重建后的 control 流必须能送达输入。
         runtime.send_control_input(pane, b"x").unwrap();
 
         server.join().unwrap();
@@ -2297,12 +2952,12 @@ mod tests {
     }
 
     #[test]
-    fn observe_error_removes_dead_stream_so_input_replaces() {
+    fn observe_error_removes_dead_stream_and_bounded_retry() {
         run_observe_removal_scenario(true);
     }
 
     #[test]
-    fn observe_closed_removes_dead_stream_so_input_replaces() {
+    fn observe_closed_removes_dead_stream_and_bounded_retry() {
         run_observe_removal_scenario(false);
     }
 }

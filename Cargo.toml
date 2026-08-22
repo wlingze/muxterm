@@ -138,6 +138,10 @@ name = "herdr_authority_contract"
 path = "tests/herdr_authority_contract.rs"
 
 [[test]]
+name = "herdr_stability_contract"
+path = "tests/herdr_stability_contract.rs"
+
+[[test]]
 name = "linux_herdr_e2e"
 path = "tests/linux_herdr_e2e.rs"
 required-features = ["gtk"]

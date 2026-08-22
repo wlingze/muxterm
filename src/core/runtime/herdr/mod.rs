@@ -8,6 +8,7 @@
 pub mod events;
 pub mod forward;
 pub mod observe;
+pub mod registry;
 pub mod runtime;
 pub mod session;
 pub mod wire;
