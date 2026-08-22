@@ -579,8 +579,14 @@ impl HerdrRuntime {
         match self.session.pane_read_ansi(herdr_pane) {
             Ok(bytes) if !bytes.is_empty() => {
                 self.outputs.insert(pane, bytes.clone());
+                // pane.read 只进 Index（搜索/attention）；Surface 由
+                // current-generation full frame 负责，禁止把无头快照当像素。
                 self.events
-                    .push_back(StateChange::PaneFrame { pane, data: bytes });
+                    .push_back(StateChange::PaneIndexSnapshot { pane, data: bytes });
+                // attach 种子就位：该 generation 的首个 full 不得覆盖它。
+                if let Some(slot) = self.stream_slots.get_mut(&pane) {
+                    slot.seed_pending = true;
+                }
             }
             Ok(_) => {}
             Err(err) => {
@@ -949,13 +955,15 @@ impl HerdrRuntime {
                             normalize_pane_size(width, height, Some((p.cols, p.rows)));
                     }
                     if full {
-                        let first_of_generation =
-                            slot.surface_baseline == SurfaceBaseline::AwaitingFull;
+                        // 只有 attach 种子（seed_pending）存在时，本 generation
+                        // 首个 full（新 client 终端初始化）才保留旧 Index；否则
+                        // full 直接替换当前帧（含 generation 切换后的新 full）。
+                        let keep_seed = slot.seed_pending
+                            && slot.surface_baseline == SurfaceBaseline::AwaitingFull;
+                        slot.seed_pending = false;
                         slot.surface_baseline = SurfaceBaseline::Ready;
                         slot.live_since = Some(now);
-                        if first_of_generation {
-                            // 新连接的初始 full 是「新 client 终端初始化」，不含
-                            // pane 历史；已有 seed/累计历史时保留（or_insert）。
+                        if keep_seed {
                             self.outputs.entry(pane).or_insert_with(|| bytes.clone());
                             // 追赶 full 之前缓存的严格连续增量。
                             match slot.take_catchup_after_full(wire_seq) {
@@ -2959,5 +2967,230 @@ mod tests {
     #[test]
     fn observe_closed_removes_dead_stream_and_bounded_retry() {
         run_observe_removal_scenario(false);
+    }
+
+    /// mock API server：只应答 pane.read，返回固定 ANSI 文本。
+    fn mock_pane_read_server(socket_path: &std::path::Path, text: &'static str) {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+        let listener = UnixListener::bind(socket_path).expect("bind mock API socket 失败");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                let method = v["method"].as_str().unwrap_or("");
+                let id = v["id"].clone();
+                let resp = match method {
+                    "pane.read" => serde_json::json!({
+                        "id": id,
+                        "result": { "read": { "text": text } },
+                    }),
+                    "ping" => serde_json::json!({
+                        "id": id,
+                        "result": { "type": "pong" },
+                    }),
+                    _ => serde_json::json!({
+                        "id": id,
+                        "error": format!("unknown {method}"),
+                    }),
+                };
+                let _ = stream.write_all((resp.to_string() + "\n").as_bytes());
+                let _ = stream.flush();
+            }
+        });
+    }
+
+    /// W3：`pane.read` 只产生 `PaneIndexSnapshot`（Index 面），不得产生
+    /// `PaneFrame/PaneOutput/PaneSnapshot`（Surface 面）。
+    #[test]
+    fn pane_read_seeds_index_without_surface_event() {
+        let dir = std::env::temp_dir().join(format!("muxterm-test-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let api_socket = dir.join("herdr.sock");
+        let seed_text = "\x1b[2J\x1b[HSEED_INDEX_TOKEN\r\n";
+        mock_pane_read_server(&api_socket, seed_text);
+
+        let mut runtime = HerdrRuntime::new(Arc::new(HerdrSession::new("test", &api_socket)), "w1");
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        runtime.seed_one_pane(pane, "w1:p1");
+
+        let surface_events = runtime
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    StateChange::PaneFrame { .. }
+                        | StateChange::PaneOutput { .. }
+                        | StateChange::PaneSnapshot { .. }
+                )
+            })
+            .count();
+        assert_eq!(
+            surface_events, 0,
+            "pane.read 不得产生任何 Surface 事件（PaneFrame/PaneOutput/PaneSnapshot）"
+        );
+        assert!(
+            runtime.events.iter().any(|event| {
+                matches!(
+                    event,
+                    StateChange::PaneIndexSnapshot { pane: p, .. } if *p == pane
+                )
+            }),
+            "pane.read 必须产生 PaneIndexSnapshot"
+        );
+        assert_eq!(
+            runtime.outputs.get(&pane).map(Vec::as_slice),
+            Some(seed_text.as_bytes()),
+            "Index 快照字节必须进 outputs"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// W3：generation 切换时保留旧像素（outputs），直到新 generation 的
+    /// full frame 到达才替换；旧 generation 的 full 不得覆盖当前 Index。
+    #[test]
+    fn generation_change_keeps_old_surface_until_new_full() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
+
+        // generation 1 的首个 full：写入 outputs。
+        tx.send(PaneStreamEvent::Frame {
+            pane,
+            generation: 1,
+            event_ordinal: 1,
+            wire_seq: 1,
+            bytes: b"GEN1_FULL".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        })
+        .unwrap();
+        runtime.drain_stream();
+        assert_eq!(runtime.outputs.get(&pane).unwrap(), b"GEN1_FULL");
+
+        // 切换到 generation 2（模拟 promote/demote）：旧像素保留。
+        runtime.start_stream_replacing(pane, StreamMode::Observe, false);
+        assert_eq!(
+            runtime.outputs.get(&pane).unwrap(),
+            b"GEN1_FULL",
+            "generation 切换不得清空旧像素"
+        );
+
+        // generation 1 的迟到 full：必须丢弃（stale），不得覆盖当前 Index。
+        tx.send(PaneStreamEvent::Frame {
+            pane,
+            generation: 1,
+            event_ordinal: 2,
+            wire_seq: 2,
+            bytes: b"STALE_GEN1_FULL".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        })
+        .unwrap();
+        runtime.drain_stream();
+        assert_eq!(
+            runtime.outputs.get(&pane).unwrap(),
+            b"GEN1_FULL",
+            "stale generation full 不得覆盖当前 Index"
+        );
+
+        // generation 2 的 full：替换旧像素。
+        let gen2 = runtime.stream_slots.get(&pane).unwrap().generation;
+        tx.send(PaneStreamEvent::Frame {
+            pane,
+            generation: gen2,
+            event_ordinal: 1,
+            wire_seq: 1,
+            bytes: b"GEN2_FULL".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        })
+        .unwrap();
+        runtime.drain_stream();
+        assert_eq!(
+            runtime.outputs.get(&pane).unwrap(),
+            b"GEN2_FULL",
+            "新 generation full 到达后才替换旧像素"
+        );
+    }
+
+    /// W3：full frame 超时（fake clock）→ Degraded，且不 fallback 重放
+    /// pane.read（outputs 保持未播种）。
+    #[test]
+    fn full_frame_timeout_after_five_seconds_is_degraded_without_index_fallback() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        runtime.ensure_stream_channels();
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Starting;
+        slot.started_at = Some(Instant::now() - std::time::Duration::from_secs(6));
+        runtime.stream_slots.insert(pane, slot);
+
+        runtime.degrade_stalled_streams(Instant::now());
+        assert_eq!(
+            runtime.test_slot_state(pane),
+            Some(SlotState::Degraded),
+            "5 秒无 full 必须 Degraded"
+        );
+        assert_eq!(
+            runtime.outputs.get(&pane),
+            None,
+            "Degraded 不得 fallback 重放 pane.read"
+        );
+        assert_eq!(runtime.test_stream_starts(pane), 0, "超时不触发重试启动");
     }
 }

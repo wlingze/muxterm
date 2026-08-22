@@ -424,6 +424,20 @@ impl Workspace {
                     });
                     buf.replace_snapshot(data, cols, rows);
                 }
+                StateChange::PaneIndexSnapshot { pane, data } => {
+                    let (cols, rows) = self
+                        .state()
+                        .pane(pane)
+                        .map(|p| (p.cols, p.rows))
+                        .unwrap_or((80, 24));
+                    let scrollback_lines = self.scrollback_lines;
+                    let buf = self.panes.entry(*pane).or_insert_with(|| {
+                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
+                    });
+                    // 无头 Index 快照（pane.read）：与 Surface snapshot 同语义
+                    // 替换 PaneBuf，但 platform 必须忽略，不 feed VTE。
+                    buf.replace_snapshot(data, cols, rows);
+                }
                 StateChange::PaneFrame { pane, data } => {
                     let (cols, rows) = self
                         .state()
@@ -566,6 +580,50 @@ mod tests {
         }]);
         let raw = w.pane_raw_bytes(PaneId(1));
         assert!(raw.ends_with(b"WORKSPACE_FULL_TWO_DIFF"));
+    }
+
+    /// W3：PaneIndexSnapshot 替换 Index（可搜索），不等价于 PaneFrame。
+    #[test]
+    fn pane_index_snapshot_replaces_index_and_is_searchable() {
+        let mut w = workspace("index-snapshot");
+        let first = b"\x1b[2J\x1b[HINDEX_ONE_TOKEN\r\n".to_vec();
+        w.feed_events(&[StateChange::PaneIndexSnapshot {
+            pane: PaneId(1),
+            data: first.clone(),
+        }]);
+        assert_eq!(w.pane_raw_bytes(PaneId(1)), first);
+        assert!(
+            !w.search_pane(PaneId(1), "INDEX_ONE_TOKEN").is_empty(),
+            "Index 快照必须可搜索"
+        );
+
+        // 第二个 Index snapshot 替换（不拼接）。
+        let second = b"\x1b[2J\x1b[HINDEX_TWO_TOKEN\r\n".to_vec();
+        w.feed_events(&[StateChange::PaneIndexSnapshot {
+            pane: PaneId(1),
+            data: second.clone(),
+        }]);
+        assert_eq!(
+            w.pane_raw_bytes(PaneId(1)),
+            second,
+            "第二个 Index snapshot 必须替换，禁止拼接"
+        );
+        assert!(
+            w.search_pane(PaneId(1), "INDEX_ONE_TOKEN").is_empty(),
+            "替换后旧 token 必须从 Index 消失"
+        );
+        assert!(
+            !w.search_pane(PaneId(1), "INDEX_TWO_TOKEN").is_empty(),
+            "新 snapshot 的 token 必须可搜索"
+        );
+
+        // 后续 PaneOutput 增量追加到新 snapshot 之后。
+        w.feed_events(&[StateChange::PaneOutput {
+            pane: PaneId(1),
+            data: b"_DIFF".to_vec(),
+        }]);
+        let raw = w.pane_raw_bytes(PaneId(1));
+        assert!(raw.ends_with(b"INDEX_TWO_TOKEN\r\n_DIFF"));
     }
 
     /// W6：search_pane 命中带 tab_id；同 pane 不同 tab 不串。

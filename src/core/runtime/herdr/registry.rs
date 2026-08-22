@@ -118,6 +118,13 @@ pub struct PaneStreamSlot {
     pub takeover_attempted: bool,
     pub control_rearm: ControlRearm,
     pub surface_baseline: SurfaceBaseline,
+    /// 本 generation 内是否已做过 pane.read 播种（attach 语义）。
+    ///
+    /// 为 true 时，该 generation 的首个 full frame 是「新 client 终端初始化」
+    /// （清屏+提示符，不含 pane 历史），不能覆盖 pane.read 的 Index 种子；
+    /// 首个 full 到达后清除。generation 切换（promote/demote/retry）没有新
+    /// 种子，新 full 必须直接替换旧像素。
+    pub seed_pending: bool,
     /// full 前按 wire seq 有界的 diff 队列（seq, bytes）。
     pub pre_full: VecDeque<(u64, Vec<u8>)>,
     pub pre_full_bytes: usize,
@@ -151,6 +158,7 @@ impl PaneStreamSlot {
             takeover_attempted: false,
             control_rearm: ControlRearm::Armed,
             surface_baseline: SurfaceBaseline::AwaitingFull,
+            seed_pending: false,
             pre_full: VecDeque::new(),
             pre_full_bytes: 0,
             pending_input: VecDeque::new(),
