@@ -1029,7 +1029,16 @@ mod tests {
             return;
         }
 
-        let sessions = list_local_tmux_sessions(Some(&socket));
+        // CI 慢机器上 new-session 返回后 server 可能尚未就绪：轮询等待
+        // session 出现（最多 5s），消除 tmux server 启动竞态。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let sessions = loop {
+            let sessions = list_local_tmux_sessions(Some(&socket));
+            if sessions.iter().any(|s| s.name == "proj") || std::time::Instant::now() >= deadline {
+                break sessions;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
         assert!(
             sessions.iter().any(|s| s.name == "proj"),
             "isolated socket 必须能看到刚创建的 session"
