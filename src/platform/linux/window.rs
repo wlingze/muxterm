@@ -923,6 +923,36 @@ impl AppWindow {
         t
     }
 
+    /// 测试用：指定 pane 的 VTE **当前屏幕**文本（不含 scrollback）。
+    ///
+    /// Ctrl-L 后旧内容可能留在 VTE scrollback；“当前屏不可见 BEFORE”
+    /// 断言必须只看屏幕，不能把 scrollback 算进去。
+    pub fn test_pane_screen_text(&self, pane_id: u32) -> String {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .map(|v| v.screen_text())
+            .unwrap_or_default()
+    }
+
+    /// 测试用：指定 pane 的 VTE 光标行（0 起；最后一行 = rows-1）。
+    pub fn test_pane_cursor_row(&self, pane_id: u32) -> i64 {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .map(|v| v.cursor_row())
+            .unwrap_or(-1)
+    }
+
+    /// 测试用：指定 pane 的 VTE 屏幕行数。
+    pub fn test_pane_screen_rows(&self, pane_id: u32) -> i64 {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .map(|v| v.screen_rows())
+            .unwrap_or(0)
+    }
+
     /// 测试用：当前 tab 布局 leaf pane id。
     pub fn test_layout_leaf_ids(&self) -> Vec<u32> {
         let s = self._state.borrow();
@@ -1162,6 +1192,37 @@ impl AppWindow {
             .iter()
             .map(|t| t.id.0)
             .collect()
+    }
+
+    /// 测试用：全部 tab 名（core 顺序；W7 new_tab_shortcut 断言非空/raw label）。
+    pub fn test_tab_names(&self) -> Vec<String> {
+        self._state
+            .borrow()
+            .active_workspace()
+            .state()
+            .tabs()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    }
+
+    /// 测试用：指定 replica 的 herdr 运行时 stream 探针（takeover_watchdog 用）。
+    /// 返回 (stream_starts, control_takeover_starts, takeover_suppressed, actual_mode)。
+    pub fn test_herdr_probe(&self, replica: &str, pane: u32) -> Option<(u64, u64, bool, String)> {
+        let s = self._state.borrow();
+        let ws = s
+            .pool
+            .list()
+            .into_iter()
+            .find(|w| w.id().replica_id() == replica)?;
+        let rt = ws.runtime().as_any().downcast_ref::<HerdrRuntime>()?;
+        let pane = PaneId(pane);
+        Some((
+            rt.test_stream_starts(pane),
+            rt.test_control_takeover_starts(pane),
+            rt.test_takeover_suppressed(pane),
+            format!("{:?}", rt.test_actual_mode(pane)),
+        ))
     }
 
     /// 测试用：当前激活 tab id。

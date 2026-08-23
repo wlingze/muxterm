@@ -11,7 +11,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::core::runtime::herdr::observe::{channel, ObserveStream};
+use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
 use muxterm::core::runtime::herdr::session::HerdrSession;
 use muxterm::core::types::PaneId;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
@@ -48,6 +48,9 @@ fn direct_reattach_preserves_server_scrollback() {
         session.client_socket_path(),
         &wire_pane,
         PaneId(1),
+        1,
+        StreamMode::Observe,
+        false,
         63,
         40,
         tx.clone(),
@@ -67,6 +70,9 @@ fn direct_reattach_preserves_server_scrollback() {
         session.client_socket_path(),
         &wire_pane,
         PaneId(1),
+        1,
+        StreamMode::Observe,
+        false,
         27,
         23,
         tx.clone(),
@@ -89,6 +95,9 @@ fn direct_reattach_preserves_server_scrollback() {
         session.client_socket_path(),
         &wire_pane,
         PaneId(1),
+        1,
+        StreamMode::Observe,
+        false,
         27,
         23,
         tx.clone(),
@@ -157,6 +166,9 @@ fn concurrent_two_pane_reopen_preserves_scrollback() {
         session.client_socket_path(),
         &wire_pane1,
         PaneId(1),
+        1,
+        StreamMode::Observe,
+        false,
         63,
         40,
         tx.clone(),
@@ -166,6 +178,9 @@ fn concurrent_two_pane_reopen_preserves_scrollback() {
         session.client_socket_path(),
         &wire_pane2,
         PaneId(2),
+        1,
+        StreamMode::Observe,
+        false,
         63,
         40,
         tx.clone(),
@@ -202,6 +217,9 @@ fn concurrent_two_pane_reopen_preserves_scrollback() {
         session.client_socket_path(),
         &wire_pane1,
         PaneId(1),
+        1,
+        StreamMode::Observe,
+        false,
         27,
         23,
         tx.clone(),
@@ -211,6 +229,9 @@ fn concurrent_two_pane_reopen_preserves_scrollback() {
         session.client_socket_path(),
         &wire_pane2,
         PaneId(2),
+        1,
+        StreamMode::Observe,
+        false,
         27,
         23,
         tx.clone(),

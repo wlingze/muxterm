@@ -460,6 +460,36 @@ impl PaneView {
             .map(|s| s.to_string())
             .unwrap_or_default()
     }
+
+    /// 测试用：VTE 当前屏幕（不含 scrollback）纯文本。
+    ///
+    /// Ctrl-L 后旧内容会留在 VTE scrollback 里，但当前屏幕必须已清空；
+    /// 断言“当前屏不可见 BEFORE”必须只看屏幕，不能把 scrollback 算进去。
+    pub fn screen_text(&self) -> String {
+        let terminal = self.inner.renderer.terminal();
+        let rows = terminal.row_count().max(1) as usize;
+        let all = self.visible_text();
+        let mut lines = all.lines();
+        let tail: Vec<&str> = lines
+            .by_ref()
+            .rev()
+            .take(rows)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        tail.join("\n")
+    }
+
+    /// 测试用：VTE 光标所在行（0 起；最后一行 = rows-1）。
+    pub fn cursor_row(&self) -> i64 {
+        self.inner.renderer.terminal().cursor_position().1
+    }
+
+    /// 测试用：VTE 屏幕行数。
+    pub fn screen_rows(&self) -> i64 {
+        self.inner.renderer.terminal().row_count()
+    }
 }
 
 fn flush_pending_feed(inner: &PaneViewInner) {

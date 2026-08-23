@@ -12,27 +12,11 @@
 
 mod support;
 
-use std::time::{Duration, Instant};
-
-use muxterm::core::catalog::{Catalog, ResolveIntent};
+use muxterm::core::catalog::ResolveIntent;
 use muxterm::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use muxterm::core::workspace::id::WorkspaceId;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
-
-const TIMEOUT: Duration = Duration::from_secs(30);
-
-fn wait_until(mut predicate: impl FnMut() -> bool, label: &str) -> bool {
-    let deadline = Instant::now() + TIMEOUT;
-    while Instant::now() < deadline {
-        if predicate() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    eprintln!("等待 {label} 超时");
-    false
-}
 
 /// 本地 herdr：Project 保存 → 重载，与 discovery Existing 同一身份。
 #[test]
@@ -85,7 +69,7 @@ fn local_project_reload_matches_existing_identity() {
         Some(workspace_id.as_str())
     );
     assert_eq!(resolved.canonical.name, "w6-project-identity");
-    let _ = std::env::remove_var("HERDR_SOCKET_PATH");
+    std::env::remove_var("HERDR_SOCKET_PATH");
 }
 
 /// 本地：AttachOnly 无匹配不创建；CreateIfMissing 只创建显式运行中的
@@ -160,7 +144,7 @@ fn ssh_herdr_attach_only_never_creates() {
         err.to_string().contains("SSH"),
         "SSH CreateIfMissing 应报禁止创建: {err}"
     );
-    let _ = std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
+    std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
 }
 
 /// identity key 只含身份字段：同 name/path 不同 session/socket/workspace_id

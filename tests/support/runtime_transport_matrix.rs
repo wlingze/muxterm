@@ -59,7 +59,9 @@ impl MatrixFixture {
                 _guard: MatrixGuard::Shell,
             }),
             ("tmux", "local") | ("tmux", "ssh") => {
-                let socket = unique_socket(&format!("matrix-{runtime}-{transport}"));
+                // W7：parent 预分配 socket 名时 child 必须复用，兜底清理才能命中。
+                let socket = std::env::var("MUXTERM_TEST_FIXTURE_SOCKET")
+                    .unwrap_or_else(|_| unique_socket(&format!("matrix-{runtime}-{transport}")));
                 let session = format!("matrix-{runtime}-{transport}");
                 let alternate_session = format!("matrix-{runtime}-{transport}-alternate");
                 create_session(&socket, &session, 120, 40);
@@ -85,7 +87,11 @@ impl MatrixFixture {
                 })
             }
             ("herdr", "local") | ("herdr", "ssh") => {
-                let herdr = IsolatedHerdr::start(&format!("matrix-{transport}"));
+                // W7：parent 预分配精确 session 名时 child 复用（兜底清理可命中）。
+                let herdr = match std::env::var("MUXTERM_TEST_FIXTURE_NAME") {
+                    Ok(name) => IsolatedHerdr::start_named(name),
+                    Err(_) => IsolatedHerdr::start(&format!("matrix-{transport}")),
+                };
                 let (workspace, _, _) =
                     herdr.create_workspace("/tmp", &format!("matrix-{transport}"));
                 let (alternate_workspace, _, _) =

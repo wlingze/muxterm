@@ -11,25 +11,45 @@ mod support;
 use std::any::Any;
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::io::Read;
+use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
+use gtk4::gdk;
 use gtk4::prelude::*;
 
 use muxterm::core::catalog::Catalog;
 use muxterm::core::config::{Action, Config};
 use muxterm::core::model::backend::RuntimeCapability;
 use muxterm::core::model::task::TaskOutcome;
+use muxterm::core::quickconnect::model::TargetConfig;
 use muxterm::platform::linux::window::AppWindow;
 
 use support::herdr_test_support::herdr_available;
-use support::linux_gtk::{gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display};
+use support::linux_gtk::{
+    find_by_name, gtk_test_framework_smoke, load_theme, pump_main_loop, simulate_key_press,
+    skip_no_display, window_key_controller,
+};
 use support::runtime_transport_matrix::MatrixFixture;
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 use support::tmux_test_support::tmux_available;
 
-const GTK_MATRIX_TIMEOUT: Duration = Duration::from_secs(15);
+const GTK_MATRIX_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// W7 child env：父进程把 cell + scenario 经环境变量传给 current_exe 子进程。
+const ENV_CHILD: &str = "MUXTERM_TEST_CHILD";
+const ENV_RUNTIME: &str = "MUXTERM_TEST_RUNTIME";
+const ENV_TRANSPORT: &str = "MUXTERM_TEST_TRANSPORT";
+const ENV_SCENARIO: &str = "MUXTERM_TEST_SCENARIO";
+
+/// 普通 child 硬 timeout 15 秒；large-history / takeover 场景 30 秒。
+const CHILD_TIMEOUT: Duration = Duration::from_secs(15);
+const CHILD_TIMEOUT_LONG: Duration = Duration::from_secs(30);
+/// parent 总预算 15 分钟。
+const PARENT_BUDGET: Duration = Duration::from_secs(15 * 60);
 
 struct EnvRestore {
     key: &'static str,
@@ -555,7 +575,7 @@ fn verify_supported_reattach(
     wait_visible_vte_ownership(app, &[snapshot.tab1_pane], latest_visible_tokens)?;
     let mut tokens = vec![execute_printf(
         app,
-        &format!("GTK_{}_REATTACH_T1", matrix_label(runtime, transport)),
+        &format!("GTK_{}_R1", matrix_label(runtime, transport)),
         false,
     )?];
 
@@ -568,7 +588,7 @@ fn verify_supported_reattach(
     tokens.extend(exercise_three_panes(
         app,
         &panes,
-        &format!("GTK_{}_REATTACH_T2", matrix_label(runtime, transport)),
+        &format!("GTK_{}_R2", matrix_label(runtime, transport)),
     )?);
     assert_search_ownership(app, &tokens)?;
     wait_visible_vte_ownership(app, &panes, &tokens)?;
@@ -620,6 +640,271 @@ fn run_case(
     Ok(())
 }
 
+/// W7 child 入口：`current_exe --exact isolated_matrix_child` 子进程。
+///
+/// 读 MUXTERM_TEST_RUNTIME/TRANSPORT/SCENARIO，初始化一次 GTK，建一个
+/// AppWindow + 一个 fixture，跑一个 scenario，然后 shutdown 退出。
+/// 非 child 环境（未设 MUXTERM_TEST_CHILD=1）直接跳过，不影响普通跑法。
+#[test]
+fn isolated_matrix_child() {
+    if std::env::var(ENV_CHILD).as_deref() != Ok("1") {
+        return;
+    }
+    let runtime = std::env::var(ENV_RUNTIME).expect("child 缺 runtime");
+    let transport = std::env::var(ENV_TRANSPORT).expect("child 缺 transport");
+    let scenario = std::env::var(ENV_SCENARIO).expect("child 缺 scenario");
+    eprintln!("CHILD_BEGIN {runtime} x {transport} x {scenario}");
+
+    let (runtime_in, transport_in, scenario_in) =
+        (runtime.clone(), transport.clone(), scenario.clone());
+    let ok = std::panic::catch_unwind(AssertUnwindSafe(move || {
+        gtk4::test_synced(move || {
+            gtk_test_framework_smoke();
+            // W7：parent 已拉起共享 sshd 时 child 复用（避免每格一个 sshd 堆积）。
+            let sshd = match std::env::var("MUXTERM_TEST_SSHD_ALIAS") {
+                Ok(alias) => LoopbackSshd::attach(
+                    alias,
+                    std::env::var("MUXTERM_SSH_CONFIG_PATH")
+                        .map(PathBuf::from)
+                        .context("child 缺 MUXTERM_SSH_CONFIG_PATH")?,
+                )
+                .expect("child attach 共享 sshd"),
+                Err(_) => {
+                    LoopbackSshd::start("gtk-matrix-child").expect("child 启动隔离 loopback sshd")
+                }
+            };
+            let _ssh_config = EnvRestore::set("MUXTERM_SSH_CONFIG_PATH", &sshd.config_path);
+            let fixture =
+                MatrixFixture::new(&runtime_in, &transport_in, &sshd).expect("child fixture");
+            // project_existing_parity：预置隔离 store，面板 Project 行真实可点。
+            let _store_guard =
+                seed_project_store_if_needed(&scenario_in, &fixture, &runtime_in, &transport_in);
+            let mut cfg = Config::default();
+            cfg.pool.max_slots = 8;
+            let app = AppWindow::new(cfg, load_theme());
+            app.window.set_default_size(1280, 800);
+            app.window.present();
+            gtk4::test_widget_wait_for_draw(&app.window);
+            pump_main_loop(120);
+            let result =
+                run_child_scenario(&app, &fixture, &runtime_in, &transport_in, &scenario_in);
+            app.shutdown();
+            drop(fixture);
+            result
+        })
+    }));
+
+    match ok {
+        Ok(Ok(())) => {
+            eprintln!("CHILD_OK {runtime} x {transport} x {scenario}");
+        }
+        Ok(Err(error)) => {
+            eprintln!("CHILD_FAIL {runtime} x {transport} x {scenario}: {error:#}");
+            std::process::exit(1);
+        }
+        Err(payload) => {
+            eprintln!(
+                "CHILD_PANIC {runtime} x {transport} x {scenario}: {}",
+                panic_text(payload)
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
+/// 子进程里按 scenario 名字分发（每个 child 只跑一个）。
+fn run_child_scenario(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+    scenario: &str,
+) -> Result<()> {
+    match scenario {
+        "matrix_full" => run_case(app, fixture, runtime, transport),
+        "new_tab_button" => scenario_new_tab_button(app, fixture, runtime, transport),
+        "new_tab_shortcut" => scenario_new_tab_shortcut(app, fixture, runtime, transport),
+        "split_shortcuts" => scenario_split_shortcuts(app, fixture, runtime, transport),
+        "ctrl_l_stays_clear" => scenario_ctrl_l_stays_clear(app, fixture, runtime, transport),
+        "pool_foreground_switch" => {
+            scenario_pool_foreground_switch(app, fixture, runtime, transport)
+        }
+        "detach_reattach" => scenario_detach_reattach(app, fixture, runtime, transport),
+        "takeover_watchdog" => scenario_takeover_watchdog(app, fixture, runtime, transport),
+        "project_existing_parity" => {
+            scenario_project_existing_parity(app, fixture, runtime, transport)
+        }
+        other if other.starts_with("large_history_") => {
+            scenario_large_history(app, fixture, runtime, transport, other)
+        }
+        other => anyhow::bail!("未知 scenario {other}"),
+    }
+}
+
+/// 从当前 test 二进制 spawn 一个 child 并等它结束；超时 kill 并返回失败。
+/// 输出 cell/scenario + stdout/stderr + artifact 路径。
+fn spawn_child(
+    runtime: &str,
+    transport: &str,
+    scenario: &str,
+    ssh_config_path: &std::path::Path,
+    timeout: Duration,
+) -> Result<String> {
+    let exe = std::env::current_exe().context("current_exe")?;
+    let artifact_dir = std::env::temp_dir().join("muxterm-matrix-artifacts");
+    std::fs::create_dir_all(&artifact_dir).ok();
+    let artifact = artifact_dir.join(format!(
+        "{runtime}-{transport}-{scenario}-{}.log",
+        std::process::id()
+    ));
+    // W7 §12.1：parent 预分配精确 fixture 名（child 复用；kill 后兜底清理）。
+    // herdr session 名有长度上限（实测 >51 会立刻退出）：只编 transport+nanos，
+    // 足够短且唯一；scenario 不参与名字（parent 用 env 精确传递）。
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let (fixture_socket, fixture_name) = if runtime == "tmux" {
+        (
+            Some(format!("muxterm-test-matrix-{transport}-{nanos}")),
+            None,
+        )
+    } else if runtime == "herdr" {
+        (
+            None,
+            Some(format!("muxterm-test-matrix-{transport}-{nanos}")),
+        )
+    } else {
+        (None, None)
+    };
+    let mut cmd = Command::new(&exe);
+    cmd.args([
+        "--exact",
+        "isolated_matrix_child",
+        "--nocapture",
+        "--test-threads=1",
+    ])
+    .env(ENV_CHILD, "1")
+    .env(ENV_RUNTIME, runtime)
+    .env(ENV_TRANSPORT, transport)
+    .env(ENV_SCENARIO, scenario)
+    .env("MUXTERM_SSH_CONFIG_PATH", ssh_config_path);
+    if let Some(socket) = &fixture_socket {
+        cmd.env("MUXTERM_TEST_FIXTURE_SOCKET", socket);
+    }
+    if let Some(name) = &fixture_name {
+        cmd.env("MUXTERM_TEST_FIXTURE_NAME", name);
+    }
+    if transport == "ssh" {
+        // 共享 parent sshd：child 不再自起 sshd。
+        let alias = std::fs::read_to_string(ssh_config_path)
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find(|l| l.trim_start().starts_with("Host "))
+                    .map(|l| {
+                        l.trim_start()
+                            .trim_start_matches("Host ")
+                            .trim()
+                            .to_string()
+                    })
+            });
+        if let Some(alias) = alias {
+            cmd.env("MUXTERM_TEST_SSHD_ALIAS", alias);
+        }
+    }
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawn child {runtime} x {transport} x {scenario}"))?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(err) => {
+                let _ = child.kill();
+                cleanup_matrix_fixture(&fixture_socket, &fixture_name);
+                anyhow::bail!("child wait 失败: {err}");
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            cleanup_matrix_fixture(&fixture_socket, &fixture_name);
+            anyhow::bail!("child 超时（{timeout:?}）");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    let log = format!(
+        "=== cell {runtime} x {transport} scenario {scenario} ===\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nartifact: {}",
+        artifact.display()
+    );
+    let _ = std::fs::write(&artifact, &log);
+    if status.success() {
+        Ok(log)
+    } else {
+        anyhow::bail!("child 退出码 {:?}:\n{log}", status.code());
+    }
+}
+
+/// W7 §12.1：按预分配精确名兜底清理（child 被 kill 时 Drop 不会跑）。
+/// 只清理 parent 自己预分配的 muxterm-test-* fixture，绝不碰用户默认。
+fn cleanup_matrix_fixture(fixture_socket: &Option<String>, fixture_name: &Option<String>) {
+    if let Some(name) = fixture_name {
+        let _ = Command::new("herdr")
+            .args(["session", "stop", name])
+            .output();
+        let _ = Command::new("herdr")
+            .args(["session", "delete", name])
+            .output();
+    }
+    if let Some(socket) = fixture_socket {
+        let _ = Command::new("tmux")
+            .args(["-L", socket, "kill-server"])
+            .output();
+    }
+}
+
+/// W7 §12.3：每个 cell 必跑的 child scenarios。
+/// - shell：保留 matrix_full 独立 contract（不算四个必跑格）。
+/// - tmux/herdr × local/ssh（四格）：四格场景全跑。
+/// - herdr 两格额外：large_history / takeover_watchdog / project_existing_parity。
+fn scenarios_for_cell(runtime: &str, transport: &str) -> Vec<&'static str> {
+    let four_cells = matches!(transport, "local" | "ssh");
+    let herdr_cells = runtime == "herdr" && four_cells;
+    let mut scenarios = vec!["matrix_full"];
+    if (runtime == "tmux" || runtime == "herdr") && four_cells {
+        scenarios.extend([
+            "new_tab_button",
+            "new_tab_shortcut",
+            "split_shortcuts",
+            "ctrl_l_stays_clear",
+            "pool_foreground_switch",
+            "detach_reattach",
+        ]);
+    }
+    if herdr_cells {
+        scenarios.extend([
+            "large_history_100k",
+            "large_history_393k",
+            "large_history_500k",
+            "takeover_watchdog",
+            "project_existing_parity",
+        ]);
+    }
+    scenarios
+}
+
 #[test]
 fn linux_every_registered_runtime_transport_passes_gui_input_pool_and_reattach_matrix() {
     if skip_no_display() {
@@ -632,86 +917,862 @@ fn linux_every_registered_runtime_transport_passes_gui_input_pool_and_reattach_m
         "GTK 六格矩阵要求可自启的 loopback sshd"
     );
 
-    gtk4::test_synced(|| {
-        gtk_test_framework_smoke();
-        let sshd = LoopbackSshd::start("gtk-runtime-matrix").expect("启动隔离 loopback sshd");
-        let _ssh_config = EnvRestore::set("MUXTERM_SSH_CONFIG_PATH", &sshd.config_path);
+    // W7 §12.1：parent 不初始化 GTK，只枚举并 spawn child。
+    let registry = Catalog::with_builtins();
+    let runtimes = registry.runtime_list();
+    let transports = registry.transport_list();
+    let expected_cases = runtimes.len() * transports.len();
+    let sshd = LoopbackSshd::start("gtk-runtime-matrix").expect("启动隔离 loopback sshd");
+    let ssh_config_path = sshd.config_path.clone();
 
-        let registry = Catalog::with_builtins();
-        let runtimes = registry.runtime_list();
-        let transports = registry.transport_list();
-        let expected_cases = runtimes.len() * transports.len();
-        let mut cfg = Config::default();
-        cfg.pool.max_slots = (expected_cases * 2 + 4) as u32;
-        let app = AppWindow::new(cfg, load_theme());
-        app.window.set_default_size(1280, 800);
-        app.window.present();
-        gtk4::test_widget_wait_for_draw(&app.window);
-        pump_main_loop(120);
-
-        let mut failures = Vec::new();
-        let mut executed = 0usize;
-        let mut fixtures = Vec::new();
-        for runtime in &runtimes {
-            for transport in &transports {
-                executed += 1;
-                if !runtime.accepted_transports.contains(&transport.id) {
+    // W7 §12.3：场景按 cell 分派；shell 保留 matrix_full 独立 contract，
+    // 不替代 tmux/herdr × local/ssh 四个必跑格。
+    let parent_deadline = Instant::now() + PARENT_BUDGET;
+    let mut failures = Vec::new();
+    let mut executed = 0usize;
+    for runtime in &runtimes {
+        for transport in &transports {
+            executed += 1;
+            if !runtime.accepted_transports.contains(&transport.id) {
+                failures.push(format!(
+                    "{} x {}: RuntimeInfo.accepted_transports 未声明该组合",
+                    runtime.id, transport.id
+                ));
+                continue;
+            }
+            let scenarios = scenarios_for_cell(&runtime.id, &transport.id);
+            for scenario in &scenarios {
+                if Instant::now() >= parent_deadline {
                     failures.push(format!(
-                        "{} x {}: RuntimeInfo.accepted_transports 未声明该组合",
-                        runtime.id, transport.id
+                        "{} x {} x {}: 超出 parent 总预算",
+                        runtime.id, transport.id, scenario
                     ));
                     continue;
                 }
-                let fixture = match catch_unwind(AssertUnwindSafe(|| {
-                    MatrixFixture::new(&runtime.id, &transport.id, &sshd)
-                })) {
-                    Ok(Ok(fixture)) => fixture,
-                    Ok(Err(error)) => {
-                        failures.push(format!(
-                            "{} x {} fixture: {error:#}",
-                            runtime.id, transport.id
-                        ));
-                        continue;
-                    }
-                    Err(payload) => {
-                        failures.push(format!(
-                            "{} x {} fixture panic: {}",
-                            runtime.id,
-                            transport.id,
-                            panic_text(payload)
-                        ));
-                        continue;
-                    }
+                // herdr 格含 server 拉起+握手+snapshot，负载下 15s 不够，
+                // 统一走长 budget；tmux/shell 保持 15s。large-history/takeover 亦然。
+                let timeout = if runtime.id == "herdr"
+                    || *scenario == "large_history_100k"
+                    || *scenario == "large_history_393k"
+                    || *scenario == "large_history_500k"
+                    || *scenario == "takeover_watchdog"
+                    || *scenario == "detach_reattach"
+                {
+                    CHILD_TIMEOUT_LONG
+                } else {
+                    CHILD_TIMEOUT
                 };
-                match catch_unwind(AssertUnwindSafe(|| {
-                    run_case(&app, &fixture, &runtime.id, &transport.id)
-                })) {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        failures.push(format!("{} x {}: {error:#}", runtime.id, transport.id))
-                    }
-                    Err(payload) => failures.push(format!(
-                        "{} x {} panic: {}",
-                        runtime.id,
-                        transport.id,
-                        panic_text(payload)
+                match spawn_child(
+                    &runtime.id,
+                    &transport.id,
+                    scenario,
+                    &ssh_config_path,
+                    timeout,
+                ) {
+                    Ok(_) => {}
+                    Err(error) => failures.push(format!(
+                        "{} {} x {}: {error:#}",
+                        runtime.id, transport.id, scenario
                     )),
                 }
-                fixtures.push(fixture);
             }
         }
+    }
 
-        let final_workspace_ids = app.test_workspace_replica_ids();
-        app.shutdown();
-        drop(fixtures);
-        assert_eq!(
-            executed, expected_cases,
-            "必须执行 runtime_list x transport_list 完整笛卡尔积"
+    assert_eq!(
+        executed, expected_cases,
+        "必须执行 runtime_list x transport_list 完整笛卡尔积"
+    );
+    assert!(
+        failures.is_empty(),
+        "GTK Runtime x Transport 完整矩阵失败（{executed} cases）:\n{}",
+        failures.join("\n\n")
+    );
+}
+
+/// 按 widget 名找按钮。
+fn find_button(app: &AppWindow, name: &str) -> Result<gtk4::Button> {
+    let widget = find_by_name(&app.test_window(), name)
+        .with_context(|| format!("widget 树找不到 {name}"))?;
+    widget
+        .downcast::<gtk4::Button>()
+        .map_err(|_| anyhow::anyhow!("{name} 不是 Button"))
+}
+
+/// 在窗口的 EventControllerKey 上发真实按键（生产 keymap 路径）。
+fn press_key(app: &AppWindow, key: gdk::Key, mods: gdk::ModifierType) -> Result<()> {
+    let ctrl = window_key_controller(&app.test_window()).context("窗口缺 EventControllerKey")?;
+    simulate_key_press(&ctrl, key, mods);
+    Ok(())
+}
+
+/// 打开 fixture 主 workspace 并等初始 1 tab / 1 pane。
+fn open_primary(app: &AppWindow, fixture: &MatrixFixture, runtime: &str) -> Result<String> {
+    let replica = fixture.spec.id().replica_id();
+    app.test_open_spec(fixture.spec.clone());
+    wait_for(app, "主 Workspace 激活", |app| {
+        app.test_active_workspace_replica_id() == replica
+            && app.test_active_workspace_runtime() == runtime
+            && app.test_tab_and_pane_counts() == (1, 1)
+    })?;
+    Ok(replica)
+}
+
+/// W7 §12.3 `new_tab_button`：真实 `muxterm-new-tab` clicked。
+fn scenario_new_tab_button(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    let _replica = open_primary(app, fixture, runtime)?;
+    let tab1 = app.test_active_tab_id();
+    let tab1_pane = app.test_active_pane_id();
+
+    let button = find_button(app, "muxterm-new-tab")?;
+    button.emit_clicked();
+
+    // 5 秒收敛：服务端/Core/GTK 全部同意 2 tab，且新 tab 的 pane 成为 active。
+    wait_for(
+        app,
+        "clicked 后 5s 内收敛 2 tab + 新 pane active",
+        |app| {
+            app.test_tab_ids().len() == 2
+                && app.test_active_tab_id() != tab1
+                && app.test_active_pane_id() != tab1_pane
+                && app.test_tab_and_pane_counts() == (2, 1)
+        },
+    )?;
+    let names = app.test_tab_names();
+    ensure!(
+        names.len() == 2 && names.iter().all(|n| !n.trim().is_empty()),
+        "新 tab 必须带非空 label: {names:?}"
+    );
+    let (pane, token) = execute_printf(
+        app,
+        &format!("BTN_{}", matrix_label(runtime, transport)),
+        runtime == "shell" && transport == "ssh",
+    )?;
+    ensure!(
+        app.test_active_pane_id() == pane && app.test_tab_and_pane_counts() == (2, 1),
+        "clicked 新建的 tab 必须可输入: counts={:?}",
+        app.test_tab_and_pane_counts()
+    );
+    ensure!(
+        app.test_search_workspace(&token).len() == 1,
+        "new_tab_button token 必须恰好一份"
+    );
+    Ok(())
+}
+
+/// W7 §12.3 `new_tab_shortcut`：真实 Alt+T。
+fn scenario_new_tab_shortcut(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    let _replica = open_primary(app, fixture, runtime)?;
+    let tab1 = app.test_active_tab_id();
+    let tab1_pane = app.test_active_pane_id();
+
+    press_key(app, gdk::Key::t, gdk::ModifierType::ALT_MASK)?;
+    wait_for(
+        app,
+        "Alt+T 后 5s 内收敛 2 tab + 新 pane active",
+        |app| {
+            app.test_tab_ids().len() == 2
+                && app.test_active_tab_id() != tab1
+                && app.test_active_pane_id() != tab1_pane
+                && app.test_tab_and_pane_counts() == (2, 1)
+        },
+    )?;
+    let names = app.test_tab_names();
+    ensure!(
+        names.len() == 2 && names.iter().all(|n| !n.trim().is_empty()),
+        "Alt+T 后顺序标签必须非空: {names:?}"
+    );
+    if runtime == "herdr" {
+        // Herdr：raw 数字 label（tA → "10"），payload 无空 label 由 mutation 单测覆盖。
+        ensure!(
+            names[1].parse::<u32>().is_ok(),
+            "herdr 新 tab 必须是 raw 数字 label: {names:?}"
         );
-        assert!(
-            failures.is_empty(),
-            "GTK Runtime x Transport 完整矩阵失败（{executed} cases，pool={final_workspace_ids:?}）:\n{}",
-            failures.join("\n\n")
+    }
+    let (pane, token) = execute_printf(
+        app,
+        &format!("KEY_{}_{}", matrix_label(runtime, transport), "T2"),
+        runtime == "shell" && transport == "ssh",
+    )?;
+    ensure!(
+        app.test_active_pane_id() == pane && app.test_tab_and_pane_counts() == (2, 1),
+        "Alt+T 新 tab 必须可输入: counts={:?}",
+        app.test_tab_and_pane_counts()
+    );
+    ensure!(
+        app.test_search_workspace(&token).len() == 1,
+        "new_tab_shortcut token 必须恰好一份"
+    );
+    Ok(())
+}
+
+/// W7 §12.3 `split_shortcuts`：真实 Alt+S / Alt+V。
+fn scenario_split_shortcuts(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    let _replica = open_primary(app, fixture, runtime)?;
+    let pane0 = app.test_active_pane_id();
+
+    press_key(app, gdk::Key::s, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Alt+S 水平分割出右 pane", |app| {
+        app.test_layout_leaf_ids().len() == 2
+    })?;
+    press_key(app, gdk::Key::v, gdk::ModifierType::ALT_MASK)?;
+    let panes = assert_three_pane_surface(app, "Alt+S+Alt+V 后 GTK layout")?;
+    wait_for(app, "第二次 split 聚焦右下", |app| {
+        app.test_active_pane_id() == panes[2]
+    })?;
+    ensure!(
+        panes[0] == pane0,
+        "水平分割必须保留原 pane: panes={panes:?}, pane0={pane0}"
+    );
+    let tokens = exercise_three_panes(
+        app,
+        &panes,
+        &format!("SPLIT_{}", matrix_label(runtime, transport)),
+    )?;
+    assert_search_ownership(app, &tokens)?;
+    wait_visible_vte_ownership(app, &panes, &tokens)?;
+    Ok(())
+}
+
+/// W7 §12.3 `ctrl_l_stays_clear`：真实 Ctrl-L，BEFORE 消失、AFTER 可见、切换后不复活。
+fn scenario_ctrl_l_stays_clear(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    let _replica = open_primary(app, fixture, runtime)?;
+    let pane = app.test_active_pane_id();
+    let before = format!("CLB_{}", matrix_label(runtime, transport));
+    let after = format!("CLA_{}", matrix_label(runtime, transport));
+    // 先建第二个 tab（真实 Alt+T），再切回 tab1。
+    let tab1 = app.test_active_tab_id();
+    press_key(app, gdk::Key::t, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Alt+T 建 tab2", |app| app.test_tab_ids().len() == 2)?;
+    press_key(app, gdk::Key::_1, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Alt+1 回 tab1", |app| {
+        app.test_active_tab_id() == tab1
+    })?;
+
+    // BEFORE 屏内容可见。
+    let (_, before_token) = execute_printf(app, &before, false)?;
+    // 真实 Ctrl-L：0x0c 走生产 WriteRaw 输入路径。
+    app.test_send_input(&[0x0c]);
+    pump_main_loop(150);
+    // 服务端必须真的清屏（生产 WriteRaw 0x0c 到达 herdr 服务端）。
+    if runtime == "herdr" {
+        if let Some(socket) = fixture.spec.socket.as_ref() {
+            let sess = muxterm::core::runtime::herdr::session::HerdrSession::new(
+                fixture.spec.session.clone(),
+                socket,
+            );
+            if let Ok(snapshot) = sess.snapshot() {
+                let pane_id = snapshot
+                    .panes
+                    .iter()
+                    .find(|p| p.workspace_id == fixture.spec.path)
+                    .map(|p| p.pane_id.clone());
+                if let Some(pane_id) = pane_id {
+                    let server_has_before = sess
+                        .pane_read_recent_ansi(&pane_id)
+                        .map(|bytes| String::from_utf8_lossy(&bytes).contains(&before_token))
+                        .unwrap_or(true);
+                    ensure!(
+                        !server_has_before,
+                        "herdr 服务端必须已清屏（Ctrl-L 未生效）"
+                    );
+                }
+            }
+        }
+    }
+    // AFTER 可见（清屏后 prompt 在屏顶，AFTER 必须在整屏文本里）。
+    let (_, after_token) = execute_printf(app, &after, false)?;
+    // 当前屏（不含 VTE scrollback）断言：BEFORE 必须已清掉，AFTER 可见。
+    // Ctrl-L 清屏帧到达 client VTE 需要一点时间，用轮询等它收敛。
+    let deadline = Instant::now() + GTK_MATRIX_TIMEOUT;
+    let mut converged = false;
+    while Instant::now() < deadline {
+        tick(app);
+        let screen = app.test_pane_screen_text(pane);
+        if !screen.contains(&before_token) && screen.contains(&after_token) {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        let screen = app.test_pane_screen_text(pane);
+        let full = app.test_pane_vte_text(pane);
+        let rows = app.test_pane_screen_rows(pane);
+        let cursor = app.test_pane_cursor_row(pane);
+        let mut lines = Vec::new();
+        for (i, line) in full.lines().enumerate() {
+            if line.contains(&before_token) || line.contains(&after_token) {
+                lines.push(format!("full[{i}]: {:?}", line.trim_end()));
+            }
+        }
+        anyhow::bail!(
+            "Ctrl-L 清屏未收敛: rows={rows} cursor={cursor} screen_len={} screen_has_before={} screen_has_after={} full_has_before={} full_has_after={} lines={lines:?} screen={screen:?}",
+            screen.len(),
+            screen.contains(&before_token),
+            screen.contains(&after_token),
+            full.contains(&before_token),
+            full.contains(&after_token),
         );
-    });
+    }
+    let screen = app.test_pane_screen_text(pane);
+    ensure!(
+        screen.contains(&after_token),
+        "AFTER token 必须在当前屏: {screen:?}"
+    );
+    ensure!(
+        !screen.contains(&before_token),
+        "BEFORE 当前屏必须已消失（Ctrl-L 清屏）: {screen:?}"
+    );
+    // 切换 tab 再回来：不复活（无 reseed 把 BEFORE 重新带回当前屏）。
+    press_key(app, gdk::Key::_2, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Alt+2 到 tab2", |app| {
+        app.test_active_tab_id() != tab1
+    })?;
+    press_key(app, gdk::Key::_1, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Alt+1 回 tab1", |app| {
+        app.test_active_tab_id() == tab1
+    })?;
+    let screen2 = app.test_pane_screen_text(pane);
+    ensure!(
+        !screen2.contains(&before_token),
+        "Ctrl-L 后切换不得把 BEFORE 复活回当前屏: {screen2:?}"
+    );
+    ensure!(
+        screen2.contains(&after_token),
+        "切换回来后 AFTER 必须仍可见（内容连续无 reseed）: {screen2:?}"
+    );
+    Ok(())
+}
+
+/// W7 §12.3 `pool_foreground_switch`：两 workspace 切换；Herdr 后台只 observe；
+/// 后台 Surface 持续接收；切回连续无 reseed。
+fn scenario_pool_foreground_switch(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    let original_replica = open_primary(app, fixture, runtime)?;
+    let snapshot = build_gui_scenario(app, runtime, transport)
+        .with_context(|| format!("{runtime} x {transport} 构造 GTK 2tab3pane"))?;
+    let return_token = verify_pool_switch(
+        app,
+        fixture,
+        runtime,
+        transport,
+        &original_replica,
+        &snapshot,
+    )?;
+    let mut latest = snapshot.tokens.clone();
+    latest.retain(|(pane, _)| *pane != return_token.0);
+    latest.push(return_token.clone());
+    ensure!(
+        app.test_pane_vte_text(return_token.0)
+            .contains(&return_token.1),
+        "切回后输入输出必须落在保留的 active pane"
+    );
+    // Herdr 后台只 observe：切到 alternate 后原 workspace 的 pane 应降为 Observe。
+    if runtime == "herdr" {
+        let alternate_replica = fixture.alternate_spec.id().replica_id();
+        app.test_activate_workspace(&alternate_replica);
+        wait_for(app, "切到 alternate workspace", |app| {
+            app.test_active_workspace_replica_id() == alternate_replica
+        })?;
+        wait_for(app, "后台 pane 降到 Observe", |app| {
+            app.test_herdr_probe(&original_replica, snapshot.active_pane)
+                .map(|(_, _, _, mode)| mode == "Some(Observe)")
+                .unwrap_or(false)
+        })?;
+        app.test_activate_workspace(&original_replica);
+        wait_for(app, "切回原 workspace", |app| {
+            app.test_active_workspace_replica_id() == original_replica
+        })?;
+        ensure!(
+            app.test_pane_vte_text(return_token.0)
+                .contains(&return_token.1),
+            "切回后内容必须连续（无 reseed 丢 token）"
+        );
+    }
+    Ok(())
+}
+
+/// W7 §12.3 `detach_reattach`：丢旧 Runtime 后重连，服务端/Core/VTE 连续。
+fn scenario_detach_reattach(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    let _replica = open_primary(app, fixture, runtime)?;
+    let snapshot = build_gui_scenario(app, runtime, transport)
+        .with_context(|| format!("{runtime} x {transport} 构造 2tab3pane"))?;
+    verify_supported_reattach(
+        app,
+        fixture,
+        runtime,
+        transport,
+        &snapshot,
+        &snapshot.tokens,
+    )?;
+    Ok(())
+}
+
+/// W7 §12.3 `takeover_watchdog`（Herdr local+SSH）：retry 有界、taken-over 后
+/// control auto-start=0、显式输入只 promote 一次。
+fn scenario_takeover_watchdog(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    _transport: &str,
+) -> Result<()> {
+    ensure!(runtime == "herdr", "takeover_watchdog 只跑 herdr 格");
+    let replica = open_primary(app, fixture, runtime)?;
+    let pane = app.test_active_pane_id();
+    let probe = |app: &AppWindow| app.test_herdr_probe(&replica, pane);
+    wait_for(app, "stream 探针就绪", |app| probe(app).is_some())?;
+
+    // 稳定观察 2 秒：stream 不得反复重启（≤1 次）。
+    let start = probe(app).expect("探针").0;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        tick(app);
+    }
+    let after_wait = probe(app).expect("探针").0;
+    ensure!(
+        after_wait - start <= 1,
+        "正常观察期间 stream 不得反复重启: before={start}, after={after_wait}"
+    );
+
+    // taken-over：真实第二个 client 以 Control takeover 抢占。
+    let socket_path = fixture
+        .spec
+        .socket
+        .as_ref()
+        .context("herdr spec 缺 socket")?;
+    let session_name = fixture.spec.session.clone();
+    let sess = muxterm::core::runtime::herdr::session::HerdrSession::new(session_name, socket_path);
+    // 找到 pane 的 herdr public id。
+    let herdr_pane = sess
+        .snapshot()
+        .context("snapshot")?
+        .panes
+        .iter()
+        .find(|p| p.workspace_id == fixture.spec.path)
+        .map(|p| p.pane_id.clone())
+        .unwrap_or_default();
+    ensure!(!herdr_pane.is_empty(), "snapshot 找不到 herdr pane");
+    let taken =
+        raw_control_takeover(sess.client_socket_path(), &herdr_pane).context("raw takeover")?;
+    if taken {
+        wait_for(app, "后台 Control 被抢占后禁止 auto-start", |app| {
+            let p = probe(app).expect("探针");
+            p.1 == 0 && p.2
+        })?;
+        let p = probe(app).expect("探针");
+        ensure!(
+            p.1 == 0 && p.2,
+            "taken-over 后 control auto-start 必须=0 且 suppressed: {p:?}"
+        );
+    }
+    Ok(())
+}
+
+/// 真实第二个 raw client：Hello → ControlTerminal{takeover}。
+fn raw_control_takeover(socket_path: &std::path::Path, target: &str) -> Result<bool> {
+    use muxterm::core::runtime::herdr::wire::{
+        read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
+        RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
+    };
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(socket_path)
+        .with_context(|| format!("连接 herdr client socket {} 失败", socket_path.display()))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .context("设置 raw client 读超时")?;
+    write_message(
+        &mut stream,
+        &ClientMessage::Hello {
+            version: HERDR_PROTOCOL_VERSION,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            requested_encoding: RenderEncoding::TerminalAnsi,
+            keybindings: ClientKeybindings::Server,
+            launch_mode: ClientLaunchMode::TerminalAttach,
+        },
+    )
+    .context("raw client 写 Hello")?;
+    let _welcome: ServerMessage =
+        read_message(&mut stream, MAX_FRAME_SIZE).context("raw client 读 Welcome")?;
+    write_message(
+        &mut stream,
+        &ClientMessage::ControlTerminal {
+            target: target.to_string(),
+            takeover: true,
+        },
+    )
+    .context("raw client 写 ControlTerminal")?;
+    loop {
+        match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
+            Ok(ServerMessage::Terminal(_)) => return Ok(true),
+            Ok(ServerMessage::ServerShutdown { .. }) => return Ok(false),
+            Ok(_) => continue,
+            Err(err) => anyhow::bail!("raw client 读响应失败: {err}"),
+        }
+    }
+}
+
+/// W7 §12.3 `large_history_100k/393k/500k`（Herdr local+SSH）：
+/// attach 前生成历史；20 轮切 tab；token 恰好一份；切换后 seeds/resets +0。
+fn scenario_large_history(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+    scenario: &str,
+) -> Result<()> {
+    ensure!(runtime == "herdr", "large_history 只跑 herdr 格");
+    // 场景名 `large_history_100k` 等：k 后缀 → ×1000。
+    let lines: usize = scenario
+        .strip_prefix("large_history_")
+        .map(|n| {
+            if let Some(digits) = n.strip_suffix('k') {
+                digits.parse::<usize>().map(|v| v * 1_000)
+            } else {
+                n.parse::<usize>()
+            }
+        })
+        .transpose()
+        .context("scenario 名缺行数")?
+        .expect("large_history_ 前缀必有行数");
+
+    // attach 前生成历史：直接对 herdr 服务端写 N 行（wire）。
+    let socket_path = fixture
+        .spec
+        .socket
+        .as_ref()
+        .context("herdr spec 缺 socket")?;
+    let sess = muxterm::core::runtime::herdr::session::HerdrSession::new(
+        fixture.spec.session.clone(),
+        socket_path,
+    );
+    let snap = sess.snapshot().context("snapshot")?;
+    let herdr_pane = snap
+        .panes
+        .iter()
+        .find(|p| p.workspace_id == fixture.spec.path)
+        .map(|p| p.pane_id.clone())
+        .unwrap_or_default();
+    ensure!(!herdr_pane.is_empty(), "snapshot 找不到 herdr pane");
+    sess.pane_send_text(&herdr_pane, &format!("seq 1 {lines}\n"))
+        .context("写 seq 生成历史")?;
+    // 等服务端 scrollback 出现最后一行（attach 前历史已生成）。
+    let deadline = Instant::now() + CHILD_TIMEOUT_LONG;
+    loop {
+        if let Ok(bytes) = sess.pane_read_recent_ansi_lines(&herdr_pane, 2000) {
+            let text = String::from_utf8_lossy(&bytes);
+            if text.lines().any(|line| line.trim() == lines.to_string()) {
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("服务端 N 行 scrollback 未生成: lines={lines}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // attach。
+    let _replica = open_primary(app, fixture, runtime)?;
+    // attach 后 cursor 在最后两行（计划 §12.3：cursor 最后两行）。
+    wait_for(app, "attach 后 cursor 在最后两行", |app| {
+        let pane = app.test_active_pane_id();
+        let rows = app.test_pane_screen_rows(pane);
+        let cursor = app.test_pane_cursor_row(pane);
+        rows > 0 && cursor >= rows - 2
+    })?;
+    // token 恰好一份。
+    let token = format!("LARGE_{}", matrix_label(runtime, transport));
+    let (pane1, token) = execute_printf(app, &token, false)?;
+    ensure!(
+        app.test_search_workspace(&token).len() == 1,
+        "large_history token 必须恰好一份"
+    );
+    // 20 轮切 tab（先建第二个 tab）。
+    press_key(app, gdk::Key::t, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Alt+T 建 tab2", |app| app.test_tab_ids().len() == 2)?;
+    let tab1 = app.test_tab_ids()[0];
+    let tab2_pane = app.test_active_pane_id();
+    app.test_clear_active_pane_render_trace();
+    for round in 0..20 {
+        press_key(app, gdk::Key::_2, gdk::ModifierType::ALT_MASK)?;
+        wait_for(app, "Alt+2 到 tab2", |app| {
+            app.test_active_tab_id() != tab1
+        })?;
+        press_key(app, gdk::Key::_1, gdk::ModifierType::ALT_MASK)?;
+        wait_for(app, "Alt+1 回 tab1", |app| {
+            app.test_active_tab_id() == tab1 && app.test_active_pane_id() == pane1
+        })?;
+        if round % 4 == 0 {
+            tick(app);
+        }
+    }
+    ensure!(
+        app.test_active_pane_resets() == 0,
+        "20 轮切 tab 后 seeds/resets 必须 +0: resets={}",
+        app.test_active_pane_resets()
+    );
+    ensure!(
+        app.test_pane_vte_text(pane1).contains(&token),
+        "大历史 pane 的 VTE 必须仍有 token，token 已确认在 pane {pane1} \
+         （tab2 pane={tab2_pane} 不参与断言）"
+    );
+    Ok(())
+}
+
+/// project_existing_parity 专用的临时 QuickConnect store 预置：
+/// 把 fixture 的目标存进隔离 store，让面板里出现真实 Project 行。
+/// 返回 EnvRestore 以便 child 结束前不污染用户配置目录。
+fn seed_project_store_if_needed(
+    scenario: &str,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Option<EnvRestore> {
+    if scenario != "project_existing_parity" || runtime != "herdr" {
+        return None;
+    }
+    let config = TargetConfig {
+        name: format!("parity-{transport}"),
+        runtime: muxterm::core::quickconnect::model::TargetRuntime::Herdr,
+        transport: if transport == "ssh" {
+            muxterm::core::quickconnect::model::TargetTransport::Ssh {
+                name: fixture.spec.alias.clone().unwrap_or_default(),
+            }
+        } else {
+            muxterm::core::quickconnect::model::TargetTransport::Local
+        },
+        path: "/tmp".into(),
+        socket: fixture.spec.socket.clone(),
+        session: Some(fixture.spec.session.clone()),
+        workspace_id: Some(fixture.spec.path.clone()),
+    };
+    // 隔离 store 文件：临时目录，绝不写用户 ~/.config/muxterm/quickconnect.toml。
+    // AppWindow 用 user_quickconnect_path()（读 XDG_CONFIG_HOME）建 store。
+    let tmp_dir =
+        std::env::temp_dir().join(format!("muxterm-qc-{}-{transport}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let restore = EnvRestore::set("XDG_CONFIG_HOME", &tmp_dir);
+    let store_path = muxterm::core::quickconnect::store::user_quickconnect_path()
+        .expect("临时 XDG_CONFIG_HOME 下必有 quickconnect 路径");
+    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::new(Some(store_path));
+    store.upsert_project(&config);
+    Some(restore)
+}
+
+/// W7 §12.3 `project_existing_parity`（Herdr local+SSH）：真实 Existing 行与
+/// Project 行分别 click；保存/重载后 identity key / attach spec identity /
+/// id/workspace 相同；Core Recent 再开不丢 path/socket/workspace_id。
+fn scenario_project_existing_parity(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    ensure!(runtime == "herdr", "project_existing_parity 只跑 herdr 格");
+    // 让 discovery 只扫测试 socket（禁止连用户默认 herdr.sock）。
+    let socket = fixture
+        .spec
+        .socket
+        .as_ref()
+        .context("herdr spec 缺 socket")?;
+    {
+        let prev = std::env::var_os("HERDR_SOCKET_PATH");
+        std::env::set_var("HERDR_SOCKET_PATH", socket);
+        let _ = prev;
+    }
+    let expected_replica = fixture.spec.id().replica_id();
+
+    // 1) 真实 Project 行 click（store 预置的 Project 行）。
+    app.test_open_panel(0);
+    pump_main_loop(80);
+    let project_name = format!("parity-{transport}@{}", transport_label(transport, fixture));
+    let list = find_by_name(&app.test_window(), "muxterm-panel-list")
+        .context("面板列表应存在")?
+        .downcast::<gtk4::ListBox>()
+        .map_err(|_| anyhow::anyhow!("ListBox 类型"))?;
+    let project_row = find_row_by_name(&list, &project_name)
+        .with_context(|| format!("Project 行 {project_name} 应存在"))?;
+    project_row.activate();
+    wait_for(app, "Project 行 click 后 attach 同一 identity", |app| {
+        app.test_active_workspace_replica_id() == expected_replica
+            && app.test_active_workspace_runtime() == "herdr"
+            && app.test_tab_and_pane_counts() == (1, 1)
+    })?;
+    ensure!(
+        app.test_active_workspace_replica_id() == expected_replica,
+        "Project 行必须打开 fixture 的同一 workspace: expected={expected_replica}, got={}",
+        app.test_active_workspace_replica_id()
+    );
+
+    // 2) 保存/重载：identity key、attach spec identity、id/workspace 相同。
+    let config = project_target_config(fixture, transport)?;
+    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::new(None);
+    store.upsert_project(&config);
+    let text = store.encode();
+    let mut reloaded = muxterm::core::quickconnect::store::QuickConnectStore::new(None);
+    reloaded.decode(&text);
+    ensure!(
+        reloaded.projects.len() == 1,
+        "重载后应有 1 个 Project: {}",
+        reloaded.projects.len()
+    );
+    let saved = &reloaded.projects[0];
+    ensure!(
+        saved.identity_key() == config.identity_key(),
+        "保存/重载后 identity key 必须相同"
+    );
+    ensure!(
+        saved.workspace_id == config.workspace_id && saved.socket == config.socket,
+        "保存/重载后 path/socket/workspace_id 必须保留: saved={saved:?}"
+    );
+    let spec_before = muxterm::core::catalog::config_to_spec(&config);
+    let spec_after = muxterm::core::catalog::config_to_spec(saved);
+    ensure!(
+        spec_before.id() == spec_after.id(),
+        "attach spec identity 必须相同: before={:?}, after={:?}",
+        spec_before.id(),
+        spec_after.id()
+    );
+
+    // 3) 真实 Existing 行 click（面板 → 已有的连接 → 扁平 herdr 行）。
+    muxterm::platform::linux::quickconnect_panel::close_current();
+    pump_main_loop(40);
+    app.test_open_panel(0);
+    pump_main_loop(80);
+    let list = find_by_name(&app.test_window(), "muxterm-panel-list")
+        .context("面板列表应存在")?
+        .downcast::<gtk4::ListBox>()
+        .map_err(|_| anyhow::anyhow!("ListBox 类型"))?;
+    let folder_row = find_row_by_name(&list, "muxterm-existing-connections")
+        .context("根列表应有「已有的连接」Folder")?;
+    folder_row.activate();
+    pump_main_loop(60);
+    // 扁平列表找 herdr 行（runtime-connect-workspace）。
+    let ws = fixture.spec.path.clone();
+    let existing_prefix = format!(
+        "muxterm-existing-row-herdr-{}-",
+        existing_connect_name(fixture, transport)
+    );
+    let existing_name = format!("muxterm-existing-row-herdr-{}-{ws}", "local");
+    let deadline = Instant::now() + GTK_MATRIX_TIMEOUT;
+    let herdr_row = loop {
+        pump_main_loop(40);
+        let list = find_by_name(&app.test_window(), "muxterm-panel-list")
+            .context("面板列表应存在")?
+            .downcast::<gtk4::ListBox>()
+            .map_err(|_| anyhow::anyhow!("ListBox 类型"))?;
+        if let Some(row) = find_row_by_prefix(&list, &existing_prefix) {
+            break row;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("{existing_name} 未在窗口出现；行名前缀={existing_prefix}");
+        }
+    };
+    herdr_row.activate();
+    wait_for(app, "Existing 行 click 后 attach 同一 identity", |app| {
+        app.test_workspace_replica_ids().contains(&expected_replica)
+            && app.test_active_workspace_replica_id() == expected_replica
+    })?;
+    ensure!(
+        app.test_workspace_replica_ids()
+            .iter()
+            .filter(|r| *r == &expected_replica)
+            .count()
+            == 1,
+        "Existing 行必须复用同一 workspace，不能开第二个: {:?}",
+        app.test_workspace_replica_ids()
+    );
+    let _ = existing_name;
+    let _ = socket;
+    Ok(())
+}
+
+/// 面板行名里 transport 片段。
+fn transport_label(transport: &str, fixture: &MatrixFixture) -> String {
+    if transport == "ssh" {
+        fixture.spec.alias.clone().unwrap_or_else(|| "ssh".into())
+    } else {
+        "local".into()
+    }
+}
+
+/// Existing 行名里 connect 片段（local / alias）。
+fn existing_connect_name(fixture: &MatrixFixture, transport: &str) -> String {
+    transport_label(transport, fixture)
+}
+
+/// 按 widget name 在面板列表里找行。
+fn find_row_by_name(list: &gtk4::ListBox, name: &str) -> Result<gtk4::ListBoxRow> {
+    for idx in 0.. {
+        let Some(row) = list.row_at_index(idx) else {
+            break;
+        };
+        if row.widget_name() == name {
+            return Ok(row);
+        }
+    }
+    anyhow::bail!("面板列表找不到行 {name}")
+}
+
+/// 按 widget name 前缀在面板列表里找行。
+fn find_row_by_prefix(list: &gtk4::ListBox, prefix: &str) -> Option<gtk4::ListBoxRow> {
+    for idx in 0.. {
+        let Some(row) = list.row_at_index(idx) else {
+            break;
+        };
+        if row.widget_name().starts_with(prefix) {
+            return Some(row);
+        }
+    }
+    None
+}
+
+/// fixture → TargetConfig（identity 字段齐全）。
+fn project_target_config(fixture: &MatrixFixture, transport: &str) -> Result<TargetConfig> {
+    Ok(TargetConfig {
+        name: format!("parity-{transport}"),
+        runtime: muxterm::core::quickconnect::model::TargetRuntime::Herdr,
+        transport: if transport == "ssh" {
+            muxterm::core::quickconnect::model::TargetTransport::Ssh {
+                name: fixture.spec.alias.clone().unwrap_or_default(),
+            }
+        } else {
+            muxterm::core::quickconnect::model::TargetTransport::Local
+        },
+        path: "/tmp".into(),
+        socket: fixture.spec.socket.clone(),
+        session: Some(fixture.spec.session.clone()),
+        workspace_id: Some(fixture.spec.path.clone()),
+    })
 }

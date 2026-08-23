@@ -3310,7 +3310,7 @@ mod tests {
                 id2.clone(),
                 "second".into(),
                 |_| {
-                    let mut rt = crate::core::runtime::shell::ShellRuntime::new("$SHELL", "");
+                    let rt = crate::core::runtime::shell::ShellRuntime::new("$SHELL", "");
                     Box::new(rt)
                 },
             ));
@@ -3321,8 +3321,7 @@ mod tests {
             }; 64];
             let n = muxterm_poll_workspace_events(h, buf.as_mut_ptr(), 64);
             assert!(n > 0, "workspace poll 应返回事件");
-            for i in 0..n as usize {
-                let entry = buf[i];
+            for entry in buf.iter().take(n as usize) {
                 assert!(!entry.workspace_id.is_null(), "每个事件必须带 workspace_id");
                 let wid = CStr::from_ptr(entry.workspace_id).to_string_lossy();
                 assert!(

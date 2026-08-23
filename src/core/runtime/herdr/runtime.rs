@@ -3083,7 +3083,7 @@ mod tests {
         .unwrap();
         runtime.drain_stream();
         assert!(
-            runtime.outputs.get(&pane).is_none(),
+            !runtime.outputs.contains_key(&pane),
             "stale generation 不得写入 outputs"
         );
         assert_eq!(

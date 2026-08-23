@@ -261,6 +261,43 @@ pub struct LoopbackSshd {
 }
 
 impl LoopbackSshd {
+    /// 复用已启动的隔离 sshd（W7 child 不重复拉起 sshd，避免进程堆积）。
+    ///
+    /// 从 ssh config 解析 alias/port/user；pid=0 表示不拥有 daemon，
+    /// Drop 只清理自己的 tmp 目录。
+    pub fn attach(alias: String, config_path: PathBuf) -> anyhow::Result<Self> {
+        let text = fs::read_to_string(&config_path)?;
+        let mut port = 0u16;
+        let mut user = String::new();
+        let mut client_key = None;
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("Port ") {
+                port = v.trim().parse().unwrap_or(0);
+            } else if let Some(v) = line.strip_prefix("User ") {
+                user = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("IdentityFile ") {
+                client_key = Some(PathBuf::from(v.trim()));
+            }
+        }
+        if port == 0 || user.is_empty() {
+            anyhow::bail!(
+                "attach 的 ssh config 缺 Port/User: {}",
+                config_path.display()
+            );
+        }
+        let client_key = client_key.unwrap_or_else(dflt_key);
+        Ok(Self {
+            tmp: PathBuf::new(),
+            pid: 0,
+            port,
+            user,
+            client_key,
+            config_path: config_path.to_path_buf(),
+            alias,
+        })
+    }
+
     /// 启动隔离 sshd，并做一次 `echo ok` smoke。
     ///
     /// Host alias 为 `muxterm-loop-{label}-{nanos}`。要固定名叫 `local` 时用
@@ -431,7 +468,19 @@ impl LoopbackSshd {
 
 impl Drop for LoopbackSshd {
     fn drop(&mut self) {
-        let _ = Command::new("kill").arg(self.pid.to_string()).output();
-        let _ = fs::remove_dir_all(&self.tmp);
+        if self.pid != 0 {
+            let _ = Command::new("kill").arg(self.pid.to_string()).output();
+        }
+        if !self.tmp.as_os_str().is_empty() {
+            let _ = fs::remove_dir_all(&self.tmp);
+        }
     }
+}
+
+fn dflt_key() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|h| h.join(".ssh").join("id_ed25519"))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("/dev/null"))
 }

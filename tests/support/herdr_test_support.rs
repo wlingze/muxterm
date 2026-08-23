@@ -123,7 +123,14 @@ pub struct IsolatedHerdr {
 impl IsolatedHerdr {
     /// 启动 `herdr --session NAME server` 并等 socket 出现（~5s）。
     pub fn start(label: &str) -> Self {
-        let name = unique_name(label);
+        Self::start_named(unique_name(label))
+    }
+
+    /// 用预分配的精确名称启动（W7 parent 兜底清理用：名称可预测）。
+    pub fn start_named(name: String) -> Self {
+        if !name.starts_with("muxterm-test-") {
+            panic!("herdr fixture 名称必须以 muxterm-test- 开头: {name}");
+        }
         // herdr server 固定用 ~/.config/herdr（不认 HERDR_CONFIG_DIR），
         // 夹具必须按真实位置等 socket。
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/wlz".into());
@@ -317,8 +324,12 @@ impl Drop for IsolatedHerdr {
         if self.socket_path == default_socket_path() {
             return;
         }
-        let _ = self.cli().args(["session", "stop", &self.name]).output();
-        let _ = self.cli().args(["session", "delete", &self.name]).output();
+        let _ = Command::new("herdr")
+            .args(["session", "stop", &self.name])
+            .output();
+        let _ = Command::new("herdr")
+            .args(["session", "delete", &self.name])
+            .output();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
