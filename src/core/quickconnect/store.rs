@@ -198,6 +198,15 @@ fn encode_section(name: &str, items: &[TargetConfig]) -> String {
             }
         }
         out.push_str(&format!("path = {}\n", toml_string(&item.path)));
+        if let Some(socket) = &item.socket {
+            out.push_str(&format!("socket = {}\n", toml_string(socket)));
+        }
+        if let Some(session) = &item.session {
+            out.push_str(&format!("session = {}\n", toml_string(session)));
+        }
+        if let Some(workspace_id) = &item.workspace_id {
+            out.push_str(&format!("workspace_id = {}\n", toml_string(workspace_id)));
+        }
         out.push('\n');
     }
     out
@@ -256,7 +265,35 @@ fn config_from_fields(fields: &std::collections::HashMap<String, String>) -> Opt
         _ => return None,
     };
     let path = fields.get("path")?.to_string();
-    Some(TargetConfig::new(name, runtime, transport, path))
+    let mut config = TargetConfig::new(name, runtime, transport, path);
+    // 旧 TOML 缺新字段仍可读（None）；保存后自动迁移补全（W6 §11.1）。
+    config.socket = fields.get("socket").cloned();
+    config.session = fields.get("session").cloned().filter(|s| !s.is_empty());
+    config.workspace_id = fields
+        .get("workspace_id")
+        .cloned()
+        .filter(|s| !s.is_empty());
+    // 一次迁移：旧格式把 Herdr workspace id 塞在 path 段（如 `w1`），
+    // 且没有独立 workspace_id 字段 → 移入 workspace_id，path 保持原样
+    // 不覆盖（path 是项目目录语义，禁止把 wN 当目录回填）。
+    if config.workspace_id.is_none() && config.runtime == TargetRuntime::Herdr {
+        if let Some(legacy) = legacy_workspace_id_from_path(&config.path) {
+            config.workspace_id = Some(legacy);
+        }
+    }
+    Some(config)
+}
+
+/// 旧 TOML 的 path 恰为 Herdr workspace id（`w<数字>`）的一次性迁移；
+/// 不是目录路径时不迁移（避免把真实目录误当 workspace id）。
+fn legacy_workspace_id_from_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    let digits = trimmed.strip_prefix('w')?;
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +331,109 @@ mod tests {
         back.decode(&text);
         assert_eq!(back.projects, store.projects);
         assert!(text.contains("transport_name = \"ryzen\""));
+    }
+
+    /// W6 §11.1：session / socket / workspace_id 必须 TOML round-trip，
+    /// 且 path（项目目录）与 workspace_id（`wN`）互不覆盖。
+    #[test]
+    fn herdr_identity_fields_roundtrip_and_do_not_overwrite() {
+        let mut store = QuickConnectStore::new(None);
+        let mut project = cfg(
+            "proj",
+            TargetRuntime::Herdr,
+            TargetTransport::Local,
+            "/srv/project",
+        );
+        project.session = Some("dev".into());
+        project.socket = Some("/tmp/herdr-dev.sock".into());
+        project.workspace_id = Some("w3".into());
+        store.upsert_project(&project);
+
+        let text = store.encode();
+        assert!(text.contains("workspace_id = \"w3\""), "{text}");
+        assert!(text.contains("session = \"dev\""), "{text}");
+        assert!(text.contains("socket = \"/tmp/herdr-dev.sock\""), "{text}");
+
+        let mut back = QuickConnectStore::new(None);
+        back.decode(&text);
+        assert_eq!(back.projects.len(), 1);
+        let loaded = &back.projects[0];
+        assert_eq!(
+            loaded.path, "/srv/project",
+            "path 是项目目录，不能被 workspace_id 覆盖"
+        );
+        assert_eq!(loaded.workspace_id.as_deref(), Some("w3"));
+        assert_eq!(loaded.session.as_deref(), Some("dev"));
+        assert_eq!(loaded.socket.as_deref(), Some("/tmp/herdr-dev.sock"));
+    }
+
+    /// W6 §11.1：旧 TOML 没有 session/socket/workspace_id 字段仍可读；
+    /// 旧格式把 Herdr workspace id 塞在 path（如 `w1`）→ 一次性迁移到
+    /// workspace_id，path 保持原样（不能把 wN 当目录回填）。
+    #[test]
+    fn legacy_toml_missing_identity_fields_migrates_workspace_id_from_path() {
+        let mut store = QuickConnectStore::new(None);
+        store.decode(
+            r#"
+[[projects]]
+name = "legacy"
+runtime = "herdr"
+transport = "local"
+path = "w2"
+"#,
+        );
+        assert_eq!(store.projects.len(), 1);
+        let legacy = &store.projects[0];
+        assert_eq!(
+            legacy.workspace_id.as_deref(),
+            Some("w2"),
+            "旧 path=w2 必须迁移到 workspace_id"
+        );
+        assert_eq!(
+            legacy.path, "w2",
+            "迁移不改 path（旧值保留，保存后才有新格式）"
+        );
+        assert_eq!(legacy.session, None);
+        assert_eq!(legacy.socket, None);
+
+        // 目录路径不是 workspace id，不迁移。
+        let mut dir = QuickConnectStore::new(None);
+        dir.decode(
+            r#"
+[[projects]]
+name = "dir"
+runtime = "herdr"
+transport = "local"
+path = "/srv/project"
+"#,
+        );
+        assert_eq!(dir.projects[0].workspace_id, None);
+        assert_eq!(dir.projects[0].path, "/srv/project");
+    }
+
+    /// W6 §11.1：identity key 由 transport target / runtime / session /
+    /// target-side socket / workspace_id 构成；name 与 path 变更不改变身份。
+    #[test]
+    fn identity_key_ignores_name_and_path() {
+        let mut a = cfg("alpha", TargetRuntime::Herdr, TargetTransport::Local, "/a");
+        a.session = Some("dev".into());
+        a.socket = Some("/tmp/herdr-dev.sock".into());
+        a.workspace_id = Some("w3".into());
+        let mut b = a.clone();
+        b.name = "beta".into();
+        b.path = "/b".into();
+        assert_eq!(a.identity_key(), b.identity_key());
+
+        // 同名同 path 但不同 socket/session/workspace_id → 不同身份。
+        let mut c = a.clone();
+        c.socket = Some("/other.sock".into());
+        assert_ne!(a.identity_key(), c.identity_key());
+        let mut d = a.clone();
+        d.workspace_id = Some("w9".into());
+        assert_ne!(a.identity_key(), d.identity_key());
+        let mut e = a.clone();
+        e.session = Some("prod".into());
+        assert_ne!(a.identity_key(), e.identity_key());
     }
 
     #[test]

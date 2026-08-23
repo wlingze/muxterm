@@ -69,16 +69,24 @@ impl TargetTransport {
 }
 
 /// 一个可快速连接的目标（Recent / Project 共用）。
+///
+/// 身份字段（transport target / runtime / session / target-side socket /
+/// workspace_id）与显示/项目元数据（name / path）分离：
+/// identity key 只由身份字段构成，`name`/`path` 变更不改变身份。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetConfig {
     pub name: String,
     pub runtime: TargetRuntime,
     pub transport: TargetTransport,
+    /// 项目目录（显示/元数据）；Herdr 的 `wN` workspace_id 独立存放，互不覆盖。
     pub path: String,
-    /// Herdr：本机 API socket 绝对路径（SSH 是转发后的本地路径）。
+    /// Herdr：target-side API socket 绝对路径（本地 = 本机 socket；
+    /// SSH = 远端 socket 路径，转发由 Runtime 创建，保存的永远是 target-side）。
     pub socket: Option<String>,
     /// Herdr：named session 名（默认 socket 为 "default"）。
     pub session: Option<String>,
+    /// Herdr：workspace id（`wN`）。tmux/shell 为空。
+    pub workspace_id: Option<String>,
 }
 
 impl TargetConfig {
@@ -95,6 +103,7 @@ impl TargetConfig {
             path: path.into(),
             socket: None,
             session: None,
+            workspace_id: None,
         }
     }
 
@@ -102,6 +111,23 @@ impl TargetConfig {
     pub fn tmux_session(session: impl Into<String>, transport: TargetTransport) -> Self {
         let session = session.into();
         TargetConfig::new(session, TargetRuntime::Tmux, transport, "~")
+    }
+
+    /// 身份 key：transport target、runtime、session、target-side socket 与
+    /// workspace_id。`name`/`path` 是显示/项目元数据，不参与身份。
+    pub fn identity_key(&self) -> String {
+        let transport_target = match &self.transport {
+            TargetTransport::Local => "".to_string(),
+            TargetTransport::Ssh { name } => name.clone(),
+        };
+        format!(
+            "{}|{}|{}|{}|{}",
+            transport_target,
+            self.runtime.as_str(),
+            self.session.as_deref().unwrap_or_default(),
+            self.socket.as_deref().unwrap_or_default(),
+            self.workspace_id.as_deref().unwrap_or_default(),
+        )
     }
 }
 

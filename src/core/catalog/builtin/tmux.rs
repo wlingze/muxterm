@@ -70,6 +70,10 @@ impl RuntimeDriver for TmuxDriver {
                 namespace: None,
                 name: s.name,
                 extra: String::new(),
+                // W6 §11.1：tmux 无 typed 身份字段。
+                session: None,
+                socket: None,
+                workspace_id: None,
             })
             .collect())
     }

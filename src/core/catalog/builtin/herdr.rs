@@ -59,7 +59,11 @@ impl RuntimeDriver for HerdrDriver {
                     target: connect.target().into(),
                     namespace: e.herdr_session.clone(),
                     name: e.title,
-                    extra: e.herdr_workspace_id.unwrap_or_default(),
+                    extra: e.herdr_workspace_id.clone().unwrap_or_default(),
+                    // W6 §11.1：typed 身份字段由 Core 转换。
+                    session: e.herdr_session.clone(),
+                    socket: e.herdr_socket.clone(),
+                    workspace_id: e.herdr_workspace_id.clone(),
                 })
                 .collect());
         }
@@ -73,9 +77,13 @@ impl RuntimeDriver for HerdrDriver {
                 runtime_id: "herdr".into(),
                 transport_id: "local".into(),
                 target: String::new(),
-                namespace: e.herdr_session,
+                namespace: e.herdr_session.clone(),
                 name: e.title,
-                extra: e.herdr_workspace_id.unwrap_or_default(),
+                extra: e.herdr_workspace_id.clone().unwrap_or_default(),
+                // W6 §11.1：typed 身份字段由 Core 转换。
+                session: e.herdr_session.clone(),
+                socket: e.herdr_socket.clone(),
+                workspace_id: e.herdr_workspace_id.clone(),
             })
             .collect())
     }

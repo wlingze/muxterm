@@ -198,6 +198,7 @@ fn discover_sessions_fans_out_and_skips_driver_error() {
             namespace: None,
             name: "mux".into(),
             extra: String::new(),
+            ..Default::default()
         }],
         list_err: false,
         opened: Arc::new(AtomicUsize::new(0)),
@@ -414,6 +415,7 @@ fn discover_sessions_all_fans_out_local_and_ssh_targets() {
             namespace: None,
             name: "mux-dup".into(),
             extra: String::new(),
+            ..Default::default()
         }],
         list_err: false,
         opened: Arc::new(AtomicUsize::new(0)),
@@ -477,6 +479,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
                 namespace: None,
                 name: "candidate".into(),
                 extra: String::new(),
+                ..Default::default()
             }])
         }
 

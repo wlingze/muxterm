@@ -18,7 +18,10 @@ pub struct RuntimeInfo {
 }
 
 /// 可 attach 的一格（tmux session 名或 Herdr workspace）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// W6 §11.1：session / target-side socket / workspace_id 是 typed 字段，
+/// 由 Core 直接转换；platform 不得从 `extra` 猜身份。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionCandidate {
     pub runtime_id: String,
     pub transport_id: String,
@@ -27,6 +30,12 @@ pub struct SessionCandidate {
     pub name: String,
     /// Herdr workspace_id；tmux 为空。
     pub extra: String,
+    /// Herdr named session 名（typed；namespace 的别名）。
+    pub session: Option<String>,
+    /// Herdr target-side socket 绝对路径（SSH = 远端路径）。
+    pub socket: Option<String>,
+    /// Herdr workspace id（typed；extra 的别名）。
+    pub workspace_id: Option<String>,
 }
 
 /// Runtime 插件：在 Connect 上 list / open，自己不持有活连接池。

@@ -40,6 +40,9 @@ pub struct Workspace {
     scrollback_lines: usize,
     agents: HashMap<PaneId, PaneAgentInfo>,
     runtime_attention: HashMap<PaneId, Vec<AttentionSignal>>,
+    /// Catalog 打开时保存的规范化目标（W6 §11.2）。
+    /// Recent/重连/高亮只读这份 Core 元数据，禁止从 WorkspaceId 反向猜。
+    resolved_target: Option<crate::core::catalog::resolver::ResolvedTarget>,
 }
 
 impl Workspace {
@@ -63,12 +66,26 @@ impl Workspace {
             scrollback_lines: scrollback_lines.max(1),
             agents: HashMap::new(),
             runtime_attention: HashMap::new(),
+            resolved_target: None,
         }
     }
 
     /// 稳定工作区 id。
     pub fn id(&self) -> &WorkspaceId {
         &self.id
+    }
+
+    /// Catalog 打开时保存的规范化目标（Core 唯一所有权；Recent/重连只读它）。
+    pub fn resolved_target(&self) -> Option<&crate::core::catalog::resolver::ResolvedTarget> {
+        self.resolved_target.as_ref()
+    }
+
+    /// 保存规范化目标（仅 Catalog::open_resolved 调用；platform 不得复制第二份）。
+    pub fn set_resolved_target(
+        &mut self,
+        resolved: crate::core::catalog::resolver::ResolvedTarget,
+    ) {
+        self.resolved_target = Some(resolved);
     }
 
     /// 用户可见的工作区名。

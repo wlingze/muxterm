@@ -21,6 +21,7 @@ use anyhow::anyhow;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
+use crate::core::catalog::ResolveIntent;
 use crate::core::config::{Action, Config, OnLastPaneExit, Theme};
 use crate::core::config_edit::set_dotted_key;
 use crate::core::discovery::existing::ExistingEntry;
@@ -30,7 +31,6 @@ use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::HerdrRuntime;
-use crate::core::runtime::HerdrSession;
 use crate::core::transport::ssh::probe::SshReach;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
@@ -3430,7 +3430,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let mut s = state.borrow_mut();
         let recents = recent_target_configs(&s.pool, 5);
         s.qc_store.replace_recents(&recents);
-        let current = s.pool.active_id().map(workspace_to_target_config);
+        let current = s.pool.active().map(workspace_to_target_config);
         let store = s.qc_store.clone();
         let theme = s.theme.clone();
         let font = s.font.clone();
@@ -4183,146 +4183,60 @@ fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
 }
 
 /// Herdr 目标：本地直接 socket JSON；SSH 先转发远端 socket 再 attach。
+/// Herdr 目标：统一走 Core Catalog 解析 + 打开（W6 §11.2）。
+///
+/// Project/Recent/Existing 三路共用；后台线程调用 Catalog API，
+/// SSH forward 由 HerdrDriver::open 创建，Project/Recent 永不保存临时
+/// forward 路径。意图：新建 Project 才 CreateIfMissing，其余 AttachOnly。
 fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
-    if config.transport.is_ssh() {
-        connect_herdr_ssh(state, config);
-        return;
-    }
-    let socket = config.socket.clone().unwrap_or_else(|| {
-        std::env::var("MUXTERM_TEST_HERDR_SOCKET").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}/.config/herdr/herdr.sock")
-        })
-    });
-    let session = config
-        .session
-        .clone()
-        .unwrap_or_else(|| "default".to_string());
-    let id = WorkspaceId::new("local", None, &session, "herdr", &config.path);
+    // 已打开的同 identity slot：直接激活。
+    let probe_id = WorkspaceId::new(
+        if config.transport.is_ssh() {
+            "ssh"
+        } else {
+            "local"
+        },
+        match &config.transport {
+            TargetTransport::Ssh { name } => Some(name.as_str()),
+            TargetTransport::Local => None,
+        },
+        config.session.as_deref().unwrap_or("default"),
+        "herdr",
+        &config.path,
+    );
     {
         let mut s = state.borrow_mut();
-        if s.pool.get(&id).is_some() {
-            activate_existing(&mut s, id);
+        if s.pool.get(&probe_id).is_some() {
+            activate_existing(&mut s, probe_id);
             return;
         }
     }
-    // 后台：workspace.list 按 name/path 找，没有就 workspace.create，再 connect。
+    // 初次新建 Project 才 CreateIfMissing；Existing/Recent/普通重连 AttachOnly。
+    let intent = if config.workspace_id.is_none() {
+        ResolveIntent::CreateIfMissing
+    } else {
+        ResolveIntent::AttachOnly
+    };
     let handle = state.borrow().rt.handle().clone();
     let (tx, rx) = std::sync::mpsc::channel::<PendingConnect>();
     state.borrow_mut().pending_connects.push_back(rx);
     std::thread::spawn(move || {
         let result = (|| -> anyhow::Result<Workspace> {
-            let herdr_session = HerdrSession::new(&session, &socket);
-            let workspace_id = match herdr_session.workspace_list() {
-                Ok(list) => list
-                    .iter()
-                    .find(|w| w.label == config.name || w.workspace_id == config.path)
-                    .map(|w| w.workspace_id.clone())
-                    .unwrap_or_else(|| {
-                        herdr_session
-                            .workspace_create(&config.path, &config.name)
-                            .map(|w| w.workspace_id)
-                            .unwrap_or_else(|e| {
-                                tracing::error!(
-                                    target = "muxterm::linux",
-                                    "herdr workspace.create 失败: {e}"
-                                );
-                                config.path.clone()
-                            })
-                    }),
-                Err(e) => {
-                    tracing::error!(target = "muxterm::linux", "herdr workspace.list 失败: {e}");
-                    config.path.clone()
-                }
-            };
-            let spec = WorkspaceSpec::herdr(session, workspace_id, socket);
-            let id = spec.id();
-            let name = spec.name();
-            let mut runtime = spec.build_runtime();
+            let mut catalog = crate::core::catalog::Catalog::with_builtins();
+            let mut workspace = handle.block_on(catalog.open_target_owned(&config, intent))?;
             handle.block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(10), runtime.connect())
+                tokio::time::timeout(std::time::Duration::from_secs(10), workspace.connect())
                     .await
-                    .map_err(|_| anyhow!("herdr connect 超时"))?
+                    .map_err(|_| anyhow::anyhow!("herdr connect 超时"))?
             })?;
-            Ok(Workspace::new(id, name, runtime))
+            Ok(workspace)
         })();
+        let id = result.as_ref().map(|w| w.id().clone()).unwrap_or(probe_id);
         let _ = tx.send(PendingConnect {
             id,
             socket: None,
-            flow: ProjectConnectFlow::new(&TargetConfig::new(
-                "",
-                TargetRuntime::Shell,
-                TargetTransport::Local,
-                "",
-            )),
-            config: TargetConfig::new("", TargetRuntime::Shell, TargetTransport::Local, ""),
-            existing: true,
-            result,
-        });
-    });
-}
-
-/// SSH Herdr：把远端 herdr.sock 转发到本机，再走 HerdrSession attach。
-///
-/// 禁止 `herdr --remote`（会在远端装/启 server）。转发进程随 Runtime 杀。
-fn connect_herdr_ssh(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
-    let TargetTransport::Ssh { name: alias } = &config.transport else {
-        return;
-    };
-    let Some(remote_socket) = config.socket.clone() else {
-        state
-            .borrow_mut()
-            .notification_log
-            .push("SSH Herdr 缺远端 socket 路径".to_string());
-        return;
-    };
-    let session = config
-        .session
-        .clone()
-        .unwrap_or_else(|| "default".to_string());
-    let workspace_id = config.path.clone();
-    let alias = alias.clone();
-    let id = WorkspaceId::new("ssh", Some(&alias), &session, "herdr", &workspace_id);
-    let handle = state.borrow().rt.handle().clone();
-    let (tx, rx) = std::sync::mpsc::channel::<PendingConnect>();
-    state.borrow_mut().pending_connects.push_back(rx);
-    std::thread::spawn(move || {
-        let result = (|| -> anyhow::Result<Workspace> {
-            let (local_socket, forward) =
-                crate::core::runtime::herdr::forward::start_herdr_ssh_forward(
-                    &alias,
-                    &remote_socket,
-                    None,
-                )?;
-            let spec = WorkspaceSpec::ssh_herdr(
-                alias,
-                session,
-                workspace_id,
-                local_socket.to_string_lossy(),
-            );
-            let id = spec.id();
-            let name = spec.name();
-            let herdr_session =
-                HerdrSession::new(&spec.session, spec.socket.clone().unwrap_or_default());
-            let mut runtime =
-                HerdrRuntime::with_forward(std::sync::Arc::new(herdr_session), &spec.path, forward);
-            handle.block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(10), runtime.connect())
-                    .await
-                    .map_err(|_| anyhow!("SSH Herdr connect 超时"))?
-            })?;
-            Ok(Workspace::new(id, name, std::boxed::Box::new(runtime)))
-        })();
-        let _ = tx.send(PendingConnect {
-            id,
-            socket: None,
-            flow: ProjectConnectFlow::new(&TargetConfig::new(
-                "",
-                TargetRuntime::Shell,
-                TargetTransport::Local,
-                "",
-            )),
-            config: TargetConfig::new("", TargetRuntime::Shell, TargetTransport::Local, ""),
+            flow: ProjectConnectFlow::new(&config),
+            config,
             existing: true,
             result,
         });
@@ -4330,16 +4244,26 @@ fn connect_herdr_ssh(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
 }
 
 /// 池里最近打开的工作区（按 last_used 倒序）→ QuickConnect 目标。
+///
+/// W6 §11.2：优先读 Core 保存的 `ResolvedTarget.canonical`（含 session /
+/// socket / workspace_id）；没有 descriptor 时回退旧五段推导（测试/直开）。
 fn recent_target_configs(pool: &WorkspacePool, limit: usize) -> Vec<TargetConfig> {
     pool.list()
         .into_iter()
         .take(limit)
-        .map(|w| workspace_to_target_config(w.id()))
+        .map(workspace_to_target_config)
         .collect()
 }
 
-/// WorkspaceId → QuickConnect 目标（Recents 列表 / 面板高亮）。
-fn workspace_to_target_config(id: &WorkspaceId) -> TargetConfig {
+/// Workspace → QuickConnect 目标（Recents 列表 / 面板高亮）。
+///
+/// 读 `resolved_target().canonical`（Catalog 打开时保存）；无 descriptor 时
+/// 从 WorkspaceId 推导（测试 mock/CLI 直开路径）。
+fn workspace_to_target_config(workspace: &Workspace) -> TargetConfig {
+    if let Some(resolved) = workspace.resolved_target() {
+        return resolved.canonical.clone();
+    }
+    let id = workspace.id();
     let name = if id.session.is_empty() {
         QuickConnect::default_name(&id.path)
     } else {

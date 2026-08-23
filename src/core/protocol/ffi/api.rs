@@ -11,6 +11,7 @@ use std::ptr;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
 use crate::core::attention::signal::AttentionSignal;
+use crate::core::catalog::ResolveIntent;
 use crate::core::config::parse_hex;
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::model::layout::{LayoutNode, SplitDir};
@@ -19,6 +20,7 @@ use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::protocol::terminal::input::KeyEvent;
+use crate::core::quickconnect::model::TargetTransport;
 use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
@@ -910,6 +912,88 @@ pub unsafe extern "C" fn muxterm_workspace_open(
     .unwrap_or(-1)
 }
 
+/// JSON 目标 → TargetConfig（W6 §11.3 additive 入口的解析）。
+/// 字段：name / runtime / transport("local"|"ssh") / target(SSH 别名) /
+/// path / session / socket(target-side) / workspace_id。未知字段忽略。
+fn target_config_from_json(
+    v: &serde_json::Value,
+) -> Option<crate::core::quickconnect::model::TargetConfig> {
+    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    let name = v.get("name")?.as_str()?.to_string();
+    let runtime = TargetRuntime::from_str(v.get("runtime")?.as_str()?)?;
+    let transport = match v.get("transport").and_then(serde_json::Value::as_str) {
+        Some("ssh") => TargetTransport::Ssh {
+            name: v.get("target")?.as_str()?.to_string(),
+        },
+        _ => TargetTransport::Local,
+    };
+    let path = v
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let mut config = TargetConfig::new(name, runtime, transport, path);
+    config.session = v
+        .get("session")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    config.socket = v
+        .get("socket")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    config.workspace_id = v
+        .get("workspace_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Some(config)
+}
+
+/// 通过 JSON target 打开工作区（additive 入口，走 Catalog resolver）。
+///
+/// `target_json`：`{"name":"…","runtime":"herdr","transport":"local"|"ssh",
+/// "target":ssh别名,"path":项目目录,"session":…,"socket":target-side,
+/// "workspace_id":…}`。`intent`：`"attach_only"` 或 `"create_if_missing"`。
+/// 返回 `{"ok":true,"id":…}` 或 `{"ok":false,"error":…}`（`muxterm_free_string` 释放）。
+///
+/// # Safety
+/// `h` 有效且未 free；`target` / `intent` NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_open_target_json(
+    h: *mut MuxtermHandle,
+    target: *const c_char,
+    intent: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || target.is_null() {
+            return json_error("handle 或 target 为空");
+        }
+        let Ok(target) = CStr::from_ptr(target).to_str() else {
+            return json_error("target 不是合法 UTF-8");
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(target) else {
+            return json_error("target JSON 解析失败");
+        };
+        let Some(config) = target_config_from_json(&value) else {
+            return json_error("target JSON 缺必要字段（name/runtime/transport）");
+        };
+        let intent = match cstr_opt(intent).as_deref() {
+            Some("create_if_missing") => ResolveIntent::CreateIfMissing,
+            _ => ResolveIntent::AttachOnly,
+        };
+        let handle = &mut *h;
+        let fut = handle.catalog.open_target(&config, intent);
+        match handle.rt.block_on(fut) {
+            Ok(workspace) => json_string(serde_json::json!({
+                "ok": true,
+                "id": workspace.id().as_str(),
+                "name": workspace.name(),
+            })),
+            Err(err) => json_error(err),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("workspace_open_target_json panic"))
+}
+
 /// 列出池里全部工作区，返回 JSON 字符串（`muxterm_free_string` 释放）。
 ///
 /// # Safety
@@ -926,11 +1010,42 @@ pub unsafe extern "C" fn muxterm_workspace_list(h: *mut MuxtermHandle) -> *mut c
             .list()
             .into_iter()
             .map(|w| {
+                let resolved = w.resolved_target().map(|r| {
+                    let canonical = &r.canonical;
+                    serde_json::json!({
+                        "canonical": {
+                            "name": canonical.name,
+                            "runtime": canonical.runtime.as_str(),
+                            "transport": match &canonical.transport {
+                                TargetTransport::Local => "local",
+                                TargetTransport::Ssh { .. } => "ssh",
+                            },
+                            "target": match &canonical.transport {
+                                TargetTransport::Ssh { name } => name,
+                                TargetTransport::Local => "",
+                            },
+                            "path": canonical.path,
+                            "session": canonical.session,
+                            "socket": canonical.socket,
+                            "workspace_id": canonical.workspace_id,
+                        },
+                        "spec": {
+                            "transport": r.spec.transport,
+                            "alias": r.spec.alias,
+                            "session": r.spec.session,
+                            "runtime": r.spec.runtime,
+                            "path": r.spec.path,
+                            "socket": r.spec.socket,
+                        },
+                    })
+                });
                 serde_json::json!({
                     "id": w.id().as_str(),
                     "name": w.name(),
                     "runtime": w.state().workspace_runtime(),
                     "active": handle.pool().active_id() == Some(w.id()),
+                    // W6 §11.3：optional resolved_target；旧消费者忽略未知字段。
+                    "resolved_target": resolved,
                 })
             })
             .collect();
@@ -3289,6 +3404,63 @@ mod tests {
             let text = CStr::from_ptr(out).to_string_lossy().into_owned();
             muxterm_free_string(out);
             assert!(text.contains("\"ok\":false"), "{text}");
+
+            muxterm_free(h);
+        }
+    }
+
+    /// W6 §11.3：additive `muxterm_workspace_open_target_json` 走 Catalog
+    /// resolver；`muxterm_workspace_list` 的行带 optional `resolved_target`，
+    /// 旧消费者忽略未知字段。
+    #[test]
+    fn ffi_workspace_open_target_json_roundtrip_and_list_resolved_target() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            assert_eq!(muxterm_connect(h), 0);
+
+            // 打开一个 shell target（AttachOnly 对 shell 直接成功）。
+            let out = muxterm_workspace_open_target_json(
+                h,
+                c"{\"name\":\"qc-proj\",\"runtime\":\"shell\",\"transport\":\"local\",\"path\":\"/tmp/qc-proj\"}".as_ptr(),
+                c"attach_only".as_ptr(),
+            );
+            assert!(!out.is_null());
+            let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+            muxterm_free_string(out);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["ok"], true, "{text}");
+            let id = value["id"].as_str().expect("open 返回 id").to_string();
+            assert!(id.contains("shell"), "id 应含 runtime: {id}");
+
+            // list 行必须带 resolved_target（canonical 完整身份字段）。
+            let list = muxterm_workspace_list(h);
+            assert!(!list.is_null());
+            let list_text = CStr::from_ptr(list).to_string_lossy().into_owned();
+            muxterm_free_string(list);
+            let list_value: serde_json::Value = serde_json::from_str(&list_text).unwrap();
+            let row = list_value["workspaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"].as_str() == Some(&id))
+                .unwrap_or_else(|| panic!("list 缺新开的 {id}: {list_text}"));
+            let resolved = &row["resolved_target"];
+            assert_eq!(resolved["canonical"]["name"], "qc-proj", "{list_text}");
+            assert_eq!(resolved["canonical"]["runtime"], "shell", "{list_text}");
+            assert_eq!(resolved["canonical"]["path"], "/tmp/qc-proj", "{list_text}");
+            assert_eq!(resolved["spec"]["runtime"], "shell", "{list_text}");
+
+            // 缺 name/runtime → error，不 panic。
+            let bad = muxterm_workspace_open_target_json(
+                h,
+                c"{\"path\":\"/tmp/x\"}".as_ptr(),
+                c"attach_only".as_ptr(),
+            );
+            assert!(!bad.is_null());
+            let bad_text = CStr::from_ptr(bad).to_string_lossy().into_owned();
+            muxterm_free_string(bad);
+            assert!(bad_text.contains("\"ok\":false"), "{bad_text}");
 
             muxterm_free(h);
         }
