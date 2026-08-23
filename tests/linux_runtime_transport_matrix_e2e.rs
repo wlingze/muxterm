@@ -354,6 +354,9 @@ fn build_gui_scenario(app: &AppWindow, runtime: &str, transport: &str) -> Result
     })?;
     app.test_handle_action(Action::NewPaneVertical);
     let tab2_panes = assert_three_pane_surface(app, "生产 NewPaneVertical")?;
+    wait_for(app, "第二次 split 后聚焦右下 pane", |app| {
+        app.test_active_pane_id() == tab2_panes[2]
+    })?;
     ensure!(
         app.test_active_pane_id() == tab2_panes[2],
         "第二次 split 后必须聚焦右下 pane: {}",

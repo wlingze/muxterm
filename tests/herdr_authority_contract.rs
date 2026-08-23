@@ -15,6 +15,7 @@ use anyhow::{ensure, Context, Result};
 
 use muxterm::core::catalog::Catalog;
 use muxterm::core::model::layout::SplitDir;
+use muxterm::core::model::state::{MutationResult, StateChange};
 use muxterm::core::model::task::{Task, TaskOutcome};
 use muxterm::core::runtime::HerdrRuntime;
 use muxterm::core::types::{PaneId, TabId};
@@ -73,6 +74,58 @@ fn done(workspace: &mut Workspace, task: Task, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// W5 起 NewTab/SplitPane 是异步 mutation：入队返回 `Accepted { operation_id }`，
+/// 最终结果由唯一 `MutationSettled(Completed)` 交付（见 plan §3.1）。
+fn accepted(workspace: &mut Workspace, task: Task, label: &str) -> Result<u64> {
+    let outcome = workspace.execute(task)?;
+    match outcome {
+        TaskOutcome::Accepted { operation_id } => Ok(operation_id),
+        other => anyhow::bail!("{label} 必须 Accepted，实际 {other:?}"),
+    }
+}
+
+/// 等待指定 operation 的唯一 `MutationSettled`，且必须 Completed。
+/// `refresh()` 会把 runtime 事件洗完並从返回值交付，必须同时检查两路。
+fn wait_settled(workspace: &mut Workspace, operation_id: u64, label: &str) -> Result<()> {
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+        for event in workspace.take_events() {
+            if let Some(()) = check_settled(event, operation_id, label)? {
+                return Ok(());
+            }
+        }
+        for event in workspace.refresh() {
+            if let Some(()) = check_settled(event, operation_id, label)? {
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    anyhow::bail!("等待 {label} settlement 超时")
+}
+
+/// 单条事件是否就是目标 operation 的 Completed settlement。
+fn check_settled(event: StateChange, operation_id: u64, label: &str) -> Result<Option<()>> {
+    if let StateChange::MutationSettled {
+        operation_id: settled,
+        result,
+        ..
+    } = event
+    {
+        ensure!(
+            settled == operation_id,
+            "{label} settlement operation {settled} != {operation_id}"
+        );
+        ensure!(
+            result == MutationResult::Completed,
+            "{label} 必须 Completed，实际 {result:?}"
+        );
+        Ok(Some(()))
+    } else {
+        Ok(None)
+    }
+}
+
 fn switch_tab(workspace: &mut Workspace, target: TabId, label: &str) -> Result<()> {
     done(workspace, Task::SwitchTab { target }, label)?;
     wait_until(workspace, label, |candidate| {
@@ -120,6 +173,26 @@ fn herdr_runtime(workspace: &Workspace) -> Result<&HerdrRuntime> {
 }
 
 fn assert_authoritative_focus(
+    workspace: &mut Workspace,
+    expected_tab: TabId,
+    expected_pane: PaneId,
+    label: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match check_authoritative_focus(workspace, expected_tab, expected_pane, label) {
+            Ok(()) => return Ok(()),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => {
+                // 事件流快照可能晚到（SSH 转发有延迟）：拉一次事件再等下一轮收敛。
+                let _ = workspace.refresh();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+}
+
+fn check_authoritative_focus(
     workspace: &Workspace,
     expected_tab: TabId,
     expected_pane: PaneId,
@@ -133,12 +206,12 @@ fn assert_authoritative_focus(
         active_pane(workspace)? == expected_pane,
         "{label}: Workspace active pane 错误"
     );
+    let layout_state = workspace.state().layout(&expected_tab);
     ensure!(
-        workspace
-            .state()
-            .layout(&expected_tab)
-            .is_some_and(|layout| layout.active == expected_pane),
-        "{label}: Workspace layout.active 错误"
+        layout_state.is_some_and(|layout| layout.active == expected_pane),
+        "{label}: Workspace layout.active 错误 active_pane={:?} layout={:?} expected={expected_pane}",
+        active_pane(workspace),
+        layout_state.map(|l| l.active)
     );
 
     let runtime = herdr_runtime(workspace)?;
@@ -326,7 +399,7 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
     let tab1_pane = active_pane(workspace)?;
     assert_authoritative_focus(workspace, tab1, tab1_pane, "初始焦点")?;
 
-    done(
+    let new_tab_op = accepted(
         workspace,
         Task::NewTab {
             name: Some("authority-tab-2".into()),
@@ -335,6 +408,7 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         },
         "NewTab",
     )?;
+    wait_settled(workspace, new_tab_op, "NewTab settlement")?;
     wait_until(workspace, "第二个 tab", |ws| {
         ws.state().tabs().len() == 2
     })?;
@@ -342,7 +416,7 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
     let left = active_pane(workspace)?;
     assert_authoritative_focus(workspace, tab2, left, "创建 Tab 2 后")?;
 
-    done(
+    let split_right_op = accepted(
         workspace,
         Task::SplitPane {
             target: Some(left),
@@ -352,13 +426,14 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         },
         "向右 split",
     )?;
+    wait_settled(workspace, split_right_op, "向右 split settlement")?;
     wait_until(workspace, "Tab 2 两 pane", |ws| {
         leaves(ws, tab2).len() == 2
     })?;
     let right_top = active_pane(workspace)?;
     assert_authoritative_focus(workspace, tab2, right_top, "向右 split 后")?;
 
-    done(
+    let split_down_op = accepted(
         workspace,
         Task::SplitPane {
             target: Some(right_top),
@@ -368,6 +443,7 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         },
         "向下 split",
     )?;
+    wait_settled(workspace, split_down_op, "向下 split settlement")?;
     wait_until(workspace, "Tab 2 三 pane", |ws| {
         leaves(ws, tab2).len() == 3
     })?;

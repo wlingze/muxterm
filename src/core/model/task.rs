@@ -133,6 +133,9 @@ impl Task {
 pub enum TaskOutcome {
     /// 成功，状态已更新（通过 StateChange 事件推送细节）。
     Done,
+    /// 异步 mutation（NewTab/SplitPane）已进入有界队列；**不是完成**。
+    /// 最终结果由 `StateChange::MutationSettled` 恰好一次送达。
+    Accepted { operation_id: u64 },
     /// 被拒绝（target 不存在 / 后端未连接 / 配置不允许）。
     Rejected { reason: String },
 }

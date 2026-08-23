@@ -3,6 +3,8 @@
 > 适用：`/home/wlz/Developer/self/muxterm`（当前分支 `feature/runtime/support_herdr`）。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
 > [WORKSPACE.md](WORKSPACE.md)、[RUNTIME.md](RUNTIME.md)（Herdr 接入）、
+> [HERDR-RUNTIME-STABILITY.md](HERDR-RUNTIME-STABILITY.md)（Herdr 稳定性设计）、
+> [HERDR-TESTING.md](HERDR-TESTING.md)（Herdr/runtime×transport 专项门禁）、
 > [CATALOG.md](CATALOG.md)（Catalog）、[VISION-AUDIT.md](VISION-AUDIT.md)、
 > [SURFACE.md](SURFACE.md)（F 已冻结）、[TASKS.md](../TASKS.md)（已冻结）、
 > [bugfix-log.md](bugfix-log.md)。
@@ -54,6 +56,9 @@
 - 需要 loopback sshd：`scripts/ci/setup-sshd.sh` 或 `tests/support/sshd_test_support.rs`。
 - SSH 集成测试默认 `--ignored`，有 sshd 时用 `--ignored --test-threads=1` 跑。
 - 密钥需求通过 `MUXTERM_TEST_SSH_KEY` 或测试环境已有授权 key 提供；没有授权 key 时不能宣称 SSH 用例通过。
+- 上述 legacy 默认不适用于 Herdr 稳定化 required matrix：tmux/herdr × loopback SSH
+  必须由 fixture 自启 sshd，不能 `#[ignore]`、skip 或因缺环境变绿。见
+  [`HERDR-TESTING.md`](HERDR-TESTING.md) §2.4、§6。
 
 ### 3.5 时间行为测试
 
@@ -109,7 +114,7 @@ xvfb-run -a cargo test --features gtk --test linux_jump_count_e2e -- --test-thre
 xvfb-run -a cargo test --features gtk --test linux_search_scope_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_last_seen_e2e -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_command_marks_e2e -- --test-threads=1
-# Herdr Runtime（隔离 named session；见 ）
+# Herdr Runtime（隔离 named session；见 docs/HERDR-TESTING.md）
 cargo test --test herdr_session_contract -- --test-threads=1
 cargo test --test herdr_feature_contract -- --test-threads=1
 cargo test --test herdr_multi_workspace_contract -- --test-threads=1
@@ -167,8 +172,10 @@ FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_sn
 
 ## 4. 开发流程（TDD 优先）
 
-1. 读文档：`docs/WORKSPACE.md` →  → `PRODUCT.md` → `AGENTS.md` → `docs/SURFACE.md` → 本文档。
-   `TASKS.md`、 已冻结，不要当新工作单。F 的 e2e 是回归门，不是本轮要重做的功能。
+1. 读文档：`docs/WORKSPACE.md` → `docs/RUNTIME.md` → `PRODUCT.md` → `AGENTS.md` →
+   `docs/SURFACE.md` → 本文档。动 Herdr 还要读 `docs/HERDR-RUNTIME-STABILITY.md` 与
+   `docs/HERDR-TESTING.md`。`TASKS.md` 已冻结，不要当新工作单。F 的 e2e 是回归门，不是
+   本轮要重做的功能。
 2. RED：写最小单测或 e2e，先看到失败（真实数据 fixture 优先）。
 3. GREEN：写最小实现，只改本功能相关文件。
 4. 补测试：增加边界、错误路径、真实 tmux 数据复放。
@@ -181,7 +188,8 @@ FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_sn
 ## 5. GUI e2e 编写指南（硬性：不许自创更弱测试）
 
 Phase F 的场景、函数名、断言（`linux_render_e2e` / `linux_live_e2e`）是 **回归门**：W 轮必须保持绿，**不要重写这些用例来迁就 dump**。
-新功能按  写测试（两工作区切回、viewport、带 tab 的搜索）。
+新功能按 §5.1 的四层断言写测试；Herdr 稳定化场景再遵守
+[`HERDR-TESTING.md`](HERDR-TESTING.md) §3–§5（两工作区切回、viewport、带 tab 的搜索）。
 C8 ASCII 几何 / E 的 `visible_ansi` 单测可留作 Index，**不算** Surface 完成，也 **不是** live 显示路径。
 `present_from_replica` 当直播、CUP 风暴 `resets==1`、只 `contains(TOKEN)` 不数次数 **不算**完成。
 
@@ -307,11 +315,16 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 
 ### 5.10 Herdr Runtime 接入
 
-契约：[`RUNTIME.md`](RUNTIME.md)。
+公共契约：[`RUNTIME.md`](RUNTIME.md)。稳定性与本轮 required 场景以
+[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) 和
+[`HERDR-TESTING.md`](HERDR-TESTING.md) 为准。
 
 测试自己拉起 **named session**（`herdr --session muxterm-test-* server`）。socket 在 `~/.config/herdr/sessions/<name>/herdr.sock`。清理：`herdr session stop <name>` 然后 `herdr session delete <name>`。**禁止** `herdr server stop`，禁止连用户默认 `/home/wlz/.config/herdr/herdr.sock`。夹具每条 CLI 必须带 `--session`（本环境常有 `HERDR_ENV=1`，不带就会打到用户 session）。
 
-无 `herdr` 二进制才 skip。不许 `#[ignore]`。生产代码走 socket JSON，不许 `Command::new("herdr")`。worktree fixture 只许 `/tmp/muxterm-test-herdr-*` 里的临时 git 仓库。
+旧的非 required 开发者便利用例只有在文档明确标成 optional 时，才可因无 `herdr` 二进制
+skip；Herdr 稳定化 required matrix/CI 必须在 doctor/setup 阶段直接失败，不能 skip 变绿。
+不许新增 `#[ignore]`。生产代码走 socket JSON，不许 `Command::new("herdr")`。worktree
+fixture 只许系统 temp 下的 `muxterm-test-herdr-*` 临时 git 仓库。
 
 | crate | 必须抓住 |
 |---|---|
@@ -384,7 +397,7 @@ tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shel
 
 ### 5.14 Catalog（Driver / Transport / Connect / Inventory）
 
-规格：[`CATALOG.md`](CATALOG.md)`trait Runtime` 不负责 `ls`。插件表是**有序数组**，`runtime_list()` 就是登记顺序。
+规格：[`CATALOG.md`](CATALOG.md)。`trait Runtime` 不负责 `ls`。插件表是**有序数组**，`runtime_list()` 就是登记顺序。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -392,7 +405,7 @@ tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shel
 | `with_builtins_runtime_list_is_tmux_herdr_shell` | `["tmux","herdr","shell"]`，无 `daemon` |
 | `with_builtins_transport_list_is_local_ssh` | `["local","ssh"]` |
 | `with_builtins_herdr_reports_worktree_caps` | Herdr 卡带 `WorktreeList` / `WorktreeCreate` |
-| `with_builtins_shell_rejects_ssh_pair` | 错误含 `does not accept transport` |
+| `with_builtins_shell_accepts_local_and_ssh` | shell 的 accepted transports 为 `local, ssh`；它的两格只算兼容覆盖，不能替代 Herdr/tmux required 四格 |
 | `discover_sessions_fans_out_and_skips_driver_error` | 一个 Driver `Err` 其它仍列出 |
 | `connect_reuses_arc_for_same_target` | 同一 `(ssh, alias)` `Arc::ptr_eq` |
 | `open_rejects_unknown_runtime` | 禁止悄悄变成 shell |
@@ -474,7 +487,9 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 
 ### 5.2 手段（沿用现有 helper）
 
-- 环境：无 DISPLAY 用 `xvfb-run -a`；`gtk4::test_synced`。无显示就 skip，不要空 assert。
+- 环境：无 DISPLAY 用 `xvfb-run -a`；`gtk4::test_synced`。只有文档明确标成 optional 的旧
+  developer test 才可在无显示时 skip，且不得做空 assert；Herdr required child/matrix 缺
+  DISPLAY/Xvfb 必须在 doctor/setup 阶段失败。
 - **同进程至多一个 `AppWindow`**。status bar / PaneView / prefs 用普通 `gtk4::Window`。
 - 隔离 tmux：**复用** `tests/support/tmux_test_support.rs`，禁止再复制 `struct IsolatedTmux`。
 - 按键：`EventControllerKey` + `simulate_key_press`。
@@ -494,7 +509,8 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 - [ ] widget_name + VTE 文本有断言
 - [ ] 持久化写的是 `config.toml`（不是 `preferences.toml`）
 - [ ] 真 tmux 用隔离 `-L`；Drop 带同一 `-L` 的 `kill-server`
-- [ ] 场景函数名与  一致；打字 token **恰好一次**；CUP seed 后 `resets` 不涨
+- [ ] 场景函数名与 [`SURFACE.md`](SURFACE.md) §5 / Herdr 专项契约一致；打字 token
+      **恰好一次**；CUP seed 后 `resets` 不涨
 - [ ] 几何用例比行号，不只 `contains(TOKEN)`
 - [ ] 状态点走 `clicked`，没有 `popover.popup()` 冒充
 - [ ] 已读 `dogfood-2026-0815-2105.txt` 与 `codex-tui-sanitized.txt`
@@ -556,7 +572,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 | 27 | 独立 TabBar | — | ✅ Phase C 已删第二条带子 | — |
 | 28 | 状态 popover 真点击 + 颜色 | ✅ CSS 三色 | ✅ C8.4 clicked；⚠️ 无 SSH 上下行（E4） | — |
 | 29 | 几何 visible_ansi ASCII 底行 | ✅ C8.1 snapshot | ✅ C8.2/C8.5 ASCII PROMPT | ⚠️ 不够测 Codex |
-| 30 | replica 滚动历史 | ✅ scroll_history | ✅ linux_render_e2e C8.3 | — |
+| 30 | Surface/VTE 原生滚动历史 | ✅ Index `scroll_history` 只供搜索 | ⚠️ 既有 C8.3 必须迁移为 VTE scrollback 证据，不能由 replica dump 驱动 | — |
 | 31 | 真隔离 tmux echo | ✅ replica | ⚠️ S8 contains TOKEN | ✅ capture-pane |
 | 32 | loopback SSH 远端 tmux | ✅ TmuxRuntime SSH | ✅ linux_ssh_e2e（W18，自启 sshd） | ✅ 远端 -L |
 | 33 | Codex TUI UTF-8+真彩播种 | ❌ `ch as u8`（E1） | ❌ 待 E2 | ✅ codex-tui-sanitized.txt |
@@ -590,14 +606,16 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 自动化无法覆盖的视觉/交互检查，启动 `./build/linux/muxterm` 后逐项确认：
 
 - 默认窗口有一个 tab / 一个 pane，焦点在终端
-- Alt+T 新 tab；Alt+D / Alt+Shift+D 水平/垂直分割；Alt+1/2/0 切 tab；Alt+[ / Alt+] 切 pane
+- Alt+T 新 tab；Alt+S / Alt+V 水平/垂直分割（Alt+D / Alt+Shift+D 为兼容别名）；Alt+1/2/0
+  切 tab；Alt+[ / Alt+] 切 pane
 - Alt+P 命令面板可用；Alt+Q QuickConnect 面板打开、搜索、连接
 - TargetConfig 窗口可编辑保存；目录补全不竞态
 - 状态栏显示正确、点击窗口可切 tab；状态栏模式可切换
 - 字体 Ctrl+= / Ctrl+- / Ctrl+0 即时生效且写入 `config.toml`；主题切换即时生效
 - 只有一条 status bar：左/中/右同步 tmux，最右状态/通知/新建；没有第二条 tab 带
 - 进入已有大量输出的 pane（或 Codex 刷屏）时画面落在当前帧且几何正确（提示符在底部），不从历史重放
-- 滚轮向上能看到 replica 历史，滚回底部恢复直播
+- 滚轮向上能看到唯一 Surface/VTE 自己累积的 scrollback，滚回底部恢复直播；Index/replica
+  只供搜索，不能为滚轮重播 ANSI
 - 点状态点弹出连接摘要；SSH 显示 connecting/connected 颜色，以及 down=/up= 流量
 - 前台自己跑完的命令（如 ls）不要出现在 attention；后台等待/完成才提醒
 - attention 预览是小终端（可打字）；双击跳转；可放大；禁止提醒可选 5m/10m/30m/1h/4h/24h

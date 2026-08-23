@@ -18,6 +18,7 @@ use crate::core::model::state::StateChange;
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
+use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
@@ -27,8 +28,7 @@ use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;
 use super::types::{
-    CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange,
-    BACKEND_STATUS_CONNECTED,
+    CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, BACKEND_STATUS_CONNECTED,
     BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
@@ -645,6 +645,8 @@ pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
 fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     match result {
         Ok(TaskOutcome::Done) => 0,
+        // Accepted = 异步 mutation 已入队（不是完成）；旧 ABI 记为请求成功。
+        Ok(TaskOutcome::Accepted { .. }) => 0,
         Ok(TaskOutcome::Rejected { .. }) | Err(_) => -1,
     }
 }
@@ -1178,6 +1180,184 @@ pub unsafe extern "C" fn muxterm_execute(h: *mut MuxtermHandle, task: *const CTa
         task_result_code(ws.execute(rust_task))
     }))
     .unwrap_or(-1)
+}
+
+/// 将 JSON 字符串中的按键描述解析为 `KeyEvent`。
+/// 单字符 → `Char`；命名键（enter/tab/backspace/escape/方向键/F1..F12）原样映射；
+/// `c-x` / `m-x` 前缀映射 Ctrl/Alt；更长字符串展开成多个 Char。
+fn key_event_from_json(text: &str) -> Vec<KeyEvent> {
+    use crate::core::protocol::terminal::input::{ArrowDir, KeyEvent};
+    match text {
+        "enter" => vec![KeyEvent::Enter],
+        "tab" => vec![KeyEvent::Tab],
+        "backspace" => vec![KeyEvent::Backspace],
+        "escape" => vec![KeyEvent::Escape],
+        "up" => vec![KeyEvent::Arrow(ArrowDir::Up)],
+        "down" => vec![KeyEvent::Arrow(ArrowDir::Down)],
+        "left" => vec![KeyEvent::Arrow(ArrowDir::Left)],
+        "right" => vec![KeyEvent::Arrow(ArrowDir::Right)],
+        _ if text.len() == 2 && text.starts_with('c') && text.as_bytes()[1] == b'-' => text
+            .chars()
+            .nth(1)
+            .map(|_| KeyEvent::Ctrl(text[2..].chars().next().unwrap_or('c')))
+            .into_iter()
+            .collect(),
+        _ if text.len() == 2 && text.starts_with('m') && text.as_bytes()[1] == b'-' => text
+            .chars()
+            .nth(1)
+            .map(|_| KeyEvent::Alt(text[2..].chars().next().unwrap_or('m')))
+            .into_iter()
+            .collect(),
+        _ if text.len() >= 2 && text.starts_with('f') && text[1..].parse::<u8>().is_ok() => {
+            vec![KeyEvent::Function(text[1..].parse().unwrap_or(1))]
+        }
+        _ => text.chars().map(KeyEvent::Char).collect(),
+    }
+}
+
+/// 解析 `muxterm_execute_json` 的 JSON task 输入。
+fn task_from_json(ws: &Workspace, value: &serde_json::Value) -> Option<Task> {
+    let obj = value.as_object()?;
+    let kind = obj.get("task")?.as_str()?;
+    let dir = |v: &serde_json::Value| match v.as_str() {
+        Some("h") | Some("horizontal") | Some("left") | Some("right") => Some(SplitDir::Horizontal),
+        Some("v") | Some("vertical") | Some("up") | Some("down") => Some(SplitDir::Vertical),
+        _ => None,
+    };
+    let opt_string =
+        |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_str).map(String::from);
+    let opt_strings = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+    };
+    let target_pane = |obj: &serde_json::Map<String, serde_json::Value>| {
+        obj.get("target")
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| resolve_c_task_pane(n as u32, ws))
+    };
+    match kind {
+        "new_tab" => Some(Task::NewTab {
+            name: opt_string(obj.get("name")),
+            command: opt_strings(obj.get("command")),
+            workdir: opt_string(obj.get("workdir")),
+        }),
+        "split_pane" => Some(Task::SplitPane {
+            target: target_pane(obj),
+            dir: dir(obj.get("dir").unwrap_or(&serde_json::Value::Null))?,
+            command: opt_strings(obj.get("command")),
+            workdir: opt_string(obj.get("workdir")),
+        }),
+        "close_pane" => Some(Task::ClosePane {
+            target: target_pane(obj)?,
+        }),
+        "switch_pane" => Some(Task::SwitchPane {
+            target: target_pane(obj)?,
+        }),
+        "switch_tab" => Some(Task::SwitchTab {
+            target: TabId(obj.get("target")?.as_u64()? as u32),
+        }),
+        "close_tab" => Some(Task::CloseTab {
+            target: TabId(obj.get("target")?.as_u64()? as u32),
+        }),
+        "rename_tab" => Some(Task::RenameTab {
+            target: TabId(obj.get("target")?.as_u64()? as u32),
+            name: opt_string(obj.get("name"))?,
+        }),
+        "rename_workspace" => Some(Task::RenameWorkspace {
+            name: opt_string(obj.get("name"))?,
+        }),
+        "resize_pane" => Some(Task::ResizePane {
+            target: target_pane(obj)?,
+            cols: obj.get("cols")?.as_u64()? as u16,
+            rows: obj.get("rows")?.as_u64()? as u16,
+        }),
+        "write_raw" => Some(Task::WriteRaw {
+            target: target_pane(obj)?,
+            data: opt_string(obj.get("data"))?.into_bytes(),
+        }),
+        "send_keys" => Some(Task::SendKeys {
+            target: target_pane(obj)?,
+            keys: obj
+                .get("keys")
+                .and_then(serde_json::Value::as_str)
+                .map(key_event_from_json)
+                .or_else(|| {
+                    obj.get("keys")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .flat_map(key_event_from_json)
+                                .collect()
+                        })
+                })?,
+        }),
+        "detach" => Some(Task::Detach),
+        "shutdown" => Some(Task::Shutdown),
+        _ => None,
+    }
+}
+
+/// 通过 JSON 执行一个 Task（additive 入口，返回结构化结果）。
+///
+/// 输入：`{"task": "new_tab", "name": "日志", "command": ["bash"], "workdir": "/tmp"}`
+/// 支持 `new_tab` / `split_pane`(`dir`: h|v) / `close_pane` / `switch_pane` / `switch_tab` /
+/// `close_tab` / `rename_tab` / `rename_workspace` / `resize_pane` / `write_raw` /
+/// `send_keys`(`keys`: 字符串或数组) / `detach` / `shutdown`。
+///
+/// 返回（`muxterm_free_string` 释放）：
+/// `{"ok": true, "result": "done"}`、
+/// `{"ok": true, "result": "accepted", "operation_id": N}`（异步 mutation 已入队）、
+/// `{"ok": false, "result": "rejected", "reason": "…"}`、
+/// `{"ok": false, "error": "…"}`（JSON 非法 / task 未知）。
+///
+/// # Safety
+/// `h` 有效且未 free；`json` NUL 结尾。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_execute_json(
+    h: *mut MuxtermHandle,
+    json: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || json.is_null() {
+            return json_error("handle 或 json 为空");
+        }
+        let Ok(json) = CStr::from_ptr(json).to_str() else {
+            return json_error("json 不是合法 UTF-8");
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+            return json_error("json 解析失败");
+        };
+        let handle = &mut *h;
+        let Some(ws) = handle.active_workspace_mut() else {
+            return json_error("没有 active workspace");
+        };
+        let Some(rust_task) = task_from_json(&*ws, &value) else {
+            return json_error("未知 task 或参数缺失");
+        };
+        match ws.execute(rust_task) {
+            Ok(TaskOutcome::Done) => json_string(serde_json::json!({
+                "ok": true,
+                "result": "done",
+            })),
+            Ok(TaskOutcome::Accepted { operation_id }) => json_string(serde_json::json!({
+                "ok": true,
+                "result": "accepted",
+                "operation_id": operation_id,
+            })),
+            Ok(TaskOutcome::Rejected { reason }) => json_string(serde_json::json!({
+                "ok": false,
+                "result": "rejected",
+                "reason": reason,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("execute_json panic"))
 }
 
 fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChange {
@@ -3009,19 +3189,16 @@ mod tests {
             assert_eq!(muxterm_connect(h), 0);
             // 第二个 workspace：直接经 pool 开一个 shell workspace。
             let handle = &mut *h;
-            let id2 = crate::core::workspace::id::WorkspaceId::new(
-                "local",
-                None,
-                "second",
-                "shell",
-                "",
-            );
-            let open_result = handle.rt.block_on(
-                handle.catalog.pool_mut().open(id2.clone(), "second".into(), |_| {
+            let id2 =
+                crate::core::workspace::id::WorkspaceId::new("local", None, "second", "shell", "");
+            let open_result = handle.rt.block_on(handle.catalog.pool_mut().open(
+                id2.clone(),
+                "second".into(),
+                |_| {
                     let mut rt = crate::core::runtime::shell::ShellRuntime::new("$SHELL", "");
                     Box::new(rt)
-                }),
-            );
+                },
+            ));
             assert!(open_result.is_ok(), "第二个 shell workspace 应能打开");
             let mut buf = [CWorkspaceStateChange {
                 workspace_id: ptr::null(),
@@ -3031,10 +3208,7 @@ mod tests {
             assert!(n > 0, "workspace poll 应返回事件");
             for i in 0..n as usize {
                 let entry = buf[i];
-                assert!(
-                    !entry.workspace_id.is_null(),
-                    "每个事件必须带 workspace_id"
-                );
+                assert!(!entry.workspace_id.is_null(), "每个事件必须带 workspace_id");
                 let wid = CStr::from_ptr(entry.workspace_id).to_string_lossy();
                 assert!(
                     !wid.is_empty() && wid.contains('/'),
@@ -3063,6 +3237,59 @@ mod tests {
                 std::mem::size_of::<CStateChange>(),
                 std::mem::size_of::<crate::core::protocol::ffi::types::CStateChange>()
             );
+            muxterm_free(h);
+        }
+    }
+
+    /// additive `muxterm_execute_json`：合法 task 返回结构化结果；
+    /// 非法 JSON / 未知 task / 参数缺失返回 error，不 panic。
+    #[test]
+    fn ffi_execute_json_returns_structured_outcome() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            assert_eq!(muxterm_connect(h), 0);
+
+            // 合法 task：local runtime 对 rename_workspace 返回 done。
+            let out = muxterm_execute_json(
+                h,
+                c"{\"task\":\"rename_workspace\",\"name\":\"json-test\"}".as_ptr(),
+            );
+            assert!(!out.is_null());
+            let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+            muxterm_free_string(out);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["ok"], true, "{text}");
+            assert_eq!(value["result"], "done", "{text}");
+
+            // 非法 JSON → error，不 panic。
+            let out = muxterm_execute_json(h, c"{not json".as_ptr());
+            assert!(!out.is_null());
+            let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+            muxterm_free_string(out);
+            assert!(text.contains("\"ok\":false"), "{text}");
+
+            // 未知 task → error。
+            let out = muxterm_execute_json(h, c"{\"task\":\"nope\"}".as_ptr());
+            assert!(!out.is_null());
+            let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+            muxterm_free_string(out);
+            assert!(text.contains("\"ok\":false"), "{text}");
+
+            // 参数缺失（rename_tab 无 name）→ error。
+            let out = muxterm_execute_json(h, c"{\"task\":\"rename_tab\",\"target\":1}".as_ptr());
+            assert!(!out.is_null());
+            let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+            muxterm_free_string(out);
+            assert!(text.contains("\"ok\":false"), "{text}");
+
+            // null handle → error。
+            let out = muxterm_execute_json(ptr::null_mut(), c"{}".as_ptr());
+            assert!(!out.is_null());
+            let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+            muxterm_free_string(out);
+            assert!(text.contains("\"ok\":false"), "{text}");
+
             muxterm_free(h);
         }
     }

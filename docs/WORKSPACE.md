@@ -1,10 +1,12 @@
 # WORKSPACE.md — Muxterm 产品结构与 Core 边界
 
 > 定名：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）
-> 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）。
+> 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）；2026-08-22 Herdr
+> WorkspaceId/foreground contract。
 > Catalog：[`CATALOG.md`](CATALOG.md)。
 > 像素：[`SURFACE.md`](SURFACE.md)（F 已交）。适配表：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)（只给 `runtime/tmux` 看）。
-> Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。Herdr 接入见 [`RUNTIME.md`](RUNTIME.md)。
+> Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。Herdr 稳定性与身份见
+> [`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)。
 
 **一句话：** Muxterm 自己的结构是 **Catalog → WorkspacePool → Workspace → Tab → Pane**。GUI **Window 只是某个 Workspace 的体现**。tmux / Herdr / Shell 是 Driver；SSH 是 Transport。前端只渲染，不养池、不养连接。
 
@@ -110,7 +112,9 @@ $N、@N、%output、send-keys、-CC 全部停在这里
 
 前端功能清单（快捷键、命令面板、搜索 UI、attention 点）**不变**。变的是：这些功能读的是 Core 已经维护好的 WorkspacePool / PaneBuf，前端不再自己做连接池。
 
-Live 显示仍走 Surface：原始字节进当前可见 Pane 的 VTE。PaneBuf 给搜索/提醒，禁止 `visible_ansi` dump。
+Live 显示仍走 Surface：原始字节按 `(WorkspaceId, PaneId)` 进入产品拓扑中常驻的 VTE；
+hidden tab/background workspace 继续 feed，只是不绘制。PaneBuf 给搜索/提醒，禁止
+`visible_ansi` dump。
 
 ---
 
@@ -122,6 +126,8 @@ Live 显示仍走 Surface：原始字节进当前可见 Pane 的 VTE。PaneBuf �
 Workspace
   id: WorkspaceId          # 稳定；不是 $N
   name: String             # 用户看见的名字（tmux 时常用 session 名）
+  resolved_target: Option<ResolvedTarget>
+                           # Catalog 打开时保存；Recent/重连的规范身份来源
   runtime: Tmux | Shell | …
   transport: Local | Ssh { alias }
   tabs: [Tab]
@@ -140,20 +146,42 @@ Workspace
 - ShellRuntime 自己造 Tab/Pane（可以一直只有一个 Tab 一个 Pane）。不要求持久化：从池里扔掉 = 进程结束。
 - TmuxRuntime detach 后远端 session 还在，可以再 open 进池。
 
-`WorkspaceId` 由连接身份构成（transport / alias / name / runtime / path），与今天 `ConnectionKey` 同构。不是 `$N`。
+`WorkspaceId` 由连接身份构成，现有稳定字符串保持五段
+`transport / alias / session / runtime / identity`，不是 `$N`。tmux/shell 没有独立 target
+id 时第五段使用 path；Herdr 使用独立 `workspace_id`，项目 `path` 仍作为
+`WorkspaceSpec` 元数据保留。当前结构的第五段字段即使仍暂名 `path`，也不能反向当成
+Project 目录。详见 [`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
+
+`ResolvedTarget` 同时保存规范化 `TargetConfig` 与实际打开用 `WorkspaceSpec`，类型固定在
+`src/core/catalog/resolver.rs`。Catalog 的 Project/Recent/Existing 路径必须填它；测试 mock/
+旧 CLI 直开可以为 None。`Workspace` 是 Pool 内唯一所有者，`PooledWorkspace` 与 platform
+不得复制第二份。Recent、当前连接高亮和重连只能读这份 Core 元数据，禁止 platform 从
+`WorkspaceId` 五段字符串反向猜 path/socket/workspace id。其
+identity key 包含 transport target、runtime、session、target-side socket 与 workspace_id；
+Project name/path 只是显示/项目元数据，不是 attach identity。
+
+descriptor 作为完整 value 在 open 时注入；相同 identity 的 slot 复用只允许 Core 整值补全
+缺失的 canonical name/path，不允许改变 attach identity。Workspace 用户可见名称来自非空
+`ResolvedTarget.canonical.name`，不能把 Herdr named session 当成 Project 名。
 
 ---
 
 ## 4. WorkspacePool（旧连接池）
 
-以前：`platform/*/quickconnect/pool.rs` + `WarmConnectionSlot` 养连接。  
+以前：`platform/*/quickconnect/pool.rs` + `WarmConnectionSlot` 养连接。
 现在：**只有** `src/core/workspace/pool.rs`。
 
 池负责：
 
 - `open`：建 Workspace + Runtime.connect，放进池
 - `list`：池里有哪些（含后台）
+- `resolved target`：Workspace 保留 Catalog 规范化的连接描述，供 Recent/重连读取；Pool
+  只通过 Workspace 查询，不另存 side table
 - `activate(id)`：前台至多一个（单窗时）；其余后台继续 `take_events` 喂 PaneBuf
+- background event routing：Pool 返回 `(WorkspaceId, events)`；platform 的常驻 Surface
+  registry 仍按 `(WorkspaceId, PaneId)` raw feed，不能只处理 attention 后丢像素事件
+- foreground 转换：只由 Pool 调用 Runtime 的通用 `set_foreground()`；platform 不按
+  runtime 名字判断
 - 淘汰：超容量 / TTL → Tmux detach，Shell shutdown
 - 搜索/提醒跨池里所有 Workspace
 
@@ -194,7 +222,11 @@ snapshot: tabs, panes, layout
 
 **`StateChange`（对前端）**
 
-留下：`PaneOutput`、`TabAdded/Closed/Renamed`、`ActiveTabChanged { tab }`、`LayoutChanged`、`PaneAdded/Closed/Title/Resized`、`ActivePaneChanged`、`StatusBarSubscription`、`WorkspaceRenamed`、`PoolChanged`（列表变了）、Runtime 连接状态。
+留下：`PaneOutput`、`PaneFrame`、只给 Index 的 `PaneIndexSnapshot`、
+`TabAdded/Closed/Renamed`、`ActiveTabChanged { tab }`、`LayoutChanged`、
+`PaneAdded/Closed/Title/Resized`、`ActivePaneChanged`、异步创建最终结果
+`MutationSettled`、`StatusBarSubscription`、`WorkspaceRenamed`、`PoolChanged`（列表变了）、
+Runtime 连接状态。
 
 删掉：`SessionChanged`、`SessionsChanged`、`WindowAdded/Closed/…`、`ActiveWindowChanged`。
 
@@ -204,29 +236,46 @@ snapshot: tabs, panes, layout
 
 删掉：`SwitchSession`、`RenameSession`、`NewWindow`/`CloseWindow`/`SwitchWindow`/`RenameWindow`。换工作区走 **Pool.activate / open**，不是 Task。
 
-### 6.2 FFI（W7 已落地）
+`TaskOutcome::Done` 只表示同步操作已完成；异步 NewTab/SplitPane 入队返回
+`Accepted { operation_id }`，最终 Completed/Failed 只由同 id 的 `MutationSettled` 表达。
+platform 不得把 Accepted 当完成并主动重拍 UI。
 
-**一个 handle = 整个 `Catalog`**（Pool 在里面；进程里 GUI 通常只拿一个）。见 [`CATALOG.md`](CATALOG.md) C5。现在代码仍是裸 `WorkspacePool`，本轮要换。
+### 6.2 FFI（现有 W7 基线 + 本轮 additive 变更）
+
+**一个 handle = 整个 `Catalog`**（Pool 在里面；进程里 GUI 通常只拿一个）。见
+[`CATALOG.md`](CATALOG.md) C5。现有 FFI handle 已经持有 Catalog；本轮不重建 handle，
+而是在现有裸 spec open 上追加 descriptor-aware target open，并补齐异步 mutation 的
+Accepted/settlement 表达。
 
 | 现在 | 说明 |
 |---|---|
 | `muxterm_new()` → 空 Catalog | 不再一个 handle 一条连接 |
 | `muxterm_runtime_list_json` / `transport_list_json` | 新建项目卡 / Local·SSH（C5） |
 | `muxterm_discover_targets_json` / `discover_sessions_json` | target = 怎么到那儿；session = 可 attach 格子 |
-| `muxterm_workspace_open(h, spec)` | 走 `Catalog::open`；spec：runtime / transport / name / socket / ssh / dir |
+| `muxterm_workspace_open(h, spec)` | 保留的低层兼容入口；走裸 spec，descriptor=None，不供 Project/Recent/Existing 新路径使用 |
+| `muxterm_workspace_open_target_json(h, target, intent)` | **新增产品入口**；Project/Recent/Existing 走 resolver，保存 resolved descriptor |
 | `muxterm_workspace_list(h, out)` | **池里的**工作区（旧 session list 的在线部分） |
 | `muxterm_workspace_activate(h, id)` | 当前体现到 GUI Window 上的那一个 |
 | `muxterm_workspace_close(h, id)` | tmux=detach；shell=shutdown |
 | `muxterm_discover_workspaces_json(spec)` | 候选（未进池）。内部才 `list-sessions` |
 | `muxterm_workspace_create(spec)` | 名字是工作区；runtime=tmux 时 adapter 去 new-session |
 | `muxterm_get_tabs` / `get_panes` / `get_layout` | 相对 **当前** workspace | 结构不变 |
-| `muxterm_poll_events` | 池事件：后台工作区照样出字节，GUI 可只画当前 |
+| `muxterm_poll_events` | 旧 active-workspace-only 兼容入口；Core 仍可在内部 poll 后台供 Index/attention 使用，但不向旧 ABI 混入无 WorkspaceId 的后台 Surface event |
+| `muxterm_poll_workspace_events` | **新增 additive 入口**；`CWorkspaceStateChange { workspace_id, event }` 返回 active/background 事件，platform 按 `(WorkspaceId, PaneId)` 路由 |
+| `muxterm_execute_json` / `STATE_MUTATION_SETTLED=16` | additive ABI：返回 Accepted operation id；settlement JSON 放既有 event data buffer |
 | `CTask` 无切 session | 切工作区用 `workspace_activate`，不是 Task |
 | `muxterm_status_snapshot_json(..., session)` | 保留（status 查询独立于连接） |
 
 `CTab` / `CPane` / `CLayoutNode` 保留。`CStateChange.window_id` 字段保留为 0（W7 未删，避免破坏 macOS ABI）。
 
 兼容：`muxterm_new(backend, socket, session)` / `muxterm_new_connect(...)` 是 deprecated 薄封装 = `new` + `workspace_open`。macOS 未改交互前靠这层。**新 Linux 只走池 API。**
+
+`muxterm_workspace_open(...)` 本轮也降为 descriptor=None 的低层兼容入口，签名不追加字段；
+新产品路径用 `muxterm_workspace_open_target_json(...)`。`muxterm_workspace_list` JSON 可追加
+optional `resolved_target`，旧消费者忽略未知字段。`CStateChange` struct 布局保持不变；新
+settlement 事件的完整内容放进既有 `data/data_len`。workspace-aware poll 用新增 wrapper
+struct 包住原 `CStateChange`，不复用 `window_id`；该字段继续为 0。一个 platform 实例不能
+同时调用旧、新 poll 去竞争同一队列。
 
 Discovery 的 JSON 形状（产品）：
 

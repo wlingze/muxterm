@@ -1,18 +1,22 @@
 # RUNTIME.md — Runtime 是什么
 
 > 日期：2026-08-17（`2026-08-17T15:26:26+08:00`）
-> 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）。
+> 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）；2026-08-22 Herdr
+> stability/identity contract。
 > 分支：`feature/runtime/support_herdr`
 > 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md)。
 > tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
-> Herdr 接入见 [`RUNTIME.md`](RUNTIME.md)。像素：[`SURFACE.md`](SURFACE.md)。
+> Herdr 稳定性契约：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)。
+> 像素：[`SURFACE.md`](SURFACE.md)。专项门禁：[`HERDR-TESTING.md`](HERDR-TESTING.md)。
 > 愿景里的阶段 D：`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §0.3 / §6 阶段 D。
 >
 > 核对：本机 `herdr 0.8.0`，socket 协议 **19**；官方 [Concepts](https://herdr.dev/docs/concepts/)、[Socket API](https://herdr.dev/docs/socket-api/)、[CLI](https://herdr.dev/docs/cli-reference/)。
 
-**一句话：** Runtime 是给一个 Muxterm Workspace **填** Tab/Pane、收字节、执行 Task 的接口。tmux、本地 shell、Herdr 都是实现。SSH 不是 Runtime，是 Transport。GUI 不许按实现名字写 `if herdr`，只许问 `support()`。
+**一句话：** Runtime 是给一个 Muxterm Workspace **填** Tab/Pane、收字节、执行 Task 的接口。tmux、shell、Herdr 都是实现。SSH 不是 Runtime，是 Transport。GUI 不许按实现名字写 `if herdr`，只许问 `support()`。
 
-本文是契约。H0–H4 已在 `feature/runtime/support_herdr`。QuickConnect 已有的连接
+本文是契约。H0–H4、Catalog 与 QuickConnect 基线已经落在
+`feature/runtime/support_herdr`；2026-08-22 的稳定化内容仍待按专项计划实施，不能把
+“已经接入”表述成“真实 Herdr 工作流已经可用”。
 
 ---
 
@@ -69,7 +73,7 @@ core
   byte transport    spawn_exec / read / write
 
 runtime/tmux        tmux -CC。唯一能出现 $N / %output 的地方
-runtime/shell       自管 PTY。没有远端可 attach
+runtime/shell       在 local/SSH Transport 上自管 shell PTY/进程
 runtime/herdr       Herdr socket。唯一能出现 w2:p1 / terminal.frame 的地方
 ```
 
@@ -77,10 +81,14 @@ runtime/herdr       Herdr socket。唯一能出现 w2:p1 / terminal.frame 的地
 
 - trait 在 `src/core/model/backend.rs`（名字仍叫 `Runtime`）
 - 实现：`TmuxRuntime`、`ShellRuntime`、`HerdrRuntime`、`DaemonRuntime`
-- `src/core/catalog/` 类型表面已在；`with_builtins()` 还空（已落地）
+- `src/core/catalog/` 与 `with_builtins()` 已注册 tmux/Herdr/shell Driver 和 local/SSH
+  Transport；FFI handle 已经持有 Catalog
 - `WorkspaceSpec.runtime` 是 `"tmux"` / `"shell"` / `"herdr"` / `"daemon"` 字符串
-- `WorkspaceSpec.build_runtime()` 仍是字符串 `match`；Catalog::open **禁止**再走这条
-- `WorkspacePool.herdr_sessions` 仍是 Herdr 旁路表，要迁进 `Catalog.connects`
+- `WorkspaceSpec.build_runtime()` 与 `WorkspacePool::open_spec()` 仍是字符串工厂/低层兼容
+  路径；Catalog 产品路径必须继续走 Driver，Project/Recent/Existing 还要补 descriptor-aware
+  resolver
+- 旧 `WorkspacePool.herdr_sessions` 已删除；`HerdrSession::shared` 仍是 adapter 内部的进程级
+  cache，不能成为产品 identity 或第二连接池
 - `RuntimeMode` 仍是 2×2 facade；真正打开走 spec / Catalog
 
 ---
@@ -89,7 +97,7 @@ runtime/herdr       Herdr socket。唯一能出现 w2:p1 / terminal.frame 的地
 
 ```
 一条 tmux session          → 一个 TmuxRuntime → 一个 Muxterm Workspace
-一个本地 shell 进程组      → 一个 ShellRuntime → 一个 Muxterm Workspace
+一个 local/SSH shell 进程组 → 一个 ShellRuntime → 一个 Muxterm Workspace
 一个 Herdr server 会话     → 一个 HerdrSession（连接）
   └── 每个 Herdr workspace → 一个 HerdrRuntime 视图 → 一个 Muxterm Workspace
 ```
@@ -127,6 +135,22 @@ if spec.runtime == "herdr" { show_worktree_ui() }
 ```
 
 `execute` 碰到当前 Runtime 没有的能力：返回 `TaskOutcome::Rejected`，不要 panic，不要悄悄 no-op。
+
+异步 topology mutation 不能复用 `Done` 冒充完成：有界入队返回
+`TaskOutcome::Accepted { operation_id }`，最终通过产品语义的
+`StateChange::MutationSettled` 恰好一次报告 Completed 或阶段化 Failed。同步 Runtime 操作仍
+返回 `Done`。完整 Herdr deadline/收敛条件见专项设计 §6。
+
+Herdr 稳定化再增加一个产品语义入口：
+
+```text
+fn set_foreground(&mut self, foreground: bool) { }
+```
+
+默认实现 no-op。只有 `WorkspacePool` 在 open/activate/background/close 边界调用；GUI 不得
+按 runtime 名字调用。Herdr 将它和自己的 active pane 合并，保证只有前台 active pane
+持有 writable control，其余 pane 使用 read-only observe。stream generation、切换与退避
+细节见 [`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §3–§4。
 
 ### 4.1 `RuntimeCapability`
 
@@ -184,7 +208,8 @@ Worktree 是 **某些 Runtime 会的事**：认出同一仓库的其它 checkout
 1. **识别**：当前格子所在仓库有哪些 checkout、哪个已经在池里打开、分支名、路径。
 2. **建立**：指定 branch / base / 可选 path，创建 checkout，并作为新工作区出现在池里。
 
-**Herdr 已有一等 API，Muxterm 要接。** 本机实测（muxterm 主 checkout，Herdr `w2`）：
+**Herdr 已有一等 API，Muxterm 的 H0–H4 adapter 已接入。** 后续稳定化继续复用该 API，
+不得退回 platform 拼 CLI。本机实测（muxterm 主 checkout，Herdr `w2`）：
 
 ```json
 {
@@ -250,16 +275,16 @@ Shell 同理：进程组不是 git 宿主，也不报 `Worktree*`。
 | pane `%N` | Pane；字节 → `PaneOutput` |
 | 控制 client detach | `Task::Detach`；session 还在 |
 
-### 6.2 Herdr（要接）
+### 6.2 Herdr（已接入，稳定化中）
 
 | Herdr | Muxterm |
 |---|---|
-| named session / 默认 `herdr.sock` | `HerdrSession`（连接身份，进 `WorkspaceId` 的 session/path，**不是**产品 Session 类型） |
+| named session / 默认 `herdr.sock` | `HerdrSession`（连接身份进入 `WorkspaceId.session`；**不是**产品 Session 类型） |
 | workspace `w2` | 一个 Workspace + 一个 `HerdrRuntime` |
 | tab `w2:t1` | Tab |
 | pane `w2:p1` | Pane |
 | `session.snapshot` + `events.subscribe` | 拓扑：Tab/Pane/layout |
-| `terminal session observe\|control` 的 `terminal.frame`（base64 ANSI） | `PaneOutput` 原始字节 → VTE `feed` |
+| `terminal session observe\|control` 的 `terminal.frame`（base64 ANSI） | full → `PaneFrame`，diff → `PaneOutput`；原始字节进入 VTE |
 | `workspace.*` / `tab.*` / `pane.*` / `layout.updated` | `StateChange` |
 | `worktree.*` | §5 Pool API；workspace 记录上的 provenance 只是提示 |
 | `session.snapshot.agents` / `pane.agent_status_changed` / `pane.updated` | Runtime 归一化为 `PaneAgentChanged`，Workspace 喂现有 attention，不新造 Herdr UI |
@@ -271,11 +296,18 @@ split tree；没有历史时才用 80×24 播种 observer。`PaneInfo` / Workspa
 
 Herdr 文档原话：`session.snapshot` 是给「自己缓存 runtime 状态的客户端」的一次性 bootstrap；之后靠事件。第三方只要终端字节：`terminal session observe`。这和 Muxterm「自己是客户端，不养 session」对齐。
 
+Herdr workspace id 不再复用项目 `path`。`WorkspaceSpec` 同时携带项目 path 与独立
+`workspace_id`；生成现有五段 `WorkspaceId` 时，第五 identity 段优先使用
+`workspace_id`。兼容和迁移规则见
+[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
+
 **pane 上 tmux 与 Herdr 互斥。** Herdr 明说不检测套在 Herdr pane 里的 tmux session。Muxterm 的 OSC/BEL 感知必须继续在 tmux 路径上自己活。接 Herdr 不是把身份租出去。
 
 ### 6.3 Shell
 
-自己分配 Tab/Pane id。没有 Discover、没有 PersistDetach、没有 Worktree。从池里扔掉 = 进程结束。
+自己分配 Tab/Pane id。支持 local/SSH Transport，但没有 Discover、没有 PersistDetach、没有
+Worktree。从池里扔掉 = 进程结束。shell 两格保留兼容测试，但不能替代 Herdr/tmux
+local/SSH 的稳定性 required 四格。
 
 ---
 
@@ -283,16 +315,21 @@ Herdr 文档原话：`session.snapshot` 是给「自己缓存 runtime 状态的�
 
 Live 路径不因 Runtime 而改：
 
-- 进当前可见 Pane 的是 **原始字节**（tmux `%output` 解转义后的 payload，或 Herdr `terminal.frame` 解开的 ANSI）
+- 进入 `(WorkspaceId, PaneId)` 常驻 Surface 的是 **原始字节**（tmux `%output` 解转义后的
+  payload，或 Herdr `terminal.frame` 解开的 ANSI）；hidden tab/background workspace 仍 feed，
+  只是 platform 不绘制隐藏 widget
 - 禁止 live `visible_ansi` → `vte.reset`
-- PaneBuf / 搜索 / 提醒吃同一份 feed
-- Herdr `pane.read` 可以当 attach 快照（类似 `capture-pane`），不要当直播
+- PaneBuf / 搜索 / 提醒持续消费经过 generation 过滤的 frame/output；Surface 只消费原始
+  `PaneFrame`/`PaneOutput`
+- Herdr `pane.read` 只生成 `PaneIndexSnapshot` 播种 Index（类似无头 attach 快照），永不
+  feed Surface，也不能在 stream 失败时作为像素 fallback
 
 输入：tmux `send-keys`；Herdr 的 `WriteRaw` / VTE commit 必须走原样写字节的
 `pane.send_text`，语义按键走 `pane.send_keys`。禁止逐键调用 `pane.send_input`：
 它会按终端状态自动添加 bracketed-paste 包装，使 Enter 只插入换行而不执行。
 控制权：Herdr control 同一终端同时只有一个 controller；Muxterm 前台 pane 用
-control，后台用 observe。
+control，后台用 observe。旧 generation 的 Frame/Closed/Error 不能改变当前流或像素；
+详见 [`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5。
 
 ---
 
@@ -302,14 +339,28 @@ control，后台用 observe。
 
 | Runtime | 连接前能列出什么 | 打开 |
 |---|---|---|
-| tmux | 本机或 ssh 上的 session **名**（内部 `list-sessions`） | `Catalog::open` ← `TmuxDriver` + Connect |
-| herdr | Connect 上 `workspace.list`（id + label + 可选 worktree） | `Catalog::open` ← `HerdrDriver`；同一 socket 共用 Connect |
-| shell | 目录，不是 session | `Catalog::open` ← `ShellDriver`；只接受 `local` |
+| tmux | 本机或 ssh 上的 session **名**（内部 `list-sessions`） | 产品入口 `Catalog::open_target/open_resolved` ← `TmuxDriver` + Connect |
+| herdr | Connect 上 `workspace.list`（id + label + 可选 worktree） | 产品入口 `Catalog::open_target/open_resolved` ← `HerdrDriver`；同一 socket 共用 Connect |
+| shell | local/SSH 上的目录，不是可 attach session | 产品入口 `Catalog::open_target/open_resolved` ← `ShellDriver`；接受 `local` / `ssh` |
 
-`discover_targets(transport)` = 怎么到那儿（SSH hosts / Local 单例）。  
+`discover_targets(transport)` = 怎么到那儿（SSH hosts / Local 单例）。
 `discover_sessions(transport, target)` = 该 target 上各 Driver 的可 attach 格子。不要叫 `discover-connection`。
 
 QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两个顶栏。最上固定「已有的连接」：点进去是**扁平** runtime list（`discover_sessions("all")`），每一行可直接 attach，**不要**本地 / SSH / Host 多层目录。同一 session 在 local 和 ssh-self 上出现两行（`tmux @ local` / `tmux @ self`）。命令面板先列 connect name（`local` 与 SSH alias 并列），点进去才是该机器的 runtime list。Runtime 只是徽章和 `support()` 决定的次级动作。新建项目卡仍来自 `runtime_list()`。见 [`CATALOG.md`](CATALOG.md) C9；W20 多层目录作废。
+
+Project、Recent、Existing 的打开不能把 `TargetConfig` 直接压成裸 `WorkspaceSpec`。Catalog
+先以显式 `ResolveIntent::{AttachOnly, CreateIfMissing}` 解析成
+`ResolvedTarget { canonical, spec }`，Workspace 保存该 Core-owned descriptor。Existing
+candidate 的 session、target-side socket、workspace_id 必须由 Core 转换；platform 只渲染。
+普通重连和旧配置迁移都是 `AttachOnly`，只有用户本次明确新建 Project 才允许
+`CreateIfMissing`。完整 identity key、path/workspace_id 分离与迁移优先级见
+[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
+
+这些 resolver 类型与逻辑固定属于 `src/core/catalog/resolver.rs`；`Workspace` 持有 descriptor，
+Pool/platform 不复制第二份。产品入口只能走 `Catalog::open_target/open_resolved`；裸
+`Catalog::open(&WorkspaceSpec)` / `WorkspacePool::open_spec` 只保留给测试 mock、旧 CLI 或迁移期
+内部调用。Workspace 显示名取 `ResolvedTarget.canonical.name`，不能把 Herdr named session
+误当 Project 名。
 
 远程 Herdr：Transport `ssh` + Runtime `herdr`。列出用 `ssh … herdr session list` / `workspace list`（和 `ssh … tmux list-sessions` 同类）。打开不要 `herdr --remote`（会在远端装/启 server）：把远端 `herdr.sock` Unix 转发到本机，再走现有 `HerdrSession`。没在跑就跳过，不要替用户启动。探活进 Inventory，不要写在 `window.rs`。
 
@@ -331,6 +382,7 @@ QuickConnect 一级按**预设项目**索引，不要按「tmux / Herdr」做两
 
 ```
 src/core/catalog/             Catalog 门面 + Driver/Transport 表 + Connect + Inventory
+src/core/catalog/resolver.rs  ResolvedTarget / ResolveIntent / identity key / 阶段化错误
 src/core/model/backend.rs     trait Runtime + RuntimeCapability + support()
 src/core/runtime/mod.rs       导出 Herdr
 src/core/runtime/herdr/       仅此处出现 herdr.sock / w2:p1 / terminal.frame

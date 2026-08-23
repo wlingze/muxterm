@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{mpsc, Arc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -16,14 +16,15 @@ use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{
-    BackendStatus, PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
-    PaneInfo, State, StateChange, TabInfo,
+    BackendStatus, MutationKind, MutationResult, MutationStage, PaneAgentInfo, PaneAgentSession,
+    PaneAgentSessionKind, PaneAgentStatus, PaneInfo, State, StateChange, TabInfo,
 };
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::types::{PaneId, TabId};
 
 use super::events::{EventStream, EventStreamEvent};
+use super::mutation::{MutationQueue, PendingMutation};
 use super::observe::{ObserveStream, PaneStreamEvent, StreamMode, StreamStartResult};
 use super::registry::{
     classify_stream_end, ControlRearm, FrameDecision, PaneStreamSlot, SlotAction, SlotState,
@@ -81,9 +82,30 @@ pub struct HerdrRuntime {
     event_rx: Option<mpsc::Receiver<EventStreamEvent>>,
     event_tx: Option<mpsc::Sender<EventStreamEvent>>,
     event_stream: Option<EventStream>,
+    /// 异步 tab/pane mutation 队列（W5：同时至多一个 in-flight）。
+    mutation_queue: MutationQueue,
+    /// lifecycle generation：detach/shutdown 后晚到的 mutation 结果直接丢弃。
+    lifecycle_generation: u64,
+    /// §6.4 完成态焦点：settle Completed 后，事件流里可能还排着 pane.focus
+    /// 生效前拍的旧快照（reader 线程与 mutation 探针两条 session.snapshot
+    /// 通道未排序），晚到会把焦点回退到创建前。短窗口内钉住 settled 焦点，
+    /// 直到用户焦点意图或窗口到期。
+    focus_pin: Option<FocusPin>,
     /// SSH 远端 socket 转发进程（Drop/shutdown 时杀掉）。
     forward: Option<std::process::Child>,
 }
+
+/// settle Completed 后短暂钉住的权威焦点（产品 id）。
+#[derive(Debug, Clone, Copy)]
+struct FocusPin {
+    tab: TabId,
+    pane: PaneId,
+    until: Instant,
+}
+
+/// 钉住窗口：必须盖过 reader 晚到旧快照的传输延迟；
+/// 用户显式切 pane/tab 会立即清除（见 `clear_focus_pin`）。
+const FOCUS_PIN_TTL: Duration = Duration::from_secs(5);
 
 impl HerdrRuntime {
     /// 绑定共享 session + 一个 Herdr workspace_id（如 `w1`）。
@@ -117,6 +139,9 @@ impl HerdrRuntime {
             event_rx: None,
             event_tx: None,
             event_stream: None,
+            mutation_queue: MutationQueue::new(),
+            lifecycle_generation: 0,
+            focus_pin: None,
             forward: None,
         }
     }
@@ -310,9 +335,16 @@ impl HerdrRuntime {
             let id = TabId(numeric_suffix(&tab.tab_id));
             self.herdr_tab_to_tab.insert(tab.tab_id.clone(), id);
             self.tab_to_herdr_tab.insert(id, tab.tab_id.clone());
+            // Herdr 快照可能不返回 label（如新建 tab 尚未命名）：
+            // 回退到 public id 后缀的十进制形式（tA → "10"），保证 tab 始终可辨识。
+            let name = if tab.label.trim().is_empty() {
+                numeric_suffix(&tab.tab_id).to_string()
+            } else {
+                tab.label.clone()
+            };
             self.tabs.push(TabInfo {
                 id,
-                name: tab.label.clone(),
+                name,
                 active: false,
             });
         }
@@ -415,10 +447,6 @@ impl HerdrRuntime {
                     .map(|tab| tab.id)
             })
             .or_else(|| self.tabs.first().map(|tab| tab.id));
-        for tab in &mut self.tabs {
-            tab.active = Some(tab.id) == self.active_tab;
-        }
-
         self.active_pane = self
             .active_tab
             .and_then(|tab| self.layouts.get(&tab).map(|layout| layout.active))
@@ -429,6 +457,19 @@ impl HerdrRuntime {
                     .find(|pane| pane.tab == active_tab)
                     .map(|pane| pane.id)
             });
+        // 晚到旧快照可能把 active 回退到 mutation 创建前：在 diff 计算**之前**
+        // 把焦点钉回 settled 值（否则 reconcile 会把错误的 ActiveTabChanged /
+        // ActivePaneChanged 发给 GUI，再 clamp 已来不及）。
+        if let Some((pin_tab, pin_pane)) = self.pinned_focus() {
+            self.active_tab = Some(pin_tab);
+            self.active_pane = Some(pin_pane);
+            if let Some(layout) = self.layouts.get_mut(&pin_tab) {
+                layout.active = pin_pane;
+            }
+        }
+        for tab in &mut self.tabs {
+            tab.active = Some(tab.id) == self.active_tab;
+        }
         for pane in &mut self.panes {
             pane.active = Some(pane.id) == self.active_pane;
         }
@@ -516,6 +557,7 @@ impl HerdrRuntime {
                         .unwrap_or(existing.active);
                     let product_layout = TabLayout { active, ..existing };
                     self.layouts.insert(tab, product_layout.clone());
+                    self.resync_active_from_layout(tab, active, emit_event);
                     if emit_event {
                         self.events.push_back(StateChange::LayoutChanged {
                             tab,
@@ -549,6 +591,7 @@ impl HerdrRuntime {
             .unwrap_or(leaves[0]);
         let product_layout = TabLayout { tab, tree, active };
         self.layouts.insert(tab, product_layout.clone());
+        self.resync_active_from_layout(tab, active, emit_event);
         if emit_event {
             self.events.push_back(StateChange::LayoutChanged {
                 tab,
@@ -556,6 +599,46 @@ impl HerdrRuntime {
             });
         }
         true
+    }
+
+    /// `apply_layout_record` 只改 `layouts[tab].active`；若该 tab 正是 active tab，
+    /// 必须同步 `active_pane`（否则事件流的 Layout 与 snapshot 乱序时，
+    /// 产品 active pane 与 layout.active 会发散，SSH 权威契约可见）。
+    /// 钉住窗口内，用钉值覆盖 incoming focused（旧 Layout 事件晚到不得回退）。
+    fn resync_active_from_layout(&mut self, tab: TabId, active: PaneId, emit_event: bool) {
+        let pin = self.pinned_focus();
+        let effective = pin.map_or(
+            active,
+            |(pin_tab, pin_pane)| {
+                if pin_tab == tab {
+                    pin_pane
+                } else {
+                    active
+                }
+            },
+        );
+        if self.active_tab == Some(tab) && self.active_pane != Some(effective) {
+            let old = self.active_pane;
+            self.active_pane = Some(effective);
+            for pane in &mut self.panes {
+                pane.active = Some(pane.id) == self.active_pane;
+            }
+            if emit_event && old != Some(effective) {
+                self.events.push_back(StateChange::ActivePaneChanged {
+                    tab,
+                    pane: effective,
+                });
+            }
+        }
+        if let Some((pin_tab, pin_pane)) = pin {
+            if pin_tab == tab {
+                if let Some(layout) = self.layouts.get_mut(&tab) {
+                    layout.active = pin_pane;
+                }
+            }
+        }
+        // Layout 事件也可能晚到（reader 线程独立拍快照）：钉住 settled 焦点。
+        self.enforce_focus_pin();
     }
 
     /// 用 `pane.read` 播种 attach 快照（禁止当直播轮询）。
@@ -796,6 +879,19 @@ impl HerdrRuntime {
 
     /// 把产品焦点切到某 pane（本地 focus edge：新 control intent，可 takeover）。
     fn promote_focus_to(&mut self, pane: PaneId) {
+        // 用户焦点意图 = 新权威：钉住该 pane（旧的 settle 钉作废），
+        // 直到 TTL 到期或下一次焦点意图/新 mutation 派发。不能只清除：
+        // 否则晚到旧快照会把焦点弹回上一个 pane（e2e 矩阵可见）。
+        let tab = self
+            .panes
+            .iter()
+            .find(|candidate| candidate.id == pane)
+            .map(|candidate| candidate.tab);
+        self.focus_pin = tab.map(|tab| FocusPin {
+            tab,
+            pane,
+            until: Instant::now() + FOCUS_PIN_TTL,
+        });
         if let Some(slot) = self.stream_slots.get_mut(&pane) {
             slot.new_user_intent(true);
             if slot.state == SlotState::Degraded {
@@ -1571,6 +1667,378 @@ impl HerdrRuntime {
         if old_pane_ids != new_pane_ids {
             self.restart_event_stream();
         }
+        // 晚到旧快照可能把焦点回退到 mutation 创建前：钉住 settled 焦点。
+        self.enforce_focus_pin();
+    }
+
+    /// 幂等初始化一个新 pane（W5：所有发现新 pane 的入口都走这里）。
+    ///
+    /// 1. 建/复用 Herdr id ↔ 产品 PaneId 映射；
+    /// 2. 建/更新 PaneInfo 与 Layout 关系；
+    /// 3. 建 registry slot（存在则 reconcile，不重复 push）；
+    /// 4. 为 Index 请求一次 seed（重复结果按 generation/初始化状态去重）；
+    /// 5. 更新 event subscription 的 pane scope；
+    /// 6. 仅在产品状态确实首次出现时发 PaneAdded。
+    fn ensure_pane_initialized(&mut self, herdr_pane: &str, tab: TabId) -> PaneId {
+        let pane = if let Some(existing) = self.herdr_pane_to_pane.get(herdr_pane) {
+            *existing
+        } else {
+            let id = PaneId(numeric_suffix(herdr_pane));
+            self.herdr_pane_to_pane.insert(herdr_pane.to_string(), id);
+            self.pane_to_herdr_pane.insert(id, herdr_pane.to_string());
+            id
+        };
+        if !self.panes.iter().any(|p| p.id == pane) {
+            self.panes.push(PaneInfo {
+                id: pane,
+                tab,
+                active: false,
+                title: "herdr".into(),
+                cols: 80,
+                rows: 24,
+            });
+            self.events.push_back(StateChange::PaneAdded { pane, tab });
+        }
+        let mode = self.desired_mode_for(
+            self.panes
+                .iter()
+                .find(|candidate| candidate.id == pane)
+                .unwrap_or_else(|| panic!("新 pane {pane} 必须已在 panes 里")),
+        );
+        self.stream_slots
+            .entry(pane)
+            .or_insert_with(|| PaneStreamSlot::new(pane, herdr_pane.to_string(), mode))
+            .desired_mode = mode;
+        self.seed_one_pane(pane, herdr_pane);
+        pane
+    }
+
+    /// 派发队头 mutation：记录 dispatch-time baseline 后发 socket 请求。
+    /// 返回 Err 表示派发失败（settle 为 Failed）。
+    fn dispatch_next_mutation(&mut self, now: Instant) -> Result<()> {
+        // 新 mutation 派发 = 新权威意图：旧 settle 焦点钉作废，
+        // 本 mutation 的 settle 会重新钉住（否则旧钉会把下一轮
+        // mutation 的收敛焦点钳回上一个 pane，5 秒内永不收敛）。
+        self.clear_focus_pin();
+        let tabs: HashSet<String> = self
+            .tabs
+            .iter()
+            .filter_map(|t| self.tab_to_herdr_tab.get(&t.id).cloned())
+            .collect();
+        let panes: HashSet<String> = self
+            .panes
+            .iter()
+            .filter_map(|p| self.pane_to_herdr_pane.get(&p.id).cloned())
+            .collect();
+        // 必须在**队列里的真实项**上写 dispatched_at，再快照派发参数；
+        // 不能 clone 后只标记副本（副本不写回 -> has_in_flight 永远 false，
+        // 同一 mutation 每个 tick 重复派发，服务端会创建重复 tab）。
+        let (operation_id, kind, new_tab_name, target_pane, split_dir) = {
+            let Some(head) = self.mutation_queue.head_mut() else {
+                return Ok(());
+            };
+            if head.dispatched_at.is_some() {
+                return Ok(());
+            }
+            head.mark_dispatched(self.lifecycle_generation, tabs, panes, now);
+            (
+                head.mutation_id,
+                head.kind,
+                head.new_tab_name.clone(),
+                head.target_pane.clone(),
+                head.split_dir,
+            )
+        };
+        let result = match kind {
+            MutationKind::NewTab => {
+                let mut params = serde_json::json!({
+                    "workspace_id": self.workspace_id,
+                    "focus": true,
+                });
+                // name=None 时完全省略 label（禁止空字符串覆盖权威数字名）。
+                if let Some(name) = &new_tab_name {
+                    params["label"] = serde_json::json!(name);
+                }
+                self.session.call("tab.create", params)
+            }
+            MutationKind::SplitPane => {
+                let target = target_pane
+                    .clone()
+                    .ok_or_else(|| anyhow!("SplitPane 缺 target pane"))?;
+                let direction = match split_dir {
+                    Some(SplitDir::Horizontal) => "right",
+                    Some(SplitDir::Vertical) => "down",
+                    None => return Err(anyhow!("SplitPane 缺 direction")),
+                };
+                self.session.call(
+                    "pane.split",
+                    serde_json::json!({
+                        "pane_id": target,
+                        "direction": direction,
+                    }),
+                )
+            }
+        };
+        match result {
+            Ok(value) => {
+                // 响应只填 expected ids，不直接推最终拓扑。
+                if let Some(head) = self.mutation_queue.head_mut() {
+                    if head.mutation_id == operation_id {
+                        if let Some(tab_id) = value
+                            .get("tab")
+                            .and_then(|t| t.get("tab_id"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            head.expected_tab = Some(tab_id.to_string());
+                        }
+                        if let Some(pane_id) = value
+                            .get("pane")
+                            .and_then(|p| p.get("pane_id"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            head.expected_pane = Some(pane_id.to_string());
+                        }
+                        if let Some(pane_id) = value
+                            .get("root_pane")
+                            .and_then(|p| p.get("pane_id"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            head.expected_pane = Some(pane_id.to_string());
+                        }
+                        // pane.split 响应通常不带 tab 字段：created pane 必然属于
+                        // 入队时记录的 target_tab（§6.1/§6.4）。
+                        if kind == MutationKind::SplitPane && head.expected_tab.is_none() {
+                            head.expected_tab = head.target_tab.clone();
+                        }
+                    }
+                }
+                // §6.4：pane.split 完成后必须在同一 worker 内请求 pane.focus，
+                // 否则 Herdr 权威焦点不会落到新 pane，收敛条件永不成立。
+                if kind == MutationKind::SplitPane {
+                    if let Some(created_pane) = self
+                        .mutation_queue
+                        .in_flight()
+                        .and_then(|head| head.expected_pane.clone())
+                    {
+                        self.session
+                            .call("pane.focus", serde_json::json!({ "pane_id": created_pane }))?;
+                    }
+                }
+                // 派发即钉住期望焦点：mutation 窗口内（settle 前）reader 晚到
+                // 旧快照若把 active 弹回旧 pane，desired_mode 会在 Control/
+                // Observe 间反复横跳，reconcile 不断 restart 流（generation
+                // 递增、AwaitingFull 重置），5 秒内永远到不了 Ready。
+                // 产品 id 用 bijective 解码直接算（拓扑里可能还没映射）。
+                if let Some(head) = self.mutation_queue.in_flight() {
+                    if head.mutation_id == operation_id {
+                        if let (Some(tab_id), Some(pane_id)) =
+                            (&head.expected_tab, &head.expected_pane)
+                        {
+                            let tab = TabId(numeric_suffix(tab_id));
+                            let pane = PaneId(numeric_suffix(pane_id));
+                            self.focus_pin = Some(FocusPin {
+                                tab,
+                                pane,
+                                until: Instant::now() + FOCUS_PIN_TTL,
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Err(err) => {
+                self.settle_mutation(
+                    operation_id,
+                    kind,
+                    MutationResult::Failed {
+                        stage: MutationStage::Dispatch,
+                        reason: err.to_string(),
+                    },
+                );
+                Err(err)
+            }
+        }
+    }
+
+    /// 发送一次 MutationSettled（同一 operation 恰好一次）并弹出队头。
+    fn settle_mutation(&mut self, operation_id: u64, kind: MutationKind, result: MutationResult) {
+        // Completed 即权威终态（§6.4）：钉住新 pane 焦点，防止 reader 晚到
+        // 的旧快照把焦点回退到创建前（事件通道与 mutation 探针无序）。
+        if result == MutationResult::Completed {
+            if let Some(head) = self.mutation_queue.in_flight() {
+                if let (Some(tab_id), Some(pane_id)) = (&head.expected_tab, &head.expected_pane) {
+                    if let (Some(tab), Some(pane)) = (
+                        self.herdr_tab_to_tab.get(tab_id).copied(),
+                        self.herdr_pane_to_pane.get(pane_id).copied(),
+                    ) {
+                        self.focus_pin = Some(FocusPin {
+                            tab,
+                            pane,
+                            until: Instant::now() + FOCUS_PIN_TTL,
+                        });
+                    }
+                }
+            }
+        }
+        self.events.push_back(StateChange::MutationSettled {
+            operation_id,
+            kind,
+            result,
+        });
+        self.mutation_queue.pop_head();
+    }
+
+    /// 用户显式焦点意图（切 pane/tab、焦点提升）：立即清除 settle 焦点钉，
+    /// 新意图是权威，不能被钉住窗口挡住。
+    fn clear_focus_pin(&mut self) {
+        self.focus_pin = None;
+    }
+
+    /// 钉住窗口内，把焦点钉回 settled 的 pane（旧快照晚到不得回退）。
+    fn enforce_focus_pin(&mut self) {
+        let Some(pin) = self.focus_pin else {
+            return;
+        };
+        if Instant::now() >= pin.until {
+            self.focus_pin = None;
+            return;
+        }
+        let pane_alive = self.panes.iter().any(|pane| pane.id == pin.pane);
+        if !pane_alive {
+            self.focus_pin = None;
+            return;
+        }
+        if self.active_tab != Some(pin.tab) || self.active_pane != Some(pin.pane) {
+            self.active_tab = Some(pin.tab);
+            self.active_pane = Some(pin.pane);
+            for pane in &mut self.panes {
+                pane.active = pane.id == pin.pane;
+            }
+            if let Some(layout) = self.layouts.get_mut(&pin.tab) {
+                layout.active = pin.pane;
+            }
+        }
+    }
+
+    /// 当前生效的焦点钉（未过期且 pane 仍在拓扑）；None = 无钉。
+    fn pinned_focus(&self) -> Option<(TabId, PaneId)> {
+        let pin = self.focus_pin?;
+        if Instant::now() >= pin.until {
+            return None;
+        }
+        if !self.panes.iter().any(|pane| pane.id == pin.pane) {
+            return None;
+        }
+        Some((pin.tab, pin.pane))
+    }
+
+    /// 检查队头 mutation 是否已权威收敛（§6.4 完成条件）。
+    fn mutation_converged(&self, pending: &PendingMutation) -> bool {
+        let Some(expected_tab) = &pending.expected_tab else {
+            return false;
+        };
+        let Some(expected_pane) = &pending.expected_pane else {
+            return false;
+        };
+        // snapshot 已包含 created tab/root pane。
+        if !self.herdr_tab_to_tab.contains_key(expected_tab) {
+            return false;
+        }
+        if !self.herdr_pane_to_pane.contains_key(expected_pane) {
+            return false;
+        }
+        // 新 pane 的 registry slot 必须 Live 且 full baseline Ready。
+        let Some(pane) = self.herdr_pane_to_pane.get(expected_pane) else {
+            return false;
+        };
+        let Some(slot) = self.stream_slots.get(pane) else {
+            return false;
+        };
+        if slot.state != SlotState::Live || slot.surface_baseline != SurfaceBaseline::Ready {
+            return false;
+        }
+        // Herdr active tab/focused pane 与产品 active 一致。
+        let Some(tab) = self.herdr_tab_to_tab.get(expected_tab) else {
+            return false;
+        };
+        if self.active_tab != Some(*tab) || self.active_pane != Some(*pane) {
+            return false;
+        }
+        // layout 的 active 也一致。
+        if self.layouts.get(tab).map(|l| l.active).unwrap_or(PaneId(0)) != *pane {
+            return false;
+        }
+        true
+    }
+
+    /// 每 poll tick 驱动 mutation 队列：派发 → probe → 收敛 → settle。
+    fn tick_mutations(&mut self, now: Instant) {
+        // detach/shutdown 后：清空队列并丢弃晚到结果。
+        if self.status != BackendStatus::Connected {
+            if !self.mutation_queue.queue.is_empty() {
+                let drained: Vec<PendingMutation> = self.mutation_queue.queue.drain(..).collect();
+                for pending in drained {
+                    self.events.push_back(StateChange::MutationSettled {
+                        operation_id: pending.mutation_id,
+                        kind: pending.kind,
+                        result: MutationResult::Failed {
+                            stage: MutationStage::Dispatch,
+                            reason: "runtime 已 detach/shutdown".into(),
+                        },
+                    });
+                }
+            }
+            return;
+        }
+        // 派发下一个等待项（同时至多一个 in-flight）。
+        if !self.mutation_queue.has_in_flight() && self.mutation_queue.has_pending() {
+            if let Err(err) = self.dispatch_next_mutation(now) {
+                tracing::warn!(
+                    target = "muxterm::herdr",
+                    error = %err,
+                    "mutation 派发失败（已 settle Failed）"
+                );
+            }
+        }
+        let Some(pending) = self.mutation_queue.in_flight().cloned() else {
+            return;
+        };
+        let operation_id = pending.mutation_id;
+        let kind = pending.kind;
+        // 端到端 deadline 到期：唯一一次阶段化失败。
+        if pending.expired(now) {
+            self.settle_mutation(
+                operation_id,
+                kind,
+                MutationResult::Failed {
+                    stage: MutationStage::AuthorityConvergence,
+                    reason: "5 秒内未权威收敛".into(),
+                },
+            );
+            return;
+        }
+        // 权威收敛：Completed。
+        if self.mutation_converged(&pending) {
+            self.settle_mutation(operation_id, kind, MutationResult::Completed);
+            return;
+        }
+        // probe：到点请求 snapshot refresh（至多一个 in-flight probe）。
+        let probe_due = self.mutation_queue.in_flight().is_some_and(|head| {
+            head.next_probe_at
+                .is_some_and(|at| now >= at && !head.probe_in_flight(now))
+        });
+        if probe_due {
+            if let Ok(snap) = self.session.snapshot() {
+                self.reconcile_snapshot(&snap);
+            }
+            if let Some(head) = self.mutation_queue.head_mut() {
+                // probe 序列耗尽（advance 返回 None）时清空 next_probe_at，
+                // 之后只等 deadline 到期统一失败。
+                if head.advance_probe(now).is_none() {
+                    head.next_probe_at = None;
+                }
+            }
+        }
     }
 
     /// 把 KeyEvent 映射成 herdr key-combo 字符串。
@@ -2118,19 +2586,29 @@ impl Runtime for HerdrRuntime {
                 command: _,
                 workdir: _,
             } => {
-                let result = self
-                    .session
-                    .call(
-                        "tab.create",
-                        serde_json::json!({
-                            "workspace_id": self.workspace_id,
-                            "label": name.clone().unwrap_or_default(),
-                            "focus": true,
-                        }),
-                    )
-                    .map_err(|e| anyhow!("tab.create 失败: {e}"))?;
-                self.apply_created_tab(&result);
-                Ok(TaskOutcome::Done)
+                // 异步 mutation：入队返回 Accepted，最终由 MutationSettled 收敛。
+                let now = Instant::now();
+                let operation_id = match self.mutation_queue.enqueue(MutationKind::NewTab, now) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Ok(TaskOutcome::Rejected {
+                            reason: "mutation 队列满（32 项）".into(),
+                        });
+                    }
+                };
+                // 请求参数随 mutation 保存（派发时才真正发 socket）。
+                let pending = self.mutation_queue.head_mut().expect("刚入队必须存在");
+                pending.new_tab_name = name.clone();
+                pending.expected_tab = None;
+                pending.expected_pane = None;
+                pending.expected_focus = None;
+                tracing::info!(
+                    target = "muxterm::herdr",
+                    workspace = %self.workspace_id,
+                    operation_id = operation_id,
+                    "NewTab 入队（异步收敛）"
+                );
+                Ok(TaskOutcome::Accepted { operation_id })
             }
             Task::SplitPane {
                 target,
@@ -2154,45 +2632,29 @@ impl Runtime for HerdrRuntime {
                         reason: format!("pane {target} 缺 Herdr id"),
                     });
                 };
-                let direction = match dir {
-                    SplitDir::Horizontal => "right",
-                    SplitDir::Vertical => "down",
-                };
-                let result = self
-                    .session
-                    .call(
-                        "pane.split",
-                        serde_json::json!({
-                            "pane_id": herdr_pane,
-                            "direction": direction,
-                        }),
-                    )
-                    .map_err(|e| anyhow!("pane.split 失败: {e}"))?;
-                let created_herdr_pane = result
-                    .get("pane")
-                    .and_then(|pane| pane.get("pane_id"))
-                    .and_then(serde_json::Value::as_str);
-                if let Some(pane_id) = created_herdr_pane {
-                    self.session
-                        .call("pane.focus", serde_json::json!({ "pane_id": pane_id }))
-                        .map_err(|e| anyhow!("pane.split 后 pane.focus 失败: {e}"))?;
-                }
-                let authoritative_layout = created_herdr_pane.and_then(|pane_id| {
-                    match self.session.pane_layout(pane_id) {
-                        Ok(layout) => Some(layout),
-                        Err(err) => {
-                            tracing::warn!(
-                                target = "muxterm::herdr",
-                                pane = %pane_id,
-                                error = %err,
-                                "pane.split 后读取权威 layout 失败"
-                            );
-                            None
-                        }
+                let now = Instant::now();
+                let operation_id = match self.mutation_queue.enqueue(MutationKind::SplitPane, now) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Ok(TaskOutcome::Rejected {
+                            reason: "mutation 队列满（32 项）".into(),
+                        });
                     }
-                });
-                self.apply_split_pane(&result, tab, *dir, authoritative_layout.as_ref());
-                Ok(TaskOutcome::Done)
+                };
+                let pending = self.mutation_queue.head_mut().expect("刚入队必须存在");
+                pending.target_tab = Some(self.tab_to_herdr_tab[&tab].clone());
+                pending.target_pane = Some(herdr_pane);
+                pending.split_dir = Some(*dir);
+                pending.expected_tab = None;
+                pending.expected_pane = None;
+                pending.expected_focus = None;
+                tracing::info!(
+                    target = "muxterm::herdr",
+                    workspace = %self.workspace_id,
+                    operation_id = operation_id,
+                    "SplitPane 入队（异步收敛）"
+                );
+                Ok(TaskOutcome::Accepted { operation_id })
             }
             Task::Detach => {
                 // detach = 客户端断开连接（保留服务端 session）。必须主动
@@ -2227,6 +2689,7 @@ impl Runtime for HerdrRuntime {
         self.degrade_stalled_streams(now);
         self.maybe_start_pending_retries(now);
         self.reconcile_stream_modes();
+        self.tick_mutations(now);
         self.events.drain(..).collect()
     }
 
@@ -2272,161 +2735,14 @@ impl Drop for HerdrRuntime {
     }
 }
 
-impl HerdrRuntime {
-    /// tab.create 响应 → 新 tab + root pane 进状态。
-    fn apply_created_tab(&mut self, result: &serde_json::Value) {
-        let Some(tab_id) = result
-            .get("tab")
-            .and_then(|t| t.get("tab_id"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            return;
-        };
-        let id = TabId(numeric_suffix(tab_id));
-        if self.herdr_tab_to_tab.contains_key(tab_id) {
-            return;
-        }
-        for tab in &mut self.tabs {
-            tab.active = false;
-        }
-        for pane in &mut self.panes {
-            pane.active = false;
-        }
-        self.herdr_tab_to_tab.insert(tab_id.to_string(), id);
-        self.tab_to_herdr_tab.insert(id, tab_id.to_string());
-        self.tabs.push(TabInfo {
-            id,
-            name: result
-                .get("tab")
-                .and_then(|t| t.get("label"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("new")
-                .to_string(),
-            active: true,
-        });
-        if let Some(pane_id) = result
-            .get("root_pane")
-            .and_then(|p| p.get("pane_id"))
-            .and_then(serde_json::Value::as_str)
-        {
-            let pid = PaneId(numeric_suffix(pane_id));
-            self.herdr_pane_to_pane.insert(pane_id.to_string(), pid);
-            self.pane_to_herdr_pane.insert(pid, pane_id.to_string());
-            self.panes.push(PaneInfo {
-                id: pid,
-                tab: id,
-                active: true,
-                title: "herdr".into(),
-                cols: 80,
-                rows: 24,
-            });
-            self.layouts.insert(
-                id,
-                TabLayout {
-                    tab: id,
-                    tree: LayoutNode::leaf(pid),
-                    active: pid,
-                },
-            );
-            self.events.push_back(StateChange::TabAdded { tab: id });
-            self.events
-                .push_back(StateChange::PaneAdded { pane: pid, tab: id });
-            self.events.push_back(StateChange::LayoutChanged {
-                tab: id,
-                layout: self.layouts[&id].clone(),
-            });
-            self.events
-                .push_back(StateChange::ActiveTabChanged { tab: id });
-            self.events
-                .push_back(StateChange::ActivePaneChanged { tab: id, pane: pid });
-            self.active_tab = Some(id);
-            self.active_pane = Some(pid);
-        }
-    }
-
-    /// pane.split 响应 → 新 pane 进状态。
-    fn apply_split_pane(
-        &mut self,
-        result: &serde_json::Value,
-        tab: TabId,
-        dir: SplitDir,
-        layout: Option<&LayoutRecord>,
-    ) {
-        let Some(pane_id) = result
-            .get("pane")
-            .and_then(|p| p.get("pane_id"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            return;
-        };
-        let pid = PaneId(numeric_suffix(pane_id));
-        if self.herdr_pane_to_pane.contains_key(pane_id) {
-            return;
-        }
-        self.herdr_pane_to_pane.insert(pane_id.to_string(), pid);
-        self.pane_to_herdr_pane.insert(pid, pane_id.to_string());
-        let rect = layout.and_then(|layout| {
-            layout
-                .panes
-                .iter()
-                .find(|candidate| candidate.pane_id == pane_id)
-                .map(|candidate| candidate.rect)
-        });
-        let (cols, rows) = normalize_pane_size(
-            rect.map(|rect| rect.width).unwrap_or(0),
-            rect.map(|rect| rect.height).unwrap_or(0),
-            None,
-        );
-        self.panes.push(PaneInfo {
-            id: pid,
-            tab,
-            active: true,
-            title: "herdr".into(),
-            cols,
-            rows,
-        });
-        self.events
-            .push_back(StateChange::PaneAdded { pane: pid, tab });
-
-        let applied_authoritative = layout
-            .map(|layout| self.apply_layout_record(layout, true))
-            .unwrap_or(false);
-        if !applied_authoritative {
-            if let Some(product_layout) = self.layouts.get_mut(&tab) {
-                let base = product_layout.active;
-                product_layout.tree.split_at(base, pid, dir);
-                product_layout.active = pid;
-            }
-            if let Some(product_layout) = self.layouts.get(&tab) {
-                self.events.push_back(StateChange::LayoutChanged {
-                    tab,
-                    layout: product_layout.clone(),
-                });
-            }
-        }
-
-        let active = self
-            .layouts
-            .get(&tab)
-            .map(|layout| layout.active)
-            .unwrap_or(pid);
-        for pane in self.panes.iter_mut().filter(|pane| pane.tab == tab) {
-            pane.active = pane.id == active;
-        }
-        self.active_pane = Some(active);
-        self.events
-            .push_back(StateChange::ActivePaneChanged { tab, pane: active });
-
-        // 新 split pane 走统一 slot bootstrap（W2 registry；W5 改为
-        // ensure_pane_initialized + mutation 收敛）。
-        self.bootstrap_stream_slots();
-    }
-}
+impl HerdrRuntime {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::runtime::herdr::session::{LayoutPaneRecord, LayoutSplitRecord};
+    use crate::core::runtime::herdr::session::{
+        HerdrAgentStatus, LayoutPaneRecord, LayoutSplitRecord, TabRecord, WorkspaceRecord,
+    };
     use crate::core::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
 
     /// Herdr public ids 使用 bijective base-32，不是十进制。用户真实 session
@@ -2441,6 +2757,66 @@ mod tests {
         assert_eq!(numeric_suffix("w2:pR"), 24);
         assert_eq!(numeric_suffix("w2:p0"), 32);
         assert_eq!(numeric_suffix("w2:p11"), 33);
+    }
+
+    /// Herdr 快照可能不返回 tab label（新建 tab 尚未命名时）。
+    /// 此时 UI 必须回退到 public id 后缀的十进制形式（tA → "10"），
+    /// 而不是显示空字符串或原始 bijective 编码。
+    #[test]
+    fn empty_tab_label_falls_back_to_decimal_suffix() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let snap = SessionSnapshot {
+            version: "0.8.0".into(),
+            protocol: 19,
+            focused_workspace_id: Some("w1".into()),
+            focused_tab_id: Some("w1:tA".into()),
+            focused_pane_id: Some("w1:p1".into()),
+            workspaces: vec![WorkspaceRecord {
+                workspace_id: "w1".into(),
+                number: 1,
+                label: "ws".into(),
+                focused: true,
+                pane_count: 1,
+                tab_count: 2,
+                active_tab_id: Some("w1:tA".into()),
+                agent_status: HerdrAgentStatus::Idle,
+                tokens: Default::default(),
+                worktree: None,
+            }],
+            tabs: vec![
+                TabRecord {
+                    tab_id: "w1:tA".into(),
+                    workspace_id: "w1".into(),
+                    number: 1,
+                    label: String::new(),
+                    focused: true,
+                    pane_count: 1,
+                    agent_status: HerdrAgentStatus::Idle,
+                },
+                TabRecord {
+                    tab_id: "w1:tB".into(),
+                    workspace_id: "w1".into(),
+                    number: 2,
+                    label: "named".into(),
+                    focused: false,
+                    pane_count: 1,
+                    agent_status: HerdrAgentStatus::Idle,
+                },
+            ],
+            panes: vec![],
+            layouts: vec![],
+            agents: vec![],
+        };
+        assert!(runtime.apply_snapshot(&snap, true));
+        let names: Vec<&str> = runtime.tabs.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["10", "named"],
+            "空 label 回退十进制后缀，非空 label 原样保留"
+        );
     }
 
     /// Herdr protocol 19 uses a zero pane rect for a background workspace

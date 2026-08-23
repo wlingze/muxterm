@@ -2074,9 +2074,7 @@ fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
                     if !view_at_bottom(&view) {
                         s.jump_unseen = s
                             .jump_unseen
-                            .saturating_add(
-                                data.iter().filter(|&&b| b == b'\n').count() as u32,
-                            );
+                            .saturating_add(data.iter().filter(|&&b| b == b'\n').count() as u32);
                     }
                     forward_parser_replies_for(s, wid, pane.0);
                 }
@@ -2168,10 +2166,10 @@ fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
                     BackendStatus::Disconnected => {
                         crate::core::protocol::ffi::types::BACKEND_STATUS_DISCONNECTED
                     }
-                    BackendStatus::Error => {
-                        crate::core::protocol::ffi::types::BACKEND_STATUS_ERROR
+                    BackendStatus::Error => crate::core::protocol::ffi::types::BACKEND_STATUS_ERROR,
+                    BackendStatus::Exited => {
+                        crate::core::protocol::ffi::types::BACKEND_STATUS_EXITED
                     }
-                    BackendStatus::Exited => crate::core::protocol::ffi::types::BACKEND_STATUS_EXITED,
                 };
                 // W16b：tmux server 死后保留最后一帧 + 水印。
                 let is_tmux = s.uses_tmux();
@@ -2513,11 +2511,7 @@ fn refresh_ui(s: &mut UiState) {
         // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
         let layouts: Vec<(u32, LayoutNode)> = tabs
             .iter()
-            .filter_map(|t| {
-                state
-                    .layout(&t.id)
-                    .map(|l| (t.id.0, l.tree.clone()))
-            })
+            .filter_map(|t| state.layout(&t.id).map(|l| (t.id.0, l.tree.clone())))
             .collect();
         let panes: Vec<(u32, u16, u16, bool)> = active_tab
             .map(|tid| {
@@ -4714,9 +4708,14 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                "pane_added", "layout", "resized", "tab_added", // 结构
-                "frame", "snapshot", // baseline
-                "output", "output", // diff
+                "pane_added",
+                "layout",
+                "resized",
+                "tab_added", // 结构
+                "frame",
+                "snapshot", // baseline
+                "output",
+                "output", // diff
             ],
             "结构必须整体先于 frame/snapshot，再先于 output"
         );

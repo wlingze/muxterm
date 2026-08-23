@@ -2,9 +2,13 @@
 
 > 机制名：**Surface**（中文：**单面**）
 > 状态：调研定案，2026-08-15 21:26 CST（核查 `2026-08-15T21:26:10+08:00`）
-> 性质：长期保留的架构文档。Linux 像素路径（F1–F6）已冻结。
+> 性质：长期保留的架构文档。Linux 像素路径（F1–F6）已冻结；2026-08-22 补充 Herdr
+> source-separation/Ctrl-L 契约。
 > **产品层级与工作区池** 见 [`WORKSPACE.md`](WORKSPACE.md)。
 > [`PANE-VT.md`](PANE-VT.md) 是讨论稿，以 WORKSPACE.md 为准。
+> Herdr 的 full/diff、generation 与 Index 播种规则见
+> [`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5；专项测试见
+> [`HERDR-TESTING.md`](HERDR-TESTING.md)。
 > 参考树：`/home/wlz/Developer/terminal/`（只读，不进本仓库）
 
 **一句话：** Director 维持 tmux 连接与拓扑；每个 pane **只有一个**终端仿真器负责画面；同一字节流可以另有只读 Index 做搜索/通知。**禁止**把第二份网格再序列化成 ANSI 灌进 VTE。
@@ -63,7 +67,7 @@ Codex 一类 TUI 的一次重绘会被 tmux 切成连续 `%output` 碎片（常�
 | 角色 | 英文 | 职责 | 禁止 |
 |---|---|---|---|
 | **Director** | 控制面 | `-CC` 连接、session/window/pane 树、layout、`refresh-client`、`send-keys`、`%pause` | 不画像素 |
-| **Surface** | 显示面 | 每个挂载的 pane **恰好一个** VT。只 `feed` 解转义后的原始 pane 字节 | 不 `reset` 追帧；不吃 `visible_ansi` |
+| **Surface** | 显示面 | 每个进入产品拓扑的 pane **恰好一个常驻** VT；隐藏时可从 widget tree 摘下，但仍按 id `feed` 原始 pane 字节 | 不 `reset` 追帧；不吃 `visible_ansi` |
 | **Index** | 索引面 | 同一字节流的只读副本：搜索、attention、peek | **永不**把网格再编码回 Surface |
 
 本地 shell（无 tmux）也是 Surface：VTE 连 PTY。tmux 时 PTY 换成 `%output` 管道，**仿真器个数不变**。
@@ -162,14 +166,26 @@ ivyTerm 在 capture 后用若干 `\n` + `ESC[#A` 把视口对齐到底（`scroll
 
 ## 3. 硬性定律（违反 = 回归）
 
-1. **One Surface.** 一个已挂载 pane，显示路径上只有一个 VT parse。
+1. **One Surface.** 一个进入产品拓扑的 pane，显示路径上只有一个常驻 VT parse；当前不可见
+   不等于未注册。
 2. **No dump.** `ReplicaStore::visible_ansi` / `present_from_replica` **不得**出现在 live `%output` 或 CUP 风暴路径。Index 自用。
-3. **No reset to chase frames.** `vte.reset` 只允许：新建 Surface、用户清屏、确认的 resize 错格。CUP 风暴用原始帧喂 VTE（或丢中间帧只 feed **原始** last frame），不要 dump。
+3. **No reset to chase frames.** `vte.reset` 只允许新建 Surface 或确认的 resize 错格；
+   用户 Ctrl-L 必须走终端输入，不能由 UI 直接 reset。CUP 风暴用原始帧喂 VTE（或丢
+   中间帧只 feed **原始** last frame），不要 dump。
 4. **Seed once.** capture 完成前不画 live；完成后一次性 feed；再增量。
 5. **Follow tail.** 直播 `history_offset=0`；新输出后视口在底（alt-screen 由字节自己切）。禁止用 replica dump 模拟滚动来「修」TUI。
 6. **Bytes in, bytes out.** 键盘 → `send-keys -H`；`%output` 解转义 → 原样 feed。
 7. **`%pause`.** 积压超过阈值对 pane pause，Surface 追上再 resume（iTerm2 / tmux `control.c`）。
 8. **Pane id.** 控制协议里 pane 是 `%N`。`缺少 @ 前缀: %64` 必须当 bug 修，不是忽略。
+9. **Source separation.** Herdr `pane.read` / `visible_ansi` 只播种 Index；只有经过当前
+   generation/event ordinal/wire seq 过滤的原始 `terminal.frame` 才能进入 Surface。full
+   建 baseline，diff 追赶；旧 generation 永不重播。
+10. **Persistent routing.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与后台
+    workspace 的 PaneView 继续吃原始字节，只是不绘制。`poll_background()` 不能只喂 Index/
+    attention 后丢掉 Surface event；切回时只能 show/hide，不能靠 Index dump 补画。
+
+Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续原始 frame/output 改变
+像素；切 tab、resize、observer 重连或 Index 更新都不得把旧屏重新 feed 回来。
 
 本地 shell 不受 4–7 约束（它有真 PTY）。
 
