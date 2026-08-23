@@ -41,7 +41,7 @@ jobs:
           /usr/bin/automationmodetool || true
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Install tools (tmux / herdr)
         run: bash scripts/ci/setup.sh
@@ -57,34 +57,8 @@ jobs:
             target
           key: ${{ runner.os }}-macos-${{ hashFiles('Cargo.toml', 'Cargo.lock', '**/Package.resolved') }}
 
-      - name: cargo build ffi (release)
-        run: cargo build --release --no-default-features --features ffi
-
-      - name: cargo test macos integration
-        run: cargo test --no-default-features --features ffi --test macos_integration -- --test-threads=1
-        timeout-minutes: 15
-
-      - name: cargo test macos e2e (W13/W14/W16 contracts)
-        run: cargo test --no-default-features --features ffi --test macos_e2e -- --test-threads=1
-        timeout-minutes: 15
-
-      - name: Link libmuxterm.a into Vendor (Swift links local ./target)
-        run: |
-          set -euo pipefail
-          mkdir -p src/platform/macos/Vendor
-          ln -sfn "$PWD/target/release/libmuxterm.a" src/platform/macos/Vendor/libmuxterm.a
-
-      # SwiftTerm 的 Muxterm 补丁（Ctrl-U 等）只在 build-macos.sh 里打过；
-      # swift test 直接解析依赖树，必须先 patch 再编译测试目标。
-      - name: Patch SwiftTerm before Swift tests
-        working-directory: src/platform/macos
-        run: ../../../scripts/patch-swiftterm.sh
-
-      # Headless Swift unit tests (ChromeTests): keyboard bindings / pane switching /
-      # PaneOutputCursor are pure logic and need no GUI. Runs on every PR, guarding
-      # against regressions without consuming desktop/disk like XCUITest would.
-      # CI mirrors local headless testing (see AGENTS.md); desktop XCUITests are
-      # intentionally not run here.
-      - name: Swift unit tests (headless)
-        working-directory: src/platform/macos
-        run: swift test --disable-swift-testing
+      # §13.2：单一入口。build/test/patch/Swift 全部由 scripts/test.sh run macos 承载，
+      # workflow 不再复制 cargo 命令序列。
+      - name: Run all macOS tests (one entry)
+        run: bash scripts/test.sh run macos
+        timeout-minutes: 30

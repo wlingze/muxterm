@@ -64,7 +64,7 @@ jobs:
         timeout-minutes: 20
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -79,5 +79,16 @@ jobs:
 
       # 与本地 scripts/test.sh 同一入口：一次编译、一起跑全部 GTK e2e。
       # fmt/clippy/check/全部 target 都在 test.sh 内，避免 CI 与本地两套命令 drift。
+      # test.sh run linux 内部自带唯一一层 Xvfb；外层不得再套 xvfb-run（§13.2）。
       - name: Run all Linux GTK e2e tests (one compile)
-        run: xvfb-run -a bash scripts/test.sh run linux
+        run: bash scripts/test.sh run linux
+
+      # §13.4：失败时上传 matrix child 日志（只含隔离 fixture 内容，
+      # 不含用户默认 session/私钥）。
+      - name: Upload matrix artifacts (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-matrix-artifacts
+          path: /tmp/muxterm-matrix-artifacts/**
+          if-no-files-found: ignore

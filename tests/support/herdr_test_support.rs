@@ -22,6 +22,20 @@ pub fn herdr_available() -> bool {
         .unwrap_or(false)
 }
 
+/// §13.1：测试开头校验 Herdr 版本 == 0.8.0（protocol 19）。
+/// 版本不符是 **required failure**，不是 skip。
+pub fn assert_herdr_version_ok() {
+    let version = Command::new("herdr")
+        .arg("--version")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    assert!(
+        version.contains("0.8.0"),
+        "herdr 版本必须为 0.8.0（protocol 19），实际: {version}"
+    );
+}
+
 /// 唯一 named session 名：`muxterm-test-herdr-{label}-{nanos}`。
 pub fn unique_name(label: &str) -> String {
     let nanos = std::time::SystemTime::now()
@@ -128,6 +142,8 @@ impl IsolatedHerdr {
 
     /// 用预分配的精确名称启动（W7 parent 兜底清理用：名称可预测）。
     pub fn start_named(name: String) -> Self {
+        // §13.1：任何 herdr 测试开始前校验 protocol 19（版本不符 = required failure）。
+        assert_herdr_version_ok();
         if !name.starts_with("muxterm-test-") {
             panic!("herdr fixture 名称必须以 muxterm-test- 开头: {name}");
         }

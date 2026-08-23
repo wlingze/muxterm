@@ -59,7 +59,7 @@ jobs:
         timeout-minutes: 20
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -126,7 +126,7 @@ jobs:
           cat "$RUNNER_TEMP/muxterm-sshd.env" >> "$GITHUB_ENV"
         timeout-minutes: 5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache cargo
         uses: actions/cache@v4

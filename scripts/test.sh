@@ -101,7 +101,50 @@ run_macos() {
     fi
 }
 
+doctor() {
+    # 只读环境/版本/fixture capability 预检（§13.1/§13.2），不安装任何工具。
+    echo "== 工具版本 =="
+    echo "rustc: $(rustc --version 2>/dev/null || echo MISSING)"
+    echo "cargo: $(cargo --version 2>/dev/null || echo MISSING)"
+    echo "tmux: $(tmux -V 2>/dev/null || echo MISSING)"
+    echo "herdr: $(herdr --version 2>/dev/null | head -1 || echo MISSING)"
+    echo "sshd: $(command -v sshd 2>/dev/null || echo MISSING)"
+    echo "== locale =="
+    echo "LANG=$LANG LC_ALL=${LC_ALL:-unset}"
+    echo "== DISPLAY / Xvfb =="
+    echo "DISPLAY=${DISPLAY:-unset}"
+    echo "xvfb: $(command -v xvfb-run 2>/dev/null || echo MISSING)"
+    echo "== 用户默认 server 只读快照（绝不写/杀） =="
+    echo "tmux sessions: $(tmux ls 2>/dev/null | wc -l)"
+    echo "herdr default: $(herdr status 2>/dev/null | head -1 || echo none)"
+
+    # required 版本（与 §13.1 一致；CI 必须精确匹配，开发机只读提示）。
+    local fail=0
+    if ! rustc --version 2>/dev/null | grep -q "1.97.1"; then
+        echo "WARN: rustc 应为 1.97.1" >&2; fail=1
+    fi
+    if ! cargo --version 2>/dev/null | grep -q "1.97.1"; then
+        echo "WARN: cargo 应为 1.97.1" >&2; fail=1
+    fi
+    if ! tmux -V 2>/dev/null | grep -q "3.7c"; then
+        echo "WARN: tmux 应为 3.7c" >&2; fail=1
+    fi
+    if ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
+        echo "WARN: herdr 应为 0.8.0" >&2; fail=1
+    fi
+    if ! command -v sshd >/dev/null 2>&1; then
+        echo "WARN: 缺 sshd（loopback SSH 格会 skip/失败）" >&2; fail=1
+    fi
+    if ! command -v xvfb-run >/dev/null 2>&1; then
+        echo "WARN: 缺 xvfb-run（Linux GTK e2e 需要）" >&2; fail=1
+    fi
+    [ "$fail" -eq 0 ] && echo "doctor: OK" || echo "doctor: 有 WARN（见上）" >&2
+}
+
 case "${1:-}" in
+doctor)
+    doctor
+    ;;
 run)
     case "${2:-}" in
     core) run_core ;;

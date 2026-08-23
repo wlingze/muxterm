@@ -37,18 +37,25 @@ if [ "$OS" = "Linux" ]; then
     bison \
     flex \
     fonts-dejavu-core
-  # tmux：ubuntu 仓库只有 3.4，控制模式事件流与本地 3.7b 有差异
-  # （detach/reattach 集成测试依赖 3.7b 行为），编译安装 3.7b。
-  if ! tmux -V 2>/dev/null | grep -q "3.7b"; then
-    echo "编译 tmux 3.7b（ubuntu 仓库版本过旧）..." >&2
-    curl -fsSL -o /tmp/tmux-3.7b.tar.gz \
-      https://github.com/tmux/tmux/releases/download/3.7b/tmux-3.7b.tar.gz
-    tar xzf /tmp/tmux-3.7b.tar.gz -C /tmp
-    (cd /tmp/tmux-3.7b \
+  # tmux：ubuntu 仓库只有 3.4，控制模式事件流与本地 3.7c 有差异
+  # （detach/reattach 集成测试依赖 3.7c 行为），编译安装官方 3.7c。
+  if ! tmux -V 2>/dev/null | grep -q "3.7c"; then
+    echo "编译 tmux 3.7c（ubuntu 仓库版本过旧）..." >&2
+    curl -fsSL -o /tmp/tmux-3.7c.tar.gz \
+      https://github.com/tmux/tmux/releases/download/3.7c/tmux-3.7c.tar.gz
+    echo "7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf  /tmp/tmux-3.7c.tar.gz" \
+      | sha256sum -c - >/dev/null
+    tar xzf /tmp/tmux-3.7c.tar.gz -C /tmp
+    (cd /tmp/tmux-3.7c \
       && ./configure --prefix=/usr/local >/dev/null \
       && make -j"$(nproc)" >/dev/null \
       && sudo make install >/dev/null)
-    rm -rf /tmp/tmux-3.7b /tmp/tmux-3.7b.tar.gz
+    rm -rf /tmp/tmux-3.7c /tmp/tmux-3.7c.tar.gz
+  fi
+  # 精确校验：tmux -V == tmux 3.7c（§13.1）。
+  if ! tmux -V | grep -q "3.7c"; then
+    echo "tmux 版本必须为 3.7c，实际: $(tmux -V)" >&2
+    exit 1
   fi
 elif [ "$OS" = "Darwin" ]; then
   brew list tmux >/dev/null 2>&1 || brew install tmux
@@ -58,26 +65,33 @@ else
 fi
 
 # ── herdr（GitHub release 预编译二进制，固定 0.8.0 与本地一致）──
-if ! command -v herdr >/dev/null 2>&1; then
+# 已存在但版本不匹配时必须安装固定资产或失败，不能只判断 command 存在（§13.1）。
+if command -v herdr >/dev/null 2>&1 && herdr --version 2>/dev/null | grep -q "0.8.0"; then
+  echo "herdr 0.8.0 已存在，跳过安装" >&2
+elif ! command -v herdr >/dev/null 2>&1 || ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
   ARCH="$(uname -m)"
   case "$OS-$ARCH" in
-    Linux-x86_64)  ASSET="herdr-linux-x86_64" ;;
-    Linux-aarch64) ASSET="herdr-linux-aarch64" ;;
-    Darwin-arm64)  ASSET="herdr-macos-aarch64" ;;
-    Darwin-x86_64) ASSET="herdr-macos-x86_64" ;;
+    Linux-x86_64)  ASSET="herdr-linux-x86_64";    SHA="b872ea7e40fa2cb17e857ac9b62b1bf26db7b403c622f5d2f3f5b35f6e9acd28" ;;
+    Linux-aarch64) ASSET="herdr-linux-aarch64";   SHA="f647ac66468d9efbc642fe534fb284468f0aea60641606fc008dfc0d82a3ca87" ;;
+    Darwin-arm64)  ASSET="herdr-macos-aarch64";   SHA="d53a9f93fccfdfcc55632927bf51002f5add0aa7990bcdf508ffbd84ac658178" ;;
+    Darwin-x86_64) ASSET="herdr-macos-x86_64";    SHA="77cb5afd6c8fcaaaf3bc28e474ec01c209331ad08094e20d7f8aa9b0bb78d649" ;;
     *) echo "不支持的平台组合: $OS-$ARCH" >&2; exit 1 ;;
   esac
   echo "下载 herdr 0.8.0 ($ASSET)..." >&2
   URL="https://github.com/herdrdev/herdr/releases/download/v0.8.0/$ASSET"
+  curl -fsSL -o /tmp/herdr "$URL"
+  echo "$SHA  /tmp/herdr" | sha256sum -c - >/dev/null
   if [ "$OS" = "Linux" ]; then
-    curl -fsSL -o /tmp/herdr "$URL"
     sudo install -m 0755 /tmp/herdr /usr/local/bin/herdr
-    rm -f /tmp/herdr
   else
-    curl -fsSL -o /tmp/herdr "$URL"
     install -m 0755 /tmp/herdr /usr/local/bin/herdr
-    rm -f /tmp/herdr
   fi
+  rm -f /tmp/herdr
+fi
+# 精确校验：herdr 0.8.0（protocol 19）。
+if ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
+  echo "herdr 版本必须为 0.8.0，实际: $(herdr --version 2>/dev/null | head -1)" >&2
+  exit 1
 fi
 herdr --version >&2
 ENV_LINES="$ENV_LINES
