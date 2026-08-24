@@ -189,6 +189,9 @@ pub(crate) trait TmuxEventSink {
     fn emit_message(&self, message: Message) {
         self.emit(TmuxEvent::Message(message));
     }
+    /// 把同一 pane 尚未发出的合并 %output 刷进下游。生产 reader 在每个
+    /// pty chunk 结束时调用，避免连续 TUI 刷新被扣在 coalescer 里。
+    fn flush(&self) {}
 }
 
 impl TmuxEventSink for TmuxEventSender {
@@ -204,6 +207,125 @@ impl TmuxEventSink for TmuxEventSender {
 impl TmuxEventSink for mpsc::UnboundedSender<TmuxEvent> {
     fn emit(&self, event: TmuxEvent) {
         let _ = self.send(event);
+    }
+}
+
+/// 同一 pane 连续 `%output` 在进入有界 lane 前合并成一块。
+///
+/// tmux 控制协议按行推送；Codex/htop 一次重绘可以产生远超
+/// [`OUTPUT_EVENT_BUFFER`] 条 `%output`。若不合并，共享 64 槽会立刻
+/// OutputGap，backend 再 pause + 大 capture，表现为卡死后再整屏重绘。
+const OUTPUT_COALESCE_MAX_BYTES: usize = 32 * 1024;
+
+pub(crate) struct OutputBatcher<S: TmuxEventSink> {
+    inner: S,
+    pending: Mutex<Option<TmuxEvent>>,
+}
+
+impl<S: TmuxEventSink> OutputBatcher<S> {
+    pub(crate) fn new(inner: S) -> Self {
+        Self {
+            inner,
+            pending: Mutex::new(None),
+        }
+    }
+}
+
+impl<S: TmuxEventSink> TmuxEventSink for OutputBatcher<S> {
+    fn emit(&self, event: TmuxEvent) {
+        if output_event_pane(&event).is_some() {
+            let mut pending = self.pending.lock().expect("output batcher mutex poisoned");
+            if let Some(existing) = pending.as_mut() {
+                if try_append_output(existing, &event) {
+                    if output_event_bytes(existing) >= OUTPUT_COALESCE_MAX_BYTES {
+                        let flushed = pending.take().expect("coalesced output just checked");
+                        drop(pending);
+                        self.inner.emit(flushed);
+                    }
+                    return;
+                }
+            }
+            let previous = pending.replace(event);
+            drop(pending);
+            if let Some(previous) = previous {
+                self.inner.emit(previous);
+            }
+            return;
+        }
+        self.flush();
+        self.inner.emit(event);
+    }
+
+    fn flush(&self) {
+        let event = self
+            .pending
+            .lock()
+            .expect("output batcher mutex poisoned")
+            .take();
+        if let Some(event) = event {
+            self.inner.emit(event);
+        }
+    }
+}
+
+fn output_event_pane(event: &TmuxEvent) -> Option<PaneId> {
+    match event {
+        TmuxEvent::Message(Message::Output { pane, .. } | Message::ExtendedOutput { pane, .. }) => {
+            Some(*pane)
+        }
+        _ => None,
+    }
+}
+
+fn output_event_bytes(event: &TmuxEvent) -> usize {
+    match event {
+        TmuxEvent::Message(
+            Message::Output { content, .. } | Message::ExtendedOutput { content, .. },
+        ) => content.len(),
+        _ => 0,
+    }
+}
+
+fn try_append_output(dst: &mut TmuxEvent, src: &TmuxEvent) -> bool {
+    match (dst, src) {
+        (
+            TmuxEvent::Message(Message::Output {
+                pane: dst_pane,
+                content,
+                raw_content,
+            }),
+            TmuxEvent::Message(Message::Output {
+                pane: src_pane,
+                content: more,
+                raw_content: more_raw,
+            }),
+        ) if dst_pane == src_pane => {
+            content.extend_from_slice(more);
+            raw_content.push_str(more_raw);
+            true
+        }
+        (
+            TmuxEvent::Message(Message::ExtendedOutput {
+                pane: dst_pane,
+                content,
+                raw_content,
+                age_ms,
+            }),
+            TmuxEvent::Message(Message::ExtendedOutput {
+                pane: src_pane,
+                content: more,
+                raw_content: more_raw,
+                age_ms: src_age,
+            }),
+        ) if dst_pane == src_pane => {
+            content.extend_from_slice(more);
+            raw_content.push_str(more_raw);
+            if *src_age > *age_ms {
+                *age_ms = *src_age;
+            }
+            true
+        }
+        _ => false,
     }
 }
 
@@ -562,7 +684,7 @@ impl TmuxClient {
         let (tx, rx) = event_channel();
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            read_pty_loop(reader, tx_clone).await;
+            read_pty_loop(reader, OutputBatcher::new(tx_clone)).await;
         });
 
         let handle = TmuxClientHandle {
@@ -595,7 +717,7 @@ impl TmuxClient {
         let (tx, rx) = event_channel();
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            read_pty_loop(reader, tx_clone).await;
+            read_pty_loop(reader, OutputBatcher::new(tx_clone)).await;
         });
 
         let handle = TmuxClientHandle {
@@ -643,7 +765,7 @@ impl TmuxClient {
 
         let (tx, rx) = event_channel();
         let tx_clone = tx.clone();
-        tokio::spawn(read_stream_loop(stdout, tx_clone));
+        tokio::spawn(read_stream_loop(stdout, OutputBatcher::new(tx_clone)));
 
         let handle = TmuxClientHandle {
             pty_writer: None,
@@ -894,7 +1016,7 @@ pub(crate) fn feed_bytes_to_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8
 }
 
 /// pty 模式读循环：用 `PtyReader::read_chunk` 异步取字节块，按真换行切行。
-async fn read_pty_loop(mut reader: PtyReader, tx: TmuxEventSender) {
+async fn read_pty_loop<S: TmuxEventSink>(mut reader: PtyReader, tx: S) {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut response = None;
 
@@ -923,13 +1045,15 @@ async fn read_pty_loop(mut reader: PtyReader, tx: TmuxEventSender) {
             );
             process_line(&line, &tx, &mut response).await;
         }
+        tx.flush();
     }
     tracing::info!(target = "muxterm::client", "tmux pty EOF");
+    tx.flush();
     tx.emit(TmuxEvent::Exit { code: None });
 }
 
 /// 直 spawn 模式读循环：ChildStdout 是 AsyncRead。
-async fn read_stream_loop(stdout: ChildStdout, tx: TmuxEventSender) {
+async fn read_stream_loop<S: TmuxEventSink>(stdout: ChildStdout, tx: S) {
     use tokio::io::AsyncReadExt;
     let mut reader = stdout;
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -943,6 +1067,7 @@ async fn read_stream_loop(stdout: ChildStdout, tx: TmuxEventSender) {
                 for line in feed_bytes_to_lines(&mut buf, &chunk[..n]) {
                     process_line(&line, &tx, &mut response).await;
                 }
+                tx.flush();
             }
             Err(e) => {
                 tracing::error!(target = "muxterm::client", "读 tmux stdout 失败: {e}");
@@ -951,6 +1076,7 @@ async fn read_stream_loop(stdout: ChildStdout, tx: TmuxEventSender) {
         }
     }
     tracing::info!(target = "muxterm::client", "tmux stdout EOF");
+    tx.flush();
     tx.emit(TmuxEvent::Exit { code: None });
 }
 
@@ -1314,6 +1440,117 @@ mod tests {
         }
         assert_eq!(output_count, OUTPUT_EVENT_BUFFER);
         assert!(saw_gap && saw_response);
+    }
+
+    fn pane_output_event(pane: u32, text: &str) -> TmuxEvent {
+        TmuxEvent::Message(Message::Output {
+            pane: PaneId(pane),
+            content: text.as_bytes().to_vec(),
+            raw_content: text.to_string(),
+        })
+    }
+
+    #[test]
+    fn coalesced_tui_burst_does_not_gap_or_block_control() {
+        let (tx, mut rx) = event_channel();
+        let batcher = OutputBatcher::new(tx);
+        let pane = PaneId(2);
+        let burst = OUTPUT_EVENT_BUFFER * 4;
+        for i in 0..burst {
+            batcher.emit(pane_output_event(2, &format!("\x1b[Hframe-{i}")));
+        }
+        batcher.emit(TmuxEvent::ResponseBlock {
+            number: 7,
+            is_error: false,
+            lines: vec!["layout-ok".into()],
+            truncated_prefix: false,
+        });
+        batcher.flush();
+
+        let mut output_events = 0usize;
+        let mut output_bytes = 0usize;
+        let mut saw_gap = false;
+        let mut saw_response = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                TmuxEvent::Message(Message::Output {
+                    content, pane: p, ..
+                }) => {
+                    assert_eq!(p, pane);
+                    output_events += 1;
+                    output_bytes += content.len();
+                }
+                TmuxEvent::OutputGap { .. } => saw_gap = true,
+                TmuxEvent::ResponseBlock {
+                    number: 7, lines, ..
+                } => {
+                    assert_eq!(lines, vec!["layout-ok".to_string()]);
+                    saw_response = true;
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert!(
+            !saw_gap,
+            "Codex 式连续 %output 必须合并，不能打满 64 槽再 OutputGap"
+        );
+        assert!(saw_response, "控制响应不能被未合并的 output 水位挡住");
+        assert!(
+            output_events >= 1 && output_events < OUTPUT_EVENT_BUFFER,
+            "burst 应合并成少量 output 事件，实际 {output_events}"
+        );
+        assert!(output_bytes > burst, "合并后仍要保留全部帧字节");
+    }
+
+    #[test]
+    fn coalescer_does_not_merge_or_gap_a_quiet_pane() {
+        let (tx, mut rx) = event_channel();
+        let batcher = OutputBatcher::new(tx);
+        for i in 0..(OUTPUT_EVENT_BUFFER * 3) {
+            batcher.emit(pane_output_event(42, &format!("codex-{i}")));
+        }
+        batcher.emit(pane_output_event(0, "quiet-shell"));
+        batcher.flush();
+
+        let mut saw_gap = false;
+        let mut quiet = None;
+        let mut chatty_bytes = 0usize;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                TmuxEvent::OutputGap { .. } => saw_gap = true,
+                TmuxEvent::Message(Message::Output { pane, content, .. }) if pane == PaneId(0) => {
+                    quiet = Some(content)
+                }
+                TmuxEvent::Message(Message::Output { pane, content, .. }) if pane == PaneId(42) => {
+                    chatty_bytes += content.len()
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert!(!saw_gap);
+        assert_eq!(quiet.as_deref(), Some(b"quiet-shell".as_slice()));
+        assert!(chatty_bytes > OUTPUT_EVENT_BUFFER);
+    }
+
+    #[test]
+    fn coalescer_flushes_when_pane_changes() {
+        let (tx, mut rx) = event_channel();
+        let batcher = OutputBatcher::new(tx);
+        batcher.emit(pane_output_event(1, "aaa"));
+        batcher.emit(pane_output_event(1, "bbb"));
+        batcher.emit(pane_output_event(2, "ccc"));
+        batcher.flush();
+
+        let mut chunks = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                TmuxEvent::Message(Message::Output { pane, content, .. }) => {
+                    chunks.push((pane.0, content))
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert_eq!(chunks, vec![(1, b"aaabbb".to_vec()), (2, b"ccc".to_vec())]);
     }
 
     #[tokio::test]

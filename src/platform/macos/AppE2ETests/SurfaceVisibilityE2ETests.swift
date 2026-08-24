@@ -115,4 +115,47 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertFalse(firstHost.isHidden)
         XCTAssertFalse(secondHost.isHidden)
     }
+
+    func testReadySurfaceReseedDoesNotHideHost() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        let host = PaneHostView(paneId: 1, terminal: view)
+        manager.onSurfaceReadinessChanged = { _, ready in
+            host.setSurfaceReady(ready)
+        }
+        host.setSurfaceReady(false)
+        manager.testQueueSurfaceSeed(
+            paneId: 1,
+            view: view,
+            data: Data("FIRST_FRAME\r\n".utf8)
+        )
+        for _ in 0..<10 where !manager.isSurfaceReady(for: 1) {
+            manager.testFlushSurfaceSeeds()
+        }
+        AppE2E.pump(10)
+
+        XCTAssertTrue(manager.isSurfaceReady(for: 1))
+        XCTAssertFalse(host.isHidden)
+
+        manager.handleSnapshot(paneId: 1, data: Data("SECOND_FRAME\r\n".utf8))
+        XCTAssertTrue(
+            manager.isSurfaceReady(for: 1),
+            "已经在画的 Surface 再 seed 不得藏白"
+        )
+        XCTAssertFalse(host.isHidden, "切 tab / output-dropped 不得把已显示的 host 藏起来")
+
+        for _ in 0..<10 {
+            manager.testFlushSurfaceSeeds()
+        }
+        AppE2E.pump(10)
+
+        XCTAssertTrue(manager.isSurfaceReady(for: 1))
+        XCTAssertFalse(host.isHidden)
+        XCTAssertTrue(view.visibleScreenText().contains("SECOND_FRAME"))
+    }
 }
