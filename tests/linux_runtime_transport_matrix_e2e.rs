@@ -1219,19 +1219,27 @@ fn scenario_ctrl_l_stays_clear(
         let full = app.test_pane_vte_text(pane);
         let rows = app.test_pane_screen_rows(pane);
         let cursor = app.test_pane_cursor_row(pane);
+        let (trace_seeds, trace_feeds, trace_bytes) = app.test_pane_render_trace(pane);
         let mut lines = Vec::new();
         for (i, line) in full.lines().enumerate() {
             if line.contains(&before_token) || line.contains(&after_token) {
                 lines.push(format!("full[{i}]: {:?}", line.trim_end()));
             }
         }
+        // 诊断：完整 buffer 文本（scrollback + 屏幕），看 CLA/CLB 到底在哪。
+        let full_dump: Vec<String> = full
+            .lines()
+            .enumerate()
+            .map(|(i, l)| format!("{i}: {:?}", l.trim_end()))
+            .collect();
         anyhow::bail!(
-            "Ctrl-L 清屏未收敛: rows={rows} cursor={cursor} screen_len={} screen_has_before={} screen_has_after={} full_has_before={} full_has_after={} lines={lines:?} screen={screen:?}",
+            "Ctrl-L 清屏未收敛: rows={rows} cursor={cursor} trace=(seeds={trace_seeds},feeds={trace_feeds},bytes={trace_bytes}) screen_len={} screen_has_before={} screen_has_after={} full_has_before={} full_has_after={} lines={lines:?} screen={screen:?}\nFULL_DUMP:\n{}",
             screen.len(),
             screen.contains(&before_token),
             screen.contains(&after_token),
             full.contains(&before_token),
             full.contains(&after_token),
+            full_dump.join("\n"),
         );
     }
     let screen = app.test_pane_screen_text(pane);

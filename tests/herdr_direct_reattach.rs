@@ -49,13 +49,13 @@ fn direct_reattach_preserves_server_scrollback() {
         &wire_pane,
         PaneId(1),
         1,
-        StreamMode::Observe,
+        StreamMode::Control,
         false,
         63,
         40,
         tx.clone(),
     )
-    .expect("初始 observe 流启动失败");
+    .expect("初始 control 流启动失败");
     stream1
         .send_input(b"printf 'KEEP_TOKEN_XYZ\\n'\r")
         .expect("写命令失败");
@@ -167,7 +167,7 @@ fn concurrent_two_pane_reopen_preserves_scrollback() {
         &wire_pane1,
         PaneId(1),
         1,
-        StreamMode::Observe,
+        StreamMode::Control,
         false,
         63,
         40,
@@ -179,7 +179,7 @@ fn concurrent_two_pane_reopen_preserves_scrollback() {
         &wire_pane2,
         PaneId(2),
         1,
-        StreamMode::Observe,
+        StreamMode::Control,
         false,
         63,
         40,

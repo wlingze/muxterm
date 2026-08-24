@@ -11,7 +11,7 @@ use anyhow::{ensure, Context, Result};
 
 use muxterm::core::model::backend::RuntimeCapability;
 use muxterm::core::model::layout::{LayoutNode, SplitDir};
-use muxterm::core::model::state::BackendStatus;
+use muxterm::core::model::state::{BackendStatus, MutationResult, StateChange};
 use muxterm::core::model::task::{Task, TaskOutcome};
 use muxterm::core::protocol::terminal::emulate::TerminalState;
 use muxterm::core::types::{PaneId, TabId};
@@ -234,15 +234,56 @@ fn wait_until(
     )
 }
 
+/// 单条事件是否就是目标 operation 的 Completed settlement。
+fn settle_check(event: StateChange, operation_id: u64, label: &str) -> Result<Option<()>> {
+    if let StateChange::MutationSettled {
+        operation_id: settled,
+        result,
+        ..
+    } = event
+    {
+        ensure!(
+            settled == operation_id,
+            "{label} settlement operation {settled} != {operation_id}"
+        );
+        ensure!(
+            result == MutationResult::Completed,
+            "{label} 必须 Completed，实际 {result:?}"
+        );
+        Ok(Some(()))
+    } else {
+        Ok(None)
+    }
+}
+
 fn done(workspace: &mut Workspace, task: Task, label: &str) -> Result<()> {
     let outcome = workspace
         .execute(task)
         .with_context(|| format!("{label} 执行失败"))?;
-    ensure!(
-        outcome == TaskOutcome::Done,
-        "{label} 必须成功，实际 {outcome:?}"
-    );
-    Ok(())
+    match outcome {
+        // shell/tmux 同步完成。
+        TaskOutcome::Done => Ok(()),
+        // W5：herdr 异步 mutation —— 必须等到唯一 MutationSettled(Completed)。
+        TaskOutcome::Accepted { operation_id } => {
+            let deadline = Instant::now() + MATRIX_TIMEOUT;
+            while Instant::now() < deadline {
+                // refresh() 会返回新事件（take_events 只排空已 poll 的）；两路都查。
+                for event in workspace.take_events() {
+                    if let Some(()) = settle_check(event, operation_id, label)? {
+                        return Ok(());
+                    }
+                }
+                for event in workspace.refresh() {
+                    if let Some(()) = settle_check(event, operation_id, label)? {
+                        return Ok(());
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            anyhow::bail!("{label} 等待 MutationSettled 超时")
+        }
+        other => anyhow::bail!("{label} 必须成功，实际 {other:?}"),
+    }
 }
 
 fn active_tab(workspace: &Workspace) -> Result<TabId> {

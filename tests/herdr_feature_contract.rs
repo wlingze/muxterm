@@ -300,7 +300,8 @@ fn herdr_runtime_split_pane_down_updates_vertical_layout() {
         .active_pane()
         .expect("应有 active pane")
         .id;
-    workspace
+    // W5：mutation 异步收敛（Accepted → MutationSettled），不能同步断言拓扑。
+    let outcome = workspace
         .execute(Task::SplitPane {
             target: Some(target),
             dir: SplitDir::Vertical,
@@ -308,6 +309,46 @@ fn herdr_runtime_split_pane_down_updates_vertical_layout() {
             workdir: None,
         })
         .expect("Herdr down SplitPane 应成功");
+    let operation_id = match outcome {
+        muxterm::core::model::task::TaskOutcome::Accepted { operation_id } => operation_id,
+        other => panic!("SplitPane 必须 Accepted，实际 {other:?}"),
+    };
+
+    // 等唯一 MutationSettled(Completed) + 快照收敛出 Vertical 布局。
+    let deadline = Instant::now() + HERDR_TIMEOUT;
+    let mut settled = false;
+    while Instant::now() < deadline {
+        for event in workspace.take_events() {
+            if let StateChange::MutationSettled {
+                operation_id: settled_id,
+                result,
+                ..
+            } = event
+            {
+                assert_eq!(settled_id, operation_id, "settlement operation 不匹配");
+                assert_eq!(
+                    result,
+                    muxterm::core::model::state::MutationResult::Completed,
+                    "SplitPane 必须 Completed"
+                );
+                settled = true;
+            }
+        }
+        let _ = workspace.refresh();
+        let tab = workspace.state().tabs()[0].id;
+        if settled
+            && matches!(
+                workspace.state().layout(&tab).map(|layout| &layout.tree),
+                Some(LayoutNode::Split {
+                    dir: SplitDir::Vertical,
+                    ..
+                })
+            )
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 
     let tab = workspace.state().tabs()[0].id;
     assert!(

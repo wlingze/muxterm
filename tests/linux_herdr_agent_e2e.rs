@@ -25,7 +25,7 @@ use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentComma
 use support::linux_gtk::{gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
-const HERDR_TIMEOUT: Duration = Duration::from_secs(15);
+const HERDR_TIMEOUT: Duration = Duration::from_secs(25);
 
 struct EnvRestore {
     key: &'static str,
@@ -1109,6 +1109,10 @@ fn herdr_agent_lifecycle_after_commands() {
         )?;
         wait_detector_working(&ctx.session, &ctx.wire_pane1)?;
         ctx.agent_command.mark_done();
+        // 与 done_attention 场景一致：先确认 server 侧 detector 已从 Working
+        // 转走（Done/Idle），再等产品侧 done attention——ssh 下事件链路
+        // 可能滞后于 server 状态，直接等产品侧会偶发超时。
+        wait_for_server_agent_transition(&ctx.session, &ctx.wire_pane1)?;
         wait_for(&ctx.app, "done attention", |candidate| {
             candidate.test_attention_done_count() == 1
                 && notification_count(candidate, ": task complete") == 1
