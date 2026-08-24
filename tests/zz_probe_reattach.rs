@@ -1,5 +1,5 @@
-//! 临时 probe：验证 herdr detach/reattach 尺寸组合对服务端 buffer 的影响。
-//! 只用隔离 session（muxterm-test-probe-re2-<pid>），绝不碰用户会话。
+//! 临时 probe：打印 pane 内 shell 环境 + 验证 detach/reattach 后 buffer。
+//! 只用隔离 session（muxterm-test-probe-env-<pid>），绝不碰用户会话。
 use std::time::{Duration, Instant};
 
 use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
@@ -9,79 +9,98 @@ use support::herdr_test_support::IsolatedHerdr;
 
 mod support;
 
+fn read_text(session: &HerdrSession, wire_pane: &str) -> String {
+    session
+        .pane_read_recent_ansi_lines(wire_pane, 2000)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default()
+}
+
 fn wait_server_text(session: &HerdrSession, wire_pane: &str, text: &str) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if let Ok(bytes) = session.pane_read_recent_ansi_lines(wire_pane, 2000) {
-            if String::from_utf8_lossy(&bytes).contains(text) {
-                return true;
-            }
+        if read_text(session, wire_pane).contains(text) {
+            return true;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     false
 }
 
-fn attach_once(
-    sess: &HerdrSession,
-    pane: &str,
-    cols: u16,
-    rows: u16,
-    mode: StreamMode,
-) -> ObserveStream {
+#[test]
+fn probe_env_and_reattach() {
+    let herdr = IsolatedHerdr::start("probe-env");
+    let (_ws, _tab, wire_pane) = herdr.create_workspace("/tmp", "probe-env-ws");
+    let sess = HerdrSession::new(herdr.name(), herdr.socket_path());
+
     let (tx, _rx) = channel();
-    ObserveStream::start(
+    let mut s1 = ObserveStream::start(
         sess.client_socket_path(),
-        pane,
+        &wire_pane,
         PaneId(1),
         1,
-        mode,
+        StreamMode::Control,
         false,
-        cols,
-        rows,
-        tx,
+        54,
+        23,
+        tx.clone(),
     )
-    .expect("流启动失败")
-}
+    .unwrap();
 
-fn attach(
-    sess: &HerdrSession,
-    pane: &str,
-    cols: u16,
-    rows: u16,
-    mode: StreamMode,
-) -> ObserveStream {
-    attach_once(sess, pane, cols, rows, mode)
-}
-
-fn scenario(label: &str, first: (u16, u16), reopen: (u16, u16), mode: StreamMode) {
-    let herdr = IsolatedHerdr::start("probe-re2");
-    let (_ws, _tab, wire_pane) = herdr.create_workspace("/tmp", "probe-re2-ws");
-    let sess = HerdrSession::new(herdr.name(), herdr.socket_path());
-    let token = format!("TK_{label}_{}", std::process::id());
-
-    let mut s1 = attach_once(&sess, &wire_pane, first.0, first.1, StreamMode::Control);
-    s1.send_input(format!("printf '{}'\r", token).as_bytes())
-        .unwrap();
+    // 1) 打印 pane 内 shell 环境（短命令，避免折行；先等 shell ready）
+    std::thread::sleep(Duration::from_millis(1200));
+    for cmd in [
+        "echo PROBE_ENV_START",
+        "echo 0=$0",
+        "echo SHELL=$SHELL",
+        "echo TERM=$TERM",
+        "echo LANG=$LANG",
+        "echo PS1=$PS1",
+        "echo PSCMD=$PROMPT_COMMAND",
+        "command -v zsh",
+        "command -v bash",
+        "echo PROBE_ENV_END",
+    ] {
+        s1.send_input(format!("{}\r", cmd).as_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(120));
+    }
     assert!(
-        wait_server_text(&sess, &wire_pane, &token),
-        "{label} B 阶段 token"
+        wait_server_text(&sess, &wire_pane, "PROBE_ENV_END"),
+        "环境探测未完成"
     );
+    std::thread::sleep(Duration::from_millis(300));
+    println!("=== PANE ENV ===\n{}", read_text(&sess, &wire_pane));
+
+    // 2) 出 token
+    let token = format!("TK_ENV_{}", std::process::id());
+    s1.send_input(format!("printf '{}'\r", token).as_bytes()).unwrap();
+    assert!(wait_server_text(&sess, &wire_pane, &token), "B 阶段 token");
+    println!("BEFORE_DETACH token_present=true");
     drop(s1);
     std::thread::sleep(Duration::from_millis(300));
 
-    let s2 = attach_once(&sess, &wire_pane, reopen.0, reopen.1, mode);
+    // 3) detach 后
+    let after_detach = read_text(&sess, &wire_pane).contains(&token);
+    println!("AFTER_DETACH token_preserved={after_detach}");
+
+    // 4) 同尺寸 reattach
+    let s2 = ObserveStream::start(
+        sess.client_socket_path(),
+        &wire_pane,
+        PaneId(1),
+        1,
+        StreamMode::Observe,
+        false,
+        54,
+        23,
+        tx,
+    )
+    .unwrap();
     let ok = wait_server_text(&sess, &wire_pane, &token);
-    println!("{label}: first={first:?} reopen={reopen:?} mode={mode:?} token_preserved={ok}");
+    println!("AFTER_REATTACH token_preserved={ok}");
+    if !ok {
+        println!("=== REATTACH 后内容 ===\n{}", read_text(&sess, &wire_pane));
+    }
     drop(s2);
     std::thread::sleep(Duration::from_millis(200));
-}
-
-#[test]
-fn probe_reattach_size_matrix() {
-    scenario("same-size", (86, 20), (86, 20), StreamMode::Observe);
-    scenario("shrink", (86, 20), (54, 23), StreamMode::Observe);
-    scenario("grow", (54, 23), (86, 20), StreamMode::Observe);
-    scenario("big-shrink", (120, 40), (54, 23), StreamMode::Observe);
-    scenario("big-to-big", (120, 40), (86, 20), StreamMode::Observe);
 }
