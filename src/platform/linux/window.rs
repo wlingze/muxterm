@@ -233,12 +233,18 @@ impl AppWindow {
                     layout.root_box.remove(&child);
                 }
             }
+            // 显式释放全部 LayoutHost/PaneView/VTE：GTK 对象必须在本窗口
+            // destroy 前解构，否则 VTE 的 GL 资源残留到下一个测试窗口
+            // realize 时才 finalize，与新的 GL 初始化交叉 = 堆损坏
+            // （linux_herdr_agent_e2e 连续多测试时可见 double free）。
+            s.pixel_cache.clear();
             // Popover 挂在状态点按钮上：先解除父子关系，避免 dot 销毁时
             // popover 仍引用它（finalize-with-children 堆损坏）。
             s.status.popover_widget().unparent();
         }
         self.window.set_child(None::<&gtk4::Widget>);
         self.window.destroy();
+        // 让 GTK 在窗口销毁后继续跑完 pending finalize，避免跨测试残留。
         while glib::MainContext::default().iteration(false) {}
     }
 
@@ -1087,6 +1093,18 @@ impl AppWindow {
             .pane(s.active_pane)
             .map(|v| v.render_trace().resets)
             .unwrap_or(0)
+    }
+
+    /// 测试用：指定 pane 的渲染痕迹（seeds/feeds/bytes）。
+    pub fn test_pane_render_trace(&self, pane_id: u32) -> (u32, u32, usize) {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .map(|v| {
+                let t = v.render_trace();
+                (t.seeds, t.feeds, t.bytes_fed)
+            })
+            .unwrap_or((0, 0, 0))
     }
 
     /// 测试用：清空当前激活 pane 的渲染痕迹（切 tab 前归零）。
@@ -2129,7 +2147,11 @@ fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
         StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
             if let Some(view) = resident_pane_view(s, wid, pane.0) {
                 sync_pane_grid_size_for(s, wid, pane.0);
-                view.feed_output(data);
+                // PaneFrame=full 完整状态（清屏重画）；PaneOutput=增量（直接 feed）。
+                match ev {
+                    StateChange::PaneFrame { .. } => view.feed_full(data),
+                    _ => view.feed_output(data),
+                }
                 if is_active {
                     // W18e：离开底部期间的新行累计到回底按钮 +N（只在前台）。
                     if !view_at_bottom(&view) {
@@ -2398,7 +2420,11 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
                 sync_pane_grid_size(s, pane.0);
                 // Surface：synced 后只 feed 原始字节；未 synced 的 live 由
                 // F3 capture 门丢弃（F2 阶段先 raw feed，禁止 dump）。
-                view.feed_output(data);
+                // PaneFrame=full 完整状态（清屏重画）；PaneOutput=增量。
+                match ev {
+                    StateChange::PaneFrame { .. } => view.feed_full(data),
+                    _ => view.feed_output(data),
+                }
                 // W18e：离开底部期间的新行累计到回底按钮 +N。
                 if !view_at_bottom(&view) {
                     s.jump_unseen = s

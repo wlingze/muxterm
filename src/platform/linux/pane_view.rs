@@ -229,6 +229,26 @@ impl PaneView {
             return;
         }
         self.inner.pending_feed.borrow_mut().extend_from_slice(data);
+        self.schedule_feed_flush();
+    }
+
+    /// full 帧（完整状态快照）入队：先清屏再喂 full，避免 resize 触发
+    /// 的 full 帧（herdr 不带 ESC[2J）叠加在旧内容上导致行错位
+    /// （matrix ctrl_l_stays_clear 偶发失败根因）。不 reset scrollback。
+    pub fn feed_full(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        self.inner
+            .pending_feed
+            .borrow_mut()
+            .extend_from_slice(b"\x1b[2J\x1b[H");
+        self.inner.pending_feed.borrow_mut().extend_from_slice(data);
+        self.schedule_feed_flush();
+    }
+
+    /// 调度合并 flush（25ms 窗口）。
+    fn schedule_feed_flush(&self) {
         if self.inner.feed_flush_source.borrow().is_none() {
             let weak = Rc::downgrade(&self.inner);
             let id = glib::timeout_add_local(
@@ -465,20 +485,11 @@ impl PaneView {
     ///
     /// Ctrl-L 后旧内容会留在 VTE scrollback 里，但当前屏幕必须已清空；
     /// 断言“当前屏不可见 BEFORE”必须只看屏幕，不能把 scrollback 算进去。
+    /// vte4 的 text_format() 返回可见屏幕（最后 rows 行，不含 scrollback）；
+    /// text_range_format(0,0,rows-1,-1) 返回的是 buffer 前 rows 行（scrollback
+    /// 区域），会误把历史 prompt 当“当前屏”（matrix ctrl_l 误报根因）。
     pub fn screen_text(&self) -> String {
-        let terminal = self.inner.renderer.terminal();
-        let rows = terminal.row_count().max(1) as usize;
-        let all = self.visible_text();
-        let mut lines = all.lines();
-        let tail: Vec<&str> = lines
-            .by_ref()
-            .rev()
-            .take(rows)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        tail.join("\n")
+        self.visible_text()
     }
 
     /// 测试用：VTE 光标所在行（0 起；最后一行 = rows-1）。
