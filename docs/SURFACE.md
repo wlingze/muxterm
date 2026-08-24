@@ -1,17 +1,17 @@
 # SURFACE.md — 单面架构（Muxterm Surface）
 
 > 机制名：**Surface**（中文：**单面**）
-> 状态：调研定案，2026-08-15 21:26 CST（核查 `2026-08-15T21:26:10+08:00`）
+> 状态：调研定案，2026-08-15 21:26 CST；**2026-08-24 纠偏**见 §7（核查 `2026-08-24T16:55:34+08:00`）
 > 性质：长期保留的架构文档。Linux 像素路径（F1–F6）已冻结；2026-08-22 补充 Herdr
 > source-separation/Ctrl-L 契约。
 > **产品层级与工作区池** 见 [`WORKSPACE.md`](WORKSPACE.md)。
-> [`PANE-VT.md`](PANE-VT.md) 是讨论稿，以 WORKSPACE.md 为准。
+> [`PANE-VT.md`](PANE-VT.md) 是讨论稿，以 WORKSPACE.md 为准。§2–3 的「镜子」是 Index，不是显示缓存。
 > Herdr 的 full/diff、generation 与 Index 播种规则见
 > [`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5；专项测试见
 > [`HERDR-TESTING.md`](HERDR-TESTING.md)。
 > 参考树：`/home/wlz/Developer/terminal/`（只读，不进本仓库）
 
-**一句话：** Director 维持 tmux 连接与拓扑；每个 pane **只有一个**终端仿真器负责画面；同一字节流可以另有只读 Index 做搜索/通知。**禁止**把第二份网格再序列化成 ANSI 灌进 VTE。
+**一句话：** Director 维持 tmux 连接与拓扑；每个 **已打开** pane 只有一个前端 VT 负责画面；同一字节流可以另有只读 Index 做搜索/通知。**禁止**把第二份网格再序列化成 ANSI 灌进 VTE/SwiftTerm。Core 保活连接，不画像素。
 
 ---
 
@@ -175,19 +175,17 @@ ivyTerm 在 capture 后用若干 `\n` + `ESC[#A` 把视口对齐到底（`scroll
 4. **Seed once.** capture 完成前不画 live；完成后一次性 feed；再增量。
 5. **Follow tail.** 直播 `history_offset=0`；新输出后视口在底（alt-screen 由字节自己切）。禁止用 replica dump 模拟滚动来「修」TUI。
 6. **Bytes in, bytes out.** 键盘 → `send-keys -H`；`%output` 解转义 → 原样 feed。
-7. **`%pause`.** 积压超过阈值对 pane pause，Surface 追上再 resume（iTerm2 / tmux `control.c`）。
+7. **`%pause` 是流控，不是切 tab 刷新。** 已打开的 Surface 禁止 `pause` + capture。洪水 pane 的 `pause-after` **尚未实现**（TODO，见 §7.4）。
 8. **Pane id.** 控制协议里 pane 是 `%N`。`缺少 @ 前缀: %64` 必须当 bug 修，不是忽略。
-9. **Source separation.** Herdr `pane.read` / `visible_ansi` 只播种 Index；只有经过当前
-   generation/event ordinal/wire seq 过滤的原始 `terminal.frame` 才能进入 Surface。full
-   建 baseline，diff 追赶；旧 generation 永不重播。
-10. **Persistent routing.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与后台
-    workspace 的 PaneView 继续吃原始字节，只是不绘制。`poll_background()` 不能只喂 Index/
-    attention 后丢掉 Surface event；切回时只能 show/hide，不能靠 Index dump 补画。
+9. **Index never becomes Surface.** `visible_ansi` / `surface_seed_ansi` / `scroll_ansi` / `paneSurfaceSeedANSI` **不得**进 VTE/SwiftTerm。Herdr `pane.read` / `visible_ansi` 也只播种 Index；只有经过当前 generation/event ordinal/wire seq 过滤的原始 `terminal.frame` 才能进入 Surface。full 建 baseline，diff 追赶；旧 generation 永不重播。
+10. **Open Surfaces keep eating.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与后台 workspace 的 PaneView 继续 `feed` 原始 PTY 字节，只是不绘制。`poll_background()` 不能只喂 Index/attention 后丢掉 Surface event；切回时只能 show/hide，不能靠 Index dump 补画。
+11. **No pause to recapture an open Surface.** 已经 seed 过的 pane，切 tab/pane 不得再抓屏。从未 seed 的 pane 才走定律 4 一次。
+12. **History is lines, not a stream.** 目标：第一次打开时 Runtime 把 capture 解析成行写入 Surface scrollback，不是 VT `feed()` 重放。**按行填 attach 前历史尚未落地**（TODO，见 §7.4）。本轮先保住 attach 之后的 PTY 增量。
 
 Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续原始 frame/output 改变
 像素；切 tab、resize、observer 重连或 Index 更新都不得把旧屏重新 feed 回来。
 
-本地 shell 不受 4–7 约束（它有真 PTY）。
+本地 shell 不受 4、7、11、12 约束（它有真 PTY）。定律 1、2、9、10 对本地同样成立。
 
 ---
 
@@ -238,7 +236,7 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续
 
 `/home/wlz/Developer/terminal/` 不提交。更新：`git -C <repo> pull --ff-only`（均为 `--depth 1`）。清单见该目录 `README.md`。
 
-核查时间：`2026-08-15T21:26:10+08:00`。源码以克隆树为准。
+核查时间：`2026-08-15T21:26:10+08:00`；§7 核查 `2026-08-24T16:55:34+08:00`。源码以克隆树为准。
 
 | 声明 | 来源 |
 |---|---|
@@ -248,10 +246,63 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续
 | seed = snapshot + discard + catch-up | cmux `Sources/RemoteTmuxPaneSeed.swift` |
 | `-H` 十六进制字节 | `tmux.1` send-keys；`cmd-send-keys.c` `args_has(..., 'H')`；[OpenBSD tmux.1](https://man.openbsd.org/tmux.1) |
 | 假 PTY | WezTerm `mux/src/tmux_pty.rs` |
+| 历史写成格子，不是 ANSI `feed` | iTerm2 `TmuxWindowOpener.m` `capture-pane -peqJN -S -N` → `TmuxHistoryParser` → `VT100Screen.setHistory:` |
+| 控制模式是文本，客户端自己画 | [tmux wiki Control Mode](https://github.com/tmux/tmux/wiki/Control-Mode)（核查 `2026-08-24T16:34:51+08:00`） |
 
 ---
 
-## 7. Topology batch commit boundary（2026-08-24）
+## 7. 2026-08-24：字节直达（纠偏）
+
+核查：`2026-08-24T16:55:34+08:00`。
+
+文档 2026-08-15 已经禁止 dump。实现后来把 Workspace/PaneBuf 当成显示缓存：切 tab `pause`+capture，再用 `surface_seed_ansi` 灌进 SwiftTerm。卡顿和「历史只能滑一点」都来自这条，不是来自「core 里有 Workspace」。
+
+### 7.1 两路内容，两个去处
+
+`runtime/tmux` 解析 `-CC` 之后只交出两种产品数据。Workspace 和前端都看不见 `%output` / `capture-pane` / `$N`。
+
+| Runtime 解析出来的 | 产品事件 | 谁用 |
+|---|---|---|
+| 控制协议（窗口树、焦点、layout、pause 通知） | `LayoutChanged` / `ActiveTabChanged` / `PaneResized` / … | Workspace 存拓扑；前端改分割和 tab |
+| PTY 字节（解转义后的 pane 输出） | `PaneOutput { pane, data }` | **只**进该 pane 的前端 Surface |
+
+Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateChange`，维护 Tab/Pane 树，把同一份 `PaneOutput` 喂给 Index（搜索/attention）。它不画像素，不把 Index 网格再编码回去。
+
+以后换 Runtime（Herdr 等）只要交出同一套 `StateChange`。产品层不对 tmux 特化。QuickConnect 里可以出现 runtime 名字 `tmux`，那是用户选工作区类型，不是协议泄漏。
+
+前端认的能力是「直连 PTY」还是「镜像 PTY」（查询应答、client 尺寸），不是 `if tmux`。
+
+### 7.2 谁渲染
+
+每个 **已打开** pane 一个前端 VT（VTE / SwiftTerm）。PTY 字节 `feed`，禁止 `reset` 追帧。
+
+切 tab：已有 Surface 只显示/隐藏，继续吃 `PaneOutput`。不要 core 预渲染一帧再贴到前端。
+
+前台 Workspace：该工作区里出 PTY 的 pane 都可以有 Surface（tab 栏上的页都算打开）。后台 Workspace：连接和 Index 仍在池里；像素控件只保留已经建过的，不再新建。池有容量上限，不是无限多个 Workspace 同时养全套 SwiftTerm。
+
+### 7.3 本轮实现
+
+- 切到已经 seed 过的 tab：Runtime 不再 `pause` / `capture-pane`（`initial_capture_done` 直接跳过）。
+- 前台 Workspace 的 `PaneOutput` / `PaneSnapshot` 进该工作区所有 pane 的 Surface（tab 栏上的页都算打开）；禁止 `paneSurfaceSeedANSI` / `visible_ansi` 当显示。
+- 后台 Workspace slot：只给已经存在的 view 继续 `feed`，不新建 widget，不把 Index dump 当切回来的刷新。
+- 第一次 seed 仍用 Runtime 的 `PaneSnapshot`（可见屏 + 模式）。attach 前 tmux 历史按行写入 scrollback 见 TODO。
+- Workspace 数量受池上限约束，默认 5，不是无限格。
+
+### 7.4 TODO（本轮不实现）
+
+1. **洪水 `pause-after`。** 某个 pane 的 Surface 跟不上时，只对 **该 pane** `refresh-client -A %N:pause`，追上再 continue。代码里搜 `TODO(surface-7.4)`。现在不要用 pause 当切 tab 手段。不能无限吃 CUP 风暴还保证 60fps。
+2. **第一次打开按行填历史。** 对齐 iTerm2 `setHistory:`：`capture-pane -peqJN -S -N` 在 Runtime 解析成行，产品事件带行数据，前端写入 scrollback。禁止把 `-S -10000` 当 VT 流 `feed()`，也禁止为了不卡而永远只抓可见屏。
+
+### 7.5 不卡顿的验收（不是保证任意负载 60fps）
+
+- 已打开的 tab/pane 切换：没有 pause、没有 capture、没有 reset。
+- 打字和 TUI 跟 `PaneOutput` 走，不跟 Index dump 走。
+- 池里 Workspace 数量受 `WorkspacePoolPolicy.max_slots` 限制（默认 5）。
+- 某个 pane 刷爆时允许掉帧；TODO 落地后只 pause 那一个 pane。
+
+---
+
+## 8. Topology batch commit boundary（2026-08-24）
 
 Structural events 和像素事件不能交错提交。一个 poll batch 必须先把最终 topology 应用到
 Core，再对每个 affected workspace 执行一次 LayoutHost sync/mount；只有这个 commit boundary

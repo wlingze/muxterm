@@ -247,9 +247,7 @@ final class PaneLayoutView: NSView {
         case .leaf(let paneId):
             let term = terminalManager.view(for: paneId)
             let wrap = PaneHostView(paneId: paneId, terminal: term)
-            // `view(for:)` may have queued a large attach/deferred seed. Keep
-            // this host out of the visible hierarchy until the full seed and
-            // its live catch-up have completed.
+            // 尚未完成 Runtime seed / 首批 PTY 的 pane 先藏起来，避免白屏。
             wrap.setSurfaceReady(terminalManager.isSurfaceReady(for: paneId))
             wrap.onActivate = { [weak self] id in
                 self?.onActivatePane?(id)

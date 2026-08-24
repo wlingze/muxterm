@@ -5,7 +5,8 @@
 > （WorkspacePool → Workspace → Tab → Pane；Window 只是体现；
 > tmux 全部在 `runtime/tmux`；池在 core）。
 > Runtime 契约 `docs/RUNTIME.md`。Herdr 接入见 `docs/RUNTIME.md`。
-> 像素契约 `docs/SURFACE.md`。FFI/CLI 以 WORKSPACE.md §6 为准。
+> 像素契约 `docs/SURFACE.md`（§7：Runtime 拆控制协议/PTY，Workspace 不画像素）。
+> FFI/CLI 以 WORKSPACE.md §6 为准。
 
 ## 角色
 

@@ -4,6 +4,7 @@
 > Core Protocol / FFI / CLI / GUI **禁止**出现 tmux 的 session/window/pane 类型。
 > Herdr 对照在 [`RUNTIME.md`](RUNTIME.md) §6.2，不要写进本表。
 > 修订：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）；Herdr 指针 2026-08-17。
+> **2026-08-24：** 控制协议翻译成拓扑事件，PTY 字节翻译成 `PaneOutput`。像素契约 [`SURFACE.md`](SURFACE.md) §7。池有上限，洪水 `pause-after` 是 TODO。
 
 TmuxRuntime 是一个 **适配器**：把 tmux 控制模式填进 Muxterm 已经定好的 **Workspace → Tab → Pane**。不是反过来让产品层去迁就 tmux。
 

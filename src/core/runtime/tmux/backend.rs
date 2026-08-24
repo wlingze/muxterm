@@ -219,11 +219,8 @@ pub struct TmuxRuntime {
     /// attach 建立后给后台 tab 做轻量索引播种的开关。它只影响异步的可见
     /// 屏 capture，不让 connect 等待，也不提前创建前端 Surface。
     background_index_capture_enabled: bool,
-    /// 最近一次 capture 只取了可见屏；第一次切入该 tab 时要升级成带历史
-    /// 的权威 capture。
+    /// 最近一次 capture 只取了可见屏。切入时直接用它，不再 pause 重抓。
     background_capture_only: HashSet<PaneId>,
-    /// 切 tab 时可见屏 capture 尚未返回，待响应完成后继续发带历史 capture。
-    full_capture_after_pending: HashSet<PaneId>,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
     /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
@@ -547,7 +544,6 @@ impl TmuxRuntime {
             initial_capture_done: HashSet::new(),
             background_index_capture_enabled: false,
             background_capture_only: HashSet::new(),
-            full_capture_after_pending: HashSet::new(),
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
@@ -677,9 +673,8 @@ impl TmuxRuntime {
 
     /// 为一个 tab 的所有 pane 发起一次性 Surface seed。
     ///
-    /// attach 初始阶段只抓活动 tab，避免后台 tab 的 capture 把连接建立和
-    /// Cmd-Shift-P 卡在大量串行响应上。切 tab 后由同一个入口把后台可见屏
-    /// 索引升级成带 cursor/1049h 的权威 seed，仍然只抓可见网格。
+    /// 已经 seed 过的 pane（`initial_capture_done`）切过来只显示，不要
+    /// 再 pause/capture。从未抓过的 pane 才走 `query_capture_pane`。
     fn query_capture_tab(&mut self, tab: TabId) {
         let panes: Vec<PaneId> = self
             .panes
@@ -688,23 +683,26 @@ impl TmuxRuntime {
             .map(|pane| pane.id)
             .collect();
         for pane in panes {
+            if self.initial_capture_done.contains(&pane) {
+                self.background_capture_only.remove(&pane);
+                continue;
+            }
             if self.background_capture_only.contains(&pane) {
                 if self.initial_capture_pending.contains(&pane) {
-                    // 可见屏索引还在飞行：等它完成后升级为带 1049h 的
-                    // 权威 seed，避免同一 pane 上并发两个查询。
-                    self.full_capture_after_pending.insert(pane);
+                    // 可见屏还在路上：等它完成即可，不要再排队一轮 pause seed。
                     continue;
                 }
                 self.background_capture_only.remove(&pane);
-                self.initial_capture_done.remove(&pane);
+                self.initial_capture_done.insert(pane);
+                continue;
             }
             self.query_capture_pane(pane);
         }
     }
 
     /// 后台 tab 的轻量首屏 capture：只为 Core 索引提供当前可见内容，响应
-    /// 不参与 connect 就绪判定；第一次切入时 `query_capture_tab` 会升级到
-    /// 带 1049h/cursor 的可见屏 Surface seed。
+    /// 不参与 connect 就绪判定。前台 Workspace 用对应 `PaneSnapshot` 种 Surface；
+    /// 切 tab 不再 pause 重抓。
     fn query_background_index_tab(&mut self, tab: TabId) {
         let panes: Vec<PaneId> = self
             .panes
@@ -1548,8 +1546,8 @@ impl TmuxRuntime {
                 }
                 // tmux session 的 active window 切换 → muxterm active tab 切换
                 self.mark_tab_active(tab_id);
-                // 活动 tab 首次切入时才请求 Surface seed。后台 tab 的原始
-                // `%output` 继续进入索引面，但不会阻塞连接或提前创建 GUI。
+                // 活动 tab 首次出现且从未抓过屏时才 seed。已经有后台索引
+                // 的 pane 直接显示，避免切 tab 再 pause 一次。
                 self.query_capture_tab(tab_id);
                 self.query_panes_if_empty(tab_id);
             }
@@ -1584,6 +1582,13 @@ impl TmuxRuntime {
             Message::Pause { pane, .. } => {
                 if let Some(pane) = pane {
                     self.paused_panes.insert(pane);
+                    if self.resyncs.contains_key(&pane) {
+                        // 我们自己发的 pause 回声，不要再开一轮 resync。
+                        return;
+                    }
+                    // TODO(surface-7.4): 洪水 pause-after。某个 Surface 跟不上
+                    // 时，只对该 pane `refresh-client -A %N:pause`，追上再
+                    // continue。本轮不实现；切 tab 也不得走这条 pause 刷新。
                     tracing::debug!(
                         target: "muxterm::tmux::pause",
                         pane = pane.0,
@@ -1893,11 +1898,6 @@ impl TmuxRuntime {
                             .push_back(StateChange::PaneOutput { pane, data });
                         self.trim_event_queue();
                     }
-                    if self.full_capture_after_pending.remove(&pane) {
-                        self.background_capture_only.remove(&pane);
-                        self.initial_capture_done.remove(&pane);
-                        self.query_capture_pane(pane);
-                    }
                 }
                 PendingQuery::ListSessions => {
                     // list-sessions 默认格式: "demo: 1 windows (created ...)"
@@ -2201,15 +2201,15 @@ impl TmuxRuntime {
             }
         }
         // attach 的控制模式不一定会把当前屏幕历史作为 %output 推送。只对
-        // 活动 tab 发起首屏 capture；其它 tab 在第一次切入时由
-        // `SessionWindowChanged` 触发，避免多窗口 attach 阶段串行抓屏。
+        // 活动 tab 发起首屏 pause+capture；其它 tab 只做轻量可见屏索引。
+        // 切过去不再 pause 重抓（SURFACE.md §7）。
         if self.tab_is_active(tab_id) {
             for pane in new_panes {
                 self.query_capture_pane(pane.id);
             }
         } else if self.background_index_capture_enabled {
-            // 只为后台索引做轻量可见屏 capture；连接状态不等待这些响应，
-            // 且前端没有当前/既有 Surface 时会忽略对应事件。
+            // 只为后台索引做轻量可见屏 capture；连接状态不等待这些响应。
+            // 前台 Workspace 会把对应 PaneSnapshot 种进 Surface。
             for pane in new_panes {
                 self.query_capture_pane_visible(pane.id);
             }
@@ -2414,8 +2414,7 @@ impl TmuxRuntime {
     }
 
     /// 后台索引用的轻量 capture：不读取 scrollback，避免 attach 后多个
-    /// inactive tab 的响应挤占控制流。它复用同一 snapshot 边界状态机，
-    /// 但记录在 `background_capture_only`，切入时会升级为带 1049h 的可见屏 seed。
+    /// inactive tab 的响应挤占控制流。切入时不再升级为 pause seed。
     fn query_capture_pane_visible(&mut self, pane: PaneId) {
         if !self.is_attach_mode()
             || self.pending_queries.iter().any(|query| {
@@ -2881,7 +2880,8 @@ impl Runtime for TmuxRuntime {
 
         // attach 的 capture 是异步 Surface seed：连接状态不再等待所有 pane
         // 的历史返回。活动 tab 的查询已经排队，前端在收到 PaneSnapshot 后
-        // 播种；其它 tab 只做轻量可见屏索引，首次激活时再补 1049h/cursor。
+        // 播种；其它 tab 只做轻量可见屏索引。已经 seed 过的 pane 切 tab
+        // 只显示，不再 pause。
         if is_attach {
             self.background_index_capture_enabled = true;
             self.query_background_index_captures();
@@ -4783,7 +4783,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_switch_upgrades_background_index_without_history_dump() {
+    fn tab_switch_does_not_pause_already_indexed_pane() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         b.cmd_tx = Some(tx);
@@ -4816,13 +4816,75 @@ mod tests {
         b.query_capture_tab(TabId(2));
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            cmds.iter().any(|cmd| cmd.contains("%1:pause")),
-            "切入后台 tab 仍要 pause 再抓 1049h 状态: {cmds:?}"
+            !cmds
+                .iter()
+                .any(|cmd| cmd.contains("pause") || cmd.contains("capture-pane")),
+            "已有可见屏索引的 tab 切过去不得再 pause/capture，否则会顿一下: {cmds:?}"
         );
+        assert!(b.initial_capture_done.contains(&pane));
+        assert!(!b.background_capture_only.contains(&pane));
+        assert!(!b.resyncs.contains_key(&pane));
+    }
+
+    #[test]
+    fn tab_switch_skips_seed_when_only_initial_capture_done() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(1);
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "bg".into(),
+                active: false,
+            },
+        ];
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: String::new(),
+            cols: 80,
+            rows: 24,
+        });
+        b.initial_capture_done.insert(pane);
+
+        b.mark_tab_active(TabId(2));
+        b.query_capture_tab(TabId(2));
+        let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            !cmds.iter().any(|cmd| cmd.contains("-S ")),
-            "切 tab 不得再抓 scrollback 把已画好的屏藏白: {cmds:?}"
+            cmds.is_empty(),
+            "initial_capture_done 的 pane 切 tab 不得再发控制命令: {cmds:?}"
         );
+        assert!(!b.resyncs.contains_key(&pane));
+    }
+
+    #[test]
+    fn own_pause_echo_does_not_start_second_resync() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(2);
+        b.begin_initial_pane_seed(pane);
+        let _ = drain_tmux_cmds(&mut rx);
+        let generation = b.resyncs.get(&pane).unwrap().generation;
+
+        b.handle_message(Message::Pause {
+            pane: Some(pane),
+            args: String::new(),
+        });
+        assert_eq!(
+            b.resyncs.get(&pane).map(|resync| resync.generation),
+            Some(generation),
+            "自己发的 %pause 回声不得再开一轮 resync"
+        );
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(cmds.is_empty(), "pause 回声不得再发命令: {cmds:?}");
     }
 
     #[test]

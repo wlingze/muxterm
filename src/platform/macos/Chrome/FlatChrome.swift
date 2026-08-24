@@ -429,11 +429,9 @@ private extension UInt8 {
 
 /// PaneOutput 事件的喂入策略。
 ///
-/// 参考成熟终端设计：后端 `%output` 事件流是权威增量，累计快照只用于
-/// 新建视图的播种。视图首次创建时，播种快照（后端最近 256KB）已覆盖
-/// 后端已入队但尚未派发的事件；这些事件必须跳过，否则同一批字节会双写
-/// （输入/回显重复）。快照为空（新 pane 首批字节）时没有任何覆盖，事件
-/// 必须原样喂入。视图已存在时事件就是纯增量，直接喂入。
+/// 后端 `PaneOutput` 是权威增量。同一批里刚用 `PaneSnapshot` 播种的视图
+/// 必须跳过已覆盖的事件，否则双写。快照为空（新 pane 首批字节）时事件
+/// 原样喂入。视图已存在时事件就是纯增量。
 public enum PaneOutputFeedPolicy {
     public static func shouldFeedEvent(
         viewExistedBeforeEvent: Bool,
@@ -447,6 +445,14 @@ public enum PaneOutputFeedPolicy {
     public static func shouldFeedLive(viewport: UInt32) -> Bool {
         _ = viewport
         return true
+    }
+}
+
+/// 前台 Workspace：PTY 事件一律交给 Surface（没有就建）。
+/// 后台 Workspace 槽：只喂已经存在的 Surface，不新建 widget。
+public enum SurfaceEventPolicy {
+    public static func shouldDeliver(viewCreationEnabled: Bool, hasView: Bool) -> Bool {
+        viewCreationEnabled || hasView
     }
 }
 

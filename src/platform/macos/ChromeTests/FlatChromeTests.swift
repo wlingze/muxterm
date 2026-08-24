@@ -441,6 +441,16 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         XCTAssertTrue(fed.isEmpty)
     }
 
+    func testForegroundWorkspaceAlwaysDelivers() {
+        XCTAssertTrue(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: true, hasView: false))
+        XCTAssertTrue(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: true, hasView: true))
+    }
+
+    func testBackgroundWorkspaceOnlyExistingViews() {
+        XCTAssertFalse(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: false, hasView: false))
+        XCTAssertTrue(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: false, hasView: true))
+    }
+
     /// 空 snapshot 时首个事件建立 view 后，后续事件仍是增量；批次结束后下一批
     /// 也不能把旧 seed 状态带过去。
     func testEmptySeedAndBatchBoundaryKeepIncrementalEvents() {
