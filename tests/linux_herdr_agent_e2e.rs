@@ -101,6 +101,22 @@ fn diagnostics(app: &AppWindow) -> String {
     )
 }
 
+/// 轮询等待服务端 pane.read（recent 2000 行）出现指定文本。
+/// reopen/reattach 后服务端 replay 异步完成，CI 慢环境下 token 行可能
+/// 延迟回到 buffer 尾部；单次读取会时序误报（detach/reattach 连续性）。
+fn wait_for_server_text(session: &HerdrSession, wire_pane: &str, text: &str) -> bool {
+    let deadline = Instant::now() + HERDR_TIMEOUT;
+    while Instant::now() < deadline {
+        if let Ok(bytes) = session.pane_read_recent_ansi_lines(wire_pane, 2000) {
+            if String::from_utf8_lossy(&bytes).contains(text) {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
 fn wait_for(
     app: &AppWindow,
     label: &str,
@@ -207,9 +223,10 @@ fn assert_bound_token(
     pane_map: &HashMap<u32, String>,
     bound: &BoundToken,
 ) -> Result<()> {
-    let server_ok =
-        String::from_utf8_lossy(&session.pane_read_recent_ansi_lines(&bound.wire_pane, 2000)?)
-            .contains(&bound.token);
+    // reopen/reattach 后服务端对 pane 的 replay 是异步的：新客户端 attach
+    // 触发服务端重放/重绘，CI（慢环境）里 token 行可能在 attach 完成瞬间
+    // 尚未回到 buffer 尾部。轮询等待而不是单次 ensure，避免时序误报。
+    let server_ok = wait_for_server_text(session, &bound.wire_pane, &bound.token);
     ensure!(
         server_ok,
         "服务端 pane.read({}) 缺 {}；服务端内容: {:?}\nherdr-server.log tail:\n{}",
