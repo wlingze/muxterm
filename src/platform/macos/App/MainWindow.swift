@@ -2036,12 +2036,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// Core 会为后台 tab 继续维护 PaneBuf 并交付输出事件；只有当前布局中
-    /// 的 pane 或已经创建过的隐藏 Surface 才应进入 SwiftTerm。这样 attach
-    /// 初始只 capture 活动 tab 时，后台 pane 的索引不会意外创建不可见 view。
-    private func shouldHandleSurfaceEvent(for paneId: UInt32, activePaneIDs: Set<UInt32>) -> Bool {
-        activePaneIDs.contains(paneId)
-            || terminalManager.hasView(for: paneId)
+    /// 前台 Workspace：每个 pane 的 PTY 都进 Surface，不按活动 tab 过滤。
+    /// 后台 Workspace 由 WarmConnectionSlot 关掉 viewCreationEnabled。
+    private func shouldHandleSurfaceEvent(paneId: UInt32) -> Bool {
+        SurfaceEventPolicy.shouldDeliver(
+            viewCreationEnabled: true,
+            hasView: terminalManager.hasView(for: paneId)
+        )
     }
 
     func pollOnce() {
@@ -2049,11 +2050,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         defer { terminalManager.endEventBatch() }
         scheduleBackgroundSlotPoll()
         let events = bridge.pollEvents()
-        // Core 已在 pollEvents() 中应用了这些状态变化；读取一次最新 active
-        // tab 的 pane 集合，让同一批刚创建的 foreground pane 也能接收其
-        // 首个 snapshot/output。后台 tab 不在此集合内，仍不会懒建 Surface。
-        let activePaneIDs = Set(lastSnapshot.panes.map(\.id))
-            .union(bridge.snapshot().panes.map(\.id))
+        // Core 已在 pollEvents() 中应用了这些状态变化。前台 Workspace 的
+        // 每个 pane 都要吃 PTY（SURFACE.md §7：tab 栏上的页都算打开）。
         lastPaneOutputEventCount = events.filter(\.isPaneOutput).count
         if let error = bridge.takeError() {
             reportStatusError(error)
@@ -2077,7 +2075,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
                 terminalManager.removePane(ev.paneId)
             } else if ev.isPaneSnapshot {
-                guard shouldHandleSurfaceEvent(for: ev.paneId, activePaneIDs: activePaneIDs) else {
+                guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
                     continue
                 }
                 // 结构/尺寸事件先同步模型和布局，再 reset + feed snapshot，
@@ -2088,7 +2086,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
                 }
             } else if ev.isPaneOutput {
-                guard shouldHandleSurfaceEvent(for: ev.paneId, activePaneIDs: activePaneIDs) else {
+                guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
                     continue
                 }
                 // 同批有结构事件（如窗口 resize 的 %layout-change）时，htop
@@ -2217,12 +2215,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
         for item in pendingSnapshots {
-            if shouldHandleSurfaceEvent(for: item.paneId, activePaneIDs: activePaneIDs) {
+            if shouldHandleSurfaceEvent(paneId: item.paneId) {
                 terminalManager.handleSnapshot(paneId: item.paneId, data: item.data)
             }
         }
         for item in pendingOutputs {
-            if shouldHandleSurfaceEvent(for: item.paneId, activePaneIDs: activePaneIDs) {
+            if shouldHandleSurfaceEvent(paneId: item.paneId) {
                 terminalManager.handleOutput(paneId: item.paneId, data: item.data)
             }
         }
@@ -2306,7 +2304,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func refreshUI() {
         let snap = bridge.snapshot()
         lastSnapshot = snap
-        terminalManager.updatePaneSizes(snap.panes)
+        // 活动 tab 的 snap.panes 只够画当前 layout。后台 tab 的 Surface 还要
+        // 跟着 pane 尺寸走，否则切回去时格子已经对了、pty 还是旧 cols。
+        let allPanes = snap.tabs.flatMap { tab in bridge.getPanes(tabId: tab.id) }
+        terminalManager.updatePaneSizes(allPanes.isEmpty ? snap.panes : allPanes)
         // 请求切换的 tab 已不存在（shell 退出/外部关闭）：立即放行门禁。
         tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         reportPaneColoursIfNeeded(snap.panes)

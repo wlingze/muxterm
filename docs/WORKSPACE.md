@@ -3,6 +3,7 @@
 > 定名：2026-08-15 23:41 CST（`2026-08-15T23:41:41+08:00`）
 > 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）；2026-08-22 Herdr
 > WorkspaceId/foreground contract。
+> 2026-08-24 纠偏：Runtime 交出布局事件 + PTY 字节；Workspace 不画像素。见 [`SURFACE.md`](SURFACE.md) §7（核查 `2026-08-24T16:55:34+08:00`）。
 > Catalog：[`CATALOG.md`](CATALOG.md)。
 > 像素：[`SURFACE.md`](SURFACE.md)（F 已交）。适配表：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)（只给 `runtime/tmux` 看）。
 > Runtime 契约：[`RUNTIME.md`](RUNTIME.md)。Herdr 稳定性与身份见
@@ -44,7 +45,7 @@ $N、@N、%output、send-keys、-CC 全部停在这里
 |---|---|---|
 | **Workspace** | 池里一格。Muxterm 的工作区。内含 Tab → Pane | tmux session（那是适配器内部） |
 | **Tab** | Workspace 里的一页 | GUI 窗口；tmux window 本体 |
-| **Pane** | 最小格子：有 PaneBuf，前端在这里画终端 | |
+| **Pane** | 最小格子：拓扑节点 + Index（PaneBuf）+ 前端 Surface | 显示网格的真相不在 PaneBuf |
 | **Catalog** | backend 总状态。两张插件表 + Connect + Inventory + Pool。见 [`CATALOG.md`](CATALOG.md) | GUI Window |
 | **Driver** | Runtime 插件（`TmuxDriver` / `HerdrDriver` / `ShellDriver`）。负责 list / open | 已经 attach 的 `trait Runtime` |
 | **Connect** | 可复用管道。同一 SSH host / 同一 Herdr socket 一份 `Arc` | 一个 Workspace |
@@ -106,15 +107,17 @@ $N、@N、%output、send-keys、-CC 全部停在这里
 
 | 层 | 做 | 不做 |
 |---|---|---|
-| **platform** | 画 Window；画 Tab/Pane 控件；快捷键；面板外观 | 池、连接生命周期、ssh、tmux |
-| **core** | Pool、Workspace 结构、搜索、提醒、FFI/CLI | 像素；tmux 协议 |
-| **runtime/tmux** | `-CC`、解析、send-keys、把 tmux 树填进 Workspace | 产品类型；GUI |
+| **platform** | 每个已打开 pane 一台 VT；`feed` `PaneOutput`；按 `LayoutChanged` 改分割；快捷键 | 池、ssh、`-CC`、`capture-pane` |
+| **core Workspace** | Pool、Tab/Pane 拓扑、Index（搜索/提醒）、把 Task 交给 Runtime | 像素；解析 `%output`；把 Index 灌回 Surface |
+| **runtime/tmux** | 拆控制协议 vs PTY；翻译成 `StateChange`；send-keys | 产品类型；GUI |
 
-前端功能清单（快捷键、命令面板、搜索 UI、attention 点）**不变**。变的是：这些功能读的是 Core 已经维护好的 WorkspacePool / PaneBuf，前端不再自己做连接池。
+产品层可以对 Runtime **种类** 说话（打开一个 tmux 工作区还是本地 shell），不对 tmux **协议** 特化。
 
 Live 显示仍走 Surface：原始字节按 `(WorkspaceId, PaneId)` 进入产品拓扑中常驻的 VTE；
 hidden tab/background workspace 继续 feed，只是不绘制。PaneBuf 给搜索/提醒，禁止
 `visible_ansi` dump。
+
+Workspace 不是无限的。`WorkspacePoolPolicy.max_slots` 默认 5，超出按 LRU detach。后台格子继续吃字节进 Index；像素 Surface 只保留已经建过的。
 
 ---
 
@@ -349,4 +352,6 @@ src/platform/linux|macos|tui
 - 把 GUI Window 一对一映射成 tmux window（iTerm2）。
 - 把 WezTerm 的 workspace 标签当产品层。
 - 把 Herdr 做成身份；规划见 [`RUNTIME.md`](RUNTIME.md)。
-- 破坏 Surface：live 仍只 `vte.feed` 原始字节。
+- 破坏 Surface：live 只能 `feed` 原始 PTY 字节。
+- 让 Workspace/PaneBuf 当显示缓存再 dump 给前端。
+- 无限个 Workspace 同时养全套前端 VT。洪水 pane 的 `pause-after` 见 [`SURFACE.md`](SURFACE.md) §7.4 TODO。

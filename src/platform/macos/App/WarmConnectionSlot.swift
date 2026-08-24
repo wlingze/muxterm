@@ -49,8 +49,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         self.lastUsedAt = now
     }
 
-    /// 后台继续 poll：喂事件给本 slot 的 TerminalManager，保持 SwiftTerm
-    /// 状态 warm；不做同步 displayIfNeeded（视图可能不在窗口层级）。
+    /// 后台继续 poll：已有 Surface 继续吃 PTY；不新建 widget，不 dump Index。
     func pollBackground() {
         // CoreBridge 的 C ABI 句柄不是可并发访问的；同一 slot 的前台切换、
         // 后台 poll、淘汰必须串行。锁只覆盖该 slot，不会阻塞主窗口其它连接。

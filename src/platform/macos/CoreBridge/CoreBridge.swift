@@ -615,7 +615,7 @@ final class CoreBridge {
         return Data(buf.prefix(Int(n)))
     }
 
-    /// 读取某 pane 内置 VT 的可见网格 ANSI（首屏播种，不是 256KB 历史环）。
+    /// Index 可见网格 ANSI（搜索/peek）。**禁止**灌进 SwiftTerm。
     func paneVisibleANSI(paneId: UInt32) -> Data {
         guard let handle else { return Data() }
         var buf = [UInt8](repeating: 0, count: 1024 * 1024)
@@ -631,8 +631,8 @@ final class CoreBridge {
         return Data(buf.prefix(Int(n)))
     }
 
-    /// 读取某 pane 的一次性 Surface seed（历史 + 当前屏）。
-    /// C 接口先返回完整长度，再按精确长度读取，避免历史超过固定缓冲后被截断。
+    /// Index 用的一次性 ANSI 网格（搜索/peek）。**禁止**灌进 SwiftTerm。
+    /// 显示路径只吃 Runtime 的 `PaneSnapshot` / `PaneOutput`（SURFACE.md §7）。
     func paneSurfaceSeedANSI(paneId: UInt32) -> Data {
         guard let handle else { return Data() }
         let required = muxterm_pane_surface_seed_ansi(handle, paneId, nil, 0)
