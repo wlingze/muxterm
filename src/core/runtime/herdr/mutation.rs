@@ -175,6 +175,13 @@ impl MutationQueue {
         self.queue.first_mut()
     }
 
+    /// 按 mutation id 取（可变）：入队后配置参数必须按 id 定位，
+    /// 不能 head_mut() —— 前一个 mutation 仍在 in-flight 时队头不是刚入队的项，
+    /// 会把新参数（含 expected 重置）写到旧项上，导致旧项永不收敛（agent e2e）。
+    pub fn by_id_mut(&mut self, id: u64) -> Option<&mut PendingMutation> {
+        self.queue.iter_mut().find(|m| m.mutation_id == id)
+    }
+
     /// 完成/失败后弹出队头，返回下一项（若有）。
     pub fn pop_head(&mut self) -> Option<PendingMutation> {
         if self.queue.is_empty() {
@@ -221,9 +228,46 @@ pub fn failed_settlement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::SplitDir;
 
     fn now() -> Instant {
         Instant::now()
+    }
+
+    /// W9 回归：入队后按 id 配置参数（NewTab/SplitPane handler 必须用
+    /// `by_id_mut`，不能用 `head_mut`）。前一个 mutation 仍在 in-flight 时
+    /// 队头是旧项，head_mut 会把新参数（含 expected 重置）写到旧项上，
+    /// 旧项永不收敛、5 秒 deadline 失败（agent e2e 可见）。
+    #[test]
+    fn by_id_mut_configures_just_enqueued_item_not_in_flight_head() {
+        let mut q = MutationQueue::new();
+        let t0 = now();
+        let _first_id = q.enqueue(MutationKind::NewTab, t0).unwrap();
+        let second_id = q.enqueue(MutationKind::SplitPane, t0).unwrap();
+        // 第一项已派发（in-flight），队头是它。
+        let tabs = HashSet::from(["w1:t1".to_string()]);
+        let panes = HashSet::from(["w1:p1".to_string()]);
+        q.head_mut().unwrap().mark_dispatched(1, tabs, panes, t0);
+        q.head_mut().unwrap().expected_tab = Some("w1:t2".into());
+
+        // 用 by_id_mut 配置刚入队的第二项：必须落在第二项，而不是队头。
+        let pending = q.by_id_mut(second_id).expect("第二项存在");
+        pending.target_tab = Some("w1:t2".into());
+        pending.target_pane = Some("w1:p1".into());
+        pending.split_dir = Some(SplitDir::Horizontal);
+        pending.expected_tab = None;
+        pending.expected_pane = None;
+
+        assert_eq!(
+            q.in_flight().unwrap().expected_tab.as_deref(),
+            Some("w1:t2"),
+            "in-flight 首项的 expected_tab 不得被后续入队配置清掉"
+        );
+        let second = q.by_id_mut(second_id).unwrap();
+        assert_eq!(second.target_tab.as_deref(), Some("w1:t2"));
+        assert_eq!(second.target_pane.as_deref(), Some("w1:p1"));
+        assert_eq!(second.split_dir, Some(SplitDir::Horizontal));
+        assert_eq!(second.expected_tab, None);
     }
 
     /// 入队返回递增 operation_id；队列满 Rejected。
