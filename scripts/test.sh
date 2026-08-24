@@ -65,11 +65,17 @@ run_linux() {
     # --jobs 1：多个 GTK target 共享同一个 Xvfb，串行跑避免窗口/GL 资源竞争。
     # xvfb-run 自带 set -e，其 kill 已退出的 Xvfb 会误报失败；必须捕获
     # cargo test 的真实退出码后再退出（否则全绿也可能 EXIT=1）。
-    # 用 -d（displayfd 探测空闲 display）而非 -a（lock 文件）：残留 Xvfb
+    # 首选 -d/--auto-display（displayfd 探测空闲 display）：残留 Xvfb
     # 进程的 lock 可能已清理，-a 会撞上被占用的 display 导致新 Xvfb 立即
-    # 退出（kill 失败 + EXIT=1）。
+    # 退出（kill 失败 + EXIT=1）。但 Ubuntu 24.04 的 xvfb 21.1.12 包
+    # 不支持 -d（CI 上直接报 invalid option）；探测能力后回退 -a（CI 是
+    # 干净 runner，无残留 lock 问题）。
+    local xvfb_opts=-d
+    if ! xvfb-run --help 2>&1 | grep -q -- '--auto-display'; then
+        xvfb_opts=-a
+    fi
     set +e
-    xvfb-run -d env GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
+    xvfb-run "$xvfb_opts" env GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
         --test linux_gtk_integration \
         --test linux_herdr_e2e \
         --test linux_herdr_switch_e2e \
