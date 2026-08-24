@@ -76,6 +76,7 @@ run_linux() {
     fi
     set +e
     xvfb-run "$xvfb_opts" env GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
+        --test zz_probe_reattach \
         --test linux_gtk_integration \
         --test linux_herdr_e2e \
         --test linux_herdr_switch_e2e \
@@ -95,7 +96,6 @@ run_linux() {
         --test linux_attention_semantics_e2e \
         --test linux_search_e2e \
         --test linux_runtime_transport_matrix_e2e \
-        --test zz_probe_reattach \
         -- --test-threads="$THREADS"
     RETVAL=$?
     set -e

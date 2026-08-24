@@ -36,7 +36,19 @@ if [ "$OS" = "Linux" ]; then
     libutempter-dev \
     bison \
     flex \
-    fonts-dejavu-core
+    fonts-dejavu-core \
+    zsh
+  # 统一 pane shell 为 zsh（与本地开发机一致）：herdr pane 用 passwd 的
+  # 登录 shell，CI runner 默认 bash 的多行彩色 PS1 与本地 zsh 环境不同，
+  # 会让 detach/reattach 内容连续性测试在 CI 上表现不一致。
+  if ! command -v zsh >/dev/null 2>&1; then
+    echo "zsh 安装失败" >&2
+    exit 1
+  fi
+  if [ "$(getent passwd "$USER" | cut -d: -f7)" != "$(command -v zsh)" ]; then
+    echo "设置默认 shell 为 zsh（$USER）..." >&2
+    sudo chsh -s "$(command -v zsh)" "$USER"
+  fi
   # tmux：ubuntu 仓库只有 3.4，控制模式事件流与本地 3.7c 有差异
   # （detach/reattach 集成测试依赖 3.7c 行为），编译安装官方 3.7c。
   if ! tmux -V 2>/dev/null | grep -q "3.7c"; then
