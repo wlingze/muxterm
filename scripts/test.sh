@@ -60,7 +60,16 @@ run_linux() {
     cargo check --features gtk
 
     # 一次编译、一起跑：全部 GTK e2e target（xvfb 下 --test-threads=1）。
-    xvfb-run -a cargo test --features gtk \
+    # GDK_DISABLE：禁用 GDK GL API，规避 xvfb/Mesa 下连续建窗销毁的
+    # GL context double-free（SIGABRT；见 docs/HERDR-RUNTIME-STABILITY.md §GL）。
+    # --jobs 1：多个 GTK target 共享同一个 Xvfb，串行跑避免窗口/GL 资源竞争。
+    # xvfb-run 自带 set -e，其 kill 已退出的 Xvfb 会误报失败；必须捕获
+    # cargo test 的真实退出码后再退出（否则全绿也可能 EXIT=1）。
+    # 用 -d（displayfd 探测空闲 display）而非 -a（lock 文件）：残留 Xvfb
+    # 进程的 lock 可能已清理，-a 会撞上被占用的 display 导致新 Xvfb 立即
+    # 退出（kill 失败 + EXIT=1）。
+    set +e
+    xvfb-run -d env GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
         --test linux_gtk_integration \
         --test linux_herdr_e2e \
         --test linux_herdr_switch_e2e \
@@ -81,6 +90,10 @@ run_linux() {
         --test linux_search_e2e \
         --test linux_runtime_transport_matrix_e2e \
         -- --test-threads="$THREADS"
+    RETVAL=$?
+    set -e
+    echo "run linux: cargo test exit=$RETVAL" >&2
+    return "$RETVAL"
 }
 
 run_macos() {
@@ -121,22 +134,28 @@ doctor() {
     # required 版本（与 §13.1 一致；CI 必须精确匹配，开发机只读提示）。
     local fail=0
     if ! rustc --version 2>/dev/null | grep -q "1.97.1"; then
-        echo "WARN: rustc 应为 1.97.1" >&2; fail=1
+        echo "WARN: rustc 应为 1.97.1" >&2
+        fail=1
     fi
     if ! cargo --version 2>/dev/null | grep -q "1.97.1"; then
-        echo "WARN: cargo 应为 1.97.1" >&2; fail=1
+        echo "WARN: cargo 应为 1.97.1" >&2
+        fail=1
     fi
     if ! tmux -V 2>/dev/null | grep -q "3.7c"; then
-        echo "WARN: tmux 应为 3.7c" >&2; fail=1
+        echo "WARN: tmux 应为 3.7c" >&2
+        fail=1
     fi
     if ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
-        echo "WARN: herdr 应为 0.8.0" >&2; fail=1
+        echo "WARN: herdr 应为 0.8.0" >&2
+        fail=1
     fi
     if ! command -v sshd >/dev/null 2>&1; then
-        echo "WARN: 缺 sshd（loopback SSH 格会 skip/失败）" >&2; fail=1
+        echo "WARN: 缺 sshd（loopback SSH 格会 skip/失败）" >&2
+        fail=1
     fi
     if ! command -v xvfb-run >/dev/null 2>&1; then
-        echo "WARN: 缺 xvfb-run（Linux GTK e2e 需要）" >&2; fail=1
+        echo "WARN: 缺 xvfb-run（Linux GTK e2e 需要）" >&2
+        fail=1
     fi
     [ "$fail" -eq 0 ] && echo "doctor: OK" || echo "doctor: 有 WARN（见上）" >&2
 }
