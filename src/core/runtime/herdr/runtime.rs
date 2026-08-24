@@ -488,7 +488,15 @@ impl HerdrRuntime {
         // 晚到旧快照可能把 active 回退到 mutation 创建前：在 diff 计算**之前**
         // 把焦点钉回 settled 值（否则 reconcile 会把错误的 ActiveTabChanged /
         // ActivePaneChanged 发给 GUI，再 clamp 已来不及）。
-        if let Some((pin_tab, pin_pane)) = self.pinned_focus() {
+        let pending_focus = self.pending_expected_focus();
+        if let Some((pin_tab, pin_pane)) = self.pinned_focus().or(pending_focus) {
+            if pending_focus.is_some() && self.pinned_focus().is_none() {
+                self.focus_pin = Some(FocusPin {
+                    tab: pin_tab,
+                    pane: pin_pane,
+                    until: Instant::now() + FOCUS_PIN_TTL,
+                });
+            }
             self.active_tab = Some(pin_tab);
             self.active_pane = Some(pin_pane);
             if let Some(layout) = self.layouts.get_mut(&pin_tab) {
@@ -776,8 +784,27 @@ impl HerdrRuntime {
         }
     }
 
-    /// 期望模式：Pool 前台 active pane = Control；其余 pane/后台 workspace = Observe。
+    /// 期望模式：in-flight mutation 已知目标时，目标 pane 独占 Control；
+    /// 否则 Pool 前台 active pane = Control，其余 pane/后台 workspace = Observe。
     fn desired_mode_for(&self, pane: &PaneInfo) -> StreamMode {
+        // pane.split/tab.create 的直接响应可能早于权威 snapshot。只要
+        // 已知道目标 Herdr pane，就先按 mutation intent 计算最终 mode，
+        // 避免新 pane 先 Observe、旧 active 仍 Control，随后反复 takeover。
+        if let Some(expected_focus) = self
+            .mutation_queue
+            .in_flight()
+            .and_then(|pending| pending.expected_focus.as_deref())
+        {
+            let is_expected = self
+                .pane_to_herdr_pane
+                .get(&pane.id)
+                .is_some_and(|herdr_pane| herdr_pane == expected_focus);
+            return if is_expected {
+                StreamMode::Control
+            } else {
+                StreamMode::Observe
+            };
+        }
         if self.foreground && Some(pane.id) == self.active_pane {
             StreamMode::Control
         } else {
@@ -1850,6 +1877,11 @@ impl HerdrRuntime {
                         if kind == MutationKind::SplitPane && head.expected_tab.is_none() {
                             head.expected_tab = head.target_tab.clone();
                         }
+                        // `expected_focus` is the wire-level pane identity
+                        // whose stream must become Control before snapshot
+                        // reconciliation.  Both tab.create and pane.split
+                        // return (or expose) the newly created root pane.
+                        head.expected_focus = head.expected_pane.clone();
                     }
                 }
                 // §6.4：pane.split 完成后必须在同一 worker 内请求 pane.focus，
@@ -1972,6 +2004,24 @@ impl HerdrRuntime {
             return None;
         }
         Some((pin.tab, pin.pane))
+    }
+
+    /// Resolve the in-flight mutation's expected wire pane once a snapshot has
+    /// installed its product mapping.  This is intentionally separate from
+    /// `pinned_focus`: before the new pane appears, the focus pin cannot be
+    /// considered alive, but the mutation intent still controls stream modes.
+    fn pending_expected_focus(&self) -> Option<(TabId, PaneId)> {
+        let expected = self
+            .mutation_queue
+            .in_flight()
+            .and_then(|pending| pending.expected_focus.as_ref())?;
+        let pane = self.herdr_pane_to_pane.get(expected).copied()?;
+        let tab = self
+            .panes
+            .iter()
+            .find(|candidate| candidate.id == pane)?
+            .tab;
+        Some((tab, pane))
     }
 
     /// 检查队头 mutation 是否已权威收敛（§6.4 完成条件）。
@@ -2892,6 +2942,58 @@ mod tests {
         assert!(!agent_source_handoff_is_bootstrap(Some(true), Some(true)));
         assert!(!agent_source_handoff_is_bootstrap(None, Some(false)));
         assert!(!agent_source_handoff_is_bootstrap(Some(false), None));
+    }
+
+    #[test]
+    fn pending_mutation_focus_wins_over_stale_active_pane_for_stream_mode() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let tab = TabId(1);
+        let old = PaneId(7);
+        let created = PaneId(23);
+        runtime.foreground = true;
+        runtime.active_pane = Some(old);
+        runtime.panes = vec![
+            PaneInfo {
+                id: old,
+                tab,
+                active: true,
+                title: "old".into(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: created,
+                tab,
+                active: false,
+                title: "created".into(),
+                cols: 80,
+                rows: 24,
+            },
+        ];
+        runtime.pane_to_herdr_pane.insert(old, "w1:p7".into());
+        runtime.pane_to_herdr_pane.insert(created, "w1:pQ".into());
+        let id = runtime
+            .mutation_queue
+            .enqueue(MutationKind::SplitPane, Instant::now())
+            .expect("mutation 入队");
+        let pending = runtime
+            .mutation_queue
+            .by_id_mut(id)
+            .expect("pending mutation");
+        pending.dispatched_at = Some(Instant::now());
+        pending.expected_focus = Some("w1:pQ".into());
+
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[0]),
+            StreamMode::Observe
+        );
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[1]),
+            StreamMode::Control
+        );
     }
 
     /// A zero-area background snapshot carries no pane placement information.

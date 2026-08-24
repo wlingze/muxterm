@@ -6,6 +6,7 @@
 //! - 退出 → `shutdown()` 或 Drop（`muxterm_free`）
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -140,6 +141,9 @@ struct UiState {
     pending_local_probe: std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingProbeMsg>>,
     /// W21 测试钩子：最近一次经 PaneView input_cb 的原始输入。
     last_raw_input: Vec<u8>,
+    /// VTE 输入回调只把 owner identity 和原始字节放入 FIFO；实际的
+    /// Runtime 写入统一在 GTK poll 中完成，避免回调重入 UiState。
+    surface_input_queue: Rc<RefCell<VecDeque<SurfaceInput>>>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
     reconnecting: bool,
     /// 重连失败退避：下一次允许发起重连的时刻。
@@ -179,6 +183,17 @@ struct UiState {
     default_socket: Option<String>,
     /// 自身弱引用（滚动 provider 用，避免循环引用）。
     self_weak: std::rc::Weak<RefCell<UiState>>,
+}
+
+/// 一个 Surface 输入事件的稳定 owner。
+///
+/// PaneView 可以在 layout 重建、tab 切换或 workspace 切换之后才触发
+/// callback，因此不能在 callback 时读取「当前 active workspace」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurfaceInput {
+    workspace: WorkspaceId,
+    pane: PaneId,
+    data: Vec<u8>,
 }
 
 impl UiState {
@@ -477,6 +492,7 @@ impl AppWindow {
             pending_existing_ssh: std::collections::VecDeque::new(),
             pending_local_probe: std::collections::VecDeque::new(),
             last_raw_input: Vec::new(),
+            surface_input_queue: Rc::new(RefCell::new(VecDeque::new())),
             reconnecting: false,
             reconnect_retry_at: None,
             reconnect_attempts: 0,
@@ -732,6 +748,7 @@ impl AppWindow {
                         drain_pending_reconnects(&st);
                         maybe_schedule_reconnect(&st);
                         let mut s = st.borrow_mut();
+                        drain_surface_input(&mut s);
                         // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
                         // 喂好，这里把注意力信号应用到引擎，并把 Surface 事件
                         // 按 (WorkspaceId, PaneId) 送进对应 background pixel cache。
@@ -1140,6 +1157,7 @@ impl AppWindow {
         maybe_schedule_reconnect(&self._state);
         let pending_close = {
             let mut s = self._state.borrow_mut();
+            drain_surface_input(&mut s);
             let events = s.active_workspace_mut().refresh();
             dispatch_event_batch(&mut s, events);
             drain_attention_notifications(&mut s);
@@ -2084,23 +2102,50 @@ fn batch_order_plan(events: &[StateChange]) -> (Vec<usize>, Vec<usize>, Vec<usiz
     (structure, baseline, output)
 }
 
+/// Effects collected while applying one Core event batch.
+///
+/// Structural events update Core immediately, but GTK topology is committed
+/// only after the final structural state is known.  This keeps tmux and Herdr
+/// on the same event contract and prevents a frame/output from observing an
+/// intermediate tree.
+#[derive(Debug, Default)]
+struct UiBatchEffects {
+    topology_changed: bool,
+}
+
+impl UiBatchEffects {
+    fn note_topology(&mut self) {
+        self.topology_changed = true;
+    }
+
+    fn commit(self, s: &mut UiState, wid: &WorkspaceId) {
+        if self.topology_changed {
+            refresh_workspace_layout(s, wid);
+        }
+    }
+}
+
 fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
     s.snapshot_seeded_this_batch.clear();
+    let wid = s.active_ws_id().clone();
+    let mut effects = UiBatchEffects::default();
     let (structure, baseline, output) = batch_order_plan(&events);
     if !baseline.is_empty() || !output.is_empty() {
         for i in &structure {
-            dispatch_event(s, &events[*i]);
+            dispatch_event(s, &events[*i], &mut effects);
         }
+        effects.commit(s, &wid);
         for i in &baseline {
-            dispatch_event(s, &events[*i]);
+            dispatch_event(s, &events[*i], &mut UiBatchEffects::default());
         }
         for i in &output {
-            dispatch_event(s, &events[*i]);
+            dispatch_event(s, &events[*i], &mut UiBatchEffects::default());
         }
     } else {
         for ev in &events {
-            dispatch_event(s, ev);
+            dispatch_event(s, ev, &mut effects);
         }
+        effects.commit(s, &wid);
     }
     s.snapshot_seeded_this_batch.clear();
 }
@@ -2121,7 +2166,12 @@ fn resident_pane_view(
 /// workspace-aware 事件分发：`wid` 的目标 LayoutHost 在 pixel_cache 里。
 /// 与 active-only 的 [`dispatch_event`] 共享结构/注意力逻辑，但 Surface
 /// 字节永远按 `(WorkspaceId, PaneId)` 进对应 pixel cache，绝不进错窗口。
-fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
+fn dispatch_event_for(
+    s: &mut UiState,
+    wid: &WorkspaceId,
+    ev: &StateChange,
+    effects: &mut UiBatchEffects,
+) {
     let ws = wid.replica_id();
     apply_attention_event_from_workspace(s, wid, &ws, ev);
     let is_active = s.pool.active_id() == Some(wid);
@@ -2172,10 +2222,10 @@ fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
             }
         }
         StateChange::ActiveTabChanged { tab } => {
+            effects.note_topology();
             if is_active {
                 s.tab_gate.on_tab_changed(tab.0);
                 s.active_tab = tab.0;
-                refresh_ui(s);
             }
         }
         StateChange::ActivePaneChanged { pane, .. } => {
@@ -2196,28 +2246,22 @@ fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
             }
         }
         StateChange::TabClosed { tab } => {
+            effects.note_topology();
             if is_active {
                 s.tab_gate.on_tab_closed(tab.0);
-                refresh_ui(s);
                 mark_pending_close_if_session_ended(s);
             }
         }
         StateChange::TabAdded { .. } => {
             // 新 tab 可能已是快照里的 active tab；必须重建 UI 让 active_tab 跟上。
-            if is_active {
-                refresh_ui(s);
-            }
+            effects.note_topology();
         }
-        StateChange::LayoutChanged { tab, .. } | StateChange::PaneAdded { tab, .. } => {
-            if is_active && tab.0 == s.active_tab {
-                refresh_ui(s);
-            }
+        StateChange::LayoutChanged { .. } | StateChange::PaneAdded { .. } => {
+            effects.note_topology();
         }
-        StateChange::PaneClosed { pane } => {
+        StateChange::PaneClosed { .. } => {
+            effects.note_topology();
             if is_active {
-                if s.active_workspace().state().pane(pane).is_none() {
-                    refresh_ui(s);
-                }
                 mark_pending_close_if_session_ended(s);
             }
         }
@@ -2282,6 +2326,7 @@ fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
             }
         }
         StateChange::PaneResized { pane, cols, rows } => {
+            effects.note_topology();
             if let Some(view) = resident_pane_view(s, wid, pane.0) {
                 view.ensure_grid_size(*cols, *rows);
             }
@@ -2294,21 +2339,24 @@ fn dispatch_event_for(s: &mut UiState, wid: &WorkspaceId, ev: &StateChange) {
 /// background workspace 只更新自己的 pixel cache，不得切窗口当前页。
 fn dispatch_event_batch_for(s: &mut UiState, wid: &WorkspaceId, events: Vec<StateChange>) {
     s.snapshot_seeded_this_batch.clear();
+    let mut effects = UiBatchEffects::default();
     let (structure, baseline, output) = batch_order_plan(&events);
     if !baseline.is_empty() || !output.is_empty() {
         for i in &structure {
-            dispatch_event_for(s, wid, &events[*i]);
+            dispatch_event_for(s, wid, &events[*i], &mut effects);
         }
+        effects.commit(s, wid);
         for i in &baseline {
-            dispatch_event_for(s, wid, &events[*i]);
+            dispatch_event_for(s, wid, &events[*i], &mut UiBatchEffects::default());
         }
         for i in &output {
-            dispatch_event_for(s, wid, &events[*i]);
+            dispatch_event_for(s, wid, &events[*i], &mut UiBatchEffects::default());
         }
     } else {
         for ev in &events {
-            dispatch_event_for(s, wid, ev);
+            dispatch_event_for(s, wid, ev, &mut effects);
         }
+        effects.commit(s, wid);
     }
     s.snapshot_seeded_this_batch.clear();
 }
@@ -2386,7 +2434,7 @@ fn apply_attention_event_from_workspace(
     }
 }
 
-fn dispatch_event(s: &mut UiState, ev: &StateChange) {
+fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffects) {
     let ws = active_workspace_id(s);
     let wid = s.active_ws_id().clone();
     apply_attention_event_from_workspace(s, &wid, &ws, ev);
@@ -2444,7 +2492,7 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
         StateChange::ActiveTabChanged { tab } => {
             s.tab_gate.on_tab_changed(tab.0);
             s.active_tab = tab.0;
-            refresh_ui(s);
+            effects.note_topology();
         }
         StateChange::ActivePaneChanged { pane, .. } => {
             // W18g：离开当前 pane 前记下副本 seq（上次看到这里）。
@@ -2464,23 +2512,19 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
         }
         StateChange::TabClosed { tab } => {
             s.tab_gate.on_tab_closed(tab.0);
-            refresh_ui(s);
+            effects.note_topology();
             mark_pending_close_if_session_ended(s);
         }
         StateChange::TabAdded { .. } => {
             // 新 tab 可能已是快照里的 active tab（tmux %window-add 后
             // add_window_tab 会标记它 active）；必须重建 UI 让 active_tab 跟上。
-            refresh_ui(s);
+            effects.note_topology();
         }
-        StateChange::LayoutChanged { tab, .. } | StateChange::PaneAdded { tab, .. } => {
-            if tab.0 == s.active_tab {
-                refresh_ui(s);
-            }
+        StateChange::LayoutChanged { .. } | StateChange::PaneAdded { .. } => {
+            effects.note_topology();
         }
-        StateChange::PaneClosed { pane } => {
-            if s.active_workspace().state().pane(pane).is_none() {
-                refresh_ui(s);
-            }
+        StateChange::PaneClosed { .. } => {
+            effects.note_topology();
             mark_pending_close_if_session_ended(s);
         }
         StateChange::StatusBarSubscription { name, value, pane } => {
@@ -2544,6 +2588,7 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange) {
             maybe_refresh_status(s, true);
         }
         StateChange::PaneResized { pane, cols, rows } => {
+            effects.note_topology();
             if let Some(view) = s.active_layout().pane(pane.0) {
                 view.ensure_grid_size(*cols, *rows);
             }
@@ -2584,9 +2629,24 @@ fn drain_attention_notifications(s: &mut UiState) {
 }
 
 fn refresh_ui(s: &mut UiState) {
-    // 先取快照数据，释放对 pool 的借用后再改 UI 状态。
+    let wid = s.active_ws_id().clone();
+    refresh_workspace_layout(s, &wid);
+    maybe_refresh_status(s, true);
+    sync_chrome_visibility(s);
+}
+
+/// Commit one workspace's final topology to its persistent LayoutHost.
+///
+/// This function intentionally does not switch the active window for a
+/// background workspace.  It only creates/reparents resident PaneViews and
+/// feeds an already-realized Surface from that workspace's Core state.
+fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
+    let is_active = s.pool.active_id() == Some(wid);
     let (tab_ids, active_tab, layouts, panes) = {
-        let state = s.active_workspace().state();
+        let Some(workspace) = s.pool.get(wid) else {
+            return;
+        };
+        let state = workspace.state();
         let tabs = state.tabs();
         let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id.0).collect();
         let active_tab = tabs
@@ -2612,58 +2672,57 @@ fn refresh_ui(s: &mut UiState) {
         (tab_ids, active_tab, layouts, panes)
     };
 
-    // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
-    s.tab_gate.on_snapshot(&tab_ids);
-    if let Some(active) = active_tab {
-        s.active_tab = active;
+    if is_active {
+        // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
+        s.tab_gate.on_snapshot(&tab_ids);
+        if let Some(active) = active_tab {
+            s.active_tab = active;
+        }
+        if !s.tab_gate.is_released() {
+            sync_chrome_visibility(s);
+            return;
+        }
     }
 
-    if !s.tab_gate.is_released() {
-        sync_chrome_visibility(s);
-        return;
-    }
+    let owner = wid.clone();
+    let input_queue = s.surface_input_queue.clone();
+    let input_cb = move |pane_id: u32, data: &[u8]| {
+        input_queue.borrow_mut().push_back(SurfaceInput {
+            workspace: owner.clone(),
+            pane: PaneId(pane_id),
+            data: data.to_vec(),
+        });
+    };
 
     // 重建布局（pane 控件跨 tab 保留：像素缓存，不因换 tab 销毁）。
     if !layouts.is_empty() {
-        // Safety: GTK 主线程，UiState 与窗口同寿；回调在 refresh_ui 返回后
-        // 才被 PaneView 触发，此时 RefCell 借用已释放。
-        let state_ptr = s as *mut UiState;
-        let input_cb = move |pane_id: u32, data: &[u8]| {
-            let s = unsafe { &mut *state_ptr };
-            s.last_raw_input = data.to_vec();
-            let _ = s.active_workspace_mut().execute(Task::WriteRaw {
-                target: PaneId(pane_id),
-                data: data.to_vec(),
-            });
-        };
-        for (tab, tree) in &layouts {
-            s.active_layout_mut().apply_layout(*tab, tree, &input_cb);
-        }
-        // 全部 tab 常驻后，把 active tab 放回可见页（apply_layout 会
-        // 依次 set_visible_child，最后一次调用决定显示页）。
-        if let Some(active) = active_tab {
-            s.active_layout_mut().show_tab(active);
+        if let Some(layout) = s.pixel_cache.get_mut(wid) {
+            for (tab, tree) in &layouts {
+                layout.apply_layout(*tab, tree, &input_cb);
+            }
+            // 全部 tab 常驻后，把 active tab 放回可见页（apply_layout 会
+            // 依次 set_visible_child，最后一次调用决定显示页）。
+            if let Some(active) = active_tab {
+                layout.show_tab(active);
+            }
         }
 
-        for (pane_id, cols, rows, active) in panes {
-            if let Some(view) = s.active_layout().pane(pane_id).cloned() {
+        for (pane_id, cols, rows, pane_active) in panes {
+            if let Some(view) = resident_pane_view(s, wid, pane_id) {
                 // Surface：已有 pane 只 show/hide，不 reset、不 dump；
                 // 滚动走 VTE 自身 scrollback（F5）。
                 view.ensure_grid_size(cols, rows);
                 // attach 保真（1820.log 白屏）：布局建好后，把 core 里
                 // capture-pane 快照播种进 VTE。快照事件可能在视图创建前
                 // 已消费，不能只依赖 PaneOutput 增量。
-                seed_unseeded_pane(s, &view, pane_id, cols, rows);
-                if active {
+                seed_unseeded_pane_for(s, wid, &view, pane_id, cols, rows);
+                if is_active && pane_active {
                     s.active_pane = pane_id;
                     view.grab_focus();
                 }
             }
         }
     }
-
-    maybe_refresh_status(s, true);
-    sync_chrome_visibility(s);
 }
 
 fn local_status_snapshot(npanes: usize, tabs: &[(u32, String, bool)]) -> StatusBarSnapshot {
@@ -2750,6 +2809,53 @@ fn sync_chrome_visibility(s: &UiState) {
     s.status.set_worktree_visible(worktree);
 }
 
+/// Drain VTE input callbacks on the production GTK poll.
+///
+/// The queue is deliberately independent from `UiState`: PaneView callbacks
+/// can outlive the layout pass that installed them, so they must never borrow
+/// or mutate the state directly.  An input whose workspace/pane disappeared is
+/// dropped with a diagnostic instead of being redirected to the active pane.
+fn drain_surface_input(s: &mut UiState) {
+    let pending = take_surface_input(&s.surface_input_queue);
+    for input in pending {
+        s.last_raw_input = input.data.clone();
+        let Some(workspace) = s.pool.get_mut(&input.workspace) else {
+            tracing::debug!(
+                target = "muxterm::surface",
+                workspace = %input.workspace,
+                pane = %input.pane,
+                "drop input for evicted workspace"
+            );
+            continue;
+        };
+        if workspace.state().pane(&input.pane).is_none() {
+            tracing::debug!(
+                target = "muxterm::surface",
+                workspace = %input.workspace,
+                pane = %input.pane,
+                "drop input for closed pane"
+            );
+            continue;
+        }
+        if let Err(error) = workspace.execute(Task::WriteRaw {
+            target: input.pane,
+            data: input.data,
+        }) {
+            tracing::warn!(
+                target = "muxterm::surface",
+                workspace = %input.workspace,
+                pane = %input.pane,
+                error = %error,
+                "surface input write failed"
+            );
+        }
+    }
+}
+
+fn take_surface_input(queue: &Rc<RefCell<VecDeque<SurfaceInput>>>) -> Vec<SurfaceInput> {
+    queue.borrow_mut().drain(..).collect()
+}
+
 fn sync_pane_outputs(s: &mut UiState) {
     // Surface：已挂载 pane 的增量走 StateChange::PaneOutput；这里不再 dump replica。
     // F3 的 capture 门接管首屏 seed；未 realized 的 pane 保持 unseeded，
@@ -2781,6 +2887,18 @@ fn seed_unseeded_pane(
     cols: u16,
     rows: u16,
 ) {
+    let wid = s.active_ws_id().clone();
+    seed_unseeded_pane_for(s, &wid, view, pane_id, cols, rows);
+}
+
+fn seed_unseeded_pane_for(
+    s: &mut UiState,
+    wid: &WorkspaceId,
+    view: &std::rc::Rc<PaneView>,
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+) {
     if view.is_seeded() || !view.widget().is_realized() {
         return;
     }
@@ -2790,9 +2908,9 @@ fn seed_unseeded_pane(
         return;
     }
     if let Some(bytes) = s
-        .active_workspace()
-        .state()
-        .pane_output(&PaneId(pane_id))
+        .pool
+        .get(wid)
+        .and_then(|workspace| workspace.state().pane_output(&PaneId(pane_id)))
         .map(|b| b.to_vec())
     {
         tracing::info!(
@@ -4738,6 +4856,44 @@ mod tests {
         assert!(b2.is_empty() && o2.is_empty(), "无结构事件不得重排");
         let order2: Vec<&str> = s2.iter().map(|i| plain[*i]).collect();
         assert_eq!(order2, plain, "无结构批次保持原始顺序");
+    }
+
+    #[test]
+    fn structural_only_batch_still_requires_one_topology_commit() {
+        let mut effects = UiBatchEffects::default();
+        effects.note_topology();
+        assert!(effects.topology_changed);
+        effects.note_topology();
+        assert!(
+            effects.topology_changed,
+            "多个 structural event 只能留下一个 coalesced effect"
+        );
+    }
+
+    #[test]
+    fn surface_input_queue_preserves_fifo_and_owner_identity() {
+        let queue = Rc::new(RefCell::new(VecDeque::new()));
+        let first = WorkspaceId::new("local", None, "first", "tmux", "");
+        let second = WorkspaceId::new("local", None, "second", "herdr", "");
+        queue.borrow_mut().push_back(SurfaceInput {
+            workspace: first.clone(),
+            pane: PaneId(7),
+            data: b"one".to_vec(),
+        });
+        queue.borrow_mut().push_back(SurfaceInput {
+            workspace: second.clone(),
+            pane: PaneId(3),
+            data: b"two".to_vec(),
+        });
+        let drained = take_surface_input(&queue);
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].workspace, first);
+        assert_eq!(drained[0].pane, PaneId(7));
+        assert_eq!(drained[0].data, b"one");
+        assert_eq!(drained[1].workspace, second);
+        assert_eq!(drained[1].pane, PaneId(3));
+        assert_eq!(drained[1].data, b"two");
+        assert!(queue.borrow().is_empty());
     }
 
     fn fn_src<'a>(src: &'a str, name: &str) -> &'a str {
