@@ -26,9 +26,9 @@ final class MuxTerminalView: TerminalView {
     var suppressOutputDrivenResponses = false
     /// 正在 feed 远端 pane 输出（解析器应答只在这个窗口内产生）。
     private var isFeedingRemoteOutput = false
-    /// `scrollWheel` 临时放行的用户 mouse report。SwiftTerm 把滚轮
+    /// `scrollWheel` / 点击临时放行的用户 mouse report。SwiftTerm 把鼠标
     /// 上报也交给 `send(source: Terminal)`；它不能和 pane 输出解析器应答
-    /// 共用 tmux mirror 的丢弃门禁。
+    /// 走同一条丢弃策略，否则 htop 点击、TUI 滚轮都到不了 tmux。
     private var isSendingUserMouseReport = false
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
@@ -88,12 +88,9 @@ final class MuxTerminalView: TerminalView {
         // 主题与终端内所有颜色绑定：新建视图用当前 activePalette
         // （默认浅色白底黑字；dark 才是 Mocha 深色）。
         applyPalette(MuxtermTerminalColors.activePalette)
-        // 关闭 SwiftTerm 的 mouse reporting 转发，保证鼠标点击/拖拽优先做文本
-        // 选择（选中复制）。codex/htop 等应用启用 mouse 协议后，SwiftTerm 默认
-        // 会把点击/拖拽当 mouse 序列发给程序，导致「选不中、一直闪烁」。需要
-        // 向应用发送鼠标事件时仍可用 Shift+拖拽（SwiftTerm 的
-        // shiftBypassesMouseReporting 兜底）。
-        allowMouseReporting = false
+        // 应用打开 mouse 协议时（htop/vim/Codex），点击必须回写 pane。
+        // 未开 mouse 时 SwiftTerm 仍做本地选区；Shift 继续绕过上报。
+        allowMouseReporting = true
         setAccessibilityIdentifier("muxterm.terminal.\(paneId)")
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
@@ -103,11 +100,9 @@ final class MuxTerminalView: TerminalView {
         setAccessibilityValue("")
     }
 
-    /// 选择/拖拽仍保持本地处理，但滚轮在 alternate screen 必须进入应用的
-    /// mouse protocol。opencode/Cursor 等 TUI 不把普通 Up/Down 当作滚动，
-    /// SwiftTerm 在 `allowMouseReporting = false` 时只会发送按键，表现为
-    /// “上下滚动没有用”。仅在滚轮调用栈临时放开上报，不改变点击选择策略。
-    override func scrollWheel(with event: NSEvent) {
+    /// 用户鼠标走 `send(source: Terminal)`，tmux 镜像默认会丢掉解析器应答。
+    /// 在点击/拖拽/滚轮期间打开上报并标记，才能把 CSI 送进 pane。
+    private func withUserMouseReporting(_ body: () -> Void) {
         let previous = allowMouseReporting
         allowMouseReporting = true
         isSendingUserMouseReport = true
@@ -115,7 +110,47 @@ final class MuxTerminalView: TerminalView {
             isSendingUserMouseReport = false
             allowMouseReporting = previous
         }
-        super.scrollWheel(with: event)
+        body()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        withUserMouseReporting { super.scrollWheel(with: event) }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        withUserMouseReporting { super.mouseDown(with: event) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        withUserMouseReporting { super.mouseUp(with: event) }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        withUserMouseReporting { super.mouseDragged(with: event) }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        withUserMouseReporting { super.rightMouseDown(with: event) }
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        withUserMouseReporting { super.rightMouseUp(with: event) }
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        withUserMouseReporting { super.rightMouseDragged(with: event) }
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        withUserMouseReporting { super.otherMouseDown(with: event) }
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        withUserMouseReporting { super.otherMouseUp(with: event) }
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        withUserMouseReporting { super.otherMouseDragged(with: event) }
     }
 
     /// MainWindow 的唯一 keyDown monitor 在终端 first responder 上调用这条
