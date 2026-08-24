@@ -95,6 +95,7 @@ run_linux() {
         --test linux_attention_semantics_e2e \
         --test linux_search_e2e \
         --test linux_runtime_transport_matrix_e2e \
+        --test zz_probe_reattach \
         -- --test-threads="$THREADS"
     RETVAL=$?
     set -e
