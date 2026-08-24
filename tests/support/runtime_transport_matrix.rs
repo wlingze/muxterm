@@ -699,6 +699,92 @@ pub fn verify_after_attach(
         )?;
     }
 
+    // Attach 后继续 mutation 是独立生命周期边界：先在已恢复的 active
+    // pane 上 split，再对新 pane split，最后创建新 tab。这个顺序覆盖
+    // Herdr attach → SplitPane → 新 pane bootstrap 的崩溃路径，也要求
+    // tmux/Herdr 在同一套 Task contract 下收敛。
+    let attached_tab = active;
+    let attached_pane = active_pane(workspace)?;
+    done(
+        workspace,
+        Task::SplitPane {
+            target: Some(attached_pane),
+            dir: SplitDir::Horizontal,
+            command: None,
+            workdir: None,
+        },
+        "attach 后第一次水平 split",
+    )?;
+    wait_until(workspace, "attach 后水平 split", |ws| {
+        leaves(ws, attached_tab).len() == 4
+    })?;
+    let first_created = active_pane(workspace)?;
+    ensure!(
+        first_created != attached_pane,
+        "attach 后水平 split 必须聚焦新 pane"
+    );
+
+    done(
+        workspace,
+        Task::SplitPane {
+            target: Some(first_created),
+            dir: SplitDir::Vertical,
+            command: None,
+            workdir: None,
+        },
+        "attach 后第二次垂直 split",
+    )?;
+    wait_until(workspace, "attach 后垂直 split", |ws| {
+        leaves(ws, attached_tab).len() == 5
+    })?;
+    let attached_panes = leaves(workspace, attached_tab);
+    ensure!(
+        active_pane(workspace)? != first_created,
+        "attach 后第二次 split 必须聚焦第二个新 pane"
+    );
+
+    done(
+        workspace,
+        Task::NewTab {
+            name: Some("attach-after-mutation".into()),
+            command: None,
+            workdir: None,
+        },
+        "attach 后创建新 tab",
+    )?;
+    wait_until(workspace, "attach 后新 tab", |ws| {
+        ws.state().tabs().len() == 3
+            && ws
+                .state()
+                .active_tab()
+                .is_some_and(|tab| tab.id != attached_tab)
+            && ws.state().active_pane().is_some()
+    })?;
+    let created_tab = active_tab(workspace)?;
+    let created_tab_pane = active_pane(workspace)?;
+    let all_panes = attached_panes
+        .iter()
+        .copied()
+        .chain(std::iter::once(created_tab_pane))
+        .collect::<Vec<_>>();
+    ensure!(
+        all_panes.len() == 6,
+        "attach 后最终 topology 必须是 3 tabs/6 panes"
+    );
+
+    for (index, pane) in all_panes.iter().copied().enumerate() {
+        let tab = workspace
+            .state()
+            .pane(&pane)
+            .map(|info| info.tab)
+            .context("attach mutation 后新 pane 缺 tab")?;
+        switch_tab_stable(workspace, tab, &format!("attach mutation 切 tab {tab}"))?;
+        switch_pane_stable(workspace, pane, &format!("attach mutation 切 pane {pane}"))?;
+        let _ = execute_echo(workspace, pane, &format!("ATT_P{}", index + 1), &all_panes)?;
+    }
+    switch_tab_stable(workspace, created_tab, "attach mutation 回新 tab")?;
+    switch_pane_stable(workspace, created_tab_pane, "attach mutation 回新 tab pane")?;
+
     let pair = format!(
         "{}_{}_REATTACH",
         runtime.replace('-', "_"),

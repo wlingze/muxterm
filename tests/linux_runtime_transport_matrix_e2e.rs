@@ -33,7 +33,7 @@ use support::linux_gtk::{
     find_by_name, gtk_test_framework_smoke, load_theme, pump_main_loop, simulate_key_press,
     skip_no_display, window_key_controller,
 };
-use support::runtime_transport_matrix::MatrixFixture;
+use support::runtime_transport_matrix::{build_2tab3pane, MatrixFixture};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 use support::tmux_test_support::tmux_available;
 
@@ -640,6 +640,26 @@ fn run_case(
     Ok(())
 }
 
+/// 在 GTK/AppWindow 创建前预置一个真实的 2-tab/3-pane workspace。
+///
+/// 这样 Existing row click 看到的是已经 populated 的 workspace，attach
+/// 本身不再偷偷承担 fixture 创建；随后 scenario 才能准确覆盖
+/// attach → split → new tab → echo。
+fn prepare_existing_fixture(fixture: &MatrixFixture, runtime: &str, transport: &str) -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .context("创建 Existing fixture Tokio runtime")?;
+    let mut catalog = Catalog::with_builtins();
+    let workspace = rt
+        .block_on(catalog.open(&fixture.spec))
+        .with_context(|| format!("预置 {runtime} x {transport} Existing fixture"))?;
+    build_2tab3pane(workspace, runtime, transport)?;
+    rt.block_on(workspace.shutdown())?;
+    Ok(())
+}
+
 /// W7 child 入口：`current_exe --exact isolated_matrix_child` 子进程。
 ///
 /// 读 MUXTERM_TEST_RUNTIME/TRANSPORT/SCENARIO，初始化一次 GTK，建一个
@@ -676,6 +696,39 @@ fn isolated_matrix_child() {
             let _ssh_config = EnvRestore::set("MUXTERM_SSH_CONFIG_PATH", &sshd.config_path);
             let fixture =
                 MatrixFixture::new(&runtime_in, &transport_in, &sshd).expect("child fixture");
+            // Existing discovery 必须只看当前隔离 fixture，不能扫描默认
+            // tmux/Herdr server；这些 env 在 child 结束时自动恢复。
+            let _herdr_discovery = if runtime_in == "herdr" {
+                let socket = fixture
+                    .spec
+                    .socket
+                    .as_ref()
+                    .context("herdr Existing fixture 缺 socket")?;
+                Some(EnvRestore::set(
+                    "HERDR_SOCKET_PATH",
+                    std::path::Path::new(socket),
+                ))
+            } else {
+                None
+            };
+            let _tmux_discovery = if runtime_in == "tmux" {
+                let socket = fixture
+                    .spec
+                    .socket
+                    .as_ref()
+                    .context("tmux Existing fixture 缺 socket")?;
+                let key = if transport_in == "ssh" {
+                    "MUXTERM_TEST_REMOTE_TMUX_SOCKET"
+                } else {
+                    "MUXTERM_TEST_LOCAL_TMUX_SOCKET"
+                };
+                Some(EnvRestore::set(key, std::path::Path::new(socket)))
+            } else {
+                None
+            };
+            if scenario_in == "attach_then_mutate_existing" {
+                prepare_existing_fixture(&fixture, &runtime_in, &transport_in)?;
+            }
             // project_existing_parity：预置隔离 store，面板 Project 行真实可点。
             let _store_guard =
                 seed_project_store_if_needed(&scenario_in, &fixture, &runtime_in, &transport_in);
@@ -722,6 +775,9 @@ fn run_child_scenario(
 ) -> Result<()> {
     match scenario {
         "matrix_full" => run_case(app, fixture, runtime, transport),
+        "attach_then_mutate_existing" => {
+            scenario_attach_then_mutate_existing(app, fixture, runtime, transport)
+        }
         "new_tab_button" => scenario_new_tab_button(app, fixture, runtime, transport),
         "new_tab_shortcut" => scenario_new_tab_shortcut(app, fixture, runtime, transport),
         "split_shortcuts" => scenario_split_shortcuts(app, fixture, runtime, transport),
@@ -885,6 +941,7 @@ fn scenarios_for_cell(runtime: &str, transport: &str) -> Vec<&'static str> {
     let mut scenarios = vec!["matrix_full"];
     if (runtime == "tmux" || runtime == "herdr") && four_cells {
         scenarios.extend([
+            "attach_then_mutate_existing",
             "new_tab_button",
             "new_tab_shortcut",
             "split_shortcuts",
@@ -997,6 +1054,116 @@ fn find_button(app: &AppWindow, name: &str) -> Result<gtk4::Button> {
     widget
         .downcast::<gtk4::Button>()
         .map_err(|_| anyhow::anyhow!("{name} 不是 Button"))
+}
+
+/// Existing Connections production path：点击已 populated workspace 后继续
+/// split、new tab，并通过真实 VTE commit 执行 echo。
+fn scenario_attach_then_mutate_existing(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    ensure!(
+        matches!(runtime, "tmux" | "herdr"),
+        "attach_then_mutate_existing 只跑 tmux/herdr"
+    );
+    let expected_replica = fixture.spec.id().replica_id();
+
+    // 生产 discovery 路径：只驱动 GLib timer，不调用 test_poll_once 来
+    // 掩盖 Existing probe 未接入生产 poll 的问题。
+    app.test_open_panel(0);
+    pump_main_loop(80);
+    let root_list = find_by_name(&app.test_window(), "muxterm-panel-list")
+        .context("Existing scenario 面板列表应存在")?
+        .downcast::<gtk4::ListBox>()
+        .map_err(|_| anyhow::anyhow!("面板列表不是 ListBox"))?;
+    let folder = find_row_by_name(&root_list, "muxterm-existing-connections")
+        .context("Existing scenario 缺少已有连接入口")?;
+    folder.activate();
+    pump_main_loop(80);
+
+    if transport == "ssh" {
+        let alias = fixture
+            .spec
+            .alias
+            .as_deref()
+            .context("SSH Existing fixture 缺 alias")?;
+        let list = find_by_name(&app.test_window(), "muxterm-panel-list")
+            .context("SSH Existing 列表应存在")?
+            .downcast::<gtk4::ListBox>()
+            .map_err(|_| anyhow::anyhow!("SSH Existing 列表不是 ListBox"))?;
+        let host = find_row_by_name(&list, &format!("muxterm-existing-host-{alias}"))
+            .with_context(|| format!("Existing 列表缺 SSH host {alias}"))?;
+        host.activate();
+        pump_main_loop(80);
+    }
+
+    let connect_name = transport_label(transport, fixture);
+    let identity = if runtime == "herdr" {
+        fixture.spec.path.clone()
+    } else {
+        fixture.spec.session.clone()
+    };
+    let row_prefix = format!("muxterm-existing-row-{runtime}-{connect_name}-{identity}");
+    let deadline = Instant::now() + GTK_MATRIX_TIMEOUT;
+    let row = loop {
+        pump_main_loop(40);
+        let list = find_by_name(&app.test_window(), "muxterm-panel-list")
+            .context("Existing attach 列表应存在")?
+            .downcast::<gtk4::ListBox>()
+            .map_err(|_| anyhow::anyhow!("Existing attach 列表不是 ListBox"))?;
+        if let Some(row) = find_row_by_prefix(&list, &row_prefix) {
+            break row;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("Existing row 未出现: prefix={row_prefix}");
+        }
+    };
+    row.activate();
+
+    wait_for(app, "Existing row attach populated workspace", |app| {
+        app.test_active_workspace_replica_id() == expected_replica
+            && app.test_active_workspace_runtime() == runtime
+            && app.test_tab_ids().len() == 2
+            && app.test_layout_leaf_ids().len() == 3
+    })?;
+    let attached_active = app.test_active_pane_id();
+
+    // 复现 incident 的第一步：attach 后立即对当前 pane split。
+    press_key(app, gdk::Key::s, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Existing attach 后 Alt+S", |app| {
+        app.test_layout_leaf_ids().len() == 4 && app.test_active_pane_id() != attached_active
+    })?;
+    press_key(app, gdk::Key::v, gdk::ModifierType::ALT_MASK)?;
+    wait_for(app, "Existing attach 后 Alt+V", |app| {
+        app.test_layout_leaf_ids().len() == 5
+    })?;
+
+    // 继续使用真实 + 按钮，确保 split 后新 tab 也沿同一生命周期契约。
+    find_button(app, "muxterm-new-tab")?.emit_clicked();
+    wait_for(app, "Existing attach 后 + 创建新 tab", |app| {
+        app.test_tab_ids().len() == 3 && app.test_tab_and_pane_counts() == (3, 1)
+    })?;
+    let target = app.test_active_pane_id();
+    let (_, token) = execute_printf(
+        app,
+        &format!("ATTACHED_{}_{}", matrix_label(runtime, transport), target),
+        false,
+    )?;
+    ensure!(
+        app.test_search_workspace(&token).len() == 1
+            && app.test_pane_vte_text(target).contains(&token),
+        "attach 后新 tab 的 echo 必须只出现在目标 VTE"
+    );
+    for pane in app.test_layout_leaf_ids() {
+        let (width, height) = app.test_pane_allocation(pane);
+        ensure!(
+            width > 0 && height > 0,
+            "attach 后 pane {pane} geometry 无效"
+        );
+    }
+    Ok(())
 }
 
 /// 在窗口的 EventControllerKey 上发真实按键（生产 keymap 路径）。
