@@ -62,6 +62,16 @@ pub struct HerdrRuntime {
     tabs: Vec<TabInfo>,
     panes: Vec<PaneInfo>,
     layouts: HashMap<TabId, TabLayout>,
+    /// 每 tab 的权威 active pane：只由 session.snapshot（apply_snapshot）与
+    /// 本地已同步到 server 的焦点意图（SwitchPane / mutation settle）更新。
+    /// `layout.updated` 事件流记录可能携带旧 focused_pane_id（事件与快照
+    /// 两条通道无序），切 tab 恢复焦点时必须以本映射为准，否则晚到旧事件
+    /// 会把恢复目标回退到创建前（agent e2e 可见）。
+    snapshot_active: HashMap<TabId, PaneId>,
+    /// 帧携带的 pane 尺寸（权威）：apply_snapshot 重建 panes 时优先使用，
+    /// 避免 snapshot rect（可能滞后）覆盖帧刚更新的尺寸、造成 VTE 反复
+    /// resize 内容重排（matrix ctrl_l CLB 漂移根因之一）。
+    frame_sizes: HashMap<PaneId, (u16, u16)>,
     outputs: HashMap<PaneId, Vec<u8>>,
     agents: HashMap<PaneId, PaneAgentInfo>,
     status: BackendStatus,
@@ -121,6 +131,8 @@ impl HerdrRuntime {
             tabs: vec![],
             panes: vec![],
             layouts: HashMap::new(),
+            snapshot_active: HashMap::new(),
+            frame_sizes: HashMap::new(),
             outputs: HashMap::new(),
             agents: HashMap::new(),
             status: BackendStatus::Disconnected,
@@ -373,9 +385,19 @@ impl HerdrRuntime {
                 })
                 .map(|pane| pane.rect);
             let previous = previous_pane_sizes.get(&pane.pane_id).copied();
-            let (cols, rows) = pane_rect
-                .map(|rect| normalize_pane_size(rect.width, rect.height, previous))
-                .unwrap_or_else(|| normalize_pane_size(0, 0, previous));
+            // 帧尺寸权威：snapshot rect 可能滞后（resize 前的旧值），若帧
+            // 已携带新尺寸则优先（frame_sizes 由 drain_stream 维护），避免
+            // VTE 在 snapshot 与帧之间反复 resize 重排内容。
+            let frame = self.frame_sizes.get(&id).copied();
+            let (cols, rows) = match frame {
+                Some((fc, fr)) if fc > 0 && fr > 0 => (fc, fr),
+                _ => match previous {
+                    Some((pc, pr)) if pc > 0 && pr > 0 => (pc, pr),
+                    _ => pane_rect
+                        .map(|rect| normalize_pane_size(rect.width, rect.height, None))
+                        .unwrap_or_else(|| normalize_pane_size(0, 0, None)),
+                },
+            };
             self.panes.push(PaneInfo {
                 id,
                 tab,
@@ -407,6 +429,8 @@ impl HerdrRuntime {
             .into_iter()
             .filter(|(tab, _)| current_tabs.contains(tab))
             .collect();
+        self.snapshot_active
+            .retain(|tab, _| current_tabs.contains(tab));
 
         for agent in snap
             .agents
@@ -428,6 +452,10 @@ impl HerdrRuntime {
         {
             self.apply_layout_record(layout, false);
         }
+        // 快照重建后，权威表 = 每个 layout 记录的 focused pane（apply_layout_record
+        // 的 snapshot 路径已写入）；只保留仍存在的 tab。
+        self.snapshot_active
+            .retain(|tab, _| self.layouts.contains_key(tab));
 
         // active 标记。每个 layout 自带该 tab 的 focused pane；只取绑定
         // workspace 的 active tab 对应值，不能误用其它 workspace 的全局焦点。
@@ -519,15 +547,10 @@ impl HerdrRuntime {
             let Some(pane) = self.herdr_pane_to_pane.get(&source_pane.pane_id).copied() else {
                 continue;
             };
-            if let Some(info) = self.panes.iter_mut().find(|info| info.id == pane) {
-                let (cols, rows) = normalize_pane_size(
-                    source_pane.rect.width,
-                    source_pane.rect.height,
-                    Some((info.cols, info.rows)),
-                );
-                info.cols = cols;
-                info.rows = rows;
-            }
+            // 尺寸只由帧事件（drain_stream Frame）更新：layout 事件流与帧流
+            // 交替到达，layout rect（54x23）会覆盖帧刚更新的 resize 后尺寸
+            // （86x20），造成 VTE 反复 resize 重排内容（ctrl_l CLB 漂移根因）。
+            let _ = pane;
         }
 
         let leaves: Vec<PaneId> = layout
@@ -555,6 +578,9 @@ impl HerdrRuntime {
                         .copied()
                         .filter(|pane| existing.tree.contains(*pane))
                         .unwrap_or(existing.active);
+                    if !emit_event {
+                        self.snapshot_active.insert(tab, active);
+                    }
                     let product_layout = TabLayout { active, ..existing };
                     self.layouts.insert(tab, product_layout.clone());
                     self.resync_active_from_layout(tab, active, emit_event);
@@ -589,6 +615,9 @@ impl HerdrRuntime {
             .copied()
             .filter(|pane| tree.contains(*pane))
             .unwrap_or(leaves[0]);
+        if !emit_event {
+            self.snapshot_active.insert(tab, active);
+        }
         let product_layout = TabLayout { tab, tree, active };
         self.layouts.insert(tab, product_layout.clone());
         self.resync_active_from_layout(tab, active, emit_event);
@@ -599,6 +628,16 @@ impl HerdrRuntime {
             });
         }
         true
+    }
+
+    /// 切 tab 时恢复目标 pane：权威快照优先（snapshot_active），layout 兜底。
+    /// `layout.updated` 事件流记录与快照两条通道无序，晚到旧事件会把
+    /// focused_pane_id 回退到 split 之前，因此恢复绝不能读事件污染的 layout。
+    fn restore_active_for(&self, target: TabId) -> Option<PaneId> {
+        self.snapshot_active
+            .get(&target)
+            .copied()
+            .or_else(|| self.layouts.get(&target).map(|layout| layout.active))
     }
 
     /// `apply_layout_record` 只改 `layouts[tab].active`；若该 tab 正是 active tab，
@@ -1049,6 +1088,7 @@ impl HerdrRuntime {
                     if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
                         (p.cols, p.rows) =
                             normalize_pane_size(width, height, Some((p.cols, p.rows)));
+                        self.frame_sizes.insert(pane, (p.cols, p.rows));
                     }
                     if full {
                         // 只有 attach 种子（seed_pending）存在时，本 generation
@@ -1841,6 +1881,7 @@ impl HerdrRuntime {
                                 pane,
                                 until: Instant::now() + FOCUS_PIN_TTL,
                             });
+                            self.snapshot_active.insert(tab, pane);
                         }
                     }
                 }
@@ -1876,6 +1917,7 @@ impl HerdrRuntime {
                             pane,
                             until: Instant::now() + FOCUS_PIN_TTL,
                         });
+                        self.snapshot_active.insert(tab, pane);
                     }
                 }
             }
@@ -2503,6 +2545,8 @@ impl Runtime for HerdrRuntime {
                 if let Some(l) = self.layouts.get_mut(&tab) {
                     l.active = *target;
                 }
+                // SwitchPane 已同步 pane.focus 到 server：本地焦点意图即权威。
+                self.snapshot_active.insert(tab, *target);
                 self.active_pane = Some(*target);
                 if tab_changed {
                     self.events.push_back(StateChange::ActiveTabChanged { tab });
@@ -2531,7 +2575,10 @@ impl Runtime for HerdrRuntime {
                     t.active = t.id == *target;
                 }
                 self.active_tab = Some(*target);
-                if let Some(pane) = self.layouts.get(target).map(|layout| layout.active) {
+                // 恢复目标必须以权威快照为准（snapshot_active），不能信任
+                // layout.updated 事件流记录：事件与快照两条通道无序，晚到旧
+                // 事件会把 focused_pane_id 回退到 split 之前（agent e2e）。
+                if let Some(pane) = self.restore_active_for(*target) {
                     for candidate in self.panes.iter_mut() {
                         candidate.active = candidate.id == pane;
                     }
@@ -2597,7 +2644,11 @@ impl Runtime for HerdrRuntime {
                     }
                 };
                 // 请求参数随 mutation 保存（派发时才真正发 socket）。
-                let pending = self.mutation_queue.head_mut().expect("刚入队必须存在");
+                // 按 id 定位：队头可能是仍在 in-flight 的旧 mutation。
+                let pending = self
+                    .mutation_queue
+                    .by_id_mut(operation_id)
+                    .expect("刚入队必须存在");
                 pending.new_tab_name = name.clone();
                 pending.expected_tab = None;
                 pending.expected_pane = None;
@@ -2641,7 +2692,10 @@ impl Runtime for HerdrRuntime {
                         });
                     }
                 };
-                let pending = self.mutation_queue.head_mut().expect("刚入队必须存在");
+                let pending = self
+                    .mutation_queue
+                    .by_id_mut(operation_id)
+                    .expect("刚入队必须存在");
                 pending.target_tab = Some(self.tab_to_herdr_tab[&tab].clone());
                 pending.target_pane = Some(herdr_pane);
                 pending.split_dir = Some(*dir);
@@ -2928,6 +2982,166 @@ mod tests {
             .panes
             .iter()
             .all(|pane| (pane.cols, pane.rows) == (90, 30)));
+    }
+
+    /// W9 回归：`layout.updated` 事件流记录可能晚到并携带旧 focused_pane_id
+    /// （事件与快照两条通道无序）。切 tab 恢复焦点必须用权威快照值
+    /// （snapshot_active），不能读被晚到旧事件污染的 layouts[tab].active。
+    #[test]
+    fn switch_tab_restores_authoritative_snapshot_active_not_stale_event() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let tab1 = TabId(1);
+        let tab2 = TabId(2);
+        runtime.herdr_tab_to_tab.insert("w1:t1".into(), tab1);
+        runtime.herdr_tab_to_tab.insert("w1:t2".into(), tab2);
+        for (herdr, product) in [
+            ("w1:p1", PaneId(1)),
+            ("w1:p2", PaneId(2)),
+            ("w1:p3", PaneId(3)),
+            ("w1:p4", PaneId(4)),
+        ] {
+            runtime.herdr_pane_to_pane.insert(herdr.into(), product);
+        }
+        runtime.tabs = vec![
+            TabInfo {
+                id: tab1,
+                name: "t1".into(),
+                active: false,
+            },
+            TabInfo {
+                id: tab2,
+                name: "t2".into(),
+                active: false,
+            },
+        ];
+        runtime.panes = vec![
+            PaneInfo {
+                id: PaneId(1),
+                tab: tab1,
+                active: false,
+                title: "p1".into(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: PaneId(2),
+                tab: tab2,
+                active: false,
+                title: "p2".into(),
+                cols: 54,
+                rows: 23,
+            },
+            PaneInfo {
+                id: PaneId(3),
+                tab: tab2,
+                active: false,
+                title: "p3".into(),
+                cols: 54,
+                rows: 11,
+            },
+            PaneInfo {
+                id: PaneId(4),
+                tab: tab2,
+                active: false,
+                title: "p4".into(),
+                cols: 54,
+                rows: 11,
+            },
+        ];
+        let left = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 54,
+            height: 23,
+        };
+        let right_top = LayoutRect {
+            x: 54,
+            y: 0,
+            width: 54,
+            height: 11,
+        };
+        let right_bottom = LayoutRect {
+            x: 54,
+            y: 12,
+            width: 54,
+            height: 11,
+        };
+        let root_rect = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 108,
+            height: 23,
+        };
+        let record = |focused: &str| LayoutRecord {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t2".into(),
+            zoomed: false,
+            area: root_rect,
+            focused_pane_id: focused.into(),
+            panes: vec![
+                LayoutPaneRecord {
+                    pane_id: "w1:p2".into(),
+                    focused: false,
+                    rect: left,
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p3".into(),
+                    focused: false,
+                    rect: right_top,
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p4".into(),
+                    focused: true,
+                    rect: right_bottom,
+                },
+            ],
+            splits: vec![
+                LayoutSplitRecord {
+                    id: "split_root".into(),
+                    path: vec![],
+                    direction: LayoutSplitDirection::Right,
+                    ratio: 0.5,
+                    rect: root_rect,
+                },
+                LayoutSplitRecord {
+                    id: "split_right".into(),
+                    path: vec![true],
+                    direction: LayoutSplitDirection::Down,
+                    ratio: 0.5,
+                    rect: root_rect,
+                },
+            ],
+        };
+
+        // 快照路径：权威 focused = p4。
+        assert!(runtime.apply_layout_record(&record("w1:p4"), false));
+        assert_eq!(
+            runtime.snapshot_active.get(&tab2).copied(),
+            Some(PaneId(4)),
+            "快照路径必须记录权威 active"
+        );
+        assert_eq!(runtime.layouts.get(&tab2).unwrap().active, PaneId(4));
+
+        // 晚到旧事件：focused 回退到 p2（split 之前的值）。
+        assert!(runtime.apply_layout_record(&record("w1:p2"), true));
+        assert_eq!(
+            runtime.layouts.get(&tab2).unwrap().active,
+            PaneId(2),
+            "事件路径可更新 UI 布局 active（本身不报错）"
+        );
+        assert_eq!(
+            runtime.snapshot_active.get(&tab2).copied(),
+            Some(PaneId(4)),
+            "晚到事件不得污染权威 active"
+        );
+        assert_eq!(
+            runtime.restore_active_for(tab2),
+            Some(PaneId(4)),
+            "切 tab 恢复必须用权威快照值，而不是被旧事件回退的 layout.active"
+        );
     }
 
     /// `terminal.frame(full=true)` 是 observer 当前屏幕的完整 ANSI 重绘，
