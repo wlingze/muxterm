@@ -376,17 +376,17 @@ pub fn list_panes(window: TabId) -> TmuxCommand {
 ///
 /// tmux `capture-pane -S`：0 = 可见区第一行，负数 = 历史。
 /// 用 `-S -N` 而不是无界 `-S -`，避免一次灌整段 history。
+/// 首屏 seed / output-dropped **不要**走这条：把历史当 VT 流重放会卡住
+/// 控制通道，htop/pi 也会错位。这条留给以后非阻塞的 shell 回填。
 pub fn capture_pane_with_history(pane: PaneId, history_lines: u32) -> TmuxCommand {
     let n = history_lines.max(1);
     TmuxCommand::from_raw(format!("capture-pane -e -p -S -{n} -t %{}", pane.0))
 }
 
-/// 后台索引播种：只捕获当前可见屏幕，不读取大段 scrollback。
-///
-/// attach 不应为了搜索而阻塞连接；后台 tab 先用轻量可见屏播种，第一次
-/// 切入时再由 runtime 发起带历史的权威 capture。
+/// 当前可见网格。`-N` 保留行尾空格，htop/pi 的列对齐才不会塌。
+/// 不带 `-S`：默认就是可见区，首屏和索引都走这里。
 pub fn capture_pane_visible(pane: PaneId) -> TmuxCommand {
-    TmuxCommand::from_raw(format!("capture-pane -e -p -t %{}", pane.0))
+    TmuxCommand::from_raw(format!("capture-pane -e -p -N -t %{}", pane.0))
 }
 
 /// 捕获 tmux 的 inactive screen。`-q` 让未使用 alternate screen 的 pane
@@ -1105,8 +1105,12 @@ fn capture_pane_with_history_requests_scrollback() {
 #[test]
 fn capture_pane_visible_avoids_scrollback_for_background_index_seed() {
     let c = capture_pane_visible(PaneId(3));
-    assert_eq!(c.as_str(), "capture-pane -e -p -t %3");
-    assert_eq!(c.to_line(), "capture-pane -e -p -t %3\n");
+    assert_eq!(c.as_str(), "capture-pane -e -p -N -t %3");
+    assert_eq!(c.to_line(), "capture-pane -e -p -N -t %3\n");
+    assert!(
+        !c.as_str().contains("-S"),
+        "可见屏 capture 不得带 -S，否则又会把历史灌进首屏"
+    );
 }
 
 #[test]

@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::core::runtime::tmux::client::{
-    event_channel, feed_bytes_to_lines, process_line, TmuxEvent, TmuxEventReceiver, TmuxEventSink,
+    event_channel, feed_bytes_to_lines, process_line, OutputBatcher, TmuxEvent, TmuxEventReceiver,
+    TmuxEventSink,
 };
 use crate::core::runtime::tmux::command::TmuxCommand;
 
@@ -206,7 +207,7 @@ impl SshSession {
         });
 
         // stdout → 行解析 → TmuxEvent
-        let parse_tx = event_tx.clone();
+        let parse_tx = OutputBatcher::new(event_tx.clone());
         let parse_join = tokio::spawn(async move {
             let mut buf: Vec<u8> = Vec::with_capacity(4096);
             let mut response = None;
@@ -223,7 +224,9 @@ impl SshSession {
                 for line_bytes in feed_bytes_to_lines(&mut buf, &chunk) {
                     process_line(&line_bytes, &parse_tx, &mut response).await;
                 }
+                parse_tx.flush();
             }
+            parse_tx.flush();
             parse_tx.emit(TmuxEvent::Exit { code: None });
         });
 

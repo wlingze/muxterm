@@ -46,8 +46,8 @@ final class TerminalManager: TerminalInputHandler {
     }
     private var pendingSeeds: [UInt32: PendingSeed] = [:]
     private var seedingPanes = Set<UInt32>()
-    /// Surface seed 完成前，PaneLayout 必须隐藏对应 host，避免用户看到
-    /// scrollback/VT 正在分块恢复的中间帧。空白 Surface 也会显式标记 ready。
+    /// 尚未完成过首屏的 pane：seed 期间 PaneLayout 隐藏 host。
+    /// 已经显示过的 pane 再 seed 时保持可见，避免切 tab 闪白。
     private var surfaceReadyPanes = Set<UInt32>()
     /// 已有 view 进入后台后收到新字节；回到前台时必须从 Core 的最新
     /// Surface seed 重建一次，不能继续显示旧的 VT 状态。
@@ -159,9 +159,10 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     /// 判断某 pane 的 Surface 是否已经可以安全显示。
-    /// 未创建或正在 seed 的 pane 一律不可见；空白 pane 在创建时会被标记 ready。
+    /// 从未完成过首屏的 pane 保持隐藏；已经显示过的 pane 再收到 snapshot
+    /// 时继续可见，避免切 tab 先有画面再白屏。
     func isSurfaceReady(for paneId: UInt32) -> Bool {
-        surfaceReadyPanes.contains(paneId) && !seedingPanes.contains(paneId)
+        surfaceReadyPanes.contains(paneId)
     }
 
     private func setSurfaceReady(_ paneId: UInt32, _ ready: Bool) {
@@ -176,13 +177,16 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     /// 将一次 Surface seed 放入主线程分块调度器。
+    /// 尚未显示过的 pane 先藏起来；已经在画的 pane 就地 reset，不要闪白。
     private func enqueueSeed(
         paneId: UInt32,
         view: MuxTerminalView,
         data: Data,
         scrollToLatest: Bool
     ) {
-        setSurfaceReady(paneId, false)
+        if !surfaceReadyPanes.contains(paneId) {
+            setSurfaceReady(paneId, false)
+        }
         pendingSeeds[paneId] = PendingSeed(
             view: view,
             data: data,
