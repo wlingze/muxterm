@@ -1114,6 +1114,18 @@ impl AppWindow {
             .unwrap_or(0)
     }
 
+    /// 测试用：当前激活 pane 是否已经完成首屏 Surface seed。
+    ///
+    /// 新 tab/远端 SSH 的 pane topology 可能先收敛，随后才在 GTK
+    /// allocation 后播种快照；输入契约必须从 seed 完成后开始计数，不能
+    /// 把正常的首屏 reset 误报成命令期间的 reset。
+    pub fn test_active_pane_seeded(&self) -> bool {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(s.active_pane)
+            .is_some_and(|view| view.is_seeded())
+    }
+
     /// 测试用：指定 pane 的渲染痕迹（seeds/feeds/bytes）。
     pub fn test_pane_render_trace(&self, pane_id: u32) -> (u32, u32, usize) {
         let s = self._state.borrow();

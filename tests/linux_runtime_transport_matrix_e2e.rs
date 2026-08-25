@@ -238,6 +238,13 @@ fn execute_printf(
         app.test_search_workspace(&token).is_empty(),
         "token {token} 在执行前就已存在"
     );
+    // New-tab/SSH topology can settle before GTK has allocated and seeded the
+    // VTE.  Wait for that lifecycle boundary before clearing the render trace;
+    // otherwise the normal first-screen reset is misclassified as a reset
+    // caused by the command under test.
+    wait_for(app, &format!("pane {pane} 首屏 seed"), |app| {
+        app.test_active_pane_seeded()
+    })?;
     // 命令输出只能原样进入已有 Surface。Herdr 的 full frame、tmux 的
     // PaneOutput 与 shell PTY 字节都不得借机 reset VTE。
     app.test_clear_active_pane_render_trace();
