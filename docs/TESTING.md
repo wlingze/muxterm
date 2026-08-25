@@ -130,6 +130,17 @@ xvfb-run -a cargo test --features gtk --test linux_scroll_wheel_e2e -- --test-th
 # W20 已有的连接 + Herdr runtime 卡
 cargo test --test existing_ssh_contract -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_existing_e2e -- --test-threads=1
+# Attach 后继续操作事故回归：已 populated Herdr workspace（约 223KB）→
+# Existing attach → Alt+S/Alt+V/+ → VTE echo；另有 colored prompt wire reattach。
+G_DEBUG=fatal-criticals xvfb-run -a env MUXTERM_TEST_CHILD=1 \
+  MUXTERM_TEST_RUNTIME=herdr MUXTERM_TEST_TRANSPORT=local \
+  MUXTERM_TEST_SCENARIO=herdr_attach_split_incident \
+  cargo test --features gtk --test linux_runtime_transport_matrix_e2e -- \
+  --exact isolated_matrix_child --test-threads=1
+cargo test --features gtk --test herdr_direct_reattach -- --test-threads=1
+# macOS FFI palette discovery 必须把显式隔离 socket 传到 Core；Swift e2e
+# 还验证异步列表更新与选中后的成功/失败诊断。
+cargo test --no-default-features --features ffi --test ffi_tmux_discovery -- --test-threads=1
 # Catalog（内置 Driver 落地后必须绿）
 cargo test --lib catalog:: -- --test-threads=1
 # C7/C8：SSH Host local 列出 + 缩放热路径
@@ -654,3 +665,31 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 - GTK 与 tmux 行列差一 → 用 pane 的 `WxH`，不是 `refresh-client -C` 的 client 尺寸。
 - 测试 server 没清理 → 创建与清理必须带同一个 `-L`。
 - `*.log` 不许提交；`tests/samples/*.txt` 必须提交。
+
+---
+
+## 12. Attach fidelity：attach 后必须可继续使用（2026-08-24）
+
+Attach 的验收不是“列表可见”或“topology 恢复”，而是以下完整行为：
+
+1. Existing Connections 生产 row click 能 attach 已有 2 tabs/3 panes；
+2. Attach 后立即执行水平 split、垂直 split、NewTab；
+3. 等待每个 mutation 的唯一 Completed；
+4. 切换 tabs/panes，通过真实 VTE commit 发送 echo；
+5. server、Core、GTK layout、Surface geometry、VTE 文本和搜索归属一致。
+
+当前 required runtime matrix 是 tmux/Herdr × local/loopback SSH；每格使用隔离 tmux `-L`
+或 named Herdr session。GTK 场景必须由生产 GLib timer 列出 Existing rows，不能只调用
+`test_poll_once()`。
+
+最小回归入口：
+
+- `runtime_transport_matrix_contract`：真实 Runtime attach 后 H/V split、NewTab、switch、
+  echo、detach/reattach；
+- `linux_runtime_transport_matrix_e2e::attach_then_mutate_existing`：真实 Existing row、
+  Alt+S、Alt+V、`+`、VTE echo、非零 geometry；
+- Herdr-local incident：固定大 baseline 下 attach→split→NewTab→echo，并在
+  `G_DEBUG=fatal-criticals` 下要求正常退出。
+
+测试停止规则：每个生命周期转换一个单元契约，每个 registry cell 一个 canonical workflow，
+只为新的 ordering/generation/payload invariant 增加定向 regression，不扩展成全笛卡尔积。

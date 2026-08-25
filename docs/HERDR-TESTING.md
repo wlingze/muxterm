@@ -214,9 +214,30 @@ Local Herdr 与 loopback SSH Herdr 都必须跑。
 顺序标签非空且新 VTE 可输入；只有 Herdr local/SSH 要求 raw authority label 为数字并检查
 wire payload 省略空 `label`。tmux 的 raw window name 允许保持 tmux 语义。
 
+### 4.4 `herdr_attach_split_incident`
+
+这是 `test_2026-0824-1856.log` 的独立 Herdr-local 回归，不由空 workspace 或普通
+`large_history_*` 场景替代：
+
+- attach 前先在已 populated 的 2-tab/3-pane workspace 写入固定的约 `223,320` bytes
+  baseline，并等待 `MX_INCIDENT_BASELINE_DONE`；历史生成不计入 GTK attach 计时；
+- 通过生产 Existing Connections row attach，确认同一 named session + workspace identity；
+- attach 后立即走真实 Alt+S、Alt+V、`+`，再通过 VTE commit 执行 echo；
+- 断言服务端/Core/目标 VTE 的新 token 与 baseline 都存在，pane geometry 有效，child 正常退出；
+- 在 `G_DEBUG=fatal-criticals` + Xvfb 下运行，任何 SIGABRT/SIGSEGV 或 timeout 都失败。
+
+`pane.read` 单次 JSON 响应可能小于完整历史，测试不把返回长度误当成历史大小；固定大小由
+fixture 的 `head -c 223320` 生成命令保证，marker 证明命令完成。
+
+### 4.5 `direct_reattach_*`
+
+wire 回归保留两条独立断言：plain token 的 detach/reattach 后旧内容连续且可执行新命令；
+colored multiline `PS1` 是单独测试，验证 prompt 解析不会阻塞新 Control 输入。临时
+`zz_probe_*` 只作诊断，不再作为 required gate。
+
 按钮与快捷键必须是两个独立子进程场景，防止一个入口代替另一个。
 
-### 4.4 `split_shortcut_waits_for_authoritative_focus`
+### 4.6 `split_shortcut_waits_for_authoritative_focus`
 
 - 分别投递 Alt+S 与 Alt+V；
 - fixture 允许第一份 layout 暂时仍指向旧 focused pane；
@@ -224,7 +245,7 @@ wire payload 省略空 `label`。tmux 的 raw window name 允许保持 tmux 语�
 - 5 秒内 Herdr、Workspace、GTK layout leaves 和 active pane 完全一致；
 - 新 pane token 只在对应 VTE 出现。
 
-### 4.5 `ctrl_l_clears_and_stays_clear`
+### 4.7 `ctrl_l_clears_and_stays_clear`
 
 - 在当前 pane 写入 `BEFORE_CLEAR_<unique>`；
 - 通过真实 VTE/key controller 输入 Ctrl+L；
@@ -233,14 +254,14 @@ wire payload 省略空 `label`。tmux 的 raw window name 允许保持 tmux 语�
 - 切到其他 tab 再切回，BEFORE 不得因 snapshot/reseed 复活；
 - Workspace Index 可以保留历史用于搜索，但不得反灌 Surface。
 
-### 4.6 `stale_stream_events_do_not_take_over_new_generation`
+### 4.8 `stale_stream_events_do_not_take_over_new_generation`
 
 - 为同 pane 创建 generation N，再 promote/replace 为 N+1；
 - 按顺序注入 N 的 Error、Closed、Frame 和 N+1 的 Frame；
 - registry 只保留 N+1；VTE 只出现 N+1 token；
 - stream start 计数不因三个 stale event 增加。
 
-### 4.7 `takeover_storm_is_bounded_and_ui_remains_responsive`
+### 4.9 `takeover_storm_is_bounded_and_ui_remains_responsive`
 
 - 对 current control generation 连续制造 taken-over/EOF；
 - 10 秒观察窗内自动 start 尝试不超过 5；
@@ -252,7 +273,7 @@ wire payload 省略空 `label`。tmux 的 raw window name 允许保持 tmux 语�
 
 CPU 百分比只作为诊断，不作为唯一断言；transition 上限和 watchdog 才是确定性门禁。
 
-### 4.8 `saved_project_matches_existing_connection_identity`
+### 4.10 `saved_project_matches_existing_connection_identity`
 
 Local 与 loopback SSH 分别：
 
@@ -455,3 +476,45 @@ artifact 只能包含测试 fixture，不得采集用户默认 tmux/Herdr sessio
 - [ ] fmt/check/clippy/Core/Linux 本地门禁通过。
 - [ ] 获准 push 后 PR #20 Core/Linux/macOS required 全绿。
 - [ ] 测试前后用户默认 tmux/Herdr session 未改变。
+
+---
+
+## 11. Attach 后继续使用的生命周期覆盖（2026-08-24）
+
+### 11.1 Canonical runtime contract
+
+registry 枚举的 tmux/Herdr × local/loopback SSH 四格都必须：
+
+1. 在隔离 server 上预建 2 tabs/3 panes；
+2. Attach 后立即水平 split、垂直 split、NewTab；
+3. 等待每个 operation 唯一 `MutationSettled::Completed`；
+4. 切换全部 tab/pane，并通过 `WriteRaw` 执行不同 echo token；
+5. detach/drop Runtime 后重新 attach，再执行一次 mutation 和 echo。
+
+断言同时覆盖 server、Core topology/focus/layout、Surface geometry、VTE 文本和 token 唯一
+归属。任何一层只通过不算完成。
+
+### 11.2 GTK production scenarios
+
+每个四格独立 child process 运行：
+
+- `attach_then_mutate_existing`：真实 QuickConnect → Existing Connections → 生产 GLib
+  probe → 精确 row click → attach populated workspace → Alt+S/Alt+V/真实 `+` → VTE
+  commit echo；断言 3 tabs、最终 geometry 和单一目标 VTE token。
+- `detach_reattach`：生产 attach、detach/drop Runtime、再次打开同一 fixture，重新切换
+  tab/pane 并执行 echo；旧 Surface generation 不得影响新 Surface。
+
+测试只使用 `tmux -L muxterm-test-*` 与 named Herdr session；不得用默认 server。
+
+### 11.3 Incident regression
+
+仅在 Herdr-local 增加一条大 payload 回归：active 单 pane + 另一 tab 的 split，attach 前固定
+约 223KB baseline；attach 后 split active pane、创建 tab、执行 echo。在
+`G_DEBUG=fatal-criticals` 下必须正常退出，不得 timeout、SIGABRT、SIGSEGV，并上传 stderr、
+stream transition、topology 和 Surface 诊断。
+
+### 11.4 停止规则
+
+每个状态转换一个 L0 contract；每个 registry cell 一个 canonical workflow；真实 GTK 只保留
+attach/reattach 两条生产入口；只有新增 ordering、generation 或 payload invariant 才增加
+regression，不做完整操作笛卡尔积。

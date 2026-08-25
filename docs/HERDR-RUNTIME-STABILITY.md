@@ -743,3 +743,62 @@ mutation_id, mutation_queue_depth
 - 修改 `~/Developer/terminal/{herdr,herdrm}`；
 - 在没有真实 `+`/key controller/GLib 主循环证据时宣称生产路径修复；
 - 在未完成 local/loopback SSH 四格前宣称 runtime×transport 已覆盖。
+
+## 11. 2026-08-24 Attach→Mutation 稳定性增补
+
+### 11.1 Incident evidence
+
+`test_2026-0824-1856.log` 确认了 attach-existing → `SplitPane` accepted → 新 pane Observe
+启动这一段，随后没有新的 stream-start、layout rebuild 或 `MutationSettled`。没有 core dump
+或 journal，所以本节不把单一 native/GTK/Rust 根因当作已证明事实；验收以 invariant 和
+可重复 regression 为准。
+
+### 11.2 Batch atomicity
+
+Runtime 输出的一个 poll batch 必须按以下边界提交：
+
+1. 先把所有 structural events 应用到最终 Core state；
+2. 每个受影响 workspace 的 LayoutHost 恰好同步一次，structural-only batch 也一样；
+3. active mount/chrome 最多一次；
+4. topology 稳定后才 feed `PaneFrame`，最后 feed `PaneOutput`。
+
+结构事件中禁止调用 inline `refresh_ui()`。tmux、Herdr 和 background workspace 都使用同一
+规则；GUI 不识别 runtime 名称。
+
+### 11.3 Mutation focus and streams
+
+`PendingMutation.expected_focus` 保存 direct response 已知的 Herdr pane identity。它必须
+先建立 focus intent，再计算 desired stream modes；目标身份已知时直接 Control，其他 pane
+Observe。identity 尚未知时允许至多一次 Observe→Control 转换。权威 snapshot/layout/focus
+与目标 pane full baseline ready 后，且只后，才能发送 `MutationSettled::Completed`。
+
+detach 会让所有 pending mutation 各产生一次 `Failed`，并禁止旧 generation 重启 stream。
+
+### 11.4 Input ownership
+
+PaneView callback 只入 FIFO，元素带 `(WorkspaceId, PaneId, bytes)`；生产 GLib poll 按该
+identity drain `Task::WriteRaw`。callback 不得裸指针借用 `UiState`，也不得查询当前 active
+workspace。workspace/pane 已关闭时丢弃并记录诊断，不得改投其他 pane。
+
+### 11.5 tmux attach 新 pane readiness
+
+tmux 的 attach-existing 与 create 不是同一个启动时序：`%window-add`/`list-panes` 可以先于
+新 pane 内 shell 完成初始化。对 attach 后新增 pane，Runtime 必须按以下顺序处理输入：
+
+```text
+PaneAdded
+  -> capture-pane 完成（或明确失败并释放 capture 门）
+  -> 用户 WriteRaw 进入 pane-keyed pending FIFO
+  -> readiness probe 的 send-keys Enter 获得响应 ack
+  -> 连续两轮该 pane 的实时 output
+  -> 发送合并后的用户 WriteRaw
+```
+
+capture 尚未完成时不得直接 send-keys；单轮 probe、没有 ack 的 output、命令通道瞬时错误都不
+能释放输入。probe error/发送失败要在下一轮 poll 重试，pane close/Workspace detach 必须
+清理 pending bytes、probe、ack 和 round 状态。probe 只在该 pane 首次有用户输入时启动，
+不能为了空闲 pane 伪造回车或改变 attach 屏幕。
+
+该 contract 由 tmux backend 单元测试和 GTK `attach_then_mutate_existing` 覆盖；GTK 测试
+必须通过 Existing Connections 生产入口，执行 attach→Alt+S→Alt+V→`+`→echo，并同时断言
+server、Core topology、pane geometry 与目标 VTE 文本。

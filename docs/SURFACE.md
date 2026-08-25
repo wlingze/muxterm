@@ -248,3 +248,16 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续
 | seed = snapshot + discard + catch-up | cmux `Sources/RemoteTmuxPaneSeed.swift` |
 | `-H` 十六进制字节 | `tmux.1` send-keys；`cmd-send-keys.c` `args_has(..., 'H')`；[OpenBSD tmux.1](https://man.openbsd.org/tmux.1) |
 | 假 PTY | WezTerm `mux/src/tmux_pty.rs` |
+
+---
+
+## 7. Topology batch commit boundary（2026-08-24）
+
+Structural events 和像素事件不能交错提交。一个 poll batch 必须先把最终 topology 应用到
+Core，再对每个 affected workspace 执行一次 LayoutHost sync/mount；只有这个 commit boundary
+之后才能 feed full frame，最后才能 feed output。structural-only batch 也必须提交一次，不能
+因没有 frame/output 而逐事件 inline refresh。
+
+PaneView input callback 只产生 `(WorkspaceId, PaneId, bytes)` FIFO item；GLib poll drain 时
+按 owner 路由 `WriteRaw`。切 tab、切 workspace、detach 或 layout rebuild 不得把迟到输入改投
+新的 active pane。Attach、Reattach 和 Create 的 Surface mount 都遵守同一 boundary。

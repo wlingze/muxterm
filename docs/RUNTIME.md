@@ -2,7 +2,7 @@
 
 > 日期：2026-08-17（`2026-08-17T15:26:26+08:00`）
 > 修订：2026-08-17 Catalog（`2026-08-17T22:45:39+08:00`）；2026-08-22 Herdr
-> stability/identity contract。
+> stability/identity contract；2026-08-25 attach→mutation/readiness contract。
 > 分支：`feature/runtime/support_herdr`
 > 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md)。
 > tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
@@ -14,9 +14,10 @@
 
 **一句话：** Runtime 是给一个 Muxterm Workspace **填** Tab/Pane、收字节、执行 Task 的接口。tmux、shell、Herdr 都是实现。SSH 不是 Runtime，是 Transport。GUI 不许按实现名字写 `if herdr`，只许问 `support()`。
 
-本文是契约。H0–H4、Catalog 与 QuickConnect 基线已经落在
-`feature/runtime/support_herdr`；2026-08-22 的稳定化内容仍待按专项计划实施，不能把
-“已经接入”表述成“真实 Herdr 工作流已经可用”。
+本文是契约。H0–H4、Catalog、QuickConnect 和 attach→mutation 稳定化已落在
+`feature/runtime/support_herdr`；当前本地 Core 与 Linux required 门禁覆盖了
+tmux/Herdr × local/loopback SSH、attach 后 split/NewTab/echo、detach→reattach 与
+agent 生命周期。远端 CI 状态仍以对应 workflow run 为准，不能用本地绿色替代远端证据。
 
 ---
 
@@ -364,6 +365,14 @@ Pool/platform 不复制第二份。产品入口只能走 `Catalog::open_target/o
 
 远程 Herdr：Transport `ssh` + Runtime `herdr`。列出用 `ssh … herdr session list` / `workspace list`（和 `ssh … tmux list-sessions` 同类）。打开不要 `herdr --remote`（会在远端装/启 server）：把远端 `herdr.sock` Unix 转发到本机，再走现有 `HerdrSession`。没在跑就跳过，不要替用户启动。探活进 Inventory，不要写在 `window.rs`。
 
+tmux Existing discovery 的 `session` 与 target-side `socket` 必须作为同一个
+attach identity 传过 FFI/QuickConnect。macOS 命令面板的
+`muxterm_discover_tmux_sessions_json` 接受显式 socket/config，并返回真实
+`name/windows/attached/created`；palette completion 不得把结果压回默认 server。
+同一 target 的异步列表请求带单调 request generation，旧 local/SSH completion 不能覆盖新
+target 的列表或错误状态。Herdr Existing row 还必须把 named session 与 `workspace_id` 一起
+编码进 widget identity，因为不同 session 都可能有 `w1`。
+
 ---
 
 ## 9. 明确不做
@@ -391,3 +400,34 @@ src/core/workspace/pool.rs    槽位表；不再持有 herdr_sessions
 ```
 
 测试：能力表用单测（假 Runtime 只报 `WorktreeList` 时 Pool 不得调用 create）。Herdr e2e 用**独立 named session**（`herdr --session muxterm-test-<unique>`），不要打用户默认 `herdr.sock`。
+
+## 11. Attach 后继续操作的公共生命周期契约（2026-08-24）
+
+Create、Attach、Reattach 只是 bootstrap 来源；三者完成后都必须进入同一个
+`Connected/task-capable` 状态。GUI、Workspace 和 Runtime 不得依据 bootstrap 来源改变
+`NewTab`、H/V split、focus、`WriteRaw` 或 `PaneOutput` 语义。
+
+标准转换为：
+
+```text
+Create | Attach | Reattach
+    -> Connected + initial Surface ready
+    -> Accepted(operation_id)
+    -> authoritative topology/focus/layout + pane baseline
+    -> MutationSettled(Completed | Failed)
+    -> Connected（或 Detached）
+```
+
+initial Surface ready 只表示已有 topology 和首屏可以挂载；`MutationSettled::Completed` 还
+必须证明该 operation 的权威 topology、active focus、layout 和目标 pane baseline 已就绪。
+`Accepted` 不能触发 GUI 手工 refresh，也不能被当作完成。
+
+所有 Runtime 的 contract 测试使用同一个行为序列：预建 2 tabs/3 panes，Attach 后执行
+水平 split、垂直 split、NewTab、逐 pane switch 和 echo；PersistDetach Runtime 再执行
+detach、重新 attach、新 mutation 和新 echo。测试矩阵由 registry 的 runtime×transport
+枚举生成，当前 required cells 为 tmux/Herdr × local/loopback SSH。
+
+每个 accepted operation 只能产生一次 Completed 或 Failed；detach 会使未完成 operation
+各失败一次，旧 Surface generation 的迟到事件不得写入新 workspace。实现细节分别见
+[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) 与
+[`SURFACE.md`](SURFACE.md)。
