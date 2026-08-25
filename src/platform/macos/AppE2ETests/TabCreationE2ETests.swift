@@ -160,4 +160,59 @@ final class TabCreationE2ETests: XCTestCase {
             "关 tab 后 tmux window 与 Core snapshot 仍必须一一对应"
         )
     }
+
+    func testNewPaneAndTabFocusTerminalInput() throws {
+        AppE2E.requireTmux()
+        let socket = Tmux.uniqueSocket("focus-input")
+        let session = "focus-input"
+        Tmux.killServer(socket)
+        defer { Tmux.killServer(socket) }
+        Tmux.ok(socket: socket, args: [
+            "-f", "/dev/null", "new-session", "-d", "-s", session,
+            "-x", "80", "-y", "24", "--", "/bin/cat",
+        ])
+        let app = try AppE2E.attachWindow(socket: socket, session: session)
+        defer { app.testShutdown() }
+        app.window?.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(app.waitReady(minTabs: 1, minLeaves: 1), "attach 后应有 1 个 pane")
+
+        func cursorInActiveTerminal() -> Bool {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            app.testRestoreTerminalFocus()
+            let active = app.testActivePaneID()
+            guard app.testPaneSurfaceReady(active) else { return false }
+            guard app.testFocusTargetPaneID() == active else { return false }
+            app.testMakeActiveTerminalFirstResponder()
+            return app.testFocusedTerminalPaneID() == active
+                && !app.testFirstResponderIsPaneHost()
+        }
+
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout, cursorInActiveTerminal),
+            "attach 后键盘目标必须是 SwiftTerm。target=\(String(describing: app.testFocusTargetPaneID())) active=\(app.testActivePaneID()) responder=\(String(describing: app.testFocusedTerminalPaneID()))"
+        )
+
+        let beforeLeaves = app.testLayoutLeafIDs()
+        app.testSplitHorizontal()
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                cursorInActiveTerminal()
+                    && app.testLayoutLeafIDs().count == beforeLeaves.count + 1
+            },
+            "新建 pane 后光标必须在新 pane 的 SwiftTerm 输入里，不能停在 host。active=\(app.testActivePaneID()) target=\(String(describing: app.testFocusTargetPaneID())) host=\(app.testFirstResponderIsPaneHost()) leaves=\(app.testLayoutLeafIDs())"
+        )
+
+        let beforeTabs = app.testTabIDs()
+        app.testNewTab()
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                let ids = app.testTabIDs()
+                return cursorInActiveTerminal()
+                    && ids.count == beforeTabs.count + 1
+                    && ids.contains(where: { !beforeTabs.contains($0) })
+            },
+            "新建 tab 后光标必须在新 tab 的 SwiftTerm 输入里。active=\(app.testActivePaneID()) target=\(String(describing: app.testFocusTargetPaneID()))"
+        )
+    }
 }

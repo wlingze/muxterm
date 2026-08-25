@@ -165,6 +165,38 @@ extension MainWindowController {
         pollOnce()
     }
 
+    func testSplitHorizontal() {
+        splitHorizontal()
+        pollOnce()
+    }
+
+    /// 键盘所在的 SwiftTerm pane。host 边框高亮不算。
+    func testFocusedTerminalPaneID() -> UInt32? {
+        (window?.firstResponder as? MuxTerminalView)?.paneId
+    }
+
+    func testFocusTargetPaneID() -> UInt32? {
+        terminalManager.focusTarget?.paneId
+    }
+
+    func testFirstResponderIsTerminalView() -> Bool {
+        window?.firstResponder is MuxTerminalView
+    }
+
+    func testFirstResponderIsPaneHost() -> Bool {
+        window?.firstResponder is PaneHostView
+    }
+
+    func testRestoreTerminalFocus() {
+        restoreTerminalFocusIfAllowed()
+    }
+
+    func testMakeActiveTerminalFirstResponder() {
+        let pane = testActivePaneID()
+        let view = terminalManager.view(for: pane)
+        window?.makeFirstResponder(view)
+    }
+
     /// 通过生产 Core task 关闭 tab；测试不得直接 `kill-window`。
     func testCloseTab(_ tabId: UInt32) {
         closeTab(tabId)

@@ -299,24 +299,20 @@ final class MuxTerminalView: TerminalView {
         minimumModelRows = target.rows
         let term = getTerminal()
         let shouldFollow = followTail || isAtLatest()
-        guard PaneGridSyncPolicy.shouldResize(
+        let didResize = PaneGridSyncPolicy.shouldResize(
             currentCols: term.cols,
             currentRows: term.rows,
             tmuxCols: target.cols,
             tmuxRows: target.rows
-        ) else {
-            if shouldFollow {
-                scrollToLatest()
-            }
-            return
-        }
+        )
+        guard didResize else { return }
         term.resize(cols: target.cols, rows: target.rows)
         lastModelCols = target.cols
         lastModelRows = target.rows
         term.updateFullScreen()
         setNeedsDisplay(bounds)
         if let layer { layer.setNeedsDisplay() }
-        if shouldFollow {
+        if PaneGridFollowPolicy.shouldScrollToLatest(didResize: true, followTail: shouldFollow) {
             scrollToLatest()
         }
     }
@@ -541,13 +537,15 @@ final class MuxTerminalView: TerminalView {
 
     /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。
     func setFont(family: String? = nil, size: CGFloat? = nil) {
-        if let family, !family.isEmpty {
+        if let family, !family.isEmpty, family != fontFamily {
             fontFamily = family
         }
         if let size {
             fontSize = MuxtermTerminalFont.clamp(size)
         }
-        font = Self.makeFont(family: fontFamily, size: fontSize)
+        let next = Self.makeFont(family: fontFamily, size: fontSize)
+        if font == next { return }
+        font = next
     }
 
     private static func makeFont(family: String, size: CGFloat) -> NSFont {

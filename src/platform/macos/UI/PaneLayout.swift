@@ -52,6 +52,8 @@ final class PaneLayoutView: NSView {
     }
     /// 分隔条释放后提交：pane、横向（宽度）/纵向（高度）、字符格尺寸。
     var onResizeDivider: ((UInt32, Bool, UInt16) -> Void)?
+    /// Surface 从 seeding 变为可显示。调用方应把键盘交还给 active pane。
+    var onSurfaceBecameReady: ((UInt32, Bool) -> Void)?
 
     init(terminalManager: TerminalManager) {
         self.terminalManager = terminalManager
@@ -63,13 +65,16 @@ final class PaneLayoutView: NSView {
     }
 
     /// 切 Workspace：把当前 Surface 树停到旧 manager 名下，挂上新 manager 已有的树。
-    func replaceTerminalManager(_ newManager: TerminalManager) {
-        guard newManager !== terminalManager else { return }
+    /// 返回是否成功挂上停驻树（切回已打开过的 Workspace 时为 true）。
+    @discardableResult
+    func replaceTerminalManager(_ newManager: TerminalManager) -> Bool {
+        guard newManager !== terminalManager else { return currentTabId != nil }
         terminalManager.onSurfaceReadinessChanged = nil
+        let parkedTabId = currentTabId
         parkCurrentTab()
         parkedByManager[ObjectIdentifier(terminalManager)] = ParkedWorkspace(
             tabTrees: tabTrees,
-            currentTabId: currentTabId,
+            currentTabId: parkedTabId,
             lastPanes: lastPanes,
             baseLayout: baseLayout,
             fullscreenPaneId: fullscreenPaneId,
@@ -88,17 +93,21 @@ final class PaneLayoutView: NSView {
         lastLayoutBounds = (0, 0)
         terminalManager = newManager
         bindSurfaceReadiness(to: newManager)
+        var restored = false
         if let parked = parkedByManager.removeValue(forKey: ObjectIdentifier(newManager)) {
             tabTrees = parked.tabTrees
             lastPanes = parked.lastPanes
             baseLayout = parked.baseLayout
             fullscreenPaneId = parked.fullscreenPaneId
             lastLayoutBounds = parked.lastLayoutBounds
-            if let tabId = parked.currentTabId, let cached = tabTrees[tabId] {
+            let tabId = parked.currentTabId ?? parked.tabTrees.keys.first
+            if let tabId, let cached = tabTrees[tabId] {
                 installCached(cached, tabId: tabId)
+                restored = true
             }
         }
         needsLayout = true
+        return restored
     }
 
     /// 淘汰后丢掉已经没有 slot 的停驻树，避免 SwiftTerm 泄漏。
@@ -110,6 +119,7 @@ final class PaneLayoutView: NSView {
     private func bindSurfaceReadiness(to manager: TerminalManager) {
         manager.onSurfaceReadinessChanged = { [weak self] paneId, ready in
             self?.setSurfaceReady(paneId: paneId, ready: ready)
+            self?.onSurfaceBecameReady?(paneId, ready)
         }
     }
 
@@ -213,12 +223,11 @@ final class PaneLayoutView: NSView {
         )
 
         needsLayout = true
-        let token = (Int(bounds.width.rounded()), Int(bounds.height.rounded()))
-        if token.0 > 0, token.1 > 0, token == lastLayoutBounds {
-            // 窗口没变，第一次挂树也不要 refresh-client -C。
-            terminalManager.flushSeedsNow(paneIds: ids)
-            terminalManager.forceRedraw(paneIds: ids)
-        } else {
+        // 窗口外框没变可以省略 refresh-client -C（hysteresis 在
+        // syncAllVisibleSizes 里）。换了一棵 pane 树仍要按每个 host
+        // 的像素重算 SwiftTerm 格子，否则切 tab 后字体/结构会错，
+        // 直到用户再点一下 pane。
+        if TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: true) {
             scheduleGeometrySync(paneIds: ids)
         }
         return true
@@ -358,15 +367,16 @@ final class PaneLayoutView: NSView {
         currentLayout = cached.layout
         hostByPane = cached.hostByPane
         currentPaneIds = cached.paneIds
-        let token = (Int(bounds.width.rounded()), Int(bounds.height.rounded()))
-        if token.0 > 0, token.1 > 0 {
-            lastLayoutBounds = token
-        }
+        // 不要在这里写 lastLayoutBounds：窗口外框没变时 layout() 会跳过，
+        // 但预热/停驻树可能是 0×0 建的，必须按现在的 host 像素重算格子。
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
         }
         markActivePane(cached.activePaneId)
         terminalManager.flushSeedsNow(paneIds: cached.paneIds)
+        if TabGeometrySyncPolicy.shouldSyncOnCachedReveal() {
+            scheduleGeometrySync(paneIds: cached.paneIds)
+        }
     }
 
     func testPaneAllocation(_ paneId: UInt32) -> NSSize {
@@ -598,6 +608,10 @@ final class PaneHostView: NSView {
         if ready {
             needsDisplay = true
         }
+    }
+
+    override var acceptsFirstResponder: Bool {
+        PaneHostFocusPolicy.acceptsFirstResponder
     }
 
     func setAllowsMoveToNewTab(_ allowed: Bool) {

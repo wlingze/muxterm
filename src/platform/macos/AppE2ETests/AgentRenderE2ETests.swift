@@ -394,6 +394,128 @@ final class AgentRenderE2ETests: XCTestCase {
         view.doCommand(by: Selector(("noop:")))
         XCTAssertEqual(handler.bytes, [0x15], "noop 必须静默忽略")
     }
+
+    /// 伪造 pi/Cursor 网格：顶栏 + 中间对话 + 底栏输入。历史 prepend 后
+    /// 可见屏仍必须是顶+输入，不能只剩中间；上划后中文历史必须可读。
+    func testForgedAgentGridKeepsTopAndInputAfterHistory() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        AppE2E.ensureApp()
+        let cols = 40
+        let rows = 12
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        manager.updatePaneSizes([Pane(id: 1, cols: UInt16(cols), rows: UInt16(rows), isActive: true)])
+        view.getTerminal().resize(cols: cols, rows: rows)
+
+        var grid = "\u{1b}[H\u{1b}[2J"
+        grid += "\u{1b}[1;1HPI_STATUS AGENT_TOP"
+        grid += "\u{1b}[5;1HCONV_MIDDLE"
+        grid += "\u{1b}[\(rows);1HPROMPT>"
+        manager.testQueueSurfaceSeed(
+            paneId: 1,
+            view: view,
+            data: Data(grid.utf8),
+            scrollToLatest: true
+        )
+        manager.handleHistory(
+            paneId: 1,
+            data: Data("HIST_ZHONG 中文历史\nASCII_HIST\n".utf8)
+        )
+        manager.testFlushSurfaceSeeds()
+        AppE2E.pump(40)
+
+        let visible = view.visibleScreenText()
+        XCTAssertTrue(visible.contains("PI_STATUS"), "顶栏必须还在。got=\(visible)")
+        XCTAssertTrue(visible.contains("PROMPT>"), "输入盒必须还在，不能只看到中间。got=\(visible)")
+        XCTAssertFalse(
+            visible.contains("HIST_ZHONG"),
+            "prepend 后不得 scrollToLatest 把历史尾卷进视口。got=\(visible)"
+        )
+
+        view.scrollLines(80)
+        AppE2E.pump(20)
+        let history = view.visibleScreenText()
+        XCTAssertTrue(
+            history.contains("HIST_ZHONG") && history.contains("中文历史"),
+            "上划后中文历史必须可读，不能是乱码。got=\(history)"
+        )
+        XCTAssertFalse(history.contains("\u{1b}"), "历史行不得残留 CSI")
+
+        let increment = "\u{1b}[1;1HPI_STATUS\u{1b}[\(rows);1HPROMPT> next"
+        manager.testQueueSurfaceLiveOutput(paneId: 1, data: Data(increment.utf8))
+        manager.testFlushFeeds()
+        AppE2E.pump(40)
+        view.scrollToLatest()
+        let afterLive = view.visibleScreenText()
+        XCTAssertTrue(afterLive.contains("PI_STATUS"), "增量后顶栏还在。got=\(afterLive)")
+        XCTAssertTrue(afterLive.contains("PROMPT>"), "增量后输入盒还在。got=\(afterLive)")
+        window.orderOut(nil)
+    }
+
+    func testPrependHistoryUsesCJKColumnWidth() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 3,
+            frame: NSRect(x: 0, y: 0, width: 400, height: 200)
+        )
+        view.getTerminal().resize(cols: 10, rows: 4)
+        view.feedOutput(Data("LIVE1\r\nLIVE2\r\nLIVE3\r\nLIVE4".utf8), isSnapshot: true)
+        view.prependHistoryLines([String(repeating: "中", count: 5)])
+        view.scrollLines(20)
+        let term = view.getTerminal()
+        XCTAssertEqual(term.getCharacter(col: 0, row: 0), "中")
+        XCTAssertNotEqual(
+            term.getCharacter(col: 1, row: 0),
+            "中",
+            "全角必须占两列，否则 Cursor/pi 中文历史会叠成乱码"
+        )
+        XCTAssertEqual(term.getCharacter(col: 2, row: 0), "中")
+    }
+
+    func testSelectionSurvivesLiveTUIFeed() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 4,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 240)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        view.getTerminal().resize(cols: 40, rows: 8)
+        view.feedOutput(Data("COPY_TOKEN hello\r\n".utf8), isSnapshot: true)
+        view.selectAll()
+        XCTAssertTrue(view.getSelection()?.contains("COPY_TOKEN") == true)
+        view.allowMouseReporting = true
+        view.feedOutput(Data("\u{1b}[1;1HCOPY_TOKEN hello\r\n".utf8))
+        view.resizeSubviews(withOldSize: view.bounds.size)
+        XCTAssertTrue(
+            view.getSelection()?.contains("COPY_TOKEN") == true,
+            "TUI live feed / 布局抖动不得把选区清掉"
+        )
+        window.orderOut(nil)
+    }
+
+    private func makeManager() throws -> (CoreBridge, TerminalManager) {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        return (bridge, TerminalManager(bridge: bridge))
+    }
 }
 
 private final class RecordingInputHandler: TerminalInputHandler {

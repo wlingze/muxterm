@@ -3,7 +3,8 @@
 # 1) 绘制时 Minimum Contrast（黑底黑字）
 # 2) doCommand 处理 deleteToBeginningOfLine / noop（不再 Unhandle print）
 # 3) 暴露 scrollWheel override，允许 Muxterm 仅对滚轮临时启用 TUI mouse protocol
-# 4) muxtermPrependHistoryLines：按行写入 scrollback，不 reset
+# 4) muxtermPrependHistoryLines：按行写入 scrollback，不 reset；CJK 按列宽占格
+# 5) live feed / linefeed / Auto Layout 抖动不得清选区
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACOS_DIR="$ROOT/src/platform/macos"
@@ -146,9 +147,7 @@ python3 - "$TERM" <<'PY'
 import pathlib, sys
 term = pathlib.Path(sys.argv[1])
 text = term.read_text()
-if "MUXTERM_PREPEND_HISTORY" in text:
-    print("==> SwiftTerm history prepend patch already applied")
-else:
+if "MUXTERM_PREPEND_HISTORY" not in text:
     anchor = """    public func changeHistorySize (_ newScrollback: Int?)
     {
         changeScrollback(newScrollback)
@@ -181,8 +180,25 @@ else:
                 var idx = remaining.startIndex
                 while idx < remaining.endIndex && col < cols {
                     let ch = remaining[idx]
-                    bl[col] = makeCharData(attribute: attr, char: ch, size: 1)
+                    var chWidth = 1
+                    if let scalar = ch.unicodeScalars.first {
+                        let measured = UnicodeUtil.columnWidth(rune: scalar)
+                        if measured > 0 { chWidth = measured }
+                    }
+                    if col + chWidth > cols {
+                        break
+                    }
+                    bl[col] = makeCharData(attribute: attr, char: ch, size: Int8(chWidth))
                     col += 1
+                    if chWidth > 1 {
+                        let wideEmpty = CharData(attribute: attr, scalar: UnicodeScalar(0)!, size: 0)
+                        var rest = chWidth - 1
+                        while rest > 0 && col < cols {
+                            bl[col] = wideEmpty
+                            col += 1
+                            rest -= 1
+                        }
+                    }
                     idx = remaining.index(after: idx)
                 }
                 items.append(bl)
@@ -205,7 +221,119 @@ else:
     if anchor not in text:
         print("ERROR: SwiftTerm changeHistorySize changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
         sys.exit(1)
-    term.write_text(text.replace(anchor, insert, 1))
+    text = text.replace(anchor, insert, 1)
     print("==> applied SwiftTerm history prepend patch")
+else:
+    print("==> SwiftTerm history prepend patch already applied")
+
+old_cell = """                    let ch = remaining[idx]
+                    bl[col] = makeCharData(attribute: attr, char: ch, size: 1)
+                    col += 1
+                    idx = remaining.index(after: idx)"""
+new_cell = """                    let ch = remaining[idx]
+                    var chWidth = 1
+                    if let scalar = ch.unicodeScalars.first {
+                        let measured = UnicodeUtil.columnWidth(rune: scalar)
+                        if measured > 0 { chWidth = measured }
+                    }
+                    if col + chWidth > cols {
+                        break
+                    }
+                    bl[col] = makeCharData(attribute: attr, char: ch, size: Int8(chWidth))
+                    col += 1
+                    if chWidth > 1 {
+                        let wideEmpty = CharData(attribute: attr, scalar: UnicodeScalar(0)!, size: 0)
+                        var rest = chWidth - 1
+                        while rest > 0 && col < cols {
+                            bl[col] = wideEmpty
+                            col += 1
+                            rest -= 1
+                        }
+                    }
+                    idx = remaining.index(after: idx)"""
+if old_cell in text:
+    text = text.replace(old_cell, new_cell, 1)
+    print("==> upgraded SwiftTerm history prepend to CJK column width")
+term.write_text(text)
+PY
+
+python3 - "$APPLE" "$MAC" <<'PY'
+import pathlib, sys
+apple = pathlib.Path(sys.argv[1])
+mac = pathlib.Path(sys.argv[2])
+
+apple_text = apple.read_text()
+if "MUXTERM_KEEP_SELECTION" not in apple_text:
+    old = """    func feedPrepare()
+    {
+        search.invalidate()
+        // Preserve manual selection while output is streaming when mouse reporting is disabled.
+        if allowMouseReporting {
+            selection.active = false
+        }
+        startDisplayUpdates()
+    }
+"""
+    new = """    func feedPrepare()
+    {
+        search.invalidate()
+        // MUXTERM_KEEP_SELECTION: pi/codex 开了 mouse reporting 时每帧 %output
+        // 都会清选区，选中内容一直闪，没法复制。
+        startDisplayUpdates()
+    }
+"""
+    if old not in apple_text:
+        print("ERROR: SwiftTerm feedPrepare changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
+        sys.exit(1)
+    apple.write_text(apple_text.replace(old, new, 1))
+    print("==> applied SwiftTerm keep-selection feedPrepare patch")
+else:
+    print("==> SwiftTerm keep-selection feedPrepare patch already applied")
+
+mac_text = mac.read_text()
+if "MUXTERM_KEEP_SELECTION_LF" not in mac_text:
+    old = """    open func linefeed(source: Terminal) {
+        // Preserve manual selection while output is streaming when mouse reporting is disabled.
+        if allowMouseReporting {
+            selection.selectNone()
+        }
+    }
+"""
+    new = """    open func linefeed(source: Terminal) {
+        // MUXTERM_KEEP_SELECTION_LF: TUI 换行不得清选区。
+    }
+"""
+    if old not in mac_text:
+        print("ERROR: SwiftTerm linefeed changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
+        sys.exit(1)
+    mac_text = mac_text.replace(old, new, 1)
+    print("==> applied SwiftTerm keep-selection linefeed patch")
+else:
+    print("==> SwiftTerm keep-selection linefeed patch already applied")
+
+if "MUXTERM_KEEP_SELECTION_RESIZE" not in mac_text:
+    old = """    public override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        updateScroller()
+        selection.active = false
+        updateProgressBarFrame()
+    }
+"""
+    new = """    public override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        updateScroller()
+        // MUXTERM_KEEP_SELECTION_RESIZE: Auto Layout 亚像素抖动不得清选区。
+        // 行列真变时 processSizeChange 已经清过。
+        updateProgressBarFrame()
+    }
+"""
+    if old not in mac_text:
+        print("ERROR: SwiftTerm resizeSubviews changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
+        sys.exit(1)
+    mac_text = mac_text.replace(old, new, 1)
+    print("==> applied SwiftTerm keep-selection resizeSubviews patch")
+else:
+    print("==> SwiftTerm keep-selection resizeSubviews patch already applied")
+mac.write_text(mac_text)
 PY
 

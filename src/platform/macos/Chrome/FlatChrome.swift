@@ -543,9 +543,58 @@ public enum FirstTabPaintPolicy {
     }
 }
 
+/// 窗口外框没变可以省略 `refresh-client -C`；换了一棵 pane 树时
+/// SwiftTerm 每个 host 的格子仍要按像素重算。
+public enum TabGeometrySyncPolicy {
+    public static func needsPaneGridSync(treeChanged: Bool) -> Bool {
+        treeChanged
+    }
+
+    /// 挂上缓存/预热树时，即使容器 bounds 没变也要跑 geometry sync。
+    public static func shouldSyncOnCachedReveal() -> Bool { true }
+}
+
+/// pane host 只是边框。点击和新建都不能把 first responder 停在 host 上。
+public enum PaneHostFocusPolicy {
+    public static var acceptsFirstResponder: Bool { false }
+}
+
+/// 光标必须在 SwiftTerm 输入里。Surface 还没 ready 时不要抢，ready 后立刻补。
+public enum TerminalInputFocusPolicy {
+    public static func shouldAttemptFocus(surfaceReady: Bool, inWindow: Bool) -> Bool {
+        surfaceReady && inWindow
+    }
+
+    public static func shouldRetryWhenSurfaceReady(isActivePane: Bool, ready: Bool) -> Bool {
+        isActivePane && ready
+    }
+}
+
+/// 格子没变时不要 scrollToLatest。TUI 每一拍 poll 都会走 updatePaneSizes，
+/// 把选区和视口拽回底部，看起来像选中内容一直闪。
+public enum PaneGridFollowPolicy {
+    public static func shouldScrollToLatest(didResize: Bool, followTail: Bool) -> Bool {
+        didResize && followTail
+    }
+}
+
+/// 切回已经打开过的 Workspace：停驻树还在就不要拆 layout，也不要再刷 OSC。
+public enum WorkspaceSwitchPaintPolicy {
+    public static func needsLayoutReload(restoredParkedTree: Bool) -> Bool {
+        !restoredParkedTree
+    }
+
+    public static func shouldReportColours(restoredParkedTree: Bool) -> Bool {
+        !restoredParkedTree
+    }
+}
+
 /// attach 前历史按行写入 native scrollback：不得 reset，也不得当 VT dump。
+/// prepend 已经把视口留在当前 TUI 上，不要再 scrollToLatest 把历史尾卷进来。
 public enum PaneHistorySeedPolicy {
     public static func shouldResetTerminal() -> Bool { false }
+
+    public static func shouldScrollToLatestAfterPrepend() -> Bool { false }
 
     public static func splitHistoryAndVisible(
         lines: [String],
@@ -975,7 +1024,9 @@ public enum ScreenText {
             var line = ""
             line.reserveCapacity(cols)
             for x in 0..<cols {
-                line.append(characterAt(x, y))
+                let ch = characterAt(x, y)
+                if ch == "\0" { continue }
+                line.append(ch)
             }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             out.append(trimmed)

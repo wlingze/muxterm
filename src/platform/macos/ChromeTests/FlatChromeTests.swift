@@ -451,6 +451,27 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         XCTAssertTrue(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: false, hasView: true))
     }
 
+    func testUnchangedPaneGridMustNotForceScrollToLatest() {
+        XCTAssertFalse(
+            PaneGridFollowPolicy.shouldScrollToLatest(didResize: false, followTail: true),
+            "格子没变时 scrollToLatest 会把 TUI 选区闪掉"
+        )
+        XCTAssertTrue(PaneGridFollowPolicy.shouldScrollToLatest(didResize: true, followTail: true))
+        XCTAssertFalse(PaneGridFollowPolicy.shouldScrollToLatest(didResize: true, followTail: false))
+    }
+
+    func testRestoredWorkspaceMustNotReloadOrResendColours() {
+        XCTAssertFalse(
+            WorkspaceSwitchPaintPolicy.needsLayoutReload(restoredParkedTree: true),
+            "停驻树还在时切回不得拆 layout / 显示等待加载"
+        )
+        XCTAssertTrue(WorkspaceSwitchPaintPolicy.needsLayoutReload(restoredParkedTree: false))
+        XCTAssertFalse(
+            WorkspaceSwitchPaintPolicy.shouldReportColours(restoredParkedTree: true)
+        )
+        XCTAssertTrue(WorkspaceSwitchPaintPolicy.shouldReportColours(restoredParkedTree: false))
+    }
+
     func testPaneGridShrinksFromAttachHintToWindow() {
         XCTAssertTrue(
             PaneGridSyncPolicy.shouldResize(
@@ -866,6 +887,17 @@ final class ScreenTextTests: XCTestCase {
         XCTAssertFalse(lines2.contains { $0.contains("A B") }, "旧屏幕不得残留")
     }
 
+    func testScreenTextSkipsWideCharStubs() {
+        let grid: [[Character]] = [
+            ["中", "\0", "文", "\0"],
+        ]
+        XCTAssertEqual(
+            ScreenText.lines(cols: 4, rows: 1) { x, y in grid[y][x] },
+            ["中文"],
+            "全角占位 NUL 不得出现在 AX/可见文本里，否则历史像乱码"
+        )
+    }
+
     func testScreenTextHandlesZeroDims() {
         XCTAssertEqual(ScreenText.lines(cols: 0, rows: 10) { _, _ in " " }, [])
         XCTAssertEqual(ScreenText.lines(cols: 10, rows: 0) { _, _ in " " }, [])
@@ -989,6 +1021,39 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertFalse(FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 2, hasLayout: false))
         XCTAssertFalse(FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 0, hasLayout: true))
     }
+
+    func testTreeChangeSyncsPaneGridEvenWhenWindowUnchanged() {
+        XCTAssertTrue(TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: true))
+        XCTAssertFalse(TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: false))
+        XCTAssertTrue(TabGeometrySyncPolicy.shouldSyncOnCachedReveal())
+        XCTAssertFalse(
+            ClientGridHysteresis.shouldSend(current: (94, 51), next: (94, 51)),
+            "换树仍要 sync SwiftTerm 格子，但 client 外框没变就不要 refresh-client -C"
+        )
+    }
+
+    func testClickingPaneMustFocusTerminalNotHost() {
+        XCTAssertFalse(PaneHostFocusPolicy.acceptsFirstResponder)
+        XCTAssertTrue(
+            TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: true, inWindow: true)
+        )
+        XCTAssertFalse(
+            TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: false, inWindow: true),
+            "Surface 还没 ready 时不要 makeFirstResponder"
+        )
+        XCTAssertFalse(
+            TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: true, inWindow: false)
+        )
+        XCTAssertTrue(
+            TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(isActivePane: true, ready: true)
+        )
+        XCTAssertFalse(
+            TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(isActivePane: true, ready: false)
+        )
+        XCTAssertFalse(
+            TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(isActivePane: false, ready: true)
+        )
+    }
 }
 
 final class PaneHistorySeedPolicyTests: XCTestCase {
@@ -996,6 +1061,10 @@ final class PaneHistorySeedPolicyTests: XCTestCase {
         XCTAssertFalse(
             PaneHistorySeedPolicy.shouldResetTerminal(),
             "历史按行写入 scrollback，不得 reset 正在用的 Surface"
+        )
+        XCTAssertFalse(
+            PaneHistorySeedPolicy.shouldScrollToLatestAfterPrepend(),
+            "prepend 后 scrollToLatest 会把历史尾卷进视口，TUI 只剩中间"
         )
     }
 

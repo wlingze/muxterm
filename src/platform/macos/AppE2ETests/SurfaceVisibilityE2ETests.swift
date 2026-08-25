@@ -243,6 +243,63 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertTrue(layout.hasCachedTab(20))
     }
 
+    func testReplaceTerminalManagerRestoresParkedHosts() throws {
+        let (bridgeA, managerA) = try makeManager()
+        let (bridgeB, managerB) = try makeManager()
+        defer {
+            bridgeA.shutdown()
+            bridgeB.shutdown()
+        }
+        let layout = PaneLayoutView(terminalManager: managerA)
+        layout.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        XCTAssertTrue(
+            layout.apply(
+                layout: .leaf(paneId: 1),
+                panes: [Pane(id: 1, cols: 80, rows: 24, isActive: true)],
+                tabId: 10
+            )
+        )
+        let host = layout.testHost(for: 1)
+        XCTAssertNotNil(host)
+        XCTAssertFalse(
+            layout.replaceTerminalManager(managerB),
+            "第一次切到 B 没有停驻树，不得假装已经加载完"
+        )
+        _ = layout.apply(
+            layout: .leaf(paneId: 2),
+            panes: [Pane(id: 2, cols: 80, rows: 24, isActive: true)],
+            tabId: 20
+        )
+        XCTAssertTrue(
+            layout.replaceTerminalManager(managerA),
+            "切回 A 必须挂上停驻树，不能等待重新加载"
+        )
+        XCTAssertTrue(
+            layout.testHost(for: 1) === host,
+            "切回 Workspace 必须复用原来的 SwiftTerm host"
+        )
+    }
+
+    func testBackgroundSlotKeepsFeedingExistingSurface() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 320, height: 180)
+        )
+        manager.testQueueSurfaceSeed(paneId: 1, view: view, data: Data("FG_SEED\r\n".utf8))
+        manager.testFlushSurfaceSeeds()
+        manager.setViewCreationEnabled(false)
+        manager.handleOutput(paneId: 1, data: Data("BG_LIVE\r\n".utf8))
+        manager.testFlushFeeds()
+        XCTAssertTrue(
+            view.visibleScreenText().contains("BG_LIVE"),
+            "后台 Workspace 必须继续喂已有 SwiftTerm，切回来才不会卡住加载"
+        )
+        manager.handleOutput(paneId: 2, data: Data("NEW_PANE\r\n".utf8))
+        XCTAssertFalse(manager.hasView(for: 2), "后台不得为从未打开的 pane 建 SwiftTerm")
+    }
+
     func testStashedSnapshotSeedsOnFirstView() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }

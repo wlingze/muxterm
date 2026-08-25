@@ -273,11 +273,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
+            self.focusPaneTerminal(paneId)
             if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
                 self.reportStatusError(
                     MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
                 )
             }
+        }
+        content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, ready in
+            guard let self else { return }
+            let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
+                ?? self.lastSnapshot.panes.first?.id
+                ?? self.bridge.snapshot().panes.first(where: \.isActive)?.id
+            guard TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(
+                isActivePane: active == paneId,
+                ready: ready
+            ) else { return }
+            self.focusPaneTerminal(paneId)
         }
         content.paneLayout.onMovePaneToNewTab = { [weak self] paneId in
             _ = self?.movePaneToNewTab(paneId)
@@ -1302,14 +1314,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandTimelineCursor.removeAll()
         commandNavigationPanes.removeAll()
         wireTerminalManagerCallbacks()
-        content.paneLayout.replaceTerminalManager(slot.terminalManager)
+        let restoredParkedTree = content.paneLayout.replaceTerminalManager(slot.terminalManager)
         content.paneLayout.dropParked(
             except: Array(connectionPool.slots.values.map(\.terminalManager))
         )
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
         // warm slot 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
-        // 避免旧 slot 还是切换前的小字体。
+        // 避免旧 slot 还是切换前的小字体。字号没变就不要 resetFont，那会清选区。
         terminalManager.setFont(
             family: terminalFontSettings.family,
             size: currentTerminalFontSize(),
@@ -1318,24 +1330,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // warm slot 的视图沿用当前主题 palette（终端跟随主题）。
         terminalManager.applyPalette(MuxtermTerminalColors.activePalette)
         // 连接建立/切换后给全部 pane 上报一次颜色，避免后台 tab 的 codex
-        // 输入框使用 tmux 默认（或上一个连接）的颜色代答。
-        let osc = ColorContrast.oscColors(
-            fg: MuxtermTerminalColors.activePalette.fg,
-            bg: MuxtermTerminalColors.activePalette.bg
-        )
-        _ = bridge.reportAllPaneColours(
-            fgHex: osc.fg,
-            bgHex: osc.bg
-        )
+        // 输入框使用 tmux 默认（或上一个连接）的颜色代答。已经打开过的
+        // Workspace 切回来时 OSC 已经报过，再刷会让 TUI 整帧闪一下。
+        if WorkspaceSwitchPaintPolicy.shouldReportColours(restoredParkedTree: restoredParkedTree) {
+            let osc = ColorContrast.oscColors(
+                fg: MuxtermTerminalColors.activePalette.fg,
+                bg: MuxtermTerminalColors.activePalette.bg
+            )
+            _ = bridge.reportAllPaneColours(
+                fgHex: osc.fg,
+                bgHex: osc.bg
+            )
+            reportedColourPanes.removeAll()
+        }
         lastSnapshot = slot.lastSnapshot
         // 切连接后旧 status bar 属于上一个 tmux：先清掉，等新快照到达再显示。
         statusBarSnapshot = nil
         statusRefreshTimer?.invalidate()
         statusRefreshTimer = nil
         content.applyStatusBar(nil)
-        reportedColourPanes.removeAll()
         tabSwitchGate = TabSwitchGate()
-        needsLayoutReload = true
+        needsLayoutReload = WorkspaceSwitchPaintPolicy.needsLayoutReload(
+            restoredParkedTree: restoredParkedTree
+        )
         refreshUI()
         focusActiveTerminal()
         refreshStatusBar(force: true)
@@ -1384,31 +1401,36 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return key === unifiedPanel?.window || key === commandPalette?.window
     }
 
-    private func restoreTerminalFocusIfAllowed() {
-        guard TerminalFocusPolicy.shouldFocusTerminal(
-            appActive: NSApp.isActive,
-            overlayIsKey: overlayOwnsFocus()
-        ) else { return }
+    func restoreTerminalFocusIfAllowed() {
         focusActiveTerminal()
     }
 
     private func focusActiveTerminal() {
-        let snap = bridge.snapshot()
+        let snap = lastSnapshot.panes.isEmpty ? bridge.snapshot() : lastSnapshot
         guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
             return
         }
-        let view = terminalManager.view(for: activePane)
+        focusPaneTerminal(activePane)
+    }
+
+    /// 光标必须落在 SwiftTerm 输入。host 边框高亮不等于键盘在 pane 里。
+    private func focusPaneTerminal(_ paneId: UInt32) {
+        let view = terminalManager.view(for: paneId)
         terminalManager.focusTarget = view
+        content.paneLayout.markActivePane(paneId)
+        guard TerminalFocusPolicy.shouldFocusTerminal(
+            appActive: NSApp.isActive,
+            overlayIsKey: overlayOwnsFocus()
+        ) else { return }
         // Surface 尚未挂进 hierarchy 时，AppKit 的 makeFirstResponder 会
-        // 触发 IMK mach-port 错误并可能把 Connect/切 tab 路径拖成 beachball。
-        // refreshUI 在 view 真正可见后会再次完成焦点切换。
-        if terminalManager.isSurfaceReady(for: activePane),
-           view.window != nil,
-           window?.firstResponder !== view
-        {
+        // 触发 IMK mach-port 错误。seed 完成走 onSurfaceBecameReady 再抢一次。
+        guard TerminalInputFocusPolicy.shouldAttemptFocus(
+            surfaceReady: terminalManager.isSurfaceReady(for: paneId),
+            inWindow: view.window != nil
+        ) else { return }
+        if window?.firstResponder !== view {
             window?.makeFirstResponder(view)
         }
-        content.paneLayout.markActivePane(activePane)
     }
 
     func requestSwitchTab(_ tabId: UInt32) {
@@ -1423,15 +1445,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         tabSwitchGate.request(tab: tabId)
         content.statusBar.markCurrentWindow(tabId)
         if let paneId = content.paneLayout.revealCachedTab(tabId) {
-            let view = terminalManager.view(for: paneId)
-            terminalManager.focusTarget = view
-            if terminalManager.isSurfaceReady(for: paneId),
-               view.window != nil,
-               window?.isKeyWindow == true,
-               window?.firstResponder !== view
-            {
-                window?.makeFirstResponder(view)
-            }
+            focusPaneTerminal(paneId)
         } else {
             needsLayoutReload = true
         }
@@ -1457,6 +1471,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if cacheHit {
             lastSnapshot = bridge.snapshot()
             content.updateTabs(lastSnapshot.tabs)
+            let panes = lastSnapshot.panes.isEmpty
+                ? bridge.getPanes(tabId: tabId)
+                : lastSnapshot.panes
+            terminalManager.updatePaneSizes(panes)
             focusVisibleTab(lastSnapshot)
             return false
         }
@@ -1473,6 +1491,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         lastSnapshot = bridge.snapshot()
         content.updateTabs(lastSnapshot.tabs)
+        terminalManager.updatePaneSizes(panes)
         terminalManager.flushSeedsNow(paneIds: Set(panes.map(\.id)))
         focusVisibleTab(lastSnapshot)
         scheduleTabTreeWarmup()
@@ -1483,9 +1502,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if let activePane = snap.panes.first(where: \.isActive)?.id
             ?? snap.panes.first?.id
         {
-            terminalManager.focusTarget = terminalManager.view(for: activePane)
-            content.paneLayout.markActivePane(activePane)
-            restoreTerminalFocusIfAllowed()
+            focusPaneTerminal(activePane)
         }
     }
 
@@ -2244,6 +2261,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 if ev.type == STATE_ACTIVE_PANE_CHANGED {
                     recordLastSeen(for: lastSnapshot.activePane)
                     bridge.attentionOnBecameVisible(paneId: ev.paneId)
+                    focusPaneTerminal(ev.paneId)
                 }
             } else if ev.isBackendStatus {
                 uiStateChanged = true
@@ -2346,6 +2364,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if shouldHandleSurfaceEvent(paneId: item.paneId) {
                 terminalManager.handleOutput(paneId: item.paneId, data: item.data)
             }
+        }
+        // 结构事件同批的 snapshot 在 refreshUI 之后才喂。seed 可能还要
+        // 下一拍才 ready；这里再抢一次，ready 的立刻进输入，没 ready 的
+        // 等 onSurfaceBecameReady。不要每个 poll 都抢，以免打断 rename 输入。
+        if deferSurfaceEvents {
+            restoreTerminalFocusIfAllowed()
         }
         refreshAttentionChrome()
         if let activePane = activePaneID {
