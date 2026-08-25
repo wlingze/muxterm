@@ -235,7 +235,10 @@ final class TerminalManager: TerminalInputHandler {
             seed.view.scrollToHistoryOffset(requestedOffset, maxOffset: maxOffset)
             applyingNativeScroll.remove(paneId)
             _ = bridge?.setPaneViewport(paneId: paneId, offset: requestedOffset)
-        } else if seed.scrollToLatest {
+        } else if seed.scrollToLatest,
+                  !(seed.view.historyPrepended
+                    && !PaneHistorySeedPolicy.shouldScrollToLatestAfterPrepend())
+        {
             applyingNativeScroll.insert(paneId)
             seed.view.scrollToLatest()
             applyingNativeScroll.remove(paneId)
@@ -789,10 +792,12 @@ final class TerminalManager: TerminalInputHandler {
     /// 运行期调整所有终端视图的字体（Cmd +/- / Cmd 0），
     /// 并立即按新字符格重新同步 PTY / tmux client 尺寸。
     func setFont(family: String? = nil, size: CGFloat, container: NSView?) {
-        if let family, !family.isEmpty {
-            fontFamily = family
-        }
-        fontSize = MuxtermTerminalFont.clamp(size)
+        let nextFamily = family.flatMap { $0.isEmpty ? nil : $0 } ?? fontFamily
+        let nextSize = MuxtermTerminalFont.clamp(size)
+        let changed = nextFamily != fontFamily || nextSize != fontSize
+        fontFamily = nextFamily
+        fontSize = nextSize
+        guard changed else { return }
         for view in views.values {
             view.setFont(family: fontFamily, size: fontSize)
         }
