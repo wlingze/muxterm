@@ -477,16 +477,19 @@ artifact 只能包含测试 fixture，不得采集用户默认 tmux/Herdr sessio
 
 ## 10. 完成定义
 
-- [ ] L0 的 stream、mutation、project RED 测试先失败，再由对应实现变绿。
-- [ ] L1 真实 named Herdr/isolated tmux contract 通过。
-- [ ] L2 每场景独立 AppWindow 子进程通过。
-- [ ] L3 tmux/herdr × local/loopback SSH 四格 required 全通过。
-- [ ] 大历史、20 轮切换、Ctrl-L、数字名、split focus、takeover bounded 全达标。
-- [ ] Project 与 Existing Connection identity parity 通过。
-- [ ] 无新增 `#[ignore]`、无环境 skip、无加长 sleep、无弱化 token/几何断言。
-- [ ] fmt/check/clippy/Core/Linux 本地门禁通过。
+- [x] L0 的 stream、mutation、project RED 测试先失败，再由对应实现变绿（当前分支本地证据）。
+- [x] L1 真实 named Herdr/isolated tmux contract 通过。
+- [x] L2 每场景独立 AppWindow 子进程通过。
+- [x] L3 tmux/herdr × local/loopback SSH 四格 required 全通过（本地）。
+- [x] 大历史、20 轮切换、Ctrl-L、数字名、split focus、takeover bounded 全达标。
+- [x] Project 与 Existing Connection identity parity 通过。
+- [x] 无新增 `#[ignore]`、无环境 skip、无加长 sleep、无弱化 token/几何断言。
+- [x] fmt/check/clippy/Core/Linux 本地门禁通过。
 - [ ] 获准 push 后 PR #20 Core/Linux/macOS required 全绿。
-- [ ] 测试前后用户默认 tmux/Herdr session 未改变。
+- [x] 测试前后用户默认 tmux/Herdr session 未改变。
+
+> 上述勾选只表示当前工作树的本地证据。macOS Swift/Xcode 和 PR required 的远端结果仍须
+> 在获准 push 后重新运行；旧 PR 的红色结果不能被改写成当前 HEAD 的绿色结果。
 
 ---
 
