@@ -26,6 +26,8 @@ pub const STATE_PANE_AGENT_CHANGED: u32 = 15;
 /// 异步 mutation（NewTab/SplitPane）的最终 settlement：data 携带
 /// `{"operation_id":..,"kind":..,"result":..}` JSON。
 pub const STATE_MUTATION_SETTLED: u32 = 16;
+/// Attach-before pane history as newline-separated rows (not a VT dump).
+pub const STATE_PANE_HISTORY: u32 = 17;
 pub const STATE_OTHER: u32 = 99;
 
 // ── BackendStatus 编码到 CStateChange.pane_id ──────────────

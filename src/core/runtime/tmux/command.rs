@@ -372,15 +372,17 @@ pub fn list_panes(window: TabId) -> TmuxCommand {
     build(&[window_target(window)], "list-panes")
 }
 
-/// attach 播种：可见屏 + 最多 `history_lines` 行 scrollback。
+/// attach 后按行回填 scrollback。只取可见区以上的历史。
 ///
-/// tmux `capture-pane -S`：0 = 可见区第一行，负数 = 历史。
-/// 用 `-S -N` 而不是无界 `-S -`，避免一次灌整段 history。
-/// 首屏 seed / output-dropped **不要**走这条：把历史当 VT 流重放会卡住
-/// 控制通道，htop/pi 也会错位。这条留给以后非阻塞的 shell 回填。
+/// `-S -N -E -1`：0 是可见区顶，负数是历史；`-E -1` 停在可见区上一行。
+/// 带 `-J -N` 与 iTerm2 `capture-pane -peqJN` 对齐。首屏 seed / resync
+/// **不要**走这条，也不要把响应当 VT 流 `feed()`。
 pub fn capture_pane_with_history(pane: PaneId, history_lines: u32) -> TmuxCommand {
     let n = history_lines.max(1);
-    TmuxCommand::from_raw(format!("capture-pane -e -p -S -{n} -t %{}", pane.0))
+    TmuxCommand::from_raw(format!(
+        "capture-pane -e -p -q -J -N -S -{n} -E -1 -t %{}",
+        pane.0
+    ))
 }
 
 /// 当前可见网格。`-N` 保留行尾空格，htop/pi 的列对齐才不会塌。
@@ -1098,8 +1100,18 @@ fn input_roundtrip_dcs_passthrough() {
 #[test]
 fn capture_pane_with_history_requests_scrollback() {
     let c = capture_pane_with_history(PaneId(3), 10_000);
-    assert_eq!(c.as_str(), "capture-pane -e -p -S -10000 -t %3");
-    assert_eq!(c.to_line(), "capture-pane -e -p -S -10000 -t %3\n");
+    assert_eq!(
+        c.as_str(),
+        "capture-pane -e -p -q -J -N -S -10000 -E -1 -t %3"
+    );
+    assert_eq!(
+        c.to_line(),
+        "capture-pane -e -p -q -J -N -S -10000 -E -1 -t %3\n"
+    );
+    assert!(
+        c.as_str().contains("-E -1"),
+        "必须排除可见屏，否则当前网格会再写进 scrollback"
+    );
 }
 
 #[test]

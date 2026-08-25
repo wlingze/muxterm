@@ -134,6 +134,11 @@ pub enum StateChange {
     /// 的差别：后者在 tmux 重连路径仍保留 Surface snapshot 语义，前者永远
     /// 不是像素来源。
     PaneIndexSnapshot { pane: PaneId, data: Vec<u8> },
+    /// attach 前 tmux 历史，按行写入 Surface scrollback。
+    ///
+    /// `data` 是 UTF-8 文本，行以 `\n` 分隔，不是 VT dump。前端不得
+    /// `reset`，也不得把整段 capture 当 `PaneOutput` 重放。
+    PaneHistory { pane: PaneId, data: Vec<u8> },
     /// tab 被加入。
     TabAdded { tab: TabId },
     /// tab 被关闭。

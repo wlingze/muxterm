@@ -935,6 +935,40 @@ final class PaneLayoutProjectionTests: XCTestCase {
     }
 }
 
+final class PaneHistorySeedPolicyTests: XCTestCase {
+    func testHistoryBackfillMustNotResetLiveTerminal() {
+        XCTAssertFalse(
+            PaneHistorySeedPolicy.shouldResetTerminal(),
+            "历史按行写入 scrollback，不得 reset 正在用的 Surface"
+        )
+    }
+
+    func testSplitKeepsOffscreenTokenOutOfVisibleGrid() {
+        var lines = ["HIST_OFFSCREEN"]
+        for i in 0..<40 {
+            lines.append(String(format: "pad-%02d", i))
+        }
+        lines.append("HIST_TAIL")
+        let split = PaneHistorySeedPolicy.splitHistoryAndVisible(
+            lines: lines,
+            visibleRows: 24
+        )
+        XCTAssertTrue(split.history.contains("HIST_OFFSCREEN"))
+        XCTAssertFalse(split.visible.contains("HIST_OFFSCREEN"))
+        XCTAssertTrue(split.visible.contains("HIST_TAIL"))
+        XCTAssertEqual(split.visible.count, 24)
+    }
+
+    func testDecodeIsRowsNotVtDump() {
+        let data = Data("HIST_OFFSCREEN\npad-01".utf8)
+        XCTAssertEqual(
+            PaneHistorySeedPolicy.decode(data),
+            ["HIST_OFFSCREEN", "pad-01"]
+        )
+        XCTAssertFalse(String(data: data, encoding: .utf8)!.contains("[2J"))
+    }
+}
+
 final class PaneFullscreenPolicyTests: XCTestCase {
     func testNoFullscreenKeepsNil() {
         XCTAssertEqual(
@@ -980,6 +1014,10 @@ final class EventBatchPlanTests: XCTestCase {
             types: [6, 99],
             requiresLayoutReload: StateEventPolicy.requiresLayoutReload
         ), "切 tab 不得推迟同批 PaneOutput")
+        XCTAssertFalse(EventBatchPlan.hasStructuralEvent(
+            types: [15, 99],
+            requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+        ), "PaneHistory 不得当结构事件推迟 live")
         XCTAssertFalse(EventBatchPlan.hasStructuralEvent(
             types: [],
             requiresLayoutReload: StateEventPolicy.requiresLayoutReload

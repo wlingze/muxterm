@@ -36,12 +36,12 @@ use super::types::{
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
     STATE_LAYOUT_CHANGED, STATE_MUTATION_SETTLED, STATE_OTHER, STATE_PANE_ADDED,
-    STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED,
-    STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED,
-    STATE_TAB_CLOSED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE,
-    TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
-    TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE,
-    TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED, STATE_PANE_HISTORY, STATE_PANE_OUTPUT,
+    STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION,
+    STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE,
+    TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE,
+    TASK_PREV_PANE, TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN,
+    TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
@@ -132,7 +132,8 @@ impl MuxtermHandle {
             };
             for ev in events {
                 if let StateChange::PaneOutput { pane, .. }
-                | StateChange::PaneSnapshot { pane, .. } = ev
+                | StateChange::PaneSnapshot { pane, .. }
+                | StateChange::PaneHistory { pane, .. } = ev
                 {
                     let signals = ws.take_attention_signals(*pane);
                     let (last_line, seq) = ws.pane_last_line_seq(*pane);
@@ -1556,6 +1557,13 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
         }
         StateChange::PaneSnapshot { pane, data } => {
             out.type_ = STATE_PANE_SNAPSHOT;
+            out.pane_id = pane.0;
+            let (p, n) = handle.push_data(data);
+            out.data = p;
+            out.data_len = n;
+        }
+        StateChange::PaneHistory { pane, data } => {
+            out.type_ = STATE_PANE_HISTORY;
             out.pane_id = pane.0;
             let (p, n) = handle.push_data(data);
             out.data = p;

@@ -53,6 +53,8 @@ enum PendingQuery {
     DisplayMessage { pane: PaneId },
     /// capture-pane -e -p -t <pane>：恢复 attach 时 tmux 已存在的可见屏幕。
     CapturePane { pane: PaneId },
+    /// 可见屏 seed 之后按行回填 attach 前历史。不 pause。
+    PaneHistory { pane: PaneId },
     /// display-message format：查询 resync 时需要重放的 VT 状态。
     PaneResyncState { pane: PaneId, generation: u64 },
     /// resync 的 primary/alternate capture。
@@ -221,6 +223,10 @@ pub struct TmuxRuntime {
     background_index_capture_enabled: bool,
     /// 最近一次 capture 只取了可见屏。切入时直接用它，不再 pause 重抓。
     background_capture_only: HashSet<PaneId>,
+    /// 已经按行回填过 attach 前历史的 pane。切 tab 不得再抓。
+    history_backfill_done: HashSet<PaneId>,
+    /// 历史 capture 还在路上。
+    history_backfill_pending: HashSet<PaneId>,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
     /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
@@ -544,6 +550,8 @@ impl TmuxRuntime {
             initial_capture_done: HashSet::new(),
             background_index_capture_enabled: false,
             background_capture_only: HashSet::new(),
+            history_backfill_done: HashSet::new(),
+            history_backfill_pending: HashSet::new(),
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
@@ -685,6 +693,8 @@ impl TmuxRuntime {
         for pane in panes {
             if self.initial_capture_done.contains(&pane) {
                 self.background_capture_only.remove(&pane);
+                // 可见屏已经有了。第一次看这个 tab 只补历史行，不 pause。
+                self.begin_pane_history_backfill(pane);
                 continue;
             }
             if self.background_capture_only.contains(&pane) {
@@ -1053,6 +1063,7 @@ impl TmuxRuntime {
             PendingQuery::ReadyProbe { pane }
             | PendingQuery::DisplayMessage { pane }
             | PendingQuery::CapturePane { pane }
+            | PendingQuery::PaneHistory { pane }
             | PendingQuery::PaneResyncState { pane, .. }
             | PendingQuery::PaneResyncCapture { pane, .. }
             | PendingQuery::NewTabInCurrentDir { pane, .. } => Some(*pane),
@@ -1068,6 +1079,9 @@ impl TmuxRuntime {
     fn cancel_pending_queries_for_pane(&mut self, pane: PaneId) {
         for query in &mut self.pending_queries {
             if Self::pending_query_pane(query) == Some(pane) {
+                if matches!(query, PendingQuery::PaneHistory { .. }) {
+                    self.history_backfill_pending.remove(&pane);
+                }
                 *query = PendingQuery::Ignore;
             }
         }
@@ -1079,6 +1093,12 @@ impl TmuxRuntime {
             })
             .collect();
         for number in numbers {
+            if matches!(
+                self.pending_by_number.get(&number),
+                Some(PendingQuery::PaneHistory { .. })
+            ) {
+                self.history_backfill_pending.remove(&pane);
+            }
             self.pending_by_number.insert(number, PendingQuery::Ignore);
             self.response_accum.remove(&number);
         }
@@ -1160,6 +1180,9 @@ impl TmuxRuntime {
         self.paused_panes.remove(&pane);
         if resync.pause_client {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        }
+        if resync.initial {
+            self.begin_pane_history_backfill(pane);
         }
         if let Some(receiver) = self.event_rx.as_mut() {
             receiver.resume_output_pane(pane);
@@ -1921,6 +1944,9 @@ impl TmuxRuntime {
                         self.trim_event_queue();
                     }
                 }
+                PendingQuery::PaneHistory { pane } => {
+                    self.finish_pane_history_backfill(pane, lines);
+                }
                 PendingQuery::ListSessions => {
                     // list-sessions 默认格式: "demo: 1 windows (created ...)"
                     let mut changed = false;
@@ -1992,6 +2018,9 @@ impl TmuxRuntime {
         // snapshot 入队后再 continue；其后的 tmux 输出会形成下一批增量。
         if pause_client {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        }
+        if initial {
+            self.begin_pane_history_backfill(pane);
         }
     }
 
@@ -2075,6 +2104,17 @@ impl TmuxRuntime {
                     self.ready_probe_in_flight.remove(&pane);
                     self.ready_probe_acknowledged.remove(&pane);
                     self.ready_probe_at.insert(pane, Instant::now());
+                }
+                PendingQuery::PaneHistory { pane } => {
+                    self.history_backfill_pending.remove(&pane);
+                    // 失败就停，避免切 tab 反复抓 1 万行把控制通道打满。
+                    self.history_backfill_done.insert(pane);
+                    tracing::warn!(
+                        target: "muxterm::tmux",
+                        pane = pane.0,
+                        number,
+                        "pane history backfill failed"
+                    );
                 }
                 other => {
                     tracing::warn!(
@@ -2455,6 +2495,36 @@ impl TmuxRuntime {
             self.background_capture_only.insert(pane);
             self.replace_last_pending(PendingQuery::CapturePane { pane });
         }
+    }
+
+    /// 可见屏已经种上之后，按行补 attach 前历史。不 pause，不 reset。
+    fn begin_pane_history_backfill(&mut self, pane: PaneId) {
+        if !self.is_attach_mode()
+            || self.history_backfill_done.contains(&pane)
+            || self.history_backfill_pending.contains(&pane)
+            || self.pending_queries.iter().any(|query| {
+                matches!(query, PendingQuery::PaneHistory { pane: pending } if *pending == pane)
+            })
+        {
+            return;
+        }
+        let line = cmd::capture_pane_with_history(pane, self.scrollback_lines).to_line();
+        if self.dispatch_command(line).is_ok() {
+            self.history_backfill_pending.insert(pane);
+            self.replace_last_pending(PendingQuery::PaneHistory { pane });
+        }
+    }
+
+    fn finish_pane_history_backfill(&mut self, pane: PaneId, lines: Vec<String>) {
+        self.history_backfill_pending.remove(&pane);
+        self.history_backfill_done.insert(pane);
+        let data = super::pane_history::PaneHistoryPolicy::encode(&lines);
+        if data.is_empty() {
+            return;
+        }
+        self.events
+            .push_back(StateChange::PaneHistory { pane, data });
+        self.trim_event_queue();
     }
 
     /// 发送 list-sessions 查询（列出 tmux server 上所有 session）。
@@ -4212,8 +4282,12 @@ mod tests {
         );
         let history = concat!("capture_pane", "_with_history");
         assert!(
-            !src.contains(history),
-            "seed/resync 不得再抓 scrollback 历史当 VT 流重放"
+            src.contains("begin_pane_history_backfill"),
+            "可见屏 seed 之后必须另开按行历史回填"
+        );
+        assert!(
+            src.contains(history),
+            "历史回填必须走 cmd::capture_pane_with_history，不能把 -S 写进首屏 seed"
         );
         assert!(
             src.contains(r#"begin_pane_snapshot(pane, "initial-seed", true, true)"#),
@@ -4859,14 +4933,37 @@ mod tests {
         b.query_capture_tab(TabId(2));
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
+            !cmds.iter().any(|cmd| cmd.contains("pause")),
+            "已有可见屏索引的 tab 切过去不得再 pause: {cmds:?}"
+        );
+        assert!(
             !cmds
                 .iter()
-                .any(|cmd| cmd.contains("pause") || cmd.contains("capture-pane")),
-            "已有可见屏索引的 tab 切过去不得再 pause/capture，否则会顿一下: {cmds:?}"
+                .any(|cmd| cmd.contains("capture-pane -e -p -N -t") && !cmd.contains("-S ")),
+            "切 tab 不得再抓可见屏: {cmds:?}"
+        );
+        assert!(
+            cmds.iter()
+                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
+            "第一次看这个 tab 必须按行补历史: {cmds:?}"
         );
         assert!(b.initial_capture_done.contains(&pane));
         assert!(!b.background_capture_only.contains(&pane));
         assert!(!b.resyncs.contains_key(&pane));
+        assert!(b.history_backfill_pending.contains(&pane));
+
+        b.history_backfill_done.insert(pane);
+        b.history_backfill_pending.remove(&pane);
+        b.mark_tab_active(TabId(1));
+        b.mark_tab_active(TabId(2));
+        b.query_capture_tab(TabId(2));
+        let again = drain_tmux_cmds(&mut rx);
+        assert!(
+            !again
+                .iter()
+                .any(|cmd| cmd.contains("capture-pane") || cmd.contains("pause")),
+            "历史已经补过的 tab 再切回来不得再抓: {again:?}"
+        );
     }
 
     #[test]
@@ -4899,12 +4996,94 @@ mod tests {
 
         b.mark_tab_active(TabId(2));
         b.query_capture_tab(TabId(2));
+        let first = drain_tmux_cmds(&mut rx);
+        assert!(
+            !first.iter().any(|cmd| cmd.contains("pause")),
+            "initial_capture_done 的 pane 切 tab 不得 pause: {first:?}"
+        );
+        assert!(
+            first
+                .iter()
+                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
+            "第一次切入必须补历史行: {first:?}"
+        );
+
+        b.history_backfill_done.insert(pane);
+        b.history_backfill_pending.remove(&pane);
+        b.query_capture_tab(TabId(2));
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
             cmds.is_empty(),
-            "initial_capture_done 的 pane 切 tab 不得再发控制命令: {cmds:?}"
+            "历史回填完成后切 tab 不得再发控制命令: {cmds:?}"
         );
         assert!(!b.resyncs.contains_key(&pane));
+    }
+
+    #[test]
+    fn history_backfill_emits_lines_not_vt_snapshot() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(3);
+        b.pending_by_number
+            .insert(1, PendingQuery::PaneHistory { pane });
+        b.history_backfill_pending.insert(pane);
+        b.dispatch_response(
+            1,
+            vec!["\u{1b}[32mHIST_OFFSCREEN\u{1b}[0m".into(), "pad-01".into()],
+        );
+        assert!(b.history_backfill_done.contains(&pane));
+        assert!(!b.history_backfill_pending.contains(&pane));
+        let Some(StateChange::PaneHistory { pane: p, data }) = b.events.back() else {
+            panic!("expected PaneHistory, got {:?}", b.events.back());
+        };
+        assert_eq!(*p, pane);
+        let text = String::from_utf8_lossy(data);
+        assert!(text.contains("HIST_OFFSCREEN"), "{text}");
+        assert!(!text.contains('\u{1b}'), "历史事件不得带 SGR: {text}");
+        assert!(!text.contains("[2J"));
+        assert!(
+            !b.events.iter().any(
+                |event| matches!(event, StateChange::PaneSnapshot { pane: sp, .. } if *sp == pane)
+            ),
+            "历史不得再发一份 PaneSnapshot"
+        );
+    }
+
+    #[test]
+    fn finish_initial_seed_queues_history_after_continue() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(4);
+        b.resyncs.insert(
+            pane,
+            PaneResync {
+                generation: 1,
+                initial: true,
+                pause_client: true,
+                primary: Some(b"prompt$\r\n".to_vec()),
+                ..PaneResync::default()
+            },
+        );
+        b.paused_panes.insert(pane);
+        b.finish_pane_resync(pane);
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("%4:continue")),
+            "seed 完成后必须 continue: {cmds:?}"
+        );
+        assert!(
+            cmds.iter()
+                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
+            "continue 之后才按行抓历史: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains(":pause")),
+            "历史回填不得再 pause: {cmds:?}"
+        );
+        assert!(b
+            .events
+            .iter()
+            .any(|event| matches!(event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane)));
     }
 
     #[test]
@@ -5183,7 +5362,7 @@ mod tests {
     async fn attach_chatty_tui_does_not_gap_control_output() {
         let socket = unique_socket();
         let run = async {
-            let created = Command::new("tmux")
+            let created = std::process::Command::new("tmux")
                 .args([
                     "-L",
                     &socket,

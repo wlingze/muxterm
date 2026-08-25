@@ -79,6 +79,11 @@ impl PaneBuf {
         self.feed(bytes, cols, rows)
     }
 
+    /// attach 前历史写入 Index scrollback，不 reset 可见屏。
+    pub fn prepend_history(&mut self, lines: &[String]) {
+        self.terminal.prepend_history_lines(lines);
+    }
+
     /// 取走尚未消费的注意力信号（GUI 在 refresh 后调用）。
     pub fn take_attention_signals(&mut self) -> Vec<AttentionSignal> {
         self.terminal.take_attention_signals()
@@ -270,5 +275,15 @@ mod tests {
             !live.contains("HIST_TOKEN"),
             "底部直播不得含离屏 token。got={live}"
         );
+    }
+
+    #[test]
+    fn prepend_history_keeps_visible_and_exposes_offscreen_token() {
+        let mut buf = PaneBuf::new(80, 24, 1000);
+        buf.replace_snapshot(b"HIST_TAIL\r\n", 80, 24);
+        buf.prepend_history(&["HIST_OFFSCREEN".into(), "pad-01".into()]);
+        let text = buf.last_n_lines(100).join("\n");
+        assert!(text.contains("HIST_OFFSCREEN"), "{text}");
+        assert!(text.contains("HIST_TAIL"), "{text}");
     }
 }

@@ -81,7 +81,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
                     paneId: ev.paneId,
                     name: value.isEmpty ? nil : value
                 )
-            } else if ev.isPaneOutput || ev.isPaneSnapshot || ev.isPaneClosed {
+            } else if ev.isPaneOutput || ev.isPaneSnapshot || ev.isPaneHistory || ev.isPaneClosed {
                 surface.append(ev)
             }
         }
@@ -118,6 +118,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
                     terminalManager.removePane(ev.paneId)
                 } else if ev.isPaneSnapshot {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
+                } else if ev.isPaneHistory {
+                    terminalManager.handleHistory(paneId: ev.paneId, data: ev.data)
                 } else if ev.isPaneOutput {
                     terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
                 }

@@ -876,6 +876,29 @@ impl TerminalState {
         });
     }
 
+    /// attach 前历史插到现有 scrollback 前面，不碰可见屏。
+    pub fn prepend_history_lines(&mut self, lines: &[String]) {
+        if lines.is_empty() {
+            return;
+        }
+        let mut incoming = VecDeque::with_capacity(lines.len() + self.scrollback.len());
+        for line in lines {
+            let seq = self.next_seq;
+            self.next_seq = self.next_seq.saturating_add(1);
+            incoming.push_back(ScrollbackLine {
+                text: line.trim_end().to_string(),
+                seq,
+                ansi: line.as_bytes().to_vec(),
+                soft_wrapped: false,
+            });
+        }
+        incoming.append(&mut self.scrollback);
+        while incoming.len() > self.scrollback_max {
+            incoming.pop_front();
+        }
+        self.scrollback = incoming;
+    }
+
     /// scrollback 行数。
     pub fn scrollback_lines(&self) -> usize {
         self.scrollback.len()
@@ -2523,6 +2546,19 @@ mod scrollback_tests {
         assert_eq!(t.scrollback_lines(), 1);
         assert_eq!(t.scrollback_line(0), Some("line1"));
         assert_eq!(snap(&t), vec!["line2", "line3", "line4"]);
+    }
+
+    #[test]
+    fn prepend_history_lines_do_not_replace_visible() {
+        let mut t = TerminalState::with_scrollback(20, 2, 100);
+        t.feed(b"HIST_TAIL\r\n");
+        t.prepend_history_lines(&["HIST_OFFSCREEN".into(), "pad-01".into()]);
+        assert_eq!(t.scrollback_line(0), Some("HIST_OFFSCREEN"));
+        assert!(
+            snap(&t).iter().any(|line| line.contains("HIST_TAIL")),
+            "可见屏必须仍是尾标: {:?}",
+            snap(&t)
+        );
     }
 
     /// scrollback 有上限（不无界增长）。

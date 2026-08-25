@@ -8,6 +8,7 @@
 pub mod backend;
 pub mod client;
 pub mod command;
+pub mod pane_history;
 pub mod protocol;
 pub mod pty;
 pub mod ssh_client;
