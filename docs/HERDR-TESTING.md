@@ -24,6 +24,8 @@ readiness capture/probe/两轮 output、pane close 清理以及 GTK agent child 
 定向回归。Core/Linux 本地门禁为绿色，旧 PR #20 的失败日志已记录在实施计划 §18.6。
 
 当前仍未验证的是 macOS Swift/Xcode，以及将当前未 push HEAD 重新运行 PR required checks。
+macOS workflow 已补齐 `scripts/ci/setup-sshd.sh` 的隔离 loopback fixture；实际 runner 结果仍
+需要新的远端 run。
 因此本文件中的“required”表示本地 required contract；远端绿色必须以新的 workflow run 为准。
 
 ---
