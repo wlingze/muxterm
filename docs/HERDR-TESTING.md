@@ -1,8 +1,8 @@
 # HERDR-TESTING.md — Herdr、Runtime×Transport 与 CI 验收契约
 
-> 状态：实施前测试定案（2026-08-22）
-> 最终复核：`2026-08-22T19:31:35+08:00`（CST；本机版本、官方 release metadata、
-> PR #20 required checks 均已重新只读核对）
+> 状态：测试契约 + W10 本地实现复核（2026-08-25）；远端 required CI 尚未在当前 HEAD 复核
+> 最终复核：`2026-08-25T12:10:25+08:00`（CST；当前 HEAD、旧 PR #20 required logs、
+> 本地门禁均已核对；未 push）
 > Runtime 设计：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)
 > 总测试规范：[`TESTING.md`](TESTING.md)
 > 实施计划：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
@@ -14,6 +14,17 @@
 
 本文是 Herdr 稳定化的专项门禁。它不删除 [`TESTING.md`](TESTING.md) 中已有用例，
 而是提高 Herdr、tab/pane 和 claimed matrix 的完成标准。
+
+## 0.1 2026-08-25 实施状态
+
+W10 的 attach 后继续操作回归已在当前分支本地完成：Existing Connections 生产入口会先
+attach 已有 2-tab/3-pane workspace，再通过真实 Alt+S、Alt+V、`+` 和 VTE echo；同一
+canonical workflow 已覆盖 tmux/Herdr × local/loopback SSH。约 223KB 历史 incident、
+readiness capture/probe/两轮 output、pane close 清理以及 GTK agent child isolation 也有
+定向回归。Core/Linux 本地门禁为绿色，旧 PR #20 的失败日志已记录在实施计划 §18.6。
+
+当前仍未验证的是 macOS Swift/Xcode，以及将当前未 push HEAD 重新运行 PR required checks。
+因此本文件中的“required”表示本地 required contract；远端绿色必须以新的 workflow run 为准。
 
 ---
 

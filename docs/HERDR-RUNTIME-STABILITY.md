@@ -1,9 +1,9 @@
 # HERDR-RUNTIME-STABILITY.md — Herdr Runtime 稳定性契约
 
-> 状态：实施前设计定案（2026-08-22）
+> 状态：设计契约 + W10 实现复核（2026-08-25）；远端 required CI 尚未在当前 HEAD 复核
 > 适用分支：`feature/runtime/support_herdr`
-> 最终复核：`2026-08-22T19:31:35+08:00`（CST；本机版本、官方 release metadata、
-> PR #20 required checks 均已重新只读核对）
+> 最终复核：`2026-08-25T12:10:25+08:00`（CST；当前 HEAD、旧 PR #20 required logs、
+> 本地门禁均已核对；未 push）
 > 实施计划：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
 > 测试契约：[`HERDR-TESTING.md`](HERDR-TESTING.md)
 
