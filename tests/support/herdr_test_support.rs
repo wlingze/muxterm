@@ -243,26 +243,21 @@ impl IsolatedHerdr {
         (ws.to_string(), tab.to_string(), pane.to_string())
     }
 
-    /// `pane send-text` + `pane send-keys enter` 涂 token。
+    /// 用一条原始 `pane send-text`（含 CR）涂 token。
+    ///
+    /// 把文本和 Enter 拆成两个 API 请求会在慢 runner 的新 shell 启动窗口
+    /// 中产生额外的跨请求排序点；单条 raw payload 保持产品 WriteRaw 的
+    /// 字节语义，也让 fixture readiness 只观察一个有序写入。
     pub fn paint(&self, pane_id: &str, token: &str) {
+        let payload = format!("{token}\r");
         let out = self
             .cli()
-            .args(["pane", "send-text", pane_id, token])
+            .args(["pane", "send-text", pane_id, &payload])
             .output()
             .expect("pane send-text 失败");
         assert!(
             out.status.success(),
             "pane send-text 失败: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let out = self
-            .cli()
-            .args(["pane", "send-keys", pane_id, "enter"])
-            .output()
-            .expect("pane send-keys 失败");
-        assert!(
-            out.status.success(),
-            "pane send-keys 失败: {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
