@@ -14,11 +14,30 @@ use std::time::{Duration, Instant};
 use std::os::unix::fs::PermissionsExt;
 
 use muxterm::core::runtime::herdr::session::HerdrSession;
+use serde_json::Value;
 
 /// Remote runners can spend several seconds creating the repeated split/close
 /// fixture before a newly created pane's shell has a visible screen. Keep this
 /// bound finite, but allow a loaded CI runner's split-child startup tail.
 const HERDR_FIXTURE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn pane_process_ready(session: &HerdrSession, pane_id: &str) -> bool {
+    let Ok(result) = session.call(
+        "pane.process_info",
+        serde_json::json!({ "pane_id": pane_id }),
+    ) else {
+        return false;
+    };
+    let Some(info) = result.get("process_info") else {
+        return false;
+    };
+    let shell_pid = info.get("shell_pid").and_then(Value::as_u64).unwrap_or(0);
+    let foreground_count = info
+        .get("foreground_processes")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    shell_pid > 0 && foreground_count > 0
+}
 
 /// 检查 herdr 二进制是否可用。
 pub fn herdr_available() -> bool {
@@ -262,6 +281,36 @@ impl IsolatedHerdr {
         );
     }
 
+    /// 等待 Herdr 为新 pane 建好真实 shell 进程。
+    ///
+    /// `pane.split` 的响应只代表拓扑已经变更；pty/shell 是随后异步启动的。
+    /// 不能用一次 `pane.send-text` 的回显来推断 ready：慢 runner 可能在 shell
+    /// 启动窗口丢掉写入，之后再重放也不一定能恢复。process-info 是 Herdr
+    /// 服务端对进程生命周期的权威观察面，和 attach 后 Runtime 使用的真实
+    /// pane 一致。
+    pub fn wait_for_pane_process(&self, pane_id: &str) {
+        let session = HerdrSession::new(self.name(), self.socket_path());
+        let deadline = Instant::now() + HERDR_FIXTURE_TIMEOUT;
+        while Instant::now() < deadline {
+            if pane_process_ready(&session, pane_id) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let info = session
+            .call(
+                "pane.process_info",
+                serde_json::json!({ "pane_id": pane_id }),
+            )
+            .map(|value| value.to_string())
+            .unwrap_or_else(|error| format!("error: {error:#}"));
+        let recent = session
+            .pane_read_recent_ansi_lines(pane_id, 2000)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|error| format!("error: {error:#}"));
+        panic!("Herdr pane shell 未就绪: pane={pane_id} process_info={info} recent={recent:?}");
+    }
+
     /// 重试发送并等待服务端 recent snapshot 看到 token，再把它作为 attach
     /// 前置条件。新建 pane 的 shell 可能尚未 ready；重试只解决 fixture
     /// readiness，不改变 attach 后 Runtime 的快照断言。
@@ -270,7 +319,7 @@ impl IsolatedHerdr {
         let deadline = Instant::now() + HERDR_FIXTURE_TIMEOUT;
         let mut next_send = Instant::now();
         while Instant::now() < deadline {
-            if Instant::now() >= next_send {
+            if pane_process_ready(&session, pane_id) && Instant::now() >= next_send {
                 self.paint(pane_id, token);
                 next_send = Instant::now() + Duration::from_millis(250);
             }
@@ -285,8 +334,15 @@ impl IsolatedHerdr {
             .pane_read_recent_ansi_lines(pane_id, 2000)
             .map(|bytes| String::from_utf8_lossy(&bytes).contains(token))
             .unwrap_or(false);
+        let process_info = session
+            .call(
+                "pane.process_info",
+                serde_json::json!({ "pane_id": pane_id }),
+            )
+            .map(|value| value.to_string())
+            .unwrap_or_else(|error| format!("error: {error:#}"));
         panic!(
-            "Herdr pane token 未在 attach 前落到服务端 snapshot: pane={pane_id} token={token} observed={observed}"
+            "Herdr pane token 未在 attach 前落到服务端 snapshot: pane={pane_id} token={token} observed={observed} process_info={process_info}"
         );
     }
 
@@ -296,10 +352,10 @@ impl IsolatedHerdr {
     /// 会把已经滚出屏幕的 token 误当作可渲染的前置条件。
     pub fn paint_until_visible_token(&self, pane_id: &str, token: &str) {
         let session = HerdrSession::new(self.name(), self.socket_path());
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HERDR_FIXTURE_TIMEOUT;
         let mut next_send = Instant::now();
         while Instant::now() < deadline {
-            if Instant::now() >= next_send {
+            if pane_process_ready(&session, pane_id) && Instant::now() >= next_send {
                 self.paint(pane_id, token);
                 next_send = Instant::now() + Duration::from_millis(250);
             }
@@ -314,8 +370,15 @@ impl IsolatedHerdr {
             .pane_read_ansi(pane_id)
             .map(|bytes| String::from_utf8_lossy(&bytes).contains(token))
             .unwrap_or(false);
+        let process_info = session
+            .call(
+                "pane.process_info",
+                serde_json::json!({ "pane_id": pane_id }),
+            )
+            .map(|value| value.to_string())
+            .unwrap_or_else(|error| format!("error: {error:#}"));
         panic!(
-            "Herdr pane token 未在 visible snapshot 落到前置条件: pane={pane_id} token={token} observed={observed}"
+            "Herdr pane token 未在 visible snapshot 落到前置条件: pane={pane_id} token={token} observed={observed} process_info={process_info}"
         );
     }
 
@@ -369,15 +432,15 @@ impl IsolatedHerdr {
     ) -> (String, String, [String; 3]) {
         let (workspace, tab, mut current) = self.create_workspace(cwd, label);
         // p1 -> ... -> pP：每轮 split 后关闭旧 pane，保持布局浅且计数继续。
-        for step in 1..22 {
+        for _ in 1..22 {
             let next = self.split_pane(&current, "right");
             // `pane.split` returns after the layout mutation, not after the
             // child shell has attached its PTY.  On a loaded CI runner,
             // closing the parent immediately can leave the new pane unable to
-            // receive the first test command.  Exercise a real command and
-            // wait for its output before retiring the old pane.
-            let ready_token = format!("HERDR_FIXTURE_SPLIT_READY_{step}");
-            self.paint_until_token(&next, &ready_token);
+            // receive the first test command.  Wait for the server's process
+            // lifecycle signal before retiring the old pane; command output is
+            // intentionally reserved for the final attach fixture below.
+            self.wait_for_pane_process(&next);
             self.close_pane(&current);
             current = next;
         }

@@ -204,6 +204,29 @@ fn ssh_herdr_forward_attach_contract() {
         .active_pane()
         .expect("SSH Herdr 应有 active pane")
         .id;
+    // `Workspace::connect` may already have the attach `pane.read` seed, but
+    // that seed is an Index snapshot and does not prove the forwarded control
+    // stream is writable.  Match the local Herdr contract: wait for a real
+    // PaneFrame before delivering VTE-style per-byte WriteRaw input.
+    let frame_deadline = Instant::now() + Duration::from_secs(15);
+    let mut saw_live_frame = false;
+    while Instant::now() < frame_deadline {
+        let events = workspace.refresh();
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                StateChange::PaneFrame { pane, .. } if *pane == active
+            )
+        }) {
+            saw_live_frame = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        saw_live_frame,
+        "SSH Herdr active pane 必须先收到 control stream full frame"
+    );
     let command = "echo HERDR_EXEC_\"SSH\"";
     let output_token = "HERDR_EXEC_SSH";
     assert!(!command.contains(output_token));
