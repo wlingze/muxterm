@@ -45,6 +45,11 @@ final class TerminalManager: TerminalInputHandler {
     }
     private var pendingSeeds: [UInt32: PendingSeed] = [:]
     private var seedingPanes = Set<UInt32>()
+    /// 后台 Workspace 关掉 viewCreation 时仍把快照留着，第一次建 Surface 立刻种。
+    private var pendingSnapshots: [UInt32: Data] = [:]
+    /// 快照之后、建 view 之前到达的 live 字节。有上限，避免后台 TUI 把内存撑爆。
+    private var pendingBackgroundOutput: [UInt32: Data] = [:]
+    private static let stashedOutputCap = 256 * 1024
     /// 尚未完成过首屏的 pane：seed 期间 PaneLayout 隐藏 host。
     /// 已经显示过的 pane 再 seed 时保持可见，避免切 tab 闪白。
     private var surfaceReadyPanes = Set<UInt32>()
@@ -126,6 +131,8 @@ final class TerminalManager: TerminalInputHandler {
         seedFlushWorkItem = nil
         pendingSeeds.removeAll()
         seedingPanes.removeAll()
+        pendingSnapshots.removeAll()
+        pendingBackgroundOutput.removeAll()
         surfaceReadyPanes.removeAll()
         reportedResizeFailures.removeAll()
         reportedClientResizeFailure = false
@@ -144,6 +151,11 @@ final class TerminalManager: TerminalInputHandler {
     /// 该开关只影响“懒建 Surface”，不影响已有 view 的清理或尺寸缓存。
     func setViewCreationEnabled(_ enabled: Bool) {
         viewCreationEnabled = enabled
+    }
+
+    /// attach 已经把这个 client 尺寸发给 tmux 时，切 tab 不要再 refresh-client -C。
+    func noteClientSize(_ size: (UInt16, UInt16)) {
+        lastClientSize = size
     }
 
     /// 判断 pane 是否已经有可复用的 Surface。后台 Workspace 只喂已有 view。
@@ -301,7 +313,57 @@ final class TerminalManager: TerminalInputHandler {
             view.getTerminal().resize(cols: size.cols, rows: size.rows)
         }
         syncHistoryCapacity(paneId: paneId, view: view)
+        applyStashedSurface(paneId: paneId, view: view)
         return view
+    }
+
+    /// 后台丢掉的快照 / live 在第一次建 Surface 时补上，不必再等 tmux。
+    private func applyStashedSurface(paneId: UInt32, view: MuxTerminalView) {
+        if let data = pendingSnapshots.removeValue(forKey: paneId) {
+            enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
+            if let extra = pendingBackgroundOutput.removeValue(forKey: paneId) {
+                queueLiveOutput(paneId, data: extra)
+            }
+            return
+        }
+        if let extra = pendingBackgroundOutput.removeValue(forKey: paneId) {
+            swiftTermSeeded.insert(paneId)
+            if let lines = savedHistory[paneId] {
+                view.prependHistoryLines(lines)
+            }
+            queueLiveOutput(paneId, data: extra)
+            setSurfaceReady(paneId, true)
+            return
+        }
+        if let lines = savedHistory[paneId] {
+            view.prependHistoryLines(lines)
+        }
+    }
+
+    /// 可见 pane 的 seed 立刻跑完，不要排在其它 tab 后面。
+    func flushSeedsNow(paneIds: Set<UInt32>) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        seedFlushWorkItem?.cancel()
+        seedFlushWorkItem = nil
+        var completed = Set<UInt32>()
+        for paneId in paneIds {
+            guard var seed = pendingSeeds[paneId] else { continue }
+            if seed.offset < seed.data.count {
+                let chunk = Data(seed.data[seed.offset...])
+                seed.view.feedOutput(chunk, isSnapshot: seed.offset == 0)
+                seed.offset = seed.data.count
+            }
+            finishSeed(paneId: paneId, seed: seed, completed: &completed)
+        }
+        if !pendingSeeds.isEmpty {
+            scheduleSeedFlush()
+        }
+        if !pendingFeeds.isEmpty {
+            flushPendingFeeds()
+        }
+        for paneId in completed where !pendingFeeds.keys.contains(paneId) {
+            setSurfaceReady(paneId, true)
+        }
     }
 
     /// 记录后端报告的 pane 尺寸，并把已有 Surface 的模型对齐到这个格子。
@@ -360,12 +422,24 @@ final class TerminalManager: TerminalInputHandler {
         scheduleFeedFlush()
     }
 
+    private func appendStashedOutput(paneId: UInt32, data: Data) {
+        var buf = pendingBackgroundOutput[paneId] ?? Data()
+        buf.append(data)
+        if buf.count > Self.stashedOutputCap {
+            buf = Data(buf.suffix(Self.stashedOutputCap))
+        }
+        pendingBackgroundOutput[paneId] = buf
+    }
+
     /// 处理 PaneOutput 增量。已有 Surface 继续 feed；禁止 Index dump。
     func handleOutput(paneId: UInt32, data: Data) {
         dispatchPrecondition(condition: .onQueue(.main))
         guard !data.isEmpty else { return }
         if views[paneId] == nil {
-            guard viewCreationEnabled else { return }
+            guard viewCreationEnabled else {
+                appendStashedOutput(paneId: paneId, data: data)
+                return
+            }
         }
         // 同一批刚用 PaneSnapshot 播种的视图，事件字节已经在快照里。
         if viewsCreatedThisBatch.contains(paneId) {
@@ -403,8 +477,12 @@ final class TerminalManager: TerminalInputHandler {
     func handleSnapshot(paneId: UInt32, data: Data) {
         dispatchPrecondition(condition: .onQueue(.main))
         if views[paneId] == nil {
-            guard viewCreationEnabled else { return }
+            guard viewCreationEnabled else {
+                pendingSnapshots[paneId] = data
+                return
+            }
         }
+        pendingSnapshots.removeValue(forKey: paneId)
         let viewExisted = views[paneId] != nil
         let seededByBatch = viewsCreatedThisBatch.contains(paneId)
         if !seededByBatch {
@@ -558,6 +636,8 @@ final class TerminalManager: TerminalInputHandler {
         pendingViewportOffsets.removeValue(forKey: paneId)
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
+        pendingSnapshots.removeValue(forKey: paneId)
+        pendingBackgroundOutput.removeValue(forKey: paneId)
         surfaceReadyPanes.remove(paneId)
         savedHistory.removeValue(forKey: paneId)
         pendingHistory.removeValue(forKey: paneId)

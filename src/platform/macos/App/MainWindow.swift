@@ -66,6 +66,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 已向 tmux 上报过颜色的 pane（`refresh-client -r` 只需每个 pane 一次；
     /// 外观变化时清空重报）。
     private var reportedColourPanes = Set<UInt32>()
+    /// 后台 tab 的 Surface 树按 runloop 一拍一棵预热，避免 attach 时一次建完卡死。
+    private var tabWarmupScheduled = false
     /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
     private var statusBarSnapshot: StatusBarSnapshot?
     /// statusbar 需要刷新（tab 增删/激活才置位；layout-change/pane 事件不触发，
@@ -364,7 +366,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportStatusError(MuxtermI18n.shared.tr(.errorNewTab))
             return
         }
-        needsLayoutReload = true
+        // 当拍 snapshot 还是旧 tab。等 TabAdded 再挂新树，避免先拆再等 tmux。
     }
 
     @objc func renameActiveTab() {
@@ -1206,6 +1208,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         return
                     }
                     let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
+                    if let initialClientSize {
+                        slot.terminalManager.noteClientSize(initialClientSize)
+                    }
                     self.activate(slot: slot)
                     completion(.success(nextBridge))
                 }
@@ -1440,7 +1445,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 已缓存的 tab：只挂树、对一下 snapshot，不重建、不 refresh-client -C。
-    /// 返回 true 表示第一次进入，需要走全量 refreshUI。
+    /// 返回 true 表示第一次进入且本地 layout 还没齐，需要走全量 refreshUI。
     @discardableResult
     private func applyCachedTabSwitch(_ tabId: UInt32) -> Bool {
         if let oldPane = lastSnapshot.panes.first(where: \.isActive)?.id {
@@ -1449,19 +1454,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         tabSwitchGate.onTabChanged(to: tabId)
         content.statusBar.markCurrentWindow(tabId)
         let cacheHit = content.paneLayout.revealCachedTab(tabId) != nil
-        guard !TabSwitchPaintPolicy.needsLayoutReload(cacheHit: cacheHit) else {
+        if cacheHit {
+            lastSnapshot = bridge.snapshot()
+            content.updateTabs(lastSnapshot.tabs)
+            focusVisibleTab(lastSnapshot)
+            return false
+        }
+        let panes = bridge.getPanes(tabId: tabId)
+        let layout = bridge.getLayout(tabId: tabId)
+        guard FirstTabPaintPolicy.canPaintFromLocalLayout(
+            paneCount: panes.count,
+            hasLayout: layout != nil
+        ) else {
+            return true
+        }
+        guard content.paneLayout.apply(layout: layout, panes: panes, tabId: tabId) else {
             return true
         }
         lastSnapshot = bridge.snapshot()
         content.updateTabs(lastSnapshot.tabs)
-        if let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
-            ?? lastSnapshot.panes.first?.id
+        terminalManager.flushSeedsNow(paneIds: Set(panes.map(\.id)))
+        focusVisibleTab(lastSnapshot)
+        scheduleTabTreeWarmup()
+        return false
+    }
+
+    private func focusVisibleTab(_ snap: FrameSnapshot) {
+        if let activePane = snap.panes.first(where: \.isActive)?.id
+            ?? snap.panes.first?.id
         {
             terminalManager.focusTarget = terminalManager.view(for: activePane)
             content.paneLayout.markActivePane(activePane)
             restoreTerminalFocusIfAllowed()
         }
-        return false
     }
 
     private func splitActivePane(horizontal: Bool) {
@@ -2037,6 +2062,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         return
                     }
                     let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
+                    if let initialClientSize {
+                        slot.terminalManager.noteClientSize(initialClientSize)
+                    }
                     self.activate(slot: slot)
                 }
             } catch {
@@ -2053,12 +2081,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         closeTab(lastSnapshot.activeTab)
     }
 
-    private func closeTab(_ tabId: UInt32) {
+    func closeTab(_ tabId: UInt32) {
         guard bridge.execute(task: MuxTask.closeTab(tabId)) == 0 else {
             reportStatusError(MuxtermI18n.shared.tr(.errorCloseTab, arguments: ["id": "\(tabId)"]))
             return
         }
-        needsLayoutReload = true
+        // 等 TabClosed / ActiveTabChanged。点击当拍不要拆当前树。
     }
 
     private func showError(_ error: Error, prefix: String? = nil) {
@@ -2183,6 +2211,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     needsLayoutReload = true
                     statusBarNeedsRefresh = true
                 }
+            } else if ev.type == STATE_TAB_CLOSED {
+                tabSwitchGate.onTabClosed(ev.tabId)
+                removeStatusBarWindow(ev.tabId)
+                statusBarNeedsRefresh = true
+                uiStateChanged = true
+                if TabLifecyclePaintPolicy.shouldTouchVisibleLayout(
+                    closedIsVisible: lastSnapshot.activeTab == ev.tabId
+                ) {
+                    let nextId = bridge.snapshot().activeTab
+                    if applyCachedTabSwitch(nextId) {
+                        needsLayoutReload = true
+                    }
+                }
+            } else if ev.type == STATE_TAB_ADDED {
+                statusBarNeedsRefresh = true
+                uiStateChanged = true
+                if ev.tabId == bridge.snapshot().activeTab,
+                   applyCachedTabSwitch(ev.tabId)
+                {
+                    needsLayoutReload = true
+                }
             } else if StateEventPolicy.shouldReloadUI(
                 type: ev.type,
                 tabId: ev.tabId,
@@ -2190,15 +2239,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ) {
                 uiStateChanged = true
                 needsLayoutReload = true
-                if ev.type == STATE_TAB_CLOSED {
-                    tabSwitchGate.onTabClosed(ev.tabId)
-                    // 本地移除已关闭 tab 的 statusbar 条目，立即反馈；
-                    // scheduleStatusBarRefresh 随后用权威快照兜底。
-                    removeStatusBarWindow(ev.tabId)
-                    statusBarNeedsRefresh = true
-                } else if ev.type == STATE_TAB_ADDED {
-                    statusBarNeedsRefresh = true
-                }
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
                 if ev.type == STATE_ACTIVE_PANE_CHANGED {
@@ -2436,6 +2476,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             restoreTerminalFocusIfAllowed()
         }
         applyPendingSearchJumpIfReady()
+        scheduleTabTreeWarmup()
+    }
+
+    /// 每拍只预热一个还没点过的 tab，第一次点击就能走缓存树。
+    private func scheduleTabTreeWarmup() {
+        guard !tabWarmupScheduled else { return }
+        tabWarmupScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.tabWarmupScheduled = false
+            self.warmNextBackgroundTab()
+        }
+    }
+
+    private func warmNextBackgroundTab() {
+        let current = lastSnapshot.activeTab
+        for tab in lastSnapshot.tabs where tab.id != current {
+            if content.paneLayout.hasCachedTab(tab.id) { continue }
+            let panes = bridge.getPanes(tabId: tab.id)
+            let layout = bridge.getLayout(tabId: tab.id)
+            guard FirstTabPaintPolicy.canPaintFromLocalLayout(
+                paneCount: panes.count,
+                hasLayout: layout != nil
+            ) else {
+                continue
+            }
+            if content.paneLayout.prewarm(tabId: tab.id, layout: layout, panes: panes) {
+                scheduleTabTreeWarmup()
+                return
+            }
+        }
     }
 
     /// 切 tab/pane 完成后：按 seq 喂历史帧，并用 SwiftTerm findNext 高亮 query。

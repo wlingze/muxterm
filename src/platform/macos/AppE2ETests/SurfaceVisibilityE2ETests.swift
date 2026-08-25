@@ -197,6 +197,82 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
+    func testPrewarmMakesFirstVisitACacheHit() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        let layout = PaneLayoutView(terminalManager: manager)
+        layout.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        let panes1 = [Pane(id: 1, cols: 80, rows: 24, isActive: true)]
+        let panes2 = [Pane(id: 2, cols: 80, rows: 24, isActive: true)]
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: panes1, tabId: 10))
+        XCTAssertTrue(layout.prewarm(tabId: 20, layout: .leaf(paneId: 2), panes: panes2))
+        XCTAssertTrue(layout.hasCachedTab(20))
+        let host2 = layout.testHost(for: 2)
+        XCTAssertNotNil(host2)
+        XCTAssertNotNil(layout.revealCachedTab(20))
+        XCTAssertTrue(
+            layout.testHost(for: 2) === host2,
+            "预热过的 tab 第一次点击必须复用 host"
+        )
+    }
+
+    func testApplyingANewTabDoesNotDropCachedTrees() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        let layout = PaneLayoutView(terminalManager: manager)
+        layout.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        let panes1 = [Pane(id: 1, cols: 80, rows: 24, isActive: true)]
+        let panes2 = [Pane(id: 2, cols: 80, rows: 24, isActive: true)]
+        let panes3 = [Pane(id: 3, cols: 80, rows: 24, isActive: true)]
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: panes1, tabId: 10))
+        let host1 = layout.testHost(for: 1)
+        XCTAssertTrue(layout.prewarm(tabId: 20, layout: .leaf(paneId: 2), panes: panes2))
+        let host2 = layout.testHost(for: 2)
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 3), panes: panes3, tabId: 30))
+        XCTAssertTrue(layout.hasCachedTab(10), "新建 tab 不得把已打开的树丢掉")
+        XCTAssertTrue(layout.hasCachedTab(20), "新建 tab 不得把预热树丢掉")
+        XCTAssertNotNil(layout.revealCachedTab(10))
+        XCTAssertTrue(layout.testHost(for: 1) === host1)
+        XCTAssertNotNil(layout.revealCachedTab(20))
+        XCTAssertTrue(layout.testHost(for: 2) === host2)
+        layout.pruneTabs(keeping: [10, 20])
+        XCTAssertFalse(layout.hasCachedTab(30), "关掉的 tab 才从缓存里拿掉")
+        XCTAssertTrue(layout.hasCachedTab(10))
+        XCTAssertTrue(layout.hasCachedTab(20))
+    }
+
+    func testStashedSnapshotSeedsOnFirstView() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setViewCreationEnabled(false)
+        manager.handleSnapshot(paneId: 7, data: Data("STASHED_PROMPT\r\n".utf8))
+        XCTAssertFalse(manager.hasView(for: 7), "后台不得为从未打开的 pane 建 SwiftTerm")
+        manager.setViewCreationEnabled(true)
+        let view = manager.view(for: 7)
+        manager.flushSeedsNow(paneIds: [7])
+        XCTAssertTrue(manager.isSurfaceReady(for: 7))
+        XCTAssertTrue(
+            view.visibleScreenText().contains("STASHED_PROMPT"),
+            "第一次建 Surface 必须立刻种上后台留住的快照。got=\(view.visibleScreenText())"
+        )
+    }
+
+    func testVisibleSeedIsNotStuckBehindBackgroundSeeds() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        var background = Data(repeating: 0x20, count: 96 * 1024)
+        background.append(contentsOf: Array("BG_DONE\r\n".utf8))
+        let bgView = MuxTerminalView(paneId: 2, frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let fgView = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        manager.testQueueSurfaceSeed(paneId: 2, view: bgView, data: background)
+        manager.testQueueSurfaceSeed(paneId: 1, view: fgView, data: Data("FG_READY\r\n".utf8))
+        manager.flushSeedsNow(paneIds: [1])
+        XCTAssertTrue(manager.isSurfaceReady(for: 1), "可见 pane 不得排在后台 seed 后面")
+        XCTAssertFalse(manager.isSurfaceReady(for: 2), "后台大 seed 可以下一拍再跑")
+    }
+
     func testCopySelectionAndPasteSendsBytes() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

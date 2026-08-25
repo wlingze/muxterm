@@ -165,6 +165,16 @@ extension MainWindowController {
         pollOnce()
     }
 
+    /// 通过生产 Core task 关闭 tab；测试不得直接 `kill-window`。
+    func testCloseTab(_ tabId: UInt32) {
+        closeTab(tabId)
+        pollOnce()
+    }
+
+    func testHasCachedTab(_ tabId: UInt32) -> Bool {
+        content.paneLayout.hasCachedTab(tabId)
+    }
+
     func testSendInput(_ data: Data) {
         // W19-E：reply overlay 可见时输入走 overlay 的 pane，否则走 active pane。
         if !content.replyOverlayContainer.isHidden, let paneId = replyOverlayPaneId {
