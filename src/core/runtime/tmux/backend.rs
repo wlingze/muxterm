@@ -17,7 +17,6 @@
 //! 不立即改 state（tmux 会回推 LayoutChange/PaneModeChanged 等通知）。
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -886,39 +885,14 @@ impl TmuxRuntime {
         }
     }
 
-    /// abort/卡死路径：按 `-L socket` 强制 kill-server，回收残留 tmux。
-    fn force_cleanup_tmux_server(&self) {
-        let mut socket: Option<&str> = None;
+    fn isolated_socket_name(&self) -> Option<&str> {
         let mut it = self.config.extra_args.iter();
         while let Some(a) = it.next() {
             if a == "-L" {
-                socket = it.next().map(String::as_str);
-                break;
+                return it.next().map(String::as_str);
             }
         }
-        if let Some(s) = socket {
-            let Ok(mut child) = Command::new(self.config.tmux_bin.as_deref().unwrap_or("tmux"))
-                .args(["-L", s, "kill-server"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            else {
-                return;
-            };
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) | Err(_) => break,
-                    Ok(None) if Instant::now() >= deadline => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break;
-                    }
-                    Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-                }
-            }
-        }
+        None
     }
 
     fn is_attach_mode(&self) -> bool {
@@ -2267,7 +2241,9 @@ impl Runtime for TmuxRuntime {
         // new-session 模式：等 SessionChanged + WindowAdd
         // attach 模式：等 SessionChanged（window 不通过通知到达，需主动查询）
         let is_attach = matches!(self.config.mode, Some(ConnectMode::Attach { .. }));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // CI 在 PersistDetach 之后立刻重新 attach：旧 control client 回收与
+        // 新 `tmux -CC` 启动可能超过 5s；矩阵两格还共用同一个 `-L` socket。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
             self.pump_events();
             if is_attach {
@@ -2292,7 +2268,11 @@ impl Runtime for TmuxRuntime {
             self.status = BackendStatus::Error;
             self.events
                 .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
-            anyhow::bail!("tmux 启动后未收到 session 事件");
+            anyhow::bail!(
+                "tmux 启动后未收到 session 事件 (mode={}, socket={})",
+                if is_attach { "attach" } else { "new-session" },
+                self.isolated_socket_name().unwrap_or("default"),
+            );
         }
 
         // 主动查询所有 window + pane，建立完整初始 state（attach 已有 session 必需）
@@ -2749,23 +2729,20 @@ impl Runtime for TmuxRuntime {
         }
         // 关闭命令通道，sender task 收到 None 后会 kill tmux 子进程并退出
         self.cmd_tx.take();
-        // 等待 sender task 结束；pty 写卡死时 abort，避免测试/CI 无限挂起
-        let mut aborted = false;
+        // 等待 sender task 结束；pty 写卡死时 abort，避免测试/CI 无限挂起。
+        // 超时不得 `kill-server`：矩阵的 primary/alternate 共用隔离 socket，
+        // PersistDetach 之后还要 attach 回同一 session。残留 `tmux -CC` 由
+        // sender 的 kill() 或测试 fixture Drop 回收。
         if let Some(mut h) = self._sender_handle.take() {
             tokio::select! {
                 r = &mut h => {
                     let _ = r;
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(8)) => {
                     tracing::warn!(target = "muxterm::tmux_backend", "shutdown: sender task 超时，abort");
                     h.abort();
-                    aborted = true;
                 }
             }
-        }
-        if aborted {
-            // abort 可能跳过 sender 末尾的 kill()；强制回收 server / 子进程
-            self.force_cleanup_tmux_server();
         }
         // 丢掉事件接收端，让读线程/读 task 在 send 失败后退出，停止无界积压
         self.event_rx.take();

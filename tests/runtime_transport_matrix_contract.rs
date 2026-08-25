@@ -138,9 +138,16 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
         // 真正丢掉旧 Runtime，再从相同 spec 新建实例 attach；不能依赖旧本地状态。
         drop(catalog);
         let mut attached_catalog = Catalog::with_builtins();
-        let attached = rt
-            .block_on(attached_catalog.open(&spec))
-            .with_context(|| format!("重新 attach {runtime_id} x {transport_id}"))?;
+        let attached = rt.block_on(attached_catalog.open(&spec)).with_context(|| {
+            if runtime_id == "tmux" {
+                format!(
+                    "重新 attach {runtime_id} x {transport_id}: {}",
+                    tmux_fixture_diagnostics(&spec)
+                )
+            } else {
+                format!("重新 attach {runtime_id} x {transport_id}")
+            }
+        })?;
         verify_after_attach(attached, runtime_id, transport_id, &snapshot)?;
         rt.block_on(attached.shutdown())?;
     } else {
