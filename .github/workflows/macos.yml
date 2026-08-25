@@ -48,6 +48,13 @@ jobs:
         run: bash scripts/ci/setup.sh
         timeout-minutes: 20
 
+      - name: Setup shared loopback sshd
+        run: |
+          set -euo pipefail
+          MUXTERM_ENV_FILE="$RUNNER_TEMP/muxterm-sshd.env" bash scripts/ci/setup-sshd.sh
+          cat "$RUNNER_TEMP/muxterm-sshd.env" >> "$GITHUB_ENV"
+        timeout-minutes: 5
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -63,3 +70,11 @@ jobs:
       - name: Run all macOS tests (one entry)
         run: bash scripts/test.sh run macos
         timeout-minutes: 30
+
+      - name: Cleanup sshd
+        if: always()
+        run: |
+          if [ -n "${MUXTERM_SSHD_TMP_DIR:-}" ] && [ -f "$MUXTERM_SSHD_TMP_DIR/sshd.pid" ]; then
+            kill "$(cat "$MUXTERM_SSHD_TMP_DIR/sshd.pid")" 2>/dev/null || true
+            rm -rf "$MUXTERM_SSHD_TMP_DIR"
+          fi
