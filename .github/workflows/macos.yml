@@ -71,6 +71,14 @@ jobs:
         run: bash scripts/test.sh run macos
         timeout-minutes: 30
 
+      - name: Upload sshd logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-sshd-logs
+          path: ${{ env.MUXTERM_SSHD_TMP_DIR }}
+          if-no-files-found: ignore
+
       - name: Cleanup sshd
         if: always()
         run: |
