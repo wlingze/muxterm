@@ -526,6 +526,27 @@ public enum TerminalFocusPolicy {
     }
 }
 
+/// Cmd-C/V/A 必须走 copy/paste/selectAll，不能进 SwiftTerm `keyDown`。
+/// `keyDown` 第一件事是 `selection.active = false`，复制永远是空的；
+/// 窗口级 monitor 若 return nil，AppKit 也到不了 Edit 菜单的 paste:。
+public enum TerminalEditShortcutPolicy {
+    public static func shouldDeferToMenu(
+        command: Bool,
+        shift: Bool,
+        option: Bool,
+        control: Bool,
+        key: String
+    ) -> Bool {
+        guard command, !shift, !option, !control else { return false }
+        switch key.lowercased() {
+        case "c", "v", "a":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 /// Cmd-P 打开 Workspaces 时不要去扫 attention / 搜索。
 public enum PanelReloadPolicy {
     public static func needsAttentionSnapshot(_ tab: PanelTab) -> Bool {

@@ -2693,6 +2693,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if self.handleKey(event) {
                 return nil
             }
+            // Cmd-C/V/A 绝不能进 SwiftTerm keyDown：那会清掉选区。
+            // handleKey 已在终端上消费；其它 first responder 把事件还给 AppKit。
+            if self.isStandardEditShortcut(event) {
+                return event
+            }
             // Terminal key events are explicitly dispatched exactly once through
             // SwiftTerm's keyDown implementation. Returning the event here would
             // let AppKit continue its normal responder walk after the monitor,
@@ -2789,6 +2794,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             control: flags.contains(.control),
             key: key
         )
+        if TerminalEditShortcutPolicy.shouldDeferToMenu(
+            command: chord.command,
+            shift: chord.shift,
+            option: chord.option,
+            control: chord.control,
+            key: chord.key
+        ), let view = window?.firstResponder as? MuxTerminalView {
+            switch chord.key {
+            case "c":
+                view.copy(nil)
+            case "v":
+                view.paste(nil)
+            case "a":
+                view.selectAll(nil)
+            default:
+                break
+            }
+            return true
+        }
         guard let action = KeyBindings.action(for: chord, custom: customKeybindings) else {
             // Ctrl+C/D/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
             // 把它们送成真实控制字节。这样不依赖 SwiftTerm 的 NSText
@@ -2847,6 +2871,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toggleActivePaneFullscreen()
         }
         return true
+    }
+
+    private func isStandardEditShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard let raw = event.charactersIgnoringModifiers, let first = raw.first else {
+            return false
+        }
+        return TerminalEditShortcutPolicy.shouldDeferToMenu(
+            command: flags.contains(.command),
+            shift: flags.contains(.shift),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            key: String(first)
+        )
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
