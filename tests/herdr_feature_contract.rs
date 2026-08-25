@@ -402,8 +402,16 @@ fn herdr_local_write_raw_executes_echo_command() {
         .expect("本地 Herdr Runtime connect 应成功");
 
     let ready_deadline = Instant::now() + HERDR_TIMEOUT;
+    let mut live_frame_pane = None;
     while Instant::now() < ready_deadline {
-        let _ = workspace.refresh();
+        let events = workspace.refresh();
+        live_frame_pane = events
+            .iter()
+            .find_map(|event| match event {
+                StateChange::PaneFrame { pane, .. } => Some(*pane),
+                _ => None,
+            })
+            .or(live_frame_pane);
         if !workspace.search_workspace(ready_token).is_empty() {
             break;
         }
@@ -413,12 +421,36 @@ fn herdr_local_write_raw_executes_echo_command() {
         !workspace.search_workspace(ready_token).is_empty(),
         "本地 Herdr shell 必须先完成 ready echo"
     );
-
     let active = workspace
         .state()
         .active_pane()
         .expect("本地 Herdr 应有 active pane")
         .id;
+    // `pane.read`/Index seed can satisfy the ready-token assertion before the
+    // asynchronous control stream has completed its first full frame.  Wait
+    // for that real stream event so the following VTE-style per-byte commits
+    // exercise a live control path rather than racing startup on slow CI.
+    let mut saw_live_frame = live_frame_pane == Some(active);
+    if !saw_live_frame {
+        let frame_deadline = Instant::now() + HERDR_TIMEOUT;
+        while Instant::now() < frame_deadline {
+            let events = workspace.refresh();
+            if events.iter().any(|event| {
+                matches!(
+                    event,
+                    StateChange::PaneFrame { pane, .. } if *pane == active
+                )
+            }) {
+                saw_live_frame = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    assert!(
+        saw_live_frame,
+        "本地 Herdr active pane 必须先收到 control stream full frame"
+    );
     let command = "echo HERDR_EXEC_\"LOCALCORE\"";
     let output_token = "HERDR_EXEC_LOCALCORE";
     assert!(!command.contains(output_token));
