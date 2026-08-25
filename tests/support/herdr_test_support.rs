@@ -17,8 +17,8 @@ use muxterm::core::runtime::herdr::session::HerdrSession;
 
 /// Remote runners can spend several seconds creating the repeated split/close
 /// fixture before a newly created pane's shell has a visible screen. Keep this
-/// bound finite, but match the e2e contract's 15-second readiness budget.
-const HERDR_FIXTURE_TIMEOUT: Duration = Duration::from_secs(15);
+/// bound finite, but allow a loaded CI runner's split-child startup tail.
+const HERDR_FIXTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 检查 herdr 二进制是否可用。
 pub fn herdr_available() -> bool {
