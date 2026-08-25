@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use muxterm::core::runtime::herdr::session::HerdrSession;
+
 /// 检查 herdr 二进制是否可用。
 pub fn herdr_available() -> bool {
     Command::new("herdr")
@@ -257,6 +259,29 @@ impl IsolatedHerdr {
             out.status.success(),
             "pane send-keys 失败: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// 等待服务端 recent snapshot 看到 token，再把它作为 attach 前置条件。
+    /// 这样 attach contract 测的是“已存在的 pane 内容能否被播种”，而不是
+    /// 把 `pane.send-text` 的异步落盘延迟误报成 Runtime 丢帧。
+    pub fn wait_for_token(&self, pane_id: &str, token: &str) {
+        let session = HerdrSession::new(self.name(), self.socket_path());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(bytes) = session.pane_read_recent_ansi_lines(pane_id, 2000) {
+                if String::from_utf8_lossy(&bytes).contains(token) {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let observed = session
+            .pane_read_recent_ansi_lines(pane_id, 2000)
+            .map(|bytes| String::from_utf8_lossy(&bytes).contains(token))
+            .unwrap_or(false);
+        panic!(
+            "Herdr pane token 未在 attach 前落到服务端 snapshot: pane={pane_id} token={token} observed={observed}"
         );
     }
 
