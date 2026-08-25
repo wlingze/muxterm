@@ -42,6 +42,7 @@ PubkeyAuthentication yes
 PermitRootLogin no
 UsePAM no
 StrictModes no
+AcceptEnv ZDOTDIR
 Subsystem sftp internal-sftp
 SSHCFG
 

@@ -102,6 +102,7 @@ impl SshTestEnv {
     BatchMode yes
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
+    SendEnv ZDOTDIR
     LogLevel ERROR
 "#,
             alias = alias,
@@ -348,6 +349,7 @@ impl LoopbackSshd {
              PermitRootLogin no\n\
              UsePAM no\n\
              StrictModes no\n\
+             AcceptEnv ZDOTDIR\n\
              Subsystem sftp internal-sftp\n",
             host = host_ed.display(),
             pid = pid_file.display(),
@@ -404,6 +406,7 @@ impl LoopbackSshd {
                  BatchMode yes\n\
                  StrictHostKeyChecking no\n\
                  UserKnownHostsFile /dev/null\n\
+                 SendEnv ZDOTDIR\n\
                  LogLevel ERROR\n",
                 key = client.display(),
             ),

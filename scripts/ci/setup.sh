@@ -60,6 +60,15 @@ if [ "$OS" = "Linux" ]; then
     echo "设置默认 shell 为 zsh（$USER）..." >&2
     sudo chsh -s "$(command -v zsh)" "$USER"
   fi
+  # Debian/Ubuntu 的交互 zsh 在没有任何 startup file 时会跑
+  # zsh-newuser-install（全屏 TUI）。apt+chsh 之后 runner 没有 ~/.zshrc；
+  # SSH pane 默认 80x24，向导会真正启动（COLUMNS<72 时它自己 return）。
+  # 向导吞掉 WriteRaw，SSH_CONNECTION 探测永远不会执行。
+  # 官方跳过方式是写一份只含注释的 ~/.zshrc。禁止从 test.sh 写 $HOME：
+  # 那会改开发机；本脚本只在 CI runner 上跑。
+  if [ ! -e "${HOME}/.zshrc" ]; then
+    printf '%s\n' '# muxterm-ci: skip zsh-newuser-install' >"${HOME}/.zshrc"
+  fi
   # tmux 使用 Ubuntu 的预编译包；setup 不从源码编译，避免 CI runner 长时间占用。
   if ! command -v tmux >/dev/null 2>&1; then
     echo "tmux 安装失败" >&2
