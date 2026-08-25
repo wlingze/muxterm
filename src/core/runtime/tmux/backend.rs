@@ -227,6 +227,10 @@ pub struct TmuxRuntime {
     history_backfill_done: HashSet<PaneId>,
     /// 历史 capture 还在路上。
     history_backfill_pending: HashSet<PaneId>,
+    /// 可见屏已经有了，等控制通道空闲再抓历史。切 tab 当拍不得发 `-S`。
+    history_backfill_wanted: HashSet<PaneId>,
+    /// 本轮 pump 里刚切了 tab / 刚种完可见屏。历史放到下一轮 poll。
+    history_backfill_hold: bool,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
     /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
@@ -552,6 +556,8 @@ impl TmuxRuntime {
             background_capture_only: HashSet::new(),
             history_backfill_done: HashSet::new(),
             history_backfill_pending: HashSet::new(),
+            history_backfill_wanted: HashSet::new(),
+            history_backfill_hold: false,
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
@@ -693,8 +699,9 @@ impl TmuxRuntime {
         for pane in panes {
             if self.initial_capture_done.contains(&pane) {
                 self.background_capture_only.remove(&pane);
-                // 可见屏已经有了。第一次看这个 tab 只补历史行，不 pause。
-                self.begin_pane_history_backfill(pane);
+                // 可见屏已经有了。历史放到下一轮 poll，不要和 select-window
+                // 抢控制通道。
+                self.schedule_pane_history_backfill(pane);
                 continue;
             }
             if self.background_capture_only.contains(&pane) {
@@ -704,6 +711,7 @@ impl TmuxRuntime {
                 }
                 self.background_capture_only.remove(&pane);
                 self.initial_capture_done.insert(pane);
+                self.schedule_pane_history_backfill(pane);
                 continue;
             }
             self.query_capture_pane(pane);
@@ -1182,7 +1190,7 @@ impl TmuxRuntime {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
         }
         if resync.initial {
-            self.begin_pane_history_backfill(pane);
+            self.schedule_pane_history_backfill(pane);
         }
         if let Some(receiver) = self.event_rx.as_mut() {
             receiver.resume_output_pane(pane);
@@ -1664,6 +1672,7 @@ impl TmuxRuntime {
 
     /// drain event_rx 的 TmuxEvent，更新 state。
     fn pump_events(&mut self) {
+        self.history_backfill_hold = false;
         self.expire_resyncs();
         for _ in 0..PUMP_EVENT_BUDGET {
             let message = self
@@ -1774,6 +1783,7 @@ impl TmuxRuntime {
         }
         self.expire_resyncs();
         self.maybe_start_resyncs();
+        self.flush_deferred_history_backfill();
     }
 
     /// 处理一条命令的完整响应（%begin..%end 之间的行）。
@@ -1918,15 +1928,17 @@ impl TmuxRuntime {
                             data
                         };
                         self.outputs.insert(pane, snapshot.clone());
-                        if !snapshot.is_empty() {
-                            // capture-pane 是权威替换，不是 live 增量。前端必须
-                            // reset VT 后再应用，否则 attach/Cursor 会把 seed
-                            // 当成命令输出重放，造成首屏和历史双写。
-                            self.events.push_back(StateChange::PaneSnapshot {
-                                pane,
-                                data: snapshot,
-                            });
-                            self.trim_event_queue();
+                        // 空屏也是权威快照：前端才能把 host 从 seeding 里放出来。
+                        self.events.push_back(StateChange::PaneSnapshot {
+                            pane,
+                            data: snapshot,
+                        });
+                        self.trim_event_queue();
+                        if self
+                            .pane_tab(pane)
+                            .is_some_and(|tab| self.tab_is_active(tab))
+                        {
+                            self.schedule_pane_history_backfill(pane);
                         }
                     } else if !data.is_empty()
                         && self
@@ -2020,7 +2032,7 @@ impl TmuxRuntime {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
         }
         if initial {
-            self.begin_pane_history_backfill(pane);
+            self.schedule_pane_history_backfill(pane);
         }
     }
 
@@ -2262,18 +2274,27 @@ impl TmuxRuntime {
                 self.restart_snapshot_after_resize(pane);
             }
         }
-        // attach 的控制模式不一定会把当前屏幕历史作为 %output 推送。只对
-        // 活动 tab 发起首屏 pause+capture；其它 tab 只做轻量可见屏索引。
-        // 切过去不再 pause 重抓（SURFACE.md §7）。
+        self.seed_listed_panes(tab_id, &new_panes);
+    }
+
+    /// attach 当中：活动 tab pause+抓可见屏。attach 完成之后：新 window /
+    /// split 只抓可见屏，不要 pause——pause+display-message 会跟
+    /// list-windows 抢 SSH 控制通道（dogfood 2026-08-25 新建第一张 tab 卡 4s）。
+    fn seed_listed_panes(&mut self, tab_id: TabId, new_panes: &[PaneInfo]) {
+        if self.background_index_capture_enabled {
+            let active = self.tab_is_active(tab_id);
+            for pane in new_panes {
+                if active {
+                    // 新建 pane 没有 attach 前历史，不要再发 `-S -10000`。
+                    self.history_backfill_done.insert(pane.id);
+                }
+                self.query_capture_pane_visible(pane.id);
+            }
+            return;
+        }
         if self.tab_is_active(tab_id) {
             for pane in new_panes {
                 self.query_capture_pane(pane.id);
-            }
-        } else if self.background_index_capture_enabled {
-            // 只为后台索引做轻量可见屏 capture；连接状态不等待这些响应。
-            // 前台 Workspace 会把对应 PaneSnapshot 种进 Surface。
-            for pane in new_panes {
-                self.query_capture_pane_visible(pane.id);
             }
         }
     }
@@ -2308,6 +2329,8 @@ impl TmuxRuntime {
             if let Some(index) = index {
                 self.window_indices.insert(tab, index);
             }
+            let was_zoomed = self.window_zoomed.contains(&tab);
+            let needs_panes = self.window_needs_pane_query(tab, &layout_str, panes_count);
             self.window_layouts.insert(tab, layout_str);
             if zoomed {
                 self.window_zoomed.insert(tab);
@@ -2329,8 +2352,20 @@ impl TmuxRuntime {
                 self.events.push_back(StateChange::TabAdded { tab });
             }
 
-            // 主动查询该 tmux window 的 panes
-            self.query_list_panes(tab);
+            // 新建/关闭 tab 会把整表再拉一遍。layout 和 pane 数没变的
+            // window 不要再 list-panes：SSH 上串行查一遍所有 window 会把
+            // 新 tab 的首屏卡住数秒。
+            if needs_panes {
+                self.query_list_panes(tab);
+            } else if was_zoomed != zoomed {
+                let panes: Vec<PaneInfo> = self
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.tab == tab)
+                    .cloned()
+                    .collect();
+                self.rebuild_layout(tab, &panes);
+            }
         }
         // TabId 是稳定的 @window_id；用户拖动 tab 只会改变 tmux index，
         // 因此必须按 list-windows 的返回顺序重排，不能保留旧 Vec 顺序。
@@ -2343,6 +2378,25 @@ impl TmuxRuntime {
         // 权威列表已到：裁决 move-window 等临时 unlink 产生的挂起 close。
         let confirmed_tabs: HashSet<TabId> = order.keys().copied().collect();
         self.settle_pending_close_tabs(&confirmed_tabs);
+    }
+
+    /// 权威 list-windows 到达时，只有拓扑真的变了才再 list-panes。
+    fn window_needs_pane_query(&self, tab: TabId, layout_str: &str, panes_count: usize) -> bool {
+        if !self.tabs.iter().any(|item| item.id == tab) {
+            return true;
+        }
+        let known_panes = self.panes.iter().filter(|pane| pane.tab == tab).count();
+        match self.window_layouts.get(&tab) {
+            Some(known) if known == layout_str => {
+                if self.expected_panes_per_window.get(&tab).copied() != Some(panes_count) {
+                    return true;
+                }
+                known_panes != panes_count
+            }
+            Some(_) => true,
+            // `%window-add` 已经 list-panes 过：第一次看到 layout 不必再查。
+            None => known_panes != panes_count,
+        }
     }
 
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
@@ -2498,7 +2552,52 @@ impl TmuxRuntime {
     }
 
     /// 可见屏已经种上之后，按行补 attach 前历史。不 pause，不 reset。
+    /// 切 tab 当拍只登记，等控制通道空闲再发，避免和 select-window 抢 SSH。
+    fn schedule_pane_history_backfill(&mut self, pane: PaneId) {
+        if !self.is_attach_mode()
+            || self.history_backfill_done.contains(&pane)
+            || self.history_backfill_pending.contains(&pane)
+        {
+            return;
+        }
+        self.history_backfill_wanted.insert(pane);
+        self.history_backfill_hold = true;
+    }
+
+    fn pane_tab(&self, pane: PaneId) -> Option<TabId> {
+        self.panes
+            .iter()
+            .find(|item| item.id == pane)
+            .map(|item| item.tab)
+    }
+
+    fn control_lane_busy(&self) -> bool {
+        self.pending_queries
+            .iter()
+            .any(|query| !matches!(query, PendingQuery::Ignore))
+            || self
+                .pending_by_number
+                .values()
+                .any(|query| !matches!(query, PendingQuery::Ignore))
+            || !self.history_backfill_pending.is_empty()
+            || !self.resyncs.is_empty()
+    }
+
+    fn flush_deferred_history_backfill(&mut self) {
+        if self.history_backfill_hold || self.control_lane_busy() {
+            return;
+        }
+        let Some(pane) = self.history_backfill_wanted.iter().copied().find(|pane| {
+            !self.history_backfill_done.contains(pane)
+                && !self.history_backfill_pending.contains(pane)
+        }) else {
+            return;
+        };
+        self.begin_pane_history_backfill(pane);
+    }
+
     fn begin_pane_history_backfill(&mut self, pane: PaneId) {
+        self.history_backfill_wanted.remove(&pane);
         if !self.is_attach_mode()
             || self.history_backfill_done.contains(&pane)
             || self.history_backfill_pending.contains(&pane)
@@ -2938,10 +3037,10 @@ impl Runtime for TmuxRuntime {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        // 现在所有 window 的 pane 查询已发出（handle_list_windows_response 对每个
-        // window 调了 query_list_panes）。连接只需要活动 tab 的拓扑即可交给
-        // 前端；其它 tab 的 pane 列表继续在后台响应，不能让一个慢 pane 把
-        // Connect/Cmd-Shift-P 卡住数秒。
+        // 第一次 list-windows 会对每个还没有 pane 快照的 window 发
+        // list-panes。连接只需要活动 tab 的拓扑即可交给前端；其它 tab
+        // 的 pane 列表继续在后台响应，不能让一个慢 pane 把 Connect
+        // 卡住数秒。之后 layout 没变就不再查。
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             self.pump_events();
@@ -4943,17 +5042,28 @@ mod tests {
             "切 tab 不得再抓可见屏: {cmds:?}"
         );
         assert!(
-            cmds.iter()
-                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
-            "第一次看这个 tab 必须按行补历史: {cmds:?}"
+            !cmds.iter().any(|cmd| cmd.contains("-S -")),
+            "切 tab 当拍不得抓 1 万行历史: {cmds:?}"
         );
+        assert!(b.history_backfill_wanted.contains(&pane));
         assert!(b.initial_capture_done.contains(&pane));
         assert!(!b.background_capture_only.contains(&pane));
         assert!(!b.resyncs.contains_key(&pane));
+
+        b.history_backfill_hold = false;
+        b.flush_deferred_history_backfill();
+        let history = drain_tmux_cmds(&mut rx);
+        assert!(
+            history
+                .iter()
+                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
+            "控制通道空闲后才按行补历史: {history:?}"
+        );
         assert!(b.history_backfill_pending.contains(&pane));
 
         b.history_backfill_done.insert(pane);
         b.history_backfill_pending.remove(&pane);
+        b.history_backfill_wanted.remove(&pane);
         b.mark_tab_active(TabId(1));
         b.mark_tab_active(TabId(2));
         b.query_capture_tab(TabId(2));
@@ -5002,14 +5112,22 @@ mod tests {
             "initial_capture_done 的 pane 切 tab 不得 pause: {first:?}"
         );
         assert!(
-            first
+            !first.iter().any(|cmd| cmd.contains("-S -")),
+            "切 tab 当拍不得抓历史: {first:?}"
+        );
+        b.history_backfill_hold = false;
+        b.flush_deferred_history_backfill();
+        let history = drain_tmux_cmds(&mut rx);
+        assert!(
+            history
                 .iter()
                 .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
-            "第一次切入必须补历史行: {first:?}"
+            "空闲后必须补历史行: {history:?}"
         );
 
         b.history_backfill_done.insert(pane);
         b.history_backfill_pending.remove(&pane);
+        b.history_backfill_wanted.remove(&pane);
         b.query_capture_tab(TabId(2));
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
@@ -5049,6 +5167,25 @@ mod tests {
     }
 
     #[test]
+    fn empty_visible_capture_still_emits_snapshot() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(8);
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+        b.initial_capture_pending.insert(pane);
+        b.dispatch_response(1, Vec::new());
+        assert!(b.initial_capture_done.contains(&pane));
+        assert!(
+            b.events.iter().any(|event| matches!(
+                event,
+                StateChange::PaneSnapshot { pane: p, data } if *p == pane && data.is_empty()
+            )),
+            "空屏也要发 PaneSnapshot，否则 host 会一直藏着: {:?}",
+            b.events.back()
+        );
+    }
+
+    #[test]
     fn finish_initial_seed_queues_history_after_continue() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
@@ -5072,13 +5209,22 @@ mod tests {
             "seed 完成后必须 continue: {cmds:?}"
         );
         assert!(
-            cmds.iter()
+            !cmds.iter().any(|cmd| cmd.contains("-S -")),
+            "continue 当拍不得抓历史，否则首屏要等 1 万行: {cmds:?}"
+        );
+        assert!(b.history_backfill_wanted.contains(&pane));
+        b.history_backfill_hold = false;
+        b.flush_deferred_history_backfill();
+        let history = drain_tmux_cmds(&mut rx);
+        assert!(
+            history
+                .iter()
                 .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
-            "continue 之后才按行抓历史: {cmds:?}"
+            "空闲后才按行抓历史: {history:?}"
         );
         assert!(
-            !cmds.iter().any(|cmd| cmd.contains(":pause")),
-            "历史回填不得再 pause: {cmds:?}"
+            !history.iter().any(|cmd| cmd.contains(":pause")),
+            "历史回填不得再 pause: {history:?}"
         );
         assert!(b
             .events
@@ -5848,8 +5994,8 @@ mod tests {
 
         // 权威列表先确认两个 window（@0/@1），其中 @1 是 move-window 的目标。
         b.handle_list_windows_response(vec![
-            "@0,first,1,aaaa,80x24,0,0,1,0".into(),
-            "@1,second,0,bbbb,80x24,0,0,1,0".into(),
+            "@0,first,1,aaaa,80x24,0,0,1,0,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
         ]);
         b.panes.push(crate::core::model::state::PaneInfo {
             id: crate::core::types::PaneId(7),
@@ -5956,8 +6102,8 @@ mod tests {
     fn list_windows_response_reorders_tabs_by_tmux_index() {
         let mut b = TmuxRuntime::new(None);
         b.handle_list_windows_response(vec![
-            "@0,first,1,aaaa,80x24,0,0,1,0".into(),
-            "@1,second,0,bbbb,80x24,0,0,1,0".into(),
+            "@0,first,1,aaaa,80x24,0,0,1,0,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
         ]);
         assert_eq!(
             b.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
@@ -5973,6 +6119,351 @@ mod tests {
             b.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
             vec![TabId(1), TabId(0)],
             "Tab 顺序必须跟随 list-windows 返回的 tmux index 顺序"
+        );
+    }
+
+    #[test]
+    fn list_windows_skips_unchanged_windows_when_a_tab_is_added() {
+        let mut b = TmuxRuntime::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+
+        b.handle_list_windows_response(vec![
+            "@0,first,1,aaaa,80x24,0,0,1,0,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
+        ]);
+        let first = drain_tmux_cmds(&mut rx);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|cmd| cmd.contains("list-panes"))
+                .count(),
+            2,
+            "第一次必须查每个 window: {first:?}"
+        );
+        b.handle_list_panes_response(TabId(0), vec!["0: [80x24] %0 (active)".into()]);
+        b.handle_list_panes_response(TabId(1), vec!["1: [80x24] %1 (active)".into()]);
+        let _ = drain_tmux_cmds(&mut rx);
+        b.pending_queries.clear();
+
+        b.handle_list_windows_response(vec![
+            "@0,first,0,aaaa,80x24,0,0,1,0,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
+            "@2,third,1,cccc,80x24,0,0,1,0,2".into(),
+        ]);
+        let cmds = drain_tmux_cmds(&mut rx);
+        let list_panes: Vec<_> = cmds
+            .iter()
+            .filter(|cmd| cmd.contains("list-panes"))
+            .collect();
+        assert_eq!(
+            list_panes.len(),
+            1,
+            "旧 window layout 没变就不要再查: {cmds:?}"
+        );
+        assert!(list_panes[0].contains("@2"), "只能查新 window: {cmds:?}");
+    }
+
+    #[test]
+    fn list_windows_skips_remaining_windows_after_close() {
+        let mut b = TmuxRuntime::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+
+        b.handle_list_windows_response(vec![
+            "@0,first,1,aaaa,80x24,0,0,1,0,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
+        ]);
+        b.handle_list_panes_response(TabId(0), vec!["0: [80x24] %0 (active)".into()]);
+        b.handle_list_panes_response(TabId(1), vec!["1: [80x24] %1 (active)".into()]);
+        let _ = drain_tmux_cmds(&mut rx);
+        b.pending_queries.clear();
+
+        b.handle_list_windows_response(vec!["@0,first,1,aaaa,80x24,0,0,1,0,0".into()]);
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("list-panes")),
+            "关掉一张 tab 不得把剩下的 window 再 list-panes 一遍: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn list_windows_requeries_when_layout_changes() {
+        let mut b = TmuxRuntime::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+
+        b.handle_list_windows_response(vec!["@0,first,1,aaaa,80x24,0,0,1,0,0".into()]);
+        b.handle_list_panes_response(TabId(0), vec!["0: [80x24] %0 (active)".into()]);
+        let _ = drain_tmux_cmds(&mut rx);
+        b.pending_queries.clear();
+
+        b.handle_list_windows_response(vec![
+            "@0,first,1,dddd,80x24,0,0{40x24,0,0,0,39x24,41,0,1},2,0,0".into(),
+        ]);
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("list-panes -t @0")),
+            "layout 变了必须再查 pane: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn post_attach_new_pane_uses_visible_capture_without_pause() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        b.background_index_capture_enabled = true;
+        b.tabs = vec![TabInfo {
+            id: TabId(3),
+            name: "new".into(),
+            active: true,
+        }];
+        b.handle_list_panes_response(TabId(3), vec!["0: [80x24] %9 (active)".into()]);
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("capture-pane")),
+            "新建 pane 仍要抓一帧可见屏，否则 prompt 可能还没到: {cmds:?}"
+        );
+        assert!(
+            !cmds
+                .iter()
+                .any(|cmd| cmd.contains("pause") || cmd.contains("-S ")),
+            "attach 完成后新建 pane 不得 pause，也不得抓 1 万行历史: {cmds:?}"
+        );
+        assert!(b.history_backfill_done.contains(&PaneId(9)));
+        assert!(!b.initial_capture_done.contains(&PaneId(9)));
+        assert!(b.initial_capture_pending.contains(&PaneId(9)));
+
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane: PaneId(9) });
+        b.dispatch_response(1, vec!["prompt$".into()]);
+        assert!(b.initial_capture_done.contains(&PaneId(9)));
+        assert!(
+            b.events.iter().any(|event| matches!(
+                event,
+                StateChange::PaneSnapshot { pane, data }
+                    if *pane == PaneId(9) && data.windows(7).any(|w| w == b"prompt$")
+            )),
+            "新建 pane 的可见屏必须变成 PaneSnapshot，否则 host 会一直藏着: {:?}",
+            b.events.back()
+        );
+        assert!(
+            !b.events.iter().any(
+                |event| matches!(event, StateChange::PaneHistory { pane, .. } if *pane == PaneId(9))
+            ),
+            "新建 pane 没有 attach 前历史，不得再发 PaneHistory"
+        );
+    }
+
+    #[test]
+    fn attach_active_tab_still_pause_seeds() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.tabs = vec![TabInfo {
+            id: TabId(1),
+            name: "active".into(),
+            active: true,
+        }];
+        b.handle_list_panes_response(TabId(1), vec!["0: [80x24] %0 (active)".into()]);
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("pause")),
+            "attach 首屏仍必须 pause-seed: {cmds:?}"
+        );
+        assert!(b.initial_capture_pending.contains(&PaneId(0)));
+    }
+
+    /// 建 tab / 关 tab / 第一次点从未打开的 tab / 再切入已打开的 tab
+    /// 共用控制通道。一条路径的优化不得把另一条的 seed/历史标干掉。
+    #[test]
+    fn tab_create_close_must_not_break_first_open_or_cached_switch() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        b.background_index_capture_enabled = true;
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(0),
+                name: "first".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(1),
+                name: "second".into(),
+                active: false,
+            },
+        ];
+        b.panes = vec![
+            PaneInfo {
+                id: PaneId(0),
+                tab: TabId(0),
+                active: true,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: PaneId(1),
+                tab: TabId(1),
+                active: true,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            },
+        ];
+        b.window_layouts.insert(TabId(0), "aaaa,80x24,0,0".into());
+        b.window_layouts.insert(TabId(1), "bbbb,80x24,0,0".into());
+        b.expected_panes_per_window.insert(TabId(0), 1);
+        b.expected_panes_per_window.insert(TabId(1), 1);
+        b.initial_capture_done.insert(PaneId(0));
+        b.history_backfill_done.insert(PaneId(0));
+        b.initial_capture_done.insert(PaneId(1));
+        b.background_capture_only.insert(PaneId(1));
+
+        b.handle_list_windows_response(vec![
+            "@0,first,0,aaaa,80x24,0,0,1,0,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
+            "@2,third,1,cccc,80x24,0,0,1,0,2".into(),
+        ]);
+        let created = drain_tmux_cmds(&mut rx);
+        let list_panes: Vec<_> = created
+            .iter()
+            .filter(|cmd| cmd.contains("list-panes"))
+            .collect();
+        assert_eq!(
+            list_panes.len(),
+            1,
+            "新建 tab 不得把旧 window 再 list-panes: {created:?}"
+        );
+        assert!(list_panes[0].contains("@2"), "{created:?}");
+        assert!(
+            !b.history_backfill_done.contains(&PaneId(1)),
+            "新建 tab 不得把其它 tab 的历史标成已完成"
+        );
+        assert!(b.initial_capture_done.contains(&PaneId(0)));
+        assert!(b.initial_capture_done.contains(&PaneId(1)));
+
+        b.pending_queries.clear();
+        b.handle_list_panes_response(TabId(2), vec!["0: [80x24] %9 (active)".into()]);
+        let seed = drain_tmux_cmds(&mut rx);
+        assert!(
+            seed.iter().any(|cmd| cmd.contains("capture-pane")),
+            "新 pane 仍要抓可见屏: {seed:?}"
+        );
+        assert!(
+            !seed
+                .iter()
+                .any(|cmd| cmd.contains("pause") || cmd.contains("-S ")),
+            "新 pane 不得 pause、不得抓 1 万行: {seed:?}"
+        );
+        assert!(b.history_backfill_done.contains(&PaneId(9)));
+        assert!(
+            !b.history_backfill_done.contains(&PaneId(1)),
+            "给新 pane 标 history_backfill_done 不得连同旧 pane 一起标"
+        );
+
+        b.pending_queries.clear();
+        b.pending_by_number.clear();
+        b.mark_tab_active(TabId(1));
+        b.query_capture_tab(TabId(1));
+        let first_open = drain_tmux_cmds(&mut rx);
+        assert!(
+            !first_open.iter().any(|cmd| cmd.contains("pause")),
+            "第一次点从未打开的 tab 仍不得 pause: {first_open:?}"
+        );
+        assert!(
+            !first_open.iter().any(|cmd| cmd.contains("-S -")),
+            "切 tab 当拍不得抓历史: {first_open:?}"
+        );
+        b.history_backfill_hold = false;
+        b.flush_deferred_history_backfill();
+        let history = drain_tmux_cmds(&mut rx);
+        assert!(
+            history
+                .iter()
+                .any(|cmd| cmd.contains("-S -") && cmd.contains("%1")),
+            "新建 tab 之后，从未打开过的 tab 仍必须能补历史: {history:?}"
+        );
+
+        b.history_backfill_done.insert(PaneId(1));
+        b.history_backfill_pending.remove(&PaneId(1));
+        b.history_backfill_wanted.remove(&PaneId(1));
+        b.mark_tab_active(TabId(0));
+        b.query_capture_tab(TabId(0));
+        let cached = drain_tmux_cmds(&mut rx);
+        assert!(cached.is_empty(), "已打开的 tab 再切入不得再抓: {cached:?}");
+
+        b.pending_queries.clear();
+        b.handle_list_windows_response(vec![
+            "@0,first,1,aaaa,80x24,0,0,1,0,0".into(),
+            "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
+        ]);
+        let closed = drain_tmux_cmds(&mut rx);
+        assert!(
+            !closed.iter().any(|cmd| cmd.contains("list-panes")),
+            "关掉一张 tab 不得把剩下的 window 再查一遍: {closed:?}"
+        );
+        b.query_capture_tab(TabId(0));
+        let after_close = drain_tmux_cmds(&mut rx);
+        assert!(
+            after_close.is_empty(),
+            "关 tab 之后已打开的 tab 仍不得再抓: {after_close:?}"
+        );
+    }
+
+    #[test]
+    fn split_after_attach_does_not_pause_already_seeded_pane() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        b.background_index_capture_enabled = true;
+        b.handle_list_windows_response(vec!["@0,first,1,aaaa,80x24,0,0,1,0,0".into()]);
+        b.handle_list_panes_response(TabId(0), vec!["0: [80x24] %0 (active)".into()]);
+        let _ = drain_tmux_cmds(&mut rx);
+        b.initial_capture_done.insert(PaneId(0));
+        b.history_backfill_done.insert(PaneId(0));
+        b.pending_queries.clear();
+
+        b.handle_list_windows_response(vec![
+            "@0,first,1,dddd,80x24,0,0{40x24,0,0,0,39x24,41,0,1},2,0,0".into(),
+        ]);
+        let requery = drain_tmux_cmds(&mut rx);
+        assert!(
+            requery.iter().any(|cmd| cmd.contains("list-panes -t @0")),
+            "split 后 layout 变了必须再查 pane: {requery:?}"
+        );
+        assert!(
+            !requery.iter().any(|cmd| cmd.contains("pause")),
+            "list-windows 自己不得 pause: {requery:?}"
+        );
+
+        b.handle_list_panes_response(
+            TabId(0),
+            vec!["0: [40x24] %0 (active)".into(), "1: [39x24] %1".into()],
+        );
+        let seed = drain_tmux_cmds(&mut rx);
+        assert!(
+            !seed.iter().any(|cmd| cmd.contains("pause")),
+            "split 后已 seed 的 pane 不得再 pause: {seed:?}"
+        );
+        assert!(
+            seed.iter()
+                .any(|cmd| cmd.contains("capture-pane") && cmd.contains("%1")),
+            "新 split 出来的 pane 仍要抓可见屏: {seed:?}"
+        );
+        assert!(
+            !seed
+                .iter()
+                .any(|cmd| cmd.contains("capture-pane") && cmd.contains("%0")),
+            "已经 seed 过的 pane 不得再 capture: {seed:?}"
         );
     }
 
