@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! tmux 测试支持：管理独立 tmux socket/session，硬超时，自动清理。
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// 唯一的 tmux socket 名（绝不复用宿主默认 socket）。
@@ -49,10 +49,31 @@ pub fn create_session(socket: &str, name: &str, cols: u32, rows: u32) {
 }
 
 /// kill tmux server（清理独立 socket 上的所有 session）。
+///
+/// `output()` 无超时：残留 control client 会让 `kill-server` 一直等，
+/// CI job 就被矩阵格拖到 45 分钟取消。spawn + try_wait 有界回收。
 pub fn kill_server(socket: &str) {
-    let _ = Command::new("tmux")
+    let Ok(mut child) = Command::new("tmux")
         .args(["-L", socket, "kill-server"])
-        .output();
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 /// 在指定 session 的 pane 执行 send-keys。

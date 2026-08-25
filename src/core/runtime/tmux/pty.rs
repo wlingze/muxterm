@@ -25,13 +25,38 @@ pub struct PtyChild {
 }
 
 impl PtyChild {
+    /// 杀 control client 并在时限内回收。禁止 `child.wait()`：portable-pty
+    /// 在 tmux -CC 未随 SIGTERM 退出时会无限堵死 tokio worker，进而让
+    /// PersistDetach 之后的重新 attach 永远等不到空闲运行时。
     pub fn kill_and_wait(&mut self) {
         if self.child.try_wait().ok().flatten().is_some() {
             return;
         }
-        if self.child.kill().is_ok() {
-            let _ = self.child.wait();
+        let pid = self.child.process_id();
+        let _ = self.child.kill();
+        if wait_exited(&mut *self.child, Duration::from_millis(400)) {
+            return;
         }
+        if let Some(pid) = pid {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+        let _ = wait_exited(&mut *self.child, Duration::from_millis(200));
+    }
+}
+
+fn wait_exited(child: &mut (dyn portable_pty::Child + Send), budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        if child.try_wait().ok().flatten().is_some() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -288,6 +313,18 @@ mod tests {
     fn spawn_pty_missing_binary_errors() {
         let err = spawn_pty("/nonexistent/binary/xyz", &[], 10, 5);
         assert!(err.is_err(), "不存在的二进制应返回 Err");
+    }
+
+    #[test]
+    fn kill_and_wait_returns_before_child_natural_exit() {
+        let mut child = spawn_pty("sleep", &["30"], 10, 5).expect("spawn sleep");
+        let start = std::time::Instant::now();
+        child.kill_and_wait();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "kill_and_wait 不得阻塞到 sleep 自然结束，实际 {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
