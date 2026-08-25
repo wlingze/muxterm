@@ -519,6 +519,13 @@ public enum ClientGridHysteresis {
     }
 }
 
+/// 已打开的 tab 再次切入只挂缓存树，不拆 Auto Layout，也不 refresh-client -C。
+public enum TabSwitchPaintPolicy {
+    public static func needsLayoutReload(cacheHit: Bool) -> Bool {
+        !cacheHit
+    }
+}
+
 /// 快捷键打开的浮层可以占有光标；其它时候只要应用在前台，光标在 terminal。
 public enum TerminalFocusPolicy {
     public static func shouldFocusTerminal(appActive: Bool, overlayIsKey: Bool) -> Bool {

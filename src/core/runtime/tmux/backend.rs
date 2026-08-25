@@ -1424,6 +1424,24 @@ impl TmuxRuntime {
                 // 几何；list-panes 返回后 rebuild_layout 会用这棵最新树建模。
                 // 旧实现只发查询、不更新 window_layouts，导致随后仍用旧树或
                 // fallback 平铺树渲染，尤其在 attach 后再次 split 时会暴露。
+                let zoomed = window_is_zoomed(
+                    flags.as_deref(),
+                    &layout.raw,
+                    visible_layout.as_ref().map(|v| v.raw.as_str()),
+                );
+                let layout_unchanged = self.window_layouts.get(&tab) == Some(&layout.raw);
+                let zoom_unchanged = self.window_zoomed.contains(&tab) == zoomed;
+                let has_panes = self.panes.iter().any(|p| p.tab == tab);
+                if layout_unchanged && zoom_unchanged && has_panes {
+                    // refresh-client -C / 切 tab 会给每个 window 再推一次
+                    // 相同 layout。list-panes 是 SSH 往返，N 个 tab 就会卡一下。
+                    tracing::trace!(
+                        target: "muxterm::tmux",
+                        window = window.0,
+                        "%layout-change 布局未变，跳过 list-panes"
+                    );
+                    return;
+                }
                 tracing::debug!(
                     target: "muxterm::tmux",
                     window = window.0,
@@ -1432,11 +1450,7 @@ impl TmuxRuntime {
                     "%layout-change 已保存并重新查询 pane"
                 );
                 self.window_layouts.insert(tab, layout.raw.clone());
-                if window_is_zoomed(
-                    flags.as_deref(),
-                    &layout.raw,
-                    visible_layout.as_ref().map(|v| v.raw.as_str()),
-                ) {
+                if zoomed {
                     self.window_zoomed.insert(tab);
                 } else {
                     self.window_zoomed.remove(&tab);
@@ -6018,6 +6032,50 @@ mod tests {
         assert!(!b
             .window_layouts
             .contains_key(&crate::core::types::TabId(20)));
+    }
+
+    /// 相同 layout 的 %layout-change（切 tab / 重复 -C）不得再 list-panes。
+    #[test]
+    fn identical_layout_change_does_not_requery_panes() {
+        use crate::core::runtime::tmux::protocol::Message;
+
+        let mut b = TmuxRuntime::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.tabs.push(crate::core::model::state::TabInfo {
+            id: crate::core::types::TabId(5),
+            name: "code".into(),
+            active: true,
+        });
+        let raw = "abcd,80x24,0,0,1";
+        b.handle_message(Message::LayoutChange {
+            window: crate::core::types::TabId(5),
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(raw).unwrap(),
+            visible_layout: None,
+            flags: Some("*".into()),
+        });
+        let first = drain_tmux_cmds(&mut rx);
+        assert!(
+            first.iter().any(|cmd| cmd.contains("list-panes -t @5")),
+            "首次 layout-change 应查询 pane: {first:?}"
+        );
+        b.handle_list_panes_response(
+            crate::core::types::TabId(5),
+            vec!["0: [80x24] %1 (active)".into()],
+        );
+        let _ = drain_tmux_cmds(&mut rx);
+
+        b.handle_message(Message::LayoutChange {
+            window: crate::core::types::TabId(5),
+            layout: crate::core::runtime::tmux::protocol::LayoutChange::parse(raw).unwrap(),
+            visible_layout: None,
+            flags: Some("-".into()),
+        });
+        let second = drain_tmux_cmds(&mut rx);
+        assert!(
+            !second.iter().any(|cmd| cmd.contains("list-panes")),
+            "相同 layout 不得再 list-panes: {second:?}"
+        );
     }
 
     /// Task::SwitchTab 应乐观更新 active tab：即使 %session-window-changed

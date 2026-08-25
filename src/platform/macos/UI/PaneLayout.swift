@@ -267,10 +267,13 @@ final class PaneLayoutView: NSView {
                 ?? lastPanes.first?.id
                 ?? 0
         )
+        // 先清空 pane 集合，detach 触发的 layout() 才不会再 schedule
+        // geometry sync / refresh-client -C。
+        currentPaneIds.removeAll()
+        pendingGeometryPaneIds = nil
         detachRoot()
         currentLayout = nil
         hostByPane.removeAll()
-        currentPaneIds.removeAll()
         currentTabId = nil
     }
 
@@ -306,6 +309,10 @@ final class PaneLayoutView: NSView {
         currentLayout = cached.layout
         hostByPane = cached.hostByPane
         currentPaneIds = cached.paneIds
+        let token = (Int(bounds.width.rounded()), Int(bounds.height.rounded()))
+        if token.0 > 0, token.1 > 0 {
+            lastLayoutBounds = token
+        }
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
         }
