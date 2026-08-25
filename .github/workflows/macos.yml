@@ -55,6 +55,12 @@ jobs:
           cat "$RUNNER_TEMP/muxterm-sshd.env" >> "$GITHUB_ENV"
         timeout-minutes: 5
 
+      - name: Verify loopback sshd environment
+        run: |
+          test -n "${MUXTERM_TEST_SSH_PORT:-}"
+          test -n "${MUXTERM_TEST_SSH_KEY:-}"
+          test -f "$MUXTERM_TEST_SSH_KEY"
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
