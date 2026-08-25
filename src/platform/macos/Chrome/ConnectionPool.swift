@@ -11,19 +11,23 @@ public struct ConnectionKey: Hashable, Sendable {
     public let session: String
     public let runtime: String   // "tmux" / "shell"
     public let path: String
+    /// Target-side tmux socket; nil means the default server.
+    public let socket: String?
 
     public init(
         transport: String,
         alias: String?,
         session: String,
         runtime: String,
-        path: String
+        path: String,
+        socket: String? = nil
     ) {
         self.transport = transport
         self.alias = alias
         self.session = session
         self.runtime = runtime
         self.path = path
+        self.socket = socket
     }
 }
 

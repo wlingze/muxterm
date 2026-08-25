@@ -20,6 +20,10 @@ pub struct ExistingEntry {
     pub runtime: TargetRuntime,
     pub transport: TargetTransport,
     pub tmux_session: Option<String>,
+    /// tmux target-side socket (`None` means the target's default server).
+    /// Local test discovery carries the isolated `-L` name here; SSH carries
+    /// the remote socket so an Existing row reattaches to the same server.
+    pub tmux_socket: Option<String>,
     /// Herdr named session 名（默认 socket 为 "default"）。
     pub herdr_session: Option<String>,
     pub herdr_workspace_id: Option<String>,
@@ -38,16 +42,21 @@ impl ExistingEntry {
 pub fn discover_local_tmux(socket: Option<&str>) -> Vec<ExistingEntry> {
     list_local_tmux_sessions(socket)
         .into_iter()
-        .map(|s| tmux_entry(s, TargetTransport::Local))
+        .map(|s| tmux_entry(s, TargetTransport::Local, socket.map(str::to_owned)))
         .collect()
 }
 
-fn tmux_entry(s: TmuxSessionInfo, transport: TargetTransport) -> ExistingEntry {
+fn tmux_entry(
+    s: TmuxSessionInfo,
+    transport: TargetTransport,
+    tmux_socket: Option<String>,
+) -> ExistingEntry {
     ExistingEntry {
         title: s.name.clone(),
         runtime: TargetRuntime::Tmux,
         transport,
         tmux_session: Some(s.name),
+        tmux_socket,
         herdr_session: None,
         herdr_workspace_id: None,
         herdr_socket: None,
@@ -117,6 +126,7 @@ fn scan_sockets(sockets: Vec<PathBuf>, default: Option<PathBuf>) -> Vec<Existing
                 runtime: TargetRuntime::Herdr,
                 transport: TargetTransport::Local,
                 tmux_session: None,
+                tmux_socket: None,
                 herdr_session: Some(session_name.clone()),
                 herdr_workspace_id: Some(ws.workspace_id),
                 herdr_socket: Some(socket.to_string_lossy().to_string()),
@@ -142,6 +152,7 @@ pub fn discover_ssh_tmux(
                     TargetTransport::Ssh {
                         name: alias.to_string(),
                     },
+                    remote_socket.map(str::to_owned),
                 )
             })
             .collect(),
@@ -197,6 +208,7 @@ pub fn discover_ssh_herdr(
                     name: alias.to_string(),
                 },
                 tmux_session: None,
+                tmux_socket: None,
                 herdr_session: Some(session_name.clone()),
                 herdr_workspace_id: Some(ws_id.to_string()),
                 herdr_socket: Some(socket_path.clone()),

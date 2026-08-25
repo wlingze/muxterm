@@ -9,6 +9,14 @@ final class PaletteSessionListE2ETests: XCTestCase {
         let fx = OnePaneCat(label: "pal-sess")
         let extra = "extra-\(fx.session)"
         Tmux.ok(socket: fx.socket, args: ["new-session", "-d", "-s", extra, "/bin/cat"])
+        let directSessions = try CoreBridge.discoverTmuxSessions(
+            backendType: "local",
+            socket: fx.socket
+        )
+        XCTAssertTrue(
+            directSessions.contains(where: { $0.name == extra }),
+            "core discovery 必须先能看到隔离 local session: \(directSessions.map(\.name))"
+        )
 
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
         defer { app.testShutdown() }
@@ -32,7 +40,16 @@ final class PaletteSessionListE2ETests: XCTestCase {
             found,
             "隔离 socket 上的 session 必须出现在列表里，不能停在 New session。titles=\(app.testPaletteTitles())"
         )
+        XCTAssertNil(app.testLastPaletteError(), "local session discovery 不应静默失败")
         XCTAssertTrue(app.testPaletteIsPresented(), "刷新完成后面板仍应打开")
+
+        app.testSelectPaletteTitle(extra)
+        let selected = AppE2E.wait(timeout: 12) {
+            AppE2E.pump(50)
+            return app.testLastPaletteSelection() != nil || app.testLastPaletteError() != nil
+        }
+        XCTAssertTrue(selected, "选择 Existing session 必须报告成功或失败")
+        XCTAssertNil(app.testLastPaletteError(), "选择隔离 session 不应失败")
     }
 
     func testSshSessionListRefreshesWhenLoopbackAvailable() throws {
@@ -78,7 +95,16 @@ final class PaletteSessionListE2ETests: XCTestCase {
             found,
             "SSH 选 host 后必须刷出远端 session 名 \(probe.session)。titles=\(app.testPaletteTitles())"
         )
+        XCTAssertNil(app.testLastPaletteError(), "SSH session discovery 不应静默失败")
         XCTAssertTrue(app.testPaletteIsPresented(), "列表刷新后不得因异步失败把面板关掉")
+
+        app.testSelectPaletteTitle(probe.session)
+        let selected = AppE2E.wait(timeout: 12) {
+            AppE2E.pump(50)
+            return app.testLastPaletteSelection() != nil || app.testLastPaletteError() != nil
+        }
+        XCTAssertTrue(selected, "选择远端 Existing session 必须报告成功或失败")
+        XCTAssertNil(app.testLastPaletteError(), "选择隔离远端 session 不应失败")
     }
 }
 

@@ -7,6 +7,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::time::Duration;
 
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
@@ -422,7 +423,12 @@ pub extern "C" fn muxterm_discover_workspaces_json(
     .unwrap_or_else(|_| json_error("tmux session discovery panic"))
 }
 
-/// deprecated 别名：`muxterm_discover_tmux_sessions_json`（W7 改名）。
+/// 列出指定 local/SSH tmux server 的 session。
+///
+/// This FFI boundary deliberately keeps the caller's socket and SSH config
+/// in the request.  The macOS palette uses this function for an Existing
+/// target; dropping the socket here would silently query the default server
+/// and leave the palette showing only `New session`.
 #[no_mangle]
 pub extern "C" fn muxterm_discover_tmux_sessions_json(
     transport_type: *const c_char,
@@ -431,7 +437,42 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
     config_path: *const c_char,
     timeout_ms: u32,
 ) -> *mut c_char {
-    muxterm_discover_workspaces_json(transport_type, target, socket, config_path, timeout_ms)
+    catch_unwind(AssertUnwindSafe(|| {
+        let transport = cstr_opt(transport_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let target = cstr_opt(target).unwrap_or_default();
+        let socket = cstr_opt(socket);
+        let config_path = cstr_opt(config_path);
+        let timeout = Duration::from_millis(u64::from(timeout_ms.max(1)));
+        let result = match transport.as_str() {
+            "local" => Ok(crate::core::discovery::list_local_tmux_sessions(
+                socket.as_deref(),
+            )),
+            "ssh" => crate::core::discovery::list_ssh_tmux_sessions(
+                &target,
+                config_path.as_deref(),
+                socket.as_deref(),
+                timeout,
+            ),
+            other => Err(anyhow::anyhow!(
+                "unknown tmux discovery transport '{other}'"
+            )),
+        };
+        match result {
+            Ok(sessions) => json_string(serde_json::json!({
+                "ok": true,
+                "sessions": sessions.iter().map(|session| serde_json::json!({
+                    "name": session.name,
+                    "windows": session.windows,
+                    "attached": session.attached,
+                    "created": session.created,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("tmux session discovery panic"))
 }
 
 /// C9：SessionCandidate → §6.2 JSON（target = connect name；id 含 connect name）。

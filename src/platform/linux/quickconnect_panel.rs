@@ -30,7 +30,7 @@ use crate::platform::linux::panel_model::{
 use crate::platform::linux::quick_pick;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetTransport,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
@@ -764,15 +764,29 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                 row_widget.set_child(Some(&label));
                             }
                             PanelItem::Existing(entry) => {
+                                let identity = entry
+                                    .herdr_workspace_id
+                                    .as_deref()
+                                    .or(entry.tmux_session.as_deref())
+                                    .unwrap_or(&entry.title);
+                                // workspace ids are only unique inside a Herdr
+                                // named session.  Keep the session in the
+                                // widget identity so two sessions exposing
+                                // `w1` cannot make the first row win attach.
+                                let identity = if entry.runtime == TargetRuntime::Herdr {
+                                    format!(
+                                        "{}-{}",
+                                        identity,
+                                        entry.herdr_session.as_deref().unwrap_or("default")
+                                    )
+                                } else {
+                                    identity.to_string()
+                                };
                                 row_widget.set_widget_name(&format!(
                                     "muxterm-existing-row-{}-{}-{}",
                                     entry.runtime.as_str(),
                                     existing_connect_name(entry),
-                                    entry
-                                        .herdr_workspace_id
-                                        .as_deref()
-                                        .or(entry.tmux_session.as_deref())
-                                        .unwrap_or(&entry.title)
+                                    identity,
                                 ));
                                 let boxed = existing_row(entry);
                                 row_widget.set_child(Some(&boxed));
@@ -1323,14 +1337,23 @@ fn existing_entry_to_config(entry: &ExistingEntry) -> TargetConfig {
         entry.title.clone(),
         entry.runtime,
         entry.transport.clone(),
-        entry
-            .herdr_workspace_id
-            .clone()
-            .or_else(|| entry.tmux_session.clone())
-            .unwrap_or_default(),
+        if entry.runtime == TargetRuntime::Herdr {
+            String::new()
+        } else {
+            "~".into()
+        },
     );
-    cfg.socket = entry.herdr_socket.clone();
-    cfg.session = entry.herdr_session.clone();
+    cfg.socket = match entry.runtime {
+        TargetRuntime::Tmux => entry.tmux_socket.clone(),
+        TargetRuntime::Herdr => entry.herdr_socket.clone(),
+        TargetRuntime::Shell => None,
+    };
+    cfg.session = match entry.runtime {
+        TargetRuntime::Tmux => entry.tmux_session.clone(),
+        TargetRuntime::Herdr => entry.herdr_session.clone(),
+        TargetRuntime::Shell => None,
+    };
+    cfg.workspace_id = entry.herdr_workspace_id.clone();
     cfg
 }
 
@@ -1430,6 +1453,7 @@ mod tests {
             runtime: TargetRuntime::Tmux,
             transport: TargetTransport::Local,
             tmux_session: Some("mux-dup".into()),
+            tmux_socket: None,
             herdr_session: None,
             herdr_workspace_id: None,
             herdr_socket: None,
@@ -1441,6 +1465,7 @@ mod tests {
                 name: "self".into(),
             },
             tmux_session: Some("mux-dup".into()),
+            tmux_socket: None,
             herdr_session: None,
             herdr_workspace_id: None,
             herdr_socket: None,
@@ -1491,9 +1516,10 @@ mod tests {
         let start = src
             .find("PanelItem::Existing(entry)")
             .expect("Existing 行渲染应存在");
-        let chunk = &src[start..start + 800];
+        let chunk = &src[start..];
         assert!(
-            chunk.contains("muxterm-existing-row-{}-{}-{}"),
+            chunk[..chunk.find("PanelItem::Host").unwrap_or(chunk.len())]
+                .contains("muxterm-existing-row-{}-{}-{}"),
             "Existing 行 widget_name 必须是 runtime-connect-id: {chunk}"
         );
     }
@@ -1506,6 +1532,38 @@ mod tests {
 
         let empty = existing_items(ExistingNav::Home, &[], &[], false, |_| vec![]);
         assert!(matches!(empty[1], PanelItem::Empty { .. }));
+    }
+
+    #[test]
+    fn existing_attach_config_preserves_target_identity() {
+        let tmux = existing_entry_to_config(&ExistingEntry {
+            title: "matrix".into(),
+            runtime: TargetRuntime::Tmux,
+            transport: TargetTransport::Local,
+            tmux_session: Some("matrix".into()),
+            tmux_socket: Some("muxterm-test-existing".into()),
+            herdr_session: None,
+            herdr_workspace_id: None,
+            herdr_socket: None,
+        });
+        assert_eq!(tmux.session.as_deref(), Some("matrix"));
+        assert_eq!(tmux.socket.as_deref(), Some("muxterm-test-existing"));
+        assert_eq!(tmux.path, "~");
+
+        let herdr = existing_entry_to_config(&ExistingEntry {
+            title: "worktree".into(),
+            runtime: TargetRuntime::Herdr,
+            transport: TargetTransport::Local,
+            tmux_session: None,
+            tmux_socket: None,
+            herdr_session: Some("named".into()),
+            herdr_workspace_id: Some("w223".into()),
+            herdr_socket: Some("/tmp/herdr.sock".into()),
+        });
+        assert_eq!(herdr.workspace_id.as_deref(), Some("w223"));
+        assert_eq!(herdr.session.as_deref(), Some("named"));
+        assert_eq!(herdr.socket.as_deref(), Some("/tmp/herdr.sock"));
+        assert_eq!(herdr.path, "");
     }
 
     /// W20：filter 对 Folder/Existing/Back 生效，Back 始终保留。
@@ -1522,6 +1580,7 @@ mod tests {
                 runtime: TargetRuntime::Herdr,
                 transport: TargetTransport::Local,
                 tmux_session: None,
+                tmux_socket: None,
                 herdr_session: Some("default".into()),
                 herdr_workspace_id: Some("w1".into()),
                 herdr_socket: None,

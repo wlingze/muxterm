@@ -748,7 +748,6 @@ impl AppWindow {
                         drain_pending_reconnects(&st);
                         maybe_schedule_reconnect(&st);
                         let mut s = st.borrow_mut();
-                        drain_surface_input(&mut s);
                         // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
                         // 喂好，这里把注意力信号应用到引擎，并把 Surface 事件
                         // 按 (WorkspaceId, PaneId) 送进对应 background pixel cache。
@@ -780,6 +779,9 @@ impl AppWindow {
                         drain_attention_notifications(&mut s);
                         sync_pane_outputs(&mut s);
                         sync_window_size(&mut s);
+                        // 输入必须在本轮 topology/snapshot/geometry 收编之后
+                        // 写入，避免 attach 新 pane 尚未完成首帧时丢掉 send-keys。
+                        drain_surface_input(&mut s);
                         maybe_refresh_status(&mut s, structural);
                         refresh_connection_summary(&mut s);
                         update_command_marks(&s);
@@ -1157,11 +1159,12 @@ impl AppWindow {
         maybe_schedule_reconnect(&self._state);
         let pending_close = {
             let mut s = self._state.borrow_mut();
-            drain_surface_input(&mut s);
             let events = s.active_workspace_mut().refresh();
             dispatch_event_batch(&mut s, events);
             drain_attention_notifications(&mut s);
             sync_pane_outputs(&mut s);
+            sync_window_size(&mut s);
+            drain_surface_input(&mut s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&mut s);
             update_command_marks(&s);
@@ -2817,34 +2820,50 @@ fn sync_chrome_visibility(s: &UiState) {
 /// dropped with a diagnostic instead of being redirected to the active pane.
 fn drain_surface_input(s: &mut UiState) {
     let pending = take_surface_input(&s.surface_input_queue);
-    for input in pending {
-        s.last_raw_input = input.data.clone();
-        let Some(workspace) = s.pool.get_mut(&input.workspace) else {
+    let mut pending = pending.into_iter().peekable();
+    while let Some(first) = pending.next() {
+        // GTK/VTE emits one commit for each typed character.  Keep adjacent
+        // commits for the same owner together so a newly-created tmux pane
+        // receives one ordered write instead of a burst of independent
+        // control-mode commands that can race pane startup.
+        let workspace_id = first.workspace.clone();
+        let pane_id = first.pane;
+        let mut data = first.data;
+        while let Some(next) = pending.peek() {
+            if next.workspace != workspace_id || next.pane != pane_id {
+                break;
+            }
+            let next = pending.next().expect("peeked SurfaceInput");
+            data.extend_from_slice(&next.data);
+        }
+        s.last_raw_input = data.clone();
+        let Some(workspace) = s.pool.get_mut(&workspace_id) else {
             tracing::debug!(
                 target = "muxterm::surface",
-                workspace = %input.workspace,
-                pane = %input.pane,
+                workspace = %workspace_id,
+                pane = %pane_id,
                 "drop input for evicted workspace"
             );
             continue;
         };
-        if workspace.state().pane(&input.pane).is_none() {
+        if workspace.state().pane(&pane_id).is_none() {
             tracing::debug!(
                 target = "muxterm::surface",
-                workspace = %input.workspace,
-                pane = %input.pane,
+                workspace = %workspace_id,
+                pane = %pane_id,
                 "drop input for closed pane"
             );
             continue;
         }
-        if let Err(error) = workspace.execute(Task::WriteRaw {
-            target: input.pane,
-            data: input.data,
-        }) {
+        let result = workspace.execute(Task::WriteRaw {
+            target: pane_id,
+            data,
+        });
+        if let Err(error) = result {
             tracing::warn!(
                 target = "muxterm::surface",
-                workspace = %input.workspace,
-                pane = %input.pane,
+                workspace = %workspace_id,
+                pane = %pane_id,
                 error = %error,
                 "surface input write failed"
             );
@@ -3162,21 +3181,30 @@ fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> 
         TargetTransport::Local
     };
     let herdr_socket = if runtime == TargetRuntime::Herdr {
-        let home = std::env::var("HOME").unwrap_or_default();
-        match c.namespace.as_deref() {
-            Some(ns) if !ns.is_empty() && ns != "default" => {
-                Some(format!("{home}/.config/herdr/sessions/{ns}/herdr.sock"))
+        if c.socket.as_deref().is_some_and(|socket| !socket.is_empty()) {
+            c.socket.clone()
+        } else {
+            let home = std::env::var("HOME").unwrap_or_default();
+            match c.namespace.as_deref() {
+                Some(ns) if !ns.is_empty() && ns != "default" => {
+                    Some(format!("{home}/.config/herdr/sessions/{ns}/herdr.sock"))
+                }
+                _ => Some(format!("{home}/.config/herdr/herdr.sock")),
             }
-            _ => Some(format!("{home}/.config/herdr/herdr.sock")),
         }
     } else {
         None
     };
+    let tmux_socket = (runtime == TargetRuntime::Tmux)
+        .then(|| c.socket.clone())
+        .flatten();
     ExistingEntry {
         title: c.name.clone(),
         runtime,
         transport,
-        tmux_session: (runtime == TargetRuntime::Tmux).then(|| c.name.clone()),
+        tmux_session: (runtime == TargetRuntime::Tmux)
+            .then(|| c.session.clone().unwrap_or_else(|| c.name.clone())),
+        tmux_socket,
         herdr_session: (runtime == TargetRuntime::Herdr).then(|| {
             c.namespace
                 .clone()
@@ -3239,7 +3267,8 @@ fn spawn_local_existing_probe(s: &mut UiState) {
         );
         let _ = tx.send(ExistingProbeMsg::Rows(local));
 
-        let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(None)
+        let ssh_config = std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(std::path::PathBuf::from);
+        let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(ssh_config.as_deref())
             .unwrap_or_default()
             .into_iter()
             .map(|h| h.alias)
@@ -3350,7 +3379,8 @@ fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
         s.existing_ssh_probing = true;
         s.existing.borrow_mut().probe_inflight = true;
     }
-    let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(None)
+    let ssh_config = std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(std::path::PathBuf::from);
+    let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(ssh_config.as_deref())
         .unwrap_or_default()
         .into_iter()
         .map(|h| h.alias)
@@ -4286,12 +4316,18 @@ fn attach_tmux(
     let (transport, alias) = config.transport.attach_backend();
     let is_ssh = transport == "tmux-ssh";
     let scrollback_lines = state.borrow().scrollback_lines;
-    let socket = state.borrow().default_socket.clone();
+    // Existing rows carry the target-side socket.  Prefer it over the
+    // process-wide default so an attach never silently falls back to another
+    // tmux server (especially an isolated `-L` fixture).
+    let socket = config
+        .socket
+        .clone()
+        .or_else(|| state.borrow().default_socket.clone());
     let spec = if is_ssh {
         WorkspaceSpec::ssh_tmux(
             alias.expect("SSH alias 必须存在").to_string(),
             Some(session.clone()),
-            None,
+            socket.clone(),
         )
         .with_scrollback_lines(scrollback_lines)
     } else {

@@ -73,7 +73,7 @@ fn linux_existing_panel_click_attaches_herdr() {
         row.activate();
         pump_main_loop(60);
 
-        let row_name = format!("muxterm-existing-row-herdr-local-{ws}");
+        let row_name = format!("muxterm-existing-row-herdr-local-{ws}-{}", herdr.name());
         let deadline = Instant::now() + HERDR_TIMEOUT;
         let mut saw = false;
         while Instant::now() < deadline {

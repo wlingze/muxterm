@@ -440,6 +440,14 @@ extension MainWindowController {
         commandPalette.testVisibleTitles()
     }
 
+    func testLastPaletteError() -> String? {
+        lastPaletteError
+    }
+
+    func testLastPaletteSelection() -> String? {
+        lastPaletteSelection
+    }
+
     func testSelectPaletteTitle(_ needle: String) {
         commandPalette.testSelect(matching: needle)
     }

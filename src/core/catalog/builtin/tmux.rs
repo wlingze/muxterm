@@ -45,21 +45,24 @@ impl RuntimeDriver for TmuxDriver {
 
     fn list(&self, connect: &Connect, _namespace: Option<&str>) -> Result<Vec<SessionCandidate>> {
         let ssh_config = Self::ssh_config();
-        let sessions = if connect.transport_id() == "ssh" {
+        let (sessions, socket) = if connect.transport_id() == "ssh" {
             // 测试隔离远端 tmux：MUXTERM_TEST_REMOTE_TMUX_SOCKET（对标
             // HERDR_SOCKET_PATH）。生产不设 = 远端默认 server。
             let remote_socket = std::env::var("MUXTERM_TEST_REMOTE_TMUX_SOCKET").ok();
-            crate::core::discovery::list_ssh_tmux_sessions(
+            let sessions = crate::core::discovery::list_ssh_tmux_sessions(
                 connect.target(),
                 ssh_config.as_deref(),
                 remote_socket.as_deref(),
                 Duration::from_secs(2),
             )
-            .unwrap_or_default()
+            .unwrap_or_default();
+            (sessions, remote_socket)
         } else {
             // 测试隔离本地 tmux：MUXTERM_TEST_LOCAL_TMUX_SOCKET（对标 REMOTE env）。
             let local_socket = std::env::var("MUXTERM_TEST_LOCAL_TMUX_SOCKET").ok();
-            crate::core::discovery::list_local_tmux_sessions(local_socket.as_deref())
+            let sessions =
+                crate::core::discovery::list_local_tmux_sessions(local_socket.as_deref());
+            (sessions, local_socket)
         };
         Ok(sessions
             .into_iter()
@@ -68,11 +71,12 @@ impl RuntimeDriver for TmuxDriver {
                 transport_id: connect.transport_id().into(),
                 target: connect.target().into(),
                 namespace: None,
-                name: s.name,
+                name: s.name.clone(),
                 extra: String::new(),
-                // W6 §11.1：tmux 无 typed 身份字段。
-                session: None,
-                socket: None,
+                // W6 §11.1：Existing attach 的 tmux session/socket 也必须
+                // 保留 typed 身份；否则测试 socket 会退回默认 server。
+                session: Some(s.name),
+                socket: socket.clone(),
                 workspace_id: None,
             })
             .collect())

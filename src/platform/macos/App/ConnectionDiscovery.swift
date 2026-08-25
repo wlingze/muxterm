@@ -74,25 +74,33 @@ final class ConnectionDiscovery {
     var attachedRemoteSocket: String?
     /// 测试/显式启动可指定 SSH config；普通应用启动保持 nil，继续用系统默认配置。
     private let sshConfigPath: String?
+    /// 仅最后一次 session-list 请求可以更新 palette。 选择 target 后再
+    /// 发起的请求不能被旧的 local/SSH completion 覆盖。
+    private var requestGeneration: UInt64 = 0
 
     init(sshConfigPath: String? = ProcessInfo.processInfo.environment["MUXTERM_SSH_CONFIG_PATH"]) {
         self.sshConfigPath = sshConfigPath
     }
 
     func listLocalSessions(completion: @escaping (Result<[TmuxSessionInfo], Error>) -> Void) {
+        let generation = beginRequest()
         let socket = attachedLocalSocket
         runAsync({
             try CoreBridge.discoverTmuxSessions(
                 backendType: "local",
                 socket: socket
             ).map(Self.sessionInfo)
-        }, completion: completion)
+        }) { [weak self] result in
+            guard let self, self.isCurrent(generation) else { return }
+            completion(result)
+        }
     }
 
     func listRemoteSessions(
         host: SSHHostInfo,
         completion: @escaping (Result<[TmuxSessionInfo], Error>) -> Void
     ) {
+        let generation = beginRequest()
         runAsync({
             try CoreBridge.discoverTmuxSessions(
                 backendType: "ssh",
@@ -100,7 +108,19 @@ final class ConnectionDiscovery {
                 socket: self.attachedRemoteSocket,
                 configPath: self.sshConfigPath
             ).map(Self.sessionInfo)
-        }, completion: completion)
+        }) { [weak self] result in
+            guard let self, self.isCurrent(generation) else { return }
+            completion(result)
+        }
+    }
+
+    private func beginRequest() -> UInt64 {
+        requestGeneration &+= 1
+        return requestGeneration
+    }
+
+    private func isCurrent(_ generation: UInt64) -> Bool {
+        requestGeneration == generation
     }
 
     /// 列出当前用户已有 SSH 配置中的 alias。

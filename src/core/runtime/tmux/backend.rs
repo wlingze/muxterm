@@ -44,6 +44,8 @@ use crate::core::types::{PaneId, TabId};
 enum PendingQuery {
     /// 非查询命令的响应占位；避免 split/send-keys 的 `%end` 消耗后续查询。
     Ignore,
+    /// 新建 attach pane 的 readiness probe（send Enter）。
+    ReadyProbe { pane: PaneId },
     /// list-panes -t <tab> -F '...'：解析所有 pane（pane_id, tab_id, active, cols, rows）。
     ListPanes { tab: TabId },
     /// list-windows -t <session> -F '...'：解析所有 window（window_id, name, active, layout, panes）。
@@ -207,6 +209,26 @@ pub struct TmuxRuntime {
     /// `%begin` 之后、capture 响应结束之前到达的输出。这个边界由 tmux
     /// control-mode response number 定义，不再用内容子串猜测重复。
     initial_capture_tail: HashMap<PaneId, Vec<u8>>,
+    /// attach 新建 pane 尚未完成首个 capture 时暂存的用户输入。
+    ///
+    /// tmux 会先报告新 window/pane，再异步启动 pane 内的 shell。若在
+    /// capture 边界建立前直接 send-keys，输入可能落在 shell 启动窗口而被
+    /// 丢弃；等权威快照完成后再发，保证 attach → new pane 的输入无损。
+    pending_writes: HashMap<PaneId, Vec<u8>>,
+    /// capture 完成后至少跨过一个 backend poll 才允许输入。
+    ///
+    /// capture 的 prompt 已经可见并不代表 pane 的 shell 已经完成启动；
+    /// 延后一轮把输入放到下一批 control-mode 命令，避免首个字符落在
+    /// shell 初始化窗口。
+    deferred_write_panes: HashSet<PaneId>,
+    /// attach 初始 state 完成后新建 pane 的 shell readiness probe。
+    attach_bootstrap_complete: bool,
+    awaiting_pane_ready: HashSet<PaneId>,
+    ready_probe_at: HashMap<PaneId, Instant>,
+    ready_probe_in_flight: HashSet<PaneId>,
+    ready_probe_acknowledged: HashSet<PaneId>,
+    ready_probe_rounds: HashMap<PaneId, u8>,
+    new_attach_panes: HashSet<PaneId>,
     /// 已经看到 capture 查询 `%begin` 的 pane。`initial_capture_buf` 中的
     /// 字节可能是请求前排队的通知，成功 capture 时不应再次重放；tail 则
     /// 明确属于响应边界之后，必须保留。
@@ -481,6 +503,15 @@ impl TmuxRuntime {
             resyncs: HashMap::new(),
             initial_capture_buf: HashMap::new(),
             initial_capture_tail: HashMap::new(),
+            pending_writes: HashMap::new(),
+            deferred_write_panes: HashSet::new(),
+            attach_bootstrap_complete: false,
+            awaiting_pane_ready: HashSet::new(),
+            ready_probe_at: HashMap::new(),
+            ready_probe_in_flight: HashSet::new(),
+            ready_probe_acknowledged: HashSet::new(),
+            ready_probe_rounds: HashMap::new(),
+            new_attach_panes: HashSet::new(),
             capture_response_seen: HashSet::new(),
             colour_report_supported: true,
             colour_report_warned: false,
@@ -1030,6 +1061,7 @@ impl TmuxRuntime {
                     }
                     return;
                 }
+                self.mark_pane_ready(pane);
                 tracing::trace!(
                     target: "muxterm::tmux",
                     pane = pane.0,
@@ -1189,6 +1221,7 @@ impl TmuxRuntime {
                     .push_back(StateChange::StatusBarSubscription { name, value, pane });
             }
             Message::ExtendedOutput { pane, content, .. } => {
+                self.mark_pane_ready(pane);
                 if self.resyncs.contains_key(&pane) {
                     append_capped(
                         &mut self.resyncs.entry(pane).or_default().live,
@@ -1252,6 +1285,8 @@ impl TmuxRuntime {
             self.events
                 .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
         }
+        self.release_deferred_writes();
+        self.poll_ready_probes();
 
         // 先把所有 TmuxEvent drain 到本地 vec，避免与 self 的可变借用冲突。
         let mut pending = Vec::new();
@@ -1316,6 +1351,10 @@ impl TmuxRuntime {
         if let Some(query) = self.pending_by_number.remove(&number) {
             match query {
                 PendingQuery::Ignore => {}
+                PendingQuery::ReadyProbe { pane } => {
+                    self.ready_probe_in_flight.remove(&pane);
+                    self.ready_probe_acknowledged.insert(pane);
+                }
                 PendingQuery::ListPanes { tab } => {
                     self.handle_list_panes_response(tab, lines);
                 }
@@ -1389,6 +1428,13 @@ impl TmuxRuntime {
                     if self.is_attach_mode() {
                         self.initial_capture_pending.remove(&pane);
                         self.initial_capture_done.insert(pane);
+                        if self.new_attach_panes.contains(&pane)
+                            && self.pending_writes.contains_key(&pane)
+                        {
+                            self.start_pane_ready_probe(pane);
+                        } else if !self.new_attach_panes.contains(&pane) {
+                            self.deferred_write_panes.insert(pane);
+                        }
                         let before_response =
                             self.initial_capture_buf.remove(&pane).unwrap_or_default();
                         let after_response =
@@ -1509,6 +1555,13 @@ impl TmuxRuntime {
                 PendingQuery::CapturePane { pane } => {
                     self.initial_capture_pending.remove(&pane);
                     self.initial_capture_done.insert(pane);
+                    if self.new_attach_panes.contains(&pane)
+                        && self.pending_writes.contains_key(&pane)
+                    {
+                        self.start_pane_ready_probe(pane);
+                    } else if !self.new_attach_panes.contains(&pane) {
+                        self.deferred_write_panes.insert(pane);
+                    }
                     let before_response =
                         self.initial_capture_buf.remove(&pane).unwrap_or_default();
                     let after_response =
@@ -1549,6 +1602,11 @@ impl TmuxRuntime {
                         "pane snapshot query failed; releasing resync"
                     );
                     self.finish_pane_resync(pane);
+                }
+                PendingQuery::ReadyProbe { pane } => {
+                    self.ready_probe_in_flight.remove(&pane);
+                    self.ready_probe_acknowledged.remove(&pane);
+                    self.ready_probe_at.insert(pane, Instant::now());
                 }
                 other => {
                     tracing::warn!(
@@ -1647,6 +1705,9 @@ impl TmuxRuntime {
             } else {
                 let mut pane = np.clone();
                 pane.active = globally_active;
+                if self.attach_bootstrap_complete && self.is_attach_mode() {
+                    self.new_attach_panes.insert(np.id);
+                }
                 self.panes.push(pane);
                 self.events.push_back(StateChange::PaneAdded {
                     pane: np.id,
@@ -1664,6 +1725,14 @@ impl TmuxRuntime {
             .collect();
         for pid in to_remove {
             self.panes.retain(|p| p.id != pid);
+            self.pending_writes.remove(&pid);
+            self.deferred_write_panes.remove(&pid);
+            self.awaiting_pane_ready.remove(&pid);
+            self.ready_probe_at.remove(&pid);
+            self.ready_probe_in_flight.remove(&pid);
+            self.ready_probe_acknowledged.remove(&pid);
+            self.ready_probe_rounds.remove(&pid);
+            self.new_attach_panes.remove(&pid);
             self.events.push_back(StateChange::PaneClosed { pane: pid });
             changed = true;
         }
@@ -1769,6 +1838,96 @@ impl TmuxRuntime {
             self.initial_capture_pending.insert(pane);
             self.replace_last_pending(PendingQuery::CapturePane { pane });
         }
+    }
+
+    /// 发送 attach 首次快照边界前暂存的用户输入。
+    fn dispatch_pending_write(&mut self, pane: PaneId) {
+        let Some(data) = self.pending_writes.remove(&pane) else {
+            return;
+        };
+        if data.is_empty() {
+            return;
+        }
+        let command = cmd::send_keys_bytes(pane, &data);
+        if self.dispatch_tmux_command(&command).is_err() {
+            tracing::warn!(
+                target = "muxterm::tmux",
+                pane = pane.0,
+                bytes = data.len(),
+                "发送 attach 暂存输入失败"
+            );
+        }
+    }
+
+    /// 释放上一轮 capture 完成后暂缓的输入。
+    fn release_deferred_writes(&mut self) {
+        let panes = self.deferred_write_panes.drain().collect::<Vec<_>>();
+        for pane in panes {
+            self.dispatch_pending_write(pane);
+        }
+    }
+
+    /// 某个新 attach pane 首次收到用户输入时才启动 readiness probe，
+    /// 不在空闲 pane 上额外制造回车或改变 attach 后的屏幕。
+    fn start_pane_ready_probe(&mut self, pane: PaneId) {
+        if !self.new_attach_panes.remove(&pane) {
+            return;
+        }
+        self.awaiting_pane_ready.insert(pane);
+        self.ready_probe_rounds.insert(pane, 0);
+        self.ready_probe_at.insert(pane, Instant::now());
+    }
+
+    /// 新建 attach pane 的 shell 可能在首个 capture prompt 之后仍处于
+    /// 初始化窗口。用 Enter 作为无害 probe；只有收到该 pane 的下一段
+    /// `%output` 才释放用户输入，若 probe 被启动阶段吞掉则下轮重试。
+    fn poll_ready_probes(&mut self) {
+        let now = Instant::now();
+        let panes = self
+            .awaiting_pane_ready
+            .iter()
+            .copied()
+            .filter(|pane| self.ready_probe_at.get(pane).is_some_and(|at| *at <= now))
+            .collect::<Vec<_>>();
+        for pane in panes {
+            if self.ready_probe_in_flight.contains(&pane) {
+                continue;
+            }
+            self.ready_probe_acknowledged.remove(&pane);
+            let command = cmd::send_keys(pane, &[cmd::Key::enter()]);
+            if self.dispatch_tmux_command(&command).is_ok() {
+                self.replace_last_pending(PendingQuery::ReadyProbe { pane });
+                self.ready_probe_in_flight.insert(pane);
+                self.ready_probe_at
+                    .insert(pane, now + Duration::from_millis(100));
+            } else {
+                // 命令通道瞬时断开时不要把 pane 永久卡在 awaiting 状态；
+                // 下一轮 poll 仍可在 Runtime 重连后重试 probe。
+                self.ready_probe_at
+                    .insert(pane, now + Duration::from_millis(100));
+            }
+        }
+    }
+
+    /// 收到 readiness probe 或其它首段实时输出后释放暂存输入。
+    fn mark_pane_ready(&mut self, pane: PaneId) {
+        if !self.ready_probe_acknowledged.remove(&pane) {
+            return;
+        }
+        self.ready_probe_in_flight.remove(&pane);
+        let rounds = self.ready_probe_rounds.entry(pane).or_default();
+        *rounds = rounds.saturating_add(1);
+        if *rounds < 2 {
+            self.ready_probe_at
+                .insert(pane, Instant::now() + Duration::from_millis(25));
+            return;
+        }
+        self.ready_probe_rounds.remove(&pane);
+        if !self.awaiting_pane_ready.remove(&pane) {
+            return;
+        }
+        self.ready_probe_at.remove(&pane);
+        self.dispatch_pending_write(pane);
     }
 
     /// 发送 list-sessions 查询（列出 tmux server 上所有 session）。
@@ -2198,6 +2357,7 @@ impl Runtime for TmuxRuntime {
                 "attach 初始快照已进入 pane_output（Surface 非空）"
             );
         }
+        self.attach_bootstrap_complete = is_attach;
 
         // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
         self.query_list_sessions();
@@ -2334,6 +2494,23 @@ impl Runtime for TmuxRuntime {
                 TaskOutcome::Done
             }
             Task::WriteRaw { target, data } => {
+                if self.is_attach_mode()
+                    && (!self.initial_capture_done.contains(target)
+                        || self.deferred_write_panes.contains(target)
+                        || self.awaiting_pane_ready.contains(target)
+                        || self.new_attach_panes.contains(target))
+                {
+                    self.pending_writes
+                        .entry(*target)
+                        .or_default()
+                        .extend_from_slice(data);
+                    if self.initial_capture_done.contains(target)
+                        && self.new_attach_panes.contains(target)
+                    {
+                        self.start_pane_ready_probe(*target);
+                    }
+                    return Ok(TaskOutcome::Done);
+                }
                 let c = cmd::send_keys_bytes(*target, data);
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
@@ -2468,7 +2645,6 @@ impl Runtime for TmuxRuntime {
                     });
                 };
                 let c = cmd::new_window(sess, name.as_deref());
-                eprintln!("DEBUG new-window cmd={:?}", c.to_line());
                 if self.dispatch_tmux_command(&c).is_err() {
                     return Ok(TaskOutcome::Rejected {
                         reason: "发送命令失败".into(),
@@ -2896,6 +3072,207 @@ mod tests {
             received += 1;
         }
         assert_eq!(received, burst, "高频输入不能因队列满而丢失");
+    }
+
+    #[test]
+    fn attach_new_pane_write_waits_for_two_probe_rounds() {
+        let pane = PaneId(7);
+        let mut backend = TmuxRuntime::new_with_attach(None, "existing");
+        backend.status = BackendStatus::Connected;
+        backend.initial_capture_done.insert(pane);
+        backend.new_attach_panes.insert(pane);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        backend.cmd_tx = Some(tx);
+
+        let outcome = backend
+            .execute(&Task::WriteRaw {
+                target: pane,
+                data: b"printf ready\r".to_vec(),
+            })
+            .unwrap();
+        assert_eq!(outcome, TaskOutcome::Done);
+        assert!(rx.try_recv().is_err(), "首个输入必须先留在 pending_writes");
+
+        backend.poll_ready_probes();
+        let probe = rx.try_recv().expect("应先发 readiness probe");
+        assert!(probe.contains("send-keys -t %7"));
+        assert!(probe.contains("Enter"));
+
+        backend.ready_probe_acknowledged.insert(pane);
+        backend.mark_pane_ready(pane);
+        assert!(
+            rx.try_recv().is_err(),
+            "单个 probe round 不足以释放 attach 输入"
+        );
+        backend.ready_probe_acknowledged.insert(pane);
+        backend.mark_pane_ready(pane);
+        let write = rx.try_recv().expect("第二个 probe round 后应发送用户输入");
+        assert!(write.contains("send-keys -t %7 -H"));
+        assert!(write.contains("70 72 69 6e 74 66"));
+    }
+
+    #[test]
+    fn attach_write_waits_for_capture_completion_before_dispatch() {
+        let pane = PaneId(12);
+        let mut backend = TmuxRuntime::new_with_attach(None, "existing");
+        backend.status = BackendStatus::Connected;
+        backend.initial_capture_pending.insert(pane);
+        backend
+            .pending_by_number
+            .insert(41, PendingQuery::CapturePane { pane });
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        backend.cmd_tx = Some(tx);
+
+        backend
+            .execute(&Task::WriteRaw {
+                target: pane,
+                data: b"echo capture-ready\r".to_vec(),
+            })
+            .unwrap();
+        assert!(backend.pending_writes.contains_key(&pane));
+        assert!(rx.try_recv().is_err(), "capture 未完成前不得发送输入");
+
+        backend.dispatch_response(41, vec!["prompt".into()]);
+        assert!(backend.initial_capture_done.contains(&pane));
+        assert!(backend.deferred_write_panes.contains(&pane));
+        assert!(
+            rx.try_recv().is_err(),
+            "capture response 所在 poll 不能和快照同批发送输入"
+        );
+
+        backend.release_deferred_writes();
+        let write = rx.try_recv().expect("下一轮才应发送暂存输入");
+        assert!(write.contains("send-keys -t %12 -H"));
+        assert!(write.contains("65 63 68 6f"));
+    }
+
+    #[test]
+    fn attach_new_pane_requires_probe_ack_before_counting_output() {
+        let pane = PaneId(13);
+        let mut backend = TmuxRuntime::new_with_attach(None, "existing");
+        backend.status = BackendStatus::Connected;
+        backend.initial_capture_done.insert(pane);
+        backend.new_attach_panes.insert(pane);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        backend.cmd_tx = Some(tx);
+
+        backend
+            .execute(&Task::WriteRaw {
+                target: pane,
+                data: b"echo probe-ack\r".to_vec(),
+            })
+            .unwrap();
+        backend.poll_ready_probes();
+        let _first_probe = rx.try_recv().expect("应先发送第一轮 probe");
+
+        // pane output 先到、probe response 尚未确认时，不能误判 shell ready。
+        backend.handle_message(Message::Output {
+            pane,
+            content: b"early".to_vec(),
+            raw_content: "early".into(),
+        });
+        assert!(rx.try_recv().is_err(), "未收到 probe ack 时不能释放输入");
+
+        backend
+            .pending_by_number
+            .insert(51, PendingQuery::ReadyProbe { pane });
+        backend.dispatch_response(51, Vec::new());
+        backend.handle_message(Message::Output {
+            pane,
+            content: b"round-1".to_vec(),
+            raw_content: "round-1".into(),
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "只有一轮 probe output 仍不能释放输入"
+        );
+
+        backend
+            .pending_by_number
+            .insert(52, PendingQuery::ReadyProbe { pane });
+        backend.dispatch_response(52, Vec::new());
+        backend.handle_message(Message::Output {
+            pane,
+            content: b"round-2".to_vec(),
+            raw_content: "round-2".into(),
+        });
+        let write = rx.try_recv().expect("第二轮 ack/output 后应发送输入");
+        assert!(write.contains("send-keys -t %13 -H"));
+    }
+
+    #[test]
+    fn attach_new_pane_probe_error_is_retried() {
+        let pane = PaneId(14);
+        let mut backend = TmuxRuntime::new_with_attach(None, "existing");
+        backend.status = BackendStatus::Connected;
+        backend.initial_capture_done.insert(pane);
+        backend.new_attach_panes.insert(pane);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        backend.cmd_tx = Some(tx);
+
+        backend
+            .execute(&Task::WriteRaw {
+                target: pane,
+                data: b"echo retry\r".to_vec(),
+            })
+            .unwrap();
+        backend.poll_ready_probes();
+        let _probe = rx.try_recv().expect("应发送 probe");
+        backend
+            .pending_by_number
+            .insert(61, PendingQuery::ReadyProbe { pane });
+        backend.handle_response_error(61);
+        assert!(!backend.ready_probe_in_flight.contains(&pane));
+        assert!(
+            backend
+                .ready_probe_at
+                .get(&pane)
+                .is_some_and(|at| *at <= Instant::now()),
+            "probe error 后必须安排下一次重试"
+        );
+        backend.poll_ready_probes();
+        assert!(
+            rx.try_recv().is_ok(),
+            "probe error 后下一轮必须重新发送 probe"
+        );
+    }
+
+    #[test]
+    fn closing_attach_pane_clears_pending_input_and_probe_state() {
+        let pane = PaneId(15);
+        let mut backend = TmuxRuntime::new_with_attach(None, "existing");
+        backend.status = BackendStatus::Connected;
+        backend.attach_bootstrap_complete = true;
+        backend.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(3),
+            active: true,
+            title: String::new(),
+            cols: 80,
+            rows: 24,
+        });
+        backend.pending_writes.insert(pane, b"stale".to_vec());
+        backend.deferred_write_panes.insert(pane);
+        backend.awaiting_pane_ready.insert(pane);
+        backend.ready_probe_at.insert(pane, Instant::now());
+        backend.ready_probe_in_flight.insert(pane);
+        backend.ready_probe_acknowledged.insert(pane);
+        backend.ready_probe_rounds.insert(pane, 1);
+        backend.new_attach_panes.insert(pane);
+
+        backend.handle_list_panes_response(
+            TabId(3),
+            vec!["0: [80x24] [history 0/2000, 0 bytes] %16 (active)".into()],
+        );
+
+        assert!(!backend.pending_writes.contains_key(&pane));
+        assert!(!backend.deferred_write_panes.contains(&pane));
+        assert!(!backend.awaiting_pane_ready.contains(&pane));
+        assert!(!backend.ready_probe_at.contains_key(&pane));
+        assert!(!backend.ready_probe_in_flight.contains(&pane));
+        assert!(!backend.ready_probe_acknowledged.contains(&pane));
+        assert!(!backend.ready_probe_rounds.contains_key(&pane));
+        assert!(!backend.new_attach_panes.contains(&pane));
     }
 
     #[test]

@@ -37,6 +37,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var isClosing = false
     /// e2e 记录桌面通知文案（不依赖系统通知权限）。
     private(set) var recordedNotifications: [String] = []
+    /// Palette discovery/attach 的最后一个可观察结果；测试和诊断不再
+    /// 只能从「列表停在 New」反推异步失败。
+    private(set) var lastPaletteError: String?
+    private(set) var lastPaletteSelection: String?
     /// 注意力 Cmd-Enter 的 replica overlay（W19-E）。
     private var replyOverlayView: MuxTerminalView?
     var replyOverlayPaneId: UInt32?
@@ -297,7 +301,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             alias: bridge.sshAlias,
             session: bridge.session ?? "",
             runtime: terminalManager.usesClientResize ? "tmux" : "shell",
-            path: bridge.startDirectory ?? ""
+            path: bridge.startDirectory ?? "",
+            socket: bridge.socket
         )
         let initialSlot = WarmConnectionSlot(
             key: initialKey,
@@ -1719,6 +1724,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func showSessions(for target: ConnectionTarget) {
+        lastPaletteError = nil
         let targetSocket = ConnectionDiscoverySocketPolicy.socket(
             for: target,
             currentSSHHost: bridge.sshAlias,
@@ -1744,6 +1750,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             switch result {
             case .success(let sessions):
+                self.lastPaletteError = nil
                 let items = [PaletteItem(
                     title: MuxtermI18n.shared.tr(.newSession),
                     detail: MuxtermI18n.shared.tr(.newSessionDetail),
@@ -1768,6 +1775,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // W19-B：异步失败不得把面板关成只剩 New session；
                 // 保留列表并显示错误，用户仍可重试/新建。
                 self.content.setConnectProgress(stage: nil)
+                self.lastPaletteError = error.localizedDescription
                 self.reportStatusError(error.localizedDescription)
             }
         }
@@ -1832,19 +1840,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func attach(target: ConnectionTarget, session: String) {
         commandPalette.dismiss()
+        lastPaletteSelection = "(target.displayName):(session)"
+        lastPaletteError = nil
+        // Preserve the target identity selected by the palette.  For an
+        // Existing session on the currently attached isolated server this is
+        // the `-L` socket; unrelated targets deliberately resolve to nil.
+        let targetSocket = ConnectionDiscoverySocketPolicy.socket(
+            for: target,
+            currentSSHHost: bridge.sshAlias,
+            currentSocket: bridge.socket
+        )
         let params: (type: String, socket: String?, sshAlias: String?)
         switch target {
         case .local:
-            params = ("tmux", nil, nil)
+            params = ("tmux", targetSocket, nil)
         case .ssh(let host):
-            params = ("ssh", nil, host.alias)
+            params = ("ssh", targetSocket, host.alias)
         }
         let key = ConnectionKey(
             transport: params.sshAlias == nil ? "local" : "ssh",
             alias: params.sshAlias,
             session: session,
             runtime: "tmux",
-            path: ""
+            path: "",
+            socket: params.socket
         )
         if let slot = connectionPool.slots[key], slot.lifecycle != .evicting {
             activate(slot: slot)
@@ -1870,6 +1889,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
+                    self?.lastPaletteError = error.localizedDescription
                     self?.showError(error)
                 }
             }
