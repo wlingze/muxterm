@@ -46,8 +46,12 @@ const ENV_RUNTIME: &str = "MUXTERM_TEST_RUNTIME";
 const ENV_TRANSPORT: &str = "MUXTERM_TEST_TRANSPORT";
 const ENV_SCENARIO: &str = "MUXTERM_TEST_SCENARIO";
 
-/// 普通 child 硬 timeout 15 秒；large-history / takeover 场景 30 秒。
-const CHILD_TIMEOUT: Duration = Duration::from_secs(15);
+/// 普通 child 硬 timeout 30 秒；large-history / takeover 场景也沿用 30 秒。
+///
+/// Parent 会串行启动多个 GTK/Xvfb child；在共享 runner 上，tmux/SSH
+/// handshake 偶尔会把普通场景推过 15 秒，但 standalone child 仍能很快
+/// 完成。统一预算只放宽失败边界，不改变成功路径等待。
+const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 const CHILD_TIMEOUT_LONG: Duration = Duration::from_secs(30);
 /// parent 总预算 15 分钟。
 const PARENT_BUDGET: Duration = Duration::from_secs(15 * 60);
