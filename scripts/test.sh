@@ -24,7 +24,8 @@ run_core() {
     cargo clippy --no-default-features --features tui -- -D warnings
 
     # 一次编译、一起跑：lib/bins + 全部集成测试 target。
-    cargo test --no-default-features --features tui --lib --bins
+    cargo test --no-default-features --features tui --lib --bins \
+        -- --test-threads="$THREADS"
     cargo test --no-default-features --features tui \
         --test cli_integration \
         --test tmux_backend_integration \
@@ -45,6 +46,7 @@ run_core() {
         --test tui_split_ffi_regression \
         --test tui_wizard_ffi_regression \
         --test tui_wizard_ssh_ffi_regression \
+        --test ffi_tmux_discovery \
         --test ssh_no_fallback \
         --test ssh_transport_unit \
         --test four_mode_integration \
@@ -76,7 +78,6 @@ run_linux() {
     fi
     set +e
     xvfb-run "$xvfb_opts" env GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
-        --test zz_probe_reattach \
         --test linux_gtk_integration \
         --test linux_herdr_e2e \
         --test linux_herdr_switch_e2e \

@@ -16,6 +16,7 @@ on:
       - '.cargo/**'
       - 'scripts/build-macos.sh'
       - 'scripts/build-common.sh'
+      - 'scripts/test.sh'
       - 'scripts/ci/**'
       - '.github/workflows/**'
 
