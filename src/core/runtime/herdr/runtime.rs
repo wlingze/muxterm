@@ -1126,7 +1126,7 @@ impl HerdrRuntime {
                         slot.seed_pending = false;
                         slot.surface_baseline = SurfaceBaseline::Ready;
                         slot.live_since = Some(now);
-                        if keep_seed {
+                        let index_snapshot = if keep_seed {
                             self.outputs.entry(pane).or_insert_with(|| bytes.clone());
                             // 追赶 full 之前缓存的严格连续增量。
                             match slot.take_catchup_after_full(wire_seq) {
@@ -1153,11 +1153,21 @@ impl HerdrRuntime {
                                     continue;
                                 }
                             }
+                            // PaneFrame 会替换 Workspace 的 Surface/Index buffer；
+                            // attach 的 pane.read 内容仍是搜索事实源，需在 full
+                            // 之后再播种一次，不能让非活动 pane 的 baseline 抹掉
+                            // 已存在的历史 token。
+                            self.outputs.get(&pane).cloned()
                         } else {
                             self.outputs.insert(pane, bytes.clone());
-                        }
+                            None
+                        };
                         self.events
                             .push_back(StateChange::PaneFrame { pane, data: bytes });
+                        if let Some(data) = index_snapshot {
+                            self.events
+                                .push_back(StateChange::PaneIndexSnapshot { pane, data });
+                        }
                     } else if slot.surface_baseline == SurfaceBaseline::AwaitingFull {
                         // full 前 diff：不画进 Surface，只进有界队列。
                         if slot.queue_pre_full(wire_seq, bytes).is_err() {
@@ -3341,6 +3351,80 @@ mod tests {
                 (false, b"_DIFF".as_slice())
             ],
             "Runtime 必须保留 full/diff 语义，同时按顺序交付每个原始 ANSI frame"
+        );
+    }
+
+    /// attach 的 `pane.read` 快照属于 Index 面；首个 observer full 只初始化
+    /// Surface，不能把历史 Index 种子抹掉。full 之后必须重新播种一次，确保
+    /// Workspace 最终保留 attach 前已经存在的内容。
+    #[test]
+    fn attach_seed_is_replayed_after_first_full_frame() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        slot.surface_baseline = SurfaceBaseline::AwaitingFull;
+        slot.seed_pending = true;
+        runtime.stream_slots.insert(pane, slot);
+        runtime.outputs.insert(pane, b"ATTACH_HISTORY".to_vec());
+
+        tx.send(PaneStreamEvent::Frame {
+            pane,
+            generation: 1,
+            event_ordinal: 1,
+            wire_seq: 1,
+            bytes: b"CURRENT_SCREEN".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        })
+        .unwrap();
+        runtime.drain_stream();
+
+        assert_eq!(
+            runtime.outputs.get(&pane).map(Vec::as_slice),
+            Some(b"ATTACH_HISTORY".as_slice()),
+            "首个 full 不得覆盖 attach 的历史 Index 快照"
+        );
+        assert!(!runtime.stream_slots.get(&pane).unwrap().seed_pending);
+        let events = runtime
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                StateChange::PaneFrame { pane: p, data } if *p == pane => {
+                    Some(("frame", data.as_slice()))
+                }
+                StateChange::PaneIndexSnapshot { pane: p, data } if *p == pane => {
+                    Some(("index", data.as_slice()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec![
+                ("frame", b"CURRENT_SCREEN".as_slice()),
+                ("index", b"ATTACH_HISTORY".as_slice()),
+            ],
+            "首个 full 后必须按 PaneFrame→PaneIndexSnapshot 顺序恢复 attach 快照"
         );
     }
 
