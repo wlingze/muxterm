@@ -413,6 +413,10 @@ Arch 本机与 Ubuntu/macOS runner 的 GTK/VTE/系统库不要求字节级相同
   `LC_ALL=en_US.UTF-8`、`LANG=en_US.UTF-8`、`TERM=xterm-256color`、
   `COLORTERM=truecolor`；locale
   不存在时 setup 直接失败，不能带 warning 继续；
+- `scripts/test.sh run {core,linux,macos}` 都建立同一份干净 zsh `ZDOTDIR`，并保留
+  `SHELL=/usr/bin/zsh`。它隔离用户/runner 的 `.zshrc`、`compinit` 和 prompt 输出，
+  使 pane 仍运行 zsh，同时保证 exact-frame 测试只观察 tmux/终端协议字节；不得用放宽
+  字节断言来掩盖启动脚本污染；
 - 差异导致失败时 artifact 足以重放，而不是远程只有一个 panic 行。
 
 ### 7.3 单一入口

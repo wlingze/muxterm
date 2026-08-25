@@ -13,6 +13,33 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 THREADS="${MUXTERM_TEST_THREADS:-1}"
+TEST_ZDOTDIR=""
+
+# tmux inherits the runner user's login shell.  Keep zsh parity with local
+# development while isolating startup files: runner images may carry a
+# .zshrc that runs compinit and emits an interactive security prompt into the
+# pane byte stream, which would corrupt tests that assert exact frame bytes.
+prepare_test_shell() {
+    if ! command -v zsh >/dev/null 2>&1; then
+        return
+    fi
+    if [ -n "${MUXTERM_TEST_ZDOTDIR:-}" ]; then
+        export ZDOTDIR="$MUXTERM_TEST_ZDOTDIR"
+        export SHELL="$(command -v zsh)"
+        return
+    fi
+    TEST_ZDOTDIR="$(mktemp -d "${TMPDIR:-/tmp}/muxterm-test-zsh.XXXXXX")"
+    chmod 700 "$TEST_ZDOTDIR"
+    # Stop both global and user zsh startup files after .zshenv.  The empty
+    # files make the contract explicit for interactive and login variants.
+    printf '%s\n' 'unsetopt rcs' > "$TEST_ZDOTDIR/.zshenv"
+    : > "$TEST_ZDOTDIR/.zprofile"
+    : > "$TEST_ZDOTDIR/.zshrc"
+    : > "$TEST_ZDOTDIR/.zlogin"
+    export ZDOTDIR="$TEST_ZDOTDIR"
+    export SHELL="$(command -v zsh)"
+    trap 'if [ -n "${TEST_ZDOTDIR:-}" ] && [ -d "$TEST_ZDOTDIR" ]; then rm -rf -- "$TEST_ZDOTDIR"; fi' EXIT
+}
 
 usage() {
     sed -n '2,8p' "${BASH_SOURCE[0]}"
@@ -173,6 +200,7 @@ doctor)
     doctor
     ;;
 run)
+    prepare_test_shell
     case "${2:-}" in
     core) run_core ;;
     linux) run_linux ;;
