@@ -262,13 +262,18 @@ impl IsolatedHerdr {
         );
     }
 
-    /// 等待服务端 recent snapshot 看到 token，再把它作为 attach 前置条件。
-    /// 这样 attach contract 测的是“已存在的 pane 内容能否被播种”，而不是
-    /// 把 `pane.send-text` 的异步落盘延迟误报成 Runtime 丢帧。
-    pub fn wait_for_token(&self, pane_id: &str, token: &str) {
+    /// 重试发送并等待服务端 recent snapshot 看到 token，再把它作为 attach
+    /// 前置条件。新建 pane 的 shell 可能尚未 ready；重试只解决 fixture
+    /// readiness，不改变 attach 后 Runtime 的快照断言。
+    pub fn paint_until_token(&self, pane_id: &str, token: &str) {
         let session = HerdrSession::new(self.name(), self.socket_path());
         let deadline = Instant::now() + Duration::from_secs(5);
+        let mut next_send = Instant::now();
         while Instant::now() < deadline {
+            if Instant::now() >= next_send {
+                self.paint(pane_id, token);
+                next_send = Instant::now() + Duration::from_millis(250);
+            }
             if let Ok(bytes) = session.pane_read_recent_ansi_lines(pane_id, 2000) {
                 if String::from_utf8_lossy(&bytes).contains(token) {
                     return;

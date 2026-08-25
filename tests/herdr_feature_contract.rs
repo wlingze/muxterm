@@ -42,8 +42,7 @@ fn herdr_attach_preexist_token_reaches_workspace() {
         (pane_q.as_str(), seed_tokens[1]),
         (pane_r.as_str(), seed_tokens[2]),
     ] {
-        herdr.paint(pane, token);
-        herdr.wait_for_token(pane, token);
+        herdr.paint_until_token(pane, token);
     }
 
     let session = Arc::new(HerdrSession::new(herdr.name(), herdr.socket_path()));
