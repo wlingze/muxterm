@@ -375,12 +375,14 @@ pub fn list_panes(window: TabId) -> TmuxCommand {
 /// attach 后按行回填 scrollback。只取可见区以上的历史。
 ///
 /// `-S -N -E -1`：0 是可见区顶，负数是历史；`-E -1` 停在可见区上一行。
-/// 带 `-J -N` 与 iTerm2 `capture-pane -peqJN` 对齐。首屏 seed / resync
-/// **不要**走这条，也不要把响应当 VT 流 `feed()`。
+/// 不要 `-J`：tmux 会把物理折行拼成逻辑行（`-J` 还隐含 `-T`），前端再按
+/// 列宽折回去会把 CJK / TUI 盒线折错，看起来像乱码。iTerm2 用 `-J` 是因为
+/// 它有 wrap-aware 的 `TmuxHistoryParser`。我们按物理行写入 scrollback。
+/// 首屏 seed / resync **不要**走这条，也不要把响应当 VT 流 `feed()`。
 pub fn capture_pane_with_history(pane: PaneId, history_lines: u32) -> TmuxCommand {
     let n = history_lines.max(1);
     TmuxCommand::from_raw(format!(
-        "capture-pane -e -p -q -J -N -S -{n} -E -1 -t %{}",
+        "capture-pane -e -p -q -N -S -{n} -E -1 -t %{}",
         pane.0
     ))
 }
@@ -1100,13 +1102,14 @@ fn input_roundtrip_dcs_passthrough() {
 #[test]
 fn capture_pane_with_history_requests_scrollback() {
     let c = capture_pane_with_history(PaneId(3), 10_000);
-    assert_eq!(
-        c.as_str(),
-        "capture-pane -e -p -q -J -N -S -10000 -E -1 -t %3"
-    );
+    assert_eq!(c.as_str(), "capture-pane -e -p -q -N -S -10000 -E -1 -t %3");
     assert_eq!(
         c.to_line(),
-        "capture-pane -e -p -q -J -N -S -10000 -E -1 -t %3\n"
+        "capture-pane -e -p -q -N -S -10000 -E -1 -t %3\n"
+    );
+    assert!(
+        !c.as_str().contains("-J"),
+        "历史必须是物理行，-J 拼折行再重折会把 CJK/TUI 弄成乱码"
     );
     assert!(
         c.as_str().contains("-E -1"),

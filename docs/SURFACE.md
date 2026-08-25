@@ -293,7 +293,7 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 ### 7.4 TODO（本轮不实现）
 
 1. **洪水 `pause-after`。** 某个 pane 的 Surface 跟不上时，只对 **该 pane** `refresh-client -A %N:pause`，追上再 continue。代码里搜 `TODO(surface-7.4)`。现在不要用 pause 当切 tab 手段。不能无限吃 CUP 风暴还保证 60fps。
-2. ~~**第一次打开按行填历史。**~~ **已落地（2026-08-25）：** Runtime 在可见屏 seed / continue 之后抓 `capture-pane -peqJN -S -N -E -1`，产品事件 `PaneHistory` 带行数据；前端 `muxtermPrependHistoryLines` 写入 scrollback。禁止把 `-S -10000` 当 VT 流 `feed()`，也禁止为了不卡而永远只抓可见屏。已打开的 tab 再切回来不得再抓。
+2. ~~**第一次打开按行填历史。**~~ **已落地（2026-08-25）：** Runtime 在可见屏 seed / continue 之后抓 `capture-pane -peqN -S -N -E -1`（物理行，不要 `-J`），产品事件 `PaneHistory` 带行数据；前端 `muxtermPrependHistoryLines` 按列宽写入 scrollback。禁止把 `-S -10000` 当 VT 流 `feed()`，也禁止为了不卡而永远只抓可见屏。已打开的 tab 再切回来不得再抓。
 
 ### 7.5 不卡顿的验收（不是保证任意负载 60fps）
 

@@ -221,6 +221,8 @@ pub struct TmuxRuntime {
     /// attach 建立后给后台 tab 做轻量索引播种的开关。它只影响异步的可见
     /// 屏 capture，不让 connect 等待，也不提前创建前端 Surface。
     background_index_capture_enabled: bool,
+    /// 已经在 Connected 之后发过一轮后台可见屏索引。connect 里只开开关。
+    background_index_started: bool,
     /// 最近一次 capture 只取了可见屏。切入时直接用它，不再 pause 重抓。
     background_capture_only: HashSet<PaneId>,
     /// 已经按行回填过 attach 前历史的 pane。切 tab 不得再抓。
@@ -316,9 +318,9 @@ pub fn supports_status_subscription(version: Option<(u32, u32)>) -> bool {
 
 /// capture-pane 响应 → 终端字节流。
 ///
-/// 后台索引用的可见屏 capture 去掉尾部纯空白行，避免没有 cursor state 时
-/// 把光标推到 pane 底部。resync/TUI 快照必须走 [`capture_pane_grid_bytes`]，
-/// 否则 Codex 这类 alternate screen 底部空行被裁掉后网格错位。
+/// 非 attach 的索引 dump 去掉尾部纯空白行。attach 的 Surface seed 必须走
+/// [`capture_pane_surface_bytes`]：按行 CUP 铺网格，不裁尾部空行，也不用
+/// `\r\n` 把光标推过 prompt。resync/TUI 快照走 [`capture_pane_grid_bytes`]。
 fn capture_pane_bytes(lines: &[String]) -> Vec<u8> {
     capture_pane_lines(lines, true)
 }
@@ -326,6 +328,27 @@ fn capture_pane_bytes(lines: &[String]) -> Vec<u8> {
 /// 保留 capture-pane 的完整网格，包括尾部空行。
 fn capture_pane_grid_bytes(lines: &[String]) -> Vec<u8> {
     capture_pane_lines(lines, false)
+}
+
+/// attach 索引用的可见屏：从 home 按行地址写入，空行留给 reset 后的空白格。
+/// 最后画出的是最后一行非空内容，光标停在 prompt / TUI 输入盒，不会掉到
+/// pane 底。pi/Cursor 的中间空行和底栏因此还在原来的格子上。
+fn capture_pane_surface_bytes(lines: &[String]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        push_csi(&mut body, &format!("{}H", i + 1));
+        body.extend_from_slice(line.as_bytes());
+    }
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    push_csi(&mut out, "H");
+    out.extend(body);
+    out
 }
 
 fn capture_pane_lines(lines: &[String], trim_trailing_blank: bool) -> Vec<u8> {
@@ -553,6 +576,7 @@ impl TmuxRuntime {
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
             background_index_capture_enabled: false,
+            background_index_started: false,
             background_capture_only: HashSet::new(),
             history_backfill_done: HashSet::new(),
             history_backfill_pending: HashSet::new(),
@@ -1672,7 +1696,10 @@ impl TmuxRuntime {
 
     /// drain event_rx 的 TmuxEvent，更新 state。
     fn pump_events(&mut self) {
-        self.history_backfill_hold = false;
+        let connected = self.status == BackendStatus::Connected;
+        if connected {
+            self.history_backfill_hold = false;
+        }
         self.expire_resyncs();
         for _ in 0..PUMP_EVENT_BUDGET {
             let message = self
@@ -1783,7 +1810,23 @@ impl TmuxRuntime {
         }
         self.expire_resyncs();
         self.maybe_start_resyncs();
-        self.flush_deferred_history_backfill();
+        if self.status == BackendStatus::Connected {
+            self.flush_deferred_history_backfill();
+            self.start_background_index_if_needed();
+        }
+    }
+
+    /// attach 的后台可见屏索引放到 Connected 之后，并且排在活动 tab
+    /// 的 `-S` 历史后面。connect 里排队会把进入 tmux 的第一下卡住。
+    fn start_background_index_if_needed(&mut self) {
+        if !self.background_index_capture_enabled || self.background_index_started {
+            return;
+        }
+        if self.control_lane_busy() || !self.history_backfill_wanted.is_empty() {
+            return;
+        }
+        self.background_index_started = true;
+        self.query_background_index_captures();
     }
 
     /// 处理一条命令的完整响应（%begin..%end 之间的行）。
@@ -1892,10 +1935,14 @@ impl TmuxRuntime {
                     let _ = self.dispatch_tmux_command(&c);
                 }
                 PendingQuery::CapturePane { pane } => {
-                    // capture-pane -p 按行返回当前可见屏幕；拼回 CRLF 后喂给
-                    // terminal emulator。attach 初始阶段必须以快照替换此前
-                    // 被抑制的 `%output`，不能因为已有 prompt 就跳过恢复。
-                    let mut data = capture_pane_bytes(&lines);
+                    // capture-pane -p 按行返回当前可见屏幕。attach 必须按网
+                    // 格地址铺，不能 trim 掉 TUI 底栏空行；非 attach 的索引
+                    // dump 仍可裁尾。
+                    let mut data = if self.is_attach_mode() {
+                        capture_pane_surface_bytes(&lines)
+                    } else {
+                        capture_pane_bytes(&lines)
+                    };
                     if self.is_attach_mode() {
                         self.initial_capture_pending.remove(&pane);
                         self.initial_capture_done.insert(pane);
@@ -2636,6 +2683,9 @@ impl TmuxRuntime {
 
     /// 探测 tmux 是否支持 `refresh-client -r`（颜色上报）：不支持时静默跳过，
     /// 避免老 tmux 每上报一次就打一条 `unknown flag -r` 错误。
+    ///
+    /// 不在 `connect()` 里调用：SSH attach 等于多一次 `tmux -V` 往返。
+    #[allow(dead_code)]
     fn detect_colour_report_support(&mut self) {
         let socket = self
             .config
@@ -3070,24 +3120,10 @@ impl Runtime for TmuxRuntime {
 
         // attach 的 capture 是异步 Surface seed：连接状态不再等待所有 pane
         // 的历史返回。活动 tab 的查询已经排队，前端在收到 PaneSnapshot 后
-        // 播种；其它 tab 只做轻量可见屏索引。已经 seed 过的 pane 切 tab
-        // 只显示，不再 pause。
+        // 播种；其它 tab 只做轻量可见屏索引，而且要等 Connected 之后的
+        // 第一拍（先发活动 tab 历史，再索引后台）。
         if is_attach {
             self.background_index_capture_enabled = true;
-            self.query_background_index_captures();
-            // 后台 pane 只做可见屏索引；给这些小响应一个 bounded settle，
-            // 让 Core 搜索在 connect 后立即可用。绝不等待后台 scrollback
-            // 历史，也不把后台事件转成不可见的 Surface。
-            let settle_deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
-            while !self.attach_visible_captures_ready()
-                && std::time::Instant::now() < settle_deadline
-            {
-                self.pump_events();
-                if self.attach_visible_captures_ready() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
             tracing::info!(
                 target: "muxterm::tmux::seed",
                 active_tab = self.active_tab_id().map(|tab| tab.0),
@@ -3099,7 +3135,10 @@ impl Runtime for TmuxRuntime {
 
         // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
         self.query_list_sessions();
-        self.detect_colour_report_support();
+        // 不要在 connect 里再跑 `tmux -V`（SSH 等于多一次往返）。
+        // 版本未知时颜色上报默认开；status 订阅直接尝试，老 tmux 的
+        // unknown flag 走 Ignore 槽，不会卡住控制通道。
+        self.status_subscription_supported = true;
         self.setup_status_subscriptions();
 
         self.status = BackendStatus::Connected;
@@ -4517,7 +4556,7 @@ mod tests {
 
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
-            b"samesame\r\n",
+            b"\x1b[H\x1b[1Hsamesame\r\n",
             "边界之后的重复文本也是合法 live，不能按子串误删"
         );
     }
@@ -4539,7 +4578,10 @@ mod tests {
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
         b.dispatch_response(1, vec!["old command".into(), "prompt$ ".into()]);
-        assert_eq!(b.outputs.get(&pane).unwrap(), b"old command\r\nprompt$ ");
+        assert_eq!(
+            b.outputs.get(&pane).unwrap(),
+            b"\x1b[H\x1b[1Hold command\x1b[2Hprompt$ "
+        );
 
         // 快照完成后，后续输出恢复为普通增量。
         b.handle_message(Message::Output {
@@ -4557,8 +4599,8 @@ mod tests {
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
 
-        // tmux 屏幕：prompt 在第 0..2 行，下方全是空白行；若把空白行也
-        // 喂给新终端，光标会被推到最底部。
+        // tmux 屏幕：prompt 在第 3 行（1 基），下方全是空白行。按行 CUP
+        // 铺网格后光标停在 ❯，不能 trim 成三行 \r\n dump。
         b.dispatch_response(
             1,
             vec![
@@ -4570,10 +4612,50 @@ mod tests {
                 " ".into(),
             ],
         );
-        assert_eq!(
-            b.outputs.get(&pane).unwrap(),
-            b"~/Developer/muxterm\r\nfeature/quickconnect\r\n\xE2\x9D\xAF"
+        let snap = b.outputs.get(&pane).unwrap();
+        let text = String::from_utf8_lossy(snap);
+        assert!(
+            snap.starts_with(b"\x1b[H"),
+            "attach 索引快照必须从 home 铺格子: {text:?}"
         );
+        assert!(
+            text.contains("\u{1b}[3H❯"),
+            "prompt 必须还在第 3 行，不能被尾部空行推到 pane 底: {text:?}"
+        );
+        assert!(
+            !text.contains("\r\n"),
+            "索引用的 Surface seed 不得靠 \\r\\n 堆行，否则 TUI 网格会塌: {text:?}"
+        );
+    }
+
+    #[test]
+    fn attach_index_snapshot_keeps_tui_top_and_input_box() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(12);
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+        b.dispatch_response(
+            1,
+            vec![
+                "PI_STATUS".into(),
+                String::new(),
+                "CONV_MIDDLE".into(),
+                String::new(),
+                "PROMPT>".into(),
+                String::new(),
+            ],
+        );
+        let snap = b.outputs.get(&pane).unwrap();
+        let text = String::from_utf8_lossy(snap);
+        assert!(
+            text.contains("\u{1b}[1HPI_STATUS"),
+            "TUI 顶栏必须在第 1 行: {text:?}"
+        );
+        assert!(
+            text.contains("\u{1b}[5HPROMPT>"),
+            "输入盒必须在原来的行，不能被 trim 后挤到中间: {text:?}"
+        );
+        assert!(text.contains("CONV_MIDDLE"), "中间内容也要在: {text:?}");
     }
 
     #[test]
@@ -4588,7 +4670,7 @@ mod tests {
         b.dispatch_response(1, vec!["ignored".into()]);
         b.dispatch_response(2, vec!["restored".into()]);
 
-        assert_eq!(b.outputs.get(&pane).unwrap(), b"restored");
+        assert_eq!(b.outputs.get(&pane).unwrap(), b"\x1b[H\x1b[1Hrestored");
     }
 
     #[test]
@@ -4614,7 +4696,7 @@ mod tests {
         b.dispatch_response(1, vec!["screen line".into()]);
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
-            b"screen linelive-during-capture\r\n"
+            b"\x1b[H\x1b[1Hscreen linelive-during-capture\r\n"
         );
 
         // 之后 %output 恢复为普通增量。
@@ -4660,7 +4742,11 @@ mod tests {
         let StateChange::PaneSnapshot { data, .. } = events[0] else {
             unreachable!()
         };
-        assert!(data.starts_with(b"SNAPSHOT_TOKEN"));
+        assert!(
+            data.windows(14).any(|w| w == b"SNAPSHOT_TOKEN"),
+            "快照正文必须在: {:?}",
+            String::from_utf8_lossy(data)
+        );
         assert!(data.ends_with(b"PRE_SEED_TOKEN"));
 
         // capture 每 pane 只发一次：已 done 的 pane 不再重复查询。
@@ -5311,6 +5397,11 @@ mod tests {
             capture_pane_grid_bytes(&lines),
             b"PROMPT>\r\n\r\n",
             "TUI 快照必须保留底部空行，否则 alternate screen 网格上移"
+        );
+        assert_eq!(
+            capture_pane_surface_bytes(&lines),
+            b"\x1b[H\x1b[1HPROMPT>",
+            "索引 Surface seed 必须 CUP 到第 1 行，不能 trim 成光秃正文"
         );
 
         let state = parse_pane_replay_state("0|2|1|block|0|1|0|0|0|1|0|0|0|0|0|0|0|0|0|0");
@@ -6277,6 +6368,123 @@ mod tests {
             "attach 首屏仍必须 pause-seed: {cmds:?}"
         );
         assert!(b.initial_capture_pending.contains(&PaneId(0)));
+    }
+
+    #[test]
+    fn attach_connect_must_not_wait_on_background_index_or_tmux_version() {
+        let src = include_str!("backend.rs");
+        let connect = src
+            .split("async fn connect(")
+            .nth(1)
+            .expect("connect")
+            .split("\n    fn execute(")
+            .next()
+            .expect("execute after connect");
+        assert!(
+            !connect.contains("attach_visible_captures_ready"),
+            "connect 不得等后台可见屏索引，否则进入 tmux 会先卡一下"
+        );
+        assert!(
+            !connect.contains("detect_colour_report_support"),
+            "connect 不得再跑 tmux -V / SSH 往返"
+        );
+        assert!(
+            connect.contains("background_index_capture_enabled = true"),
+            "attach 仍要打开后台索引，只是放到 Connected 之后"
+        );
+        assert!(
+            connect.contains("status_subscription_supported = true"),
+            "跳过 -V 之后仍要尝试 status 订阅"
+        );
+    }
+
+    #[test]
+    fn history_backfill_and_background_index_wait_until_connected() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connecting;
+        b.background_index_capture_enabled = true;
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "bg".into(),
+                active: false,
+            },
+        ];
+        b.panes = vec![
+            PaneInfo {
+                id: PaneId(0),
+                tab: TabId(1),
+                active: true,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: PaneId(1),
+                tab: TabId(2),
+                active: true,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            },
+        ];
+        b.history_backfill_wanted.insert(PaneId(0));
+        b.history_backfill_hold = false;
+        b.pump_events();
+        let during_connect = drain_tmux_cmds(&mut rx);
+        assert!(
+            !during_connect
+                .iter()
+                .any(|cmd| cmd.contains("-S ") || cmd.contains("capture-pane")),
+            "connect settle 期间不得发历史或后台索引: {during_connect:?}"
+        );
+        assert!(
+            !b.attach_visible_captures_ready(),
+            "后台索引还没开始时 attach_visible_captures_ready 必须是 false"
+        );
+
+        b.status = BackendStatus::Connected;
+        b.pump_events();
+        let after_connect = drain_tmux_cmds(&mut rx);
+        assert!(
+            after_connect
+                .iter()
+                .any(|cmd| cmd.contains("-S ") && cmd.contains("%0")),
+            "Connected 后先补活动 pane 历史: {after_connect:?}"
+        );
+        assert!(
+            !after_connect
+                .iter()
+                .any(|cmd| cmd.contains("%1") && cmd.contains("capture-pane")),
+            "历史还在路上时不得插进后台索引: {after_connect:?}"
+        );
+
+        b.pending_queries.clear();
+        b.pending_by_number.clear();
+        b.history_backfill_done.insert(PaneId(0));
+        b.history_backfill_pending.remove(&PaneId(0));
+        b.history_backfill_wanted.clear();
+        b.pump_events();
+        let index = drain_tmux_cmds(&mut rx);
+        assert!(
+            index
+                .iter()
+                .any(|cmd| cmd.contains("capture-pane") && cmd.contains("%1")),
+            "历史走完后再索引后台 tab: {index:?}"
+        );
+        assert!(
+            !index
+                .iter()
+                .any(|cmd| cmd.contains("pause") || cmd.contains("-S ")),
+            "后台索引只抓可见屏: {index:?}"
+        );
     }
 
     /// 建 tab / 关 tab / 第一次点从未打开的 tab / 再切入已打开的 tab
