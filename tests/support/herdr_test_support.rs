@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
 use muxterm::core::runtime::herdr::session::HerdrSession;
+use muxterm::core::types::PaneId;
 use serde_json::Value;
 
 /// Remote runners can spend several seconds creating the repeated split/close
@@ -286,10 +288,11 @@ impl IsolatedHerdr {
     /// 预置 attach 内容不是产品逐字输入测试；使用原子 API 避免新 shell
     /// 刚进入交互态时 `pane.send-text` 的跨请求/行规程竞态。产品 raw 输入
     /// 仍由 `herdr_local_write_raw_executes_echo_command` 等契约覆盖。
+    /// `printf` 把 token 写成命令输出，避免把 token 当可执行文件名。
     fn run_marker(&self, pane_id: &str, token: &str) {
         let out = self
             .cli()
-            .args(["pane", "run", pane_id, token])
+            .args(["pane", "run", pane_id, "printf", "%s\n", token])
             .output()
             .expect("pane run 失败");
         assert!(
@@ -297,6 +300,61 @@ impl IsolatedHerdr {
             "pane run 失败: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    /// 挂一个有尺寸的 Control client，让 `pane.read(visible)` 在没有 GUI
+    /// client 的 CI runner 上仍有非空 viewport。Hello 的 cols/rows 是 session
+    /// 级 client 尺寸；本地若已有默认 viewport 也无害。
+    fn attach_sized_client(&self, pane_id: &str, cols: u16, rows: u16) -> ObserveStream {
+        let (tx, _rx) = channel();
+        let stream = ObserveStream::start(
+            self.client_socket_path(),
+            pane_id,
+            PaneId(1),
+            1,
+            StreamMode::Control,
+            false,
+            cols,
+            rows,
+            tx,
+        )
+        .unwrap_or_else(|error| panic!("启动 Herdr sizing client 失败: {error:#}"));
+        let session = HerdrSession::new(self.name(), self.socket_path());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if session
+                .pane_read_ansi(pane_id)
+                .ok()
+                .is_some_and(|bytes| !bytes.is_empty())
+            {
+                return stream;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        stream
+    }
+
+    fn snapshot_preview(session: &HerdrSession, pane_id: &str, source: &str) -> String {
+        let bytes = if source == "recent" {
+            session.pane_read_recent_ansi_lines(pane_id, 2000)
+        } else {
+            session.pane_read_ansi(pane_id)
+        };
+        match bytes {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                text.chars()
+                    .rev()
+                    .take(800)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<String>()
+                    .escape_debug()
+                    .to_string()
+            }
+            Err(error) => format!("error: {error:#}"),
+        }
     }
 
     /// 等待 Herdr 为新 pane 建好真实 shell 进程。
@@ -367,9 +425,12 @@ impl IsolatedHerdr {
     /// 重试运行并等待服务端 visible snapshot 看到 token。
     ///
     /// GTK/VTE attach 断言的是当前可见终端，而不是 scrollback；使用 recent
-    /// 会把已经滚出屏幕的 token 误当作可渲染的前置条件。
+    /// 会把已经滚出屏幕的 token 误当作可渲染的前置条件。CI runner 没有
+    /// 预先连接的 Herdr GUI client 时 visible viewport 可能为空，所以先
+    /// 挂一个有尺寸的 Control client（函数返回后 drop，GTK 再 attach）。
     pub fn paint_until_visible_token(&self, pane_id: &str, token: &str) {
         let session = HerdrSession::new(self.name(), self.socket_path());
+        let _client = self.attach_sized_client(pane_id, 120, 40);
         let deadline = Instant::now() + HERDR_FIXTURE_TIMEOUT;
         let mut next_send = Instant::now();
         while Instant::now() < deadline {
@@ -396,7 +457,9 @@ impl IsolatedHerdr {
             .map(|value| value.to_string())
             .unwrap_or_else(|error| format!("error: {error:#}"));
         panic!(
-            "Herdr pane token 未在 visible snapshot 落到前置条件: pane={pane_id} token={token} observed={observed} process_info={process_info}"
+            "Herdr pane token 未在 visible snapshot 落到前置条件: pane={pane_id} token={token} observed={observed} process_info={process_info} visible={} recent={}",
+            Self::snapshot_preview(&session, pane_id, "visible"),
+            Self::snapshot_preview(&session, pane_id, "recent"),
         );
     }
 

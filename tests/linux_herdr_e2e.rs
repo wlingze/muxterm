@@ -55,10 +55,11 @@ fn linux_herdr_attach_shows_preexist_token() {
             (pane_q.as_str(), "HERDR_LIVE_GB"),
             (pane_r.as_str(), "HERDR_LIVE_GC"),
         ];
+        // split 返回时新 pane 的 shell 可能尚未 ready；只有服务端
+        // visible snapshot 确认 token 后才进入 GTK attach。CI runner
+        // 没有预先连接的 Herdr GUI client 时，paint_until_visible_token
+        // 会先挂一个有尺寸的 Control client。
         for (pane, token) in pane_tokens {
-            // split 返回时新 pane 的 shell 可能尚未 ready；只有服务端
-            // recent snapshot 确认 token 后才进入 GTK attach，避免 CI 慢
-            // runner 丢输入而本地快 runner 偶然通过。
             herdr.paint_until_visible_token(pane, token);
         }
 
