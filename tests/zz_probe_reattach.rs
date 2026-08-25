@@ -73,7 +73,8 @@ fn probe_env_and_reattach() {
 
     // 2) 出 token
     let token = format!("TK_ENV_{}", std::process::id());
-    s1.send_input(format!("printf '{}'\r", token).as_bytes()).unwrap();
+    s1.send_input(format!("printf '{}'\r", token).as_bytes())
+        .unwrap();
     assert!(wait_server_text(&sess, &wire_pane, &token), "B 阶段 token");
     println!("BEFORE_DETACH token_present=true");
     drop(s1);

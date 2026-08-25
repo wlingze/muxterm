@@ -42,10 +42,12 @@ fn probe_prompt_env_reattach() {
     .unwrap();
 
     // 模拟 CI 多行带色 prompt
-    s1.send_input(b"export PS1='\\[\\e[38;5;2m\\]\\u@\\h:\\w\\[\\e[0m\\]\ncal-$$$ '\r").unwrap();
+    s1.send_input(b"export PS1='\\[\\e[38;5;2m\\]\\u@\\h:\\w\\[\\e[0m\\]\ncal-$$$ '\r")
+        .unwrap();
     std::thread::sleep(Duration::from_millis(500));
     let token = format!("TK_PS1_{}", std::process::id());
-    s1.send_input(format!("printf '{}'\r", token).as_bytes()).unwrap();
+    s1.send_input(format!("printf '{}'\r", token).as_bytes())
+        .unwrap();
     assert!(wait_server_text(&sess, &wire_pane, &token), "B 阶段 token");
     println!("PS1_SET token_present=true");
     drop(s1);
