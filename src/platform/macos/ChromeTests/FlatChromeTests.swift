@@ -892,10 +892,10 @@ final class PaneLayoutProjectionTests: XCTestCase {
     }
 
     func testOnlyStructuralEventsRebuildLayout() {
-        for type: UInt32 in [1, 2, 3, 4, 5, 6] {
+        for type: UInt32 in [1, 2, 3, 4, 5] {
             XCTAssertTrue(StateEventPolicy.requiresLayoutReload(type), "event=\(type)")
         }
-        for type: UInt32 in [0, 7, 8, 9, 10, 99] {
+        for type: UInt32 in [0, 6, 7, 8, 9, 10, 99] {
             XCTAssertFalse(StateEventPolicy.requiresLayoutReload(type), "event=\(type)")
         }
         XCTAssertTrue(StateEventPolicy.changesActivePane(7))
@@ -920,13 +920,18 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertFalse(
             StateEventPolicy.shouldReloadUI(type: 5, tabId: 5, activeTabId: 2)
         )
-        // tab add/close、active tab changed 无条件重建。
+        // tab add/close 仍要处理；active tab 由缓存路径消化，策略层仍标记。
         XCTAssertTrue(
             StateEventPolicy.shouldReloadUI(type: 1, tabId: 5, activeTabId: 2)
         )
         XCTAssertTrue(
             StateEventPolicy.shouldReloadUI(type: 6, tabId: 5, activeTabId: 2)
         )
+    }
+
+    func testCachedTabSwitchDoesNotRebuildLayout() {
+        XCTAssertFalse(TabSwitchPaintPolicy.needsLayoutReload(cacheHit: true))
+        XCTAssertTrue(TabSwitchPaintPolicy.needsLayoutReload(cacheHit: false))
     }
 }
 
@@ -971,6 +976,10 @@ final class EventBatchPlanTests: XCTestCase {
             types: [7, 99, 99],
             requiresLayoutReload: StateEventPolicy.requiresLayoutReload
         ))
+        XCTAssertFalse(EventBatchPlan.hasStructuralEvent(
+            types: [6, 99],
+            requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+        ), "切 tab 不得推迟同批 PaneOutput")
         XCTAssertFalse(EventBatchPlan.hasStructuralEvent(
             types: [],
             requiresLayoutReload: StateEventPolicy.requiresLayoutReload

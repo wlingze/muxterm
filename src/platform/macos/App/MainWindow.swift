@@ -1439,6 +1439,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 缓存命中时画面已经切过去了。
     }
 
+    /// 已缓存的 tab：只挂树、对一下 snapshot，不重建、不 refresh-client -C。
+    /// 返回 true 表示第一次进入，需要走全量 refreshUI。
+    @discardableResult
+    private func applyCachedTabSwitch(_ tabId: UInt32) -> Bool {
+        if let oldPane = lastSnapshot.panes.first(where: \.isActive)?.id {
+            recordLastSeen(for: oldPane)
+        }
+        tabSwitchGate.onTabChanged(to: tabId)
+        content.statusBar.markCurrentWindow(tabId)
+        let cacheHit = content.paneLayout.revealCachedTab(tabId) != nil
+        guard !TabSwitchPaintPolicy.needsLayoutReload(cacheHit: cacheHit) else {
+            return true
+        }
+        lastSnapshot = bridge.snapshot()
+        content.updateTabs(lastSnapshot.tabs)
+        if let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
+            ?? lastSnapshot.panes.first?.id
+        {
+            terminalManager.focusTarget = terminalManager.view(for: activePane)
+            content.paneLayout.markActivePane(activePane)
+            restoreTerminalFocusIfAllowed()
+        }
+        return false
+    }
+
     private func splitActivePane(horizontal: Bool) {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
@@ -2142,6 +2167,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
                 }
                 outputSeen = true
+            } else if ev.type == STATE_ACTIVE_TAB_CHANGED {
+                if applyCachedTabSwitch(ev.tabId) {
+                    uiStateChanged = true
+                    needsLayoutReload = true
+                    statusBarNeedsRefresh = true
+                }
             } else if StateEventPolicy.shouldReloadUI(
                 type: ev.type,
                 tabId: ev.tabId,
@@ -2149,20 +2180,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ) {
                 uiStateChanged = true
                 needsLayoutReload = true
-                if ev.type == STATE_ACTIVE_TAB_CHANGED {
-                    // 切 tab 也意味着旧 pane 暂时离开可见 Surface。先在
-                    // 过渡快照上记录旧 active pane 的稳定行 seq；否则只有
-                    // Cmd+[ / Cmd+] 切 pane 会产生 last-seen，切 tab 回来
-                    // 永远没有“上次看到这里”入口。
-                    if let oldPane = lastSnapshot.panes.first(where: \.isActive)?.id {
-                        recordLastSeen(for: oldPane)
-                    }
-                    tabSwitchGate.onTabChanged(to: ev.tabId)
-                    // 前端驱动高亮：立即把 statusbar 高亮移到目标 tab，
-                    // 不等子进程快照查询（用户要求：tmux 不同步就前端控制）。
-                    content.statusBar.markCurrentWindow(ev.tabId)
-                    statusBarNeedsRefresh = true
-                } else if ev.type == STATE_TAB_CLOSED {
+                if ev.type == STATE_TAB_CLOSED {
                     tabSwitchGate.onTabClosed(ev.tabId)
                     // 本地移除已关闭 tab 的 statusbar 条目，立即反馈；
                     // scheduleStatusBarRefresh 随后用权威快照兜底。

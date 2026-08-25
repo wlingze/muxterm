@@ -35,9 +35,10 @@ public enum PaneFullscreenPolicy {
 public enum StateEventPolicy {
     public static func requiresLayoutReload(_ type: UInt32) -> Bool {
         switch type {
-        case 1, 2, 3, 4, 5, 6: // tab add/close, layout, pane add/close, active tab
+        case 1, 2, 3, 4, 5: // tab add/close, layout, pane add/close
             return true
         default:
+            // 6 = active tab changed：只挂缓存树，同批 PaneOutput 不必推迟。
             return false
         }
     }
@@ -53,7 +54,9 @@ public enum StateEventPolicy {
         activeTabId: UInt32
     ) -> Bool {
         switch type {
-        case 1, 2, 6: // tab add/close、active tab changed：总是重建
+        case 1, 2: // tab add/close：总是处理
+            return true
+        case 6: // active tab：缓存命中时 MainWindow 走轻量路径，不重建
             return true
         case 3, 4, 5: // layout / pane add / pane close：只看当前 tab
             return tabId == activeTabId
