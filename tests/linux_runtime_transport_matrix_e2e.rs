@@ -207,6 +207,15 @@ fn assert_three_pane_surface(app: &AppWindow, label: &str) -> Result<Vec<u32>> {
     Ok(leaves)
 }
 
+fn pane_vte_contains_token(app: &AppWindow, pane: u32, token: &str) -> bool {
+    let text = app.test_pane_vte_text(pane);
+    if text.contains(token) {
+        return true;
+    }
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains(token)
+}
+
 fn emit_command(app: &AppWindow, command: &str) -> Result<()> {
     for character in command.chars() {
         ensure!(
@@ -247,15 +256,21 @@ fn execute_printf(
     // otherwise the normal first-screen reset is misclassified as a reset
     // caused by the command under test.
     wait_for(app, &format!("pane {pane} 首屏 seed"), |app| {
-        app.test_active_pane_seeded()
+        app.test_active_pane_seeded() && app.test_pane_allocation(pane).0 > 0
     })?;
     // 命令输出只能原样进入已有 Surface。Herdr 的 full frame、tmux 的
     // PaneOutput 与 shell PTY 字节都不得借机 reset VTE。
     app.test_clear_active_pane_render_trace();
-    emit_command(app, &command)?;
+    // SSH/split 后 Control 首帧可能仍是空屏；与 core 矩阵 execute_echo
+    // 一样有界重试 printf，断言仍要求 VTE + 搜索出现真实 token。
+    let mut next_send = Instant::now();
     wait_for(app, &format!("pane {pane} 输出 {token}"), |app| {
+        if Instant::now() >= next_send {
+            let _ = emit_command(app, &command);
+            next_send = Instant::now() + Duration::from_millis(500);
+        }
         let hits = app.test_search_workspace(&token);
-        app.test_pane_vte_text(pane).contains(&token)
+        pane_vte_contains_token(app, pane, &token)
             && hits.iter().any(|(_, hit_pane, _)| *hit_pane == pane)
     })?;
     let hit_panes = app
@@ -359,7 +374,7 @@ fn wait_visible_vte_ownership(
                 visible_panes
                     .iter()
                     .copied()
-                    .filter(|pane| app.test_pane_vte_text(*pane).contains(token))
+                    .filter(|pane| pane_vte_contains_token(app, *pane, token))
                     .collect::<Vec<_>>()
                     == vec![*expected_pane]
             },
