@@ -281,6 +281,24 @@ impl IsolatedHerdr {
         );
     }
 
+    /// 用 Herdr 的原子 `pane run`（命令 + Enter）在夹具中产生标记。
+    ///
+    /// 预置 attach 内容不是产品逐字输入测试；使用原子 API 避免新 shell
+    /// 刚进入交互态时 `pane.send-text` 的跨请求/行规程竞态。产品 raw 输入
+    /// 仍由 `herdr_local_write_raw_executes_echo_command` 等契约覆盖。
+    fn run_marker(&self, pane_id: &str, token: &str) {
+        let out = self
+            .cli()
+            .args(["pane", "run", pane_id, token])
+            .output()
+            .expect("pane run 失败");
+        assert!(
+            out.status.success(),
+            "pane run 失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     /// 等待 Herdr 为新 pane 建好真实 shell 进程。
     ///
     /// `pane.split` 的响应只代表拓扑已经变更；pty/shell 是随后异步启动的。
@@ -311,7 +329,7 @@ impl IsolatedHerdr {
         panic!("Herdr pane shell 未就绪: pane={pane_id} process_info={info} recent={recent:?}");
     }
 
-    /// 重试发送并等待服务端 recent snapshot 看到 token，再把它作为 attach
+    /// 重试运行并等待服务端 recent snapshot 看到 token，再把它作为 attach
     /// 前置条件。新建 pane 的 shell 可能尚未 ready；重试只解决 fixture
     /// readiness，不改变 attach 后 Runtime 的快照断言。
     pub fn paint_until_token(&self, pane_id: &str, token: &str) {
@@ -320,7 +338,7 @@ impl IsolatedHerdr {
         let mut next_send = Instant::now();
         while Instant::now() < deadline {
             if pane_process_ready(&session, pane_id) && Instant::now() >= next_send {
-                self.paint(pane_id, token);
+                self.run_marker(pane_id, token);
                 next_send = Instant::now() + Duration::from_millis(250);
             }
             if let Ok(bytes) = session.pane_read_recent_ansi_lines(pane_id, 2000) {
@@ -346,7 +364,7 @@ impl IsolatedHerdr {
         );
     }
 
-    /// 重试发送并等待服务端 visible snapshot 看到 token。
+    /// 重试运行并等待服务端 visible snapshot 看到 token。
     ///
     /// GTK/VTE attach 断言的是当前可见终端，而不是 scrollback；使用 recent
     /// 会把已经滚出屏幕的 token 误当作可渲染的前置条件。
@@ -356,7 +374,7 @@ impl IsolatedHerdr {
         let mut next_send = Instant::now();
         while Instant::now() < deadline {
             if pane_process_ready(&session, pane_id) && Instant::now() >= next_send {
-                self.paint(pane_id, token);
+                self.run_marker(pane_id, token);
                 next_send = Instant::now() + Duration::from_millis(250);
             }
             if let Ok(bytes) = session.pane_read_ansi(pane_id) {

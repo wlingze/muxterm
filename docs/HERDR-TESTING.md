@@ -422,9 +422,9 @@ Arch 本机与 Ubuntu/macOS runner 的 GTK/VTE/系统库不要求字节级相同
 Herdr 拓扑夹具还必须把 `pane.split` 的两个阶段分开：split 响应只表示布局已变更，
 新 pane 的 pty/shell 仍由服务端异步启动。测试在关闭旧 pane 或发送 seed token 前，
 轮询同一 named session 的 `pane.process_info`，确认 `shell_pid` 和
-`foreground_processes` 都存在；最终 attach token 才通过单条 `pane.send-text`（含 CR）
-写入并由 `pane.read` 观察。禁止用“立刻写入后反复 sleep/重放”冒充 readiness，这会在
-慢 runner 上丢掉启动窗口并造成伪随机失败。
+`foreground_processes` 都存在；夹具的 attach seed 通过 Herdr 原子 `pane.run`（命令 + Enter）
+写入并由 `pane.read` 观察。产品逐字 raw 输入另由真实 `WriteRaw` 测试覆盖。禁止用
+“立刻写入后反复 sleep/重放”冒充 readiness，这会在慢 runner 上丢掉启动窗口并造成伪随机失败。
 
 ### 7.3 单一入口
 
