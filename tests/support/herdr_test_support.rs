@@ -290,6 +290,35 @@ impl IsolatedHerdr {
         );
     }
 
+    /// 重试发送并等待服务端 visible snapshot 看到 token。
+    ///
+    /// GTK/VTE attach 断言的是当前可见终端，而不是 scrollback；使用 recent
+    /// 会把已经滚出屏幕的 token 误当作可渲染的前置条件。
+    pub fn paint_until_visible_token(&self, pane_id: &str, token: &str) {
+        let session = HerdrSession::new(self.name(), self.socket_path());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut next_send = Instant::now();
+        while Instant::now() < deadline {
+            if Instant::now() >= next_send {
+                self.paint(pane_id, token);
+                next_send = Instant::now() + Duration::from_millis(250);
+            }
+            if let Ok(bytes) = session.pane_read_ansi(pane_id) {
+                if String::from_utf8_lossy(&bytes).contains(token) {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let observed = session
+            .pane_read_ansi(pane_id)
+            .map(|bytes| String::from_utf8_lossy(&bytes).contains(token))
+            .unwrap_or(false);
+        panic!(
+            "Herdr pane token 未在 visible snapshot 落到前置条件: pane={pane_id} token={token} observed={observed}"
+        );
+    }
+
     /// 在指定 pane 上真实执行 `pane split`，返回新 pane 的 public id。
     pub fn split_pane(&self, pane_id: &str, direction: &str) -> String {
         let out = self

@@ -401,23 +401,37 @@ fn execute_echo(
         !command.contains(&token),
         "测试命令不得把期望 token 原样写进输入回显"
     );
-    done(
-        workspace,
-        Task::WriteRaw {
-            target,
-            data: command.into_bytes(),
-        },
-        &format!("pane {target} printf"),
-    )?;
-    let wait = wait_until(workspace, &format!("pane {target} 输出 {token}"), |ws| {
-        pane_contains_token(ws, target, &token)
-    });
-    if let Err(error) = wait {
+    // 远端 shell/Herdr control stream 在 Workspace connect 返回后仍可能处于
+    // startup；一次性写入会在慢 CI 丢失，而本地快 runner 偶然成功。重试是
+    // 有界的 fixture readiness 处理，断言仍要求真实命令输出 token。
+    let deadline = Instant::now() + MATRIX_TIMEOUT;
+    let mut next_send = Instant::now();
+    let mut delivered = false;
+    while Instant::now() < deadline {
+        if Instant::now() >= next_send {
+            done(
+                workspace,
+                Task::WriteRaw {
+                    target,
+                    data: command.as_bytes().to_vec(),
+                },
+                &format!("pane {target} printf"),
+            )?;
+            next_send = Instant::now() + Duration::from_millis(500);
+        }
+        let _ = workspace.refresh();
+        if pane_contains_token(workspace, target, &token) {
+            delivered = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if !delivered {
         let bytes = workspace.state().pane_output(&target).unwrap_or_default();
         let raw_tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(1_200)..]);
         let rendered = rendered_pane_output(workspace, target);
         anyhow::bail!(
-            "{error:#}; raw_len={}, raw_tail={}, rendered={}",
+            "pane {target} 输出 {token} 超时; raw_len={}, raw_tail={}, rendered={}",
             bytes.len(),
             raw_tail.escape_debug(),
             rendered.escape_debug()
