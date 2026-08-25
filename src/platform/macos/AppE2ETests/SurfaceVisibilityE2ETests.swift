@@ -196,4 +196,40 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
             "第二次进入已加载的 tab 必须复用 host，不得重建 SwiftTerm"
         )
     }
+
+    func testCopySelectionAndPasteSendsBytes() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        view.getTerminal().resize(cols: 80, rows: 24)
+        view.feedOutput(Data("COPY_ME hello\n".utf8), isSnapshot: true)
+        view.selectAll()
+        XCTAssertTrue(view.getSelection()?.contains("COPY_ME") == true)
+
+        view.copy(nil)
+        XCTAssertTrue(
+            NSPasteboard.general.string(forType: .string)?.contains("COPY_ME") == true,
+            "选区必须进系统剪贴板"
+        )
+
+        let handler = ClipboardRecordingHandler()
+        view.inputHandler = handler
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("PASTE_ME", forType: .string)
+        view.paste(nil)
+        XCTAssertTrue(
+            String(bytes: handler.bytes, encoding: .utf8)?.contains("PASTE_ME") == true,
+            "粘贴必须把剪贴板字节发给 pane"
+        )
+    }
+}
+
+private final class ClipboardRecordingHandler: TerminalInputHandler {
+    var bytes: [UInt8] = []
+    func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
+        bytes.append(contentsOf: data)
+    }
+    func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {}
 }

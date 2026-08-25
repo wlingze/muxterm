@@ -520,6 +520,41 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         )
     }
 
+    func testEditShortcutsDeferToMenu() {
+        XCTAssertTrue(
+            TerminalEditShortcutPolicy.shouldDeferToMenu(
+                command: true, shift: false, option: false, control: false, key: "c"
+            )
+        )
+        XCTAssertTrue(
+            TerminalEditShortcutPolicy.shouldDeferToMenu(
+                command: true, shift: false, option: false, control: false, key: "v"
+            )
+        )
+        XCTAssertTrue(
+            TerminalEditShortcutPolicy.shouldDeferToMenu(
+                command: true, shift: false, option: false, control: false, key: "a"
+            )
+        )
+        XCTAssertFalse(
+            TerminalEditShortcutPolicy.shouldDeferToMenu(
+                command: true, shift: false, option: false, control: false, key: "t"
+            ),
+            "Cmd-T 仍是新 tab，不能当成编辑快捷键"
+        )
+        XCTAssertFalse(
+            TerminalEditShortcutPolicy.shouldDeferToMenu(
+                command: false, shift: false, option: false, control: true, key: "c"
+            ),
+            "Ctrl-C 必须继续作为 SIGINT 发给 pane"
+        )
+        XCTAssertFalse(
+            TerminalEditShortcutPolicy.shouldDeferToMenu(
+                command: true, shift: true, option: false, control: false, key: "c"
+            )
+        )
+    }
+
     func testPanelReloadSkipsAttentionAndSearchOnWorkspaces() {
         XCTAssertFalse(PanelReloadPolicy.needsAttentionSnapshot(.workspaces))
         XCTAssertTrue(PanelReloadPolicy.needsAttentionSnapshot(.attention))

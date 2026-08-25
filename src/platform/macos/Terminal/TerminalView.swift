@@ -161,6 +161,27 @@ final class MuxTerminalView: TerminalView {
         keyDown(with: event)
     }
 
+    /// SwiftTerm 的 copy/paste 签名是 `Any`，对不上 NSResponder 的 `Any?`。
+    /// Edit 菜单和 Cmd-C/V 走的是 NSResponder，必须在这里写剪贴板 / 发给 pane。
+    override func copy(_ sender: Any?) {
+        guard let text = getSelection() else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    override func paste(_ sender: Any?) {
+        let text = NSPasteboard.general.string(forType: .string) ?? ""
+        guard !text.isEmpty else { return }
+        if getTerminal().bracketedPasteMode {
+            send(data: EscapeSequences.bracketedPasteStart[...])
+            send(txt: text)
+            send(data: EscapeSequences.bracketedPasteEnd[...])
+        } else {
+            insertText(text, replacementRange: NSRange(location: 0, length: 0))
+        }
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         return nil
