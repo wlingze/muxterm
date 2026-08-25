@@ -596,17 +596,42 @@ pub fn verify_ssh_shell_transport(workspace: &mut Workspace) -> Result<()> {
         !command.contains(&token),
         "SSH transport 证明命令不得把期望 token 原样写进输入回显"
     );
-    done(
-        workspace,
-        Task::WriteRaw {
-            target: pane,
-            data: command.into_bytes(),
-        },
-        "SSH shell 远端环境证明",
-    )?;
-    wait_until(workspace, "SSH shell 必须存在 SSH_CONNECTION", |ws| {
-        pane_contains_token(ws, pane, &token)
-    })
+    // 与 execute_echo 相同：connect 返回后远端交互 shell 仍可能在
+    // startup / newuser 向导窗口；一次性 WriteRaw 会在慢 CI 丢失。
+    let deadline = Instant::now() + MATRIX_TIMEOUT;
+    let mut next_send = Instant::now();
+    let mut delivered = false;
+    while Instant::now() < deadline {
+        if Instant::now() >= next_send {
+            done(
+                workspace,
+                Task::WriteRaw {
+                    target: pane,
+                    data: command.as_bytes().to_vec(),
+                },
+                "SSH shell 远端环境证明",
+            )?;
+            next_send = Instant::now() + Duration::from_millis(500);
+        }
+        let _ = workspace.refresh();
+        if pane_contains_token(workspace, pane, &token) {
+            delivered = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if !delivered {
+        let bytes = workspace.state().pane_output(&pane).unwrap_or_default();
+        let raw_tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(1_200)..]);
+        let rendered = rendered_pane_output(workspace, pane);
+        anyhow::bail!(
+            "SSH shell 必须存在 SSH_CONNECTION 超时; raw_len={}, raw_tail={}, rendered={}",
+            bytes.len(),
+            raw_tail.escape_debug(),
+            rendered.escape_debug()
+        );
+    }
+    Ok(())
 }
 
 /// 从第二个 Workspace 通过 WorkspacePool 切回后，原对象的拓扑、焦点和输出必须保留。
