@@ -147,8 +147,10 @@ fn herdr_down_split_preserves_vertical_tree_rects_and_output_isolation() {
     let bottom_pane = herdr.split_pane(&top_pane, "down");
     let top_token = "HERDR_LAYOUT_TOP_ONLY";
     let bottom_token = "HERDR_LAYOUT_BOTTOM_ONLY";
-    herdr.paint(&top_pane, top_token);
-    herdr.paint(&bottom_pane, bottom_token);
+    // 新 pane 的 shell 可能在 split 返回后尚未 ready；等待服务端 recent
+    // snapshot 确认 token，避免本地快速 runner 与 CI 慢 runner 的时序差异。
+    herdr.paint_until_token(&top_pane, top_token);
+    herdr.paint_until_token(&bottom_pane, bottom_token);
 
     let session = Arc::new(HerdrSession::new(herdr.name(), herdr.socket_path()));
     let snapshot = session.snapshot().expect("应读取真实 Herdr snapshot");
