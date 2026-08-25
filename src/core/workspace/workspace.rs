@@ -466,6 +466,25 @@ impl Workspace {
                     });
                     buf.replace_frame(data, cols, rows);
                 }
+                StateChange::PaneHistory { pane, data } => {
+                    let lines: Vec<String> = String::from_utf8_lossy(data)
+                        .split('\n')
+                        .map(str::to_string)
+                        .collect();
+                    if lines.iter().all(|line| line.is_empty()) {
+                        continue;
+                    }
+                    let (cols, rows) = self
+                        .state()
+                        .pane(pane)
+                        .map(|p| (p.cols, p.rows))
+                        .unwrap_or((80, 24));
+                    let scrollback_lines = self.scrollback_lines;
+                    let buf = self.panes.entry(*pane).or_insert_with(|| {
+                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
+                    });
+                    buf.prepend_history(&lines);
+                }
                 StateChange::PaneClosed { pane } => {
                     self.panes.remove(pane);
                     self.agents.remove(pane);
@@ -547,6 +566,22 @@ mod tests {
             }
         )));
         assert!(w.pane_text(PaneId(1)).contains("MUXTERM_TOKEN"));
+    }
+
+    #[test]
+    fn pane_history_event_is_searchable_without_replacing_visible() {
+        let mut w = workspace("demo");
+        w.feed_events(&[StateChange::PaneSnapshot {
+            pane: PaneId(1),
+            data: b"HIST_TAIL\r\n".to_vec(),
+        }]);
+        w.feed_events(&[StateChange::PaneHistory {
+            pane: PaneId(1),
+            data: b"HIST_OFFSCREEN\npad-01".to_vec(),
+        }]);
+        let text = w.pane_text(PaneId(1));
+        assert!(text.contains("HIST_OFFSCREEN"), "{text}");
+        assert!(text.contains("HIST_TAIL"), "{text}");
     }
 
     #[test]

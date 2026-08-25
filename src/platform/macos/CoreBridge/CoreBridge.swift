@@ -50,6 +50,7 @@ struct StateChange: Equatable {
     /// `%output` event.  Keeping this distinction at the bridge boundary avoids
     /// feeding an attach/resync capture twice when a view is created.
     var isPaneSnapshot: Bool { type == STATE_PANE_SNAPSHOT }
+    var isPaneHistory: Bool { type == STATE_PANE_HISTORY }
     var isPaneClosed: Bool { type == STATE_PANE_CLOSED }
     var isTabClosed: Bool { type == STATE_TAB_CLOSED }
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }

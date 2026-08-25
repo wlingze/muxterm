@@ -16,6 +16,8 @@ final class MuxTerminalView: TerminalView {
     var onScrollPositionChanged: ((UInt32, Double, Bool) -> Void)?
     /// 诊断/回归测试：Surface seed 之外不允许发生 reset。
     private(set) var snapshotResetCount = 0
+    /// 已经写入过 attach 前历史。snapshot reset 后清掉，允许再 prepend。
+    private(set) var historyPrepended = false
     /// tmux 控制模式下，SwiftTerm 解析 pane 输出时生成的查询应答（OSC 10/11、
     /// CSI DA/DSR、DCS 等）必须丢弃：tmux 拥有 pane 的 PTY 与终端协议，应答
     /// 经 `send-keys -l` 回写会被 pane 回显并执行，造成 `git lg` 的
@@ -193,6 +195,7 @@ final class MuxTerminalView: TerminalView {
             // 只允许新建 Surface 的一次性 seed reset；历史 seed 随后进入
             // SwiftTerm 原生 scrollback，不能在 live/滚轮路径重复调用。
             snapshotResetCount += 1
+            historyPrepended = false
             getTerminal().resetToInitialState()
         }
         // A zero-byte snapshot is meaningful: it clears an authoritative blank
@@ -226,6 +229,16 @@ final class MuxTerminalView: TerminalView {
             lastAccessibilityUpdate = now
             updateAccessibilityOutput()
         }
+    }
+
+    /// attach 前历史写入 native scrollback。不得 reset，也不得当 VT 流重放。
+    func prependHistoryLines(_ lines: [String]) {
+        guard !PaneHistorySeedPolicy.shouldResetTerminal() else { return }
+        guard !lines.isEmpty, !historyPrepended else { return }
+        historyPrepended = true
+        ensureHistoryCapacity(atLeast: historyCapacity + lines.count)
+        getTerminal().muxtermPrependHistoryLines(lines)
+        updateAccessibilityOutput()
     }
 
     /// 当前 native VT 是否位于最新输出尾部。

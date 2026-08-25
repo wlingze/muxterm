@@ -2138,6 +2138,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             $0.type == STATE_PANE_RESIZED
         })
         var pendingSnapshots: [(paneId: UInt32, data: Data)] = []
+        var pendingHistory: [(paneId: UInt32, data: Data)] = []
         var pendingOutputs: [(paneId: UInt32, data: Data)] = []
         for ev in events {
             if ev.isPaneClosed {
@@ -2153,6 +2154,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     pendingSnapshots.append((paneId: ev.paneId, data: ev.data))
                 } else {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
+                }
+            } else if ev.isPaneHistory {
+                guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
+                    continue
+                }
+                if deferSurfaceEvents {
+                    pendingHistory.append((paneId: ev.paneId, data: ev.data))
+                } else {
+                    terminalManager.handleHistory(paneId: ev.paneId, data: ev.data)
                 }
             } else if ev.isPaneOutput {
                 guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
@@ -2285,6 +2295,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for item in pendingSnapshots {
             if shouldHandleSurfaceEvent(paneId: item.paneId) {
                 terminalManager.handleSnapshot(paneId: item.paneId, data: item.data)
+            }
+        }
+        for item in pendingHistory {
+            if shouldHandleSurfaceEvent(paneId: item.paneId) {
+                terminalManager.handleHistory(paneId: item.paneId, data: item.data)
             }
         }
         for item in pendingOutputs {

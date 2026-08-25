@@ -80,6 +80,9 @@ final class TerminalManager: TerminalInputHandler {
     /// 但命令时间线/搜索可能在这段窗口内要求跳到历史；该请求必须在 seed
     /// 写完后重新应用，不能被 finishSeed 的默认 scrollToLatest 覆盖。
     private var pendingViewportOffsets: [UInt32: UInt32] = [:]
+    /// attach 前历史。snapshot reset 后还要再 prepend 一次。
+    private var savedHistory: [UInt32: [String]] = [:]
+    private var pendingHistory: [UInt32: [String]] = [:]
     /// `applyViewport`/回底是程序主动改变 native scroll position，回调只做
     /// 重绘通知，不再把 native 的浮点位置反算回 core，避免搜索跳转漂移。
     private var applyingNativeScroll = Set<UInt32>()
@@ -207,6 +210,9 @@ final class TerminalManager: TerminalInputHandler {
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         swiftTermSeeded.insert(paneId)
+        if let lines = pendingHistory.removeValue(forKey: paneId) ?? savedHistory[paneId] {
+            seed.view.prependHistoryLines(lines)
+        }
         if let requestedOffset = pendingViewportOffsets.removeValue(forKey: paneId) {
             // 首屏 feed 完成后再应用 seed 期间排队的显式历史请求；此时
             // SwiftTerm 已经拥有完整 scrollback，offset 才有真实几何意义。
@@ -431,6 +437,23 @@ final class TerminalManager: TerminalInputHandler {
         recordTraffic(bytes: data.count)
     }
 
+    /// Runtime 的按行历史：写入 native scrollback，禁止 reset。
+    func handleHistory(paneId: UInt32, data: Data) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let lines = PaneHistorySeedPolicy.decode(data)
+        guard !lines.isEmpty else { return }
+        savedHistory[paneId] = lines
+        if views[paneId] == nil {
+            guard viewCreationEnabled else { return }
+        }
+        let view = view(for: paneId)
+        if seedingPanes.contains(paneId) {
+            pendingHistory[paneId] = lines
+            return
+        }
+        view.prependHistoryLines(lines)
+    }
+
     private func scheduleFeedFlush() {
         guard feedFlushWorkItem == nil else { return }
         let work = DispatchWorkItem { [weak self] in
@@ -536,6 +559,8 @@ final class TerminalManager: TerminalInputHandler {
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         surfaceReadyPanes.remove(paneId)
+        savedHistory.removeValue(forKey: paneId)
+        pendingHistory.removeValue(forKey: paneId)
         // Surface feed 只在主线程。后台 slot 把事件 hop 回来再 remove。
         views[paneId]?.removeFromSuperview()
         views.removeValue(forKey: paneId)

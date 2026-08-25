@@ -45,6 +45,7 @@ pub mod state_types {
     pub const STATE_ACTIVE_PANE_CHANGED: u32 = 7;
     pub const STATE_PANE_RESIZED: u32 = 9;
     pub const STATE_PANE_SNAPSHOT: u32 = 14;
+    pub const STATE_PANE_HISTORY: u32 = 17;
 }
 
 /// FFI 状态事件的渲染策略。
@@ -98,7 +99,9 @@ impl EventBatchPlan {
         let mut later = Vec::new();
         for (i, t) in types.iter().enumerate() {
             if defer
-                && (*t == state_types::STATE_PANE_OUTPUT || *t == state_types::STATE_PANE_SNAPSHOT)
+                && (*t == state_types::STATE_PANE_OUTPUT
+                    || *t == state_types::STATE_PANE_SNAPSHOT
+                    || *t == state_types::STATE_PANE_HISTORY)
             {
                 later.push(i);
             } else {

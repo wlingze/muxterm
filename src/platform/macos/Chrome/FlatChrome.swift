@@ -526,6 +526,30 @@ public enum TabSwitchPaintPolicy {
     }
 }
 
+/// attach 前历史按行写入 native scrollback：不得 reset，也不得当 VT dump。
+public enum PaneHistorySeedPolicy {
+    public static func shouldResetTerminal() -> Bool { false }
+
+    public static func splitHistoryAndVisible(
+        lines: [String],
+        visibleRows: Int
+    ) -> (history: [String], visible: [String]) {
+        let rows = max(0, visibleRows)
+        if rows == 0 || lines.count <= rows {
+            return ([], lines)
+        }
+        let idx = lines.count - rows
+        return (Array(lines[..<idx]), Array(lines[idx...]))
+    }
+
+    public static func decode(_ data: Data) -> [String] {
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else {
+            return []
+        }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+}
+
 /// 快捷键打开的浮层可以占有光标；其它时候只要应用在前台，光标在 terminal。
 public enum TerminalFocusPolicy {
     public static func shouldFocusTerminal(appActive: Bool, overlayIsKey: Bool) -> Bool {

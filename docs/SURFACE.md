@@ -180,7 +180,7 @@ ivyTerm 在 capture 后用若干 `\n` + `ESC[#A` 把视口对齐到底（`scroll
 9. **Index never becomes Surface.** `visible_ansi` / `surface_seed_ansi` / `scroll_ansi` / `paneSurfaceSeedANSI` **不得**进 VTE/SwiftTerm。Herdr `pane.read` / `visible_ansi` 也只播种 Index；只有经过当前 generation/event ordinal/wire seq 过滤的原始 `terminal.frame` 才能进入 Surface。full 建 baseline，diff 追赶；旧 generation 永不重播。
 10. **Open Surfaces keep eating.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与后台 workspace 的 PaneView 继续 `feed` 原始 PTY 字节，只是不绘制。`poll_background()` 不能只喂 Index/attention 后丢掉 Surface event；切回时只能 show/hide，不能靠 Index dump 补画。
 11. **No pause to recapture an open Surface.** 已经 seed 过的 pane，切 tab/pane 不得再抓屏。从未 seed 的 pane 才走定律 4 一次。
-12. **History is lines, not a stream.** 目标：第一次打开时 Runtime 把 capture 解析成行写入 Surface scrollback，不是 VT `feed()` 重放。**按行填 attach 前历史尚未落地**（TODO，见 §7.4）。本轮先保住 attach 之后的 PTY 增量。
+12. **History is lines, not a stream.** 第一次打开时 Runtime 把 capture 解析成行写入 Surface scrollback，不是 VT `feed()` 重放。已打开的 tab 再切回来只显示，不再抓。
 
 Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续原始 frame/output 改变
 像素；切 tab、resize、observer 重连或 Index 更新都不得把旧屏重新 feed 回来。
@@ -287,13 +287,13 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 - 前台 Workspace 的 `PaneOutput` / `PaneSnapshot` 进该工作区所有 pane 的 Surface（tab 栏上的页都算打开）；禁止 `paneSurfaceSeedANSI` / `visible_ansi` 当显示。
 - 后台 Workspace：core 继续吃字节进 Index；已经建过的 Surface 在**主线程**继续 `feed` 到**该 Workspace 自己的** VT 树。禁止在后台 GCD 队列改 SwiftTerm。不新建 widget，不把 Index dump 当切回来的刷新。
 - 切 Workspace / 切已加载的 tab：挂已有 Surface 树，不拆 Auto Layout 重建。
-- 第一次 seed 仍用 Runtime 的 `PaneSnapshot`（可见屏 + 模式）。attach 前 tmux 历史按行写入 scrollback 见 TODO。
+- 第一次 seed 仍用 Runtime 的 `PaneSnapshot`（可见屏 + 模式）。attach 前 tmux 历史在可见屏之后按行回填（`PaneHistory`），写入 native scrollback，不 `reset`，也不把 `-S -N` 当 VT 流 `feed()`。
 - Workspace 数量受池上限约束，默认 5，不是无限格。
 
 ### 7.4 TODO（本轮不实现）
 
 1. **洪水 `pause-after`。** 某个 pane 的 Surface 跟不上时，只对 **该 pane** `refresh-client -A %N:pause`，追上再 continue。代码里搜 `TODO(surface-7.4)`。现在不要用 pause 当切 tab 手段。不能无限吃 CUP 风暴还保证 60fps。
-2. **第一次打开按行填历史。** 对齐 iTerm2 `setHistory:`：`capture-pane -peqJN -S -N` 在 Runtime 解析成行，产品事件带行数据，前端写入 scrollback。禁止把 `-S -10000` 当 VT 流 `feed()`，也禁止为了不卡而永远只抓可见屏。
+2. ~~**第一次打开按行填历史。**~~ **已落地（2026-08-25）：** Runtime 在可见屏 seed / continue 之后抓 `capture-pane -peqJN -S -N -E -1`，产品事件 `PaneHistory` 带行数据；前端 `muxtermPrependHistoryLines` 写入 scrollback。禁止把 `-S -10000` 当 VT 流 `feed()`，也禁止为了不卡而永远只抓可见屏。已打开的 tab 再切回来不得再抓。
 
 ### 7.5 不卡顿的验收（不是保证任意负载 60fps）
 

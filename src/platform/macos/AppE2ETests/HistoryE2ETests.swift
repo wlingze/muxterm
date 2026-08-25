@@ -18,6 +18,14 @@ final class HistoryE2ETests: XCTestCase {
             app.waitTerminalContains(fx.tailMark, timeout: AppE2E.featureTimeout),
             "可见尾标 \(fx.tailMark) 必须在 SwiftTerm 里"
         )
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                return app.testNativeCanScroll()
+            },
+            "attach 后必须把离屏历史写入 SwiftTerm native scrollback"
+        )
 
         XCTAssertTrue(
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
@@ -61,6 +69,14 @@ final class HistoryE2ETests: XCTestCase {
         XCTAssertTrue(
             app.waitTerminalContains(fx.tailMark, timeout: AppE2E.featureTimeout),
             "可见尾标必须在"
+        )
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                return app.testNativeCanScroll()
+            },
+            "live 回归前 SwiftTerm 必须先有 attach 前历史"
         )
         XCTAssertEqual(app.testPaneViewport(), 0, "attach 后必须在底部 live，不能误进历史冻结")
 
@@ -113,7 +129,14 @@ final class HistoryE2ETests: XCTestCase {
 
         XCTAssertTrue(app.waitReady(minLeaves: 1), "attach 后应有 pane")
         let pane = try XCTUnwrap(app.testLayoutLeafIDs().first)
-        XCTAssertTrue(app.testNativeCanScroll(), "attach seed 后 SwiftTerm 必须有 native scrollback")
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                return app.testNativeCanScroll()
+            },
+            "attach seed 后 SwiftTerm 必须有 native scrollback"
+        )
         XCTAssertEqual(app.testPaneViewport(), 0, "初始必须在 live 尾部")
 
         XCTAssertTrue(app.testDispatchScrollWheel(deltaLines: 80), "必须能构造并分发滚轮事件")

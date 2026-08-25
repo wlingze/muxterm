@@ -224,6 +224,31 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
             "粘贴必须把剪贴板字节发给 pane"
         )
     }
+
+    func testPrependHistoryDoesNotResetOrHideVisibleTail() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        view.getTerminal().resize(cols: 80, rows: 24)
+        view.feedOutput(Data("HIST_TAIL\n".utf8), isSnapshot: true)
+        XCTAssertEqual(view.snapshotResetCount, 1)
+        view.prependHistoryLines(["HIST_OFFSCREEN", "pad-01"])
+        XCTAssertEqual(view.snapshotResetCount, 1, "历史回填不得再 reset")
+        XCTAssertTrue(view.historyPrepended)
+        XCTAssertTrue(view.canScroll, "补上 attach 前历史后必须能上划")
+        view.scrollLines(80)
+        XCTAssertTrue(
+            view.visibleScreenText().contains("HIST_OFFSCREEN"),
+            "上划后必须看见离屏 token。got=\(view.visibleScreenText())"
+        )
+        view.scrollToLatest()
+        XCTAssertTrue(
+            view.visibleScreenText().contains("HIST_TAIL"),
+            "回底后必须看见尾标。got=\(view.visibleScreenText())"
+        )
+    }
 }
 
 private final class ClipboardRecordingHandler: TerminalInputHandler {

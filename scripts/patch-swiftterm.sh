@@ -3,22 +3,24 @@
 # 1) 绘制时 Minimum Contrast（黑底黑字）
 # 2) doCommand 处理 deleteToBeginningOfLine / noop（不再 Unhandle print）
 # 3) 暴露 scrollWheel override，允许 Muxterm 仅对滚轮临时启用 TUI mouse protocol
+# 4) muxtermPrependHistoryLines：按行写入 scrollback，不 reset
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACOS_DIR="$ROOT/src/platform/macos"
 CHECKOUT="$MACOS_DIR/.build/checkouts/SwiftTerm"
 APPLE="$CHECKOUT/Sources/SwiftTerm/Apple/AppleTerminalView.swift"
 MAC="$CHECKOUT/Sources/SwiftTerm/Mac/MacTerminalView.swift"
+TERM="$CHECKOUT/Sources/SwiftTerm/Terminal.swift"
 
 if [[ ! -f "$APPLE" ]]; then
   echo "==> resolving SwiftTerm (checkout missing)"
   (cd "$MACOS_DIR" && swift package resolve)
 fi
-if [[ ! -f "$APPLE" || ! -f "$MAC" ]]; then
+if [[ ! -f "$APPLE" || ! -f "$MAC" || ! -f "$TERM" ]]; then
   echo "ERROR: SwiftTerm sources not found under $CHECKOUT" >&2
   exit 1
 fi
-chmod u+w "$APPLE" "$MAC"
+chmod u+w "$APPLE" "$MAC" "$TERM"
 
 python3 - "$APPLE" "$MAC" <<'PY'
 import pathlib, sys
@@ -139,3 +141,71 @@ if "MUXTERM_SCROLL_WHEEL" not in mac_text:
 else:
     print("==> SwiftTerm scroll-wheel override patch already applied")
 PY
+
+python3 - "$TERM" <<'PY'
+import pathlib, sys
+term = pathlib.Path(sys.argv[1])
+text = term.read_text()
+if "MUXTERM_PREPEND_HISTORY" in text:
+    print("==> SwiftTerm history prepend patch already applied")
+else:
+    anchor = """    public func changeHistorySize (_ newScrollback: Int?)
+    {
+        changeScrollback(newScrollback)
+    }
+    
+    func syncScrollArea ()
+"""
+    insert = r'''    public func changeHistorySize (_ newScrollback: Int?)
+    {
+        changeScrollback(newScrollback)
+    }
+
+    /// Muxterm: insert attach-before history above the viewport without reset.
+    public func muxtermPrependHistoryLines (_ texts: [String]) { // MUXTERM_PREPEND_HISTORY
+        guard !texts.isEmpty else { return }
+        let dest = normalBuffer
+        let needed = dest.lines.count + max(texts.count, 1) + rows
+        if needed > options.scrollback {
+            changeHistorySize(needed)
+        }
+        var items: [BufferLine] = []
+        items.reserveCapacity(texts.count)
+        let attr = CharData.defaultAttr
+        for text in texts {
+            var remaining = text
+            var wrapped = false
+            while true {
+                let bl = BufferLine(cols: cols, fillData: CharData.Null, isWrapped: wrapped)
+                var col = 0
+                var idx = remaining.startIndex
+                while idx < remaining.endIndex && col < cols {
+                    let ch = remaining[idx]
+                    bl[col] = makeCharData(attribute: attr, char: ch, size: 1)
+                    col += 1
+                    idx = remaining.index(after: idx)
+                }
+                items.append(bl)
+                if idx >= remaining.endIndex {
+                    break
+                }
+                remaining = String(remaining[idx...])
+                wrapped = true
+            }
+        }
+        guard !items.isEmpty else { return }
+        dest.lines.splice(start: 0, deleteCount: 0, items: items, change: { _ in })
+        dest.yBase += items.count
+        dest.yDisp += items.count
+        refresh(startRow: 0, endRow: rows - 1)
+    }
+    
+    func syncScrollArea ()
+'''
+    if anchor not in text:
+        print("ERROR: SwiftTerm changeHistorySize changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
+        sys.exit(1)
+    term.write_text(text.replace(anchor, insert, 1))
+    print("==> applied SwiftTerm history prepend patch")
+PY
+
