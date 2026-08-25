@@ -283,8 +283,10 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 ### 7.3 本轮实现
 
 - 切到已经 seed 过的 tab：Runtime 不再 `pause` / `capture-pane`（`initial_capture_done` 直接跳过）。
+- 已经 seed 的 Surface：`output-dropped` / OutputGap 只 resume live lane，不再 pause+capture。洪水 pause-after 仍是 TODO(surface-7.4)。
 - 前台 Workspace 的 `PaneOutput` / `PaneSnapshot` 进该工作区所有 pane 的 Surface（tab 栏上的页都算打开）；禁止 `paneSurfaceSeedANSI` / `visible_ansi` 当显示。
-- 后台 Workspace slot：只给已经存在的 view 继续 `feed`，不新建 widget，不把 Index dump 当切回来的刷新。
+- 后台 Workspace：core 继续吃字节进 Index；已经建过的 Surface 在**主线程**继续 `feed` 到**该 Workspace 自己的** VT 树。禁止在后台 GCD 队列改 SwiftTerm。不新建 widget，不把 Index dump 当切回来的刷新。
+- 切 Workspace / 切已加载的 tab：挂已有 Surface 树，不拆 Auto Layout 重建。
 - 第一次 seed 仍用 Runtime 的 `PaneSnapshot`（可见屏 + 模式）。attach 前 tmux 历史按行写入 scrollback 见 TODO。
 - Workspace 数量受池上限约束，默认 5，不是无限格。
 

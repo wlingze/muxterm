@@ -20,6 +20,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onMute: ((String, UInt32, UInt64) -> Void)? // (workspaceId, paneId, seconds)
     /// 明确打开 Attention 条目时确认已读；仅切到列表或查看状态不触发。
     var onAcknowledge: ((String, UInt32) -> Void)? // (workspaceId, paneId)
+    var onDismissed: (() -> Void)?
     var currentConfig: TargetConfig?
 
     private let store: QuickConnectStore
@@ -108,8 +109,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         guard let window else { return }
         window.level = .floating
         CompactPanelLayout.prepare(window, owner: ownerWindow, preferred: Self.preferredContentSize)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        CompactPanelLayout.bringForward(window)
         applyTab()
         window.layoutIfNeeded()
         QuickConnectTableLayout.fit(table)
@@ -142,14 +142,45 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     func dismiss() {
         window?.orderOut(nil)
         ownerWindow?.makeKeyAndOrderFront(nil)
-        if let ownerWindow, let first = ownerWindow.contentView {
-            ownerWindow.makeFirstResponder(first)
-        }
+        onDismissed?()
     }
 
     // MARK: - 数据
 
     private func reload() {
+        if model.tab == .workspaces || allItems.isEmpty {
+            loadWorkspaceItems()
+        }
+        if PanelReloadPolicy.needsAttentionSnapshot(model.tab) {
+            rows = snapshot().map { AttentionList.rows(from: $0, query: model.query) } ?? []
+        } else {
+            rows = []
+        }
+        if PanelReloadPolicy.needsSearch(
+            model.tab,
+            queryIsEmpty: model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ) {
+            hits = search(model.query, model.scope)
+        } else {
+            hits = []
+        }
+        if model.tab == .workspaces {
+            applyFilter()
+        }
+        table.reloadData()
+        let rowCount = numberOfRows(in: table)
+        if rowCount > 0 {
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            table.scrollRowToVisible(0)
+        } else {
+            table.deselectAll(nil)
+        }
+        updatePeek()
+        updateEmptyState()
+        QuickConnectTableLayout.fit(table)
+    }
+
+    private func loadWorkspaceItems() {
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
         allItems = QuickConnect.entries(
             recents: store.recents,
@@ -162,20 +193,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             )
         }
         allItems.append(.newProject)
-        applyFilter()
-        rows = snapshot().map { AttentionList.rows(from: $0, query: model.query) } ?? []
-        hits = model.query.isEmpty ? [] : search(model.query, model.scope)
-        table.reloadData()
-        let rowCount = numberOfRows(in: table)
-        if rowCount > 0 {
-            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            table.scrollRowToVisible(0)
-        } else {
-            table.deselectAll(nil)
-        }
-        updatePeek()
-        updateEmptyState()
-        QuickConnectTableLayout.fit(table)
     }
 
     private func applyFilter() {

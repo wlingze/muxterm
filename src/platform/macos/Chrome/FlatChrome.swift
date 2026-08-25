@@ -456,6 +456,87 @@ public enum SurfaceEventPolicy {
     }
 }
 
+/// tmux pane 格子是 Surface 模型的真相。attach 可能先按估出来的 client
+/// 尺寸播种（日志里 128x63），窗口 layout 后变成 93x51；模型必须缩小，
+/// 不能 `max(旧格子, 新格子)` 把 prompt 留在窗口下面。
+public enum PaneGridSyncPolicy {
+    public static func modelSize(
+        tmuxCols: Int,
+        tmuxRows: Int
+    ) -> (cols: Int, rows: Int)? {
+        guard tmuxCols >= 2, tmuxRows >= 1 else { return nil }
+        return (tmuxCols, tmuxRows)
+    }
+
+    public static func shouldResize(
+        currentCols: Int,
+        currentRows: Int,
+        tmuxCols: Int,
+        tmuxRows: Int
+    ) -> Bool {
+        guard let target = modelSize(tmuxCols: tmuxCols, tmuxRows: tmuxRows) else {
+            return false
+        }
+        return currentCols != target.cols || currentRows != target.rows
+    }
+
+    /// `STATE_PANE_RESIZED` 把 cols/rows 打成小端 u16 放进 data。
+    public static func grid(fromResizeEvent data: Data) -> (cols: Int, rows: Int)? {
+        guard data.count >= 4 else { return nil }
+        let cols = Int(data[0]) | (Int(data[1]) << 8)
+        let rows = Int(data[2]) | (Int(data[3]) << 8)
+        return modelSize(tmuxCols: cols, tmuxRows: rows)
+    }
+}
+
+/// `refresh-client -C` 的发送门禁。
+///
+/// Auto Layout 在切 tab 时会把测量抖 ±1 列；retina 下如果把 point 格再
+/// 除一次 `backingScaleFactor`，93×51 会变成 186×102。两种抖动都会对
+/// 所有 window 发 `%layout-change`，把控制通道打满。
+public enum ClientGridHysteresis {
+    public static func shouldSend(
+        current: (UInt16, UInt16)?,
+        next: (UInt16, UInt16)
+    ) -> Bool {
+        guard let current else { return true }
+        if isRetinaDoubleCount(from: current, to: next) {
+            return false
+        }
+        let dc = abs(Int(current.0) - Int(next.0))
+        let dr = abs(Int(current.1) - Int(next.1))
+        return dc > 1 || dr > 1
+    }
+
+    /// 新尺寸恰好是旧尺寸的 2 倍：把 point 格又除了一次 scale。
+    public static func isRetinaDoubleCount(
+        from current: (UInt16, UInt16),
+        to next: (UInt16, UInt16)
+    ) -> Bool {
+        let doubledCols = Int(current.0) &* 2
+        let doubledRows = Int(current.1) &* 2
+        return Int(next.0) == doubledCols && Int(next.1) == doubledRows
+    }
+}
+
+/// 快捷键打开的浮层可以占有光标；其它时候只要应用在前台，光标在 terminal。
+public enum TerminalFocusPolicy {
+    public static func shouldFocusTerminal(appActive: Bool, overlayIsKey: Bool) -> Bool {
+        appActive && !overlayIsKey
+    }
+}
+
+/// Cmd-P 打开 Workspaces 时不要去扫 attention / 搜索。
+public enum PanelReloadPolicy {
+    public static func needsAttentionSnapshot(_ tab: PanelTab) -> Bool {
+        tab == .attention
+    }
+
+    public static func needsSearch(_ tab: PanelTab, queryIsEmpty: Bool) -> Bool {
+        tab == .search && !queryIsEmpty
+    }
+}
+
 /// 历史查看策略：触控板/PageUp 交给 SwiftTerm 或前台 TUI；应用自身不拦截
 /// 事件，也不通过 PaneBuf dump 替换 live 屏幕。
 public enum PaneHistoryScrollPolicy {

@@ -252,12 +252,38 @@ final class MuxTerminalView: TerminalView {
     func setMinimumModelSize(cols: Int, rows: Int) {
         minimumModelCols = max(2, cols)
         minimumModelRows = max(1, rows)
-        let dims = getTerminal().getDims()
-        if dims.cols < minimumModelCols || dims.rows < minimumModelRows {
-            getTerminal().resize(
-                cols: max(dims.cols, minimumModelCols),
-                rows: max(dims.rows, minimumModelRows)
-            )
+    }
+
+    /// 把 SwiftTerm 模型对齐到 tmux pane 格子。必须允许缩小：attach 用
+    /// 8×17 估出来的 128×63 会比窗口真实格子大，只涨不缩会把 prompt
+    /// 留在可见区域下面。
+    func applyGridSize(cols: Int, rows: Int, followTail: Bool) {
+        guard let target = PaneGridSyncPolicy.modelSize(tmuxCols: cols, tmuxRows: rows) else {
+            return
+        }
+        minimumModelCols = target.cols
+        minimumModelRows = target.rows
+        let term = getTerminal()
+        let shouldFollow = followTail || isAtLatest()
+        guard PaneGridSyncPolicy.shouldResize(
+            currentCols: term.cols,
+            currentRows: term.rows,
+            tmuxCols: target.cols,
+            tmuxRows: target.rows
+        ) else {
+            if shouldFollow {
+                scrollToLatest()
+            }
+            return
+        }
+        term.resize(cols: target.cols, rows: target.rows)
+        lastModelCols = target.cols
+        lastModelRows = target.rows
+        term.updateFullScreen()
+        setNeedsDisplay(bounds)
+        if let layer { layer.setNeedsDisplay() }
+        if shouldFollow {
+            scrollToLatest()
         }
     }
 
@@ -330,6 +356,14 @@ final class MuxTerminalView: TerminalView {
         cellSizeInPixels(source: getTerminal())
     }
 
+    /// 字符格的 point 尺寸。`refresh-client -C` 必须用这个去除以
+    /// `bounds`（也是 point）。再除一次 backingScale 会把 93×51 变成 186×102。
+    func terminalCellSizeInPoints() -> (width: CGFloat, height: CGFloat)? {
+        let cellWidth = max(font.maximumAdvancement.width, 1)
+        let cellHeight = max(ceil(font.ascender - font.descender + font.leading), 1)
+        return (cellWidth, cellHeight)
+    }
+
     /// 当前外观下的前景/背景 hex（`rrggbb`），供 tmux `refresh-client -r`
     /// 上报，让 tmux 代答 pane 的 OSC 10/11 颜色查询。
     func themeHexColors() -> (fg: String, bg: String) {
@@ -360,9 +394,13 @@ final class MuxTerminalView: TerminalView {
     }
 
     /// 布局完成后：按当前像素尺寸驱动 SwiftTerm 行列。
+    /// `exactGrid` 存在时（tmux pane 格子）模型必须等于它，允许缩小。
     /// 返回是否成功同步到合法行列（≥2×1）。
     @discardableResult
-    func syncSizeToPty(notifyResize: Bool = true) -> Bool {
+    func syncSizeToPty(
+        notifyResize: Bool = true,
+        exactGrid: (cols: Int, rows: Int)? = nil
+    ) -> Bool {
         layoutSubtreeIfNeeded()
         let size = bounds.size
         guard size.width >= 40, size.height >= 24 else { return false }
@@ -376,8 +414,21 @@ final class MuxTerminalView: TerminalView {
         }
 
         let term = getTerminal()
-        let modelCols = max(term.cols, minimumModelCols)
-        let modelRows = max(term.rows, minimumModelRows)
+        let modelCols: Int
+        let modelRows: Int
+        if let exact = exactGrid,
+           let target = PaneGridSyncPolicy.modelSize(tmuxCols: exact.cols, tmuxRows: exact.rows)
+        {
+            // tmux 格子是真相。processSizeChange 可能刚按像素写成另一套
+            // 行列；随后必须改回 pane 尺寸，否则 prompt 会掉到窗口外。
+            modelCols = target.cols
+            modelRows = target.rows
+            minimumModelCols = target.cols
+            minimumModelRows = target.rows
+        } else {
+            modelCols = max(term.cols, minimumModelCols)
+            modelRows = max(term.rows, minimumModelRows)
+        }
         if term.cols != modelCols || term.rows != modelRows {
             term.resize(cols: modelCols, rows: modelRows)
         }

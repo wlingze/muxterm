@@ -298,17 +298,29 @@ final class TerminalManager: TerminalInputHandler {
         return view
     }
 
-    /// 记录后端报告的 pane 尺寸（供新视图创建时先 resize 模型再喂帧）。
+    /// 记录后端报告的 pane 尺寸，并把已有 Surface 的模型对齐到这个格子。
     func updatePaneSizes(_ panes: [Pane]) {
         expectedPaneSizes = Dictionary(
             uniqueKeysWithValues: panes.map { ($0.id, (Int($0.cols), Int($0.rows))) }
         )
         for (paneId, size) in expectedPaneSizes {
-            views[paneId]?.setMinimumModelSize(cols: size.cols, rows: size.rows)
-            if let view = views[paneId] {
-                syncHistoryCapacity(paneId: paneId, view: view)
-            }
+            applyPaneGrid(paneId: paneId, cols: size.cols, rows: size.rows)
         }
+    }
+
+    /// tmux `PANE_RESIZED`：隐藏 tab 的 Surface 也要缩小，不能等切过去再靠像素。
+    func applyPaneGrid(paneId: UInt32, cols: Int, rows: Int) {
+        guard let target = PaneGridSyncPolicy.modelSize(tmuxCols: cols, tmuxRows: rows) else {
+            return
+        }
+        expectedPaneSizes[paneId] = (target.cols, target.rows)
+        guard let view = views[paneId] else { return }
+        view.applyGridSize(
+            cols: target.cols,
+            rows: target.rows,
+            followTail: view.isAtLatest()
+        )
+        syncHistoryCapacity(paneId: paneId, view: view)
     }
 
     /// SwiftTerm 的 native scrollback 必须至少覆盖 core 当前可滚动窗口。
@@ -335,6 +347,7 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     private func queueLiveOutput(_ paneId: UInt32, data: Data) {
+        dispatchPrecondition(condition: .onQueue(.main))
         pendingFeeds[paneId, default: Data()].append(data)
         appendSnippet(data)
         recordTraffic(bytes: data.count)
@@ -343,6 +356,7 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 处理 PaneOutput 增量。已有 Surface 继续 feed；禁止 Index dump。
     func handleOutput(paneId: UInt32, data: Data) {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard !data.isEmpty else { return }
         if views[paneId] == nil {
             guard viewCreationEnabled else { return }
@@ -381,6 +395,7 @@ final class TerminalManager: TerminalInputHandler {
 
     /// Runtime 的权威 `PaneSnapshot`：一次 seed / 错格恢复。不是 Index dump。
     func handleSnapshot(paneId: UInt32, data: Data) {
+        dispatchPrecondition(condition: .onQueue(.main))
         if views[paneId] == nil {
             guard viewCreationEnabled else { return }
         }
@@ -462,6 +477,7 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     private func flushPendingFeeds() {
+        dispatchPrecondition(condition: .onQueue(.main))
         feedFlushWorkItem = nil
         let feeds = pendingFeeds
         pendingFeeds.removeAll()
@@ -520,11 +536,8 @@ final class TerminalManager: TerminalInputHandler {
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         surfaceReadyPanes.remove(paneId)
-        // Warm slot 的后台 poll 不在 AppKit 主线程；旧 view 已经从前台
-        // hierarchy 脱离，不能在后台直接调用 removeFromSuperview。
-        if Thread.isMainThread {
-            views[paneId]?.removeFromSuperview()
-        }
+        // Surface feed 只在主线程。后台 slot 把事件 hop 回来再 remove。
+        views[paneId]?.removeFromSuperview()
         views.removeValue(forKey: paneId)
         viewsCreatedThisBatch.remove(paneId)
         swiftTermSeeded.remove(paneId)
@@ -559,11 +572,21 @@ final class TerminalManager: TerminalInputHandler {
         for id in paneIds {
             guard let view = views[id] else { continue }
             view.layoutSubtreeIfNeeded()
-            _ = view.syncSizeToPty(notifyResize: !usesClientResize)
+            let exact = expectedPaneSizes[id].map { (cols: $0.cols, rows: $0.rows) }
+            _ = view.syncSizeToPty(
+                notifyResize: !usesClientResize,
+                exactGrid: usesClientResize ? exact : nil
+            )
         }
         if usesClientResize, let container {
             syncClientSize(container: container, paneIds: paneIds)
         }
+    }
+
+    /// 取任一可见终端的字符格 point 尺寸；同一窗口字体统一。
+    /// `refresh-client -C` 必须用 point，不能用 backing pixel 再除 scale。
+    func cellSizeInPoints(paneIds: Set<UInt32>) -> (width: CGFloat, height: CGFloat)? {
+        paneIds.lazy.compactMap { self.views[$0]?.terminalCellSizeInPoints() }.first
     }
 
     /// 取任一可见终端的字符格 backing pixel 尺寸；同一窗口字体统一。
@@ -576,16 +599,11 @@ final class TerminalManager: TerminalInputHandler {
         views.values.first?.themeHexColors()
     }
 
-    /// 强制把 SwiftTerm 模型行列同步成 tmux 报告的 pane 尺寸。
-    ///
-    /// `cellSizeInPixels()` 是 backing pixel，AppKit `bounds` 是 point。
-    /// 先用窗口的 backing scale 归一化成 point，再计算字符格；不能把
-    /// 一个尚未完成 layer 初始化的 scale=1 cell 与 scale=2 container 混算。
     private func syncClientSize(container: NSView, paneIds: Set<UInt32>) {
         guard let size = clientGridSize(container: container, paneIds: paneIds) else {
             return
         }
-        guard lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1 else { return }
+        guard ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else { return }
         guard pendingClientSize?.0 != size.0 || pendingClientSize?.1 != size.1 else { return }
 
         pendingClientSize = size
@@ -606,7 +624,7 @@ final class TerminalManager: TerminalInputHandler {
         guard let size = clientGridSize(container: container, paneIds: paneIds) else {
             return
         }
-        guard lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1 else { return }
+        guard ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else { return }
         guard let bridge else { return }
         if bridge.resizeClient(cols: size.0, rows: size.1) == 0 {
             lastClientSize = size
@@ -621,15 +639,12 @@ final class TerminalManager: TerminalInputHandler {
         container: NSView,
         paneIds: Set<UInt32>
     ) -> (UInt16, UInt16)? {
-        guard let cell = cellSizeInPixels(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
+        guard let cell = cellSizeInPoints(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
             return nil
         }
-        let scale = max(container.window?.backingScaleFactor ?? 1, 1)
-        let cellWidth = CGFloat(cell.width) / scale
-        let cellHeight = CGFloat(cell.height) / scale
         let pointSize = container.bounds.size
-        let cols = Int(floor(pointSize.width / cellWidth))
-        let rows = Int(floor(pointSize.height / cellHeight))
+        let cols = Int(floor(pointSize.width / cell.width))
+        let rows = Int(floor(pointSize.height / cell.height))
         guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return nil }
         return (UInt16(cols), UInt16(rows))
     }

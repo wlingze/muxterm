@@ -158,4 +158,42 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertFalse(host.isHidden)
         XCTAssertTrue(view.visibleScreenText().contains("SECOND_FRAME"))
     }
+
+    func testTmuxGridShrinkMovesPromptIntoView() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 800, height: 900)
+        )
+        view.getTerminal().resize(cols: 128, rows: 63)
+        view.feedOutput(Data(repeating: 0x0a, count: 62) + Data("PROMPT>\n".utf8), isSnapshot: true)
+        view.applyGridSize(cols: 93, rows: 51, followTail: true)
+
+        let dims = view.getTerminal().getDims()
+        XCTAssertEqual(dims.cols, 93)
+        XCTAssertEqual(dims.rows, 51)
+        XCTAssertTrue(view.isAtLatest(), "缩小后必须回到底部，prompt 不能留在窗口下面")
+        XCTAssertTrue(view.visibleScreenText().contains("PROMPT>"))
+    }
+
+    func testCachedTabHostIsReusedOnSecondVisit() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        let layout = PaneLayoutView(terminalManager: manager)
+        layout.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        let panes1 = [Pane(id: 1, cols: 80, rows: 24, isActive: true)]
+        let panes2 = [Pane(id: 2, cols: 80, rows: 24, isActive: true)]
+
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: panes1, tabId: 10))
+        let host1 = layout.testHost(for: 1)
+        XCTAssertNotNil(host1)
+
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 2), panes: panes2, tabId: 20))
+        XCTAssertNotNil(layout.revealCachedTab(10))
+        XCTAssertTrue(
+            layout.testHost(for: 1) === host1,
+            "第二次进入已加载的 tab 必须复用 host，不得重建 SwiftTerm"
+        )
+    }
 }

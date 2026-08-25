@@ -44,6 +44,13 @@ enum CompactPanelLayout {
         }
         panel.setFrameOrigin(origin)
     }
+
+    static func bringForward(_ panel: NSWindow) {
+        panel.makeKeyAndOrderFront(nil)
+        if !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
 }
 
 enum PaletteCommand: Equatable {
@@ -107,6 +114,7 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
     private static let preferredContentSize = NSSize(width: 600, height: 360)
 
     var onSelect: ((PaletteItem) -> Void)?
+    var onDismissed: (() -> Void)?
 
     private let input = NSSearchField()
     private let table = NSTableView()
@@ -160,8 +168,7 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
         guard let window else { return }
         window.level = .floating
         CompactPanelLayout.prepare(window, owner: ownerWindow, preferred: Self.preferredContentSize)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        CompactPanelLayout.bringForward(window)
         window.makeFirstResponder(input)
     }
 
@@ -185,9 +192,7 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
     func dismiss() {
         window?.orderOut(nil)
         ownerWindow?.makeKeyAndOrderFront(nil)
-        if let ownerWindow, let first = ownerWindow.contentView {
-            ownerWindow.makeFirstResponder(first)
-        }
+        onDismissed?()
     }
 
     // MARK: - View

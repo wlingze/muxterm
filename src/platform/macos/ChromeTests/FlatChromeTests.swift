@@ -451,6 +451,83 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         XCTAssertTrue(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: false, hasView: true))
     }
 
+    func testPaneGridShrinksFromAttachHintToWindow() {
+        XCTAssertTrue(
+            PaneGridSyncPolicy.shouldResize(
+                currentCols: 128,
+                currentRows: 63,
+                tmuxCols: 93,
+                tmuxRows: 51
+            ),
+            "attach 估的 128x63 必须缩到窗口 93x51，否则 prompt 在窗口下面"
+        )
+        XCTAssertEqual(PaneGridSyncPolicy.modelSize(tmuxCols: 93, tmuxRows: 51)?.cols, 93)
+        XCTAssertEqual(PaneGridSyncPolicy.modelSize(tmuxCols: 93, tmuxRows: 51)?.rows, 51)
+        XCTAssertFalse(
+            PaneGridSyncPolicy.shouldResize(
+                currentCols: 93,
+                currentRows: 51,
+                tmuxCols: 93,
+                tmuxRows: 51
+            )
+        )
+    }
+
+    func testPaneResizeEventDecodesLittleEndianGrid() {
+        var data = Data([93, 0, 51, 0])
+        XCTAssertEqual(PaneGridSyncPolicy.grid(fromResizeEvent: data)?.cols, 93)
+        XCTAssertEqual(PaneGridSyncPolicy.grid(fromResizeEvent: data)?.rows, 51)
+        data = Data([0x80, 0x00, 0x3f, 0x00])
+        XCTAssertEqual(PaneGridSyncPolicy.grid(fromResizeEvent: data)?.cols, 128)
+        XCTAssertEqual(PaneGridSyncPolicy.grid(fromResizeEvent: data)?.rows, 63)
+        XCTAssertNil(PaneGridSyncPolicy.grid(fromResizeEvent: Data([1, 0, 1, 0])))
+    }
+
+    func testClientGridIgnoresOneCellJitterAndRetinaDouble() {
+        XCTAssertTrue(
+            ClientGridHysteresis.shouldSend(current: nil, next: (93, 51)),
+            "第一次必须发送"
+        )
+        XCTAssertFalse(
+            ClientGridHysteresis.shouldSend(current: (93, 51), next: (94, 51)),
+            "±1 列是 Auto Layout 抖动，不能 refresh-client"
+        )
+        XCTAssertFalse(
+            ClientGridHysteresis.shouldSend(current: (93, 51), next: (93, 52))
+        )
+        XCTAssertTrue(
+            ClientGridHysteresis.shouldSend(current: (93, 51), next: (80, 40)),
+            "真的拖窗口必须发送"
+        )
+        XCTAssertTrue(
+            ClientGridHysteresis.isRetinaDoubleCount(from: (93, 51), to: (186, 102))
+        )
+        XCTAssertFalse(
+            ClientGridHysteresis.shouldSend(current: (93, 51), next: (186, 102)),
+            "93×51 变成 186×102 是 backing scale 算了两次"
+        )
+    }
+
+    func testTerminalFocusStaysOnOverlayWhenShortcutOpened() {
+        XCTAssertFalse(
+            TerminalFocusPolicy.shouldFocusTerminal(appActive: true, overlayIsKey: true)
+        )
+        XCTAssertTrue(
+            TerminalFocusPolicy.shouldFocusTerminal(appActive: true, overlayIsKey: false)
+        )
+        XCTAssertFalse(
+            TerminalFocusPolicy.shouldFocusTerminal(appActive: false, overlayIsKey: false)
+        )
+    }
+
+    func testPanelReloadSkipsAttentionAndSearchOnWorkspaces() {
+        XCTAssertFalse(PanelReloadPolicy.needsAttentionSnapshot(.workspaces))
+        XCTAssertTrue(PanelReloadPolicy.needsAttentionSnapshot(.attention))
+        XCTAssertFalse(PanelReloadPolicy.needsSearch(.workspaces, queryIsEmpty: false))
+        XCTAssertFalse(PanelReloadPolicy.needsSearch(.search, queryIsEmpty: true))
+        XCTAssertTrue(PanelReloadPolicy.needsSearch(.search, queryIsEmpty: false))
+    }
+
     /// 空 snapshot 时首个事件建立 view 后，后续事件仍是增量；批次结束后下一批
     /// 也不能把旧 seed 状态带过去。
     func testEmptySeedAndBatchBoundaryKeepIncrementalEvents() {
