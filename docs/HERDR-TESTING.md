@@ -370,7 +370,8 @@ Rust/Herdr 不得使用 `stable` 或偶然预装版本作为 required gate 的�
 版本与 release metadata 最终核验于 `2026-08-22T19:31:35+08:00`（CST）：
 
 - Rust 1.97.1：[`channel-rust-1.97.1.toml.sha256`](https://static.rust-lang.org/dist/channel-rust-1.97.1.toml.sha256)；
-- tmux：CI 不从源码编译；Linux 使用 Ubuntu apt 的预编译包，macOS 使用 Homebrew bottle，
+- tmux：CI 不从源码编译；Linux 使用 Ubuntu apt 的预编译包，macOS 使用 Homebrew
+  `--force-bottle` bottle，
   并记录 `tmux -V`。官方 [`tmux/tmux` release 3.7c](https://github.com/tmux/tmux/releases/tag/3.7c)
   目前只提供源码归档，不能作为 CI 二进制下载地址；Homebrew 的
   [`tmux` formula](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/t/tmux.rb)
@@ -394,8 +395,9 @@ CI 下载必须校验以下 SHA-256，不能只校验文件名或 `--version`：
 | `herdr-macos-x86_64` | `77cb5afd6c8fcaaaf3bc28e474ec01c209331ad08094e20d7f8aa9b0bb78d649` |
 | `herdr-macos-aarch64` | `d53a9f93fccfdfcc55632927bf51002f5add0aa7990bcdf508ffbd84ac658178` |
 
-tmux 的校验由 apt/Homebrew 自己完成；`scripts/ci/setup.sh` 不下载源码归档、不运行
-`configure`/`make`，只确认预编译包安装成功并输出实际版本。这样保留跨 runner 的
+tmux 的校验由 apt/Homebrew 自己完成；macOS 使用 `--force-bottle`，没有可用 bottle 时直接
+失败而不回退源码编译；`scripts/ci/setup.sh` 不下载源码归档、不运行 `configure`/`make`，
+只确认预编译包安装成功并输出实际版本。这样保留跨 runner 的
 二进制安装路径，同时避免 CI 因 tmux 编译长时间占用资源；若协议行为需要固定版本，
 应先发布带 checksum 的平台二进制，再把该 artifact 加入本表，而不是在 required job
 现场编译。

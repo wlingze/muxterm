@@ -67,7 +67,7 @@ if [ "$OS" = "Linux" ]; then
   fi
 elif [ "$OS" = "Darwin" ]; then
   # Homebrew 安装预编译 bottle；setup 不从源码编译，版本跟随 runner 的当前 formula。
-  brew list tmux >/dev/null 2>&1 || brew install tmux
+  brew list tmux >/dev/null 2>&1 || brew install --force-bottle tmux
   if ! command -v tmux >/dev/null 2>&1; then
     echo "tmux 安装失败" >&2
     exit 1
