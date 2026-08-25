@@ -56,7 +56,10 @@ fn linux_herdr_attach_shows_preexist_token() {
             (pane_r.as_str(), "HERDR_LIVE_GC"),
         ];
         for (pane, token) in pane_tokens {
-            herdr.paint(pane, token);
+            // split 返回时新 pane 的 shell 可能尚未 ready；只有服务端
+            // recent snapshot 确认 token 后才进入 GTK attach，避免 CI 慢
+            // runner 丢输入而本地快 runner 偶然通过。
+            herdr.paint_until_token(pane, token);
         }
 
         let cfg = Config::default();

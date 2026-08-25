@@ -812,8 +812,11 @@ impl HerdrRuntime {
         }
     }
 
-    /// 为每个 pane 建 registry slot 并按 foreground/active 计算 desired mode。
-    fn bootstrap_stream_slots(&mut self) {
+    /// 为每个 pane 建 registry slot，但不启动异步 stream。
+    ///
+    /// attach 需要先把 `pane.read` 写入 seed_pending，再允许 worker 发出首个
+    /// full frame；否则首帧可能在 seed 标记建立前到达并覆盖历史 Index。
+    fn initialize_stream_slots(&mut self) {
         self.ensure_stream_channels();
         for pane in &self.panes {
             let Some(herdr_pane) = self.pane_to_herdr_pane.get(&pane.id).cloned() else {
@@ -825,7 +828,6 @@ impl HerdrRuntime {
                 .or_insert_with(|| PaneStreamSlot::new(pane.id, herdr_pane, mode))
                 .desired_mode = mode;
         }
-        self.reconcile_stream_modes();
     }
 
     /// 唯一 mode transition 入口：先算全体 desired mode，再做最小变更。
@@ -2507,8 +2509,11 @@ impl Runtime for HerdrRuntime {
                 self.workspace_id
             ));
         }
+        // 先建 slot，再读取 attach seed，最后才启动异步 stream；这样
+        // seed_one_pane 能标记 seed_pending，首个 full 不会抹掉历史 Index。
+        self.initialize_stream_slots();
         self.seed_pane_read();
-        self.bootstrap_stream_slots();
+        self.reconcile_stream_modes();
         self.start_event_stream()
             .context("Herdr events.subscribe 失败")?;
 
@@ -3804,6 +3809,10 @@ mod tests {
             rows: 24,
         });
         runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        runtime.stream_slots.insert(
+            pane,
+            PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe),
+        );
         runtime.seed_one_pane(pane, "w1:p1");
 
         let surface_events = runtime
@@ -3835,6 +3844,10 @@ mod tests {
             runtime.outputs.get(&pane).map(Vec::as_slice),
             Some(seed_text.as_bytes()),
             "Index 快照字节必须进 outputs"
+        );
+        assert!(
+            runtime.stream_slots.get(&pane).unwrap().seed_pending,
+            "attach seed 必须在 stream slot 建立后标记 seed_pending"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
