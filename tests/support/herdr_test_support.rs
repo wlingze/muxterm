@@ -15,6 +15,11 @@ use std::os::unix::fs::PermissionsExt;
 
 use muxterm::core::runtime::herdr::session::HerdrSession;
 
+/// Remote runners can spend several seconds creating the repeated split/close
+/// fixture before a newly created pane's shell has a visible screen. Keep this
+/// bound finite, but match the e2e contract's 15-second readiness budget.
+const HERDR_FIXTURE_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// 检查 herdr 二进制是否可用。
 pub fn herdr_available() -> bool {
     Command::new("herdr")
@@ -166,7 +171,7 @@ impl IsolatedHerdr {
             .spawn()
             .expect("spawn herdr server 失败");
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HERDR_FIXTURE_TIMEOUT;
         while Instant::now() < deadline {
             if socket_path.exists() {
                 break;
@@ -267,7 +272,7 @@ impl IsolatedHerdr {
     /// readiness，不改变 attach 后 Runtime 的快照断言。
     pub fn paint_until_token(&self, pane_id: &str, token: &str) {
         let session = HerdrSession::new(self.name(), self.socket_path());
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HERDR_FIXTURE_TIMEOUT;
         let mut next_send = Instant::now();
         while Instant::now() < deadline {
             if Instant::now() >= next_send {
@@ -369,8 +374,15 @@ impl IsolatedHerdr {
     ) -> (String, String, [String; 3]) {
         let (workspace, tab, mut current) = self.create_workspace(cwd, label);
         // p1 -> ... -> pP：每轮 split 后关闭旧 pane，保持布局浅且计数继续。
-        for _ in 1..22 {
+        for step in 1..22 {
             let next = self.split_pane(&current, "right");
+            // `pane.split` returns after the layout mutation, not after the
+            // child shell has attached its PTY.  On a loaded CI runner,
+            // closing the parent immediately can leave the new pane unable to
+            // receive the first test command.  Exercise a real command and
+            // wait for its output before retiring the old pane.
+            let ready_token = format!("HERDR_FIXTURE_SPLIT_READY_{step}");
+            self.paint_until_token(&next, &ready_token);
             self.close_pane(&current);
             current = next;
         }
