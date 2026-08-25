@@ -7,6 +7,10 @@ import MuxtermChrome
 /// 切换目标时旧 slot 进入 background 继续 poll（保持 warm），不立即
 /// shutdown；只有淘汰时才 evict。tmux/ssh 淘汰用 detach 保留远端
 /// server/session，local shell 直接 shutdown（前端就是 PTY 模拟器）。
+///
+/// 后台线程只排空 FFI。`PaneOutput` / `PaneSnapshot` 必须 hop 回主线程
+/// 再喂给 **这个** Workspace 自己的 TerminalManager。不能在
+/// `muxterm.macos.background-poll` 上改 Swift Dictionary / SwiftTerm。
 final class WarmConnectionSlot: ConnectionSlotProtocol {
     var key: ConnectionKey
     var targetConfig: TargetConfig
@@ -15,6 +19,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     private let stateLock = NSLock()
     private var lifecycleValue: ConnectionLifecycle = .background
     private var lastSnapshotValue = FrameSnapshot()
+    private var pendingSurfaceEvents: [StateChange] = []
+    private var pendingDrainedWhileBackground = false
     var lifecycle: ConnectionLifecycle {
         get {
             stateLock.lock()
@@ -49,44 +55,78 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         self.lastUsedAt = now
     }
 
-    /// 后台继续 poll：已有 Surface 继续吃 PTY；不新建 widget，不 dump Index。
+    /// ConnectionPool 协议入口：后台只排空 FFI，不碰 Surface。
     func pollBackground() {
-        // CoreBridge 的 C ABI 句柄不是可并发访问的；同一 slot 的前台切换、
-        // 后台 poll、淘汰必须串行。锁只覆盖该 slot，不会阻塞主窗口其它连接。
+        _ = drainBackgroundEvents()
+    }
+
+    /// 在后台队列排空该 Workspace 的 core 事件。
+    ///
+    /// 只做 FFI：poll、Index/attention 进程名、缓存 snapshot。
+    /// 返回是否有待主线程投递的 Surface 事件。
+    @discardableResult
+    func drainBackgroundEvents() -> Bool {
         stateLock.lock()
-        guard lifecycleValue == .background else {
-            stateLock.unlock()
-            return
-        }
         defer { stateLock.unlock() }
-        terminalManager.setViewCreationEnabled(false)
-        defer { terminalManager.setViewCreationEnabled(true) }
-        terminalManager.beginEventBatch()
-        defer { terminalManager.endEventBatch() }
+        guard lifecycleValue == .background else { return false }
         let events = bridge.pollEvents()
         _ = bridge.takeError()
+        var surface: [StateChange] = []
         for ev in events {
-            if ev.isPaneClosed {
-                terminalManager.removePane(ev.paneId)
-            } else if ev.isPaneSnapshot {
-                terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
-            } else if ev.isPaneOutput {
-                terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
-            } else if ev.type == STATE_STATUS_SUBSCRIPTION,
-                      ev.name.hasPrefix("muxterm.pane-cmd") {
-                // 后台 Workspace 也要维护 pane 进程名；否则 Attention 从后台
-                // 触发时只能显示 workspace/node，无法标记 Codex/Cursor。
+            if ev.type == STATE_STATUS_SUBSCRIPTION,
+               ev.name.hasPrefix("muxterm.pane-cmd")
+            {
                 let value = String(data: ev.data, encoding: .utf8) ?? ""
                 _ = bridge.attentionSetProcessName(
                     paneId: ev.paneId,
                     name: value.isEmpty ? nil : value
                 )
-            } else if ev.isBackendStatus, ev.paneId == 4 {
-                // 后台连接退出：不主动关窗口，交给前台下次激活时处理。
-                continue
+            } else if ev.isPaneOutput || ev.isPaneSnapshot || ev.isPaneClosed {
+                surface.append(ev)
             }
         }
+        if !surface.isEmpty {
+            pendingSurfaceEvents.append(contentsOf: surface)
+            pendingDrainedWhileBackground = true
+        }
         lastSnapshotValue = bridge.snapshot()
+        return !pendingSurfaceEvents.isEmpty
+    }
+
+    /// 主线程：把后台排空的 PTY 喂给本 slot 的 Surface 树。
+    ///
+    /// 后台批次即使后来变成前台，也不得为从未打开的 pane 新建 widget。
+    func applyPendingSurfaceEvents() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        stateLock.lock()
+        let events = pendingSurfaceEvents
+        pendingSurfaceEvents.removeAll()
+        let fromBackground = pendingDrainedWhileBackground
+        pendingDrainedWhileBackground = false
+        let alive = lifecycleValue != .evicting
+        let nowActive = lifecycleValue == .active
+        stateLock.unlock()
+        guard alive else { return }
+
+        if fromBackground {
+            terminalManager.setViewCreationEnabled(false)
+        }
+        if !events.isEmpty {
+            terminalManager.beginEventBatch()
+            for ev in events {
+                if ev.isPaneClosed {
+                    terminalManager.removePane(ev.paneId)
+                } else if ev.isPaneSnapshot {
+                    terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
+                } else if ev.isPaneOutput {
+                    terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
+                }
+            }
+            terminalManager.endEventBatch()
+        }
+        if nowActive {
+            terminalManager.setViewCreationEnabled(true)
+        }
     }
 
     /// 在 MainWindow 使用该 slot 的 bridge 前先切换生命周期。若后台 poll
@@ -95,6 +135,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.lock()
         lifecycleValue = .active
         stateLock.unlock()
+        terminalManager.setViewCreationEnabled(true)
     }
 
     /// 在后台 slot 上安全访问 CoreBridge。后台 poll、前台激活和淘汰共用
@@ -113,6 +154,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.lock()
         defer { stateLock.unlock() }
         lifecycleValue = .evicting
+        pendingSurfaceEvents.removeAll()
+        pendingDrainedWhileBackground = false
         if terminalManager.usesClientResize {
             _ = bridge.detach()
         }
@@ -124,6 +167,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.lock()
         defer { stateLock.unlock() }
         lifecycleValue = .evicting
+        pendingSurfaceEvents.removeAll()
+        pendingDrainedWhileBackground = false
         bridge.shutdown()
     }
 }

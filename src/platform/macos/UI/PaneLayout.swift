@@ -4,7 +4,25 @@ import MuxtermChrome
 /// 递归二叉树 Pane 分割布局（对应 CLayoutNode）。
 ///
 /// 全程 Auto Layout，避免 frame/AL 混用导致子视图 bounds=0 → SwiftTerm 黑屏。
+/// 每个 Workspace 一份已建 tab 树；切工作区 / 切 tab 只挂已有 host，不拆 SwiftTerm。
 final class PaneLayoutView: NSView {
+    private struct CachedTabTree {
+        var layout: LayoutNode
+        var paneIds: Set<UInt32>
+        var rootView: NSView
+        var hostByPane: [UInt32: PaneHostView]
+        var activePaneId: UInt32
+    }
+
+    private struct ParkedWorkspace {
+        var tabTrees: [UInt32: CachedTabTree]
+        var currentTabId: UInt32?
+        var lastPanes: [Pane]
+        var baseLayout: LayoutNode?
+        var fullscreenPaneId: UInt32?
+        var lastLayoutBounds: (Int, Int)
+    }
+
     private var terminalManager: TerminalManager
     private var rootView: NSView?
     private var rootConstraints: [NSLayoutConstraint] = []
@@ -17,6 +35,10 @@ final class PaneLayoutView: NSView {
     private var forceRebuild = false
     private var hostByPane: [UInt32: PaneHostView] = [:]
     private var currentPaneIds = Set<UInt32>()
+    private var currentTabId: UInt32?
+    private var tabTrees: [UInt32: CachedTabTree] = [:]
+    private var parkedByManager: [ObjectIdentifier: ParkedWorkspace] = [:]
+    private var lastLayoutBounds: (Int, Int) = (0, 0)
     private var geometrySyncScheduled = false
     private var pendingGeometryPaneIds: Set<UInt32>?
     var onActivatePane: ((UInt32) -> Void)?
@@ -40,18 +62,22 @@ final class PaneLayoutView: NSView {
         setAccessibilityIdentifier("muxterm.paneLayout")
     }
 
-    /// 切换 warm slot 时替换 TerminalManager，并重建 pane 树。
-    /// 旧 slot 的 TerminalManager 及其 SwiftTerm 视图保留在 slot 内，
-    /// 不在这里销毁；当前窗口只显示新 slot 的视图。
+    /// 切 Workspace：把当前 Surface 树停到旧 manager 名下，挂上新 manager 已有的树。
     func replaceTerminalManager(_ newManager: TerminalManager) {
         guard newManager !== terminalManager else { return }
         terminalManager.onSurfaceReadinessChanged = nil
-        if let rootView {
-            NSLayoutConstraint.deactivate(rootConstraints)
-            rootConstraints = []
-            rootView.removeFromSuperview()
-        }
-        rootView = nil
+        parkCurrentTab()
+        parkedByManager[ObjectIdentifier(terminalManager)] = ParkedWorkspace(
+            tabTrees: tabTrees,
+            currentTabId: currentTabId,
+            lastPanes: lastPanes,
+            baseLayout: baseLayout,
+            fullscreenPaneId: fullscreenPaneId,
+            lastLayoutBounds: lastLayoutBounds
+        )
+        detachRoot()
+        tabTrees.removeAll()
+        currentTabId = nil
         currentLayout = nil
         baseLayout = nil
         fullscreenPaneId = nil
@@ -59,10 +85,26 @@ final class PaneLayoutView: NSView {
         forceRebuild = false
         hostByPane.removeAll()
         currentPaneIds.removeAll()
-        pendingGeometryPaneIds = nil
+        lastLayoutBounds = (0, 0)
         terminalManager = newManager
         bindSurfaceReadiness(to: newManager)
+        if let parked = parkedByManager.removeValue(forKey: ObjectIdentifier(newManager)) {
+            tabTrees = parked.tabTrees
+            lastPanes = parked.lastPanes
+            baseLayout = parked.baseLayout
+            fullscreenPaneId = parked.fullscreenPaneId
+            lastLayoutBounds = parked.lastLayoutBounds
+            if let tabId = parked.currentTabId, let cached = tabTrees[tabId] {
+                installCached(cached, tabId: tabId)
+            }
+        }
         needsLayout = true
+    }
+
+    /// 淘汰后丢掉已经没有 slot 的停驻树，避免 SwiftTerm 泄漏。
+    func dropParked(except managers: [TerminalManager]) {
+        let keep = Set(managers.map { ObjectIdentifier($0) })
+        parkedByManager = parkedByManager.filter { keep.contains($0.key) }
     }
 
     private func bindSurfaceReadiness(to manager: TerminalManager) {
@@ -72,8 +114,16 @@ final class PaneLayoutView: NSView {
     }
 
     private func setSurfaceReady(paneId: UInt32, ready: Bool) {
-        guard let host = hostByPane[paneId] else { return }
-        host.setSurfaceReady(ready)
+        if let host = hostByPane[paneId] {
+            host.setSurfaceReady(ready)
+            return
+        }
+        for cache in tabTrees.values {
+            if let host = cache.hostByPane[paneId] {
+                host.setSurfaceReady(ready)
+                return
+            }
+        }
     }
 
     @available(*, unavailable)
@@ -81,12 +131,12 @@ final class PaneLayoutView: NSView {
         return nil
     }
 
-    /// 根据布局树重建子视图，并在布局完成后同步 PTY 尺寸 + 强制重绘。
+    /// 根据布局树挂载子视图。同一 tab 第二次进入只显示缓存树。
     ///
     /// 返回 false 表示 layout 与当前 tab 的 pane 快照不一致；调用方应保留
     /// reload 标记等待后端的下一帧，不能把旧 tab 的 pane 树套到新 tab 上。
     @discardableResult
-    func apply(layout: LayoutNode?, panes: [Pane]) -> Bool {
+    func apply(layout: LayoutNode?, panes: [Pane], tabId: UInt32) -> Bool {
         lastPanes = panes
         if let layout {
             baseLayout = layout
@@ -117,27 +167,25 @@ final class PaneLayoutView: NSView {
             tree = .leaf(paneId: full)
         }
 
-        // 只有 pane 拓扑或 tmux 保存的比例真正变化时才重建 AppKit 树。
-        // 窗口 resize 产生的重复 layout-change 只需重新同步几何；反复
-        // unparent/重建 SwiftTerm 会造成 tab 闪烁和 Metal 层短暂黑屏。
-        if !forceRebuild, tree == currentLayout, Set(expectedPaneIDs) == currentPaneIds {
-            let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
+        let expectedIds = Set(expectedPaneIDs)
+        let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
+        if !forceRebuild, tabId == currentTabId, tree == currentLayout, expectedIds == currentPaneIds {
             markActivePane(active)
-            scheduleGeometrySync(paneIds: currentPaneIds)
+            return true
+        }
+        if !forceRebuild, let cached = tabTrees[tabId], cached.layout == tree, cached.paneIds == expectedIds {
+            if tabId != currentTabId {
+                parkCurrentTab()
+                installCached(cached, tabId: tabId)
+            }
+            markActivePane(active)
             return true
         }
         forceRebuild = false
 
-        if let rootView {
-            NSLayoutConstraint.deactivate(rootConstraints)
-            rootConstraints = []
-            rootView.removeFromSuperview()
-        }
-        rootView = nil
-        currentLayout = nil
-        hostByPane.removeAll()
-        currentPaneIds.removeAll()
-        pendingGeometryPaneIds = nil
+        parkCurrentTab()
+        tabTrees.removeValue(forKey: tabId)
+        currentTabId = tabId
 
         guard let tree else {
             // 不销毁任何 pane 视图：tab 切换 / 布局重建必须保留 SwiftTerm
@@ -146,35 +194,122 @@ final class PaneLayoutView: NSView {
         }
 
         currentLayout = tree
+        hostByPane.removeAll()
         let built = build(node: tree)
-        built.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(built)
-        rootConstraints = [
-            built.leadingAnchor.constraint(equalTo: leadingAnchor),
-            built.trailingAnchor.constraint(equalTo: trailingAnchor),
-            built.topAnchor.constraint(equalTo: topAnchor),
-            built.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ]
-        NSLayoutConstraint.activate(rootConstraints)
-        rootView = built
+        attachRoot(built)
 
         let ids = Set(collectPaneIds(tree))
         currentPaneIds = ids
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && ids.count > 1)
         }
-
-        let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
         markActivePane(active)
+        tabTrees[tabId] = CachedTabTree(
+            layout: tree,
+            paneIds: ids,
+            rootView: built,
+            hostByPane: hostByPane,
+            activePaneId: active
+        )
 
         needsLayout = true
         scheduleGeometrySync(paneIds: ids)
         return true
     }
 
+    /// 乐观切 tab：缓存命中时立刻挂树。返回该 tab 上次的活动 pane。
+    @discardableResult
+    func revealCachedTab(_ tabId: UInt32) -> UInt32? {
+        guard let cached = tabTrees[tabId] else { return nil }
+        if tabId == currentTabId {
+            return cached.activePaneId
+        }
+        parkCurrentTab()
+        installCached(cached, tabId: tabId)
+        return cached.activePaneId
+    }
+
+    func pruneTabs(keeping ids: Set<UInt32>) {
+        for key in tabTrees.keys where !ids.contains(key) {
+            tabTrees.removeValue(forKey: key)
+        }
+    }
+
     func testLeafPaneIDs() -> [UInt32] {
         guard let currentLayout else { return [] }
         return collectPaneIds(currentLayout)
+    }
+
+    func testHost(for paneId: UInt32) -> PaneHostView? {
+        if let host = hostByPane[paneId] {
+            return host
+        }
+        for cache in tabTrees.values {
+            if let host = cache.hostByPane[paneId] {
+                return host
+            }
+        }
+        return nil
+    }
+
+    private func parkCurrentTab() {
+        guard let tabId = currentTabId, let root = rootView, let layout = currentLayout else {
+            detachRoot()
+            return
+        }
+        tabTrees[tabId] = CachedTabTree(
+            layout: layout,
+            paneIds: currentPaneIds,
+            rootView: root,
+            hostByPane: hostByPane,
+            activePaneId: tabTrees[tabId]?.activePaneId
+                ?? lastPanes.first(where: \.isActive)?.id
+                ?? lastPanes.first?.id
+                ?? 0
+        )
+        detachRoot()
+        currentLayout = nil
+        hostByPane.removeAll()
+        currentPaneIds.removeAll()
+        currentTabId = nil
+    }
+
+    private func detachRoot() {
+        if let rootView {
+            NSLayoutConstraint.deactivate(rootConstraints)
+            rootConstraints = []
+            rootView.removeFromSuperview()
+        }
+        rootView = nil
+        pendingGeometryPaneIds = nil
+    }
+
+    private func attachRoot(_ view: NSView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        if view.superview !== self {
+            view.removeFromSuperview()
+            addSubview(view)
+        }
+        rootConstraints = [
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ]
+        NSLayoutConstraint.activate(rootConstraints)
+        rootView = view
+    }
+
+    private func installCached(_ cached: CachedTabTree, tabId: UInt32) {
+        attachRoot(cached.rootView)
+        currentTabId = tabId
+        currentLayout = cached.layout
+        hostByPane = cached.hostByPane
+        currentPaneIds = cached.paneIds
+        for host in hostByPane.values {
+            host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
+        }
+        markActivePane(cached.activePaneId)
     }
 
     func testPaneAllocation(_ paneId: UInt32) -> NSSize {
@@ -195,13 +330,17 @@ final class PaneLayoutView: NSView {
         guard lastPanes.contains(where: { $0.id == paneId }) else { return }
         fullscreenPaneId = fullscreenPaneId == paneId ? nil : paneId
         forceRebuild = true
-        _ = apply(layout: baseLayout, panes: lastPanes)
+        _ = apply(layout: baseLayout, panes: lastPanes, tabId: currentTabId ?? 0)
     }
 
     /// 更新活跃 pane 高亮与 AX（供 Cmd+[ / ] 焦点跟随断言）。
     func markActivePane(_ paneId: UInt32) {
         for (id, host) in hostByPane {
             host.setActive(id == paneId)
+        }
+        if let tabId = currentTabId, var cached = tabTrees[tabId] {
+            cached.activePaneId = paneId
+            tabTrees[tabId] = cached
         }
     }
 
@@ -224,7 +363,9 @@ final class PaneLayoutView: NSView {
     override func layout() {
         super.layout()
         guard !currentPaneIds.isEmpty else { return }
-        // 窗口尺寸变化时没有 tmux event，仍需把新的根容器尺寸同步给 client。
+        let token = (Int(bounds.width.rounded()), Int(bounds.height.rounded()))
+        guard token != lastLayoutBounds else { return }
+        lastLayoutBounds = token
         scheduleGeometrySync(paneIds: currentPaneIds)
     }
 

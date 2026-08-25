@@ -239,6 +239,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 _ = targetBridge.attentionMute(paneId: paneId, seconds: seconds)
             }
         }
+        unifiedPanel.onDismissed = { [weak self] in
+            self?.restoreTerminalFocusIfAllowed()
+        }
+        commandPalette.onDismissed = { [weak self] in
+            self?.restoreTerminalFocusIfAllowed()
+        }
         languageObserver = NotificationCenter.default.addObserver(
             forName: .muxtermLanguageChanged,
             object: nil,
@@ -1149,14 +1155,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 在 tmux -CC spawn 前给出一个接近当前窗口的字符网格。
     ///
-    /// 首次 attach 时 SwiftTerm 还没有完成 layout，不能依赖终端 cell
-    /// metrics；这里用当前主题的常见等宽字符近似值，连接建立后仍由
-    /// `TerminalManager.syncClientSize` 用真实 cell 尺寸发送最终 refresh。
+    /// 必须用真实等宽字体 metrics。以前用 8×17 会把 Menlo 18 的窗口估成
+    /// 128×63，attach 先按这个播种，随后才 `refresh-client -C 93x51`。
     private func initialTmuxClientSizeHint() -> (UInt16, UInt16)? {
         let bounds = content.paneLayout.bounds
         guard bounds.width >= 16, bounds.height >= 17 else { return nil }
-        let cols = Int(floor(bounds.width / 8.0))
-        let rows = Int(floor(bounds.height / 17.0))
+        let font = NSFont(
+            name: MuxtermTerminalFont.defaultFamily,
+            size: MuxtermTerminalFont.defaultSize
+        ) ?? NSFont.monospacedSystemFont(
+            ofSize: MuxtermTerminalFont.defaultSize,
+            weight: .regular
+        )
+        let cellWidth = max(font.maximumAdvancement.width, 1)
+        let cellHeight = max(ceil(font.ascender - font.descender + font.leading), 1)
+        let cols = Int(floor(bounds.width / cellWidth))
+        let rows = Int(floor(bounds.height / cellHeight))
         guard cols >= 2, rows >= 1, cols < 10_000, rows < 10_000 else { return nil }
         return (UInt16(cols), UInt16(rows))
     }
@@ -1271,6 +1285,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func activate(slot: WarmConnectionSlot) {
         let oldBridge = bridge
         slot.prepareForForeground()
+        slot.applyPendingSurfaceEvents()
         connectionPool.acquire(key: slot.key) { _ in slot }
         bridge = slot.bridge
         terminalManager = slot.terminalManager
@@ -1283,6 +1298,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandNavigationPanes.removeAll()
         wireTerminalManagerCallbacks()
         content.paneLayout.replaceTerminalManager(slot.terminalManager)
+        content.paneLayout.dropParked(
+            except: Array(connectionPool.slots.values.map(\.terminalManager))
+        )
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
         // warm slot 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
@@ -1356,6 +1374,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func overlayOwnsFocus() -> Bool {
+        let key = NSApp.keyWindow
+        return key === unifiedPanel?.window || key === commandPalette?.window
+    }
+
+    private func restoreTerminalFocusIfAllowed() {
+        guard TerminalFocusPolicy.shouldFocusTerminal(
+            appActive: NSApp.isActive,
+            overlayIsKey: overlayOwnsFocus()
+        ) else { return }
+        focusActiveTerminal()
+    }
+
     private func focusActiveTerminal() {
         let snap = bridge.snapshot()
         guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
@@ -1385,14 +1416,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         tabSwitchGate.request(tab: tabId)
-        needsLayoutReload = true
+        content.statusBar.markCurrentWindow(tabId)
+        if let paneId = content.paneLayout.revealCachedTab(tabId) {
+            let view = terminalManager.view(for: paneId)
+            terminalManager.focusTarget = view
+            if terminalManager.isSurfaceReady(for: paneId),
+               view.window != nil,
+               window?.isKeyWindow == true,
+               window?.firstResponder !== view
+            {
+                window?.makeFirstResponder(view)
+            }
+        } else {
+            needsLayoutReload = true
+        }
         guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
             tabSwitchGate = TabSwitchGate()
             reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
-        // 等 STATE_ACTIVE_TAB_CHANGED 到达后再 refreshUI；此时 snapshot 的
-        // panes/layout 才保证属于同一个 active tab。
+        // 等 STATE_ACTIVE_TAB_CHANGED 到达后再用权威 snapshot 对齐；
+        // 缓存命中时画面已经切过去了。
     }
 
     private func splitActivePane(horizontal: Bool) {
@@ -2165,10 +2209,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             } else if ev.isWorkspaceRenamed {
                 applyWorkspaceRename(ev.name)
             } else if ev.type == STATE_PANE_RESIZED {
-                // pane 尺寸变化：SwiftTerm 视图按像素自适应（syncSizeToPty），
-                // 不需要 bridge.snapshot() 或布局重建。高频输出时 PANE_RESIZED
-                // 频繁触发，走 refreshUI 会卡顿。
-                // 标记轻量更新：只在下一轮 poll 时更新 debug 文本。
+                // pane 格子变了：立刻把 SwiftTerm 模型对齐（含缩小）。
+                // 不能只记轻量更新，否则 attach 的 128x63 会钉在 93x51
+                // 窗口上，prompt 掉到可见区域下面。
+                if let grid = PaneGridSyncPolicy.grid(fromResizeEvent: ev.data) {
+                    terminalManager.applyPaneGrid(
+                        paneId: ev.paneId,
+                        cols: grid.cols,
+                        rows: grid.rows
+                    )
+                }
                 needsLightweightUpdate = true
             }
             if ev.isBackendStatus {
@@ -2230,17 +2280,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 投递后台 warm slot 的事件消费；绝不在 AppKit 主线程同步执行。
+    /// 后台只排空 FFI。Surface feed 必须 hop 回主线程，交给那个 Workspace
+    /// 自己的 TerminalManager。
     private func scheduleBackgroundSlotPoll() {
         guard !backgroundPollInFlight else { return }
         let slots = connectionPool.slots.values.filter { $0.lifecycle == .background }
         guard !slots.isEmpty else { return }
         backgroundPollInFlight = true
         backgroundPollQueue.async { [weak self] in
+            var dirty: [WarmConnectionSlot] = []
             for slot in slots {
-                slot.pollBackground()
+                if slot.drainBackgroundEvents() {
+                    dirty.append(slot)
+                }
             }
             DispatchQueue.main.async { [weak self] in
+                for slot in dirty {
+                    slot.applyPendingSurfaceEvents()
+                }
                 self?.backgroundPollInFlight = false
             }
         }
@@ -2303,23 +2360,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshUI() {
         let snap = bridge.snapshot()
+        tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
+        if !tabSwitchGate.isReleased() {
+            // 乐观切 tab 已经挂了缓存树；不能用还没切过去的 snapshot 盖回去。
+            reportPaneColoursIfNeeded(snap.panes)
+            return
+        }
         lastSnapshot = snap
         // 活动 tab 的 snap.panes 只够画当前 layout。后台 tab 的 Surface 还要
         // 跟着 pane 尺寸走，否则切回去时格子已经对了、pty 还是旧 cols。
         let allPanes = snap.tabs.flatMap { tab in bridge.getPanes(tabId: tab.id) }
         terminalManager.updatePaneSizes(allPanes.isEmpty ? snap.panes : allPanes)
-        // 请求切换的 tab 已不存在（shell 退出/外部关闭）：立即放行门禁。
-        tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         reportPaneColoursIfNeeded(snap.panes)
         content.updateTabs(snap.tabs)
-        if needsLayoutReload, tabSwitchGate.isReleased() {
-            if content.paneLayout.apply(layout: snap.layout, panes: snap.panes) {
+        if needsLayoutReload {
+            if content.paneLayout.apply(
+                layout: snap.layout,
+                panes: snap.panes,
+                tabId: snap.activeTab
+            ) {
                 needsLayoutReload = false
                 content.statusBar.clearLayoutSyncError()
             } else {
                 content.statusBar.showLayoutSyncing()
             }
         }
+        content.paneLayout.pruneTabs(keeping: Set(snap.tabs.map(\.id)))
         content.statusBar.updateDebugSnapshot(snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
@@ -2332,17 +2398,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
-            let view = terminalManager.view(for: activePane)
-            terminalManager.focusTarget = view
+            terminalManager.focusTarget = terminalManager.view(for: activePane)
             content.paneLayout.markActivePane(activePane)
-            // 只在视图已挂进窗口且焦点确实不同时才切换，避免对未挂载视图
-            // 反复 makeFirstResponder 触发 IMK mach port 报错和切换卡顿。
-            if terminalManager.isSurfaceReady(for: activePane),
-               view.window != nil,
-               window?.firstResponder !== view
-            {
-                window?.makeFirstResponder(view)
-            }
+            restoreTerminalFocusIfAllowed()
         }
         applyPendingSearchJumpIfReady()
     }
@@ -2789,6 +2847,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toggleActivePaneFullscreen()
         }
         return true
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        restoreTerminalFocusIfAllowed()
     }
 
     func windowWillClose(_ notification: Notification) {

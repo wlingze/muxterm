@@ -1199,6 +1199,14 @@ impl TmuxRuntime {
         // 也必须原样 feed，不能让 Surface 跳到历史顶部再跳回输入框。
         let panes: Vec<PaneId> = self.dropped_output_panes.drain().collect();
         for pane in panes {
+            if self.initial_capture_done.contains(&pane) {
+                // Surface 已经在吃 live。丢字节不要 pause 重抓，否则切 tab
+                // 会把控制通道堵住。洪水 pause-after 是 TODO(surface-7.4)。
+                if let Some(receiver) = self.event_rx.as_mut() {
+                    receiver.resume_output_pane(pane);
+                }
+                continue;
+            }
             if !self.resyncs.contains_key(&pane) {
                 self.begin_pane_resync(pane, "output-dropped");
             }
@@ -2557,6 +2565,14 @@ impl TmuxRuntime {
         }
     }
 
+    fn emit_layout_if_changed(&mut self, layout: TabLayout) {
+        if self.layouts.get(&layout.tab) == Some(&layout) {
+            return;
+        }
+        self.layouts.insert(layout.tab, layout.clone());
+        self.push_layout_changed(layout);
+    }
+
     /// 用 parse_layout_tree 重建 LayoutNode 树。
     ///
     /// 需要 list-windows 的 window_layout 字符串。这里通过几何匹配把
@@ -2572,24 +2588,19 @@ impl TmuxRuntime {
             .unwrap_or(panes[0].id);
         // zoom：pane 快照仍有全部 pane，但 GUI 只显示当前 pane（tmux prefix-z）。
         if self.window_zoomed.contains(&tab_id) {
-            let layout = TabLayout {
+            self.emit_layout_if_changed(TabLayout {
                 tab: tab_id,
                 tree: LayoutNode::leaf(active),
                 active,
-            };
-            self.layouts.insert(tab_id, layout.clone());
-            self.push_layout_changed(layout);
+            });
             return;
         }
         if panes.len() == 1 {
-            let tree = LayoutNode::leaf(panes[0].id);
-            let layout = TabLayout {
+            self.emit_layout_if_changed(TabLayout {
                 tab: tab_id,
-                tree,
+                tree: LayoutNode::leaf(panes[0].id),
                 active,
-            };
-            self.layouts.insert(tab_id, layout.clone());
-            self.push_layout_changed(layout);
+            });
             return;
         }
         let layout_str = match self.window_layouts.get(&tab_id) {
@@ -2614,13 +2625,11 @@ impl TmuxRuntime {
                 return;
             }
         };
-        let layout = TabLayout {
+        self.emit_layout_if_changed(TabLayout {
             tab: tab_id,
             tree: layout_node,
             active,
-        };
-        self.layouts.insert(tab_id, layout.clone());
-        self.push_layout_changed(layout);
+        });
     }
 
     /// 朴素兜底布局：按顺序水平排列 pane。
@@ -2631,13 +2640,11 @@ impl TmuxRuntime {
         for p in &sorted[1..] {
             tree.split_at(sorted[0].id, p.id, SplitDir::Horizontal);
         }
-        let layout = TabLayout {
+        self.emit_layout_if_changed(TabLayout {
             tab: tab_id,
             tree,
             active,
-        };
-        self.layouts.insert(tab_id, layout.clone());
-        self.push_layout_changed(layout);
+        });
     }
 
     /// 把一个命令异步发送给 tmux（通过 channel）。
@@ -4695,6 +4702,28 @@ mod tests {
         assert!(b.pending_queries.iter().any(
             |query| matches!(query, PendingQuery::PaneResyncState { pane: p, .. } if *p == pane)
         ));
+    }
+
+    #[test]
+    fn dropped_output_does_not_resync_already_seeded_surface() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new(None);
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(32);
+        b.initial_capture_done.insert(pane);
+        b.dropped_output_panes.insert(pane);
+        b.maybe_start_resyncs();
+        assert!(
+            !b.resyncs.contains_key(&pane),
+            "已经 seed 的 Surface 丢字节不得 pause+capture"
+        );
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            !cmds
+                .iter()
+                .any(|cmd| cmd.contains("pause") || cmd.contains("capture-pane")),
+            "output-dropped 不得再抓已打开的 Surface: {cmds:?}"
+        );
     }
 
     fn drain_tmux_cmds(rx: &mut mpsc::UnboundedReceiver<String>) -> Vec<String> {
