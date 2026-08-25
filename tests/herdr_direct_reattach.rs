@@ -130,6 +130,76 @@ fn direct_reattach_preserves_server_scrollback() {
     std::thread::sleep(Duration::from_millis(200));
 }
 
+/// A colored, multiline shell prompt must not prevent a reattached pane from
+/// accepting a new command.  This is intentionally separate from the plain
+/// scrollback test so prompt parsing and lifecycle continuity fail distinctly.
+#[test]
+fn direct_reattach_colored_prompt_accepts_new_command() {
+    if !herdr_available() {
+        eprintln!("herdr 不可用，跳过 colored prompt reattach 验证");
+        return;
+    }
+    let herdr = IsolatedHerdr::start("colored-prompt-reattach");
+    let (_workspace_id, _tab, wire_pane) = herdr.create_workspace("/tmp", "colored-prompt");
+    let session = HerdrSession::new(herdr.name(), herdr.socket_path());
+    let (tx, _rx) = channel();
+
+    let mut first = ObserveStream::start(
+        session.client_socket_path(),
+        &wire_pane,
+        PaneId(1),
+        1,
+        StreamMode::Control,
+        false,
+        54,
+        23,
+        tx.clone(),
+    )
+    .expect("colored prompt 初始流启动失败");
+    first
+        .send_input(b"export PS1='\\[\\e[38;5;2m\\]\\u@\\h\\[\\e[0m\\]\\ncal-$$$ '\r")
+        .expect("设置 colored multiline PS1 失败");
+    first
+        .send_input(b"printf 'PROMPT_OLD\n'\r")
+        .expect("写 old token 失败");
+    assert!(
+        wait_server_text(&session, &wire_pane, "PROMPT_OLD"),
+        "colored prompt 阶段 old token 未到达服务端"
+    );
+    drop(first);
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut second = ObserveStream::start(
+        session.client_socket_path(),
+        &wire_pane,
+        PaneId(1),
+        1,
+        StreamMode::Control,
+        false,
+        54,
+        23,
+        tx,
+    )
+    .expect("colored prompt reattach 流启动失败");
+    second
+        .send_input(b"printf 'PROMPT_NEW\n'\r")
+        .expect("写 new token 失败");
+    assert!(
+        wait_server_text(&session, &wire_pane, "PROMPT_NEW"),
+        "colored prompt reattach 后 new token 未到达服务端"
+    );
+    let text = String::from_utf8_lossy(
+        &session
+            .pane_read_recent_ansi_lines(&wire_pane, 2000)
+            .expect("读取 colored prompt reattach 内容失败"),
+    )
+    .into_owned();
+    assert!(text.contains("PROMPT_OLD"), "reattach 后 old token 丢失");
+    assert!(text.contains("PROMPT_NEW"), "reattach 后 new token 丢失");
+    assert!(text.contains("cal-"), "colored multiline prompt 未保留");
+    drop(second);
+}
+
 /// 多 pane 并发 reopen：GTK e2e 是 4 pane 同时重新 attach，而单 pane
 /// wire 测试在 CI 上通过。此测试用 2 个 pane 模拟并发 reopen，验证
 /// 并发 attach 不会触发服务端 scrollback 竞态丢内容。

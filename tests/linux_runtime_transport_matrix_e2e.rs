@@ -15,6 +15,7 @@ use std::io::Read;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
@@ -94,6 +95,13 @@ fn panic_text(payload: Box<dyn Any + Send>) -> String {
     }
 }
 
+fn join_reader(reader: &mut Option<thread::JoinHandle<String>>) -> String {
+    reader
+        .take()
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
+}
+
 fn matrix_label(runtime: &str, transport: &str) -> String {
     let runtime = match runtime {
         "tmux" => "TM",
@@ -133,12 +141,15 @@ fn diagnostics(app: &AppWindow) -> String {
         })
         .collect::<Vec<_>>();
     format!(
-        "workspace={} runtime={} tabs/panes={:?} active_tab={} active_pane={} leaves={leaves:?} gtk={} vte={vte:?}",
+        "workspace={} runtime={} tabs/panes={:?} active_tab={} active_pane={} last_input={:?} leaves={leaves:?} gtk={} vte={vte:?}",
         app.test_active_workspace_replica_id(),
         app.test_active_workspace_runtime(),
         app.test_tab_and_pane_counts(),
         app.test_active_tab_id(),
         app.test_active_pane_id(),
+        String::from_utf8_lossy(&app.test_last_raw_input())
+            .escape_debug()
+            .to_string(),
         app.test_gtk_layout_signature(),
     )
 }
@@ -660,6 +671,66 @@ fn prepare_existing_fixture(fixture: &MatrixFixture, runtime: &str, transport: &
     Ok(())
 }
 
+const HERDR_INCIDENT_BASELINE_BYTES: usize = 223_320;
+const HERDR_INCIDENT_BASELINE_MARKER: &str = "MX_INCIDENT_BASELINE_DONE";
+
+/// 在 AppWindow 创建前向已 populated 的 Herdr workspace 写入固定大小的
+/// baseline。该 fixture 对应 2026-08-24 事故的约 223KB 历史，而不是把
+/// 历史生成混入 GTK attach 计时。
+fn seed_herdr_incident_baseline(fixture: &MatrixFixture) -> Result<()> {
+    ensure!(
+        fixture.spec.runtime == "herdr",
+        "incident baseline 只支持 Herdr"
+    );
+    let socket = fixture
+        .spec
+        .socket
+        .as_ref()
+        .context("incident fixture 缺 Herdr socket")?;
+    let session = muxterm::core::runtime::herdr::session::HerdrSession::new(
+        fixture.spec.session.clone(),
+        socket,
+    );
+    let snapshot = session.snapshot().context("incident baseline snapshot")?;
+    let pane = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.workspace_id == fixture.spec.path)
+        .map(|pane| pane.pane_id.clone())
+        .context("incident baseline 找不到 populated pane")?;
+    let command = format!(
+        "head -c {HERDR_INCIDENT_BASELINE_BYTES} /dev/zero | tr '\\0' X; printf '\\n{HERDR_INCIDENT_BASELINE_MARKER}\\n'\n"
+    );
+    session
+        .pane_send_text(&pane, &command)
+        .context("写 incident baseline")?;
+    let deadline = Instant::now() + CHILD_TIMEOUT_LONG;
+    while Instant::now() < deadline {
+        if let Ok(bytes) = session.pane_read_recent_ansi_lines(&pane, 20_000) {
+            let text = String::from_utf8_lossy(&bytes);
+            // Herdr's JSON `pane.read` response is intentionally capped
+            // below the full history size; the command itself is the exact
+            // baseline generator, while the marker proves it completed.
+            if text.contains(HERDR_INCIDENT_BASELINE_MARKER) {
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let observed = session
+        .pane_read_recent_ansi_lines(&pane, 20_000)
+        .map(|bytes| {
+            (
+                bytes.len(),
+                String::from_utf8_lossy(&bytes).contains(HERDR_INCIDENT_BASELINE_MARKER),
+            )
+        })
+        .unwrap_or((0, false));
+    anyhow::bail!(
+        "incident baseline 未达到约 {HERDR_INCIDENT_BASELINE_BYTES} bytes: pane={pane} observed={observed:?}"
+    )
+}
+
 /// W7 child 入口：`current_exe --exact isolated_matrix_child` 子进程。
 ///
 /// 读 MUXTERM_TEST_RUNTIME/TRANSPORT/SCENARIO，初始化一次 GTK，建一个
@@ -726,8 +797,14 @@ fn isolated_matrix_child() {
             } else {
                 None
             };
-            if scenario_in == "attach_then_mutate_existing" {
+            if matches!(
+                scenario_in.as_str(),
+                "attach_then_mutate_existing" | "herdr_attach_split_incident"
+            ) {
                 prepare_existing_fixture(&fixture, &runtime_in, &transport_in)?;
+            }
+            if scenario_in == "herdr_attach_split_incident" {
+                seed_herdr_incident_baseline(&fixture)?;
             }
             // project_existing_parity：预置隔离 store，面板 Project 行真实可点。
             let _store_guard =
@@ -777,6 +854,9 @@ fn run_child_scenario(
         "matrix_full" => run_case(app, fixture, runtime, transport),
         "attach_then_mutate_existing" => {
             scenario_attach_then_mutate_existing(app, fixture, runtime, transport)
+        }
+        "herdr_attach_split_incident" => {
+            scenario_herdr_attach_split_incident(app, fixture, runtime, transport)
         }
         "new_tab_button" => scenario_new_tab_button(app, fixture, runtime, transport),
         "new_tab_shortcut" => scenario_new_tab_shortcut(app, fixture, runtime, transport),
@@ -874,6 +954,22 @@ fn spawn_child(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("spawn child {runtime} x {transport} x {scenario}"))?;
+    // 必须在 child 运行期间持续 drain 两个 pipe。等 child 退出后再读会在
+    // tmux/GTK 诊断输出较多时填满 OS pipe buffer，child 阻塞而被误判为 timeout。
+    let mut stdout_reader = child.stdout.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            text
+        })
+    });
+    let mut stderr_reader = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            text
+        })
+    });
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -888,19 +984,20 @@ fn spawn_child(
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            let stdout = join_reader(&mut stdout_reader);
+            let stderr = join_reader(&mut stderr_reader);
+            let log = format!(
+                "=== cell {runtime} x {transport} scenario {scenario} ===\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nartifact: {}",
+                artifact.display()
+            );
+            let _ = std::fs::write(&artifact, &log);
             cleanup_matrix_fixture(&fixture_socket, &fixture_name);
-            anyhow::bail!("child 超时（{timeout:?}）");
+            anyhow::bail!("child 超时（{timeout:?}）:\n{log}");
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
+    let stdout = join_reader(&mut stdout_reader);
+    let stderr = join_reader(&mut stderr_reader);
     let log = format!(
         "=== cell {runtime} x {transport} scenario {scenario} ===\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nartifact: {}",
         artifact.display()
@@ -958,6 +1055,9 @@ fn scenarios_for_cell(runtime: &str, transport: &str) -> Vec<&'static str> {
             "takeover_watchdog",
             "project_existing_parity",
         ]);
+        if transport == "local" {
+            scenarios.push("herdr_attach_split_incident");
+        }
     }
     scenarios
 }
@@ -1013,6 +1113,7 @@ fn linux_every_registered_runtime_transport_passes_gui_input_pool_and_reattach_m
                     || *scenario == "large_history_393k"
                     || *scenario == "large_history_500k"
                     || *scenario == "takeover_watchdog"
+                    || *scenario == "herdr_attach_split_incident"
                     || *scenario == "detach_reattach"
                 {
                     CHILD_TIMEOUT_LONG
@@ -1083,25 +1184,9 @@ fn scenario_attach_then_mutate_existing(
     folder.activate();
     pump_main_loop(80);
 
-    if transport == "ssh" {
-        let alias = fixture
-            .spec
-            .alias
-            .as_deref()
-            .context("SSH Existing fixture 缺 alias")?;
-        let list = find_by_name(&app.test_window(), "muxterm-panel-list")
-            .context("SSH Existing 列表应存在")?
-            .downcast::<gtk4::ListBox>()
-            .map_err(|_| anyhow::anyhow!("SSH Existing 列表不是 ListBox"))?;
-        let host = find_row_by_name(&list, &format!("muxterm-existing-host-{alias}"))
-            .with_context(|| format!("Existing 列表缺 SSH host {alias}"))?;
-        host.activate();
-        pump_main_loop(80);
-    }
-
     let connect_name = transport_label(transport, fixture);
     let identity = if runtime == "herdr" {
-        fixture.spec.path.clone()
+        format!("{}-{}", fixture.spec.path, fixture.spec.session)
     } else {
         fixture.spec.session.clone()
     };
@@ -1143,7 +1228,13 @@ fn scenario_attach_then_mutate_existing(
     // 继续使用真实 + 按钮，确保 split 后新 tab 也沿同一生命周期契约。
     find_button(app, "muxterm-new-tab")?.emit_clicked();
     wait_for(app, "Existing attach 后 + 创建新 tab", |app| {
-        app.test_tab_ids().len() == 3 && app.test_tab_and_pane_counts() == (3, 1)
+        let target = app.test_active_pane_id();
+        let (width, height) = app.test_pane_allocation(target);
+        app.test_tab_ids().len() == 3
+            && app.test_tab_and_pane_counts() == (3, 1)
+            && width > 0
+            && height > 0
+            && !app.test_pane_vte_text(target).trim().is_empty()
     })?;
     let target = app.test_active_pane_id();
     let (_, token) = execute_printf(
@@ -1163,6 +1254,24 @@ fn scenario_attach_then_mutate_existing(
             "attach 后 pane {pane} geometry 无效"
         );
     }
+    Ok(())
+}
+
+/// 2026-08-24 Herdr incident regression: populated attach → split → NewTab →
+/// real echo must settle and exit normally with a fixed large baseline.
+fn scenario_herdr_attach_split_incident(
+    app: &AppWindow,
+    fixture: &MatrixFixture,
+    runtime: &str,
+    transport: &str,
+) -> Result<()> {
+    ensure!(runtime == "herdr" && transport == "local");
+    scenario_attach_then_mutate_existing(app, fixture, runtime, transport)?;
+    ensure!(
+        !app.test_search_workspace(HERDR_INCIDENT_BASELINE_MARKER)
+            .is_empty(),
+        "incident attach 后 baseline marker 必须仍在 Workspace/Core 中"
+    );
     Ok(())
 }
 
@@ -1856,10 +1965,15 @@ fn scenario_project_existing_parity(
     // 扁平列表找 herdr 行（runtime-connect-workspace）。
     let ws = fixture.spec.path.clone();
     let existing_prefix = format!(
-        "muxterm-existing-row-herdr-{}-",
-        existing_connect_name(fixture, transport)
+        "muxterm-existing-row-herdr-{}-{ws}-{}",
+        existing_connect_name(fixture, transport),
+        fixture.spec.session
     );
-    let existing_name = format!("muxterm-existing-row-herdr-{}-{ws}", "local");
+    let existing_name = format!(
+        "muxterm-existing-row-herdr-{}-{ws}-{}",
+        existing_connect_name(fixture, transport),
+        fixture.spec.session
+    );
     let deadline = Instant::now() + GTK_MATRIX_TIMEOUT;
     let herdr_row = loop {
         pump_main_loop(40);

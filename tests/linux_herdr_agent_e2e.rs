@@ -10,6 +10,7 @@ mod support;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
@@ -115,6 +116,51 @@ fn wait_for_server_text(session: &HerdrSession, wire_pane: &str, text: &str) -> 
         std::thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+/// 失败诊断：用独立 wire 连接重新 attach 到该 pane，验证 token 是否
+/// 在服务端 scrollback 里（区分「服务端真丢」vs「AppWindow 重放路径」）。
+fn wire_reattach_token_check(session: &HerdrSession, wire_pane: &str, token: &str) -> String {
+    use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
+    use muxterm::core::types::PaneId;
+    let (tx, _rx) = channel();
+    let wire_id = wire_pane
+        .rsplit(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1) as u32;
+    let result = match ObserveStream::start(
+        session.client_socket_path(),
+        wire_pane,
+        PaneId(wire_id),
+        9999,
+        StreamMode::Observe,
+        false,
+        54,
+        23,
+        tx,
+    ) {
+        Ok(stream) => {
+            // 等 full 帧到达（服务端重放），再读服务端 buffer。
+            std::thread::sleep(Duration::from_millis(1500));
+            drop(stream);
+            std::thread::sleep(Duration::from_millis(300));
+            let text = session
+                .pane_read_recent_ansi_lines(wire_pane, 2000)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default();
+            if text.contains(token) {
+                "wire 直连后 token 仍在（服务端有，AppWindow 路径丢）".to_string()
+            } else {
+                format!(
+                    "wire 直连后 token 仍缺（服务端 scrollback 真丢）; tail: {:?}",
+                    text.escape_debug()
+                )
+            }
+        }
+        Err(err) => format!("wire 直连失败: {err:#}"),
+    };
+    result
 }
 
 fn wait_for(
@@ -229,11 +275,12 @@ fn assert_bound_token(
     let server_ok = wait_for_server_text(session, &bound.wire_pane, &bound.token);
     ensure!(
         server_ok,
-        "服务端 pane.read({}) 缺 {}；服务端内容: {:?}\nherdr-server.log tail:\n{}",
+        "服务端 pane.read({}) 缺 {}；服务端内容: {:?}\nwire 直连重查: {}\nherdr-server.log tail:\n{}",
         bound.wire_pane,
         bound.token,
         String::from_utf8_lossy(&session.pane_read_recent_ansi_lines(&bound.wire_pane, 2000)?)
             .escape_debug(),
+        wire_reattach_token_check(session, &bound.wire_pane, &bound.token),
         server_log_tail(session),
     );
     let hit_panes = app
@@ -630,20 +677,31 @@ fn verify_reattach_continuity(
     focus_pane(app, session, workspace_id, scenario, scenario.tab2_panes[2])
 }
 
-fn wait_agent_detected(session: &HerdrSession, pane_id: &str) -> Result<()> {
-    let deadline = Instant::now() + HERDR_TIMEOUT;
-    while Instant::now() < deadline {
-        let snapshot = session.snapshot()?;
-        if snapshot
-            .agents
-            .iter()
-            .any(|agent| agent.pane_id == pane_id && agent.agent.as_deref() == Some("pi"))
-        {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(50));
+fn wait_agent_detected(app: &AppWindow, session: &HerdrSession, pane_id: &str) -> Result<()> {
+    // commit 输入先进入 Workspace-owned FIFO；必须持续走生产 poll，才能把
+    // `./pi\r` 从当前 VTE 转发到 Herdr，而不是只轮询服务端快照。
+    let detection = wait_for(app, "Herdr agent detection", |_| {
+        session.snapshot().is_ok_and(|snapshot| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.pane_id == pane_id && agent.agent.as_deref() == Some("pi"))
+        })
+    });
+    if detection.is_ok() {
+        return Ok(());
     }
-    anyhow::bail!("Herdr 未识别 pane {pane_id} 的真实 pi")
+    let agents = session
+        .snapshot()
+        .map(|snapshot| format!("{:?}", snapshot.agents))
+        .unwrap_or_else(|error| format!("snapshot error: {error:#}"));
+    let screen = session
+        .pane_read_ansi(pane_id)
+        .map(|bytes| String::from_utf8_lossy(&bytes).escape_debug().to_string())
+        .unwrap_or_else(|error| format!("pane.read error: {error:#}"));
+    anyhow::bail!(
+        "Herdr 未识别 pane {pane_id} 的真实 pi；wait={detection:?}; agents={agents}; screen={screen}"
+    )
 }
 
 fn wait_detector_working(session: &HerdrSession, pane_id: &str) -> Result<()> {
@@ -802,7 +860,7 @@ fn start_agent(ctx: &AgentTestCtx) -> Result<()> {
         "启动 agent 前切 Tab 1",
     )?;
     emit_command(&ctx.app, ctx.agent_command.invocation())?;
-    wait_agent_detected(&ctx.session, &ctx.wire_pane1)?;
+    wait_agent_detected(&ctx.app, &ctx.session, &ctx.wire_pane1)?;
     std::fs::write(&ctx.agent_session_path, "{}\n").context("创建临时 pi session")?;
     ctx.session.call(
         "pane.report_agent_session",
@@ -862,8 +920,31 @@ fn run_agent_test(
 }
 
 /// local + ssh 两个 transport 各跑一次场景。
-fn run_agent_test_pair(name: &'static str, body: fn(&AgentTestCtx) -> Result<()>) {
+fn run_agent_test_pair(
+    test_name: &'static str,
+    name: &'static str,
+    body: fn(&AgentTestCtx) -> Result<()>,
+) {
     if skip_no_display() {
+        return;
+    }
+    // GTK/VTE allocators are process-global.  A single Rust test process that
+    // repeatedly creates and destroys two AppWindow instances can leave GLib
+    // finalizers queued past the next test (observed as a later double free in
+    // CI even though every scenario passes in isolation).  Keep the production
+    // scenario unchanged, but run each named contract in its own child process
+    // so one test's GTK teardown cannot corrupt the next one.
+    if std::env::var_os("MUXTERM_AGENT_CHILD").is_none() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let status = Command::new(executable)
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env("MUXTERM_AGENT_CHILD", "1")
+            .status()
+            .unwrap_or_else(|error| panic!("spawn GTK Herdr agent child {test_name}: {error}"));
+        assert!(
+            status.success(),
+            "GTK Herdr agent child {test_name} exited with {status}"
+        );
         return;
     }
     // 仅在 RUST_LOG 明确设置时输出 Muxterm tracing（CI 不设则不输出）。
@@ -892,163 +973,189 @@ fn run_agent_test_pair(name: &'static str, body: fn(&AgentTestCtx) -> Result<()>
 /// 场景 1：初始 attach 后，四个 pane 都能执行命令并绑定 token。
 #[test]
 fn herdr_agent_initial_attach_binds_tokens() {
-    run_agent_test_pair("initial attach", |ctx| {
-        let tokens = exercise_all_panes(
-            &ctx.app,
-            &ctx.session,
-            &ctx.workspace_id,
-            &ctx.scenario,
-            &format!("B{}", ctx.mark),
-        )?;
-        ensure!(
-            tokens
-                .iter()
-                .map(|token| token.product_pane)
-                .collect::<HashSet<_>>()
-                == ctx
-                    .scenario
-                    .pane_map
-                    .keys()
-                    .copied()
-                    .collect::<HashSet<_>>(),
-            "初始 attach 必须绑定全部四个 pane"
-        );
-        Ok(())
-    });
+    run_agent_test_pair(
+        "herdr_agent_initial_attach_binds_tokens",
+        "initial attach",
+        |ctx| {
+            let tokens = exercise_all_panes(
+                &ctx.app,
+                &ctx.session,
+                &ctx.workspace_id,
+                &ctx.scenario,
+                &format!("B{}", ctx.mark),
+            )?;
+            ensure!(
+                tokens
+                    .iter()
+                    .map(|token| token.product_pane)
+                    .collect::<HashSet<_>>()
+                    == ctx
+                        .scenario
+                        .pane_map
+                        .keys()
+                        .copied()
+                        .collect::<HashSet<_>>(),
+                "初始 attach 必须绑定全部四个 pane"
+            );
+            Ok(())
+        },
+    );
 }
 
 /// 场景 2：detach + reopen 后，working 作为 bootstrap 恢复，四 pane 内容连续。
 #[test]
 fn herdr_agent_detach_reattach_preserves_content() {
-    run_agent_test_pair("detach/reattach", |ctx| {
-        let before_tokens = exercise_all_panes(
-            &ctx.app,
-            &ctx.session,
-            &ctx.workspace_id,
-            &ctx.scenario,
-            &format!("B{}", ctx.mark),
-        )?;
-        // 阶段快照（诊断 reopen 内容丢失用；成功时不打印）。
-        let pane2_wire = ctx.scenario.pane_map[&ctx.scenario.tab2_panes[0]].clone();
-        let snap_b = ctx
-            .session
-            .pane_read_recent_ansi_lines(&pane2_wire, 2000)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .unwrap_or_else(|e| format!("read err: {e}"));
-        start_agent(ctx)?;
-        ensure!(
-            String::from_utf8_lossy(&ctx.session.pane_read_ansi(&ctx.wire_pane1)?)
-                .contains("Working..."),
-            "detach 前 agent pane 服务端缺 Working..."
-        );
-        ensure!(
-            ctx.app
-                .test_active_runtime_supports(RuntimeCapability::PersistDetach),
-            "Herdr 必须声明 PersistDetach"
-        );
-        ensure!(
-            ctx.app.test_detach_active_workspace_outcome()? == TaskOutcome::Done,
-            "Herdr detach 必须成功"
-        );
-        for token in before_tokens
-            .iter()
-            .filter(|token| ctx.scenario.tab2_panes.contains(&token.product_pane))
-        {
-            ensure!(
-                String::from_utf8_lossy(&ctx.session.pane_read_ansi(&token.wire_pane)?)
-                    .contains(&token.token),
-                "detach 后、reopen 前服务端 {} 丢失 {}",
-                token.wire_pane,
-                token.token
-            );
-        }
-        ctx.app.test_open_spec(ctx.spec.clone());
-        wait_for(&ctx.app, "agent working reattach", |candidate| {
-            candidate.test_active_workspace_runtime() == "herdr"
-                && candidate.test_tab_ids().len() == 2
-                && candidate.test_active_tab_id() == ctx.scenario.tab2
-                && candidate.test_layout_leaf_ids() == ctx.scenario.tab2_panes
-        })?;
-        let reattach = verify_reattach_continuity(
-            &ctx.app,
-            &ctx.session,
-            &ctx.workspace_id,
-            &ctx.scenario,
-            &before_tokens,
-        );
-        if let Err(err) = reattach {
-            let snap_now = ctx
+    run_agent_test_pair(
+        "herdr_agent_detach_reattach_preserves_content",
+        "detach/reattach",
+        |ctx| {
+            let before_tokens = exercise_all_panes(
+                &ctx.app,
+                &ctx.session,
+                &ctx.workspace_id,
+                &ctx.scenario,
+                &format!("B{}", ctx.mark),
+            )?;
+            // 阶段快照（诊断 reopen 内容丢失用；成功时不打印）。
+            let pane2_wire = ctx.scenario.pane_map[&ctx.scenario.tab2_panes[0]].clone();
+            let snap_b = ctx
                 .session
                 .pane_read_recent_ansi_lines(&pane2_wire, 2000)
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
                 .unwrap_or_else(|e| format!("read err: {e}"));
-            eprintln!(
+            start_agent(ctx)?;
+            ensure!(
+                String::from_utf8_lossy(&ctx.session.pane_read_ansi(&ctx.wire_pane1)?)
+                    .contains("Working..."),
+                "detach 前 agent pane 服务端缺 Working..."
+            );
+            ensure!(
+                ctx.app
+                    .test_active_runtime_supports(RuntimeCapability::PersistDetach),
+                "Herdr 必须声明 PersistDetach"
+            );
+            ensure!(
+                ctx.app.test_detach_active_workspace_outcome()? == TaskOutcome::Done,
+                "Herdr detach 必须成功"
+            );
+            for token in before_tokens
+                .iter()
+                .filter(|token| ctx.scenario.tab2_panes.contains(&token.product_pane))
+            {
+                ensure!(
+                    String::from_utf8_lossy(&ctx.session.pane_read_ansi(&token.wire_pane)?)
+                        .contains(&token.token),
+                    "detach 后、reopen 前服务端 {} 丢失 {}",
+                    token.wire_pane,
+                    token.token
+                );
+            }
+            ctx.app.test_open_spec(ctx.spec.clone());
+            wait_for(&ctx.app, "agent working reattach", |candidate| {
+                candidate.test_active_workspace_runtime() == "herdr"
+                    && candidate.test_tab_ids().len() == 2
+                    && candidate.test_active_tab_id() == ctx.scenario.tab2
+                    && candidate.test_layout_leaf_ids() == ctx.scenario.tab2_panes
+            })?;
+            let reattach = verify_reattach_continuity(
+                &ctx.app,
+                &ctx.session,
+                &ctx.workspace_id,
+                &ctx.scenario,
+                &before_tokens,
+            );
+            if let Err(err) = reattach {
+                let snap_now = ctx
+                    .session
+                    .pane_read_recent_ansi_lines(&pane2_wire, 2000)
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_else(|e| format!("read err: {e}"));
+                eprintln!(
                 "detach/reattach 阶段快照（pane {pane2_wire}）\nB 阶段后: {:?}\nreopen 后: {:?}",
                 snap_b.escape_debug(),
                 snap_now.escape_debug()
             );
-            return Err(err.context("reattach 后四 pane 内容连续性"));
-        }
-        for _ in 0..10 {
-            tick(&ctx.app);
-        }
-        ensure!(
-            ctx.app.test_attention_blocked_workspaces() == 0
-                && ctx.app.test_attention_done_count() == 0
-                && notification_count(&ctx.app, ": needs attention") == 0
-                && notification_count(&ctx.app, ": task complete") == 0,
-            "attach 的初始 working 不得伪造通知: {:?}",
-            ctx.app.test_notifications_recorded()
-        );
-        Ok(())
-    });
+                return Err(err.context("reattach 后四 pane 内容连续性"));
+            }
+            // Reattach 后必须仍能向当前 Control pane 写入一个新 token；只
+            // 证明旧 scrollback 存在不足以覆盖 attach 后继续使用的路径。
+            let after_token = execute_and_assert_binding(
+                &ctx.app,
+                &ctx.session,
+                &ctx.scenario.pane_map,
+                &format!("A{}", ctx.mark),
+            )?;
+            ensure!(
+                String::from_utf8_lossy(&ctx.session.pane_read_ansi(&after_token.wire_pane)?)
+                    .contains(&after_token.token),
+                "reattach 后新 token 必须到达服务端 pane {}",
+                after_token.wire_pane
+            );
+            for _ in 0..10 {
+                tick(&ctx.app);
+            }
+            ensure!(
+                ctx.app.test_attention_blocked_workspaces() == 0
+                    && ctx.app.test_attention_done_count() == 0
+                    && notification_count(&ctx.app, ": needs attention") == 0
+                    && notification_count(&ctx.app, ": task complete") == 0,
+                "attach 的初始 working 不得伪造通知: {:?}",
+                ctx.app.test_notifications_recorded()
+            );
+            Ok(())
+        },
+    );
 }
 
 /// 场景 3：后台 agent 报 blocked 时产生一次 needs-attention 通知。
 #[test]
 fn herdr_agent_blocked_attention() {
-    run_agent_test_pair("blocked attention", |ctx| {
-        let _ = exercise_all_panes(
-            &ctx.app,
-            &ctx.session,
-            &ctx.workspace_id,
-            &ctx.scenario,
-            &format!("B{}", ctx.mark),
-        )?;
-        start_agent(ctx)?;
-        ctx.session.call(
-            "pane.report_agent",
-            serde_json::json!({
-                "pane_id": &ctx.wire_pane1,
-                "source": &ctx.source,
-                "agent": "pi",
-                "state": "blocked",
-                "message": format!("approve GTK command"),
-                "seq": 3,
-                "agent_session_path": &ctx.agent_session_path,
-            }),
-        )?;
-        wait_for(&ctx.app, "blocked attention", |candidate| {
-            candidate.test_attention_blocked_workspaces() == 1
-                && notification_count(candidate, ": needs attention") == 1
-        })?;
-        for _ in 0..10 {
-            tick(&ctx.app);
-        }
-        ensure!(
-            notification_count(&ctx.app, ": needs attention") == 1,
-            "blocked 保持期间只能通知一次: {:?}",
-            ctx.app.test_notifications_recorded()
-        );
-        Ok(())
-    });
+    run_agent_test_pair(
+        "herdr_agent_blocked_attention",
+        "blocked attention",
+        |ctx| {
+            let _ = exercise_all_panes(
+                &ctx.app,
+                &ctx.session,
+                &ctx.workspace_id,
+                &ctx.scenario,
+                &format!("B{}", ctx.mark),
+            )?;
+            start_agent(ctx)?;
+            ctx.session.call(
+                "pane.report_agent",
+                serde_json::json!({
+                    "pane_id": &ctx.wire_pane1,
+                    "source": &ctx.source,
+                    "agent": "pi",
+                    "state": "blocked",
+                    "message": format!("approve GTK command"),
+                    "seq": 3,
+                    "agent_session_path": &ctx.agent_session_path,
+                }),
+            )?;
+            wait_for(&ctx.app, "blocked attention", |candidate| {
+                candidate.test_attention_blocked_workspaces() == 1
+                    && notification_count(candidate, ": needs attention") == 1
+            })?;
+            for _ in 0..10 {
+                tick(&ctx.app);
+            }
+            ensure!(
+                notification_count(&ctx.app, ": needs attention") == 1,
+                "blocked 保持期间只能通知一次: {:?}",
+                ctx.app.test_notifications_recorded()
+            );
+            Ok(())
+        },
+    );
 }
 
 /// 场景 4：释放 authority 后由 screen detector 接管，真实 pi 完成帧触发
 /// 一次 task-complete 通知。
 #[test]
 fn herdr_agent_done_attention() {
-    run_agent_test_pair("done attention", |ctx| {
+    run_agent_test_pair("herdr_agent_done_attention", "done attention", |ctx| {
         let _ = exercise_all_panes(
             &ctx.app,
             &ctx.session,
@@ -1091,95 +1198,99 @@ fn herdr_agent_done_attention() {
 /// 仍能执行命令——authority/observe/control 切换不得破坏终端。
 #[test]
 fn herdr_agent_lifecycle_after_commands() {
-    run_agent_test_pair("lifecycle after commands", |ctx| {
-        let before_tokens = exercise_all_panes(
-            &ctx.app,
-            &ctx.session,
-            &ctx.workspace_id,
-            &ctx.scenario,
-            &format!("B{}", ctx.mark),
-        )?;
-        start_agent(ctx)?;
-        ctx.session.call(
-            "pane.report_agent",
-            serde_json::json!({
-                "pane_id": &ctx.wire_pane1,
-                "source": &ctx.source,
-                "agent": "pi",
-                "state": "blocked",
-                "message": format!("approve GTK command"),
-                "seq": 3,
-                "agent_session_path": &ctx.agent_session_path,
-            }),
-        )?;
-        wait_for(&ctx.app, "blocked attention", |candidate| {
-            candidate.test_attention_blocked_workspaces() == 1
-                && notification_count(candidate, ": needs attention") == 1
-        })?;
-        ctx.session.call(
-            "pane.clear_agent_authority",
-            serde_json::json!({
-                "pane_id": &ctx.wire_pane1,
-                "source": &ctx.source,
-                "seq": 4,
-            }),
-        )?;
-        wait_detector_working(&ctx.session, &ctx.wire_pane1)?;
-        ctx.agent_command.mark_done();
-        // 与 done_attention 场景一致：先确认 server 侧 detector 已从 Working
-        // 转走（Done/Idle），再等产品侧 done attention——ssh 下事件链路
-        // 可能滞后于 server 状态，直接等产品侧会偶发超时。
-        wait_for_server_agent_transition(&ctx.session, &ctx.wire_pane1)?;
-        wait_for(&ctx.app, "done attention", |candidate| {
-            candidate.test_attention_done_count() == 1
-                && notification_count(candidate, ": task complete") == 1
-        })?;
-        ctx.agent_command.stop();
-        let authority = Authority {
-            session: &ctx.session,
-            workspace_id: &ctx.workspace_id,
-        };
-        switch_tab(
-            &ctx.app,
-            Action::SwitchTab1,
-            authority,
-            FocusTarget {
-                product_tab: ctx.scenario.tab1,
-                product_pane: ctx.scenario.tab1_pane,
-                wire_tab: &ctx.scenario.wire_tab1,
-                wire_pane: ctx
-                    .scenario
-                    .pane_map
-                    .get(&ctx.scenario.tab1_pane)
-                    .context("agent pane 缺 wire mapping")?,
-            },
-            "完成后切回 agent pane",
-        )?;
-        wait_for(&ctx.app, "聚焦后 attention 清零", |candidate| {
-            candidate.test_attention_blocked_workspaces() == 0
-                && candidate.test_attention_done_count() == 0
-        })?;
-        let after_tokens = exercise_all_panes(
-            &ctx.app,
-            &ctx.session,
-            &ctx.workspace_id,
-            &ctx.scenario,
-            &format!("A{}", ctx.mark),
-        )?;
-        ensure!(
-            after_tokens
-                .iter()
-                .map(|token| token.product_pane)
-                .collect::<HashSet<_>>()
-                == ctx
-                    .scenario
-                    .pane_map
-                    .keys()
-                    .copied()
-                    .collect::<HashSet<_>>(),
-            "agent lifecycle 后必须再次在全部四个 pane 成功执行命令"
-        );
-        let _ = before_tokens;
-        Ok(())
-    });
+    run_agent_test_pair(
+        "herdr_agent_lifecycle_after_commands",
+        "lifecycle after commands",
+        |ctx| {
+            let before_tokens = exercise_all_panes(
+                &ctx.app,
+                &ctx.session,
+                &ctx.workspace_id,
+                &ctx.scenario,
+                &format!("B{}", ctx.mark),
+            )?;
+            start_agent(ctx)?;
+            ctx.session.call(
+                "pane.report_agent",
+                serde_json::json!({
+                    "pane_id": &ctx.wire_pane1,
+                    "source": &ctx.source,
+                    "agent": "pi",
+                    "state": "blocked",
+                    "message": format!("approve GTK command"),
+                    "seq": 3,
+                    "agent_session_path": &ctx.agent_session_path,
+                }),
+            )?;
+            wait_for(&ctx.app, "blocked attention", |candidate| {
+                candidate.test_attention_blocked_workspaces() == 1
+                    && notification_count(candidate, ": needs attention") == 1
+            })?;
+            ctx.session.call(
+                "pane.clear_agent_authority",
+                serde_json::json!({
+                    "pane_id": &ctx.wire_pane1,
+                    "source": &ctx.source,
+                    "seq": 4,
+                }),
+            )?;
+            wait_detector_working(&ctx.session, &ctx.wire_pane1)?;
+            ctx.agent_command.mark_done();
+            // 与 done_attention 场景一致：先确认 server 侧 detector 已从 Working
+            // 转走（Done/Idle），再等产品侧 done attention——ssh 下事件链路
+            // 可能滞后于 server 状态，直接等产品侧会偶发超时。
+            wait_for_server_agent_transition(&ctx.session, &ctx.wire_pane1)?;
+            wait_for(&ctx.app, "done attention", |candidate| {
+                candidate.test_attention_done_count() == 1
+                    && notification_count(candidate, ": task complete") == 1
+            })?;
+            ctx.agent_command.stop();
+            let authority = Authority {
+                session: &ctx.session,
+                workspace_id: &ctx.workspace_id,
+            };
+            switch_tab(
+                &ctx.app,
+                Action::SwitchTab1,
+                authority,
+                FocusTarget {
+                    product_tab: ctx.scenario.tab1,
+                    product_pane: ctx.scenario.tab1_pane,
+                    wire_tab: &ctx.scenario.wire_tab1,
+                    wire_pane: ctx
+                        .scenario
+                        .pane_map
+                        .get(&ctx.scenario.tab1_pane)
+                        .context("agent pane 缺 wire mapping")?,
+                },
+                "完成后切回 agent pane",
+            )?;
+            wait_for(&ctx.app, "聚焦后 attention 清零", |candidate| {
+                candidate.test_attention_blocked_workspaces() == 0
+                    && candidate.test_attention_done_count() == 0
+            })?;
+            let after_tokens = exercise_all_panes(
+                &ctx.app,
+                &ctx.session,
+                &ctx.workspace_id,
+                &ctx.scenario,
+                &format!("A{}", ctx.mark),
+            )?;
+            ensure!(
+                after_tokens
+                    .iter()
+                    .map(|token| token.product_pane)
+                    .collect::<HashSet<_>>()
+                    == ctx
+                        .scenario
+                        .pane_map
+                        .keys()
+                        .copied()
+                        .collect::<HashSet<_>>(),
+                "agent lifecycle 后必须再次在全部四个 pane 成功执行命令"
+            );
+            let _ = before_tokens;
+            Ok(())
+        },
+    );
 }
