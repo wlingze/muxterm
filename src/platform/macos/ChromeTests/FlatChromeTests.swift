@@ -933,6 +933,62 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertFalse(TabSwitchPaintPolicy.needsLayoutReload(cacheHit: true))
         XCTAssertTrue(TabSwitchPaintPolicy.needsLayoutReload(cacheHit: false))
     }
+
+    func testTabCreateCloseDoesNotReloadOnClick() {
+        XCTAssertFalse(TabLifecyclePaintPolicy.needsLayoutReloadOnClick())
+        XCTAssertFalse(TabLifecyclePaintPolicy.shouldTouchVisibleLayout(closedIsVisible: false))
+        XCTAssertTrue(TabLifecyclePaintPolicy.shouldTouchVisibleLayout(closedIsVisible: true))
+    }
+
+    func testTabPaintPathsDoNotShareOneReloadSwitch() {
+        XCTAssertFalse(
+            TabLifecyclePaintPolicy.needsLayoutReloadOnClick(),
+            "新建/关闭的点击当拍不能拆当前树"
+        )
+        XCTAssertTrue(
+            FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 1, hasLayout: false),
+            "第一次点从未打开的单 pane tab 必须能就地建树"
+        )
+        XCTAssertFalse(
+            TabSwitchPaintPolicy.needsLayoutReload(cacheHit: true),
+            "已打开的 tab 再切入只挂缓存树"
+        )
+        XCTAssertTrue(
+            TabSwitchPaintPolicy.needsLayoutReload(cacheHit: false),
+            "缓存未命中才走全量 apply"
+        )
+        XCTAssertTrue(
+            StateEventPolicy.requiresLayoutReload(1),
+            "TabAdded 仍是结构事件，新 pane 要等 layout 再喂输出"
+        )
+        XCTAssertTrue(
+            StateEventPolicy.requiresLayoutReload(2),
+            "TabClosed 仍是结构事件"
+        )
+        XCTAssertFalse(
+            StateEventPolicy.requiresLayoutReload(6),
+            "切 tab 不得把同批 PaneOutput 推迟"
+        )
+        XCTAssertFalse(
+            EventBatchPlan.hasStructuralEvent(
+                types: [6, 99],
+                requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+            )
+        )
+        XCTAssertTrue(
+            EventBatchPlan.hasStructuralEvent(
+                types: [1, 99],
+                requiresLayoutReload: StateEventPolicy.requiresLayoutReload
+            )
+        )
+    }
+
+    func testFirstVisitCanPaintFromLocalLayout() {
+        XCTAssertTrue(FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 1, hasLayout: false))
+        XCTAssertTrue(FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 2, hasLayout: true))
+        XCTAssertFalse(FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 2, hasLayout: false))
+        XCTAssertFalse(FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 0, hasLayout: true))
+    }
 }
 
 final class PaneHistorySeedPolicyTests: XCTestCase {

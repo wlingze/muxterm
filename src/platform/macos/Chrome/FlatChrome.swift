@@ -526,6 +526,23 @@ public enum TabSwitchPaintPolicy {
     }
 }
 
+/// 新建/关闭 tab：等 Core 事件，不要在点击当拍拆当前树。
+public enum TabLifecyclePaintPolicy {
+    public static func needsLayoutReloadOnClick() -> Bool { false }
+
+    /// 关掉后台 tab 只更新 chrome。关掉当前可见 tab 才动前台树。
+    public static func shouldTouchVisibleLayout(closedIsVisible: Bool) -> Bool {
+        closedIsVisible
+    }
+}
+
+/// 第一次点一个还没建树的 tab：只要 core 已经有这个 tab 的 layout，就地建树。
+public enum FirstTabPaintPolicy {
+    public static func canPaintFromLocalLayout(paneCount: Int, hasLayout: Bool) -> Bool {
+        paneCount > 0 && (hasLayout || paneCount == 1)
+    }
+}
+
 /// attach 前历史按行写入 native scrollback：不得 reset，也不得当 VT dump。
 public enum PaneHistorySeedPolicy {
     public static func shouldResetTerminal() -> Bool { false }

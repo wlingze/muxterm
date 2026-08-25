@@ -213,7 +213,56 @@ final class PaneLayoutView: NSView {
         )
 
         needsLayout = true
-        scheduleGeometrySync(paneIds: ids)
+        let token = (Int(bounds.width.rounded()), Int(bounds.height.rounded()))
+        if token.0 > 0, token.1 > 0, token == lastLayoutBounds {
+            // 窗口没变，第一次挂树也不要 refresh-client -C。
+            terminalManager.flushSeedsNow(paneIds: ids)
+            terminalManager.forceRedraw(paneIds: ids)
+        } else {
+            scheduleGeometrySync(paneIds: ids)
+        }
+        return true
+    }
+
+    func hasCachedTab(_ tabId: UInt32) -> Bool {
+        tabTrees[tabId] != nil || currentTabId == tabId
+    }
+
+    /// 前台 Workspace 把还没点过的 tab 先建成停驻树。第一次点击只挂树。
+    @discardableResult
+    func prewarm(tabId: UInt32, layout: LayoutNode?, panes: [Pane]) -> Bool {
+        guard tabId != currentTabId, tabTrees[tabId] == nil, !panes.isEmpty else {
+            return false
+        }
+        let expectedPaneIDs = panes.map(\.id)
+        let tree: LayoutNode?
+        if let layout {
+            guard PaneLayoutProjection.accepts(
+                treePaneIDs: layout.leafPaneIDs(),
+                paneIDs: expectedPaneIDs
+            ) else {
+                return false
+            }
+            tree = layout
+        } else if panes.count == 1 {
+            tree = .leaf(paneId: panes[0].id)
+        } else {
+            return false
+        }
+        guard let tree else { return false }
+        let savedHosts = hostByPane
+        hostByPane.removeAll()
+        let built = build(node: tree)
+        let ids = Set(collectPaneIds(tree))
+        let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
+        tabTrees[tabId] = CachedTabTree(
+            layout: tree,
+            paneIds: ids,
+            rootView: built,
+            hostByPane: hostByPane,
+            activePaneId: active
+        )
+        hostByPane = savedHosts
         return true
     }
 
@@ -317,6 +366,7 @@ final class PaneLayoutView: NSView {
             host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
         }
         markActivePane(cached.activePaneId)
+        terminalManager.flushSeedsNow(paneIds: cached.paneIds)
     }
 
     func testPaneAllocation(_ paneId: UInt32) -> NSSize {
@@ -363,6 +413,7 @@ final class PaneLayoutView: NSView {
         for host in hostByPane.values {
             host.publishGeometry()
         }
+        terminalManager.flushSeedsNow(paneIds: paneIds)
         terminalManager.syncAllVisibleSizes(paneIds: paneIds, container: self)
         terminalManager.forceRedraw(paneIds: paneIds)
     }
