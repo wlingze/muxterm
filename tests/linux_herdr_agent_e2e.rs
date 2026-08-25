@@ -90,16 +90,29 @@ fn tick(app: &AppWindow) {
 }
 
 fn diagnostics(app: &AppWindow) -> String {
+    let pane = app.test_active_pane_id();
+    let (seeds, feeds, bytes) = app.test_pane_render_trace(pane);
+    let (width, height) = app.test_pane_allocation(pane);
     format!(
-        "workspace={} runtime={} tab={} pane={} leaves={:?} gtk={} ids={:?}",
+        "workspace={} runtime={} tab={} pane={} leaves={:?} gtk={} ids={:?} seeded={} alloc={width}x{height} trace=seeds:{seeds}/feeds:{feeds}/bytes:{bytes}",
         app.test_active_workspace_replica_id(),
         app.test_active_workspace_runtime(),
         app.test_active_tab_id(),
-        app.test_active_pane_id(),
+        pane,
         app.test_layout_leaf_ids(),
         app.test_gtk_layout_signature(),
         app.test_workspace_replica_ids(),
+        app.test_active_pane_seeded(),
     )
+}
+
+fn vte_contains_token(app: &AppWindow, pane: u32, token: &str) -> bool {
+    let text = app.test_pane_vte_text(pane);
+    if text.contains(token) {
+        return true;
+    }
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains(token)
 }
 
 /// 轮询等待服务端 pane.read（recent 2000 行）出现指定文本。
@@ -294,8 +307,7 @@ fn assert_bound_token(
         bound.token
     );
     ensure!(
-        app.test_pane_vte_text(bound.product_pane)
-            .contains(&bound.token),
+        vte_contains_token(app, bound.product_pane, &bound.token),
         "目标 VTE {} 缺 {}",
         bound.product_pane,
         bound.token
@@ -338,6 +350,17 @@ fn execute_and_assert_binding(
         app.test_search_workspace(&token).is_empty(),
         "执行前 Workspace 不得已有 {token}"
     );
+    // Split/SSH 的 Control 首帧是「清屏+提示符」；在 seed 完成前键入
+    // 会让命令进 Index（pane.read / search）而 VTE 仍停在 init 全帧。
+    wait_for(
+        app,
+        &format!("pane {product_pane} 首屏 seed"),
+        |candidate| {
+            candidate.test_active_pane_id() == product_pane
+                && candidate.test_active_pane_seeded()
+                && candidate.test_pane_allocation(product_pane).0 > 0
+        },
+    )?;
     app.test_clear_active_pane_render_trace();
     emit_command(app, &command)?;
 
@@ -354,9 +377,7 @@ fn execute_and_assert_binding(
                 .test_search_workspace(&bound.token)
                 .iter()
                 .any(|(_, pane, line)| *pane == bound.product_pane && line.contains(&bound.token))
-            && candidate
-                .test_pane_vte_text(bound.product_pane)
-                .contains(&bound.token)
+            && vte_contains_token(candidate, bound.product_pane, &bound.token)
     });
     if let Err(error) = delivery {
         let server = session
@@ -365,11 +386,12 @@ fn execute_and_assert_binding(
             .unwrap_or_else(|read_error| format!("pane.read error: {read_error:#}"));
         let vte = app.test_pane_vte_text(bound.product_pane);
         anyhow::bail!(
-            "{error:#}; token={}; server={}; search={:?}; vte={}",
+            "{error:#}; token={}; server={}; search={:?}; vte={}; {}",
             bound.token,
             server.escape_debug(),
             app.test_search_workspace(&bound.token),
             vte.escape_debug(),
+            diagnostics(app),
         );
     }
     assert_bound_token(app, session, pane_map, &bound)?;
@@ -934,17 +956,26 @@ fn run_agent_test_pair(
     // CI even though every scenario passes in isolation).  Keep the production
     // scenario unchanged, but run each named contract in its own child process
     // so one test's GTK teardown cannot corrupt the next one.
+    //
+    // lifecycle 等长场景还会在同一 child 里先跑完 local 再开 ssh 窗口；CI
+    // 上第二个 transport 的 split pane VTE 会停在 Control 首帧。每个
+    // transport 也单独进子进程。
     if std::env::var_os("MUXTERM_AGENT_CHILD").is_none() {
         let executable = std::env::current_exe().expect("current test executable");
-        let status = Command::new(executable)
-            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
-            .env("MUXTERM_AGENT_CHILD", "1")
-            .status()
-            .unwrap_or_else(|error| panic!("spawn GTK Herdr agent child {test_name}: {error}"));
-        assert!(
-            status.success(),
-            "GTK Herdr agent child {test_name} exited with {status}"
-        );
+        for transport in ["local", "ssh"] {
+            let status = Command::new(&executable)
+                .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+                .env("MUXTERM_AGENT_CHILD", "1")
+                .env("MUXTERM_AGENT_TRANSPORT", transport)
+                .status()
+                .unwrap_or_else(|error| {
+                    panic!("spawn GTK Herdr agent child {test_name} {transport}: {error}")
+                });
+            assert!(
+                status.success(),
+                "GTK Herdr agent child {test_name} {transport} exited with {status}"
+            );
+        }
         return;
     }
     // 仅在 RUST_LOG 明确设置时输出 Muxterm tracing（CI 不设则不输出）。
@@ -959,14 +990,13 @@ fn run_agent_test_pair(
         loopback_sshd_available(),
         "GTK Herdr agent e2e 要求可自启 loopback sshd"
     );
+    let transport = std::env::var("MUXTERM_AGENT_TRANSPORT").unwrap_or_else(|_| "local".into());
     gtk4::test_synced(move || {
         gtk_test_framework_smoke();
         let sshd = LoopbackSshd::start("gtk-herdr-agent").expect("启动 loopback sshd");
         let _ssh_config = EnvRestore::set("MUXTERM_SSH_CONFIG_PATH", &sshd.config_path);
-        for transport in ["local", "ssh"] {
-            run_agent_test(&sshd, transport, body)
-                .unwrap_or_else(|error| panic!("GTK Herdr agent {transport} {name}: {error:#}"));
-        }
+        run_agent_test(&sshd, &transport, body)
+            .unwrap_or_else(|error| panic!("GTK Herdr agent {transport} {name}: {error:#}"));
     });
 }
 
