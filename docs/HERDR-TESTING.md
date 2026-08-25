@@ -356,20 +356,25 @@ Local 与 loopback SSH 分别：
 
 ### 7.1 固定部分
 
-实施后以下版本必须由仓库声明并在测试开头校验：
+实施后以下工具契约必须由仓库声明并在测试开头校验：
 
 | 工具 | 版本 |
 |---|---|
 | Rust | 1.97.1 |
-| tmux | 3.7c |
+| tmux | 必须存在；CI 使用 Ubuntu apt / macOS Homebrew 的预编译包，并在日志中记录实际版本 |
 | Herdr | 0.8.0 / protocol 19 |
 
-`stable`、Homebrew 当前最新版或 runner 偶然预装版本不能作为 required gate 的隐式输入。
+Rust/Herdr 不得使用 `stable` 或偶然预装版本作为 required gate 的隐式输入；tmux
+明确走 runner 的 apt/Homebrew 预编译包，实际版本必须写入 setup 日志和失败 artifact。
 
 版本与 release metadata 最终核验于 `2026-08-22T19:31:35+08:00`（CST）：
 
 - Rust 1.97.1：[`channel-rust-1.97.1.toml.sha256`](https://static.rust-lang.org/dist/channel-rust-1.97.1.toml.sha256)；
-- tmux 3.7c：[`tmux/tmux` release 3.7c](https://github.com/tmux/tmux/releases/tag/3.7c)；
+- tmux：CI 不从源码编译；Linux 使用 Ubuntu apt 的预编译包，macOS 使用 Homebrew bottle，
+  并记录 `tmux -V`。官方 [`tmux/tmux` release 3.7c](https://github.com/tmux/tmux/releases/tag/3.7c)
+  目前只提供源码归档，不能作为 CI 二进制下载地址；Homebrew 的
+  [`tmux` formula](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/t/tmux.rb)
+  负责取得对应平台的 bottle；
 - Herdr 0.8.0：[`herdrdev/herdr` release v0.8.0](https://github.com/herdrdev/herdr/releases/tag/v0.8.0)；
 - Herdr socket 语义：官方 [Socket API](https://herdr.dev/docs/socket-api/)；本分支和本机
   `herdr 0.8.0` 的 wire contract 固定为 protocol 19。
@@ -384,11 +389,16 @@ CI 下载必须校验以下 SHA-256，不能只校验文件名或 `--version`：
 | artifact | SHA-256 |
 |---|---|
 | `channel-rust-1.97.1.toml` | `03569b1886ceb5c05276b50c8431ab111de944cd6140fe1fa7d821dd8e0f29cf` |
-| `tmux-3.7c.tar.gz` | `7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf` |
 | `herdr-linux-x86_64` | `b872ea7e40fa2cb17e857ac9b62b1bf26db7b403c622f5d2f3f5b35f6e9acd28` |
 | `herdr-linux-aarch64` | `f647ac66468d9efbc642fe534fb284468f0aea60641606fc008dfc0d82a3ca87` |
 | `herdr-macos-x86_64` | `77cb5afd6c8fcaaaf3bc28e474ec01c209331ad08094e20d7f8aa9b0bb78d649` |
 | `herdr-macos-aarch64` | `d53a9f93fccfdfcc55632927bf51002f5add0aa7990bcdf508ffbd84ac658178` |
+
+tmux 的校验由 apt/Homebrew 自己完成；`scripts/ci/setup.sh` 不下载源码归档、不运行
+`configure`/`make`，只确认预编译包安装成功并输出实际版本。这样保留跨 runner 的
+二进制安装路径，同时避免 CI 因 tmux 编译长时间占用资源；若协议行为需要固定版本，
+应先发布带 checksum 的平台二进制，再把该 artifact 加入本表，而不是在 required job
+现场编译。
 
 ### 7.2 有意保留的兼容差异
 

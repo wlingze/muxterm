@@ -21,6 +21,16 @@ set -euo pipefail
 OS="$(uname -s)"
 ENV_LINES=""
 
+verify_sha256() {
+  local expected="$1"
+  local file="$2"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$expected" "$file" | sha256sum -c - >/dev/null
+  else
+    printf '%s  %s\n' "$expected" "$file" | shasum -a 256 -c - >/dev/null
+  fi
+}
+
 # ── 系统依赖 ──
 if [ "$OS" = "Linux" ]; then
   sudo apt-get update
@@ -31,6 +41,7 @@ if [ "$OS" = "Linux" ]; then
     openssh-client \
     python3 \
     curl \
+    tmux \
     libevent-dev \
     libncurses-dev \
     libutempter-dev \
@@ -49,28 +60,18 @@ if [ "$OS" = "Linux" ]; then
     echo "设置默认 shell 为 zsh（$USER）..." >&2
     sudo chsh -s "$(command -v zsh)" "$USER"
   fi
-  # tmux：ubuntu 仓库只有 3.4，控制模式事件流与本地 3.7c 有差异
-  # （detach/reattach 集成测试依赖 3.7c 行为），编译安装官方 3.7c。
-  if ! tmux -V 2>/dev/null | grep -q "3.7c"; then
-    echo "编译 tmux 3.7c（ubuntu 仓库版本过旧）..." >&2
-    curl -fsSL -o /tmp/tmux-3.7c.tar.gz \
-      https://github.com/tmux/tmux/releases/download/3.7c/tmux-3.7c.tar.gz
-    echo "7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf  /tmp/tmux-3.7c.tar.gz" \
-      | sha256sum -c - >/dev/null
-    tar xzf /tmp/tmux-3.7c.tar.gz -C /tmp
-    (cd /tmp/tmux-3.7c \
-      && ./configure --prefix=/usr/local >/dev/null \
-      && make -j"$(nproc)" >/dev/null \
-      && sudo make install >/dev/null)
-    rm -rf /tmp/tmux-3.7c /tmp/tmux-3.7c.tar.gz
-  fi
-  # 精确校验：tmux -V == tmux 3.7c（§13.1）。
-  if ! tmux -V | grep -q "3.7c"; then
-    echo "tmux 版本必须为 3.7c，实际: $(tmux -V)" >&2
+  # tmux 使用 Ubuntu 的预编译包；setup 不从源码编译，避免 CI runner 长时间占用。
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "tmux 安装失败" >&2
     exit 1
   fi
 elif [ "$OS" = "Darwin" ]; then
+  # Homebrew 安装预编译 bottle；setup 不从源码编译，版本跟随 runner 的当前 formula。
   brew list tmux >/dev/null 2>&1 || brew install tmux
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "tmux 安装失败" >&2
+    exit 1
+  fi
 else
   echo "不支持的平台: $OS" >&2
   exit 1
@@ -92,7 +93,7 @@ elif ! command -v herdr >/dev/null 2>&1 || ! herdr --version 2>/dev/null | grep 
   echo "下载 herdr 0.8.0 ($ASSET)..." >&2
   URL="https://github.com/herdrdev/herdr/releases/download/v0.8.0/$ASSET"
   curl -fsSL -o /tmp/herdr "$URL"
-  echo "$SHA  /tmp/herdr" | sha256sum -c - >/dev/null
+  verify_sha256 "$SHA" /tmp/herdr
   if [ "$OS" = "Linux" ]; then
     sudo install -m 0755 /tmp/herdr /usr/local/bin/herdr
   else

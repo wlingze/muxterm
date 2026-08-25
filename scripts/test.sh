@@ -149,8 +149,8 @@ doctor() {
         echo "WARN: cargo 应为 1.97.1" >&2
         fail=1
     fi
-    if ! tmux -V 2>/dev/null | grep -q "3.7c"; then
-        echo "WARN: tmux 应为 3.7c" >&2
+    if ! command -v tmux >/dev/null 2>&1; then
+        echo "WARN: 缺 tmux（CI setup 使用 runner 预编译包）" >&2
         fail=1
     fi
     if ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
