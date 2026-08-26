@@ -59,6 +59,14 @@ struct PaneViewInner {
     /// 待合并的输出。
     pending_feed: RefCell<Vec<u8>>,
     feed_flush_source: RefCell<Option<glib::SourceId>>,
+    /// attach 历史批次。权威 Snapshot 会 reset native scrollback，所以
+    /// 必须保留这些批次，按 Surface generation 重放。
+    history_batches: RefCell<Vec<Vec<u8>>>,
+    /// 快照/历史 feed 后需要把 viewport 钉回底部（镜像模式
+    /// scroll-on-output=false 时 feed 不自动滚动）。
+    scroll_to_bottom_pending: Cell<bool>,
+    /// 当前 Surface generation 已写入的 history_batches 数量。
+    history_applied: Cell<usize>,
     /// 已播种过；未播种前不应走增量 feed。
     seeded: Cell<bool>,
     /// VTE / 无头模型当前字符格。Codex CUP 帧必须与此一致。
@@ -102,6 +110,9 @@ impl PaneView {
             is_feeding_remote_output: Cell::new(false),
             pending_feed: RefCell::new(Vec::new()),
             feed_flush_source: RefCell::new(None),
+            history_batches: RefCell::new(Vec::new()),
+            history_applied: Cell::new(0),
+            scroll_to_bottom_pending: Cell::new(false),
             seeded: Cell::new(false),
             grid_cols: Cell::new(80),
             grid_rows: Cell::new(24),
@@ -249,35 +260,37 @@ impl PaneView {
 
     /// attach 前历史按行写进 VTE scrollback，不 reset，也不把历史反喂成
     /// reply_state 的 VT 流。先刷完 live lane，再保存当前可见网格并重建
-    /// VTE；reply_state 只用按行 prepend 保持自身 scrollback 一致。
+    /// VTE；reply_state 只用按行 prepend 保持自身 scrollback 一致。首帧
+    /// 尚未播种时先排队；后到的 Snapshot reset 后按 generation 重放。
     pub fn prepend_history(&self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
-        let lines: Vec<String> = String::from_utf8_lossy(data)
-            .split('\n')
-            .map(str::to_string)
-            .collect();
-        if lines.iter().all(|line| line.is_empty()) {
+        {
+            let mut batches = self.inner.history_batches.borrow_mut();
+            // 同一 generation 的多次 resync 可能重发相同 PaneHistory
+            // （第二次 resync 覆盖 Surface 后重新 capture 历史）；内容
+            // 相同则跳过，避免 scrollback 翻倍。
+            if batches.last().is_some_and(|last| last.as_slice() == data) {
+                return;
+            }
+            batches.push(data.to_vec());
+        }
+        if !self.inner.seeded.get() {
             return;
         }
+        flush_unapplied_history(&self.inner);
+    }
 
-        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
-            id.remove();
-        }
-        flush_pending_feed(&self.inner);
-
-        let (rows, visible_overlay) = {
-            let state = self.inner.reply_state.borrow();
-            (state.rows(), state.visible_overlay_ansi())
-        };
-        self.inner
-            .reply_state
-            .borrow_mut()
-            .prepend_history_lines(&lines);
-
-        let replay = history_replay_ansi(&lines, rows, &visible_overlay);
-        self.feed_direct(&replay);
+    /// 新一轮 attach 开始：清掉上一轮保留的历史批次。
+    ///
+    /// reattach 会重新 capture 同一份 pane 历史；若不清掉旧批次，
+    /// 后到的权威 Snapshot reset 会把旧历史再重放一遍，造成重复历史
+    /// 与无界增长。`Connecting` 事件先于任何新 generation 的
+    /// PaneHistory/PaneSnapshot 到达，因此在这里重置是安全的。
+    pub fn begin_attach_generation(&self) {
+        self.inner.history_batches.borrow_mut().clear();
+        self.inner.history_applied.set(0);
     }
 
     /// 调度合并 flush（25ms 窗口）。
@@ -304,7 +317,7 @@ impl PaneView {
 
     /// 用完整快照播种（首次挂载 pane 时）。播种前先按 pane 尺寸 resize。
     pub fn seed_snapshot(&self, data: &[u8], cols: u16, rows: u16) {
-        // 播种会 reset VTE，丢弃尚未 flush 的增量，避免和快照叠在一起。
+        // 播种会丢弃尚未 flush 的增量，避免和快照叠在一起。
         if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
             id.remove();
         }
@@ -312,7 +325,16 @@ impl PaneView {
         if cols >= 2 || rows >= 1 {
             self.resize_to(cols, rows);
         }
-        self.inner.renderer.terminal().reset(true, true);
+        // 不用 vte reset：reset 同步执行但不会清空 VTE 输入队列，旧
+        // generation 已入队的字节会在 reset 之后继续渲染，把旧内容画进
+        // 新画面（历史翻倍/光标错乱）。改用队列内的清屏序列：旧的
+        // pending feed 先被处理，然后 `2J` 清当前屏、`3J` 清 scrollback，
+        // 最后才轮到快照字节。
+        //
+        // scrollback 已应用过本 generation 历史时（history_applied > 0）
+        // 不再清 scrollback：同一 generation 的 resize/resync 只是替换
+        // 当前屏，历史必须保留且不能重放翻倍。
+        let clear_scrollback = self.inner.history_applied.get() == 0;
         {
             let mut trace = self.inner.render_trace.borrow_mut();
             trace.resets += 1;
@@ -320,14 +342,31 @@ impl PaneView {
         }
         *self.inner.reply_state.borrow_mut() =
             TerminalState::new(cols.max(2) as usize, rows.max(1) as usize);
-        if !data.is_empty() {
-            with_remote_feed(&self.inner, || {
+        let mut prefix = b"\x1b[2J\x1b[H".to_vec();
+        if clear_scrollback {
+            prefix.extend_from_slice(b"\x1b[3J");
+        }
+        with_remote_feed(&self.inner, || {
+            self.inner.renderer.terminal().feed(&prefix);
+            feed_reply_state(&self.inner, &prefix);
+            if !data.is_empty() {
                 self.inner.renderer.terminal().feed(data);
                 feed_reply_state(&self.inner, data);
-                apply_mirror_mouse_policy(&self.inner);
-            });
+            }
+            apply_mirror_mouse_policy(&self.inner);
+        });
+        if !data.is_empty() {
+            // reattach 时新 control client 的尺寸校准（refresh-client -C）
+            // 晚于首屏 capture：快照网格行数可能大于 VTE 当前可见行数，
+            // 快照末尾的 CUP 因此越界，光标落在错误位置。shell 随后因
+            // resize 重绘 prompt（`\r\r ESC M ESC M ESC[J`）会从错误位置
+            // 清掉整屏，刚 seed 的历史 token 随之丢失。把光标锚定到
+            // buffer 末尾，让重绘只影响底部几行。
+            anchor_snapshot_cursor(&self.inner, data);
         }
         self.inner.seeded.set(true);
+        // 历史先于 seed 到达（或上一轮 seed 时有未应用批次）时补放。
+        flush_unapplied_history(&self.inner);
     }
 
     /// attach 快照播种：不 reset、不 dump，直接把 capture-pane 原始字节
@@ -348,12 +387,21 @@ impl PaneView {
         if cols >= 2 || rows >= 1 {
             self.resize_to(cols, rows);
         }
+        // seed_raw 不 reset：历史 replay 必须先入队（`\x1b[H\x1b[2J` 会把
+        // 历史推进 scrollback 并重画 overlay 屏），快照最后入队覆盖屏幕，
+        // scrollback 里的历史才会保留。若快照先入队，replay 的 `\x1b[2J`
+        // 会清掉刚画好的快照屏。
+        flush_unapplied_history(&self.inner);
         if !data.is_empty() {
             with_remote_feed(&self.inner, || {
                 self.inner.renderer.terminal().feed(data);
                 feed_reply_state(&self.inner, data);
                 apply_mirror_mouse_policy(&self.inner);
             });
+            // 与 seed_snapshot 相同：快照网格可能大于 VTE 可见行数，
+            // 末尾 CUP 越界会让光标/viewport 停在错误位置，shell 重绘或
+            // 测试断言都看不到尾标。锚定到 buffer 末尾。
+            anchor_snapshot_cursor(&self.inner, data);
         }
         self.inner.render_trace.borrow_mut().seeds += 1;
         self.inner.seeded.set(true);
@@ -406,19 +454,6 @@ impl PaneView {
     #[cfg(test)]
     pub fn test_open_url_at(&self, x: f64, y: f64) {
         self.open_url_at(x, y);
-    }
-
-    fn feed_direct(&self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        with_remote_feed(&self.inner, || {
-            self.inner.renderer.terminal().feed(bytes);
-            apply_mirror_mouse_policy(&self.inner);
-        });
-        let mut trace = self.inner.render_trace.borrow_mut();
-        trace.feeds += 1;
-        trace.bytes_fed += bytes.len();
     }
 
     /// 取出待回写 shell 的查询应答字节。
@@ -504,7 +539,7 @@ impl PaneView {
         self.inner.renderer.terminal().grab_focus();
     }
 
-    /// 测试用：VTE 当前可见/滚动缓冲纯文本。
+    /// 测试用：VTE 当前 viewport 纯文本。
     pub fn visible_text(&self) -> String {
         self.inner
             .renderer
@@ -512,6 +547,23 @@ impl PaneView {
             .text_format(vte4::Format::Text)
             .map(|s| s.to_string())
             .unwrap_or_default()
+    }
+
+    /// 测试/诊断：VTE scrollback + 当前屏的完整文本。
+    pub fn buffer_text(&self) -> String {
+        let terminal = self.inner.renderer.terminal();
+        let Some(adjustment) = terminal.vadjustment() else {
+            return self.visible_text();
+        };
+        let row_count = (adjustment.upper() - adjustment.lower()).ceil() as i64;
+        let end_row = terminal.cursor_position().1;
+        let start_row = end_row.saturating_sub(row_count.saturating_sub(1));
+        let (text, _) = terminal.text_range_format(vte4::Format::Text, start_row, 0, end_row, -1);
+        let visible = self.visible_text();
+        match text {
+            Some(buffer) if !buffer.is_empty() => format!("{buffer}\n{visible}"),
+            _ => visible,
+        }
     }
 
     /// 测试用：VTE 当前屏幕（不含 scrollback）纯文本。
@@ -553,6 +605,105 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     trace.feeds += 1;
     trace.bytes_fed += data.len();
     inner.seeded.set(true);
+    drop(trace);
+    flush_unapplied_history(inner);
+}
+
+/// 快照网格行数：capture 网格是行以 `\r\n` join 的纯文本，`\n` 计数 + 1
+/// 即物理行数（CUP/模式序列里不会有 `\n`）。
+fn snapshot_grid_rows(data: &[u8]) -> usize {
+    data.iter().filter(|&&byte| byte == b'\n').count() + 1
+}
+
+/// 快照网格大于 VTE 可见行数时，把光标锚定到 buffer 末尾。
+///
+/// 否则快照末尾 CUP 越界后光标停留在错误行，shell 的 prompt 重绘
+/// （resize 触发）会从错误位置 `ESC[J` 清掉刚 seed 的内容。
+fn anchor_snapshot_cursor(inner: &Rc<PaneViewInner>, data: &[u8]) {
+    let terminal = inner.renderer.terminal();
+    // row_count()/vadjustment 在 VTE 0.84 里受 set_size 与 widget 分配
+    // 交互影响（模型 24 行时 row_count 可能 20 或 24，page_size 也可能
+    // 24）。唯一可靠的是 widget 实际像素高度 ÷ 字符高。reattach 时快照
+    // 网格常大于可见行数，末尾 CUP 越界后光标落在错误位置，shell 的
+    // prompt 重绘（resize 触发）会从错误位置 ESC[J 清掉刚 seed 的内容。
+    let char_h = terminal.char_height().max(1) as f64;
+    let widget_h = terminal.height().max(0) as f64;
+    let visible_rows = (widget_h / char_h).floor().max(1.0) as usize;
+    let snapshot_rows = snapshot_grid_rows(data);
+    if snapshot_rows > visible_rows {
+        // CUP 锚到 buffer 末尾：后续 shell 重绘只影响底部几行。
+        feed_direct(inner, b"\x1b[999;1H");
+        // feed 是异步的，且镜像模式 scroll-on-output=false；等本批 feed
+        // 处理完（下一个 idle）再把 view 钉到底部，保证 attach 后可见尾标。
+        if !inner.scroll_to_bottom_pending.replace(true) {
+            let weak = Rc::downgrade(inner);
+            // idle（不是 timeout）：feed 的处理 idle 先注册，默认优先级
+            // 下按注册顺序先跑完，这里再滚到底部才能看到新 buffer 高度。
+            glib::idle_add_local(move || {
+                if let Some(inner) = weak.upgrade() {
+                    inner.scroll_to_bottom_pending.set(false);
+                    if let Some(adj) = inner.renderer.terminal().vadjustment() {
+                        let bottom = (adj.upper() - adj.page_size()).max(adj.lower());
+                        adj.set_value(bottom);
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    }
+}
+
+fn flush_unapplied_history(inner: &PaneViewInner) {
+    let start = inner.history_applied.get();
+    let pending = {
+        let batches = inner.history_batches.borrow();
+        batches.iter().skip(start).cloned().collect::<Vec<_>>()
+    };
+    // prepend_history_seeded 会先 flush live lane；提前推进游标，避免该
+    // flush 回调再次进入这里时重复重放同一批历史。
+    inner
+        .history_applied
+        .set(start.saturating_add(pending.len()));
+    for data in pending {
+        prepend_history_seeded(inner, &data);
+    }
+}
+
+fn prepend_history_seeded(inner: &PaneViewInner, data: &[u8]) {
+    let lines: Vec<String> = String::from_utf8_lossy(data)
+        .split('\n')
+        .map(str::to_string)
+        .collect();
+    if lines.iter().all(|line| line.is_empty()) {
+        return;
+    }
+
+    if let Some(id) = inner.feed_flush_source.borrow_mut().take() {
+        id.remove();
+    }
+    flush_pending_feed(inner);
+
+    let (rows, visible_overlay) = {
+        let state = inner.reply_state.borrow();
+        (state.rows(), state.visible_overlay_ansi())
+    };
+    inner.reply_state.borrow_mut().prepend_history_lines(&lines);
+
+    let replay = history_replay_ansi(&lines, rows, &visible_overlay);
+    feed_direct(inner, &replay);
+}
+
+fn feed_direct(inner: &PaneViewInner, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    with_remote_feed(inner, || {
+        inner.renderer.terminal().feed(bytes);
+        apply_mirror_mouse_policy(inner);
+    });
+    let mut trace = inner.render_trace.borrow_mut();
+    trace.feeds += 1;
+    trace.bytes_fed += bytes.len();
 }
 
 /// 把按行历史滚入 native VT scrollback，再覆盖恢复原来的可见网格。
@@ -635,6 +786,14 @@ pub fn rgb_hex(c: Rgb) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_grid_rows_counts_physical_lines() {
+        assert_eq!(snapshot_grid_rows(b"a\r\nb\r\nc"), 3);
+        assert_eq!(snapshot_grid_rows(b""), 1);
+        assert_eq!(snapshot_grid_rows(b"\x1b[20;3H"), 1);
+        assert_eq!(snapshot_grid_rows(b"\r\n\r\n\r\n"), 4);
+    }
 
     #[test]
     fn coalesce_window_is_25ms() {
