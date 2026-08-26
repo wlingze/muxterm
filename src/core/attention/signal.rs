@@ -7,7 +7,8 @@ use super::state::PaneStatus;
 pub enum AttentionSource {
     /// BEL（0x07）。
     Bel,
-    /// OSC 9 / 99 / 777 / 1337 通知类。
+    /// OSC 9、合法 OSC 99、`OSC 777;notify` 或
+    /// `OSC 1337;RequestAttention=...` 通知类。
     OscNotify,
     /// OSC 133 FTCS 序列。
     Osc133,
