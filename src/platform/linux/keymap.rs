@@ -142,14 +142,23 @@ mod tests {
         assert_eq!(km.lookup_str("n", &["alt"]), Some(Action::NewWindow));
     }
 
-    /// 对应：Alt+Shift+D → 竖直分割 pane。
+    /// 对应：Alt+D → 上下分割；Alt+Shift+D → 左右分割。
     #[test]
-    fn test_keymap_alt_shift_d_vertical_pane() {
+    fn test_keymap_alt_d_vertical_shift_d_horizontal() {
         let km = KeyMap::from_bindings(&default_keybindings());
         assert_eq!(
-            km.lookup_str("d", &["alt", "shift"]),
-            Some(Action::NewPaneVertical)
+            km.lookup_str("d", &["alt"]),
+            Some(Action::NewPaneVertical),
+            "Alt+D 应为上下分割（Vertical）"
         );
+        assert_eq!(
+            km.lookup_str("d", &["alt", "shift"]),
+            Some(Action::NewPane),
+            "Alt+Shift+D 应为左右分割（Horizontal）"
+        );
+        // Alt+S / Alt+V 仍与 TUI 对齐，不受 D 别名交换影响。
+        assert_eq!(km.lookup_str("s", &["alt"]), Some(Action::NewPane));
+        assert_eq!(km.lookup_str("v", &["alt"]), Some(Action::NewPaneVertical));
     }
 
     /// 对应：Alt+1..9 切 tab。
