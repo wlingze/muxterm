@@ -2244,11 +2244,16 @@ fn dispatch_event_for(
         StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
             if let Some(view) = resident_pane_view(s, wid, pane.0) {
                 sync_pane_grid_size_for(s, wid, pane.0);
+                // 未分配像素时不 feed：VTE 丢字节却会把 seeded=true，core 补种失效。
+                if !view.can_paint_surface() {
+                    return;
+                }
                 // PaneFrame=full 完整状态（清屏重画）；PaneOutput=增量（直接 feed）。
                 match ev {
                     StateChange::PaneFrame { .. } => view.feed_full(data),
                     _ => view.feed_output(data),
                 }
+                view.flush_deferred_history();
                 if is_active {
                     // W18e：离开底部期间的新行累计到回底按钮 +N（只在前台）。
                     if !view_at_bottom(&view) {
@@ -2539,6 +2544,10 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
                 // Codex 的 CUP/EL 按 tmux pane 列数生成；VTE 网格必须先对齐，
                 // 否则输入框只剩「最近一个词」（2219.log tab2 %2）。
                 sync_pane_grid_size(s, pane.0);
+                // 未分配像素时不 feed：VTE 丢字节却会把 seeded=true，core 补种失效。
+                if !view.can_paint_surface() {
+                    return;
+                }
                 // Surface：synced 后只 feed 原始字节；未 synced 的 live 由
                 // F3 capture 门丢弃（F2 阶段先 raw feed，禁止 dump）。
                 // PaneFrame=full 完整状态（清屏重画）；PaneOutput=增量。
@@ -2546,6 +2555,7 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
                     StateChange::PaneFrame { .. } => view.feed_full(data),
                     _ => view.feed_output(data),
                 }
+                view.flush_deferred_history();
                 // W18e：离开底部期间的新行累计到回底按钮 +N。
                 if !view_at_bottom(&view) {
                     s.jump_unseen = s
@@ -3013,13 +3023,10 @@ fn seed_unseeded_pane_for(
     cols: u16,
     rows: u16,
 ) {
-    if view.is_seeded()
-        || !surface_allocation_is_seedable(
-            view.widget().is_realized(),
-            view.widget().width(),
-            view.widget().height(),
-        )
-    {
+    if view.is_seeded() || !view.can_paint_surface() {
+        if view.is_seeded() && view.can_paint_surface() {
+            view.flush_deferred_history();
+        }
         return;
     }
     if let Some(bytes) = s
