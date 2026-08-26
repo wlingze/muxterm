@@ -19,6 +19,10 @@ extension MainWindowController {
         return lastPaneOutputEventCount
     }
 
+    func testStatusSubscriptionActive() -> Bool {
+        bridge.statusSubscriptionActive()
+    }
+
     func testFlushFeeds() {
         terminalManager.testFlushFeeds()
         content.layoutSubtreeIfNeeded()
