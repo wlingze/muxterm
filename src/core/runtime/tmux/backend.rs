@@ -2404,8 +2404,8 @@ impl TmuxRuntime {
         if self.background_index_capture_enabled {
             let active = self.tab_is_active(tab_id);
             for pane in new_panes {
-                if active {
-                    // 新建 pane 没有 attach 前历史，不要再发 `-S -10000`。
+                if active && self.new_attach_panes.contains(&pane.id) {
+                    // attach 后新建的 pane 没有旧历史，不要再发 `-S -10000`。
                     self.history_backfill_done.insert(pane.id);
                 }
                 self.query_capture_pane_visible(pane.id);
@@ -6814,6 +6814,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
         b.status = BackendStatus::Connected;
+        b.attach_bootstrap_complete = true;
         b.background_index_capture_enabled = true;
         b.tabs = vec![TabInfo {
             id: TabId(3),
@@ -6854,6 +6855,40 @@ mod tests {
                 |event| matches!(event, StateChange::PaneHistory { pane, .. } if *pane == PaneId(9))
             ),
             "新建 pane 没有 attach 前历史，不得再发 PaneHistory"
+        );
+    }
+
+    #[test]
+    fn relisting_existing_active_pane_preserves_pending_history_backfill() {
+        let pane = PaneId(9);
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.status = BackendStatus::Connected;
+        b.attach_bootstrap_complete = true;
+        b.background_index_capture_enabled = true;
+        b.tabs = vec![TabInfo {
+            id: TabId(3),
+            name: "existing".into(),
+            active: true,
+        }];
+        b.panes = vec![PaneInfo {
+            id: pane,
+            tab: TabId(3),
+            active: true,
+            title: String::new(),
+            cols: 80,
+            rows: 24,
+        }];
+        b.initial_capture_done.insert(pane);
+
+        b.handle_list_panes_response(TabId(3), vec!["0: [80x24] %9 (active)".into()]);
+
+        assert!(
+            !b.new_attach_panes.contains(&pane),
+            "重列已有 pane 不得把它当成 attach 后新建 pane"
+        );
+        assert!(
+            !b.history_backfill_done.contains(&pane),
+            "GTK resize 触发的 list-panes 不得吞掉已有 pane 的历史回填"
         );
     }
 
@@ -7010,6 +7045,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
         b.status = BackendStatus::Connected;
+        b.attach_bootstrap_complete = true;
         b.background_index_capture_enabled = true;
         b.tabs = vec![
             TabInfo {
