@@ -229,6 +229,9 @@ pub struct TmuxRuntime {
     background_index_started: bool,
     /// 最近一次 capture 只取了可见屏。切入时直接用它，不再 pause 重抓。
     background_capture_only: HashSet<PaneId>,
+    /// 发出 capture 时的 pane 网格。完成时不得用事后尺寸覆盖；切 tab
+    /// 时若当前 cols/rows 对不上，可见索引已经过期，必须 pause 再抓。
+    capture_grid: HashMap<PaneId, (u16, u16)>,
     /// 已经按行回填过 attach 前历史的 pane。切 tab 不得再抓。
     history_backfill_done: HashSet<PaneId>,
     /// 历史 capture 还在路上。
@@ -590,6 +593,7 @@ impl TmuxRuntime {
             background_index_capture_enabled: false,
             background_index_started: false,
             background_capture_only: HashSet::new(),
+            capture_grid: HashMap::new(),
             history_backfill_done: HashSet::new(),
             history_backfill_pending: HashSet::new(),
             history_backfill_wanted: HashSet::new(),
@@ -726,8 +730,9 @@ impl TmuxRuntime {
 
     /// 为一个 tab 的所有 pane 发起一次性 Surface seed。
     ///
-    /// 已经 seed 过的 pane（`initial_capture_done`）切过来只显示，不要
-    /// 再 pause/capture。从未抓过的 pane 才走 `query_capture_pane`。
+    /// 已经 seed 过、且 capture 网格仍匹配当前尺寸的 pane，切过来只显示，
+    /// 不要再 pause/capture。后台抓的网格若已经过期（窗口在后台被
+    /// resize），必须作废再抓。从未抓过的 pane 才走 `query_capture_pane`。
     fn query_capture_tab(&mut self, tab: TabId) {
         let panes: Vec<PaneId> = self
             .panes
@@ -736,6 +741,12 @@ impl TmuxRuntime {
             .map(|pane| pane.id)
             .collect();
         for pane in panes {
+            if self.background_capture_only.contains(&pane) && self.capture_grid_stale(pane) {
+                self.initial_capture_done.remove(&pane);
+                self.background_capture_only.remove(&pane);
+                self.query_capture_pane(pane);
+                continue;
+            }
             if self.initial_capture_done.contains(&pane) {
                 self.background_capture_only.remove(&pane);
                 // 可见屏已经有了。历史放到下一轮 poll，不要和 select-window
@@ -757,9 +768,36 @@ impl TmuxRuntime {
         }
     }
 
+    fn pane_grid_size(&self, pane: PaneId) -> Option<(u16, u16)> {
+        self.panes
+            .iter()
+            .find(|item| item.id == pane)
+            .map(|item| (item.cols, item.rows))
+    }
+
+    /// 记下发出 capture 那一刻的网格。完成响应时不要用事后尺寸覆盖。
+    fn record_capture_grid(&mut self, pane: PaneId) {
+        if let Some(size) = self.pane_grid_size(pane) {
+            self.capture_grid.insert(pane, size);
+        }
+    }
+
+    /// 没有记录时不当过期，避免旧单测/未索引 pane 误触发 pause。
+    fn capture_grid_stale(&self, pane: PaneId) -> bool {
+        let Some(captured) = self.capture_grid.get(&pane) else {
+            return false;
+        };
+        self.pane_grid_size(pane)
+            .is_some_and(|current| current != *captured)
+    }
+
+    fn forget_pane_capture_grid(&mut self, pane: PaneId) {
+        self.capture_grid.remove(&pane);
+    }
+
     /// 后台 tab 的轻量首屏 capture：只为 Core 索引提供当前可见内容，响应
     /// 不参与 connect 就绪判定。前台 Workspace 用对应 `PaneSnapshot` 种 Surface；
-    /// 切 tab 不再 pause 重抓。
+    /// 切 tab 时若网格仍匹配，不再 pause 重抓；尺寸过期则 `query_capture_tab` 会作废再抓。
     fn query_background_index_tab(&mut self, tab: TabId) {
         let panes: Vec<PaneId> = self
             .panes
@@ -1096,6 +1134,7 @@ impl TmuxRuntime {
             self.abort_pane_resync(pane, "pause-command-failed");
             return;
         }
+        self.record_capture_grid(pane);
         let query = cmd::display_message(PaneId(pane.0), PANE_RESYNC_FORMAT);
         if self.dispatch_tmux_command(&query).is_ok() {
             self.replace_last_pending(PendingQuery::PaneResyncState { pane, generation });
@@ -1350,9 +1389,15 @@ impl TmuxRuntime {
         if self.latest_switch_target == Some(tab) {
             self.latest_switch_target = None;
         }
-        for p in self.panes.iter().filter(|p| p.tab == tab) {
-            self.events
-                .push_back(StateChange::PaneClosed { pane: p.id });
+        let closed: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|p| p.tab == tab)
+            .map(|p| p.id)
+            .collect();
+        for id in closed {
+            self.forget_pane_capture_grid(id);
+            self.events.push_back(StateChange::PaneClosed { pane: id });
         }
         self.panes.retain(|p| p.tab != tab);
         self.layouts.remove(&tab);
@@ -2322,6 +2367,7 @@ impl TmuxRuntime {
             .map(|p| p.id)
             .collect();
         for pid in to_remove {
+            self.forget_pane_capture_grid(pid);
             self.panes.retain(|p| p.id != pid);
             self.pending_writes.remove(&pid);
             self.deferred_write_panes.remove(&pid);
@@ -2616,6 +2662,7 @@ impl TmuxRuntime {
         }
         let line = cmd::capture_pane_visible(pane).to_line();
         if self.dispatch_command(line).is_ok() {
+            self.record_capture_grid(pane);
             self.initial_capture_buf.remove(&pane);
             self.initial_capture_tail.remove(&pane);
             self.capture_response_seen.remove(&pane);
@@ -5381,6 +5428,104 @@ mod tests {
     }
 
     #[test]
+    fn tab_switch_recaptures_when_capture_grid_stale() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.background_index_capture_enabled = true;
+        let pane = PaneId(1);
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "bg".into(),
+                active: false,
+            },
+        ];
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: String::new(),
+            cols: 125,
+            rows: 25,
+        });
+        b.background_capture_only.insert(pane);
+        b.initial_capture_done.insert(pane);
+        b.capture_grid.insert(pane, (94, 25));
+
+        b.mark_tab_active(TabId(2));
+        b.query_capture_tab(TabId(2));
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("pause")),
+            "后台索引网格已经过期，切 tab 必须 pause 再抓: {cmds:?}"
+        );
+        assert!(
+            !b.initial_capture_done.contains(&pane),
+            "过期索引必须作废，不能当成 initial_capture_done"
+        );
+        assert!(
+            !b.background_capture_only.contains(&pane),
+            "过期的 background_capture_only 不得直接 promote"
+        );
+        assert!(b.resyncs.contains_key(&pane), "必须进入 pause seed");
+        assert_eq!(
+            b.capture_grid.get(&pane).copied(),
+            Some((125, 25)),
+            "再抓必须记下当前网格，不能用事后尺寸或旧 94 列"
+        );
+    }
+
+    #[test]
+    fn tab_switch_does_not_recapture_open_surface_after_resize() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(1);
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "open".into(),
+                active: false,
+            },
+        ];
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: String::new(),
+            cols: 125,
+            rows: 25,
+        });
+        b.initial_capture_done.insert(pane);
+        b.history_backfill_done.insert(pane);
+        b.capture_grid.insert(pane, (94, 25));
+
+        b.mark_tab_active(TabId(2));
+        b.query_capture_tab(TabId(2));
+        let cmds = drain_tmux_cmds(&mut rx);
+
+        assert!(
+            !cmds
+                .iter()
+                .any(|cmd| cmd.contains("pause") || cmd.contains("capture-pane")),
+            "已经打开的 Surface resize 后切回只能复用 live VT，不得重抓: {cmds:?}"
+        );
+        assert!(b.initial_capture_done.contains(&pane));
+        assert!(!b.resyncs.contains_key(&pane));
+    }
+
+    #[test]
     fn tab_switch_skips_seed_when_only_initial_capture_done() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
@@ -6380,6 +6525,8 @@ mod tests {
                 active: false,
                 title: format!("p{id}"),
             });
+            b.capture_grid
+                .insert(crate::core::types::PaneId(id), (40, 24));
         }
 
         b.handle_message(Message::WindowClose { window: win });
@@ -6401,6 +6548,12 @@ mod tests {
         assert!(
             b.panes.iter().all(|p| p.tab != tab),
             "window 关闭后 pane 应全部移除"
+        );
+        assert!(
+            [5u32, 6]
+                .into_iter()
+                .all(|id| !b.capture_grid.contains_key(&crate::core::types::PaneId(id))),
+            "window 关闭后 pane capture 网格也必须回收"
         );
     }
 
