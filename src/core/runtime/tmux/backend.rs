@@ -1733,6 +1733,22 @@ impl TmuxRuntime {
                         // 我们自己发的 pause 回声，不要再开一轮 resync。
                         return;
                     }
+                    // 已经有权威 Surface 时，%pause 只恢复输出，不得再
+                    // pause→capture→VTE reset（Cursor agent / dogfood 0826 乱码风暴）。
+                    if self.initial_capture_done.contains(&pane) {
+                        tracing::debug!(
+                            target: "muxterm::tmux::pause",
+                            pane = pane.0,
+                            "tmux pause on seeded surface; continue without resync"
+                        );
+                        self.paused_panes.remove(&pane);
+                        if self.cmd_tx.is_some() {
+                            let _ =
+                                self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+                        }
+                        self.flush_suppressed_output(pane);
+                        return;
+                    }
                     // TODO(surface-7.4): 洪水 pause-after。某个 Surface 跟不上
                     // 时，只对该 pane `refresh-client -A %N:pause`，追上再
                     // continue。本轮不实现；切 tab 也不得走这条 pause 刷新。
@@ -2122,6 +2138,10 @@ impl TmuxRuntime {
         if snapshot.len() > MAX_PANE_OUTPUT_BYTES {
             snapshot = snapshot[snapshot.len() - MAX_PANE_OUTPUT_BYTES..].to_vec();
         }
+        let alternate_on = resync
+            .state
+            .as_ref()
+            .is_some_and(|state| state.alternate_on);
         if let Some(flow) = self.flow.get_mut(&pane) {
             flow.resyncing = false;
         }
@@ -2149,7 +2169,9 @@ impl TmuxRuntime {
         if pause_client {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
         }
-        if initial {
+        // alternate screen TUI（Cursor agent / htop）：历史回填会 ESC[2J 当前屏，
+        // 且 alt hsize==0 时 -S 只会抓到可见行 0，必须跳过。
+        if initial && !alternate_on {
             self.schedule_pane_history_backfill(pane);
         }
         self.release_attach_followup_if_ready();
@@ -5689,6 +5711,82 @@ mod tests {
             .events
             .iter()
             .any(|event| matches!(event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane)));
+    }
+
+    #[test]
+    fn alt_screen_initial_seed_does_not_queue_history_backfill() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(120);
+        b.resyncs.insert(
+            pane,
+            PaneResync {
+                generation: 1,
+                initial: true,
+                pause_client: true,
+                state: Some(PaneReplayState {
+                    cursor_x: 0,
+                    cursor_y: 0,
+                    cursor_flag: true,
+                    cursor_shape: String::new(),
+                    cursor_blinking: None,
+                    alternate_on: true,
+                    alternate_saved_x: None,
+                    alternate_saved_y: None,
+                    insert_flag: false,
+                    wrap_flag: true,
+                    keypad_flag: false,
+                    keypad_cursor_flag: false,
+                    origin_flag: false,
+                    mouse_all_flag: false,
+                    mouse_any_flag: false,
+                    mouse_button_flag: false,
+                    mouse_sgr_flag: false,
+                    mouse_standard_flag: false,
+                    mouse_utf8_flag: false,
+                    bracket_paste_flag: false,
+                }),
+                alternate: Some(b"CURSOR_AGENT_TUI\r\n".to_vec()),
+                ..PaneResync::default()
+            },
+        );
+        b.paused_panes.insert(pane);
+        b.finish_pane_resync(pane);
+        let _ = drain_tmux_cmds(&mut rx);
+        assert!(
+            !b.history_backfill_wanted.contains(&pane),
+            "alternate screen TUI 不得排队历史回填，否则 ESC[2J 会毁掉当前屏"
+        );
+        assert!(b.initial_capture_done.contains(&pane));
+    }
+
+    #[test]
+    fn tmux_pause_on_seeded_surface_does_not_begin_resync() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(120);
+        b.initial_capture_done.insert(pane);
+        b.handle_message(Message::Pause {
+            pane: Some(pane),
+            args: String::new(),
+        });
+        assert!(
+            !b.resyncs.contains_key(&pane),
+            "已 seed 的 Surface 收到 %pause 不得再 pause+capture 风暴"
+        );
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("%120:continue")),
+            "应 continue 恢复输出，而不是 resync: {cmds:?}"
+        );
+        assert!(
+            !cmds
+                .iter()
+                .any(|cmd| cmd.contains("capture-pane") || cmd.contains("display-message")),
+            "seeded pause 不得抓屏: {cmds:?}"
+        );
     }
 
     #[test]
