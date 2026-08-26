@@ -491,8 +491,14 @@ fn macos_ffi_attach_history_and_jump_latest() {
         "初始 viewport 应为 0"
     );
 
-    let max = unsafe { muxterm_pane_history_max_offset(h, 0, 24) };
-    assert!(max > 0, "离屏 30 行必须能滚, max={max}");
+    // 首屏优先：历史回填会等可见 capture 交付并让出控制通道后再开始。
+    // 持续 poll 到历史真正进入 PaneBuf，不能用可见 token 代替完成条件。
+    let mut max = 0;
+    let history_ready = poll_until(h, Duration::from_secs(8), || {
+        max = unsafe { muxterm_pane_history_max_offset(h, 0, 24) };
+        max > 0
+    });
+    assert!(history_ready, "离屏 30 行必须能滚, max={max}");
     let mut ansi = vec![0u8; 256 * 1024];
     let n =
         unsafe { muxterm_pane_scroll_ansi(h, 0, max as u32, 24, ansi.as_mut_ptr(), ansi.len()) };
