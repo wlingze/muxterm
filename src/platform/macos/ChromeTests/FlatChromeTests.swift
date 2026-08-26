@@ -58,6 +58,18 @@ final class FlatChromeTests: XCTestCase {
             12
         )
     }
+
+    func testLastSeenDepartureIgnoresActivePaneEventAfterTabSnapshotRefresh() {
+        XCTAssertEqual(
+            LastSeenNavigation.departingPane(snapshotPane: 11, eventPane: 22),
+            11,
+            "pane 事件先到时必须记录旧 pane"
+        )
+        XCTAssertNil(
+            LastSeenNavigation.departingPane(snapshotPane: 22, eventPane: 22),
+            "tab 事件已刷新快照时不得把新 pane 误记成离开 baseline"
+        )
+    }
 }
 
 final class KeyBindingsTests: XCTestCase {

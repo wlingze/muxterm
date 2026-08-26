@@ -2259,7 +2259,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             } else if StateEventPolicy.changesActivePane(ev.type) {
                 uiStateChanged = true
                 if ev.type == STATE_ACTIVE_PANE_CHANGED {
-                    recordLastSeen(for: lastSnapshot.activePane)
+                    if let departingPane = LastSeenNavigation.departingPane(
+                        snapshotPane: lastSnapshot.activePane,
+                        eventPane: ev.paneId
+                    ) {
+                        recordLastSeen(for: departingPane)
+                    }
                     bridge.attentionOnBecameVisible(paneId: ev.paneId)
                     focusPaneTerminal(ev.paneId)
                 }

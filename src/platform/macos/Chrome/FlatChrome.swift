@@ -718,6 +718,14 @@ public enum PaneHistoryScrollPolicy {
 /// `rawOffset == -1` 表示 core 已经淘汰了旧 seq；此时必须清掉按钮，
 /// 不能沿用上一轮缓存的 offset 误跳到历史或 live 尾部。
 public enum LastSeenNavigation {
+    /// 同一轮切 tab 可能先应用 tab 快照、再收到 active-pane 事件。
+    /// 此时 snapshot 已经指向 eventPane，不能把新 pane 的尾部覆盖成
+    /// “离开位置”；只有事件确实从另一个 pane 迁入时才记录旧 pane。
+    public static func departingPane(snapshotPane: UInt32, eventPane: UInt32) -> UInt32? {
+        guard snapshotPane != eventPane else { return nil }
+        return snapshotPane
+    }
+
     public static func targetOffset(
         latest: Int64,
         seen: UInt64?,
