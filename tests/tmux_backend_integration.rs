@@ -3266,3 +3266,65 @@ fn scenario5_pane_cmd_subscription_reports_foreground_command() {
     let _ = model.shutdown();
     cleanup(&socket);
 }
+
+/// attach 首屏会把 follow-up 命令延后；Surface seed 完成后必须真正补发
+/// status/pane-cmd 订阅，不能只在 new-session 路径生效。
+#[test]
+fn scenario5_attach_releases_pane_cmd_subscription_after_surface_seed() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let session = "attachcmd";
+    let create = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "--",
+            "/bin/cat",
+        ])
+        .output()
+        .expect("创建隔离 tmux server 失败");
+    assert!(
+        create.status.success(),
+        "创建隔离 tmux server 失败: {create:?}"
+    );
+
+    let backend = TmuxRuntime::new_with_attach(Some(&socket), session);
+    let mut model = TerminalModel::new(Box::new(backend));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    rt.block_on(model.connect()).unwrap();
+    std::mem::forget(rt);
+
+    let ready = wait_for(&mut model, Duration::from_secs(10), |state| {
+        state.active_pane().is_some()
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut subscriptions = model.status_subscriptions_active();
+    while !subscriptions && Instant::now() < deadline {
+        let _ = model.refresh();
+        subscriptions = model.status_subscriptions_active();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let pane = model.state().active_pane().map(|item| item.id);
+    let _ = model.shutdown();
+    cleanup(&socket);
+
+    assert!(ready, "attach 后必须建立 active pane");
+    assert!(pane.is_some(), "attach 后必须有 pane");
+    assert!(
+        subscriptions,
+        "attach Surface seed 完成后必须补发 status/pane-cmd 订阅"
+    );
+}

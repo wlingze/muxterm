@@ -3144,6 +3144,11 @@ impl Runtime for TmuxRuntime {
         self._sender_handle = Some(sender_join);
         self.handle = None; // handle 已 move 进 sender task
 
+        // 不在 connect 里额外跑 `tmux -V`（SSH 会多一次往返）。版本未知时
+        // 直接尝试 -B；必须在首屏 seed 可能完成前标记，否则 seed 的早期
+        // release 会把 follow-up 记成已完成，却因 supported=false 跳过订阅。
+        self.status_subscription_supported = true;
+
         // 等待 tmux 启动事件建立初始 state
         // new-session 模式：等 SessionChanged + WindowAdd
         // attach 模式：等 SessionChanged（window 不通过通知到达，需主动查询）
@@ -3251,10 +3256,8 @@ impl Runtime for TmuxRuntime {
         }
         self.attach_bootstrap_complete = is_attach;
 
-        // 不要在 connect 里再跑 `tmux -V`（SSH 等于多一次往返）。
-        // 版本未知时颜色上报默认开；status 订阅直接尝试，老 tmux 的
-        // unknown flag 走 Ignore 槽，不会卡住控制通道。
-        self.status_subscription_supported = true;
+        // 版本未知时颜色上报默认开；status 订阅已在首屏 seed 前标记为
+        // 可尝试，老 tmux 的 unknown flag 走 Ignore 槽，不会卡住控制通道。
         if is_attach && self.initial_seed_blocks_followup() {
             // display-message 还在路上：list-sessions / -B 放到可见
             // capture-pane 发出之后。1612 就是在 pause 之后立刻灌这些
