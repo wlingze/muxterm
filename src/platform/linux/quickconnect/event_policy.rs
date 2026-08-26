@@ -112,15 +112,20 @@ impl EventBatchPlan {
     }
 }
 
-/// 用 VTE 实际列数驱动 `refresh-client -C`，避免 root 像素/字宽算出
-/// 比 widget 更宽的 client（htop CUP 画到 VTE 右缘之外再折行）。
+/// 用本地 GTK 视口驱动 `refresh-client -C`。
+///
+/// VTE `column_count` 可能是**另一 attach** 经 `PaneResized` 写进的服务端网格
+/// （dogfood 2030：213 列被回灌成本机 client，与 142 本地互抢，画面往上刷）。
+/// 本地权威宽度永远是 root 像素 / 字宽；单 pane 时仅当 VTE 列数 **不大于**
+/// 像素推算值时才采用（widget 比 root 稍窄的 2310 情形），绝不把更大的
+/// 外来网格反射回 tmux。
 pub enum ClientSizePolicy {}
 
 impl ClientSizePolicy {
     /// `multi_pane` 为 true 时不能用 active pane 的 VTE 列数当 client 宽度：
     /// 那是整个 tmux window 的宽度，多 pane 下 active pane 只占一部分，
     /// 用它驱动 `refresh-client -C` 会让 tmux 把整个 client 缩到单 pane 宽
-    /// （1820 白屏的 resize 反馈环）。单 pane 仍优先 VTE 实际列数（2310.log）。
+    /// （1820 白屏的 resize 反馈环）。
     pub fn cols(
         vte_cols: i64,
         allocated: bool,
@@ -128,13 +133,22 @@ impl ClientSizePolicy {
         cell_w: i64,
         multi_pane: bool,
     ) -> Option<u16> {
-        if !multi_pane && allocated && vte_cols >= 2 {
-            return Some(vte_cols.clamp(2, u16::MAX as i64) as u16);
+        let pixel = if cell_w <= 0 || root_w == 0 {
+            None
+        } else {
+            Some((root_w / cell_w as u64).clamp(2, u16::MAX as u64) as u16)
+        };
+        if multi_pane {
+            return pixel;
         }
-        if cell_w <= 0 || root_w == 0 {
-            return None;
+        if allocated && vte_cols >= 2 {
+            let vte = vte_cols.clamp(2, i64::from(u16::MAX)) as u16;
+            return Some(match pixel {
+                Some(px) => vte.min(px),
+                None => vte,
+            });
         }
-        Some((root_w / cell_w as u64).clamp(2, u16::MAX as u64) as u16)
+        pixel
     }
 
     pub fn rows(root_h: u64, cell_h: i64) -> Option<u16> {
@@ -246,5 +260,16 @@ mod tests {
         );
         assert_eq!(ClientSizePolicy::rows(580, 10), Some(58));
         assert_eq!(ClientSizePolicy::rows(0, 10), None);
+    }
+
+    #[test]
+    fn client_cols_never_reflect_foreign_attach_grid() {
+        // dogfood 2030：另一 attach 把 window 拉到 213 列，PaneResized 写进 VTE；
+        // 本地 root 只有 1420px → 必须报告 142，不得回灌 213 造成互抢往上刷。
+        assert_eq!(
+            ClientSizePolicy::cols(213, true, 1420, 10, false),
+            Some(142)
+        );
+        assert_eq!(ClientSizePolicy::cols(213, true, 1420, 10, true), Some(142));
     }
 }
