@@ -247,6 +247,9 @@ pub struct TmuxRuntime {
     /// 初始 seed 仍 pause：等历史回填完成再 continue，避免 live 与
     /// history 重叠后 VTE ESC[2J 回放造成往上刷（dogfood 2030）。
     history_holds_pause: HashSet<PaneId>,
+    /// 最近一次权威 seed 时 `#{alternate_on}`。切 tab 不得再 `-S` 历史，
+    /// 否则 PaneHistory 的 ESC[2J 会毁掉 Cursor/htop 等候框。
+    alternate_screen_panes: HashSet<PaneId>,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
     /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
@@ -607,6 +610,7 @@ impl TmuxRuntime {
             history_backfill_wanted: HashSet::new(),
             history_backfill_hold: false,
             history_holds_pause: HashSet::new(),
+            alternate_screen_panes: HashSet::new(),
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
@@ -2156,6 +2160,11 @@ impl TmuxRuntime {
             .state
             .as_ref()
             .is_some_and(|state| state.alternate_on);
+        if alternate_on {
+            self.alternate_screen_panes.insert(pane);
+        } else {
+            self.alternate_screen_panes.remove(&pane);
+        }
         if let Some(flow) = self.flow.get_mut(&pane) {
             flow.resyncing = false;
         }
@@ -2426,6 +2435,7 @@ impl TmuxRuntime {
             .collect();
         for pid in to_remove {
             self.forget_pane_capture_grid(pid);
+            self.alternate_screen_panes.remove(&pid);
             self.panes.retain(|p| p.id != pid);
             self.pending_writes.remove(&pid);
             self.deferred_write_panes.remove(&pid);
@@ -2739,10 +2749,12 @@ impl TmuxRuntime {
 
     /// 可见屏已经种上之后，按行补 attach 前历史。不 pause，不 reset。
     /// 切 tab 当拍只登记，等控制通道空闲再发，避免和 select-window 抢 SSH。
+    /// alternate screen TUI（Cursor 等候框）永不排队：历史 ESC[2J 会毁掉当前屏。
     fn schedule_pane_history_backfill(&mut self, pane: PaneId) {
         if !self.is_attach_mode()
             || self.history_backfill_done.contains(&pane)
             || self.history_backfill_pending.contains(&pane)
+            || self.alternate_screen_panes.contains(&pane)
         {
             return;
         }
@@ -5779,7 +5791,8 @@ mod tests {
         b.refresh_initial_client_size();
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            cmds.iter().any(|cmd| cmd.contains("refresh-client -C 142x67")),
+            cmds.iter()
+                .any(|cmd| cmd.contains("refresh-client -C 142x67")),
             "UI 写入真实尺寸后才同步: {cmds:?}"
         );
     }
@@ -5839,6 +5852,16 @@ mod tests {
         );
         assert!(!b.history_holds_pause.contains(&pane));
         assert!(b.initial_capture_done.contains(&pane));
+        assert!(
+            b.alternate_screen_panes.contains(&pane),
+            "必须记下 alternate_on，切 tab 时仍跳过历史"
+        );
+        // 切回该 tab：已 seed 路径会 schedule_pane_history_backfill。
+        b.schedule_pane_history_backfill(pane);
+        assert!(
+            !b.history_backfill_wanted.contains(&pane),
+            "切 tab 仍不得给 alt-screen 排队历史"
+        );
     }
 
     #[test]
