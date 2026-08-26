@@ -247,6 +247,39 @@ impl PaneView {
         self.schedule_feed_flush();
     }
 
+    /// attach 前历史按行写进 VTE scrollback，不 reset，也不把历史反喂成
+    /// reply_state 的 VT 流。先刷完 live lane，再保存当前可见网格并重建
+    /// VTE；reply_state 只用按行 prepend 保持自身 scrollback 一致。
+    pub fn prepend_history(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let lines: Vec<String> = String::from_utf8_lossy(data)
+            .split('\n')
+            .map(str::to_string)
+            .collect();
+        if lines.iter().all(|line| line.is_empty()) {
+            return;
+        }
+
+        if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
+            id.remove();
+        }
+        flush_pending_feed(&self.inner);
+
+        let (rows, visible_overlay) = {
+            let state = self.inner.reply_state.borrow();
+            (state.rows(), state.visible_overlay_ansi())
+        };
+        self.inner
+            .reply_state
+            .borrow_mut()
+            .prepend_history_lines(&lines);
+
+        let replay = history_replay_ansi(&lines, rows, &visible_overlay);
+        self.feed_direct(&replay);
+    }
+
     /// 调度合并 flush（25ms 窗口）。
     fn schedule_feed_flush(&self) {
         if self.inner.feed_flush_source.borrow().is_none() {
@@ -522,6 +555,30 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     inner.seeded.set(true);
 }
 
+/// 把按行历史滚入 native VT scrollback，再覆盖恢复原来的可见网格。
+///
+/// `ESC[2J` 只清当前屏，不清 scrollback；这里刻意不用 RIS/reset。调用方
+/// 必须把结果只喂给 native Surface，不能再让 reply_state 解析一次。
+fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) -> Vec<u8> {
+    let text_bytes = lines.iter().map(String::len).sum::<usize>();
+    let mut replay = Vec::with_capacity(
+        b"\x1b[H\x1b[2J".len()
+            + text_bytes
+            + (lines.len() + rows) * b"\r\n".len()
+            + visible_overlay.len(),
+    );
+    replay.extend_from_slice(b"\x1b[H\x1b[2J");
+    for line in lines {
+        replay.extend_from_slice(line.as_bytes());
+        replay.extend_from_slice(b"\r\n");
+    }
+    for _ in 0..rows {
+        replay.extend_from_slice(b"\r\n");
+    }
+    replay.extend_from_slice(visible_overlay);
+    replay
+}
+
 fn apply_mirror_mouse_policy(inner: &PaneViewInner) {
     if !inner.is_tmux_mirror.get() {
         return;
@@ -597,5 +654,28 @@ mod tests {
         assert!(!should_forward_mixed_input(true, true, leaked));
         assert!(!should_forward_mixed_input(false, true, leaked));
         assert!(should_forward_mixed_input(false, true, b"ls\n"));
+    }
+
+    #[test]
+    fn history_replay_scrolls_rows_without_reset_and_restores_visible_grid() {
+        let mut current = TerminalState::new(20, 3);
+        current.feed(b"TAIL_VISIBLE");
+        let before = current.snapshot();
+        let overlay = current.visible_overlay_ansi();
+        let lines = vec!["HIST_OFFSCREEN".into(), String::new(), "pad-01".into()];
+
+        let replay = history_replay_ansi(&lines, current.rows(), &overlay);
+        assert!(!replay.windows(2).any(|bytes| bytes == b"\x1bc"));
+        assert!(replay.starts_with(b"\x1b[H\x1b[2JHIST_OFFSCREEN\r\n\r\npad-01\r\n"));
+
+        current.feed(&replay);
+        assert_eq!(current.snapshot(), before, "当前可见网格必须原样恢复");
+        assert!(
+            current
+                .search("HIST_OFFSCREEN")
+                .iter()
+                .any(|(_, line)| line.contains("HIST_OFFSCREEN")),
+            "历史 token 必须进入 native VT scrollback"
+        );
     }
 }
