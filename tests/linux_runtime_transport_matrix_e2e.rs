@@ -145,7 +145,7 @@ fn diagnostics(app: &AppWindow) -> String {
         })
         .collect::<Vec<_>>();
     format!(
-        "workspace={} runtime={} tabs/panes={:?} active_tab={} active_pane={} last_input={:?} leaves={leaves:?} gtk={} vte={vte:?}",
+        "workspace={} runtime={} tabs/panes={:?} active_tab={} active_pane={} last_input={} leaves={leaves:?} gtk={} vte={vte:?}",
         app.test_active_workspace_replica_id(),
         app.test_active_workspace_runtime(),
         app.test_tab_and_pane_counts(),
@@ -383,6 +383,38 @@ fn wait_visible_vte_ownership(
     Ok(())
 }
 
+fn wait_vte_buffer_ownership(
+    app: &AppWindow,
+    resident_panes: &[u32],
+    tokens: &[(u32, String)],
+) -> Result<()> {
+    for (expected_pane, token) in tokens
+        .iter()
+        .filter(|(pane, _)| resident_panes.contains(pane))
+    {
+        wait_for(
+            app,
+            &format!("token {token} 只在常驻 VTE buffer pane {expected_pane}"),
+            |app| {
+                resident_panes
+                    .iter()
+                    .copied()
+                    .filter(|pane| {
+                        let text = app.test_pane_vte_buffer_text(*pane);
+                        let compact: String = text
+                            .chars()
+                            .filter(|character| !character.is_whitespace())
+                            .collect();
+                        text.contains(token) || compact.contains(token)
+                    })
+                    .collect::<Vec<_>>()
+                    == vec![*expected_pane]
+            },
+        )?;
+    }
+    Ok(())
+}
+
 fn build_gui_scenario(app: &AppWindow, runtime: &str, transport: &str) -> Result<GuiSnapshot> {
     let pair = matrix_label(runtime, transport);
     wait_for(app, "初始 1 tab / 1 pane", |app| {
@@ -597,19 +629,20 @@ fn verify_supported_reattach(
         "reattach 后 pane id/layout 必须稳定: before={:?}, after={panes:?}",
         snapshot.tab2_panes
     );
-    for (_, token) in &snapshot.tokens {
-        ensure!(
-            !app.test_search_workspace(token).is_empty(),
-            "reattach 后新 Runtime 的 PaneBuf 必须恢复旧 token {token}"
-        );
-    }
+    wait_for(app, "reattach 后后台 pane 索引恢复", |app| {
+        assert_search_ownership(app, &snapshot.tokens).is_ok()
+    })
+    .or_else(|timeout| {
+        assert_search_ownership(app, &snapshot.tokens).with_context(|| timeout.to_string())
+    })?;
+    assert_search_ownership(app, &snapshot.tokens)?;
 
     app.test_handle_action(Action::SwitchTab1);
     wait_for(app, "reattach 后 SwitchTab1", |app| {
         app.test_active_tab_id() == snapshot.tab1
             && app.test_layout_leaf_ids() == vec![snapshot.tab1_pane]
     })?;
-    wait_visible_vte_ownership(app, &[snapshot.tab1_pane], latest_visible_tokens)?;
+    wait_vte_buffer_ownership(app, &[snapshot.tab1_pane], latest_visible_tokens)?;
     let mut tokens = vec![execute_printf(
         app,
         &format!("GTK_{}_R1", matrix_label(runtime, transport)),
@@ -621,7 +654,7 @@ fn verify_supported_reattach(
         app.test_active_tab_id() == snapshot.tab2 && app.test_layout_leaf_ids().len() == 3
     })?;
     let panes = assert_three_pane_surface(app, "reattach 后切回 Tab 2")?;
-    wait_visible_vte_ownership(app, &panes, latest_visible_tokens)?;
+    wait_vte_buffer_ownership(app, &panes, latest_visible_tokens)?;
     tokens.extend(exercise_three_panes(
         app,
         &panes,
