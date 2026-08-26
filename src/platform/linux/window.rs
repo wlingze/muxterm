@@ -2271,6 +2271,9 @@ fn dispatch_event_for(
             // 新 tab 可能已是快照里的 active tab；必须重建 UI 让 active_tab 跟上。
             effects.note_topology();
         }
+        StateChange::TabOrderChanged => {
+            effects.note_topology();
+        }
         StateChange::LayoutChanged { .. } | StateChange::PaneAdded { .. } => {
             effects.note_topology();
         }
@@ -2533,6 +2536,9 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
         StateChange::TabAdded { .. } => {
             // 新 tab 可能已是快照里的 active tab（tmux %window-add 后
             // add_window_tab 会标记它 active）；必须重建 UI 让 active_tab 跟上。
+            effects.note_topology();
+        }
+        StateChange::TabOrderChanged => {
             effects.note_topology();
         }
         StateChange::LayoutChanged { .. } | StateChange::PaneAdded { .. } => {

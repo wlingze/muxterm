@@ -2292,6 +2292,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // 标题变化只更新 tab 列表文字，不需要全量 snapshot + 布局重建。
                 // 高频输出时 TAB_RENAMED 频繁触发，走 refreshUI 会卡顿。
                 needsTabRefresh = true
+            } else if ev.isTabOrderChanged {
+                // move-window 保持稳定 TabId 和布局，只刷新权威 tab 顺序。
+                needsTabRefresh = true
+                statusBarNeedsRefresh = true
             } else if ev.isWorkspaceRenamed {
                 applyWorkspaceRename(ev.name)
             } else if ev.type == STATE_PANE_RESIZED {

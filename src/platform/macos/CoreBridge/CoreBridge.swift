@@ -53,6 +53,7 @@ struct StateChange: Equatable {
     var isPaneHistory: Bool { type == STATE_PANE_HISTORY }
     var isPaneClosed: Bool { type == STATE_PANE_CLOSED }
     var isTabClosed: Bool { type == STATE_TAB_CLOSED }
+    var isTabOrderChanged: Bool { type == STATE_TAB_ORDER_CHANGED }
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }
     var isWorkspaceRenamed: Bool { type == STATE_WORKSPACE_RENAMED }
     var isPoolChanged: Bool { type == STATE_POOL_CHANGED }

@@ -145,6 +145,8 @@ pub enum StateChange {
     TabClosed { tab: TabId },
     /// tab 被重命名。
     TabRenamed { tab: TabId, name: String },
+    /// tab 的权威顺序变化（稳定 TabId 不变，仅顺序改变）。
+    TabOrderChanged,
     /// 激活的 tab 变化。
     ActiveTabChanged { tab: TabId },
     /// tab 布局变化（分割 / resize / pane 增减）。

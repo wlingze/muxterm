@@ -225,8 +225,8 @@ snapshot: tabs, panes, layout
 
 **`StateChange`（对前端）**
 
-留下：`PaneOutput`、`PaneFrame`、只给 Index 的 `PaneIndexSnapshot`、
-`TabAdded/Closed/Renamed`、`ActiveTabChanged { tab }`、`LayoutChanged`、
+留下：`PaneOutput`、`PaneFrame`、`PaneSnapshot`、`PaneHistory`、只给 Index 的 `PaneIndexSnapshot`、
+`TabAdded/Closed/Renamed`、`TabOrderChanged`、`ActiveTabChanged { tab }`、`LayoutChanged`、
 `PaneAdded/Closed/Title/Resized`、`ActivePaneChanged`、异步创建最终结果
 `MutationSettled`、`StatusBarSubscription`、`WorkspaceRenamed`、`PoolChanged`（列表变了）、
 Runtime 连接状态。
