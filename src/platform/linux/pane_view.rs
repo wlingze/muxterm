@@ -636,6 +636,7 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     }
     // Surface：合并缓冲里的原始 pane 字节按序 feed，永不 reset 追帧。
     // 半帧（1365/2730）必须都留下；CUP 风暴由 VTE 自己演到末帧。
+    // 不得在这里标 seeded：live 抢先 flush 会挡住后续 seed_raw（Cursor 丢首屏）。
     with_remote_feed(inner, || {
         inner.renderer.terminal().feed(&data);
         feed_reply_state(inner, &data);
@@ -644,9 +645,6 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     let mut trace = inner.render_trace.borrow_mut();
     trace.feeds += 1;
     trace.bytes_fed += data.len();
-    inner.seeded.set(true);
-    drop(trace);
-    flush_unapplied_history(inner);
 }
 
 /// 快照网格行数：capture 网格是行以 `\r\n` join 的纯文本，`\n` 计数 + 1

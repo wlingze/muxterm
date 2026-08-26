@@ -99,6 +99,10 @@ struct UiState {
     /// - 其它 Runtime（shell / Herdr）：`(Some(pane), cols, rows)` 按 pane 跳过，
     ///   避免切 tab 后同像素尺寸被全局缓存吞掉 ResizePane（htop 0826）。
     last_client_size: Option<(Option<u32>, u16, u16)>,
+    /// tmux SharedClientResize：同一尺寸连续命中才 dispatch（约 10×16ms），
+    /// 避免 map 时 106→284→142 连发 -C（dogfood 2152）。
+    pending_client_size: Option<(u16, u16)>,
+    pending_client_hits: u8,
     tab_gate: TabSwitchGate,
     preferences: Preferences,
     on_last_pane_exit: OnLastPaneExit,
@@ -471,6 +475,8 @@ impl AppWindow {
             active_tab: 0,
             active_pane: 0,
             last_client_size: None,
+            pending_client_size: None,
+            pending_client_hits: 0,
             tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
             preferences,
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
@@ -3118,6 +3124,11 @@ fn forward_parser_replies_for(s: &mut UiState, wid: &WorkspaceId, pane_id: u32) 
 /// 共享 client viewport 的 Runtime（tmux）收到整个 Workspace 的尺寸；
 /// 其它 Runtime（shell / Herdr）收到当前 Surface 的实际字符格尺寸。
 /// platform 只问 capability，不按实现名字分支。
+///
+/// tmux SharedClientResize：同一尺寸连续 ~10 次 poll（约 160ms）才 -C，
+/// 过滤窗口 map / VTE preferred 抖动（dogfood 2152：106→284→142）。
+const CLIENT_SIZE_STABLE_HITS: u8 = 10;
+
 fn sync_window_size(s: &mut UiState) {
     let Some(view) = s.active_layout().pane(s.active_pane) else {
         return;
@@ -3166,9 +3177,22 @@ fn sync_window_size(s: &mut UiState) {
     };
     if shared_client_resize {
         if s.last_client_size == Some((None, cols, rows)) {
+            s.pending_client_size = None;
+            s.pending_client_hits = 0;
+            return;
+        }
+        if s.pending_client_size == Some((cols, rows)) {
+            s.pending_client_hits = s.pending_client_hits.saturating_add(1);
+        } else {
+            s.pending_client_size = Some((cols, rows));
+            s.pending_client_hits = 1;
+        }
+        if s.pending_client_hits < CLIENT_SIZE_STABLE_HITS {
             return;
         }
         s.last_client_size = Some((None, cols, rows));
+        s.pending_client_size = None;
+        s.pending_client_hits = 0;
         let _ = s
             .active_workspace_mut()
             .execute(Task::ResizeClient { cols, rows });
@@ -4505,6 +4529,8 @@ fn after_activate(s: &mut UiState) {
     }
     s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
     s.last_client_size = None;
+    s.pending_client_size = None;
+    s.pending_client_hits = 0;
     s.qc_store
         .replace_recents(&recent_target_configs(&s.pool, 5));
     refresh_ui(s);
