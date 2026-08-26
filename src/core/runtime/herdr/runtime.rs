@@ -790,6 +790,9 @@ impl HerdrRuntime {
 
     /// 期望模式：in-flight mutation 已知目标时，目标 pane 独占 Control；
     /// 否则 Pool 前台 active pane = Control，其余 pane/后台 workspace = Observe。
+    ///
+    /// GTK preferred 未到前一律 Observe：Control Hello 默认 80×24 会对长期
+    /// 运行的 htop 发 SIGWINCH，把 PTY 锁死在小屏（dogfood 2030 单 pane）。
     fn desired_mode_for(&self, pane: &PaneInfo) -> StreamMode {
         // pane.split/tab.create 的直接响应可能早于权威 snapshot。只要
         // 已知道目标 Herdr pane，就先按 mutation intent 计算最终 mode，
@@ -808,6 +811,9 @@ impl HerdrRuntime {
             } else {
                 StreamMode::Observe
             };
+        }
+        if self.preferred_client_size.is_none() {
+            return StreamMode::Observe;
         }
         if self.foreground && Some(pane.id) == self.active_pane {
             StreamMode::Control
@@ -1034,13 +1040,18 @@ impl HerdrRuntime {
 
     /// resize 发给 current control（PTY）与 Observe（client viewport）。
     /// Starting/Backoff 期间 latest-wins 暂存。
+    /// 首次写入 preferred 后 reconcile，把 deferred Observe 升到 Control。
     fn resize_control_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
+        let first_preferred = self.preferred_client_size.is_none();
         let (cols, rows) = normalize_pane_size(cols, rows, None);
         self.preferred_client_size = Some((cols, rows));
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
+            if first_preferred {
+                self.reconcile_stream_modes();
+            }
             return Err(anyhow!("pane {pane} 不存在"));
         };
-        match (slot.state, slot.actual_mode) {
+        let result = match (slot.state, slot.actual_mode) {
             (SlotState::Live, Some(StreamMode::Control | StreamMode::Observe)) => {
                 let stream = slot
                     .stream
@@ -1063,7 +1074,11 @@ impl HerdrRuntime {
                 }
                 Ok(())
             }
+        };
+        if first_preferred {
+            self.reconcile_stream_modes();
         }
+        result
     }
 
     /// 记录 pending resize 后触发 reconcile（避免 &mut 借用与 &mut self 冲突）。
@@ -2587,6 +2602,21 @@ impl Runtime for HerdrRuntime {
                 }
                 let cols = (*cols).max(2);
                 let rows = (*rows).max(1);
+                // PaneInfo 可能已随 Observe frame 对齐，但仍要写 preferred 并
+                // 推 wire Resize：否则 early-return 会让 Control Hello 卡在 80×24。
+                let first_preferred = self.preferred_client_size.is_none();
+                match self.resize_control_stream(*target, cols, rows) {
+                    Ok(()) => {}
+                    Err(_) if !self.stream_slots.contains_key(target) => {
+                        self.preferred_client_size = Some((cols, rows));
+                        if first_preferred {
+                            self.reconcile_stream_modes();
+                        }
+                    }
+                    Err(err) => {
+                        return Err(anyhow!("Herdr pane control resize 失败: {err}"));
+                    }
+                }
                 let unchanged = self
                     .panes
                     .iter()
@@ -2595,8 +2625,6 @@ impl Runtime for HerdrRuntime {
                 if unchanged {
                     return Ok(TaskOutcome::Done);
                 }
-                self.resize_control_stream(*target, cols, rows)
-                    .map_err(|err| anyhow!("Herdr pane control resize 失败: {err}"))?;
                 if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == *target) {
                     pane.cols = cols;
                     pane.rows = rows;
@@ -3010,6 +3038,76 @@ mod tests {
             runtime.hello_client_size(pane),
             (140, 50),
             "pending_resize 优先于 preferred"
+        );
+    }
+
+    /// dogfood 2030：GTK preferred 未到前不得 Control Hello（默认 80×24 SIGWINCH）。
+    #[test]
+    fn desired_mode_stays_observe_until_preferred_client_size() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        runtime.foreground = true;
+        let pane = PaneId(5);
+        runtime.active_pane = Some(pane);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "htop".into(),
+            cols: 76,
+            rows: 12,
+        });
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[0]),
+            StreamMode::Observe,
+            "无 preferred 时 active 也只能 Observe"
+        );
+        runtime.preferred_client_size = Some((132, 41));
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[0]),
+            StreamMode::Control
+        );
+    }
+
+    /// PaneInfo 已与 frame 对齐时 ResizePane 仍必须写入 preferred（否则卡 80×24）。
+    #[test]
+    fn resize_pane_records_preferred_even_when_paneinfo_unchanged() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        let pane = PaneId(5);
+        runtime.active_pane = Some(pane);
+        runtime.foreground = true;
+        runtime.status = BackendStatus::Connected;
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "htop".into(),
+            cols: 132,
+            rows: 41,
+        });
+        runtime.stream_slots.insert(
+            pane,
+            PaneStreamSlot::new(pane, "w2:p5", StreamMode::Observe),
+        );
+        assert!(runtime.preferred_client_size.is_none());
+        let outcome = runtime
+            .execute(&Task::ResizePane {
+                target: pane,
+                cols: 132,
+                rows: 41,
+            })
+            .expect("resize");
+        assert!(matches!(outcome, TaskOutcome::Done));
+        assert_eq!(runtime.preferred_client_size, Some((132, 41)));
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[0]),
+            StreamMode::Control,
+            "preferred 写入后 active 应变 Control"
         );
     }
 
