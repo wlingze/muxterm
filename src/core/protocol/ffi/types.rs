@@ -28,6 +28,8 @@ pub const STATE_PANE_AGENT_CHANGED: u32 = 15;
 pub const STATE_MUTATION_SETTLED: u32 = 16;
 /// Attach-before pane history as newline-separated rows (not a VT dump).
 pub const STATE_PANE_HISTORY: u32 = 17;
+/// Authoritative tab order changed; consumers should refresh tab metadata.
+pub const STATE_TAB_ORDER_CHANGED: u32 = 18;
 pub const STATE_OTHER: u32 = 99;
 
 // ── BackendStatus 编码到 CStateChange.pane_id ──────────────
@@ -148,5 +150,24 @@ impl Default for CStateChange {
             data_len: 0,
             name: std::ptr::null(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_state_change_discriminants_are_stable_and_unique() {
+        assert_eq!(
+            [
+                STATE_PANE_SNAPSHOT,
+                STATE_PANE_AGENT_CHANGED,
+                STATE_MUTATION_SETTLED,
+                STATE_PANE_HISTORY,
+                STATE_TAB_ORDER_CHANGED,
+            ],
+            [14, 15, 16, 17, 18]
+        );
     }
 }

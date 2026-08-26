@@ -69,6 +69,7 @@ struct CLayoutNode {
 #define STATE_PANE_SNAPSHOT       14u
 #define STATE_PANE_AGENT_CHANGED  15u
 #define STATE_PANE_HISTORY        17u
+#define STATE_TAB_ORDER_CHANGED   18u
 #define STATE_OTHER               99u
 
 #define TASK_SPLIT_PANE  0u

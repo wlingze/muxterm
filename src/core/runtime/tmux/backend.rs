@@ -2422,6 +2422,7 @@ impl TmuxRuntime {
     /// 解析 `list-windows -t <session> -F '#{window_id},#{window_name},#{window_active},#{window_layout},#{window_panes},#{window_zoomed_flag}'` 的响应。
     fn handle_list_windows_response(&mut self, lines: Vec<String>) {
         // tmux list-windows 返回所有 tmux window → 每个创建/更新一个 muxterm Tab
+        let previous_order: Vec<TabId> = self.tabs.iter().map(|tab| tab.id).collect();
         let mut order = HashMap::new();
         for line in lines {
             let line = line.trim();
@@ -2495,6 +2496,12 @@ impl TmuxRuntime {
                 .copied()
                 .unwrap_or((usize::MAX, usize::MAX))
         });
+        let current_order: Vec<TabId> = self.tabs.iter().map(|tab| tab.id).collect();
+        let same_tabs = previous_order.len() == current_order.len()
+            && previous_order.iter().all(|tab| current_order.contains(tab));
+        if same_tabs && previous_order != current_order {
+            self.events.push_back(StateChange::TabOrderChanged);
+        }
         // 权威列表已到：裁决 move-window 等临时 unlink 产生的挂起 close。
         let confirmed_tabs: HashSet<TabId> = order.keys().copied().collect();
         self.settle_pending_close_tabs(&confirmed_tabs);
@@ -6692,6 +6699,7 @@ mod tests {
             b.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
             vec![TabId(0), TabId(1),]
         );
+        b.events.clear();
 
         b.handle_list_windows_response(vec![
             "@1,second,1,bbbb,80x24,0,0,1,0".into(),
@@ -6702,6 +6710,12 @@ mod tests {
             b.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
             vec![TabId(1), TabId(0)],
             "Tab 顺序必须跟随 list-windows 返回的 tmux index 顺序"
+        );
+        assert!(
+            b.events
+                .iter()
+                .any(|event| matches!(event, StateChange::TabOrderChanged)),
+            "纯顺序变化也必须通知前端刷新 tab 元数据"
         );
     }
 
