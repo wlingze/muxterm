@@ -732,10 +732,13 @@ pub fn verify_after_attach(
     );
 
     if before.persistent {
-        assert_tokens_belong_to_one_pane(
-            workspace,
-            std::iter::once(before.tab1_token.clone()).chain(before.tab2_tokens.iter().cloned()),
-        )?;
+        let tokens = std::iter::once(before.tab1_token.clone())
+            .chain(before.tab2_tokens.iter().cloned())
+            .collect::<Vec<_>>();
+        wait_until(workspace, "attach 后后台 pane 索引恢复", |ws| {
+            assert_tokens_belong_to_one_pane(ws, tokens.clone()).is_ok()
+        })?;
+        assert_tokens_belong_to_one_pane(workspace, tokens)?;
     }
 
     // Attach 后继续 mutation 是独立生命周期边界：先在已恢复的 active
