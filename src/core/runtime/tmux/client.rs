@@ -1496,7 +1496,7 @@ mod tests {
         );
         assert!(saw_response, "控制响应不能被未合并的 output 水位挡住");
         assert!(
-            output_events >= 1 && output_events < OUTPUT_EVENT_BUFFER,
+            (1..OUTPUT_EVENT_BUFFER).contains(&output_events),
             "burst 应合并成少量 output 事件，实际 {output_events}"
         );
         assert!(output_bytes > burst, "合并后仍要保留全部帧字节");
@@ -1518,12 +1518,16 @@ mod tests {
         while let Ok(event) = rx.try_recv() {
             match event {
                 TmuxEvent::OutputGap { .. } => saw_gap = true,
-                TmuxEvent::Message(Message::Output { pane, content, .. }) if pane == PaneId(0) => {
-                    quiet = Some(content)
-                }
-                TmuxEvent::Message(Message::Output { pane, content, .. }) if pane == PaneId(42) => {
-                    chatty_bytes += content.len()
-                }
+                TmuxEvent::Message(Message::Output {
+                    pane: PaneId(0),
+                    content,
+                    ..
+                }) => quiet = Some(content),
+                TmuxEvent::Message(Message::Output {
+                    pane: PaneId(42),
+                    content,
+                    ..
+                }) => chatty_bytes += content.len(),
                 other => panic!("unexpected event: {other:?}"),
             }
         }
