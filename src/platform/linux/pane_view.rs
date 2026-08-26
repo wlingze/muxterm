@@ -242,12 +242,15 @@ impl PaneView {
     }
 
     /// 输出事件入队合并（同一 pane 短窗口内一次 feed）。
+    ///
+    /// 未 realize / 零尺寸时只入队不 flush：否则 VTE 丢字节却把
+    /// `seeded=true`，后续 seed 失效；Cursor 等候框等 live 重绘也会丢。
     pub fn feed_output(&self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
         self.inner.pending_feed.borrow_mut().extend_from_slice(data);
-        self.schedule_feed_flush();
+        self.schedule_feed_flush_if_paintable();
     }
 
     /// full 帧（完整状态快照）入队：先清屏再喂 full，避免 resize 触发
@@ -262,7 +265,7 @@ impl PaneView {
             .borrow_mut()
             .extend_from_slice(b"\x1b[2J\x1b[H");
         self.inner.pending_feed.borrow_mut().extend_from_slice(data);
-        self.schedule_feed_flush();
+        self.schedule_feed_flush_if_paintable();
     }
 
     /// attach 前历史按行写进 VTE scrollback，不 reset，也不把历史反喂成
@@ -310,6 +313,20 @@ impl PaneView {
     pub fn flush_deferred_history(&self) {
         if self.can_paint_surface() && self.inner.seeded.get() {
             flush_unapplied_history(&self.inner);
+        }
+    }
+
+    /// 布局变为可 paint 后补放暂存 live（!can_paint 时入队的字节）。
+    pub fn flush_deferred_feed(&self) {
+        if self.can_paint_surface() && !self.inner.pending_feed.borrow().is_empty() {
+            self.schedule_feed_flush();
+        }
+    }
+
+    /// 仅在可 paint 时调度 flush，避免 unrealized VTE 丢字节并假 seeded。
+    fn schedule_feed_flush_if_paintable(&self) {
+        if self.can_paint_surface() {
+            self.schedule_feed_flush();
         }
     }
 
@@ -387,6 +404,7 @@ impl PaneView {
         self.inner.seeded.set(true);
         flush_unapplied_history(&self.inner);
         self.flush_deferred_history();
+        self.flush_deferred_feed();
     }
 
     /// attach 快照播种：不 reset、不 dump，直接把 capture-pane 原始字节
@@ -426,6 +444,7 @@ impl PaneView {
         self.inner.render_trace.borrow_mut().seeds += 1;
         self.inner.seeded.set(true);
         self.flush_deferred_history();
+        self.flush_deferred_feed();
     }
 
     /// 渲染痕迹（测试断言不刷屏）。
@@ -636,11 +655,28 @@ fn snapshot_grid_rows(data: &[u8]) -> usize {
     data.iter().filter(|&&byte| byte == b'\n').count() + 1
 }
 
+/// alt-screen 快照（Cursor/htop 等）已带权威 CUP；禁止再用 `999;1H`
+/// 把光标拽到底——相对 CUU/EL 会画到错误行，黄色等候框整片错位。
+fn snapshot_is_alternate_screen(data: &[u8]) -> bool {
+    data.windows(b"\x1b[?1049h".len())
+        .any(|window| window == b"\x1b[?1049h")
+}
+
+/// 仅在 primary 屏、且快照行数大于可见行时才锚定光标。
+fn should_anchor_snapshot_cursor(data: &[u8], snapshot_rows: usize, visible_rows: usize) -> bool {
+    !snapshot_is_alternate_screen(data) && snapshot_rows > visible_rows
+}
+
 /// 快照网格大于 VTE 可见行数时，把光标锚定到 buffer 末尾。
 ///
 /// 否则快照末尾 CUP 越界后光标停留在错误行，shell 的 prompt 重绘
 /// （resize 触发）会从错误位置 `ESC[J` 清掉刚 seed 的内容。
+///
+/// alternate screen（Cursor 等候框 / TUI）跳过：信任 tmux CUP。
 fn anchor_snapshot_cursor(inner: &Rc<PaneViewInner>, data: &[u8]) {
+    if snapshot_is_alternate_screen(data) {
+        return;
+    }
     let terminal = inner.renderer.terminal();
     // row_count()/vadjustment 在 VTE 0.84 里受 set_size 与 widget 分配
     // 交互影响（模型 24 行时 row_count 可能 20 或 24，page_size 也可能
@@ -651,7 +687,7 @@ fn anchor_snapshot_cursor(inner: &Rc<PaneViewInner>, data: &[u8]) {
     let widget_h = terminal.height().max(0) as f64;
     let visible_rows = (widget_h / char_h).floor().max(1.0) as usize;
     let snapshot_rows = snapshot_grid_rows(data);
-    if snapshot_rows > visible_rows {
+    if should_anchor_snapshot_cursor(data, snapshot_rows, visible_rows) {
         // CUP 锚到 buffer 末尾：后续 shell 重绘只影响底部几行。
         feed_direct(inner, b"\x1b[999;1H");
         // feed 是异步的，且镜像模式 scroll-on-output=false；等本批 feed
@@ -848,6 +884,17 @@ mod tests {
     fn history_replay_is_noop_on_alternate_screen() {
         assert!(history_replay_allowed(false));
         assert!(!history_replay_allowed(true));
+    }
+
+    #[test]
+    fn alt_screen_snapshot_must_not_anchor_cursor_to_bottom() {
+        let alt = b"\x1b[?1049h\x1b[43m waiting \x1b[m\x1b[10;5H";
+        assert!(snapshot_is_alternate_screen(alt));
+        assert!(!should_anchor_snapshot_cursor(alt, 80, 24));
+        let primary = b"shell prompt$\nline2\nline3";
+        assert!(!snapshot_is_alternate_screen(primary));
+        assert!(should_anchor_snapshot_cursor(primary, 80, 24));
+        assert!(!should_anchor_snapshot_cursor(primary, 20, 24));
     }
 
     #[test]
