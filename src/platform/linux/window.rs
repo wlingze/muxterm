@@ -948,6 +948,15 @@ impl AppWindow {
         t
     }
 
+    /// 测试用：指定 pane 的 VTE scrollback + 当前屏完整文本。
+    pub fn test_pane_vte_buffer_text(&self, pane_id: u32) -> String {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .map(|view| view.buffer_text())
+            .unwrap_or_default()
+    }
+
     /// 测试用：指定 pane 的 VTE **当前屏幕**文本（不含 scrollback）。
     ///
     /// Ctrl-L 后旧内容可能留在 VTE scrollback；“当前屏不可见 BEFORE”
@@ -2199,7 +2208,13 @@ fn dispatch_event_for(
             if let Some(view) = resident_pane_view(s, wid, pane.0) {
                 sync_pane_grid_size_for(s, wid, pane.0);
                 let seeded_from_core = s.snapshot_seeded_this_batch.contains(&pane.0);
-                if !seeded_from_core && view.widget().is_realized() && view.widget().width() > 0 {
+                if !seeded_from_core
+                    && surface_allocation_is_seedable(
+                        view.widget().is_realized(),
+                        view.widget().width(),
+                        view.widget().height(),
+                    )
+                {
                     let (cols, rows) = s
                         .pool
                         .get(wid)
@@ -2308,6 +2323,17 @@ fn dispatch_event_for(
             }
         }
         StateChange::BackendStatusChanged(status) => {
+            if matches!(status, BackendStatus::Connecting) {
+                // 新一轮 attach 会重新 capture 历史；清掉旧 generation 的
+                // 保留批次，避免 reattach 后 seed_snapshot 重放旧历史。
+                if let Some(layout) = s.pixel_cache.get(wid) {
+                    for pane in layout.pane_ids() {
+                        if let Some(view) = layout.pane(pane) {
+                            view.begin_attach_generation();
+                        }
+                    }
+                }
+            }
             if is_active {
                 s.runtime_status = match status {
                     BackendStatus::Connected => {
@@ -2475,7 +2501,13 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
                 // 有效分配时直接 reset/feed；未 realize 的 pane 留给下一轮
                 // seed_unseeded_pane 从 core Surface 补种，避免白屏。
                 let seeded_from_core = s.snapshot_seeded_this_batch.contains(&pane.0);
-                if !seeded_from_core && view.widget().is_realized() && view.widget().width() > 0 {
+                if !seeded_from_core
+                    && surface_allocation_is_seedable(
+                        view.widget().is_realized(),
+                        view.widget().width(),
+                        view.widget().height(),
+                    )
+                {
                     let (cols, rows) = s
                         .active_workspace()
                         .state()
@@ -2582,6 +2614,17 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
             }
         }
         StateChange::BackendStatusChanged(status) => {
+            if matches!(status, BackendStatus::Connecting) {
+                // 新一轮 attach 会重新 capture 历史；清掉旧 generation 的
+                // 保留批次，避免 reattach 后 seed_snapshot 重放旧历史。
+                if let Some(layout) = s.pixel_cache.get(&wid) {
+                    for pane in layout.pane_ids() {
+                        if let Some(view) = layout.pane(pane) {
+                            view.begin_attach_generation();
+                        }
+                    }
+                }
+            }
             s.runtime_status = match status {
                 BackendStatus::Connected => {
                     crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED
@@ -2942,6 +2985,11 @@ fn seed_unseeded_pane(
     seed_unseeded_pane_for(s, &wid, view, pane_id, cols, rows);
 }
 
+/// VTE 只有在 realize 且二维分配都有效时才能可靠接收首帧。
+fn surface_allocation_is_seedable(realized: bool, width: i32, height: i32) -> bool {
+    realized && width > 0 && height > 0
+}
+
 fn seed_unseeded_pane_for(
     s: &mut UiState,
     wid: &WorkspaceId,
@@ -2950,12 +2998,13 @@ fn seed_unseeded_pane_for(
     cols: u16,
     rows: u16,
 ) {
-    if view.is_seeded() || !view.widget().is_realized() {
-        return;
-    }
-    // VTE 在 Paned 子节点分配前 width/height 为 0，feed 会被丢弃（白屏）。
-    // 等 GTK 完成布局后再播种；sync_pane_outputs 每轮都会补种。
-    if view.widget().width() <= 0 || view.widget().height() <= 0 {
+    if view.is_seeded()
+        || !surface_allocation_is_seedable(
+            view.widget().is_realized(),
+            view.widget().width(),
+            view.widget().height(),
+        )
+    {
         return;
     }
     if let Some(bytes) = s
@@ -4803,6 +4852,16 @@ mod tests {
         assert!(should_poll_status(false, last, now, Duration::from_secs(1)));
         // 无订阅但未到间隔 → 不轮询
         assert!(!should_poll_status(false, now, now, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn surface_seed_gate_requires_realized_positive_allocation() {
+        assert!(surface_allocation_is_seedable(true, 1, 1));
+        assert!(!surface_allocation_is_seedable(false, 80, 24));
+        assert!(!surface_allocation_is_seedable(true, 0, 24));
+        assert!(!surface_allocation_is_seedable(true, 80, 0));
+        assert!(!surface_allocation_is_seedable(true, -1, 24));
+        assert!(!surface_allocation_is_seedable(true, 80, -1));
     }
 
     #[test]

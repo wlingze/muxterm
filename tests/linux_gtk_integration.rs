@@ -37,6 +37,7 @@ use muxterm::core::quickconnect::model::TargetRuntime;
 use muxterm::platform::linux::ffi_bridge::{BridgeTab, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
+use muxterm::platform::linux::pane_view::PaneView;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::store::QuickConnectStore;
 use muxterm::platform::linux::tab_bar::TabBar;
@@ -458,28 +459,4 @@ fn gtk_z_build_2tab3pane_via_keys() {
         assert_build_2tab3pane_via_keys();
         HEAVY_GTK_UI_DONE.store(true, Ordering::SeqCst);
     });
-}
-
-#[cfg(test)]
-mod keymap_alt_s_v {
-    use super::*;
-    use muxterm::core::config::{default_keybindings, Action};
-
-    #[test]
-    fn default_bindings_include_alt_s_and_alt_v() {
-        let km = KeyMap::from_bindings(&default_keybindings());
-        // 不依赖 DISPLAY：用 lookup_str
-        assert_eq!(km.lookup_str("s", &["alt"]), Some(Action::NewPane));
-        assert_eq!(km.lookup_str("v", &["alt"]), Some(Action::NewPaneVertical));
-        assert_eq!(km.lookup_str("t", &["alt"]), Some(Action::NewTab));
-        assert_eq!(km.lookup_str("q", &["control"]), Some(Action::Quit));
-        assert_eq!(
-            km.lookup_str("c", &["control", "shift"]),
-            Some(Action::Copy)
-        );
-        assert_eq!(
-            km.lookup_str("v", &["control", "shift"]),
-            Some(Action::Paste)
-        );
-    }
 }

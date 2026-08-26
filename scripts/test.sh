@@ -121,6 +121,7 @@ run_linux() {
         --test linux_panel_e2e \
         --test linux_render_e2e \
         --test linux_attach_history_e2e \
+        --test linux_pane_history_integration \
         --test linux_attention_semantics_e2e \
         --test linux_search_e2e \
         --test linux_runtime_transport_matrix_e2e \
