@@ -298,6 +298,7 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 ### 7.5 不卡顿的验收（不是保证任意负载 60fps）
 
 - 已打开的 tab/pane 切换：没有 pause、没有 capture、没有 reset。
+- attach 首屏：可见 `capture-pane` 发出之前，控制通道不得塞 `list-sessions` / 全 pane OSC `-r`。慢 SSH 可以等，但不能空超时后再抓 `-S -10000`。
 - 打字和 TUI 跟 `PaneOutput` 走，不跟 Index dump 走。
 - 池里 Workspace 数量受 `WorkspacePoolPolicy.max_slots` 限制（默认 5）。
 - 某个 pane 刷爆时允许掉帧；TODO 落地后只 pause 那一个 pane。

@@ -3,6 +3,10 @@
 //! `capture-pane -S -N -E -1` 只取可见区以上的行。前端写入 SwiftTerm
 //! scrollback，禁止 `reset`，也禁止把带可见屏的 `-S -10000` dump `feed()`。
 
+/// 一次历史回填最多抓这么多物理行。配置里的 10_000 是 Index/前端容量，
+/// 不能一次经 SSH 拉完，否则首屏 seed 会被挤过 deadline。
+pub const HISTORY_BACKFILL_CHUNK_LINES: u32 = 256;
+
 /// 历史捕获与拆行的纯函数，不碰 tmux socket。
 pub struct PaneHistoryPolicy;
 
@@ -80,6 +84,11 @@ impl PaneHistoryPolicy {
             .map(str::to_string)
             .collect()
     }
+
+    /// attach 回填用的 `-S -N`：有配置上限，但单次不能超过 chunk。
+    pub fn capture_lines(configured: u32) -> u32 {
+        configured.clamp(1, HISTORY_BACKFILL_CHUNK_LINES)
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +127,12 @@ mod tests {
         let lines = vec!["a".into(), String::new(), "b".into()];
         let decoded = PaneHistoryPolicy::decode(&PaneHistoryPolicy::encode(&lines));
         assert_eq!(decoded, lines);
+    }
+
+    #[test]
+    fn capture_lines_caps_configured_scrollback() {
+        assert_eq!(PaneHistoryPolicy::capture_lines(10_000), 256);
+        assert_eq!(PaneHistoryPolicy::capture_lines(80), 80);
+        assert_eq!(PaneHistoryPolicy::capture_lines(0), 1);
     }
 }

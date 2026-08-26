@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
+use crate::core::config::Rgb;
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
@@ -88,6 +89,9 @@ const PUMP_TIME_BUDGET: Duration = Duration::from_millis(4);
 /// Snapshot 是恢复手段，不得把 pane 永久锁在 resyncing；5s 也与 iTerm2 的
 /// tmux unresponsive watchdog 保持同一量级。
 const RESYNC_TIMEOUT: Duration = Duration::from_secs(5);
+/// attach 首屏允许更慢（SSH RTT、远端 TUI）。慢可以，但不能在 5s 时空屏
+/// 再抓 `-S -10000` 把控制通道卡死。
+const INITIAL_SEED_TIMEOUT: Duration = Duration::from_secs(20);
 const RESYNC_COOLDOWN: Duration = Duration::from_secs(5);
 
 /// 单个 pane 的输出流控状态。
@@ -288,6 +292,14 @@ pub struct TmuxRuntime {
     status_subscription_supported: bool,
     /// 已成功发出 status-left/right 订阅（前端据此关闭轮询定时器）。
     status_subscriptions_active: bool,
+    /// 活动 tab 的 display-message 还没换成可见 `capture-pane`。这期间
+    /// `list-sessions` / `-B` / 全 pane `-r` 必须排队，否则 SSH 上会把
+    /// 首屏挤过 deadline（1612：pause 之后 9s 都没发出 capture）。
+    attach_followup_held: bool,
+    /// 已经补发过 attach 后续命令，避免 timeout/capture 各 flush 一次。
+    attach_followup_flushed: bool,
+    /// seed 进行中收到的 OSC 颜色上报，等可见 capture 发出后再写 tmux。
+    held_colour_reports: Vec<(PaneId, Rgb, Rgb)>,
 }
 
 /// 解析 `tmux -V` 输出（如 `tmux 3.7b` / `tmux 2.9a`）。
@@ -604,6 +616,9 @@ impl TmuxRuntime {
             colour_report_warned: false,
             status_subscription_supported: false,
             status_subscriptions_active: false,
+            attach_followup_held: false,
+            attach_followup_flushed: false,
+            held_colour_reports: Vec::new(),
         }
     }
 
@@ -1050,11 +1065,16 @@ impl TmuxRuntime {
             flow.resyncing = true;
             flow.suppressed.clear();
         }
+        let timeout = if initial {
+            INITIAL_SEED_TIMEOUT
+        } else {
+            RESYNC_TIMEOUT
+        };
         self.resyncs.insert(
             pane,
             PaneResync {
                 generation,
-                deadline: Some(Instant::now() + RESYNC_TIMEOUT),
+                deadline: Some(Instant::now() + timeout),
                 initial,
                 pause_client,
                 ..PaneResync::default()
@@ -1191,6 +1211,7 @@ impl TmuxRuntime {
             Vec::new()
         };
         fallback.extend(suppressed);
+        let had_content = !fallback.is_empty();
         if resync.initial {
             // 首屏 seed 超时也必须发 PaneSnapshot，否则 macOS 会把 host 一直
             // 藏在 seedingPanes 里，用户看到的就是 tab 卡住。
@@ -1206,19 +1227,20 @@ impl TmuxRuntime {
                 data: fallback,
             });
             self.trim_event_queue();
-        } else if !fallback.is_empty() {
+        } else if had_content {
             self.push_pane_output(pane, fallback);
         }
         self.paused_panes.remove(&pane);
         if resync.pause_client {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
         }
-        if resync.initial {
+        if resync.initial && had_content {
             self.schedule_pane_history_backfill(pane);
         }
         if let Some(receiver) = self.event_rx.as_mut() {
             receiver.resume_output_pane(pane);
         }
+        self.release_attach_followup_if_ready();
         tracing::warn!(
             target: "muxterm::tmux::resync",
             pane = pane.0,
@@ -1254,9 +1276,12 @@ impl TmuxRuntime {
         // 也必须原样 feed，不能让 Surface 跳到历史顶部再跳回输入框。
         let panes: Vec<PaneId> = self.dropped_output_panes.drain().collect();
         for pane in panes {
-            if self.initial_capture_done.contains(&pane) {
-                // Surface 已经在吃 live。丢字节不要 pause 重抓，否则切 tab
-                // 会把控制通道堵住。洪水 pause-after 是 TODO(surface-7.4)。
+            if self.initial_capture_done.contains(&pane)
+                || self.is_attach_mode()
+                || self.initial_seed_blocks_followup()
+            {
+                // attach / 已打开 Surface：丢字节只恢复 live。pause+resync
+                // 会把活动 tab 的 display-message 挤出 deadline（1612）。
                 if let Some(receiver) = self.event_rx.as_mut() {
                     receiver.resume_output_pane(pane);
                 }
@@ -1882,6 +1907,7 @@ impl TmuxRuntime {
                             alternate: false,
                             generation,
                         });
+                        self.release_attach_followup_if_ready();
                     } else {
                         self.abort_pane_resync(pane, "capture-command-failed");
                     }
@@ -2081,6 +2107,7 @@ impl TmuxRuntime {
         if initial {
             self.schedule_pane_history_backfill(pane);
         }
+        self.release_attach_followup_if_ready();
     }
 
     /// 处理一条命令响应的 `%error` 边界。
@@ -2619,15 +2646,47 @@ impl TmuxRuntime {
     }
 
     fn control_lane_busy(&self) -> bool {
-        self.pending_queries
-            .iter()
-            .any(|query| !matches!(query, PendingQuery::Ignore))
+        self.pending_queries.iter().any(Self::query_blocks_history)
             || self
                 .pending_by_number
                 .values()
-                .any(|query| !matches!(query, PendingQuery::Ignore))
+                .any(Self::query_blocks_history)
             || !self.history_backfill_pending.is_empty()
             || !self.resyncs.is_empty()
+    }
+
+    fn query_blocks_history(query: &PendingQuery) -> bool {
+        !matches!(query, PendingQuery::Ignore | PendingQuery::ListSessions)
+    }
+
+    /// 活动 tab 的 display-message 还没发出可见 capture。这时往通道里
+    /// 塞 list-sessions / OSC 会把 SSH 上的首屏挤死。
+    fn initial_seed_blocks_followup(&self) -> bool {
+        self.resyncs
+            .values()
+            .any(|resync| resync.initial && resync.state.is_none())
+    }
+
+    fn release_attach_followup_if_ready(&mut self) {
+        if self.attach_followup_flushed || self.initial_seed_blocks_followup() {
+            return;
+        }
+        self.flush_attach_followup_commands();
+    }
+
+    fn flush_attach_followup_commands(&mut self) {
+        if self.attach_followup_flushed {
+            return;
+        }
+        self.attach_followup_flushed = true;
+        self.attach_followup_held = false;
+        self.query_list_sessions();
+        self.setup_status_subscriptions();
+        let colours = std::mem::take(&mut self.held_colour_reports);
+        for (pane, fg, bg) in colours {
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_colour(pane, 10, fg));
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_colour(pane, 11, bg));
+        }
     }
 
     fn flush_deferred_history_backfill(&mut self) {
@@ -2654,7 +2713,11 @@ impl TmuxRuntime {
         {
             return;
         }
-        let line = cmd::capture_pane_with_history(pane, self.scrollback_lines).to_line();
+        let line = cmd::capture_pane_with_history(
+            pane,
+            super::pane_history::PaneHistoryPolicy::capture_lines(self.scrollback_lines),
+        )
+        .to_line();
         if self.dispatch_command(line).is_ok() {
             self.history_backfill_pending.insert(pane);
             self.replace_last_pending(PendingQuery::PaneHistory { pane });
@@ -2675,6 +2738,10 @@ impl TmuxRuntime {
 
     /// 发送 list-sessions 查询（列出 tmux server 上所有 session）。
     fn query_list_sessions(&mut self) {
+        if self.initial_seed_blocks_followup() {
+            self.attach_followup_held = true;
+            return;
+        }
         let line = "list-sessions\n".to_string();
         if self.dispatch_command(line).is_ok() {
             self.replace_last_pending(PendingQuery::ListSessions);
@@ -2713,6 +2780,10 @@ impl TmuxRuntime {
     fn setup_status_subscriptions(&mut self) {
         self.status_subscriptions_active = false;
         if !self.status_subscription_supported {
+            return;
+        }
+        if self.initial_seed_blocks_followup() {
+            self.attach_followup_held = true;
             return;
         }
         let left = crate::core::runtime::tmux::command::refresh_client_subscribe(
@@ -3133,13 +3204,18 @@ impl Runtime for TmuxRuntime {
         }
         self.attach_bootstrap_complete = is_attach;
 
-        // 查询所有 session（用于 list-sessions 列出 server 上所有 session）
-        self.query_list_sessions();
         // 不要在 connect 里再跑 `tmux -V`（SSH 等于多一次往返）。
         // 版本未知时颜色上报默认开；status 订阅直接尝试，老 tmux 的
         // unknown flag 走 Ignore 槽，不会卡住控制通道。
         self.status_subscription_supported = true;
-        self.setup_status_subscriptions();
+        if is_attach && self.initial_seed_blocks_followup() {
+            // display-message 还在路上：list-sessions / -B 放到可见
+            // capture-pane 发出之后。1612 就是在 pause 之后立刻灌这些
+            // 命令，9s 都没抓到首屏。
+            self.attach_followup_held = true;
+        } else {
+            self.flush_attach_followup_commands();
+        }
 
         self.status = BackendStatus::Connected;
         self.events
@@ -3305,6 +3381,11 @@ impl Runtime for TmuxRuntime {
                             "tmux 不支持 refresh-client -r，跳过颜色上报"
                         );
                     }
+                    return Ok(TaskOutcome::Done);
+                }
+                if self.initial_seed_blocks_followup() {
+                    self.attach_followup_held = true;
+                    self.held_colour_reports.push((*target, *fg, *bg));
                     return Ok(TaskOutcome::Done);
                 }
                 // tmux 用这两个颜色代答 pane 的 OSC 10/11 查询；必须分两次
@@ -5054,6 +5135,143 @@ mod tests {
     }
 
     #[test]
+    fn attach_followup_waits_until_visible_capture_is_sent() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        b.status_subscription_supported = true;
+        let pane = PaneId(79);
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(34),
+            active: true,
+            title: String::new(),
+            cols: 80,
+            rows: 24,
+        });
+        b.begin_initial_pane_seed(pane);
+        let _ = drain_tmux_cmds(&mut rx);
+
+        b.query_list_sessions();
+        b.setup_status_subscriptions();
+        let _ = b.execute(&crate::core::model::task::Task::ReportPaneColours {
+            target: pane,
+            fg: crate::core::config::Rgb(0, 0, 0),
+            bg: crate::core::config::Rgb(255, 255, 255),
+        });
+        let held = drain_tmux_cmds(&mut rx);
+        assert!(
+            !held.iter().any(|cmd| cmd.contains("list-sessions")
+                || cmd.contains("refresh-client -B")
+                || cmd.contains("refresh-client -r")),
+            "display-message 回来前不得灌 list-sessions/OSC: {held:?}"
+        );
+        assert!(b.initial_seed_blocks_followup());
+        assert!(b.attach_followup_held);
+        assert_eq!(b.held_colour_reports.len(), 1);
+
+        b.pending_by_number.insert(
+            1,
+            PendingQuery::PaneResyncState {
+                pane,
+                generation: 1,
+            },
+        );
+        b.dispatch_response(1, vec!["0|0|1|||1|||||||||||||||".into()]);
+        let after = drain_tmux_cmds(&mut rx);
+        let capture_at = after
+            .iter()
+            .position(|cmd| cmd.contains("capture-pane -e -p -N -t %79"))
+            .expect("必须先发可见 capture");
+        assert!(
+            after.iter().any(|cmd| cmd.contains("list-sessions")),
+            "可见 capture 发出后才能补 list-sessions: {after:?}"
+        );
+        let list_at = after
+            .iter()
+            .position(|cmd| cmd.contains("list-sessions"))
+            .unwrap();
+        assert!(
+            capture_at < list_at,
+            "list-sessions 必须排在可见 capture 后面: {after:?}"
+        );
+        assert!(
+            after.iter().any(|cmd| cmd.contains("refresh-client -r")),
+            "排队的 OSC 也要在 capture 之后发出: {after:?}"
+        );
+        assert!(!b.initial_seed_blocks_followup());
+        assert!(!b.attach_followup_held);
+        assert!(b.held_colour_reports.is_empty());
+    }
+
+    #[test]
+    fn empty_initial_seed_deadline_does_not_grab_history() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(2);
+        b.begin_initial_pane_seed(pane);
+        let _ = drain_tmux_cmds(&mut rx);
+        b.resyncs.get_mut(&pane).unwrap().deadline =
+            Some(Instant::now() - Duration::from_millis(1));
+        b.expire_resyncs();
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("-S ")),
+            "空超时不得再抓历史，否则 1612 会把通道卡死: {cmds:?}"
+        );
+        assert!(
+            !b.history_backfill_wanted.contains(&pane),
+            "空 snapshot 不是可滚的历史"
+        );
+        assert!(b.initial_capture_done.contains(&pane));
+    }
+
+    #[test]
+    fn attach_dropped_output_does_not_pause_background_panes() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.begin_initial_pane_seed(PaneId(79));
+        let _ = drain_tmux_cmds(&mut rx);
+        b.dropped_output_panes.insert(PaneId(0));
+        b.dropped_output_panes.insert(PaneId(116));
+        b.maybe_start_resyncs();
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            !cmds
+                .iter()
+                .any(|cmd| cmd.contains("%0:pause") || cmd.contains("%116:pause")),
+            "attach 首屏期间后台 pane 丢字节不得再 pause: {cmds:?}"
+        );
+        assert!(!b.resyncs.contains_key(&PaneId(0)));
+        assert!(!b.resyncs.contains_key(&PaneId(116)));
+    }
+
+    #[test]
+    fn history_backfill_caps_ssh_chunk_not_configured_10000() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.set_scrollback_lines(10_000);
+        let pane = PaneId(4);
+        b.history_backfill_wanted.insert(pane);
+        b.history_backfill_hold = false;
+        b.flush_deferred_history_backfill();
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter()
+                .any(|cmd| cmd.contains("-S -256") && cmd.contains("-E -1")),
+            "单次历史必须封顶 256 行: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("-S -10000")),
+            "配置 10000 是容量，不能一次经 SSH 拉完: {cmds:?}"
+        );
+    }
+
+    #[test]
     fn output_dropped_resync_caps_capture_history() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
@@ -5642,6 +5860,124 @@ mod tests {
         cleanup(&socket);
         if timed.is_err() {
             panic!("attach_chatty_tui_does_not_gap_control_output 超时");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn attach_first_paint_beats_background_flood() {
+        let socket = unique_socket();
+        let run = async {
+            let created = std::process::Command::new("tmux")
+                .args([
+                    "-L",
+                    &socket,
+                    "new-session",
+                    "-d",
+                    "-s",
+                    "paint",
+                    "-n",
+                    "main",
+                    "-x",
+                    "80",
+                    "-y",
+                    "24",
+                    "sh",
+                    "-c",
+                    "printf 'FIRST_PAINT_OK\\n'; exec cat",
+                ])
+                .status();
+            if !created
+                .as_ref()
+                .is_ok_and(std::process::ExitStatus::success)
+            {
+                eprintln!("skip: 无法在隔离 socket 上创建 paint session");
+                return;
+            }
+            let _ = std::process::Command::new("tmux")
+                .args([
+                    "-L",
+                    &socket,
+                    "new-window",
+                    "-t",
+                    "paint",
+                    "-n",
+                    "flood",
+                    "sh",
+                    "-c",
+                    "i=0; while [ \"$i\" -lt 800 ]; do printf '\\033[H\\033[2Jflood-%s\\n' \"$i\"; i=$((i+1)); done; exec sleep 30",
+                ])
+                .status();
+            let _ = std::process::Command::new("tmux")
+                .args(["-L", &socket, "select-window", "-t", "paint:main"])
+                .status();
+            let wait_token = Instant::now() + Duration::from_secs(2);
+            loop {
+                let out = std::process::Command::new("tmux")
+                    .args(["-L", &socket, "capture-pane", "-p", "-t", "paint:main"])
+                    .output();
+                if out
+                    .as_ref()
+                    .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("FIRST_PAINT_OK"))
+                {
+                    break;
+                }
+                if Instant::now() >= wait_token {
+                    eprintln!("skip: 隔离 session 没有 FIRST_PAINT_OK");
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+
+            let mut b = TmuxRuntime::new_with_attach(Some(&socket), "paint");
+            let started = Instant::now();
+            if b.connect().await.is_err() {
+                return;
+            }
+            let panes: Vec<PaneId> = b.panes.iter().map(|pane| pane.id).collect();
+            for pane in panes {
+                let _ = b.execute(&crate::core::model::task::Task::ReportPaneColours {
+                    target: pane,
+                    fg: crate::core::config::Rgb(0, 0, 0),
+                    bg: crate::core::config::Rgb(255, 255, 255),
+                });
+            }
+            let paint_deadline = Duration::from_millis(1000);
+            let mut painted = false;
+            while started.elapsed() < paint_deadline {
+                painted = b.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        StateChange::PaneSnapshot { data, .. }
+                            if data.windows(b"FIRST_PAINT_OK".len()).any(|w| w == b"FIRST_PAINT_OK")
+                    )
+                }) || b.take_events().iter().any(|event| {
+                    matches!(
+                        event,
+                        StateChange::PaneSnapshot { data, .. }
+                            if data.windows(b"FIRST_PAINT_OK".len()).any(|w| w == b"FIRST_PAINT_OK")
+                    )
+                });
+                if painted {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(
+                painted,
+                "后台 flood + OSC 也必须在 1s 内种上活动 pane，不能空超时"
+            );
+            assert!(
+                started.elapsed() < paint_deadline,
+                "本机隔离 socket 首屏不得超过 1s，实际 {:?}",
+                started.elapsed()
+            );
+            assert!(b.resyncs.is_empty(), "首屏成功后不得还停在 pause/resync");
+            let _ = b.shutdown().await;
+        };
+        let timed = tokio::time::timeout(TMUX_TEST_TIMEOUT, run).await;
+        cleanup(&socket);
+        if timed.is_err() {
+            panic!("attach_first_paint_beats_background_flood 超时");
         }
     }
 
@@ -6395,6 +6731,15 @@ mod tests {
         assert!(
             connect.contains("status_subscription_supported = true"),
             "跳过 -V 之后仍要尝试 status 订阅"
+        );
+        assert!(
+            connect.contains("initial_seed_blocks_followup")
+                && connect.contains("flush_attach_followup_commands"),
+            "connect 必须把 list-sessions/-B 排到可见 capture 之后"
+        );
+        assert!(
+            !connect.contains("self.query_list_sessions();"),
+            "connect 不得在 seed 还在飞时无条件 list-sessions"
         );
     }
 
