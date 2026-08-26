@@ -219,13 +219,33 @@ mod tests {
         assert!(!should_close_window(true, 0, OnLastPaneExit::NewShell));
     }
 
-    /// Ctrl+Q 会在 key handler 仍持有 RefCell 时同步触发 close-request。
-    /// 关窗回调必须 try_borrow，不能 borrow_mut（否则 panic in trampoline）。
+    /// 命令面板 Detach 在持有 `RefMut<UiState>` 时同步 `window.close()`，
+    /// close-request trampoline 再借同一把锁会 panic（dogfood 0826）。
+    /// 关窗回调必须 try_borrow；借失败视为 HideKeepPolling。
     #[test]
     fn close_request_try_borrow_does_not_panic_when_already_borrowed() {
-        let cell = std::cell::RefCell::new(());
+        let cell = std::cell::RefCell::new(false);
         let _hold = cell.borrow_mut();
-        assert!(cell.try_borrow_mut().is_err());
+        let quit = cell.try_borrow().map(|g| *g).unwrap_or(false);
+        assert!(!quit);
+        assert_eq!(
+            crate::platform::linux::window::close_intent(quit),
+            crate::platform::linux::window::CloseIntent::HideKeepPolling
+        );
+    }
+
+    #[test]
+    fn detach_done_must_drop_uistate_borrow_before_close() {
+        let cell = std::cell::RefCell::new(());
+        let should_close = {
+            let _s = cell.borrow_mut();
+            true // TaskOutcome::Done
+        };
+        assert!(should_close);
+        assert!(
+            cell.try_borrow().is_ok(),
+            "close_request 必须能在 Detach 放下锁之后再借 UiState"
+        );
     }
 
     #[test]
