@@ -72,6 +72,9 @@ pub struct HerdrRuntime {
     /// 避免 snapshot rect（可能滞后）覆盖帧刚更新的尺寸、造成 VTE 反复
     /// resize 内容重排（matrix ctrl_l CLB 漂移根因之一）。
     frame_sizes: HashMap<PaneId, (u16, u16)>,
+    /// GTK 分配的 client viewport（ResizePane 写入）。Hello 用它，不用
+    /// snapshot 的 split-cell rect（76×12 会让 htop Observe 永远缩在小格子里）。
+    preferred_client_size: Option<(u16, u16)>,
     outputs: HashMap<PaneId, Vec<u8>>,
     agents: HashMap<PaneId, PaneAgentInfo>,
     status: BackendStatus,
@@ -133,6 +136,7 @@ impl HerdrRuntime {
             layouts: HashMap::new(),
             snapshot_active: HashMap::new(),
             frame_sizes: HashMap::new(),
+            preferred_client_size: None,
             outputs: HashMap::new(),
             agents: HashMap::new(),
             status: BackendStatus::Disconnected,
@@ -912,12 +916,7 @@ impl HerdrRuntime {
         }
         let generation = slot.generation;
         let target = slot.target.clone();
-        let (cols, rows) = self
-            .panes
-            .iter()
-            .find(|p| p.id == pane)
-            .map(|p| (p.cols, p.rows))
-            .unwrap_or((80, 24));
+        let (cols, rows) = self.hello_client_size(pane);
         let socket = self.session.client_socket_path().to_path_buf();
         let (Some(event_tx), Some(start_tx)) = (
             self.stream_tx.as_ref().cloned(),
@@ -1019,18 +1018,34 @@ impl HerdrRuntime {
         Ok(())
     }
 
-    /// resize 只发给 current control；Starting/Backoff 期间 latest-wins 暂存。
+    /// Hello / Observe viewport 尺寸：GTK preferred → pending_resize → 默认。
+    /// 绝不用 snapshot split-cell rect（否则 htop 会锁在 76×12）。
+    fn hello_client_size(&self, pane: PaneId) -> (u16, u16) {
+        if let Some(slot) = self.stream_slots.get(&pane) {
+            if let Some((cols, rows)) = slot.pending_resize {
+                return normalize_pane_size(cols, rows, None);
+            }
+        }
+        if let Some((cols, rows)) = self.preferred_client_size {
+            return normalize_pane_size(cols, rows, None);
+        }
+        (DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS)
+    }
+
+    /// resize 发给 current control（PTY）与 Observe（client viewport）。
+    /// Starting/Backoff 期间 latest-wins 暂存。
     fn resize_control_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
         let (cols, rows) = normalize_pane_size(cols, rows, None);
+        self.preferred_client_size = Some((cols, rows));
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
             return Err(anyhow!("pane {pane} 不存在"));
         };
         match (slot.state, slot.actual_mode) {
-            (SlotState::Live, Some(StreamMode::Control)) => {
+            (SlotState::Live, Some(StreamMode::Control | StreamMode::Observe)) => {
                 let stream = slot
                     .stream
                     .as_mut()
-                    .ok_or_else(|| anyhow!("pane {pane} control stream 缺失"))?;
+                    .ok_or_else(|| anyhow!("pane {pane} stream 缺失"))?;
                 stream.resize(cols, rows)
             }
             (SlotState::Starting | SlotState::Backoff, _) => {
@@ -1041,7 +1056,7 @@ impl HerdrRuntime {
                 let needs_reconcile = self.active_pane == Some(pane);
                 slot.pending_resize = Some((cols, rows));
                 if needs_reconcile {
-                    // active pane 需要 control 才能收 resize；无 intent 时
+                    // active pane 需要 control 才能收 PTY resize；无 intent 时
                     // open/activate 语义（takeover=false）启动即可。
                     // 先结束 slot 借用再 reconcile。
                     return self.resize_pending_then_reconcile(pane, cols, rows);
@@ -1115,9 +1130,17 @@ impl HerdrRuntime {
                         FrameDecision::Apply => {}
                     }
                     if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
+                        let prev = (p.cols, p.rows);
                         (p.cols, p.rows) =
                             normalize_pane_size(width, height, Some((p.cols, p.rows)));
                         self.frame_sizes.insert(pane, (p.cols, p.rows));
+                        if (p.cols, p.rows) != prev {
+                            self.events.push_back(StateChange::PaneResized {
+                                pane,
+                                cols: p.cols,
+                                rows: p.rows,
+                            });
+                        }
                     }
                     if full {
                         // 只有 attach 种子（seed_pending）存在时，本 generation
@@ -1361,33 +1384,37 @@ impl HerdrRuntime {
                     slot.stream = Some(stream);
                     slot.actual_mode = Some(mode);
                     slot.state = SlotState::Live;
-                    if mode.is_control() {
-                        // 握手成功后：先发 coalesced resize，再 flush input 恰好一次。
-                        let resize = slot.pending_resize.take();
+                    // Control：PTY SIGWINCH；Observe：client viewport。两者都要
+                    // flush pending_resize，否则 Hello 用默认尺寸后永远卡在小屏。
+                    let resize = slot.pending_resize.take();
+                    let inputs: Vec<Vec<u8>> = if mode.is_control() {
                         let inputs: Vec<Vec<u8>> = slot.pending_input.drain(..).collect();
                         slot.pending_input_bytes = 0;
-                        if let Some((cols, rows)) = resize {
-                            if let Some(stream) = slot.stream.as_mut() {
-                                if let Err(err) = stream.resize(cols, rows) {
-                                    tracing::warn!(
-                                        target = "muxterm::herdr",
-                                        pane = %pane,
-                                        error = %err,
-                                        "control handshake 后 resize 失败"
-                                    );
-                                }
+                        inputs
+                    } else {
+                        Vec::new()
+                    };
+                    if let Some((cols, rows)) = resize {
+                        if let Some(stream) = slot.stream.as_mut() {
+                            if let Err(err) = stream.resize(cols, rows) {
+                                tracing::warn!(
+                                    target = "muxterm::herdr",
+                                    pane = %pane,
+                                    error = %err,
+                                    "stream handshake 后 resize 失败"
+                                );
                             }
                         }
-                        for data in inputs {
-                            if let Some(stream) = slot.stream.as_mut() {
-                                if let Err(err) = stream.send_input(&data) {
-                                    tracing::warn!(
-                                        target = "muxterm::herdr",
-                                        pane = %pane,
-                                        error = %err,
-                                        "control handshake 后 input flush 失败"
-                                    );
-                                }
+                    }
+                    for data in inputs {
+                        if let Some(stream) = slot.stream.as_mut() {
+                            if let Err(err) = stream.send_input(&data) {
+                                tracing::warn!(
+                                    target = "muxterm::herdr",
+                                    pane = %pane,
+                                    error = %err,
+                                    "control handshake 后 input flush 失败"
+                                );
                             }
                         }
                     }
@@ -2947,6 +2974,151 @@ mod tests {
         assert_eq!(normalize_pane_size(0, 0, Some((132, 41))), (132, 41));
         assert_eq!(normalize_pane_size(54, 23, Some((132, 41))), (54, 23));
         assert_eq!(normalize_pane_size(0, 0, Some((0, 0))), (80, 24));
+    }
+
+    /// dogfood 0826：snapshot rect 76×12 不得变成 Hello；否则 htop Observe 锁死。
+    #[test]
+    fn hello_client_size_ignores_snapshot_split_rect() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        let pane = PaneId(5);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "htop".into(),
+            cols: 76,
+            rows: 12,
+        });
+        runtime.stream_slots.insert(
+            pane,
+            PaneStreamSlot::new(pane, "w2:p5", StreamMode::Observe),
+        );
+        assert_eq!(
+            runtime.hello_client_size(pane),
+            (DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS),
+            "无 GTK preferred 时 Hello 必须是默认 viewport，不是 split rect"
+        );
+        runtime.preferred_client_size = Some((132, 41));
+        assert_eq!(runtime.hello_client_size(pane), (132, 41));
+        if let Some(slot) = runtime.stream_slots.get_mut(&pane) {
+            slot.pending_resize = Some((140, 50));
+        }
+        assert_eq!(
+            runtime.hello_client_size(pane),
+            (140, 50),
+            "pending_resize 优先于 preferred"
+        );
+    }
+
+    /// 帧尺寸变化必须先发 PaneResized，再让 Surface 吃 PaneFrame。
+    #[test]
+    fn frame_size_change_emits_pane_resized_before_frame() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(5);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "htop".into(),
+            cols: 76,
+            rows: 12,
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        runtime.stream_tx = Some(tx);
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w2:p5", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        slot.surface_baseline = SurfaceBaseline::AwaitingFull;
+        runtime.stream_slots.insert(pane, slot);
+
+        runtime
+            .stream_tx
+            .as_ref()
+            .unwrap()
+            .send(PaneStreamEvent::Frame {
+                pane,
+                generation: 1,
+                event_ordinal: 1,
+                wire_seq: 1,
+                bytes: b"HTOP".to_vec(),
+                width: 132,
+                height: 41,
+                full: true,
+            })
+            .unwrap();
+        runtime.drain_stream();
+
+        let mut saw_resized = false;
+        let mut saw_frame_after = false;
+        for ev in &runtime.events {
+            match ev {
+                StateChange::PaneResized {
+                    pane: p,
+                    cols: 132,
+                    rows: 41,
+                } if *p == pane => {
+                    saw_resized = true;
+                }
+                StateChange::PaneFrame { pane: p, .. } if *p == pane => {
+                    assert!(saw_resized, "PaneResized 必须先于 PaneFrame");
+                    saw_frame_after = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_resized && saw_frame_after);
+        assert_eq!(
+            runtime
+                .panes
+                .iter()
+                .find(|p| p.id == pane)
+                .map(|p| (p.cols, p.rows)),
+            Some((132, 41))
+        );
+    }
+
+    #[test]
+    fn observe_live_resize_updates_preferred_client_size() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        let pane = PaneId(5);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "htop".into(),
+            cols: 76,
+            rows: 12,
+        });
+        let mut slot = PaneStreamSlot::new(pane, "w2:p5", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Starting;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
+
+        // Starting：latest-wins 暂存；不得因 snapshot 尺寸 early-return。
+        runtime
+            .resize_control_stream(pane, 132, 41)
+            .expect("observe starting resize");
+        assert_eq!(runtime.preferred_client_size, Some((132, 41)));
+        assert_eq!(
+            runtime
+                .stream_slots
+                .get(&pane)
+                .and_then(|s| s.pending_resize),
+            Some((132, 41))
+        );
     }
 
     #[test]

@@ -94,8 +94,11 @@ struct UiState {
     keymap: KeyMap,
     active_tab: u32,
     active_pane: u32,
-    /// 最近一次同步给后端/PTY 的字符格尺寸，避免 16ms 轮询重复 resize。
-    last_client_size: Option<(u16, u16)>,
+    /// 最近一次同步给后端/PTY 的尺寸。
+    /// - SharedClientResize（tmux）：`(None, cols, rows)` 整窗 client size
+    /// - 其它 Runtime（shell / Herdr）：`(Some(pane), cols, rows)` 按 pane 跳过，
+    ///   避免切 tab 后同像素尺寸被全局缓存吞掉 ResizePane（htop 0826）。
+    last_client_size: Option<(Option<u32>, u16, u16)>,
     tab_gate: TabSwitchGate,
     preferences: Preferences,
     on_last_pane_exit: OnLastPaneExit,
@@ -3158,16 +3161,20 @@ fn sync_window_size(s: &mut UiState) {
         let rows = (i64::from(term.height()) / ch).clamp(1, i64::from(u16::MAX)) as u16;
         (cols, rows)
     };
-    if s.last_client_size == Some((cols, rows)) {
-        return;
-    }
-    s.last_client_size = Some((cols, rows));
     if shared_client_resize {
+        if s.last_client_size == Some((None, cols, rows)) {
+            return;
+        }
+        s.last_client_size = Some((None, cols, rows));
         let _ = s
             .active_workspace_mut()
             .execute(Task::ResizeClient { cols, rows });
     } else {
         let pane = s.active_pane;
+        if s.last_client_size == Some((Some(pane), cols, rows)) {
+            return;
+        }
+        s.last_client_size = Some((Some(pane), cols, rows));
         let _ = s.active_workspace_mut().execute(Task::ResizePane {
             target: PaneId(pane),
             cols,
