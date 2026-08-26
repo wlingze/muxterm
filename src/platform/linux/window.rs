@@ -2083,7 +2083,7 @@ fn workspace_replica_id(id: &WorkspaceId) -> String {
     id.replica_id()
 }
 
-/// 批处理顺序计划：结构 →（frame/snapshot）→ output。
+/// 批处理顺序计划：结构 →（frame/snapshot/history）→ output。
 ///
 /// 纯函数（L0 可测）：tmux/Herdr 可在同一轮把 resize、snapshot 和 live
 /// output 一起送到 UI；按输入顺序直接喂会让 CUP/DECSTBM 仍按旧网格解释。
@@ -2109,7 +2109,9 @@ fn batch_order_plan(events: &[StateChange]) -> (Vec<usize>, Vec<usize>, Vec<usiz
     let mut output = Vec::new();
     for (i, ev) in events.iter().enumerate() {
         match ev {
-            StateChange::PaneSnapshot { .. } | StateChange::PaneFrame { .. } => baseline.push(i),
+            StateChange::PaneSnapshot { .. }
+            | StateChange::PaneFrame { .. }
+            | StateChange::PaneHistory { .. } => baseline.push(i),
             StateChange::PaneOutput { .. } => output.push(i),
             _ => structure.push(i),
         }
@@ -2207,6 +2209,12 @@ fn dispatch_event_for(
                     view.seed_snapshot(data, cols, rows);
                     forward_parser_replies_for(s, wid, pane.0);
                 }
+            }
+        }
+        StateChange::PaneHistory { pane, data } => {
+            if let Some(view) = resident_pane_view(s, wid, pane.0) {
+                sync_pane_grid_size_for(s, wid, pane.0);
+                view.prepend_history(data);
             }
         }
         StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
@@ -2477,6 +2485,12 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
                     view.seed_snapshot(data, cols, rows);
                     forward_parser_replies(s, pane.0);
                 }
+            }
+        }
+        StateChange::PaneHistory { pane, data } => {
+            if let Some(view) = s.active_layout().pane(pane.0).cloned() {
+                sync_pane_grid_size(s, pane.0);
+                view.prepend_history(data);
             }
         }
         StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
@@ -4832,7 +4846,8 @@ mod tests {
     }
 
     /// W4：同一批 PaneAdded + LayoutChanged + PaneResized + PaneFrame +
-    /// PaneOutput 时，顺序必须是结构 → frame → output（各阶段内部保持原序）。
+    /// PaneHistory + PaneOutput 时，顺序必须是结构 → baseline → output
+    ///（各阶段内部保持原序）。
     #[test]
     fn batch_order_plan_puts_structure_before_frames_before_output() {
         let ev = |kind: &str| match kind {
@@ -4861,6 +4876,10 @@ mod tests {
                 pane: PaneId(1),
                 data: b"S".to_vec(),
             },
+            "history" => StateChange::PaneHistory {
+                pane: PaneId(1),
+                data: b"H".to_vec(),
+            },
             "output" => StateChange::PaneOutput {
                 pane: PaneId(1),
                 data: b"O".to_vec(),
@@ -4877,6 +4896,7 @@ mod tests {
             "output",
             "resized",
             "snapshot",
+            "history",
             "output",
             "tab_added",
         ];
@@ -4896,7 +4916,8 @@ mod tests {
                 "resized",
                 "tab_added", // 结构
                 "frame",
-                "snapshot", // baseline
+                "snapshot",
+                "history", // baseline
                 "output",
                 "output", // diff
             ],
@@ -4904,7 +4925,7 @@ mod tests {
         );
 
         // 无结构事件：保持原始顺序（全部在 structure 列表，原序）。
-        let plain = ["frame", "output", "frame", "output"];
+        let plain = ["frame", "history", "output", "frame", "output"];
         let events2: Vec<StateChange> = plain.iter().map(|k| ev(k)).collect();
         let (s2, b2, o2) = batch_order_plan(&events2);
         assert!(b2.is_empty() && o2.is_empty(), "无结构事件不得重排");
