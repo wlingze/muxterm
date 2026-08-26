@@ -1,6 +1,6 @@
 //! tmux control-mode conformance scenarios that exercise the lossy edge cases
-//! covered by tmux's own control.c regressions: a stalled client, a pause, and
-//! an authoritative capture/resync boundary.
+//! covered by tmux's own control.c regressions: a stalled client, bounded pane
+//! output, and live recovery without recapturing an already-open Surface.
 
 mod support;
 
@@ -34,14 +34,14 @@ fn connected_model(socket: &str, session: &str) -> (TerminalModel, tokio::runtim
     runtime
         .block_on(model.connect())
         .expect("isolated tmux attach must connect");
-    // Consume the initial connecting/attach snapshot. The test below is only
-    // interested in the snapshot generated after the deliberate stall.
+    // Consume the initial connecting/attach snapshot. The test below verifies
+    // that the deliberate stall does not generate another snapshot.
     let _ = model.poll_events();
     (model, runtime)
 }
 
 #[test]
-fn stalled_control_client_resyncs_to_authoritative_last_frame() {
+fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
     if !tmux_available() {
         eprintln!("skip: tmux unavailable");
         return;
@@ -53,16 +53,15 @@ fn stalled_control_client_resyncs_to_authoritative_last_frame() {
     let (mut model, runtime) = connected_model(&socket, "resync");
 
     // Stop polling long enough to fill the bounded pane-output lane. The reader
-    // must keep parsing control boundaries, report an explicit gap, and recover
-    // with one authoritative snapshot rather than replaying a partial ESC/CUP
-    // frame. A large, fast burst makes this deterministic even when tmux
-    // coalesces many short frames into a small number of `%output` blocks.
+    // must keep parsing control boundaries, bound and coalesce pane data, then
+    // resume the open Surface with live bytes. A large, fast burst makes this
+    // deterministic even when tmux coalesces many short frames into a small
+    // number of `%output` blocks.
     let script = "for i in $(seq 1 5000); do printf \"\\033[H\\033[2Jframe-%s\\n\" \"$i\"; done; printf \"FLOOD_DONE\\n\"; exec /bin/cat";
     send_keys_line(&socket, &format!("%{pane}"), script);
     // Do not wait for the shell to finish before polling: the control reader
     // intentionally stalls here while tmux continues running; once the first
-    // poll drains the lane, the authoritative resync must retain the terminal's
-    // eventual last frame.
+    // poll drains the lane, live recovery must retain the eventual last frame.
     std::thread::sleep(Duration::from_secs(2));
 
     let deadline = Instant::now() + Duration::from_secs(6);
@@ -71,6 +70,7 @@ fn stalled_control_client_resyncs_to_authoritative_last_frame() {
     let mut total_events = 0usize;
     let mut total_outputs = 0usize;
     let mut total_output_bytes = 0usize;
+    let mut last_frame_seen_at = None;
     while Instant::now() < deadline {
         let events = model.refresh();
         total_events += events.len();
@@ -100,15 +100,22 @@ fn stalled_control_client_resyncs_to_authoritative_last_frame() {
                     .windows(b"FLOOD_DONE".len())
                     .any(|w| w == b"FLOOD_DONE")
             });
-        if snapshots > 0 && saw_last_frame {
-            break;
+        if saw_last_frame {
+            let seen_at = last_frame_seen_at.get_or_insert_with(Instant::now);
+            if seen_at.elapsed() >= Duration::from_millis(500) {
+                break;
+            }
         }
         std::thread::sleep(Duration::from_millis(25));
     }
 
+    assert_eq!(
+        snapshots, 0,
+        "an open attach Surface must not pause/recapture after output loss (events={total_events}, outputs={total_outputs}, bytes={total_output_bytes})"
+    );
     assert!(
-        snapshots >= 1,
-        "stalled client must emit a PaneSnapshot resync (events={total_events}, outputs={total_outputs}, bytes={total_output_bytes})"
+        (1..=400).contains(&total_outputs),
+        "the 5000-frame burst must stay coalesced and bounded (events={total_events}, outputs={total_outputs}, bytes={total_output_bytes})"
     );
     let tail = model
         .state()
@@ -119,11 +126,7 @@ fn stalled_control_client_resyncs_to_authoritative_last_frame() {
         .unwrap_or_default();
     assert!(
         saw_last_frame,
-        "resync snapshot must contain the last flood frame; tail={tail:?}"
-    );
-    assert!(
-        snapshots <= 2,
-        "one stall should not cause repeated snapshot loops"
+        "live recovery must contain the last flood frame; tail={tail:?}"
     );
     let _ = runtime.block_on(model.shutdown());
 }
