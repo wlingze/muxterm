@@ -699,11 +699,12 @@ impl AppWindow {
         }
 
         // 关闭窗口：非 Quit 动作隐藏并保持 16ms 轮询；Quit 才真正关闭。
+        // try_borrow：命令面板 Detach 可能仍握着 RefMut 时同步 close（dogfood 0826）。
         {
             let st = state.clone();
             let win = window.clone();
             window.connect_close_request(move |_| {
-                let quit = st.borrow().quit_requested;
+                let quit = st.try_borrow().map(|s| s.quit_requested).unwrap_or(false);
                 match close_intent(quit) {
                     CloseIntent::Quit => glib::Propagation::Proceed,
                     CloseIntent::HideKeepPolling => {
@@ -1602,10 +1603,16 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             });
         }
         PaletteAction::TmuxDetach => {
-            let mut s = state.borrow_mut();
-            let outcome = s.active_workspace_mut().execute(Task::Detach);
-            if matches!(outcome, Ok(crate::core::model::task::TaskOutcome::Done)) {
-                window.close();
+            // 必须先放下 RefMut 再 close：close-request 会再借同一把 UiState。
+            let should_quit = {
+                let mut s = state.borrow_mut();
+                matches!(
+                    s.active_workspace_mut().execute(Task::Detach),
+                    Ok(crate::core::model::task::TaskOutcome::Done)
+                )
+            };
+            if should_quit {
+                request_quit_close(state, window);
             }
         }
         PaletteAction::SshDisconnect => {
@@ -1643,8 +1650,7 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             reset_font(&mut s);
         }
         PaletteAction::Quit => {
-            state.borrow_mut().quit_requested = true;
-            window.close();
+            request_quit_close(state, window);
         }
         PaletteAction::NewTab => {
             let mut s = state.borrow_mut();
@@ -2858,6 +2864,12 @@ pub fn close_intent(is_quit_action: bool) -> CloseIntent {
     } else {
         CloseIntent::HideKeepPolling
     }
+}
+
+/// 标记 Quit 并关闭窗口。调用方不得在持有 `RefMut<UiState>` 时进入。
+fn request_quit_close(state: &Rc<RefCell<UiState>>, window: &Window) {
+    state.borrow_mut().quit_requested = true;
+    window.close();
 }
 
 /// 是否仍需要按时间轮询状态栏。
