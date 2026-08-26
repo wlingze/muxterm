@@ -179,6 +179,13 @@ impl PaneView {
         self.inner.seeded.get()
     }
 
+    /// VTE 已 realize 且有非零分配时才可 paint；否则 feed 会被丢弃却把
+    /// seeded 置位，后续 seed_raw 再也补不上（herdr 后台/隐藏 pane）。
+    pub fn can_paint_surface(&self) -> bool {
+        let w = self.widget();
+        w.is_realized() && w.width() > 0 && w.height() > 0
+    }
+
     /// tmux/SSH 镜像模式：解析器查询应答由 tmux `refresh-client -r` 代答。
     pub fn is_tmux_mirror(&self) -> bool {
         self.inner.is_tmux_mirror.get()
@@ -264,6 +271,7 @@ impl PaneView {
     /// 尚未播种时先排队；后到的 Snapshot reset 后按 generation 重放。
     ///
     /// alternate screen（TUI）上禁止 ESC[2J 回放：会清掉当前 Cursor/htop 屏。
+    /// 布局未就绪时只入队不 flush，等 seed / can_paint 后再回放。
     pub fn prepend_history(&self, data: &[u8]) {
         if data.is_empty() {
             return;
@@ -281,7 +289,7 @@ impl PaneView {
             }
             batches.push(data.to_vec());
         }
-        if !self.inner.seeded.get() {
+        if !self.inner.seeded.get() || !self.can_paint_surface() {
             return;
         }
         flush_unapplied_history(&self.inner);
@@ -296,6 +304,13 @@ impl PaneView {
     pub fn begin_attach_generation(&self) {
         self.inner.history_batches.borrow_mut().clear();
         self.inner.history_applied.set(0);
+    }
+
+    /// 布局变为可 paint 后补放暂存历史（seeded 后 width 才 >0 的情形）。
+    pub fn flush_deferred_history(&self) {
+        if self.can_paint_surface() && self.inner.seeded.get() {
+            flush_unapplied_history(&self.inner);
+        }
     }
 
     /// 调度合并 flush（25ms 窗口）。
@@ -370,8 +385,8 @@ impl PaneView {
             anchor_snapshot_cursor(&self.inner, data);
         }
         self.inner.seeded.set(true);
-        // 历史先于 seed 到达（或上一轮 seed 时有未应用批次）时补放。
         flush_unapplied_history(&self.inner);
+        self.flush_deferred_history();
     }
 
     /// attach 快照播种：不 reset、不 dump，直接把 capture-pane 原始字节
@@ -410,6 +425,7 @@ impl PaneView {
         }
         self.inner.render_trace.borrow_mut().seeds += 1;
         self.inner.seeded.set(true);
+        self.flush_deferred_history();
     }
 
     /// 渲染痕迹（测试断言不刷屏）。
