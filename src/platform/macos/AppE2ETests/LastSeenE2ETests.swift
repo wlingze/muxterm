@@ -43,9 +43,11 @@ final class LastSeenE2ETests: XCTestCase {
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
                 app.testFlushFeeds()
-                return app.testActiveTabID() == secondTab
+                return app.testSearchAll(leftHere).contains { hit in
+                    hit.paneId == firstPaneID && hit.line.contains(leftHere)
+                }
             },
-            "离开旧 tab 时仍必须消费旧 pane 的 live 输出"
+            "离开旧 tab 时 Core Index 仍必须消费旧 pane 的 live 输出"
         )
 
         app.testSwitchTab(firstTab)
