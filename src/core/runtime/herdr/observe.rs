@@ -160,6 +160,8 @@ impl ObserveStream {
             }
             other => bail!("Herdr 握手响应不是 Welcome: {other:?}"),
         }
+        // Welcome 之后去掉握手超时：空闲 Observe 不应每 30s 假死（dogfood 帧长度失败）。
+        stream.set_read_timeout(None).context("清除流读超时失败")?;
 
         let message = match mode {
             StreamMode::Observe => ClientMessage::ObserveTerminal {
