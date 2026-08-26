@@ -584,8 +584,10 @@ impl TerminalState {
 
     /// OSC 注意力收集器（LINUX-PLAN §0.4）。
     ///
-    /// 只认 `ESC ] ... BEL|ST` 的 OSC 帧：133 的 A/B/C/D/P 与
-    /// 9/99/777/1337 通知类产生信号，其余原样留给 vte 处理。
+    /// 只认 `ESC ] ... BEL|ST` 的 OSC 帧：133 的 C/D 产生命令状态信号，
+    /// 9/99/777/1337 的有效通知形式产生注意力信号；OSC 9;4 进度帧、
+    /// 133 的 prompt 边界以及 1337 的其它 iTerm2 扩展不产生通知，
+    /// 其余原样留给 vte 处理。
     /// 返回 true 表示该字节终止了一条 OSC（BEL/ST），调用方不要把它当命令文本。
     fn scan_attention_byte(&mut self, b: u8) -> bool {
         if self.osc_pending.is_some() {
@@ -690,18 +692,55 @@ impl TerminalState {
                             }
                         }
                     }
-                    Some(b'A' | b'P') => {
-                        // prompt start：Working 尚未收到 D → 视为结束（无退出码）。
-                        self.signals
-                            .push(AttentionSignal::CommandDone { exit_code: None });
-                    }
+                    // A/B 是 prompt 边界，P 是属性，不是命令完成信号。
+                    // 命令完成只接受 D；否则普通 prompt 刷新会把运行中的
+                    // agent 错误地标成 Done。
+                    Some(b'A' | b'P') => {}
                     _ => {}
                 }
             }
-            b"9" | b"99" | b"777" | b"1337" => {
+            b"9" => {
+                // OSC 9;4;<state> 是进度协议（pi 等 TUI 会周期性发送），
+                // 不能当成一次新的“需要关注”通知，否则运行中的 agent
+                // 会每秒被加入消息列表。
+                if params.get(1).is_some_and(|param| *param == b"4") {
+                    return;
+                }
                 self.signals.push(AttentionSignal::AttentionRequest {
                     source: AttentionSource::OscNotify,
                 });
+            }
+            b"99" => {
+                // Kitty OSC 99 的合法格式是 `99;metadata;payload`。
+                if params.len() >= 3 {
+                    self.signals.push(AttentionSignal::AttentionRequest {
+                        source: AttentionSource::OscNotify,
+                    });
+                }
+            }
+            b"777" => {
+                // rxvt/WezTerm 约定只有 `777;notify;...` 是通知；其它
+                // 777 扩展不能污染 attention。
+                if params.get(1).is_some_and(|param| *param == b"notify") {
+                    self.signals.push(AttentionSignal::AttentionRequest {
+                        source: AttentionSource::OscNotify,
+                    });
+                }
+            }
+            b"1337" => {
+                // iTerm2 的 1337 命名空间还包含 SetUserVar、CurrentDir、
+                // SetMark、File 等大量非通知序列；只有 RequestAttention
+                // 的 yes/once/fireworks 值才表示需要关注，no 是取消请求。
+                let is_request = params.get(1).is_some_and(|param| {
+                    *param == b"RequestAttention=yes"
+                        || *param == b"RequestAttention=once"
+                        || *param == b"RequestAttention=fireworks"
+                });
+                if is_request {
+                    self.signals.push(AttentionSignal::AttentionRequest {
+                        source: AttentionSource::OscNotify,
+                    });
+                }
             }
             _ => {}
         }
@@ -2927,17 +2966,11 @@ mod attention_signal_tests {
     }
 
     #[test]
-    fn osc133_a_and_p_treated_as_done() {
+    fn osc133_a_and_p_are_not_completion_signals() {
         let mut t = TerminalState::new(80, 24);
         t.feed(b"\x1b]133;A;aid=1\x07");
         t.feed(b"\x1b]133;P\x07");
-        assert_eq!(
-            t.take_attention_signals(),
-            vec![
-                AttentionSignal::CommandDone { exit_code: None },
-                AttentionSignal::CommandDone { exit_code: None },
-            ]
-        );
+        assert!(t.take_attention_signals().is_empty());
     }
 
     #[test]
@@ -2974,6 +3007,53 @@ mod attention_signal_tests {
                     source: AttentionSource::OscNotify
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn osc99_valid_notification_emits_osc_notify() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]99;;hello\x1b\\");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![AttentionSignal::AttentionRequest {
+                source: AttentionSource::OscNotify
+            }]
+        );
+    }
+
+    #[test]
+    fn non_notification_osc_extensions_are_ignored() {
+        let mut t = TerminalState::new(80, 24);
+        // OSC 777 的非 notify 子命令。
+        t.feed(b"\x1b]777;other;x;y\x07");
+        // iTerm2 1337 的普通状态/标记扩展。
+        t.feed(b"\x1b]1337;CurrentDir=/tmp\x07");
+        t.feed(b"\x1b]1337;SetUserVar=name=value\x07");
+        t.feed(b"\x1b]1337;RequestAttention=no\x07");
+        assert!(t.take_attention_signals().is_empty());
+    }
+
+    #[test]
+    fn iterm_request_attention_emits_osc_notify() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]1337;RequestAttention=once\x07");
+        assert_eq!(
+            t.take_attention_signals(),
+            vec![AttentionSignal::AttentionRequest {
+                source: AttentionSource::OscNotify
+            }]
+        );
+    }
+
+    #[test]
+    fn osc9_progress_does_not_emit_osc_notify() {
+        let mut t = TerminalState::new(80, 24);
+        // OSC 9;4;<state> 是进度状态，不是“需要用户关注”的通知。
+        t.feed(b"\x1b]9;4;3\x07");
+        assert!(
+            t.take_attention_signals().is_empty(),
+            "OSC 9;4 进度帧不能触发消息通知"
         );
     }
 
