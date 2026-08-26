@@ -259,9 +259,6 @@ pub struct TmuxRuntime {
     /// 仅 attach `connect()` 期间为 true：强制等 UI 尺寸再 seed。
     /// 单测直接 `query_capture_pane` 不走这条门。
     awaiting_ui_client_size: bool,
-    /// ResizeClient 之后下一轮 list-panes 的 size_changed 才允许重抓已 seed
-    /// 的 pane。split 导致的尺寸变化不得再 pause 已打开的 Surface。
-    recapture_on_next_size_change: bool,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
     /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
@@ -639,7 +636,6 @@ impl TmuxRuntime {
             surface_seed_locked: HashSet::new(),
             deferred_attach_seeds: HashSet::new(),
             awaiting_ui_client_size: false,
-            recapture_on_next_size_change: false,
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
@@ -1173,6 +1169,7 @@ impl TmuxRuntime {
                 deadline: Some(Instant::now() + timeout),
                 initial,
                 pause_client,
+                pre_capture: self.initial_capture_buf.remove(&pane).unwrap_or_default(),
                 ..PaneResync::default()
             },
         );
@@ -1562,6 +1559,20 @@ impl TmuxRuntime {
                                 target: "muxterm::tmux",
                                 pane = pane.0,
                                 "attach 未 capture 的 pane 输出已进入索引"
+                            );
+                        } else if self.awaiting_ui_client_size
+                            || self.deferred_attach_seeds.contains(&pane)
+                        {
+                            // 等 GTK 尺寸期间：暂存到 buf，seed 开始时迁入
+                            // pre_capture（失败 fallback）。成功 snapshot 仍以
+                            // capture 为准，不把这些字节拼进 live（会与网格重复）。
+                            let buf = self.initial_capture_buf.entry(pane).or_default();
+                            append_capped(buf, &content, MAX_PANE_OUTPUT_BYTES);
+                            tracing::trace!(
+                                target: "muxterm::tmux",
+                                pane = pane.0,
+                                len = content.len(),
+                                "延后 attach seed，暂存活动 pane %output"
                             );
                         } else {
                             tracing::trace!(
@@ -2191,6 +2202,8 @@ impl TmuxRuntime {
         let alternate = resync.alternate.unwrap_or_default();
         let initial = resync.initial;
         let pause_client = resync.pause_client;
+        // initial：只拼 capture 开始后的 live。pre_capture / 延后暂存可能已
+        // 被网格覆盖，拼进去会与 snapshot 重复（乱屏）。abort 才用 pre_capture。
         let live = if initial {
             resync.post_capture
         } else {
@@ -2214,14 +2227,10 @@ impl TmuxRuntime {
             self.initial_capture_done.insert(pane);
             self.background_capture_only.remove(&pane);
         }
-        // snapshot 入队后再决定 continue：primary 屏要先抓历史（仍 pause），
-        // 否则 continue 后的 live 会与 history 重叠，VTE 回放 ESC[2J 往上刷。
-        // 持 pause 期间保留 paused_panes，避免 %pause 回声误发 continue。
-        // mouse TUI（Cursor primary）与 alternate 一样跳过历史。
-        let hold_pause_for_history = initial && !skip_history && pause_client;
-        if !hold_pause_for_history {
-            self.paused_panes.remove(&pane);
-        }
+        // iTerm2/cmux：pause→capture→continue 同一队列；continue 不得依赖历史。
+        // 持 pause 等 -S 会在 Cursor 上永久卡住（dogfood 2304：%1 pause×2 无 continue）。
+        // 历史在 continue 之后异步补，且 skip_history（alt/mouse TUI）根本不抓。
+        self.paused_panes.remove(&pane);
         // An empty screen is still authoritative: emit a zero-byte snapshot so
         // every frontend clears its previous VT instead of retaining stale text.
         self.outputs.insert(pane, snapshot.clone());
@@ -2239,26 +2248,11 @@ impl TmuxRuntime {
         if let Some(receiver) = self.event_rx.as_mut() {
             receiver.resume_output_pane(pane);
         }
-        if hold_pause_for_history {
-            self.history_holds_pause.insert(pane);
+        if pause_client {
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        }
+        if initial && !skip_history {
             self.schedule_pane_history_backfill(pane);
-            self.history_backfill_hold = false;
-            self.flush_deferred_history_backfill();
-            if !self.history_backfill_pending.contains(&pane)
-                && !self.history_backfill_wanted.contains(&pane)
-            {
-                // 未能发出历史查询：立刻恢复输出。
-                self.history_holds_pause.remove(&pane);
-                self.paused_panes.remove(&pane);
-                let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
-            }
-        } else {
-            if pause_client {
-                let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
-            }
-            if initial && !skip_history {
-                self.schedule_pane_history_backfill(pane);
-            }
         }
         self.release_attach_followup_if_ready();
     }
@@ -2507,30 +2501,9 @@ impl TmuxRuntime {
         for pane in size_changed {
             if self.resyncs.contains_key(&pane) {
                 self.restart_snapshot_after_resize(pane);
-            } else if self.recapture_on_next_size_change
-                && self.is_attach_mode()
-                && self.initial_capture_done.contains(&pane)
-                && self
-                    .pane_tab(pane)
-                    .is_some_and(|tab| self.tab_is_active(tab))
-            {
-                // ResizeClient 后 pane 网格变了：旧 seed（常为远端尺寸）作废。
-                tracing::info!(
-                    target: "muxterm::tmux::seed",
-                    pane = pane.0,
-                    "recapture after client resize invalidated attach seed"
-                );
-                self.initial_capture_done.remove(&pane);
-                self.surface_seed_locked.remove(&pane);
-                self.history_backfill_done.insert(pane);
-                self.alternate_screen_panes.remove(&pane);
-                self.begin_initial_pane_seed(pane);
             }
         }
-        if self.recapture_on_next_size_change {
-            self.recapture_on_next_size_change = false;
-        }
-        // GTK ResizeClient 之后：pane 网格已是本地尺寸，放出延后的 attach seed。
+        // GTK ResizeClient 之后：放出延后的 attach seed（若尚未放出）。
         if !self.awaiting_ui_client_size && !self.deferred_attach_seeds.is_empty() {
             self.flush_deferred_attach_seeds();
         }
@@ -2810,8 +2783,18 @@ impl TmuxRuntime {
     /// inactive tab 的响应挤占控制流。切入时不再升级为 pause seed。
     fn query_capture_pane_visible(&mut self, pane: PaneId) {
         if !self.is_attach_mode()
+            || self.deferred_attach_seeds.contains(&pane)
+            || self.resyncs.contains_key(&pane)
             || self.pending_queries.iter().any(|query| {
-                matches!(query, PendingQuery::CapturePane { pane: pending } if *pending == pane)
+                matches!(
+                    query,
+                    PendingQuery::CapturePane { pane: pending }
+                        | PendingQuery::PaneResyncState {
+                            pane: pending, ..
+                        }
+                        | PendingQuery::PaneResyncCapture { pane: pending, .. }
+                        if *pending == pane
+                )
             })
             || self.initial_capture_done.contains(&pane)
         {
@@ -3641,8 +3624,8 @@ impl Runtime for TmuxRuntime {
                         reason: "发送 client resize 命令失败".into(),
                     });
                 }
-                // 下一轮 list-panes size_changed 才重抓；立刻放出延后 seed。
-                self.recapture_on_next_size_change = true;
+                // cmux：-C 只做 SIGWINCH，不因 resize 再 pause+capture（否则
+                // Cursor 会卡在 pause 且永不 continue，dogfood 2304）。
                 self.flush_deferred_attach_seeds();
                 TaskOutcome::Done
             }
@@ -5815,7 +5798,8 @@ mod tests {
     }
 
     #[test]
-    fn finish_initial_seed_captures_history_before_continue() {
+    fn finish_initial_seed_continues_before_history_backfill() {
+        // cmux/iTerm2：continue 与 pause 同队列；不得持 pause 等 -S（Cursor 会死锁）。
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         b.cmd_tx = Some(tx);
@@ -5834,36 +5818,55 @@ mod tests {
         b.finish_pane_resync(pane);
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            !cmds.iter().any(|cmd| cmd.contains("%4:continue")),
-            "primary 屏必须先抓历史再 continue，否则 live 与 history 重叠: {cmds:?}"
+            cmds.iter().any(|cmd| cmd.contains("%4:continue")),
+            "seed 完成必须立刻 continue: {cmds:?}"
         );
         assert!(
-            cmds.iter()
-                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
-            "仍 pause 时就按行抓历史: {cmds:?}"
+            !b.paused_panes.contains(&pane),
+            "continue 后不得仍标 paused"
         );
-        assert!(b.history_holds_pause.contains(&pane));
-        assert!(b.history_backfill_pending.contains(&pane));
         assert!(
-            b.paused_panes.contains(&pane),
-            "抓历史期间必须保持 paused，避免 %pause 误 continue"
+            b.history_backfill_wanted.contains(&pane) || b.history_backfill_pending.contains(&pane),
+            "primary shell 仍应排队历史（unpaused）"
         );
-        b.finish_pane_history_backfill(pane, vec!["old".into()]);
-        let after = drain_tmux_cmds(&mut rx);
-        assert!(
-            after.iter().any(|cmd| cmd.contains("%4:continue")),
-            "历史完成后才 continue: {after:?}"
-        );
-        assert!(!b.history_holds_pause.contains(&pane));
-        assert!(!b.paused_panes.contains(&pane));
         assert!(b
             .events
             .iter()
             .any(|event| matches!(event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane)));
-        assert!(b
-            .events
-            .iter()
-            .any(|event| matches!(event, StateChange::PaneHistory { pane: p, .. } if *p == pane)));
+    }
+
+    #[test]
+    fn resize_client_does_not_arm_recapture() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        b.awaiting_ui_client_size = true;
+        b.deferred_attach_seeds.insert(PaneId(1));
+        b.panes.push(PaneInfo {
+            id: PaneId(1),
+            tab: TabId(1),
+            active: true,
+            title: "cursor".into(),
+            cols: 142,
+            rows: 67,
+        });
+        let outcome = b
+            .execute(&crate::core::model::task::Task::ResizeClient {
+                cols: 142,
+                rows: 67,
+            })
+            .expect("resize");
+        assert!(matches!(outcome, TaskOutcome::Done));
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter()
+                .any(|cmd| cmd.contains("refresh-client -C 142x67")),
+            "必须 -C: {cmds:?}"
+        );
+        // 放出 deferred seed → 一次 pause，不得因 -C 再武装第二轮 pause。
+        let pause_count = cmds.iter().filter(|cmd| cmd.contains("%1:pause")).count();
+        assert_eq!(pause_count, 1, "只 pause 一次: {cmds:?}");
     }
 
     #[test]
