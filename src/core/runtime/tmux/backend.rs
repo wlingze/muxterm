@@ -177,6 +177,10 @@ pub struct TmuxRuntime {
     outputs: HashMap<PaneId, Vec<u8>>,
     /// attach 初始 capture 的历史行数（W16a：`capture-pane -S -N`）。
     scrollback_lines: u32,
+    /// UI 是否调用过 `set_client_size`。默认 80×24 只是占位，attach 时
+    /// 不得拿它 `refresh-client -C`（会把共享 session 缩小，再与另一
+    /// attach 互抢尺寸，dogfood 2030 往上刷）。
+    client_size_from_ui: bool,
 
     status: BackendStatus,
     events: VecDeque<StateChange>,
@@ -240,6 +244,9 @@ pub struct TmuxRuntime {
     history_backfill_wanted: HashSet<PaneId>,
     /// 本轮 pump 里刚切了 tab / 刚种完可见屏。历史放到下一轮 poll。
     history_backfill_hold: bool,
+    /// 初始 seed 仍 pause：等历史回填完成再 continue，避免 live 与
+    /// history 重叠后 VTE ESC[2J 回放造成往上刷（dogfood 2030）。
+    history_holds_pause: HashSet<PaneId>,
     /// 被 `%pause` 暂停输出的 pane（`%continue` 恢复；供背压/诊断）。
     paused_panes: HashSet<PaneId>,
     /// 每个 pane 的输出速率窗口（洪峰 pause / 合并）。
@@ -576,6 +583,7 @@ impl TmuxRuntime {
             layouts: HashMap::new(),
             outputs: HashMap::new(),
             scrollback_lines: 10_000,
+            client_size_from_ui: false,
             status: BackendStatus::Disconnected,
             events: VecDeque::new(),
             response_accum: HashMap::new(),
@@ -598,6 +606,7 @@ impl TmuxRuntime {
             history_backfill_pending: HashSet::new(),
             history_backfill_wanted: HashSet::new(),
             history_backfill_hold: false,
+            history_holds_pause: HashSet::new(),
             paused_panes: HashSet::new(),
             flow: HashMap::new(),
             resyncs: HashMap::new(),
@@ -717,6 +726,7 @@ impl TmuxRuntime {
         if cols >= 2 && rows >= 1 {
             self.config.cols = Some(u32::from(cols));
             self.config.rows = Some(u32::from(rows));
+            self.client_size_from_ui = true;
         }
     }
 
@@ -1733,6 +1743,10 @@ impl TmuxRuntime {
                         // 我们自己发的 pause 回声，不要再开一轮 resync。
                         return;
                     }
+                    if self.history_holds_pause.contains(&pane) {
+                        // 仍在抓历史：保持 pause，不得 continue。
+                        return;
+                    }
                     // 已经有权威 Surface 时，%pause 只恢复输出，不得再
                     // pause→capture→VTE reset（Cursor agent / dogfood 0826 乱码风暴）。
                     if self.initial_capture_done.contains(&pane) {
@@ -2150,7 +2164,13 @@ impl TmuxRuntime {
             self.initial_capture_done.insert(pane);
             self.background_capture_only.remove(&pane);
         }
-        self.paused_panes.remove(&pane);
+        // snapshot 入队后再决定 continue：primary 屏要先抓历史（仍 pause），
+        // 否则 continue 后的 live 会与 history 重叠，VTE 回放 ESC[2J 往上刷。
+        // 持 pause 期间保留 paused_panes，避免 %pause 回声误发 continue。
+        let hold_pause_for_history = initial && !alternate_on && pause_client;
+        if !hold_pause_for_history {
+            self.paused_panes.remove(&pane);
+        }
         // An empty screen is still authoritative: emit a zero-byte snapshot so
         // every frontend clears its previous VT instead of retaining stale text.
         self.outputs.insert(pane, snapshot.clone());
@@ -2165,14 +2185,26 @@ impl TmuxRuntime {
         if let Some(receiver) = self.event_rx.as_mut() {
             receiver.resume_output_pane(pane);
         }
-        // snapshot 入队后再 continue；其后的 tmux 输出会形成下一批增量。
-        if pause_client {
-            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
-        }
-        // alternate screen TUI（Cursor agent / htop）：历史回填会 ESC[2J 当前屏，
-        // 且 alt hsize==0 时 -S 只会抓到可见行 0，必须跳过。
-        if initial && !alternate_on {
+        if hold_pause_for_history {
+            self.history_holds_pause.insert(pane);
             self.schedule_pane_history_backfill(pane);
+            self.history_backfill_hold = false;
+            self.flush_deferred_history_backfill();
+            if !self.history_backfill_pending.contains(&pane)
+                && !self.history_backfill_wanted.contains(&pane)
+            {
+                // 未能发出历史查询：立刻恢复输出。
+                self.history_holds_pause.remove(&pane);
+                self.paused_panes.remove(&pane);
+                let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+            }
+        } else {
+            if pause_client {
+                let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+            }
+            if initial && !alternate_on {
+                self.schedule_pane_history_backfill(pane);
+            }
         }
         self.release_attach_followup_if_ready();
     }
@@ -2268,6 +2300,10 @@ impl TmuxRuntime {
                         number,
                         "pane history backfill failed"
                     );
+                    if self.history_holds_pause.remove(&pane) {
+                        self.paused_panes.remove(&pane);
+                        let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+                    }
                 }
                 other => {
                     tracing::warn!(
@@ -2804,12 +2840,15 @@ impl TmuxRuntime {
         self.history_backfill_pending.remove(&pane);
         self.history_backfill_done.insert(pane);
         let data = super::pane_history::PaneHistoryPolicy::encode(&lines);
-        if data.is_empty() {
-            return;
+        if !data.is_empty() {
+            self.events
+                .push_back(StateChange::PaneHistory { pane, data });
+            self.trim_event_queue();
         }
-        self.events
-            .push_back(StateChange::PaneHistory { pane, data });
-        self.trim_event_queue();
+        if self.history_holds_pause.remove(&pane) {
+            self.paused_panes.remove(&pane);
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        }
     }
 
     /// 发送 list-sessions 查询（列出 tmux server 上所有 session）。
@@ -2927,10 +2966,17 @@ impl TmuxRuntime {
         false
     }
 
-    /// attach 的控制 client 默认可能先以 80x24 建立。先把已知的窗口尺寸
-    /// 写入 client，再发 list-windows/list-panes/capture，避免 TUI 首屏按旧
-    /// 网格换行，随后 resize 时输入框被遮住或错位。
+    /// attach 的控制 client 默认可能先以 80x24 建立。仅当 UI 已经写入真实
+    /// 视口时才提前 `refresh-client -C`；占位 80x24 会先缩共享 session，
+    /// 再与另一 attach 的真实尺寸互抢（dogfood 2030）。
     fn refresh_initial_client_size(&mut self) {
+        if !self.client_size_from_ui {
+            tracing::debug!(
+                target: "muxterm::tmux::seed",
+                "attach 跳过占位 80x24 首屏 resize，等 GTK 分配后再 refresh-client -C"
+            );
+            return;
+        }
         let (Some(cols), Some(rows)) = (self.config.cols, self.config.rows) else {
             return;
         };
@@ -5667,7 +5713,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_initial_seed_queues_history_after_continue() {
+    fn finish_initial_seed_captures_history_before_continue() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         b.cmd_tx = Some(tx);
@@ -5686,31 +5732,56 @@ mod tests {
         b.finish_pane_resync(pane);
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            cmds.iter().any(|cmd| cmd.contains("%4:continue")),
-            "seed 完成后必须 continue: {cmds:?}"
+            !cmds.iter().any(|cmd| cmd.contains("%4:continue")),
+            "primary 屏必须先抓历史再 continue，否则 live 与 history 重叠: {cmds:?}"
         );
         assert!(
-            !cmds.iter().any(|cmd| cmd.contains("-S -")),
-            "continue 当拍不得抓历史，否则首屏要等 1 万行: {cmds:?}"
-        );
-        assert!(b.history_backfill_wanted.contains(&pane));
-        b.history_backfill_hold = false;
-        b.flush_deferred_history_backfill();
-        let history = drain_tmux_cmds(&mut rx);
-        assert!(
-            history
-                .iter()
+            cmds.iter()
                 .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
-            "空闲后才按行抓历史: {history:?}"
+            "仍 pause 时就按行抓历史: {cmds:?}"
         );
+        assert!(b.history_holds_pause.contains(&pane));
+        assert!(b.history_backfill_pending.contains(&pane));
         assert!(
-            !history.iter().any(|cmd| cmd.contains(":pause")),
-            "历史回填不得再 pause: {history:?}"
+            b.paused_panes.contains(&pane),
+            "抓历史期间必须保持 paused，避免 %pause 误 continue"
         );
+        b.finish_pane_history_backfill(pane, vec!["old".into()]);
+        let after = drain_tmux_cmds(&mut rx);
+        assert!(
+            after.iter().any(|cmd| cmd.contains("%4:continue")),
+            "历史完成后才 continue: {after:?}"
+        );
+        assert!(!b.history_holds_pause.contains(&pane));
+        assert!(!b.paused_panes.contains(&pane));
         assert!(b
             .events
             .iter()
             .any(|event| matches!(event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane)));
+        assert!(b
+            .events
+            .iter()
+            .any(|event| matches!(event, StateChange::PaneHistory { pane: p, .. } if *p == pane)));
+    }
+
+    #[test]
+    fn attach_skips_placeholder_80x24_client_resize() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.refresh_initial_client_size();
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("refresh-client -C")),
+            "未经 UI set_client_size 不得用占位 80x24 缩共享 session: {cmds:?}"
+        );
+        b.set_client_size(142, 67);
+        b.refresh_initial_client_size();
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("refresh-client -C 142x67")),
+            "UI 写入真实尺寸后才同步: {cmds:?}"
+        );
     }
 
     #[test]
@@ -5753,11 +5824,20 @@ mod tests {
         );
         b.paused_panes.insert(pane);
         b.finish_pane_resync(pane);
-        let _ = drain_tmux_cmds(&mut rx);
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("%120:continue")),
+            "alt-screen 不得等历史，直接 continue: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("-S -")),
+            "alternate screen TUI 不得抓历史: {cmds:?}"
+        );
         assert!(
             !b.history_backfill_wanted.contains(&pane),
             "alternate screen TUI 不得排队历史回填，否则 ESC[2J 会毁掉当前屏"
         );
+        assert!(!b.history_holds_pause.contains(&pane));
         assert!(b.initial_capture_done.contains(&pane));
     }
 
