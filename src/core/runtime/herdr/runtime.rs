@@ -607,6 +607,44 @@ impl HerdrRuntime {
             }
         }
 
+        // Incomplete layout.updated（dogfood 2105：已知 2 pane 却只带 1 个）
+        // 不得把 SV:… 塌成 Leaf，否则 GTK unparent VTE 并反复 rebuild。
+        // 真正关 pane 时 self.panes 会先少掉，不会走进这里。
+        if let Some(existing) = self.layouts.get(&tab).cloned() {
+            let known_tab_panes: HashSet<PaneId> = self
+                .panes
+                .iter()
+                .filter(|pane| pane.tab == tab)
+                .map(|pane| pane.id)
+                .collect();
+            let incoming_leaves: HashSet<PaneId> = leaves.iter().copied().collect();
+            let existing_leaves: HashSet<PaneId> = existing.tree.leaves().into_iter().collect();
+            if known_tab_panes.len() > incoming_leaves.len()
+                && incoming_leaves.is_subset(&known_tab_panes)
+                && existing_leaves.is_superset(&known_tab_panes)
+            {
+                let active = self
+                    .herdr_pane_to_pane
+                    .get(&layout.focused_pane_id)
+                    .copied()
+                    .filter(|pane| existing.tree.contains(*pane))
+                    .unwrap_or(existing.active);
+                if !emit_event {
+                    self.snapshot_active.insert(tab, active);
+                }
+                let product_layout = TabLayout { active, ..existing };
+                self.layouts.insert(tab, product_layout.clone());
+                self.resync_active_from_layout(tab, active, emit_event);
+                if emit_event {
+                    self.events.push_back(StateChange::LayoutChanged {
+                        tab,
+                        layout: product_layout,
+                    });
+                }
+                return true;
+            }
+        }
+
         let tree = match layout_tree_from_record(layout, &self.herdr_pane_to_pane) {
             Some(tree) => tree,
             None => {
@@ -793,7 +831,12 @@ impl HerdrRuntime {
     ///
     /// GTK preferred 未到前一律 Observe：Control Hello 默认 80×24 会对长期
     /// 运行的 htop 发 SIGWINCH，把 PTY 锁死在小屏（dogfood 2030 单 pane）。
+    /// mutation expected_focus 也必须等 preferred，否则 split/NewTab 立刻
+    /// Control→Observe→Control 三代 Hello（dogfood 2105 layout thrash）。
     fn desired_mode_for(&self, pane: &PaneInfo) -> StreamMode {
+        if self.preferred_client_size.is_none() {
+            return StreamMode::Observe;
+        }
         // pane.split/tab.create 的直接响应可能早于权威 snapshot。只要
         // 已知道目标 Herdr pane，就先按 mutation intent 计算最终 mode，
         // 避免新 pane 先 Observe、旧 active 仍 Control，随后反复 takeover。
@@ -811,9 +854,6 @@ impl HerdrRuntime {
             } else {
                 StreamMode::Observe
             };
-        }
-        if self.preferred_client_size.is_none() {
-            return StreamMode::Observe;
         }
         if self.foreground && Some(pane.id) == self.active_pane {
             StreamMode::Control
@@ -3239,6 +3279,7 @@ mod tests {
         let old = PaneId(7);
         let created = PaneId(23);
         runtime.foreground = true;
+        runtime.preferred_client_size = Some((132, 41));
         runtime.active_pane = Some(old);
         runtime.panes = vec![
             PaneInfo {
@@ -3277,6 +3318,49 @@ mod tests {
         );
         assert_eq!(
             runtime.desired_mode_for(&runtime.panes[1]),
+            StreamMode::Control
+        );
+    }
+
+    /// dogfood 2105：mutation expected_focus 也不得在 preferred 未到时 Control。
+    #[test]
+    fn pending_mutation_focus_stays_observe_until_preferred_client_size() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let tab = TabId(1);
+        let created = PaneId(23);
+        runtime.foreground = true;
+        runtime.active_pane = Some(created);
+        runtime.panes = vec![PaneInfo {
+            id: created,
+            tab,
+            active: true,
+            title: "created".into(),
+            cols: 80,
+            rows: 24,
+        }];
+        runtime.pane_to_herdr_pane.insert(created, "w1:pQ".into());
+        let id = runtime
+            .mutation_queue
+            .enqueue(MutationKind::SplitPane, Instant::now())
+            .expect("mutation 入队");
+        let pending = runtime
+            .mutation_queue
+            .by_id_mut(id)
+            .expect("pending mutation");
+        pending.dispatched_at = Some(Instant::now());
+        pending.expected_focus = Some("w1:pQ".into());
+
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[0]),
+            StreamMode::Observe,
+            "preferred 未到时 mutation target 也只能 Observe"
+        );
+        runtime.preferred_client_size = Some((132, 41));
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[0]),
             StreamMode::Control
         );
     }
@@ -3369,6 +3453,78 @@ mod tests {
             .panes
             .iter()
             .all(|pane| (pane.cols, pane.rows) == (90, 30)));
+    }
+
+    /// dogfood 2105：已知 tab 仍有 2 pane 时，只带 1 pane 的 layout.updated
+    /// 不得把 SV:500:L48:L49 塌成 Leaf（否则 GTK 反复 unparent rebuild）。
+    #[test]
+    fn incomplete_layout_updated_preserves_existing_split_tree() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let tab = TabId(1);
+        let first = PaneId(48);
+        let second = PaneId(49);
+        runtime.herdr_tab_to_tab.insert("w1:t28".into(), tab);
+        runtime.herdr_pane_to_pane.insert("w1:p1G".into(), first);
+        runtime.herdr_pane_to_pane.insert("w1:p1H".into(), second);
+        runtime.panes = vec![
+            PaneInfo {
+                id: first,
+                tab,
+                active: true,
+                title: "a".into(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: second,
+                tab,
+                active: false,
+                title: "b".into(),
+                cols: 80,
+                rows: 24,
+            },
+        ];
+        let expected_tree = LayoutNode::Split {
+            dir: SplitDir::Vertical,
+            ratio: 500,
+            first: Box::new(LayoutNode::Leaf(first)),
+            second: Box::new(LayoutNode::Leaf(second)),
+        };
+        runtime.layouts.insert(
+            tab,
+            TabLayout {
+                tab,
+                tree: expected_tree.clone(),
+                active: first,
+            },
+        );
+        let area = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 132,
+            height: 41,
+        };
+        let incomplete = LayoutRecord {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t28".into(),
+            zoomed: false,
+            area,
+            focused_pane_id: "w1:p1G".into(),
+            panes: vec![LayoutPaneRecord {
+                pane_id: "w1:p1G".into(),
+                focused: true,
+                rect: area,
+            }],
+            splits: vec![],
+        };
+
+        assert!(runtime.apply_layout_record(&incomplete, true));
+        let kept = runtime.layouts.get(&tab).expect("layout");
+        assert_eq!(kept.tree, expected_tree, "不得塌成 Leaf(48)");
+        assert_eq!(kept.active, first);
     }
 
     /// W9 回归：`layout.updated` 事件流记录可能晚到并携带旧 focused_pane_id
