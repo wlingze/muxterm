@@ -262,8 +262,13 @@ impl PaneView {
     /// reply_state 的 VT 流。先刷完 live lane，再保存当前可见网格并重建
     /// VTE；reply_state 只用按行 prepend 保持自身 scrollback 一致。首帧
     /// 尚未播种时先排队；后到的 Snapshot reset 后按 generation 重放。
+    ///
+    /// alternate screen（TUI）上禁止 ESC[2J 回放：会清掉当前 Cursor/htop 屏。
     pub fn prepend_history(&self, data: &[u8]) {
         if data.is_empty() {
+            return;
+        }
+        if !history_replay_allowed(self.inner.reply_state.borrow().alternate_screen) {
             return;
         }
         {
@@ -670,6 +675,9 @@ fn flush_unapplied_history(inner: &PaneViewInner) {
 }
 
 fn prepend_history_seeded(inner: &PaneViewInner, data: &[u8]) {
+    if !history_replay_allowed(inner.reply_state.borrow().alternate_screen) {
+        return;
+    }
     let lines: Vec<String> = String::from_utf8_lossy(data)
         .split('\n')
         .map(str::to_string)
@@ -710,6 +718,11 @@ fn feed_direct(inner: &PaneViewInner, bytes: &[u8]) {
 ///
 /// `ESC[2J` 只清当前屏，不清 scrollback；这里刻意不用 RIS/reset。调用方
 /// 必须把结果只喂给 native Surface，不能再让 reply_state 解析一次。
+/// alternate screen 上不得调用（见 `history_replay_allowed`）。
+fn history_replay_allowed(alternate_screen: bool) -> bool {
+    !alternate_screen
+}
+
 fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) -> Vec<u8> {
     let text_bytes = lines.iter().map(String::len).sum::<usize>();
     let mut replay = Vec::with_capacity(
@@ -813,6 +826,12 @@ mod tests {
         assert!(!should_forward_mixed_input(true, true, leaked));
         assert!(!should_forward_mixed_input(false, true, leaked));
         assert!(should_forward_mixed_input(false, true, b"ls\n"));
+    }
+
+    #[test]
+    fn history_replay_is_noop_on_alternate_screen() {
+        assert!(history_replay_allowed(false));
+        assert!(!history_replay_allowed(true));
     }
 
     #[test]
