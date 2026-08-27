@@ -286,6 +286,8 @@ pub struct PanelShowArgs {
     pub theme: Theme,
     pub font: FontSettings,
     pub on_connect: Box<dyn Fn(TargetConfig)>,
+    /// Existing 行专用回调：必须使用 attach-only 意图。
+    pub on_existing_connect: Box<dyn Fn(TargetConfig)>,
     pub on_edit: Box<dyn Fn(TargetConfig)>,
     pub on_new_project: Box<dyn Fn()>,
     /// 跳转回调：`(ws, pane, seq)`。seq 是搜索命中的 PaneBuf 行号（W17c），
@@ -323,6 +325,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         theme,
         font,
         on_connect,
+        on_existing_connect,
         on_edit,
         on_new_project,
         on_jump_pane,
@@ -505,6 +508,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         theme,
         font,
         on_connect,
+        on_existing_connect,
         on_edit,
         on_new_project,
         on_jump_pane,
@@ -1121,7 +1125,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         }
                         Some(PanelItem::Existing(entry)) => {
                             dismiss();
-                            (callbacks.on_connect)(existing_entry_to_config(&entry));
+                            (callbacks.on_existing_connect)(existing_entry_to_config(&entry));
                         }
                         Some(PanelItem::Host { alias }) => {
                             let nav = ExistingNav::SshHost { alias };

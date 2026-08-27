@@ -66,6 +66,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 }),
                 font: FontSettings::default(),
                 on_connect: Box::new(|_| {}),
+                on_existing_connect: Box::new(|_| {}),
                 on_edit: Box::new(|_| {}),
                 on_new_project: Box::new(|| {}),
                 on_jump_pane: Box::new(move |ws, pane, _seq| j.borrow_mut().push((ws, pane))),

@@ -50,7 +50,9 @@ use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
 use crate::platform::linux::quickconnect::font::{FontSettings, Preferences};
 use crate::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
-use crate::platform::linux::quickconnect::project_flow::{ProjectConnectFlow, ProjectConnectState};
+use crate::platform::linux::quickconnect::project_flow::{
+    ProjectConnectFlow, ProjectConnectIntent, ProjectConnectState,
+};
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
@@ -1416,7 +1418,7 @@ impl AppWindow {
             spec,
             id.clone(),
             socket,
-            ProjectConnectFlow::new(&config),
+            ProjectConnectFlow::new_with_intent(&config, ProjectConnectIntent::AttachOnly),
             config,
             true,
         );
@@ -3832,6 +3834,12 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                     connect_target(&st, cfg);
                 })
             },
+            on_existing_connect: {
+                let st = st.clone();
+                std::boxed::Box::new(move |cfg| {
+                    connect_target_with_intent(&st, cfg, ProjectConnectIntent::AttachOnly);
+                })
+            },
             on_edit: {
                 let st = st.clone();
                 let win = win.clone();
@@ -4379,7 +4387,15 @@ fn start_local_shell(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
 }
 
 fn run_project_flow(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
-    let flow = ProjectConnectFlow::new(&config);
+    run_project_flow_with_intent(state, config, ProjectConnectIntent::CreateIfMissing);
+}
+
+fn run_project_flow_with_intent(
+    state: &Rc<RefCell<UiState>>,
+    config: TargetConfig,
+    intent: ProjectConnectIntent,
+) {
+    let flow = ProjectConnectFlow::new_with_intent(&config, intent);
     step_project_flow(state, config, flow);
 }
 
@@ -4539,16 +4555,24 @@ fn after_activate(s: &mut UiState) {
 }
 
 fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+    connect_target_with_intent(state, config, ProjectConnectIntent::CreateIfMissing);
+}
+
+fn connect_target_with_intent(
+    state: &Rc<RefCell<UiState>>,
+    config: TargetConfig,
+    intent: ProjectConnectIntent,
+) {
     match config.runtime {
-        TargetRuntime::Tmux => run_project_flow(state, config),
+        TargetRuntime::Tmux => run_project_flow_with_intent(state, config, intent),
         TargetRuntime::Shell => {
             if config.transport.is_ssh() {
-                run_project_flow(state, config);
+                run_project_flow_with_intent(state, config, intent);
             } else {
                 start_local_shell(state, config);
             }
         }
-        TargetRuntime::Herdr => connect_herdr(state, config),
+        TargetRuntime::Herdr => connect_herdr(state, config, intent),
     }
 }
 
@@ -4558,7 +4582,7 @@ fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
 /// Project/Recent/Existing 三路共用；后台线程调用 Catalog API，
 /// SSH forward 由 HerdrDriver::open 创建，Project/Recent 永不保存临时
 /// forward 路径。意图：新建 Project 才 CreateIfMissing，其余 AttachOnly。
-fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig, intent: ProjectConnectIntent) {
     // 已打开的同 identity slot：直接激活。
     let probe_id = WorkspaceId::new(
         if config.transport.is_ssh() {
@@ -4582,10 +4606,9 @@ fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
         }
     }
     // 初次新建 Project 才 CreateIfMissing；Existing/Recent/普通重连 AttachOnly。
-    let intent = if config.workspace_id.is_none() {
-        ResolveIntent::CreateIfMissing
-    } else {
-        ResolveIntent::AttachOnly
+    let resolve_intent = match intent {
+        ProjectConnectIntent::AttachOnly => ResolveIntent::AttachOnly,
+        ProjectConnectIntent::CreateIfMissing => ResolveIntent::CreateIfMissing,
     };
     let handle = state.borrow().rt.handle().clone();
     let (tx, rx) = std::sync::mpsc::channel::<PendingConnect>();
@@ -4593,7 +4616,8 @@ fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
     std::thread::spawn(move || {
         let result = (|| -> anyhow::Result<Workspace> {
             let mut catalog = crate::core::catalog::Catalog::with_builtins();
-            let mut workspace = handle.block_on(catalog.open_target_owned(&config, intent))?;
+            let mut workspace =
+                handle.block_on(catalog.open_target_owned(&config, resolve_intent))?;
             handle.block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(10), workspace.connect())
                     .await
@@ -4605,7 +4629,9 @@ fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
         let _ = tx.send(PendingConnect {
             id,
             socket: None,
-            flow: ProjectConnectFlow::new(&config),
+            // Herdr 的 CreateIfMissing 已在 Catalog resolver 中完成；如果
+            // Runtime connect 之后失败，绝不能落入 tmux Project fallback。
+            flow: ProjectConnectFlow::new_with_intent(&config, ProjectConnectIntent::AttachOnly),
             config,
             existing: true,
             result,
