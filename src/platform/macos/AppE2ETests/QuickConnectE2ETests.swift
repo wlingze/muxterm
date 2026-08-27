@@ -209,4 +209,46 @@ final class QuickConnectE2ETests: XCTestCase {
             XCTAssertLessThan(size.width, 20, "徽章必须是小色块，不能是 42pt PROJECT 胶囊。size=\(size)")
         }
     }
+
+    func testExistingProjectShowsGreenDotBeforeName() {
+        AppE2E.ensureApp()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: QuickTargetCellView.preferredRowHeight))
+        let cell = QuickTargetCellView(identifier: NSUserInterfaceItemIdentifier("qc-exists"))
+        cell.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(cell)
+        NSLayoutConstraint.activate([
+            cell.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            cell.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            cell.topAnchor.constraint(equalTo: host.topAnchor),
+            cell.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        cell.config = TargetConfig(
+            name: "muxterm",
+            runtime: .tmux,
+            transport: .local,
+            path: FileManager.default.temporaryDirectory.path
+        )
+        cell.badges = [.project]
+        cell.existence = .exists
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(cell.testProjectExistenceDotVisible())
+        XCTAssertLessThan(
+            cell.testProjectExistenceDotFrame().maxX,
+            cell.testTitleFrame().minX,
+            "存在状态点必须位于 Project 名称左侧"
+        )
+
+        let titleWithDot = cell.testTitleFrame()
+        cell.existence = .missing
+        host.layoutSubtreeIfNeeded()
+        XCTAssertFalse(cell.testProjectExistenceDotVisible())
+        XCTAssertEqual(
+            cell.testTitleFrame().minX,
+            14,
+            accuracy: 0.5,
+            "隐藏存在点时名称不能保留空白占位"
+        )
+        XCTAssertGreaterThan(titleWithDot.minX, cell.testTitleFrame().minX)
+    }
 }

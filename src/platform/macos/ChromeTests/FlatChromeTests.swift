@@ -1056,6 +1056,45 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertFalse(
             TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: true, inWindow: false)
         )
+        XCTAssertFalse(
+            TerminalInputFocusPolicy.shouldAttemptFocus(
+                surfaceReady: true,
+                inWindow: true,
+                windowVisible: false,
+                windowKey: true,
+                appActive: true
+            ),
+            "不可见 window 不得触发 makeFirstResponder"
+        )
+        XCTAssertFalse(
+            TerminalInputFocusPolicy.shouldAttemptFocus(
+                surfaceReady: true,
+                inWindow: true,
+                windowVisible: true,
+                windowKey: false,
+                appActive: true
+            ),
+            "非 key window 不得触发 makeFirstResponder"
+        )
+        XCTAssertFalse(
+            TerminalInputFocusPolicy.shouldAttemptFocus(
+                surfaceReady: true,
+                inWindow: true,
+                windowVisible: true,
+                windowKey: true,
+                appActive: false
+            ),
+            "后台 App 不得触发 makeFirstResponder"
+        )
+        XCTAssertTrue(
+            TerminalInputFocusPolicy.shouldAttemptFocus(
+                surfaceReady: true,
+                inWindow: true,
+                windowVisible: true,
+                windowKey: true,
+                appActive: true
+            )
+        )
         XCTAssertTrue(
             TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(isActivePane: true, ready: true)
         )
@@ -1419,6 +1458,45 @@ final class QuickConnectModelTests: XCTestCase {
         let entries = QuickConnect.entries(recents: recents, projects: projects)
         XCTAssertEqual(entries.count, 2) // local 与 ryzen 是不同目标
         XCTAssertEqual(entries.map { $0.config.transport.label }, ["local", "ryzen"])
+    }
+
+    func testEntriesCarryRuntimeOnlyProjectExistence() {
+        let project = TargetConfig(
+            name: "muxterm",
+            runtime: .tmux,
+            transport: .local,
+            path: "/tmp/muxterm"
+        )
+        let id = QuickConnect.uniqueID(for: project)
+        let exists = QuickConnect.entries(
+            recents: [],
+            projects: [project],
+            existence: [id: .exists]
+        )
+        XCTAssertEqual(exists.first?.existence, .exists)
+
+        let probing = QuickConnect.entries(recents: [], projects: [project])
+        XCTAssertEqual(probing.first?.existence, .probing)
+    }
+
+    func testLocalProjectExistenceUsesDirectorySemantics() {
+        let directory = TargetConfig(
+            name: "tmp",
+            runtime: .shell,
+            transport: .local,
+            path: FileManager.default.temporaryDirectory.path
+        )
+        XCTAssertEqual(QuickConnect.projectExistence(for: directory), .exists)
+
+        let missingPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muxterm-missing-project-\(UUID().uuidString)")
+        var missingConfig = directory
+        missingConfig.path = missingPath.path
+        XCTAssertEqual(QuickConnect.projectExistence(for: missingConfig), .missing)
+
+        var remote = directory
+        remote.transport = .ssh(name: "example")
+        XCTAssertEqual(QuickConnect.projectExistence(for: remote), .unknown)
     }
 
     func testSshAttachBackendDoesNotPutAliasInSocket() {

@@ -89,14 +89,17 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     private func reload() {
         // 前 5 条 Recent（最新在前），再补 Project 独有的；按唯一 ID 去重。
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
+        let existence = QuickConnect.projectExistenceMap(for: store.projects)
         var items: [QuickConnectItem] = QuickConnect.entries(
             recents: store.recents,
-            projects: store.projects
+            projects: store.projects,
+            existence: existence
         ).map { entry in
             .target(
                 entry.config,
                 badges: entry.badges,
-                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config)
+                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config),
+                existence: entry.existence
             )
         }
         items.append(.newProject)
@@ -191,7 +194,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
             ? allItems
             : allItems.filter { item in
                 switch item {
-                case .target(let c, _, _): return QuickConnect.searchText(for: c).contains(query)
+                case .target(let c, _, _, _): return QuickConnect.searchText(for: c).contains(query)
                 case .newProject: return "new project 新建".contains(query)
                 }
             }
@@ -214,7 +217,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     private func activateSelected() {
         guard table.selectedRow >= 0, table.selectedRow < visibleItems.count else { return }
         switch visibleItems[table.selectedRow] {
-        case .target(let config, _, _):
+        case .target(let config, _, _, _):
             onConnect?(config)
         case .newProject:
             onNewProject?()
@@ -236,13 +239,14 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = visibleItems[row]
         switch item {
-        case .target(let config, let badges, let isCurrent):
+            case .target(let config, let badges, let isCurrent, let existence):
             let id = NSUserInterfaceItemIdentifier("QuickTarget")
             let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                 ?? QuickTargetCellView(identifier: id)
             cell.config = config
             cell.badges = badges
             cell.isCurrent = isCurrent
+            cell.existence = existence
             return cell
         case .newProject:
             let id = NSUserInterfaceItemIdentifier("QuickNew")
@@ -262,7 +266,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
         let row = table.clickedRow
         guard row >= 0, row < visibleItems.count else { return }
         switch visibleItems[row] {
-        case .target(let config, _, _):
+        case .target(let config, _, _, _):
             onEditProject?(config)
         default:
             activateSelected()
@@ -272,7 +276,12 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
 
 /// 面板条目：目标（带标记）/ 新建入口。
 enum QuickConnectItem {
-    case target(TargetConfig, badges: [QuickBadge], isCurrent: Bool)
+    case target(
+        TargetConfig,
+        badges: [QuickBadge],
+        isCurrent: Bool,
+        existence: ProjectExistence
+    )
     case newProject
 }
 
@@ -313,12 +322,18 @@ final class QuickTargetCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let badgeStack = NSStackView()
+    private let existenceDot = QuickBadgeDotView(badge: .project)
+    private var titleLeadingConstraint: NSLayoutConstraint!
 
     var config: TargetConfig? {
         didSet { updateLayout() }
     }
 
     var badges: [QuickBadge] = [] {
+        didSet { updateLayout() }
+    }
+
+    var existence: ProjectExistence = .probing {
         didSet { updateLayout() }
     }
 
@@ -357,11 +372,20 @@ final class QuickTargetCellView: NSTableCellView {
         badgeStack.spacing = 4
         badgeStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         badgeStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        existenceDot.isHidden = true
+        existenceDot.toolTip = "Project path exists"
         addSubview(titleLabel)
         addSubview(detailLabel)
         addSubview(badgeStack)
+        addSubview(existenceDot)
+        titleLeadingConstraint = titleLabel.leadingAnchor.constraint(
+            equalTo: leadingAnchor,
+            constant: 14
+        )
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            existenceDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            existenceDot.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            titleLeadingConstraint,
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
             badgeStack.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
@@ -385,6 +409,13 @@ final class QuickTargetCellView: NSTableCellView {
         detailLabel.stringValue = path.isEmpty
             ? QuickConnect.subtitle(for: config)
             : "\(QuickConnect.subtitle(for: config))  ·  \(path)"
+        let showExistenceDot = badges.contains(.project) && existence == .exists
+        existenceDot.isHidden = !showExistenceDot
+        // Hidden NSView 仍可能参与 Auto Layout；显式收回左侧占位，避免
+        // Recent-only/未探测 Project 的名称被无故向右推 14pt。
+        titleLeadingConstraint.constant = showExistenceDot
+            ? 14 + QuickTargetCellView.badgeDotSize + 6
+            : 14
 
         for view in badgeStack.arrangedSubviews {
             badgeStack.removeArrangedSubview(view)
@@ -431,6 +462,18 @@ final class QuickTargetCellView: NSTableCellView {
             let size = view.bounds.size
             return size.width > 0 ? size : view.fittingSize
         }
+    }
+
+    func testProjectExistenceDotVisible() -> Bool {
+        !existenceDot.isHidden
+    }
+
+    func testProjectExistenceDotFrame() -> NSRect {
+        existenceDot.frame
+    }
+
+    func testTitleFrame() -> NSRect {
+        titleLabel.frame
     }
 }
 

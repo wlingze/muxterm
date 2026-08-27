@@ -30,7 +30,7 @@ use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::{BackendStatus, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
-use crate::core::quickconnect::model::QuickConnect;
+use crate::core::quickconnect::model::{ProjectExistence, QuickConnect};
 use crate::core::runtime::HerdrRuntime;
 use crate::core::transport::ssh::probe::SshReach;
 use crate::core::types::{PaneId, TabId};
@@ -57,7 +57,8 @@ use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBa
 use crate::platform::linux::quickconnect::store::{user_quickconnect_path, QuickConnectStore};
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::platform::linux::quickconnect_panel::{
-    build_root_items, ExistingNav, ExistingPanelState, PanelItem,
+    build_root_items_with_existence, replace_current_workspaces, ExistingNav, ExistingPanelState,
+    PanelItem,
 };
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
@@ -148,6 +149,12 @@ struct UiState {
         std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingSshProbeResult>>,
     /// C7：本地已有连接探测结果队列（open_panel 不阻塞 GTK）。
     pending_local_probe: std::collections::VecDeque<std::sync::mpsc::Receiver<ExistingProbeMsg>>,
+    /// Project path 存在性缓存（仅运行时，不写 quickconnect.toml）。
+    project_existence: HashMap<String, ProjectExistence>,
+    /// Project 存在性探测是否在跑（防止重复打开面板时并发探测）。
+    project_existence_probing: bool,
+    /// Project 存在性探测结果队列。
+    pending_project_probes: std::collections::VecDeque<std::sync::mpsc::Receiver<ProjectProbeMsg>>,
     /// W21 测试钩子：最近一次经 PaneView input_cb 的原始输入。
     last_raw_input: Vec<u8>,
     /// VTE 输入回调只把 owner identity 和原始字节放入 FIFO；实际的
@@ -502,6 +509,9 @@ impl AppWindow {
             existing_ssh_probing: false,
             pending_existing_ssh: std::collections::VecDeque::new(),
             pending_local_probe: std::collections::VecDeque::new(),
+            project_existence: HashMap::new(),
+            project_existence_probing: false,
+            pending_project_probes: std::collections::VecDeque::new(),
             last_raw_input: Vec::new(),
             surface_input_queue: Rc::new(RefCell::new(VecDeque::new())),
             reconnecting: false,
@@ -757,6 +767,7 @@ impl AppWindow {
                         drain_pending_connects(&st);
                         drain_ssh_probes(&st);
                         drain_local_existing(&st);
+                        drain_project_existence(&st);
                         drain_pending_reconnects(&st);
                         maybe_schedule_reconnect(&st);
                         let mut s = st.borrow_mut();
@@ -1091,6 +1102,7 @@ impl AppWindow {
         drain_ssh_probes(&self._state);
         drain_existing_ssh(&self._state);
         drain_local_existing(&self._state);
+        drain_project_existence(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
         let (n, pending_close) = {
@@ -1188,6 +1200,7 @@ impl AppWindow {
         drain_ssh_probes(&self._state);
         drain_existing_ssh(&self._state);
         drain_local_existing(&self._state);
+        drain_project_existence(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
         let pending_close = {
@@ -3353,6 +3366,112 @@ enum ExistingProbeMsg {
     Done,
 }
 
+/// Project path 存在性探测增量。
+enum ProjectProbeMsg {
+    Result {
+        id: String,
+        existence: ProjectExistence,
+    },
+    Done,
+}
+
+/// 启动 Project path 后台探测；GTK 线程只负责收编结果和重建列表。
+fn spawn_project_existence_probe(s: &mut UiState, projects: &[TargetConfig]) {
+    if s.project_existence_probing || projects.is_empty() {
+        return;
+    }
+    s.project_existence_probing = true;
+    for project in projects {
+        s.project_existence
+            .insert(QuickConnect::unique_id(project), ProjectExistence::Probing);
+    }
+
+    let projects = projects.to_vec();
+    let ssh_config = std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(std::path::PathBuf::from);
+    let (tx, rx) = std::sync::mpsc::channel::<ProjectProbeMsg>();
+    s.pending_project_probes.push_back(rx);
+    std::thread::spawn(move || {
+        for project in projects {
+            let id = QuickConnect::unique_id(&project);
+            let existence = match &project.transport {
+                TargetTransport::Local => {
+                    crate::core::discovery::probe_local_directory(&project.path)
+                }
+                TargetTransport::Ssh { name } => crate::core::discovery::probe_remote_directory(
+                    name,
+                    &project.path,
+                    ssh_config.to_str(),
+                    Duration::from_secs(3),
+                ),
+            };
+            tracing::debug!(
+                target = "muxterm::linux",
+                project = %id,
+                ?existence,
+                "project existence probe completed"
+            );
+            if tx.send(ProjectProbeMsg::Result { id, existence }).is_err() {
+                return;
+            }
+        }
+        let _ = tx.send(ProjectProbeMsg::Done);
+    });
+}
+
+/// 收编 Project path 探测结果，并刷新当前 QuickConnect 根列表。
+fn drain_project_existence(state: &Rc<RefCell<UiState>>) {
+    let mut wait = false;
+    while !wait {
+        let (msg, disconnected) = {
+            let mut s = state.borrow_mut();
+            let Some(rx) = s.pending_project_probes.front() else {
+                break;
+            };
+            match rx.try_recv() {
+                Ok(msg) => (Some(msg), false),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    wait = true;
+                    (None, false)
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    s.pending_project_probes.pop_front();
+                    s.project_existence_probing = false;
+                    // worker 意外退出时，不能把项目永久留在 probing；
+                    // Unknown 明确表示本轮无法判断，下一次打开面板仍可重试。
+                    mark_probing_projects_unknown(&mut s.project_existence);
+                    (None, true)
+                }
+            }
+        };
+        if disconnected {
+            refresh_quickconnect_workspace_items(state);
+        }
+        match msg {
+            Some(ProjectProbeMsg::Result { id, existence }) => {
+                state.borrow_mut().project_existence.insert(id, existence);
+                refresh_quickconnect_workspace_items(state);
+            }
+            Some(ProjectProbeMsg::Done) => {
+                let mut s = state.borrow_mut();
+                s.pending_project_probes.pop_front();
+                s.project_existence_probing = false;
+                drop(s);
+                refresh_quickconnect_workspace_items(state);
+            }
+            None => {}
+        }
+    }
+}
+
+/// 探测通道断开时收敛未完成的状态，避免 UI 永久停在 probing。
+fn mark_probing_projects_unknown(cache: &mut HashMap<String, ProjectExistence>) {
+    for status in cache.values_mut() {
+        if *status == ProjectExistence::Probing {
+            *status = ProjectExistence::Unknown;
+        }
+    }
+}
+
 fn merge_existing_entries(ex: &mut ExistingPanelState, entries: Vec<ExistingEntry>) {
     for e in entries {
         match &e.transport {
@@ -3800,7 +3919,9 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let font = s.font.clone();
         let win = window.clone();
         let st = state.clone();
-        let workspaces = build_root_items(&store, current.as_ref());
+        spawn_project_existence_probe(&mut s, &store.projects);
+        let workspaces =
+            build_root_items_with_existence(&store, current.as_ref(), &s.project_existence);
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
         // C7：本地列出搬后台线程（GTK 线程禁止 ssh / 扫 herdr socket），
         // 结果经 16ms poll 收编，和 SSH probe 同一模式。
@@ -3939,6 +4060,27 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             },
         },
     );
+}
+
+/// 用最新 Project existence cache 更新已经打开的面板根列表。
+fn refresh_quickconnect_workspace_items(state: &Rc<RefCell<UiState>>) {
+    let (store, current, existence) = {
+        let s = state.borrow();
+        if s.panel_open.is_none() {
+            return;
+        }
+        (
+            s.qc_store.clone(),
+            s.pool.active().map(workspace_to_target_config),
+            s.project_existence.clone(),
+        )
+    };
+    replace_current_workspaces(build_root_items_with_existence(
+        &store,
+        current.as_ref(),
+        &existence,
+    ));
+    crate::platform::linux::quickconnect_panel::refresh_current();
 }
 
 /// 跳到注意力 pane：若目标工作区不是当前前台连接，先切连接；
@@ -4867,6 +5009,7 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         .qc-badge-recent {{ background: #1e66f5; }}
         .qc-badge-project {{ background: #40a02b; }}
         .qc-badge-current {{ background: #df8e1d; }}
+        .qc-project-exists-dot {{ color: #40a02b; font-size: 9px; }}
         .qc-current {{ background: alpha(#89b4fa, 0.18); }}
         "
     )
