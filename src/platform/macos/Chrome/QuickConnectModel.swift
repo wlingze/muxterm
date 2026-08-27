@@ -52,14 +52,31 @@ public enum QuickBadge: Equatable, Sendable, CaseIterable {
     }
 }
 
+/// Project path 的运行时存在状态。
+///
+/// 该状态只用于 QuickConnect 的显示，不属于 `TargetConfig`，也不会写入
+/// quickconnect.toml。
+public enum ProjectExistence: Equatable, Sendable {
+    case probing
+    case exists
+    case missing
+    case unknown
+}
+
 /// 面板中的一行：目标 + 其应显示的标记（Recent / Project 可同时出现）。
 public struct QuickConnectEntry: Equatable, Sendable {
     public let config: TargetConfig
     public let badges: [QuickBadge]
+    public let existence: ProjectExistence
 
-    public init(config: TargetConfig, badges: [QuickBadge]) {
+    public init(
+        config: TargetConfig,
+        badges: [QuickBadge],
+        existence: ProjectExistence = .probing
+    ) {
         self.config = config
         self.badges = badges
+        self.existence = existence
     }
 }
 
@@ -112,6 +129,48 @@ public enum QuickConnect {
         "\(config.name)@\(config.transport.label)"
     }
 
+    /// 计算本机 Project path 的存在状态。
+    ///
+    /// macOS 的 SSH path 需要异步远端探测；当前 Chrome 层不持有 SSH
+    /// transport，因此保持 `unknown`，避免把本机路径误当成远端路径。
+    public static func projectExistence(for config: TargetConfig) -> ProjectExistence {
+        guard !config.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .unknown
+        }
+        switch config.transport {
+        case .local:
+            let path = config.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            let expanded: String
+            if path == "~" {
+                expanded = FileManager.default.homeDirectoryForCurrentUser.path
+            } else if path.hasPrefix("~/") {
+                expanded = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(String(path.dropFirst(2)), isDirectory: true)
+                    .path
+            } else {
+                expanded = path
+            }
+            var isDirectory = ObjCBool(false)
+            guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory) else {
+                return .missing
+            }
+            return isDirectory.boolValue ? .exists : .missing
+        case .ssh:
+            return .unknown
+        }
+    }
+
+    /// 为 Project 生成一次运行时存在状态快照；Recent-only 目标不参与。
+    public static func projectExistenceMap(
+        for projects: [TargetConfig]
+    ) -> [String: ProjectExistence] {
+        var result: [String: ProjectExistence] = [:]
+        for config in projects {
+            result[uniqueID(for: config)] = projectExistence(for: config)
+        }
+        return result
+    }
+
     /// 计算目标应显示哪些标记。
     /// - recents / projects: 现有记录（按唯一 ID 匹配）。
     /// 返回顺序固定：Recent 在前、Project 在后（若都有则都返回）。
@@ -136,7 +195,8 @@ public enum QuickConnect {
     public static func entries(
         recents: [TargetConfig],
         projects: [TargetConfig],
-        recentLimit: Int = 5
+        recentLimit: Int = 5,
+        existence: [String: ProjectExistence] = [:]
     ) -> [QuickConnectEntry] {
         var seen = Set<String>()
         var result: [QuickConnectEntry] = []
@@ -145,7 +205,8 @@ public enum QuickConnect {
             guard seen.insert(id).inserted else { continue }
             result.append(QuickConnectEntry(
                 config: config,
-                badges: badges(for: config, recents: recents, projects: projects)
+                badges: badges(for: config, recents: recents, projects: projects),
+                existence: existence[uniqueID(for: config)] ?? .probing
             ))
         }
         for config in projects {
@@ -153,7 +214,8 @@ public enum QuickConnect {
             guard seen.insert(id).inserted else { continue }
             result.append(QuickConnectEntry(
                 config: config,
-                badges: badges(for: config, recents: recents, projects: projects)
+                badges: badges(for: config, recents: recents, projects: projects),
+                existence: existence[uniqueID(for: config)] ?? .probing
             ))
         }
         return result

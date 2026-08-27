@@ -30,7 +30,8 @@ use crate::platform::linux::panel_model::{
 use crate::platform::linux::quick_pick;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
+    ProjectExistence, QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime,
+    TargetTransport,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
@@ -53,6 +54,11 @@ thread_local! {
     static PANEL_REFRESH: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    static PANEL_WORKSPACES_REPLACE: RefCell<Option<Box<dyn Fn(Vec<PanelItem>)>>> =
+        const { RefCell::new(None) };
+}
+
 /// 已有的连接面板共享状态（window 侧更新，面板 rebuild 读取）。
 #[derive(Debug, Clone, Default)]
 pub struct ExistingPanelState {
@@ -73,6 +79,18 @@ pub fn refresh_current() {
     });
 }
 
+/// 测试/生产共用：替换当前面板根列表中的 Recent/Project 条目。
+///
+/// Project path 探测在后台完成；窗口侧先更新缓存，再调用此函数触发
+/// 现有 rebuild 闭包，因此不需要让 GTK 面板持有 UiState。
+pub fn replace_current_workspaces(items: Vec<PanelItem>) {
+    PANEL_WORKSPACES_REPLACE.with(|slot| {
+        if let Some(replace) = slot.borrow().as_ref() {
+            replace(items);
+        }
+    });
+}
+
 /// 测试/生产共用：关闭当前 QuickConnect 面板（AppWindow 跳转后关面板，W15b）。
 ///
 /// 独立面板测试（`linux_search_e2e`）不调用它，面板保持打开以便量宽度。
@@ -89,6 +107,7 @@ pub fn close_current() {
 pub fn clear_panel_hooks() {
     PANEL_REFRESH.with(|slot| *slot.borrow_mut() = None);
     PANEL_DISMISS.with(|slot| *slot.borrow_mut() = None);
+    PANEL_WORKSPACES_REPLACE.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// 测试用：向当前面板的 Attention 小 VTE 注入按键（走 `connect_input` → `on_send_input`）。
@@ -178,10 +197,23 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
 }
 
 pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
+    build_items_with_existence(store, current, &HashMap::new())
+}
+
+/// 构造带 Project path 运行时存在状态的快速连接列表。
+pub fn build_items_with_existence(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+    existence: &HashMap<String, ProjectExistence>,
+) -> Vec<PanelItem> {
     let current_id = current.map(QuickConnect::unique_id);
     let mut items: Vec<PanelItem> = QuickConnect::entries(&store.recents, &store.projects, 5)
         .into_iter()
-        .map(|entry| {
+        .map(|mut entry| {
+            entry.existence = existence
+                .get(&QuickConnect::unique_id(&entry.config))
+                .copied()
+                .unwrap_or(ProjectExistence::Probing);
             let is_current = current_id
                 .as_ref()
                 .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
@@ -197,11 +229,20 @@ pub fn build_root_items(
     store: &QuickConnectStore,
     current: Option<&TargetConfig>,
 ) -> Vec<PanelItem> {
+    build_root_items_with_existence(store, current, &HashMap::new())
+}
+
+/// 构造带 Project path 运行时存在状态的根列表。
+pub fn build_root_items_with_existence(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+    existence: &HashMap<String, ProjectExistence>,
+) -> Vec<PanelItem> {
     let mut items = vec![PanelItem::Folder {
         id: "existing-connections",
         title: i18n::tr(TextKey::ExistingConnections),
     }];
-    items.extend(build_items(store, current));
+    items.extend(build_items_with_existence(store, current, existence));
     items
 }
 
@@ -499,7 +540,15 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     overlay.add_overlay(&panel);
 
     let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
-    let all = Rc::new(workspaces);
+    let all = Rc::new(RefCell::new(workspaces));
+    {
+        let all = all.clone();
+        PANEL_WORKSPACES_REPLACE.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move |items| {
+                *all.borrow_mut() = items;
+            }));
+        });
+    }
     let attention = Rc::new(attention);
     let callbacks = Rc::new(PanelShowArgs {
         initial_tab,
@@ -660,7 +709,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             let all: Vec<PanelItem> = {
                 let ex = existing.borrow();
                 if ex.nav == ExistingNav::Root {
-                    (*all).clone()
+                    all.borrow().clone()
                 } else {
                     existing_items(
                         ex.nav.clone(),
@@ -1080,7 +1129,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     let all: Vec<PanelItem> = {
                         let ex = existing.borrow();
                         if ex.nav == ExistingNav::Root {
-                            (*all).clone()
+                            all.borrow().clone()
                         } else {
                             existing_items(
                                 ex.nav.clone(),
@@ -1247,6 +1296,16 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
         }));
         title_row.append(&dot);
     }
+    if should_show_project_existence_dot(entry) {
+        let dot = Label::new(Some("●"));
+        dot.set_widget_name(&format!(
+            "muxterm-project-exists-dot-{}",
+            QuickConnect::unique_id(&entry.config)
+        ));
+        dot.add_css_class("qc-project-exists-dot");
+        dot.set_tooltip_text(Some("Project path exists"));
+        title_row.append(&dot);
+    }
     let name = Label::new(Some(&entry.config.name));
     name.set_halign(Align::Start);
     name.add_css_class("qc-name");
@@ -1276,6 +1335,11 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
     col.append(&sub);
     col.append(&path);
     col
+}
+
+/// 只有 Project 且 path 已明确探测存在时才显示绿色点。
+fn should_show_project_existence_dot(entry: &QuickConnectEntry) -> bool {
+    entry.badges.contains(&QuickBadge::Project) && entry.existence == ProjectExistence::Exists
 }
 
 /// W20：已有的连接行（title + `runtime @ transport` 副标题，与 Project 行同款）。
@@ -1429,6 +1493,46 @@ mod tests {
         assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
         assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.config == dup));
         assert!(matches!(items[1], PanelItem::NewProject));
+    }
+
+    #[test]
+    fn build_items_applies_runtime_project_existence_without_persisting_it() {
+        let mut store = QuickConnectStore::new(None);
+        let project = cfg("project");
+        store.projects.push(project.clone());
+        let mut existence = HashMap::new();
+        existence.insert(
+            QuickConnect::unique_id(&project),
+            crate::core::quickconnect::model::ProjectExistence::Exists,
+        );
+        let items = build_items_with_existence(&store, None, &existence);
+        assert!(matches!(
+            &items[0],
+            PanelItem::Target(entry, false)
+                if entry.existence == crate::core::quickconnect::model::ProjectExistence::Exists
+        ));
+        assert!(
+            !store.encode().contains("existence"),
+            "存在状态是运行时缓存，不能写入 TOML"
+        );
+    }
+
+    #[test]
+    fn project_existence_dot_requires_project_badge_and_exists_state() {
+        let mut entry = QuickConnectEntry::new(cfg("project"), vec![]);
+        assert!(!should_show_project_existence_dot(&entry));
+        entry.existence = crate::core::quickconnect::model::ProjectExistence::Exists;
+        assert!(!should_show_project_existence_dot(&entry));
+        entry.badges.push(QuickBadge::Project);
+        assert!(should_show_project_existence_dot(&entry));
+        for state in [
+            crate::core::quickconnect::model::ProjectExistence::Probing,
+            crate::core::quickconnect::model::ProjectExistence::Missing,
+            crate::core::quickconnect::model::ProjectExistence::Unknown,
+        ] {
+            entry.existence = state;
+            assert!(!should_show_project_existence_dot(&entry));
+        }
     }
 
     /// W20b：根列表第 0 项是「已有的连接」Folder，末项 New Project。
