@@ -16,6 +16,19 @@ final class NativeNotificationTests: XCTestCase {
         XCTAssertFalse(NativeNotificationAuthorizationPolicy.canDeliver(.denied))
     }
 
+    func testUnavailableAuthorizationIsLoggedOnlyOnce() {
+        XCTAssertTrue(
+            NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
+                previouslyLogged: false
+            )
+        )
+        XCTAssertFalse(
+            NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
+                previouslyLogged: true
+            )
+        )
+    }
+
     func testNotificationServiceIsSafeAndSilentUnderXCTest() {
         XCTAssertTrue(NativeNotificationService.isSuppressedProcess)
         NativeNotificationService.shared.configure {}

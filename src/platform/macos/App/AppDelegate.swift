@@ -19,11 +19,21 @@ enum NativeNotificationAuthorizationPolicy {
     }
 }
 
+enum NativeNotificationLogPolicy {
+    static func shouldLogAuthorizationUnavailable(previouslyLogged: Bool) -> Bool {
+        !previouslyLogged
+    }
+}
+
 /// macOS 原生通知入口：启动时请求一次权限，前台也显示 banner，点击后回到 Attention。
 final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NativeNotificationService()
 
     private var onActivate: (() -> Void)?
+    private let authorizationLock = NSLock()
+    private var authorizationRequestInFlight = false
+    private var authorizationUnavailableLogged = false
+    private var pendingAuthorizationCompletions: [(Bool) -> Void] = []
 
     static var isSuppressedProcess: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -42,7 +52,7 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
             ) else {
                 return
             }
-            Self.requestAuthorization(on: center)
+            self.requestAuthorization(on: center)
         }
     }
 
@@ -55,26 +65,74 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
             } else if NativeNotificationAuthorizationPolicy.shouldRequest(
                 settings.authorizationStatus
             ) {
-                Self.requestAuthorization(on: center) { granted in
+                self.requestAuthorization(on: center) { granted in
                     guard granted else { return }
                     Self.deliver(title: title, body: body, on: center)
                 }
+            } else {
+                self.logAuthorizationUnavailableOnce()
             }
         }
     }
 
-    private static func requestAuthorization(
+    private func requestAuthorization(
         on center: UNUserNotificationCenter,
         completion: ((Bool) -> Void)? = nil
     ) {
-        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error {
-                // 被用户/系统拒绝不是应用故障；Attention 面板和铃铛仍然可用。
-                // 用“unavailable”而不是“failed”避免把 macOS 设置状态误报成崩溃。
-                NSLog("muxterm: notification authorization unavailable: %@", error.localizedDescription)
+        authorizationLock.lock()
+        if authorizationRequestInFlight {
+            if let completion {
+                pendingAuthorizationCompletions.append(completion)
             }
-            completion?(granted)
+            authorizationLock.unlock()
+            return
         }
+        authorizationRequestInFlight = true
+        if let completion {
+            pendingAuthorizationCompletions.append(completion)
+        }
+        authorizationLock.unlock()
+
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            self.authorizationLock.lock()
+            self.authorizationRequestInFlight = false
+            let completions = self.pendingAuthorizationCompletions
+            self.pendingAuthorizationCompletions.removeAll()
+            let shouldLog = NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
+                previouslyLogged: self.authorizationUnavailableLogged
+            ) && (error != nil || !granted)
+            if shouldLog {
+                self.authorizationUnavailableLogged = true
+            }
+            self.authorizationLock.unlock()
+
+            if shouldLog {
+                let message = error?.localizedDescription
+                    ?? "Notifications are not allowed for this application"
+                // 被用户/系统拒绝不是应用故障；Attention 面板和铃铛仍然可用。
+                // 同一进程只记录一次，避免每个 pane 完成事件刷屏。
+                NSLog("muxterm: notification authorization unavailable: %@", message)
+            }
+            for completion in completions {
+                completion(granted)
+            }
+        }
+    }
+
+    private func logAuthorizationUnavailableOnce() {
+        authorizationLock.lock()
+        let shouldLog = NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
+            previouslyLogged: authorizationUnavailableLogged
+        )
+        if shouldLog {
+            authorizationUnavailableLogged = true
+        }
+        authorizationLock.unlock()
+        guard shouldLog else { return }
+        NSLog(
+            "muxterm: notification authorization unavailable: %@",
+            "Notifications are not allowed for this application"
+        )
     }
 
     private static func deliver(
