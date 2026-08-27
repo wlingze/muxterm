@@ -527,6 +527,9 @@ final class TerminalManager: TerminalInputHandler {
         dispatchPrecondition(condition: .onQueue(.main))
         if views[paneId] == nil {
             guard viewCreationEnabled else {
+                // 新 snapshot 是比后台缓存 full frame 更新的权威 baseline；
+                // 若不清掉旧 frame，首次建 Surface 时会留下错误的 frame 重放。
+                pendingFrames.removeValue(forKey: paneId)
                 pendingSnapshots[paneId] = data
                 return
             }
