@@ -316,6 +316,23 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
+    func testBackgroundSnapshotReplacesStalePendingFrame() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        manager.setViewCreationEnabled(false)
+        manager.handleFrame(paneId: 7, data: Data("STALE_FRAME\r\n".utf8))
+        manager.handleSnapshot(paneId: 7, data: Data("AUTHORITATIVE_SNAPSHOT\r\n".utf8))
+
+        manager.setViewCreationEnabled(true)
+        let view = manager.view(for: 7)
+        manager.flushSeedsNow(paneIds: [7])
+
+        let text = view.visibleScreenText()
+        XCTAssertTrue(text.contains("AUTHORITATIVE_SNAPSHOT"), "应显示最新 snapshot。got=\(text)")
+        XCTAssertFalse(text.contains("STALE_FRAME"), "旧 full frame 不得在 snapshot 后重放。got=\(text)")
+    }
+
     func testVisibleSeedIsNotStuckBehindBackgroundSeeds() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }
