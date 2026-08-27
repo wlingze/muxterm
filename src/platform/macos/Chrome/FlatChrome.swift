@@ -561,8 +561,14 @@ public enum PaneHostFocusPolicy {
 
 /// 光标必须在 SwiftTerm 输入里。Surface 还没 ready 时不要抢，ready 后立刻补。
 public enum TerminalInputFocusPolicy {
-    public static func shouldAttemptFocus(surfaceReady: Bool, inWindow: Bool) -> Bool {
-        surfaceReady && inWindow
+    public static func shouldAttemptFocus(
+        surfaceReady: Bool,
+        inWindow: Bool,
+        windowVisible: Bool = true,
+        windowKey: Bool = true,
+        appActive: Bool = true
+    ) -> Bool {
+        surfaceReady && inWindow && windowVisible && windowKey && appActive
     }
 
     public static func shouldRetryWhenSurfaceReady(isActivePane: Bool, ready: Bool) -> Bool {
