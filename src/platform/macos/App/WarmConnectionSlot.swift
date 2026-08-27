@@ -8,7 +8,7 @@ import MuxtermChrome
 /// shutdown；只有淘汰时才 evict。tmux/ssh 淘汰用 detach 保留远端
 /// server/session，local shell 直接 shutdown（前端就是 PTY 模拟器）。
 ///
-/// 后台线程只排空 FFI。`PaneOutput` / `PaneSnapshot` 必须 hop 回主线程
+/// 后台线程只排空 FFI。`PaneOutput` / `PaneFrame` / `PaneSnapshot` 必须 hop 回主线程
 /// 再喂给 **这个** Workspace 自己的 TerminalManager。不能在
 /// `muxterm.macos.background-poll` 上改 Swift Dictionary / SwiftTerm。
 final class WarmConnectionSlot: ConnectionSlotProtocol {
@@ -81,7 +81,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
                     paneId: ev.paneId,
                     name: value.isEmpty ? nil : value
                 )
-            } else if ev.isPaneOutput || ev.isPaneSnapshot || ev.isPaneHistory || ev.isPaneClosed {
+            } else if ev.isPaneOutput || ev.isPaneFrame || ev.isPaneSnapshot || ev.isPaneHistory || ev.isPaneClosed {
                 surface.append(ev)
             }
         }
@@ -118,6 +118,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
                     terminalManager.removePane(ev.paneId)
                 } else if ev.isPaneSnapshot {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
+                } else if ev.isPaneFrame {
+                    terminalManager.handleFrame(paneId: ev.paneId, data: ev.data)
                 } else if ev.isPaneHistory {
                     terminalManager.handleHistory(paneId: ev.paneId, data: ev.data)
                 } else if ev.isPaneOutput {

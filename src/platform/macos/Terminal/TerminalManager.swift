@@ -47,6 +47,9 @@ final class TerminalManager: TerminalInputHandler {
     private var seedingPanes = Set<UInt32>()
     /// 后台 Workspace 关掉 viewCreation 时仍把快照留着，第一次建 Surface 立刻种。
     private var pendingSnapshots: [UInt32: Data] = [:]
+    /// 后台 Workspace 关掉 viewCreation 时保留最新完整 frame；它必须在
+    /// foreground 后替换当前屏幕，不能降级成普通 output 追加。
+    private var pendingFrames: [UInt32: Data] = [:]
     /// 快照之后、建 view 之前到达的 live 字节。有上限，避免后台 TUI 把内存撑爆。
     private var pendingBackgroundOutput: [UInt32: Data] = [:]
     private static let stashedOutputCap = 256 * 1024
@@ -132,6 +135,7 @@ final class TerminalManager: TerminalInputHandler {
         pendingSeeds.removeAll()
         seedingPanes.removeAll()
         pendingSnapshots.removeAll()
+        pendingFrames.removeAll()
         pendingBackgroundOutput.removeAll()
         surfaceReadyPanes.removeAll()
         reportedResizeFailures.removeAll()
@@ -329,6 +333,17 @@ final class TerminalManager: TerminalInputHandler {
             }
             return
         }
+        if let data = pendingFrames.removeValue(forKey: paneId) {
+            // 完整 frame 是当前屏幕 baseline，不是首屏 snapshot seed；保持
+            // native scrollback，并把它放在已经缓存的 live 之前。
+            view.feedFull(data)
+            swiftTermSeeded.insert(paneId)
+            setSurfaceReady(paneId, true)
+            if let extra = pendingBackgroundOutput.removeValue(forKey: paneId) {
+                queueLiveOutput(paneId, data: extra)
+            }
+            return
+        }
         if let extra = pendingBackgroundOutput.removeValue(forKey: paneId) {
             swiftTermSeeded.insert(paneId)
             if let lines = savedHistory[paneId] {
@@ -476,6 +491,37 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    /// Runtime 的完整 `PaneFrame`：替换当前可见屏幕，保留 native
+    /// scrollback。它和 `PaneSnapshot` 的 reset/seed 语义不同，也不能把
+    /// 后续 `PaneOutput` 丢掉。
+    func handleFrame(paneId: UInt32, data: Data) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        if views[paneId] == nil {
+            guard viewCreationEnabled else {
+                // 该 frame 覆盖它之前缓存的增量；后续 output 会继续追加到
+                // 这个 baseline 之后。
+                pendingSnapshots.removeValue(forKey: paneId)
+                pendingFrames[paneId] = data
+                pendingBackgroundOutput.removeValue(forKey: paneId)
+                return
+            }
+        }
+        pendingFrames.removeValue(forKey: paneId)
+        pendingSnapshots.removeValue(forKey: paneId)
+        // full frame 覆盖已经排队但尚未送入 SwiftTerm 的旧 live 字节。
+        pendingFeeds.removeValue(forKey: paneId)
+        pendingSeeds.removeValue(forKey: paneId)
+        seedingPanes.remove(paneId)
+
+        let view = view(for: paneId)
+        ensureValidModelSize(view)
+        view.feedFull(data)
+        swiftTermSeeded.insert(paneId)
+        setSurfaceReady(paneId, true)
+        appendSnippet(data)
+        recordTraffic(bytes: data.count)
+    }
+
     /// Runtime 的权威 `PaneSnapshot`：一次 seed / 错格恢复。不是 Index dump。
     func handleSnapshot(paneId: UInt32, data: Data) {
         dispatchPrecondition(condition: .onQueue(.main))
@@ -486,6 +532,7 @@ final class TerminalManager: TerminalInputHandler {
             }
         }
         pendingSnapshots.removeValue(forKey: paneId)
+        pendingFrames.removeValue(forKey: paneId)
         let viewExisted = views[paneId] != nil
         let seededByBatch = viewsCreatedThisBatch.contains(paneId)
         if !seededByBatch {
@@ -640,6 +687,7 @@ final class TerminalManager: TerminalInputHandler {
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         pendingSnapshots.removeValue(forKey: paneId)
+        pendingFrames.removeValue(forKey: paneId)
         pendingBackgroundOutput.removeValue(forKey: paneId)
         surfaceReadyPanes.remove(paneId)
         savedHistory.removeValue(forKey: paneId)

@@ -16,7 +16,7 @@ use crate::core::protocol::ffi::api::{
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
-    STATE_BACKEND_STATUS, STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT,
+    STATE_BACKEND_STATUS, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT,
 };
 
 /// 从 FFI 拷贝出的事件。
@@ -319,6 +319,10 @@ impl CoreBridge {
 
     pub fn is_pane_output(ev: &BridgeEvent) -> bool {
         ev.type_ == STATE_PANE_OUTPUT
+    }
+
+    pub fn is_pane_frame(ev: &BridgeEvent) -> bool {
+        ev.type_ == STATE_PANE_FRAME
     }
 
     pub fn is_pane_snapshot(ev: &BridgeEvent) -> bool {
