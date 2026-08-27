@@ -30,6 +30,9 @@ pub const STATE_MUTATION_SETTLED: u32 = 16;
 pub const STATE_PANE_HISTORY: u32 = 17;
 /// Authoritative tab order changed; consumers should refresh tab metadata.
 pub const STATE_TAB_ORDER_CHANGED: u32 = 18;
+/// Complete terminal frame that replaces the current screen without resetting
+/// the native terminal scrollback. This is distinct from incremental output.
+pub const STATE_PANE_FRAME: u32 = 19;
 pub const STATE_OTHER: u32 = 99;
 
 // ── BackendStatus 编码到 CStateChange.pane_id ──────────────
@@ -166,8 +169,9 @@ mod tests {
                 STATE_MUTATION_SETTLED,
                 STATE_PANE_HISTORY,
                 STATE_TAB_ORDER_CHANGED,
+                STATE_PANE_FRAME,
             ],
-            [14, 15, 16, 17, 18]
+            [14, 15, 16, 17, 18, 19]
         );
     }
 }

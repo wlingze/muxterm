@@ -21,7 +21,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::core::protocol::ffi::types::{
-    STATE_PANE_CLOSED, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
+    STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::core::protocol::terminal::mirror::should_forward_parser_response;
@@ -92,6 +92,9 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
             match ev.type_ {
                 STATE_PANE_OUTPUT => {
                     term_mgr.feed_event(ev.pane_id, &ev.data);
+                }
+                STATE_PANE_FRAME => {
+                    term_mgr.feed_frame_event(ev.pane_id, &ev.data);
                 }
                 STATE_PANE_SNAPSHOT => {
                     term_mgr.replace_snapshot(ev.pane_id, &ev.data);

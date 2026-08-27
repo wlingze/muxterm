@@ -2166,7 +2166,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let events = bridge.pollEvents()
         // Core 已在 pollEvents() 中应用了这些状态变化。前台 Workspace 的
         // 每个 pane 都要吃 PTY（SURFACE.md §7：tab 栏上的页都算打开）。
-        lastPaneOutputEventCount = events.filter(\.isPaneOutput).count
+        lastPaneOutputEventCount = events.filter { $0.isPaneOutput || $0.isPaneFrame }.count
         if let error = bridge.takeError() {
             reportStatusError(error)
         }
@@ -2183,6 +2183,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             $0.type == STATE_PANE_RESIZED
         })
         var pendingSnapshots: [(paneId: UInt32, data: Data)] = []
+        var pendingFrames: [(paneId: UInt32, data: Data)] = []
         var pendingHistory: [(paneId: UInt32, data: Data)] = []
         var pendingOutputs: [(paneId: UInt32, data: Data)] = []
         for ev in events {
@@ -2200,6 +2201,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
                 }
+            } else if ev.isPaneFrame {
+                guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
+                    continue
+                }
+                // full frame 和 snapshot 一样必须等结构/尺寸收敛后再进
+                // SwiftTerm；但它只清可见网格，不 reset native scrollback。
+                if deferSurfaceEvents {
+                    pendingFrames.append((paneId: ev.paneId, data: ev.data))
+                } else {
+                    terminalManager.handleFrame(paneId: ev.paneId, data: ev.data)
+                }
+                outputSeen = true
             } else if ev.isPaneHistory {
                 guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
                     continue
@@ -2362,6 +2375,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for item in pendingSnapshots {
             if shouldHandleSurfaceEvent(paneId: item.paneId) {
                 terminalManager.handleSnapshot(paneId: item.paneId, data: item.data)
+            }
+        }
+        for item in pendingFrames {
+            if shouldHandleSurfaceEvent(paneId: item.paneId) {
+                terminalManager.handleFrame(paneId: item.paneId, data: item.data)
             }
         }
         for item in pendingHistory {

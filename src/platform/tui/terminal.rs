@@ -38,6 +38,12 @@ impl PaneTerminal {
         self.state.feed(data);
     }
 
+    /// 完整 frame 只替换当前可见网格，不重建终端状态或清空 scrollback。
+    pub fn feed_full(&mut self, data: &[u8]) {
+        self.state.feed(b"\x1b[2J\x1b[H");
+        self.state.feed(data);
+    }
+
     /// 运行时调整尺寸：保留屏幕 / 光标 / 滚动区域，不清空重放。
     ///
     /// 之前这里重建 `TerminalState` 并把 `fed_len` 清零，下次同步会从头
@@ -163,6 +169,26 @@ impl TerminalManager {
             .map(|p| (p.cols, p.rows))
             .unwrap_or((80, 24));
         self.feed(pane_id, cols, rows, data);
+    }
+
+    /// 事件驱动的完整 frame：清当前屏幕后按原始 ANSI 重画，不能当作
+    /// `PaneOutput` 追加，否则 Cursor/Pi 的 full frame 会逐帧堆叠。
+    pub fn feed_frame_event(&mut self, pane_id: u32, data: &[u8]) {
+        let (cols, rows) = self
+            .panes
+            .get(&pane_id)
+            .map(|p| (p.cols, p.rows))
+            .unwrap_or((80, 24));
+        let pt = self
+            .panes
+            .entry(pane_id)
+            .or_insert_with(|| PaneTerminal::new(cols.max(1), rows.max(1)));
+        pt.resize(cols, rows);
+        pt.feed_full(data);
+        if !self.forward_replies {
+            let _ = pt.take_reply();
+        }
+        pt.fed_len = data.len();
     }
 
     /// 用权威 snapshot 替换已有 pane 的 VT 状态；不可把它当增量 feed，
@@ -295,6 +321,20 @@ mod tests {
             pt.screen().iter().map(|s| trimmed(s)).collect::<Vec<_>>(),
             vec!["4", "5", "6"]
         );
+    }
+
+    #[test]
+    fn full_frame_replaces_visible_screen_and_keeps_following_delta() {
+        let mut mgr = TerminalManager::new();
+        mgr.feed_event(1, b"OLD_SCREEN");
+        mgr.feed_frame_event(1, b"NEW_SCREEN");
+        let visible = mgr.screen(1).unwrap().join("|");
+        assert!(visible.contains("NEW_SCREEN"));
+        assert!(!visible.contains("OLD_SCREEN"));
+
+        mgr.feed_event(1, b"_DIFF");
+        let visible = mgr.screen(1).unwrap().join("|");
+        assert!(visible.contains("NEW_SCREEN_DIFF"));
     }
 
     /// 查询应答从 TerminalState 冒泡出来，供前端回写 shell。

@@ -107,6 +107,41 @@ final class AgentRenderE2ETests: XCTestCase {
         window.orderOut(nil)
     }
 
+    /// Herdr 的连续 `terminal.frame(full=true)` 必须替换当前屏幕；它不是
+    /// `PaneOutput`，也不能走 SwiftTerm reset（否则 native scrollback 会丢）。
+    func testFullFramesReplaceScreenAndDiffFollowsWithoutReset() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 2,
+            frame: NSRect(x: 0, y: 0, width: 800, height: 400)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+
+        view.feedOutput(Data("old scrollback\r\nOLD_VISIBLE\r\n".utf8))
+        view.feedFull(Data("FULL_ONE\r\n".utf8))
+        view.feedFull(Data("FULL_TWO\r\n".utf8))
+        view.feedOutput(Data("DIFF_AFTER_FULL\r\n".utf8))
+        AppE2E.pump(40)
+
+        let text = view.visibleScreenText()
+        XCTAssertTrue(text.contains("FULL_TWO"), "最新 full frame 必须可见。got=\(text)")
+        XCTAssertTrue(
+            text.contains("DIFF_AFTER_FULL"),
+            "full frame 后的增量必须继续显示。got=\(text)"
+        )
+        XCTAssertFalse(text.contains("FULL_ONE"), "旧 full frame 不得残留。got=\(text)")
+        XCTAssertFalse(text.contains("OLD_VISIBLE"), "旧当前屏幕不得残留。got=\(text)")
+        XCTAssertEqual(view.snapshotResetCount, 0, "PaneFrame 不得调用 SwiftTerm reset")
+        window.orderOut(nil)
+    }
+
     func testAttachedCatPaneShowsCaret() throws {
         let one = OnePaneCat(label: "caret")
         let app = try AppE2E.attachWindow(socket: one.socket, session: one.session)

@@ -36,11 +36,11 @@ use super::types::{
     BACKEND_STATUS_EXITED, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF, LAYOUT_SPLIT_H,
     LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
     STATE_LAYOUT_CHANGED, STATE_MUTATION_SETTLED, STATE_OTHER, STATE_PANE_ADDED,
-    STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED, STATE_PANE_HISTORY, STATE_PANE_OUTPUT,
-    STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION,
-    STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_ORDER_CHANGED, STATE_TAB_RENAMED,
-    STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH,
-    TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
+    STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_HISTORY,
+    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED,
+    STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_ORDER_CHANGED,
+    STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB,
+    TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
     TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE,
     TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
@@ -1566,8 +1566,15 @@ pub unsafe extern "C" fn muxterm_execute_json(
 fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChange {
     let mut out = CStateChange::default();
     match ev {
-        StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
+        StateChange::PaneOutput { pane, data } => {
             out.type_ = STATE_PANE_OUTPUT;
+            out.pane_id = pane.0;
+            let (p, n) = handle.push_data(data);
+            out.data = p;
+            out.data_len = n;
+        }
+        StateChange::PaneFrame { pane, data } => {
+            out.type_ = STATE_PANE_FRAME;
             out.pane_id = pane.0;
             let (p, n) = handle.push_data(data);
             out.data = p;
@@ -2950,6 +2957,25 @@ mod tests {
                 !String::from_utf8_lossy(payload).contains("pane.agent_status_changed"),
                 "FFI payload 禁止泄漏 Herdr wire event 名"
             );
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_pane_frame_event_keeps_full_frame_type() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            let frame = StateChange::PaneFrame {
+                pane: PaneId(23),
+                data: b"\x1b[2J\x1b[Hlatest-frame".to_vec(),
+            };
+            let c_event = state_change_to_c(&mut *h, &frame);
+            assert_eq!(c_event.type_, STATE_PANE_FRAME);
+            assert_ne!(c_event.type_, STATE_PANE_OUTPUT);
+            assert_eq!(c_event.pane_id, 23);
+            let payload = std::slice::from_raw_parts(c_event.data, c_event.data_len);
+            assert_eq!(payload, b"\x1b[2J\x1b[Hlatest-frame");
             muxterm_free(h);
         }
     }

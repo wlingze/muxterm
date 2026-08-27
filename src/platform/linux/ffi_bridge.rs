@@ -21,7 +21,7 @@ use crate::core::protocol::ffi::api::{
 };
 use crate::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
-    STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT,
+    STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT,
 };
 
 /// 从 FFI 拷贝出的、可在 Rust 侧安全持有的事件。
@@ -416,6 +416,10 @@ impl CoreBridge {
         ev.type_ == STATE_PANE_OUTPUT
     }
 
+    pub fn is_pane_frame(ev: &BridgeEvent) -> bool {
+        ev.type_ == STATE_PANE_FRAME
+    }
+
     pub fn is_pane_snapshot(ev: &BridgeEvent) -> bool {
         ev.type_ == STATE_PANE_SNAPSHOT
     }
@@ -758,8 +762,8 @@ pub mod tasks {
 mod tests {
     use super::*;
     use crate::core::protocol::ffi::types::{
-        DIR_HORIZONTAL, DIR_VERTICAL, STATE_PANE_OUTPUT, TASK_CLOSE_PANE, TASK_CLOSE_TAB,
-        TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE,
+        DIR_HORIZONTAL, DIR_VERTICAL, STATE_PANE_FRAME, STATE_PANE_OUTPUT, TASK_CLOSE_PANE,
+        TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE,
         TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
     };
 
@@ -820,5 +824,19 @@ mod tests {
             ..ev
         };
         assert!(!CoreBridge::is_pane_output(&other));
+    }
+
+    #[test]
+    fn is_pane_frame_matches_only_full_frame_type() {
+        let ev = BridgeEvent {
+            type_: STATE_PANE_FRAME,
+            pane_id: 1,
+            tab_id: 0,
+            window_id: 0,
+            data: b"frame".to_vec(),
+            name: String::new(),
+        };
+        assert!(CoreBridge::is_pane_frame(&ev));
+        assert!(!CoreBridge::is_pane_output(&ev));
     }
 }

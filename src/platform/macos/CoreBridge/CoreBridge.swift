@@ -46,6 +46,10 @@ struct StateChange: Equatable {
     let name: String
 
     var isPaneOutput: Bool { type == STATE_PANE_OUTPUT }
+    /// A complete runtime frame replaces the current screen, but is not an
+    /// incremental output event. Keeping this bit at the bridge boundary
+    /// prevents full Herdr frames from being appended to the old screen.
+    var isPaneFrame: Bool { type == STATE_PANE_FRAME }
     /// A pane snapshot replaces the terminal surface; it is not an incremental
     /// `%output` event.  Keeping this distinction at the bridge boundary avoids
     /// feeding an attach/resync capture twice when a view is created.

@@ -231,6 +231,19 @@ final class MuxTerminalView: TerminalView {
         }
     }
 
+    /// 将 Runtime 的完整 frame 替换到当前屏幕。
+    ///
+    /// `PaneFrame` 不是 SwiftTerm 的 reset/seed：它只清当前可见网格并把
+    /// 原始 ANSI frame 从光标起点重画，保留 native scrollback、终端模式和
+    /// 用户当前历史容量。Herdr 的 full frame 通常不自带清屏序列，若直接
+    /// append 到旧屏幕，Cursor/Pi 的历史帧就会逐帧堆叠。
+    func feedFull(_ data: Data) {
+        var frame = Data(capacity: data.count + 7)
+        frame.append(contentsOf: [0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48])
+        frame.append(data)
+        feedOutput(frame)
+    }
+
     /// attach 前历史写入 native scrollback。不得 reset，也不得当 VT 流重放。
     func prependHistoryLines(_ lines: [String]) {
         guard !PaneHistorySeedPolicy.shouldResetTerminal() else { return }
