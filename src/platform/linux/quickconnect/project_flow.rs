@@ -18,6 +18,16 @@ pub enum ProjectConnectStage {
     AttachCreated,
 }
 
+/// Project/Recent 与 Existing 的连接意图。
+///
+/// Existing 是 attach-only：目标消失时必须报错，不能因为同名 session
+/// 不存在就偷偷创建一个新的工作区。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectConnectIntent {
+    AttachOnly,
+    CreateIfMissing,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectConnectState {
     /// 尝试 attach 已有 session。
@@ -39,17 +49,30 @@ pub struct ProjectConnectFlow {
     pub session: String,
     /// 创建 detached session 时使用的目录（twork 的 `-c <dir>`）。
     pub directory: String,
+    pub intent: ProjectConnectIntent,
     pub state: ProjectConnectState,
 }
 
 impl ProjectConnectFlow {
     pub fn new(config: &TargetConfig) -> Self {
+        Self::new_with_intent(config, ProjectConnectIntent::CreateIfMissing)
+    }
+
+    pub fn new_with_intent(config: &TargetConfig, intent: ProjectConnectIntent) -> Self {
         let trimmed_name = config.name.trim();
-        let session = if trimmed_name.is_empty() {
-            QuickConnect::default_name(&config.path)
-        } else {
-            trimmed_name.to_string()
-        };
+        let session = config
+            .session
+            .as_deref()
+            .map(str::trim)
+            .filter(|session| !session.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if trimmed_name.is_empty() {
+                    QuickConnect::default_name(&config.path)
+                } else {
+                    trimmed_name.to_string()
+                }
+            });
         let trimmed_path = config.path.trim();
         let directory = if trimmed_path.is_empty() {
             "~".into()
@@ -59,6 +82,7 @@ impl ProjectConnectFlow {
         ProjectConnectFlow {
             session: session.clone(),
             directory,
+            intent,
             state: ProjectConnectState::AttachExisting { session },
         }
     }
@@ -67,11 +91,19 @@ impl ProjectConnectFlow {
         self.state = ProjectConnectState::Done;
     }
 
-    pub fn attach_existing_failed(&mut self, _message: &str) {
+    pub fn attach_existing_failed(&mut self, message: &str) {
         if matches!(self.state, ProjectConnectState::AttachExisting { .. }) {
-            self.state = ProjectConnectState::CreateDetached {
-                session: self.session.clone(),
-                directory: self.directory.clone(),
+            self.state = match self.intent {
+                ProjectConnectIntent::CreateIfMissing => ProjectConnectState::CreateDetached {
+                    session: self.session.clone(),
+                    directory: self.directory.clone(),
+                },
+                ProjectConnectIntent::AttachOnly => {
+                    ProjectConnectState::Failed(ProjectConnectFailure {
+                        stage: ProjectConnectStage::AttachExisting,
+                        detail: message.to_string(),
+                    })
+                }
             };
         }
     }
@@ -119,6 +151,7 @@ mod tests {
         let flow = ProjectConnectFlow::new(&cfg("myproj", "~/Developer/self/muxterm"));
         assert_eq!(flow.session, "myproj");
         assert_eq!(flow.directory, "~/Developer/self/muxterm");
+        assert_eq!(flow.intent, ProjectConnectIntent::CreateIfMissing);
     }
 
     #[test]
@@ -142,6 +175,36 @@ mod tests {
         ));
         flow.attach_created_succeeded();
         assert_eq!(flow.state, ProjectConnectState::Done);
+    }
+
+    #[test]
+    fn attach_only_failure_is_terminal_and_never_creates() {
+        let mut flow =
+            ProjectConnectFlow::new_with_intent(&cfg("s", "~/x"), ProjectConnectIntent::AttachOnly);
+        flow.attach_existing_failed("session is gone");
+        assert!(matches!(
+            flow.state,
+            ProjectConnectState::Failed(ProjectConnectFailure {
+                stage: ProjectConnectStage::AttachExisting,
+                ..
+            })
+        ));
+        flow.create_succeeded();
+        assert!(matches!(
+            flow.state,
+            ProjectConnectState::Failed(ProjectConnectFailure {
+                stage: ProjectConnectStage::AttachExisting,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn existing_session_identity_beats_display_name() {
+        let mut config = cfg("display label", "~/x");
+        config.session = Some("actual-session".into());
+        let flow = ProjectConnectFlow::new_with_intent(&config, ProjectConnectIntent::AttachOnly);
+        assert_eq!(flow.session, "actual-session");
     }
 
     #[test]
