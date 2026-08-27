@@ -5060,6 +5060,19 @@ mod tests {
     }
 
     #[test]
+    fn disconnected_project_probe_converges_probing_to_unknown() {
+        let mut cache = HashMap::from([
+            ("pending".to_string(), ProjectExistence::Probing),
+            ("exists".to_string(), ProjectExistence::Exists),
+            ("missing".to_string(), ProjectExistence::Missing),
+        ]);
+        mark_probing_projects_unknown(&mut cache);
+        assert_eq!(cache["pending"], ProjectExistence::Unknown);
+        assert_eq!(cache["exists"], ProjectExistence::Exists);
+        assert_eq!(cache["missing"], ProjectExistence::Missing);
+    }
+
+    #[test]
     fn should_poll_status_respects_subscription() {
         let last = Instant::now() - Duration::from_secs(5);
         let now = Instant::now();

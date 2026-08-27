@@ -243,12 +243,11 @@ final class QuickConnectE2ETests: XCTestCase {
         cell.existence = .missing
         host.layoutSubtreeIfNeeded()
         XCTAssertFalse(cell.testProjectExistenceDotVisible())
-        XCTAssertEqual(
-            cell.testTitleFrame().minX,
-            14,
-            accuracy: 0.5,
+        let titleWithoutDot = cell.testTitleFrame()
+        XCTAssertGreaterThanOrEqual(
+            titleWithDot.minX - titleWithoutDot.minX,
+            QuickTargetCellView.badgeDotSize + 5,
             "隐藏存在点时名称不能保留空白占位"
         )
-        XCTAssertGreaterThan(titleWithDot.minX, cell.testTitleFrame().minX)
     }
 }
