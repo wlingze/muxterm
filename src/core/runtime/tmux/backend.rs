@@ -54,6 +54,8 @@ enum PendingQuery {
     DisplayMessage { pane: PaneId },
     /// capture-pane -e -p -t <pane>：恢复 attach 时 tmux 已存在的可见屏幕。
     CapturePane { pane: PaneId },
+    /// 后台可见屏 capture：只更新 Workspace Index，永远不能播种 Surface。
+    PaneIndexCapture { pane: PaneId },
     /// 可见屏 seed 之后按行回填 attach 前历史。不 pause。
     PaneHistory { pane: PaneId },
     /// display-message format：查询 resync 时需要重放的 VT 状态。
@@ -793,7 +795,6 @@ impl TmuxRuntime {
             .collect();
         for pane in panes {
             if self.background_capture_only.contains(&pane) && self.capture_grid_stale(pane) {
-                self.initial_capture_done.remove(&pane);
                 self.background_capture_only.remove(&pane);
                 self.query_capture_pane(pane);
                 continue;
@@ -807,12 +808,14 @@ impl TmuxRuntime {
             }
             if self.background_capture_only.contains(&pane) {
                 if self.initial_capture_pending.contains(&pane) {
-                    // 可见屏还在路上：等它完成即可，不要再排队一轮 pause seed。
+                    // 可见屏索引还在路上：等它完成；响应处理会再发真正的
+                    // Surface seed。索引快照永远不能直接升级成 Surface。
                     continue;
                 }
                 self.background_capture_only.remove(&pane);
-                self.initial_capture_done.insert(pane);
-                self.schedule_pane_history_backfill(pane);
+                // 兼容旧状态/测试中已经完成的后台索引：它仍然没有播种
+                // Surface，切入时必须另发前台 seed。
+                self.query_capture_pane(pane);
                 continue;
             }
             self.query_capture_pane(pane);
@@ -921,9 +924,11 @@ impl TmuxRuntime {
                     .map(|pane| pane.id)
                     .collect();
                 panes.len() >= *expected
-                    && panes
-                        .iter()
-                        .all(|pane| self.initial_capture_done.contains(pane))
+                    && panes.iter().all(|pane| {
+                        self.initial_capture_done.contains(pane)
+                            || (self.background_capture_only.contains(pane)
+                                && !self.initial_capture_pending.contains(pane))
+                    })
             })
     }
 
@@ -1209,6 +1214,7 @@ impl TmuxRuntime {
             PendingQuery::ReadyProbe { pane }
             | PendingQuery::DisplayMessage { pane }
             | PendingQuery::CapturePane { pane }
+            | PendingQuery::PaneIndexCapture { pane }
             | PendingQuery::PaneHistory { pane }
             | PendingQuery::PaneResyncState { pane, .. }
             | PendingQuery::PaneResyncCapture { pane, .. }
@@ -1901,6 +1907,9 @@ impl TmuxRuntime {
                                     Some(PendingQuery::CapturePane { pane }) => {
                                         self.capture_response_seen.insert(pane);
                                     }
+                                    Some(PendingQuery::PaneIndexCapture { pane }) => {
+                                        self.capture_response_seen.insert(pane);
+                                    }
                                     Some(PendingQuery::PaneResyncCapture {
                                         pane,
                                         generation,
@@ -2094,6 +2103,38 @@ impl TmuxRuntime {
                     );
                     let _ = self.dispatch_tmux_command(&c);
                 }
+                PendingQuery::PaneIndexCapture { pane } => {
+                    let mut data = capture_pane_bytes(&lines);
+                    let before_response =
+                        self.initial_capture_buf.remove(&pane).unwrap_or_default();
+                    let after_response =
+                        self.initial_capture_tail.remove(&pane).unwrap_or_default();
+                    let response_seen = self.capture_response_seen.remove(&pane);
+                    // `%begin` 之前的输出可能已经被 capture-pane 包含；只有
+                    // 响应边界之后的输出才需要追加到 Index 快照。直接调用
+                    // dispatch_response 的单测没有边界，保留旧 fallback 语义。
+                    if response_seen {
+                        data.extend_from_slice(&after_response);
+                    } else {
+                        data.extend_from_slice(&before_response);
+                        data.extend_from_slice(&after_response);
+                    }
+                    self.initial_capture_pending.remove(&pane);
+                    // Index 的空快照也有意义：它替换旧索引，不能让已经消失
+                    // 的 agent 文本继续出现在搜索/attention 中。
+                    self.events
+                        .push_back(StateChange::PaneIndexSnapshot { pane, data });
+                    self.trim_event_queue();
+                    // 用户可能在后台索引响应返回前切入了这个 tab；索引
+                    // capture 仍不是 Surface seed，此时必须另发前台 seed。
+                    if self
+                        .pane_tab(pane)
+                        .is_some_and(|tab| self.tab_is_active(tab))
+                    {
+                        self.background_capture_only.remove(&pane);
+                        self.query_capture_pane(pane);
+                    }
+                }
                 PendingQuery::CapturePane { pane } => {
                     // capture-pane -p 按行返回当前可见屏幕。attach 必须按网
                     // 格地址铺，不能 trim 掉 TUI 底栏空行；非 attach 的索引
@@ -2135,6 +2176,7 @@ impl TmuxRuntime {
                             data
                         };
                         self.outputs.insert(pane, snapshot.clone());
+                        self.surface_seed_locked.insert(pane);
                         // 空屏也是权威快照：前端才能把 host 从 seeding 里放出来。
                         self.events.push_back(StateChange::PaneSnapshot {
                             pane,
@@ -2266,6 +2308,40 @@ impl TmuxRuntime {
         let _err_lines = self.response_accum.remove(&number).unwrap_or_default();
         if let Some(q) = self.pending_by_number.remove(&number) {
             match q {
+                PendingQuery::PaneIndexCapture { pane } => {
+                    self.initial_capture_pending.remove(&pane);
+                    self.background_capture_only.remove(&pane);
+                    let before_response =
+                        self.initial_capture_buf.remove(&pane).unwrap_or_default();
+                    let after_response =
+                        self.initial_capture_tail.remove(&pane).unwrap_or_default();
+                    let response_seen = self.capture_response_seen.remove(&pane);
+                    let fallback = if response_seen {
+                        after_response
+                    } else {
+                        let mut combined = before_response;
+                        combined.extend_from_slice(&after_response);
+                        combined
+                    };
+                    if !fallback.is_empty() {
+                        // 索引查询失败时，暂存的实时字节仍然是普通 live
+                        // 输出；不要伪造 Surface snapshot，也不要把失败的
+                        // 索引当成 Surface 已就绪。
+                        self.push_pane_output(pane, fallback);
+                    }
+                    if self
+                        .pane_tab(pane)
+                        .is_some_and(|tab| self.tab_is_active(tab))
+                    {
+                        self.query_capture_pane(pane);
+                    }
+                    tracing::warn!(
+                        target = "muxterm::tmux",
+                        pane = pane.0,
+                        number,
+                        "background pane index capture failed"
+                    );
+                }
                 PendingQuery::CapturePane { pane } => {
                     self.initial_capture_pending.remove(&pane);
                     self.initial_capture_done.insert(pane);
@@ -2521,7 +2597,13 @@ impl TmuxRuntime {
                     // attach 后新建的 pane 没有旧历史，不要再发 `-S -10000`。
                     self.history_backfill_done.insert(pane.id);
                 }
-                self.query_capture_pane_visible(pane.id);
+                if active {
+                    // attach 完成后活动 tab 的新 pane 仍必须得到 Surface
+                    // snapshot；后台 Index capture 只能用于隐藏 tab。
+                    self.query_surface_capture_pane_visible(pane.id);
+                } else {
+                    self.query_capture_pane_visible(pane.id);
+                }
             }
             return;
         }
@@ -2673,6 +2755,7 @@ impl TmuxRuntime {
                 matches!(
                     query,
                     PendingQuery::CapturePane { pane: pending }
+                        | PendingQuery::PaneIndexCapture { pane: pending }
                         | PendingQuery::PaneResyncState {
                             pane: pending, ..
                         }
@@ -2789,6 +2872,7 @@ impl TmuxRuntime {
                 matches!(
                     query,
                     PendingQuery::CapturePane { pane: pending }
+                        | PendingQuery::PaneIndexCapture { pane: pending }
                         | PendingQuery::PaneResyncState {
                             pane: pending, ..
                         }
@@ -2808,6 +2892,41 @@ impl TmuxRuntime {
             self.capture_response_seen.remove(&pane);
             self.initial_capture_pending.insert(pane);
             self.background_capture_only.insert(pane);
+            self.replace_last_pending(PendingQuery::PaneIndexCapture { pane });
+        }
+    }
+
+    /// attach 完成后活动 tab 的轻量 Surface seed。它不 pause，避免新建
+    /// pane 与 list-windows/list-panes 争抢 SSH 控制通道，但它仍然必须走
+    /// `CapturePane`，不能误登记为只给 Index 的 `PaneIndexCapture`。
+    fn query_surface_capture_pane_visible(&mut self, pane: PaneId) {
+        if !self.is_attach_mode()
+            || self.deferred_attach_seeds.contains(&pane)
+            || self.resyncs.contains_key(&pane)
+            || self.pending_queries.iter().any(|query| {
+                matches!(
+                    query,
+                    PendingQuery::CapturePane { pane: pending }
+                        | PendingQuery::PaneIndexCapture { pane: pending }
+                        | PendingQuery::PaneResyncState {
+                            pane: pending, ..
+                        }
+                        | PendingQuery::PaneResyncCapture { pane: pending, .. }
+                        if *pending == pane
+                )
+            })
+            || self.initial_capture_done.contains(&pane)
+        {
+            return;
+        }
+        let line = cmd::capture_pane_visible(pane).to_line();
+        if self.dispatch_command(line).is_ok() {
+            self.record_capture_grid(pane);
+            self.initial_capture_buf.remove(&pane);
+            self.initial_capture_tail.remove(&pane);
+            self.capture_response_seen.remove(&pane);
+            self.initial_capture_pending.insert(pane);
+            self.background_capture_only.remove(&pane);
             self.replace_last_pending(PendingQuery::CapturePane { pane });
         }
     }
@@ -4792,6 +4911,109 @@ mod tests {
     }
 
     #[test]
+    fn background_index_capture_is_not_a_surface_seed() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(10);
+        b.pending_by_number
+            .insert(1, PendingQuery::PaneIndexCapture { pane });
+
+        b.dispatch_response(1, vec!["PI_STATUS".into(), "PROMPT>".into()]);
+
+        assert!(!b.initial_capture_pending.contains(&pane));
+        assert!(!b.initial_capture_done.contains(&pane));
+        assert!(!b.surface_seed_locked.contains(&pane));
+        assert!(!b.outputs.contains_key(&pane));
+        assert!(b.events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneIndexSnapshot { pane: event_pane, data }
+                if *event_pane == pane && data.starts_with(b"PI_STATUS")
+        )));
+        assert!(!b
+            .events
+            .iter()
+            .any(|event| matches!(event, StateChange::PaneSnapshot { pane: event_pane, .. } if *event_pane == pane)));
+    }
+
+    #[test]
+    fn background_index_capture_registers_as_index_query() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+
+        b.query_capture_pane_visible(PaneId(11));
+
+        assert!(b.pending_queries.iter().any(|query| matches!(
+            query,
+            PendingQuery::PaneIndexCapture { pane } if *pane == PaneId(11)
+        )));
+        assert!(!b.pending_queries.iter().any(|query| matches!(
+            query,
+            PendingQuery::CapturePane { pane } if *pane == PaneId(11)
+        )));
+    }
+
+    #[test]
+    fn completed_background_index_requires_foreground_surface_seed() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(12);
+        b.tabs = vec![TabInfo {
+            id: TabId(2),
+            name: "background".into(),
+            active: false,
+        }];
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: false,
+            title: String::new(),
+            cols: 80,
+            rows: 24,
+        });
+        b.background_capture_only.insert(pane);
+
+        b.mark_tab_active(TabId(2));
+        b.query_capture_tab(TabId(2));
+
+        let _ = drain_tmux_cmds(&mut rx);
+        assert!(!b.initial_capture_done.contains(&pane));
+        assert!(!b.background_capture_only.contains(&pane));
+        assert!(b.resyncs.contains_key(&pane));
+        assert!(b.paused_panes.contains(&pane));
+    }
+
+    #[test]
+    fn background_index_capture_error_falls_back_without_surface_seed() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(13);
+        b.initial_capture_pending.insert(pane);
+        b.background_capture_only.insert(pane);
+        b.initial_capture_buf
+            .insert(pane, b"live-index-fallback".to_vec());
+        b.pending_by_number
+            .insert(1, PendingQuery::PaneIndexCapture { pane });
+
+        b.handle_response_error(1);
+
+        assert!(!b.initial_capture_pending.contains(&pane));
+        assert!(!b.initial_capture_done.contains(&pane));
+        assert!(!b.background_capture_only.contains(&pane));
+        assert!(!b.surface_seed_locked.contains(&pane));
+        assert_eq!(b.outputs.get(&pane), Some(&b"live-index-fallback".to_vec()));
+        assert!(b.events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneOutput { pane: event_pane, data }
+                if *event_pane == pane && data == b"live-index-fallback"
+        )));
+        assert!(!b.events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneSnapshot { pane: event_pane, .. }
+                if *event_pane == pane
+        )));
+    }
+
+    #[test]
     fn client_size_overrides_default_tmux_grid() {
         let mut b = TmuxRuntime::new(None);
         assert_eq!(b.config.cols, Some(80));
@@ -4874,13 +5096,19 @@ mod tests {
             b"\x1b[H\x1b[1Hold command\x1b[2Hprompt$ "
         );
 
-        // 快照完成后，后续输出恢复为普通增量。
+        // 快照完成后，后续输出恢复为普通增量事件；outputs 保持权威
+        // Surface seed，不再把 live 字节混进下一次内部快照缓冲。
         b.handle_message(Message::Output {
             pane,
             content: b"live\r\n".to_vec(),
             raw_content: "live\\r\\n".into(),
         });
-        assert!(b.outputs.get(&pane).unwrap().ends_with(b"live\r\n"));
+        assert!(!b.outputs.get(&pane).unwrap().ends_with(b"live\r\n"));
+        assert!(b.events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneOutput { pane: event_pane, data }
+                if *event_pane == pane && data == b"live\r\n"
+        )));
     }
 
     #[test]
@@ -4990,17 +5218,23 @@ mod tests {
             b"\x1b[H\x1b[1Hscreen linelive-during-capture\r\n"
         );
 
-        // 之后 %output 恢复为普通增量。
+        // 之后 %output 恢复为普通增量事件，而不是追加到权威 snapshot
+        // 缓冲，避免下一次渲染把历史网格和 live CUP 混在一起。
         b.handle_message(Message::Output {
             pane,
             content: b"after-capture\r\n".to_vec(),
             raw_content: "after-capture\\r\\n".into(),
         });
-        assert!(b
+        assert!(!b
             .outputs
             .get(&pane)
             .unwrap()
             .ends_with(b"after-capture\r\n"));
+        assert!(b.events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneOutput { pane: event_pane, data }
+                if *event_pane == pane && data == b"after-capture\r\n"
+        )));
     }
 
     /// F3：capture 完成前 live 不得进 VTE（事件层）——快照前无 PaneOutput 事件；
@@ -5513,7 +5747,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_switch_does_not_pause_already_indexed_pane() {
+    fn tab_switch_promotes_indexed_pane_to_surface_seed() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         b.cmd_tx = Some(tx);
@@ -5540,54 +5774,26 @@ mod tests {
             rows: 24,
         });
         b.background_capture_only.insert(pane);
-        b.initial_capture_done.insert(pane);
 
         b.mark_tab_active(TabId(2));
         b.query_capture_tab(TabId(2));
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            !cmds.iter().any(|cmd| cmd.contains("pause")),
-            "已有可见屏索引的 tab 切过去不得再 pause: {cmds:?}"
+            cmds.iter().any(|cmd| cmd.contains("pause")),
+            "只有 Index 的 tab 切入必须启动 Surface seed: {cmds:?}"
         );
         assert!(
-            !cmds
-                .iter()
-                .any(|cmd| cmd.contains("capture-pane -e -p -N -t") && !cmd.contains("-S ")),
-            "切 tab 不得再抓可见屏: {cmds:?}"
+            !cmds.iter().any(|cmd| cmd.contains("capture-pane")),
+            "Surface seed 应先完成 display-message 边界: {cmds:?}"
         );
         assert!(
             !cmds.iter().any(|cmd| cmd.contains("-S -")),
             "切 tab 当拍不得抓 1 万行历史: {cmds:?}"
         );
-        assert!(b.history_backfill_wanted.contains(&pane));
-        assert!(b.initial_capture_done.contains(&pane));
+        assert!(!b.history_backfill_wanted.contains(&pane));
+        assert!(!b.initial_capture_done.contains(&pane));
         assert!(!b.background_capture_only.contains(&pane));
-        assert!(!b.resyncs.contains_key(&pane));
-
-        b.history_backfill_hold = false;
-        b.flush_deferred_history_backfill();
-        let history = drain_tmux_cmds(&mut rx);
-        assert!(
-            history
-                .iter()
-                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
-            "控制通道空闲后才按行补历史: {history:?}"
-        );
-        assert!(b.history_backfill_pending.contains(&pane));
-
-        b.history_backfill_done.insert(pane);
-        b.history_backfill_pending.remove(&pane);
-        b.history_backfill_wanted.remove(&pane);
-        b.mark_tab_active(TabId(1));
-        b.mark_tab_active(TabId(2));
-        b.query_capture_tab(TabId(2));
-        let again = drain_tmux_cmds(&mut rx);
-        assert!(
-            !again
-                .iter()
-                .any(|cmd| cmd.contains("capture-pane") || cmd.contains("pause")),
-            "历史已经补过的 tab 再切回来不得再抓: {again:?}"
-        );
+        assert!(b.resyncs.contains_key(&pane));
     }
 
     #[test]
@@ -5618,7 +5824,6 @@ mod tests {
             rows: 25,
         });
         b.background_capture_only.insert(pane);
-        b.initial_capture_done.insert(pane);
         b.capture_grid.insert(pane, (94, 25));
 
         b.mark_tab_active(TabId(2));
@@ -7521,7 +7726,6 @@ mod tests {
         b.expected_panes_per_window.insert(TabId(1), 1);
         b.initial_capture_done.insert(PaneId(0));
         b.history_backfill_done.insert(PaneId(0));
-        b.initial_capture_done.insert(PaneId(1));
         b.background_capture_only.insert(PaneId(1));
 
         b.handle_list_windows_response(vec![
@@ -7545,7 +7749,7 @@ mod tests {
             "新建 tab 不得把其它 tab 的历史标成已完成"
         );
         assert!(b.initial_capture_done.contains(&PaneId(0)));
-        assert!(b.initial_capture_done.contains(&PaneId(1)));
+        assert!(!b.initial_capture_done.contains(&PaneId(1)));
 
         b.pending_queries.clear();
         b.handle_list_panes_response(TabId(2), vec!["0: [80x24] %9 (active)".into()]);
@@ -7572,13 +7776,43 @@ mod tests {
         b.query_capture_tab(TabId(1));
         let first_open = drain_tmux_cmds(&mut rx);
         assert!(
-            !first_open.iter().any(|cmd| cmd.contains("pause")),
-            "第一次点从未打开的 tab 仍不得 pause: {first_open:?}"
+            first_open.iter().any(|cmd| cmd.contains("pause")),
+            "只有 Index 的 tab 首次点入必须启动 Surface seed: {first_open:?}"
         );
         assert!(
             !first_open.iter().any(|cmd| cmd.contains("-S -")),
             "切 tab 当拍不得抓历史: {first_open:?}"
         );
+
+        let generation = b
+            .resyncs
+            .get(&PaneId(1))
+            .map(|resync| resync.generation)
+            .expect("首次切入应创建 Surface seed");
+        b.pending_by_number.insert(
+            101,
+            PendingQuery::PaneResyncState {
+                pane: PaneId(1),
+                generation,
+            },
+        );
+        b.dispatch_response(101, Vec::new());
+        let _ = drain_tmux_cmds(&mut rx);
+        b.pending_by_number.insert(
+            102,
+            PendingQuery::PaneResyncCapture {
+                pane: PaneId(1),
+                alternate: false,
+                generation,
+            },
+        );
+        b.dispatch_response(102, vec!["screen".into()]);
+        // 这里直接调用 dispatch_response，模拟真实 reader 已经从 FIFO
+        // pending_queries 弹出了响应；清掉测试中的占位，才能验证历史
+        // 回填不会被一个已完成的 capture 阻塞。
+        b.pending_queries.clear();
+        assert!(b.initial_capture_done.contains(&PaneId(1)));
+
         b.history_backfill_hold = false;
         b.flush_deferred_history_backfill();
         let history = drain_tmux_cmds(&mut rx);
