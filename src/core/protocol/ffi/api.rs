@@ -123,6 +123,14 @@ impl MuxtermHandle {
         }
     }
 
+    /// 把产品事件交给 FFI 队列。Index 快照已经由 Workspace 消费，不能
+    /// 再作为没有 Workspace 身份的像素事件外发给平台层。
+    fn defer_event(&mut self, workspace_id: WorkspaceId, event: StateChange) {
+        if should_export_state_change(&event) {
+            self.deferred_events.push_back((workspace_id, event));
+        }
+    }
+
     /// 把一批事件里的 PaneOutput 信号应用到注意力引擎。
     fn apply_attention_for_events(&mut self, ws_id: &WorkspaceId, events: &[StateChange]) {
         let mut pending: Vec<(u32, Vec<AttentionSignal>, String, u64)> = Vec::new();
@@ -164,6 +172,15 @@ impl MuxtermHandle {
             self.attention.set_process_name(&ws_name, pane, name);
         }
     }
+}
+
+/// 判断 StateChange 是否属于平台 FFI 的 Surface/结构事件。
+///
+/// `PaneIndexSnapshot` 只更新 Core 的搜索/attention Index；如果把它序列化
+/// 成 C 事件，macOS/Linux 可能把 capture dump 再灌进唯一终端 Surface，正是
+/// Cursor/Pi 历史错乱的来源之一。
+fn should_export_state_change(event: &StateChange) -> bool {
+    !matches!(event, StateChange::PaneIndexSnapshot { .. })
 }
 
 fn cstr_opt(p: *const c_char) -> Option<String> {
@@ -1727,7 +1744,7 @@ pub unsafe extern "C" fn muxterm_poll_events(
         for (ws_id, events) in handle.pool_mut().poll_background() {
             handle.apply_attention_for_events(&ws_id, &events);
             for ev in events {
-                handle.deferred_events.push_back((ws_id.clone(), ev));
+                handle.defer_event(ws_id.clone(), ev);
             }
         }
         let active_id = handle.pool().active_id().cloned();
@@ -1736,7 +1753,7 @@ pub unsafe extern "C" fn muxterm_poll_events(
             if let Some(ws_id) = &active_id {
                 handle.apply_attention_for_events(ws_id, &events);
                 for ev in events {
-                    handle.deferred_events.push_back((ws_id.clone(), ev));
+                    handle.defer_event(ws_id.clone(), ev);
                 }
             }
         }
@@ -1807,7 +1824,7 @@ pub unsafe extern "C" fn muxterm_poll_workspace_events(
         for (ws_id, events) in handle.pool_mut().poll_background() {
             handle.apply_attention_for_events(&ws_id, &events);
             for ev in events {
-                handle.deferred_events.push_back((ws_id.clone(), ev));
+                handle.defer_event(ws_id.clone(), ev);
             }
         }
         let active_id = handle.pool().active_id().cloned();
@@ -1816,7 +1833,7 @@ pub unsafe extern "C" fn muxterm_poll_workspace_events(
             if let Some(ws_id) = &active_id {
                 handle.apply_attention_for_events(ws_id, &events);
                 for ev in events {
-                    handle.deferred_events.push_back((ws_id.clone(), ev));
+                    handle.defer_event(ws_id.clone(), ev);
                 }
             }
         }
@@ -2860,6 +2877,28 @@ mod tests {
     use crate::core::protocol::ffi::types::DIR_HORIZONTAL;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn ffi_export_policy_filters_index_snapshots_only() {
+        assert!(!should_export_state_change(
+            &StateChange::PaneIndexSnapshot {
+                pane: PaneId(1),
+                data: b"index".to_vec(),
+            }
+        ));
+        assert!(should_export_state_change(&StateChange::PaneOutput {
+            pane: PaneId(1),
+            data: b"live".to_vec(),
+        }));
+        assert!(should_export_state_change(&StateChange::PaneSnapshot {
+            pane: PaneId(1),
+            data: b"surface".to_vec(),
+        }));
+        assert!(should_export_state_change(&StateChange::PaneHistory {
+            pane: PaneId(1),
+            data: b"history".to_vec(),
+        }));
+    }
 
     #[test]
     fn ffi_pane_agent_event_uses_runtime_neutral_json() {
