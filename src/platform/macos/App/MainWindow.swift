@@ -1422,14 +1422,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             appActive: NSApp.isActive,
             overlayIsKey: overlayOwnsFocus()
         ) else { return }
+        guard let window else { return }
         // Surface 尚未挂进 hierarchy 时，AppKit 的 makeFirstResponder 会
         // 触发 IMK mach-port 错误。seed 完成走 onSurfaceBecameReady 再抢一次。
         guard TerminalInputFocusPolicy.shouldAttemptFocus(
             surfaceReady: terminalManager.isSurfaceReady(for: paneId),
-            inWindow: view.window != nil
+            inWindow: view.window === window,
+            windowVisible: window.isVisible,
+            windowKey: window.isKeyWindow,
+            appActive: NSApp.isActive
         ) else { return }
-        if window?.firstResponder !== view {
-            window?.makeFirstResponder(view)
+        if window.firstResponder !== view {
+            window.makeFirstResponder(view)
         }
     }
 
