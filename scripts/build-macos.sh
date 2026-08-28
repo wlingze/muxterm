@@ -62,9 +62,15 @@ ln -sfn "$(cd "$(dirname "$LIBMUXTERM")" && pwd)/libmuxterm.a" "$MACOS_DIR/Vendo
 echo "==> patch SwiftTerm min-contrast"
 "$ROOT/scripts/patch-swiftterm.sh"
 
-echo "==> swift build -c release"
+# SwiftPM 不跟踪 unsafe linker flag 指向的外部静态库内容。Rust-only 修改后
+# 直接 `swift build` 可能复用上一次已链接的 MuxtermApp，造成测试跑新 core、
+# 实际 .app 仍带旧 libmuxterm.a。每次打包都清掉 Swift 产物，强制重新链接。
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+echo "==> swift package clean (refresh libmuxterm.a linkage)"
 cd "$MACOS_DIR"
+swift package clean
+
+echo "==> swift build -c release"
 swift build -c release
 
 SWIFT_BIN="$(swift build -c release --show-bin-path)/MuxtermApp"
