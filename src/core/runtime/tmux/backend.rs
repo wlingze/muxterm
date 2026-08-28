@@ -417,15 +417,14 @@ fn parse_bool_field(fields: &[&str], index: usize) -> bool {
         .is_some_and(|v| *v == "1" || *v == "on" || *v == "true")
 }
 
-/// Cursor / htop 等 TUI 即使 `alternate_on=0`（primary 屏）也可能持续原地重绘。
-/// 对它们抓 `-S` 历史会把旧重绘网格误当成线性 scrollback；真实 pi 还可能
-/// 不开 mouse mode，因此必须同时识别前台 agent 命令（dogfood 1320）。
+/// alternate screen / mouse TUI 的 tmux history 是重绘网格，不是线性消息，
+/// 不能回填。primary-screen 且不开 mouse 的 pi/Cursor 则相反：`-E -1`
+/// 只抓可见屏之前的物理行，清洗后是用户唯一可滚动的历史（dogfood 1437）。
 fn should_skip_history_backfill(state: Option<&PaneReplayState>) -> bool {
     let Some(state) = state else {
         return false;
     };
     state.alternate_on
-        || is_interactive_agent_command(&state.current_command)
         || (should_restore_mouse_modes(state)
             && (state.mouse_any_flag
                 || state.mouse_all_flag
@@ -443,22 +442,6 @@ fn command_executable_name(command: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase()
-}
-
-/// 已知交互式 coding agent 都会原地重绘，不能把它们的 tmux grid history
-/// 当成普通 shell 行回填。`pi` 很短，只允许 exact / `pi-*` / `pi_*`，避免
-/// 把 `ping`、`pilot` 等普通命令误判。
-fn is_interactive_agent_command(command: &str) -> bool {
-    const KNOWN_AGENTS: &[&str] = &[
-        "pi", "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline",
-        "goose", "amp", "grok", "windsurf", "kiro",
-    ];
-    let executable = command_executable_name(command);
-    KNOWN_AGENTS.iter().any(|agent| {
-        executable == *agent
-            || executable.starts_with(&format!("{agent}-"))
-            || executable.starts_with(&format!("{agent}_"))
-    })
 }
 
 /// pane_current_command 已回到交互 shell 且不在 alternate screen 时，tmux
@@ -5539,7 +5522,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_pi_without_mouse_modes_skips_history_backfill() {
+    fn primary_pi_without_mouse_modes_keeps_text_history_backfill() {
         let pi = parse_pane_replay_state(
             "0|24|1|block|1|0|||0|1|0|0|0|0|0|0|0|0|0|1|/opt/homebrew/bin/pi",
         );
@@ -5550,8 +5533,8 @@ mod tests {
         assert!(!pi.mouse_button_flag);
         assert!(!pi.mouse_sgr_flag);
         assert!(
-            should_skip_history_backfill(Some(&pi)),
-            "primary-screen pi 也属于持续原地重绘的交互 agent，不能把 capture-pane -S 当历史回填"
+            !should_skip_history_backfill(Some(&pi)),
+            "primary-screen/no-mouse pi 的离屏消息必须作为清洗后的 native history 回填"
         );
     }
 
@@ -6430,7 +6413,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_pi_initial_seed_never_queues_history_capture() {
+    fn primary_pi_initial_seed_queues_history_after_surface_snapshot() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         b.cmd_tx = Some(tx);
@@ -6458,11 +6441,10 @@ mod tests {
             "pi 首屏 seed 后必须立即 continue: {cmds:?}"
         );
         assert!(
-            !cmds.iter().any(|cmd| cmd.contains("-S -")),
-            "primary/no-mouse pi 不得抓线性历史: {cmds:?}"
+            b.history_backfill_wanted.contains(&pane) || b.history_backfill_pending.contains(&pane),
+            "pi history 必须在首屏/continue 后进入异步回填队列；cmds={cmds:?}"
         );
-        assert!(!b.history_backfill_wanted.contains(&pane));
-        assert!(b.alternate_screen_panes.contains(&pane));
+        assert!(!b.alternate_screen_panes.contains(&pane));
         assert!(b.surface_seed_locked.contains(&pane));
     }
 
@@ -6522,7 +6504,7 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_history_for_alt_mouse_or_agent_tui() {
+    fn should_skip_history_only_for_alt_or_active_mouse_tui() {
         let mut state = PaneReplayState {
             cursor_x: 0,
             cursor_y: 0,
@@ -6556,7 +6538,10 @@ mod tests {
         assert!(should_skip_history_backfill(Some(&state)));
         state.mouse_sgr_flag = false;
         state.current_command = "/usr/local/bin/cursor-agent".into();
-        assert!(should_skip_history_backfill(Some(&state)));
+        assert!(
+            !should_skip_history_backfill(Some(&state)),
+            "primary/no-mouse Cursor 也必须保留可滚动消息历史"
+        );
     }
 
     #[test]
