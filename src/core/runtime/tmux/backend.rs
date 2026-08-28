@@ -419,18 +419,48 @@ fn parse_bool_field(fields: &[&str], index: usize) -> bool {
         .is_some_and(|v| *v == "1" || *v == "on" || *v == "true")
 }
 
-/// Cursor / htop 等 TUI 即使 `alternate_on=0`（primary 屏）也常开 mouse。
-/// 对它们抓 `-S` 历史再 ESC[2J 回放会把旧 shell 行混进当前屏（dogfood 2152）。
+/// Cursor / htop 等 TUI 即使 `alternate_on=0`（primary 屏）也可能持续原地重绘。
+/// 对它们抓 `-S` 历史会把旧重绘网格误当成线性 scrollback；真实 pi 还可能
+/// 不开 mouse mode，因此必须同时识别前台 agent 命令（dogfood 1320）。
 fn should_skip_history_backfill(state: Option<&PaneReplayState>) -> bool {
     let Some(state) = state else {
         return false;
     };
     state.alternate_on
+        || is_interactive_agent_command(&state.current_command)
         || (should_restore_mouse_modes(state)
             && (state.mouse_any_flag
                 || state.mouse_all_flag
                 || state.mouse_sgr_flag
                 || state.mouse_button_flag))
+}
+
+fn command_executable_name(command: &str) -> String {
+    command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('-')
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// 已知交互式 coding agent 都会原地重绘，不能把它们的 tmux grid history
+/// 当成普通 shell 行回填。`pi` 很短，只允许 exact / `pi-*` / `pi_*`，避免
+/// 把 `ping`、`pilot` 等普通命令误判。
+fn is_interactive_agent_command(command: &str) -> bool {
+    const KNOWN_AGENTS: &[&str] = &[
+        "pi", "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline",
+        "goose", "amp", "grok", "windsurf", "kiro",
+    ];
+    let executable = command_executable_name(command);
+    KNOWN_AGENTS.iter().any(|agent| {
+        executable == *agent
+            || executable.starts_with(&format!("{agent}-"))
+            || executable.starts_with(&format!("{agent}_"))
+    })
 }
 
 /// pane_current_command 已回到交互 shell 且不在 alternate screen 时，tmux
@@ -441,15 +471,7 @@ fn should_restore_mouse_modes(state: &PaneReplayState) -> bool {
 }
 
 fn is_interactive_shell_command(command: &str) -> bool {
-    let executable = command
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches('-')
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let executable = command_executable_name(command);
     matches!(
         executable.as_str(),
         "sh" | "ash"
@@ -2325,6 +2347,20 @@ impl TmuxRuntime {
             snapshot = snapshot[snapshot.len() - MAX_PANE_OUTPUT_BYTES..].to_vec();
         }
         let skip_history = should_skip_history_backfill(resync.state.as_ref());
+        if let Some(state) = resync.state.as_ref() {
+            tracing::debug!(
+                target: "muxterm::tmux::seed",
+                pane = pane.0,
+                command = %state.current_command,
+                alternate_on = state.alternate_on,
+                mouse_all = state.mouse_all_flag,
+                mouse_any = state.mouse_any_flag,
+                mouse_button = state.mouse_button_flag,
+                mouse_sgr = state.mouse_sgr_flag,
+                skip_history,
+                "classified pane history backfill"
+            );
+        }
         if skip_history {
             self.alternate_screen_panes.insert(pane);
         } else {
@@ -5491,6 +5527,23 @@ mod tests {
     }
 
     #[test]
+    fn primary_pi_without_mouse_modes_skips_history_backfill() {
+        let pi = parse_pane_replay_state(
+            "0|24|1|block|1|0|||0|1|0|0|0|0|0|0|0|0|0|1|/opt/homebrew/bin/pi",
+        );
+
+        assert!(!pi.alternate_on);
+        assert!(!pi.mouse_all_flag);
+        assert!(!pi.mouse_any_flag);
+        assert!(!pi.mouse_button_flag);
+        assert!(!pi.mouse_sgr_flag);
+        assert!(
+            should_skip_history_backfill(Some(&pi)),
+            "primary-screen pi 也属于持续原地重绘的交互 agent，不能把 capture-pane -S 当历史回填"
+        );
+    }
+
+    #[test]
     fn alternate_screen_shell_process_keeps_live_mouse_modes() {
         let state = parse_pane_replay_state("0|0|1|block|1|1|||0|1|0|0|0|0|1|0|1|0|0|1|bash");
         let snapshot = build_pane_snapshot(Some(&state), b"", b"SHELL TUI", b"");
@@ -6365,6 +6418,43 @@ mod tests {
     }
 
     #[test]
+    fn primary_pi_initial_seed_never_queues_history_capture() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(121);
+        b.resyncs.insert(
+            pane,
+            PaneResync {
+                generation: 1,
+                initial: true,
+                pause_client: true,
+                state: Some(parse_pane_replay_state(
+                    "0|24|1|block|1|0|||0|1|0|0|0|0|0|0|0|0|0|1|pi",
+                )),
+                primary: Some(b"PI_HEADER\r\n\x1b[25;1HPI_PROMPT".to_vec()),
+                ..PaneResync::default()
+            },
+        );
+        b.paused_panes.insert(pane);
+
+        b.finish_pane_resync(pane);
+
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("%121:continue")),
+            "pi 首屏 seed 后必须立即 continue: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("-S -")),
+            "primary/no-mouse pi 不得抓线性历史: {cmds:?}"
+        );
+        assert!(!b.history_backfill_wanted.contains(&pane));
+        assert!(b.alternate_screen_panes.contains(&pane));
+        assert!(b.surface_seed_locked.contains(&pane));
+    }
+
+    #[test]
     fn attach_seed_defers_until_client_size_from_ui() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
@@ -6420,7 +6510,7 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_history_for_alt_or_mouse_tui() {
+    fn should_skip_history_for_alt_mouse_or_agent_tui() {
         let mut state = PaneReplayState {
             cursor_x: 0,
             cursor_y: 0,
@@ -6442,13 +6532,16 @@ mod tests {
             mouse_standard_flag: false,
             mouse_utf8_flag: false,
             bracket_paste_flag: false,
-            current_command: "cursor".into(),
+            current_command: "zsh".into(),
         };
         assert!(!should_skip_history_backfill(Some(&state)));
         state.alternate_on = true;
         assert!(should_skip_history_backfill(Some(&state)));
         state.alternate_on = false;
         state.mouse_sgr_flag = true;
+        assert!(should_skip_history_backfill(Some(&state)));
+        state.mouse_sgr_flag = false;
+        state.current_command = "/usr/local/bin/cursor-agent".into();
         assert!(should_skip_history_backfill(Some(&state)));
     }
 
