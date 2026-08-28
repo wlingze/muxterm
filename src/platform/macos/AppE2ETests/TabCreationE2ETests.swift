@@ -4,6 +4,81 @@ import XCTest
 /// Tab 创建必须走 Core task → tmux runtime → Core snapshot；GUI 不得自己
 /// 猜 tmux window index，也不能在 snapshot 到达前画半个 Surface。
 final class TabCreationE2ETests: XCTestCase {
+    /// 真实 AppKit + tmux control-mode 回归：attach 后后台 tab 正在逐 pane
+    /// 建索引时，NewTab/CloseTab 仍必须在交互预算内完成并显示可用 Surface。
+    func testBusyBackgroundTabsDoNotBlockCreateOrClose() throws {
+        AppE2E.requireTmux()
+        let socket = Tmux.uniqueSocket("tab-mutation-latency")
+        let session = "tab-mutation-latency"
+        Tmux.killServer(socket)
+        defer { Tmux.killServer(socket) }
+        Tmux.ok(socket: socket, args: [
+            "-f", "/dev/null", "new-session", "-d", "-s", session,
+            "-x", "120", "-y", "36", "--", "/bin/cat",
+        ])
+
+        // 6 个隐藏 window、每个 2 pane，确保 attach 后存在一批真实的后台
+        // capture 工作；mutation 不能排在整批 capture 之后。
+        for index in 1...6 {
+            Tmux.ok(socket: socket, args: [
+                "new-window", "-d", "-t", session, "-n", "background-\(index)", "/bin/cat",
+            ])
+            let window = Tmux.out(
+                socket: socket,
+                args: ["list-windows", "-t", session, "-F", "#{window_id}"]
+            )
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+                .last ?? ""
+            XCTAssertFalse(window.isEmpty, "应找到刚创建的后台 window")
+            Tmux.ok(socket: socket, args: ["split-window", "-h", "-t", window, "/bin/cat"])
+            Tmux.sendLiteral(
+                socket: socket,
+                target: window,
+                text: "BACKGROUND_INDEX_\(index)_\(String(repeating: "x", count: 512))"
+            )
+        }
+        Tmux.ok(socket: socket, args: ["select-window", "-t", "\(session):0"])
+
+        let app = try AppE2E.attachWindow(socket: socket, session: session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minTabs: 7), "attach 后必须先暴露全部已有 tab")
+        let originalTabs = app.testTabIDs()
+        XCTAssertEqual(originalTabs.count, 7)
+
+        let createStarted = Date()
+        app.testNewTab()
+        let createdReady = AppE2E.wait(timeout: 2.0) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            let ids = app.testTabIDs()
+            guard let created = ids.first(where: { !originalTabs.contains($0) }) else {
+                return false
+            }
+            return ids.count == originalTabs.count + 1
+                && app.testActiveTabID() == created
+                && app.testPaneSurfaceReady(app.testActivePaneID())
+        }
+        let createElapsed = Date().timeIntervalSince(createStarted)
+        XCTAssertTrue(createdReady, "繁忙后台索引期间新 tab 必须在 2s 内出现且 Surface 可用")
+        XCTAssertLessThan(createElapsed, 2.0, "NewTab 实际耗时 \(createElapsed)s")
+        let created = try XCTUnwrap(
+            app.testTabIDs().first(where: { !originalTabs.contains($0) })
+        )
+
+        let closeStarted = Date()
+        app.testCloseTab(created)
+        let closedReady = AppE2E.wait(timeout: 2.0) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            return Set(app.testTabIDs()) == Set(originalTabs)
+                && app.testPaneSurfaceReady(app.testActivePaneID())
+        }
+        let closeElapsed = Date().timeIntervalSince(closeStarted)
+        XCTAssertTrue(closedReady, "繁忙后台索引期间关闭 tab 必须在 2s 内收敛且保留可用 Surface")
+        XCTAssertLessThan(closeElapsed, 2.0, "CloseTab 实际耗时 \(closeElapsed)s")
+    }
+
     func testNewTabUsesRuntimeSnapshotAndRevealsSurface() throws {
         let painted = PaintedWorkspace(label: "tab-creation")
         let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
