@@ -1016,6 +1016,12 @@ impl Runtime for ShellRuntime {
             // SwiftTerm/VTE 直接应答（写回 pty），无需上报。
             Task::ReportPaneColours { .. } => TaskOutcome::Done,
 
+            // direct PTY 没有 Runtime 侧 VT 网格；平台应继续持有自己的
+            // SwiftTerm/VTE Surface，不能把 byte ring 冒充权威快照。
+            Task::RequestPaneSnapshot { .. } => TaskOutcome::Rejected {
+                reason: "ShellRuntime 无法重建 pane Surface".into(),
+            },
+
             Task::ResizePane { target, cols, rows } => {
                 if !self.resize_pane(*target, *cols, *rows) {
                     return Ok(TaskOutcome::Rejected {

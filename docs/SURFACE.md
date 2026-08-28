@@ -175,11 +175,11 @@ ivyTerm 在 capture 后用若干 `\n` + `ESC[#A` 把视口对齐到底（`scroll
 4. **Seed once.** capture 完成前不画 live；完成后一次性 feed；再增量。
 5. **Follow tail.** 直播 `history_offset=0`；新输出后视口在底（alt-screen 由字节自己切）。禁止用 replica dump 模拟滚动来「修」TUI。
 6. **Bytes in, bytes out.** 键盘 → `send-keys -H`；`%output` 解转义 → 原样 feed。
-7. **`%pause` 是流控，不是切 tab 刷新。** 已打开的 Surface 禁止 `pause` + capture。洪水 pane 的 `pause-after` **尚未实现**（TODO，见 §7.4）。
+7. **`%pause` 是数据丢失屏障，不是切 tab 刷新。** 正常切换已打开的 Surface 禁止 `pause` + capture；但 reader OutputGap、平台缓存溢出或 tmux 主动 `%pause` 说明增量已不连续，必须保持该 pane fenced，安装一次权威 snapshot/full frame 后才能恢复 live。洪水 pane 的主动 `pause-after` **尚未实现**（TODO，见 §7.4）。
 8. **Pane id.** 控制协议里 pane 是 `%N`。`缺少 @ 前缀: %64` 必须当 bug 修，不是忽略。
 9. **Index never becomes Surface.** `visible_ansi` / `surface_seed_ansi` / `scroll_ansi` / `paneSurfaceSeedANSI` **不得**进 VTE/SwiftTerm。Herdr `pane.read` / `visible_ansi` 也只播种 Index；只有经过当前 generation/event ordinal/wire seq 过滤的原始 `terminal.frame` 才能进入 Surface。full 建 baseline，diff 追赶；旧 generation 永不重播。
 10. **Open Surfaces keep eating.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与后台 workspace 的 PaneView 继续 `feed` 原始 PTY 字节，只是不绘制。`poll_background()` 不能只喂 Index/attention 后丢掉 Surface event；切回时只能 show/hide，不能靠 Index dump 补画。
-11. **No pause to recapture an open Surface.** 已经 seed 过的 pane，切 tab/pane 不得再抓屏。从未 seed 的 pane 才走定律 4 一次。
+11. **No recapture on navigation.** 已经 seed 过的 pane，切 tab/pane 不得再抓屏；只有明确的数据丢失边界可重拍，并且 snapshot 必须原子 reset 旧 VT parser，禁止续喂猜测 suffix。
 12. **History is lines, not a stream.** 第一次打开时 Runtime 把 capture 解析成行写入 Surface scrollback，不是 VT `feed()` 重放。已打开的 tab 再切回来只显示，不再抓。
 
 Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续原始 frame/output 改变
@@ -219,6 +219,8 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续
 - `surface_typing_overwrites_in_place`：`\r` + 更长前缀；完整句在 `visible_text` **恰好一次**
 - `surface_codex_fixture_raw_feed`：`codex-tui-sanitized` **直接 feed**；头+底+盒线
 - `surface_seed_drops_output_until_capture`：capture 前 live 不进 VTE；之后 catch-up 进
+- `seeded_output_gap_replaces_partial_sgr_before_live_resumes`：在 `ESC[38;2;…` 中间制造 gap；capture 前后半截不得进入 snapshot，权威 frame 后才恢复 live
+- macOS 后台缓存超过上限：不得 `suffix(cap)`；必须请求 `RequestPaneSnapshot`，新 baseline 前 Surface 保持未就绪
 - 切 pane/tab 的 `resets` 增量：widget 或 `linux_live_e2e` 的 `isolated_tmux_switch_tab_resets_bounded`
 
 ### 5.3 大：隔离 tmux e2e（`-L muxterm-test-*`）
@@ -283,9 +285,9 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 ### 7.3 本轮实现
 
 - 切到已经 seed 过的 tab：Runtime 不再 `pause` / `capture-pane`（`initial_capture_done` 直接跳过）。
-- 已经 seed 的 Surface：`output-dropped` / OutputGap 只 resume live lane，不再 pause+capture。洪水 pause-after 仍是 TODO(surface-7.4)。
+- 已经 seed 的 Surface：正常切换不重拍；`output-dropped` / OutputGap / `%pause` 是例外的数据丢失屏障，按 pane pause → visible capture → `PaneSnapshot` reset → continue。失败保持 fenced 并有界重试，禁止直接 resume。
 - 前台 Workspace 的 `PaneOutput` / `PaneSnapshot` 进该工作区所有 pane 的 Surface（tab 栏上的页都算打开）；禁止 `paneSurfaceSeedANSI` / `visible_ansi` 当显示。
-- 后台 Workspace：core 继续吃字节进 Index；已经建过的 Surface 在**主线程**继续 `feed` 到**该 Workspace 自己的** VT 树。禁止在后台 GCD 队列改 SwiftTerm。不新建 widget，不把 Index dump 当切回来的刷新。
+- 后台 Workspace：core 继续吃字节进 Index；已经建过的 Surface 在**主线程**继续 `feed` 到**该 Workspace 自己的** VT 树。禁止在后台 GCD 队列改 SwiftTerm。不新建 widget，不把 Index dump 当切回来的刷新。未建 Surface 的有界 live 缓存一旦溢出，丢弃整段缓存并发 `RequestPaneSnapshot`；绝不从 CSI/OSC/DCS 中间截 suffix。
 - 切 Workspace / 切已加载的 tab：挂已有 Surface 树，不拆 Auto Layout 重建。
 - 第一次 seed 仍用 Runtime 的 `PaneSnapshot`（可见屏 + 模式）。attach 前 tmux 历史在可见屏之后按行回填（`PaneHistory`），写入 native scrollback，不 `reset`，也不把 `-S -N` 当 VT 流 `feed()`。
 - Workspace 数量受池上限约束，默认 5，不是无限格。

@@ -461,6 +461,22 @@ impl Runtime for MockRuntime {
                 });
                 TaskOutcome::Done
             }
+            Task::RequestPaneSnapshot { target } => {
+                let Some(data) = self
+                    .outputs
+                    .iter()
+                    .find_map(|(pane, data)| (*pane == *target).then(|| data.clone()))
+                else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                };
+                self.events.push(StateChange::PaneSnapshot {
+                    pane: *target,
+                    data,
+                });
+                TaskOutcome::Done
+            }
             Task::Detach => {
                 self.status = BackendStatus::Disconnected;
                 self.events.push(StateChange::BackendStatusChanged(

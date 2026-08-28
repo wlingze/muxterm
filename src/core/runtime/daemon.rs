@@ -240,7 +240,8 @@ impl DaemonRuntime {
             Task::NextPane
             | Task::PrevPane
             | Task::ResizePaneStep { .. }
-            | Task::ReportPaneColours { .. } => None,
+            | Task::ReportPaneColours { .. }
+            | Task::RequestPaneSnapshot { .. } => None,
         }
     }
 }

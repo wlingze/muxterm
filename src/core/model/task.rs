@@ -96,6 +96,10 @@ pub enum Task {
     /// tmux 会用这两个颜色代答 pane 里的 OSC 10/11 查询；前端不能再用
     /// `send-keys` 回答案，否则应答会被 pane 回显成 `git lg` 的字面乱码。
     ReportPaneColours { target: PaneId, fg: Rgb, bg: Rgb },
+    /// 前端丢失了该 pane 的增量基线，请 Runtime 重新发送一个权威 Surface。
+    /// 支持快照/完整帧的 Runtime 应异步产生 `PaneSnapshot` / `PaneFrame`；
+    /// 无法重建的 Runtime 明确 Rejected，平台只能回退到已有安全 baseline。
+    RequestPaneSnapshot { target: PaneId },
 
     // ── 生命周期 ──────────────────────────────────────────
     /// 分离当前控制 client，但保留 tmux session / daemon 继续运行。
@@ -120,7 +124,10 @@ impl Task {
     pub fn is_readonly(&self) -> bool {
         matches!(
             self,
-            Task::SwitchPane { .. } | Task::NextPane | Task::PrevPane
+            Task::SwitchPane { .. }
+                | Task::NextPane
+                | Task::PrevPane
+                | Task::RequestPaneSnapshot { .. }
         )
     }
 }
@@ -214,6 +221,13 @@ mod tests {
             data: b"paste\r\n".to_vec(),
         };
         assert!(!t.is_readonly());
+    }
+
+    #[test]
+    fn pane_snapshot_request_is_explicit_and_readonly() {
+        let task = Task::RequestPaneSnapshot { target: pid(9) };
+        assert!(task.is_readonly());
+        assert!(!task.needs_active_pane());
     }
 
     #[test]

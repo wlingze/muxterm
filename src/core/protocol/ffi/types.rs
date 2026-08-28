@@ -61,6 +61,7 @@ pub const TASK_BREAK_PANE: u32 = 12;
 pub const TASK_REFRESH_TABS: u32 = 13;
 pub const TASK_RENAME_TAB: u32 = 14;
 pub const TASK_RENAME_WORKSPACE: u32 = 15;
+pub const TASK_REQUEST_PANE_SNAPSHOT: u32 = 16;
 
 // ── Split dir / layout node ────────────────────────────────
 pub const DIR_HORIZONTAL: u32 = 0;

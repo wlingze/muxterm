@@ -410,6 +410,222 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertFalse(text.contains("STALE_FRAME"), "旧 full frame 不得在 snapshot 后重放。got=\(text)")
     }
 
+    func testBackgroundSnapshotDropsOlderStashedOutput() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        manager.setViewCreationEnabled(false)
+        manager.handleOutput(paneId: 7, data: Data("OLD_INCREMENT\r\n".utf8))
+        manager.handleSnapshot(paneId: 7, data: Data("NEW_BASELINE\r\n".utf8))
+
+        manager.setViewCreationEnabled(true)
+        let view = manager.view(for: 7)
+        manager.flushSeedsNow(paneIds: [7])
+
+        let text = view.visibleScreenText()
+        XCTAssertTrue(text.contains("NEW_BASELINE"), "应显示新 snapshot。got=\(text)")
+        XCTAssertFalse(
+            text.contains("OLD_INCREMENT"),
+            "snapshot 之前缓存的 output 已被覆盖，不能在 snapshot 后重放。got=\(text)"
+        )
+    }
+
+    func testBackgroundOutputOverflowWaitsForAuthoritativeSnapshot() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        let paneId: UInt32 = 7
+        var requested: [UInt32] = []
+        manager.onAuthoritativeSnapshotRequired = { pane in
+            requested.append(pane)
+            return true
+        }
+
+        manager.setViewCreationEnabled(false)
+        manager.handleSnapshot(paneId: paneId, data: Data("STALE_BASELINE\r\n".utf8))
+        var overflow = Data("\u{1b}]1337;unterminated=".utf8)
+        overflow.append(Data(repeating: 0x76, count: 300 * 1024))
+        overflow.append(Data("\u{1b}[38;2;118;".utf8))
+        manager.handleOutput(paneId: paneId, data: overflow)
+
+        manager.setViewCreationEnabled(true)
+        let view = manager.view(for: paneId)
+        manager.flushSeedsNow(paneIds: [paneId])
+
+        XCTAssertEqual(requested, [paneId], "溢出后必须只请求一次权威 pane snapshot")
+        XCTAssertFalse(
+            manager.isSurfaceReady(for: paneId),
+            "新 snapshot 到达前不得把旧 baseline 或任意 suffix 标成可显示"
+        )
+        XCTAssertFalse(view.visibleScreenText().contains("vvvvvvvv"))
+
+        manager.handleOutput(paneId: paneId, data: Data("DROPPED_WHILE_FENCED\r\n".utf8))
+        manager.setViewCreationEnabled(true)
+        XCTAssertEqual(requested, [paneId], "等待权威 snapshot 时不得重复请求或恢复 live")
+
+        manager.beginEventBatch()
+        manager.handleSnapshot(
+            paneId: paneId,
+            data: Data("\u{1b}[38;2;36;41;46mCURRENT_FRAME\u{1b}[0m\r\n".utf8)
+        )
+        manager.handleOutput(paneId: paneId, data: Data("LIVE_AFTER_SNAPSHOT\r\n".utf8))
+        manager.endEventBatch()
+        manager.flushSeedsNow(paneIds: [paneId])
+
+        let text = view.visibleScreenText()
+        XCTAssertTrue(manager.isSurfaceReady(for: paneId))
+        XCTAssertTrue(text.contains("CURRENT_FRAME"), "应显示恢复后的权威 frame。got=\(text)")
+        XCTAssertTrue(text.contains("LIVE_AFTER_SNAPSHOT"), "snapshot 后的 live 必须保留。got=\(text)")
+        XCTAssertFalse(text.contains("STALE_BASELINE"), "旧 baseline 不得复活。got=\(text)")
+        XCTAssertFalse(text.contains("DROPPED_WHILE_FENCED"), "fence 期间 live 不得进入 parser。got=\(text)")
+        XCTAssertFalse(text.contains("118;"), "半截 SGR suffix 不得进入 SwiftTerm。got=\(text)")
+    }
+
+    func testBackgroundOutputOverflowRejectedRequestUsesOnlySafeBaseline() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        let paneId: UInt32 = 7
+        var requested: [UInt32] = []
+        manager.onAuthoritativeSnapshotRequired = { pane in
+            requested.append(pane)
+            return false
+        }
+
+        manager.setViewCreationEnabled(false)
+        manager.handleSnapshot(paneId: paneId, data: Data("SAFE_BASELINE\r\n".utf8))
+        manager.handleOutput(
+            paneId: paneId,
+            data: Data(repeating: 0x78, count: 300 * 1024)
+        )
+
+        manager.setViewCreationEnabled(true)
+        let view = manager.view(for: paneId)
+        manager.flushSeedsNow(paneIds: [paneId])
+
+        let text = view.visibleScreenText()
+        XCTAssertEqual(requested, [paneId])
+        XCTAssertTrue(manager.isSurfaceReady(for: paneId))
+        XCTAssertTrue(text.contains("SAFE_BASELINE"), "拒绝重拍时只能显示旧安全 baseline。got=\(text)")
+        XCTAssertFalse(text.contains("xxxxxxxx"), "溢出的任意 suffix 都不得显示。got=\(text)")
+    }
+
+    func testBackgroundOutputOverflowRecoversFromFullFrameAndFollowingLive() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        let paneId: UInt32 = 7
+        var requested: [UInt32] = []
+        manager.onAuthoritativeSnapshotRequired = { pane in
+            requested.append(pane)
+            return true
+        }
+
+        manager.setViewCreationEnabled(false)
+        manager.handleSnapshot(paneId: paneId, data: Data("STALE_BASELINE\r\n".utf8))
+        manager.handleOutput(
+            paneId: paneId,
+            data: Data(repeating: 0x79, count: 300 * 1024)
+        )
+        manager.setViewCreationEnabled(true)
+        let view = manager.view(for: paneId)
+
+        manager.beginEventBatch()
+        manager.handleFrame(
+            paneId: paneId,
+            data: Data("\u{1b}[2J\u{1b}[HFULL_FRAME\r\n".utf8)
+        )
+        manager.handleOutput(paneId: paneId, data: Data("LIVE_AFTER_FRAME\r\n".utf8))
+        manager.endEventBatch()
+        manager.testFlushFeeds()
+
+        let text = view.visibleScreenText()
+        XCTAssertEqual(requested, [paneId])
+        XCTAssertTrue(manager.isSurfaceReady(for: paneId))
+        XCTAssertTrue(text.contains("FULL_FRAME"), "Herdr full frame 应建立新 baseline。got=\(text)")
+        XCTAssertTrue(text.contains("LIVE_AFTER_FRAME"), "full frame 后的 diff/live 必须保留。got=\(text)")
+        XCTAssertFalse(text.contains("STALE_BASELINE"), "旧 snapshot 不得在 full frame 后复活。got=\(text)")
+        XCTAssertFalse(text.contains("yyyyyyyy"), "溢出的 byte suffix 不得显示。got=\(text)")
+    }
+
+    func testProductionOverflowRequestRoundTripsThroughFfiAndTmux() throws {
+        AppE2E.ensureApp()
+        AppE2E.requireTmux()
+        let socket = Tmux.uniqueSocket("surface-overflow")
+        let session = "surface-overflow"
+        Tmux.killServer(socket)
+        defer { Tmux.killServer(socket) }
+        Tmux.ok(socket: socket, args: [
+            "-f", "/dev/null", "new-session", "-d", "-s", session,
+            "-x", "100", "-y", "30", "--", "/bin/cat",
+        ])
+        let target = Tmux.out(
+            socket: socket,
+            args: ["list-panes", "-t", session, "-F", "#{pane_id}"]
+        )
+        let token = "AUTHORITATIVE_TMUX_FRAME_\(ProcessInfo.processInfo.processIdentifier)"
+        Tmux.sendLiteral(socket: socket, target: target, text: token)
+        Tmux.sendHex(socket: socket, target: target, bytes: [0x0d])
+        Tmux.waitCapture(socket: socket, target: target, needle: token)
+
+        let bridge = try CoreBridge.connect(
+            backendType: "tmux",
+            socket: socket,
+            session: session,
+            initialClientSize: (100, 30)
+        )
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge)
+        manager.setViewCreationEnabled(false)
+        let paneId = try XCTUnwrap(bridge.snapshot().panes.first?.id)
+        manager.updatePaneSizes(bridge.snapshot().panes)
+
+        var initialSnapshotSeen = false
+        func route(_ events: [StateChange]) {
+            manager.beginEventBatch()
+            for event in events {
+                if event.isPaneSnapshot {
+                    initialSnapshotSeen = true
+                    manager.handleSnapshot(paneId: event.paneId, data: event.data)
+                } else if event.isPaneFrame {
+                    manager.handleFrame(paneId: event.paneId, data: event.data)
+                } else if event.isPaneHistory {
+                    manager.handleHistory(paneId: event.paneId, data: event.data)
+                } else if event.isPaneOutput {
+                    manager.handleOutput(paneId: event.paneId, data: event.data)
+                }
+            }
+            manager.endEventBatch()
+        }
+
+        XCTAssertTrue(AppE2E.wait(timeout: 8) {
+            route(bridge.pollEvents())
+            return initialSnapshotSeen
+        }, "attach 必须先建立初始 pane snapshot")
+        // 排空初始 capture 后的 history/live，避免把它误认成恢复请求的响应。
+        for _ in 0..<8 {
+            route(bridge.pollEvents())
+            AppE2E.pump(20)
+        }
+
+        manager.handleOutput(
+            paneId: paneId,
+            data: Data(repeating: 0x7a, count: 300 * 1024)
+        )
+        initialSnapshotSeen = false
+        manager.setViewCreationEnabled(true)
+        let view = manager.view(for: paneId)
+
+        XCTAssertTrue(AppE2E.wait(timeout: 8) {
+            route(bridge.pollEvents())
+            return initialSnapshotSeen
+        }, "生产 CoreBridge task 必须经 FFI 触发 tmux 权威 snapshot")
+        manager.flushSeedsNow(paneIds: [paneId])
+        manager.testFlushFeeds()
+
+        let text = view.visibleScreenText()
+        XCTAssertTrue(manager.isSurfaceReady(for: paneId))
+        XCTAssertTrue(text.contains(token), "恢复后的 tmux capture 应包含真实 pane 内容。got=\(text)")
+        XCTAssertFalse(text.contains("zzzzzzzz"), "本地溢出的任意 suffix 不得进入 SwiftTerm。got=\(text)")
+    }
+
     func testVisibleSeedIsNotStuckBehindBackgroundSeeds() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }

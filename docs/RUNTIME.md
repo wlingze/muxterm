@@ -137,6 +137,11 @@ if spec.runtime == "herdr" { show_worktree_ui() }
 
 `execute` 碰到当前 Runtime 没有的能力：返回 `TaskOutcome::Rejected`，不要 panic，不要悄悄 no-op。
 
+Surface 增量发生明确丢失时，平台统一发送
+`Task::RequestPaneSnapshot { target }`，不能按 runtime 名字分支。TmuxRuntime 产生一次
+`PaneSnapshot`；HerdrRuntime 换 generation 并等待新的 full `PaneFrame`；没有 Runtime 侧 VT
+网格的 ShellRuntime 明确 `Rejected`，平台只能保留已有安全 baseline，不能重放任意 byte suffix。
+
 异步 topology mutation 不能复用 `Done` 冒充完成：有界入队返回
 `TaskOutcome::Accepted { operation_id }`，最终通过产品语义的
 `StateChange::MutationSettled` 恰好一次报告 Completed 或阶段化 Failed。同步 Runtime 操作仍
@@ -324,6 +329,9 @@ Live 路径不因 Runtime 而改：
   `PaneFrame`/`PaneOutput`
 - Herdr `pane.read` 只生成 `PaneIndexSnapshot` 播种 Index（类似无头 attach 快照），永不
   feed Surface，也不能在 stream 失败时作为像素 fallback
+- reader lane、平台后台缓存或远端 frame 序列出现 gap 后，live 必须先 fenced；只有
+  `PaneSnapshot` / full `PaneFrame` 建立新 baseline 后才能恢复。`RequestPaneSnapshot` 是这一
+  恢复的产品 Task，GUI 不得拼 `capture-pane` 或 Herdr wire 命令
 
 输入：tmux `send-keys`；Herdr 的 `WriteRaw` / VTE commit 必须走原样写字节的
 `pane.send_text`，语义按键走 `pane.send_keys`。禁止逐键调用 `pane.send_input`：

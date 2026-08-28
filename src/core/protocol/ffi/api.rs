@@ -41,8 +41,8 @@ use super::types::{
     STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_ORDER_CHANGED,
     STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB,
     TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
-    TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE,
-    TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_REQUEST_PANE_SNAPSHOT, TASK_SHUTDOWN,
+    TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
@@ -1345,6 +1345,9 @@ fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
             name,
         }),
         TASK_RENAME_WORKSPACE => name.map(|name| Task::RenameWorkspace { name }),
+        TASK_REQUEST_PANE_SNAPSHOT => Some(Task::RequestPaneSnapshot {
+            target: resolve_c_task_pane(task.target_pane, ws),
+        }),
         _ => None,
     }
 }
@@ -2877,6 +2880,7 @@ pub unsafe extern "C" fn muxterm_pane_last_n_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::model::state::{
         PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
     };
@@ -3128,6 +3132,67 @@ mod tests {
             };
             assert_eq!(muxterm_execute(h, &task), -1);
             assert_eq!(muxterm_detach(h), -1);
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_snapshot_request_maps_to_runtime_neutral_task() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            let c_task = CTask {
+                type_: TASK_REQUEST_PANE_SNAPSHOT,
+                target_pane: 42,
+                target_tab: 0,
+                dir: 0,
+                name: ptr::null(),
+            };
+            let handle = &mut *h;
+            let workspace = handle.active_workspace_mut().unwrap();
+            assert_eq!(
+                ctask_to_task(&c_task, workspace),
+                Some(Task::RequestPaneSnapshot { target: PaneId(42) })
+            );
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_snapshot_request_executes_and_exports_authoritative_snapshot() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            let expected = b"\x1b[2J\x1b[Hauthoritative-frame".to_vec();
+            let mut runtime = MockRuntime::with_single_pane();
+            runtime.outputs[0].1 = expected.clone();
+            let workspace = Workspace::new(
+                WorkspaceId::new("local", None, "ffi-snapshot", "tmux", "mock"),
+                "ffi-snapshot".into(),
+                Box::new(runtime),
+            );
+            (&mut *h).pool_mut().insert_connected(workspace);
+
+            let c_task = CTask {
+                type_: TASK_REQUEST_PANE_SNAPSHOT,
+                target_pane: 1,
+                target_tab: 0,
+                dir: 0,
+                name: ptr::null(),
+            };
+            assert_eq!(muxterm_execute(h, &c_task), 0);
+
+            let mut events = [CStateChange::default(); 16];
+            let count = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
+            assert!(count > 0, "快照请求应产生 FFI 事件");
+            let snapshot = events[..count as usize]
+                .iter()
+                .find(|event| event.type_ == STATE_PANE_SNAPSHOT)
+                .expect("FFI 应保留 PaneSnapshot 类型");
+            assert_eq!(snapshot.pane_id, 1);
+            let payload = std::slice::from_raw_parts(snapshot.data, snapshot.data_len);
+            assert_eq!(payload, expected);
+
             muxterm_free(h);
         }
     }

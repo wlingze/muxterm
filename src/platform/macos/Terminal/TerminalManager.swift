@@ -49,6 +49,10 @@ final class TerminalManager: TerminalInputHandler {
     /// 快照之后、建 view 之前到达的 live 字节。有上限，避免后台 TUI 把内存撑爆。
     private var pendingBackgroundOutput: [UInt32: Data] = [:]
     private static let stashedOutputCap = 256 * 1024
+    /// 后台 live 超过上限后，任意 suffix 已不再是可解析基线。该 pane 在
+    /// Runtime 发来新 snapshot/full frame 前保持未就绪并丢弃后续增量。
+    private var needsAuthoritativeSnapshot = Set<UInt32>()
+    private var requestedAuthoritativeSnapshots = Set<UInt32>()
     /// 尚未完成过首屏的 pane：seed 期间 PaneLayout 隐藏 host。
     /// 已经显示过的 pane 再 seed 时保持可见，避免切 tab 闪白。
     private var surfaceReadyPanes = Set<UInt32>()
@@ -74,6 +78,8 @@ final class TerminalManager: TerminalInputHandler {
     /// 回调只在主线程触发；后台 slot 不创建/重建 AppKit view。
     var onSurfaceReadinessChanged: ((UInt32, Bool) -> Void)?
     var onError: ((String) -> Void)?
+    /// 测试可替换；生产默认通过 CoreBridge 发 runtime-neutral snapshot task。
+    var onAuthoritativeSnapshotRequired: ((UInt32) -> Bool)?
     /// viewport 变化（滚轮 / 回底）：窗口用来显示跳转最新按钮。
     var onViewportChanged: ((UInt32, UInt32) -> Void)?
     /// 离开底部期间新增的行数变化；窗口用来显示 `↓ +N`。
@@ -131,6 +137,8 @@ final class TerminalManager: TerminalInputHandler {
         pendingSnapshots.removeAll()
         pendingFrames.removeAll()
         pendingBackgroundOutput.removeAll()
+        needsAuthoritativeSnapshot.removeAll()
+        requestedAuthoritativeSnapshots.removeAll()
         surfaceReadyPanes.removeAll()
         reportedResizeFailures.removeAll()
         reportedClientResizeFailure = false
@@ -149,6 +157,32 @@ final class TerminalManager: TerminalInputHandler {
     /// 该开关只影响“懒建 Surface”，不影响已有 view 的清理或尺寸缓存。
     func setViewCreationEnabled(_ enabled: Bool) {
         viewCreationEnabled = enabled
+        if enabled {
+            requestAuthoritativeSnapshotsIfNeeded()
+        }
+    }
+
+    private func requestAuthoritativeSnapshotsIfNeeded() {
+        guard viewCreationEnabled else { return }
+        let panes = needsAuthoritativeSnapshot
+            .subtracting(requestedAuthoritativeSnapshots)
+            .sorted()
+        for paneId in panes {
+            let accepted: Bool
+            if let callback = onAuthoritativeSnapshotRequired {
+                accepted = callback(paneId)
+            } else {
+                accepted = bridge?.execute(task: .requestPaneSnapshot(paneId)) == 0
+            }
+            if accepted {
+                requestedAuthoritativeSnapshots.insert(paneId)
+            } else {
+                // direct PTY 等无法重建 Surface 的 Runtime：只允许回退到
+                // 已缓存的安全 baseline，溢出的 suffix 已经永久丢弃。
+                needsAuthoritativeSnapshot.remove(paneId)
+                requestedAuthoritativeSnapshots.remove(paneId)
+            }
+        }
     }
 
     /// attach 已经把这个 client 尺寸发给 tmux 时，切 tab 不要再 refresh-client -C。
@@ -320,6 +354,10 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 后台丢掉的快照 / live 在第一次建 Surface 时补上，不必再等 tmux。
     private func applyStashedSurface(paneId: UInt32, view: MuxTerminalView) {
+        if needsAuthoritativeSnapshot.contains(paneId) {
+            requestAuthoritativeSnapshotsIfNeeded()
+            return
+        }
         if let data = pendingSnapshots.removeValue(forKey: paneId) {
             enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
             if let extra = pendingBackgroundOutput.removeValue(forKey: paneId) {
@@ -435,11 +473,17 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     private func appendStashedOutput(paneId: UInt32, data: Data) {
+        guard !needsAuthoritativeSnapshot.contains(paneId) else { return }
         var buf = pendingBackgroundOutput[paneId] ?? Data()
-        buf.append(data)
-        if buf.count > Self.stashedOutputCap {
-            buf = Data(buf.suffix(Self.stashedOutputCap))
+        if data.count > Self.stashedOutputCap - min(buf.count, Self.stashedOutputCap) {
+            // 不能从 CSI/OSC/DCS 中间截尾，也不能把一个不完整 suffix 当 live。
+            // 丢掉整段缓存并要求 Runtime 发新的权威 baseline。
+            pendingBackgroundOutput.removeValue(forKey: paneId)
+            needsAuthoritativeSnapshot.insert(paneId)
+            requestedAuthoritativeSnapshots.remove(paneId)
+            return
         }
+        buf.append(data)
         pendingBackgroundOutput[paneId] = buf
     }
 
@@ -447,6 +491,10 @@ final class TerminalManager: TerminalInputHandler {
     func handleOutput(paneId: UInt32, data: Data) {
         dispatchPrecondition(condition: .onQueue(.main))
         guard !data.isEmpty else { return }
+        if needsAuthoritativeSnapshot.contains(paneId) {
+            requestAuthoritativeSnapshotsIfNeeded()
+            return
+        }
         if views[paneId] == nil {
             guard viewCreationEnabled else {
                 appendStashedOutput(paneId: paneId, data: data)
@@ -483,6 +531,8 @@ final class TerminalManager: TerminalInputHandler {
     /// 后续 `PaneOutput` 丢掉。
     func handleFrame(paneId: UInt32, data: Data) {
         dispatchPrecondition(condition: .onQueue(.main))
+        needsAuthoritativeSnapshot.remove(paneId)
+        requestedAuthoritativeSnapshots.remove(paneId)
         if views[paneId] == nil {
             guard viewCreationEnabled else {
                 // 该 frame 覆盖它之前缓存的增量；后续 output 会继续追加到
@@ -512,6 +562,10 @@ final class TerminalManager: TerminalInputHandler {
     /// Runtime 的权威 `PaneSnapshot`：一次 seed / 错格恢复。不是 Index dump。
     func handleSnapshot(paneId: UInt32, data: Data) {
         dispatchPrecondition(condition: .onQueue(.main))
+        needsAuthoritativeSnapshot.remove(paneId)
+        requestedAuthoritativeSnapshots.remove(paneId)
+        // snapshot 覆盖它之前的所有 live；按事件顺序，之后的 output 会重新追加。
+        pendingBackgroundOutput.removeValue(forKey: paneId)
         if views[paneId] == nil {
             guard viewCreationEnabled else {
                 // 新 snapshot 是比后台缓存 full frame 更新的权威 baseline；
@@ -662,6 +716,8 @@ final class TerminalManager: TerminalInputHandler {
         pendingSnapshots.removeValue(forKey: paneId)
         pendingFrames.removeValue(forKey: paneId)
         pendingBackgroundOutput.removeValue(forKey: paneId)
+        needsAuthoritativeSnapshot.remove(paneId)
+        requestedAuthoritativeSnapshots.remove(paneId)
         surfaceReadyPanes.remove(paneId)
         savedHistory.removeValue(forKey: paneId)
         pendingHistory.removeValue(forKey: paneId)

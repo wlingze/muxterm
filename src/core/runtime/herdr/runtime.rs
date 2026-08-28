@@ -2612,6 +2612,22 @@ impl Runtime for HerdrRuntime {
             });
         }
         match task {
+            Task::RequestPaneSnapshot { target } => {
+                let Some(slot) = self.stream_slots.get(target) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                };
+                // Herdr 的权威 Surface 是 observe/control stream 的 full frame。
+                // 换 generation 会让 diff 重新等待 full，平台不会收到无头增量。
+                let mode = if slot.control_rearm == ControlRearm::SuppressedAfterTakeover {
+                    StreamMode::Observe
+                } else {
+                    slot.actual_mode.unwrap_or(slot.desired_mode)
+                };
+                self.start_stream_replacing(*target, mode, false);
+                Ok(TaskOutcome::Done)
+            }
             Task::WriteRaw { target, data } => {
                 if self.herdr_pane(*target).is_none() {
                     return Ok(TaskOutcome::Rejected {
@@ -2958,6 +2974,34 @@ mod tests {
         HerdrAgentStatus, LayoutPaneRecord, LayoutSplitRecord, TabRecord, WorkspaceRecord,
     };
     use crate::core::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
+
+    #[test]
+    fn pane_snapshot_request_restarts_generation_waiting_for_full_frame() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(7);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p7", StreamMode::Observe);
+        slot.generation = 3;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        slot.surface_baseline = SurfaceBaseline::Ready;
+        slot.last_frame_seq = Some(44);
+        runtime.stream_slots.insert(pane, slot);
+
+        let outcome = runtime
+            .execute(&Task::RequestPaneSnapshot { target: pane })
+            .unwrap();
+
+        assert_eq!(outcome, TaskOutcome::Done);
+        let slot = runtime.stream_slots.get(&pane).unwrap();
+        assert_eq!(slot.generation, 4);
+        assert_eq!(slot.state, SlotState::Starting);
+        assert_eq!(slot.surface_baseline, SurfaceBaseline::AwaitingFull);
+        assert_eq!(slot.last_frame_seq, None);
+    }
 
     /// Herdr public ids 使用 bijective base-32，不是十进制。用户真实 session
     /// 已出现 pP/pQ/pR；它们绝不能全部退化成 PaneId(0)。
