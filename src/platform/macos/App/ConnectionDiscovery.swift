@@ -7,6 +7,15 @@ struct TmuxSessionInfo: Equatable {
     let attached: Bool
 }
 
+/// Unified Quick Panel 中一条可直接 attach 的已有连接。
+/// socket 在发现时固化，避免用户从隔离 `-L` server 选中后因当前 Workspace
+/// 变化而误连默认 server。
+struct ExistingConnectionChoice: Equatable {
+    let target: ConnectionTarget
+    let session: TmuxSessionInfo
+    let socket: String?
+}
+
 /// core 从用户 SSH config 解析出的 Host alias。
 struct SSHHostInfo: Equatable {
     let alias: String

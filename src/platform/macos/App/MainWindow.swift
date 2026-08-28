@@ -208,6 +208,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onConnect = { [weak self] config in
             self?.connect(config: config)
         }
+        unifiedPanel.onLoadExistingConnections = { [weak self] completion in
+            guard let self else {
+                completion(.success([]))
+                return
+            }
+            self.loadExistingConnections(completion: completion)
+        }
+        unifiedPanel.onAttachExistingConnection = { [weak self] choice in
+            self?.attachExistingConnection(choice)
+        }
+        unifiedPanel.onExistingConnectionsError = { [weak self] error in
+            self?.reportStatusError(error.localizedDescription)
+        }
         unifiedPanel.onNewProject = { [weak self] in
             self?.editProject(nil)
         }
@@ -1057,6 +1070,54 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let offset = max(0, self.bridge.paneViewport(paneId: paneId))
             self.content.setJumpLatestVisible(offset > 0, unseenLines: count)
         }
+    }
+
+    /// Unified Quick Panel 的 Existing Connections 只发现当前 transport
+    /// 上的 tmux sessions。发现时固化 `-L` socket，选择时不重新推断身份。
+    private func loadExistingConnections(
+        completion: @escaping (Result<[ExistingConnectionChoice], Error>) -> Void
+    ) {
+        // Herdr/daemon 的 Existing catalog 尚未暴露到 macOS discovery；不能把
+        // Herdr socket 错当成 tmux `-L`。先保持空列表，tmux/local/SSH 走已
+        // 有的 Core discovery 契约。
+        if bridge.backendType == "herdr" || bridge.backendType == "daemon" {
+            completion(.success([]))
+            return
+        }
+
+        let socket = bridge.socket
+        if let alias = bridge.sshAlias {
+            let host = SSHHostInfo(alias: alias, hostname: "", user: nil, port: nil)
+            let target = ConnectionTarget.ssh(host)
+            discovery.attachedRemoteSocket = socket
+            discovery.listRemoteSessions(host: host) { result in
+                completion(result.map { sessions in
+                    sessions.map {
+                        ExistingConnectionChoice(target: target, session: $0, socket: socket)
+                    }
+                })
+            }
+        } else {
+            let target = ConnectionTarget.local
+            discovery.attachedLocalSocket = socket
+            discovery.listLocalSessions { result in
+                completion(result.map { sessions in
+                    sessions.map {
+                        ExistingConnectionChoice(target: target, session: $0, socket: socket)
+                    }
+                })
+            }
+        }
+    }
+
+    /// Existing 行是严格 attach-only：不创建目录、不进入 ProjectConnectFlow。
+    private func attachExistingConnection(_ choice: ExistingConnectionChoice) {
+        unifiedPanel.dismiss()
+        attach(
+            target: choice.target,
+            session: choice.session.name,
+            resolvedSocket: choice.socket
+        )
     }
 
     /// 按 QuickConnect 目标连接：tmux 有 name → attach，无 name → 创建；
@@ -2035,23 +2096,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func attach(target: ConnectionTarget, session: String) {
-        commandPalette.dismiss()
-        lastPaletteSelection = "(target.displayName):(session)"
-        lastPaletteError = nil
-        // Preserve the target identity selected by the palette.  For an
-        // Existing session on the currently attached isolated server this is
-        // the `-L` socket; unrelated targets deliberately resolve to nil.
         let targetSocket = ConnectionDiscoverySocketPolicy.socket(
             for: target,
             currentSSHHost: bridge.sshAlias,
             currentSocket: bridge.socket
         )
+        attach(target: target, session: session, resolvedSocket: targetSocket)
+    }
+
+    /// 已解析身份的直接 attach。`resolvedSocket` 允许显式 nil（默认 server），
+    /// 因此不能在这里再次按当前 bridge 推断 socket。
+    private func attach(
+        target: ConnectionTarget,
+        session: String,
+        resolvedSocket: String?
+    ) {
+        commandPalette.dismiss()
+        lastPaletteSelection = "\(target.displayName):\(session)"
+        lastPaletteError = nil
         let params: (type: String, socket: String?, sshAlias: String?)
         switch target {
         case .local:
-            params = ("tmux", targetSocket, nil)
+            params = ("tmux", resolvedSocket, nil)
         case .ssh(let host):
-            params = ("ssh", targetSocket, host.alias)
+            params = ("ssh", resolvedSocket, host.alias)
         }
         let key = ConnectionKey(
             transport: params.sshAlias == nil ? "local" : "ssh",

@@ -1,6 +1,55 @@
 import AppKit
 import MuxtermChrome
 
+private enum UnifiedWorkspaceNavigation: Equatable {
+    case root
+    case existingConnections
+}
+
+private enum UnifiedWorkspaceItem {
+    case existingConnections
+    case target(TargetConfig, badges: [QuickBadge], isCurrent: Bool)
+    case newProject
+    case back
+    case existing(ExistingConnectionChoice)
+    case loading
+    case empty
+
+    var title: String {
+        switch self {
+        case .existingConnections:
+            return MuxtermI18n.shared.tr(.existingConnections)
+        case .target(let config, _, _):
+            return config.name
+        case .newProject:
+            return MuxtermI18n.shared.tr(.panelNewProject)
+        case .back:
+            return MuxtermI18n.shared.tr(.existingBack)
+        case .existing(let choice):
+            return choice.session.name
+        case .loading:
+            return MuxtermI18n.shared.tr(.existingLoading)
+        case .empty:
+            return MuxtermI18n.shared.tr(.existingEmpty)
+        }
+    }
+
+    func matches(_ query: String) -> Bool {
+        switch self {
+        case .existingConnections, .newProject, .loading, .empty:
+            return title.lowercased().contains(query)
+        case .target(let config, _, _):
+            return QuickConnect.searchText(for: config).contains(query)
+        case .back:
+            return true
+        case .existing(let choice):
+            return "\(choice.session.name) \(choice.target.displayName) tmux session"
+                .lowercased()
+                .contains(query)
+        }
+    }
+}
+
 /// Cmd-P 统一三 tab 面板（对标 Linux `quickconnect_panel.rs` + `panel_model.rs`）。
 ///
 /// 一个 NSPanel：Workspaces / Attention / Search，共享 input，Tab / Shift+Tab
@@ -12,6 +61,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private static let preferredContentSize = NSSize(width: 640, height: 420)
 
     var onConnect: ((TargetConfig) -> Void)?
+    var onLoadExistingConnections: ((@escaping (Result<[ExistingConnectionChoice], Error>) -> Void) -> Void)?
+    var onAttachExistingConnection: ((ExistingConnectionChoice) -> Void)?
+    var onExistingConnectionsError: ((Error) -> Void)?
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
     var onJump: ((String?, UInt32?, UInt32, UInt64, String) -> Void)?
@@ -37,8 +89,11 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let attentionOpenButton = NSButton(title: "", target: nil, action: nil)
     private let attentionMuteButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private var selectionAliases: [String: PanelAccessibilityAliasButton] = [:]
-    private var allItems: [QuickConnectItem] = []
-    private var visibleItems: [QuickConnectItem] = []
+    private var allItems: [UnifiedWorkspaceItem] = []
+    private var visibleItems: [UnifiedWorkspaceItem] = []
+    private var existingItems: [UnifiedWorkspaceItem] = []
+    private var workspaceNavigation = UnifiedWorkspaceNavigation.root
+    private var existingRequestGeneration: UInt64 = 0
     private var hits: [SearchHit] = []
     private var rows: [AttentionRow] = []
     private var model = PanelModel.open(.workspaces)
@@ -105,6 +160,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         model.query = ""
         model.scope = scope
         input.stringValue = ""
+        workspaceNavigation = .root
+        existingItems = []
+        existingRequestGeneration &+= 1
         reload()
         guard let window else { return }
         window.level = .floating
@@ -140,6 +198,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func dismiss() {
+        existingRequestGeneration &+= 1
         window?.orderOut(nil)
         ownerWindow?.makeKeyAndOrderFront(nil)
         onDismissed?()
@@ -181,8 +240,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func loadWorkspaceItems() {
+        if workspaceNavigation == .existingConnections {
+            allItems = existingItems
+            return
+        }
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
-        allItems = QuickConnect.entries(
+        allItems = [.existingConnections]
+        allItems.append(contentsOf: QuickConnect.entries(
             recents: store.recents,
             projects: store.projects
         ).map { entry in
@@ -191,7 +255,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 badges: entry.badges,
                 isCurrent: currentId == QuickConnect.uniqueID(for: entry.config)
             )
-        }
+        })
         allItems.append(.newProject)
     }
 
@@ -199,12 +263,67 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         visibleItems = query.isEmpty
             ? allItems
-            : allItems.filter { item in
-                switch item {
-                case .target(let c, _, _): return QuickConnect.searchText(for: c).contains(query)
-                case .newProject: return "new project 新建".contains(query)
+            : allItems.filter { $0.matches(query) }
+    }
+
+    private func openExistingConnections() {
+        workspaceNavigation = .existingConnections
+        model.query = ""
+        input.stringValue = ""
+        existingRequestGeneration &+= 1
+        let generation = existingRequestGeneration
+        existingItems = [.back, .loading]
+        reload()
+
+        guard let loader = onLoadExistingConnections else {
+            existingItems = [.back, .empty]
+            reload()
+            return
+        }
+        loader { [weak self] result in
+            let apply = { [weak self] in
+                guard let self,
+                      self.existingRequestGeneration == generation,
+                      self.workspaceNavigation == .existingConnections,
+                      self.window?.isVisible == true
+                else { return }
+                switch result {
+                case .success(let choices):
+                    let sorted = choices.sorted {
+                        if $0.target.displayName != $1.target.displayName {
+                            return $0.target.displayName.localizedCaseInsensitiveCompare(
+                                $1.target.displayName
+                            ) == .orderedAscending
+                        }
+                        return $0.session.name.localizedCaseInsensitiveCompare(
+                            $1.session.name
+                        ) == .orderedAscending
+                    }
+                    self.existingItems = [.back]
+                    self.existingItems.append(contentsOf: sorted.map(UnifiedWorkspaceItem.existing))
+                    if sorted.isEmpty {
+                        self.existingItems.append(.empty)
+                    }
+                case .failure(let error):
+                    self.existingItems = [.back, .empty]
+                    self.onExistingConnectionsError?(error)
                 }
+                self.reload()
             }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
+            }
+        }
+    }
+
+    private func returnToWorkspaceRoot() {
+        existingRequestGeneration &+= 1
+        workspaceNavigation = .root
+        model.query = ""
+        input.stringValue = ""
+        reload()
     }
 
     private func selectRow(offset: Int) {
@@ -222,10 +341,18 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .workspaces:
             guard table.selectedRow < visibleItems.count else { return }
             switch visibleItems[table.selectedRow] {
+            case .existingConnections:
+                openExistingConnections()
             case .target(let config, _, _):
                 onConnect?(config)
             case .newProject:
                 onNewProject?()
+            case .back:
+                returnToWorkspaceRoot()
+            case .existing(let choice):
+                onAttachExistingConnection?(choice)
+            case .loading, .empty:
+                break
             }
         case .attention:
             guard table.selectedRow < rows.count else { return }
@@ -611,7 +738,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             guard let self, self.window?.isKeyWindow == true else { return event }
             switch event.keyCode {
             case 53: // Escape
-                self.dismiss()
+                if self.model.tab == .workspaces,
+                   self.workspaceNavigation == .existingConnections
+                {
+                    self.returnToWorkspaceRoot()
+                } else {
+                    self.dismiss()
+                }
                 return nil
             case 48: // Tab
                 self.model.cycleTab(back: event.modifierFlags.contains(.shift))
@@ -656,6 +789,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             guard row < visibleItems.count else { return nil }
             let item = visibleItems[row]
             switch item {
+            case .existingConnections:
+                let id = NSUserInterfaceItemIdentifier("ExistingConnectionsFolder")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.title = "› " + item.title
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.existingConnections")
+                return cell
             case .target(let config, let badges, let isCurrent):
                 let id = NSUserInterfaceItemIdentifier("QuickTarget")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
@@ -669,6 +809,36 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
                 cell.title = "＋ " + MuxtermI18n.shared.tr(.panelNewProject)
+                return cell
+            case .back:
+                let id = NSUserInterfaceItemIdentifier("ExistingConnectionsBack")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.title = "‹ " + item.title
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.existingBack")
+                return cell
+            case .existing(let choice):
+                let id = NSUserInterfaceItemIdentifier("ExistingConnection")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? ExistingConnectionCellView
+                    ?? ExistingConnectionCellView(identifier: id)
+                cell.title = choice.session.name
+                var detail = "\(choice.target.displayName) · tmux · " + MuxtermI18n.shared.tr(
+                    .tmuxWindows,
+                    arguments: ["count": "\(choice.session.windowCount)"]
+                )
+                if choice.session.attached {
+                    detail += " · " + MuxtermI18n.shared.tr(.tmuxAttached)
+                }
+                cell.detail = detail
+                cell.setAccessibilityIdentifier(
+                    "muxterm.quickConnect.existing.\(choice.target.displayName).\(choice.session.name)"
+                )
+                return cell
+            case .loading, .empty:
+                let id = NSUserInterfaceItemIdentifier("ExistingConnectionsStatus")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.title = item.title
                 return cell
             }
         case .attention:
@@ -846,6 +1016,22 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         visibleItems.count
     }
 
+    func testWorkspaceTitles() -> [String] {
+        visibleItems.map(\.title)
+    }
+
+    func testActivateWorkspaceItem(matching title: String) {
+        guard model.tab == .workspaces,
+              let row = visibleItems.firstIndex(where: { $0.title == title })
+        else { return }
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        activateSelected()
+    }
+
+    func testWorkspaceShowsExistingConnections() -> Bool {
+        workspaceNavigation == .existingConnections
+    }
+
     func testSelectFirstRow() {
         guard !rows.isEmpty else { return }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -924,6 +1110,49 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func testUsesSegmentedNavigation() -> Bool {
         tabControl.segmentCount == 3 && scopeControl.segmentCount == 3
+    }
+}
+
+private final class ExistingConnectionCellView: NSTableCellView {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+
+    var title: String {
+        get { titleLabel.stringValue }
+        set { titleLabel.stringValue = newValue }
+    }
+
+    var detail: String {
+        get { detailLabel.stringValue }
+        set { detailLabel.stringValue = newValue }
+    }
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = NSFont.systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+        addSubview(titleLabel)
+        addSubview(detailLabel)
+        textField = titleLabel
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
     }
 }
 
