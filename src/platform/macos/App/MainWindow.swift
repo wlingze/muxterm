@@ -295,6 +295,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, ready in
             guard let self else { return }
+            if ready {
+                self.scheduleTabTreeWarmup()
+            }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
                 ?? self.bridge.snapshot().panes.first(where: \.isActive)?.id
@@ -2604,16 +2607,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 每拍只预热一个还没点过的 tab，第一次点击就能走缓存树。
     private func scheduleTabTreeWarmup() {
+        guard TabWarmupPolicy.canStart(
+            activeSurfaceReady: activeSurfaceReadyForTabWarmup()
+        ) else {
+            return
+        }
         guard !tabWarmupScheduled else { return }
         tabWarmupScheduled = true
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + TabWarmupPolicy.delayAfterFirstPaint
+        ) { [weak self] in
             guard let self else { return }
             self.tabWarmupScheduled = false
+            guard TabWarmupPolicy.canStart(
+                activeSurfaceReady: self.activeSurfaceReadyForTabWarmup()
+            ) else {
+                return
+            }
             self.warmNextBackgroundTab()
         }
     }
 
+    private func activeSurfaceReadyForTabWarmup() -> Bool {
+        guard let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
+            ?? lastSnapshot.panes.first?.id
+        else {
+            return false
+        }
+        return terminalManager.isSurfaceReady(for: activePane)
+    }
+
     private func warmNextBackgroundTab() {
+        guard activeSurfaceReadyForTabWarmup() else { return }
         let current = lastSnapshot.activeTab
         for tab in lastSnapshot.tabs where tab.id != current {
             if content.paneLayout.hasCachedTab(tab.id) { continue }

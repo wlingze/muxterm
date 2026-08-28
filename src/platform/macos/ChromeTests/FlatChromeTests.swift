@@ -1034,6 +1034,19 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertFalse(FirstTabPaintPolicy.canPaintFromLocalLayout(paneCount: 0, hasLayout: true))
     }
 
+    func testBackgroundTabWarmupWaitsForActiveSurfaceFirstPaint() {
+        XCTAssertFalse(
+            TabWarmupPolicy.canStart(activeSurfaceReady: false),
+            "后台 tab tree 不得抢在活动 Surface seed 前占用 AppKit 主线程"
+        )
+        XCTAssertTrue(TabWarmupPolicy.canStart(activeSurfaceReady: true))
+        XCTAssertGreaterThanOrEqual(
+            TabWarmupPolicy.delayAfterFirstPaint,
+            FlatChrome.eventPollInterval,
+            "首帧 ready 后至少让出一个事件/绘制帧再预热"
+        )
+    }
+
     func testTreeChangeSyncsPaneGridEvenWhenWindowUnchanged() {
         XCTAssertTrue(TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: true))
         XCTAssertFalse(TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: false))
