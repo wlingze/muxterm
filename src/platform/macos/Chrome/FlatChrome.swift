@@ -543,6 +543,16 @@ public enum FirstTabPaintPolicy {
     }
 }
 
+/// 后台 tab 的 AppKit tree 预热不在首帧关键路径。活动 Surface 尚未完成
+/// seed 时禁止创建不可见 host/约束；ready 后至少让出一个绘制帧。
+public enum TabWarmupPolicy {
+    public static let delayAfterFirstPaint: TimeInterval = 0.05
+
+    public static func canStart(activeSurfaceReady: Bool) -> Bool {
+        activeSurfaceReady
+    }
+}
+
 /// 窗口外框没变可以省略 `refresh-client -C`；换了一棵 pane 树时
 /// SwiftTerm 每个 host 的格子仍要按像素重算。
 public enum TabGeometrySyncPolicy {
