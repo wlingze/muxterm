@@ -23,7 +23,24 @@ final class AttachE2ETests: XCTestCase {
     /// 大小才出现内容。这里先固定窗口，再走生产 Existing attach；attach
     /// 开始后绝不 setFrame，且断言最终 host 与 SwiftTerm 都已有首帧。
     func testExistingAttachPaintsSurfaceWithoutPostAttachWindowResize() throws {
-        let fixture = OnePaneCat(label: "attach-no-resize")
+        try assertExistingAttachPaintsWithoutResize(
+            frame: NSRect(x: 40, y: 40, width: 620, height: 360),
+            label: "attach-no-resize"
+        )
+    }
+
+    func testSmallWindowExistingAttachPaintsWithoutPostAttachResize() throws {
+        try assertExistingAttachPaintsWithoutResize(
+            frame: NSRect(x: 40, y: 40, width: 500, height: 320),
+            label: "attach-small-window"
+        )
+    }
+
+    private func assertExistingAttachPaintsWithoutResize(
+        frame fixedFrame: NSRect,
+        label: String
+    ) throws {
+        let fixture = OnePaneCat(label: label)
         AppE2E.ensureApp()
         let startupBridge = try CoreBridge(backendType: "local")
         let app = MainWindowController(
@@ -33,7 +50,6 @@ final class AttachE2ETests: XCTestCase {
         )
         defer { app.testShutdown() }
 
-        let fixedFrame = NSRect(x: 40, y: 40, width: 620, height: 360)
         app.window?.setFrame(fixedFrame, display: true)
         app.window?.orderFront(nil)
         AppE2E.pump(160)
