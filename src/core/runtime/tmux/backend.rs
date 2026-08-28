@@ -6539,6 +6539,8 @@ mod tests {
         assert!(should_skip_history_backfill(Some(&state)));
         state.alternate_on = false;
         state.mouse_sgr_flag = true;
+        assert!(!should_skip_history_backfill(Some(&state)));
+        state.current_command = "htop".into();
         assert!(should_skip_history_backfill(Some(&state)));
         state.mouse_sgr_flag = false;
         state.current_command = "/usr/local/bin/cursor-agent".into();
