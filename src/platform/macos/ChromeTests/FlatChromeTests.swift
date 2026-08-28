@@ -417,10 +417,11 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         )
     }
 
-    /// 回归：视图刚创建且播种快照非空（覆盖了后端已入队事件）时，事件必须
-    /// 跳过，否则同一批字节双写（输入/回显重复、状态区堆叠）。
-    func testNewViewWithSeedSkipsAlreadyCoveredEvents() {
-        XCTAssertFalse(PaneOutputFeedPolicy.shouldFeedEvent(
+    /// `PaneSnapshot` 是事件流中的权威基线；Runtime 会在发布它之前删掉
+    /// 旧 `PaneOutput`。因此即使 view 刚创建，同批排在 snapshot 后面的
+    /// output 也已经是新增量，不能因为 poll 批次相同而丢弃。
+    func testNewViewFeedsOutputFollowingSnapshotInSameBatch() {
+        XCTAssertTrue(PaneOutputFeedPolicy.shouldFeedEvent(
             viewExistedBeforeEvent: false,
             seedCoveredEvent: true
         ))
@@ -434,9 +435,9 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         ))
     }
 
-    /// Snapshot seed 覆盖的是同一批已经入队的事件；逐事件判断时必须全部跳过，
-    /// 不能把同一批终端字节再次喂给 SwiftTerm。
-    func testSeededBatchDoesNotReplayAnyEvent() {
+    /// poll 批次只是 FFI 取数边界，不是 Surface 的覆盖边界。snapshot 后的
+    /// 多段重绘必须逐段保留，否则 agent 只重画一次的最新正文会永久消失。
+    func testSeededBatchKeepsEveryFollowingIncrement() {
         let events: [[UInt8]] = [
             [0x1b, 0x5b, 0x32, 0x30, 0x32, 0x36, 0x68], // CSI ?2026h 的片段
             [0x0f, 0x08, 0x0d], // SO / BS / CR
@@ -450,7 +451,7 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
                 fed.append(event)
             }
         }
-        XCTAssertTrue(fed.isEmpty)
+        XCTAssertEqual(fed, events)
     }
 
     func testForegroundWorkspaceAlwaysDelivers() {
