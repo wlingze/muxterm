@@ -128,6 +128,10 @@ struct PaneReplayState {
     mouse_standard_flag: bool,
     mouse_utf8_flag: bool,
     bracket_paste_flag: bool,
+    /// 与终端 mode 同一次 display-message 查询得到的前台命令。
+    /// TUI 异常退出后 tmux 可能仍保留 mouse flags；已经回到交互 shell 时
+    /// 这些 flag 不能重新灌给前端，否则点击会作为 SGR 文本进入命令行。
+    current_command: String,
 }
 
 /// 一次 pane snapshot/resync 事务。所有 live output 都暂存在事务里，直到
@@ -405,7 +409,8 @@ const PANE_RESYNC_FORMAT: &str = concat!(
     "#{alternate_on}|#{alternate_saved_x}|#{alternate_saved_y}|#{insert_flag}|",
     "#{wrap_flag}|#{keypad_flag}|#{keypad_cursor_flag}|#{origin_flag}|",
     "#{mouse_all_flag}|#{mouse_any_flag}|#{mouse_button_flag}|#{mouse_sgr_flag}|",
-    "#{mouse_standard_flag}|#{mouse_utf8_flag}|#{bracket_paste_flag}"
+    "#{mouse_standard_flag}|#{mouse_utf8_flag}|#{bracket_paste_flag}|",
+    "#{pane_current_command}"
 );
 
 fn parse_bool_field(fields: &[&str], index: usize) -> bool {
@@ -421,10 +426,49 @@ fn should_skip_history_backfill(state: Option<&PaneReplayState>) -> bool {
         return false;
     };
     state.alternate_on
-        || state.mouse_any_flag
-        || state.mouse_all_flag
-        || state.mouse_sgr_flag
-        || state.mouse_button_flag
+        || (should_restore_mouse_modes(state)
+            && (state.mouse_any_flag
+                || state.mouse_all_flag
+                || state.mouse_sgr_flag
+                || state.mouse_button_flag))
+}
+
+/// pane_current_command 已回到交互 shell 且不在 alternate screen 时，tmux
+/// 的 mouse flags 可能只是上一个异常退出 TUI 的残留。真正仍在运行的
+/// Cursor/htop/cat 等前台进程继续按 tmux 的权威 flags 恢复。
+fn should_restore_mouse_modes(state: &PaneReplayState) -> bool {
+    state.alternate_on || !is_interactive_shell_command(&state.current_command)
+}
+
+fn is_interactive_shell_command(command: &str) -> bool {
+    let executable = command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('-')
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        executable.as_str(),
+        "sh" | "ash"
+            | "bash"
+            | "csh"
+            | "dash"
+            | "elvish"
+            | "fish"
+            | "ksh"
+            | "mksh"
+            | "nu"
+            | "osh"
+            | "pdksh"
+            | "powershell"
+            | "pwsh"
+            | "tcsh"
+            | "xonsh"
+            | "zsh"
+    )
 }
 
 fn parse_optional_u32(fields: &[&str], index: usize) -> Option<u32> {
@@ -461,6 +505,7 @@ fn parse_pane_replay_state(line: &str) -> PaneReplayState {
         mouse_standard_flag: parse_bool_field(&fields, 17),
         mouse_utf8_flag: parse_bool_field(&fields, 18),
         bracket_paste_flag: parse_bool_field(&fields, 19),
+        current_command: fields.get(20).copied().unwrap_or_default().to_string(),
     }
 }
 
@@ -532,23 +577,25 @@ fn build_pane_snapshot(
         for mode in [1000, 1002, 1003, 1005, 1006] {
             push_csi(&mut out, &format!("?{mode}l"));
         }
-        if state.mouse_standard_flag || state.mouse_button_flag || state.mouse_any_flag {
-            push_csi(
-                &mut out,
-                if state.mouse_any_flag {
-                    "?1003h"
-                } else if state.mouse_button_flag {
-                    "?1002h"
-                } else {
-                    "?1000h"
-                },
-            );
-        }
-        if state.mouse_utf8_flag {
-            push_csi(&mut out, "?1005h");
-        }
-        if state.mouse_sgr_flag {
-            push_csi(&mut out, "?1006h");
+        if should_restore_mouse_modes(state) {
+            if state.mouse_standard_flag || state.mouse_button_flag || state.mouse_any_flag {
+                push_csi(
+                    &mut out,
+                    if state.mouse_any_flag {
+                        "?1003h"
+                    } else if state.mouse_button_flag {
+                        "?1002h"
+                    } else {
+                        "?1000h"
+                    },
+                );
+            }
+            if state.mouse_utf8_flag {
+                push_csi(&mut out, "?1005h");
+            }
+            if state.mouse_sgr_flag {
+                push_csi(&mut out, "?1006h");
+            }
         }
     } else if !alternate.is_empty() {
         // Older tmux may not expose the format fields. Keep the captured
@@ -5414,6 +5461,48 @@ mod tests {
     }
 
     #[test]
+    fn pane_replay_mouse_modes_are_isolated_between_shell_and_tui() {
+        assert!(PANE_RESYNC_FORMAT.ends_with("|#{pane_current_command}"));
+        let shell = parse_pane_replay_state("0|0|1|block|1|0|||0|1|0|0|0|0|1|0|1|0|0|1|/bin/bash");
+        let tui = parse_pane_replay_state("0|0|1|block|1|0|||0|1|0|0|0|0|1|0|1|0|0|1|cursor");
+
+        let shell_snapshot = build_pane_snapshot(Some(&shell), b"PROMPT> ", b"", b"");
+        let tui_snapshot = build_pane_snapshot(Some(&tui), b"CURSOR TUI", b"", b"");
+
+        for enabled in [b"\x1b[?1003h".as_slice(), b"\x1b[?1006h".as_slice()] {
+            assert!(
+                !shell_snapshot
+                    .windows(enabled.len())
+                    .any(|window| window == enabled),
+                "已经回到 shell 的 pane 不得恢复陈旧 mouse mode"
+            );
+            assert!(
+                tui_snapshot
+                    .windows(enabled.len())
+                    .any(|window| window == enabled),
+                "另一个仍在运行 TUI 的 pane 必须独立保留 mouse mode"
+            );
+        }
+        assert!(shell_snapshot
+            .windows(b"\x1b[?1003l".len())
+            .any(|window| window == b"\x1b[?1003l"));
+        assert!(!should_skip_history_backfill(Some(&shell)));
+        assert!(should_skip_history_backfill(Some(&tui)));
+    }
+
+    #[test]
+    fn alternate_screen_shell_process_keeps_live_mouse_modes() {
+        let state = parse_pane_replay_state("0|0|1|block|1|1|||0|1|0|0|0|0|1|0|1|0|0|1|bash");
+        let snapshot = build_pane_snapshot(Some(&state), b"", b"SHELL TUI", b"");
+        assert!(snapshot
+            .windows(b"\x1b[?1003h".len())
+            .any(|window| window == b"\x1b[?1003h"));
+        assert!(snapshot
+            .windows(b"\x1b[?1006h".len())
+            .any(|window| window == b"\x1b[?1006h"));
+    }
+
+    #[test]
     fn pane_resync_emits_one_snapshot_and_replays_catch_up_bytes() {
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
@@ -6185,6 +6274,7 @@ mod tests {
                     mouse_standard_flag: false,
                     mouse_utf8_flag: false,
                     bracket_paste_flag: false,
+                    current_command: "cursor".into(),
                 }),
                 alternate: Some(b"CURSOR_AGENT_TUI\r\n".to_vec()),
                 ..PaneResync::default()
@@ -6252,6 +6342,7 @@ mod tests {
                     mouse_standard_flag: false,
                     mouse_utf8_flag: false,
                     bracket_paste_flag: false,
+                    current_command: "cursor".into(),
                 }),
                 primary: Some(b"CURSOR_WAITING_BOX\r\n".to_vec()),
                 ..PaneResync::default()
@@ -6351,6 +6442,7 @@ mod tests {
             mouse_standard_flag: false,
             mouse_utf8_flag: false,
             bracket_paste_flag: false,
+            current_command: "cursor".into(),
         };
         assert!(!should_skip_history_backfill(Some(&state)));
         state.alternate_on = true;
