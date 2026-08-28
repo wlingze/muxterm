@@ -23,12 +23,13 @@ use std::time::{Duration, Instant};
 
 use muxterm::core::protocol::ffi::api::{
     muxterm_connect, muxterm_detach, muxterm_execute, muxterm_free, muxterm_get_layout,
-    muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events,
-    muxterm_resize_client, muxterm_resize_pane_axis, muxterm_shutdown,
+    muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_resize_client,
+    muxterm_resize_pane_axis, muxterm_shutdown,
 };
 use muxterm::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF,
-    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, TASK_NEW_TAB, TASK_SPLIT_PANE, TASK_SWITCH_TAB,
+    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_PANE_HISTORY, TASK_NEW_TAB, TASK_SPLIT_PANE,
+    TASK_SWITCH_TAB,
 };
 
 #[test]
@@ -460,10 +461,10 @@ fn macos_ffi_attach_2tab3pane_layout() {
         .status();
 }
 
-/// macOS FFI 回归：attach 前已经存在的 shell 画面必须可从累计输出读取，
-/// 这样 SwiftTerm 首次创建 pane view 时才能恢复，而不是只有后续输入可见。
+/// macOS FFI 回归：attach 前已经滚出可见 grid 的普通 shell 历史必须通过
+/// PaneHistory 交给平台层，且不能被 primary-screen agent 的跳过策略误伤。
 #[test]
-fn macos_ffi_attach_restores_existing_shell_screen_output() {
+fn macos_ffi_attach_restores_existing_shell_history() {
     if !tmux_available() {
         eprintln!("skip: tmux 不可用");
         return;
@@ -471,6 +472,13 @@ fn macos_ffi_attach_restores_existing_shell_screen_output() {
 
     let backend = format!("mac-restore-{}-{}", std::process::id(), rand_suffix());
     let marker = "MAC_ATTACH_RESTORE_74291";
+    // 不依赖用户登录 shell 的初始化时序：先确定性地产生超过一屏的输出，
+    // 再进入普通交互 shell。marker 因而只存在于 tmux history，能真正验证
+    // shell 的 PaneHistory backfill，而不是碰巧由当前可见 snapshot 恢复。
+    let startup_command = format!(
+        "printf '{marker}\\n'; i=0; while [ \"$i\" -lt 40 ]; do \
+         printf 'MAC_ATTACH_FILL_%02d\\n' \"$i\"; i=$((i + 1)); done; exec /bin/sh"
+    );
     let created = Command::new("tmux")
         .args([
             "-L",
@@ -483,6 +491,7 @@ fn macos_ffi_attach_restores_existing_shell_screen_output() {
             "80",
             "-y",
             "24",
+            &startup_command,
         ])
         .status()
         .map(|status| status.success())
@@ -494,24 +503,51 @@ fn macos_ffi_attach_restores_existing_shell_screen_output() {
             .status();
         return;
     }
-    let command = format!("printf '{marker}\\n'");
-    assert!(
-        Command::new("tmux")
+
+    let seed_deadline = Instant::now() + Duration::from_secs(2);
+    let mut seeded_history = Vec::new();
+    while Instant::now() < seed_deadline {
+        seeded_history = Command::new("tmux")
             .args([
                 "-L",
                 &backend,
-                "send-keys",
+                "capture-pane",
+                "-p",
+                "-S",
+                "-",
                 "-t",
                 "restore",
-                &command,
-                "Enter"
             ])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false),
-        "预置 tmux shell 画面失败"
+            .output()
+            .map(|output| output.stdout)
+            .unwrap_or_default();
+        if String::from_utf8_lossy(&seeded_history).contains(marker) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        String::from_utf8_lossy(&seeded_history).contains(marker),
+        "测试 fixture 必须先把 marker 写入 tmux history"
     );
-    std::thread::sleep(Duration::from_millis(150));
+    let visible = Command::new("tmux")
+        .args([
+            "-L",
+            &backend,
+            "capture-pane",
+            "-p",
+            "-S",
+            "0",
+            "-t",
+            "restore",
+        ])
+        .output()
+        .map(|output| output.stdout)
+        .unwrap_or_default();
+    assert!(
+        !String::from_utf8_lossy(&visible).contains(marker),
+        "marker 必须滚出可见 grid，避免 snapshot 掩盖 history backfill 回归"
+    );
 
     let bt = CString::new("tmux").unwrap();
     let sock = CString::new(backend.as_str()).unwrap();
@@ -521,23 +557,23 @@ fn macos_ffi_attach_restores_existing_shell_screen_output() {
 
     unsafe {
         assert_eq!(muxterm_connect(h), 0, "muxterm_connect 失败");
+        assert_eq!(
+            muxterm_resize_client(h, 80, 24),
+            0,
+            "attach 测试必须像真实 macOS 前端一样先提交首个字符网格尺寸"
+        );
         let mut events = [CStateChange::default(); 64];
         let mut restored = false;
         for _ in 0..60 {
-            let _ = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
-            let mut panes = [CPane {
-                id: 0,
-                cols: 0,
-                rows: 0,
-                is_active: 0,
-            }; 16];
-            let count = muxterm_get_panes(h, 0, panes.as_mut_ptr(), panes.len() as i32);
-            for pane in panes.iter().take(count.max(0) as usize) {
-                let mut output = vec![0u8; 256 * 1024];
-                let n = muxterm_get_pane_output(h, pane.id, output.as_mut_ptr(), output.len());
-                if n > 0 && String::from_utf8_lossy(&output[..n as usize]).contains(marker) {
-                    restored = true;
-                    break;
+            let count = muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32);
+            for event in events.iter().take(count.max(0) as usize) {
+                if event.type_ == STATE_PANE_HISTORY && !event.data.is_null() && event.data_len > 0
+                {
+                    let payload = std::slice::from_raw_parts(event.data, event.data_len);
+                    if String::from_utf8_lossy(payload).contains(marker) {
+                        restored = true;
+                        break;
+                    }
                 }
             }
             if restored {
@@ -547,7 +583,7 @@ fn macos_ffi_attach_restores_existing_shell_screen_output() {
         }
         assert!(
             restored,
-            "attach 后 FFI 应恢复已有 shell 画面 marker={marker}"
+            "attach 后 FFI 应发送已有普通 shell 历史 marker={marker}"
         );
         let _ = muxterm_shutdown(h);
         muxterm_free(h);

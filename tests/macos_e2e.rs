@@ -16,7 +16,8 @@ use muxterm::core::protocol::ffi::api::{
     muxterm_attention_take_notifications, muxterm_connect, muxterm_execute, muxterm_free,
     muxterm_get_layout, muxterm_get_pane_output, muxterm_new, muxterm_pane_command_marks_json,
     muxterm_pane_history_max_offset, muxterm_pane_last_n_lines, muxterm_pane_scroll_ansi,
-    muxterm_pane_viewport, muxterm_poll_events, muxterm_search_all, muxterm_set_pane_viewport,
+    muxterm_pane_viewport, muxterm_poll_events, muxterm_resize_client, muxterm_search_all,
+    muxterm_set_pane_viewport,
 };
 use muxterm::core::protocol::ffi::types::{
     CLayoutNode, CStateChange, CTask, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_EXITED,
@@ -163,6 +164,10 @@ impl PaintedFixture {
                 ));
             }
         }
+        assert!(
+            tmux_ok(&socket, &["select-window", "-t", &w0]),
+            "fixture 必须让带三个 pane 的 tab1 成为 attach 活动 tab"
+        );
 
         // capture 确认每个 token 已上屏。
         for (i, pane) in tab1_panes.iter().enumerate() {
@@ -204,6 +209,8 @@ impl Drop for PaintedFixture {
 fn connect_attach(
     socket: &str,
     session: &str,
+    cols: u16,
+    rows: u16,
 ) -> *mut muxterm::core::protocol::ffi::api::MuxtermHandle {
     let bt = CString::new("tmux").unwrap();
     let sock = CString::new(socket).unwrap();
@@ -211,6 +218,11 @@ fn connect_attach(
     let h = muxterm_new(bt.as_ptr(), sock.as_ptr(), sess.as_ptr());
     assert!(!h.is_null(), "muxterm_new 失败");
     assert_eq!(unsafe { muxterm_connect(h) }, 0, "muxterm_connect 失败");
+    assert_eq!(
+        unsafe { muxterm_resize_client(h, cols, rows) },
+        0,
+        "macOS attach 必须自动提交首个字符网格尺寸"
+    );
     h
 }
 
@@ -284,7 +296,7 @@ fn take_notifications(
 fn macos_ffi_attach_search_attention_and_done() {
     require_tmux();
     let fx = PaintedFixture::new("search-attn");
-    let h = connect_attach(&fx.socket, &fx.session);
+    let h = connect_attach(&fx.socket, &fx.session, 100, 30);
 
     // 等 attach 完成：pane 输出含 token。
     let ok = poll_until(h, Duration::from_secs(8), || {
@@ -409,7 +421,7 @@ fn macos_ffi_attach_search_attention_and_done() {
 fn macos_ffi_disconnect_keeps_last_frame() {
     require_tmux();
     let fx = PaintedFixture::new("disconnect");
-    let h = connect_attach(&fx.socket, &fx.session);
+    let h = connect_attach(&fx.socket, &fx.session, 100, 30);
 
     let ok = poll_until(h, Duration::from_secs(8), || {
         pane_output(h, 0).contains(&fx.tab1_tokens[0])
@@ -468,7 +480,7 @@ fn macos_ffi_attach_history_and_jump_latest() {
         &["send-keys", "-t", &pane, "-l", &visible]
     ));
 
-    let h = connect_attach(&socket, session);
+    let h = connect_attach(&socket, session, 80, 24);
     let ok = poll_until(h, Duration::from_secs(8), || {
         pane_output(h, 0).contains(&visible)
     });
@@ -568,13 +580,28 @@ fn macos_ffi_command_marks_roundtrip() {
     ));
     let pane = tmux_out(&socket, &["list-panes", "-t", session, "-F", "#{pane_id}"]);
     let pane = pane.lines().next().unwrap_or("").to_string();
-    let h = connect_attach(&socket, session);
-    let first =
-        b"\x1b]133;A\x07\x1b]133;B\x07echo CMD_OK\r\n\x1b]133;C\x07out-ok\r\n\x1b]133;D;0\x07";
-    let second =
-        b"\x1b]133;A\x07\x1b]133;B\x07false CMD_FAIL\r\n\x1b]133;C\x07out-fail\r\n\x1b]133;D;7\x07";
-    send_keys_hex(&socket, &pane, first);
-    send_keys_hex(&socket, &pane, second);
+    let h = connect_attach(&socket, session, 80, 24);
+    assert!(
+        poll_until(h, Duration::from_secs(3), || !pane_output(h, 0).is_empty()),
+        "写 OSC 前必须完成初始 Surface seed"
+    );
+
+    // canonical TTY 会把输入侧 ESC/BEL 回显成 `^[`/`^G`。命令标记必须由
+    // pane 进程从 stdout 写出真实 OSC 133，与生产 shell integration 一致。
+    let suffix = rand_suffix();
+    let ok_token = format!("CMD_OK_{suffix}");
+    let fail_token = format!("CMD_FAIL_{suffix}");
+    let py =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/osc133_rounds.py");
+    assert!(py.is_file(), "缺少 {}", py.display());
+    let command = format!(
+        "env MUXTERM_CMD_SUFFIX={suffix} python3 -u {}",
+        py.display()
+    );
+    assert!(
+        tmux_ok(&socket, &["respawn-pane", "-k", "-t", &pane, &command]),
+        "启动 OSC 133 command fixture 失败"
+    );
 
     let mut last_marks = String::new();
     let ok = poll_until(h, Duration::from_secs(8), || unsafe {
@@ -591,8 +618,8 @@ fn macos_ffi_command_marks_roundtrip() {
         let marks = value["marks"].as_array();
         marks.is_some_and(|marks| {
             marks.len() >= 2
-                && value["marks"].to_string().contains("CMD_OK")
-                && value["marks"].to_string().contains("CMD_FAIL")
+                && value["marks"].to_string().contains(&ok_token)
+                && value["marks"].to_string().contains(&fail_token)
         })
     });
     assert!(
@@ -609,7 +636,7 @@ fn macos_ffi_command_marks_roundtrip() {
 fn macos_ffi_disconnect_emits_exited_or_disconnected() {
     require_tmux();
     let fx = PaintedFixture::new("disc-status");
-    let h = connect_attach(&fx.socket, &fx.session);
+    let h = connect_attach(&fx.socket, &fx.session, 100, 30);
     let ok = poll_until(h, Duration::from_secs(8), || {
         pane_output(h, 0).contains(&fx.tab1_tokens[0])
     });
@@ -649,7 +676,7 @@ fn macos_ffi_disconnect_emits_exited_or_disconnected() {
 fn macos_ffi_zoom_collapses_layout_to_leaf() {
     require_tmux();
     let fx = PaintedFixture::new("zoom");
-    let h = connect_attach(&fx.socket, &fx.session);
+    let h = connect_attach(&fx.socket, &fx.session, 100, 30);
     let ok = poll_until(h, Duration::from_secs(8), || {
         pane_output(h, 0).contains(&fx.tab1_tokens[0])
     });
