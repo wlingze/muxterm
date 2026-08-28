@@ -2885,6 +2885,33 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    static TEST_TMUX_SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct IsolatedTmuxServer {
+        socket: String,
+    }
+
+    impl IsolatedTmuxServer {
+        fn start(session: &str) -> Option<Self> {
+            let sequence = TEST_TMUX_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let socket = format!("muxterm-test-ffi-{}-{sequence}", std::process::id());
+            let server = Self { socket };
+            let status = std::process::Command::new("tmux")
+                .args(["-L", &server.socket, "new-session", "-d", "-s", session])
+                .status()
+                .ok()?;
+            status.success().then_some(server)
+        }
+    }
+
+    impl Drop for IsolatedTmuxServer {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("tmux")
+                .args(["-L", &self.socket, "kill-server"])
+                .status();
+        }
+    }
+
     #[test]
     fn ffi_export_policy_filters_index_snapshots_only() {
         assert!(!should_export_state_change(
@@ -3038,6 +3065,11 @@ mod tests {
     /// W7：workspace_open / list / activate / close 走 core 池。
     #[test]
     fn ffi_workspace_open_list_activate_close() {
+        let Some(tmux) = IsolatedTmuxServer::start("demo") else {
+            eprintln!("skip: tmux 不可用");
+            return;
+        };
+        let socket = CString::new(tmux.socket.as_str()).unwrap();
         let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
         assert!(!h.is_null());
         unsafe {
@@ -3048,7 +3080,7 @@ mod tests {
             muxterm_free_string(list);
             assert!(text.contains("workspaces"), "list 应含 workspaces: {text}");
 
-            // 再开一个 tmux 工作区（无真实 tmux 时 open 失败，但不应 panic）。
+            // 再开一个隔离 tmux 工作区，绝不能尝试用户默认 server。
             let rc = muxterm_workspace_open(
                 h,
                 c"local".as_ptr(),
@@ -3056,10 +3088,9 @@ mod tests {
                 c"demo".as_ptr(),
                 c"tmux".as_ptr(),
                 c"".as_ptr(),
-                ptr::null(),
+                socket.as_ptr(),
             );
-            // 有 tmux 时 rc==0；无 tmux 时 rc==-1，两种情况都接受。
-            let _ = rc;
+            assert_eq!(rc, 0, "隔离 tmux workspace 应可打开");
 
             // list 应仍可调用。
             let list = muxterm_workspace_list(h);
