@@ -65,6 +65,10 @@ enum MuxtermTextKey: CaseIterable {
     case errorSwitchTab
     case errorTmuxSessionCreation
     case errorTmuxSessionDiscovery
+    case existingBack
+    case existingConnections
+    case existingEmpty
+    case existingLoading
     case freeformUseTypedTarget
     case hintNewTab
     case hintQuit
@@ -277,6 +281,10 @@ enum MuxtermTextKey: CaseIterable {
         case .errorSwitchTab: return "error_switch_tab"
         case .errorTmuxSessionCreation: return "error_tmux_session_creation"
         case .errorTmuxSessionDiscovery: return "error_tmux_session_discovery"
+        case .existingBack: return "existing_back"
+        case .existingConnections: return "existing_connections"
+        case .existingEmpty: return "existing_empty"
+        case .existingLoading: return "existing_loading"
         case .freeformUseTypedTarget: return "freeform_use_typed_target"
         case .hintNewTab: return "hint_new_tab"
         case .hintQuit: return "hint_quit"

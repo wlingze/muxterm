@@ -18,7 +18,11 @@ final class QuickConnectE2ETests: XCTestCase {
         app.openQuickConnect()
         AppE2E.pump(80)
 
-        let cell = app.unifiedPanel.testWorkspaceCell(at: 0)
+        XCTAssertEqual(
+            app.unifiedPanel.testWorkspaceTitles().first,
+            MuxtermI18n.shared.tr(.existingConnections)
+        )
+        let cell = app.unifiedPanel.testWorkspaceCell(at: 1)
         XCTAssertNotNil(cell, "启动创建的 local workspace 必须出现在 Quick Connect")
         XCTAssertEqual(cell?.testTitleText(), "workspace")
         XCTAssertEqual(cell?.testBadgeDotSizes().count, 1, "启动 workspace 必须带 Recent 标记")
@@ -131,9 +135,14 @@ final class QuickConnectE2ETests: XCTestCase {
             "统一面板列必须跟 720pt 窗口，不能停在 100pt。width=\(panel.testTableColumnWidth())"
         )
         let expected = ["archmini-home", "pc-home", "ubuntu-home"]
+        XCTAssertEqual(
+            panel.testWorkspaceTitles().first,
+            MuxtermI18n.shared.tr(.existingConnections)
+        )
         for (index, name) in expected.enumerated() {
-            let cell = panel.testWorkspaceCell(at: index)
-            XCTAssertNotNil(cell, "row \(index) 必须是 QuickTargetCellView（\(name)）")
+            let row = index + 1
+            let cell = panel.testWorkspaceCell(at: row)
+            XCTAssertNotNil(cell, "row \(row) 必须是 QuickTargetCellView（\(name)）")
             guard let cell else { continue }
             XCTAssertEqual(cell.testTitleText(), name)
             let needed = cell.testTitleTextWidth()
