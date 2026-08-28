@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::core::runtime::tmux::client::{
-    event_channel, feed_bytes_to_lines, process_line, OutputBatcher, TmuxEvent, TmuxEventReceiver,
-    TmuxEventSink,
+    event_channel, feed_bytes_to_lines, process_line, OutputBatcher, ResponseBuffer, TmuxEvent,
+    TmuxEventReceiver, TmuxEventSink, OUTPUT_COALESCE_IDLE,
 };
 use crate::core::runtime::tmux::command::TmuxCommand;
 
@@ -40,6 +40,57 @@ fn hex_debug(bytes: &[u8]) -> String {
         out.push_str("...(truncated)");
     }
     out
+}
+
+/// SSH stdout -> tmux control protocol parser.
+///
+/// 独立成函数后，transport chunk 边界可以直接做回归测试；这些边界不是
+/// `%output` 的语义边界，不能改变交付给 Surface 的字节流。
+async fn process_tmux_stdout_chunk<S: TmuxEventSink>(
+    chunk: Vec<u8>,
+    buf: &mut Vec<u8>,
+    parse_tx: &S,
+    response: &mut Option<ResponseBuffer>,
+) {
+    if chunk.is_empty() {
+        return;
+    }
+    tracing::debug!(
+        target = "muxterm::ssh",
+        len = chunk.len(),
+        hex = %hex_debug(&chunk),
+        "recv remote tmux chunk"
+    );
+    for line_bytes in feed_bytes_to_lines(buf, &chunk) {
+        process_line(&line_bytes, parse_tx, response).await;
+    }
+}
+
+async fn read_tmux_stdout<S: TmuxEventSink>(mut stdout_rx: mpsc::Receiver<Vec<u8>>, parse_tx: S) {
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut response = None;
+    'reader: loop {
+        let Some(chunk) = stdout_rx.recv().await else {
+            break;
+        };
+        process_tmux_stdout_chunk(chunk, &mut buf, &parse_tx, &mut response).await;
+
+        // async-ssh2-tokio 的 channel chunk 只是 transport read 边界。
+        // 在短 idle 窗内继续收，避免每个小 chunk 都把 OutputBatcher 强制
+        // flush 成一个 lane event；控制消息仍会在 emit 时形成顺序边界。
+        loop {
+            match tokio::time::timeout(OUTPUT_COALESCE_IDLE, stdout_rx.recv()).await {
+                Ok(Some(chunk)) => {
+                    process_tmux_stdout_chunk(chunk, &mut buf, &parse_tx, &mut response).await;
+                }
+                Ok(None) => break 'reader,
+                Err(_) => break,
+            }
+        }
+        parse_tx.flush();
+    }
+    parse_tx.flush();
+    parse_tx.emit(TmuxEvent::Exit { code: None });
 }
 
 /// SSH 连接配置。
@@ -187,7 +238,7 @@ impl SshSession {
         let cmd = build_tmux_cc_command(session_name);
         tracing::info!(target = "muxterm::ssh", %cmd, "spawn remote tmux -CC");
 
-        let (stdout_tx, mut stdout_rx) = mpsc::channel::<Vec<u8>>(256);
+        let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(256);
         let (stderr_tx, mut stderr_rx) = mpsc::channel::<Vec<u8>>(16);
         let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(64);
         let (event_tx, event_rx) = event_channel();
@@ -208,27 +259,7 @@ impl SshSession {
 
         // stdout → 行解析 → TmuxEvent
         let parse_tx = OutputBatcher::new(event_tx.clone());
-        let parse_join = tokio::spawn(async move {
-            let mut buf: Vec<u8> = Vec::with_capacity(4096);
-            let mut response = None;
-            while let Some(chunk) = stdout_rx.recv().await {
-                if chunk.is_empty() {
-                    continue;
-                }
-                tracing::debug!(
-                    target = "muxterm::ssh",
-                    len = chunk.len(),
-                    hex = %hex_debug(&chunk),
-                    "recv remote tmux chunk"
-                );
-                for line_bytes in feed_bytes_to_lines(&mut buf, &chunk) {
-                    process_line(&line_bytes, &parse_tx, &mut response).await;
-                }
-                parse_tx.flush();
-            }
-            parse_tx.flush();
-            parse_tx.emit(TmuxEvent::Exit { code: None });
-        });
+        let parse_join = tokio::spawn(read_tmux_stdout(stdout_rx, parse_tx));
 
         // SSH exec（请求 pty，tmux -CC 需要）
         let exec_join = tokio::spawn(async move {
@@ -590,6 +621,113 @@ mod tests {
         assert!(
             saw_response,
             "ordinary response text may use lossy String conversion"
+        );
+    }
+
+    #[tokio::test]
+    async fn ssh_transport_chunks_do_not_overflow_output_lane_or_split_sgr() {
+        let (event_tx, mut event_rx) = event_channel();
+        let (stdout_tx, stdout_rx) = mpsc::channel(256);
+        let chunks = 128usize;
+        let mut expected = Vec::new();
+
+        for i in 0..chunks {
+            let payload = format!("\x1b[38;2;108;108;118mframe-{i}\x1b[0m");
+            expected.extend_from_slice(payload.as_bytes());
+            stdout_tx
+                .send(
+                    format!("%output %7 \\033[38;2;108;108;118mframe-{i}\\033[0m\r\n").into_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+        drop(stdout_tx);
+
+        read_tmux_stdout(stdout_rx, OutputBatcher::new(event_tx)).await;
+
+        let mut actual = Vec::new();
+        let mut output_events = 0usize;
+        let mut saw_gap = false;
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                TmuxEvent::Message(crate::core::runtime::tmux::protocol::Message::Output {
+                    pane,
+                    content,
+                    ..
+                }) => {
+                    assert_eq!(pane, crate::core::types::PaneId(7));
+                    output_events += 1;
+                    actual.extend_from_slice(&content);
+                }
+                TmuxEvent::OutputGap { pane } => {
+                    assert_eq!(pane, crate::core::types::PaneId(7));
+                    saw_gap = true;
+                }
+                TmuxEvent::Exit { .. } => {}
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+
+        assert!(
+            !saw_gap,
+            "SSH transport chunks must not fill the output lane"
+        );
+        assert_eq!(actual, expected, "SGR bytes must remain exact and ordered");
+        assert!(
+            output_events <= 16,
+            "adjacent SSH chunks should coalesce before the lane; got {output_events}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ssh_interleaved_panes_do_not_make_each_other_gap() {
+        let (event_tx, mut event_rx) = event_channel();
+        let (stdout_tx, stdout_rx) = mpsc::channel(256);
+        let mut expected = [Vec::new(), Vec::new()];
+
+        for i in 0..128usize {
+            let slot = i % 2;
+            let pane = 7 + slot;
+            let payload = format!("\x1b[38;2;36;41;46mpane-{pane}-frame-{i}\x1b[0m");
+            expected[slot].extend_from_slice(payload.as_bytes());
+            stdout_tx
+                .send(
+                    format!(
+                        "%output %{pane} \\033[38;2;36;41;46mpane-{pane}-frame-{i}\\033[0m\r\n"
+                    )
+                    .into_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+        drop(stdout_tx);
+
+        read_tmux_stdout(stdout_rx, OutputBatcher::new(event_tx)).await;
+
+        let mut actual = [Vec::new(), Vec::new()];
+        let mut gaps = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                TmuxEvent::Message(crate::core::runtime::tmux::protocol::Message::Output {
+                    pane,
+                    content,
+                    ..
+                }) if pane.0 == 7 || pane.0 == 8 => {
+                    actual[(pane.0 - 7) as usize].extend_from_slice(&content);
+                }
+                TmuxEvent::OutputGap { pane } => gaps.push(pane),
+                TmuxEvent::Exit { .. } => {}
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+
+        assert!(
+            gaps.is_empty(),
+            "one chatty pane must not gap peers: {gaps:?}"
+        );
+        assert_eq!(
+            actual, expected,
+            "each pane must retain its exact byte stream"
         );
     }
 }
