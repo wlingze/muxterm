@@ -373,6 +373,12 @@ extension MainWindowController {
         connect(config: config)
     }
 
+    /// 走 Unified Panel Existing Connections 的生产 attach-only 路径。
+    /// 测试必须传入隔离 tmux socket，禁止落到用户默认 server。
+    func testAttachExistingConnection(_ choice: ExistingConnectionChoice) {
+        unifiedPanel.onAttachExistingConnection?(choice)
+    }
+
     /// 把另一个隔离 CoreBridge 登记为 warm Workspace 并激活。
     func testActivateWorkspaceBridge(_ nextBridge: CoreBridge, session: String) {
         let key = ConnectionKey(
