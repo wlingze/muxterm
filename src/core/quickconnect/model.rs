@@ -147,37 +147,16 @@ impl QuickBadge {
     }
 }
 
-/// Project path 的运行时存在状态。
-///
-/// 这是面板显示缓存，不属于 `TargetConfig`，也不会写入 quickconnect.toml。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProjectExistence {
-    /// 尚未完成本轮探测。
-    Probing,
-    /// 目标 path 是一个可访问的目录。
-    Exists,
-    /// 目标 path 不存在，或存在但不是目录。
-    Missing,
-    /// 无法可靠判断（例如 SSH 不可达或权限错误）。
-    Unknown,
-}
-
 /// 面板中的一行：目标 + 应显示的标记。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickConnectEntry {
     pub config: TargetConfig,
     pub badges: Vec<QuickBadge>,
-    /// 仅运行时的 Project path 探测结果。
-    pub existence: ProjectExistence,
 }
 
 impl QuickConnectEntry {
     pub fn new(config: TargetConfig, badges: Vec<QuickBadge>) -> Self {
-        QuickConnectEntry {
-            config,
-            badges,
-            existence: ProjectExistence::Probing,
-        }
+        QuickConnectEntry { config, badges }
     }
 }
 
@@ -371,32 +350,5 @@ mod tests {
             entries[0].badges,
             vec![QuickBadge::Recent, QuickBadge::Project]
         );
-    }
-
-    #[test]
-    fn entries_start_with_probing_existence_state() {
-        let project = cfg(
-            "project",
-            TargetRuntime::Shell,
-            TargetTransport::Local,
-            "~/project",
-        );
-        let entries = QuickConnect::entries(&[], &[project], 5);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].existence, ProjectExistence::Probing);
-    }
-
-    #[test]
-    fn entry_constructor_keeps_existence_runtime_only() {
-        let config = cfg(
-            "project",
-            TargetRuntime::Shell,
-            TargetTransport::Local,
-            "~/project",
-        );
-        let mut entry = QuickConnectEntry::new(config, vec![QuickBadge::Project]);
-        assert_eq!(entry.existence, ProjectExistence::Probing);
-        entry.existence = ProjectExistence::Exists;
-        assert_eq!(entry.existence, ProjectExistence::Exists);
     }
 }

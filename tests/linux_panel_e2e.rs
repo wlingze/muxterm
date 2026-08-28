@@ -26,7 +26,7 @@ use muxterm::core::transport::ssh::probe::SshReach;
 use muxterm::platform::linux::panel_model::PanelTab;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::model::{
-    ProjectExistence, QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
+    QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
 use muxterm::platform::linux::quickconnect_panel::{
     show, test_emit_peek_input, PanelItem, PanelShowArgs,
@@ -46,12 +46,13 @@ fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttenti
 }
 
 fn target(name: &str) -> PanelItem {
-    let mut entry = QuickConnectEntry::new(
-        TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x"),
-        vec![QuickBadge::Project],
-    );
-    entry.existence = ProjectExistence::Exists;
-    PanelItem::Target(entry, false)
+    PanelItem::Target(
+        QuickConnectEntry::new(
+            TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x"),
+            vec![QuickBadge::Project],
+        ),
+        false,
+    )
 }
 
 fn ssh_target(alias: &str) -> PanelItem {
@@ -301,10 +302,6 @@ fn three_tab_panel_full_flow() {
                 err_dot.has_css_class("muxterm-ssh-dot-err"),
                 "dead 应为 err class: {:?}",
                 err_dot.css_classes()
-            );
-            assert!(
-                find_by_name(&win, "muxterm-project-exists-dot-legion@local").is_some(),
-                "已存在的 Project 应在名称前显示绿色点"
             );
 
             // 8. 点 Search tab，占位行可见（从 Workspaces 起 Tab 会先到 Attention）
