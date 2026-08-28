@@ -136,9 +136,9 @@ struct PaneResync {
     state: Option<PaneReplayState>,
     primary: Option<Vec<u8>>,
     alternate: Option<Vec<u8>>,
-    live: Vec<u8>,
     /// attach 首次播种：pause 控制 client 输出，capture 开始前的通知可能
-    /// 已经进快照，capture 边界之后的字节才需要 catch-up。
+    /// 已经进快照；output-gap 恢复同样必须丢弃边界前的半截 VT 序列，
+    /// 只有 capture `%begin` 之后的字节才是可靠 catch-up。
     initial: bool,
     capture_started: bool,
     pre_capture: Vec<u8>,
@@ -277,6 +277,10 @@ pub struct TmuxRuntime {
     /// 字节”的情况才需要 authoritative resync；正常的高频 CUP 输出不能
     /// 因为时间/字节阈值被主动重拍。
     dropped_output_panes: HashSet<PaneId>,
+    /// 持久诊断计数。`dropped_output_panes` 会在恢复后清空，不能拿它证明
+    /// 一次 chatty 测试从未发生 gap。
+    output_gap_count: u64,
+    output_gap_recovery_count: u64,
     /// attach 初始快照查询进行期间到达的实时 `%output` 缓冲。
     ///
     /// capture-pane 返回的是查询瞬间的完整屏幕；在「发出 capture-pane」到「收到
@@ -696,6 +700,8 @@ impl TmuxRuntime {
             resync_generation: HashMap::new(),
             resync_cooldown_until: HashMap::new(),
             dropped_output_panes: HashSet::new(),
+            output_gap_count: 0,
+            output_gap_recovery_count: 0,
             initial_capture_buf: HashMap::new(),
             initial_capture_tail: HashMap::new(),
             pending_writes: HashMap::new(),
@@ -1115,6 +1121,38 @@ impl TmuxRuntime {
         !self.tabs.is_empty() && !self.owns_tab(tab)
     }
 
+    /// 记录一个明确的数据丢失边界。集合只负责去重当前待恢复 pane；累计
+    /// 计数用于日志和集成测试，恢复后也不会被 drain 成“从未发生”。
+    fn mark_output_gap(&mut self, pane: PaneId, source: &'static str) {
+        if !self.dropped_output_panes.insert(pane) {
+            return;
+        }
+        self.output_gap_count = self.output_gap_count.saturating_add(1);
+        tracing::warn!(
+            target: "muxterm::tmux::resync",
+            pane = pane.0,
+            source,
+            gap_count = self.output_gap_count,
+            seeded = self.initial_capture_done.contains(&pane),
+            attach = self.is_attach_mode(),
+            "pane output gap fenced; authoritative snapshot required"
+        );
+    }
+
+    fn complete_output_gap_recovery(&mut self, pane: PaneId, generation: u64) {
+        if !self.dropped_output_panes.remove(&pane) {
+            return;
+        }
+        self.output_gap_recovery_count = self.output_gap_recovery_count.saturating_add(1);
+        tracing::info!(
+            target: "muxterm::tmux::resync",
+            pane = pane.0,
+            generation,
+            recovery_count = self.output_gap_recovery_count,
+            "pane output gap recovered by authoritative snapshot"
+        );
+    }
+
     fn is_attached_session(&self, session: TmuxSessionId) -> bool {
         self.active_session == Some(session)
     }
@@ -1138,7 +1176,7 @@ impl TmuxRuntime {
                 break;
             };
             if let Some(StateChange::PaneOutput { pane, .. }) = self.events.remove(idx) {
-                self.dropped_output_panes.insert(pane);
+                self.mark_output_gap(pane, "state-event-queue");
             }
         }
         // 仍超限：丢弃最旧的 LayoutChanged（可重建，前端只要最新布局）。
@@ -1173,12 +1211,13 @@ impl TmuxRuntime {
     /// 确实丢弃过该 pane 的增量时，`maybe_start_resyncs` 才会启动
     /// authoritative snapshot。
     fn note_pane_output(&mut self, pane: PaneId, content: &[u8]) {
-        if self.resyncs.contains_key(&pane) {
-            append_capped(
-                &mut self.resyncs.entry(pane).or_default().live,
-                content,
-                MAX_PANE_OUTPUT_BYTES,
-            );
+        if let Some(resync) = self.resyncs.get_mut(&pane) {
+            let target = if resync.capture_started {
+                &mut resync.post_capture
+            } else {
+                &mut resync.pre_capture
+            };
+            append_capped(target, content, MAX_PANE_OUTPUT_BYTES);
             return;
         }
         let flow = self.flow.entry(pane).or_default();
@@ -1243,6 +1282,7 @@ impl TmuxRuntime {
         {
             return;
         }
+        let pause_already_active = self.paused_panes.contains(&pane);
         // 不要在 transaction 开始时删除已经排队的 PaneOutput。只有完整 snapshot
         // 成功时才原子替换旧增量；如果查询堵塞/失败，旧增量仍是唯一可用 fallback。
         let generation = self
@@ -1280,6 +1320,7 @@ impl TmuxRuntime {
         }
 
         if pause_client
+            && !pause_already_active
             && self
                 .dispatch_tmux_command(&cmd::refresh_client_pause(pane, true))
                 .is_err()
@@ -1364,10 +1405,25 @@ impl TmuxRuntime {
         }
     }
 
-    /// 失败/超时时释放 resync。永远不要让旧 pane 画面成为 transaction 成功的
-    /// 唯一前提：能交付的 live bytes 先交付，迟到响应全部按 tombstone 忽略。
+    /// 失败/超时不能把任意 live suffix 接回旧 VT parser。首屏尚无 Surface
+    /// 时仍用带终止 fence 的 fallback 解开隐藏；已经在画的 Surface 则保持
+    /// output fence，冷却后重试权威快照。
     fn abort_pane_resync(&mut self, pane: PaneId, reason: &'static str) {
-        self.release_pane_resync(pane, reason, true);
+        let initial = self.resyncs.get(&pane).is_some_and(|resync| resync.initial);
+        if initial {
+            self.release_pane_resync(pane, reason, true);
+            return;
+        }
+        self.release_pane_resync(pane, reason, false);
+        self.mark_output_gap(pane, "resync-failed");
+        self.resync_cooldown_until
+            .insert(pane, Instant::now() + RESYNC_COOLDOWN);
+        tracing::warn!(
+            target: "muxterm::tmux::resync",
+            pane = pane.0,
+            reason,
+            "pane snapshot failed; output remains fenced for retry"
+        );
     }
 
     fn release_pane_resync(&mut self, pane: PaneId, reason: &'static str, deliver: bool) {
@@ -1385,17 +1441,16 @@ impl TmuxRuntime {
                 pane = pane.0,
                 generation = resync.generation,
                 reason,
-                "pane snapshot dropped; recapturing at new size"
+                "pane snapshot transaction dropped without resuming live output"
             );
             return;
         }
-        self.dropped_output_panes.remove(&pane);
+        self.complete_output_gap_recovery(pane, resync.generation);
         self.resync_cooldown_until
             .insert(pane, Instant::now() + RESYNC_COOLDOWN);
 
         let mut fallback = resync.pre_capture;
         fallback.extend(resync.post_capture);
-        fallback.extend(resync.live);
         let suppressed = if let Some(flow) = self.flow.get_mut(&pane) {
             flow.resyncing = false;
             std::mem::take(&mut flow.suppressed)
@@ -1404,6 +1459,11 @@ impl TmuxRuntime {
         };
         fallback.extend(suppressed);
         let had_content = !fallback.is_empty();
+        if had_content {
+            // 若 fallback 末尾刚好是半截 OSC/DCS/CSI，先用 ST 结束字符串
+            // 序列，再用完整 SGR 把 parser 拉回 ground，后续 live 才不会被吞。
+            fallback.extend_from_slice(b"\x1b\\\x1b[0m");
+        }
         if resync.initial {
             // 首屏 seed 超时也必须发 PaneSnapshot，否则 macOS 会把 host 一直
             // 藏在 seedingPanes 里，用户看到的就是 tab 卡住。
@@ -1419,8 +1479,6 @@ impl TmuxRuntime {
                 data: fallback,
             });
             self.trim_event_queue();
-        } else if had_content {
-            self.push_pane_output(pane, fallback);
         }
         self.paused_panes.remove(&pane);
         if resync.pause_client {
@@ -1438,7 +1496,7 @@ impl TmuxRuntime {
             pane = pane.0,
             generation = resync.generation,
             reason,
-            "pane resync released with live fallback"
+            "initial pane seed released with parser-safe fallback"
         );
     }
 
@@ -1460,27 +1518,35 @@ impl TmuxRuntime {
     }
 
     fn maybe_start_resyncs(&mut self) {
-        if self.cmd_tx.is_none() {
+        if self.cmd_tx.is_none() || !self.resyncs.is_empty() {
             return;
         }
-        // 只有 trim_event_queue 确实移除了 PaneOutput，或 tmux 发出明确的
-        // `%pause`，才启动 snapshot。正常的 OMP/CUP burst 即使跨过数十 KB
-        // 也必须原样 feed，不能让 Surface 跳到历史顶部再跳回输入框。
-        let panes: Vec<PaneId> = self.dropped_output_panes.drain().collect();
+        // 每轮只恢复一个 pane，避免多个 chatty pane 同时把 display-message /
+        // capture-pane 挤进 control lane。pending gap 保留到 snapshot 成功，
+        // 绝不能 drain 后直接 resume；否则下一块可能续在半截 CSI/OSC 上。
+        let now = Instant::now();
+        let mut panes: Vec<PaneId> = self.dropped_output_panes.iter().copied().collect();
+        panes.sort_by_key(|pane| pane.0);
         for pane in panes {
-            if self.initial_capture_done.contains(&pane)
-                || self.is_attach_mode()
-                || self.initial_seed_blocks_followup()
+            if self
+                .resync_cooldown_until
+                .get(&pane)
+                .is_some_and(|until| *until > now)
             {
-                // attach / 已打开 Surface：丢字节只恢复 live。pause+resync
-                // 会把活动 tab 的 display-message 挤出 deadline（1612）。
-                if let Some(receiver) = self.event_rx.as_mut() {
-                    receiver.resume_output_pane(pane);
-                }
                 continue;
             }
-            if !self.resyncs.contains_key(&pane) {
+            if self.is_attach_mode() && !self.initial_capture_done.contains(&pane) {
+                // connect 首屏仍在等 UI 字符格时保留 fence；尺寸到位后原有
+                // initial seed 会完成同一次恢复，不能提前按远端旧尺寸抓屏。
+                if self.awaiting_ui_client_size || self.deferred_attach_seeds.contains(&pane) {
+                    continue;
+                }
+                self.begin_initial_pane_seed(pane);
+            } else {
                 self.begin_pane_resync(pane, "output-dropped");
+            }
+            if self.resyncs.contains_key(&pane) {
+                break;
             }
         }
     }
@@ -1607,12 +1673,10 @@ impl TmuxRuntime {
         match msg {
             Message::Output { pane, content, .. } => {
                 if let Some(resync) = self.resyncs.get_mut(&pane) {
-                    let target = if resync.initial && resync.capture_started {
+                    let target = if resync.capture_started {
                         &mut resync.post_capture
-                    } else if resync.initial {
-                        &mut resync.pre_capture
                     } else {
-                        &mut resync.live
+                        &mut resync.pre_capture
                     };
                     append_capped(target, &content, MAX_PANE_OUTPUT_BYTES);
                     return;
@@ -1876,12 +1940,10 @@ impl TmuxRuntime {
             Message::ExtendedOutput { pane, content, .. } => {
                 self.mark_pane_ready(pane);
                 if let Some(resync) = self.resyncs.get_mut(&pane) {
-                    let target = if resync.initial && resync.capture_started {
+                    let target = if resync.capture_started {
                         &mut resync.post_capture
-                    } else if resync.initial {
-                        &mut resync.pre_capture
                     } else {
-                        &mut resync.live
+                        &mut resync.pre_capture
                     };
                     append_capped(target, &content, MAX_PANE_OUTPUT_BYTES);
                     return;
@@ -1907,20 +1969,21 @@ impl TmuxRuntime {
                         // 仍在抓历史：保持 pause，不得 continue。
                         return;
                     }
-                    // 已经有权威 Surface 时，%pause 只恢复输出，不得再
-                    // pause→capture→VTE reset（Cursor agent / dogfood 0826 乱码风暴）。
+                    // `%pause` 表示 tmux 已经停止这条 pane 的 control output；
+                    // 中间增量可能被丢弃。已 seed Surface 也必须 reset 到权威
+                    // 网格，直接 continue 会把下一块接在半截 CSI/OSC 后面。
                     if self.initial_capture_done.contains(&pane) {
-                        tracing::debug!(
+                        tracing::warn!(
                             target: "muxterm::tmux::pause",
                             pane = pane.0,
-                            "tmux pause on seeded surface; continue without resync"
+                            "tmux paused seeded surface; scheduling authoritative resync"
                         );
-                        self.paused_panes.remove(&pane);
                         if self.cmd_tx.is_some() {
-                            let _ =
-                                self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+                            self.mark_output_gap(pane, "tmux-pause");
+                            self.begin_pane_resync(pane, "tmux-pause");
+                        } else {
+                            self.flush_suppressed_output(pane);
                         }
-                        self.flush_suppressed_output(pane);
                         return;
                     }
                     // TODO(surface-7.4): 洪水 pause-after。某个 Surface 跟不上
@@ -2011,7 +2074,7 @@ impl TmuxRuntime {
                                         ..
                                     }) => {
                                         if let Some(resync) = self.resyncs.get_mut(&pane) {
-                                            if resync.initial && resync.generation == generation {
+                                            if resync.generation == generation {
                                                 resync.capture_started = true;
                                             }
                                         }
@@ -2062,7 +2125,7 @@ impl TmuxRuntime {
                     if let Some(receiver) = self.event_rx.as_mut() {
                         receiver.discard_output_pane(pane);
                     }
-                    self.dropped_output_panes.insert(pane);
+                    self.mark_output_gap(pane, "reader-output-lane");
                 }
                 TmuxEvent::Exit { .. } => {
                     self.status = BackendStatus::Exited;
@@ -2328,18 +2391,14 @@ impl TmuxRuntime {
         let Some(resync) = self.resyncs.remove(&pane) else {
             return;
         };
-        self.dropped_output_panes.remove(&pane);
+        let generation = resync.generation;
         let primary = resync.primary.unwrap_or_default();
         let alternate = resync.alternate.unwrap_or_default();
         let initial = resync.initial;
         let pause_client = resync.pause_client;
-        // initial：只拼 capture 开始后的 live。pre_capture / 延后暂存可能已
-        // 被网格覆盖，拼进去会与 snapshot 重复（乱屏）。abort 才用 pre_capture。
-        let live = if initial {
-            resync.post_capture
-        } else {
-            resync.live
-        };
+        // 所有 snapshot 都只拼 capture `%begin` 后的 live。gap 前后半截、
+        // capture 边界前通知都已由权威网格覆盖，重放会生成非法 SGR/OSC。
+        let live = resync.post_capture;
         let mut snapshot = build_pane_snapshot(resync.state.as_ref(), &primary, &alternate, &live);
         if snapshot.len() > MAX_PANE_OUTPUT_BYTES {
             snapshot = snapshot[snapshot.len() - MAX_PANE_OUTPUT_BYTES..].to_vec();
@@ -2390,6 +2449,7 @@ impl TmuxRuntime {
             data: snapshot,
         });
         self.trim_event_queue();
+        self.complete_output_gap_recovery(pane, generation);
         if let Some(receiver) = self.event_rx.as_mut() {
             receiver.resume_output_pane(pane);
         }
@@ -5561,11 +5621,6 @@ mod tests {
             data: b"stale-frame".to_vec(),
         });
         b.begin_pane_resync(pane, "test");
-        b.handle_message(Message::Output {
-            pane,
-            content: b"live-after-pause".to_vec(),
-            raw_content: String::new(),
-        });
         b.pending_by_number.insert(
             1,
             PendingQuery::PaneResyncState {
@@ -5577,6 +5632,13 @@ mod tests {
             1,
             vec!["2|1|1|block|0|1|0|0|0|1|0|0|0|0|0|0|0|0|0|1".into()],
         );
+        // 只有 capture 响应 `%begin` 之后的输出才确定晚于权威网格。
+        b.resyncs.get_mut(&pane).unwrap().capture_started = true;
+        b.handle_message(Message::Output {
+            pane,
+            content: b"live-after-pause".to_vec(),
+            raw_content: String::new(),
+        });
         b.pending_by_number.insert(
             2,
             PendingQuery::PaneResyncCapture {
@@ -5666,24 +5728,104 @@ mod tests {
     }
 
     #[test]
-    fn dropped_output_does_not_resync_already_seeded_surface() {
+    fn dropped_output_resyncs_already_seeded_surface() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
         b.cmd_tx = Some(tx);
         let pane = PaneId(32);
         b.initial_capture_done.insert(pane);
-        b.dropped_output_panes.insert(pane);
+        b.mark_output_gap(pane, "test");
         b.maybe_start_resyncs();
         assert!(
-            !b.resyncs.contains_key(&pane),
-            "已经 seed 的 Surface 丢字节不得 pause+capture"
+            b.resyncs.contains_key(&pane),
+            "已经 seed 的 Surface 丢字节后也必须用权威快照 reset VT parser"
         );
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            !cmds
-                .iter()
-                .any(|cmd| cmd.contains("pause") || cmd.contains("capture-pane")),
-            "output-dropped 不得再抓已打开的 Surface: {cmds:?}"
+            cmds.iter().any(|cmd| cmd.contains(r#"%32:pause"#)),
+            "output gap 后必须先 pause 该 pane: {cmds:?}"
+        );
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("display-message")),
+            "output gap 后必须查询权威终端状态: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn seeded_output_gap_replaces_partial_sgr_before_live_resumes() {
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(41);
+        b.initial_capture_done.insert(pane);
+        b.events.push_back(StateChange::PaneOutput {
+            pane,
+            data: b"\x1b[38;2;108;".to_vec(),
+        });
+
+        b.mark_output_gap(pane, "test-partial-sgr");
+        b.maybe_start_resyncs();
+        assert!(b.resyncs.contains_key(&pane));
+
+        // gap 后、capture 边界前到达的后半截不能拼到新快照后面。
+        b.handle_message(Message::Output {
+            pane,
+            content: b"108;118mBROKEN".to_vec(),
+            raw_content: String::new(),
+        });
+        b.pending_by_number.insert(
+            1,
+            PendingQuery::PaneResyncState {
+                pane,
+                generation: 1,
+            },
+        );
+        b.dispatch_response(
+            1,
+            vec!["0|0|1|block|1|0|||0|1|0|0|0|0|0|0|0|0|0|1|codex".into()],
+        );
+        b.resyncs.get_mut(&pane).unwrap().capture_started = true;
+        b.handle_message(Message::Output {
+            pane,
+            content: b"\x1b[0mLIVE_AFTER_CAPTURE".to_vec(),
+            raw_content: String::new(),
+        });
+        b.pending_by_number.insert(
+            2,
+            PendingQuery::PaneResyncCapture {
+                pane,
+                alternate: false,
+                generation: 1,
+            },
+        );
+        b.dispatch_response(2, vec!["\x1b[38;2;36;41;46mCURRENT_FRAME".into()]);
+
+        assert!(!b.resyncs.contains_key(&pane));
+        assert!(b.events.iter().all(|event| {
+            !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane)
+        }));
+        let snapshots: Vec<&[u8]> = b
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                StateChange::PaneSnapshot { pane: p, data } if *p == pane => Some(data.as_slice()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(b.output_gap_count, 1);
+        assert_eq!(b.output_gap_recovery_count, 1);
+        assert!(snapshots[0]
+            .windows(b"CURRENT_FRAME".len())
+            .any(|window| window == b"CURRENT_FRAME"));
+        assert!(snapshots[0]
+            .windows(b"LIVE_AFTER_CAPTURE".len())
+            .any(|window| window == b"LIVE_AFTER_CAPTURE"));
+        assert!(
+            !snapshots[0]
+                .windows(b"108;118mBROKEN".len())
+                .any(|window| window == b"108;118mBROKEN"),
+            "capture 前的半截 SGR 必须由权威网格覆盖"
         );
     }
 
@@ -6545,7 +6687,7 @@ mod tests {
     }
 
     #[test]
-    fn tmux_pause_on_seeded_surface_does_not_begin_resync() {
+    fn tmux_pause_on_seeded_surface_starts_authoritative_resync() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         b.cmd_tx = Some(tx);
@@ -6556,19 +6698,21 @@ mod tests {
             args: String::new(),
         });
         assert!(
-            !b.resyncs.contains_key(&pane),
-            "已 seed 的 Surface 收到 %pause 不得再 pause+capture 风暴"
+            b.resyncs.contains_key(&pane),
+            "已 seed 的 Surface 收到 %pause 后必须重拍，不能续喂可能缺失的增量"
         );
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            cmds.iter().any(|cmd| cmd.contains("%120:continue")),
-            "应 continue 恢复输出，而不是 resync: {cmds:?}"
+            !cmds.iter().any(|cmd| cmd.contains("%120:pause")),
+            "tmux 已报告 pause 时不得重复 pause: {cmds:?}"
         );
         assert!(
-            !cmds
-                .iter()
-                .any(|cmd| cmd.contains("capture-pane") || cmd.contains("display-message")),
-            "seeded pause 不得抓屏: {cmds:?}"
+            cmds.iter().any(|cmd| cmd.contains("display-message")),
+            "seeded pause 必须开始权威状态查询: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("%120:continue")),
+            "snapshot 完成前不得 continue: {cmds:?}"
         );
     }
 
@@ -6712,7 +6856,7 @@ mod tests {
     }
 
     #[test]
-    fn resync_deadline_releases_live_fallback_and_starts_cooldown() {
+    fn resync_deadline_keeps_output_fenced_for_retry() {
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
         b.cmd_tx = Some(tx);
@@ -6727,7 +6871,7 @@ mod tests {
             pane,
             PaneResync {
                 deadline: Some(Instant::now() - Duration::from_millis(1)),
-                live: b"live\r\n".to_vec(),
+                pre_capture: b"108;118mBROKEN".to_vec(),
                 pause_client: false,
                 ..PaneResync::default()
             },
@@ -6737,13 +6881,14 @@ mod tests {
 
         assert!(!b.resyncs.contains_key(&pane));
         assert!(!b.flow.get(&pane).unwrap().resyncing);
-        assert!(b.outputs.get(&pane).is_some_and(|data| {
-            data.windows(b"live\r\n".len())
-                .any(|window| window == b"live\r\n")
-                && data
-                    .windows(b"suppressed\r\n".len())
-                    .any(|window| window == b"suppressed\r\n")
+        assert!(b.dropped_output_panes.contains(&pane));
+        assert!(b.events.iter().all(|event| {
+            !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane)
         }));
+        assert!(
+            !b.outputs.contains_key(&pane),
+            "失败恢复不得把半截 live suffix 当作可继续解析的 baseline"
+        );
         assert!(b
             .resync_cooldown_until
             .get(&pane)
@@ -6887,8 +7032,10 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             assert!(
-                b.dropped_output_panes.is_empty(),
-                "CUP 洪峰不得把共享 output lane 打成 OutputGap，否则就会 pause+大 capture 再整屏重绘"
+                b.output_gap_count == 0,
+                "CUP 洪峰不得打出 OutputGap（pending 集合恢复后会清空，必须检查持久计数）；gaps={} recoveries={}",
+                b.output_gap_count,
+                b.output_gap_recovery_count
             );
             let _ = b.shutdown().await;
         };
