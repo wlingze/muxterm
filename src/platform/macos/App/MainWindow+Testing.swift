@@ -201,6 +201,14 @@ extension MainWindowController {
         window?.makeFirstResponder(view)
     }
 
+    func testActiveTerminalView() -> MuxTerminalView {
+        terminalManager.view(for: testActivePaneID())
+    }
+
+    func testRouteMonitoredKeyEvent(_ event: NSEvent) -> NSEvent? {
+        routeMonitoredKeyEvent(event)
+    }
+
     /// 通过生产 Core task 关闭 tab；测试不得直接 `kill-window`。
     func testCloseTab(_ tabId: UInt32) {
         closeTab(tabId)
