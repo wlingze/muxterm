@@ -36,9 +36,10 @@ final class AttachE2ETests: XCTestCase {
         )
     }
 
-    /// 单 token 只能证明“有字节”，抓不住 Cursor/pi 的历史和输入区
-    /// 因列宽错位而混乱。这里用真实隔离 tmux + 动态全屏 TUI，
-    /// 走生产 Existing attach，并在 attach 后禁止改窗口尺寸。
+    /// 单 token 只能证明“有字节”，抓不住 agent 风格画面的历史和输入区
+    /// 因列宽错位而混乱。这里用真实隔离 tmux + python3 动态全屏 TUI
+    /// 验证通用历史机制；真实 `pi` 进程身份由下面两条回归覆盖。
+    /// 测试走生产 Existing attach，并在 attach 后禁止改窗口尺寸。
     func testExistingAttachPaintsAgentHistoryAndInputWithoutResize() throws {
         let fixture = AgentScreenWorkspace(label: "attach-agent-no-resize")
         AppE2E.ensureApp()
@@ -108,6 +109,110 @@ final class AttachE2ETests: XCTestCase {
             "回到尾部后 agent 顶栏和输入区仍必须正确"
         )
         XCTAssertEqual(app.window?.frame, fixedFrame, "历史验证全程没有 resize 窗口")
+    }
+
+    /// 1320 的核心边界：pi 在 primary screen 且不开 mouse。普通 shell pane
+    /// 仍应收到线性历史，pi pane 则只能吃当前 Surface snapshot + live。
+    func testPrimaryPiUpperPaneSkipsLinearHistoryBackfill() throws {
+        let fixture = try PrimaryPiSplitWorkspace(label: "primary-pi-history")
+        let bridge = try CoreBridge.connect(
+            backendType: "tmux",
+            socket: fixture.socket,
+            session: fixture.session,
+            initialClientSize: (94, 51)
+        )
+        defer { bridge.shutdown() }
+
+        var snapshots: [UInt32: Data] = [:]
+        var historyPanes = Set<UInt32>()
+        let observed = AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            for event in bridge.pollEvents() {
+                if event.isPaneSnapshot {
+                    snapshots[event.paneId] = event.data
+                } else if event.isPaneHistory {
+                    historyPanes.insert(event.paneId)
+                }
+            }
+            let top = String(
+                decoding: snapshots[fixture.topPaneId] ?? Data(),
+                as: UTF8.self
+            )
+            let bottom = String(
+                decoding: snapshots[fixture.bottomPaneId] ?? Data(),
+                as: UTF8.self
+            )
+            return top.contains("PI_E2E_HEADER")
+                && top.contains("PI_E2E_BODY")
+                && top.contains("PI_E2E_PROMPT")
+                && bottom.contains(fixture.bottomToken)
+                && historyPanes.contains(fixture.bottomPaneId)
+        }
+
+        XCTAssertTrue(
+            observed,
+            "真实上下分屏 attach 应播种两个 pane，并继续给普通 cat 回填历史；snapshots=\(snapshots.mapValues(\.count)) histories=\(historyPanes)"
+        )
+        XCTAssertFalse(
+            historyPanes.contains(fixture.topPaneId),
+            "primary/no-mouse pi 的 OSC/CUP 网格不能作为 PaneHistory 回填"
+        )
+    }
+
+    /// 与上面的 core 事件断言配套，验证生产 MainWindow/SwiftTerm 路径：
+    /// 上方 pi 和下方 cat 在 attach 后不 resize 窗口也都直接显示。
+    func testPrimaryPiUpperSplitPaintsWithoutPostAttachResize() throws {
+        let fixture = try PrimaryPiSplitWorkspace(label: "primary-pi-surface")
+        AppE2E.ensureApp()
+        let startupBridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(
+            bridge: startupBridge,
+            debug: true,
+            quickConnectStore: QuickConnectStore()
+        )
+        defer { app.testShutdown() }
+
+        let fixedFrame = NSRect(x: 40, y: 40, width: 620, height: 360)
+        app.window?.setFrame(fixedFrame, display: true)
+        app.window?.orderFront(nil)
+        AppE2E.pump(160)
+        app.testAttachExistingConnection(ExistingConnectionChoice(
+            target: .local,
+            session: TmuxSessionInfo(
+                name: fixture.session,
+                windowCount: 1,
+                attached: false
+            ),
+            socket: fixture.socket
+        ))
+
+        let painted = AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            let top = app.testPaneTerminalText(fixture.topPaneId)
+            let bottom = app.testPaneTerminalText(fixture.bottomPaneId)
+            AppE2E.pump(30)
+            return app.testActiveWorkspaceSession() == fixture.session
+                && app.testLayoutLeafIDs().count == 2
+                && app.testPaneSurfaceReady(fixture.topPaneId)
+                && app.testPaneSurfaceReady(fixture.bottomPaneId)
+                && top.contains("PI_E2E_HEADER")
+                && top.contains("PI_E2E_BODY")
+                && top.contains("PI_E2E_PROMPT")
+                && bottom.contains(fixture.bottomToken)
+        }
+        let top = app.testPaneTerminalText(fixture.topPaneId)
+        XCTAssertTrue(painted, "上方真实 pi 首屏不得乱屏/白屏：\(top)")
+        XCTAssertEqual(app.window?.frame, fixedFrame, "pi split attach 后测试没有 resize 窗口")
+
+        // 再跨过 feed coalesce/history backfill 窗口，确认随后到达的后台事件
+        // 没有把已经正确的 pi Surface 改坏。
+        AppE2E.pump(600)
+        app.testPollOnce()
+        app.testFlushFeeds()
+        let stableTop = app.testPaneTerminalText(fixture.topPaneId)
+        XCTAssertTrue(stableTop.contains("PI_E2E_HEADER"), "后续事件不能覆盖 pi 顶栏：\(stableTop)")
+        XCTAssertTrue(stableTop.contains("PI_E2E_PROMPT"), "后续事件不能覆盖 pi 输入区：\(stableTop)")
+        XCTAssertEqual(app.window?.frame, fixedFrame, "稳定性检查也没有 resize 窗口")
     }
 
     private func assertExistingAttachPaintsWithoutResize(

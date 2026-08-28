@@ -315,9 +315,10 @@ final class OnePaneCat {
     }
 }
 
-/// 含 attach 前历史、顶栏、正文和底部输入区的 Cursor/pi 风格 TUI。
-/// 进程会在 tmux pane 尺寸变化后重画，用于验证 Existing attach
-/// 的首屏尺寸门控，不允许测试靠事后 resize 恢复。
+/// 含 attach 前历史、顶栏、正文和底部输入区的 Cursor/pi 风格画面夹具。
+/// 它的真实 pane_current_command 是 python3，只验证通用 Surface/历史机制；
+/// primary-screen/no-mouse 的真实 `pi` 身份由 PrimaryPiSplitWorkspace 覆盖。
+/// 进程会在 tmux pane 尺寸变化后重画，不允许测试靠事后 resize 恢复。
 final class AgentScreenWorkspace {
     let socket: String
     let session: String
@@ -365,6 +366,143 @@ final class AgentScreenWorkspace {
 
     deinit {
         Tmux.killServer(socket)
+    }
+}
+
+/// 复现 1320：活动 tab 为上下分屏，上方是真正名为 `pi` 的 primary-screen
+/// TUI；它不开 mouse/alternate mode，但有大量 OSC/CUP 历史。旧判断会把
+/// 这些重绘网格误抓成 PaneHistory，导致上 pane 乱屏和数秒卡顿。
+final class PrimaryPiSplitWorkspace {
+    let socket: String
+    let session: String
+    let topPane: String
+    let topPaneId: UInt32
+    let bottomPane: String
+    let bottomPaneId: UInt32
+    let bottomToken: String
+    let temporaryDirectory: URL
+
+    init(label: String) throws {
+        AppE2E.requireTmux()
+        let fileManager = FileManager.default
+        let source = AppE2E.repoRoot.appendingPathComponent("tests/scripts/pi_primary_tui.c")
+        XCTAssertTrue(fileManager.isReadableFile(atPath: source.path), "缺少 \(source.path)")
+
+        let temp = fileManager.temporaryDirectory.appendingPathComponent(
+            "muxterm-pi-fixture-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: temp, withIntermediateDirectories: true)
+        let executable = temp.appendingPathComponent("pi")
+        let compiler = Process()
+        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        compiler.arguments = [
+            "clang", "-std=c11", "-O0", source.path, "-o", executable.path,
+        ]
+        let compilerOutput = Pipe()
+        compiler.standardOutput = compilerOutput
+        compiler.standardError = compilerOutput
+        try compiler.run()
+        compiler.waitUntilExit()
+        let diagnostics = String(
+            data: compilerOutput.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        guard compiler.terminationStatus == 0 else {
+            try? fileManager.removeItem(at: temp)
+            throw NSError(
+                domain: "MuxtermAppE2ETests",
+                code: Int(compiler.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "编译 pi fixture 失败：\(diagnostics)"]
+            )
+        }
+
+        let localSocket = Tmux.uniqueSocket(label)
+        let localSession = "pi-\(label)"
+        Tmux.killServer(localSocket)
+        Tmux.ok(socket: localSocket, args: [
+            "-f", "/dev/null", "new-session", "-d", "-s", localSession,
+            "-x", "94", "-y", "51", "--", executable.path,
+        ])
+        let localTop = Tmux.out(socket: localSocket, args: [
+            "list-panes", "-t", localSession, "-F", "#{pane_id}",
+        ]).split(whereSeparator: \.isNewline).map(String.init).first ?? ""
+        guard let localTopId = UInt32(localTop.dropFirst()) else {
+            Tmux.killServer(localSocket)
+            try? fileManager.removeItem(at: temp)
+            throw NSError(
+                domain: "MuxtermAppE2ETests",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "无效 pi pane id：\(localTop)"]
+            )
+        }
+        Tmux.ok(socket: localSocket, args: [
+            "split-window", "-v", "-t", localTop, "/bin/cat",
+        ])
+        let panes = Tmux.out(socket: localSocket, args: [
+            "list-panes", "-t", localSession, "-F", "#{pane_id}",
+        ]).split(whereSeparator: \.isNewline).map(String.init)
+        let localBottom = panes.first(where: { $0 != localTop }) ?? ""
+        guard let localBottomId = UInt32(localBottom.dropFirst()) else {
+            Tmux.killServer(localSocket)
+            try? fileManager.removeItem(at: temp)
+            throw NSError(
+                domain: "MuxtermAppE2ETests",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "无效 bottom pane id：\(localBottom)"]
+            )
+        }
+        let localBottomToken = "PI_E2E_BOTTOM_\(ProcessInfo.processInfo.processIdentifier)"
+        let bottomHistory = (0..<80)
+            .map { "BOTTOM_HISTORY_\(String(format: "%03d", $0))" }
+            .joined(separator: "\n")
+        Tmux.sendLiteral(
+            socket: localSocket,
+            target: localBottom,
+            text: "\(bottomHistory)\n\(localBottomToken)\n"
+        )
+        Tmux.ok(socket: localSocket, args: ["select-pane", "-t", localTop])
+
+        for token in ["PI_E2E_HEADER", "PI_E2E_BODY", "PI_E2E_PROMPT"] {
+            Tmux.waitCapture(socket: localSocket, target: localTop, needle: token)
+        }
+        Tmux.waitCapture(
+            socket: localSocket,
+            target: localTop,
+            needle: "PI_E2E_HISTORY_000",
+            history: true
+        )
+        Tmux.waitCapture(
+            socket: localSocket,
+            target: localBottom,
+            needle: "BOTTOM_HISTORY_000",
+            history: true
+        )
+        Tmux.waitCapture(socket: localSocket, target: localBottom, needle: localBottomToken)
+
+        let modes = Tmux.out(socket: localSocket, args: [
+            "display-message", "-p", "-t", localTop,
+            "#{pane_current_command}|#{alternate_on}|#{mouse_all_flag}|#{mouse_any_flag}|#{mouse_sgr_flag}|#{pane_top}",
+        ])
+        XCTAssertEqual(
+            modes,
+            "pi|0|0|0|0|0",
+            "夹具必须命中上方真实 pi 的遗漏边界，而不是 python3/mock token：\(modes)"
+        )
+
+        socket = localSocket
+        session = localSession
+        topPane = localTop
+        topPaneId = localTopId
+        bottomPane = localBottom
+        bottomPaneId = localBottomId
+        bottomToken = localBottomToken
+        temporaryDirectory = temp
+    }
+
+    deinit {
+        Tmux.killServer(socket)
+        try? FileManager.default.removeItem(at: temporaryDirectory)
     }
 }
 
