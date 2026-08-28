@@ -7051,9 +7051,7 @@ mod tests {
                     "80",
                     "-y",
                     "24",
-                    "sh",
-                    "-c",
-                    "i=0; while [ \"$i\" -lt 400 ]; do printf '\\033[H\\033[2Jframe-%s\\n' \"$i\"; i=$((i+1)); done; exec sleep 30",
+                    "/bin/sh",
                 ])
                 .status();
             if !created
@@ -7064,14 +7062,53 @@ mod tests {
                 return;
             }
             let mut b = TmuxRuntime::new_with_attach(Some(&socket), "chatty");
+            b.set_client_size(80, 24);
             if b.connect().await.is_err() {
                 return;
             }
-            let deadline = Instant::now() + Duration::from_millis(800);
-            while Instant::now() < deadline {
+            let pane = b.panes.first().expect("chatty session 应有 pane").id;
+            let seed_deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < seed_deadline && !b.initial_capture_done.contains(&pane) {
                 let _ = b.take_events();
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            assert!(
+                b.initial_capture_done.contains(&pane),
+                "必须先完成 attach seed，测试的才是 steady-state live lane"
+            );
+
+            let command = "p=$(printf '%3000s' '' | tr ' ' x); i=0; while [ \"$i\" -lt 160 ]; do printf '\\033[H\\033[2J%s-%s\\n' \"$p\" \"$i\"; i=$((i+1)); done; printf 'LIVE_FLOOD_DONE\\n'";
+            let target = format!("%{}", pane.0);
+            let typed = std::process::Command::new("tmux")
+                .args(["-L", &socket, "send-keys", "-t", &target, "-l", command])
+                .status();
+            assert!(typed.as_ref().is_ok_and(std::process::ExitStatus::success));
+            let entered = std::process::Command::new("tmux")
+                .args(["-L", &socket, "send-keys", "-t", &target, "Enter"])
+                .status();
+            assert!(entered
+                .as_ref()
+                .is_ok_and(std::process::ExitStatus::success));
+
+            // 故意暂停 Runtime 消费，模拟 AppKit 正忙于布局/SwiftTerm feed。
+            // 旧 reader 每个 4KiB 都 flush，会在这段时间打满 64 槽。
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut saw_done = false;
+            while Instant::now() < deadline {
+                for event in b.take_events() {
+                    if let StateChange::PaneOutput { pane: p, data } = event {
+                        if p == pane && String::from_utf8_lossy(&data).contains("LIVE_FLOOD_DONE") {
+                            saw_done = true;
+                        }
+                    }
+                }
+                if saw_done {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(saw_done, "attach 后的 live 洪峰必须完整交付到结束 token");
             assert!(
                 b.output_gap_count == 0,
                 "CUP 洪峰不得打出 OutputGap（pending 集合恢复后会清空，必须检查持久计数）；gaps={} recoveries={}",

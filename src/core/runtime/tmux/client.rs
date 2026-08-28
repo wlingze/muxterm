@@ -189,8 +189,8 @@ pub(crate) trait TmuxEventSink {
     fn emit_message(&self, message: Message) {
         self.emit(TmuxEvent::Message(message));
     }
-    /// 把同一 pane 尚未发出的合并 %output 刷进下游。生产 reader 在每个
-    /// pty chunk 结束时调用，避免连续 TUI 刷新被扣在 coalescer 里。
+    /// 把尚未发出的分 pane `%output` 合并块刷进下游。生产 reader 在一次
+    /// logical burst 结束时调用，避免连续 TUI 刷新被扣在 coalescer 里。
     fn flush(&self) {}
 }
 
@@ -216,17 +216,28 @@ impl TmuxEventSink for mpsc::UnboundedSender<TmuxEvent> {
 /// [`OUTPUT_EVENT_BUFFER`] 条 `%output`。若不合并，共享 64 槽会立刻
 /// OutputGap，backend 再 pause + 大 capture，表现为卡死后再整屏重绘。
 const OUTPUT_COALESCE_MAX_BYTES: usize = 32 * 1024;
+/// PTY/SSH reader 的一次 logical burst 在短暂空闲后才 flush。这样底层 4KiB
+/// read 边界不会退化成 Surface 事件边界，同时单次按键输出最多只增加 1ms 延迟。
+pub(crate) const OUTPUT_COALESCE_IDLE: std::time::Duration = std::time::Duration::from_millis(1);
 
 pub(crate) struct OutputBatcher<S: TmuxEventSink> {
     inner: S,
-    pending: Mutex<Option<TmuxEvent>>,
+    /// 不同 pane 的字节流彼此独立；按首次出现顺序各保留一个合并块。
+    /// 控制事件到达时整体 flush，因此不会让 output 穿过协议顺序屏障。
+    pending: Mutex<VecDeque<TmuxEvent>>,
 }
 
 impl<S: TmuxEventSink> OutputBatcher<S> {
     pub(crate) fn new(inner: S) -> Self {
         Self {
             inner,
-            pending: Mutex::new(None),
+            pending: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn flush_events(&self, events: VecDeque<TmuxEvent>) {
+        for event in events {
+            self.inner.emit(event);
         }
     }
 }
@@ -235,20 +246,23 @@ impl<S: TmuxEventSink> TmuxEventSink for OutputBatcher<S> {
     fn emit(&self, event: TmuxEvent) {
         if output_event_pane(&event).is_some() {
             let mut pending = self.pending.lock().expect("output batcher mutex poisoned");
-            if let Some(existing) = pending.as_mut() {
+            let mut appended = false;
+            let mut reached_limit = false;
+            for existing in pending.iter_mut() {
                 if try_append_output(existing, &event) {
-                    if output_event_bytes(existing) >= OUTPUT_COALESCE_MAX_BYTES {
-                        let flushed = pending.take().expect("coalesced output just checked");
-                        drop(pending);
-                        self.inner.emit(flushed);
-                    }
-                    return;
+                    appended = true;
+                    reached_limit = output_event_bytes(existing) >= OUTPUT_COALESCE_MAX_BYTES;
+                    break;
                 }
             }
-            let previous = pending.replace(event);
-            drop(pending);
-            if let Some(previous) = previous {
-                self.inner.emit(previous);
+            if !appended {
+                reached_limit = output_event_bytes(&event) >= OUTPUT_COALESCE_MAX_BYTES;
+                pending.push_back(event);
+            }
+            if reached_limit {
+                let flushed = std::mem::take(&mut *pending);
+                drop(pending);
+                self.flush_events(flushed);
             }
             return;
         }
@@ -257,14 +271,9 @@ impl<S: TmuxEventSink> TmuxEventSink for OutputBatcher<S> {
     }
 
     fn flush(&self) {
-        let event = self
-            .pending
-            .lock()
-            .expect("output batcher mutex poisoned")
-            .take();
-        if let Some(event) = event {
-            self.inner.emit(event);
-        }
+        let events =
+            std::mem::take(&mut *self.pending.lock().expect("output batcher mutex poisoned"));
+        self.flush_events(events);
     }
 }
 
@@ -1015,35 +1024,65 @@ pub(crate) fn feed_bytes_to_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8
     lines
 }
 
+async fn process_pty_chunk<S: TmuxEventSink>(
+    chunk_res: std::io::Result<Vec<u8>>,
+    buf: &mut Vec<u8>,
+    tx: &S,
+    response: &mut Option<ResponseBuffer>,
+) -> bool {
+    let chunk = match chunk_res {
+        Ok(chunk) => chunk,
+        Err(error) => {
+            tracing::error!(target = "muxterm::client", "读 tmux pty 失败: {error}");
+            return false;
+        }
+    };
+    if chunk.is_empty() {
+        return true;
+    }
+    tracing::trace!(
+        target = "muxterm::client",
+        len = chunk.len(),
+        hex = %hex_debug(&chunk),
+        "recv tmux chunk"
+    );
+    for line in feed_bytes_to_lines(buf, &chunk) {
+        tracing::trace!(
+            target = "muxterm::client",
+            line = %String::from_utf8_lossy(&line),
+            "recv line"
+        );
+        process_line(&line, tx, response).await;
+    }
+    true
+}
+
 /// pty 模式读循环：用 `PtyReader::read_chunk` 异步取字节块，按真换行切行。
 async fn read_pty_loop<S: TmuxEventSink>(mut reader: PtyReader, tx: S) {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut response = None;
 
-    while let Some(chunk_res) = reader.read_chunk().await {
-        let chunk = match chunk_res {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(target = "muxterm::client", "读 tmux pty 失败: {e}");
-                break;
-            }
+    'reader: loop {
+        let Some(chunk_res) = reader.read_chunk().await else {
+            break;
         };
-        if chunk.is_empty() {
-            continue;
+        if !process_pty_chunk(chunk_res, &mut buf, &tx, &mut response).await {
+            break;
         }
-        tracing::trace!(
-            target = "muxterm::client",
-            len = chunk.len(),
-            hex = %hex_debug(&chunk),
-            "recv tmux chunk"
-        );
-        for line in feed_bytes_to_lines(&mut buf, &chunk) {
-            tracing::trace!(
-                target = "muxterm::client",
-                line = %String::from_utf8_lossy(&line),
-                "recv line"
-            );
-            process_line(&line, &tx, &mut response).await;
+
+        // 把同一 logical redraw 的已排队/紧邻 PTY chunks 一起交给
+        // OutputBatcher。旧实现每个 4KiB chunk 都 flush，384KiB redraw 会
+        // 产生 96+ lane events，让“32KiB coalescer”在生产路径形同虚设。
+        loop {
+            match tokio::time::timeout(OUTPUT_COALESCE_IDLE, reader.read_chunk()).await {
+                Ok(Some(chunk_res)) => {
+                    if !process_pty_chunk(chunk_res, &mut buf, &tx, &mut response).await {
+                        break 'reader;
+                    }
+                }
+                Ok(None) => break 'reader,
+                Err(_) => break,
+            }
         }
         tx.flush();
     }
@@ -1537,7 +1576,7 @@ mod tests {
     }
 
     #[test]
-    fn coalescer_flushes_when_pane_changes() {
+    fn coalescer_keeps_distinct_panes_in_first_seen_order() {
         let (tx, mut rx) = event_channel();
         let batcher = OutputBatcher::new(tx);
         batcher.emit(pane_output_event(1, "aaa"));
@@ -1555,6 +1594,124 @@ mod tests {
             }
         }
         assert_eq!(chunks, vec![(1, b"aaabbb".to_vec()), (2, b"ccc".to_vec())]);
+    }
+
+    #[test]
+    fn interleaved_pane_coalescing_does_not_cross_control_boundary() {
+        let (tx, mut rx) = event_channel();
+        let batcher = OutputBatcher::new(tx);
+        batcher.emit(pane_output_event(1, "a"));
+        batcher.emit(pane_output_event(2, "b"));
+        batcher.emit(pane_output_event(1, "c"));
+        batcher.emit(TmuxEvent::ResponseBlock {
+            number: 9,
+            is_error: false,
+            lines: vec!["boundary".into()],
+            truncated_prefix: false,
+        });
+        batcher.emit(pane_output_event(1, "d"));
+        batcher.flush();
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { pane: PaneId(1), content, .. }))
+                if content == b"ac"
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { pane: PaneId(2), content, .. }))
+                if content == b"b"
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::ResponseBlock { number: 9, .. })
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TmuxEvent::Message(Message::Output { pane: PaneId(1), content, .. }))
+                if content == b"d"
+        ));
+    }
+
+    #[tokio::test]
+    async fn chunked_reader_coalesces_large_redraw_before_bounded_output_lane() {
+        let (tx, mut rx) = event_channel();
+        let (read_tx, read_rx) = mpsc::channel(256);
+        let pane = PaneId(7);
+        let chunks = OUTPUT_EVENT_BUFFER * 2;
+        let payload = "x".repeat(3_000);
+        for _ in 0..chunks {
+            read_tx
+                .send(Ok(format!("%output %7 {payload}\r\n").into_bytes()))
+                .await
+                .unwrap();
+        }
+        drop(read_tx);
+
+        read_pty_loop(PtyReader::from_channel(read_rx), OutputBatcher::new(tx)).await;
+
+        let mut output_events = 0usize;
+        let mut output_bytes = 0usize;
+        let mut saw_gap = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                TmuxEvent::Message(Message::Output {
+                    pane: event_pane,
+                    content,
+                    ..
+                }) => {
+                    assert_eq!(event_pane, pane);
+                    output_events += 1;
+                    output_bytes += content.len();
+                }
+                TmuxEvent::OutputGap { pane: event_pane } => {
+                    assert_eq!(event_pane, pane);
+                    saw_gap = true;
+                }
+                TmuxEvent::Exit { .. } => {}
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+
+        assert!(!saw_gap, "reader 分块不得绕过 coalescer 打满 output lane");
+        assert_eq!(output_bytes, chunks * payload.len());
+        assert!(
+            output_events <= 16,
+            "384KiB redraw 应合并为约 32KiB 事件，实际 {output_events}"
+        );
+    }
+
+    #[tokio::test]
+    async fn quiet_reader_output_flushes_after_short_idle_window() {
+        let (tx, mut rx) = event_channel();
+        let (read_tx, read_rx) = mpsc::channel(4);
+        let reader_task = tokio::spawn(read_pty_loop(
+            PtyReader::from_channel(read_rx),
+            OutputBatcher::new(tx),
+        ));
+        read_tx
+            .send(Ok(b"%output %3 prompt-ready\r\n".to_vec()))
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+            .await
+            .expect("quiet output 不得一直扣在 coalescer")
+            .expect("reader lane 不得提前关闭");
+        assert!(matches!(
+            event,
+            TmuxEvent::Message(Message::Output {
+                pane: PaneId(3),
+                content,
+                ..
+            }) if content == b"prompt-ready"
+        ));
+
+        drop(read_tx);
+        tokio::time::timeout(std::time::Duration::from_millis(100), reader_task)
+            .await
+            .expect("关闭输入后 reader 应及时退出")
+            .unwrap();
     }
 
     #[tokio::test]

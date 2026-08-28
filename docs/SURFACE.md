@@ -210,6 +210,9 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续
 - `send-keys -H` 对任意 `[u8]` roundtrip（对照 psmux `test_send_keys_literal_byte.rs`）
 - `parse_line("%… %64 …")` 接受 `%` pane id，不再 WARN `@`
 - `%pause` / `%extended-output` 能 parse
+- 384KiB live redraw 即使被本地 PTY / SSH transport 拆成 4KiB chunks，也必须在有界
+  lane 前合并为约 32KiB events；多个 pane 交错刷新时分别保序，不能互相制造
+  `OutputGap`；安静输出在 1ms idle window 后交付
 
 ### 5.2 中：Surface（GTK VTE，无 AppWindow 或一个 Window）
 
