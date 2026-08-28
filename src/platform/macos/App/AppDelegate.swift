@@ -3,8 +3,11 @@ import UserNotifications
 
 /// 系统通知授权状态的纯策略，避免把权限弹窗带进 XCTest / XCUITest。
 enum NativeNotificationAuthorizationPolicy {
-    static func shouldRequest(_ status: UNAuthorizationStatus) -> Bool {
-        status == .notDetermined
+    static func shouldRequest(
+        _ status: UNAuthorizationStatus,
+        hasPendingNotification: Bool
+    ) -> Bool {
+        hasPendingNotification && status == .notDetermined
     }
 
     static func canDeliver(_ status: UNAuthorizationStatus) -> Bool {
@@ -20,19 +23,23 @@ enum NativeNotificationAuthorizationPolicy {
 }
 
 enum NativeNotificationLogPolicy {
-    static func shouldLogAuthorizationUnavailable(previouslyLogged: Bool) -> Bool {
-        !previouslyLogged
+    static func shouldLogAuthorizationError(
+        previouslyLogged: Bool,
+        hasSystemError: Bool
+    ) -> Bool {
+        hasSystemError && !previouslyLogged
     }
 }
 
-/// macOS 原生通知入口：启动时请求一次权限，前台也显示 banner，点击后回到 Attention。
+/// macOS 原生通知入口：第一次确有通知时才请求权限；前台也显示 banner，
+/// 点击后回到 Attention。用户拒绝是正常状态，Attention 面板仍然可用。
 final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NativeNotificationService()
 
     private var onActivate: (() -> Void)?
     private let authorizationLock = NSLock()
     private var authorizationRequestInFlight = false
-    private var authorizationUnavailableLogged = false
+    private var authorizationErrorLogged = false
     private var pendingAuthorizationCompletions: [(Bool) -> Void] = []
 
     static var isSuppressedProcess: Bool {
@@ -46,14 +53,6 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
         guard !Self.isSuppressedProcess else { return }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.getNotificationSettings { settings in
-            guard NativeNotificationAuthorizationPolicy.shouldRequest(
-                settings.authorizationStatus
-            ) else {
-                return
-            }
-            self.requestAuthorization(on: center)
-        }
     }
 
     func post(title: String, body: String) {
@@ -63,14 +62,13 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
             if NativeNotificationAuthorizationPolicy.canDeliver(settings.authorizationStatus) {
                 Self.deliver(title: title, body: body, on: center)
             } else if NativeNotificationAuthorizationPolicy.shouldRequest(
-                settings.authorizationStatus
+                settings.authorizationStatus,
+                hasPendingNotification: true
             ) {
                 self.requestAuthorization(on: center) { granted in
                     guard granted else { return }
                     Self.deliver(title: title, body: body, on: center)
                 }
-            } else {
-                self.logAuthorizationUnavailableOnce()
             }
         }
     }
@@ -98,41 +96,23 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
             self.authorizationRequestInFlight = false
             let completions = self.pendingAuthorizationCompletions
             self.pendingAuthorizationCompletions.removeAll()
-            let shouldLog = NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
-                previouslyLogged: self.authorizationUnavailableLogged
-            ) && (error != nil || !granted)
+            let shouldLog = NativeNotificationLogPolicy.shouldLogAuthorizationError(
+                previouslyLogged: self.authorizationErrorLogged,
+                hasSystemError: error != nil
+            )
             if shouldLog {
-                self.authorizationUnavailableLogged = true
+                self.authorizationErrorLogged = true
             }
             self.authorizationLock.unlock()
 
-            if shouldLog {
-                let message = error?.localizedDescription
-                    ?? "Notifications are not allowed for this application"
-                // 被用户/系统拒绝不是应用故障；Attention 面板和铃铛仍然可用。
-                // 同一进程只记录一次，避免每个 pane 完成事件刷屏。
-                NSLog("muxterm: notification authorization unavailable: %@", message)
+            if shouldLog, let error {
+                // 真正的 UserNotifications API 错误同一进程只记录一次。
+                NSLog("muxterm: notification authorization request failed: %@", error.localizedDescription)
             }
             for completion in completions {
                 completion(granted)
             }
         }
-    }
-
-    private func logAuthorizationUnavailableOnce() {
-        authorizationLock.lock()
-        let shouldLog = NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
-            previouslyLogged: authorizationUnavailableLogged
-        )
-        if shouldLog {
-            authorizationUnavailableLogged = true
-        }
-        authorizationLock.unlock()
-        guard shouldLog else { return }
-        NSLog(
-            "muxterm: notification authorization unavailable: %@",
-            "Notifications are not allowed for this application"
-        )
     }
 
     private static func deliver(
