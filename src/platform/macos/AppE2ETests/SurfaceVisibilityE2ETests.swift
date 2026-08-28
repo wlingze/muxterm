@@ -68,6 +68,67 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertFalse(host.isHidden, "空白 snapshot 也必须有可见的完整首帧")
     }
 
+    /// 回归 2026-08-28 Legion pi：一次 poll 同时取到 attach snapshot 与
+    /// continue/SIGWINCH 后的唯一最新 redraw。snapshot 是基线，排在它后面的
+    /// PaneOutput 是新增量；若按 poll 批次整批抑制，界面会永久停在旧消息。
+    func testSnapshotAndFollowingOutputInSameBatchPaintLatestFrame() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        manager.updatePaneSizes([
+            Pane(id: 9, cols: 94, rows: 24, isActive: true),
+        ])
+        manager.beginEventBatch()
+        manager.handleSnapshot(
+            paneId: 9,
+            data: Data("\u{1b}[H\u{1b}[2JSTALE_PI_FRAME".utf8)
+        )
+        manager.handleOutput(
+            paneId: 9,
+            data: Data("\u{1b}[H\u{1b}[2JLATEST_PI_REDRAW".utf8)
+        )
+        manager.endEventBatch()
+
+        manager.flushSeedsNow(paneIds: [9])
+        manager.testFlushFeeds()
+        let text = manager.view(for: 9).visibleScreenText()
+        XCTAssertTrue(text.contains("LATEST_PI_REDRAW"), "snapshot 后最新 redraw 必须可见。got=\(text)")
+        XCTAssertFalse(text.contains("STALE_PI_FRAME"), "最新 redraw 应覆盖旧 frame。got=\(text)")
+    }
+
+    /// 94→125 是 14:37 日志的真实 attach resize。模型先扩列，再在同批应用
+    /// resize 后 redraw；批次边界不能吞掉 SIGWINCH 产生的唯一新帧。
+    func testResizeThenSnapshotAndLiveRedrawKeepsNewestWideFrame() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+
+        manager.updatePaneSizes([
+            Pane(id: 10, cols: 94, rows: 24, isActive: true),
+        ])
+        _ = manager.view(for: 10)
+        manager.updatePaneSizes([
+            Pane(id: 10, cols: 125, rows: 24, isActive: true),
+        ])
+        manager.beginEventBatch()
+        manager.handleSnapshot(
+            paneId: 10,
+            data: Data("\u{1b}[H\u{1b}[2JPI_BEFORE_SIGWINCH".utf8)
+        )
+        manager.handleOutput(
+            paneId: 10,
+            data: Data("\u{1b}[H\u{1b}[2JPI_AFTER_SIGWINCH_125".utf8)
+        )
+        manager.endEventBatch()
+
+        manager.flushSeedsNow(paneIds: [10])
+        manager.testFlushFeeds()
+        let view = manager.view(for: 10)
+        XCTAssertEqual(view.getTerminal().cols, 125)
+        let text = view.visibleScreenText()
+        XCTAssertTrue(text.contains("PI_AFTER_SIGWINCH_125"), "resize 后最新 frame 必须可见。got=\(text)")
+        XCTAssertFalse(text.contains("PI_BEFORE_SIGWINCH"), "resize 前 frame 不得残留。got=\(text)")
+    }
+
     func testMultipleSeedsRemainHiddenIndividuallyUntilComplete() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }

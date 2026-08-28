@@ -429,15 +429,17 @@ private extension UInt8 {
 
 /// PaneOutput 事件的喂入策略。
 ///
-/// 后端 `PaneOutput` 是权威增量。同一批里刚用 `PaneSnapshot` 播种的视图
-/// 必须跳过已覆盖的事件，否则双写。快照为空（新 pane 首批字节）时事件
-/// 原样喂入。视图已存在时事件就是纯增量。
+/// 后端 `PaneOutput` 是权威增量。`PaneSnapshot` 发布前，Runtime 已清除该
+/// pane 更旧的排队 output；所以 snapshot 后面的事件即使落在同一次 FFI poll，
+/// 也必须原样喂入。poll 批次不是 Surface 覆盖边界。
 public enum PaneOutputFeedPolicy {
     public static func shouldFeedEvent(
         viewExistedBeforeEvent: Bool,
         seedCoveredEvent: Bool
     ) -> Bool {
-        viewExistedBeforeEvent || !seedCoveredEvent
+        _ = viewExistedBeforeEvent
+        _ = seedCoveredEvent
+        return true
     }
 
     /// native SwiftTerm scrollback 在 `userScrolling` 状态下仍须接收 live。

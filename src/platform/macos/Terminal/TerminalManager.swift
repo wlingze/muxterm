@@ -14,12 +14,8 @@ final class TerminalManager: TerminalInputHandler {
     /// 后台 Workspace 仍然消费 Core 事件，但不创建不可见的 AppKit/SwiftTerm
     /// view。已有 view 继续 feed PTY。
     private var viewCreationEnabled = true
-    /// 本轮 poll 批次内刚用 `PaneSnapshot` 播种的视图：该快照已覆盖本批
-    /// 已入队的 PaneOutput，剩余同批事件必须跳过，否则双写。
-    private var viewsCreatedThisBatch = Set<UInt32>()
     /// 已经完成过 Runtime seed 或首批 live PTY 的 pane。
     private var swiftTermSeeded = Set<UInt32>()
-    private var inEventBatch = false
     /// 最近喂给终端的 UTF-8 片段（供 UITest / 状态栏无障碍查询）。
     private(set) var recentOutputSnippet: String = ""
     /// 上次成功同步到 PTY 的行列，避免无意义重复 resize。
@@ -119,9 +115,7 @@ final class TerminalManager: TerminalInputHandler {
         }
         views.removeAll()
         expectedPaneSizes.removeAll()
-        viewsCreatedThisBatch.removeAll()
         swiftTermSeeded.removeAll()
-        inEventBatch = false
         lastPtySize.removeAll()
         lastClientSize = nil
         pendingClientSize = nil
@@ -459,15 +453,8 @@ final class TerminalManager: TerminalInputHandler {
                 return
             }
         }
-        // 同一批刚用 PaneSnapshot 播种的视图，事件字节已经在快照里。
-        if viewsCreatedThisBatch.contains(paneId) {
-            return
-        }
         let existed = views[paneId] != nil
         let view = view(for: paneId)
-        if viewsCreatedThisBatch.contains(paneId) {
-            return
-        }
         if seedingPanes.contains(paneId) {
             // seed 发出之后到达的 live 增量，等 seed 完成再按序补上。
             queueLiveOutput(paneId, data: data)
@@ -485,7 +472,7 @@ final class TerminalManager: TerminalInputHandler {
         // `userScrolling` 状态下保持当前 yDisp，同时把新行留在 scrollback。
         if PaneOutputFeedPolicy.shouldFeedEvent(
             viewExistedBeforeEvent: existed,
-            seedCoveredEvent: viewsCreatedThisBatch.contains(paneId)
+            seedCoveredEvent: false
         ) {
             queueLiveOutput(paneId, data: data)
         }
@@ -537,28 +524,16 @@ final class TerminalManager: TerminalInputHandler {
         pendingSnapshots.removeValue(forKey: paneId)
         pendingFrames.removeValue(forKey: paneId)
         let viewExisted = views[paneId] != nil
-        let seededByBatch = viewsCreatedThisBatch.contains(paneId)
-        if !seededByBatch {
-            pendingFeeds.removeValue(forKey: paneId)
-            pendingSeeds.removeValue(forKey: paneId)
-            seedingPanes.remove(paneId)
-        }
+        pendingFeeds.removeValue(forKey: paneId)
+        pendingSeeds.removeValue(forKey: paneId)
+        seedingPanes.remove(paneId)
         let view = view(for: paneId)
-        if seededByBatch {
-            return
-        }
-        if seedingPanes.contains(paneId) {
-            return
-        }
         ensureValidModelSize(view)
         if data.isEmpty {
             view.feedOutput(Data(), isSnapshot: true)
             swiftTermSeeded.insert(paneId)
             setSurfaceReady(paneId, true)
             return
-        }
-        if inEventBatch {
-            viewsCreatedThisBatch.insert(paneId)
         }
         if viewExisted {
             swiftTermSeeded.remove(paneId)
@@ -668,17 +643,12 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 每轮 poll 事件处理前调用，标记批次边界。
     func beginEventBatch() {
-        inEventBatch = true
-        // 只有本轮事件处理中创建的 view 才能确定 seed 覆盖了本批事件。
-        // 批次外（例如切回 warm Workspace 后）创建的 view 不应抑制下一轮
-        // 完整 poll，否则 seed 之后产生的新 prompt/token 会被整批丢掉。
-        viewsCreatedThisBatch.removeAll()
+        // FFI poll 只负责批量取数，不改变 Surface 事件的顺序语义。
     }
 
     /// 本轮 poll 事件处理完毕。
     func endEventBatch() {
-        viewsCreatedThisBatch.removeAll()
-        inEventBatch = false
+        // 保留显式边界入口，供前台与 warm slot 使用；当前无需批次状态。
     }
 
     /// 移除已关闭 pane 的视图（只在 STATE_PANE_CLOSED 时调用；
@@ -698,7 +668,6 @@ final class TerminalManager: TerminalInputHandler {
         // Surface feed 只在主线程。后台 slot 把事件 hop 回来再 remove。
         views[paneId]?.removeFromSuperview()
         views.removeValue(forKey: paneId)
-        viewsCreatedThisBatch.remove(paneId)
         swiftTermSeeded.remove(paneId)
         unseenLines.removeValue(forKey: paneId)
         applyingNativeScroll.remove(paneId)
