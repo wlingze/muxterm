@@ -4,6 +4,20 @@ import XCTest
 
 /// W13：attach 已有 2tab/3pane，SwiftTerm 非空、几何 ≥ 40px、切 tab 像素还在、CUP 洪水有上界。
 final class AttachE2ETests: XCTestCase {
+    func testSizedAttachPublishesSurfaceSnapshotWithoutFrontendResize() throws {
+        try assertSizedAttachPublishesSnapshot(
+            size: (125, 51),
+            label: "attach-sized"
+        )
+    }
+
+    func testSmallSizedAttachPublishesSurfaceSnapshotWithoutFrontendResize() throws {
+        try assertSizedAttachPublishesSnapshot(
+            size: (42, 12),
+            label: "attach-small"
+        )
+    }
+
     func testAttachPreexist2Tab3PaneIsUsable() throws {
         let painted = PaintedWorkspace(label: "gtk-attach")
         let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
@@ -81,6 +95,34 @@ final class AttachE2ETests: XCTestCase {
         XCTAssertFalse(
             app.testAllVisibleTerminalText().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             "洪水后 SwiftTerm 仍不能空"
+        )
+    }
+
+    private func assertSizedAttachPublishesSnapshot(
+        size: (UInt16, UInt16),
+        label: String
+    ) throws {
+        let fixture = OnePaneCat(label: label)
+        let bridge = try CoreBridge.connect(
+            backendType: "tmux",
+            socket: fixture.socket,
+            session: fixture.session,
+            initialClientSize: size
+        )
+        defer { bridge.shutdown() }
+
+        var snapshots: [StateChange] = []
+        let received = AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            snapshots.append(contentsOf: bridge.pollEvents().filter(\.isPaneSnapshot))
+            return snapshots.contains { event in
+                !event.data.isEmpty &&
+                    String(decoding: event.data, as: UTF8.self).contains(fixture.token)
+            }
+        }
+
+        XCTAssertTrue(
+            received,
+            "带初始尺寸 \(size.0)x\(size.1) attach 后，即使前端不 resize，也必须发布含可见内容的 PaneSnapshot；实际 snapshots=\(snapshots.map { ($0.paneId, $0.data.count) })"
         )
     }
 }
