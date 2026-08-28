@@ -3,10 +3,32 @@ import XCTest
 @testable import MuxtermAppLib
 
 final class NativeNotificationTests: XCTestCase {
-    func testAuthorizationPolicyRequestsOnlyWhenUndetermined() {
-        XCTAssertTrue(NativeNotificationAuthorizationPolicy.shouldRequest(.notDetermined))
-        XCTAssertFalse(NativeNotificationAuthorizationPolicy.shouldRequest(.denied))
-        XCTAssertFalse(NativeNotificationAuthorizationPolicy.shouldRequest(.authorized))
+    func testAuthorizationPolicyRequestsOnlyForPendingNotification() {
+        XCTAssertFalse(
+            NativeNotificationAuthorizationPolicy.shouldRequest(
+                .notDetermined,
+                hasPendingNotification: false
+            ),
+            "应用启动时不得脱离通知上下文主动请求权限"
+        )
+        XCTAssertTrue(
+            NativeNotificationAuthorizationPolicy.shouldRequest(
+                .notDetermined,
+                hasPendingNotification: true
+            )
+        )
+        XCTAssertFalse(
+            NativeNotificationAuthorizationPolicy.shouldRequest(
+                .denied,
+                hasPendingNotification: true
+            )
+        )
+        XCTAssertFalse(
+            NativeNotificationAuthorizationPolicy.shouldRequest(
+                .authorized,
+                hasPendingNotification: true
+            )
+        )
     }
 
     func testAuthorizationPolicyDeliversForEveryGrantedState() {
@@ -16,15 +38,24 @@ final class NativeNotificationTests: XCTestCase {
         XCTAssertFalse(NativeNotificationAuthorizationPolicy.canDeliver(.denied))
     }
 
-    func testUnavailableAuthorizationIsLoggedOnlyOnce() {
+    func testDeniedAuthorizationIsSilentButSystemErrorIsLoggedOnce() {
+        XCTAssertFalse(
+            NativeNotificationLogPolicy.shouldLogAuthorizationError(
+                previouslyLogged: false,
+                hasSystemError: false
+            ),
+            "用户拒绝通知是正常授权状态，不得伪装成运行错误"
+        )
         XCTAssertTrue(
-            NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
-                previouslyLogged: false
+            NativeNotificationLogPolicy.shouldLogAuthorizationError(
+                previouslyLogged: false,
+                hasSystemError: true
             )
         )
         XCTAssertFalse(
-            NativeNotificationLogPolicy.shouldLogAuthorizationUnavailable(
-                previouslyLogged: true
+            NativeNotificationLogPolicy.shouldLogAuthorizationError(
+                previouslyLogged: true,
+                hasSystemError: true
             )
         )
     }
