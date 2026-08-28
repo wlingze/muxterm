@@ -315,6 +315,59 @@ final class OnePaneCat {
     }
 }
 
+/// 含 attach 前历史、顶栏、正文和底部输入区的 Cursor/pi 风格 TUI。
+/// 进程会在 tmux pane 尺寸变化后重画，用于验证 Existing attach
+/// 的首屏尺寸门控，不允许测试靠事后 resize 恢复。
+final class AgentScreenWorkspace {
+    let socket: String
+    let session: String
+    let pane: String
+    let historyToken: String
+
+    init(label: String) {
+        AppE2E.requireTmux()
+        socket = Tmux.uniqueSocket(label)
+        session = "agent-\(label)"
+        historyToken = "AGENT_HISTORY_\(ProcessInfo.processInfo.processIdentifier)"
+        Tmux.killServer(socket)
+        Tmux.ok(socket: socket, args: [
+            "-f", "/dev/null", "new-session", "-d", "-s", session,
+            "-x", "80", "-y", "24", "--", "/bin/cat",
+        ])
+        pane = Tmux.out(socket: socket, args: ["list-panes", "-t", session, "-F", "#{pane_id}"])
+            .split(whereSeparator: \.isNewline).map(String.init).first ?? ""
+
+        let py = AppE2E.repoRoot.appendingPathComponent("tests/scripts/mock_codex.py")
+        XCTAssertTrue(FileManager.default.isReadableFile(atPath: py.path), "缺少 \(py.path)")
+        Tmux.ok(socket: socket, args: [
+            "respawn-pane", "-k", "-t", pane,
+            "MOCK_CODEX_DYNAMIC_SIZE=1 MOCK_CODEX_HISTORY_LINES=72 "
+                + "MOCK_CODEX_HISTORY_TOKEN=\(historyToken) "
+                + "MOCK_CODEX_FRAMES=3 MOCK_CODEX_SLEEP=0.02 "
+                + "python3 -u \(py.path)",
+        ])
+
+        for token in ["TOKEN_HEADER", "TOKEN_BODY", "TOKEN_PROMPT"] {
+            Tmux.waitCapture(socket: socket, target: pane, needle: token)
+        }
+        Tmux.waitCapture(
+            socket: socket,
+            target: pane,
+            needle: historyToken,
+            history: true
+        )
+        let visible = Tmux.out(socket: socket, args: ["capture-pane", "-p", "-t", pane])
+        XCTAssertFalse(
+            visible.contains(historyToken),
+            "夹具失败：attach 前历史 token 仍在可见屏。visible=\(visible)"
+        )
+    }
+
+    deinit {
+        Tmux.killServer(socket)
+    }
+}
+
 final class OffscreenHistory {
     let socket: String
     let session: String
