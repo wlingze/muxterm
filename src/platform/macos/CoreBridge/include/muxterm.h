@@ -90,6 +90,7 @@ struct CLayoutNode {
 #define TASK_REFRESH_TABS 13u
 #define TASK_RENAME_TAB 14u
 #define TASK_RENAME_WORKSPACE 15u
+#define TASK_REQUEST_PANE_SNAPSHOT 16u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u

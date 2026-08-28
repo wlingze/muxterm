@@ -248,6 +248,17 @@ struct MuxTask {
             name: name
         )
     }
+
+    /// Runtime 重新发送指定 pane 的权威 Surface baseline。
+    static func requestPaneSnapshot(_ paneId: UInt32) -> MuxTask {
+        MuxTask(
+            type: TASK_REQUEST_PANE_SNAPSHOT,
+            targetPane: paneId,
+            targetTab: 0,
+            dir: 0,
+            name: nil
+        )
+    }
 }
 
 /// 一帧渲染快照。

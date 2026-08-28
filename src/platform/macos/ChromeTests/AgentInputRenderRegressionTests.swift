@@ -116,13 +116,14 @@ final class AgentInputRenderRegressionTests: XCTestCase {
         XCTAssertEqual(Set(cursorRows).count, 1, "光标行应固定，实际 \(cursorRows)")
     }
 
-    /// 验证「快照从半个转义序列开始」会破坏后续帧解析（复现阶梯的机制）。
-    /// 若此测试失败（出现阶梯），说明 Rust 侧必须保证快照从完整行边界开始。
-    func testPartialEscapePrefixBreaksRedraw() {
+    /// fallback 可能恰好停在半个 OSC；ST + 完整 SGR fence 必须把 parser
+    /// 拉回 ground，之后 agent 重绘的输入行和光标都应恢复稳定。
+    func testParserFenceRecoversPartialEscapeBeforeRedraw() {
         let terminal = makeTerminal()
-        // 模拟滑动窗口快照从 OSC 序列中间开始：只有 `ESC]` 没有终止符。
         terminal.feed(byteArray: Array("\u{1b}]1337;SetUserVar=X=".utf8))
+        terminal.feed(byteArray: Array("\u{1b}\\\u{1b}[0m".utf8))
         var inputRows: [Int] = []
+        var cursorRows: [Int] = []
         for text in ["x", "xc", "xci"] {
             terminal.feed(byteArray: frame(text: text))
             let rows = terminal.getDims().rows
@@ -136,11 +137,11 @@ final class AgentInputRenderRegressionTests: XCTestCase {
             if found >= 0 {
                 inputRows.append(found)
             }
+            cursorRows.append(terminal.getCursorLocation().y)
         }
-        // 机制确认：半截 OSC 会导致后续 ESC 序列被吞掉，输入逐行下移。
-        // 这里不硬断言必须复现（SwiftTerm 可能自行恢复），只记录结果。
-        print("partial-escape inputRows=\(inputRows)")
-        XCTAssertGreaterThan(inputRows.count, 0)
+        XCTAssertEqual(inputRows.count, 3, "fence 后每一帧输入都必须可见")
+        XCTAssertEqual(Set(inputRows).count, 1, "fence 后输入行必须稳定：\(inputRows)")
+        XCTAssertEqual(Set(cursorRows).count, 1, "fence 后光标行必须稳定：\(cursorRows)")
     }
 
     /// 复现 test-2026-0813-1721.log：codex 粘贴/输入时每次重绘先

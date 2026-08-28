@@ -3891,6 +3891,18 @@ impl Runtime for TmuxRuntime {
                 }
                 TaskOutcome::Done
             }
+            Task::RequestPaneSnapshot { target } => {
+                if self.pane(target).is_none() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                }
+                // 平台缓存溢出与 reader lane gap 是同一种 Surface 数据丢失：
+                // 共用 fence、单 pane snapshot 和 retry 状态机。
+                self.mark_output_gap(*target, "frontend-surface-overflow");
+                self.maybe_start_resyncs();
+                TaskOutcome::Done
+            }
             Task::ResizePane { target, cols, rows } => {
                 let c = cmd::resize_pane(*target, Some(*cols as u32), Some(*rows as u32));
                 if self.dispatch_tmux_command(&c).is_err() {
@@ -5749,6 +5761,35 @@ mod tests {
             cmds.iter().any(|cmd| cmd.contains("display-message")),
             "output gap 后必须查询权威终端状态: {cmds:?}"
         );
+    }
+
+    #[test]
+    fn frontend_snapshot_request_uses_output_gap_recovery() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new(None);
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        let pane = PaneId(40);
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "codex".into(),
+            cols: 120,
+            rows: 40,
+        });
+        b.initial_capture_done.insert(pane);
+
+        let outcome = b
+            .execute(&Task::RequestPaneSnapshot { target: pane })
+            .unwrap();
+
+        assert_eq!(outcome, TaskOutcome::Done);
+        assert!(b.resyncs.contains_key(&pane));
+        assert_eq!(b.output_gap_count, 1);
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(cmds.iter().any(|cmd| cmd.contains(r#"%40:pause"#)));
+        assert!(cmds.iter().any(|cmd| cmd.contains("display-message")));
     }
 
     #[test]
