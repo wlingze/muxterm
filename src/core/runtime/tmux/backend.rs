@@ -68,13 +68,6 @@ enum PendingQuery {
     },
     /// list-sessions：列出 tmux server 上所有 session。
     ListSessions,
-    /// 新 tab 未指定目录时，先查询当前 pane cwd，再发 new-window -c。
-    NewTabInCurrentDir {
-        pane: PaneId,
-        session: TmuxSessionId,
-        name: Option<String>,
-        command: Option<Vec<String>>,
-    },
 }
 
 /// status bar 订阅名（文档 §B+：`refresh-client -B` 的名字）。
@@ -237,6 +230,11 @@ pub struct TmuxRuntime {
     background_index_capture_enabled: bool,
     /// 已经在 Connected 之后发过一轮后台可见屏索引。connect 里只开开关。
     background_index_started: bool,
+    /// 尚未发送的后台 pane 索引。后台工作必须逐个进入 control lane，给
+    /// NewTab/CloseTab/输入等前台命令留下可让位的边界。
+    background_index_queue: VecDeque<PaneId>,
+    /// 当前唯一允许在途的后台 pane 索引。
+    background_index_in_flight: Option<PaneId>,
     /// 最近一次 capture 只取了可见屏。切入时直接用它，不再 pause 重抓。
     background_capture_only: HashSet<PaneId>,
     /// 发出 capture 时的 pane 网格。完成时不得用事后尺寸覆盖；切 tab
@@ -696,6 +694,8 @@ impl TmuxRuntime {
             initial_capture_done: HashSet::new(),
             background_index_capture_enabled: false,
             background_index_started: false,
+            background_index_queue: VecDeque::new(),
+            background_index_in_flight: None,
             background_capture_only: HashSet::new(),
             capture_grid: HashMap::new(),
             history_backfill_done: HashSet::new(),
@@ -933,19 +933,18 @@ impl TmuxRuntime {
         self.capture_grid.remove(&pane);
     }
 
-    /// 后台 tab 的轻量首屏 capture：只为 Core 索引提供当前可见内容，响应
-    /// 不参与 connect 就绪判定。前台 Workspace 用对应 `PaneSnapshot` 种 Surface；
-    /// 切 tab 时若网格仍匹配，不再 pause 重抓；尺寸过期则 `query_capture_tab` 会作废再抓。
-    fn query_background_index_tab(&mut self, tab: TabId) {
-        let panes: Vec<PaneId> = self
-            .panes
-            .iter()
-            .filter(|pane| pane.tab == tab)
-            .map(|pane| pane.id)
-            .collect();
-        for pane in panes {
-            self.query_capture_pane_visible(pane);
+    /// 登记后台 tab 的轻量首屏 capture。这里只排队，不把所有 pane 一次性
+    /// 塞进 tmux control lane；否则一个慢 capture 会让随后点击的 NewTab
+    /// 排在整批后台工作之后。
+    fn enqueue_background_index_pane(&mut self, pane: PaneId) {
+        if self.background_index_in_flight == Some(pane)
+            || self.background_index_queue.contains(&pane)
+            || self.initial_capture_done.contains(&pane)
+            || self.background_capture_only.contains(&pane)
+        {
+            return;
         }
+        self.background_index_queue.push_back(pane);
     }
 
     fn query_background_index_captures(&mut self) {
@@ -953,14 +952,41 @@ impl TmuxRuntime {
             return;
         }
         let active = self.active_tab_id();
-        let tabs: Vec<TabId> = self
-            .tabs
+        let panes: Vec<PaneId> = self
+            .panes
             .iter()
-            .filter(|tab| Some(tab.id) != active)
-            .map(|tab| tab.id)
+            .filter(|pane| Some(pane.tab) != active)
+            .map(|pane| pane.id)
             .collect();
-        for tab in tabs {
-            self.query_background_index_tab(tab);
+        for pane in panes {
+            self.enqueue_background_index_pane(pane);
+        }
+        self.dispatch_next_background_index_capture();
+    }
+
+    /// 每次只放行一个后台 capture。响应结束后的下一轮 pump 才会继续，
+    /// 因而期间进入 cmd_tx 的前台 mutation 会自然排在下一个 capture 前面。
+    fn dispatch_next_background_index_capture(&mut self) {
+        if self.background_index_in_flight.is_some()
+            || self.control_lane_busy()
+            || !self.history_backfill_wanted.is_empty()
+        {
+            return;
+        }
+        while let Some(pane) = self.background_index_queue.pop_front() {
+            let Some(tab) = self.pane_tab(pane) else {
+                continue;
+            };
+            if self.tab_is_active(tab)
+                || self.initial_capture_done.contains(&pane)
+                || self.background_capture_only.contains(&pane)
+            {
+                continue;
+            }
+            if self.query_capture_pane_visible(pane) {
+                self.background_index_in_flight = Some(pane);
+                break;
+            }
         }
     }
 
@@ -1301,8 +1327,7 @@ impl TmuxRuntime {
             | PendingQuery::PaneIndexCapture { pane }
             | PendingQuery::PaneHistory { pane }
             | PendingQuery::PaneResyncState { pane, .. }
-            | PendingQuery::PaneResyncCapture { pane, .. }
-            | PendingQuery::NewTabInCurrentDir { pane, .. } => Some(*pane),
+            | PendingQuery::PaneResyncCapture { pane, .. } => Some(*pane),
             PendingQuery::Ignore
             | PendingQuery::ListPanes { .. }
             | PendingQuery::ListWindows
@@ -1527,7 +1552,6 @@ impl TmuxRuntime {
     }
 
     /// tmux window 关闭 → muxterm Tab 关闭。
-    /// `%window-close` 与 `%unlinked-window-close` 共用。
     /// 真正关闭一个 tab：先逐 pane 发 PaneClosed，前端才能回收对应的终端视图；
     /// 只发 TabClosed 会让切 tab 后保留的视图泄漏（视图只在 PaneClosed 时移除）。
     fn remove_window_tab(&mut self, tab: TabId) {
@@ -1760,10 +1784,14 @@ impl TmuxRuntime {
                 // 若它随后被 link 进当前 session，tmux 会再发 %window-add。
             }
             Message::UnlinkedWindowClose { window } => {
-                // 实测：kill-window 时控制客户端收到的是 %unlinked-window-close
-                // 而不是 %window-close（tmux 3.4）。忽略它会导致 tab 关闭后
-                // statusbar 不更新、Alt+1..4 仍能切到幽灵 tab。
-                self.close_window_tab(window);
+                // tmux control-notify 的契约：该 window id 已经不在当前
+                // session，正常 kill-window 会走这里。它本身就是权威裁决，
+                // 无需再发 list-windows 多等一轮；只有 `%window-close` 需要
+                // 为 move-window 的 unlink→link 竞态保留查询。
+                self.pending_close_tabs.remove(&window);
+                if self.tabs.iter().any(|tab| tab.id == window) {
+                    self.remove_window_tab(window);
+                }
             }
             Message::UnlinkedWindowRenamed { window, name } => {
                 self.rename_window_tab(window, name);
@@ -2071,14 +2099,18 @@ impl TmuxRuntime {
     /// attach 的后台可见屏索引放到 Connected 之后，并且排在活动 tab
     /// 的 `-S` 历史后面。connect 里排队会把进入 tmux 的第一下卡住。
     fn start_background_index_if_needed(&mut self) {
-        if !self.background_index_capture_enabled || self.background_index_started {
+        if !self.background_index_capture_enabled || self.status != BackendStatus::Connected {
             return;
         }
-        if self.control_lane_busy() || !self.history_backfill_wanted.is_empty() {
-            return;
+        if !self.background_index_started {
+            if self.control_lane_busy() || !self.history_backfill_wanted.is_empty() {
+                return;
+            }
+            self.background_index_started = true;
+            self.query_background_index_captures();
+        } else {
+            self.dispatch_next_background_index_capture();
         }
-        self.background_index_started = true;
-        self.query_background_index_captures();
     }
 
     /// 处理一条命令的完整响应（%begin..%end 之间的行）。
@@ -2167,27 +2199,10 @@ impl TmuxRuntime {
                     }
                     self.finish_pane_resync(pane);
                 }
-                PendingQuery::NewTabInCurrentDir {
-                    pane: _,
-                    session,
-                    name,
-                    command,
-                } => {
-                    // `display-message` returns the path as one response line;
-                    // preserve spaces and pass it through tmux's C quoting.
-                    let path = lines
-                        .first()
-                        .map(|line| line.trim())
-                        .filter(|p| !p.is_empty());
-                    let c = cmd::new_window_with_directory(
-                        session,
-                        name.as_deref(),
-                        path,
-                        command.as_deref(),
-                    );
-                    let _ = self.dispatch_tmux_command(&c);
-                }
                 PendingQuery::PaneIndexCapture { pane } => {
+                    if self.background_index_in_flight == Some(pane) {
+                        self.background_index_in_flight = None;
+                    }
                     let mut data = capture_pane_bytes(&lines);
                     let before_response =
                         self.initial_capture_buf.remove(&pane).unwrap_or_default();
@@ -2414,6 +2429,9 @@ impl TmuxRuntime {
         if let Some(q) = self.pending_by_number.remove(&number) {
             match q {
                 PendingQuery::PaneIndexCapture { pane } => {
+                    if self.background_index_in_flight == Some(pane) {
+                        self.background_index_in_flight = None;
+                    }
                     self.initial_capture_pending.remove(&pane);
                     self.background_capture_only.remove(&pane);
                     let before_response =
@@ -2505,14 +2523,6 @@ impl TmuxRuntime {
                     {
                         self.abort_pane_resync(pane, "response-error");
                     }
-                }
-                PendingQuery::NewTabInCurrentDir { pane, .. } => {
-                    tracing::warn!(
-                        target = "muxterm::tmux",
-                        pane = pane.0,
-                        number,
-                        "current pane cwd query failed; new tab was not created"
-                    );
                 }
                 PendingQuery::ReadyProbe { pane } => {
                     self.ready_probe_in_flight.remove(&pane);
@@ -2707,9 +2717,10 @@ impl TmuxRuntime {
                     // snapshot；后台 Index capture 只能用于隐藏 tab。
                     self.query_surface_capture_pane_visible(pane.id);
                 } else {
-                    self.query_capture_pane_visible(pane.id);
+                    self.enqueue_background_index_pane(pane.id);
                 }
             }
+            self.start_background_index_if_needed();
             return;
         }
         if self.tab_is_active(tab_id) {
@@ -2969,7 +2980,7 @@ impl TmuxRuntime {
 
     /// 后台索引用的轻量 capture：不读取 scrollback，避免 attach 后多个
     /// inactive tab 的响应挤占控制流。切入时不再升级为 pause seed。
-    fn query_capture_pane_visible(&mut self, pane: PaneId) {
+    fn query_capture_pane_visible(&mut self, pane: PaneId) -> bool {
         if !self.is_attach_mode()
             || self.deferred_attach_seeds.contains(&pane)
             || self.resyncs.contains_key(&pane)
@@ -2987,7 +2998,7 @@ impl TmuxRuntime {
             })
             || self.initial_capture_done.contains(&pane)
         {
-            return;
+            return false;
         }
         let line = cmd::capture_pane_visible(pane).to_line();
         if self.dispatch_command(line).is_ok() {
@@ -2998,7 +3009,9 @@ impl TmuxRuntime {
             self.initial_capture_pending.insert(pane);
             self.background_capture_only.insert(pane);
             self.replace_last_pending(PendingQuery::PaneIndexCapture { pane });
+            return true;
         }
+        false
     }
 
     /// attach 完成后活动 tab 的轻量 Surface seed。它不 pause，避免新建
@@ -3956,22 +3969,21 @@ impl Runtime for TmuxRuntime {
                             reason: "发送命令失败".into(),
                         });
                     }
-                } else if let Some(pane) = self.active_pane().map(|pane| pane.id) {
-                    // New tabs inherit the active pane's cwd. Querying tmux is
-                    // authoritative even when the GUI's project path is `~` or
-                    // the shell has changed directory since attach.
-                    let q = cmd::display_message(pane, "#{pane_current_path}");
-                    if self.dispatch_tmux_command(&q).is_err() {
+                } else if self.active_pane().is_some() {
+                    // `-c` 接受 tmux format；让 tmux 在 new-window 同一命令
+                    // 的目标上下文里展开 cwd，避免先 display-message 再等一轮
+                    // 响应。active pane 的存在保证当前 session 有展开上下文。
+                    let c = cmd::new_window_with_directory(
+                        sess,
+                        name.as_deref(),
+                        Some("#{pane_current_path}"),
+                        command.as_deref(),
+                    );
+                    if self.dispatch_tmux_command(&c).is_err() {
                         return Ok(TaskOutcome::Rejected {
                             reason: "发送命令失败".into(),
                         });
                     }
-                    self.replace_last_pending(PendingQuery::NewTabInCurrentDir {
-                        pane,
-                        session: sess,
-                        name: name.clone(),
-                        command: command.clone(),
-                    });
                 } else {
                     let c = cmd::new_window_with_directory(
                         sess,
@@ -7454,6 +7466,51 @@ mod tests {
         );
     }
 
+    /// tmux 明确区分 `%window-close`（window 仍 link 在当前 session）和
+    /// `%unlinked-window-close`（已经不在当前 session）。后者无需再等一次
+    /// `list-windows`，否则每次正常 kill-window 都多一个控制通道往返。
+    #[test]
+    fn unlinked_window_close_is_immediate_even_when_connected() {
+        use crate::core::model::state::StateChange;
+        use crate::core::runtime::tmux::protocol::{Message, TmuxSessionId};
+
+        let mut b = TmuxRuntime::new(None);
+        b.active_session = Some(TmuxSessionId(0));
+        b.status = BackendStatus::Connected;
+        b.tabs.push(TabInfo {
+            id: TabId(2),
+            name: "closed".into(),
+            active: true,
+        });
+        b.panes.push(PaneInfo {
+            id: PaneId(7),
+            tab: TabId(2),
+            cols: 80,
+            rows: 24,
+            active: true,
+            title: String::new(),
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+
+        b.handle_message(Message::UnlinkedWindowClose { window: TabId(2) });
+
+        assert!(
+            !b.tabs.iter().any(|tab| tab.id == TabId(2)),
+            "unlinked close 已是权威事实，必须当拍移除 tab"
+        );
+        assert!(
+            b.events
+                .iter()
+                .any(|event| matches!(event, StateChange::TabClosed { tab } if *tab == TabId(2))),
+            "必须当拍发布 TabClosed"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "unlinked close 不得再发 list-windows 往返"
+        );
+    }
+
     /// move-window 竞态回归：权威 list-windows 已确认窗口存在后，迟到的
     /// `%window-close` 不得把 tab 永久删掉；挂起关闭必须等下一次权威响应
     /// 裁决，确认仍存在时取消关闭（tmux unlink→link 的 add+close 组合）。
@@ -7835,6 +7892,109 @@ mod tests {
         );
     }
 
+    /// 后台 Index 只允许一个 pane 在途。用户点击 NewTab 后，即使第一个
+    /// capture 此刻才返回，未发送的后台 capture 也必须排在 mutation 后面。
+    #[test]
+    fn background_index_yields_between_panes_for_foreground_mutation() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.active_session = Some(TmuxSessionId(0));
+        b.status = BackendStatus::Connected;
+        b.attach_bootstrap_complete = true;
+        b.background_index_capture_enabled = true;
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(0),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(1),
+                name: "background-a".into(),
+                active: false,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "background-b".into(),
+                active: false,
+            },
+        ];
+        b.panes = vec![
+            PaneInfo {
+                id: PaneId(0),
+                tab: TabId(0),
+                active: true,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: PaneId(1),
+                tab: TabId(1),
+                active: false,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: PaneId(2),
+                tab: TabId(2),
+                active: false,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            },
+        ];
+        b.initial_capture_done.insert(PaneId(0));
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+
+        b.start_background_index_if_needed();
+        let first_turn = drain_tmux_cmds(&mut rx);
+        assert_eq!(
+            first_turn
+                .iter()
+                .filter(|command| command.contains("capture-pane"))
+                .count(),
+            1,
+            "一轮只能排一个后台 capture，不能一次把控制通道塞满: {first_turn:?}"
+        );
+
+        b.execute(&Task::NewTab {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+
+        let first_query = b
+            .pending_queries
+            .pop_front()
+            .expect("第一个后台 capture 应占一个响应槽");
+        assert!(matches!(
+            first_query,
+            PendingQuery::PaneIndexCapture { pane: PaneId(1) }
+        ));
+        b.pending_by_number.insert(101, first_query);
+        b.dispatch_response(101, vec!["background-a".into()]);
+        b.start_background_index_if_needed();
+
+        let next_turn = drain_tmux_cmds(&mut rx);
+        assert!(
+            next_turn
+                .first()
+                .is_some_and(|command| command.starts_with("new-window ")),
+            "前台 NewTab 必须排在下一个后台 capture 前: {next_turn:?}"
+        );
+        assert_eq!(
+            next_turn
+                .iter()
+                .filter(|command| command.contains("capture-pane"))
+                .count(),
+            1,
+            "第一个响应完成后只能放行一个后续后台 capture: {next_turn:?}"
+        );
+    }
+
     #[test]
     fn history_backfill_and_background_index_wait_until_connected() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -8139,6 +8299,49 @@ mod tests {
                 .iter()
                 .any(|cmd| cmd.contains("capture-pane") && cmd.contains("%0")),
             "已经 seed 过的 pane 不得再 capture: {seed:?}"
+        );
+    }
+
+    /// 未指定 workdir 的 NewTab 必须让 tmux 在同一条命令里展开当前 pane cwd。
+    /// 旧实现先 display-message、等响应，再发 new-window；控制通道繁忙时这会
+    /// 把一次点击放大成数秒延迟。
+    #[test]
+    fn new_tab_inherits_current_directory_atomically() {
+        let mut b = TmuxRuntime::new(None);
+        b.active_session = Some(TmuxSessionId(4));
+        b.tabs.push(TabInfo {
+            id: TabId(7),
+            name: "current".into(),
+            active: true,
+        });
+        b.panes.push(PaneInfo {
+            id: PaneId(3),
+            tab: TabId(7),
+            cols: 80,
+            rows: 24,
+            active: true,
+            title: String::new(),
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+
+        let outcome = b
+            .execute(&Task::NewTab {
+                name: Some("next".into()),
+                command: Some(vec!["pi".into(), "--resume".into()]),
+                workdir: None,
+            })
+            .unwrap();
+
+        assert_eq!(outcome, TaskOutcome::Done);
+        assert_eq!(
+            rx.try_recv().expect("应直接发送 new-window"),
+            "new-window -t $4 -n \"next\" -c \"#{pane_current_path}\" \"pi\" \"--resume\"\n"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "原子 NewTab 不得先发 display-message 再等待第二个往返"
         );
     }
 
