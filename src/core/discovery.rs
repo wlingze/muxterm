@@ -11,8 +11,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::quickconnect::model::ProjectExistence;
-
 pub mod existing;
 
 /// SSH Host 条目（从 `~/.ssh/config` 读取）。
@@ -806,47 +804,6 @@ pub fn list_remote_dir(
     Ok(out)
 }
 
-/// 探测本地 Project path 是否为目录。
-///
-/// `metadata` 让不存在与其它 I/O 错误分开：不存在/普通文件显示灰态，
-/// 权限等无法判断的错误不误报为不存在。
-pub fn probe_local_directory(path: &str) -> ProjectExistence {
-    let path = crate::core::config::expand_config_value(path);
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => ProjectExistence::Exists,
-        Ok(_) => ProjectExistence::Missing,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ProjectExistence::Missing,
-        Err(_) => ProjectExistence::Unknown,
-    }
-}
-
-/// `test -d` 的远端探测退出码映射。
-fn classify_project_directory_exit(exit_code: i32) -> ProjectExistence {
-    match exit_code {
-        0 => ProjectExistence::Exists,
-        1 => ProjectExistence::Missing,
-        _ => ProjectExistence::Unknown,
-    }
-}
-
-/// 通过 SSH 探测远端 Project path 是否为目录。
-///
-/// 探测使用无 PTY 的短命令；SSH 连接失败、权限/执行错误或超时均返回
-/// `Unknown`，只有 `test -d` 的明确成功/失败分别显示存在/不存在。
-pub fn probe_remote_directory(
-    alias: &str,
-    path: &str,
-    ssh_config_path: Option<&str>,
-    timeout: std::time::Duration,
-) -> ProjectExistence {
-    let remote_command = format!("test -d {}", shell_quote_remote_path(path));
-    let (program, args) = build_ssh_command_for_discovery(alias, &remote_command, ssh_config_path);
-    match run_ssh_discovery_command(&program, &args, timeout) {
-        Ok((exit_code, _)) => classify_project_directory_exit(exit_code),
-        Err(_) => ProjectExistence::Unknown,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1067,45 +1024,6 @@ mod tests {
             "$HOME/'Project/my repo/it'\\''s'"
         );
         assert_eq!(shell_quote_remote_path("/tmp/my repo"), "'/tmp/my repo'");
-    }
-
-    #[test]
-    fn project_directory_probe_exit_codes_are_stable() {
-        assert_eq!(classify_project_directory_exit(0), ProjectExistence::Exists);
-        assert_eq!(
-            classify_project_directory_exit(1),
-            ProjectExistence::Missing
-        );
-        assert_eq!(
-            classify_project_directory_exit(2),
-            ProjectExistence::Unknown
-        );
-        assert_eq!(
-            classify_project_directory_exit(255),
-            ProjectExistence::Unknown
-        );
-    }
-
-    #[test]
-    fn local_project_probe_distinguishes_directory_and_missing_path() {
-        let path = std::env::temp_dir().join(format!(
-            "muxterm-project-probe-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::create_dir(&path).expect("测试目录应能创建");
-        assert_eq!(
-            probe_local_directory(path.to_str().expect("临时路径应为 UTF-8")),
-            ProjectExistence::Exists
-        );
-        std::fs::remove_dir(&path).expect("测试目录应能清理");
-        assert_eq!(
-            probe_local_directory(path.to_str().expect("临时路径应为 UTF-8")),
-            ProjectExistence::Missing
-        );
     }
 
     #[test]

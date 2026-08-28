@@ -182,17 +182,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func loadWorkspaceItems() {
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
-        let existence = QuickConnect.projectExistenceMap(for: store.projects)
         allItems = QuickConnect.entries(
             recents: store.recents,
-            projects: store.projects,
-            existence: existence
+            projects: store.projects
         ).map { entry in
             .target(
                 entry.config,
                 badges: entry.badges,
-                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config),
-                existence: entry.existence
+                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config)
             )
         }
         allItems.append(.newProject)
@@ -204,7 +201,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             ? allItems
             : allItems.filter { item in
                 switch item {
-                case .target(let c, _, _, _): return QuickConnect.searchText(for: c).contains(query)
+                case .target(let c, _, _): return QuickConnect.searchText(for: c).contains(query)
                 case .newProject: return "new project 新建".contains(query)
                 }
             }
@@ -225,7 +222,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .workspaces:
             guard table.selectedRow < visibleItems.count else { return }
             switch visibleItems[table.selectedRow] {
-            case .target(let config, _, _, _):
+            case .target(let config, _, _):
                 onConnect?(config)
             case .newProject:
                 onNewProject?()
@@ -659,14 +656,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             guard row < visibleItems.count else { return nil }
             let item = visibleItems[row]
             switch item {
-            case .target(let config, let badges, let isCurrent, let existence):
+            case .target(let config, let badges, let isCurrent):
                 let id = NSUserInterfaceItemIdentifier("QuickTarget")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                     ?? QuickTargetCellView(identifier: id)
                 cell.config = config
                 cell.badges = badges
                 cell.isCurrent = isCurrent
-                cell.existence = existence
                 return cell
             case .newProject:
                 let id = NSUserInterfaceItemIdentifier("QuickNew")
@@ -742,7 +738,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             return
         }
         switch visibleItems[row] {
-        case .target(let config, _, _, _):
+        case .target(let config, _, _):
             onEditProject?(config)
         default:
             activateSelected()
