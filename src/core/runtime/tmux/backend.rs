@@ -255,7 +255,7 @@ pub struct TmuxRuntime {
     /// attach 首屏 seed 已写入 `outputs`：后续 live 只走 PaneOutput 事件，
     /// 不得再 append 进 outputs，否则 seed_raw 会吃到「旧网格+新 CUP」混合物。
     surface_seed_locked: HashSet<PaneId>,
-    /// GTK 尚未 `set_client_size`：先登记，等 ResizeClient 后再 pause+capture。
+    /// UI 尚未 `set_client_size`：先登记，等 ResizeClient 后再 pause+capture。
     /// 否则会按远端 213×53 seed，再被本地 -C 缩成 106×29，Cursor 整屏乱码。
     deferred_attach_seeds: HashSet<PaneId>,
     /// 仅 attach `connect()` 期间为 true：强制等 UI 尺寸再 seed。
@@ -762,7 +762,7 @@ impl TmuxRuntime {
         }
     }
 
-    /// GTK 视口到位后：把 attach 期间推迟的首屏 seed 发出去。
+    /// UI 视口到位后：把 attach 期间推迟的首屏 seed 发出去。
     fn flush_deferred_attach_seeds(&mut self) {
         if self.awaiting_ui_client_size {
             return;
@@ -771,6 +771,21 @@ impl TmuxRuntime {
         for pane in pending {
             self.query_capture_pane(pane);
         }
+    }
+
+    /// 初始化 attach 的 UI 尺寸门闩。
+    ///
+    /// macOS 可以在创建 Runtime 前把 AppKit/SwiftTerm 的初始字符尺寸
+    /// 传进来；这种情况下不能在 connect() 中重新进入等待状态，否则
+    /// Swift 侧会把同一尺寸视为“已经发送”，deferred seed 永远不会释放。
+    fn arm_attach_client_size_gate(&mut self) {
+        self.awaiting_ui_client_size = !self.client_size_from_ui;
+        tracing::debug!(
+            target: "muxterm::tmux::seed",
+            initial_size_from_ui = self.client_size_from_ui,
+            awaiting_ui_client_size = self.awaiting_ui_client_size,
+            "attach UI client-size gate initialized"
+        );
     }
 
     fn active_tab_id(&self) -> Option<TabId> {
@@ -1430,8 +1445,8 @@ impl TmuxRuntime {
                 pane.active = false;
             }
             // list-panes 返回前没有任何可发布的真实 PaneId。禁止用 PaneId(0)
-            // 占位：它通常属于旧 tab，会让 Workspace/GTK 把同一 pane 挂进
-            // 两个 tab，造成数据串 pane 与 gtk_widget_set_parent critical。
+            // 占位：它通常属于旧 tab，会让 Workspace/UI 把同一 pane 挂进
+            // 两个 tab，造成数据串 pane 与 widget parent critical。
             self.layouts.remove(&tab);
             self.events.push_back(StateChange::TabAdded { tab });
         }
@@ -1569,7 +1584,7 @@ impl TmuxRuntime {
                         } else if self.awaiting_ui_client_size
                             || self.deferred_attach_seeds.contains(&pane)
                         {
-                            // 等 GTK 尺寸期间：暂存到 buf，seed 开始时迁入
+                            // 等 UI 尺寸期间：暂存到 buf，seed 开始时迁入
                             // pre_capture（失败 fallback）。成功 snapshot 仍以
                             // capture 为准，不把这些字节拼进 live（会与网格重复）。
                             let buf = self.initial_capture_buf.entry(pane).or_default();
@@ -2175,6 +2190,7 @@ impl TmuxRuntime {
                         } else {
                             data
                         };
+                        let snapshot_len = snapshot.len();
                         self.outputs.insert(pane, snapshot.clone());
                         self.surface_seed_locked.insert(pane);
                         // 空屏也是权威快照：前端才能把 host 从 seeding 里放出来。
@@ -2182,6 +2198,12 @@ impl TmuxRuntime {
                             pane,
                             data: snapshot,
                         });
+                        tracing::debug!(
+                            target: "muxterm::tmux::seed",
+                            pane = pane.0,
+                            bytes = snapshot_len,
+                            "attach Surface snapshot ready"
+                        );
                         self.trim_event_queue();
                         if self
                             .pane_tab(pane)
@@ -2579,7 +2601,7 @@ impl TmuxRuntime {
                 self.restart_snapshot_after_resize(pane);
             }
         }
-        // GTK ResizeClient 之后：放出延后的 attach seed（若尚未放出）。
+        // UI ResizeClient 之后：放出延后的 attach seed（若尚未放出）。
         if !self.awaiting_ui_client_size && !self.deferred_attach_seeds.is_empty() {
             self.flush_deferred_attach_seeds();
         }
@@ -2746,7 +2768,7 @@ impl TmuxRuntime {
             tracing::debug!(
                 target: "muxterm::tmux::seed",
                 pane = pane.0,
-                "defer attach seed until GTK client size"
+                "defer attach seed until UI client size"
             );
             return;
         }
@@ -3169,7 +3191,7 @@ impl TmuxRuntime {
         if !self.client_size_from_ui {
             tracing::debug!(
                 target: "muxterm::tmux::seed",
-                "attach 跳过占位 80x24 首屏 resize，等 GTK 分配后再 refresh-client -C"
+                "attach 跳过占位 80x24 首屏 resize，等 UI 分配后再 refresh-client -C"
             );
             return;
         }
@@ -3425,8 +3447,9 @@ impl Runtime for TmuxRuntime {
         // attach 模式：等 SessionChanged（window 不通过通知到达，需主动查询）
         let is_attach = matches!(self.config.mode, Some(ConnectMode::Attach { .. }));
         if is_attach {
-            // 等 GTK ResizeClient 写入真实尺寸后再 pause+capture（dogfood 2152）。
-            self.awaiting_ui_client_size = true;
+            // 若 FFI 已提供真实初始尺寸，直接允许 pause+capture；否则等
+            // UI 后续 ResizeClient 写入真实尺寸（dogfood 2152）。
+            self.arm_attach_client_size_gate();
         }
         // CI 在 PersistDetach 之后立刻重新 attach：旧 control client 回收与
         // 新 `tmux -CC` 启动可能超过 5s；矩阵两格还共用同一个 `-L` socket。
@@ -3526,6 +3549,9 @@ impl Runtime for TmuxRuntime {
                 target: "muxterm::tmux::seed",
                 active_tab = self.active_tab_id().map(|tab| tab.0),
                 pending = self.initial_capture_pending.len(),
+                deferred = self.deferred_attach_seeds.len(),
+                waiting_for_ui_size = self.awaiting_ui_client_size,
+                resyncing = self.resyncs.len(),
                 "attach 首屏 capture 已异步排队"
             );
         }
@@ -6075,6 +6101,37 @@ mod tests {
     }
 
     #[test]
+    fn sized_attach_does_not_wait_for_a_second_ui_resize() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.set_client_size(125, 51);
+        b.arm_attach_client_size_gate();
+
+        let pane = PaneId(7);
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(4),
+            active: true,
+            title: "cursor".into(),
+            cols: 125,
+            rows: 51,
+        });
+        b.query_capture_pane(pane);
+
+        let cmds = drain_tmux_cmds(&mut rx);
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("%7:pause")),
+            "已有初始 UI 尺寸时必须直接开始 Surface seed: {cmds:?}"
+        );
+        assert!(
+            !b.deferred_attach_seeds.contains(&pane),
+            "已有初始 UI 尺寸时不得把 seed 永久留在 deferred 队列"
+        );
+        assert!(!b.awaiting_ui_client_size);
+    }
+
+    #[test]
     fn attach_skips_placeholder_80x24_client_resize() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
@@ -6234,7 +6291,7 @@ mod tests {
         b.query_capture_pane(pane);
         assert!(
             b.deferred_attach_seeds.contains(&pane),
-            "无 GTK 尺寸时必须延后"
+            "无 UI 尺寸时必须延后"
         );
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
@@ -6728,7 +6785,7 @@ mod tests {
             if b.connect().await.is_err() {
                 return;
             }
-            // connect 会延后 seed 直到 UI 尺寸；本测试无 GTK，手动写入。
+            // connect 会延后 seed 直到 UI 尺寸；本测试手动写入。
             b.set_client_size(80, 24);
             b.flush_deferred_attach_seeds();
             let panes: Vec<PaneId> = b.panes.iter().map(|pane| pane.id).collect();
@@ -7531,7 +7588,7 @@ mod tests {
         );
         assert!(
             !b.history_backfill_done.contains(&pane),
-            "GTK resize 触发的 list-panes 不得吞掉已有 pane 的历史回填"
+            "UI resize 触发的 list-panes 不得吞掉已有 pane 的历史回填"
         );
     }
 
