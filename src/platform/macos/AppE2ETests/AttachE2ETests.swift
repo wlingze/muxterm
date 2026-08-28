@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import MuxtermAppLib
+import MuxtermChrome
 
 /// W13：attach 已有 2tab/3pane，SwiftTerm 非空、几何 ≥ 40px、切 tab 像素还在、CUP 洪水有上界。
 final class AttachE2ETests: XCTestCase {
@@ -16,6 +17,61 @@ final class AttachE2ETests: XCTestCase {
             size: (42, 12),
             label: "attach-small"
         )
+    }
+
+    /// 回归 2026-08-28 真机白屏：Quick Panel attach 后只有手动改变窗口
+    /// 大小才出现内容。这里先固定窗口，再走生产 Existing attach；attach
+    /// 开始后绝不 setFrame，且断言最终 host 与 SwiftTerm 都已有首帧。
+    func testExistingAttachPaintsSurfaceWithoutPostAttachWindowResize() throws {
+        let fixture = OnePaneCat(label: "attach-no-resize")
+        AppE2E.ensureApp()
+        let startupBridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(
+            bridge: startupBridge,
+            debug: true,
+            quickConnectStore: QuickConnectStore()
+        )
+        defer { app.testShutdown() }
+
+        let fixedFrame = NSRect(x: 40, y: 40, width: 620, height: 360)
+        app.window?.setFrame(fixedFrame, display: true)
+        app.window?.orderFront(nil)
+        AppE2E.pump(160)
+
+        app.testAttachExistingConnection(ExistingConnectionChoice(
+            target: .local,
+            session: TmuxSessionInfo(
+                name: fixture.session,
+                windowCount: 1,
+                attached: false
+            ),
+            socket: fixture.socket
+        ))
+
+        let painted = AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            guard app.testActiveWorkspaceSession() == fixture.session else {
+                AppE2E.pump(30)
+                return false
+            }
+            let pane = app.testActivePaneID()
+            // tmux 的 `%0` 是合法 pane id，不能拿 0 当“尚未就绪”哨兵。
+            let ready = app.testPaneSurfaceReady(pane)
+            let hasToken = app.testActivePaneTerminalText().contains(fixture.token)
+            AppE2E.pump(30)
+            return ready && hasToken
+        }
+
+        let activePane = app.testActivePaneID()
+        let diagnostics = "session=\(app.testActiveWorkspaceSession() ?? "nil") "
+            + "pane=\(activePane) ready=\(app.testPaneSurfaceReady(activePane)) "
+            + "text=\(app.testActivePaneTerminalText())"
+        XCTAssertTrue(
+            painted,
+            "Existing attach 必须在不改变窗口大小时直接显示首帧；\(diagnostics)"
+        )
+        XCTAssertEqual(app.window?.frame, fixedFrame, "attach 后测试没有 resize 窗口")
     }
 
     func testAttachPreexist2Tab3PaneIsUsable() throws {
