@@ -111,9 +111,9 @@ final class AttachE2ETests: XCTestCase {
         XCTAssertEqual(app.window?.frame, fixedFrame, "历史验证全程没有 resize 窗口")
     }
 
-    /// 1320 的核心边界：pi 在 primary screen 且不开 mouse。普通 shell pane
-    /// 仍应收到线性历史，pi pane 则只能吃当前 Surface snapshot + live。
-    func testPrimaryPiUpperPaneSkipsLinearHistoryBackfill() throws {
+    /// 1320/1437 的组合边界：pi 在 primary screen 且不开 mouse。它的当前
+    /// Surface 必须保持完整，离屏消息则要清洗成文本后进入 native scrollback。
+    func testPrimaryPiUpperPanePublishesSanitizedHistoryBackfill() throws {
         let fixture = try PrimaryPiSplitWorkspace(label: "primary-pi-history")
         let bridge = try CoreBridge.connect(
             backendType: "tmux",
@@ -124,13 +124,13 @@ final class AttachE2ETests: XCTestCase {
         defer { bridge.shutdown() }
 
         var snapshots: [UInt32: Data] = [:]
-        var historyPanes = Set<UInt32>()
+        var histories: [UInt32: Data] = [:]
         let observed = AppE2E.wait(timeout: AppE2E.featureTimeout) {
             for event in bridge.pollEvents() {
                 if event.isPaneSnapshot {
                     snapshots[event.paneId] = event.data
                 } else if event.isPaneHistory {
-                    historyPanes.insert(event.paneId)
+                    histories[event.paneId] = event.data
                 }
             }
             let top = String(
@@ -145,16 +145,22 @@ final class AttachE2ETests: XCTestCase {
                 && top.contains("PI_E2E_BODY")
                 && top.contains("PI_E2E_PROMPT")
                 && bottom.contains(fixture.bottomToken)
-                && historyPanes.contains(fixture.bottomPaneId)
+                && String(decoding: histories[fixture.topPaneId] ?? Data(), as: UTF8.self)
+                    .contains("PI_E2E_HISTORY_200")
+                && histories[fixture.bottomPaneId] != nil
         }
 
         XCTAssertTrue(
             observed,
-            "真实上下分屏 attach 应播种两个 pane，并继续给普通 cat 回填历史；snapshots=\(snapshots.mapValues(\.count)) histories=\(historyPanes)"
+            "真实上下分屏 attach 应播种两个 pane，并给 pi/cat 回填历史；snapshots=\(snapshots.mapValues(\.count)) histories=\(histories.mapValues(\.count))"
+        )
+        let topHistory = String(
+            decoding: histories[fixture.topPaneId] ?? Data(),
+            as: UTF8.self
         )
         XCTAssertFalse(
-            historyPanes.contains(fixture.topPaneId),
-            "primary/no-mouse pi 的 OSC/CUP 网格不能作为 PaneHistory 回填"
+            topHistory.contains("\u{1b}"),
+            "pi history 必须剥离 OSC/CSI，不能把控制序列当 VT 流重放"
         )
     }
 
@@ -199,6 +205,7 @@ final class AttachE2ETests: XCTestCase {
                 && top.contains("PI_E2E_BODY")
                 && top.contains("PI_E2E_PROMPT")
                 && bottom.contains(fixture.bottomToken)
+                && app.testNativeCanScroll()
         }
         let top = app.testPaneTerminalText(fixture.topPaneId)
         XCTAssertTrue(painted, "上方真实 pi 首屏不得乱屏/白屏：\(top)")
@@ -212,6 +219,30 @@ final class AttachE2ETests: XCTestCase {
         let stableTop = app.testPaneTerminalText(fixture.topPaneId)
         XCTAssertTrue(stableTop.contains("PI_E2E_HEADER"), "后续事件不能覆盖 pi 顶栏：\(stableTop)")
         XCTAssertTrue(stableTop.contains("PI_E2E_PROMPT"), "后续事件不能覆盖 pi 输入区：\(stableTop)")
+
+        XCTAssertTrue(app.testDispatchScrollWheel(deltaLines: 10_000), "pi pane 必须接收真实 AppKit 滚轮")
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                AppE2E.pump(20)
+                return app.testPaneTerminalText(fixture.topPaneId)
+                    .contains("PI_E2E_HISTORY_")
+            },
+            "上划后必须能看到 pi 的历史消息"
+        )
+        XCTAssertLessThan(app.testNativeScrollPosition(), 0.999, "上划后 pi native scrollback 必须离底")
+
+        XCTAssertTrue(app.testDispatchScrollWheel(deltaLines: -10_000), "pi pane 必须能滚回最新消息")
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                let text = app.testPaneTerminalText(fixture.topPaneId)
+                return text.contains("PI_E2E_HEADER") && text.contains("PI_E2E_PROMPT")
+            },
+            "滚回底部后 pi 顶栏与输入框必须保持正确"
+        )
         XCTAssertEqual(app.window?.frame, fixedFrame, "稳定性检查也没有 resize 窗口")
     }
 
