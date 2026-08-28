@@ -36,6 +36,80 @@ final class AttachE2ETests: XCTestCase {
         )
     }
 
+    /// 单 token 只能证明“有字节”，抓不住 Cursor/pi 的历史和输入区
+    /// 因列宽错位而混乱。这里用真实隔离 tmux + 动态全屏 TUI，
+    /// 走生产 Existing attach，并在 attach 后禁止改窗口尺寸。
+    func testExistingAttachPaintsAgentHistoryAndInputWithoutResize() throws {
+        let fixture = AgentScreenWorkspace(label: "attach-agent-no-resize")
+        AppE2E.ensureApp()
+        let startupBridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(
+            bridge: startupBridge,
+            debug: true,
+            quickConnectStore: QuickConnectStore()
+        )
+        defer { app.testShutdown() }
+
+        let fixedFrame = NSRect(x: 40, y: 40, width: 620, height: 360)
+        app.window?.setFrame(fixedFrame, display: true)
+        app.window?.orderFront(nil)
+        AppE2E.pump(160)
+
+        app.testAttachExistingConnection(ExistingConnectionChoice(
+            target: .local,
+            session: TmuxSessionInfo(
+                name: fixture.session,
+                windowCount: 1,
+                attached: false
+            ),
+            socket: fixture.socket
+        ))
+
+        let painted = AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            let pane = app.testActivePaneID()
+            let text = app.testActivePaneTerminalText()
+            AppE2E.pump(30)
+            return app.testActiveWorkspaceSession() == fixture.session
+                && app.testPaneSurfaceReady(pane)
+                && text.contains("TOKEN_HEADER")
+                && text.contains("TOKEN_BODY")
+                && text.contains("TOKEN_PROMPT")
+                && app.testNativeCanScroll()
+        }
+        let live = app.testActivePaneTerminalText()
+        XCTAssertTrue(
+            painted,
+            "Existing attach 首屏必须同时保留 agent 顶栏/正文/输入区与历史。got=\(live)"
+        )
+        XCTAssertEqual(app.window?.frame, fixedFrame, "agent attach 后测试没有 resize 窗口")
+
+        app.testScrollHistory(deltaLines: 10_000)
+        let historyVisible = AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            AppE2E.pump(20)
+            return app.testActivePaneTerminalText().contains(fixture.historyToken)
+        }
+        XCTAssertTrue(
+            historyVisible,
+            "attach 前 agent 历史必须在 SwiftTerm native scrollback 中可读"
+        )
+
+        app.testScrollHistory(deltaLines: -10_000)
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                let text = app.testActivePaneTerminalText()
+                return text.contains("TOKEN_HEADER") && text.contains("TOKEN_PROMPT")
+            },
+            "回到尾部后 agent 顶栏和输入区仍必须正确"
+        )
+        XCTAssertEqual(app.window?.frame, fixedFrame, "历史验证全程没有 resize 窗口")
+    }
+
     private func assertExistingAttachPaintsWithoutResize(
         frame fixedFrame: NSRect,
         label: String
