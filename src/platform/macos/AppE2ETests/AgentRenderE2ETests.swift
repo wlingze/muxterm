@@ -518,6 +518,84 @@ final class AgentRenderE2ETests: XCTestCase {
         XCTAssertEqual(term.getCharacter(col: 2, row: 0), "中")
     }
 
+    /// Muxterm 给 tmux 的列宽必须来自 SwiftTerm 真正采用的 backing-pixel
+    /// 字符格。若改用 NSFont.maximumAdvancement，Menlo 18 在宽窗口会累计
+    /// 多报 1–2 列，最右侧全角字符只画出一半。
+    func testTerminalPointMetricsMatchSwiftTermBackingPixelGrid() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 31,
+            fontFamily: "Menlo",
+            fontSize: 18,
+            frame: NSRect(x: 0, y: 0, width: 1_375, height: 420)
+        )
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        view.layoutSubtreeIfNeeded()
+
+        let pixels = try XCTUnwrap(view.terminalCellSizeInPixels())
+        let points = try XCTUnwrap(view.terminalCellSizeInPoints())
+        let scale = window.backingScaleFactor
+        XCTAssertEqual(points.width * scale, CGFloat(pixels.width), accuracy: 0.001)
+        XCTAssertEqual(points.height * scale, CGFloat(pixels.height), accuracy: 0.001)
+
+        let reportedCols = Int(floor(view.bounds.width / points.width))
+        XCTAssertEqual(
+            reportedCols,
+            view.getTerminal().cols,
+            "Muxterm 上报给 tmux 的列数必须和 SwiftTerm 实际模型一致"
+        )
+        window.orderOut(nil)
+    }
+
+    func testInitialClientHintUsesConfiguredFontAndPixelSnapping() throws {
+        AppE2E.ensureApp()
+        let bounds = NSSize(width: 1_100, height: 540)
+        let family = "Monaco"
+        let size: CGFloat = 27
+        XCTAssertNotNil(NSFont(name: family, size: size), "测试字体必须存在")
+
+        let view = MuxTerminalView(
+            paneId: 32,
+            fontFamily: family,
+            fontSize: size,
+            frame: NSRect(origin: .zero, size: bounds)
+        )
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        let scale = window.backingScaleFactor
+        let cell = try XCTUnwrap(view.terminalCellSizeInPoints())
+        let hint = try XCTUnwrap(MuxTerminalGridMetrics.clientSize(
+            bounds: bounds,
+            family: family,
+            size: size,
+            backingScale: scale
+        ))
+
+        XCTAssertEqual(Int(hint.0), Int(floor(bounds.width / cell.width)))
+        XCTAssertEqual(Int(hint.1), Int(floor(bounds.height / cell.height)))
+        let defaultHint = try XCTUnwrap(MuxTerminalGridMetrics.clientSize(
+            bounds: bounds,
+            family: MuxtermTerminalFont.defaultFamily,
+            size: MuxtermTerminalFont.defaultSize,
+            backingScale: scale
+        ))
+        XCTAssertNotEqual(hint.0, defaultHint.0, "initial hint 不得偷偷退回默认 Menlo 18")
+        window.orderOut(nil)
+    }
+
     func testSelectionSurvivesLiveTUIFeed() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

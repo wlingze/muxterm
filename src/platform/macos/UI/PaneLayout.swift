@@ -540,6 +540,7 @@ final class PaneHostView: NSView {
         self.moveSeparator = NSMenuItem.separator()
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityIdentifier("muxterm.pane.\(paneId)")

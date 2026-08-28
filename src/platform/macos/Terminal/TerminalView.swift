@@ -2,6 +2,50 @@ import AppKit
 import MuxtermChrome
 import SwiftTerm
 
+/// 与 SwiftTerm `computeFontDimensions()` 相同的首屏字符格估算。
+/// 已创建的 view 直接读取 SwiftTerm 实际 backing-pixel 尺寸；这里只供
+/// attach spawn 前尚无 Surface 时计算初始 client hint。
+enum MuxTerminalGridMetrics {
+    static func makeFont(family: String, size: CGFloat) -> NSFont {
+        NSFont(name: family, size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    static func cellSizeInPoints(
+        family: String,
+        size: CGFloat,
+        backingScale: CGFloat
+    ) -> (width: CGFloat, height: CGFloat) {
+        let font = makeFont(family: family, size: size)
+        let glyph = font.glyph(withName: "W")
+        let rawWidth = font.advancement(forGlyph: glyph).width
+        let rawHeight = ceil(font.ascender - font.descender + font.leading)
+        let scale = max(backingScale, 1)
+        return (
+            max(ceil(rawWidth * scale) / scale, 1),
+            max(ceil(rawHeight * scale) / scale, 1)
+        )
+    }
+
+    static func clientSize(
+        bounds: NSSize,
+        family: String,
+        size: CGFloat,
+        backingScale: CGFloat
+    ) -> (UInt16, UInt16)? {
+        guard bounds.width >= 16, bounds.height >= 17 else { return nil }
+        let cell = cellSizeInPoints(
+            family: family,
+            size: size,
+            backingScale: backingScale
+        )
+        let cols = Int(floor(bounds.width / cell.width))
+        let rows = Int(floor(bounds.height / cell.height))
+        guard cols >= 2, rows >= 1, cols < 10_000, rows < 10_000 else { return nil }
+        return (UInt16(cols), UInt16(rows))
+    }
+}
+
 /// 单个 pane 的 SwiftTerm 终端视图；输入经 delegate 回传到 FFI。
 ///
 /// 不重写 `keyDown`：交给 SwiftTerm → `interpretKeyEvents` → `insertText`（NSTextInputClient）
@@ -402,9 +446,12 @@ final class MuxTerminalView: TerminalView {
     /// 字符格的 point 尺寸。`refresh-client -C` 必须用这个去除以
     /// `bounds`（也是 point）。再除一次 backingScale 会把 93×51 变成 186×102。
     func terminalCellSizeInPoints() -> (width: CGFloat, height: CGFloat)? {
-        let cellWidth = max(font.maximumAdvancement.width, 1)
-        let cellHeight = max(ceil(font.ascender - font.descender + font.leading), 1)
-        return (cellWidth, cellHeight)
+        guard let pixels = terminalCellSizeInPixels() else { return nil }
+        let scale = max(window?.backingScaleFactor ?? 1, 1)
+        return (
+            CGFloat(pixels.width) / scale,
+            CGFloat(pixels.height) / scale
+        )
     }
 
     /// 当前外观下的前景/背景 hex（`rrggbb`），供 tmux `refresh-client -r`
@@ -562,8 +609,7 @@ final class MuxTerminalView: TerminalView {
     }
 
     private static func makeFont(family: String, size: CGFloat) -> NSFont {
-        NSFont(name: family, size: size)
-            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        MuxTerminalGridMetrics.makeFont(family: family, size: size)
     }
 
     /// 覆写 SwiftTerm 模拟器输出通道：只有 `Terminal.sendResponse` /

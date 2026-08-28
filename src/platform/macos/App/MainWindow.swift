@@ -1237,20 +1237,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 128×63，attach 先按这个播种，随后才 `refresh-client -C 93x51`。
     private func initialTmuxClientSizeHint() -> (UInt16, UInt16)? {
         let bounds = content.paneLayout.bounds
-        guard bounds.width >= 16, bounds.height >= 17 else { return nil }
-        let font = NSFont(
-            name: MuxtermTerminalFont.defaultFamily,
-            size: MuxtermTerminalFont.defaultSize
-        ) ?? NSFont.monospacedSystemFont(
-            ofSize: MuxtermTerminalFont.defaultSize,
-            weight: .regular
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        return MuxTerminalGridMetrics.clientSize(
+            bounds: bounds.size,
+            family: terminalFontSettings.family,
+            size: currentTerminalFontSize(),
+            backingScale: scale
         )
-        let cellWidth = max(font.maximumAdvancement.width, 1)
-        let cellHeight = max(ceil(font.ascender - font.descender + font.leading), 1)
-        let cols = Int(floor(bounds.width / cellWidth))
-        let rows = Int(floor(bounds.height / cellHeight))
-        guard cols >= 2, rows >= 1, cols < 10_000, rows < 10_000 else { return nil }
-        return (UInt16(cols), UInt16(rows))
     }
 
     private func attachTmux(
