@@ -5,6 +5,22 @@ import XCTest
 /// Surface seed 的 AppKit 可见性契约：host 不能在 SwiftTerm 分块恢复期间
 /// 暴露空白/半截帧，seed 与同期间 live catch-up 完成后才一次性显示。
 final class SurfaceVisibilityE2ETests: XCTestCase {
+    func testPaneHostClipsTerminalGlyphsAtSplitBoundary() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 30,
+            frame: NSRect(x: 0, y: 0, width: 400, height: 200)
+        )
+        let host = PaneHostView(paneId: 30, terminal: view)
+
+        XCTAssertTrue(host.wantsLayer)
+        XCTAssertEqual(
+            host.layer?.masksToBounds,
+            true,
+            "最右侧 CJK glyph 不得越过 pane/split 边界"
+        )
+    }
+
     private func makeManager() throws -> (CoreBridge, TerminalManager) {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
