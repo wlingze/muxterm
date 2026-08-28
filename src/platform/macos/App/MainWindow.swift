@@ -2929,33 +2929,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func installKeyEquivalents() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            // CommandPalette/UnifiedPanel/ProjectConfig are independent NSPanel
-            // windows. Their text fields own Backspace and other editing keys;
-            // the main terminal shortcut router must never consume those events.
-            if let eventWindow = event.window, eventWindow !== self.window {
-                return event
-            }
-            if self.handleKey(event) {
-                return nil
-            }
-            // Cmd-C/V/A 绝不能进 SwiftTerm keyDown：那会清掉选区。
-            // handleKey 已在终端上消费；其它 first responder 把事件还给 AppKit。
-            if self.isStandardEditShortcut(event) {
-                return event
-            }
-            // Terminal key events are explicitly dispatched exactly once through
-            // SwiftTerm's keyDown implementation. Returning the event here would
-            // let AppKit continue its normal responder walk after the monitor,
-            // which is the source of duplicate Enter/Control callbacks observed
-            // in the tmux command log.
-            if event.window === self.window,
-               let terminal = self.window?.firstResponder as? MuxTerminalView
-            {
-                terminal.dispatchKeyDown(event)
-                return nil
-            }
+            return self.routeMonitoredKeyEvent(event)
+        }
+    }
+
+    /// local monitor 的单事件决策，拆出供真实 `NSApp.sendEvent` 回归检查。
+    /// 返回 nil 表示 monitor 已消费；返回 event 表示继续 AppKit responder chain。
+    func routeMonitoredKeyEvent(_ event: NSEvent) -> NSEvent? {
+        // CommandPalette/UnifiedPanel/ProjectConfig are independent NSPanel
+        // windows. Their text fields own Backspace and other editing keys;
+        // the main terminal shortcut router must never consume those events.
+        if let eventWindow = event.window, eventWindow !== window {
             return event
         }
+        if handleKey(event) {
+            return nil
+        }
+        // 普通文字、IME 组合/提交和 Enter 必须原样交还 AppKit。local monitor
+        // 回调栈里手工调用 SwiftTerm keyDown/interpretKeyEvents 会绕开正常的
+        // responder/IMK 调度，并可能触发 IMKCFRunLoopWakeUpReliable mach-port
+        // 错误。真正的窗口快捷键已由 handleKey 消费并在上面返回 nil。
+        return event
     }
 
     /// 返回 true 表示已消费事件。in-process e2e 经 `testDispatchKeyEvent` 调用。
@@ -3116,20 +3110,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toggleActivePaneFullscreen()
         }
         return true
-    }
-
-    private func isStandardEditShortcut(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard let raw = event.charactersIgnoringModifiers, let first = raw.first else {
-            return false
-        }
-        return TerminalEditShortcutPolicy.shouldDeferToMenu(
-            command: flags.contains(.command),
-            shift: flags.contains(.shift),
-            option: flags.contains(.option),
-            control: flags.contains(.control),
-            key: String(first)
-        )
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
