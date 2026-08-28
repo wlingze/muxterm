@@ -183,9 +183,21 @@ impl IsolatedHerdr {
         let socket_path = session_dir.join("herdr.sock");
         let client_socket_path = session_dir.join("herdr-client.sock");
 
-        // setsid：server 脱离测试进程的进程组，stdin/stdout/stderr 全丢。
-        let child = Command::new("setsid")
-            .args(["herdr", "--session", &name, "server"])
+        // Linux 用 setsid 脱离测试进程组；macOS 没有 setsid 可执行文件，
+        // 直接持有 named-session server 子进程并在 Drop 精确 stop/delete。
+        #[cfg(target_os = "linux")]
+        let mut server = {
+            let mut command = Command::new("setsid");
+            command.args(["herdr", "--session", &name, "server"]);
+            command
+        };
+        #[cfg(not(target_os = "linux"))]
+        let mut server = {
+            let mut command = Command::new("herdr");
+            command.args(["--session", &name, "server"]);
+            command
+        };
+        let child = server
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
