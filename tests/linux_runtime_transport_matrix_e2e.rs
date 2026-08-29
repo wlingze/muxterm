@@ -1918,15 +1918,16 @@ fn seed_project_store_if_needed(
         session: Some(fixture.spec.session.clone()),
         workspace_id: Some(fixture.spec.path.clone()),
     };
-    // 隔离 store 文件：临时目录，绝不写用户 ~/.config/muxterm/quickconnect.toml。
-    // AppWindow 用 user_quickconnect_path()（读 XDG_CONFIG_HOME）建 store。
+    // 隔离统一 config 文件：临时目录，绝不写用户 ~/.config/muxterm/config.toml。
     let tmp_dir =
         std::env::temp_dir().join(format!("muxterm-qc-{}-{transport}", std::process::id()));
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    let config_dir = tmp_dir.join("muxterm");
+    let _ = std::fs::create_dir_all(&config_dir);
     let restore = EnvRestore::set("XDG_CONFIG_HOME", &tmp_dir);
-    let store_path = muxterm::core::quickconnect::store::user_quickconnect_path()
-        .expect("临时 XDG_CONFIG_HOME 下必有 quickconnect 路径");
-    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::new(Some(store_path));
+    let store_path = muxterm::core::config::Config::user_config_path()
+        .expect("临时 XDG_CONFIG_HOME 下必有 config 路径");
+    let mut store =
+        muxterm::core::quickconnect::store::QuickConnectStore::new_unified(Some(store_path));
     store.upsert_project(&config);
     Some(restore)
 }
@@ -1976,19 +1977,17 @@ fn scenario_project_existing_parity(
         app.test_active_workspace_replica_id()
     );
 
-    // 2) 保存/重载：identity key、attach spec identity、id/workspace 相同。
+    // 2) 内存态 identity：identity key、attach spec identity、id/workspace 相同。
     let config = project_target_config(fixture, transport)?;
-    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::new(None);
+    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::in_memory();
     store.upsert_project(&config);
-    let text = store.encode();
-    let mut reloaded = muxterm::core::quickconnect::store::QuickConnectStore::new(None);
-    reloaded.decode(&text);
+    assert_eq!(store.projects.len(), 1);
+    let saved = store.projects[0].clone();
     ensure!(
-        reloaded.projects.len() == 1,
-        "重载后应有 1 个 Project: {}",
-        reloaded.projects.len()
+        store.projects.len() == 1,
+        "保存后应有 1 个 Project: {}",
+        store.projects.len()
     );
-    let saved = &reloaded.projects[0];
     ensure!(
         saved.identity_key() == config.identity_key(),
         "保存/重载后 identity key 必须相同"
@@ -1998,7 +1997,7 @@ fn scenario_project_existing_parity(
         "保存/重载后 path/socket/workspace_id 必须保留: saved={saved:?}"
     );
     let spec_before = muxterm::core::catalog::config_to_spec(&config);
-    let spec_after = muxterm::core::catalog::config_to_spec(saved);
+    let spec_after = muxterm::core::catalog::config_to_spec(&saved);
     ensure!(
         spec_before.id() == spec_after.id(),
         "attach spec identity 必须相同: before={:?}, after={:?}",

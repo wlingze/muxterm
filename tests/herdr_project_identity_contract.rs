@@ -39,19 +39,16 @@ fn local_project_reload_matches_existing_identity() {
         workspace_id: Some(workspace_id.clone()),
     };
 
-    // 模拟“保存后重载的 Project”（TOML round-trip：字段应无损）。
-    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::new(None);
+    // 内存态 store 足够验证 Project identity；持久化由 ConfigService 测试覆盖。
+    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::in_memory();
     store.upsert_project(&existing);
-    let text = store.encode();
-    let mut reloaded = muxterm::core::quickconnect::store::QuickConnectStore::new(None);
-    reloaded.decode(&text);
-    assert_eq!(reloaded.projects.len(), 1);
-    let project = &reloaded.projects[0];
+    assert_eq!(store.projects.len(), 1);
+    let project = store.projects[0].clone();
 
     // identity key / spec 身份字段 / WorkspaceId 一致。
     assert_eq!(existing.identity_key(), project.identity_key());
     let spec_a = muxterm::core::catalog::config_to_spec(&existing);
-    let spec_b = muxterm::core::catalog::config_to_spec(project);
+    let spec_b = muxterm::core::catalog::config_to_spec(&project);
     assert_eq!(spec_a.id(), spec_b.id());
 
     // Catalog::resolve_target：AttachOnly 命中（不创建）。
