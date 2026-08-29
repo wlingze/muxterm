@@ -148,7 +148,10 @@ pub fn resolve_effective_keybindings(shortcuts: &ShortcutConfig) -> Vec<KeyBindi
         }
     }
     for override_item in &shortcuts.overrides {
-        bindings.retain(|binding| binding.action != override_item.action);
+        if override_item.bindings.is_empty() {
+            bindings.retain(|binding| binding.action != override_item.action);
+            continue;
+        }
         for binding in &override_item.bindings {
             bindings.push(KeyBinding {
                 key: binding.key.clone(),
@@ -276,8 +279,30 @@ fn resolve_effective_keybindings_applies_primary_and_overrides() {
         .overrides
         .push(crate::core::config_service::schema::ShortcutOverride {
             action: "quick_connect".into(),
-            bindings: Vec::new(),
+            bindings: vec![crate::core::config_service::schema::ShortcutBinding {
+                key: "q".into(),
+                modifiers: vec!["alt".into()],
+            }],
         });
+    let bindings = resolve_effective_keybindings(&shortcuts);
+    assert!(
+        bindings
+            .iter()
+            .any(|binding| binding.action == "quick_connect"
+                && binding.key == "p"
+                && binding.mods == vec!["control".to_string()]),
+        "partial legacy overrides must preserve the default primary P binding"
+    );
+    assert!(
+        bindings
+            .iter()
+            .any(|binding| binding.action == "quick_connect"
+                && binding.key == "q"
+                && binding.mods == vec!["alt".to_string()]),
+        "partial overrides should add their custom chord"
+    );
+
+    shortcuts.overrides[0].bindings.clear();
     let bindings = resolve_effective_keybindings(&shortcuts);
     assert!(!bindings
         .iter()
