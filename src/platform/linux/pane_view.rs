@@ -544,10 +544,18 @@ impl PaneView {
     }
 
     pub fn copy_clipboard(&self) {
+        if let Some(text) = self.selected_text() {
+            self.inner.renderer.terminal().clipboard().set_text(&text);
+        }
+    }
+
+    /// 当前 VTE 选区文本；无选区时返回 `None`。
+    pub fn selected_text(&self) -> Option<String> {
         self.inner
             .renderer
             .terminal()
-            .copy_clipboard_format(vte4::Format::Text);
+            .text_selected(vte4::Format::Text)
+            .map(|text| text.to_string())
     }
 
     /// VTE 无 PTY 时 `paste_clipboard` 会走 commit → 空的 `ESC[200~ESC[201~`。
