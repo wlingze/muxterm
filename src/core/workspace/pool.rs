@@ -11,8 +11,6 @@ use crate::core::model::backend::{Runtime, RuntimeCapability, WorktreeCreateSpec
 use crate::core::model::state::StateChange;
 use crate::core::model::task::Task;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
-use crate::core::runtime::herdr::session::HerdrWorktreeRecord;
-use crate::core::runtime::{HerdrRuntime, HerdrSession};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::workspace::Workspace;
 
@@ -209,62 +207,6 @@ impl WorkspacePool {
             spec.build_runtime()
         })
         .await
-    }
-
-    /// 列出当前工作区所在仓库的 checkout（需 `WorktreeList`）。
-    ///
-    /// 无能力 → `Err`，零 git、零 socket；有能力的 Runtime 提供产品方法。
-    pub async fn list_worktrees(&self, ws: &WorkspaceId) -> anyhow::Result<Vec<WorktreeInfo>> {
-        let Some(slot) = self.slots.get(ws) else {
-            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
-        };
-        let caps = slot.workspace.runtime().support();
-        if !caps.contains(&RuntimeCapability::WorktreeList) {
-            return Err(anyhow::anyhow!("runtime 不支持 WorktreeList"));
-        }
-        slot.workspace.runtime().list_worktrees()
-    }
-
-    /// 创建 worktree 并作为新工作区开进池里（需 `WorktreeCreate`）。
-    ///
-    /// 无能力 → `Err`，零 git、零 socket。
-    pub async fn create_worktree(
-        &mut self,
-        ws: &WorkspaceId,
-        spec: &WorktreeCreateSpec,
-    ) -> anyhow::Result<WorkspaceId> {
-        let Some(slot) = self.slots.get(ws) else {
-            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
-        };
-        let caps = slot.workspace.runtime().support();
-        if !caps.contains(&RuntimeCapability::WorktreeCreate) {
-            return Err(anyhow::anyhow!("runtime 不支持 WorktreeCreate"));
-        }
-        let new_spec = slot.workspace.runtime().create_worktree_spec(spec)?;
-        let new_id = new_spec.id();
-        self.open_spec(&new_spec).await?;
-        Ok(new_id)
-    }
-
-    /// 打开已有 checkout 并作为新工作区开进池里（需 `WorktreeOpen`）。
-    ///
-    /// 无能力 → `Err`，零 git、零 socket。
-    pub async fn open_worktree(
-        &mut self,
-        ws: &WorkspaceId,
-        path: &str,
-    ) -> anyhow::Result<WorkspaceId> {
-        let Some(slot) = self.slots.get(ws) else {
-            return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
-        };
-        let caps = slot.workspace.runtime().support();
-        if !caps.contains(&RuntimeCapability::WorktreeOpen) {
-            return Err(anyhow::anyhow!("runtime 不支持 WorktreeOpen"));
-        }
-        let new_spec = slot.workspace.runtime().open_worktree_spec(path)?;
-        let new_id = new_spec.id();
-        self.open_spec(&new_spec).await?;
-        Ok(new_id)
     }
 
     /// 列出当前工作区所在仓库的 checkout（需 `WorktreeList`）。
