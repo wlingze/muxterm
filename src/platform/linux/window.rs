@@ -14,7 +14,10 @@ use std::time::{Duration, Instant};
 use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{ApplicationWindow, Box, CssProvider, EventControllerKey, Orientation, Window};
+use gtk4::{
+    ApplicationWindow, Box, Button, CssProvider, EventControllerKey, HeaderBar, Label, Orientation,
+    Window,
+};
 use vte4::prelude::*;
 
 use anyhow::anyhow;
@@ -61,6 +64,7 @@ use crate::platform::linux::quickconnect_panel::{
 };
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
+use crate::platform::linux::workspace_sidebar::{WorkspaceSidebar, WorkspaceSidebarItem};
 
 /// 主窗口。
 pub struct AppWindow {
@@ -90,6 +94,8 @@ struct UiState {
     theme: Theme,
     theme_name: String,
     status: StatusBar,
+    /// 标题栏开启的 workspace 侧栏（overlay，不挤占终端布局）。
+    sidebar: WorkspaceSidebar,
     status_mode: StatusBarMode,
     last_status_at: Instant,
     status_interval: Duration,
@@ -365,6 +371,25 @@ impl AppWindow {
             fallback: cfg.font.fallback.clone(),
         };
         let status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
+        let sidebar = WorkspaceSidebar::new();
+
+        let header = HeaderBar::new();
+        header.set_widget_name("muxterm-header-bar");
+        header.pack_start(&sidebar.toggle);
+        let quick_connect_button = Button::with_label("⚡");
+        quick_connect_button.set_widget_name("muxterm-quick-connect-button");
+        quick_connect_button.set_has_frame(false);
+        quick_connect_button.set_can_focus(false);
+        header.pack_start(&quick_connect_button);
+        let settings_button = Button::with_label("⚙");
+        settings_button.set_widget_name("muxterm-settings-button");
+        settings_button.set_has_frame(false);
+        settings_button.set_can_focus(false);
+        header.pack_end(&settings_button);
+        let title_label = Label::new(Some("muxterm"));
+        title_label.set_widget_name("muxterm-title-label");
+        header.set_title_widget(Some(&title_label));
+        window.set_titlebar(Some(&header));
 
         let uses_tmux = matches!(
             pool.active().map(|w| w.state().workspace_runtime()),
@@ -453,6 +478,7 @@ impl AppWindow {
         layout_overlay.add_overlay(&cmd_mark_ok);
         layout_overlay.add_overlay(&cmd_mark_fail);
         layout_overlay.add_overlay(&jump_latest);
+        layout_overlay.add_overlay(&sidebar.revealer);
         root.append(&layout_overlay);
         root.append(&status.container);
         window.set_child(Some(&root));
@@ -463,7 +489,7 @@ impl AppWindow {
         let state = Rc::new(RefCell::new(UiState {
             pool,
             pixel_cache,
-            mounted_ws: Some(startup_id),
+            mounted_ws: Some(startup_id.clone()),
             snapshot_seeded_this_batch: HashSet::new(),
             rt,
             qc_store,
@@ -473,6 +499,7 @@ impl AppWindow {
             theme,
             theme_name,
             status,
+            sidebar,
             status_mode,
             last_status_at: Instant::now()
                 .checked_sub(Duration::from_secs(10))
@@ -540,6 +567,49 @@ impl AppWindow {
                     handle_pane_menu_action(&st, pane_id, action);
                 });
             }
+        }
+
+        {
+            let st = state.clone();
+            let win = window.clone();
+            settings_button.connect_clicked(move |_| {
+                open_preferences(&st, &win);
+            });
+        }
+
+        {
+            let st = state.clone();
+            let win = window.clone();
+            quick_connect_button.connect_clicked(move |_| {
+                open_quick_connect(&st, &win);
+            });
+        }
+
+        {
+            let st = state.clone();
+            state
+                .borrow()
+                .sidebar
+                .connect_workspace_activated(move |id| {
+                    let mut s = st.borrow_mut();
+                    activate_existing(&mut s, id.clone());
+                });
+        }
+
+        {
+            let st = state.clone();
+            let toggle = state.borrow().sidebar.toggle.clone();
+            toggle.connect_toggled(move |button| {
+                if button.is_active() {
+                    let items = WorkspaceSidebarItem::from_pool(&st.borrow().pool);
+                    st.borrow_mut().sidebar.set_workspaces(&items);
+                }
+            });
+        }
+
+        {
+            let items = WorkspaceSidebarItem::from_pool(&state.borrow().pool);
+            state.borrow().sidebar.set_workspaces(&items);
         }
 
         // status bar 中区 tab 按钮 → SwitchTab(id)
@@ -2495,6 +2565,9 @@ fn dispatch_event_for(
             if let Some(view) = resident_pane_view(s, wid, pane.0) {
                 view.ensure_grid_size(*cols, *rows);
             }
+        }
+        StateChange::PoolChanged => {
+            refresh_sidebar_if_open(s);
         }
         _ => {}
     }
@@ -4611,6 +4684,14 @@ fn activate_existing(s: &mut UiState, id: WorkspaceId) {
     after_activate(s);
 }
 
+fn refresh_sidebar_if_open(s: &mut UiState) {
+    if !s.sidebar.is_open() {
+        return;
+    }
+    let items = WorkspaceSidebarItem::from_pool(&s.pool);
+    s.sidebar.set_workspaces(&items);
+}
+
 fn after_activate(s: &mut UiState) {
     // 切工作区 = 改绑体现：挂载该工作区的像素缓存（没有则新建）。
     let id = s.active_ws_id().clone();
@@ -4661,6 +4742,7 @@ fn after_activate(s: &mut UiState) {
     s.pending_client_hits = 0;
     s.qc_store
         .replace_recents(&recent_target_configs(&s.pool, 5));
+    refresh_sidebar_if_open(s);
     refresh_ui(s);
     report_all_pane_colours(s);
     maybe_refresh_status(s, true);

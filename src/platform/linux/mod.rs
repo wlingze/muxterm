@@ -27,3 +27,4 @@ pub mod target_config_window;
 pub mod theme;
 pub mod tmux_dialog;
 pub mod window;
+pub mod workspace_sidebar;
