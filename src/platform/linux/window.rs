@@ -45,7 +45,7 @@ use crate::platform::linux::ffi_bridge::CoreBridge;
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
-use crate::platform::linux::pane_view::PaneView;
+use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
 use crate::platform::linux::quickconnect::font::FontSettings;
@@ -531,6 +531,16 @@ impl AppWindow {
             self_weak: std::rc::Weak::new(),
         }));
         state.borrow_mut().self_weak = Rc::downgrade(&state);
+
+        {
+            let st = state.clone();
+            let mut s = state.borrow_mut();
+            if let Some(layout) = s.pixel_cache.get_mut(&startup_id) {
+                layout.set_menu_callback(move |pane_id, action| {
+                    handle_pane_menu_action(&st, pane_id, action);
+                });
+            }
+        }
 
         // status bar 中区 tab 按钮 → SwitchTab(id)
         {
@@ -1912,14 +1922,14 @@ fn report_all_pane_colours(s: &mut UiState) {
     }
 }
 
-fn copy_active_pane(s: &UiState) {
-    if let Some(view) = s.active_layout().pane(s.active_pane) {
+fn copy_pane(s: &UiState, pane_id: u32) {
+    if let Some(view) = s.active_layout().pane(pane_id) {
         view.copy_clipboard();
     }
 }
 
-fn paste_active_pane(s: &UiState, state: &Rc<RefCell<UiState>>) {
-    let Some(view) = s.active_layout().pane(s.active_pane).cloned() else {
+fn paste_pane(s: &UiState, state: &Rc<RefCell<UiState>>, pane_id: u32) {
+    let Some(view) = s.active_layout().pane(pane_id).cloned() else {
         return;
     };
     let pane_id = view.pane_id();
@@ -1946,6 +1956,49 @@ fn paste_active_pane(s: &UiState, state: &Rc<RefCell<UiState>>) {
             data,
         });
     });
+}
+
+fn copy_active_pane(s: &UiState) {
+    copy_pane(s, s.active_pane);
+}
+
+fn paste_active_pane(s: &UiState, state: &Rc<RefCell<UiState>>) {
+    paste_pane(s, state, s.active_pane);
+}
+
+fn split_pane_from_menu(s: &mut UiState, pane_id: u32, vertical: bool) {
+    let dir = if vertical {
+        SplitDir::Vertical
+    } else {
+        SplitDir::Horizontal
+    };
+    let _ = s.active_workspace_mut().execute(Task::SplitPane {
+        target: Some(PaneId(pane_id)),
+        dir,
+        command: None,
+        workdir: None,
+    });
+}
+
+fn handle_pane_menu_action(state: &Rc<RefCell<UiState>>, pane_id: u32, action: PaneMenuAction) {
+    match action {
+        PaneMenuAction::Copy => {
+            let s = state.borrow();
+            copy_pane(&s, pane_id);
+        }
+        PaneMenuAction::Paste => {
+            let s = state.borrow();
+            paste_pane(&s, state, pane_id);
+        }
+        PaneMenuAction::SplitVertical => {
+            let mut s = state.borrow_mut();
+            split_pane_from_menu(&mut s, pane_id, true);
+        }
+        PaneMenuAction::SplitHorizontal => {
+            let mut s = state.borrow_mut();
+            split_pane_from_menu(&mut s, pane_id, false);
+        }
+    }
 }
 
 fn switch_tab_n(s: &mut UiState, n: usize) {
@@ -4564,7 +4617,14 @@ fn after_activate(s: &mut UiState) {
     if s.mounted_ws.as_ref() != Some(&id) {
         if !s.pixel_cache.contains_key(&id) {
             let uses = s.uses_tmux();
-            let layout = LayoutHost::new(s.theme.clone(), s.font.clone(), uses, s.scrollback_lines);
+            let weak = s.self_weak.clone();
+            let mut layout =
+                LayoutHost::new(s.theme.clone(), s.font.clone(), uses, s.scrollback_lines);
+            layout.set_menu_callback(move |pane_id, action| {
+                if let Some(state) = weak.upgrade() {
+                    handle_pane_menu_action(&state, pane_id, action);
+                }
+            });
             s.pixel_cache.insert(id.clone(), layout);
         }
         // C8：后台 cache 的字号与当前字号不同才补（不在 Ctrl+= 里遍历全部）。

@@ -29,6 +29,17 @@ pub const FEED_COALESCE_MS: u64 = 25;
 /// 用户输入回调：`(pane_id, bytes)`。
 pub type InputCallback = Box<dyn Fn(u32, &[u8])>;
 
+type MenuCallback = Rc<dyn Fn(u32, PaneMenuAction)>;
+
+/// 右键菜单动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneMenuAction {
+    Copy,
+    Paste,
+    SplitVertical,
+    SplitHorizontal,
+}
+
 /// 渲染痕迹：没有视觉时证明「不刷屏」。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderTrace {
@@ -76,6 +87,9 @@ struct PaneViewInner {
     render_trace: RefCell<RenderTrace>,
     /// URL 打开出口（测试注入 Recording，生产接 GTK）。
     url_opener: RefCell<Option<Rc<dyn UrlOpener>>>,
+    /// 右键菜单；随 PaneView 常驻，点击时在指针位置弹出。
+    menu: gtk4::Popover,
+    menu_cb: RefCell<Option<MenuCallback>>,
 }
 
 impl PaneView {
@@ -118,10 +132,107 @@ impl PaneView {
             grid_rows: Cell::new(24),
             render_trace: RefCell::new(RenderTrace::default()),
             url_opener: RefCell::new(None),
+            menu: gtk4::Popover::new(),
+            menu_cb: RefCell::new(None),
         });
         let view = PaneView { inner };
+        view.install_context_menu();
         view.attach_scroll_controller();
         view
+    }
+
+    /// 安装右键菜单；回调由 Window 侧统一接线。
+    fn install_context_menu(&self) {
+        let menu = self.inner.menu.clone();
+        menu.set_widget_name("muxterm-pane-menu");
+        menu.set_has_arrow(false);
+        menu.set_parent(&self.inner.renderer.widget());
+
+        let box_ = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .spacing(2)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
+        box_.set_widget_name("muxterm-pane-menu-box");
+
+        let copy = gtk4::Button::with_label("复制");
+        copy.set_widget_name("muxterm-pane-menu-copy");
+        let paste = gtk4::Button::with_label("粘贴");
+        paste.set_widget_name("muxterm-pane-menu-paste");
+        let split_vertical = gtk4::Button::with_label("上下切分");
+        split_vertical.set_widget_name("muxterm-pane-menu-split-vertical");
+        let split_horizontal = gtk4::Button::with_label("左右切分");
+        split_horizontal.set_widget_name("muxterm-pane-menu-split-horizontal");
+
+        box_.append(&copy);
+        box_.append(&paste);
+        box_.append(&split_vertical);
+        box_.append(&split_horizontal);
+        menu.set_child(Some(&box_));
+
+        let callback = {
+            let inner = self.inner.clone();
+            move |action| {
+                let pane_id = inner.pane_id.get();
+                if let Some(cb) = inner.menu_cb.borrow().as_ref() {
+                    cb(pane_id, action);
+                }
+            }
+        };
+
+        {
+            let callback = callback.clone();
+            let menu = menu.clone();
+            copy.connect_clicked(move |_| {
+                callback(PaneMenuAction::Copy);
+                menu.popdown();
+            });
+        }
+        {
+            let callback = callback.clone();
+            let menu = menu.clone();
+            paste.connect_clicked(move |_| {
+                callback(PaneMenuAction::Paste);
+                menu.popdown();
+            });
+        }
+        {
+            let callback = callback.clone();
+            let menu = menu.clone();
+            split_vertical.connect_clicked(move |_| {
+                callback(PaneMenuAction::SplitVertical);
+                menu.popdown();
+            });
+        }
+        {
+            let callback = callback.clone();
+            let menu = menu.clone();
+            split_horizontal.connect_clicked(move |_| {
+                callback(PaneMenuAction::SplitHorizontal);
+                menu.popdown();
+            });
+        }
+
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(3);
+        gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        {
+            let menu = menu.clone();
+            gesture.connect_pressed(move |_, _, x, y| {
+                let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                menu.set_pointing_to(Some(&rect));
+                menu.popup();
+            });
+        }
+        self.inner.renderer.widget().add_controller(gesture);
+    }
+
+    /// 设置右键菜单动作回调；`pane_id` 是菜单所属 pane。
+    pub fn connect_menu<F: Fn(u32, PaneMenuAction) + 'static>(&self, callback: F) {
+        *self.inner.menu_cb.borrow_mut() = Some(Rc::new(callback));
     }
 
     /// W21：生产滚轮路径。主屏滚 VTE 历史；alt-screen 发 CSI 方向键。

@@ -10,7 +10,7 @@ use gtk4::{Orientation, Paned, Widget};
 use crate::core::config::Theme;
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::types::PaneId;
-use crate::platform::linux::pane_view::PaneView;
+use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::quickconnect::font::FontSettings;
 
 /// 布局根：持有 pane_id → PaneView，以及当前根 widget。
@@ -34,6 +34,8 @@ pub struct LayoutHost {
     split_ratios: HashMap<u32, HashMap<Paned, Rc<Cell<u32>>>>,
     /// 本地 shell 模式的全屏 pane（tmux 模式由 resize-pane -Z 处理）。
     fullscreen_pane: Option<u32>,
+    /// 右键菜单动作回调；新建 PaneView 时统一接线。
+    menu_cb: Option<Rc<dyn Fn(u32, PaneMenuAction)>>,
 }
 
 impl LayoutHost {
@@ -69,7 +71,13 @@ impl LayoutHost {
             last_structure_sig: HashMap::new(),
             split_ratios: HashMap::new(),
             fullscreen_pane: None,
+            menu_cb: None,
         }
+    }
+
+    /// 设置右键菜单回调；之后新建的 pane 会自动接线。
+    pub fn set_menu_callback<F: Fn(u32, PaneMenuAction) + 'static>(&mut self, callback: F) {
+        self.menu_cb = Some(Rc::new(callback));
     }
 
     pub fn pane(&self, id: u32) -> Option<&Rc<PaneView>> {
@@ -140,6 +148,10 @@ impl LayoutHost {
         ));
         let cb = on_input.clone();
         view.connect_input(move |pid, data| cb(pid, data));
+        if let Some(menu_cb) = &self.menu_cb {
+            let menu_cb = menu_cb.clone();
+            view.connect_menu(move |pid, action| menu_cb(pid, action));
+        }
         self.panes.insert(id, view.clone());
         view
     }
