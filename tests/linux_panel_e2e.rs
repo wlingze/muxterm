@@ -37,6 +37,7 @@ fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttenti
         workspace_id: ws.into(),
         pane_id: pane,
         status,
+        acknowledged: false,
         last_line: line.into(),
         seq: pane as u64,
         process_name: Some("cat".into()),

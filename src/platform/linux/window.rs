@@ -64,7 +64,9 @@ use crate::platform::linux::quickconnect_panel::{
 };
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
-use crate::platform::linux::workspace_sidebar::{WorkspaceSidebar, WorkspaceSidebarItem};
+use crate::platform::linux::workspace_sidebar::{
+    AgentSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
+};
 
 /// 主窗口。
 pub struct AppWindow {
@@ -623,18 +625,30 @@ impl AppWindow {
 
         {
             let st = state.clone();
+            state
+                .borrow()
+                .sidebar
+                .connect_agent_activated(move |id, pane| {
+                    activate_sidebar_agent(&mut st.borrow_mut(), id, pane);
+                });
+        }
+
+        {
+            let st = state.clone();
             let toggle = state.borrow().sidebar.toggle.clone();
             toggle.connect_toggled(move |button| {
                 if button.is_active() {
-                    let items = WorkspaceSidebarItem::from_pool(&st.borrow().pool);
-                    st.borrow_mut().sidebar.set_workspaces(&items);
+                    refresh_sidebar_if_open(&mut st.borrow_mut());
                 }
             });
         }
 
         {
-            let items = WorkspaceSidebarItem::from_pool(&state.borrow().pool);
-            state.borrow().sidebar.set_workspaces(&items);
+            let s = state.borrow();
+            let workspaces = WorkspaceSidebarItem::from_pool(&s.pool);
+            let agents = AgentSidebarItem::from_pool(&s.pool, &s.attention.snapshot());
+            s.sidebar.set_workspaces(&workspaces);
+            s.sidebar.set_agents(&agents);
         }
 
         // status bar 中区 tab 按钮 → SwitchTab(id)
@@ -1480,6 +1494,30 @@ impl AppWindow {
             .iter()
             .map(|w| w.done)
             .sum()
+    }
+
+    /// 测试用：通过通用 Attention 权威状态模拟任意 Runtime 的 agent。
+    pub fn test_set_agent_attention(
+        &self,
+        pane: u32,
+        process_name: &str,
+        status: crate::core::attention::state::PaneStatus,
+    ) {
+        let mut s = self._state.borrow_mut();
+        let ws = active_workspace_id(&s);
+        s.attention
+            .set_process_name(&ws, pane, Some(process_name.to_string()));
+        s.attention.apply(
+            &ws,
+            pane,
+            &[AttentionSignal::AuthoritativeStatus {
+                status,
+                initial: false,
+            }],
+            "",
+            1,
+        );
+        refresh_sidebar_if_open(&mut s);
     }
 
     /// 测试用：当前激活 pane id。
@@ -2378,6 +2416,7 @@ fn dispatch_event_batch(s: &mut UiState, events: Vec<StateChange>) {
         }
         effects.commit(s, &wid);
     }
+    refresh_sidebar_if_open(s);
     s.snapshot_seeded_this_batch.clear();
 }
 
@@ -2621,6 +2660,7 @@ fn dispatch_event_batch_for(s: &mut UiState, wid: &WorkspaceId, events: Vec<Stat
         }
         effects.commit(s, wid);
     }
+    refresh_sidebar_if_open(s);
     s.snapshot_seeded_this_batch.clear();
 }
 
@@ -4709,12 +4749,44 @@ fn activate_existing(s: &mut UiState, id: WorkspaceId) {
     after_activate(s);
 }
 
+fn activate_sidebar_agent(s: &mut UiState, id: &WorkspaceId, pane: u32) {
+    if s.pool.active_id() != Some(id) {
+        s.pool.activate(id);
+        after_activate(s);
+    }
+    let tab = {
+        let state = s.active_workspace().state();
+        state
+            .tabs()
+            .into_iter()
+            .find(|tab| {
+                state
+                    .panes(&tab.id)
+                    .iter()
+                    .any(|candidate| candidate.id.0 == pane)
+            })
+            .map(|tab| tab.id.0)
+    };
+    if let Some(tab) = tab {
+        if tab != s.active_tab {
+            request_switch_tab(s, tab);
+        }
+        let _ = s.active_workspace_mut().execute(Task::SwitchPane {
+            target: PaneId(pane),
+        });
+    }
+    s.attention.acknowledge(&id.replica_id(), pane);
+    refresh_sidebar_if_open(s);
+}
+
 fn refresh_sidebar_if_open(s: &mut UiState) {
     if !s.sidebar.is_open() {
         return;
     }
-    let items = WorkspaceSidebarItem::from_pool(&s.pool);
-    s.sidebar.set_workspaces(&items);
+    let workspaces = WorkspaceSidebarItem::from_pool(&s.pool);
+    let agents = AgentSidebarItem::from_pool(&s.pool, &s.attention.snapshot());
+    s.sidebar.set_workspaces(&workspaces);
+    s.sidebar.set_agents(&agents);
 }
 
 fn after_activate(s: &mut UiState) {
@@ -5108,6 +5180,10 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); }}
         .muxterm-sidebar-row-name {{ color: {fg}; }}
         .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
+        .muxterm-sidebar-agent-dot {{ font-size: 10px; }}
+        .muxterm-sidebar-agent-dot.running {{ color: #40a02b; }}
+        .muxterm-sidebar-agent-dot.needs-attention {{ color: #df8e1d; }}
+        .muxterm-sidebar-agent-dot.seen {{ color: transparent; }}
         .muxterm-main-split > separator {{
             min-width: 1px;
             background: alpha({fg}, 0.18);

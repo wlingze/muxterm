@@ -160,6 +160,7 @@ mod tests {
             workspace_id: ws.into(),
             pane_id: pane,
             status,
+            acknowledged: false,
             last_line: format!("line-{pane}"),
             seq,
             process_name: Some("cat".into()),

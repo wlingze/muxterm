@@ -8,6 +8,7 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Paned, Revealer, ToggleButton, Widget};
 
+use muxterm::core::attention::state::PaneStatus;
 use muxterm::core::config::Config;
 use muxterm::core::workspace::spec::WorkspaceSpec;
 use muxterm::platform::linux::window::AppWindow;
@@ -149,6 +150,54 @@ fn title_bar_actions_and_workspace_sidebar() {
         assert!(agent_scroll.is_visible());
         workspace_section_toggle.set_active(true);
         pump_main_loop(100);
+
+        let agent_list = find_by_name(&app.window, "muxterm-sidebar-agent-list")
+            .expect("agent list")
+            .downcast::<gtk4::ListBox>()
+            .expect("agent list type");
+        app.test_set_agent_attention(1, "codex", PaneStatus::Working);
+        pump_main_loop(100);
+        assert_eq!(
+            count_widget_names(&agent_list, "muxterm-sidebar-agent-row"),
+            1,
+            "all detected agents must appear in the lower section"
+        );
+        let row = agent_list.row_at_index(0).expect("agent row");
+        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("agent status dot");
+        assert!(dot.has_css_class("running"), "working agent must be green");
+
+        app.test_set_agent_attention(1, "codex", PaneStatus::Blocked);
+        pump_main_loop(100);
+        let row = agent_list.row_at_index(0).expect("blocked agent row");
+        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("blocked status dot");
+        assert!(
+            dot.has_css_class("needs-attention"),
+            "waiting agent must be yellow"
+        );
+        row.activate();
+        pump_main_loop(100);
+        let row = agent_list.row_at_index(0).expect("acknowledged agent row");
+        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("seen status dot");
+        assert!(
+            dot.has_css_class("seen"),
+            "viewed agent must have no colored status dot"
+        );
+
+        app.test_set_agent_attention(1, "codex", PaneStatus::Done);
+        pump_main_loop(100);
+        let row = agent_list.row_at_index(0).expect("finished agent row");
+        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("finished status dot");
+        assert!(
+            dot.has_css_class("needs-attention"),
+            "finished but unseen agent must be yellow"
+        );
+        row.activate();
+        pump_main_loop(100);
+        let row = agent_list
+            .row_at_index(0)
+            .expect("viewed finished agent row");
+        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("viewed finished dot");
+        assert!(dot.has_css_class("seen"));
 
         let content = find_by_name(&app.window, "muxterm-content")
             .expect("main split must exist")

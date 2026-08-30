@@ -5,6 +5,7 @@
 //! Core pool, including the active workspace and background workspaces.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
@@ -13,6 +14,9 @@ use gtk4::{
     RevealerTransitionType, ScrolledWindow, SelectionMode, ToggleButton,
 };
 
+use crate::core::attention::engine::{known_agent_process_name, PaneAttention, WorkspaceAttention};
+use crate::core::attention::state::PaneStatus;
+use crate::core::model::state::{PaneAgentInfo, PaneAgentStatus};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::workspace::Workspace;
@@ -66,7 +70,125 @@ impl WorkspaceSidebarItem {
     }
 }
 
+/// Agent 行的状态点语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentIndicator {
+    Running,
+    NeedsAttention,
+    None,
+}
+
+/// 跨全部 Workspace 汇总的一条 agent。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSidebarItem {
+    pub workspace_id: WorkspaceId,
+    pub pane_id: u32,
+    pub title: String,
+    pub detail: String,
+    pub indicator: AgentIndicator,
+}
+
+impl AgentSidebarItem {
+    pub fn from_pool(
+        pool: &WorkspacePool,
+        attention: &[WorkspaceAttention],
+    ) -> Vec<AgentSidebarItem> {
+        let attention_by_pane: HashMap<(String, u32), &PaneAttention> = attention
+            .iter()
+            .flat_map(|workspace| workspace.panes.iter())
+            .map(|pane| ((pane.workspace_id.clone(), pane.pane_id), pane))
+            .collect();
+        let mut items = Vec::new();
+        for workspace in pool.list() {
+            let workspace_key = workspace.id().replica_id();
+            let state = workspace.state();
+            for tab in state.tabs() {
+                for pane in state.panes(&tab.id) {
+                    let attention = attention_by_pane
+                        .get(&(workspace_key.clone(), pane.id.0))
+                        .copied();
+                    if let Some(agent) = workspace.pane_agent(pane.id) {
+                        items.push(AgentSidebarItem {
+                            workspace_id: workspace.id().clone(),
+                            pane_id: pane.id.0,
+                            title: agent_title(agent, &pane.title),
+                            detail: agent_detail(workspace.name(), pane.id.0, &pane.title),
+                            indicator: structured_indicator(agent.status, attention),
+                        });
+                    } else if let Some(attention) = attention {
+                        let Some(process) = attention.process_name.as_deref() else {
+                            continue;
+                        };
+                        let Some(agent_name) = known_agent_process_name(process) else {
+                            continue;
+                        };
+                        items.push(AgentSidebarItem {
+                            workspace_id: workspace.id().clone(),
+                            pane_id: pane.id.0,
+                            title: agent_name.to_string(),
+                            detail: agent_detail(workspace.name(), pane.id.0, &pane.title),
+                            indicator: attention_indicator(attention),
+                        });
+                    }
+                }
+            }
+        }
+        items
+    }
+}
+
+fn agent_title(agent: &PaneAgentInfo, pane_title: &str) -> String {
+    [
+        agent.display_name.as_deref(),
+        agent.title.as_deref(),
+        agent.name.as_deref(),
+        agent.kind.as_deref(),
+        agent.terminal_title_stripped.as_deref(),
+        agent.terminal_title.as_deref(),
+        Some(pane_title),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|value| !value.trim().is_empty())
+    .unwrap_or("agent")
+    .to_string()
+}
+
+fn agent_detail(workspace: &str, pane: u32, pane_title: &str) -> String {
+    if pane_title.trim().is_empty() {
+        format!("{workspace} · pane {pane}")
+    } else {
+        format!("{workspace} · {pane_title}")
+    }
+}
+
+fn structured_indicator(
+    status: PaneAgentStatus,
+    attention: Option<&PaneAttention>,
+) -> AgentIndicator {
+    match status {
+        PaneAgentStatus::Working => AgentIndicator::Running,
+        PaneAgentStatus::Blocked | PaneAgentStatus::Done
+            if attention.is_none_or(|pane| !pane.acknowledged) =>
+        {
+            AgentIndicator::NeedsAttention
+        }
+        _ => AgentIndicator::None,
+    }
+}
+
+fn attention_indicator(attention: &PaneAttention) -> AgentIndicator {
+    match attention.status {
+        PaneStatus::Working => AgentIndicator::Running,
+        PaneStatus::Blocked | PaneStatus::Done if !attention.acknowledged => {
+            AgentIndicator::NeedsAttention
+        }
+        _ => AgentIndicator::None,
+    }
+}
+
 type WorkspaceActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
+type AgentActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId, u32)>>>>;
 
 fn section_header(title: &str, widget_name: &str) -> (ToggleButton, Label) {
     let arrow = Label::new(Some("▾"));
@@ -109,7 +231,11 @@ pub struct WorkspaceSidebar {
     pub agent_section_toggle: ToggleButton,
     pub toggle: ToggleButton,
     ids: Rc<RefCell<Vec<WorkspaceId>>>,
+    agent_targets: Rc<RefCell<Vec<(WorkspaceId, u32)>>>,
+    workspace_items: RefCell<Vec<WorkspaceSidebarItem>>,
+    agent_items: RefCell<Vec<AgentSidebarItem>>,
     on_activate: WorkspaceActivateCb,
+    on_agent_activate: AgentActivateCb,
 }
 
 impl WorkspaceSidebar {
@@ -264,7 +390,9 @@ impl WorkspaceSidebar {
         revealer.set_size_request(180, -1);
 
         let ids = Rc::new(RefCell::new(Vec::new()));
+        let agent_targets = Rc::new(RefCell::new(Vec::new()));
         let on_activate: WorkspaceActivateCb = Rc::new(RefCell::new(None));
+        let on_agent_activate: AgentActivateCb = Rc::new(RefCell::new(None));
 
         container.append(&revealer);
 
@@ -291,6 +419,20 @@ impl WorkspaceSidebar {
             });
         }
 
+        {
+            let agent_targets = agent_targets.clone();
+            let on_agent_activate = on_agent_activate.clone();
+            agent_list.connect_row_activated(move |_, row| {
+                let index = row.index().max(0) as usize;
+                let Some((id, pane)) = agent_targets.borrow().get(index).cloned() else {
+                    return;
+                };
+                if let Some(callback) = on_agent_activate.borrow().as_ref() {
+                    callback(&id, pane);
+                }
+            });
+        }
+
         Self {
             container,
             revealer,
@@ -301,12 +443,20 @@ impl WorkspaceSidebar {
             agent_section_toggle,
             toggle,
             ids,
+            agent_targets,
+            workspace_items: RefCell::new(Vec::new()),
+            agent_items: RefCell::new(Vec::new()),
             on_activate,
+            on_agent_activate,
         }
     }
 
     /// Set every row from the Core pool.
     pub fn set_workspaces(&self, items: &[WorkspaceSidebarItem]) {
+        if self.workspace_items.borrow().as_slice() == items {
+            return;
+        }
+        *self.workspace_items.borrow_mut() = items.to_vec();
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -357,6 +507,75 @@ impl WorkspaceSidebar {
         }
     }
 
+    /// 更新全部工作区的 agent 行；模型不变时不重建 GTK widget。
+    pub fn set_agents(&self, items: &[AgentSidebarItem]) {
+        if self.agent_items.borrow().as_slice() == items {
+            return;
+        }
+        *self.agent_items.borrow_mut() = items.to_vec();
+        while let Some(child) = self.agent_list.first_child() {
+            self.agent_list.remove(&child);
+        }
+        *self.agent_targets.borrow_mut() = items
+            .iter()
+            .map(|item| (item.workspace_id.clone(), item.pane_id))
+            .collect();
+
+        for item in items {
+            let row = ListBoxRow::new();
+            row.set_widget_name(&format!(
+                "muxterm-sidebar-agent-row-{}-{}",
+                widget_id(&item.workspace_id.as_str()),
+                item.pane_id
+            ));
+            row.set_can_focus(false);
+            row.add_css_class("muxterm-sidebar-row");
+            row.add_css_class("muxterm-sidebar-agent-row");
+
+            let content = GtkBox::builder()
+                .orientation(Orientation::Horizontal)
+                .spacing(8)
+                .margin_top(6)
+                .margin_bottom(6)
+                .margin_start(10)
+                .margin_end(10)
+                .build();
+            let dot = Label::new(Some("●"));
+            dot.set_widget_name("muxterm-sidebar-agent-dot");
+            dot.add_css_class("muxterm-sidebar-agent-dot");
+            dot.add_css_class(match item.indicator {
+                AgentIndicator::Running => "running",
+                AgentIndicator::NeedsAttention => "needs-attention",
+                AgentIndicator::None => "seen",
+            });
+            let labels = GtkBox::builder()
+                .orientation(Orientation::Vertical)
+                .spacing(1)
+                .hexpand(true)
+                .build();
+            let title = Label::builder()
+                .label(&item.title)
+                .halign(Align::Start)
+                .xalign(0.0)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
+                .build();
+            title.add_css_class("muxterm-sidebar-row-name");
+            let detail = Label::builder()
+                .label(&item.detail)
+                .halign(Align::Start)
+                .xalign(0.0)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
+                .build();
+            detail.add_css_class("muxterm-sidebar-row-detail");
+            labels.append(&title);
+            labels.append(&detail);
+            content.append(&dot);
+            content.append(&labels);
+            row.set_child(Some(&content));
+            self.agent_list.append(&row);
+        }
+    }
+
     /// Open or close the overlay.
     pub fn set_open(&self, open: bool) {
         self.toggle.set_active(open);
@@ -371,6 +590,23 @@ impl WorkspaceSidebar {
     pub fn connect_workspace_activated<F: Fn(&WorkspaceId) + 'static>(&self, callback: F) {
         *self.on_activate.borrow_mut() = Some(Box::new(callback));
     }
+
+    pub fn connect_agent_activated<F: Fn(&WorkspaceId, u32) + 'static>(&self, callback: F) {
+        *self.on_agent_activate.borrow_mut() = Some(Box::new(callback));
+    }
+}
+
+fn widget_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 impl Default for WorkspaceSidebar {
@@ -383,10 +619,62 @@ impl Default for WorkspaceSidebar {
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockRuntime;
+    use crate::core::model::state::StateChange;
+    use crate::core::types::PaneId;
+    use std::collections::BTreeMap;
+    use std::time::Instant;
 
     fn workspace(name: &str) -> Workspace {
         let id = WorkspaceId::new("local", None, name, "tmux", name);
         Workspace::new(id, name.into(), Box::new(MockRuntime::with_single_pane()))
+    }
+
+    fn agent(status: PaneAgentStatus) -> PaneAgentInfo {
+        PaneAgentInfo {
+            terminal_id: None,
+            name: Some("codex".into()),
+            kind: Some("codex".into()),
+            title: Some("Review muxterm".into()),
+            terminal_title: None,
+            terminal_title_stripped: None,
+            display_name: Some("Codex".into()),
+            status,
+            screen_detection_skipped: false,
+            state_labels: BTreeMap::new(),
+            tokens: BTreeMap::new(),
+            session: None,
+            focused: false,
+            launch_pending: false,
+            interactive_ready: true,
+            state_change_seq: 1,
+            cwd: Some("/work/muxterm".into()),
+            foreground_cwd: None,
+            revision: 1,
+        }
+    }
+
+    fn attention(
+        workspace_id: String,
+        status: PaneStatus,
+        acknowledged: bool,
+    ) -> WorkspaceAttention {
+        WorkspaceAttention {
+            workspace_id: workspace_id.clone(),
+            blocked: usize::from(status == PaneStatus::Blocked),
+            done: usize::from(status == PaneStatus::Done),
+            working: usize::from(status == PaneStatus::Working),
+            panes: vec![PaneAttention {
+                workspace_id,
+                pane_id: 1,
+                status,
+                acknowledged,
+                last_line: String::new(),
+                seq: 1,
+                process_name: Some("codex".into()),
+                mute_until: None,
+                last_regex_eval: Instant::now(),
+            }],
+        }
     }
 
     #[test]
@@ -439,5 +727,48 @@ mod tests {
             .map(|item| item.name)
             .collect();
         assert_eq!(names, ["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn agents_merge_structured_runtime_and_generic_attention_state() {
+        let id = WorkspaceId::new("local", None, "muxterm", "herdr", "w2");
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.events.push(StateChange::PaneAgentChanged {
+            pane: PaneId(1),
+            agent: Some(Box::new(agent(PaneAgentStatus::Working))),
+            initial: false,
+        });
+        let mut workspace = Workspace::new(id.clone(), "muxterm".into(), Box::new(runtime));
+        workspace.refresh();
+        let mut pool =
+            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
+        pool.insert_connected(workspace);
+
+        let items = AgentSidebarItem::from_pool(
+            &pool,
+            &[attention(id.replica_id(), PaneStatus::Working, false)],
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Codex");
+        assert_eq!(items[0].detail, "muxterm · bash");
+        assert_eq!(items[0].indicator, AgentIndicator::Running);
+    }
+
+    #[test]
+    fn blocked_and_done_agents_turn_clear_after_acknowledgement() {
+        let unread = attention("muxterm@local".into(), PaneStatus::Done, false);
+        let seen = attention("muxterm@local".into(), PaneStatus::Done, true);
+        assert_eq!(
+            structured_indicator(PaneAgentStatus::Done, Some(&unread.panes[0])),
+            AgentIndicator::NeedsAttention
+        );
+        assert_eq!(
+            structured_indicator(PaneAgentStatus::Done, Some(&seen.panes[0])),
+            AgentIndicator::None
+        );
+        assert_eq!(
+            structured_indicator(PaneAgentStatus::Blocked, None),
+            AgentIndicator::NeedsAttention
+        );
     }
 }

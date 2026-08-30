@@ -14,12 +14,38 @@ use super::signal::AttentionSignal;
 use super::state::{transition, PaneEvent, PaneStatus};
 use crate::core::config::AttentionConfig;
 
+const KNOWN_AGENTS: &[&str] = &[
+    "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline", "goose", "amp",
+    "grok", "windsurf", "kiro",
+];
+
+/// 从进程名/argv 中识别通用 agent 名；不依赖具体 Runtime。
+pub fn known_agent_process_name(value: &str) -> Option<&'static str> {
+    for token in value.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))) {
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        if let Some(agent) = KNOWN_AGENTS.iter().find(|agent| {
+            lower == **agent
+                || lower.starts_with(&format!("{}-", agent))
+                || lower.starts_with(&format!("{}_", agent))
+        }) {
+            return Some(*agent);
+        }
+    }
+    None
+}
+
 /// 单个 pane 的注意力状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneAttention {
     pub workspace_id: String,
     pub pane_id: u32,
     pub status: PaneStatus,
+    /// 用户是否已经查看/处理了当前 Blocked 或 Done 状态。
+    /// Runtime 权威状态可以继续保持 Blocked/Done；该位只表达 UI 未读语义。
+    pub acknowledged: bool,
     pub last_line: String,
     pub seq: u64,
     pub process_name: Option<String>,
@@ -102,6 +128,7 @@ impl<C: Clock> AttentionEngine<C> {
                 workspace_id: ws.to_string(),
                 pane_id: pane,
                 status: PaneStatus::Unknown,
+                acknowledged: true,
                 last_line: String::new(),
                 seq: 0,
                 process_name: None,
@@ -123,7 +150,11 @@ impl<C: Clock> AttentionEngine<C> {
         let now = self.clock.now();
         let key = (ws.to_string(), pane);
         let mut authoritative = self.authoritative_panes.contains(&key);
-        let mut status = self.entry_mut(ws, pane).status;
+        let (mut status, mut acknowledged) = {
+            let entry = self.entry_mut(ws, pane);
+            (entry.status, entry.acknowledged)
+        };
+        let previous_status = status;
         let mut initial_status = None;
 
         for sig in signals {
@@ -175,6 +206,10 @@ impl<C: Clock> AttentionEngine<C> {
             entry.last_line = last_line.to_string();
             entry.seq = seq;
             entry.status = status;
+            if status != previous_status {
+                acknowledged = !matches!(status, PaneStatus::Blocked | PaneStatus::Done);
+            }
+            entry.acknowledged = acknowledged;
         }
         // Runtime bootstrap（attach 或 authority handoff）只播种现状。把
         // 初始 blocked/done 记为已经通知，防止伪造一条「新转换」通知；
@@ -197,6 +232,7 @@ impl<C: Clock> AttentionEngine<C> {
     /// 用户输入：Blocked → Idle（输入才算处理）。
     pub fn on_user_input(&mut self, ws: &str, pane: u32) {
         let now = self.clock.now();
+        self.entry_mut(ws, pane).acknowledged = true;
         if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
             return;
         }
@@ -208,6 +244,7 @@ impl<C: Clock> AttentionEngine<C> {
     /// 该 pane 成为前台可见（仅当前台 pane，后台不触发）。
     pub fn on_became_visible(&mut self, ws: &str, pane: u32) {
         let now = self.clock.now();
+        self.entry_mut(ws, pane).acknowledged = true;
         if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
             return;
         }
@@ -222,6 +259,7 @@ impl<C: Clock> AttentionEngine<C> {
     /// 该显式入口只把两种已列出的状态转换为 Idle，不影响 Working。
     pub fn acknowledge(&mut self, ws: &str, pane: u32) {
         let now = self.clock.now();
+        self.entry_mut(ws, pane).acknowledged = true;
         if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
             return;
         }
@@ -304,22 +342,8 @@ impl<C: Clock> AttentionEngine<C> {
         // tmux 通常只给 pane_current_command（例如 `node`），但某些
         // transports/fixtures 会传完整 argv。优先从整条命令中识别 agent，
         // 避免把 npx/node/wrapper 当成用户真正执行的 Codex/Cursor。
-        const KNOWN_AGENTS: &[&str] = &[
-            "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline",
-            "goose", "amp", "grok", "windsurf", "kiro",
-        ];
-        for token in value.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))) {
-            if token.is_empty() {
-                continue;
-            }
-            let lower = token.to_ascii_lowercase();
-            if let Some(agent) = KNOWN_AGENTS.iter().find(|agent| {
-                lower == **agent
-                    || lower.starts_with(&format!("{}-", agent))
-                    || lower.starts_with(&format!("{}_", agent))
-            }) {
-                return Some((*agent).to_string());
-            }
+        if let Some(agent) = known_agent_process_name(value) {
+            return Some(agent.to_string());
         }
         let basename = value
             .rsplit(['/', '\\'])
@@ -1038,5 +1062,54 @@ mod tests {
         assert_eq!(e.blocked_workspace_count(), 0);
         assert!(e.snapshot()[0].panes[0].status == PaneStatus::Idle);
         assert!(e.take_notifications().is_empty());
+    }
+
+    #[test]
+    fn authoritative_status_tracks_viewed_state_without_overwriting_runtime_state() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            9,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Blocked,
+                initial: false,
+            }],
+            "approve",
+            1,
+        );
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Blocked);
+        assert!(!pane.acknowledged);
+
+        e.on_became_visible("ws", 9);
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Blocked);
+        assert!(pane.acknowledged);
+
+        // 同一权威状态的元数据刷新不能重新点黄；真正的新状态会重置未读。
+        e.apply(
+            "ws",
+            9,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Blocked,
+                initial: false,
+            }],
+            "approve",
+            2,
+        );
+        assert!(e.snapshot()[0].panes[0].acknowledged);
+        e.apply(
+            "ws",
+            9,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Done,
+                initial: false,
+            }],
+            "done",
+            3,
+        );
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Done);
+        assert!(!pane.acknowledged);
     }
 }
