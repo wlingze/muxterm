@@ -5077,6 +5077,21 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); }}
         .muxterm-sidebar-row-name {{ color: {fg}; }}
         .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
+        .quick-pick-backdrop {{ background-color: alpha(#000000, 0.42); }}
+        .quick-pick-root {{
+            background-color: {bg};
+            color: {fg};
+            border: 1px solid alpha({fg}, 0.24);
+            border-radius: 12px;
+            box-shadow: 0 16px 36px alpha(#000000, 0.46);
+        }}
+        .quick-pick-entry {{
+            background-color: alpha({fg}, 0.08);
+            color: {fg};
+            border: 1px solid alpha({fg}, 0.18);
+            border-radius: 8px;
+        }}
+        .quick-pick-list {{ background-color: transparent; }}
         "
     )
 }
@@ -5184,6 +5199,12 @@ mod tests {
             light_css.contains("muxterm-status-window.current"),
             "{light_css}"
         );
+        assert!(light_css.contains(".quick-pick-root"), "{light_css}");
+        assert!(
+            light_css.contains("background-color: #eff1f5"),
+            "{light_css}"
+        );
+        assert!(light_css.contains("box-shadow: 0 16px 36px"), "{light_css}");
         assert_ne!(light_css, dark_css);
     }
 
