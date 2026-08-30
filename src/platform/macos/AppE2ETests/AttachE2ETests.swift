@@ -274,7 +274,7 @@ final class AttachE2ETests: XCTestCase {
             socket: fixture.socket
         ))
 
-        let painted = AppE2E.wait(timeout: AppE2E.attachTimeout) {
+        let hasVisibleText = AppE2E.wait(timeout: AppE2E.attachTimeout) {
             app.testPollOnce()
             app.testFlushFeeds()
             guard app.testActiveWorkspaceSession() == fixture.session else {
@@ -333,7 +333,7 @@ final class AttachE2ETests: XCTestCase {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty
         }
-        XCTAssertTrue(painted, "attach 后 SwiftTerm 不能空（1820 白屏）")
+        XCTAssertTrue(hasVisibleText, "attach 后 SwiftTerm 不能空（1820 白屏）")
         for token in painted.tab1Tokens {
             XCTAssertTrue(app.waitTerminalContains(token), "可见 pane 应含播种 token \(token)。vte=\(app.testAllVisibleTerminalText())")
         }
