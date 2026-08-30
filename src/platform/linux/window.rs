@@ -625,6 +625,13 @@ impl AppWindow {
 
         {
             let st = state.clone();
+            state.borrow().sidebar.connect_workspace_closed(move |id| {
+                close_sidebar_workspace(&mut st.borrow_mut(), id);
+            });
+        }
+
+        {
+            let st = state.clone();
             state
                 .borrow()
                 .sidebar
@@ -4749,6 +4756,87 @@ fn activate_existing(s: &mut UiState, id: WorkspaceId) {
     after_activate(s);
 }
 
+fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
+    let ordered: Vec<WorkspaceId> = s
+        .pool
+        .list()
+        .into_iter()
+        .map(|workspace| workspace.id().clone())
+        .collect();
+    let Some(index) = ordered.iter().position(|candidate| candidate == id) else {
+        return;
+    };
+    let was_active = s.pool.active_id() == Some(id);
+    let fallback = if was_active {
+        ordered
+            .get(index + 1)
+            .or_else(|| {
+                index
+                    .checked_sub(1)
+                    .and_then(|previous| ordered.get(previous))
+            })
+            .cloned()
+    } else {
+        None
+    };
+    let replica_id = id.replica_id();
+    let panes: Vec<u32> = s
+        .pool
+        .get(id)
+        .map(|workspace| {
+            let state = workspace.state();
+            state
+                .tabs()
+                .into_iter()
+                .flat_map(|tab| state.panes(&tab.id).into_iter().map(|pane| pane.id.0))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !s.pool.close(id) {
+        return;
+    }
+
+    for pane in panes {
+        s.attention.remove_pane(&replica_id, pane);
+    }
+    s.last_seen
+        .retain(|(workspace, _), _| workspace != &replica_id);
+    s.surface_input_queue
+        .borrow_mut()
+        .retain(|input| &input.workspace != id);
+    s.workspace_sockets.remove(id);
+    for evicted in s.pool.take_evicted() {
+        if s.mounted_ws.as_ref() == Some(&evicted) {
+            s.layout_overlay.set_child(None::<&gtk4::Widget>);
+            s.mounted_ws = None;
+        }
+        s.pixel_cache.remove(&evicted);
+    }
+
+    if was_active {
+        if let Some(fallback) = fallback {
+            s.pool.activate(&fallback);
+        } else {
+            // 主窗口始终需要一个可轮询的前台 Workspace。关闭最后一格时
+            // 立即回到一格空本地 shell；PersistDetach Runtime 已在 close
+            // 中安全 detach，不会停止用户的 tmux/Herdr server。
+            let spec = WorkspaceSpec::local_shell("").with_scrollback_lines(s.scrollback_lines);
+            let UiState { rt, pool, .. } = s;
+            if let Err(error) = rt.block_on(pool.open_spec(&spec)) {
+                tracing::error!(
+                    target = "muxterm::linux",
+                    "关闭最后工作区后创建本地 shell 失败: {error}"
+                );
+                return;
+            }
+        }
+        after_activate(s);
+    } else {
+        refresh_sidebar_if_open(s);
+        maybe_refresh_status(s, true);
+    }
+}
+
 fn activate_sidebar_agent(s: &mut UiState, id: &WorkspaceId, pane: u32) {
     if s.pool.active_id() != Some(id) {
         s.pool.activate(id);
@@ -5178,6 +5266,19 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         }}
         .muxterm-sidebar-row {{ border-radius: 4px; }}
         .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); }}
+        .muxterm-sidebar-close {{
+            min-width: 22px;
+            min-height: 22px;
+            padding: 0;
+            border-radius: 4px;
+            color: {fg};
+            opacity: 0;
+        }}
+        .muxterm-sidebar-workspace-row:hover .muxterm-sidebar-close {{ opacity: 0.72; }}
+        .muxterm-sidebar-close:hover {{
+            opacity: 1;
+            background-color: alpha({fg}, 0.12);
+        }}
         .muxterm-sidebar-row-name {{ color: {fg}; }}
         .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
         .muxterm-sidebar-agent-dot {{ font-size: 10px; }}
@@ -5311,6 +5412,10 @@ mod tests {
             "{light_css}"
         );
         assert!(light_css.contains(".quick-pick-root"), "{light_css}");
+        assert!(
+            light_css.contains(".muxterm-sidebar-workspace-row:hover .muxterm-sidebar-close"),
+            "{light_css}"
+        );
         assert!(
             light_css.contains("background-color: #eff1f5"),
             "{light_css}"

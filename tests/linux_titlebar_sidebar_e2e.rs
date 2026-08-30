@@ -26,6 +26,21 @@ fn count_widget_names(root: &impl IsA<Widget>, prefix: &str) -> usize {
     n
 }
 
+fn find_by_css_class(root: &impl IsA<Widget>, class: &str) -> Option<Widget> {
+    let root = root.as_ref();
+    if root.has_css_class(class) {
+        return Some(root.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_by_css_class(&widget, class) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 #[test]
 fn alt_p_opens_quick_connect() {
     if skip_no_display() {
@@ -269,6 +284,7 @@ fn title_bar_actions_and_workspace_sidebar() {
             "startup shell workspace must be listed"
         );
 
+        let original_workspaces = app.test_workspace_replica_ids();
         app.test_open_spec(WorkspaceSpec::local_shell(
             "/tmp/muxterm-sidebar-second-workspace",
         ));
@@ -277,6 +293,35 @@ fn title_bar_actions_and_workspace_sidebar() {
             count_widget_names(&app.window, "muxterm-sidebar-row"),
             2,
             "sidebar must list every connected workspace"
+        );
+        let second_row = workspace_list
+            .row_at_index(1)
+            .expect("second workspace row");
+        let close = find_by_css_class(&second_row, "muxterm-sidebar-close")
+            .expect("workspace row must provide a close button")
+            .downcast::<gtk4::Button>()
+            .expect("workspace close control type");
+        assert!(close.has_css_class("muxterm-sidebar-close"));
+        close.emit_clicked();
+        pump_main_loop(200);
+        assert_eq!(
+            app.test_workspace_replica_ids(),
+            original_workspaces,
+            "closing the active workspace must return to the stable neighboring workspace"
+        );
+        assert_eq!(count_widget_names(&app.window, "muxterm-sidebar-row"), 1);
+        let last_row = workspace_list.row_at_index(0).expect("last workspace row");
+        let close_last = find_by_css_class(&last_row, "muxterm-sidebar-close")
+            .expect("last workspace still has close")
+            .downcast::<gtk4::Button>()
+            .expect("last workspace close type");
+        close_last.emit_clicked();
+        pump_main_loop(200);
+        assert_eq!(app.test_workspace_replica_ids().len(), 1);
+        assert_eq!(
+            app.test_active_workspace_runtime(),
+            "shell",
+            "closing the last workspace must leave a fresh usable local shell"
         );
 
         sidebar_toggle.set_active(false);

@@ -188,6 +188,7 @@ fn attention_indicator(attention: &PaneAttention) -> AgentIndicator {
 }
 
 type WorkspaceActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
+type WorkspaceCloseCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
 type AgentActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId, u32)>>>>;
 
 fn section_header(title: &str, widget_name: &str) -> (ToggleButton, Label) {
@@ -235,6 +236,7 @@ pub struct WorkspaceSidebar {
     workspace_items: RefCell<Vec<WorkspaceSidebarItem>>,
     agent_items: RefCell<Vec<AgentSidebarItem>>,
     on_activate: WorkspaceActivateCb,
+    on_close: WorkspaceCloseCb,
     on_agent_activate: AgentActivateCb,
 }
 
@@ -392,6 +394,7 @@ impl WorkspaceSidebar {
         let ids = Rc::new(RefCell::new(Vec::new()));
         let agent_targets = Rc::new(RefCell::new(Vec::new()));
         let on_activate: WorkspaceActivateCb = Rc::new(RefCell::new(None));
+        let on_close: WorkspaceCloseCb = Rc::new(RefCell::new(None));
         let on_agent_activate: AgentActivateCb = Rc::new(RefCell::new(None));
 
         container.append(&revealer);
@@ -447,6 +450,7 @@ impl WorkspaceSidebar {
             workspace_items: RefCell::new(Vec::new()),
             agent_items: RefCell::new(Vec::new()),
             on_activate,
+            on_close,
             on_agent_activate,
         }
     }
@@ -468,17 +472,22 @@ impl WorkspaceSidebar {
             row.set_widget_name("muxterm-sidebar-row");
             row.set_can_focus(false);
             row.add_css_class("muxterm-sidebar-row");
+            row.add_css_class("muxterm-sidebar-workspace-row");
             if item.active {
                 row.add_css_class("active");
             }
 
-            let box_ = GtkBox::builder()
+            let content = GtkBox::builder()
+                .orientation(Orientation::Horizontal)
+                .spacing(4)
+                .build();
+            let labels = GtkBox::builder()
                 .orientation(Orientation::Vertical)
                 .spacing(2)
                 .margin_top(8)
                 .margin_bottom(8)
                 .margin_start(12)
-                .margin_end(12)
+                .hexpand(true)
                 .build();
 
             let marker = if item.active { "●" } else { "○" };
@@ -496,9 +505,31 @@ impl WorkspaceSidebar {
                 .build();
             detail.add_css_class("muxterm-sidebar-row-detail");
 
-            box_.append(&name);
-            box_.append(&detail);
-            row.set_child(Some(&box_));
+            labels.append(&name);
+            labels.append(&detail);
+            let close = gtk4::Button::with_label("×");
+            close.set_widget_name(&format!(
+                "muxterm-sidebar-workspace-close-{}",
+                widget_id(&item.id.as_str())
+            ));
+            close.add_css_class("muxterm-sidebar-close");
+            close.set_has_frame(false);
+            close.set_can_focus(false);
+            close.set_valign(Align::Center);
+            close.set_margin_end(6);
+            close.set_tooltip_text(Some("Close workspace"));
+            {
+                let id = item.id.clone();
+                let on_close = self.on_close.clone();
+                close.connect_clicked(move |_| {
+                    if let Some(callback) = on_close.borrow().as_ref() {
+                        callback(&id);
+                    }
+                });
+            }
+            content.append(&labels);
+            content.append(&close);
+            row.set_child(Some(&content));
             self.list.append(&row);
 
             if item.active {
@@ -589,6 +620,10 @@ impl WorkspaceSidebar {
     /// Handle a workspace row activation.
     pub fn connect_workspace_activated<F: Fn(&WorkspaceId) + 'static>(&self, callback: F) {
         *self.on_activate.borrow_mut() = Some(Box::new(callback));
+    }
+
+    pub fn connect_workspace_closed<F: Fn(&WorkspaceId) + 'static>(&self, callback: F) {
+        *self.on_close.borrow_mut() = Some(Box::new(callback));
     }
 
     pub fn connect_agent_activated<F: Fn(&WorkspaceId, u32) + 'static>(&self, callback: F) {
