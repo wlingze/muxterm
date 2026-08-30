@@ -153,6 +153,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         XCTAssertTrue(
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
+                app.unifiedPanel.refreshData()
                 return app.testAttentionRowCount() > 0
             },
             "后台 Workspace 的 BEL 必须进入 Attention"

@@ -1515,6 +1515,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
+        if let departingPane = lastSnapshot.panes.first(where: \.isActive)?.id {
+            recordLastSeen(for: departingPane)
+        }
         // 等 STATE_ACTIVE_TAB_CHANGED 到达后再用权威 snapshot 对齐；
         // 缓存命中时画面已经切过去了。
     }
