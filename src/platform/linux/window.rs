@@ -5088,7 +5088,22 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         .qc-badge-current {{ background: #df8e1d; }}
         .qc-current {{ background: alpha(#89b4fa, 0.18); }}
         .muxterm-sidebar {{ background: {bg}; border-right: 1px solid alpha({fg}, 0.18); }}
-        .muxterm-sidebar-title {{ color: {fg}; font-weight: 600; }}
+        .muxterm-sidebar-section-header {{
+            background-image: none;
+            background-color: alpha({fg}, 0.035);
+            border: none;
+            border-radius: 0;
+            min-height: 26px;
+            padding: 0;
+            color: {fg};
+        }}
+        .muxterm-sidebar-section-header:hover {{ background-color: alpha({fg}, 0.09); }}
+        .muxterm-sidebar-title {{ color: {fg}; font-size: 11px; font-weight: 700; }}
+        .muxterm-sidebar-section-arrow {{ color: {fg}; opacity: 0.72; }}
+        .muxterm-sidebar-sections > separator {{
+            min-height: 1px;
+            background: alpha({fg}, 0.18);
+        }}
         .muxterm-sidebar-row {{ border-radius: 4px; }}
         .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); }}
         .muxterm-sidebar-row-name {{ color: {fg}; }}

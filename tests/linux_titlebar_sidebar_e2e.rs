@@ -89,6 +89,67 @@ fn title_bar_actions_and_workspace_sidebar() {
             sidebar.reveals_child(),
             "sidebar toggle must reveal sidebar"
         );
+        let workspace_section_toggle =
+            find_by_name(&app.window, "muxterm-sidebar-workspaces-toggle")
+                .expect("workspace section toggle")
+                .downcast::<ToggleButton>()
+                .expect("workspace section toggle type");
+        let agent_section_toggle = find_by_name(&app.window, "muxterm-sidebar-agents-toggle")
+            .expect("agent section toggle")
+            .downcast::<ToggleButton>()
+            .expect("agent section toggle type");
+        let sections = find_by_name(&app.window, "muxterm-sidebar-sections")
+            .expect("vertical sidebar split")
+            .downcast::<Paned>()
+            .expect("sidebar sections must be a Paned");
+        let workspace_scroll =
+            find_by_name(&app.window, "muxterm-sidebar-scroll").expect("workspace section body");
+        let agent_scroll =
+            find_by_name(&app.window, "muxterm-sidebar-agent-scroll").expect("agent section body");
+        assert!(workspace_section_toggle.is_active());
+        assert!(agent_section_toggle.is_active());
+        assert!(workspace_scroll.is_visible());
+        assert!(agent_scroll.is_visible());
+
+        let workspace_list = find_by_name(&app.window, "muxterm-sidebar-list")
+            .expect("workspace list")
+            .downcast::<gtk4::ListBox>()
+            .expect("workspace list type");
+        let sidebar_labels = widget_label_texts(&workspace_list);
+        assert!(
+            sidebar_labels.iter().any(|label| label == "shell @ local"),
+            "workspace subtitle must be runtime @ transport: {sidebar_labels:?}"
+        );
+
+        let divider = sections.position();
+        sections.set_position(divider + 40);
+        pump_main_loop(100);
+        assert!(
+            sections.position() > divider,
+            "two expanded sections must have an adjustable divider"
+        );
+
+        agent_section_toggle.set_active(false);
+        pump_main_loop(100);
+        assert!(workspace_scroll.is_visible());
+        assert!(!agent_scroll.is_visible());
+
+        workspace_section_toggle.set_active(false);
+        pump_main_loop(100);
+        assert!(!workspace_scroll.is_visible());
+        assert!(!agent_scroll.is_visible());
+        assert!(
+            !sections.property::<bool>("vexpand"),
+            "all collapsed section headers must stack at the top"
+        );
+
+        agent_section_toggle.set_active(true);
+        pump_main_loop(100);
+        assert!(!workspace_scroll.is_visible());
+        assert!(agent_scroll.is_visible());
+        workspace_section_toggle.set_active(true);
+        pump_main_loop(100);
+
         let content = find_by_name(&app.window, "muxterm-content")
             .expect("main split must exist")
             .downcast::<Paned>()
