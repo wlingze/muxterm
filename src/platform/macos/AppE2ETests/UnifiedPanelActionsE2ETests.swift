@@ -78,6 +78,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady(minLeaves: 1))
+        let firstBridge = app.bridge
 
         let secondBridge = try CoreBridge(
             backendType: "tmux",
@@ -134,7 +135,6 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady(minLeaves: 1))
-        let firstBridge = app.bridge
 
         let secondBridge = try CoreBridge(
             backendType: "tmux",
