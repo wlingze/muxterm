@@ -85,6 +85,7 @@ impl Workspace {
         &mut self,
         resolved: crate::core::catalog::resolver::ResolvedTarget,
     ) {
+        self.name = resolved.display_name();
         self.resolved_target = Some(resolved);
     }
 

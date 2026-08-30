@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::{Catalog, Reach};
+use super::{Catalog, Reach, ResolvedTarget};
 use crate::core::catalog::connect::Connect;
 use crate::core::catalog::driver::{RuntimeDriver, SessionCandidate};
 use crate::core::catalog::transport::{TargetInfo, Transport};
@@ -318,6 +318,44 @@ async fn open_uses_driver_not_build_runtime() {
         .unwrap();
     assert_eq!(ws.runtime().workspace_runtime(), "mockrt");
     assert_eq!(opened.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn open_resolved_uses_canonical_workspace_name() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "herdr",
+        name: "Herdr",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+
+    let spec = WorkspaceSpec::herdr("default", "w2", "/tmp/herdr.sock");
+    let canonical = crate::core::quickconnect::model::TargetConfig {
+        name: "muxterm".into(),
+        runtime: crate::core::quickconnect::model::TargetRuntime::Herdr,
+        transport: crate::core::quickconnect::model::TargetTransport::Local,
+        path: "/home/example/muxterm".into(),
+        socket: Some("/tmp/herdr.sock".into()),
+        session: Some("default".into()),
+        workspace_id: Some("w2".into()),
+    };
+    let ws = cat
+        .open_resolved(ResolvedTarget { canonical, spec })
+        .await
+        .unwrap();
+
+    assert_eq!(ws.name(), "muxterm");
 }
 
 #[test]
