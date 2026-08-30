@@ -44,13 +44,10 @@ impl WorkspaceSidebarItem {
     /// Build every row currently owned by the pool.
     pub fn from_pool(pool: &WorkspacePool) -> Vec<Self> {
         let active_id = pool.active_id();
-        let mut items: Vec<Self> = pool
-            .list()
+        pool.list()
             .into_iter()
             .map(|workspace| Self::from_workspace(workspace, active_id))
-            .collect();
-        items.sort_by(|a, b| b.active.cmp(&a.active).then_with(|| a.name.cmp(&b.name)));
-        items
+            .collect()
     }
 }
 
@@ -280,5 +277,27 @@ mod tests {
         let ws = workspace("beta");
         let item = WorkspaceSidebarItem::from_workspace(&ws, None);
         assert!(!item.active);
+    }
+
+    #[tokio::test]
+    async fn pool_items_keep_open_order_when_active_workspace_changes() {
+        let mut pool =
+            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
+        for name in ["alpha", "beta", "gamma"] {
+            let workspace_id = WorkspaceId::new("local", None, name, "shell", name);
+            pool.open(workspace_id, name.into(), |_| {
+                Box::new(MockRuntime::with_single_pane())
+            })
+            .await
+            .unwrap();
+        }
+        let beta = WorkspaceId::new("local", None, "beta", "shell", "beta");
+        pool.activate(&beta);
+
+        let names: Vec<String> = WorkspaceSidebarItem::from_pool(&pool)
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(names, ["alpha", "beta", "gamma"]);
     }
 }

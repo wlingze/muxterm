@@ -52,6 +52,8 @@ struct PooledWorkspace {
     workspace: Workspace,
     lifecycle: WorkspaceLifecycle,
     last_used_at: Instant,
+    /// 首次进入池的稳定顺序；activate/status 刷新不得改变。
+    opened_order: u64,
 }
 
 /// WorkspacePool：连接池的 core 版。
@@ -60,6 +62,7 @@ pub struct WorkspacePool {
     active_id: Option<WorkspaceId>,
     policy: WorkspacePoolPolicy,
     recently_evicted: Vec<WorkspaceId>,
+    next_opened_order: u64,
 }
 
 impl Default for WorkspacePool {
@@ -75,6 +78,7 @@ impl WorkspacePool {
             active_id: None,
             policy,
             recently_evicted: Vec::new(),
+            next_opened_order: 0,
         }
     }
 
@@ -118,7 +122,15 @@ impl WorkspacePool {
 
     /// 池里全部工作区（含后台）。
     pub fn list(&self) -> Vec<&Workspace> {
-        self.slots.values().map(|p| &p.workspace).collect()
+        let mut slots: Vec<&PooledWorkspace> = self.slots.values().collect();
+        slots.sort_by_key(|slot| slot.opened_order);
+        slots.into_iter().map(|slot| &slot.workspace).collect()
+    }
+
+    fn allocate_opened_order(&mut self) -> u64 {
+        let order = self.next_opened_order;
+        self.next_opened_order = self.next_opened_order.saturating_add(1);
+        order
     }
 
     /// 打开（或复用）一个工作区并设为前台。`create` 只在不存在时调用。
@@ -176,12 +188,14 @@ impl WorkspacePool {
         let mut workspace =
             Workspace::new_with_scrollback(id.clone(), name, runtime, scrollback_lines);
         workspace.connect().await?;
+        let opened_order = self.allocate_opened_order();
         self.slots.insert(
             id.clone(),
             PooledWorkspace {
                 workspace,
                 lifecycle: WorkspaceLifecycle::Active,
                 last_used_at: now,
+                opened_order,
             },
         );
         self.transition_active(&id);
@@ -272,12 +286,18 @@ impl WorkspacePool {
     pub fn insert_connected(&mut self, workspace: Workspace) -> WorkspaceId {
         let now = Instant::now();
         let id = workspace.id().clone();
+        let opened_order = self
+            .slots
+            .get(&id)
+            .map(|slot| slot.opened_order)
+            .unwrap_or_else(|| self.allocate_opened_order());
         self.slots.insert(
             id.clone(),
             PooledWorkspace {
                 workspace,
                 lifecycle: WorkspaceLifecycle::Active,
                 last_used_at: now,
+                opened_order,
             },
         );
         self.transition_active(&id);
@@ -410,6 +430,7 @@ impl WorkspacePool {
             release_runtime(&mut slot.workspace, &id);
         }
         self.active_id = None;
+        self.next_opened_order = 0;
     }
 
     fn evict(&mut self, id: &WorkspaceId, _reason: WorkspaceEvictionReason) {
@@ -705,6 +726,28 @@ mod tests {
         assert_eq!(foreground_calls(&pool, &b), vec![true]);
     }
 
+    /// 侧栏等消费者必须拿到首次打开顺序；激活不能把当前项挪到最前。
+    #[tokio::test]
+    async fn list_preserves_open_order_across_activation() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(8));
+        let ids = [id("alpha", "tmux"), id("beta", "tmux"), id("gamma", "tmux")];
+        for workspace_id in &ids {
+            pool.open(workspace_id.clone(), workspace_id.session.clone(), |_| {
+                Box::new(MockRuntime::with_single_pane())
+            })
+            .await
+            .unwrap();
+        }
+
+        pool.activate(&ids[0]);
+        let listed: Vec<WorkspaceId> = pool
+            .list()
+            .into_iter()
+            .map(|workspace| workspace.id().clone())
+            .collect();
+        assert_eq!(listed, ids);
+    }
+
     /// W1：close 先降前台（false）再按能力释放。
     #[tokio::test]
     async fn close_notifies_false_before_capability_release() {
@@ -783,6 +826,7 @@ mod tests {
                 ),
                 lifecycle: WorkspaceLifecycle::Background,
                 last_used_at: Instant::now() - Duration::from_secs(60),
+                opened_order: 0,
             },
         );
         pool.slots.insert(
@@ -795,6 +839,7 @@ mod tests {
                 ),
                 lifecycle: WorkspaceLifecycle::Active,
                 last_used_at: Instant::now(),
+                opened_order: 1,
             },
         );
         pool.active_id = Some(b.clone());
