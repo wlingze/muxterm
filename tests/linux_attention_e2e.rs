@@ -14,7 +14,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::gdk;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
-use vte4::prelude::*;
 
 use muxterm::core::config::{Config, Theme};
 use muxterm::platform::linux::window::AppWindow;
@@ -160,34 +159,22 @@ fn attention_bel_paints_badge_and_panel() {
             .expect("ToggleButton 类型");
         assert!(attention_tab.is_active(), "Attention tab 应激活");
 
-        // 选中注意力行 → 小 VTE 播种（副本里有 hello）。
+        // Attention 行直接展示摘要和状态点，不再创建小终端。
         let list = find_by_name(&app.test_window(), "muxterm-panel-list")
             .expect("列表应存在")
             .downcast::<gtk4::ListBox>()
             .expect("ListBox 类型");
         let row = list.row_at_index(1).expect("注意力行");
         list.select_row(Some(&row));
-        let entry = find_by_name(&app.test_window(), "muxterm-panel-entry")
-            .expect("共享 Entry 应存在")
-            .downcast::<gtk4::Entry>()
-            .expect("Entry 类型");
-        entry.set_text("x");
-        entry.set_text("");
-        pump_main_loop(40);
-        let peek_sw = find_by_name(&app.test_window(), "muxterm-attention-peek")
-            .expect("小 VTE 容器应存在")
-            .downcast::<gtk4::ScrolledWindow>()
-            .expect("ScrolledWindow 类型");
-        let peek_term = peek_sw
-            .child()
-            .expect("小 VTE 应有子控件")
-            .downcast::<vte4::Terminal>()
-            .expect("子控件应为 VTE Terminal");
-        let text = peek_term
-            .text_format(vte4::Format::Text)
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        assert!(text.contains("hello"), "小 VTE 应含副本文本: {text:?}");
+        let labels = widget_label_texts(&row);
+        assert!(
+            labels.iter().any(|text| text.contains("hello")),
+            "Blocked attention 行应直接包含摘要: {labels:?}"
+        );
+        let dot =
+            find_by_name(&row, "muxterm-attention-status-dot").expect("Blocked attention 状态点");
+        assert!(dot.has_css_class("needs-attention"));
+        assert!(find_by_name(&app.test_window(), "muxterm-attention-peek").is_none());
 
         // 前台 pane 0 的 CommandDone（如 ls）→ 已看见，不进 attention 列表。
         app.test_feed_replica(0, b"\x1b]133;D;0\x07");

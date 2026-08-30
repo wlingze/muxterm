@@ -178,7 +178,7 @@
   "panel_tab_workspaces": "Workspaces",
   "panel_tab_attention": "Attention",
   "panel_tab_search": "Search",
-  "attention_count": "Pending {n}",
+  "attention_count": "Agents & attention {n}",
   "attention_empty": "No pending panes",
   "peek": "Peek",
   "reply_hint": "Reply (Enter)",

@@ -3,9 +3,12 @@
 //! 无 GTK 依赖：tab 切换、query 保留、Tab1 工作区过滤/状态标记、
 //! Tab2 注意力排序、Tab3 搜索占位。GTK 层只负责渲染。
 
+use std::collections::{HashMap, HashSet};
+
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
 use crate::platform::linux::quickconnect_panel::{filter_panel_items, PanelItem};
+use crate::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
 
 /// 面板 tab。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +67,16 @@ pub struct WorkspaceRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionRow {
     pub attention: PaneAttention,
+}
+
+/// Attention tab 的统一展示行：agent 常驻，其余行保留 Blocked/Done 语义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionPanelRow {
+    pub workspace_id: String,
+    pub pane_id: u32,
+    pub title: String,
+    pub detail: String,
+    pub indicator: AgentIndicator,
 }
 
 /// Tab3 结果：工作区 PaneBuf 搜索命中行。
@@ -135,6 +148,86 @@ pub fn filter_attention_rows(panes: &[PaneAttention], query: &str) -> Vec<Attent
     rows
 }
 
+/// 合并常驻 agent 与传统 attention 行。
+///
+/// agent 顺序直接沿用 `AgentSidebarItem::from_pool` 的 pool/tab/pane 顺序；
+/// 同一 pane 即使同时处于 Blocked/Done，也只展示一次 agent 行。
+pub fn filter_attention_panel_rows(
+    agents: &[AgentSidebarItem],
+    panes: &[PaneAttention],
+    query: &str,
+) -> Vec<AttentionPanelRow> {
+    let q = query.trim().to_lowercase();
+    let pane_by_key: HashMap<(String, u32), &PaneAttention> = panes
+        .iter()
+        .map(|pane| ((pane.workspace_id.clone(), pane.pane_id), pane))
+        .collect();
+    let mut agent_keys = HashSet::new();
+    let mut rows = Vec::new();
+
+    for agent in agents {
+        let workspace_id = agent.workspace_id.replica_id();
+        let key = (workspace_id.clone(), agent.pane_id);
+        agent_keys.insert(key.clone());
+        let linked = pane_by_key.get(&key).copied();
+        let matches = q.is_empty()
+            || workspace_id.to_lowercase().contains(&q)
+            || agent.title.to_lowercase().contains(&q)
+            || agent.detail.to_lowercase().contains(&q)
+            || linked.is_some_and(|pane| {
+                pane.process_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&q)
+                    || pane.last_line.to_lowercase().contains(&q)
+            });
+        if matches {
+            rows.push(AttentionPanelRow {
+                workspace_id,
+                pane_id: agent.pane_id,
+                title: agent.title.clone(),
+                detail: agent.detail.clone(),
+                indicator: agent.indicator,
+            });
+        }
+    }
+
+    rows.extend(
+        filter_attention_rows(panes, query)
+            .into_iter()
+            .filter(|row| {
+                !agent_keys.contains(&(row.attention.workspace_id.clone(), row.attention.pane_id))
+            })
+            .map(|row| {
+                let attention = row.attention;
+                let title = attention
+                    .process_name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("Attention")
+                    .to_string();
+                let detail = if attention.last_line.trim().is_empty() {
+                    attention.workspace_id.clone()
+                } else {
+                    format!("{} · {}", attention.workspace_id, attention.last_line)
+                };
+                AttentionPanelRow {
+                    workspace_id: attention.workspace_id,
+                    pane_id: attention.pane_id,
+                    title,
+                    detail,
+                    indicator: if attention.acknowledged {
+                        AgentIndicator::None
+                    } else {
+                        AgentIndicator::NeedsAttention
+                    },
+                }
+            }),
+    );
+    rows
+}
+
 /// Tab3：按 query 过滤命中行；空结果返回占位 flag。
 pub fn search_rows(query: &str, hits: Vec<SearchRow>) -> (Vec<SearchRow>, bool) {
     let q = query.trim().to_lowercase();
@@ -154,6 +247,9 @@ pub fn search_rows(query: &str, hits: Vec<SearchRow>) -> (Vec<SearchRow>, bool) 
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    use crate::core::workspace::id::WorkspaceId;
+    use crate::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
 
     fn attention(ws: &str, pane: u32, status: PaneStatus, seq: u64) -> PaneAttention {
         PaneAttention {
@@ -217,6 +313,45 @@ mod tests {
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].attention.workspace_id, "legion");
+    }
+
+    #[test]
+    fn attention_panel_keeps_all_agents_in_stable_order_without_duplicates() {
+        let first_id = WorkspaceId::new("local", None, "alpha", "tmux", "/work/alpha");
+        let second_id = WorkspaceId::new("local", None, "beta", "tmux", "/work/beta");
+        let agents = vec![
+            AgentSidebarItem {
+                workspace_id: first_id.clone(),
+                pane_id: 7,
+                title: "pi".into(),
+                detail: "/work/alpha · main".into(),
+                indicator: AgentIndicator::Running,
+            },
+            AgentSidebarItem {
+                workspace_id: second_id.clone(),
+                pane_id: 9,
+                title: "codex".into(),
+                detail: "/work/beta · feature/panel".into(),
+                indicator: AgentIndicator::None,
+            },
+        ];
+        let panes = vec![
+            attention(&first_id.replica_id(), 7, PaneStatus::Working, 1),
+            attention(&second_id.replica_id(), 9, PaneStatus::Done, 2),
+            attention("plain@local", 11, PaneStatus::Blocked, 3),
+        ];
+
+        let rows = filter_attention_panel_rows(&agents, &panes, "");
+        assert_eq!(rows.len(), 3, "agent panes must not be rendered twice");
+        assert_eq!(rows[0].title, "pi");
+        assert_eq!(rows[0].indicator, AgentIndicator::Running);
+        assert_eq!(rows[1].title, "codex");
+        assert_eq!(rows[1].indicator, AgentIndicator::None);
+        assert_eq!(rows[2].workspace_id, "plain@local");
+
+        let filtered = filter_attention_panel_rows(&agents, &panes, "feature/panel");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].title, "codex");
     }
 
     #[test]

@@ -1661,11 +1661,6 @@ impl AppWindow {
     pub fn test_open_pane_find(&self) {
         open_pane_find(&self._state.clone(), &self.window);
     }
-
-    /// 测试用：Attention 小 VTE 按键（必须走 peek `connect_input`，不要直接 WriteRaw）。
-    pub fn test_peek_emit_input(&self, data: &[u8]) {
-        crate::platform::linux::quickconnect_panel::test_emit_peek_input(data);
-    }
 }
 
 fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<RefCell<UiState>>) {
@@ -2543,6 +2538,11 @@ fn dispatch_event_for(
                     s.active_workspace().pane_last_line_seq(PaneId(pane.0)).0 != *seen
                 });
                 s.last_seen_mark.set_visible(has_unseen);
+                if s.panel_open.is_none() && !s.pane_find.is_visible() {
+                    if let Some(view) = s.active_layout().pane(pane.0).cloned() {
+                        view.grab_focus();
+                    }
+                }
             }
         }
         StateChange::TabClosed { tab } => {
@@ -2851,6 +2851,11 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
                 s.active_workspace().pane_last_line_seq(PaneId(pane.0)).0 != *seen
             });
             s.last_seen_mark.set_visible(has_unseen);
+            if s.panel_open.is_none() && !s.pane_find.is_visible() {
+                if let Some(view) = s.active_layout().pane(pane.0).cloned() {
+                    view.grab_focus();
+                }
+            }
         }
         StateChange::TabClosed { tab } => {
             s.tab_gate.on_tab_closed(tab.0);
@@ -4049,17 +4054,14 @@ fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
 
 /// 打开三 tab 面板（initial_tab 由入口决定：Alt+Q → Workspaces，红点 → Attention）。
 ///
-/// 内部自行 borrow：show() 的 rebuild 会同步触发 peek_text（st.borrow()），
-/// 调用方不能同时持有 RefMut。
+/// 内部自行 borrow：面板回调会再次借用 state，调用方不能同时持有 RefMut。
 fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
-    let (workspaces, attention, theme, font, win, st, ssh_reach) = {
+    let (workspaces, agents, attention, win, st, ssh_reach) = {
         let mut s = state.borrow_mut();
         let recents = recent_target_configs(&s.pool, 5);
         s.qc_store.replace_recents(&recents);
         let current = s.pool.active().map(workspace_to_target_config);
         let store = s.qc_store.clone();
-        let theme = s.theme.clone();
-        let font = s.font.clone();
         let win = window.clone();
         let st = state.clone();
         let workspaces = build_root_items(&store, current.as_ref());
@@ -4069,17 +4071,14 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         // C7：本地列出搬后台线程（GTK 线程禁止 ssh / 扫 herdr socket），
         // 结果经 16ms poll 收编，和 SSH probe 同一模式。
         spawn_local_existing_probe(&mut s);
-        let ws = active_workspace_id(&s);
-        let active_pane = s.active_pane;
-        let attention: Vec<PaneAttention> = s
-            .attention
-            .snapshot()
+        let attention_snapshot = s.attention.snapshot();
+        let agents = AgentSidebarItem::from_pool(&s.pool, &attention_snapshot);
+        let attention: Vec<PaneAttention> = attention_snapshot
             .into_iter()
             .flat_map(|w| w.panes)
-            .filter(|p| !(p.workspace_id == ws && p.pane_id == active_pane))
             .collect();
         s.panel_open = Some(initial_tab);
-        (workspaces, attention, theme, font, win, st, ssh_reach)
+        (workspaces, agents, attention, win, st, ssh_reach)
     };
     if !window.is_visible() {
         window.present();
@@ -4089,9 +4088,8 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         crate::platform::linux::quickconnect_panel::PanelShowArgs {
             initial_tab,
             workspaces,
+            agents,
             attention,
-            theme,
-            font,
             on_connect: {
                 let st = st.clone();
                 std::boxed::Box::new(move |cfg| {
@@ -4122,45 +4120,6 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                 let st = st.clone();
                 std::boxed::Box::new(move |ws, pane, seq| {
                     jump_to_attention_pane(&st, &ws, pane, seq);
-                })
-            },
-            on_send_input: {
-                let st = st.clone();
-                std::boxed::Box::new(move |ws, pane, data| {
-                    let mut s = st.borrow_mut();
-                    activate_attention_workspace(&mut s, &ws);
-                    let _ = s.active_workspace_mut().execute(Task::WriteRaw {
-                        target: PaneId(pane),
-                        data: data.to_vec(),
-                    });
-                    s.attention.on_user_input(&ws, pane);
-                })
-            },
-            on_mute: {
-                let st = st.clone();
-                std::boxed::Box::new(move |ws, pane, duration| {
-                    let mut s = st.borrow_mut();
-                    s.attention.mute_for(&ws, pane, duration);
-                })
-            },
-            peek_bytes: {
-                let st = st.clone();
-                std::boxed::Box::new(move |ws, pane| {
-                    let s = st.borrow();
-                    let wid = s
-                        .pool
-                        .list()
-                        .into_iter()
-                        .find(|w| workspace_replica_id(w.id()) == ws);
-                    let Some(w) = wid else {
-                        return (80, 24, Vec::new());
-                    };
-                    let (cols, rows) = w
-                        .state()
-                        .pane(&PaneId(pane))
-                        .map(|p| (p.cols, p.rows))
-                        .unwrap_or((80, 24));
-                    (cols, rows, w.pane_raw_bytes(PaneId(pane)))
                 })
             },
             search: {

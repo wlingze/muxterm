@@ -443,9 +443,13 @@ fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
         let server = TmuxServerGuard::new("linux-agent-list");
         let session = "agent-list";
         create_session(server.socket(), session, 100, 30);
-        let pane = *list_pane_ids(server.socket(), session)
-            .first()
-            .expect("isolated tmux pane");
+        tmux_ok(
+            server.socket(),
+            &["split-window", "-d", "-h", "-t", session],
+        );
+        let panes = list_pane_ids(server.socket(), session);
+        assert_eq!(panes.len(), 2, "isolated tmux must have two panes");
+        let pane = *panes.last().expect("background isolated tmux pane");
         let target = format!("%{pane}");
         send_keys_line(
             server.socket(),
@@ -490,6 +494,50 @@ fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
         assert!(
             dot.has_css_class("running"),
             "running tmux agent must be green"
+        );
+
+        // A Working tmux agent must remain in Attention even while it is not
+        // Blocked/Done. Enter is the only action and must jump to its pane.
+        assert_ne!(
+            app.test_active_pane_id(),
+            pane,
+            "fake pi fixture must start in the background"
+        );
+        app.test_open_panel(1);
+        pump_main_loop(80);
+        let attention_list = find_by_name(&app.window, "muxterm-panel-list")
+            .expect("Attention list")
+            .downcast::<gtk4::ListBox>()
+            .expect("Attention list type");
+        let attention_row = attention_list
+            .row_at_index(1)
+            .expect("tmux pi Attention row");
+        let attention_labels = widget_label_texts(&attention_row);
+        assert!(
+            attention_labels.iter().any(|text| text == "pi"),
+            "active Working tmux agent must stay in Attention: {attention_labels:?}"
+        );
+        let attention_dot = find_by_name(&attention_row, "muxterm-attention-status-dot")
+            .expect("Attention agent status dot");
+        assert!(attention_dot.has_css_class("running"));
+        assert!(find_by_name(&app.window, "muxterm-attention-peek").is_none());
+        let entry = find_by_name(&app.window, "muxterm-panel-entry")
+            .expect("panel entry")
+            .downcast::<gtk4::Entry>()
+            .expect("panel entry type");
+        let entry_ctrl = window_key_controller(&entry).expect("panel key controller");
+        simulate_key_press(&entry_ctrl, gdk::Key::Return, gdk::ModifierType::empty());
+        assert!(
+            wait_until_widget(8_000, || {
+                app.test_poll_once();
+                app.test_active_pane_id() == pane
+            }),
+            "Enter must jump to the background tmux agent pane"
+        );
+        assert!(!app.test_panel_open(), "jump must close Attention");
+        assert!(
+            app.test_active_terminal_has_focus(),
+            "the target terminal must own focus after the async pane switch"
         );
 
         app.test_open_spec(WorkspaceSpec::local_shell("/tmp"));

@@ -12,13 +12,11 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::core::config::Theme;
 use muxterm::core::model::backend::mock::MockRuntime;
 use muxterm::core::types::PaneId;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;
 use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
-use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect_panel::{show, PanelShowArgs};
 
 #[test]
@@ -56,23 +54,13 @@ fn search_tab_finds_replica_hits_and_jumps() {
             PanelShowArgs {
                 initial_tab: PanelTab::Search,
                 workspaces: vec![],
+                agents: vec![],
                 attention: vec![],
-                theme: Theme::load("light").unwrap_or_else(|_| Theme {
-                    name: "test".into(),
-                    background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-                    foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-                    cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-                    colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
-                }),
-                font: FontSettings::default(),
                 on_connect: Box::new(|_| {}),
                 on_existing_connect: Box::new(|_| {}),
                 on_edit: Box::new(|_| {}),
                 on_new_project: Box::new(|| {}),
                 on_jump_pane: Box::new(move |ws, pane, _seq| j.borrow_mut().push((ws, pane))),
-                on_send_input: Box::new(|_, _, _| {}),
-                on_mute: Box::new(|_, _, _| {}),
-                peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
                 search: Box::new(move |query, _scope| {
                     s.borrow()
                         .search_workspace(query)

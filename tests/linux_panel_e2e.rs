@@ -1,7 +1,7 @@
 //! 三 tab 面板 e2e（普通 GTK Window，不构造 AppWindow）。
 //!
 //! LINUX-PLAN C3.2/C3.3/C3.5：widget_name 契约、共享 Entry、Tab/Shift+Tab、
-//! Esc、peek、一行答复、静音。本机 xvfb/Mesa 在第三个窗口 present 时崩溃，
+//! Esc、agent 状态、回车跳转。本机 xvfb/Mesa 在第三个窗口 present 时崩溃，
 //! 因此整个 crate 只用一个 Window、一个面板生命周期。
 
 #![cfg(feature = "gtk")]
@@ -12,25 +12,22 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::process::Command;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gtk4::gdk;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
-use vte4::prelude::*;
 
 use muxterm::core::attention::engine::PaneAttention;
 use muxterm::core::attention::state::PaneStatus;
-use muxterm::core::config::Theme;
 use muxterm::core::transport::ssh::probe::SshReach;
+use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
-use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
-use muxterm::platform::linux::quickconnect_panel::{
-    show, test_emit_peek_input, PanelItem, PanelShowArgs,
-};
+use muxterm::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
+use muxterm::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
 
 fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
     PaneAttention {
@@ -43,6 +40,23 @@ fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttenti
         process_name: Some("cat".into()),
         mute_until: None,
         last_regex_eval: Instant::now(),
+    }
+}
+
+fn agent(
+    session: &str,
+    path: &str,
+    pane: u32,
+    title: &str,
+    detail: &str,
+    indicator: AgentIndicator,
+) -> AgentSidebarItem {
+    AgentSidebarItem {
+        workspace_id: WorkspaceId::new("local", None, session, "tmux", path),
+        pane_id: pane,
+        title: title.into(),
+        detail: detail.into(),
+        indicator,
     }
 }
 
@@ -116,11 +130,8 @@ fn three_tab_panel_full_flow() {
             gtk4::test_widget_wait_for_draw(&win);
 
             let jumps = Rc::new(RefCell::new(Vec::<(String, u32)>::new()));
-            let inputs = Rc::new(RefCell::new(Vec::<(String, u32, Vec<u8>)>::new()));
-            let mutes = Rc::new(RefCell::new(Vec::<(String, u32, Duration)>::new()));
             let j = jumps.clone();
-            let i = inputs.clone();
-            let m = mutes.clone();
+            let long_detail = format!("/work/legion · main · {}", "x".repeat(180));
             show(
                 &win,
                 PanelShowArgs {
@@ -131,30 +142,27 @@ fn three_tab_panel_full_flow() {
                         ssh_target("ryzen"),
                         ssh_target("dead"),
                     ],
-                    attention: vec![
-                        attention("legion", 1, PaneStatus::Blocked, "ask me"),
-                        attention("muxterm", 2, PaneStatus::Done, "build ok"),
+                    agents: vec![
+                        agent("legion", "", 1, "pi", &long_detail, AgentIndicator::Running),
+                        agent(
+                            "muxterm",
+                            "",
+                            2,
+                            "codex",
+                            "/work/muxterm · feature/panel",
+                            AgentIndicator::None,
+                        ),
                     ],
-                    theme: Theme::load("light").unwrap_or_else(|_| Theme {
-                        name: "test".into(),
-                        background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-                        foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-                        cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-                        colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
-                    }),
-                    font: FontSettings::default(),
+                    attention: vec![
+                        attention("legion@local", 1, PaneStatus::Working, "running"),
+                        attention("muxterm@local", 2, PaneStatus::Done, "build ok"),
+                        attention("plain@local", 3, PaneStatus::Blocked, "ask me"),
+                    ],
                     on_connect: Box::new(|_| {}),
                     on_existing_connect: Box::new(|_| {}),
                     on_edit: Box::new(|_| {}),
                     on_new_project: Box::new(|| {}),
                     on_jump_pane: Box::new(move |ws, pane, _seq| j.borrow_mut().push((ws, pane))),
-                    on_send_input: Box::new(move |ws, pane, data| {
-                        i.borrow_mut().push((ws, pane, data.to_vec()))
-                    }),
-                    on_mute: Box::new(move |ws, pane, d| m.borrow_mut().push((ws, pane, d))),
-                    peek_bytes: Box::new(|ws, pane| {
-                        (80, 24, format!("\x1b[1;1Hpeek-{ws}-{pane}").into_bytes())
-                    }),
                     search: Box::new(|_, _| vec![]),
                     on_close: Box::new(|| {}),
                     ssh_reach: HashMap::from([
@@ -173,23 +181,25 @@ fn three_tab_panel_full_flow() {
             let panel = find_by_name(&win, "muxterm-panel").expect("面板应存在");
             assert!(panel.is_visible());
 
-            // 2. 初始 tab = Attention：列表含工作区名与 last_line
+            // 2. 初始 tab = Attention：Working / seen agent 都常驻，并保持 title/detail。
             let list = find_by_name(&win, "muxterm-panel-list")
                 .expect("列表应存在")
                 .downcast::<gtk4::ListBox>()
                 .expect("ListBox 类型");
             let labels = widget_label_texts(&list);
             assert!(
-                labels
-                    .iter()
-                    .any(|t| t.contains("legion") && t.contains("ask me")),
-                "Tab2 应显示工作区+进程+last_line: {labels:?}"
+                labels.iter().any(|text| text == "pi")
+                    && labels.iter().any(|text| text.contains("/work/legion")),
+                "Working agent 应按 title + path/branch detail 展示: {labels:?}"
             );
             assert!(
-                labels
-                    .iter()
-                    .any(|t| t.contains("muxterm") && t.contains("build ok")),
-                "Tab2 应显示第二条: {labels:?}"
+                labels.iter().any(|text| text == "codex")
+                    && labels.iter().any(|text| text.contains("feature/panel")),
+                "已读 agent 也必须常驻 Attention: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|text| text.contains("ask me")),
+                "非 agent 的 Blocked/Done attention 行仍须保留: {labels:?}"
             );
 
             // 3. 输入 query 过滤
@@ -197,106 +207,67 @@ fn three_tab_panel_full_flow() {
                 .expect("共享 Entry 应存在")
                 .downcast::<gtk4::Entry>()
                 .expect("Entry 类型");
-            entry.set_text("legion");
+            entry.set_text("feature/panel");
             pump_main_loop(40);
             let labels = widget_label_texts(&list);
             assert!(
-                labels.iter().any(|t| t.contains("legion")),
-                "过滤后应保留 legion: {labels:?}"
+                labels.iter().any(|text| text == "codex"),
+                "detail 过滤后应保留 codex: {labels:?}"
             );
             assert!(
-                !labels.iter().any(|t| t.contains("build ok")),
-                "过滤后应去掉 muxterm: {labels:?}"
+                !labels.iter().any(|text| text == "pi"),
+                "过滤后应去掉 pi: {labels:?}"
             );
 
-            // 4. 清空 query，选中 legion 行 → 小 VTE 播种 + 按钮可用
+            // 4. 清空 query：状态点正确；不再创建小终端或动作条。
             entry.set_text("");
             pump_main_loop(40);
-            let row = list.row_at_index(1).expect("注意力行");
-            list.select_row(Some(&row));
-            // select_row 不触发信号；rebuild 会按当前选中行刷新小 VTE。
-            entry.set_text("x");
-            entry.set_text("");
-            pump_main_loop(40);
-
-            let peek_sw = find_by_name(&win, "muxterm-attention-peek")
-                .expect("小 VTE 容器应存在")
-                .downcast::<gtk4::ScrolledWindow>()
-                .expect("ScrolledWindow 类型");
-            let peek_term = peek_sw
-                .child()
-                .expect("小 VTE 应有子控件")
-                .downcast::<vte4::Terminal>()
-                .expect("子控件应为 VTE Terminal");
-            let text = peek_term
-                .text_format(vte4::Format::Text)
-                .map(|s| s.to_string())
-                .unwrap_or_default();
+            let pi_row = list.row_at_index(1).expect("pi agent row");
+            let pi_dot =
+                find_by_name(&pi_row, "muxterm-attention-status-dot").expect("pi status dot");
             assert!(
-                text.contains("peek-legion-1"),
-                "小 VTE 应显示 replica 播种内容: {text:?}"
+                pi_dot.has_css_class("running"),
+                "Working agent 应显示绿色状态 class"
+            );
+            let seen_row = list.row_at_index(2).expect("seen codex row");
+            let seen_dot =
+                find_by_name(&seen_row, "muxterm-attention-status-dot").expect("seen status dot");
+            assert!(seen_dot.has_css_class("seen"));
+            assert!(find_by_name(&win, "muxterm-attention-peek").is_none());
+            assert!(find_by_name(&win, "muxterm-attention-jump").is_none());
+            assert!(find_by_name(&win, "muxterm-attention-mute").is_none());
+
+            // 5. 选择 + Enter 是 Attention 唯一动作。
+            list.select_row(Some(&pi_row));
+            let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
+            simulate_key_press(&entry_ctrl, gdk::Key::Return, gdk::ModifierType::empty());
+            pump_main_loop(40);
+            assert_eq!(
+                jumps.borrow().as_slice(),
+                &[("legion@local".to_string(), 1)]
             );
 
-            // 5. 跳转按钮 → on_jump_pane
-            let jump_btn = find_by_name(&win, "muxterm-attention-jump")
-                .expect("跳转按钮应存在")
-                .downcast::<gtk4::Button>()
-                .expect("Button 类型");
-            assert!(jump_btn.is_sensitive(), "选中后跳转应可用");
-            let _: () = jump_btn.emit_by_name("clicked", &[]);
-            pump_main_loop(40);
-            let got = jumps.borrow();
-            assert_eq!(got.len(), 1, "应恰好跳转一次");
-            assert_eq!(got[0], ("legion".to_string(), 1));
-            drop(got);
+            // 6. 超长 agent detail 不得撑宽面板。
+            gtk4::test_widget_wait_for_draw(&win);
+            let attention_width = panel.width();
+            assert!(
+                attention_width > 0 && attention_width <= 640,
+                "Attention 面板宽度必须有 640px 上限: {attention_width}"
+            );
 
-            // 5b. 小 VTE 快速回复 → on_send_input（W15e）
-            test_emit_peek_input(b"REPLY_PANEL");
-            pump_main_loop(40);
-            let got = inputs.borrow();
-            assert_eq!(got.len(), 1, "peek 输入应走 on_send_input 一次: {got:?}");
-            assert_eq!(got[0].0, "legion");
-            assert_eq!(got[0].1, 1);
-            assert_eq!(got[0].2, b"REPLY_PANEL".to_vec());
-            drop(got);
-
-            // 6. 放大按钮：小 VTE 高度 120 → 360
-            let zoom_btn = find_by_name(&win, "muxterm-attention-zoom")
-                .expect("放大按钮应存在")
-                .downcast::<gtk4::Button>()
-                .expect("Button 类型");
-            assert!(zoom_btn.is_sensitive(), "选中后放大应可用");
-            assert_eq!(peek_sw.height_request(), 120, "初始小 VTE 高 120");
-            let _: () = zoom_btn.emit_by_name("clicked", &[]);
-            pump_main_loop(40);
-            assert_eq!(peek_sw.height_request(), 360, "放大后小 VTE 高 360");
-
-            // 7. 禁止提醒下拉：mute-10m → on_mute(ws, pane, 600s)
-            let mute_btn = find_by_name(&win, "muxterm-attention-mute")
-                .expect("静音下拉应存在")
-                .downcast::<gtk4::MenuButton>()
-                .expect("MenuButton 类型");
-            assert!(mute_btn.is_sensitive(), "选中后静音应可用");
-            let mute_10m = find_by_name(&win, "muxterm-attention-mute-10m")
-                .expect("10m 菜单项应存在")
-                .downcast::<gtk4::Button>()
-                .expect("Button 类型");
-            let _: () = mute_10m.emit_by_name("clicked", &[]);
-            pump_main_loop(40);
-            let got = mutes.borrow();
-            assert_eq!(got.len(), 1, "应恰好静音一次");
-            assert_eq!(got[0].0, "legion");
-            assert_eq!(got[0].1, 1);
-            assert_eq!(got[0].2, Duration::from_secs(600), "10m 应回调 600s");
-            drop(got);
-
-            // 7b. Workspaces tab：注入的 SSH 灯（W15d）
+            // 7. Workspaces tab：注入的 SSH 灯（W15d），且切 tab 不改宽度。
             let ws_tab = find_by_name(&win, "muxterm-panel-tab-workspaces")
                 .expect("Workspaces tab")
                 .downcast::<gtk4::ToggleButton>()
                 .expect("ToggleButton");
             let _: () = ws_tab.emit_by_name("clicked", &[]);
             pump_main_loop(80);
+            gtk4::test_widget_wait_for_draw(&win);
+            assert_eq!(
+                panel.width(),
+                attention_width,
+                "切到 Workspaces 时面板不得横向抖动"
+            );
             let ok_dot = find_by_name(&win, "muxterm-ssh-dot-ryzen")
                 .expect("ryzen 行应有 muxterm-ssh-dot-ryzen");
             assert!(
@@ -319,6 +290,12 @@ fn three_tab_panel_full_flow() {
                 .expect("ToggleButton");
             let _: () = search_tab.emit_by_name("clicked", &[]);
             pump_main_loop(40);
+            gtk4::test_widget_wait_for_draw(&win);
+            assert_eq!(
+                panel.width(),
+                attention_width,
+                "切到 Search 时面板不得横向抖动"
+            );
             assert!(search_tab.is_active(), "应切到 Search");
             assert_eq!(entry.text().as_str(), "", "query 应跨 tab 保留");
             let status = find_by_name(&win, "muxterm-search-status").expect("搜索占位行");
@@ -365,15 +342,8 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                             .chain(std::iter::once(target("muxterm")))
                             .chain((2..32).map(|i| target(&format!("workspace-{i:02}"))))
                             .collect(),
+                        agents: vec![],
                         attention: vec![],
-                        theme: Theme::load("light").unwrap_or_else(|_| Theme {
-                            name: "test".into(),
-                            background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-                            foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-                            cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-                            colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
-                        }),
-                        font: FontSettings::default(),
                         on_connect: Box::new(move |cfg| {
                             connected_cb.borrow_mut().push(cfg.name);
                         }),
@@ -381,9 +351,6 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                         on_edit: Box::new(|_| {}),
                         on_new_project: Box::new(|| {}),
                         on_jump_pane: Box::new(|_, _, _| {}),
-                        on_send_input: Box::new(|_, _, _| {}),
-                        on_mute: Box::new(|_, _, _| {}),
-                        peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
                         search: Box::new(|_, _| vec![]),
                         on_close: Box::new(|| {}),
                         ssh_reach: HashMap::new(),
@@ -532,9 +499,9 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
 }
 
 #[test]
-fn rapid_typing_and_attention_navigation_are_coalesced() {
+fn rapid_typing_and_attention_navigation_stay_lightweight() {
     run_isolated(
-        "rapid_typing_and_attention_navigation_are_coalesced",
+        "rapid_typing_and_attention_navigation_stay_lightweight",
         || {
             gtk4::test_synced(|| {
                 gtk_test_framework_smoke();
@@ -548,37 +515,22 @@ fn rapid_typing_and_attention_navigation_are_coalesced() {
 
                 let search_calls = Rc::new(Cell::new(0u32));
                 let search_calls_cb = search_calls.clone();
-                let preview_calls = Rc::new(Cell::new(0u32));
-                let preview_calls_cb = preview_calls.clone();
                 show(
                     &win,
                     PanelShowArgs {
                         initial_tab: PanelTab::Search,
                         workspaces: vec![target("muxterm")],
+                        agents: vec![],
                         attention: vec![
                             attention("one", 1, PaneStatus::Blocked, "first"),
                             attention("two", 2, PaneStatus::Blocked, "second"),
                             attention("three", 3, PaneStatus::Done, "third"),
                         ],
-                        theme: Theme::load("light").unwrap_or_else(|_| Theme {
-                            name: "test".into(),
-                            background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-                            foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-                            cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-                            colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
-                        }),
-                        font: FontSettings::default(),
                         on_connect: Box::new(|_| {}),
                         on_existing_connect: Box::new(|_| {}),
                         on_edit: Box::new(|_| {}),
                         on_new_project: Box::new(|| {}),
                         on_jump_pane: Box::new(|_, _, _| {}),
-                        on_send_input: Box::new(|_, _, _| {}),
-                        on_mute: Box::new(|_, _, _| {}),
-                        peek_bytes: Box::new(move |_, pane| {
-                            preview_calls_cb.set(preview_calls_cb.get() + 1);
-                            (80, 24, format!("preview-{pane}").into_bytes())
-                        }),
                         search: Box::new(move |query, _| {
                             search_calls_cb.set(search_calls_cb.get() + 1);
                             if query.is_empty() {
@@ -635,7 +587,6 @@ fn rapid_typing_and_attention_navigation_are_coalesced() {
                 pump_main_loop(40);
                 entry.set_text("");
                 pump_main_loop(40);
-                let baseline_preview = preview_calls.get();
                 let list = find_by_name(&win, "muxterm-panel-list")
                     .expect("列表应存在")
                     .downcast::<gtk4::ListBox>()
@@ -646,15 +597,14 @@ fn rapid_typing_and_attention_navigation_are_coalesced() {
                 list.select_row(Some(&row_three));
                 list.select_row(Some(&row_two));
                 assert_eq!(
-                    preview_calls.get(),
-                    baseline_preview,
-                    "快速切换选中行不得同步抓取 pane 预览"
+                    list.selected_row().map(|row| row.index()),
+                    Some(row_two.index()),
+                    "快速切换后应立即停在最终选择行"
                 );
-                pump_main_loop(40);
-                assert_eq!(
-                    preview_calls.get(),
-                    baseline_preview + 1,
-                    "快速切换只应抓取最终选中 pane 的一次预览"
+                assert!(find_by_name(&win, "muxterm-attention-peek").is_none());
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "Attention 上下选择不应抢走搜索框焦点"
                 );
 
                 win.close();
@@ -696,23 +646,13 @@ fn existing_connections_navigation() {
                         target("muxterm"),
                         PanelItem::NewProject,
                     ],
+                    agents: vec![],
                     attention: vec![],
-                    theme: Theme::load("light").unwrap_or_else(|_| Theme {
-                        name: "test".into(),
-                        background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-                        foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-                        cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-                        colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
-                    }),
-                    font: FontSettings::default(),
                     on_connect: Box::new(|_| {}),
                     on_existing_connect: Box::new(|_| {}),
                     on_edit: Box::new(|_| {}),
                     on_new_project: Box::new(|| {}),
                     on_jump_pane: Box::new(|_, _, _| {}),
-                    on_send_input: Box::new(|_, _, _| {}),
-                    on_mute: Box::new(|_, _, _| {}),
-                    peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
                     search: Box::new(|_, _| vec![]),
                     on_close: Box::new(|| {}),
                     ssh_reach: HashMap::new(),

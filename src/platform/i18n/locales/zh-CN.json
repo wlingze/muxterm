@@ -178,7 +178,7 @@
   "panel_tab_workspaces": "工作区",
   "panel_tab_attention": "待处理",
   "panel_tab_search": "搜索",
-  "attention_count": "待处理 {n}",
+  "attention_count": "智能体与关注项 {n}",
   "attention_empty": "没有待处理的 pane",
   "peek": "预览",
   "reply_hint": "答复（Enter）",

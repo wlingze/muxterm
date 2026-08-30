@@ -12,30 +12,30 @@ use gtk4::gdk::Key;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Entry, EventControllerKey, GestureClick, Label, ListBox,
-    ListBoxRow, MenuButton, Orientation, Overlay, Popover, ScrolledWindow, SelectionMode, Window,
+    Align, Box as GtkBox, Entry, EventControllerKey, GestureClick, Label, ListBox, ListBoxRow,
+    Orientation, Overlay, ScrolledWindow, SelectionMode, Window,
 };
 
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
-use crate::core::config::Theme;
 use crate::core::discovery::existing::ExistingEntry;
 use crate::core::transport::ssh::probe::SshReach;
 use crate::platform::i18n::{self, Key as TextKey};
-use crate::platform::linux::pane_view::PaneView;
 use crate::platform::linux::panel_model::{
-    filter_attention_rows, filter_workspace_rows, search_rows, PanelModel, PanelTab, SearchRow,
-    SearchScope,
+    filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
+    PanelTab, SearchRow, SearchScope,
 };
 use crate::platform::linux::quick_pick;
-use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
+use crate::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
 const PANEL_ENTRY_HEIGHT: i32 = 36;
+const PANEL_MAX_WIDTH: i32 = 640;
+const PANEL_TEXT_MAX_CHARS: i32 = 64;
 
 /// ListBox 保留搜索框焦点时不会自动跟随选中行滚动；按行坐标只移动
 /// 必要距离，确保键盘选中的整行始终留在 ScrolledWindow 视口内。
@@ -63,14 +63,7 @@ enum VisibleAction {
     None,
 }
 
-type SendInputCb = Box<dyn Fn(String, u32, &[u8])>;
-type MuteCb = Box<dyn Fn(String, u32, Duration)>;
-type PeekBytesCb = Box<dyn Fn(String, u32) -> (u16, u16, Vec<u8>)>;
 type SearchCb = Box<dyn Fn(&str, SearchScope) -> Vec<SearchRow>>;
-
-thread_local! {
-    static PEEK_VIEW: RefCell<Option<Rc<PaneView>>> = const { RefCell::new(None) };
-}
 
 thread_local! {
     static PANEL_DISMISS: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
@@ -116,17 +109,6 @@ pub fn close_current() {
 pub fn clear_panel_hooks() {
     PANEL_REFRESH.with(|slot| *slot.borrow_mut() = None);
     PANEL_DISMISS.with(|slot| *slot.borrow_mut() = None);
-}
-
-/// 测试用：向当前面板的 Attention 小 VTE 注入按键（走 `connect_input` → `on_send_input`）。
-pub fn test_emit_peek_input(data: &[u8]) {
-    PEEK_VIEW.with(|slot| {
-        let view = slot.borrow();
-        let view = view
-            .as_ref()
-            .expect("W15e: peek PaneView 未登记（面板未打开）");
-        view.test_emit_input(data);
-    });
 }
 
 /// 面板回调。
@@ -334,10 +316,8 @@ fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction
 pub struct PanelShowArgs {
     pub initial_tab: PanelTab,
     pub workspaces: Vec<PanelItem>,
+    pub agents: Vec<AgentSidebarItem>,
     pub attention: Vec<PaneAttention>,
-    /// 小 VTE 主题/字体（与主窗口一致）。
-    pub theme: Theme,
-    pub font: FontSettings,
     pub on_connect: Box<dyn Fn(TargetConfig)>,
     /// Existing 行专用回调：必须使用 attach-only 意图。
     pub on_existing_connect: Box<dyn Fn(TargetConfig)>,
@@ -346,12 +326,6 @@ pub struct PanelShowArgs {
     /// 跳转回调：`(ws, pane, seq)`。seq 是搜索命中的 PaneBuf 行号（W17c），
     /// Attention 跳转没有搜索语义传 0。
     pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
-    /// 小 VTE 按键 → 目标 pane 输入。
-    pub on_send_input: SendInputCb,
-    /// 禁止提醒：`(ws, pane, duration)`。
-    pub on_mute: MuteCb,
-    /// 小 VTE 播种：`(ws, pane) → (cols, rows, 原始 pane 字节)`。
-    pub peek_bytes: PeekBytesCb,
     /// Search tab：query → replica 命中行。
     pub search: SearchCb,
     /// 面板关闭回调（window 侧清 panel_open 状态）。
@@ -369,22 +343,23 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     let parent = parent.as_ref();
     let parent_h = parent.height().max(400);
     let (panel_h, list_h) = quick_pick::panel_list_heights(parent_h);
-    let panel_w = 640;
+    let parent_w = parent.width();
+    let panel_w = if parent_w > 0 {
+        parent_w.saturating_sub(32).clamp(1, PANEL_MAX_WIDTH)
+    } else {
+        PANEL_MAX_WIDTH
+    };
 
     let PanelShowArgs {
         initial_tab,
         workspaces,
+        agents,
         attention,
-        theme,
-        font,
         on_connect,
         on_existing_connect,
         on_edit,
         on_new_project,
         on_jump_pane,
-        on_send_input,
-        on_mute,
-        peek_bytes,
         search,
         on_close,
         ssh_reach,
@@ -410,6 +385,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     panel.set_widget_name("muxterm-panel");
     panel.set_margin_top(28);
     panel.set_size_request(panel_w, panel_h);
+    panel.set_hexpand(false);
+    panel.set_vexpand(false);
     panel.set_overflow(gtk4::Overflow::Hidden);
 
     let entry = Entry::builder()
@@ -456,7 +433,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         .child(&list)
         .build();
     sw.set_margin_top(6);
-    sw.set_size_request(panel_w, list_h);
+    sw.set_size_request(-1, list_h);
     panel.append(&sw);
 
     // Tab3 占位（搜索中…行，阶段 C 前固定显示占位文案）
@@ -488,87 +465,23 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     scope_bar.set_visible(false);
     panel.append(&scope_bar);
 
-    // Attention 小 VTE（E6）：镜像、scrollback 0、replica 播种；仅 Attention tab 显示。
-    let peek_view = Rc::new(PaneView::new(0, &theme, &font, true, 0));
-    PEEK_VIEW.with(|s| *s.borrow_mut() = Some(peek_view.clone()));
-    let peek_sw = ScrolledWindow::builder()
-        .vexpand(true)
-        .hexpand(true)
-        .hscrollbar_policy(gtk4::PolicyType::Never)
-        .vscrollbar_policy(gtk4::PolicyType::Automatic)
-        .child(&peek_view.widget())
-        .build();
-    peek_sw.set_widget_name("muxterm-attention-peek");
-    peek_sw.set_margin_start(12);
-    peek_sw.set_margin_end(12);
-    peek_sw.set_margin_top(8);
-    peek_sw.set_size_request(panel_w - 24, 120);
-    peek_sw.set_visible(false);
-    panel.append(&peek_sw);
-
-    // 按钮行：跳转 / 放大 / 禁止提醒（下拉 5m/10m/30m/1h/4h/24h）。
-    let attention_actions = GtkBox::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(8)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(8)
-        .margin_bottom(12)
-        .build();
-    let jump_button = Button::with_label(&i18n::tr(TextKey::AttentionJump));
-    jump_button.set_widget_name("muxterm-attention-jump");
-    jump_button.set_sensitive(false);
-    let zoom_button = Button::with_label(&i18n::tr(TextKey::AttentionZoom));
-    zoom_button.set_widget_name("muxterm-attention-zoom");
-    zoom_button.set_sensitive(false);
-    let mute_button = MenuButton::new();
-    mute_button.set_widget_name("muxterm-attention-mute");
-    mute_button.set_label(&i18n::tr(TextKey::Mute1h));
-    mute_button.set_sensitive(false);
-    let mute_popover = Popover::new();
-    let mute_box = GtkBox::new(Orientation::Vertical, 0);
-    let mut mute_items: Vec<Button> = Vec::new();
-    for (id, label) in [
-        ("5m", "5m"),
-        ("10m", "10m"),
-        ("30m", "30m"),
-        ("1h", "1h"),
-        ("4h", "4h"),
-        ("24h", "24h"),
-    ] {
-        let item = Button::with_label(label);
-        item.set_widget_name(&format!("muxterm-attention-mute-{id}"));
-        mute_box.append(&item);
-        mute_items.push(item);
-    }
-    mute_popover.set_child(Some(&mute_box));
-    mute_button.set_popover(Some(&mute_popover));
-    attention_actions.append(&jump_button);
-    attention_actions.append(&zoom_button);
-    attention_actions.append(&mute_button);
-    attention_actions.set_visible(false);
-    panel.append(&attention_actions);
-
     overlay.add_overlay(&backdrop);
     overlay.add_overlay(&panel);
 
     let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
     let all = Rc::new(workspaces);
+    let agents = Rc::new(agents);
     let attention = Rc::new(attention);
     let callbacks = Rc::new(PanelShowArgs {
         initial_tab,
         workspaces: Vec::new(),
+        agents: Vec::new(),
         attention: Vec::new(),
-        theme,
-        font,
         on_connect,
         on_existing_connect,
         on_edit,
         on_new_project,
         on_jump_pane,
-        on_send_input,
-        on_mute,
-        peek_bytes,
         search,
         on_close: std::boxed::Box::new(|| {}),
         ssh_reach: HashMap::new(),
@@ -620,90 +533,12 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         map
     };
 
-    // 当前选中的注意力 pane（小 VTE 输入/双击/按钮共用）。
-    let selected = Rc::new(RefCell::new(None::<(String, u32)>));
-    let preview_generation = Rc::new(Cell::new(0u64));
-
-    // 选中态立即更新；pane 预览延后到主循环空闲阶段。generation 让快速
-    // 上下移动只读取最终 pane，避免每个 row-selected 都同步抓整屏。
-    let update_peek = {
-        let model = model.clone();
-        let attention = attention.clone();
-        let callbacks = callbacks.clone();
-        let peek_view = peek_view.clone();
-        let jump_button = jump_button.clone();
-        let zoom_button = zoom_button.clone();
-        let mute_button = mute_button.clone();
-        let list = list.clone();
-        let selected = selected.clone();
-        let preview_generation = preview_generation.clone();
-        move || {
-            let clear_selection = || {
-                *selected.borrow_mut() = None;
-                jump_button.set_sensitive(false);
-                zoom_button.set_sensitive(false);
-                mute_button.set_sensitive(false);
-            };
-            let next_generation = preview_generation.get().wrapping_add(1);
-            preview_generation.set(next_generation);
-            if model.borrow().tab != PanelTab::Attention {
-                clear_selection();
-                return;
-            }
-            let Some(row) = list.selected_row() else {
-                clear_selection();
-                return;
-            };
-            let name = row.widget_name();
-            let Some(rest) = name.strip_prefix("muxterm-attention-") else {
-                clear_selection();
-                return;
-            };
-            let Some((ws, pane)) = rest.rsplit_once('-') else {
-                clear_selection();
-                return;
-            };
-            let Ok(pane) = pane.parse::<u32>() else {
-                clear_selection();
-                return;
-            };
-            let ws = ws.to_string();
-            let Some(sel) = attention
-                .iter()
-                .find(|p| p.workspace_id == ws && p.pane_id == pane)
-                .cloned()
-            else {
-                clear_selection();
-                return;
-            };
-            let ws = sel.workspace_id.clone();
-            let pane = sel.pane_id;
-            *selected.borrow_mut() = Some((ws.clone(), pane));
-            jump_button.set_sensitive(true);
-            zoom_button.set_sensitive(true);
-            mute_button.set_sensitive(true);
-            let callbacks = callbacks.clone();
-            let peek_view = peek_view.clone();
-            let preview_generation = preview_generation.clone();
-            glib::idle_add_local_once(move || {
-                if preview_generation.get() != next_generation {
-                    return;
-                }
-                let (cols, rows, bytes) = (callbacks.peek_bytes)(ws, pane);
-                if preview_generation.get() != next_generation {
-                    return;
-                }
-                peek_view.set_pane_id(pane);
-                peek_view.seed_snapshot(&bytes, cols, rows);
-            });
-        }
-    };
-
     let visible_actions = Rc::new(RefCell::new(Vec::<VisibleAction>::new()));
     let rebuild = {
         let list = list.clone();
         let model = model.clone();
         let all = all.clone();
+        let agents = agents.clone();
         let attention = attention.clone();
         let callbacks = callbacks.clone();
         let dismiss = dismiss.clone();
@@ -712,9 +547,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let tab_attention = tab_attention.clone();
         let tab_search = tab_search.clone();
         let workspace_status = workspace_status.clone();
-        let update_peek = update_peek.clone();
-        let peek_sw = peek_sw.clone();
-        let attention_actions = attention_actions.clone();
         let ssh_reach = ssh_reach.clone();
         let scope_pane = scope_pane.clone();
         let scope_workspace = scope_workspace.clone();
@@ -757,9 +589,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             scope_pane.set_active(scope == SearchScope::Pane);
             scope_workspace.set_active(scope == SearchScope::Workspace);
             scope_all.set_active(scope == SearchScope::All);
-            let show_peek = tab == PanelTab::Attention;
-            peek_sw.set_visible(show_peek);
-            attention_actions.set_visible(show_peek);
             match tab {
                 PanelTab::Workspaces => {
                     let rows = filter_workspace_rows(&all, &query, |item| {
@@ -918,7 +747,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     }
                 }
                 PanelTab::Attention => {
-                    let rows = filter_attention_rows(&attention, &query);
+                    let rows = filter_attention_panel_rows(&agents, &attention, &query);
                     let count = Label::new(Some(&i18n::tr_args(
                         TextKey::AttentionCount,
                         &[("n", &rows.len().to_string())],
@@ -950,23 +779,13 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         row_widget.set_activatable(true);
                         row_widget.set_widget_name(&format!(
                             "muxterm-attention-{}-{}",
-                            row.attention.workspace_id, row.attention.pane_id
+                            row.workspace_id, row.pane_id
                         ));
-                        let process = row.attention.process_name.as_deref().unwrap_or("?");
-                        let text = format!(
-                            "{} · {} · {}",
-                            row.attention.workspace_id, process, row.attention.last_line
-                        );
-                        let label = Label::new(Some(&text));
-                        label.set_halign(Align::Start);
-                        label.set_margin_start(12);
-                        label.set_margin_top(5);
-                        label.set_margin_bottom(5);
-                        row_widget.set_child(Some(&label));
+                        row_widget.set_child(Some(&attention_panel_row(row)));
                         list.append(&row_widget);
                         actions.push(VisibleAction::Jump {
-                            workspace_id: row.attention.workspace_id.clone(),
-                            pane_id: row.attention.pane_id,
+                            workspace_id: row.workspace_id.clone(),
+                            pane_id: row.pane_id,
                             seq: 0,
                         });
                         if i == 0 {
@@ -990,6 +809,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         label.set_halign(Align::Start);
                         label.set_hexpand(true);
                         label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                        label.set_max_width_chars(PANEL_TEXT_MAX_CHARS);
                         label.set_margin_start(12);
                         label.set_margin_top(5);
                         label.set_margin_bottom(5);
@@ -1007,7 +827,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 }
             }
             *visible_actions.borrow_mut() = actions;
-            update_peek();
             entry.grab_focus();
         }
     };
@@ -1037,12 +856,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         PANEL_REFRESH.with(|slot| *slot.borrow_mut() = Some(Box::new(schedule_rebuild)));
     }
 
-    // Tab2 选中行 → peek + 答复目标；无选中 → 清空并禁用答复。
-    {
-        let update_peek = update_peek.clone();
-        list.connect_row_selected(move |_, _| update_peek());
-    }
-
     // 搜索框持续持有输入焦点，因此 ListBox 自身不会替选中行滚动。
     // 所有键盘/程序化选中统一从这里保证可见。
     {
@@ -1052,74 +865,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 reveal_selected_row(&sw, list, row);
             }
         });
-    }
-
-    // 小 VTE 输入 → 目标 pane（键直接打在 VTE 上，不做输入框）。
-    {
-        let callbacks = callbacks.clone();
-        let selected = selected.clone();
-        peek_view.connect_input(move |_pid, data| {
-            if let Some((ws, pane)) = selected.borrow().clone() {
-                (callbacks.on_send_input)(ws, pane, data);
-            }
-        });
-    }
-
-    // 双击小 VTE = 跳转。
-    {
-        let callbacks = callbacks.clone();
-        let selected = selected.clone();
-        let gesture = GestureClick::new();
-        gesture.set_button(1);
-        gesture.connect_released(move |_g, n_press, _x, _y| {
-            if n_press == 2 {
-                if let Some((ws, pane)) = selected.borrow().clone() {
-                    (callbacks.on_jump_pane)(ws, pane, 0);
-                }
-            }
-        });
-        peek_view.widget().add_controller(gesture);
-    }
-
-    // 跳转按钮。
-    {
-        let callbacks = callbacks.clone();
-        let selected = selected.clone();
-        jump_button.connect_clicked(move |_| {
-            if let Some((ws, pane)) = selected.borrow().clone() {
-                (callbacks.on_jump_pane)(ws, pane, 0);
-            }
-        });
-    }
-
-    // 放大按钮：面板内大预览（120 ↔ 360 高）。
-    {
-        let peek_sw = peek_sw.clone();
-        zoom_button.connect_clicked(move |_| {
-            let cur = peek_sw.height_request();
-            peek_sw.set_size_request(-1, if cur > 200 { 120 } else { 360 });
-        });
-    }
-
-    // 禁止提醒下拉：5m/10m/30m/1h/4h/24h（默认 1h 在菜单里）。
-    {
-        let callbacks = callbacks.clone();
-        let selected = selected.clone();
-        let mute_popover = mute_popover.clone();
-        for (item, secs) in mute_items
-            .into_iter()
-            .zip([300u64, 600, 1800, 3600, 14400, 86400])
-        {
-            let mute_popover = mute_popover.clone();
-            let callbacks = callbacks.clone();
-            let selected = selected.clone();
-            item.connect_clicked(move |_| {
-                if let Some((ws, pane)) = selected.borrow().clone() {
-                    (callbacks.on_mute)(ws, pane, Duration::from_secs(secs));
-                }
-                mute_popover.popdown();
-            });
-        }
     }
 
     {
@@ -1304,6 +1049,57 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         gtk4::prelude::GtkWindowExt::set_focus(&parent_focus, Some(&entry_focus));
         entry_focus.grab_focus();
     });
+}
+
+fn attention_panel_row(item: &AttentionPanelRow) -> GtkBox {
+    let content = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .margin_bottom(4)
+        .build();
+    let dot = Label::new(Some("●"));
+    dot.set_widget_name("muxterm-attention-status-dot");
+    dot.add_css_class("muxterm-sidebar-agent-dot");
+    dot.add_css_class(match item.indicator {
+        AgentIndicator::Running => "running",
+        AgentIndicator::NeedsAttention => "needs-attention",
+        AgentIndicator::None => "seen",
+    });
+
+    let labels = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(1)
+        .hexpand(true)
+        .build();
+    let title = Label::builder()
+        .label(&item.title)
+        .halign(Align::Start)
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .max_width_chars(PANEL_TEXT_MAX_CHARS)
+        .build();
+    title.set_widget_name("muxterm-attention-title");
+    title.add_css_class("quick-pick-label");
+    let detail = Label::builder()
+        .label(&item.detail)
+        .halign(Align::Start)
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .max_width_chars(PANEL_TEXT_MAX_CHARS)
+        .build();
+    detail.set_widget_name("muxterm-attention-detail");
+    detail.add_css_class("quick-pick-detail");
+    detail.set_tooltip_text(Some(&item.detail));
+    labels.append(&title);
+    labels.append(&detail);
+    content.append(&dot);
+    content.append(&labels);
+    content
 }
 
 fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReach>) -> GtkBox {
