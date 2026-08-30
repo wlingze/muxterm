@@ -875,6 +875,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } ?? false
     }
 
+    /// 测试用：按 Workspace 安全读取 blocked 计数（后台 slot 会锁住 bridge）。
+    func testAttentionBlockedCount(workspaceId: String) -> Int {
+        var blockedCount = -1
+        _ = withWorkspaceBridge(workspaceId) { bridge in
+            guard let json = bridge.attentionSnapshotJSON(),
+                  let data = json.data(using: .utf8),
+                  let snapshot = AttentionSnapshot.decode(data)
+            else {
+                return
+            }
+            blockedCount = snapshot.blockedCount
+        }
+        return blockedCount
+    }
+
     @discardableResult
     private func activateWorkspaceIfAvailable(_ workspaceId: String) -> Bool {
         if activeWorkspaceReplicaID == workspaceId {
@@ -1515,7 +1530,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
-        if let departingPane = lastSnapshot.panes.first(where: \.isActive)?.id {
+        if let departingPane = activePaneID {
             recordLastSeen(for: departingPane)
         }
         // 等 STATE_ACTIVE_TAB_CHANGED 到达后再用权威 snapshot 对齐；
@@ -1526,7 +1541,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 返回 true 表示第一次进入且本地 layout 还没齐，需要走全量 refreshUI。
     @discardableResult
     private func applyCachedTabSwitch(_ tabId: UInt32) -> Bool {
-        if let oldPane = lastSnapshot.panes.first(where: \.isActive)?.id {
+        if let oldPane = activePaneID {
             recordLastSeen(for: oldPane)
         }
         tabSwitchGate.onTabChanged(to: tabId)

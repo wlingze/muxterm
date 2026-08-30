@@ -17,6 +17,8 @@ final class AttentionNavE2ETests: XCTestCase {
         XCTAssertTrue(
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
+                app.testOpenAttentionPanel()
+                app.unifiedPanel.refreshData()
                 return app.testBlockedCount() >= 1 || app.testAttentionRowCount() >= 1
             },
             "后台 BEL 必须进注意力"
