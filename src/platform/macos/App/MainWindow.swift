@@ -2710,6 +2710,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// 测试用：last-seen 状态机的三个输入，便于 E2E 失败定位。
+    func testLastSeenDiagnostics(paneId: UInt32) -> String {
+        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        let seen = lastSeenLineSeq[paneId]
+        let rawOffset = seen
+            .map { bridge.paneViewportOffsetForSeq(paneId: paneId, seq: $0) }
+            ?? -1
+        return "latest=\(latest) seen=\(seen.map(String.init) ?? "nil") rawOffset=\(rawOffset)"
+    }
+
     private func refreshHistoryChrome(for paneId: UInt32) {
         guard paneId == activePaneID else { return }
         let latest = bridge.paneLatestLineSeq(paneId: paneId)

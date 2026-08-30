@@ -57,7 +57,7 @@ final class LastSeenE2ETests: XCTestCase {
                 app.testFlushFeeds()
                 return app.testActiveTabID() == firstTab && app.testLastSeenVisible()
             },
-            "从 tab 切回后必须显示 last-seen 按钮；active=\(app.testActiveTabID()) hits=\(app.testSearchAll(leftHere)) viewport=\(app.testPaneViewport())"
+            "从 tab 切回后必须显示 last-seen 按钮；active=\(app.testActiveTabID()) lastSeen=\(app.testLastSeenDiagnostics(paneId: firstPaneID)) hits=\(app.testSearchAll(leftHere)) viewport=\(app.testPaneViewport())"
         )
         // tab 结构事件之后 PaneLayout 还有一次异步几何同步；先让它
         // 稳定，再点击，避免把“布局尚未挂载”误判成 last-seen 跳转失败。
