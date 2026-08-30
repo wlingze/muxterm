@@ -896,6 +896,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// E2E 用：同步排空 warm 后台 Workspace，避免 QoS 队列造成偶发超时。
     /// 仍走 WarmConnectionSlot 的生产 drain/apply 路径。
     func testPollBackgroundWorkspaces() {
+        // testPollOnce() 可能刚把同一批 slot 投递到后台队列；先等该批
+        // FFI 操作结束，再从测试线程查询结果。否则测试直接读取 bridge
+        // 时会和 drainBackgroundEvents() 并发访问同一个 C handle。
+        backgroundPollQueue.sync {}
         for slot in connectionPool.slots.values where slot.lifecycle == .background {
             if slot.drainBackgroundEvents() {
                 slot.applyPendingSurfaceEvents()
@@ -3012,6 +3016,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         statusRefreshTimer = nil
         statusRefreshWorkItem?.cancel()
         statusRefreshWorkItem = nil
+        backgroundPollQueue.sync {}
         connectionPool.shutdownAll()
         bridge.shutdown()
         window?.close()
@@ -3030,6 +3035,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         statusRefreshTimer = nil
         statusRefreshWorkItem?.cancel()
         statusRefreshWorkItem = nil
+        backgroundPollQueue.sync {}
         connectionPool.shutdownAll()
         bridge.shutdown()
         window?.close()
