@@ -517,7 +517,7 @@ impl StatusBar {
         let css = format!(
             ".muxterm-status-bar {{ background: #{bg_hex}; color: #{fg_hex}; }}\n\
              .muxterm-status-window-colored {{ background: #{bg_hex}; border-radius: 3px; }}\n\
-             .muxterm-status-window-theme-current {{ background: alpha(currentColor, 0.12); border-radius: 3px; }}\n\
+             .muxterm-status-window-theme-current {{ background: alpha(currentColor, 0.20); border-radius: 4px; }}\n\
              {}\n",
             status_dot_css()
         );

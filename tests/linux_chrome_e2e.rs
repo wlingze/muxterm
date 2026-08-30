@@ -102,13 +102,15 @@ fn status_bar_has_left_center_right_and_chrome_buttons(bar: &StatusBar, win: &gt
         .downcast::<gtk4::Label>()
         .expect("Label 类型");
     assert!(right.text().contains('R'), "right 应含 R: {}", right.text());
+    let active_tab = find_by_name(win, "muxterm-status-tab-18").expect("中区应有 tab-18");
+    let inactive_tab = find_by_name(win, "muxterm-status-tab-21").expect("中区应有 tab-21");
     assert!(
-        find_by_name(win, "muxterm-status-tab-18").is_some(),
-        "中区应有 tab-18"
+        active_tab.has_css_class("tab-active"),
+        "当前 tab 必须有明确的 active class"
     );
     assert!(
-        find_by_name(win, "muxterm-status-tab-21").is_some(),
-        "中区应有 tab-21"
+        !inactive_tab.has_css_class("tab-active"),
+        "非当前 tab 不能误用 active class"
     );
 }
 

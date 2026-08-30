@@ -5223,24 +5223,39 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
             background-color: alpha({fg}, 0.12);
             box-shadow: inset 0 -2px 0 {fg};
         }}
-        .status-bar {{ color: {fg}; padding: 2px 8px; font-size: 11px; }}
+        .status-bar {{
+            color: {fg};
+            padding: 3px 8px;
+            font-size: 11px;
+            border-top: 1px solid alpha({fg}, 0.12);
+        }}
+        .muxterm-status-windows {{
+            padding: 1px;
+            border-radius: 5px;
+            background-color: alpha({fg}, 0.035);
+        }}
         button.muxterm-status-window {{
             background-image: none;
             background-color: transparent;
-            border: none;
+            border: 1px solid transparent;
             box-shadow: none;
-            min-height: 18px;
-            padding: 1px 8px;
-            border-radius: 3px;
+            min-height: 20px;
+            padding: 1px 10px;
+            border-radius: 4px;
             color: {fg};
-            font-weight: 400;
-            opacity: 0.6;
+            font-weight: 500;
+            opacity: 0.72;
         }}
-        button.muxterm-status-window.current {{
+        button.muxterm-status-window:hover {{
+            opacity: 0.92;
+            background-color: alpha({fg}, 0.08);
+        }}
+        button.muxterm-status-window.tab-active {{
             opacity: 1;
-            font-weight: 600;
-            background-color: alpha({fg}, 0.16);
-            box-shadow: inset 0 -2px 0 {fg};
+            font-weight: 700;
+            border-color: alpha({fg}, 0.16);
+            background-color: alpha({fg}, 0.20);
+            box-shadow: inset 0 -3px 0 {fg};
         }}
         .qc-badge {{ padding: 0 6px; border-radius: 4px; font-size: 9px; color: #fff; }}
         .qc-badge-recent {{ background: #1e66f5; }}
@@ -5408,9 +5423,10 @@ mod tests {
         assert!(dark_css.contains("#1e1e2e"), "{dark_css}");
         assert!(light_css.contains("tab-active"), "{light_css}");
         assert!(
-            light_css.contains("muxterm-status-window.current"),
+            light_css.contains("muxterm-status-window.tab-active"),
             "{light_css}"
         );
+        assert!(light_css.contains("inset 0 -3px 0"), "{light_css}");
         assert!(light_css.contains(".quick-pick-root"), "{light_css}");
         assert!(
             light_css.contains(".muxterm-sidebar-workspace-row:hover .muxterm-sidebar-close"),
