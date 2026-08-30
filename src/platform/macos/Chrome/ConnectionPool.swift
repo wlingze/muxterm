@@ -143,7 +143,8 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
             alias: oldKey.alias,
             session: name,
             runtime: oldKey.runtime,
-            path: oldKey.path
+            path: oldKey.path,
+            socket: oldKey.socket
         )
         guard newKey != oldKey, slots[newKey] == nil else { return }
         slots.removeValue(forKey: oldKey)

@@ -51,6 +51,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// pane → 最近一次离开时的稳定行 ID。连接切换时清空，避免把不同
     /// workspace 的 seq 混用。
     private var lastSeenLineSeq: [UInt32: UInt64] = [:]
+    /// 离开时 Index 还没有创建 PaneBuf 的 pane。下一轮 poll 在 Core 建好
+    /// 稳定行索引后再建立基线，不能把暂时的 seq=0 当作真实行号。
+    private var pendingLastSeenPanes = Set<UInt32>()
     private var lastSeenJump: (paneId: UInt32, offset: UInt32)?
     /// 当前 pane 上一次是否已经展示过 last-seen；避免 60Hz poll 重复
     /// 改变全局 overlay 的可见状态。
@@ -908,7 +911,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             alias: bridge.sshAlias,
             session: currentSession,
             runtime: "tmux",
-            path: ""
+            path: "",
+            socket: bridge.socket
         )
         if connectionPool.slots[currentKey] == nil {
             let currentSlot = WarmConnectionSlot(
@@ -924,7 +928,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             alias: nextBridge.sshAlias,
             session: session,
             runtime: "tmux",
-            path: ""
+            path: "",
+            socket: nextBridge.socket
         )
         activate(slot: WarmConnectionSlot(key: key, bridge: nextBridge, now: 0))
     }
@@ -1419,6 +1424,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager = slot.terminalManager
         trafficRateSampler.reset()
         lastSeenLineSeq.removeAll()
+        pendingLastSeenPanes.removeAll()
         lastSeenJump = nil
         lastSeenVisiblePane = nil
         content.setLastSeenVisible(false)
@@ -1580,7 +1586,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 返回 true 表示第一次进入且本地 layout 还没齐，需要走全量 refreshUI。
     @discardableResult
     private func applyCachedTabSwitch(_ tabId: UInt32) -> Bool {
-        if let oldPane = activePaneID {
+        // requestSwitchTab 已在命令成功后记录了离开基线；同一个
+        // STATE_ACTIVE_TAB_CHANGED 只是确认事件，不能再次用事件到达时
+        // 更晚的 latest 覆盖原始离开位置。
+        let isRequestedSwitch = tabSwitchGate.pendingTab == tabId
+        if !isRequestedSwitch, let oldPane = activePaneID {
             recordLastSeen(for: oldPane)
         }
         tabSwitchGate.onTabChanged(to: tabId)
@@ -2287,6 +2297,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func pollOnce() {
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
+        resolvePendingLastSeen()
         scheduleBackgroundSlotPoll()
         let events = bridge.pollEvents()
         // Core 已在 pollEvents() 中应用了这些状态变化。前台 Workspace 的
@@ -2523,6 +2534,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if deferSurfaceEvents {
             restoreTerminalFocusIfAllowed()
         }
+        // Index 快照由 Core 在 poll 内消费，事件处理完成后再尝试一次，
+        // 让“刚切走就还没有 PaneBuf”的首轮时序也能建立基线。
+        resolvePendingLastSeen()
         refreshAttentionChrome()
         if let activePane = activePaneID {
             refreshHistoryChrome(for: activePane)
@@ -2740,12 +2754,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 记录离开 pane 时最后一条稳定终端行；回到该 pane 后若 seq 前进，
     /// 显示“上次看到这里”按钮，并用 core 行索引跳回，而不是猜文本位置。
     private func recordLastSeen(for paneId: UInt32) {
-        let seq = bridge.paneLatestLineSeq(paneId: paneId)
-        guard seq >= 0 else { return }
-        lastSeenLineSeq[paneId] = UInt64(seq)
+        // 一个离开周期只建立一次基线。tab 申请和 active-tab 确认事件
+        // 都可能到这里；后到的调用不能把已经记录的离开位置推迟。
+        guard lastSeenLineSeq[paneId] == nil else {
+            pendingLastSeenPanes.remove(paneId)
+            lastSeenJump = lastSeenJump?.paneId == paneId ? nil : lastSeenJump
+            if lastSeenVisiblePane == paneId {
+                setLastSeenVisible(false, paneId: paneId)
+            }
+            return
+        }
+        guard let seq = LastSeenNavigation.baselineSequence(
+            latest: bridge.paneLatestLineSeq(paneId: paneId)
+        ) else {
+            pendingLastSeenPanes.insert(paneId)
+            return
+        }
+        pendingLastSeenPanes.remove(paneId)
+        lastSeenLineSeq[paneId] = seq
         lastSeenJump = lastSeenJump?.paneId == paneId ? nil : lastSeenJump
         if lastSeenVisiblePane == paneId {
             setLastSeenVisible(false, paneId: paneId)
+        }
+    }
+
+    /// 处理离开时 Core 尚未创建 PaneBuf 的情况。`pollEvents()` 会先在
+    /// Core 内消费 Index 快照，再把可见事件交给这里，因此在一轮 poll
+    /// 前后各尝试一次即可覆盖正常的异步建索引时序。
+    private func resolvePendingLastSeen() {
+        guard !pendingLastSeenPanes.isEmpty else { return }
+        for paneId in Array(pendingLastSeenPanes) {
+            recordLastSeen(for: paneId)
         }
     }
 

@@ -736,6 +736,13 @@ public enum PaneHistoryScrollPolicy {
 /// `rawOffset == -1` 表示 core 已经淘汰了旧 seq；此时必须清掉按钮，
 /// 不能沿用上一轮缓存的 offset 误跳到历史或 live 尾部。
 public enum LastSeenNavigation {
+    /// Core 在 PaneBuf 尚未创建时返回 0；稳定行 ID 从 1 开始，不能把
+    /// 这个“尚未就绪”值写成 last-seen 基线。
+    public static func baselineSequence(latest: Int64) -> UInt64? {
+        guard latest > 0 else { return nil }
+        return UInt64(latest)
+    }
+
     /// 同一轮切 tab 可能先应用 tab 快照、再收到 active-pane 事件。
     /// 此时 snapshot 已经指向 eventPane，不能把新 pane 的尾部覆盖成
     /// “离开位置”；只有事件确实从另一个 pane 迁入时才记录旧 pane。
@@ -749,8 +756,9 @@ public enum LastSeenNavigation {
         seen: UInt64?,
         rawOffset: Int32
     ) -> UInt32? {
-        guard latest >= 0,
+        guard latest > 0,
               let seen,
+              seen > 0,
               UInt64(latest) > seen,
               rawOffset >= 0
         else {
