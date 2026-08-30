@@ -7111,9 +7111,27 @@ mod tests {
     }
 
     fn cleanup(socket: &str) {
-        let _ = std::process::Command::new("tmux")
+        let Ok(mut child) = std::process::Command::new("tmux")
             .args(["-L", socket, "kill-server"])
-            .output();
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
     }
 
     /// 整个用例上限，防止 connect/shutdown/pty 写卡住拖死 CI（曾 15min 挂起）。
