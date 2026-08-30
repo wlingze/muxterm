@@ -26,6 +26,15 @@ final class CommandTimelineE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: socket, session: session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady(minLeaves: 1), "attach 后必须有 pane")
+        let paneId = app.testActivePaneID()
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.attachTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                return app.testPaneSurfaceReady(paneId)
+            },
+            "初始 Surface seed 完成后才能 respawn OSC 133 fixture"
+        )
 
         let script = AppE2E.repoRoot.appendingPathComponent("tests/scripts/osc133_rounds.py")
         XCTAssertTrue(FileManager.default.isReadableFile(atPath: script.path))
