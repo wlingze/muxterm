@@ -13,8 +13,8 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, ComboBoxText, Entry, Label, ListBox, Orientation, ScrolledWindow,
-    SearchEntry, SpinButton, TextView, Window,
+    Align, Box as GtkBox, Button, ComboBoxText, Entry, Label, ListBox, ListBoxRow, Orientation,
+    ScrolledWindow, SearchEntry, SpinButton, Stack, TextView, Window,
 };
 use serde_json::Value;
 
@@ -38,6 +38,12 @@ struct FieldControl {
     kind: ControlKind,
     baseline: Option<Value>,
     integer: bool,
+}
+
+struct CategoryPage {
+    id: String,
+    navigation_index: i32,
+    fields: Vec<(glib::WeakRef<GtkBox>, String)>,
 }
 
 impl FieldControl {
@@ -277,27 +283,118 @@ pub fn show(
     search.set_placeholder_text(Some("Search settings"));
     root.append(&search);
 
-    let mut rows: Vec<(GtkBox, String)> = Vec::new();
+    let body = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(12)
+        .vexpand(true)
+        .build();
+    body.set_widget_name("muxterm-prefs-body");
+
+    let categories = ListBox::builder()
+        .selection_mode(gtk4::SelectionMode::Single)
+        .vexpand(true)
+        .build();
+    categories.set_widget_name("muxterm-prefs-categories");
+    categories.add_css_class("muxterm-prefs-categories");
+    categories.set_size_request(180, -1);
+    let categories_scroll = ScrolledWindow::builder()
+        .vexpand(true)
+        .child(&categories)
+        .build();
+    categories_scroll.set_widget_name("muxterm-prefs-categories-scroll");
+    categories_scroll.set_size_request(180, -1);
+    body.append(&categories_scroll);
+
+    let pages = Stack::new();
+    pages.set_widget_name("muxterm-prefs-pages");
+    pages.add_css_class("muxterm-prefs-pages");
+    pages.set_hexpand(true);
+    pages.set_vexpand(true);
+    body.append(&pages);
+    root.append(&body);
+
     let mut controls: Vec<FieldControl> = Vec::new();
+    let mut category_pages: Vec<CategoryPage> = Vec::new();
     if let Some(groups) = manifest["groups"].as_array() {
         for group in groups {
+            let group_id = group["id"]
+                .as_str()
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or("settings")
+                .to_string();
             let group_title = group["title_key"].as_str().unwrap_or("Settings");
+
+            let navigation_row = ListBoxRow::new();
+            navigation_row.set_widget_name(&format!("muxterm-prefs-category-{group_id}"));
+            navigation_row.add_css_class("muxterm-prefs-category-row");
+            let navigation_label = Label::new(Some(&category_title(&group_id, group_title)));
+            navigation_label.set_halign(Align::Start);
+            navigation_label.set_xalign(0.0);
+            navigation_row.set_child(Some(&navigation_label));
+            categories.append(&navigation_row);
+
+            let page_content = GtkBox::builder()
+                .orientation(Orientation::Vertical)
+                .spacing(10)
+                .margin_top(4)
+                .margin_bottom(4)
+                .margin_start(8)
+                .margin_end(8)
+                .build();
+            page_content.set_widget_name(&format!("muxterm-prefs-page-{group_id}"));
             let section_box = section(group_title);
-            if let Some(fields) = group["fields"].as_array() {
-                for field in fields {
+            let mut page_fields = Vec::new();
+            if let Some(manifest_fields) = group["fields"].as_array() {
+                for field in manifest_fields {
                     let (row, control) = control_row(field, &values);
                     let path = field["path"].as_str().unwrap_or_default();
                     if let Some(control) = control {
-                        if !matches!(control.kind, ControlKind::Summary(_)) {
-                            controls.push(control);
-                        }
+                        controls.push(control);
                     }
-                    rows.push((row.clone(), path.to_string()));
+                    let row_ref = glib::WeakRef::new();
+                    row_ref.set(Some(&row));
+                    page_fields.push((row_ref, format!("{group_id} {path}")));
                     section_box.append(&row);
                 }
             }
-            root.append(&section_box);
+            page_content.append(&section_box);
+            let page = ScrolledWindow::builder()
+                .child(&page_content)
+                .hexpand(true)
+                .vexpand(true)
+                .hscrollbar_policy(gtk4::PolicyType::Never)
+                .vscrollbar_policy(gtk4::PolicyType::Automatic)
+                .build();
+            page.set_widget_name(&format!("muxterm-prefs-scroll-{group_id}"));
+            pages.add_named(&page, Some(&group_id));
+            category_pages.push(CategoryPage {
+                id: group_id,
+                navigation_index: category_pages.len() as i32,
+                fields: page_fields,
+            });
         }
+    }
+
+    let category_pages = Rc::new(category_pages);
+    {
+        let pages = pages.clone();
+        let category_pages = category_pages.clone();
+        categories.connect_row_selected(move |_, row| {
+            let Some(row) = row else {
+                return;
+            };
+            let Some(category) = category_pages.get(row.index().max(0) as usize) else {
+                return;
+            };
+            pages.set_visible_child_name(&category.id);
+        });
+    }
+
+    if let Some(first) = category_pages.first() {
+        if let Some(row) = categories.row_at_index(first.navigation_index) {
+            categories.select_row(Some(&row));
+        }
+        pages.set_visible_child_name(&first.id);
     }
 
     let actions = GtkBox::builder()
@@ -352,12 +449,38 @@ pub fn show(
         }
     }
 
-    search.connect_search_changed(move |search| {
-        let query = search.text().to_ascii_lowercase();
-        for (row, path) in &rows {
-            row.set_visible(query.is_empty() || path.to_ascii_lowercase().contains(&query));
-        }
-    });
+    {
+        let categories = categories.clone();
+        let pages = pages.clone();
+        let category_pages = category_pages.clone();
+        search.connect_search_changed(move |search| {
+            let query = search.text().trim().to_ascii_lowercase();
+            let mut first_match = None;
+            for category in category_pages.iter() {
+                let mut category_matches = false;
+                for (row, search_text) in &category.fields {
+                    let visible =
+                        query.is_empty() || search_text.to_ascii_lowercase().contains(&query);
+                    if let Some(row) = row.upgrade() {
+                        row.set_visible(visible);
+                    }
+                    category_matches |= visible;
+                }
+                if let Some(row) = categories.row_at_index(category.navigation_index) {
+                    row.set_visible(query.is_empty() || category_matches);
+                }
+                if category_matches && first_match.is_none() {
+                    first_match = Some(category);
+                }
+            }
+            if let Some(category) = first_match {
+                if let Some(row) = categories.row_at_index(category.navigation_index) {
+                    categories.select_row(Some(&row));
+                }
+                pages.set_visible_child_name(&category.id);
+            }
+        });
+    }
 
     cancel.connect_clicked({
         let win = win.clone();
@@ -1035,6 +1158,24 @@ fn section(title: &str) -> GtkBox {
     box_
 }
 
+fn category_title(id: &str, title_key: &str) -> String {
+    let raw = title_key
+        .strip_prefix("settings.")
+        .filter(|title| !title.is_empty())
+        .unwrap_or(id);
+    raw.split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            match characters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,6 +1192,15 @@ mod tests {
         let values = serde_json::json!({"font": {"size": 15.0}});
         assert_eq!(pointer(&values, "/font/size"), Some(&Value::from(15.0)));
         assert!(pointer(&values, "/font/missing").is_none());
+    }
+
+    #[test]
+    fn category_title_humanizes_manifest_key() {
+        assert_eq!(
+            category_title("appearance", "settings.appearance"),
+            "Appearance"
+        );
+        assert_eq!(category_title("tab_bar", ""), "Tab Bar");
     }
 
     #[test]

@@ -8,6 +8,7 @@
 mod support;
 
 use gtk4::prelude::*;
+use gtk4::{ListBox, ListBoxRow, Stack};
 use support::linux_gtk::*;
 
 use muxterm::core::config::parse_config_toml;
@@ -162,6 +163,26 @@ fn prefs_window_exposes_project_and_shortcut_editors() {
             None,
         );
         pump_main_loop(80);
+
+        let categories = find_by_name(&win, "muxterm-prefs-categories")
+            .expect("设置分类列表应存在")
+            .downcast::<ListBox>()
+            .expect("设置分类列表类型");
+        let pages = find_by_name(&win, "muxterm-prefs-pages")
+            .expect("设置分类页面栈应存在")
+            .downcast::<Stack>()
+            .expect("设置分类页面栈类型");
+        let runtime_category = find_by_name(&win, "muxterm-prefs-category-runtime")
+            .expect("Runtime 分类应存在")
+            .downcast::<ListBoxRow>()
+            .expect("Runtime 分类类型");
+        categories.select_row(Some(&runtime_category));
+        pump_main_loop(40);
+        assert_eq!(
+            pages.visible_child_name().as_deref(),
+            Some("runtime"),
+            "选择分类后右侧应显示对应配置页"
+        );
 
         let projects = find_by_name(&win, "muxterm-prefs-projects")
             .expect("project editor 入口应存在")
