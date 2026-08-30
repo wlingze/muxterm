@@ -890,6 +890,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return blockedCount
     }
 
+    /// E2E 用：同步排空 warm 后台 Workspace，避免 QoS 队列造成偶发超时。
+    /// 仍走 WarmConnectionSlot 的生产 drain/apply 路径。
+    func testPollBackgroundWorkspaces() {
+        for slot in connectionPool.slots.values where slot.lifecycle == .background {
+            if slot.drainBackgroundEvents() {
+                slot.applyPendingSurfaceEvents()
+            }
+        }
+    }
+
     @discardableResult
     private func activateWorkspaceIfAvailable(_ workspaceId: String) -> Bool {
         if activeWorkspaceReplicaID == workspaceId {
