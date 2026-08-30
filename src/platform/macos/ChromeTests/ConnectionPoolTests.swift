@@ -72,6 +72,18 @@ final class ConnectionKeyTests: XCTestCase {
         )
         XCTAssertNotEqual(a, b)
     }
+
+    func testKeyDistinguishesTargetSocket() {
+        let a = ConnectionKey(
+            transport: "local", alias: nil, session: "s", runtime: "tmux", path: "/x",
+            socket: "muxterm-a"
+        )
+        let b = ConnectionKey(
+            transport: "local", alias: nil, session: "s", runtime: "tmux", path: "/x",
+            socket: "muxterm-b"
+        )
+        XCTAssertNotEqual(a, b)
+    }
 }
 
 // MARK: - ConnectionPool
@@ -84,14 +96,16 @@ final class ConnectionPoolTests: XCTestCase {
         path: String = "/x",
         transport: String = "local",
         alias: String? = nil,
-        runtime: String = "tmux"
+        runtime: String = "tmux",
+        socket: String? = nil
     ) -> ConnectionKey {
         ConnectionKey(
             transport: transport,
             alias: alias,
             session: session,
             runtime: runtime,
-            path: path
+            path: path,
+            socket: socket
         )
     }
 
@@ -326,6 +340,17 @@ final class ConnectionPoolTests: XCTestCase {
         XCTAssertEqual(pool.recentTargetConfigs().first?.name, "after")
         XCTAssertEqual(pool.activeKey?.session, "after")
         XCTAssertNil(pool.slots[key])
+    }
+
+    func testRenameTmuxTargetPreservesSocketIdentity() {
+        let pool = makePool(maxSlots: 3)
+        let key = makeKey(session: "before", path: "/x", socket: "muxterm-isolated")
+        _ = pool.acquire(key: key) { [self] _ in createSlot(key) }
+
+        pool.renameActiveTarget(to: "after", rekeySession: true)
+
+        XCTAssertEqual(pool.activeKey?.socket, "muxterm-isolated")
+        XCTAssertEqual(pool.activeKey?.session, "after")
     }
 
     func testRenameLocalShellKeepsConnectionIdentity() {

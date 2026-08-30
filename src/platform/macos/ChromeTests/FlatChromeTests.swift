@@ -41,6 +41,20 @@ final class FlatChromeTests: XCTestCase {
         )
     }
 
+    func testLastSeenBaselineWaitsForCoreIndex() {
+        XCTAssertNil(LastSeenNavigation.baselineSequence(latest: -1))
+        XCTAssertNil(LastSeenNavigation.baselineSequence(latest: 0))
+        XCTAssertEqual(LastSeenNavigation.baselineSequence(latest: 1), 1)
+        XCTAssertNil(
+            LastSeenNavigation.targetOffset(
+                latest: 10,
+                seen: 0,
+                rawOffset: 4
+            ),
+            "seq=0 是 Index 尚未就绪，不是可跳转的稳定行"
+        )
+    }
+
     func testLastSeenTargetRequiresNewerLine() {
         XCTAssertNil(
             LastSeenNavigation.targetOffset(
