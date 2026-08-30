@@ -564,9 +564,17 @@ extension MainWindowController {
         AppE2E.wait(timeout: AppE2E.attachTimeout) { [weak self] in
             guard let self else { return false }
             testPollOnce()
+            // Surface seed/feed 在主线程异步完成；只看拓扑数量会让慢机器
+            // 在 SwiftTerm 仍为空或 host 仍隐藏时就开始发送测试输入。
+            testFlushFeeds()
             AppE2E.pump(30)
+            testFlushFeeds()
             let counts = testTabAndPaneCounts()
-            return counts.tabs >= minTabs && testLayoutLeafIDs().count >= minLeaves
+            let leaves = testLayoutLeafIDs()
+            guard counts.tabs >= minTabs, leaves.count >= minLeaves else {
+                return false
+            }
+            return leaves.allSatisfy { testPaneSurfaceReady($0) }
         }
     }
 
