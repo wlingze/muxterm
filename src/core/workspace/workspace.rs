@@ -678,6 +678,28 @@ mod tests {
         assert!(raw.ends_with(b"INDEX_TWO_TOKEN\r\n_DIFF"));
     }
 
+    #[test]
+    fn pane_index_snapshot_preserves_pending_attention_signals() {
+        let mut w = workspace("index-attention");
+        w.feed_events(&[
+            StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: vec![0x07],
+            },
+            StateChange::PaneIndexSnapshot {
+                pane: PaneId(1),
+                data: b"INDEX_SNAPSHOT".to_vec(),
+            },
+        ]);
+
+        assert_eq!(
+            w.take_attention_signals(PaneId(1)),
+            vec![AttentionSignal::AttentionRequest {
+                source: crate::core::attention::signal::AttentionSource::Bel,
+            }]
+        );
+    }
+
     /// W6：search_pane 命中带 tab_id；同 pane 不同 tab 不串。
     #[test]
     fn search_pane_returns_hits_with_tab_id() {

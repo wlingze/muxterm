@@ -16,6 +16,8 @@ use crate::core::protocol::terminal::emulate::TerminalState;
 pub struct PaneBuf {
     terminal: TerminalState,
     scrollback_max: usize,
+    /// TerminalState 被完整快照替换时，保留尚未交给注意力引擎的信号。
+    pending_attention: Vec<AttentionSignal>,
     /// 有界原始字节环（丢最旧；供 peek / 小终端播种）。
     byte_ring: Vec<u8>,
     /// 当前 viewport 滚动偏移（0 = 底部直播）。
@@ -28,6 +30,7 @@ impl PaneBuf {
         Self {
             terminal: TerminalState::with_scrollback(cols.max(1), rows.max(1), scrollback_max),
             scrollback_max,
+            pending_attention: Vec::new(),
             byte_ring: Vec::new(),
             viewport: 0,
         }
@@ -54,6 +57,8 @@ impl PaneBuf {
     /// snapshot 不是普通增量：必须清掉旧 terminal、raw ring 和 viewport，
     /// 否则 pause/resync 后旧的 Cursor 帧会继续污染新屏幕。
     pub fn replace_snapshot(&mut self, bytes: &[u8], cols: u16, rows: u16) {
+        self.pending_attention
+            .extend(self.terminal.take_attention_signals());
         let scrollback = self.terminal.scrollback_capacity();
         self.terminal = TerminalState::with_scrollback(
             usize::from(cols.max(1)),
@@ -69,6 +74,8 @@ impl PaneBuf {
     ///
     /// 这只重建无头搜索/提醒副本；像素 Surface 仍直接 feed 同一份原始 ANSI。
     pub fn replace_frame(&mut self, bytes: &[u8], cols: u16, rows: u16) -> Vec<AttentionSignal> {
+        self.pending_attention
+            .extend(self.terminal.take_attention_signals());
         self.terminal = TerminalState::with_scrollback(
             usize::from(cols.max(1)),
             usize::from(rows.max(1)),
@@ -86,7 +93,9 @@ impl PaneBuf {
 
     /// 取走尚未消费的注意力信号（GUI 在 refresh 后调用）。
     pub fn take_attention_signals(&mut self) -> Vec<AttentionSignal> {
-        self.terminal.take_attention_signals()
+        let mut signals = std::mem::take(&mut self.pending_attention);
+        signals.extend(self.terminal.take_attention_signals());
+        signals
     }
 
     /// 最近一次 feed 的 seq + 最后非空行（注意力引擎用）。
