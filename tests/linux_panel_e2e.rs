@@ -341,9 +341,9 @@ fn three_tab_panel_full_flow() {
 }
 
 #[test]
-fn keyboard_navigation_keeps_search_focus_and_activates_visible_row() {
+fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
     run_isolated(
-        "keyboard_navigation_keeps_search_focus_and_activates_visible_row",
+        "keyboard_navigation_scrolls_selection_and_keeps_search_focus",
         || {
             gtk4::test_synced(|| {
                 gtk_test_framework_smoke();
@@ -361,7 +361,10 @@ fn keyboard_navigation_keeps_search_focus_and_activates_visible_row() {
                     &win,
                     PanelShowArgs {
                         initial_tab: PanelTab::Workspaces,
-                        workspaces: vec![target("legion"), target("muxterm")],
+                        workspaces: std::iter::once(target("legion"))
+                            .chain(std::iter::once(target("muxterm")))
+                            .chain((2..32).map(|i| target(&format!("workspace-{i:02}"))))
+                            .collect(),
                         attention: vec![],
                         theme: Theme::load("light").unwrap_or_else(|_| Theme {
                             name: "test".into(),
@@ -436,6 +439,63 @@ fn keyboard_navigation_keeps_search_focus_and_activates_visible_row() {
                 assert!(
                     entry_owns_window_focus(&win, &entry),
                     "Up 后输入焦点必须仍在搜索框"
+                );
+
+                for _ in 0..20 {
+                    simulate_key_press(&controller, gdk::Key::Down, gdk::ModifierType::empty());
+                }
+                pump_main_loop(20);
+                let selected = list.selected_row().expect("连续 Down 后应有选中行");
+                assert_eq!(selected.index(), 20, "连续 Down 应选中第 21 行");
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "滚动列表后输入焦点仍必须在搜索框"
+                );
+                let mut ancestor = list.clone().upcast::<gtk4::Widget>().parent();
+                let scroller = loop {
+                    let widget = ancestor.expect("列表必须位于 ScrolledWindow 中");
+                    if let Ok(scroller) = widget.clone().downcast::<gtk4::ScrolledWindow>() {
+                        break scroller;
+                    }
+                    ancestor = widget.parent();
+                };
+                let adjustment = scroller.vadjustment();
+                let bounds = selected
+                    .compute_bounds(&list)
+                    .expect("选中行必须能换算到列表坐标");
+                let row_top = f64::from(bounds.y());
+                let row_bottom = f64::from(bounds.y() + bounds.height());
+                let viewport_top = adjustment.value();
+                let viewport_bottom = viewport_top + adjustment.page_size();
+                assert!(
+                    viewport_top > adjustment.lower(),
+                    "选到溢出行后列表必须向下滚动：value={viewport_top}, page={} upper={}",
+                    adjustment.page_size(),
+                    adjustment.upper()
+                );
+                assert!(
+                    row_top >= viewport_top - 1.0 && row_bottom <= viewport_bottom + 1.0,
+                    "选中行必须完整位于视口：row={row_top}..{row_bottom}, viewport={viewport_top}..{viewport_bottom}"
+                );
+
+                for _ in 0..20 {
+                    simulate_key_press(&controller, gdk::Key::Up, gdk::ModifierType::empty());
+                }
+                pump_main_loop(20);
+                assert_eq!(
+                    list.selected_row().map(|row| row.index()),
+                    Some(0),
+                    "连续 Up 应回到第一行"
+                );
+                assert!(
+                    adjustment.value() <= adjustment.lower() + 1.0,
+                    "选回第一行后列表必须滚回顶部：value={}, lower={}",
+                    adjustment.value(),
+                    adjustment.lower()
+                );
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "向上滚回顶部后输入焦点仍必须在搜索框"
                 );
 
                 entry.set_text("muxterm");

@@ -37,6 +37,18 @@ use crate::platform::linux::quickconnect::store::QuickConnectStore;
 const NEW_PROJECT_ID: &str = "__new_project__";
 const PANEL_ENTRY_HEIGHT: i32 = 36;
 
+/// ListBox 保留搜索框焦点时不会自动跟随选中行滚动；按行坐标只移动
+/// 必要距离，确保键盘选中的整行始终留在 ScrolledWindow 视口内。
+fn reveal_selected_row(scroller: &ScrolledWindow, list: &ListBox, row: &ListBoxRow) {
+    let Some(bounds) = row.compute_bounds(list) else {
+        return;
+    };
+    scroller.vadjustment().clamp_page(
+        f64::from(bounds.y()),
+        f64::from(bounds.y() + bounds.height()),
+    );
+}
+
 #[derive(Clone)]
 enum VisibleAction {
     Connect(TargetConfig),
@@ -1029,6 +1041,17 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     {
         let update_peek = update_peek.clone();
         list.connect_row_selected(move |_, _| update_peek());
+    }
+
+    // 搜索框持续持有输入焦点，因此 ListBox 自身不会替选中行滚动。
+    // 所有键盘/程序化选中统一从这里保证可见。
+    {
+        let sw = sw.clone();
+        list.connect_row_selected(move |list, row| {
+            if let Some(row) = row {
+                reveal_selected_row(&sw, list, row);
+            }
+        });
     }
 
     // 小 VTE 输入 → 目标 pane（键直接打在 VTE 上，不做输入框）。

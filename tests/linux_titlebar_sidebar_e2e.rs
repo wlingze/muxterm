@@ -4,6 +4,8 @@
 
 mod support;
 
+use std::process::Command;
+
 use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Paned, Revealer, ToggleButton, Widget};
@@ -41,9 +43,42 @@ fn find_by_css_class(root: &impl IsA<Widget>, class: &str) -> Option<Widget> {
     None
 }
 
-#[test]
-fn alt_p_opens_quick_connect() {
+fn widget_owns_window_focus(win: &gtk4::Window, widget: &impl IsA<Widget>) -> bool {
+    let widget = widget.as_ref();
+    gtk4::prelude::GtkWindowExt::focus(win).is_some_and(|focused| {
+        focused == *widget || gtk4::prelude::WidgetExt::is_ancestor(&focused, widget)
+    })
+}
+
+fn entry_owns_window_focus(win: &gtk4::Window, entry: &gtk4::Entry) -> bool {
+    widget_owns_window_focus(win, entry)
+}
+
+/// GTK/VTE teardown cannot safely destroy two AppWindow instances in one
+/// process on the Xvfb runner. Keep each scenario in its own child process.
+fn enter_isolated(test_name: &'static str) -> bool {
     if skip_no_display() {
+        return false;
+    }
+    if std::env::var_os("MUXTERM_TITLEBAR_CHILD").is_none() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let status = Command::new(executable)
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env("MUXTERM_TITLEBAR_CHILD", "1")
+            .status()
+            .unwrap_or_else(|error| panic!("spawn GTK titlebar child {test_name}: {error}"));
+        assert!(
+            status.success(),
+            "GTK titlebar child {test_name} exited with {status}"
+        );
+        return false;
+    }
+    true
+}
+
+#[test]
+fn alt_p_panel_escape_restores_terminal_focus() {
+    if !enter_isolated("alt_p_panel_escape_restores_terminal_focus") {
         return;
     }
     gtk4::test_synced(|| {
@@ -59,6 +94,28 @@ fn alt_p_opens_quick_connect() {
         assert!(app.test_panel_open(), "Alt+P must open QuickConnect");
         assert_eq!(app.test_active_panel_tab(), 0, "Alt+P must open Workspaces");
 
+        let entry = find_by_name(&app.window, "muxterm-panel-entry")
+            .expect("QuickConnect entry")
+            .downcast::<gtk4::Entry>()
+            .expect("QuickConnect entry type");
+        assert!(
+            entry_owns_window_focus(&app.window, &entry),
+            "QuickConnect entry must own focus while open"
+        );
+        let entry_ctrl = window_key_controller(&entry).expect("QuickConnect entry controller");
+        simulate_key_press(&entry_ctrl, gdk::Key::Escape, gdk::ModifierType::empty());
+
+        assert!(!app.test_panel_open(), "Escape must close QuickConnect");
+        assert!(
+            app.test_active_terminal_has_focus(),
+            "Escape must synchronously return keyboard focus to the active terminal"
+        );
+        pump_main_loop(100);
+        assert!(
+            app.test_active_terminal_has_focus(),
+            "active terminal must keep focus after the main loop settles"
+        );
+
         app.shutdown();
         pump_main_loop(100);
     });
@@ -66,7 +123,7 @@ fn alt_p_opens_quick_connect() {
 
 #[test]
 fn title_bar_actions_and_workspace_sidebar() {
-    if skip_no_display() {
+    if !enter_isolated("title_bar_actions_and_workspace_sidebar") {
         return;
     }
     gtk4::test_synced(|| {

@@ -1384,6 +1384,14 @@ impl AppWindow {
         self._state.borrow().panel_open.is_some()
     }
 
+    /// 测试用：当前 pane 的 VTE 是否持有键盘焦点。
+    pub fn test_active_terminal_has_focus(&self) -> bool {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(s.active_pane)
+            .is_some_and(|view| view.terminal().has_focus())
+    }
+
     /// 测试用：当前面板 tab（0=workspaces / 1=attention / 2=search）。
     pub fn test_active_panel_tab(&self) -> u32 {
         self._state
@@ -3054,7 +3062,11 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
                 seed_unseeded_pane_for(s, wid, &view, pane_id, cols, rows);
                 if is_active && pane_active {
                     s.active_pane = pane_id;
-                    view.grab_focus();
+                    // 临时输入面板存在时不能由 topology refresh 抢走焦点；
+                    // 没有输入面板时，键盘归当前 terminal。
+                    if s.panel_open.is_none() && !s.pane_find.is_visible() {
+                        view.grab_focus();
+                    }
                 }
             }
         }
@@ -4038,6 +4050,8 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let st = state.clone();
         let workspaces = build_root_items(&store, current.as_ref());
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
+        // 临时输入 surface 互斥：QuickConnect 打开后不保留 pane-find。
+        s.pane_find.set_visible(false);
         // C7：本地列出搬后台线程（GTK 线程禁止 ssh / 扫 herdr socket），
         // 结果经 16ms poll 收编，和 SSH probe 同一模式。
         spawn_local_existing_probe(&mut s);
@@ -4160,7 +4174,15 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             on_close: {
                 let st = st.clone();
                 std::boxed::Box::new(move || {
-                    st.borrow_mut().panel_open = None;
+                    let active_view = {
+                        let mut s = st.borrow_mut();
+                        s.panel_open = None;
+                        let pane = s.active_pane;
+                        s.active_layout().pane(pane).cloned()
+                    };
+                    if let Some(view) = active_view {
+                        view.grab_focus();
+                    }
                 })
             },
             ssh_reach,
