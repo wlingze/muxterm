@@ -50,6 +50,8 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         fx.sendBelOnBackground()
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
             app.testPollOnce()
+            app.testOpenAttentionPanel()
+            app.unifiedPanel.refreshData()
             return app.testBlockedCount() >= 1
         })
 
