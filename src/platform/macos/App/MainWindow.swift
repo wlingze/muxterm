@@ -1563,6 +1563,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if tabSwitchGate.pendingTab == tabId, !tabSwitchGate.isReleased() {
             return
         }
+        let departingPane = activePaneID
+        if let departingPane {
+            settleLastSeenBaseline(for: departingPane)
+        }
+        // settle 过程中可能已经收到另一个切换确认；重新检查目标，避免
+        // 对已经成为 active 的 tab 再发一次 select-window。
+        guard tabId != lastSnapshot.activeTab else { return }
+        let departingLatest = departingPane.map {
+            bridge.paneLatestLineSeq(paneId: $0)
+        }
         tabSwitchGate.request(tab: tabId)
         content.statusBar.markCurrentWindow(tabId)
         if let paneId = content.paneLayout.revealCachedTab(tabId) {
@@ -1575,8 +1585,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
-        if let departingPane = activePaneID {
-            recordLastSeen(for: departingPane)
+        if let departingPane {
+            recordLastSeen(for: departingPane, latest: departingLatest)
         }
         // 等 STATE_ACTIVE_TAB_CHANGED 到达后再用权威 snapshot 对齐；
         // 缓存命中时画面已经切过去了。
@@ -2753,7 +2763,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 记录离开 pane 时最后一条稳定终端行；回到该 pane 后若 seq 前进，
     /// 显示“上次看到这里”按钮，并用 core 行索引跳回，而不是猜文本位置。
-    private func recordLastSeen(for paneId: UInt32) {
+    private func recordLastSeen(for paneId: UInt32, latest: Int64? = nil) {
         // 一个离开周期只建立一次基线。tab 申请和 active-tab 确认事件
         // 都可能到这里；后到的调用不能把已经记录的离开位置推迟。
         guard lastSeenLineSeq[paneId] == nil else {
@@ -2765,7 +2775,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         guard let seq = LastSeenNavigation.baselineSequence(
-            latest: bridge.paneLatestLineSeq(paneId: paneId)
+            latest: latest ?? bridge.paneLatestLineSeq(paneId: paneId)
         ) else {
             pendingLastSeenPanes.insert(paneId)
             return
@@ -2775,6 +2785,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         lastSeenJump = lastSeenJump?.paneId == paneId ? nil : lastSeenJump
         if lastSeenVisiblePane == paneId {
             setLastSeenVisible(false, paneId: paneId)
+        }
+    }
+
+    /// 切 tab 前给尚未建立 PaneBuf 的旧 pane 一个有限的索引 settle 窗口。
+    ///
+    /// `muxterm_execute(select-window)` 会在 Core 内乐观改变 active tab；如果
+    /// 先执行它，再读取旧 pane 的 latest，排队中的初始 snapshot 可能把离开
+    /// 基线推迟或重置。这里最多处理几轮已经到达的事件，不阻塞等待网络，
+    /// 仍由后续普通 poll 负责最终解决 pending baseline。
+    private func settleLastSeenBaseline(for paneId: UInt32) {
+        guard bridge.paneLatestLineSeq(paneId: paneId) <= 0 else { return }
+        for _ in 0..<4 {
+            pollOnce()
+            if bridge.paneLatestLineSeq(paneId: paneId) > 0 {
+                return
+            }
+            RunLoop.current.run(
+                mode: .default,
+                before: Date().addingTimeInterval(0.005)
+            )
         }
     }
 
