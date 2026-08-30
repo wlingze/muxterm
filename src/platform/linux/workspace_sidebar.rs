@@ -68,6 +68,7 @@ type WorkspaceActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
 
 /// The title-bar toggle plus the overlay sidebar.
 pub struct WorkspaceSidebar {
+    pub container: GtkBox,
     pub revealer: Revealer,
     pub list: ListBox,
     pub toggle: ToggleButton,
@@ -77,6 +78,14 @@ pub struct WorkspaceSidebar {
 
 impl WorkspaceSidebar {
     pub fn new() -> Self {
+        let container = GtkBox::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(0)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        container.set_widget_name("muxterm-sidebar-shell");
+
         let toggle = ToggleButton::with_label("☰");
         toggle.set_widget_name("muxterm-sidebar-toggle");
         toggle.set_has_frame(false);
@@ -135,6 +144,8 @@ impl WorkspaceSidebar {
         let ids = Rc::new(RefCell::new(Vec::new()));
         let on_activate: WorkspaceActivateCb = Rc::new(RefCell::new(None));
 
+        container.append(&revealer);
+
         {
             let revealer = revealer.clone();
             toggle.connect_toggled(move |button| {
@@ -157,6 +168,7 @@ impl WorkspaceSidebar {
         }
 
         Self {
+            container,
             revealer,
             list,
             toggle,

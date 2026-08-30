@@ -471,6 +471,19 @@ impl AppWindow {
         cmd_mark_fail.set_margin_end(2);
         cmd_mark_fail.add_css_class("muxterm-cmd-mark-fail");
         cmd_mark_fail.set_visible(false);
+        let content = Box::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(0)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        content.set_widget_name("muxterm-content");
+        content.append(&sidebar.container);
+        content.append(&layout_overlay);
+        root.append(&content);
+        root.append(&status.container);
+        window.set_child(Some(&root));
+
         layout_overlay.add_overlay(&pane_find);
         layout_overlay.add_overlay(&search_highlight);
         layout_overlay.add_overlay(&disconnect_overlay);
@@ -478,10 +491,6 @@ impl AppWindow {
         layout_overlay.add_overlay(&cmd_mark_ok);
         layout_overlay.add_overlay(&cmd_mark_fail);
         layout_overlay.add_overlay(&jump_latest);
-        layout_overlay.add_overlay(&sidebar.revealer);
-        root.append(&layout_overlay);
-        root.append(&status.container);
-        window.set_child(Some(&root));
 
         let keymap = KeyMap::from_bindings(&keybindings);
         let qc_store =
@@ -5062,6 +5071,12 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         .qc-badge-project {{ background: #40a02b; }}
         .qc-badge-current {{ background: #df8e1d; }}
         .qc-current {{ background: alpha(#89b4fa, 0.18); }}
+        .muxterm-sidebar {{ background: {bg}; border-right: 1px solid alpha({fg}, 0.18); }}
+        .muxterm-sidebar-title {{ color: {fg}; font-weight: 600; }}
+        .muxterm-sidebar-row {{ border-radius: 4px; }}
+        .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); }}
+        .muxterm-sidebar-row-name {{ color: {fg}; }}
+        .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
         "
     )
 }

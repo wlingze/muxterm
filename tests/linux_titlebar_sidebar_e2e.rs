@@ -85,6 +85,34 @@ fn title_bar_actions_and_workspace_sidebar() {
             sidebar.reveals_child(),
             "sidebar toggle must reveal sidebar"
         );
+        let content = find_by_name(&app.window, "muxterm-content")
+            .and_then(|widget| widget.first_child())
+            .expect("sidebar must be a layout sibling, not an overlay");
+        assert_eq!(
+            content.widget_name(),
+            "muxterm-sidebar-shell",
+            "first content child must be the sidebar"
+        );
+        let terminal = find_by_name(&app.window, "muxterm-sidebar-scroll")
+            .and_then(|widget| widget.ancestor(gtk4::Widget::static_type()))
+            .expect("sidebar widget has an ancestor");
+        let _ = terminal;
+        let terminal_width = find_by_name(&app.window, "muxterm-content")
+            .and_then(|widget| widget.last_child())
+            .expect("terminal sibling exists")
+            .allocated_width();
+        assert!(
+            terminal_width < 960,
+            "terminal must shrink when sidebar is open, got {terminal_width}"
+        );
+        let sidebar_panel = find_by_name(&app.window, "muxterm-sidebar")
+            .expect("sidebar panel")
+            .downcast::<gtk4::Box>()
+            .expect("sidebar panel is Box");
+        let terminal = find_by_name(&app.window, "muxterm-sidebar-scroll")
+            .and_then(|widget| widget.ancestor(gtk4::Widget::static_type()))
+            .expect("sidebar widget has an ancestor");
+        let _ = (sidebar_panel, terminal);
         assert_eq!(
             count_widget_names(&app.window, "muxterm-sidebar-row"),
             1,
