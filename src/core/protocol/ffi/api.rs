@@ -142,6 +142,7 @@ impl MuxtermHandle {
             for ev in events {
                 if let StateChange::PaneOutput { pane, .. }
                 | StateChange::PaneSnapshot { pane, .. }
+                | StateChange::PaneIndexSnapshot { pane, .. }
                 | StateChange::PaneHistory { pane, .. } = ev
                 {
                     let signals = ws.take_attention_signals(*pane);

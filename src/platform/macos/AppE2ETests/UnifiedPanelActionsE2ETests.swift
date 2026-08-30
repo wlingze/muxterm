@@ -14,6 +14,15 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         let activePane = UInt32(fx.panes[0].replacingOccurrences(of: "%", with: "")) ?? 0
         let backgroundPane = UInt32(fx.panes[1].replacingOccurrences(of: "%", with: "")) ?? 1
         app.testSwitchPane(activePane)
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.attachTimeout) {
+                app.testPollOnce()
+                app.testFlushFeeds()
+                return app.testPaneSurfaceReady(activePane)
+                    && app.testPaneSurfaceReady(backgroundPane)
+            },
+            "两个 pane 的 Index/Surface seed 都完成后才能验证搜索范围"
+        )
         app.testOpenSearchPanel()
         app.testSetSearchQuery("E2E_")
         AppE2E.pump(80)
@@ -69,7 +78,6 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady(minLeaves: 1))
-        let firstBridge = app.bridge
 
         let secondBridge = try CoreBridge(
             backendType: "tmux",
@@ -141,12 +149,14 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
 
         Tmux.sendHex(socket: first.socket, target: first.pane, bytes: [0x07])
         Tmux.ok(socket: first.socket, args: ["send-keys", "-t", first.pane, "Enter"])
-        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
-            app.testPollOnce()
-            return Self.blockedCount(firstBridge) > 0
-        }, "后台 Workspace 的 BEL 必须进入 Attention")
-
         app.testOpenAttentionPanel()
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
+                app.testPollOnce()
+                return app.testAttentionRowCount() > 0
+            },
+            "后台 Workspace 的 BEL 必须进入 Attention"
+        )
         AppE2E.pump(80)
         app.unifiedPanel.testSelectFirstRow()
         XCTAssertEqual(
@@ -156,7 +166,9 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         app.unifiedPanel.testMuteSelected(seconds: 300)
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session, "Mute 不应切换 Workspace")
         XCTAssertTrue(AppE2E.wait(timeout: 2) {
-            Self.blockedCount(firstBridge) == 0
+            app.testPollOnce()
+            app.unifiedPanel.refreshData()
+            return app.testAttentionRowCount() == 0
         }, "Mute 必须发送到条目所属的后台 bridge")
     }
 
@@ -192,14 +204,5 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
             return app.testActiveWorkspaceSession() == first.session
                 && app.testReplyOverlayVisible()
         }, "Open 必须先激活条目所属 Workspace，再打开对应 pane overlay")
-    }
-
-    private static func blockedCount(_ bridge: CoreBridge) -> Int {
-        guard let json = bridge.attentionSnapshotJSON(),
-              let snapshot = AttentionSnapshot.decode(Data(json.utf8))
-        else {
-            return 0
-        }
-        return snapshot.blockedCount
     }
 }
