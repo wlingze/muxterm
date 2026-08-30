@@ -97,6 +97,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         Tmux.ok(socket: first.socket, args: ["send-keys", "-t", first.pane, "Enter"])
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
             app.testPollOnce()
+            app.testPollBackgroundWorkspaces()
             guard let json = firstBridge.searchAllJSON(query: token),
                   let snapshot = SearchSnapshot.decode(Data(json.utf8))
             else {
@@ -154,6 +155,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         XCTAssertTrue(
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
+                app.testPollBackgroundWorkspaces()
                 app.unifiedPanel.refreshData()
                 return app.testAttentionBlockedCount(workspaceId: firstWorkspace) > 0
                     || app.testAttentionRowCount() > 0
@@ -170,6 +172,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session, "Mute 不应切换 Workspace")
         XCTAssertTrue(AppE2E.wait(timeout: 2) {
             app.testPollOnce()
+            app.testPollBackgroundWorkspaces()
             return app.testAttentionBlockedCount(workspaceId: firstWorkspace) == 0
         }, "Mute 必须发送到条目所属的后台 bridge")
     }
@@ -197,6 +200,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         Tmux.ok(socket: first.socket, args: ["send-keys", "-t", first.pane, "Enter"])
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
             app.testPollOnce()
+            app.testPollBackgroundWorkspaces()
             app.testOpenAttentionPanel()
             app.unifiedPanel.refreshData()
             return app.testAttentionBlockedCount(workspaceId: firstWorkspace) > 0
