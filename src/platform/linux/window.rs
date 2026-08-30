@@ -5309,16 +5309,38 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
             background-color: {bg};
             color: {fg};
             border: 1px solid alpha({fg}, 0.24);
-            border-radius: 12px;
-            box-shadow: 0 16px 36px alpha(#000000, 0.46);
+            border-radius: 10px;
+            box-shadow: 0 18px 44px alpha(#000000, 0.54), inset 0 1px alpha({fg}, 0.08);
         }}
         .quick-pick-entry {{
-            background-color: alpha({fg}, 0.08);
+            min-height: 32px;
+            padding: 0 10px;
+            background-color: alpha({fg}, 0.065);
             color: {fg};
-            border: 1px solid alpha({fg}, 0.18);
-            border-radius: 8px;
+            border: 1px solid alpha({fg}, 0.20);
+            border-radius: 6px;
+            box-shadow: inset 0 1px 2px alpha(#000000, 0.22);
         }}
-        .quick-pick-list {{ background-color: transparent; }}
+        .quick-pick-entry:focus {{
+            border-color: alpha({fg}, 0.42);
+            box-shadow: 0 0 0 1px alpha({fg}, 0.12), inset 0 1px 2px alpha(#000000, 0.20);
+        }}
+        .quick-pick-list {{ background-color: transparent; padding: 2px 6px 5px; }}
+        .quick-pick-list row {{
+            min-height: 0;
+            border-radius: 5px;
+            color: {fg};
+        }}
+        .quick-pick-list row:hover {{ background-color: alpha({fg}, 0.065); }}
+        .quick-pick-list row:selected {{ background-color: alpha({fg}, 0.15); }}
+        .quick-pick-label, .qc-name {{ font-size: 13px; font-weight: 600; }}
+        .quick-pick-detail, .qc-sub {{ font-size: 11px; opacity: 0.62; }}
+        .qc-attention-count {{ font-size: 10px; opacity: 0.58; }}
+        .quick-pick-root togglebutton {{
+            min-height: 24px;
+            padding: 1px 9px;
+            border-radius: 5px;
+        }}
         "
     )
 }

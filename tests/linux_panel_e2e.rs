@@ -8,7 +8,7 @@
 
 mod support;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::process::Command;
 use std::rc::Rc;
@@ -23,7 +23,7 @@ use muxterm::core::attention::engine::PaneAttention;
 use muxterm::core::attention::state::PaneStatus;
 use muxterm::core::config::Theme;
 use muxterm::core::transport::ssh::probe::SshReach;
-use muxterm::platform::linux::panel_model::PanelTab;
+use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
@@ -69,6 +69,13 @@ fn ssh_target(alias: &str) -> PanelItem {
         ),
         false,
     )
+}
+
+fn entry_owns_window_focus(win: &gtk4::Window, entry: &gtk4::Entry) -> bool {
+    gtk4::prelude::GtkWindowExt::focus(win).is_some_and(|focused| {
+        focused == entry.clone().upcast::<gtk4::Widget>()
+            || gtk4::prelude::WidgetExt::is_ancestor(&focused, entry)
+    })
 }
 
 /// 每个 GTK 窗口生命周期单独进子进程。同一 test binary 里先后
@@ -331,6 +338,271 @@ fn three_tab_panel_full_flow() {
             pump_main_loop(40);
         });
     });
+}
+
+#[test]
+fn keyboard_navigation_keeps_search_focus_and_activates_visible_row() {
+    run_isolated(
+        "keyboard_navigation_keeps_search_focus_and_activates_visible_row",
+        || {
+            gtk4::test_synced(|| {
+                gtk_test_framework_smoke();
+                let win = gtk4::Window::builder()
+                    .title("panel-keyboard")
+                    .default_width(800)
+                    .default_height(600)
+                    .build();
+                win.present();
+                gtk4::test_widget_wait_for_draw(&win);
+
+                let connected = Rc::new(RefCell::new(Vec::<String>::new()));
+                let connected_cb = connected.clone();
+                show(
+                    &win,
+                    PanelShowArgs {
+                        initial_tab: PanelTab::Workspaces,
+                        workspaces: vec![target("legion"), target("muxterm")],
+                        attention: vec![],
+                        theme: Theme::load("light").unwrap_or_else(|_| Theme {
+                            name: "test".into(),
+                            background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
+                            foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
+                            cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
+                            colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+                        }),
+                        font: FontSettings::default(),
+                        on_connect: Box::new(move |cfg| {
+                            connected_cb.borrow_mut().push(cfg.name);
+                        }),
+                        on_existing_connect: Box::new(|_| {}),
+                        on_edit: Box::new(|_| {}),
+                        on_new_project: Box::new(|| {}),
+                        on_jump_pane: Box::new(|_, _, _| {}),
+                        on_send_input: Box::new(|_, _, _| {}),
+                        on_mute: Box::new(|_, _, _| {}),
+                        peek_bytes: Box::new(|_, _| (80, 24, Vec::new())),
+                        search: Box::new(|_, _| vec![]),
+                        on_close: Box::new(|| {}),
+                        ssh_reach: HashMap::new(),
+                        existing: Rc::new(RefCell::new(
+                            muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                        )),
+                        on_existing_nav: Box::new(|_| {}),
+                    },
+                );
+                pump_main_loop(80);
+
+                let entry = find_by_name(&win, "muxterm-panel-entry")
+                    .expect("共享搜索框应存在")
+                    .downcast::<gtk4::Entry>()
+                    .expect("Entry 类型");
+                let list = find_by_name(&win, "muxterm-panel-list")
+                    .expect("列表应存在")
+                    .downcast::<gtk4::ListBox>()
+                    .expect("ListBox 类型");
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "面板打开后焦点必须在搜索框"
+                );
+
+                let first = list.row_at_index(0).expect("第一条 workspace");
+                assert!(first.height() > 0, "workspace 行必须完成分配");
+                assert!(
+                    first.height() <= 52,
+                    "workspace 行应为紧凑的两行布局，实际高度 {}",
+                    first.height()
+                );
+
+                let controller = window_key_controller(&entry).expect("Entry 应有键盘 controller");
+                simulate_key_press(&controller, gdk::Key::Down, gdk::ModifierType::empty());
+                pump_main_loop(10);
+                assert_eq!(
+                    list.selected_row().map(|row| row.index()),
+                    Some(1),
+                    "Down 应立即选择下一行"
+                );
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "Down 后输入焦点必须仍在搜索框"
+                );
+
+                simulate_key_press(&controller, gdk::Key::Up, gdk::ModifierType::empty());
+                pump_main_loop(10);
+                assert_eq!(
+                    list.selected_row().map(|row| row.index()),
+                    Some(0),
+                    "Up 应立即选择上一行"
+                );
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "Up 后输入焦点必须仍在搜索框"
+                );
+
+                entry.set_text("muxterm");
+                pump_main_loop(40);
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "过滤后输入焦点必须仍在搜索框"
+                );
+                assert_eq!(
+                    list.selected_row().map(|row| row.index()),
+                    Some(0),
+                    "过滤结果应立即选中第一行"
+                );
+                assert!(
+                    list.selected_row()
+                        .is_some_and(|row| row.widget_name().contains("muxterm")),
+                    "过滤后渲染行必须对应 muxterm，实际 {:?}",
+                    list.selected_row().map(|row| row.widget_name())
+                );
+                simulate_key_press(&controller, gdk::Key::Return, gdk::ModifierType::empty());
+                pump_main_loop(40);
+                assert_eq!(connected.borrow().as_slice(), &["muxterm".to_string()]);
+                assert!(
+                    find_by_name(&win, "muxterm-panel").is_none(),
+                    "Enter 激活可见行后应关闭面板"
+                );
+
+                win.close();
+                win.destroy();
+                pump_main_loop(40);
+            });
+        },
+    );
+}
+
+#[test]
+fn rapid_typing_and_attention_navigation_are_coalesced() {
+    run_isolated(
+        "rapid_typing_and_attention_navigation_are_coalesced",
+        || {
+            gtk4::test_synced(|| {
+                gtk_test_framework_smoke();
+                let win = gtk4::Window::builder()
+                    .title("panel-coalescing")
+                    .default_width(800)
+                    .default_height(600)
+                    .build();
+                win.present();
+                gtk4::test_widget_wait_for_draw(&win);
+
+                let search_calls = Rc::new(Cell::new(0u32));
+                let search_calls_cb = search_calls.clone();
+                let preview_calls = Rc::new(Cell::new(0u32));
+                let preview_calls_cb = preview_calls.clone();
+                show(
+                    &win,
+                    PanelShowArgs {
+                        initial_tab: PanelTab::Search,
+                        workspaces: vec![target("muxterm")],
+                        attention: vec![
+                            attention("one", 1, PaneStatus::Blocked, "first"),
+                            attention("two", 2, PaneStatus::Blocked, "second"),
+                            attention("three", 3, PaneStatus::Done, "third"),
+                        ],
+                        theme: Theme::load("light").unwrap_or_else(|_| Theme {
+                            name: "test".into(),
+                            background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
+                            foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
+                            cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
+                            colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+                        }),
+                        font: FontSettings::default(),
+                        on_connect: Box::new(|_| {}),
+                        on_existing_connect: Box::new(|_| {}),
+                        on_edit: Box::new(|_| {}),
+                        on_new_project: Box::new(|| {}),
+                        on_jump_pane: Box::new(|_, _, _| {}),
+                        on_send_input: Box::new(|_, _, _| {}),
+                        on_mute: Box::new(|_, _, _| {}),
+                        peek_bytes: Box::new(move |_, pane| {
+                            preview_calls_cb.set(preview_calls_cb.get() + 1);
+                            (80, 24, format!("preview-{pane}").into_bytes())
+                        }),
+                        search: Box::new(move |query, _| {
+                            search_calls_cb.set(search_calls_cb.get() + 1);
+                            if query.is_empty() {
+                                vec![]
+                            } else {
+                                vec![SearchRow {
+                                    workspace_id: "muxterm".into(),
+                                    tab_id: 1,
+                                    pane_id: 1,
+                                    seq: 1,
+                                    line: query.to_string(),
+                                }]
+                            }
+                        }),
+                        on_close: Box::new(|| {}),
+                        ssh_reach: HashMap::new(),
+                        existing: Rc::new(RefCell::new(
+                            muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                        )),
+                        on_existing_nav: Box::new(|_| {}),
+                    },
+                );
+                pump_main_loop(80);
+
+                let entry = find_by_name(&win, "muxterm-panel-entry")
+                    .expect("共享搜索框应存在")
+                    .downcast::<gtk4::Entry>()
+                    .expect("Entry 类型");
+                let baseline_search = search_calls.get();
+                entry.set_text("m");
+                entry.set_text("mu");
+                entry.set_text("mux");
+                assert_eq!(
+                    search_calls.get(),
+                    baseline_search,
+                    "连续输入不得在 changed 回调里同步执行搜索/重建"
+                );
+                pump_main_loop(40);
+                assert_eq!(
+                    search_calls.get(),
+                    baseline_search + 1,
+                    "一批连续输入只应执行一次最新查询"
+                );
+                assert!(
+                    entry_owns_window_focus(&win, &entry),
+                    "批量过滤后焦点必须仍在搜索框"
+                );
+
+                let attention_tab = find_by_name(&win, "muxterm-panel-tab-attention")
+                    .expect("Attention tab")
+                    .downcast::<gtk4::ToggleButton>()
+                    .expect("ToggleButton");
+                let _: () = attention_tab.emit_by_name("clicked", &[]);
+                pump_main_loop(40);
+                entry.set_text("");
+                pump_main_loop(40);
+                let baseline_preview = preview_calls.get();
+                let list = find_by_name(&win, "muxterm-panel-list")
+                    .expect("列表应存在")
+                    .downcast::<gtk4::ListBox>()
+                    .expect("ListBox 类型");
+                let row_two = list.row_at_index(2).expect("第二条 attention");
+                let row_three = list.row_at_index(3).expect("第三条 attention");
+                list.select_row(Some(&row_two));
+                list.select_row(Some(&row_three));
+                list.select_row(Some(&row_two));
+                assert_eq!(
+                    preview_calls.get(),
+                    baseline_preview,
+                    "快速切换选中行不得同步抓取 pane 预览"
+                );
+                pump_main_loop(40);
+                assert_eq!(
+                    preview_calls.get(),
+                    baseline_preview + 1,
+                    "快速切换只应抓取最终选中 pane 的一次预览"
+                );
+
+                win.close();
+                win.destroy();
+                pump_main_loop(40);
+            });
+        },
+    );
 }
 
 /// W20f / C9：已有的连接导航——点进去扁平列表，Back 回根。

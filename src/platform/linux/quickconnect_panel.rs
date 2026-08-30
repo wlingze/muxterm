@@ -3,7 +3,7 @@
 //! 行为对齐 macOS `QuickConnectController`：搜索、badges、当前连接高亮、
 //! 回车连接、双击编辑、末行 New Project。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -35,6 +35,21 @@ use crate::platform::linux::quickconnect::model::{
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
 const NEW_PROJECT_ID: &str = "__new_project__";
+const PANEL_ENTRY_HEIGHT: i32 = 36;
+
+#[derive(Clone)]
+enum VisibleAction {
+    Connect(TargetConfig),
+    ExistingConnect(TargetConfig),
+    NewProject,
+    Navigate(ExistingNav),
+    Jump {
+        workspace_id: String,
+        pane_id: u32,
+        seq: u64,
+    },
+    None,
+}
 
 type SendInputCb = Box<dyn Fn(String, u32, &[u8])>;
 type MuteCb = Box<dyn Fn(String, u32, Duration)>;
@@ -276,6 +291,32 @@ pub fn existing_items(
     items
 }
 
+fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction {
+    match item {
+        PanelItem::Target(entry, _) => VisibleAction::Connect(entry.config.clone()),
+        PanelItem::NewProject => VisibleAction::NewProject,
+        PanelItem::Folder { id, .. } => match *id {
+            "existing-connections" => VisibleAction::Navigate(ExistingNav::Home),
+            "existing-local" => VisibleAction::Navigate(ExistingNav::Local),
+            "existing-ssh" => VisibleAction::Navigate(ExistingNav::SshHosts),
+            _ => VisibleAction::None,
+        },
+        PanelItem::Back => VisibleAction::Navigate(match nav {
+            ExistingNav::Home => ExistingNav::Root,
+            ExistingNav::Local | ExistingNav::SshHosts => ExistingNav::Home,
+            ExistingNav::SshHost { .. } => ExistingNav::SshHosts,
+            ExistingNav::Root => ExistingNav::Root,
+        }),
+        PanelItem::Existing(existing_entry) => {
+            VisibleAction::ExistingConnect(existing_entry_to_config(existing_entry))
+        }
+        PanelItem::Host { alias } => VisibleAction::Navigate(ExistingNav::SshHost {
+            alias: alias.clone(),
+        }),
+        PanelItem::Loading | PanelItem::Empty { .. } => VisibleAction::None,
+    }
+}
+
 /// 弹出 QuickConnect 面板。
 /// 三 tab 面板参数（LINUX-PLAN §10 C3.2/C3.3）。
 pub struct PanelShowArgs {
@@ -355,7 +396,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         .build();
     panel.add_css_class("quick-pick-root");
     panel.set_widget_name("muxterm-panel");
-    panel.set_margin_top(40);
+    panel.set_margin_top(28);
     panel.set_size_request(panel_w, panel_h);
     panel.set_overflow(gtk4::Overflow::Hidden);
 
@@ -365,18 +406,19 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         .build();
     entry.set_widget_name("muxterm-panel-entry");
     entry.add_css_class("quick-pick-entry");
-    entry.set_margin_start(12);
-    entry.set_margin_end(12);
-    entry.set_margin_top(12);
+    entry.set_margin_start(10);
+    entry.set_margin_end(10);
+    entry.set_margin_top(8);
+    entry.set_size_request(-1, PANEL_ENTRY_HEIGHT);
     panel.append(&entry);
 
     // 三 tab 按钮
     let tab_bar = GtkBox::builder()
         .orientation(Orientation::Horizontal)
         .spacing(4)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(8)
+        .margin_start(10)
+        .margin_end(10)
+        .margin_top(6)
         .build();
     let tab_workspaces = gtk4::ToggleButton::with_label(&i18n::tr(TextKey::PanelTabWorkspaces));
     tab_workspaces.set_widget_name("muxterm-panel-tab-workspaces");
@@ -401,7 +443,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         .vscrollbar_policy(gtk4::PolicyType::Automatic)
         .child(&list)
         .build();
-    sw.set_margin_top(8);
+    sw.set_margin_top(6);
     sw.set_size_request(panel_w, list_h);
     panel.append(&sw);
 
@@ -568,8 +610,10 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
 
     // 当前选中的注意力 pane（小 VTE 输入/双击/按钮共用）。
     let selected = Rc::new(RefCell::new(None::<(String, u32)>));
+    let preview_generation = Rc::new(Cell::new(0u64));
 
-    // 根据当前选中行刷新小 VTE 与按钮（rebuild 与 row-selected 共用）。
+    // 选中态立即更新；pane 预览延后到主循环空闲阶段。generation 让快速
+    // 上下移动只读取最终 pane，避免每个 row-selected 都同步抓整屏。
     let update_peek = {
         let model = model.clone();
         let attention = attention.clone();
@@ -580,26 +624,35 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let mute_button = mute_button.clone();
         let list = list.clone();
         let selected = selected.clone();
+        let preview_generation = preview_generation.clone();
         move || {
-            let tab = model.borrow().tab;
-            if tab != PanelTab::Attention {
-                return;
-            }
-            let Some(row) = list.selected_row() else {
+            let clear_selection = || {
                 *selected.borrow_mut() = None;
                 jump_button.set_sensitive(false);
                 zoom_button.set_sensitive(false);
                 mute_button.set_sensitive(false);
+            };
+            let next_generation = preview_generation.get().wrapping_add(1);
+            preview_generation.set(next_generation);
+            if model.borrow().tab != PanelTab::Attention {
+                clear_selection();
+                return;
+            }
+            let Some(row) = list.selected_row() else {
+                clear_selection();
                 return;
             };
             let name = row.widget_name();
             let Some(rest) = name.strip_prefix("muxterm-attention-") else {
+                clear_selection();
                 return;
             };
             let Some((ws, pane)) = rest.rsplit_once('-') else {
+                clear_selection();
                 return;
             };
             let Ok(pane) = pane.parse::<u32>() else {
+                clear_selection();
                 return;
             };
             let ws = ws.to_string();
@@ -608,6 +661,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 .find(|p| p.workspace_id == ws && p.pane_id == pane)
                 .cloned()
             else {
+                clear_selection();
                 return;
             };
             let ws = sel.workspace_id.clone();
@@ -616,16 +670,24 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             jump_button.set_sensitive(true);
             zoom_button.set_sensitive(true);
             mute_button.set_sensitive(true);
-            peek_view.set_pane_id(pane);
-            let (cols, rows, bytes) = (callbacks.peek_bytes)(ws, pane);
-            peek_view.ensure_grid_size(cols, rows);
-            if !bytes.is_empty() {
-                peek_view.feed_output(&bytes);
-                peek_view.flush_pending_feed();
-            }
+            let callbacks = callbacks.clone();
+            let peek_view = peek_view.clone();
+            let preview_generation = preview_generation.clone();
+            glib::idle_add_local_once(move || {
+                if preview_generation.get() != next_generation {
+                    return;
+                }
+                let (cols, rows, bytes) = (callbacks.peek_bytes)(ws, pane);
+                if preview_generation.get() != next_generation {
+                    return;
+                }
+                peek_view.set_pane_id(pane);
+                peek_view.seed_snapshot(&bytes, cols, rows);
+            });
         }
     };
 
+    let visible_actions = Rc::new(RefCell::new(Vec::<VisibleAction>::new()));
     let rebuild = {
         let list = list.clone();
         let model = model.clone();
@@ -647,10 +709,13 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let scope_all = scope_all.clone();
         let scope_bar = scope_bar.clone();
         let existing = existing.clone();
+        let entry = entry.clone();
+        let visible_actions = visible_actions.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
+            let mut actions = Vec::new();
             // 先取 tab/query 并释放 RefCell，再 set_active（toggled 会重入 rebuild）。
             let (tab, query) = {
                 let m = model.borrow();
@@ -695,6 +760,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     for (i, row) in rows.iter().enumerate() {
                         let row_widget = ListBoxRow::new();
                         row_widget.set_activatable(true);
+                        actions.push(visible_action_for_item(&row.item, &existing.borrow().nav));
                         match &row.item {
                             PanelItem::Target(entry, is_current) => {
                                 row_widget.set_widget_name(&QuickConnect::unique_id(&entry.config));
@@ -744,27 +810,27 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                     i18n::tr(TextKey::NewProject)
                                 )));
                                 label.set_halign(Align::Start);
-                                label.set_margin_start(16);
-                                label.set_margin_top(10);
-                                label.set_margin_bottom(10);
+                                label.set_margin_start(12);
+                                label.set_margin_top(6);
+                                label.set_margin_bottom(6);
                                 row_widget.set_child(Some(&label));
                             }
                             PanelItem::Folder { id, title } => {
                                 row_widget.set_widget_name(&format!("muxterm-{id}"));
                                 let label = Label::new(Some(title));
                                 label.set_halign(Align::Start);
-                                label.set_margin_start(16);
-                                label.set_margin_top(10);
-                                label.set_margin_bottom(10);
+                                label.set_margin_start(12);
+                                label.set_margin_top(6);
+                                label.set_margin_bottom(6);
                                 row_widget.set_child(Some(&label));
                             }
                             PanelItem::Back => {
                                 row_widget.set_widget_name("muxterm-existing-back");
                                 let label = Label::new(Some(&i18n::tr(TextKey::ExistingBack)));
                                 label.set_halign(Align::Start);
-                                label.set_margin_start(16);
-                                label.set_margin_top(10);
-                                label.set_margin_bottom(10);
+                                label.set_margin_start(12);
+                                label.set_margin_top(6);
+                                label.set_margin_bottom(6);
                                 row_widget.set_child(Some(&label));
                             }
                             PanelItem::Existing(entry) => {
@@ -801,9 +867,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                 let reach = ssh_reach.get(alias).copied();
                                 let label = Label::new(Some(alias));
                                 label.set_halign(Align::Start);
-                                label.set_margin_start(16);
-                                label.set_margin_top(10);
-                                label.set_margin_bottom(10);
+                                label.set_margin_start(12);
+                                label.set_margin_top(6);
+                                label.set_margin_bottom(6);
                                 let boxed = GtkBox::new(Orientation::Horizontal, 8);
                                 boxed.append(&label);
                                 if let Some(reach) = reach {
@@ -817,9 +883,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                 row_widget.set_activatable(false);
                                 let label = Label::new(Some(&i18n::tr(TextKey::ExistingProbing)));
                                 label.set_halign(Align::Start);
-                                label.set_margin_start(16);
-                                label.set_margin_top(10);
-                                label.set_margin_bottom(10);
+                                label.set_margin_start(12);
+                                label.set_margin_top(6);
+                                label.set_margin_bottom(6);
                                 row_widget.set_child(Some(&label));
                             }
                             PanelItem::Empty { title } => {
@@ -827,9 +893,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                 row_widget.set_activatable(false);
                                 let label = Label::new(Some(title));
                                 label.set_halign(Align::Start);
-                                label.set_margin_start(16);
-                                label.set_margin_top(10);
-                                label.set_margin_bottom(10);
+                                label.set_margin_start(12);
+                                label.set_margin_top(6);
+                                label.set_margin_bottom(6);
                                 row_widget.set_child(Some(&label));
                             }
                         }
@@ -847,23 +913,25 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     )));
                     count.set_halign(Align::Start);
                     count.add_css_class("qc-attention-count");
-                    count.set_margin_start(16);
-                    count.set_margin_top(8);
-                    count.set_margin_bottom(4);
+                    count.set_margin_start(12);
+                    count.set_margin_top(4);
+                    count.set_margin_bottom(2);
                     let count_row = ListBoxRow::new();
                     count_row.set_activatable(false);
                     count_row.set_child(Some(&count));
                     list.append(&count_row);
+                    actions.push(VisibleAction::None);
                     if rows.is_empty() {
                         let empty = Label::new(Some(&i18n::tr(TextKey::AttentionEmpty)));
                         empty.set_halign(Align::Start);
-                        empty.set_margin_start(16);
-                        empty.set_margin_top(10);
-                        empty.set_margin_bottom(10);
+                        empty.set_margin_start(12);
+                        empty.set_margin_top(6);
+                        empty.set_margin_bottom(6);
                         let empty_row = ListBoxRow::new();
                         empty_row.set_activatable(false);
                         empty_row.set_child(Some(&empty));
                         list.append(&empty_row);
+                        actions.push(VisibleAction::None);
                     }
                     for (i, row) in rows.iter().enumerate() {
                         let row_widget = ListBoxRow::new();
@@ -879,11 +947,16 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         );
                         let label = Label::new(Some(&text));
                         label.set_halign(Align::Start);
-                        label.set_margin_start(16);
-                        label.set_margin_top(8);
-                        label.set_margin_bottom(8);
+                        label.set_margin_start(12);
+                        label.set_margin_top(5);
+                        label.set_margin_bottom(5);
                         row_widget.set_child(Some(&label));
                         list.append(&row_widget);
+                        actions.push(VisibleAction::Jump {
+                            workspace_id: row.attention.workspace_id.clone(),
+                            pane_id: row.attention.pane_id,
+                            seq: 0,
+                        });
                         if i == 0 {
                             list.select_row(Some(&row_widget));
                         }
@@ -905,24 +978,51 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         label.set_halign(Align::Start);
                         label.set_hexpand(true);
                         label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                        label.set_margin_start(16);
-                        label.set_margin_top(8);
-                        label.set_margin_bottom(8);
+                        label.set_margin_start(12);
+                        label.set_margin_top(5);
+                        label.set_margin_bottom(5);
                         row_widget.set_child(Some(&label));
                         list.append(&row_widget);
+                        actions.push(VisibleAction::Jump {
+                            workspace_id: row.workspace_id.clone(),
+                            pane_id: row.pane_id,
+                            seq: row.seq,
+                        });
                         if i == 0 {
                             list.select_row(Some(&row_widget));
                         }
                     }
                 }
             }
+            *visible_actions.borrow_mut() = actions;
             update_peek();
+            entry.grab_focus();
         }
     };
     rebuild();
-    {
+    let rebuild_pending = Rc::new(Cell::new(false));
+    let schedule_rebuild = {
         let rebuild = rebuild.clone();
-        PANEL_REFRESH.with(|slot| *slot.borrow_mut() = Some(Box::new(rebuild)));
+        let rebuild_pending = rebuild_pending.clone();
+        let finished = finished.clone();
+        move || {
+            if *finished.borrow() || rebuild_pending.replace(true) {
+                return;
+            }
+            let rebuild = rebuild.clone();
+            let rebuild_pending = rebuild_pending.clone();
+            let finished = finished.clone();
+            glib::idle_add_local_once(move || {
+                rebuild_pending.set(false);
+                if !*finished.borrow() {
+                    rebuild();
+                }
+            });
+        }
+    };
+    {
+        let schedule_rebuild = schedule_rebuild.clone();
+        PANEL_REFRESH.with(|slot| *slot.borrow_mut() = Some(Box::new(schedule_rebuild)));
     }
 
     // Tab2 选中行 → peek + 答复目标；无选中 → 清空并禁用答复。
@@ -1001,10 +1101,10 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
 
     {
         let model = model.clone();
-        let rebuild = rebuild.clone();
+        let schedule_rebuild = schedule_rebuild.clone();
         entry.connect_changed(move |e| {
             model.borrow_mut().query = e.text().to_string();
-            rebuild();
+            schedule_rebuild();
         });
     }
 
@@ -1015,7 +1115,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         (scope_all.clone(), SearchScope::All),
     ] {
         let model = model.clone();
-        let rebuild = rebuild.clone();
+        let schedule_rebuild = schedule_rebuild.clone();
         btn.connect_toggled(move |b| {
             if b.is_active() {
                 let changed = {
@@ -1028,7 +1128,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     }
                 };
                 if changed {
-                    rebuild();
+                    schedule_rebuild();
                 }
             }
         });
@@ -1041,7 +1141,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         (tab_search.clone(), PanelTab::Search),
     ] {
         let model = model.clone();
-        let rebuild = rebuild.clone();
+        let schedule_rebuild = schedule_rebuild.clone();
         btn.connect_toggled(move |b| {
             if b.is_active() {
                 // 只有 tab 真正变化才重建，避免 set_active 重入死循环。
@@ -1055,7 +1155,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     }
                 };
                 if changed {
-                    rebuild();
+                    schedule_rebuild();
                 }
             }
         });
@@ -1063,100 +1163,48 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
 
     let activate = {
         let list = list.clone();
-        let model = model.clone();
         let callbacks = callbacks.clone();
         let dismiss = dismiss.clone();
-        let rebuild = rebuild.clone();
         let existing = existing.clone();
+        let visible_actions = visible_actions.clone();
+        let schedule_rebuild = schedule_rebuild.clone();
         move || {
             let Some(row) = list.selected_row() else {
                 return;
             };
             let idx = row.index() as usize;
-            let tab = model.borrow().tab;
-            match tab {
-                PanelTab::Workspaces => {
-                    // W20：与 rebuild 同一套 all（非 Root 时来自已有的连接）。
-                    let all: Vec<PanelItem> = {
-                        let ex = existing.borrow();
-                        if ex.nav == ExistingNav::Root {
-                            (*all).clone()
-                        } else {
-                            existing_items(
-                                ex.nav.clone(),
-                                &ex.locals,
-                                &ex.hosts,
-                                ex.probe_inflight,
-                                |alias| ex.remote.get(alias).cloned().unwrap_or_default(),
-                            )
-                        }
-                    };
-                    let visible = filter_panel_items(&all, &model.borrow().query);
-                    match visible.get(idx).cloned() {
-                        Some(PanelItem::Target(entry, _)) => {
-                            dismiss();
-                            (callbacks.on_connect)(entry.config);
-                        }
-                        Some(PanelItem::NewProject) => {
-                            dismiss();
-                            (callbacks.on_new_project)();
-                        }
-                        Some(PanelItem::Folder { id, .. }) => {
-                            let next = match id {
-                                "existing-connections" => ExistingNav::Home,
-                                "existing-local" => ExistingNav::Local,
-                                "existing-ssh" => ExistingNav::SshHosts,
-                                _ => return,
-                            };
-                            existing.borrow_mut().nav = next.clone();
-                            (callbacks.on_existing_nav)(next);
-                            rebuild();
-                        }
-                        Some(PanelItem::Back) => {
-                            let back = match existing.borrow().nav {
-                                ExistingNav::Home => ExistingNav::Root,
-                                ExistingNav::Local | ExistingNav::SshHosts => ExistingNav::Home,
-                                ExistingNav::SshHost { .. } => ExistingNav::SshHosts,
-                                ExistingNav::Root => ExistingNav::Root,
-                            };
-                            existing.borrow_mut().nav = back.clone();
-                            (callbacks.on_existing_nav)(back);
-                            rebuild();
-                        }
-                        Some(PanelItem::Existing(entry)) => {
-                            dismiss();
-                            (callbacks.on_existing_connect)(existing_entry_to_config(&entry));
-                        }
-                        Some(PanelItem::Host { alias }) => {
-                            let nav = ExistingNav::SshHost { alias };
-                            existing.borrow_mut().nav = nav.clone();
-                            (callbacks.on_existing_nav)(nav);
-                            rebuild();
-                        }
-                        Some(PanelItem::Loading) | Some(PanelItem::Empty { .. }) => {}
-                        None => {}
-                    }
+            let action = visible_actions
+                .borrow()
+                .get(idx)
+                .cloned()
+                .unwrap_or(VisibleAction::None);
+            match action {
+                VisibleAction::Connect(config) => {
+                    dismiss();
+                    (callbacks.on_connect)(config);
                 }
-                PanelTab::Attention => {
-                    let rows = filter_attention_rows(&attention, &model.borrow().query);
-                    if let Some(row) = rows.get(idx) {
-                        (callbacks.on_jump_pane)(
-                            row.attention.workspace_id.clone(),
-                            row.attention.pane_id,
-                            0,
-                        );
-                    }
+                VisibleAction::ExistingConnect(config) => {
+                    dismiss();
+                    (callbacks.on_existing_connect)(config);
                 }
-                PanelTab::Search => {
-                    let scope = model.borrow().scope;
-                    let hits = (callbacks.search)(&model.borrow().query, scope);
-                    let (rows, _) = search_rows(&model.borrow().query, hits);
-                    if let Some(row) = rows.get(idx) {
-                        // 面板关闭由 window 侧 jump_to_attention_pane 的
-                        // close_current 负责；独立面板测试要留着面板量宽度。
-                        (callbacks.on_jump_pane)(row.workspace_id.clone(), row.pane_id, row.seq);
-                    }
+                VisibleAction::NewProject => {
+                    dismiss();
+                    (callbacks.on_new_project)();
                 }
+                VisibleAction::Navigate(next) => {
+                    existing.borrow_mut().nav = next.clone();
+                    (callbacks.on_existing_nav)(next);
+                    schedule_rebuild();
+                }
+                VisibleAction::Jump {
+                    workspace_id,
+                    pane_id,
+                    seq,
+                } => {
+                    // 搜索跳转由 window 侧关闭；独立面板测试会保留面板量宽度。
+                    (callbacks.on_jump_pane)(workspace_id, pane_id, seq);
+                }
+                VisibleAction::None => {}
             }
         }
     };
@@ -1170,8 +1218,10 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let dismiss = dismiss.clone();
         let activate = activate.clone();
         let model = model.clone();
-        let rebuild = rebuild.clone();
+        let schedule_rebuild = schedule_rebuild.clone();
         let list = list.clone();
+        let entry = entry.clone();
+        let entry_for_keys = entry.clone();
         let controller = EventControllerKey::new();
         controller.connect_key_pressed(move |_c, key, _code, mods| match key {
             Key::Escape => {
@@ -1186,7 +1236,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 model
                     .borrow_mut()
                     .cycle_tab(mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK));
-                rebuild();
+                schedule_rebuild();
                 glib::Propagation::Stop
             }
             Key::Up | Key::Down => {
@@ -1197,16 +1247,25 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 if rows == 0 {
                     return glib::Propagation::Stop;
                 }
-                let cur = list.selected_row().map(|r| r.index()).unwrap_or(0);
-                let next = if key == Key::Down {
-                    (cur + 1).min(rows - 1)
+                let step = if key == Key::Down { 1 } else { -1 };
+                let mut next = if let Some(row) = list.selected_row() {
+                    row.index() + step
+                } else if step > 0 {
+                    0
                 } else {
-                    (cur - 1).max(0)
+                    rows - 1
                 };
-                if let Some(row) = list.row_at_index(next) {
-                    list.select_row(Some(&row));
-                    row.grab_focus();
+                while next >= 0 && next < rows {
+                    let Some(row) = list.row_at_index(next) else {
+                        break;
+                    };
+                    if row.is_activatable() {
+                        list.select_row(Some(&row));
+                        break;
+                    }
+                    next += step;
                 }
+                entry_for_keys.grab_focus();
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -1215,23 +1274,30 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     }
 
     entry.grab_focus();
+    gtk4::prelude::GtkWindowExt::set_focus(parent, Some(&entry));
+    let parent_focus = parent.clone();
+    let entry_focus = entry.clone();
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        gtk4::prelude::GtkWindowExt::set_focus(&parent_focus, Some(&entry_focus));
+        entry_focus.grab_focus();
+    });
 }
 
 fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReach>) -> GtkBox {
     let col = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(2)
-        .margin_start(16)
-        .margin_end(16)
-        .margin_top(8)
-        .margin_bottom(8)
+        .spacing(1)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .margin_bottom(4)
         .build();
     if is_current {
         col.add_css_class("qc-current-row");
     }
     let title_row = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(8)
+        .spacing(6)
         .build();
     // SSH 可达性灯（W15d）：与 host picker 共用 ssh_dot_widget_name / ssh_dot_css_class。
     if let (Some(reach), TargetTransport::Ssh { name }) = (reach, &entry.config.transport) {
@@ -1266,15 +1332,19 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
         cur.add_css_class("qc-badge-current");
         title_row.append(&cur);
     }
-    let sub = Label::new(Some(&QuickConnect::subtitle(&entry.config)));
+    let subtitle = QuickConnect::subtitle(&entry.config);
+    let detail = if entry.config.path.trim().is_empty() {
+        subtitle
+    } else {
+        format!("{subtitle} · {}", entry.config.path)
+    };
+    let sub = Label::new(Some(&detail));
     sub.set_halign(Align::Start);
+    sub.set_hexpand(true);
+    sub.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
     sub.add_css_class("qc-sub");
-    let path = Label::new(Some(&entry.config.path));
-    path.set_halign(Align::Start);
-    path.add_css_class("qc-path");
     col.append(&title_row);
     col.append(&sub);
-    col.append(&path);
     col
 }
 
@@ -1290,15 +1360,15 @@ fn existing_connect_name(entry: &ExistingEntry) -> String {
 fn existing_row(entry: &ExistingEntry) -> GtkBox {
     let col = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(2)
-        .margin_start(16)
-        .margin_end(16)
-        .margin_top(8)
-        .margin_bottom(8)
+        .spacing(1)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .margin_bottom(4)
         .build();
     let title_row = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(8)
+        .spacing(6)
         .build();
     if let TargetTransport::Ssh { name } = &entry.transport {
         let dot = Label::new(Some("●"));

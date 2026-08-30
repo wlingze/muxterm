@@ -6,8 +6,9 @@
 //! 以 Overlay 挂在父窗口上（非独立 Window），高度钳在父窗口一半内，
 //! 列表在固定高度的 ScrolledWindow 内滚动，不会溢出屏幕。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk4::gdk::Key;
 use gtk4::glib;
@@ -16,6 +17,10 @@ use gtk4::{
     Align, Box as GtkBox, Entry, EventControllerKey, GestureClick, Label, ListBox, ListBoxRow,
     Orientation, Overlay, ScrolledWindow, SelectionMode, Widget, Window,
 };
+
+const ENTRY_HEIGHT: i32 = 36;
+const PANEL_TOP_MARGIN: i32 = 28;
+const ROW_VERTICAL_MARGIN: i32 = 2;
 
 /// 一条可选项。
 #[derive(Debug, Clone)]
@@ -29,8 +34,7 @@ pub struct QuickPickItem {
 /// 返回 `(panel_h, list_h)`。
 pub fn panel_list_heights(parent_h: i32) -> (i32, i32) {
     let panel_h = (parent_h / 2).clamp(200, 420);
-    let entry_h = 44;
-    let list_h = (panel_h - entry_h - 8).max(100);
+    let list_h = (panel_h - ENTRY_HEIGHT - 8).max(100);
     (panel_h, list_h)
 }
 
@@ -54,7 +58,6 @@ where
     let parent = parent.as_ref();
     let parent_h = parent_height(parent);
     let (panel_h, list_h) = panel_list_heights(parent_h);
-    let entry_h = 44;
     let panel_w = 520;
 
     let overlay = ensure_overlay(parent);
@@ -74,7 +77,8 @@ where
         .vexpand(false)
         .build();
     panel.add_css_class("quick-pick-root");
-    panel.set_margin_top(40);
+    panel.set_widget_name("muxterm-quick-pick");
+    panel.set_margin_top(PANEL_TOP_MARGIN);
     panel.set_size_request(panel_w, panel_h);
     // 禁止随内容长高
     panel.set_overflow(gtk4::Overflow::Hidden);
@@ -85,13 +89,15 @@ where
         .vexpand(false)
         .build();
     entry.add_css_class("quick-pick-entry");
-    entry.set_size_request(-1, entry_h);
+    entry.set_widget_name("muxterm-quick-pick-entry");
+    entry.set_size_request(-1, ENTRY_HEIGHT);
     panel.append(&entry);
 
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Browse);
     list.set_vexpand(false);
     list.add_css_class("quick-pick-list");
+    list.set_widget_name("muxterm-quick-pick-list");
 
     // 固定高度：不传播 natural height，由 size_request 约束，溢出则滚动
     let sw = ScrolledWindow::builder()
@@ -157,11 +163,11 @@ where
                 row.set_activatable(true);
                 let box_ = GtkBox::builder()
                     .orientation(Orientation::Vertical)
-                    .spacing(0)
-                    .margin_start(8)
-                    .margin_end(8)
-                    .margin_top(4)
-                    .margin_bottom(4)
+                    .spacing(1)
+                    .margin_start(10)
+                    .margin_end(10)
+                    .margin_top(ROW_VERTICAL_MARGIN)
+                    .margin_bottom(ROW_VERTICAL_MARGIN)
                     .build();
                 let label = Label::builder()
                     .label(&item.label)
@@ -194,18 +200,27 @@ where
         let all_items = all_items.clone();
         let filtered = filtered.clone();
         let rebuild = rebuild.clone();
+        let filter_pending = Rc::new(Cell::new(false));
+        let finished = finished.clone();
         entry.connect_changed(move |e| {
-            let q = e.text().to_string();
-            let next: Vec<QuickPickItem> = all_items
-                .iter()
-                .filter(|it| {
-                    fuzzy_match(&q, &it.label)
-                        || it.detail.as_ref().is_some_and(|d| fuzzy_match(&q, d))
-                })
-                .cloned()
-                .collect();
-            *filtered.borrow_mut() = next;
-            rebuild();
+            if *finished.borrow() || filter_pending.replace(true) {
+                return;
+            }
+            let entry = e.clone();
+            let all_items = all_items.clone();
+            let filtered = filtered.clone();
+            let rebuild = rebuild.clone();
+            let filter_pending = filter_pending.clone();
+            let finished = finished.clone();
+            glib::idle_add_local_once(move || {
+                filter_pending.set(false);
+                if *finished.borrow() {
+                    return;
+                }
+                *filtered.borrow_mut() = filter_items(&all_items, &entry.text());
+                rebuild();
+                entry.grab_focus();
+            });
         });
     }
 
@@ -223,6 +238,7 @@ where
         let finish = finish.clone();
         let list = list.clone();
         let filtered = filtered.clone();
+        let entry_for_keys = entry.clone();
         let controller = EventControllerKey::new();
         controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
         controller.connect_key_pressed(move |_c, keyval, _keycode, _mods| {
@@ -249,6 +265,7 @@ where
                 } else if let Some(first) = list.row_at_index(0) {
                     list.select_row(Some(&first));
                 }
+                entry_for_keys.grab_focus();
                 return glib::Propagation::Stop;
             }
             if keyval == Key::Up {
@@ -260,6 +277,7 @@ where
                         }
                     }
                 }
+                entry_for_keys.grab_focus();
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -268,6 +286,13 @@ where
     }
 
     entry.grab_focus();
+    gtk4::prelude::GtkWindowExt::set_focus(parent, Some(&entry));
+    let parent_focus = parent.clone();
+    let entry_focus = entry.clone();
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        gtk4::prelude::GtkWindowExt::set_focus(&parent_focus, Some(&entry_focus));
+        entry_focus.grab_focus();
+    });
 }
 
 /// 带自由输入的 Quick Pick：输入框非空时，始终把当前文本作为首选项。
@@ -311,7 +336,6 @@ pub fn show_freeform<F>(
     let parent = parent.as_ref();
     let parent_h = parent_height(parent);
     let (panel_h, list_h) = panel_list_heights(parent_h);
-    let entry_h = 44;
     let panel_w = 520;
 
     let overlay = ensure_overlay(parent);
@@ -330,7 +354,8 @@ pub fn show_freeform<F>(
         .vexpand(false)
         .build();
     panel.add_css_class("quick-pick-root");
-    panel.set_margin_top(40);
+    panel.set_widget_name("muxterm-quick-pick");
+    panel.set_margin_top(PANEL_TOP_MARGIN);
     panel.set_size_request(panel_w, panel_h);
     panel.set_overflow(gtk4::Overflow::Hidden);
 
@@ -340,13 +365,15 @@ pub fn show_freeform<F>(
         .vexpand(false)
         .build();
     entry.add_css_class("quick-pick-entry");
-    entry.set_size_request(-1, entry_h);
+    entry.set_widget_name("muxterm-quick-pick-entry");
+    entry.set_size_request(-1, ENTRY_HEIGHT);
     panel.append(&entry);
 
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Browse);
     list.set_vexpand(false);
     list.add_css_class("quick-pick-list");
+    list.set_widget_name("muxterm-quick-pick-list");
 
     let sw = ScrolledWindow::builder()
         .vexpand(false)
@@ -410,11 +437,11 @@ pub fn show_freeform<F>(
                 row.set_activatable(true);
                 let box_ = GtkBox::builder()
                     .orientation(Orientation::Vertical)
-                    .spacing(0)
-                    .margin_start(8)
-                    .margin_end(8)
-                    .margin_top(4)
-                    .margin_bottom(4)
+                    .spacing(1)
+                    .margin_start(10)
+                    .margin_end(10)
+                    .margin_top(ROW_VERTICAL_MARGIN)
+                    .margin_bottom(ROW_VERTICAL_MARGIN)
                     .build();
                 let label = Label::builder()
                     .label(&item.label)
@@ -455,8 +482,24 @@ pub fn show_freeform<F>(
 
     {
         let apply_filter = apply_filter.clone();
+        let filter_pending = Rc::new(Cell::new(false));
+        let finished = finished.clone();
         entry.connect_changed(move |e| {
-            apply_filter(&e.text());
+            if *finished.borrow() || filter_pending.replace(true) {
+                return;
+            }
+            let entry = e.clone();
+            let apply_filter = apply_filter.clone();
+            let filter_pending = filter_pending.clone();
+            let finished = finished.clone();
+            glib::idle_add_local_once(move || {
+                filter_pending.set(false);
+                if *finished.borrow() {
+                    return;
+                }
+                apply_filter(&entry.text());
+                entry.grab_focus();
+            });
         });
     }
 
@@ -512,6 +555,7 @@ pub fn show_freeform<F>(
                 } else if let Some(first) = list.row_at_index(0) {
                     list.select_row(Some(&first));
                 }
+                entry.grab_focus();
                 return glib::Propagation::Stop;
             }
             if keyval == Key::Up {
@@ -523,6 +567,7 @@ pub fn show_freeform<F>(
                         }
                     }
                 }
+                entry.grab_focus();
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -531,6 +576,13 @@ pub fn show_freeform<F>(
     }
 
     entry.grab_focus();
+    gtk4::prelude::GtkWindowExt::set_focus(parent, Some(&entry));
+    let parent_focus = parent.clone();
+    let entry_focus = entry.clone();
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        gtk4::prelude::GtkWindowExt::set_focus(&parent_focus, Some(&entry_focus));
+        entry_focus.grab_focus();
+    });
 }
 
 fn parent_height(parent: &Window) -> i32 {
@@ -682,12 +734,12 @@ mod tests {
     fn test_quick_pick_list_height_clamped() {
         let (panel, list) = panel_list_heights(900);
         assert_eq!(panel, 420); // clamp 上限
-        assert_eq!(list, panel - 44 - 8);
+        assert_eq!(list, panel - ENTRY_HEIGHT - 8);
         assert!(list <= panel);
 
         let (panel2, list2) = panel_list_heights(100);
         assert_eq!(panel2, 200); // clamp 下限
-        assert_eq!(list2, 148); // 200 - 44 - 8 = 148 (>100)
+        assert_eq!(list2, 156); // 200 - 36 - 8 = 156 (>100)
         assert!(list2 <= panel2);
         assert!(list2 >= 100);
     }
