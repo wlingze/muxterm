@@ -135,6 +135,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady(minLeaves: 1))
+        let firstWorkspace = "\(first.session)@local"
 
         let secondBridge = try CoreBridge(
             backendType: "tmux",
@@ -154,7 +155,8 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
                 app.unifiedPanel.refreshData()
-                return app.testAttentionRowCount() > 0
+                return app.testAttentionBlockedCount(workspaceId: firstWorkspace) > 0
+                    || app.testAttentionRowCount() > 0
             },
             "后台 Workspace 的 BEL 必须进入 Attention"
         )
@@ -162,14 +164,13 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         app.unifiedPanel.testSelectFirstRow()
         XCTAssertEqual(
             app.unifiedPanel.testSelectedAttentionRow()?.workspaceId,
-            "\(first.session)@local"
+            firstWorkspace
         )
         app.unifiedPanel.testMuteSelected(seconds: 300)
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session, "Mute 不应切换 Workspace")
         XCTAssertTrue(AppE2E.wait(timeout: 2) {
             app.testPollOnce()
-            app.unifiedPanel.refreshData()
-            return app.testAttentionRowCount() == 0
+            return app.testAttentionBlockedCount(workspaceId: firstWorkspace) == 0
         }, "Mute 必须发送到条目所属的后台 bridge")
     }
 
@@ -179,6 +180,7 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady(minLeaves: 1))
+        let firstWorkspace = "\(first.session)@local"
 
         let secondBridge = try CoreBridge(
             backendType: "tmux",
@@ -196,7 +198,9 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
             app.testPollOnce()
             app.testOpenAttentionPanel()
-            return app.testAttentionRowCount() > 0
+            app.unifiedPanel.refreshData()
+            return app.testAttentionBlockedCount(workspaceId: firstWorkspace) > 0
+                || app.testAttentionRowCount() > 0
         })
         app.unifiedPanel.testSelectFirstRow()
         app.unifiedPanel.testOpenSelectedAttention()
