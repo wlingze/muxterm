@@ -5458,7 +5458,7 @@ mod tests {
             light_css.contains("background-color: #eff1f5"),
             "{light_css}"
         );
-        assert!(light_css.contains("box-shadow: 0 16px 36px"), "{light_css}");
+        assert!(light_css.contains("box-shadow: 0 18px 44px"), "{light_css}");
         assert_ne!(light_css, dark_css);
     }
 
