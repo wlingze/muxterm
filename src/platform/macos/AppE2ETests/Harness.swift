@@ -54,11 +54,27 @@ enum AppE2E {
         XCTAssertTrue(Tmux.available, "需要本机 tmux（禁止 skip 冒充绿）")
     }
 
+    /// macOS 26 会把压到 visibleFrame 之外的窗口上移。测试关心的是
+    /// “attach 后不再改 frame”，不是绝对 (40, 40)，因此先选一个屏幕内
+    /// 的固定 frame，再全程断言它不变。
+    static func fixedWindowFrame(width: CGFloat, height: CGFloat) -> NSRect {
+        let visible = NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: width + 80, height: height + 80)
+        let horizontalMargin = min(40, max(0, (visible.width - width) / 2))
+        let verticalMargin = min(40, max(0, (visible.height - height) / 2))
+        return NSRect(
+            x: visible.minX + horizontalMargin,
+            y: visible.minY + verticalMargin,
+            width: width,
+            height: height
+        )
+    }
+
     static func attachWindow(socket: String, session: String) throws -> MainWindowController {
         ensureApp()
         let bridge = try CoreBridge(backendType: "tmux", socket: socket, session: session)
         let wc = MainWindowController(bridge: bridge, debug: true)
-        wc.window?.setFrame(NSRect(x: 40, y: 40, width: 1280, height: 800), display: true)
+        wc.window?.setFrame(fixedWindowFrame(width: 1280, height: 800), display: true)
         wc.window?.orderFront(nil)
         pump(200)
         FileHandle.standardError.write(Data("DEBUG FRAME after attach: \(wc.window?.frame.size ?? .zero)\n".utf8))
@@ -79,7 +95,7 @@ enum AppE2E {
             sshAlias: alias
         )
         let wc = MainWindowController(bridge: bridge, debug: true)
-        wc.window?.setFrame(NSRect(x: 40, y: 40, width: 1280, height: 800), display: true)
+        wc.window?.setFrame(fixedWindowFrame(width: 1280, height: 800), display: true)
         wc.window?.orderFront(nil)
         pump(200)
         return wc

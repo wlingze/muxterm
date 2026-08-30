@@ -2255,11 +2255,16 @@ impl TmuxRuntime {
                     let after_response =
                         self.initial_capture_tail.remove(&pane).unwrap_or_default();
                     let response_seen = self.capture_response_seen.remove(&pane);
-                    // `%begin` 之前的输出可能已经被 capture-pane 包含；只有
-                    // 响应边界之后的输出才需要追加到 Index 快照。直接调用
-                    // dispatch_response 的单测没有边界，保留旧 fallback 语义。
+                    // `%begin` 之前的输出不能丢弃：capture-pane 只能重建
+                    // 可见网格，无法重建 OSC 133、BEL 或已滚出的历史。把它
+                    // 放在 Index 快照前，索引既能保留这些非绘制信号，也能
+                    // 用最新快照覆盖当前屏。直接调用 dispatch_response 的
+                    // 单测没有边界，仍保留旧的查询期间暂存语义。
                     if response_seen {
-                        data.extend_from_slice(&after_response);
+                        let mut combined = before_response;
+                        combined.extend_from_slice(&data);
+                        combined.extend_from_slice(&after_response);
+                        data = combined;
                     } else {
                         data.extend_from_slice(&before_response);
                         data.extend_from_slice(&after_response);
@@ -2304,13 +2309,17 @@ impl TmuxRuntime {
                         let after_response =
                             self.initial_capture_tail.remove(&pane).unwrap_or_default();
                         let response_seen = self.capture_response_seen.remove(&pane);
-                        // 真实 control-mode 流中 `%begin` 已经给出边界：
-                        // - begin 前的通知可能已被 capture-pane 包含，丢弃以免历史重复；
-                        // - begin 后的字节属于快照之后的 live，必须追加。
-                        // 直接调用 dispatch_response 的单元测试没有 `%begin`，
-                        // 仍按旧的“查询期间暂存”语义保留 before_response。
+                        // 真实 control-mode 流中 `%begin` 已经给出边界。begin
+                        // 前的字节先喂，再喂权威快照：OSC/BEL 和滚出的历史
+                        // 不会丢，当前屏则由快照覆盖，避免可见文本重复。
+                        // begin 后的字节属于快照之后的 live，必须追加。直接
+                        // 调用 dispatch_response 的单元测试没有 `%begin`，仍
+                        // 按旧的“查询期间暂存”语义保留 before_response。
                         if response_seen {
-                            data.extend_from_slice(&after_response);
+                            let mut combined = before_response;
+                            combined.extend_from_slice(&data);
+                            combined.extend_from_slice(&after_response);
+                            data = combined;
                         } else {
                             data.extend_from_slice(&before_response);
                             data.extend_from_slice(&after_response);
@@ -5237,12 +5246,12 @@ mod tests {
     }
 
     #[test]
-    fn capture_response_boundary_drops_prequeued_bytes_but_keeps_repeated_live_tail() {
+    fn capture_response_boundary_preserves_prequeued_history_before_snapshot() {
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(8);
         b.initial_capture_pending.insert(pane);
-        // 请求响应开始前已经排队的通知可能与 snapshot 完全相同，不能
-        // 再用内容子串猜测；它们由 response boundary 明确归类为 stale。
+        // 请求响应开始前已经排队的通知可能包含 OSC/BEL 或滚出的历史。
+        // capture-pane 无法重建这些字节；先喂它们，再用快照覆盖当前屏。
         b.initial_capture_buf.insert(pane, b"same\r\n".to_vec());
         // begin 之后的合法 live 输出即使恰好重复 snapshot，也必须保留。
         b.initial_capture_tail.insert(pane, b"same\r\n".to_vec());
@@ -5254,8 +5263,58 @@ mod tests {
 
         assert_eq!(
             b.outputs.get(&pane).unwrap(),
-            b"\x1b[H\x1b[1Hsamesame\r\n",
-            "边界之后的重复文本也是合法 live，不能按子串误删"
+            b"same\r\n\x1b[H\x1b[1Hsamesame\r\n",
+            "begin 前历史保留在 scrollback，快照覆盖当前屏，边界后 live 追加"
+        );
+    }
+
+    #[test]
+    fn capture_response_boundary_preserves_nonvisible_signals_before_snapshot() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(18);
+        b.initial_capture_pending.insert(pane);
+        b.initial_capture_buf
+            .insert(pane, b"\x1b]133;C;cmd\x07PRE_HISTORY\x07".to_vec());
+        b.capture_response_seen.insert(pane);
+        b.pending_by_number
+            .insert(1, PendingQuery::CapturePane { pane });
+
+        b.dispatch_response(1, vec!["screen".into()]);
+
+        assert!(
+            b.outputs
+                .get(&pane)
+                .unwrap()
+                .starts_with(b"\x1b]133;C;cmd\x07PRE_HISTORY\x07"),
+            "OSC 133 与 BEL 必须先于权威快照保留"
+        );
+    }
+
+    #[test]
+    fn background_index_capture_preserves_pre_response_live_bytes() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(19);
+        b.initial_capture_pending.insert(pane);
+        b.initial_capture_buf
+            .insert(pane, b"\x1b]133;C;background\x07BEL\x07".to_vec());
+        b.capture_response_seen.insert(pane);
+        b.pending_by_number
+            .insert(1, PendingQuery::PaneIndexCapture { pane });
+
+        b.dispatch_response(1, vec!["index".into()]);
+
+        let event = b.events.iter().find_map(|event| match event {
+            StateChange::PaneIndexSnapshot { pane: p, data } if *p == pane => Some(data.clone()),
+            _ => None,
+        });
+        let data = event.expect("background index snapshot must be emitted");
+        assert!(
+            data.starts_with(b"\x1b]133;C;background\x07BEL\x07"),
+            "后台索引不能丢弃 begin 前的 OSC/BEL: {data:?}"
+        );
+        assert!(
+            data.windows(5).any(|window| window == b"index"),
+            "后台索引仍必须包含权威快照: {data:?}"
         );
     }
 

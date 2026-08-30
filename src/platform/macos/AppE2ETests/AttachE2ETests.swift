@@ -24,14 +24,14 @@ final class AttachE2ETests: XCTestCase {
     /// 开始后绝不 setFrame，且断言最终 host 与 SwiftTerm 都已有首帧。
     func testExistingAttachPaintsSurfaceWithoutPostAttachWindowResize() throws {
         try assertExistingAttachPaintsWithoutResize(
-            frame: NSRect(x: 40, y: 40, width: 620, height: 360),
+            frame: AppE2E.fixedWindowFrame(width: 620, height: 360),
             label: "attach-no-resize"
         )
     }
 
     func testSmallWindowExistingAttachPaintsWithoutPostAttachResize() throws {
         try assertExistingAttachPaintsWithoutResize(
-            frame: NSRect(x: 40, y: 40, width: 500, height: 320),
+            frame: AppE2E.fixedWindowFrame(width: 500, height: 320),
             label: "attach-small-window"
         )
     }
@@ -51,7 +51,7 @@ final class AttachE2ETests: XCTestCase {
         )
         defer { app.testShutdown() }
 
-        let fixedFrame = NSRect(x: 40, y: 40, width: 620, height: 360)
+        let fixedFrame = AppE2E.fixedWindowFrame(width: 620, height: 360)
         app.window?.setFrame(fixedFrame, display: true)
         app.window?.orderFront(nil)
         AppE2E.pump(160)
@@ -177,7 +177,7 @@ final class AttachE2ETests: XCTestCase {
         )
         defer { app.testShutdown() }
 
-        let fixedFrame = NSRect(x: 40, y: 40, width: 620, height: 360)
+        let fixedFrame = AppE2E.fixedWindowFrame(width: 620, height: 360)
         app.window?.setFrame(fixedFrame, display: true)
         app.window?.orderFront(nil)
         AppE2E.pump(160)
@@ -325,8 +325,15 @@ final class AttachE2ETests: XCTestCase {
             )
         }
 
-        let text = app.testAllVisibleTerminalText()
-        XCTAssertFalse(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "attach 后 SwiftTerm 不能空（1820 白屏）")
+        let painted = AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            return !app
+                .testAllVisibleTerminalText()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        }
+        XCTAssertTrue(painted, "attach 后 SwiftTerm 不能空（1820 白屏）")
         for token in painted.tab1Tokens {
             XCTAssertTrue(app.waitTerminalContains(token), "可见 pane 应含播种 token \(token)。vte=\(app.testAllVisibleTerminalText())")
         }
