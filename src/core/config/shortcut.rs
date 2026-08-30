@@ -90,8 +90,8 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         // 水平 / 竖直分割：与 TUI（Alt+S / Alt+V）对齐；保留 Alt+D 兼容 ARCHITECTURE
         kb("s", &["alt"], "new_pane"),
         kb("v", &["alt"], "new_pane_vertical"),
-        kb("d", &["alt"], "new_pane"),
-        kb("d", &["alt", "shift"], "new_pane_vertical"),
+        kb("d", &["alt"], "new_pane_vertical"),
+        kb("d", &["alt", "shift"], "new_pane"),
         kb("1", &["alt"], "switch_tab_1"),
         kb("2", &["alt"], "switch_tab_2"),
         kb("3", &["alt"], "switch_tab_3"),
