@@ -274,7 +274,7 @@ final class AttachE2ETests: XCTestCase {
             socket: fixture.socket
         ))
 
-        let hasVisibleText = AppE2E.wait(timeout: AppE2E.attachTimeout) {
+        let painted = AppE2E.wait(timeout: AppE2E.attachTimeout) {
             app.testPollOnce()
             app.testFlushFeeds()
             guard app.testActiveWorkspaceSession() == fixture.session else {
@@ -325,7 +325,7 @@ final class AttachE2ETests: XCTestCase {
             )
         }
 
-        let painted = AppE2E.wait(timeout: AppE2E.attachTimeout) {
+        let hasVisibleText = AppE2E.wait(timeout: AppE2E.attachTimeout) {
             app.testPollOnce()
             app.testFlushFeeds()
             return !app
