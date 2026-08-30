@@ -834,7 +834,11 @@ impl HerdrRuntime {
     /// mutation expected_focus 也必须等 preferred，否则 split/NewTab 立刻
     /// Control→Observe→Control 三代 Hello（dogfood 2105 layout thrash）。
     fn desired_mode_for(&self, pane: &PaneInfo) -> StreamMode {
-        if self.preferred_client_size.is_none() {
+        let has_pending_resize = self
+            .stream_slots
+            .get(&pane.id)
+            .is_some_and(|slot| slot.pending_resize.is_some());
+        if self.preferred_client_size.is_none() && !has_pending_resize {
             return StreamMode::Observe;
         }
         // pane.split/tab.create 的直接响应可能早于权威 snapshot。只要
@@ -1025,12 +1029,25 @@ impl HerdrRuntime {
         if self.active_pane != Some(pane) {
             self.execute(&Task::SwitchPane { target: pane })?;
         }
+        let pane_size = self.preferred_client_size.unwrap_or_else(|| {
+            self.panes
+                .iter()
+                .find(|candidate| candidate.id == pane)
+                .filter(|candidate| candidate.cols >= 2 && candidate.rows >= 1)
+                .map(|candidate| (candidate.cols, candidate.rows))
+                .unwrap_or((DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS))
+        });
+        if self.preferred_client_size.is_none() {
+            self.preferred_client_size = Some(pane_size);
+        }
         let needs_reconcile = {
             let Some(slot) = self.stream_slots.get_mut(&pane) else {
                 return Err(anyhow!("pane {pane} 不存在"));
             };
             let queued = match (slot.state, slot.actual_mode, slot.control_rearm) {
-                (SlotState::Live, Some(StreamMode::Control), _) => {
+                (SlotState::Live, Some(StreamMode::Control), _)
+                    if slot.surface_baseline == SurfaceBaseline::Ready =>
+                {
                     let stream = slot
                         .stream
                         .as_mut()
@@ -1038,9 +1055,13 @@ impl HerdrRuntime {
                     stream.send_input(data)?;
                     return Ok(());
                 }
+                (SlotState::Live, Some(StreamMode::Control), _) => false,
                 (SlotState::Starting | SlotState::Backoff, _, ControlRearm::Armed) => false,
                 _ => {
                     // suppressed 或没有 control：真实 input 建立新 intent。
+                    if slot.pending_resize.is_none() {
+                        slot.pending_resize = Some(pane_size);
+                    }
                     slot.new_user_intent(false);
                     if slot.state == SlotState::Degraded {
                         slot.state = SlotState::Absent;
@@ -1184,17 +1205,22 @@ impl HerdrRuntime {
                         }
                         FrameDecision::Apply => {}
                     }
-                    if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
-                        let prev = (p.cols, p.rows);
-                        (p.cols, p.rows) =
-                            normalize_pane_size(width, height, Some((p.cols, p.rows)));
-                        self.frame_sizes.insert(pane, (p.cols, p.rows));
-                        if (p.cols, p.rows) != prev {
-                            self.events.push_back(StateChange::PaneResized {
-                                pane,
-                                cols: p.cols,
-                                rows: p.rows,
-                            });
+                    let synthetic_observe_frame = slot.stream.is_none()
+                        && slot.state == SlotState::Live
+                        && slot.actual_mode == Some(StreamMode::Observe);
+                    if self.preferred_client_size.is_some() || synthetic_observe_frame {
+                        if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
+                            let prev = (p.cols, p.rows);
+                            (p.cols, p.rows) =
+                                normalize_pane_size(width, height, Some((p.cols, p.rows)));
+                            self.frame_sizes.insert(pane, (p.cols, p.rows));
+                            if (p.cols, p.rows) != prev {
+                                self.events.push_back(StateChange::PaneResized {
+                                    pane,
+                                    cols: p.cols,
+                                    rows: p.rows,
+                                });
+                            }
                         }
                     }
                     if full {
@@ -1206,6 +1232,22 @@ impl HerdrRuntime {
                         slot.seed_pending = false;
                         slot.surface_baseline = SurfaceBaseline::Ready;
                         slot.live_since = Some(now);
+                        if slot.actual_mode == Some(StreamMode::Control) && slot.stream.is_some() {
+                            let inputs: Vec<Vec<u8>> = slot.pending_input.drain(..).collect();
+                            slot.pending_input_bytes = 0;
+                            for data in inputs {
+                                if let Some(stream) = slot.stream.as_mut() {
+                                    if let Err(err) = stream.send_input(&data) {
+                                        tracing::warn!(
+                                            target = "muxterm::herdr",
+                                            pane = pane.0,
+                                            error = %err,
+                                            "control full frame 后 input flush 失败"
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         let index_snapshot = if keep_seed {
                             self.outputs.entry(pane).or_insert_with(|| bytes.clone());
                             // 追赶 full 之前缓存的严格连续增量。
@@ -1442,13 +1484,6 @@ impl HerdrRuntime {
                     // Control：PTY SIGWINCH；Observe：client viewport。两者都要
                     // flush pending_resize，否则 Hello 用默认尺寸后永远卡在小屏。
                     let resize = slot.pending_resize.take();
-                    let inputs: Vec<Vec<u8>> = if mode.is_control() {
-                        let inputs: Vec<Vec<u8>> = slot.pending_input.drain(..).collect();
-                        slot.pending_input_bytes = 0;
-                        inputs
-                    } else {
-                        Vec::new()
-                    };
                     if let Some((cols, rows)) = resize {
                         if let Some(stream) = slot.stream.as_mut() {
                             if let Err(err) = stream.resize(cols, rows) {
@@ -1461,15 +1496,19 @@ impl HerdrRuntime {
                             }
                         }
                     }
-                    for data in inputs {
-                        if let Some(stream) = slot.stream.as_mut() {
-                            if let Err(err) = stream.send_input(&data) {
-                                tracing::warn!(
-                                    target = "muxterm::herdr",
-                                    pane = %pane,
-                                    error = %err,
-                                    "control handshake 后 input flush 失败"
-                                );
+                    if mode.is_control() && slot.surface_baseline == SurfaceBaseline::Ready {
+                        let inputs: Vec<Vec<u8>> = slot.pending_input.drain(..).collect();
+                        slot.pending_input_bytes = 0;
+                        for data in inputs {
+                            if let Some(stream) = slot.stream.as_mut() {
+                                if let Err(err) = stream.send_input(&data) {
+                                    tracing::warn!(
+                                        target = "muxterm::herdr",
+                                        pane = pane.0,
+                                        error = %err,
+                                        "control stream ready 后 input flush 失败"
+                                    );
+                                }
                             }
                         }
                     }
@@ -4202,6 +4241,13 @@ mod tests {
         let slot = runtime.stream_slots.get(&pane).unwrap();
         assert_eq!(slot.state, SlotState::Live, "重建后新流必须 Live");
         assert!(slot.stream.is_some(), "重建后新流必须存在");
+        // 输入只允许在首个 full frame 建立后进入 control 通道；
+        // 本用例聚焦流重建，因此直接标记 baseline 已就绪。
+        runtime
+            .stream_slots
+            .get_mut(&pane)
+            .unwrap()
+            .surface_baseline = SurfaceBaseline::Ready;
 
         // 重建后的 control 流必须能送达输入。
         runtime.send_control_input(pane, b"x").unwrap();

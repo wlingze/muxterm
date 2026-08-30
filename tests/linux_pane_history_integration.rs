@@ -36,6 +36,20 @@ fn assert_history_waits_for_surface_seed(view: &PaneView) {
     assert!(visible.contains("TAIL_VISIBLE"), "{visible}");
     assert!(!visible.contains("HIST_BEFORE_SEED"), "{visible}");
 
+    if let Some(adj) = view.terminal().vadjustment() {
+        adj.set_value(adj.lower());
+        pump_main_loop(40);
+        let scrolled = view.visible_text();
+        assert!(
+            scrolled.contains("HIST_BEFORE_SEED"),
+            "viewport text must follow VTE adjustment: {scrolled}"
+        );
+
+        let bottom = (adj.upper() - adj.page_size()).max(adj.lower());
+        adj.set_value(bottom);
+        pump_main_loop(40);
+    }
+
     view.seed_snapshot(b"TAIL_AFTER_RESET\r\n", 80, 24);
     pump_main_loop(40);
     // 同一 generation 内第二次权威 Snapshot 只替换当前屏：scrollback 里

@@ -2991,6 +2991,15 @@ fn bug7_edge_attach_send_keys() {
             keys: vec![muxterm::core::protocol::terminal::input::KeyEvent::Enter],
         })
         .unwrap();
+    // 无 GUI 契约必须显式模拟前端 viewport；attach seed 在 UI preferred
+    // size 到达前保持 deferred，不能吞掉后续 send-keys 输出。
+    let outcome = model
+        .execute(Task::ResizeClient { cols: 80, rows: 24 })
+        .unwrap();
+    assert!(
+        matches!(outcome, muxterm::core::model::task::TaskOutcome::Done),
+        "{outcome:?}"
+    );
     let _ = model.poll_events();
 
     let ok = wait_for(&mut model, Duration::from_secs(5), |s| {
@@ -2998,7 +3007,11 @@ fn bug7_edge_attach_send_keys() {
             .map(|o| String::from_utf8_lossy(o).contains("attach_test"))
             .unwrap_or(false)
     });
-    assert!(ok, "attach 后 send-keys 输出应显示");
+    assert!(
+        ok,
+        "attach 后 send-keys 输出应显示: {:?}",
+        model.state().pane_output(&pane)
+    );
 
     let _ = model.shutdown();
     cleanup(&socket);

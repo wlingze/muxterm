@@ -200,7 +200,11 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     func dismiss() {
         existingRequestGeneration &+= 1
         window?.orderOut(nil)
+        let ownerFrame = ownerWindow?.frame
         ownerWindow?.makeKeyAndOrderFront(nil)
+        if let ownerFrame, ownerWindow?.frame.origin != ownerFrame.origin {
+            ownerWindow?.setFrameOrigin(ownerFrame.origin)
+        }
         onDismissed?()
     }
 

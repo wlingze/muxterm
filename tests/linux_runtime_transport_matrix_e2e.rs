@@ -151,9 +151,7 @@ fn diagnostics(app: &AppWindow) -> String {
         app.test_tab_and_pane_counts(),
         app.test_active_tab_id(),
         app.test_active_pane_id(),
-        String::from_utf8_lossy(&app.test_last_raw_input())
-            .escape_debug()
-            .to_string(),
+        String::from_utf8_lossy(&app.test_last_raw_input()).escape_debug(),
         app.test_gtk_layout_signature(),
     )
 }
