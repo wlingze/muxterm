@@ -2569,13 +2569,11 @@ fn dispatch_event_for(
             }
         }
         StateChange::StatusBarSubscription { name, value, pane } => {
-            if is_active && name.starts_with("muxterm.pane-cmd") {
-                let ws = active_workspace_id(s);
-                s.attention.set_process_name(
-                    &ws,
-                    pane.map(|p| p.0).unwrap_or(0),
-                    Some(value.clone()),
-                );
+            if name.starts_with("muxterm.pane-cmd") {
+                if let Some(pane) = pane {
+                    s.attention
+                        .set_process_name(&ws, pane.0, Some(value.clone()));
+                }
             } else if is_active && name == "muxterm.status-left" {
                 s.status_left = Some(value.clone());
                 maybe_refresh_status(s, true);
@@ -2747,6 +2745,20 @@ fn apply_attention_event_from_workspace(
 ) {
     if let StateChange::PaneClosed { pane } = event {
         s.attention.remove_pane(ws, pane.0);
+    } else if let StateChange::PaneAgentChanged { pane, agent, .. } = event {
+        let process_name = agent.as_deref().and_then(|agent| {
+            [
+                agent.name.as_deref(),
+                agent.kind.as_deref(),
+                agent.display_name.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|value| !value.trim().is_empty())
+            .map(str::to_string)
+        });
+        s.attention.set_process_name(ws, pane.0, process_name);
+        apply_attention_from_workspace(s, wid, ws, pane.0);
     } else if let Some(pane) = attention_event_pane(event) {
         apply_attention_from_workspace(s, wid, ws, pane);
     }
@@ -2863,11 +2875,13 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
         StateChange::StatusBarSubscription { name, value, pane } => {
             if name.starts_with("muxterm.pane-cmd") {
                 let ws = active_workspace_id(s);
-                s.attention.set_process_name(
-                    &ws,
-                    pane.map(|p| p.0).unwrap_or(0),
-                    Some(value.clone()),
-                );
+                if let Some(pane) = pane {
+                    s.attention
+                        .set_process_name(&ws, pane.0, Some(value.clone()));
+                    if pane.0 == s.active_pane {
+                        s.attention.on_became_visible(&ws, pane.0);
+                    }
+                }
             } else if name == "muxterm.status-left" {
                 s.status_left = Some(value.clone());
                 maybe_refresh_status(s, true);

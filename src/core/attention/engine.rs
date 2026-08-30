@@ -16,7 +16,7 @@ use crate::core::config::AttentionConfig;
 
 const KNOWN_AGENTS: &[&str] = &[
     "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline", "goose", "amp",
-    "grok", "windsurf", "kiro",
+    "grok", "windsurf", "kiro", "pi", "hermes",
 ];
 
 /// 从进程名/argv 中识别通用 agent 名；不依赖具体 Runtime。
@@ -96,6 +96,9 @@ pub struct AttentionEngine<C: Clock> {
     /// Runtime 已提供结构化权威状态的 pane；这些 pane 的 OSC/BEL/正则只
     /// 继续更新文本索引，不覆盖 agent lifecycle。
     authoritative_panes: HashSet<(String, u32)>,
+    /// pane-cmd 上一次实际看到的前台进程。展示名称会在回到 shell 后
+    /// 保留 agent 名用于 Done 行，所以生命周期边沿不能反查展示字段。
+    foreground_processes: HashMap<(String, u32), String>,
     /// 正则缓存：编译失败时记录该条并跳过。
     regex_cache: HashMap<String, Option<Regex>>,
 }
@@ -111,6 +114,7 @@ impl<C: Clock> AttentionEngine<C> {
             notified_blocked_panes: HashSet::new(),
             notified_done_panes: HashSet::new(),
             authoritative_panes: HashSet::new(),
+            foreground_processes: HashMap::new(),
             regex_cache: HashMap::new(),
         }
     }
@@ -288,11 +292,17 @@ impl<C: Clock> AttentionEngine<C> {
     /// Working/Idle/Unknown 生效，不覆盖 Blocked（输入才熄）。
     pub fn set_process_name(&mut self, ws: &str, pane: u32, name: Option<String>) {
         let now = self.clock.now();
-        let previous = self
-            .panes
-            .get(&(ws.to_string(), pane))
-            .and_then(|p| p.process_name.clone());
+        let key = (ws.to_string(), pane);
+        let previous = self.foreground_processes.get(&key).cloned();
         let normalized = name.and_then(|value| Self::normalize_process_name(&value));
+        let Some(next_process) = normalized.as_ref() else {
+            self.foreground_processes.remove(&key);
+            self.entry_mut(ws, pane).process_name = None;
+            self.sync_notified(ws, pane, now);
+            return;
+        };
+        self.foreground_processes
+            .insert(key.clone(), next_process.clone());
         {
             let entry = self.entry_mut(ws, pane);
             // shell 只是容器，不应覆盖刚完成的 codex/cursor/agent 名称。
@@ -303,10 +313,21 @@ impl<C: Clock> AttentionEngine<C> {
                 entry.process_name = normalized.clone();
             }
         }
-        if let (Some(prev), Some(next)) = (previous, normalized) {
-            if !Self::is_shell(&prev) && Self::is_shell(&next) {
+        let next_agent = known_agent_process_name(next_process);
+        let previous_agent = previous.as_deref().and_then(known_agent_process_name);
+        if next_agent.is_some() && next_agent != previous_agent {
+            let (last_line, seq) = self
+                .panes
+                .get(&key)
+                .map(|entry| (entry.last_line.clone(), entry.seq))
+                .unwrap_or_default();
+            self.apply(ws, pane, &[AttentionSignal::CommandStart], &last_line, seq);
+            return;
+        }
+        if let (Some(prev), Some(next)) = (previous.as_deref(), normalized.as_deref()) {
+            if !Self::is_shell(prev) && Self::is_shell(next) {
                 let shell_ok = {
-                    let entry = self.panes.get(&(ws.to_string(), pane));
+                    let entry = self.panes.get(&key);
                     // 只对 Working/Unknown 生效：Idle 是被前台可见清掉的
                     // （on_became_visible），不能又被 pane-cmd 点亮成 Done。
                     matches!(
@@ -317,7 +338,7 @@ impl<C: Clock> AttentionEngine<C> {
                 if shell_ok {
                     let (last_line, seq) = self
                         .panes
-                        .get(&(ws.to_string(), pane))
+                        .get(&key)
                         .map(|entry| (entry.last_line.clone(), entry.seq))
                         .unwrap_or_default();
                     self.apply(
@@ -360,6 +381,7 @@ impl<C: Clock> AttentionEngine<C> {
         let key = (ws.to_string(), pane);
         self.panes.remove(&key);
         self.authoritative_panes.remove(&key);
+        self.foreground_processes.remove(&key);
         self.sync_notified(ws, pane, now);
     }
 
@@ -1002,6 +1024,66 @@ mod tests {
         assert_eq!(
             AttentionEngine::<FakeClock>::normalize_process_name("/bin/zsh"),
             Some("zsh".into())
+        );
+        assert_eq!(
+            AttentionEngine::<FakeClock>::normalize_process_name("pi"),
+            Some("pi".into()),
+            "tmux pane_current_command reports the Pi coding agent as `pi`"
+        );
+    }
+
+    #[test]
+    fn tmux_agent_process_tracks_working_blocked_done_and_restart() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("zsh".into()));
+
+        e.set_process_name("ws", 1, Some("pi".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.process_name.as_deref(), Some("pi"));
+        assert_eq!(pane.status, PaneStatus::Working);
+
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "approval required",
+            2,
+        );
+        e.set_process_name("ws", 1, Some("pi".into()));
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Blocked,
+            "a repeated tmux subscription must not erase a blocked agent state"
+        );
+
+        e.set_process_name("ws", 1, Some("zsh".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.process_name.as_deref(), Some("pi"));
+        assert_eq!(
+            pane.status,
+            PaneStatus::Blocked,
+            "waiting-for-user remains blocked until the user acknowledges it"
+        );
+
+        e.on_user_input("ws", 1);
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+
+        e.set_process_name("ws", 1, Some("pi".into()));
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Working,
+            "starting the same agent again must enter Working"
+        );
+        e.set_process_name("ws", 1, Some("zsh".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+
+        e.set_process_name("ws", 1, Some("pi".into()));
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Working,
+            "a new run must replace the previous Done state"
         );
     }
 

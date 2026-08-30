@@ -790,6 +790,25 @@ mod tests {
     }
 
     #[test]
+    fn tmux_pi_attention_is_projected_into_agents() {
+        let workspace = workspace("agent-workspace");
+        let id = workspace.id().clone();
+        let mut pool =
+            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
+        pool.insert_connected(workspace);
+
+        let mut generic = attention(id.replica_id(), PaneStatus::Working, true);
+        generic.panes[0].process_name = Some("pi".into());
+        let items = AgentSidebarItem::from_pool(&pool, &[generic]);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].workspace_id, id);
+        assert_eq!(items[0].pane_id, 1);
+        assert_eq!(items[0].title, "pi");
+        assert_eq!(items[0].indicator, AgentIndicator::Running);
+    }
+
+    #[test]
     fn blocked_and_done_agents_turn_clear_after_acknowledgement() {
         let unread = attention("muxterm@local".into(), PaneStatus::Done, false);
         let seen = attention("muxterm@local".into(), PaneStatus::Done, true);

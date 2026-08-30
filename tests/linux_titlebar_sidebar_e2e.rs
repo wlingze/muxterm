@@ -16,6 +16,10 @@ use muxterm::core::workspace::spec::WorkspaceSpec;
 use muxterm::platform::linux::window::AppWindow;
 
 use support::linux_gtk::*;
+use support::tmux_test_support::{
+    create_session, list_pane_ids, send_keys_line, tmux_available, tmux_ok, wait_for,
+    TmuxServerGuard,
+};
 
 fn count_widget_names(root: &impl IsA<Widget>, prefix: &str) -> usize {
     let root = root.as_ref();
@@ -52,6 +56,27 @@ fn widget_owns_window_focus(win: &gtk4::Window, widget: &impl IsA<Widget>) -> bo
 
 fn entry_owns_window_focus(win: &gtk4::Window, entry: &gtk4::Entry) -> bool {
     widget_owns_window_focus(win, entry)
+}
+
+fn pane_current_command(socket: &str, target: &str) -> String {
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            socket,
+            "display-message",
+            "-p",
+            "-t",
+            target,
+            "#{pane_current_command}",
+        ])
+        .output()
+        .expect("query isolated tmux pane command");
+    assert!(
+        output.status.success(),
+        "query isolated tmux pane command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 /// GTK/VTE teardown cannot safely destroy two AppWindow instances in one
@@ -399,6 +424,95 @@ fn title_bar_actions_and_workspace_sidebar() {
         quick.emit_clicked();
         pump_main_loop(100);
         assert!(app.test_panel_open(), "title-bar quick connect must work");
+
+        app.shutdown();
+        pump_main_loop(100);
+    });
+}
+
+#[test]
+fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
+    if !enter_isolated("isolated_tmux_pi_agent_lifecycle_reaches_agent_list") {
+        return;
+    }
+    if !tmux_available() {
+        panic!("tmux is required for the Linux agent-list regression");
+    }
+    gtk4::test_synced(|| {
+        gtk_test_framework_smoke();
+        let server = TmuxServerGuard::new("linux-agent-list");
+        let session = "agent-list";
+        create_session(server.socket(), session, 100, 30);
+        let pane = *list_pane_ids(server.socket(), session)
+            .first()
+            .expect("isolated tmux pane");
+        let target = format!("%{pane}");
+        send_keys_line(
+            server.socket(),
+            &target,
+            "/bin/bash -c 'exec -a pi sleep 120'",
+        );
+        wait_for(
+            std::time::Duration::from_secs(5),
+            "isolated tmux reports pi",
+            || pane_current_command(server.socket(), &target) == "pi",
+        );
+
+        let app = AppWindow::new(Config::default(), load_theme());
+        app.window.set_default_size(960, 640);
+        app.window.present();
+        gtk4::test_widget_wait_for_draw(&app.window);
+        app.test_open_spec(WorkspaceSpec::local_tmux(
+            Some(session.into()),
+            Some(server.socket().into()),
+        ));
+
+        let sidebar_toggle = find_by_name(&app.window, "muxterm-sidebar-toggle")
+            .expect("sidebar toggle")
+            .downcast::<ToggleButton>()
+            .expect("sidebar toggle type");
+        sidebar_toggle.set_active(true);
+        let agent_list = find_by_name(&app.window, "muxterm-sidebar-agent-list")
+            .expect("agent list")
+            .downcast::<gtk4::ListBox>()
+            .expect("agent list type");
+        assert!(
+            wait_until_widget(8_000, || agent_list.row_at_index(0).is_some()),
+            "tmux pi must appear in the persistent Agent list"
+        );
+        let row = agent_list.row_at_index(0).expect("tmux pi row");
+        assert!(
+            widget_label_texts(&row).iter().any(|text| text == "pi"),
+            "Agent title must use the detected tmux process: {:?}",
+            widget_label_texts(&row)
+        );
+        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("working status dot");
+        assert!(
+            dot.has_css_class("running"),
+            "running tmux agent must be green"
+        );
+
+        app.test_open_spec(WorkspaceSpec::local_shell("/tmp"));
+        assert_eq!(
+            app.test_active_workspace_runtime(),
+            "shell",
+            "the tmux agent must remain observable while its workspace is in the background"
+        );
+        tmux_ok(server.socket(), &["send-keys", "-t", &target, "C-c"]);
+        wait_for(
+            std::time::Duration::from_secs(5),
+            "isolated tmux returns to shell",
+            || pane_current_command(server.socket(), &target) != "pi",
+        );
+        assert!(
+            wait_until_widget(8_000, || {
+                agent_list.row_at_index(0).is_some_and(|row| {
+                    find_by_name(&row, "muxterm-sidebar-agent-dot")
+                        .is_some_and(|dot| dot.has_css_class("needs-attention"))
+                })
+            }),
+            "finished unseen tmux agent must become yellow"
+        );
 
         app.shutdown();
         pump_main_loop(100);

@@ -22,6 +22,32 @@ pub fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
+/// RAII guard for one uniquely named isolated tmux server.
+///
+/// Tests still create sessions explicitly, but every unwind path cleans the
+/// same `-L` server without touching the user's default tmux server.
+pub struct TmuxServerGuard {
+    socket: String,
+}
+
+impl TmuxServerGuard {
+    pub fn new(label: &str) -> Self {
+        Self {
+            socket: unique_socket(label),
+        }
+    }
+
+    pub fn socket(&self) -> &str {
+        &self.socket
+    }
+}
+
+impl Drop for TmuxServerGuard {
+    fn drop(&mut self) {
+        kill_server(&self.socket);
+    }
+}
+
 /// 在独立 socket 创建 detached session。
 pub fn create_session(socket: &str, name: &str, cols: u32, rows: u32) {
     let output = Command::new("tmux")
