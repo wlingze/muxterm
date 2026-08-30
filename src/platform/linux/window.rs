@@ -16,7 +16,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
     ApplicationWindow, Box, Button, CssProvider, EventControllerKey, HeaderBar, Label, Orientation,
-    Window,
+    Paned, Window,
 };
 use vte4::prelude::*;
 
@@ -94,7 +94,7 @@ struct UiState {
     theme: Theme,
     theme_name: String,
     status: StatusBar,
-    /// 标题栏开启的 workspace 侧栏（overlay，不挤占终端布局）。
+    /// 标题栏开启的 workspace 侧栏（主分割栏左列）。
     sidebar: WorkspaceSidebar,
     status_mode: StatusBarMode,
     last_status_at: Instant,
@@ -471,17 +471,33 @@ impl AppWindow {
         cmd_mark_fail.set_margin_end(2);
         cmd_mark_fail.add_css_class("muxterm-cmd-mark-fail");
         cmd_mark_fail.set_visible(false);
-        let content = Box::builder()
-            .orientation(Orientation::Horizontal)
+        // 左侧栏与右侧终端 chrome 是同一个水平 Paned 的两列。Tab/status
+        // chrome 属于右列，不能延伸到侧栏下方；Paned 的 handle 同时提供
+        // 用户可调宽度，避免用一个 hexpand 空壳制造中间空白。
+        let terminal_column = Box::builder()
+            .orientation(Orientation::Vertical)
             .spacing(0)
             .hexpand(true)
             .vexpand(true)
             .build();
+        terminal_column.set_widget_name("muxterm-terminal-column");
+        terminal_column.append(&layout_overlay);
+        terminal_column.append(&status.container);
+
+        let content = Paned::new(Orientation::Horizontal);
         content.set_widget_name("muxterm-content");
-        content.append(&sidebar.container);
-        content.append(&layout_overlay);
+        content.add_css_class("muxterm-main-split");
+        content.set_hexpand(true);
+        content.set_vexpand(true);
+        content.set_wide_handle(false);
+        content.set_resize_start_child(false);
+        content.set_shrink_start_child(false);
+        content.set_resize_end_child(true);
+        content.set_shrink_end_child(true);
+        content.set_start_child(Some(&sidebar.container));
+        content.set_end_child(Some(&terminal_column));
+        content.set_position(280);
         root.append(&content);
-        root.append(&status.container);
         window.set_child(Some(&root));
 
         layout_overlay.add_overlay(&pane_find);
@@ -5077,6 +5093,10 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); }}
         .muxterm-sidebar-row-name {{ color: {fg}; }}
         .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
+        .muxterm-main-split > separator {{
+            min-width: 1px;
+            background: alpha({fg}, 0.18);
+        }}
         .quick-pick-backdrop {{ background-color: alpha(#000000, 0.42); }}
         .quick-pick-root {{
             background-color: {bg};

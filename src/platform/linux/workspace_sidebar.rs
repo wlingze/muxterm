@@ -1,8 +1,8 @@
 //! Linux workspace sidebar.
 //!
-//! The sidebar is a transient overlay on the terminal area. It is opened from
-//! the window title bar and lists every workspace currently held by the Core
-//! pool, including the active workspace and background workspaces.
+//! The sidebar is the resizable left column of the main window. It is opened
+//! from the window title bar and lists every workspace currently held by the
+//! Core pool, including the active workspace and background workspaces.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -81,10 +81,11 @@ impl WorkspaceSidebar {
         let container = GtkBox::builder()
             .orientation(Orientation::Horizontal)
             .spacing(0)
-            .hexpand(true)
+            .hexpand(false)
             .vexpand(true)
             .build();
         container.set_widget_name("muxterm-sidebar-shell");
+        container.set_visible(false);
 
         let toggle = ToggleButton::with_label("☰");
         toggle.set_widget_name("muxterm-sidebar-toggle");
@@ -139,7 +140,8 @@ impl WorkspaceSidebar {
         revealer.set_valign(Align::Fill);
         revealer.set_hexpand(false);
         revealer.set_vexpand(true);
-        revealer.set_size_request(280, -1);
+        // Paned 负责实际宽度；这里只保留可用下限，初始 280px 由 window 设置。
+        revealer.set_size_request(180, -1);
 
         let ids = Rc::new(RefCell::new(Vec::new()));
         let on_activate: WorkspaceActivateCb = Rc::new(RefCell::new(None));
@@ -148,7 +150,9 @@ impl WorkspaceSidebar {
 
         {
             let revealer = revealer.clone();
+            let container = container.clone();
             toggle.connect_toggled(move |button| {
+                container.set_visible(button.is_active());
                 revealer.set_reveal_child(button.is_active());
             });
         }
