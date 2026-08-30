@@ -387,18 +387,6 @@ extension MainWindowController {
         unifiedPanel.onAttachExistingConnection?(choice)
     }
 
-    /// 把另一个隔离 CoreBridge 登记为 warm Workspace 并激活。
-    func testActivateWorkspaceBridge(_ nextBridge: CoreBridge, session: String) {
-        let key = ConnectionKey(
-            transport: nextBridge.sshAlias == nil ? "local" : "ssh",
-            alias: nextBridge.sshAlias,
-            session: session,
-            runtime: "tmux",
-            path: ""
-        )
-        activate(slot: WarmConnectionSlot(key: key, bridge: nextBridge, now: 0))
-    }
-
     func testActiveWorkspaceSession() -> String? {
         bridge.session
     }

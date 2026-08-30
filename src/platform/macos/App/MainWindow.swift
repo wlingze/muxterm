@@ -900,6 +900,35 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// 把另一个隔离 CoreBridge 登记为 warm Workspace 并激活。
+    func testActivateWorkspaceBridge(_ nextBridge: CoreBridge, session: String) {
+        let currentSession = bridge.session ?? session
+        let currentKey = ConnectionKey(
+            transport: bridge.sshAlias == nil ? "local" : "ssh",
+            alias: bridge.sshAlias,
+            session: currentSession,
+            runtime: "tmux",
+            path: ""
+        )
+        if connectionPool.slots[currentKey] == nil {
+            let currentSlot = WarmConnectionSlot(
+                key: currentKey,
+                bridge: bridge,
+                terminalManager: terminalManager,
+                now: 0
+            )
+            _ = connectionPool.acquire(key: currentKey) { _ in currentSlot }
+        }
+        let key = ConnectionKey(
+            transport: nextBridge.sshAlias == nil ? "local" : "ssh",
+            alias: nextBridge.sshAlias,
+            session: session,
+            runtime: "tmux",
+            path: ""
+        )
+        activate(slot: WarmConnectionSlot(key: key, bridge: nextBridge, now: 0))
+    }
+
     @discardableResult
     private func activateWorkspaceIfAvailable(_ workspaceId: String) -> Bool {
         if activeWorkspaceReplicaID == workspaceId {
