@@ -585,7 +585,7 @@ impl PaneView {
             .renderer
             .terminal()
             .text_format(vte4::Format::Text)
-            .map(|s| s.to_string())
+            .map(|text| text.to_string())
             .unwrap_or_default()
     }
 
@@ -614,7 +614,12 @@ impl PaneView {
     /// text_range_format(0,0,rows-1,-1) 返回的是 buffer 前 rows 行（scrollback
     /// 区域），会误把历史 prompt 当“当前屏”（matrix ctrl_l 误报根因）。
     pub fn screen_text(&self) -> String {
-        self.visible_text()
+        self.inner
+            .renderer
+            .terminal()
+            .text_format(vte4::Format::Text)
+            .map(|text| text.to_string())
+            .unwrap_or_default()
     }
 
     /// 测试用：VTE 光标所在行（0 起；最后一行 = rows-1）。
@@ -665,6 +670,23 @@ fn should_anchor_snapshot_cursor(data: &[u8], snapshot_rows: usize, visible_rows
     !snapshot_is_alternate_screen(data) && snapshot_rows > visible_rows
 }
 
+/// 在 feed 的 idle 处理完成后把 viewport 钉回底部。
+fn schedule_scroll_to_bottom(inner: &Rc<PaneViewInner>) {
+    if !inner.scroll_to_bottom_pending.replace(true) {
+        let weak = Rc::downgrade(inner);
+        glib::idle_add_local(move || {
+            if let Some(inner) = weak.upgrade() {
+                inner.scroll_to_bottom_pending.set(false);
+                if let Some(adj) = inner.renderer.terminal().vadjustment() {
+                    let bottom = (adj.upper() - adj.page_size()).max(adj.lower());
+                    adj.set_value(bottom);
+                }
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
 /// 快照网格大于 VTE 可见行数时，把光标锚定到 buffer 末尾。
 ///
 /// 否则快照末尾 CUP 越界后光标停留在错误行，shell 的 prompt 重绘
@@ -690,25 +712,11 @@ fn anchor_snapshot_cursor(inner: &Rc<PaneViewInner>, data: &[u8]) {
         feed_direct(inner, b"\x1b[999;1H");
         // feed 是异步的，且镜像模式 scroll-on-output=false；等本批 feed
         // 处理完（下一个 idle）再把 view 钉到底部，保证 attach 后可见尾标。
-        if !inner.scroll_to_bottom_pending.replace(true) {
-            let weak = Rc::downgrade(inner);
-            // idle（不是 timeout）：feed 的处理 idle 先注册，默认优先级
-            // 下按注册顺序先跑完，这里再滚到底部才能看到新 buffer 高度。
-            glib::idle_add_local(move || {
-                if let Some(inner) = weak.upgrade() {
-                    inner.scroll_to_bottom_pending.set(false);
-                    if let Some(adj) = inner.renderer.terminal().vadjustment() {
-                        let bottom = (adj.upper() - adj.page_size()).max(adj.lower());
-                        adj.set_value(bottom);
-                    }
-                }
-                glib::ControlFlow::Break
-            });
-        }
+        schedule_scroll_to_bottom(inner);
     }
 }
 
-fn flush_unapplied_history(inner: &PaneViewInner) {
+fn flush_unapplied_history(inner: &Rc<PaneViewInner>) {
     let start = inner.history_applied.get();
     let pending = {
         let batches = inner.history_batches.borrow();
@@ -719,12 +727,12 @@ fn flush_unapplied_history(inner: &PaneViewInner) {
     inner
         .history_applied
         .set(start.saturating_add(pending.len()));
-    for data in pending {
-        prepend_history_seeded(inner, &data);
+    for (index, data) in pending.into_iter().enumerate() {
+        prepend_history_seeded(inner, &data, start == 0 && index == 0);
     }
 }
 
-fn prepend_history_seeded(inner: &PaneViewInner, data: &[u8]) {
+fn prepend_history_seeded(inner: &Rc<PaneViewInner>, data: &[u8], clear_scrollback: bool) {
     if !history_replay_allowed(inner.reply_state.borrow().alternate_screen) {
         return;
     }
@@ -741,14 +749,29 @@ fn prepend_history_seeded(inner: &PaneViewInner, data: &[u8]) {
     }
     flush_pending_feed(inner);
 
-    let (rows, visible_overlay) = {
+    let (state_rows, visible_overlay) = {
         let state = inner.reply_state.borrow();
         (state.rows(), state.visible_overlay_ansi())
     };
+    let rows = inner
+        .renderer
+        .terminal()
+        .row_count()
+        .max(0)
+        .max(state_rows as i64)
+        .max(1) as usize;
     inner.reply_state.borrow_mut().prepend_history_lines(&lines);
 
     let replay = history_replay_ansi(&lines, rows, &visible_overlay);
+    if clear_scrollback {
+        inner.renderer.terminal().reset(true, true);
+    }
     feed_direct(inner, &replay);
+    if let Some(adj) = inner.renderer.terminal().vadjustment() {
+        let bottom = (adj.upper() - adj.page_size()).max(adj.lower());
+        adj.set_value(bottom);
+    }
+    schedule_scroll_to_bottom(inner);
 }
 
 fn feed_direct(inner: &PaneViewInner, bytes: &[u8]) {
@@ -789,6 +812,9 @@ fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) ->
     for _ in 0..rows {
         replay.extend_from_slice(b"\r\n");
     }
+    // 历史行已被推进 scrollback；先清掉当前屏再铺可见网格，避免短历史
+    // 批次残留在底部 viewport 里。
+    replay.extend_from_slice(b"\x1b[2J\x1b[H");
     replay.extend_from_slice(visible_overlay);
     replay
 }

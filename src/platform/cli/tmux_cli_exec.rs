@@ -22,6 +22,12 @@ const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
 /// tmux 启动后等待事件就绪的轮询时间。
 const READY_POLL_DURATION: Duration = Duration::from_millis(800);
 
+/// 显式 snapshot 后的最短等待时间。
+///
+/// pause/capture 的权威响应可能晚于第一条 live tail；过早返回会把 runtime
+/// 提前关闭，从而丢掉完整快照。
+const SNAPSHOT_MIN_WAIT: Duration = Duration::from_secs(1);
+
 /// `muxterm tmux ...` 入口：解析 + 执行 + 输出 envelope。
 pub fn run_tmux_cli(args: &[String]) -> anyhow::Result<()> {
     let cmd = match parse_tmux_cli(args) {
@@ -108,6 +114,110 @@ fn wait_ready(model: &mut TerminalModel, duration: Duration) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// 等待显式请求的权威 pane 快照。
+///
+/// live tail 可能先于 capture 响应到达。若在第一条变化输出后就返回，runtime
+/// 会被提前关闭，完整快照来不及替换 live tail。
+fn wait_cli_pane_capture(model: &mut TerminalModel, pane_id: PaneId, deadline: Instant) -> String {
+    let requested_at = Instant::now();
+    let mut previous = model
+        .state()
+        .pane_output(&pane_id)
+        .map(|output| output.to_vec())
+        .unwrap_or_default();
+    let mut previous_at = Instant::now();
+
+    while Instant::now() < deadline {
+        let _ = model.refresh();
+        let current = model
+            .state()
+            .pane_output(&pane_id)
+            .map(|output| output.to_vec())
+            .unwrap_or_default();
+        if current != previous {
+            previous = current;
+            previous_at = Instant::now();
+        }
+
+        let waited_for_snapshot = requested_at.elapsed() >= SNAPSHOT_MIN_WAIT;
+        let stable = previous_at.elapsed() >= Duration::from_millis(100);
+        if waited_for_snapshot && stable && !previous.is_empty() {
+            return String::from_utf8_lossy(&previous).to_string();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    String::from_utf8_lossy(&previous).to_string()
+}
+
+/// 截取 capture 输出的末尾 N 行，同时忽略屏幕网格末尾的空白行。
+///
+/// 权威 snapshot 会保留 pane 的完整网格（包括尾部空行）；`--lines` 的 CLI
+/// 语义应该返回最后 N 行有意义的输出，而不是让空行吞掉最近命令。
+fn is_blank_or_control_line(line: &str) -> bool {
+    let mut escaped = false;
+    let mut in_csi = false;
+
+    for ch in line.chars() {
+        if in_csi {
+            if ('\u{40}'..='\u{7e}').contains(&ch) {
+                in_csi = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            if ch == '[' {
+                in_csi = true;
+            }
+            continue;
+        }
+        if ch == '\u{1b}' {
+            escaped = true;
+            continue;
+        }
+        if ch.is_control() || ch.is_whitespace() {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn truncate_capture_lines(text: String, lines: Option<usize>) -> String {
+    let Some(n) = lines else {
+        return text;
+    };
+    let mut all_lines: Vec<&str> = text.trim_end().lines().collect();
+
+    // 先取掉末尾的控制/空行；其中非空白行是 cursor/mode 等 VT 状态，
+    // 需要保留。空白行只是 pane 网格 padding，不应占用 `--lines` 名额。
+    let mut state_suffix = Vec::new();
+    while all_lines
+        .last()
+        .is_some_and(|line| is_blank_or_control_line(line))
+    {
+        let line = all_lines.pop().expect("all_lines is non-empty");
+        if !line.trim().is_empty() {
+            state_suffix.push(line);
+        }
+    }
+    while all_lines.last().is_some_and(|line| line.trim().is_empty()) {
+        all_lines.pop();
+    }
+
+    let start = all_lines.len().saturating_sub(n);
+    let selected = all_lines[start..].to_vec();
+    let mut output = selected.join("\n");
+    if let Some(first_suffix) = state_suffix.last() {
+        output.push_str(first_suffix);
+    }
+    for suffix in state_suffix.iter().rev().skip(1) {
+        output.push('\n');
+        output.push_str(suffix);
+    }
+    output
 }
 
 /// 等待 pane 数量变化（确认 tmux 已处理 split/new-window 等命令）。
@@ -220,27 +330,12 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
             match target {
                 Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |model| {
                     wait_ready(model, READY_POLL_DURATION);
-                    // attach 的已有屏幕由后台 capture-pane 查询回流；在构造
-                    // CLI 响应前等待一次，确保 CLI 与 GUI 观察到同一份快照。
-                    let restore_deadline = Instant::now() + Duration::from_secs(2);
-                    while Instant::now() < restore_deadline {
-                        let _ = model.refresh();
-                        let restored = model
-                            .state()
-                            .active_tab()
-                            .map(|tab| {
-                                model.state().panes(&tab.id).iter().any(|pane| {
-                                    model
-                                        .state()
-                                        .pane_output(&pane.id)
-                                        .is_some_and(|output| !output.is_empty())
-                                })
-                            })
-                            .unwrap_or(false);
-                        if restored {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
+                    // 无 GUI 的 CLI 不发送 ResizeClient；显式请求权威快照，
+                    // 避免 attach 首屏被 UI 尺寸门闩无限推迟。
+                    let pane_id = model.state().active_pane().map(|pane| pane.id);
+                    if let Some(pane_id) = pane_id {
+                        let _ = model.execute(Task::RequestPaneSnapshot { target: pane_id });
+                        let _ = wait_cli_pane_capture(model, pane_id, deadline);
                     }
                     let tabs = model.state().tabs().len() as u32;
                     let panes: Vec<serde_json::Value> = model
@@ -513,26 +608,11 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                     with_local_tmux(socket.as_deref(), session, deadline, |model| {
                         wait_ready(model, READY_POLL_DURATION);
                         let pane_id = PaneId(*pane);
-                        // attach 后可见屏幕由 runtime 内部 capture-pane 查询恢复；
-                        // 等待输出到达（最多到命令 deadline）。
-                        let mut text = String::new();
-                        while Instant::now() < deadline {
-                            let _ = model.refresh();
-                            text = model
-                                .state()
-                                .pane_output(&pane_id)
-                                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                                .unwrap_or_default();
-                            if !text.is_empty() {
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(100));
-                        }
-                        if let Some(n) = lines {
-                            let all_lines: Vec<&str> = text.lines().collect();
-                            let start = all_lines.len().saturating_sub(*n);
-                            text = all_lines[start..].join("\n");
-                        }
+                        // CLI 可以读取后台 tab 的 pane；显式请求权威 Surface，
+                        // 不依赖 attach 时活动 tab 的首屏 seed。
+                        let _ = model.execute(Task::RequestPaneSnapshot { target: pane_id });
+                        let text = wait_cli_pane_capture(model, pane_id, deadline);
+                        let text = truncate_capture_lines(text, *lines);
                         Ok(serde_json::json!({
                             "pane": pane,
                             "output": text,
@@ -552,4 +632,36 @@ fn check_timeout(deadline: Instant) -> anyhow::Result<()> {
         anyhow::bail!("命令执行超时（{}s）", EXEC_TIMEOUT.as_secs());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_capture_lines;
+
+    #[test]
+    fn capture_lines_ignores_trailing_blank_grid_lines() {
+        let text = "marker\nprompt\n\n\n\n\n\n\n\n\n\n\n\n";
+
+        assert_eq!(
+            truncate_capture_lines(text.to_string(), Some(10)),
+            "marker\nprompt"
+        );
+    }
+
+    #[test]
+    fn capture_lines_preserves_terminal_state_suffix() {
+        let text = "marker\nprompt\n\n\n\n\n\n\n\n\n\u{1b}[9;3H\u{1b}[?25h";
+
+        assert_eq!(
+            truncate_capture_lines(text.to_string(), Some(10)),
+            "marker\nprompt\u{1b}[9;3H\u{1b}[?25h"
+        );
+    }
+
+    #[test]
+    fn capture_without_line_limit_preserves_output() {
+        let text = "marker\n\n";
+
+        assert_eq!(truncate_capture_lines(text.to_string(), None), "marker\n\n");
+    }
 }

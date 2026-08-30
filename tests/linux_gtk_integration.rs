@@ -37,7 +37,6 @@ use muxterm::core::quickconnect::model::TargetRuntime;
 use muxterm::platform::linux::ffi_bridge::{BridgeTab, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
-use muxterm::platform::linux::pane_view::PaneView;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::store::QuickConnectStore;
 use muxterm::platform::linux::tab_bar::TabBar;

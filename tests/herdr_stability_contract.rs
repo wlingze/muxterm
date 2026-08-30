@@ -220,6 +220,13 @@ fn run_stability_case(
 
     // 1) 初始：active pane 必须已是 Control；其它 pane 等待 Observe。
     let first_active = active_pane(workspace)?;
+    // 无 GUI 的契约必须显式模拟前端 viewport；Herdr 在 preferred size
+    // 到达前保持 Observe，避免默认 80×24 Control Hello 重排远端 TUI。
+    workspace.execute(Task::ResizePane {
+        target: first_active,
+        cols: 80,
+        rows: 24,
+    })?;
     wait_actual_mode(
         workspace,
         first_active,

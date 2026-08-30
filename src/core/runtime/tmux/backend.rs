@@ -3897,6 +3897,15 @@ impl Runtime for TmuxRuntime {
                         reason: format!("pane {target} 不存在"),
                     });
                 }
+                if self.is_attach_mode() && !self.initial_capture_done.contains(target) {
+                    // An explicit snapshot request already has a consumer that
+                    // wants authoritative bytes.  A CLI can read a background
+                    // pane before any GUI ResizeClient arrives; use the remote
+                    // grid directly instead of leaving that request fenced.
+                    self.deferred_attach_seeds.remove(target);
+                    self.begin_initial_pane_seed(*target);
+                    return Ok(TaskOutcome::Done);
+                }
                 // 平台缓存溢出与 reader lane gap 是同一种 Surface 数据丢失：
                 // 共用 fence、单 pane snapshot 和 retry 状态机。
                 self.mark_output_gap(*target, "frontend-surface-overflow");
@@ -5790,6 +5799,50 @@ mod tests {
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(cmds.iter().any(|cmd| cmd.contains(r#"%40:pause"#)));
         assert!(cmds.iter().any(|cmd| cmd.contains("display-message")));
+    }
+
+    #[test]
+    fn frontend_snapshot_request_bypasses_headless_attach_size_gate() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        b.awaiting_ui_client_size = true;
+        let pane = PaneId(41);
+        b.tabs = vec![TabInfo {
+            id: TabId(1),
+            name: "active".into(),
+            active: true,
+        }];
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: String::new(),
+            cols: 125,
+            rows: 31,
+        });
+        b.deferred_attach_seeds.insert(pane);
+
+        let outcome = b
+            .execute(&Task::RequestPaneSnapshot { target: pane })
+            .unwrap();
+
+        assert_eq!(outcome, TaskOutcome::Done);
+        assert!(!b.deferred_attach_seeds.contains(&pane));
+        assert!(b.initial_capture_pending.contains(&pane));
+        assert!(b.resyncs.contains_key(&pane));
+        let commands = drain_tmux_cmds(&mut rx);
+        assert!(
+            commands.iter().any(|command| command.contains("%41:pause")),
+            "explicit snapshot request must start the authoritative seed: {commands:?}"
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|command| command.contains("refresh-client -C")),
+            "the remote-grid seed must not resize the shared session: {commands:?}"
+        );
     }
 
     #[test]

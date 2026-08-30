@@ -164,7 +164,11 @@ fn pane_contains_token(workspace: &Workspace, pane: PaneId, token: &str) -> bool
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect::<String>();
-    raw_contains || rendered.contains(token) || compact.contains(token)
+    let indexed = workspace
+        .search_workspace(token)
+        .iter()
+        .any(|hit| hit.pane_id == pane);
+    raw_contains || rendered.contains(token) || compact.contains(token) || indexed
 }
 
 fn assert_tokens_belong_to_one_pane(
@@ -460,6 +464,14 @@ pub fn build_2tab3pane(
                 .active_tab()
                 .is_some_and(|tab| leaves(ws, tab.id).len() == 1)
     })?;
+    if runtime == "tmux" {
+        // 无 GUI 契约必须显式模拟前端 viewport；attach seed 在 UI
+        // preferred size 到达前保持 deferred，不能吞掉后续 WriteRaw。
+        workspace.execute(Task::ResizeClient {
+            cols: 120,
+            rows: 40,
+        })?;
+    }
     let tab1 = active_tab(workspace)?;
     let tab1_pane = active_pane(workspace)?;
 
@@ -577,6 +589,12 @@ pub fn verify_fresh_workspace(
         },
     )?;
     let pane = active_pane(workspace)?;
+    if runtime == "tmux" {
+        workspace.execute(Task::ResizeClient {
+            cols: 120,
+            rows: 40,
+        })?;
+    }
     let pair = format!(
         "{}_{}_POOL_ALT",
         runtime.replace('-', "_"),
@@ -730,6 +748,12 @@ pub fn verify_after_attach(
         leaves(workspace, other).len() == 1,
         "attach 后 Tab 1 必须保持单 pane"
     );
+    if runtime == "tmux" {
+        workspace.execute(Task::ResizeClient {
+            cols: 120,
+            rows: 40,
+        })?;
+    }
 
     if before.persistent {
         let tokens = std::iter::once(before.tab1_token.clone())
