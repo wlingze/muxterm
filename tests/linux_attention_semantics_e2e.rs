@@ -1,4 +1,4 @@
-//! W16c：blocked 看见不熄、输入才熄；TOML 正则能点亮后台 pane。
+//! Attention read 语义：blocked 看过后隐藏、输入后重新布防；TOML 正则能点亮后台 pane。
 //!
 //! 本 crate 只构造一个 AppWindow。真 BEL 走 `%output`，禁止 `test_feed_replica`。
 
@@ -40,9 +40,9 @@ fn wait_blocked_eq(app: &AppWindow, n: usize) -> bool {
     false
 }
 
-/// 愿景 §2.15.1：blocked 不是「打开即已读」。正则不靠 BEL。
+/// 看过的 blocked 从 Attention 隐藏；输入清理底层状态后，正则可再次点亮。
 #[test]
-fn linux_blocked_survives_view_clears_on_input_regex_lights() {
+fn linux_blocked_becomes_read_on_view_and_rearms_on_input() {
     if skip_no_display() {
         return;
     }
@@ -98,11 +98,12 @@ fn linux_blocked_survives_view_clears_on_input_regex_lights() {
         pump_main_loop(80);
         app.test_poll_once();
         assert!(
-            app.test_attention_blocked_workspaces() >= 1,
-            "切到 blocked pane 只是看见，红点必须还在。count={}",
+            wait_blocked_eq(&app, 0),
+            "切到 blocked pane 后应标为 read，并从 Attention 隐藏。count={}",
             app.test_attention_blocked_workspaces()
         );
 
+        // 输入清理底层 Blocked，确保同一 pane 后续事件可以重新点亮。
         app.test_send_input(b"x");
         assert!(
             wait_blocked_eq(&app, 0),

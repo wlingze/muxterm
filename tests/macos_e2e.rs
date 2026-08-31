@@ -357,16 +357,30 @@ fn macos_ffi_attach_search_attention_and_done() {
         "BEL 后应有 blocked 通知: {notifications}"
     );
 
-    // 看见不熄：Blocked + BecameVisible 仍保持（W16c 语义）。
+    // 看过即进入 read：保留底层 Blocked 状态供常驻 Agent 侧边栏显示，
+    // 但 acknowledged=true，且不再计入 Attention。
     unsafe { muxterm_attention_on_became_visible(h, pane1_id) };
     let snap = attention_json(h);
     assert_eq!(
         snap["blocked_count"].as_u64().unwrap_or(0),
-        1,
-        "看见不熄：Blocked 应保持: {snap}"
+        0,
+        "看过的 Blocked 应从 Attention 隐藏: {snap}"
+    );
+    let read_pane = snap["workspaces"][0]["panes"]
+        .as_array()
+        .and_then(|panes| {
+            panes
+                .iter()
+                .find(|pane| pane["pane_id"].as_u64() == Some(u64::from(pane1_id)))
+        })
+        .expect("快照应保留已读 pane");
+    assert_eq!(read_pane["status"], "blocked", "底层 Agent 状态应保留");
+    assert_eq!(
+        read_pane["acknowledged"], true,
+        "常驻 Agent 侧边栏应能映射成 read: {snap}"
     );
 
-    // 输入才熄：Blocked + UserInput → Idle。
+    // 输入后清理底层 Blocked，允许后续新的注意力事件重新点亮。
     let input = b"x";
     assert_eq!(
         unsafe {
@@ -381,9 +395,17 @@ fn macos_ffi_attach_search_attention_and_done() {
         "send_input 应成功"
     );
     let ok = poll_until(h, Duration::from_secs(3), || {
-        attention_json(h)["blocked_count"].as_u64().unwrap_or(99) == 0
+        let snap = attention_json(h);
+        snap["workspaces"][0]["panes"]
+            .as_array()
+            .and_then(|panes| {
+                panes
+                    .iter()
+                    .find(|pane| pane["pane_id"].as_u64() == Some(u64::from(pane1_id)))
+            })
+            .is_some_and(|pane| pane["status"] != "blocked")
     });
-    assert!(ok, "输入后 blocked 应清 0: {}", attention_json(h));
+    assert!(ok, "输入后应清理底层 blocked: {}", attention_json(h));
 
     // 后台 Done：先切前台到 pane0，再让 pane1 直接写 OSC 133 D（send-keys
     // 会把控制字节转成字面量，必须由 pane 进程写 stdout，与 Linux 契约一致）。
