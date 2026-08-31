@@ -286,13 +286,32 @@ impl<C: Clock> AttentionEngine<C> {
         self.sync_notified(ws, pane, now);
     }
 
-    /// 交互 shell 的 basename（pane-cmd 回到 shell = 命令结束）。
-    fn is_shell(name: &str) -> bool {
-        let base = name.rsplit('/').next().unwrap_or(name).to_lowercase();
-        matches!(
+    /// 是否只是空闲交互 shell（pane-cmd 回到它 = 命令结束）。
+    /// `bash -c ...` / `zsh -lc ...` 是实际命令，不能当作空闲容器。
+    fn is_shell(command: &str) -> bool {
+        let mut words = command.split_whitespace();
+        let Some(executable) = words.next() else {
+            return false;
+        };
+        let base = executable
+            .trim_matches(|ch| ch == '\'' || ch == '"')
+            .trim_start_matches('-')
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(executable)
+            .to_ascii_lowercase();
+        let shell = matches!(
             base.as_str(),
             "zsh" | "bash" | "sh" | "fish" | "tcsh" | "csh" | "dash" | "ksh"
-        )
+        );
+        shell
+            && !words.any(|arg| {
+                arg == "-c"
+                    || arg == "--command"
+                    || (arg.starts_with('-')
+                        && !arg.starts_with("--")
+                        && arg.chars().skip(1).any(|ch| ch == 'c'))
+            })
     }
 
     /// 更新 pane 进程名；非 shell 进程名可作 Working 粗判来源（注释见 LINUX-PLAN §9）。
@@ -418,12 +437,21 @@ impl<C: Clock> AttentionEngine<C> {
         if let Some(agent) = known_agent_process_name(value) {
             return Some(agent.to_string());
         }
-        let basename = value
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(value)
-            .trim_matches(|c: char| c == '\'' || c == '"');
-        Some(basename.to_string())
+        let split = value
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map(|(index, _)| index)
+            .unwrap_or(value.len());
+        let executable = value[..split]
+            .trim_matches(|c: char| c == '\'' || c == '"')
+            .trim_start_matches('-');
+        let basename = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
+        let arguments = value[split..].trim_start();
+        if arguments.is_empty() {
+            Some(basename.to_string())
+        } else {
+            Some(format!("{basename} {arguments}"))
+        }
     }
 
     /// pane 已从 Workspace 拓扑删除：同时清理状态、权威来源和 workspace
@@ -1163,6 +1191,46 @@ mod tests {
             PaneStatus::Done,
             "returning to the shell must leave an unread completed command"
         );
+    }
+
+    #[test]
+    fn login_shell_is_idle_but_shell_command_tracks_running_and_done() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("/bin/zsh -l".into()));
+        assert_ne!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Working,
+            "an interactive login shell is only a container"
+        );
+
+        e.set_process_name("ws", 1, Some("/bin/bash -c echo-ready".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.process_name.as_deref(), Some("bash -c echo-ready"));
+        assert_eq!(pane.status, PaneStatus::Working);
+
+        e.set_process_name("ws", 1, Some("/bin/zsh -l".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+    }
+
+    #[test]
+    fn real_tmux_wrapped_codex_argv_is_classified_as_agent() {
+        let fixture =
+            include_str!("../../../tests/samples/tmux-agent-process-observation-2026-0901.txt");
+        let argv = fixture
+            .lines()
+            .find(|line| line.contains("|node|node /usr/bin/codex "))
+            .and_then(|line| line.split('|').next_back())
+            .expect("captured Codex foreground argv");
+
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("zsh".into()));
+        e.set_process_name("ws", 1, Some(argv.into()));
+
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.process_name.as_deref(), Some("codex"));
+        assert_eq!(pane.agent_name.as_deref(), Some("codex"));
+        assert!(pane.process_is_agent);
+        assert_eq!(pane.status, PaneStatus::Working);
     }
 
     #[test]

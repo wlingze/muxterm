@@ -259,6 +259,30 @@ pub fn foreground_process_name(pid: u32) -> Option<String> {
     }
 }
 
+/// 读取 pane 首进程的前台进程组 argv。
+///
+/// tmux 的 `pane_current_command` 在 Linux 只保留前台进程组 leader 的
+/// argv0，因此 npm 安装的 Codex 会退化成 `node`。这里通过 pane shell 的
+/// `/proc/<pid>/stat` 找到 tpgid，再读取完整 cmdline；非 Linux 或没有本地
+/// `/proc` 时返回 None，由 Runtime 使用 tmux 的原值回退。
+pub fn foreground_process_command(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let foreground_pid = parse_foreground_process_group(&stat)?;
+        let argv = read_cmdline(foreground_pid)?;
+        format_process_command(&argv)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// 路径 basename（`/usr/bin/bash` → `bash`）。
 pub fn basename_command(s: &str) -> String {
     PathBuf::from(s)
@@ -280,6 +304,39 @@ fn read_cmdline(pid: u32) -> Option<Vec<String>> {
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .collect();
     Some(parts)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_foreground_process_group(stat: &str) -> Option<u32> {
+    // proc_pid_stat(5): comm 在括号内且可以包含空格或 `)`；从最后一个
+    // 右括号后解析，字段依次为 state, ppid, pgrp, session, tty_nr, tpgid。
+    let close = stat.rfind(')')?;
+    let foreground = stat.get(close + 1..)?.split_whitespace().nth(5)?;
+    let foreground = foreground.parse::<i64>().ok()?;
+    u32::try_from(foreground).ok().filter(|pid| *pid != 0)
+}
+
+#[cfg(target_os = "linux")]
+fn format_process_command(argv: &[String]) -> Option<String> {
+    const MAX_COMMAND_CHARS: usize = 1_024;
+    let mut command = argv
+        .iter()
+        .map(|arg| {
+            arg.chars()
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if command.is_empty() {
+        return None;
+    }
+    if command.chars().count() > MAX_COMMAND_CHARS {
+        command = command.chars().take(MAX_COMMAND_CHARS).collect();
+    }
+    Some(command)
 }
 
 #[cfg(target_os = "linux")]
@@ -320,6 +377,24 @@ mod tests {
     #[test]
     fn get_process_name_zero() {
         assert!(get_process_name(0).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn proc_stat_parser_reads_tpgid_after_complex_comm() {
+        let stat = "42 (node worker) S 10 42 42 34832 77 0 0 0";
+        assert_eq!(parse_foreground_process_group(stat), Some(77));
+        assert_eq!(parse_foreground_process_group("broken"), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn process_command_preserves_wrapper_argv_and_bounds_control_text() {
+        let argv = vec!["node".into(), "/usr/bin/codex".into(), "line\nvalue".into()];
+        assert_eq!(
+            format_process_command(&argv).as_deref(),
+            Some("node /usr/bin/codex line value")
+        );
     }
 
     #[test]

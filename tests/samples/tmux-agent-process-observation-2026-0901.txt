@@ -1,0 +1,11 @@
+# Real local tmux process observation captured on 2026-09-01T00:50:08+08:00.
+# tmux 3.7c, isolated socket muxterm-test-agent-observe-1788194912.
+# No prompt was sent to either agent; both processes were stopped after capture.
+# Fields: kind|pane|pane_pid|tty|pane_current_command|pid|ppid|pgrp|tpgid|comm|argv
+process|%0|279627|/dev/pts/16|node|279627|279625|279627|280650|zsh|/bin/zsh
+process|%0|279627|/dev/pts/16|node|280650|279627|280650|280650|node|node /usr/bin/codex -m glm-5.3-flash
+process|%0|279627|/dev/pts/16|node|280665|280650|280650|280650|codex|/usr/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex -m glm-5.3-flash
+process|%1|279911|/dev/pts/21|pi|279911|279625|279911|280652|zsh|/bin/zsh
+process|%1|279911|/dev/pts/21|pi|280652|279911|280652|280652|pi|pi
+transition|%0|node|zsh
+transition|%1|pi|zsh

@@ -3280,6 +3280,88 @@ fn scenario5_pane_cmd_subscription_reports_foreground_command() {
     cleanup(&socket);
 }
 
+#[test]
+fn scenario5_wrapped_agent_subscription_reports_full_argv() {
+    if !tmux_available() {
+        eprintln!("skip: tmux 不可用");
+        return;
+    }
+    let socket = unique_socket();
+    let create = Command::new("tmux")
+        .args(["-L", &socket, "new-session", "-d", "-s", "wrapped-agent"])
+        .output()
+        .expect("创建隔离 tmux server 失败");
+    assert!(create.status.success(), "创建隔离 tmux server 失败");
+
+    let mut model = connect_tmux(&socket);
+    let _ = model.poll_events();
+    let tab = model.state().active_tab().expect("应有 tab").id;
+    let pane = model.state().panes(&tab)[0].id;
+    let command = "exec -a node python3 -c 'import time; time.sleep(120)' codex";
+    let type_command = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "send-keys",
+            "-t",
+            &format!("%{}", pane.0),
+            "-l",
+            command,
+        ])
+        .output()
+        .expect("输入包装进程命令失败");
+    assert!(type_command.status.success());
+    let enter = Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "send-keys",
+            "-t",
+            &format!("%{}", pane.0),
+            "Enter",
+        ])
+        .output()
+        .expect("执行包装进程命令失败");
+    assert!(enter.status.success());
+    assert!(
+        wait_pane_command(&socket, pane, "node", Duration::from_secs(10)),
+        "fixture 必须复现 tmux 只报告 node"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut observed = None;
+    while Instant::now() < deadline {
+        for event in model.refresh() {
+            if let StateChange::StatusBarSubscription {
+                name,
+                value,
+                pane: Some(changed_pane),
+            } = event
+            {
+                if name == "muxterm.pane-cmd" && changed_pane == pane {
+                    observed = Some(value);
+                }
+            }
+        }
+        if observed
+            .as_deref()
+            .is_some_and(|value| value.contains("codex"))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        observed
+            .as_deref()
+            .is_some_and(|value| value.contains("codex")),
+        "本地订阅必须把 node wrapper 增强为完整 argv，实际为 {observed:?}"
+    );
+
+    let _ = model.shutdown();
+    cleanup(&socket);
+}
+
 /// attach 首屏会把 follow-up 命令延后；Surface seed 完成后必须真正补发
 /// status/pane-cmd 订阅，不能只在 new-session 路径生效。
 #[test]

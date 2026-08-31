@@ -16,7 +16,8 @@ pub use emulate::TerminalState;
 pub use input::{encode, ArrowDir, KeyEvent};
 #[allow(unused_imports)]
 pub use process::{
-    get_process_info, get_process_name, kill, spawn_program, ProcessHandle, SpawnError,
+    foreground_process_command, get_process_info, get_process_name, kill, spawn_program,
+    ProcessHandle, SpawnError,
 };
 #[allow(unused_imports)]
 pub use scrollback::ScrollbackBuffer;
