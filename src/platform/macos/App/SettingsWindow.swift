@@ -7,13 +7,45 @@ import Foundation
 /// field only needs a manifest entry to appear here. Controls are keyed by JSON
 /// Pointer and are always written back through `SettingsService` transactions,
 /// never by parsing or rewriting `config.toml` in Swift.
-final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
+func settingsCategoryTitle(id: String, titleKey: String) -> String {
+    let keyTail = titleKey.split(separator: ".").last.map(String.init) ?? ""
+    let source = keyTail.isEmpty ? id : keyTail
+    return source
+        .replacingOccurrences(of: "_", with: " ")
+        .replacingOccurrences(of: "-", with: " ")
+        .split(separator: " ")
+        .map { word in
+            guard let first = word.first else { return "" }
+            return first.uppercased() + word.dropFirst()
+        }
+        .joined(separator: " ")
+}
+
+final class SettingsWindowController: NSWindowController, NSWindowDelegate,
+    NSTextFieldDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate
+{
+    private struct Category {
+        let id: String
+        let title: String
+        let searchText: String
+        let fields: [[String: Any]]
+    }
+
     private let bridge: CoreBridge
     private var controls: [String: NSView] = [:]
     private var baselines: [String: Any] = [:]
     private var pendingFontPath: String?
     private var dirty = false
     private var summaryLabel = NSTextField(labelWithString: "")
+    private let searchField = NSSearchField()
+    private let categoryTable = NSTableView()
+    private let categoryScroll = NSScrollView()
+    private let sidebarView = NSView()
+    private let pagesContainer = NSView()
+    private var categories: [Category] = []
+    private var visibleCategoryIDs: [String] = []
+    private var selectedCategoryID: String?
+    private var pages: [String: NSScrollView] = [:]
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
@@ -24,7 +56,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             defer: false
         )
         window.title = "Settings"
-        window.minSize = NSSize(width: 520, height: 420)
+        window.minSize = NSSize(width: 680, height: 420)
         super.init(window: window)
         window.delegate = self
         window.setAccessibilityIdentifier("muxterm.settingsWindow")
@@ -57,69 +89,234 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func buildView(in window: NSWindow, values: [String: Any], manifest: [String: Any]) {
+        NSLayoutConstraint.deactivate(sidebarView.constraints)
+        NSLayoutConstraint.deactivate(pagesContainer.constraints)
+        sidebarView.subviews.forEach { $0.removeFromSuperview() }
+        pagesContainer.subviews.forEach { $0.removeFromSuperview() }
+        categoryTable.tableColumns.forEach { categoryTable.removeTableColumn($0) }
         controls = [:]
         baselines = [:]
         dirty = false
-
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 14
-        stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
-
-        let title = NSTextField(labelWithString: "Settings")
-        title.font = .boldSystemFont(ofSize: 18)
-        stack.addArrangedSubview(title)
+        categories = []
+        visibleCategoryIDs = []
+        selectedCategoryID = nil
+        pages = [:]
 
         guard let groups = manifest["groups"] as? [[String: Any]] else {
-            summaryLabel.stringValue = "No settings manifest"
-            stack.addArrangedSubview(summaryLabel)
-            scroll.documentView = stack
-            window.contentView = scroll
+            let label = NSTextField(labelWithString: "No settings manifest")
+            label.alignment = .center
+            window.contentView = label
             return
         }
 
         for group in groups {
-            let groupTitle = NSTextField(labelWithString: group["title_key"] as? String ?? "Settings")
-            groupTitle.font = .boldSystemFont(ofSize: 14)
-            stack.addArrangedSubview(groupTitle)
-            guard let fields = group["fields"] as? [[String: Any]] else { continue }
-            for field in fields {
-                guard let path = field["path"] as? String else { continue }
-                let control = makeControl(field: field, values: values)
-                controls[path] = control
-                baselines[path] = value(at: path, in: values)
-                stack.addArrangedSubview(row(field["title_key"] as? String ?? path, control))
-            }
+            guard let id = group["id"] as? String,
+                  !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+            let titleKey = group["title_key"] as? String ?? ""
+            let fields = group["fields"] as? [[String: Any]] ?? []
+            let fieldSearch = fields.flatMap { field in
+                [
+                    field["path"] as? String,
+                    field["title_key"] as? String,
+                    field["description_key"] as? String,
+                ].compactMap { $0 }
+            }.joined(separator: " ")
+            let title = settingsCategoryTitle(id: id, titleKey: titleKey)
+            categories.append(Category(
+                id: id,
+                title: title,
+                searchText: "\(id) \(titleKey) \(title) \(fieldSearch)".lowercased(),
+                fields: fields
+            ))
         }
+        visibleCategoryIDs = categories.map(\.id)
 
         summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.lineBreakMode = .byWordWrapping
         summaryLabel.maximumNumberOfLines = 2
-        stack.addArrangedSubview(summaryLabel)
+        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        let root = NSView()
+        root.setAccessibilityIdentifier("muxterm.settings.root")
+        sidebarView.translatesAutoresizingMaskIntoConstraints = false
+        sidebarView.setAccessibilityIdentifier("muxterm.settings.categories")
+        pagesContainer.translatesAutoresizingMaskIntoConstraints = false
+        pagesContainer.setAccessibilityIdentifier("muxterm.settings.pages")
+
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.placeholderString = "Search Settings"
+        searchField.delegate = self
+        searchField.stringValue = ""
+        searchField.setAccessibilityIdentifier("muxterm.settings.search")
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("category"))
+        categoryTable.addTableColumn(column)
+        categoryTable.headerView = nil
+        categoryTable.rowHeight = 30
+        categoryTable.style = .sourceList
+        categoryTable.dataSource = self
+        categoryTable.delegate = self
+        categoryTable.setAccessibilityIdentifier("muxterm.settings.categoryList")
+        categoryScroll.translatesAutoresizingMaskIntoConstraints = false
+        categoryScroll.drawsBackground = false
+        categoryScroll.hasVerticalScroller = true
+        categoryScroll.documentView = categoryTable
+
+        sidebarView.addSubview(searchField)
+        sidebarView.addSubview(categoryScroll)
+        root.addSubview(sidebarView)
+
+        let right = NSView()
+        right.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(right)
+        right.addSubview(pagesContainer)
+
+        for category in categories {
+            let page = makePage(for: category, values: values)
+            page.translatesAutoresizingMaskIntoConstraints = false
+            page.isHidden = true
+            pages[category.id] = page
+            pagesContainer.addSubview(page)
+            NSLayoutConstraint.activate([
+                page.leadingAnchor.constraint(equalTo: pagesContainer.leadingAnchor),
+                page.trailingAnchor.constraint(equalTo: pagesContainer.trailingAnchor),
+                page.topAnchor.constraint(equalTo: pagesContainer.topAnchor),
+                page.bottomAnchor.constraint(equalTo: pagesContainer.bottomAnchor),
+            ])
+        }
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(separator)
+
+        let footer = NSView()
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        right.addSubview(footer)
+        footer.addSubview(summaryLabel)
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSettings))
+        cancel.translatesAutoresizingMaskIntoConstraints = false
+        cancel.setAccessibilityIdentifier("muxterm.settings.cancel")
+        let apply = NSButton(title: "Apply", target: self, action: #selector(applySettings))
+        apply.translatesAutoresizingMaskIntoConstraints = false
+        apply.keyEquivalent = "\r"
+        apply.setAccessibilityIdentifier("muxterm.settings.apply")
+        footer.addSubview(cancel)
+        footer.addSubview(apply)
+
+        NSLayoutConstraint.activate([
+            sidebarView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            sidebarView.topAnchor.constraint(equalTo: root.topAnchor),
+            sidebarView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            sidebarView.widthAnchor.constraint(equalToConstant: 180),
+            searchField.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 10),
+            searchField.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -10),
+            searchField.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 12),
+            categoryScroll.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
+            categoryScroll.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
+            categoryScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            categoryScroll.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor),
+            separator.leadingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: root.topAnchor),
+            separator.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            separator.widthAnchor.constraint(equalToConstant: 1),
+            right.leadingAnchor.constraint(equalTo: separator.trailingAnchor),
+            right.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            right.topAnchor.constraint(equalTo: root.topAnchor),
+            right.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            pagesContainer.leadingAnchor.constraint(equalTo: right.leadingAnchor),
+            pagesContainer.trailingAnchor.constraint(equalTo: right.trailingAnchor),
+            pagesContainer.topAnchor.constraint(equalTo: right.topAnchor),
+            pagesContainer.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            footer.leadingAnchor.constraint(equalTo: right.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: right.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: right.bottomAnchor),
+            footer.heightAnchor.constraint(equalToConstant: 56),
+            summaryLabel.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 20),
+            summaryLabel.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            summaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: cancel.leadingAnchor, constant: -12),
+            apply.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -20),
+            apply.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            cancel.trailingAnchor.constraint(equalTo: apply.leadingAnchor, constant: -8),
+            cancel.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+        ])
+
+        window.contentView = root
+        categoryTable.reloadData()
+        selectCategory(visibleCategoryIDs.first)
+    }
+
+    private func makePage(for category: Category, values: [String: Any]) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.setAccessibilityIdentifier("muxterm.settings.page.\(category.id)")
+
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 14
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 24, right: 24)
+
+        let title = NSTextField(labelWithString: category.title)
+        title.font = .boldSystemFont(ofSize: 18)
+        stack.addArrangedSubview(title)
+        for field in category.fields {
+            guard let path = field["path"] as? String else { continue }
+            let control = makeControl(field: field, values: values)
+            controls[path] = control
+            baselines[path] = value(at: path, in: values)
+            let label = settingsCategoryTitle(
+                id: path.split(separator: "/").last.map(String.init) ?? path,
+                titleKey: field["title_key"] as? String ?? ""
+            )
+            stack.addArrangedSubview(row(label, control))
+        }
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
         stack.addArrangedSubview(spacer)
 
-        let buttons = NSStackView()
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        buttons.addArrangedSubview(NSView())
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSettings))
-        cancel.setAccessibilityIdentifier("muxterm.settings.cancel")
-        let apply = NSButton(title: "Apply", target: self, action: #selector(applySettings))
-        apply.keyEquivalent = "\r"
-        apply.setAccessibilityIdentifier("muxterm.settings.apply")
-        buttons.addArrangedSubview(cancel)
-        buttons.addArrangedSubview(apply)
-        stack.addArrangedSubview(buttons)
-
         scroll.documentView = stack
-        window.contentView = scroll
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
+        return scroll
+    }
+
+    private func selectCategory(_ id: String?) {
+        guard let id, visibleCategoryIDs.contains(id), pages[id] != nil else {
+            selectedCategoryID = nil
+            pages.values.forEach { $0.isHidden = true }
+            categoryTable.deselectAll(nil)
+            return
+        }
+        selectedCategoryID = id
+        for (pageID, page) in pages {
+            page.isHidden = pageID != id
+        }
+        if let row = visibleCategoryIDs.firstIndex(of: id), categoryTable.selectedRow != row {
+            categoryTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+    }
+
+    private func applySearch() {
+        let query = searchField.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        visibleCategoryIDs = categories
+            .filter { query.isEmpty || $0.searchText.contains(query) }
+            .map(\.id)
+        categoryTable.reloadData()
+        if let selectedCategoryID, visibleCategoryIDs.contains(selectedCategoryID) {
+            selectCategory(selectedCategoryID)
+        } else {
+            selectCategory(visibleCategoryIDs.first)
+        }
     }
 
     private func makeControl(field: [String: Any], values: [String: Any]) -> NSView {
@@ -353,7 +550,55 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func controlTextDidChange(_ obj: Notification) {
+        if let field = obj.object as? NSSearchField, field === searchField {
+            applySearch()
+            return
+        }
         dirty = true
+    }
+
+    // MARK: - Category table
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        visibleCategoryIDs.count
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        viewFor tableColumn: NSTableColumn?,
+        row: Int
+    ) -> NSView? {
+        guard visibleCategoryIDs.indices.contains(row),
+              let category = categories.first(where: { $0.id == visibleCategoryIDs[row] })
+        else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("muxterm.settings.categoryCell")
+        let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView)
+            ?? NSTableCellView()
+        cell.identifier = identifier
+        let label: NSTextField
+        if let existing = cell.textField {
+            label = existing
+        } else {
+            label = NSTextField(labelWithString: "")
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.lineBreakMode = .byTruncatingTail
+            cell.textField = label
+            cell.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+        }
+        label.stringValue = category.title
+        cell.setAccessibilityIdentifier("muxterm.settings.category.\(category.id)")
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let row = categoryTable.selectedRow
+        guard visibleCategoryIDs.indices.contains(row) else { return }
+        selectCategory(visibleCategoryIDs[row])
     }
 
     @objc private func chooseFont(_ sender: NSButton) {
@@ -398,5 +643,46 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             current = next
         }
         return current
+    }
+
+    // MARK: - In-process E2E hooks
+
+    func testCategoryIDs() -> [String] {
+        categories.map(\.id)
+    }
+
+    func testVisibleCategoryIDs() -> [String] {
+        visibleCategoryIDs
+    }
+
+    func testSelectedCategoryID() -> String? {
+        selectedCategoryID
+    }
+
+    func testVisiblePageID() -> String? {
+        pages.first(where: { !$0.value.isHidden })?.key
+    }
+
+    func testSelectCategory(_ id: String) {
+        selectCategory(id)
+    }
+
+    func testTextField(path: String) -> NSTextField? {
+        textField(at: path)
+    }
+
+    func testSetSearchQuery(_ query: String) {
+        searchField.stringValue = query
+        applySearch()
+    }
+
+    func testSidebarWidth() -> CGFloat {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return sidebarView.frame.width
+    }
+
+    func testVisiblePageIsScrollable() -> Bool {
+        guard let selectedCategoryID, let page = pages[selectedCategoryID] else { return false }
+        return page.hasVerticalScroller
     }
 }
