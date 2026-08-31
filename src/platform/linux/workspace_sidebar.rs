@@ -5,13 +5,13 @@
 //! Core pool, including the active workspace and background workspaces.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Label, ListBox, ListBoxRow, Orientation, Paned, Revealer,
-    RevealerTransitionType, ScrolledWindow, SelectionMode, ToggleButton,
+    Align, Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation, Paned, Revealer,
+    RevealerTransitionType, ScrolledWindow, SelectionMode, ToggleButton, Widget,
 };
 
 use crate::core::attention::engine::{known_agent_process_name, PaneAttention, WorkspaceAttention};
@@ -197,6 +197,16 @@ fn activity_detail(workspace: &Workspace, agent: Option<&PaneAgentInfo>) -> Stri
     }
 }
 
+fn command_detail(workspace: &Workspace) -> String {
+    let metadata = WorkspaceSidebarItem::from_workspace(workspace, None);
+    format!(
+        "{}@{}@{}",
+        workspace.name(),
+        metadata.runtime,
+        metadata.transport
+    )
+}
+
 fn structured_indicator(
     status: PaneAgentStatus,
     attention: Option<&PaneAttention>,
@@ -222,7 +232,7 @@ fn attention_indicator(attention: &PaneAttention) -> ActivityIndicator {
     }
 }
 
-/// 跨全部 Workspace 汇总的一条非 agent 命令或空闲 shell。
+/// 跨全部 Workspace 汇总的一条正在运行或尚未阅读的非 agent 命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSidebarItem {
     pub workspace_id: WorkspaceId,
@@ -248,50 +258,35 @@ impl CommandSidebarItem {
             let state = workspace.state();
             for tab in state.tabs() {
                 for pane in state.panes(&tab.id) {
-                    let attention = attention_by_pane
+                    let Some(attention) = attention_by_pane
                         .get(&(workspace_key.clone(), pane.id.0))
-                        .copied();
-                    let active = attention.filter(|pane| {
-                        pane.status == PaneStatus::Working
-                            || (matches!(pane.status, PaneStatus::Blocked | PaneStatus::Done)
-                                && !pane.acknowledged)
-                    });
-                    if active.is_some_and(|pane| pane.process_is_agent) {
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    let active = (attention.status == PaneStatus::Working
+                        || (matches!(attention.status, PaneStatus::Blocked | PaneStatus::Done)
+                            && !attention.acknowledged))
+                        .then_some(attention);
+                    let Some(active) = active else {
+                        continue;
+                    };
+                    if active.process_is_agent || workspace.pane_agent(pane.id).is_some() {
                         continue;
                     }
-                    let retained_agent = workspace.pane_agent(pane.id).is_some()
-                        || attention.is_some_and(|pane| pane.agent_name.is_some());
-                    let has_shell = attention
-                        .and_then(|pane| pane.shell_name.as_deref())
-                        .is_some_and(|value| !value.trim().is_empty());
-                    if active.is_none() && retained_agent && !has_shell {
-                        continue;
-                    }
-                    let title = active
-                        .and_then(|pane| pane.process_name.as_deref())
+                    let Some(title) = active
+                        .process_name
+                        .as_deref()
                         .filter(|value| !value.trim().is_empty())
-                        .or_else(|| {
-                            attention
-                                .and_then(|pane| pane.shell_name.as_deref())
-                                .filter(|value| !value.trim().is_empty())
-                        })
-                        .unwrap_or_else(|| {
-                            if pane.title.trim().is_empty() {
-                                "shell"
-                            } else {
-                                pane.title.as_str()
-                            }
-                        })
-                        .to_string();
+                    else {
+                        continue;
+                    };
                     items.push(CommandSidebarItem {
                         workspace_id: workspace.id().clone(),
                         pane_id: pane.id.0,
-                        title,
-                        detail: activity_detail(workspace, None),
-                        indicator: active
-                            .filter(|pane| !pane.process_is_agent)
-                            .map(attention_indicator)
-                            .unwrap_or(ActivityIndicator::None),
+                        title: title.to_string(),
+                        detail: command_detail(workspace),
+                        indicator: attention_indicator(active),
                     });
                 }
             }
@@ -303,6 +298,23 @@ impl CommandSidebarItem {
 type WorkspaceActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
 type WorkspaceCloseCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
 type ActivityActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId, u32)>>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct HiddenCommandKey {
+    workspace_id: WorkspaceId,
+    pane_id: u32,
+    title: String,
+}
+
+impl From<&CommandSidebarItem> for HiddenCommandKey {
+    fn from(item: &CommandSidebarItem) -> Self {
+        Self {
+            workspace_id: item.workspace_id.clone(),
+            pane_id: item.pane_id,
+            title: item.title.clone(),
+        }
+    }
+}
 
 fn section_header(title: &str, widget_name: &str) -> (ToggleButton, Label) {
     let arrow = Label::new(Some("▾"));
@@ -341,11 +353,13 @@ pub struct WorkspaceSidebar {
     pub list: ListBox,
     pub agent_list: ListBox,
     pub command_list: ListBox,
+    pub hidden_command_list: ListBox,
     pub sections: Paned,
     pub lower_sections: Paned,
     pub workspace_section_toggle: ToggleButton,
     pub agent_section_toggle: ToggleButton,
     pub command_section_toggle: ToggleButton,
+    pub hidden_command_section_toggle: ToggleButton,
     pub toggle: ToggleButton,
     ids: Rc<RefCell<Vec<WorkspaceId>>>,
     agent_targets: Rc<RefCell<Vec<(WorkspaceId, u32)>>>,
@@ -353,6 +367,7 @@ pub struct WorkspaceSidebar {
     workspace_items: RefCell<Vec<WorkspaceSidebarItem>>,
     agent_items: RefCell<Vec<AgentSidebarItem>>,
     command_items: RefCell<Vec<CommandSidebarItem>>,
+    hidden_commands: Rc<RefCell<HashSet<HiddenCommandKey>>>,
     on_activate: WorkspaceActivateCb,
     on_close: WorkspaceCloseCb,
     on_agent_activate: ActivityActivateCb,
@@ -448,6 +463,27 @@ impl WorkspaceSidebar {
 
         let (command_section_toggle, command_arrow) =
             section_header("COMMANDS", "muxterm-sidebar-commands-toggle");
+        command_section_toggle.set_active(false);
+
+        let hidden_command_list = ListBox::builder()
+            .selection_mode(SelectionMode::Single)
+            .build();
+        hidden_command_list.set_widget_name("muxterm-sidebar-hidden-command-list");
+        hidden_command_list.set_activate_on_single_click(true);
+        hidden_command_list.set_can_focus(false);
+        hidden_command_list.add_css_class("muxterm-sidebar-list");
+
+        let hidden_command_scrolled = ScrolledWindow::builder()
+            .child(&hidden_command_list)
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .vexpand(true)
+            .build();
+        hidden_command_scrolled.set_widget_name("muxterm-sidebar-hidden-command-scroll");
+
+        let (hidden_command_section_toggle, hidden_command_arrow) =
+            section_header("HIDDEN COMMANDS", "muxterm-sidebar-hidden-commands-toggle");
+        hidden_command_section_toggle.set_active(false);
         let command_section = GtkBox::builder()
             .orientation(Orientation::Vertical)
             .spacing(0)
@@ -456,6 +492,8 @@ impl WorkspaceSidebar {
         command_section.set_widget_name("muxterm-sidebar-commands-section");
         command_section.append(&command_section_toggle);
         command_section.append(&command_scrolled);
+        command_section.append(&hidden_command_section_toggle);
+        command_section.append(&hidden_command_scrolled);
 
         let lower_sections = Paned::new(Orientation::Vertical);
         lower_sections.set_widget_name("muxterm-sidebar-lower-sections");
@@ -496,12 +534,15 @@ impl WorkspaceSidebar {
             let workspace_section_toggle = workspace_section_toggle.clone();
             let agent_section_toggle = agent_section_toggle.clone();
             let command_section_toggle = command_section_toggle.clone();
+            let hidden_command_section_toggle = hidden_command_section_toggle.clone();
             let workspace_arrow = workspace_arrow.clone();
             let agent_arrow = agent_arrow.clone();
             let command_arrow = command_arrow.clone();
+            let hidden_command_arrow = hidden_command_arrow.clone();
             let scrolled = scrolled.clone();
             let agent_scrolled = agent_scrolled.clone();
             let command_scrolled = command_scrolled.clone();
+            let hidden_command_scrolled = hidden_command_scrolled.clone();
             let workspace_section = workspace_section.clone();
             let agent_section = agent_section.clone();
             let command_section = command_section.clone();
@@ -511,28 +552,32 @@ impl WorkspaceSidebar {
                 let workspaces_open = workspace_section_toggle.is_active();
                 let agents_open = agent_section_toggle.is_active();
                 let commands_open = command_section_toggle.is_active();
-                let lower_open = agents_open || commands_open;
+                let hidden_commands_open = hidden_command_section_toggle.is_active();
+                let command_group_open = commands_open || hidden_commands_open;
+                let lower_open = agents_open || command_group_open;
                 workspace_arrow.set_label(if workspaces_open { "▾" } else { "▸" });
                 agent_arrow.set_label(if agents_open { "▾" } else { "▸" });
                 command_arrow.set_label(if commands_open { "▾" } else { "▸" });
+                hidden_command_arrow.set_label(if hidden_commands_open { "▾" } else { "▸" });
                 scrolled.set_visible(workspaces_open);
                 agent_scrolled.set_visible(agents_open);
                 command_scrolled.set_visible(commands_open);
+                hidden_command_scrolled.set_visible(hidden_commands_open);
                 workspace_section.set_vexpand(workspaces_open);
                 agent_section.set_vexpand(agents_open);
-                command_section.set_vexpand(commands_open);
+                command_section.set_vexpand(command_group_open);
                 sections.set_vexpand(workspaces_open || lower_open);
                 lower_sections.set_vexpand(lower_open);
                 sections.set_resize_start_child(workspaces_open);
                 sections.set_resize_end_child(lower_open);
                 lower_sections.set_resize_start_child(agents_open);
-                lower_sections.set_resize_end_child(commands_open);
+                lower_sections.set_resize_end_child(command_group_open);
                 match (workspaces_open, lower_open) {
                     (true, true) => sections.set_position(saved_divider.get()),
                     (true, false) => sections.set_position(i32::MAX),
                     (false, true) | (false, false) => sections.set_position(0),
                 }
-                match (agents_open, commands_open) {
+                match (agents_open, command_group_open) {
                     (true, true) => lower_sections.set_position(saved_lower_divider.get()),
                     (true, false) => lower_sections.set_position(i32::MAX),
                     (false, true) | (false, false) => lower_sections.set_position(0),
@@ -552,13 +597,20 @@ impl WorkspaceSidebar {
             command_section_toggle.connect_toggled(move |_| update_sections());
         }
         {
+            let update_sections = update_sections.clone();
+            hidden_command_section_toggle.connect_toggled(move |_| update_sections());
+        }
+        {
             let workspace_section_toggle = workspace_section_toggle.clone();
             let agent_section_toggle = agent_section_toggle.clone();
             let command_section_toggle = command_section_toggle.clone();
+            let hidden_command_section_toggle = hidden_command_section_toggle.clone();
             let saved_divider = saved_divider.clone();
             sections.connect_notify_local(Some("position"), move |paned, _| {
                 if workspace_section_toggle.is_active()
-                    && (agent_section_toggle.is_active() || command_section_toggle.is_active())
+                    && (agent_section_toggle.is_active()
+                        || command_section_toggle.is_active()
+                        || hidden_command_section_toggle.is_active())
                 {
                     saved_divider.set(paned.position().max(1));
                 }
@@ -567,9 +619,13 @@ impl WorkspaceSidebar {
         {
             let agent_section_toggle = agent_section_toggle.clone();
             let command_section_toggle = command_section_toggle.clone();
+            let hidden_command_section_toggle = hidden_command_section_toggle.clone();
             let saved_lower_divider = saved_lower_divider.clone();
             lower_sections.connect_notify_local(Some("position"), move |paned, _| {
-                if agent_section_toggle.is_active() && command_section_toggle.is_active() {
+                if agent_section_toggle.is_active()
+                    && (command_section_toggle.is_active()
+                        || hidden_command_section_toggle.is_active())
+                {
                     saved_lower_divider.set(paned.position().max(1));
                 }
             });
@@ -592,6 +648,7 @@ impl WorkspaceSidebar {
         let ids = Rc::new(RefCell::new(Vec::new()));
         let agent_targets = Rc::new(RefCell::new(Vec::new()));
         let command_targets = Rc::new(RefCell::new(Vec::new()));
+        let hidden_commands = Rc::new(RefCell::new(HashSet::new()));
         let on_activate: WorkspaceActivateCb = Rc::new(RefCell::new(None));
         let on_close: WorkspaceCloseCb = Rc::new(RefCell::new(None));
         let on_agent_activate: ActivityActivateCb = Rc::new(RefCell::new(None));
@@ -650,17 +707,33 @@ impl WorkspaceSidebar {
             });
         }
 
+        {
+            let command_targets = command_targets.clone();
+            let on_command_activate = on_command_activate.clone();
+            hidden_command_list.connect_row_activated(move |_, row| {
+                let index = row.index().max(0) as usize;
+                let Some((id, pane)) = command_targets.borrow().get(index).cloned() else {
+                    return;
+                };
+                if let Some(callback) = on_command_activate.borrow().as_ref() {
+                    callback(&id, pane);
+                }
+            });
+        }
+
         Self {
             container,
             revealer,
             list,
             agent_list,
             command_list,
+            hidden_command_list,
             sections,
             lower_sections,
             workspace_section_toggle,
             agent_section_toggle,
             command_section_toggle,
+            hidden_command_section_toggle,
             toggle,
             ids,
             agent_targets,
@@ -668,6 +741,7 @@ impl WorkspaceSidebar {
             workspace_items: RefCell::new(Vec::new()),
             agent_items: RefCell::new(Vec::new()),
             command_items: RefCell::new(Vec::new()),
+            hidden_commands,
             on_activate,
             on_close,
             on_agent_activate,
@@ -787,7 +861,8 @@ impl WorkspaceSidebar {
         }
     }
 
-    /// 更新全部工作区的非 agent 命令/shell 行。
+    /// 更新全部工作区的非 agent 活跃命令；隐藏状态只绑定当前命令身份，
+    /// 同一 pane 启动另一条命令后会自动重新显示。
     pub fn set_commands(&self, items: &[CommandSidebarItem]) {
         if self.command_items.borrow().as_slice() == items {
             return;
@@ -796,17 +871,54 @@ impl WorkspaceSidebar {
         while let Some(child) = self.command_list.first_child() {
             self.command_list.remove(&child);
         }
+        while let Some(child) = self.hidden_command_list.first_child() {
+            self.hidden_command_list.remove(&child);
+        }
+        let current_keys = items
+            .iter()
+            .map(HiddenCommandKey::from)
+            .collect::<HashSet<_>>();
+        self.hidden_commands
+            .borrow_mut()
+            .retain(|key| current_keys.contains(key));
         *self.command_targets.borrow_mut() = items
             .iter()
             .map(|item| (item.workspace_id.clone(), item.pane_id))
             .collect();
 
         for item in items {
-            self.command_list.append(&activity_row(
-                "command",
-                "muxterm-sidebar-command-dot",
-                item,
-            ));
+            let key = HiddenCommandKey::from(item);
+            let is_hidden = self.hidden_commands.borrow().contains(&key);
+            let (visible_row, hide) = command_activity_row(item, false);
+            let (hidden_row, show) = command_activity_row(item, true);
+            visible_row.set_visible(!is_hidden);
+            hidden_row.set_visible(is_hidden);
+
+            {
+                let hidden_commands = self.hidden_commands.clone();
+                let key = key.clone();
+                let visible_row = visible_row.clone();
+                let hidden_row = hidden_row.clone();
+                hide.connect_clicked(move |_| {
+                    hidden_commands.borrow_mut().insert(key.clone());
+                    visible_row.set_visible(false);
+                    hidden_row.set_visible(true);
+                });
+            }
+            {
+                let hidden_commands = self.hidden_commands.clone();
+                let key = key.clone();
+                let visible_row = visible_row.clone();
+                let hidden_row = hidden_row.clone();
+                show.connect_clicked(move |_| {
+                    hidden_commands.borrow_mut().remove(&key);
+                    hidden_row.set_visible(false);
+                    visible_row.set_visible(true);
+                });
+            }
+
+            self.command_list.append(&visible_row);
+            self.hidden_command_list.append(&hidden_row);
         }
     }
 
@@ -891,6 +1003,15 @@ impl SidebarActivityRow for CommandSidebarItem {
 }
 
 fn activity_row(kind: &str, dot_widget_name: &str, item: &impl SidebarActivityRow) -> ListBoxRow {
+    activity_row_with_trailing(kind, dot_widget_name, item, None)
+}
+
+fn activity_row_with_trailing(
+    kind: &str,
+    dot_widget_name: &str,
+    item: &impl SidebarActivityRow,
+    trailing: Option<&Widget>,
+) -> ListBoxRow {
     let row = ListBoxRow::new();
     row.set_widget_name(&format!(
         "muxterm-sidebar-{kind}-row-{}-{}",
@@ -942,8 +1063,31 @@ fn activity_row(kind: &str, dot_widget_name: &str, item: &impl SidebarActivityRo
     labels.append(&title);
     labels.append(&detail);
     content.append(&labels);
+    if let Some(trailing) = trailing {
+        content.append(trailing);
+    }
     row.set_child(Some(&content));
     row
+}
+
+fn command_activity_row(item: &CommandSidebarItem, hidden: bool) -> (ListBoxRow, Button) {
+    let (label, widget_name) = if hidden {
+        ("显示", "muxterm-sidebar-command-show")
+    } else {
+        ("不显示", "muxterm-sidebar-command-hide")
+    };
+    let action = Button::with_label(label);
+    action.set_widget_name(widget_name);
+    action.set_has_frame(false);
+    action.set_can_focus(false);
+    action.add_css_class("muxterm-sidebar-command-visibility");
+    let row = activity_row_with_trailing(
+        if hidden { "hidden-command" } else { "command" },
+        "muxterm-sidebar-command-dot",
+        item,
+        Some(action.upcast_ref()),
+    );
+    (row, action)
 }
 
 fn widget_id(value: &str) -> String {
@@ -1142,9 +1286,10 @@ mod tests {
         pool.insert_connected(workspace);
 
         let shell_rows = CommandSidebarItem::from_pool(&pool, &[]);
-        assert_eq!(shell_rows.len(), 1);
-        assert_eq!(shell_rows[0].title, "bash");
-        assert_eq!(shell_rows[0].indicator, ActivityIndicator::None);
+        assert!(
+            shell_rows.is_empty(),
+            "idle shells and terminal titles must not create command rows"
+        );
 
         let mut running = attention(id.replica_id(), PaneStatus::Working, true);
         running.panes[0].process_name = Some("cargo test".into());
@@ -1152,6 +1297,7 @@ mod tests {
         running.panes[0].agent_name = None;
         let rows = CommandSidebarItem::from_pool(&pool, &[running.clone()]);
         assert_eq!(rows[0].title, "cargo test");
+        assert_eq!(rows[0].detail, "command-workspace@tmux@local");
         assert_eq!(rows[0].indicator, ActivityIndicator::Running);
 
         running.panes[0].status = PaneStatus::Done;
@@ -1162,8 +1308,10 @@ mod tests {
 
         running.panes[0].acknowledged = true;
         let rows = CommandSidebarItem::from_pool(&pool, &[running]);
-        assert_eq!(rows[0].title, "zsh");
-        assert_eq!(rows[0].indicator, ActivityIndicator::None);
+        assert!(
+            rows.is_empty(),
+            "a read command that returned to an idle shell must disappear"
+        );
     }
 
     #[test]
@@ -1185,6 +1333,28 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].title, "cargo");
         assert_eq!(commands[0].indicator, ActivityIndicator::Running);
+    }
+
+    #[test]
+    fn commands_prefer_command_over_remote_pane_title_and_show_project_transport() {
+        let id = WorkspaceId::new("ssh", Some("ryzen"), "default", "tmux", "/home/wlz/Devexx");
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.panes[0].title = "(ryzen) ~/Devexx · zsh".into();
+        let workspace = Workspace::new(id.clone(), "Devexx".into(), Box::new(runtime));
+        let mut pool =
+            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
+        pool.insert_connected(workspace);
+
+        let mut running = attention(id.replica_id(), PaneStatus::Working, true);
+        running.panes[0].process_name = Some("cargo test --workspace".into());
+        running.panes[0].process_is_agent = false;
+        running.panes[0].agent_name = None;
+
+        let commands = CommandSidebarItem::from_pool(&pool, &[running]);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].title, "cargo test --workspace");
+        assert_eq!(commands[0].detail, "Devexx@tmux@ryzen");
+        assert_ne!(commands[0].title, "(ryzen) ~/Devexx · zsh");
     }
 
     #[test]

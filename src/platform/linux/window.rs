@@ -5343,6 +5343,23 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
             opacity: 1;
             background-color: alpha({fg}, 0.12);
         }}
+        button.muxterm-sidebar-command-visibility {{
+            background-image: none;
+            background-color: transparent;
+            border: none;
+            box-shadow: none;
+            min-width: 0;
+            min-height: 18px;
+            padding: 1px 4px;
+            border-radius: 4px;
+            color: {fg};
+            font-size: 10px;
+            opacity: 0.58;
+        }}
+        button.muxterm-sidebar-command-visibility:hover {{
+            opacity: 1;
+            background-color: alpha({fg}, 0.12);
+        }}
         .muxterm-sidebar-row-name {{ color: {fg}; }}
         .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
         .muxterm-sidebar-workspace-shortcut {{

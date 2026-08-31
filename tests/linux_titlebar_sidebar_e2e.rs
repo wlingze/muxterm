@@ -200,6 +200,11 @@ fn title_bar_actions_and_workspace_sidebar() {
             .expect("command section toggle")
             .downcast::<ToggleButton>()
             .expect("command section toggle type");
+        let hidden_command_section_toggle =
+            find_by_name(&app.window, "muxterm-sidebar-hidden-commands-toggle")
+                .expect("hidden command section toggle")
+                .downcast::<ToggleButton>()
+                .expect("hidden command section toggle type");
         let sections = find_by_name(&app.window, "muxterm-sidebar-sections")
             .expect("vertical sidebar split")
             .downcast::<Paned>()
@@ -214,12 +219,17 @@ fn title_bar_actions_and_workspace_sidebar() {
             find_by_name(&app.window, "muxterm-sidebar-agent-scroll").expect("agent section body");
         let command_scroll = find_by_name(&app.window, "muxterm-sidebar-command-scroll")
             .expect("command section body");
+        let hidden_command_scroll =
+            find_by_name(&app.window, "muxterm-sidebar-hidden-command-scroll")
+                .expect("hidden command section body");
         assert!(workspace_section_toggle.is_active());
         assert!(agent_section_toggle.is_active());
-        assert!(command_section_toggle.is_active());
+        assert!(!command_section_toggle.is_active());
+        assert!(!hidden_command_section_toggle.is_active());
         assert!(workspace_scroll.is_visible());
         assert!(agent_scroll.is_visible());
-        assert!(command_scroll.is_visible());
+        assert!(!command_scroll.is_visible());
+        assert!(!hidden_command_scroll.is_visible());
 
         let workspace_list = find_by_name(&app.window, "muxterm-sidebar-list")
             .expect("workspace list")
@@ -234,18 +244,17 @@ fn title_bar_actions_and_workspace_sidebar() {
             .expect("command list")
             .downcast::<gtk4::ListBox>()
             .expect("command list type");
-        let shell_row = command_list.row_at_index(0).expect("startup shell row");
+        let hidden_command_list = find_by_name(&app.window, "muxterm-sidebar-hidden-command-list")
+            .expect("hidden command list")
+            .downcast::<gtk4::ListBox>()
+            .expect("hidden command list type");
         assert!(
-            widget_label_texts(&shell_row)
-                .iter()
-                .any(|label| matches!(label.as_str(), "bash" | "zsh" | "sh" | "fish" | "shell")),
-            "idle non-agent panes must be collected under Commands"
-        );
-        assert!(
-            find_by_name(&shell_row, "muxterm-sidebar-command-dot").is_none(),
-            "an idle/read shell must not create a status point"
+            command_list.row_at_index(0).is_none(),
+            "idle shells and pane titles must not create command rows"
         );
 
+        command_section_toggle.set_active(true);
+        pump_main_loop(100);
         let divider = sections.position();
         sections.set_position(divider + 40);
         pump_main_loop(100);
@@ -304,9 +313,50 @@ fn title_bar_actions_and_workspace_sidebar() {
                 .any(|label| label == "cargo test"),
             "runtime-neutral OSC command text must reach Commands"
         );
+        let command_labels = widget_label_texts(&running_command);
+        assert!(
+            command_labels.iter().any(|label| {
+                let fields = label.split('@').collect::<Vec<_>>();
+                fields.len() == 3
+                    && !fields[0].trim().is_empty()
+                    && fields[1] == "shell"
+                    && fields[2] == "local"
+            }),
+            "command detail must be projectname@runtime@transportname: {command_labels:?}"
+        );
+        assert!(
+            command_labels
+                .iter()
+                .all(|label| !label.starts_with("(ryzen) ")),
+            "pane terminal titles must not be used as command names: {command_labels:?}"
+        );
         let command_dot = find_by_name(&running_command, "muxterm-sidebar-command-dot")
             .expect("running command status point");
         assert!(command_dot.has_css_class("running"));
+
+        let hide = find_by_name(&running_command, "muxterm-sidebar-command-hide")
+            .expect("command hide action")
+            .downcast::<gtk4::Button>()
+            .expect("command hide action type");
+        hide.emit_clicked();
+        pump_main_loop(100);
+        assert!(!running_command.is_visible());
+        let hidden_command = hidden_command_list
+            .row_at_index(0)
+            .expect("hidden command row");
+        hidden_command_section_toggle.set_active(true);
+        pump_main_loop(100);
+        assert!(hidden_command_scroll.is_visible());
+        assert!(hidden_command.is_visible());
+        let show = find_by_name(&hidden_command, "muxterm-sidebar-command-show")
+            .expect("command restore action")
+            .downcast::<gtk4::Button>()
+            .expect("command restore action type");
+        show.emit_clicked();
+        pump_main_loop(100);
+        assert!(running_command.is_visible());
+        assert!(!hidden_command.is_visible());
+        hidden_command_section_toggle.set_active(false);
 
         app.test_set_agent_attention(1, "codex", PaneStatus::Working);
         pump_main_loop(100);
