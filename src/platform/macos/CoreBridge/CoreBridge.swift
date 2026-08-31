@@ -56,11 +56,41 @@ struct StateChange: Equatable {
     var isPaneSnapshot: Bool { type == STATE_PANE_SNAPSHOT }
     var isPaneHistory: Bool { type == STATE_PANE_HISTORY }
     var isPaneClosed: Bool { type == STATE_PANE_CLOSED }
+    var isPaneAgentChanged: Bool { type == STATE_PANE_AGENT_CHANGED }
     var isTabClosed: Bool { type == STATE_TAB_CLOSED }
     var isTabOrderChanged: Bool { type == STATE_TAB_ORDER_CHANGED }
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }
     var isWorkspaceRenamed: Bool { type == STATE_WORKSPACE_RENAMED }
     var isPoolChanged: Bool { type == STATE_POOL_CHANGED }
+}
+
+/// Runtime-neutral payload carried by `STATE_PANE_AGENT_CHANGED`.
+private struct CorePaneAgentEvent: Decodable {
+    let agent: CorePaneAgentPayload?
+}
+
+private struct CorePaneAgentPayload: Decodable {
+    let displayName: String?
+    let title: String?
+    let name: String?
+    let kind: String?
+    let status: StructuredAgentStatus
+
+    enum CodingKeys: String, CodingKey {
+        case displayName = "display_name"
+        case title, name, kind, status
+    }
+
+    func sidebarAgent(paneId: UInt32) -> StructuredPaneAgent {
+        StructuredPaneAgent(
+            paneId: paneId,
+            displayName: displayName,
+            title: title,
+            name: name,
+            kind: kind,
+            status: status
+        )
+    }
 }
 
 /// core SSH discovery 返回的 owned 条目。
@@ -438,6 +468,9 @@ final class CoreBridge {
     private(set) var resolvedTargetConfig: TargetConfig?
     private var pendingError: String?
     private var pollFailureReported = false
+    /// Core has already normalized these snapshots; the platform only keeps a
+    /// pane-indexed registry so read agents remain visible in the sidebar.
+    private var structuredAgents = StructuredAgentRegistry()
 
     // MARK: - 日志
 
@@ -1052,7 +1085,7 @@ final class CoreBridge {
         }
         guard n > 0 else { return [] }
 
-        return buf.prefix(Int(n)).map { c in
+        let events = buf.prefix(Int(n)).map { c in
             if c.type_ == STATE_BACKEND_STATUS {
                 lastStatus = c.pane_id
             }
@@ -1071,6 +1104,28 @@ final class CoreBridge {
                 name: Self.string(from: c.name)
             )
         }
+        for event in events {
+            if event.isPaneClosed {
+                structuredAgents.removePane(event.paneId)
+            } else if event.isPaneAgentChanged {
+                guard let payload = try? JSONDecoder().decode(
+                    CorePaneAgentEvent.self,
+                    from: event.data
+                ) else {
+                    continue
+                }
+                structuredAgents.observe(
+                    paneId: event.paneId,
+                    agent: payload.agent?.sidebarAgent(paneId: event.paneId)
+                )
+            }
+        }
+        return events
+    }
+
+    /// Stable pane order keeps incremental AppKit reloads deterministic.
+    func structuredAgentSnapshot() -> [StructuredPaneAgent] {
+        structuredAgents.snapshot
     }
 
     /// 取出一次待显示的核心错误。

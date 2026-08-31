@@ -28,6 +28,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var bridge: CoreBridge
     var terminalManager: TerminalManager
     let content: ContentView
+    let workspaceSidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+    private let mainSplitController = NSSplitViewController()
+    private var sidebarSplitItem: NSSplitViewItem?
+    private let sidebarToggleButton = NSButton()
+    private var sidebarTitlebarAccessory: NSTitlebarAccessoryViewController?
     private let discovery = ConnectionDiscovery()
     var commandPalette: CommandPaletteController!
     var unifiedPanel: UnifiedPanelController!
@@ -228,7 +233,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         super.init(window: window)
         window.delegate = self
+        installMainSplit(in: window)
+        installSidebarToggle(in: window)
         wireTerminalManagerCallbacks()
+
+        workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
+            _ = self?.activateWorkspaceIfAvailable(workspaceId)
+        }
+        workspaceSidebar.onAgentActivate = { [weak self] workspaceId, paneId in
+            guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
+            _ = self.bridge.attentionAcknowledge(paneId: paneId)
+            self.jumpToPane(tabId: nil, paneId: paneId)
+            self.refreshWorkspaceSidebar()
+        }
 
         commandPalette = CommandPaletteController(ownerWindow: window)
         commandPalette.onSelect = { [weak self] item in
@@ -389,24 +406,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
         // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
         // workspace 既不在 Recent，也无法在切走后保持 warm。
+        let initialTarget = bridge.resolvedTargetConfig
         let initialKey = ConnectionKey(
             transport: bridge.sshAlias == nil ? "local" : "ssh",
             alias: bridge.sshAlias,
-            session: bridge.session ?? "",
-            runtime: terminalManager.usesClientResize ? "tmux" : "shell",
-            path: bridge.startDirectory ?? "",
-            socket: bridge.socket
+            session: initialTarget?.session ?? bridge.session ?? "",
+            runtime: initialTarget?.runtime.rawValue
+                ?? (terminalManager.usesClientResize ? "tmux" : "shell"),
+            path: initialTarget?.path ?? bridge.startDirectory ?? "",
+            socket: initialTarget?.socket ?? bridge.socket,
+            workspaceID: initialTarget?.workspaceID
         )
         let initialSlot = WarmConnectionSlot(
             key: initialKey,
             bridge: bridge,
             terminalManager: terminalManager,
+            targetConfig: initialTarget,
             now: 0
         )
         connectionPool.acquire(key: initialKey) { _ in initialSlot }
 
         installKeyEquivalents()
         applyTheme(currentTheme())
+        refreshWorkspaceSidebar(force: true)
         startPolling()
         DispatchQueue.main.async { [weak self] in
             self?.refreshUI()
@@ -823,6 +845,87 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.show(tab: .attention)
     }
 
+    private func installSidebarToggle(in window: NSWindow) {
+        sidebarToggleButton.image = NSImage(
+            systemSymbolName: "sidebar.left",
+            accessibilityDescription: "Toggle Sidebar"
+        )
+        sidebarToggleButton.title = ""
+        sidebarToggleButton.imagePosition = .imageOnly
+        sidebarToggleButton.bezelStyle = .texturedRounded
+        sidebarToggleButton.setButtonType(.toggle)
+        sidebarToggleButton.state = .off
+        sidebarToggleButton.target = self
+        sidebarToggleButton.action = #selector(toggleWorkspaceSidebar)
+        sidebarToggleButton.setAccessibilityIdentifier("muxterm.sidebar.toggle")
+        sidebarToggleButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 38, height: 28))
+        holder.addSubview(sidebarToggleButton)
+        NSLayoutConstraint.activate([
+            sidebarToggleButton.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 4),
+            sidebarToggleButton.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+            sidebarToggleButton.widthAnchor.constraint(equalToConstant: 30),
+            sidebarToggleButton.heightAnchor.constraint(equalToConstant: 24),
+        ])
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.layoutAttribute = .left
+        accessory.view = holder
+        window.addTitlebarAccessoryViewController(accessory)
+        sidebarTitlebarAccessory = accessory
+    }
+
+    private func installMainSplit(in window: NSWindow) {
+        let sidebarController = NSViewController()
+        sidebarController.view = workspaceSidebar
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
+        sidebarItem.canCollapse = true
+        sidebarItem.minimumThickness = 180
+        sidebarItem.maximumThickness = 420
+        sidebarItem.preferredThicknessFraction = 0.25
+
+        let contentController = NSViewController()
+        contentController.view = content
+        let contentItem = NSSplitViewItem(viewController: contentController)
+        contentItem.minimumThickness = 320
+
+        mainSplitController.splitView.isVertical = true
+        mainSplitController.splitView.dividerStyle = .thin
+        mainSplitController.splitView.autosaveName = "muxterm.main.sidebar"
+        mainSplitController.splitView.setAccessibilityIdentifier("muxterm.main.split")
+        mainSplitController.addSplitViewItem(sidebarItem)
+        mainSplitController.addSplitViewItem(contentItem)
+        sidebarItem.isCollapsed = true
+        sidebarSplitItem = sidebarItem
+        window.contentViewController = mainSplitController
+    }
+
+    @objc private func toggleWorkspaceSidebar() {
+        setWorkspaceSidebarOpen(!isWorkspaceSidebarOpen)
+    }
+
+    private var isWorkspaceSidebarOpen: Bool {
+        sidebarSplitItem?.isCollapsed == false
+    }
+
+    private func setWorkspaceSidebarOpen(_ open: Bool) {
+        sidebarSplitItem?.isCollapsed = !open
+        sidebarToggleButton.state = open ? .on : .off
+        if open {
+            refreshWorkspaceSidebar(force: true)
+        }
+        window?.contentView?.needsLayout = true
+    }
+
+    /// In-process E2E uses the same production toggle path.
+    func setWorkspaceSidebarOpenForTest(_ open: Bool) {
+        setWorkspaceSidebarOpen(open)
+    }
+
+    func workspaceSidebarOpenForTest() -> Bool {
+        isWorkspaceSidebarOpen
+    }
+
     /// 点击系统通知时始终回到主窗口并显示 Attention，不复用 toggle 语义。
     func revealAttentionFromSystemNotification() {
         NSApp.activate(ignoringOtherApps: true)
@@ -846,8 +949,70 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func attentionSnapshot(from candidate: CoreBridge) -> AttentionSnapshot? {
+        guard let json = candidate.attentionSnapshotJSON() else { return nil }
+        return AttentionSnapshot.decode(Data(json.utf8))
+    }
+
+    private func fallbackReplicaID(for target: TargetConfig) -> String {
+        let identityPath = target.workspaceID.flatMap { $0.isEmpty ? nil : $0 } ?? target.path
+        let session = target.session?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = session.isEmpty ? QuickConnect.defaultName(for: identityPath) : session
+        let transport = target.transport.label
+        if !session.isEmpty, !identityPath.isEmpty {
+            return "\(name):\(identityPath)@\(transport)"
+        }
+        return "\(name)@\(transport)"
+    }
+
+    private func workspaceReplicaID(from candidate: CoreBridge, target: TargetConfig) -> String {
+        attentionSnapshot(from: candidate)?.workspaces.first?.workspaceId
+            ?? fallbackReplicaID(for: target)
+    }
+
     private var activeWorkspaceReplicaID: String? {
-        connectionPool.currentTargetConfig.map { QuickConnect.uniqueID(for: $0) }
+        guard let target = connectionPool.currentTargetConfig else { return nil }
+        return workspaceReplicaID(from: bridge, target: target)
+    }
+
+    private func sidebarItems() -> [WorkspaceSidebarItem] {
+        let slots = connectionPool.slots.values
+            .filter { $0.lifecycle != .evicting }
+            .sorted { lhs, rhs in
+                if (lhs.lifecycle == .active) != (rhs.lifecycle == .active) {
+                    return lhs.lifecycle == .active
+                }
+                if lhs.lastUsedAt != rhs.lastUsedAt {
+                    return lhs.lastUsedAt > rhs.lastUsedAt
+                }
+                return lhs.targetConfig.name < rhs.targetConfig.name
+            }
+        return slots.compactMap { slot in
+            // `withBridge` holds the slot lock; capture lock-backed lifecycle
+            // first so the projection never attempts to acquire it recursively.
+            let isActive = slot.lifecycle == .active
+            let target = slot.targetConfig
+            return slot.withBridge { candidate in
+                return WorkspaceSidebarItem(
+                    workspaceId: workspaceReplicaID(from: candidate, target: target),
+                    name: target.name,
+                    runtime: target.runtime.rawValue,
+                    transport: target.transport.label,
+                    isActive: isActive,
+                    structuredAgents: candidate.structuredAgentSnapshot()
+                )
+            }
+        }
+    }
+
+    private func refreshWorkspaceSidebar(force: Bool = false) {
+        guard force || isWorkspaceSidebarOpen else { return }
+        let workspaces = sidebarItems()
+        workspaceSidebar.setWorkspaces(workspaces)
+        workspaceSidebar.setAgents(WorkspaceSidebarProjection.agents(
+            workspaces: workspaces,
+            attention: attentionSnapshotForPanel()
+        ))
     }
 
     private func attentionSnapshotForPanel() -> AttentionSnapshot? {
@@ -911,16 +1076,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             body(bridge)
             return true
         }
-        guard let slot = connectionPool.slots.values.first(where: {
-            QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
-                && $0.lifecycle != .evicting
-        }) else {
-            return false
+        for slot in connectionPool.slots.values where slot.lifecycle != .evicting {
+            let matches = slot.withBridge { candidate in
+                workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
+                    || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
+            } ?? false
+            if matches {
+                return slot.withBridge { candidate in
+                    body(candidate)
+                    return true
+                } ?? false
+            }
         }
-        return slot.withBridge { candidate in
-            body(candidate)
-            return true
-        } ?? false
+        return false
     }
 
     /// 测试用：按 Workspace 安全读取 blocked 计数（后台 slot 会锁住 bridge）。
@@ -988,14 +1156,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if activeWorkspaceReplicaID == workspaceId {
             return true
         }
-        guard let slot = connectionPool.slots.values.first(where: {
-            QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
-                && $0.lifecycle != .evicting
-        }) else {
-            return false
+        for slot in connectionPool.slots.values where slot.lifecycle != .evicting {
+            let matches = slot.withBridge { candidate in
+                workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
+                    || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
+            } ?? false
+            if matches {
+                activate(slot: slot)
+                return true
+            }
         }
-        activate(slot: slot)
-        return true
+        return false
     }
 
     /// 跳转到指定 tab + pane（搜索命中 / 注意力行）。
@@ -1623,6 +1794,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshStatusBar(force: true)
         // 切连接后立即更新 SSH 状态 + 流量监控显示。
         updateTrafficMonitor()
+        refreshWorkspaceSidebar()
         // 若旧 bridge 不在 pool（初始连接或非 pool 路径），切走后直接回收；
         // pool 内的旧 slot 由 acquire 降为 background，保持 warm。
         let oldIsPooled = connectionPool.slots.values.contains { $0.bridge === oldBridge }
@@ -2723,13 +2895,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     slot.applyPendingSurfaceEvents()
                 }
                 self?.backgroundPollInFlight = false
+                self?.refreshWorkspaceSidebar()
             }
         }
     }
 
     /// 注意力引擎：更新状态栏红点 + 弹出 blocked/done 通知。
     private func refreshAttentionChrome() {
-        guard !isClosing, terminalManager.usesClientResize else { return }
+        guard !isClosing else { return }
         // 前台 pane 输出视为已看见：CommandDone 清成 Idle（Linux 同款），
         // 前台 `sleep && echo` 不弹完成通知。
         let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
@@ -2749,6 +2922,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             drainAttentionNotifications(from: candidate)
         }
         content.statusBar.setAttention(StatusBarAttention(count: blockedCount))
+        refreshWorkspaceSidebar()
     }
 
     private func drainAttentionNotifications(from candidate: CoreBridge) {

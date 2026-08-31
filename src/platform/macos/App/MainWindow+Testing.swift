@@ -14,6 +14,26 @@ extension MainWindowController {
         pollOnce()
     }
 
+    func testSetSidebarOpen(_ open: Bool) {
+        setWorkspaceSidebarOpenForTest(open)
+    }
+
+    func testSidebarOpen() -> Bool {
+        workspaceSidebarOpenForTest()
+    }
+
+    func testSidebarWorkspaceNames() -> [String] {
+        workspaceSidebar.testWorkspaceNames()
+    }
+
+    func testSidebarAgentCount() -> Int {
+        workspaceSidebar.testAgentCount()
+    }
+
+    func testSidebarAgentIndicators() -> [AgentSidebarIndicator] {
+        workspaceSidebar.testAgentIndicators()
+    }
+
     func testPollOutputEventCount() -> Int {
         pollOnce()
         return lastPaneOutputEventCount
