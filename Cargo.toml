@@ -41,6 +41,10 @@ async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
 
+# 可选：跨平台 TUI 前端
+crossterm = { version = "0.28", optional = true }
+ratatui = { version = "0.29", optional = true }
+
 # 可选：Linux bundled font registration
 [target.'cfg(target_os = "linux")'.dependencies]
 yeslogic-fontconfig-sys = "6"
@@ -49,10 +53,6 @@ yeslogic-fontconfig-sys = "6"
 gtk4 = { version = "0.9", optional = true }
 # v0_76：Terminal::text_format，GTK 测试校验 VTE 可见文本（防分割后黑屏）
 vte4 = { version = "0.8", optional = true, features = ["v0_76"] }
-
-# 可选：TUI 前端
-crossterm = { version = "0.28", optional = true }
-ratatui = { version = "0.29", optional = true }
 
 [target."cfg(unix)".dependencies]
 # 仅 Unix: 为 tmux -CC 子进程分配 pty

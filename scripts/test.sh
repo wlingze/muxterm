@@ -133,6 +133,9 @@ run_linux() {
 }
 
 run_macos() {
+    # macOS 发布物包含跨平台 TUI；必须在 macOS target 上实际解析并编译
+    # crossterm / ratatui，避免依赖误落入 Linux-only 表后直到发布才失败。
+    cargo check --no-default-features --features tui
     cargo build --release --no-default-features --features ffi
     cargo test --no-default-features --features ffi \
         --test macos_integration -- --test-threads="$THREADS"
