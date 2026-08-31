@@ -535,8 +535,8 @@ extension MainWindowController {
         toggleTheme()
     }
 
-    func testSavedTheme() -> String? {
-        UserDefaults.standard.string(forKey: "muxterm.theme")
+    func testTerminalFontSize() -> CGFloat {
+        terminalManager.view(for: testActivePaneID()).fontSize
     }
 
     func testChromeAppearanceIsDark() -> Bool {

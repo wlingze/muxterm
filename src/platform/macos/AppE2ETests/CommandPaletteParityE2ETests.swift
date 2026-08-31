@@ -1,5 +1,6 @@
 import XCTest
 @testable import MuxtermAppLib
+import MuxtermChrome
 
 /// Linux 命令面板已有的纯前端动作，在 macOS 也必须可发现、可执行。
 final class CommandPaletteParityE2ETests: XCTestCase {
@@ -48,17 +49,14 @@ final class CommandPaletteParityE2ETests: XCTestCase {
     }
 
     func testPaletteTabAndFontActionsUseProductionHandlers() throws {
-        let fontKey = "muxterm.terminalFontSize"
-        let defaults = UserDefaults.standard
-        let previousFont = defaults.object(forKey: fontKey)
-        defer {
-            if let previousFont {
-                defaults.set(previousFont, forKey: fontKey)
-            } else {
-                defaults.removeObject(forKey: fontKey)
-            }
-        }
-        defaults.set(18.0, forKey: fontKey)
+        let config = try IsolatedMuxtermConfig(label: "palette-font", toml: """
+        config_version = 1
+
+        [font]
+        family = "Menlo"
+        size = 18.0
+        """)
+        defer { config.restore() }
 
         let painted = PaintedWorkspace(label: "palette-actions")
         let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
@@ -79,6 +77,8 @@ final class CommandPaletteParityE2ETests: XCTestCase {
         app.testOpenCommandPalette()
         AppE2E.pump(40)
         app.testSelectPaletteTitle(MuxtermI18n.shared.tr(.menuIncreaseFontSize))
-        XCTAssertEqual(defaults.double(forKey: fontKey), 19.0, accuracy: 0.01)
+        XCTAssertEqual(app.testTerminalFontSize(), 19.0, accuracy: 0.01)
+        let persisted = try String(contentsOf: config.configURL, encoding: .utf8)
+        XCTAssertEqual(MuxtermTerminalFont.settings(from: persisted).size, 19.0, accuracy: 0.01)
     }
 }

@@ -1,14 +1,19 @@
 import Foundation
 import XCTest
 @testable import MuxtermAppLib
+import MuxtermChrome
 
-/// 对标 `linux_prefs_e2e`：Cmd+= 增大字号并持久化（macOS 写 UserDefaults，不得新建 preferences.toml）。
+/// 对标 `linux_prefs_e2e`：Cmd+= 增大字号并通过 Core 事务持久化。
 final class PrefsE2ETests: XCTestCase {
     func testCmdEqualIncreasesFontAndPersists() throws {
-        let defaults = UserDefaults.standard
-        let key = "muxterm.terminalFontSize"
-        defaults.removeObject(forKey: key)
-        defer { defaults.removeObject(forKey: key) }
+        let config = try IsolatedMuxtermConfig(label: "prefs-font", toml: """
+        config_version = 1
+
+        [font]
+        family = "Menlo"
+        size = 18.0
+        """)
+        defer { config.restore() }
 
         AppE2E.requireTmux()
         let fx = OnePaneCat(label: "prefs")
@@ -16,18 +21,19 @@ final class PrefsE2ETests: XCTestCase {
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady())
 
-        let before = defaults.object(forKey: key) as? Double
+        let before = app.testTerminalFontSize()
         app.increaseTerminalFontSize(nil)
         AppE2E.pump(80)
-        let after = try XCTUnwrap(defaults.object(forKey: key) as? Double, "Cmd+= 必须把字号写入 UserDefaults \(key)")
-        if let before {
-            XCTAssertGreaterThan(after, before)
-        } else {
-            XCTAssertGreaterThan(after, 0)
-        }
-        let prefs = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/muxterm/preferences.toml")
-        // 本测试不得为了绿去新建 preferences.toml；若用户机器上已有文件则忽略。
-        _ = prefs
+        let after = app.testTerminalFontSize()
+        XCTAssertEqual(after, before + 1, accuracy: 0.01)
+
+        let persisted = try String(contentsOf: config.configURL, encoding: .utf8)
+        XCTAssertEqual(MuxtermTerminalFont.settings(from: persisted).size, after, accuracy: 0.01)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: config.root.appendingPathComponent("muxterm/preferences.toml").path
+            ),
+            "新实现只写统一 config.toml，不得重建 legacy preferences.toml"
+        )
     }
 }

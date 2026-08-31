@@ -299,6 +299,9 @@ final class MuxtermThemeTests: XCTestCase {
         XCTAssertEqual(MuxtermTheme.from(name: nil), .light)
         XCTAssertEqual(MuxtermTheme.from(name: "Light"), .light)
         XCTAssertEqual(MuxtermTheme.from(name: "dark"), .dark)
+        XCTAssertEqual(MuxtermTheme.from(name: "black"), .dark)
+        XCTAssertEqual(MuxtermTheme.from(name: "black.toml"), .dark)
+        XCTAssertEqual(MuxtermTheme.from(name: "white"), .light)
         XCTAssertEqual(MuxtermTheme.from(name: "bogus"), .light)
     }
 

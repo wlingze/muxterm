@@ -1516,7 +1516,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return MuxTerminalGridMetrics.clientSize(
             bounds: bounds.size,
             family: terminalFontSettings.family,
-            size: currentTerminalFontSize(),
+            size: terminalFontSettings.size,
             backingScale: scale
         )
     }

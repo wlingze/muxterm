@@ -4,6 +4,41 @@ import XCTest
 @testable import MuxtermAppLib
 import MuxtermChrome
 
+/// 为会写 Core 配置的 E2E 提供独立 XDG 根目录，避免测试改动真实用户配置。
+final class IsolatedMuxtermConfig {
+    let root: URL
+    let configURL: URL
+    private let previousConfigHome: String?
+    private var restored = false
+
+    init(label: String, toml: String) throws {
+        previousConfigHome = getenv("XDG_CONFIG_HOME").map { String(cString: $0) }
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "muxterm-config-\(label)-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)"
+        )
+        let directory = root.appendingPathComponent("muxterm")
+        configURL = directory.appendingPathComponent("config.toml")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try toml.write(to: configURL, atomically: true, encoding: .utf8)
+        setenv("XDG_CONFIG_HOME", root.path, 1)
+    }
+
+    func restore() {
+        guard !restored else { return }
+        restored = true
+        if let previousConfigHome {
+            setenv("XDG_CONFIG_HOME", previousConfigHome, 1)
+        } else {
+            unsetenv("XDG_CONFIG_HOME")
+        }
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    deinit {
+        restore()
+    }
+}
+
 /// in-process AppKit e2e 夹具（对标 `tests/support/tmux_test_support.rs`）。
 ///
 /// tmux **只** `-L muxterm-test-*`。Drop 时同一 `-L` 的 `kill-server`。

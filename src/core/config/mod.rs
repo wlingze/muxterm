@@ -528,7 +528,10 @@ pub fn parse_config_toml(raw: &str) -> Result<Config> {
 mod shortcut;
 mod theme;
 
+// 这些类型是 config 兼容 facade 的公开接口；不同前端只会消费其中一部分。
+#[allow(unused_imports)]
 pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
+#[allow(unused_imports)]
 pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
 
 fn dirs_config() -> Option<PathBuf> {

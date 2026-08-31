@@ -150,10 +150,10 @@ public enum MuxtermTheme: String, CaseIterable, Sendable {
         MuxtermTerminalColors.palette(forThemeName: rawValue)
     }
 
-    /// 从 config.toml `[theme] name` 或 UserDefaults 值解析；缺省/未知回退浅色。
+    /// 从 Core config.toml `[theme] name` 解析；兼容新的 black/white 与旧的 dark/light 名称。
     public static func from(name: String?) -> MuxtermTheme {
         switch name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "dark", "dark.toml": return .dark
+        case "black", "black.toml", "dark", "dark.toml": return .dark
         default: return .light
         }
     }

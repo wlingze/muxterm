@@ -9,17 +9,15 @@ import MuxtermChrome
 final class ThemeToggleE2ETests: XCTestCase {
     func testToggleThemeChangesChromeAndTerminalPalette() throws {
         AppE2E.requireTmux()
-        let defaults = UserDefaults.standard
-        let key = "muxterm.theme"
-        let previous = defaults.string(forKey: key)
-        defaults.removeObject(forKey: key)
-        defer {
-            if let previous {
-                defaults.set(previous, forKey: key)
-            } else {
-                defaults.removeObject(forKey: key)
-            }
-        }
+        let config = try IsolatedMuxtermConfig(label: "theme", toml: """
+        config_version = 1
+
+        [theme]
+        name = "white"
+        light = "white"
+        dark = "black"
+        """)
+        defer { config.restore() }
 
         let fx = OnePaneCat(label: "theme")
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
@@ -48,7 +46,11 @@ final class ThemeToggleE2ETests: XCTestCase {
             beforeSaved,
             "Cmd-Shift-P 主题项必须翻转 light/dark"
         )
-        XCTAssertEqual(app.testSavedTheme(), app.currentTheme().rawValue)
+        let savedDark = MuxtermTerminalColors.themeName(
+            from: try String(contentsOf: config.configURL, encoding: .utf8)
+        )
+        XCTAssertEqual(MuxtermTheme.from(name: savedDark), app.currentTheme())
+        XCTAssertEqual(savedDark, "black")
         XCTAssertNotEqual(
             app.testChromeAppearanceIsDark(),
             beforeDark,
