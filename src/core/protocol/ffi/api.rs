@@ -46,6 +46,8 @@ use super::types::{
     TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
+type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<String>);
+
 /// FFI 句柄：WorkspacePool + runtime + 供 C 侧借用的缓冲。
 ///
 /// W7：`muxterm_new()` 建空池；`muxterm_workspace_open` 开工作区。
@@ -165,8 +167,8 @@ impl MuxtermHandle {
 
     /// 把一批事件里的 PaneOutput 信号应用到注意力引擎。
     fn apply_attention_for_events(&mut self, ws_id: &WorkspaceId, events: &[StateChange]) {
-        let mut pending: Vec<(u32, Vec<AttentionSignal>, String, u64)> = Vec::new();
-        let mut pending_process_names: Vec<(u32, Option<String>)> = Vec::new();
+        let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
+        let mut pending_process_names: Vec<(u32, Option<String>, bool)> = Vec::new();
         {
             let Some(ws) = self.pool_mut().get_mut(ws_id) else {
                 return;
@@ -174,12 +176,38 @@ impl MuxtermHandle {
             for ev in events {
                 if let StateChange::PaneOutput { pane, .. }
                 | StateChange::PaneSnapshot { pane, .. }
+                | StateChange::PaneFrame { pane, .. }
                 | StateChange::PaneIndexSnapshot { pane, .. }
-                | StateChange::PaneHistory { pane, .. } = ev
+                | StateChange::PaneHistory { pane, .. }
+                | StateChange::PaneAgentChanged { pane, .. } = ev
                 {
+                    if let StateChange::PaneAgentChanged { agent, .. } = ev {
+                        let process_name = agent.as_deref().and_then(|agent| {
+                            [
+                                agent.display_name.as_deref(),
+                                agent.title.as_deref(),
+                                agent.name.as_deref(),
+                                agent.kind.as_deref(),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .find(|value| !value.trim().is_empty())
+                            .map(str::to_string)
+                        });
+                        pending_process_names.push((pane.0, process_name, true));
+                    }
                     let signals = ws.take_attention_signals(*pane);
                     let (last_line, seq) = ws.pane_last_line_seq(*pane);
-                    pending.push((pane.0, signals, last_line, seq));
+                    let command = signals
+                        .iter()
+                        .any(|signal| matches!(signal, AttentionSignal::CommandStart))
+                        .then(|| {
+                            ws.pane_command_marks(*pane)
+                                .last()
+                                .map(|mark| mark.command.clone())
+                        })
+                        .flatten();
+                    pending.push((pane.0, signals, last_line, seq, command));
                 } else if let StateChange::StatusBarSubscription {
                     name,
                     value,
@@ -190,19 +218,30 @@ impl MuxtermHandle {
                     // poll 时同步消费，避免 Swift 尚未绘制完事件批次时 Done
                     // 通知先到而 Attention 行短暂显示 `?`。
                     if name.starts_with("muxterm.pane-cmd") {
-                        pending_process_names
-                            .push((pane.0, (!value.is_empty()).then(|| value.clone())));
+                        pending_process_names.push((
+                            pane.0,
+                            (!value.is_empty()).then(|| value.clone()),
+                            false,
+                        ));
                     }
                 }
             }
         }
         let ws_name = ws_id.replica_id();
-        for (pane, signals, last_line, seq) in pending {
+        for (pane, name, is_agent) in pending_process_names {
+            if is_agent {
+                self.attention.set_agent_process_name(&ws_name, pane, name);
+            } else {
+                self.attention.set_process_name(&ws_name, pane, name);
+            }
+        }
+        for (pane, signals, last_line, seq, command) in pending {
+            if let Some(command) = command {
+                self.attention
+                    .set_process_name(&ws_name, pane, Some(command));
+            }
             self.attention
                 .apply(&ws_name, pane, &signals, &last_line, seq);
-        }
-        for (pane, name) in pending_process_names {
-            self.attention.set_process_name(&ws_name, pane, name);
         }
     }
 }
@@ -2621,9 +2660,13 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
                         serde_json::json!({
                             "pane_id": p.pane_id,
                             "status": format!("{:?}", p.status).to_lowercase(),
+                            "acknowledged": p.acknowledged,
                             "last_line": p.last_line,
                             "seq": p.seq,
                             "process_name": p.process_name,
+                            "process_is_agent": p.process_is_agent,
+                            "agent_name": p.agent_name,
+                            "shell_name": p.shell_name,
                         })
                     }).collect::<Vec<_>>(),
                 })

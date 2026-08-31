@@ -30,7 +30,7 @@ use crate::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
-use crate::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
+use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
 const PANEL_ENTRY_HEIGHT: i32 = 36;
@@ -1108,15 +1108,6 @@ fn attention_panel_row(item: &AttentionPanelRow) -> GtkBox {
         .margin_top(4)
         .margin_bottom(4)
         .build();
-    let dot = Label::new(Some("●"));
-    dot.set_widget_name("muxterm-attention-status-dot");
-    dot.add_css_class("muxterm-sidebar-agent-dot");
-    dot.add_css_class(match item.indicator {
-        AgentIndicator::Running => "running",
-        AgentIndicator::NeedsAttention => "needs-attention",
-        AgentIndicator::None => "seen",
-    });
-
     let labels = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(1)
@@ -1145,7 +1136,17 @@ fn attention_panel_row(item: &AttentionPanelRow) -> GtkBox {
     detail.set_tooltip_text(Some(&item.detail));
     labels.append(&title);
     labels.append(&detail);
-    content.append(&dot);
+    if item.indicator != ActivityIndicator::None {
+        let dot = Label::new(Some("●"));
+        dot.set_widget_name("muxterm-attention-status-dot");
+        dot.add_css_class("muxterm-sidebar-agent-dot");
+        dot.add_css_class(match item.indicator {
+            ActivityIndicator::Running => "running",
+            ActivityIndicator::Done => "done",
+            ActivityIndicator::None => unreachable!("None does not create a status dot"),
+        });
+        content.append(&dot);
+    }
     content.append(&labels);
     content
 }

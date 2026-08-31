@@ -173,7 +173,7 @@ fn attention_bel_paints_badge_and_panel() {
         );
         let dot =
             find_by_name(&row, "muxterm-attention-status-dot").expect("Blocked attention 状态点");
-        assert!(dot.has_css_class("needs-attention"));
+        assert!(dot.has_css_class("done"));
         assert!(find_by_name(&app.test_window(), "muxterm-attention-peek").is_none());
 
         // 前台 pane 0 的 CommandDone（如 ls）→ 已看见，不进 attention 列表。

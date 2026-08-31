@@ -272,10 +272,10 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 | `linux_chrome_e2e` | popover 人类可读累计 **和** `/s` 速率；禁止 `1234B/s` 这种把累计当速率 |
 | `linux_search_e2e` | 超长命中行时 `muxterm-panel` 宽 ≤ 窗口 |
 | `linux_search_jump_e2e` | 命中在 tab 2：激活后当前 tab 是 2，VTE 含 token，面板关闭 |
-| `linux_panel_e2e` | agent 常驻 Attention；title/detail/状态点；宽度 ≤ 640 且切 tab 不抖；无预览控件；SSH 行 `muxterm-ssh-dot-ok/err` |
+| `linux_panel_e2e` | Attention 只含 running 与未读 done；黄色 running / 绿色 done；已读 agent 隐藏；宽度 ≤ 640 且切 tab 不抖；无预览控件；SSH 行 `muxterm-ssh-dot-ok/err` |
 | `linux_feature_e2e` | 真 BEL → blocked 通知；原有 search/Done/mock-TUI/tail 契约 |
 | `linux_attention_e2e` | Attention 行直接含后台摘要和黄色状态点，且无预览控件 |
-| `linux_titlebar_sidebar_e2e` | token-free fake `pi` 常驻 Agents/Attention；选择 + Enter 跳 pane；面板关闭并把焦点交回 terminal |
+| `linux_titlebar_sidebar_e2e` | token-free fake `pi` 常驻 Agents；非 agent 进入 Commands；三段可折叠/拖拽；Attention 选择 + Enter 跳 pane；面板关闭并把焦点交回 terminal |
 | `linux_connect_timeout_e2e` | `test_connect_target` 到 192.0.2.1 不得堵 GTK 线程；失败进 notification_log |
 
 禁止：用 replica 注入冒充 live BEL；只断言跳转回调却不检查 pane/关闭/焦点；为了绿把连接改回 `block_on` 主线程。
@@ -593,7 +593,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 | 35 | SSH popover 上下行 | ❌ 无计数 | ❌ 待 E4 | — |
 | 36 | Search tab 搜 PaneBuf | ✅ `search_all` | ✅ linux_feature_e2e / linux_search_jump_e2e | ✅ 真 attach token |
 | 37 | 前台 ls 不进 attention | ✅ Done+BecameVisible | ⚠️ feature e2e 后台 Done；前台路径靠 apply 后 on_became_visible | ✅ OSC 133 |
-| 38 | Agents 常驻 Attention + Enter 跳转 | ✅ agent/attention 合并去重 | ✅ linux_panel_e2e；linux_titlebar_sidebar_e2e | ✅ 隔离 tmux fake process（无模型调用） |
+| 38 | Agents/Commands 分类 + Attention 生命周期 + Enter 跳转 | ✅ running/done/read + agent identity | ✅ linux_panel_e2e；linux_titlebar_sidebar_e2e | ✅ 隔离 tmux fake process（无模型调用） |
 | 39 | attach 离屏历史 | ✅ `capture_pane_with_history` | ✅ linux_attach_history_e2e | ✅ 夹具 `-S -` vs `-p` |
 | 40 | 回底按钮 | — | ✅ muxterm-jump-latest + linux_jump_count_e2e | — |
 | 41 | 断线水印 | — | ✅ linux_disconnect_e2e | ✅ 隔离 kill-server |
@@ -631,7 +631,8 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
   只供搜索，不能为滚轮重播 ANSI
 - 点状态点弹出连接摘要；SSH 显示 connecting/connected 颜色，以及 down=/up= 流量
 - 前台自己跑完的命令（如 ls）不要出现在 attention；后台等待/完成才提醒
-- Attention 常驻显示全部 agent（title + path/branch + 状态点）；不创建预览终端，选择后 Enter 跳转
+- 侧栏 Agents 常驻全部 agent，Commands 收集其它命令/shell；黄色 running、绿色 done、已读 agent 无点
+- Attention 只显示全部 running 命令与未读 done 命令；已读后消失；不创建预览终端，选择后 Enter 跳转
 - 搜索能搜到 pane 文本并跳转
 - Codex/htop 全屏 TUI 头栏和底栏同时在，不要空白或挤成一团
 - Pane 全屏进入/恢复；attach / new / ssh 向导三种路径可用；退出干净

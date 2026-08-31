@@ -65,7 +65,7 @@ use crate::platform::linux::quickconnect_panel::{
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 use crate::platform::linux::workspace_sidebar::{
-    AgentSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
+    AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
 
 /// 主窗口。
@@ -636,7 +636,17 @@ impl AppWindow {
                 .borrow()
                 .sidebar
                 .connect_agent_activated(move |id, pane| {
-                    activate_sidebar_agent(&mut st.borrow_mut(), id, pane);
+                    activate_sidebar_activity(&mut st.borrow_mut(), id, pane);
+                });
+        }
+
+        {
+            let st = state.clone();
+            state
+                .borrow()
+                .sidebar
+                .connect_command_activated(move |id, pane| {
+                    activate_sidebar_activity(&mut st.borrow_mut(), id, pane);
                 });
         }
 
@@ -653,9 +663,12 @@ impl AppWindow {
         {
             let s = state.borrow();
             let workspaces = WorkspaceSidebarItem::from_pool(&s.pool);
-            let agents = AgentSidebarItem::from_pool(&s.pool, &s.attention.snapshot());
+            let attention = s.attention.snapshot();
+            let agents = AgentSidebarItem::from_pool(&s.pool, &attention);
+            let commands = CommandSidebarItem::from_pool(&s.pool, &attention);
             s.sidebar.set_workspaces(&workspaces);
             s.sidebar.set_agents(&agents);
+            s.sidebar.set_commands(&commands);
         }
 
         // status bar 中区 tab 按钮 → SwitchTab(id)
@@ -1493,6 +1506,7 @@ impl AppWindow {
         s.active_workspace_mut()
             .feed_pane_bytes(PaneId(pane_id), bytes, 80, 24);
         apply_attention_from_workspace(&mut s, &wid, &ws, pane_id);
+        refresh_sidebar_if_open(&mut s);
     }
 
     /// 测试用：本轮进入 blocked 的 workspace 通知记录。
@@ -1521,7 +1535,7 @@ impl AppWindow {
         let mut s = self._state.borrow_mut();
         let ws = active_workspace_id(&s);
         s.attention
-            .set_process_name(&ws, pane, Some(process_name.to_string()));
+            .set_agent_process_name(&ws, pane, Some(process_name.to_string()));
         s.attention.apply(
             &ws,
             pane,
@@ -2184,11 +2198,29 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
 /// PaneBuf 已在 `Workspace::refresh` 里喂好；这里只取信号，不再维护
 /// GUI 侧副本（W6：PaneBuf 收进 core Workspace）。
 fn apply_attention_from_workspace(s: &mut UiState, wid: &WorkspaceId, ws: &str, pane: u32) {
-    let Some(workspace) = s.pool.get_mut(wid) else {
-        return;
+    let (signals, last_line, seq, command) = {
+        let Some(workspace) = s.pool.get_mut(wid) else {
+            return;
+        };
+        let signals = workspace.take_attention_signals(PaneId(pane));
+        let (last_line, seq) = workspace.pane_last_line_seq(PaneId(pane));
+        let command = signals
+            .iter()
+            .any(|signal| matches!(signal, AttentionSignal::CommandStart))
+            .then(|| {
+                workspace
+                    .pane_command_marks(PaneId(pane))
+                    .last()
+                    .map(|mark| mark.command.clone())
+            })
+            .flatten();
+        (signals, last_line, seq, command)
     };
-    let signals = workspace.take_attention_signals(PaneId(pane));
-    let (last_line, seq) = workspace.pane_last_line_seq(PaneId(pane));
+    // OSC 133 的 B→C 区间提供真实命令文本；tmux 与 Herdr 都通过同一
+    // Workspace/PaneBuf 路径进入这里，不需要 GUI 按 Runtime 名字分支。
+    if let Some(command) = command {
+        s.attention.set_process_name(ws, pane, Some(command));
+    }
     s.attention.apply(ws, pane, &signals, &last_line, seq);
     // 前台 pane 的输出视为已看见：CommandDone 清成 Idle，前台 `ls` 不进 attention。
     if pane == s.active_pane && s.pool.active_id() == Some(wid) {
@@ -2748,16 +2780,17 @@ fn apply_attention_event_from_workspace(
     } else if let StateChange::PaneAgentChanged { pane, agent, .. } = event {
         let process_name = agent.as_deref().and_then(|agent| {
             [
+                agent.display_name.as_deref(),
+                agent.title.as_deref(),
                 agent.name.as_deref(),
                 agent.kind.as_deref(),
-                agent.display_name.as_deref(),
             ]
             .into_iter()
             .flatten()
             .find(|value| !value.trim().is_empty())
             .map(str::to_string)
         });
-        s.attention.set_process_name(ws, pane.0, process_name);
+        s.attention.set_agent_process_name(ws, pane.0, process_name);
         apply_attention_from_workspace(s, wid, ws, pane.0);
     } else if let Some(pane) = attention_event_pane(event) {
         apply_attention_from_workspace(s, wid, ws, pane);
@@ -4832,7 +4865,7 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     }
 }
 
-fn activate_sidebar_agent(s: &mut UiState, id: &WorkspaceId, pane: u32) {
+fn activate_sidebar_activity(s: &mut UiState, id: &WorkspaceId, pane: u32) {
     if s.pool.active_id() != Some(id) {
         s.pool.activate(id);
         after_activate(s);
@@ -4867,9 +4900,12 @@ fn refresh_sidebar_if_open(s: &mut UiState) {
         return;
     }
     let workspaces = WorkspaceSidebarItem::from_pool(&s.pool);
-    let agents = AgentSidebarItem::from_pool(&s.pool, &s.attention.snapshot());
+    let attention = s.attention.snapshot();
+    let agents = AgentSidebarItem::from_pool(&s.pool, &attention);
+    let commands = CommandSidebarItem::from_pool(&s.pool, &attention);
     s.sidebar.set_workspaces(&workspaces);
     s.sidebar.set_agents(&agents);
+    s.sidebar.set_commands(&commands);
 }
 
 fn after_activate(s: &mut UiState) {
@@ -5292,9 +5328,8 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         .muxterm-sidebar-row-name {{ color: {fg}; }}
         .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
         .muxterm-sidebar-agent-dot {{ font-size: 10px; }}
-        .muxterm-sidebar-agent-dot.running {{ color: #40a02b; }}
-        .muxterm-sidebar-agent-dot.needs-attention {{ color: #df8e1d; }}
-        .muxterm-sidebar-agent-dot.seen {{ color: transparent; }}
+        .muxterm-sidebar-agent-dot.running {{ color: #df8e1d; }}
+        .muxterm-sidebar-agent-dot.done {{ color: #40a02b; }}
         .muxterm-main-split > separator {{
             min-width: 1px;
             background: alpha({fg}, 0.18);

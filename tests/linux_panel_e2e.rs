@@ -27,7 +27,7 @@ use muxterm::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
 use muxterm::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
-use muxterm::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
+use muxterm::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
 fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
     PaneAttention {
@@ -38,9 +38,18 @@ fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttenti
         last_line: line.into(),
         seq: pane as u64,
         process_name: Some("cat".into()),
+        process_is_agent: false,
+        agent_name: None,
+        shell_name: Some("zsh".into()),
         mute_until: None,
         last_regex_eval: Instant::now(),
     }
+}
+
+fn read_attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
+    let mut attention = attention(ws, pane, status, line);
+    attention.acknowledged = true;
+    attention
 }
 
 fn agent(
@@ -49,7 +58,7 @@ fn agent(
     pane: u32,
     title: &str,
     detail: &str,
-    indicator: AgentIndicator,
+    indicator: ActivityIndicator,
 ) -> AgentSidebarItem {
     AgentSidebarItem {
         workspace_id: WorkspaceId::new("local", None, session, "tmux", path),
@@ -143,19 +152,26 @@ fn three_tab_panel_full_flow() {
                         ssh_target("dead"),
                     ],
                     agents: vec![
-                        agent("legion", "", 1, "pi", &long_detail, AgentIndicator::Running),
+                        agent(
+                            "legion",
+                            "",
+                            1,
+                            "pi",
+                            &long_detail,
+                            ActivityIndicator::Running,
+                        ),
                         agent(
                             "muxterm",
                             "",
                             2,
                             "codex",
                             "/work/muxterm · feature/panel",
-                            AgentIndicator::None,
+                            ActivityIndicator::None,
                         ),
                     ],
                     attention: vec![
                         attention("legion@local", 1, PaneStatus::Working, "running"),
-                        attention("muxterm@local", 2, PaneStatus::Done, "build ok"),
+                        read_attention("muxterm@local", 2, PaneStatus::Done, "build ok"),
                         attention("plain@local", 3, PaneStatus::Blocked, "ask me"),
                     ],
                     on_connect: Box::new(|_| {}),
@@ -181,7 +197,8 @@ fn three_tab_panel_full_flow() {
             let panel = find_by_name(&win, "muxterm-panel").expect("面板应存在");
             assert!(panel.is_visible());
 
-            // 2. 初始 tab = Attention：Working / seen agent 都常驻，并保持 title/detail。
+            // 2. 初始 tab = Attention：只显示 running 与未读 done；已读 agent
+            // 只常驻侧栏，不得继续占用快速面板。
             let list = find_by_name(&win, "muxterm-panel-list")
                 .expect("列表应存在")
                 .downcast::<gtk4::ListBox>()
@@ -193,9 +210,8 @@ fn three_tab_panel_full_flow() {
                 "Working agent 应按 title + path/branch detail 展示: {labels:?}"
             );
             assert!(
-                labels.iter().any(|text| text == "codex")
-                    && labels.iter().any(|text| text.contains("feature/panel")),
-                "已读 agent 也必须常驻 Attention: {labels:?}"
+                !labels.iter().any(|text| text == "codex"),
+                "已读 agent 必须从 Attention 消失: {labels:?}"
             );
             assert!(
                 labels.iter().any(|text| text.contains("ask me")),
@@ -207,16 +223,16 @@ fn three_tab_panel_full_flow() {
                 .expect("共享 Entry 应存在")
                 .downcast::<gtk4::Entry>()
                 .expect("Entry 类型");
-            entry.set_text("feature/panel");
+            entry.set_text("pi");
             pump_main_loop(40);
             let labels = widget_label_texts(&list);
             assert!(
-                labels.iter().any(|text| text == "codex"),
-                "detail 过滤后应保留 codex: {labels:?}"
+                labels.iter().any(|text| text == "pi"),
+                "title 过滤后应保留 pi: {labels:?}"
             );
             assert!(
-                !labels.iter().any(|text| text == "pi"),
-                "过滤后应去掉 pi: {labels:?}"
+                !labels.iter().any(|text| text.contains("ask me")),
+                "过滤后应去掉其它命令: {labels:?}"
             );
 
             // 4. 清空 query：状态点正确；不再创建小终端或动作条。
@@ -227,12 +243,12 @@ fn three_tab_panel_full_flow() {
                 find_by_name(&pi_row, "muxterm-attention-status-dot").expect("pi status dot");
             assert!(
                 pi_dot.has_css_class("running"),
-                "Working agent 应显示绿色状态 class"
+                "Working agent 应显示黄色 running 状态 class"
             );
-            let seen_row = list.row_at_index(2).expect("seen codex row");
-            let seen_dot =
-                find_by_name(&seen_row, "muxterm-attention-status-dot").expect("seen status dot");
-            assert!(seen_dot.has_css_class("seen"));
+            let done_row = list.row_at_index(2).expect("unread done row");
+            let done_dot = find_by_name(&done_row, "muxterm-attention-status-dot")
+                .expect("unread done status dot");
+            assert!(done_dot.has_css_class("done"));
             assert!(find_by_name(&win, "muxterm-attention-peek").is_none());
             assert!(find_by_name(&win, "muxterm-attention-jump").is_none());
             assert!(find_by_name(&win, "muxterm-attention-mute").is_none());

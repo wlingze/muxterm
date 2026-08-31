@@ -196,18 +196,30 @@ fn title_bar_actions_and_workspace_sidebar() {
             .expect("agent section toggle")
             .downcast::<ToggleButton>()
             .expect("agent section toggle type");
+        let command_section_toggle = find_by_name(&app.window, "muxterm-sidebar-commands-toggle")
+            .expect("command section toggle")
+            .downcast::<ToggleButton>()
+            .expect("command section toggle type");
         let sections = find_by_name(&app.window, "muxterm-sidebar-sections")
             .expect("vertical sidebar split")
             .downcast::<Paned>()
             .expect("sidebar sections must be a Paned");
+        let lower_sections = find_by_name(&app.window, "muxterm-sidebar-lower-sections")
+            .expect("agent/command split")
+            .downcast::<Paned>()
+            .expect("lower sidebar sections must be a Paned");
         let workspace_scroll =
             find_by_name(&app.window, "muxterm-sidebar-scroll").expect("workspace section body");
         let agent_scroll =
             find_by_name(&app.window, "muxterm-sidebar-agent-scroll").expect("agent section body");
+        let command_scroll = find_by_name(&app.window, "muxterm-sidebar-command-scroll")
+            .expect("command section body");
         assert!(workspace_section_toggle.is_active());
         assert!(agent_section_toggle.is_active());
+        assert!(command_section_toggle.is_active());
         assert!(workspace_scroll.is_visible());
         assert!(agent_scroll.is_visible());
+        assert!(command_scroll.is_visible());
 
         let workspace_list = find_by_name(&app.window, "muxterm-sidebar-list")
             .expect("workspace list")
@@ -218,24 +230,51 @@ fn title_bar_actions_and_workspace_sidebar() {
             sidebar_labels.iter().any(|label| label == "shell @ local"),
             "workspace subtitle must be runtime @ transport: {sidebar_labels:?}"
         );
+        let command_list = find_by_name(&app.window, "muxterm-sidebar-command-list")
+            .expect("command list")
+            .downcast::<gtk4::ListBox>()
+            .expect("command list type");
+        let shell_row = command_list.row_at_index(0).expect("startup shell row");
+        assert!(
+            widget_label_texts(&shell_row)
+                .iter()
+                .any(|label| matches!(label.as_str(), "bash" | "zsh" | "sh" | "fish" | "shell")),
+            "idle non-agent panes must be collected under Commands"
+        );
+        assert!(
+            find_by_name(&shell_row, "muxterm-sidebar-command-dot").is_none(),
+            "an idle/read shell must not create a status point"
+        );
 
         let divider = sections.position();
         sections.set_position(divider + 40);
         pump_main_loop(100);
         assert!(
             sections.position() > divider,
-            "two expanded sections must have an adjustable divider"
+            "expanded workspace and activity sections must have an adjustable divider"
+        );
+        let lower_divider = lower_sections.position();
+        lower_sections.set_position(lower_divider + 30);
+        pump_main_loop(100);
+        assert!(
+            lower_sections.position() > lower_divider,
+            "expanded Agents and Commands sections must have an adjustable divider"
         );
 
         agent_section_toggle.set_active(false);
         pump_main_loop(100);
         assert!(workspace_scroll.is_visible());
         assert!(!agent_scroll.is_visible());
+        assert!(command_scroll.is_visible());
 
         workspace_section_toggle.set_active(false);
         pump_main_loop(100);
         assert!(!workspace_scroll.is_visible());
         assert!(!agent_scroll.is_visible());
+        assert!(command_scroll.is_visible());
+        command_section_toggle.set_active(false);
+        pump_main_loop(100);
+        assert!(!command_scroll.is_visible());
         assert!(
             !sections.property::<bool>("vexpand"),
             "all collapsed section headers must stack at the top"
@@ -245,13 +284,30 @@ fn title_bar_actions_and_workspace_sidebar() {
         pump_main_loop(100);
         assert!(!workspace_scroll.is_visible());
         assert!(agent_scroll.is_visible());
+        assert!(!command_scroll.is_visible());
         workspace_section_toggle.set_active(true);
+        command_section_toggle.set_active(true);
         pump_main_loop(100);
 
         let agent_list = find_by_name(&app.window, "muxterm-sidebar-agent-list")
             .expect("agent list")
             .downcast::<gtk4::ListBox>()
             .expect("agent list type");
+        app.test_feed_replica(1, b"\x1b]133;B\x07cargo test\x1b]133;C\x07");
+        pump_main_loop(100);
+        let running_command = command_list
+            .row_at_index(0)
+            .expect("OSC 133 running command row");
+        assert!(
+            widget_label_texts(&running_command)
+                .iter()
+                .any(|label| label == "cargo test"),
+            "runtime-neutral OSC command text must reach Commands"
+        );
+        let command_dot = find_by_name(&running_command, "muxterm-sidebar-command-dot")
+            .expect("running command status point");
+        assert!(command_dot.has_css_class("running"));
+
         app.test_set_agent_attention(1, "codex", PaneStatus::Working);
         pump_main_loop(100);
         assert_eq!(
@@ -261,23 +317,29 @@ fn title_bar_actions_and_workspace_sidebar() {
         );
         let row = agent_list.row_at_index(0).expect("agent row");
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("agent status dot");
-        assert!(dot.has_css_class("running"), "working agent must be green");
+        assert!(
+            dot.has_css_class("running"),
+            "running agent must use the yellow running state"
+        );
+        assert!(
+            command_list.row_at_index(0).is_none(),
+            "a pane classified as an agent must not be duplicated under Commands"
+        );
 
         app.test_set_agent_attention(1, "codex", PaneStatus::Blocked);
         pump_main_loop(100);
         let row = agent_list.row_at_index(0).expect("blocked agent row");
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("blocked status dot");
         assert!(
-            dot.has_css_class("needs-attention"),
-            "waiting agent must be yellow"
+            dot.has_css_class("done"),
+            "waiting-for-review agent must use the green done state"
         );
         row.activate();
         pump_main_loop(100);
         let row = agent_list.row_at_index(0).expect("acknowledged agent row");
-        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("seen status dot");
         assert!(
-            dot.has_css_class("seen"),
-            "viewed agent must have no colored status dot"
+            find_by_name(&row, "muxterm-sidebar-agent-dot").is_none(),
+            "read agent must remain listed without creating a status point"
         );
 
         app.test_set_agent_attention(1, "codex", PaneStatus::Done);
@@ -285,16 +347,15 @@ fn title_bar_actions_and_workspace_sidebar() {
         let row = agent_list.row_at_index(0).expect("finished agent row");
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("finished status dot");
         assert!(
-            dot.has_css_class("needs-attention"),
-            "finished but unseen agent must be yellow"
+            dot.has_css_class("done"),
+            "finished but unseen agent must be green"
         );
         row.activate();
         pump_main_loop(100);
         let row = agent_list
             .row_at_index(0)
             .expect("viewed finished agent row");
-        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("viewed finished dot");
-        assert!(dot.has_css_class("seen"));
+        assert!(find_by_name(&row, "muxterm-sidebar-agent-dot").is_none());
 
         let content = find_by_name(&app.window, "muxterm-content")
             .expect("main split must exist")
@@ -493,7 +554,7 @@ fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("working status dot");
         assert!(
             dot.has_css_class("running"),
-            "running tmux agent must be green"
+            "running tmux agent must use the yellow running state"
         );
 
         // A Working tmux agent must remain in Attention even while it is not
@@ -555,10 +616,10 @@ fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
             wait_until_widget(8_000, || {
                 agent_list.row_at_index(0).is_some_and(|row| {
                     find_by_name(&row, "muxterm-sidebar-agent-dot")
-                        .is_some_and(|dot| dot.has_css_class("needs-attention"))
+                        .is_some_and(|dot| dot.has_css_class("done"))
                 })
             }),
-            "finished unseen tmux agent must become yellow"
+            "finished unseen tmux agent must become green"
         );
 
         app.shutdown();

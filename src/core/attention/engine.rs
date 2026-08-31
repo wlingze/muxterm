@@ -48,7 +48,14 @@ pub struct PaneAttention {
     pub acknowledged: bool,
     pub last_line: String,
     pub seq: u64,
+    /// 当前或最近一次命令的展示名。
     pub process_name: Option<String>,
+    /// `process_name` 对应的命令是否被识别为 agent。
+    pub process_is_agent: bool,
+    /// 该 pane 最近识别到的 agent；已读或 Runtime 释放 authority 后仍保留。
+    pub agent_name: Option<String>,
+    /// 最近看到的交互 shell，用于已读普通命令回退到稳定的 shell 行。
+    pub shell_name: Option<String>,
     pub mute_until: Option<Instant>,
     pub last_regex_eval: Instant,
 }
@@ -136,6 +143,9 @@ impl<C: Clock> AttentionEngine<C> {
                 last_line: String::new(),
                 seq: 0,
                 process_name: None,
+                process_is_agent: false,
+                agent_name: None,
+                shell_name: None,
                 mute_until: None,
                 // 初始化为久远过去，保证第一条输出就参与正则评估。
                 last_regex_eval: now.checked_sub(Duration::from_secs(3600)).unwrap_or(now),
@@ -291,31 +301,73 @@ impl<C: Clock> AttentionEngine<C> {
     /// 视为后台命令结束 → CommandDone（OSC 133 D 之外的兜底）。只对
     /// Working/Idle/Unknown 生效，不覆盖 Blocked（输入才熄）。
     pub fn set_process_name(&mut self, ws: &str, pane: u32, name: Option<String>) {
+        self.set_process_name_with_kind(ws, pane, name, false);
+    }
+
+    /// Runtime 结构化识别出的 agent。GUI 只调用这份通用产品接口，不按
+    /// Runtime 名字分支；agent identity 会一直保留到 pane 被关闭。
+    pub fn set_agent_process_name(&mut self, ws: &str, pane: u32, name: Option<String>) {
+        self.set_process_name_with_kind(ws, pane, name, true);
+    }
+
+    fn set_process_name_with_kind(
+        &mut self,
+        ws: &str,
+        pane: u32,
+        name: Option<String>,
+        authoritative_agent: bool,
+    ) {
         let now = self.clock.now();
         let key = (ws.to_string(), pane);
         let previous = self.foreground_processes.get(&key).cloned();
         let normalized = name.and_then(|value| Self::normalize_process_name(&value));
         let Some(next_process) = normalized.as_ref() else {
             self.foreground_processes.remove(&key);
-            self.entry_mut(ws, pane).process_name = None;
+            let preserve_current_agent = {
+                let entry = self.entry_mut(ws, pane);
+                authoritative_agent || entry.process_is_agent
+            };
+            if !preserve_current_agent {
+                let entry = self.entry_mut(ws, pane);
+                entry.process_name = None;
+                entry.process_is_agent = false;
+            }
             self.sync_notified(ws, pane, now);
             return;
         };
         self.foreground_processes
             .insert(key.clone(), next_process.clone());
+        let is_shell = Self::is_shell(next_process);
+        let detected_agent = known_agent_process_name(next_process);
+        let process_is_agent = authoritative_agent || detected_agent.is_some();
         {
             let entry = self.entry_mut(ws, pane);
             // shell 只是容器，不应覆盖刚完成的 codex/cursor/agent 名称。
             // 但首次订阅通常先到 shell（zsh/bash）；记录它作为竞态期间的
             // 可靠兜底，避免 Attention 行在后台 Done 先到时显示成 `?`。
             let is_initial_process = entry.process_name.is_none();
-            if normalized.as_deref().map(Self::is_shell) != Some(true) || is_initial_process {
+            if is_shell {
+                entry.shell_name = normalized.clone();
+            }
+            if !is_shell || is_initial_process {
                 entry.process_name = normalized.clone();
+                entry.process_is_agent = process_is_agent;
+            }
+            if process_is_agent {
+                entry.agent_name = Some(
+                    detected_agent
+                        .map(str::to_string)
+                        .unwrap_or_else(|| next_process.clone()),
+                );
             }
         }
-        let next_agent = known_agent_process_name(next_process);
-        let previous_agent = previous.as_deref().and_then(known_agent_process_name);
-        if next_agent.is_some() && next_agent != previous_agent {
+        let starts_command = !is_shell
+            && (previous.as_deref().is_none_or(Self::is_shell)
+                || matches!(
+                    self.panes.get(&key).map(|pane| pane.status),
+                    Some(PaneStatus::Unknown | PaneStatus::Idle | PaneStatus::Done)
+                ));
+        if starts_command {
             let (last_line, seq) = self
                 .panes
                 .get(&key)
@@ -1040,6 +1092,8 @@ mod tests {
         e.set_process_name("ws", 1, Some("pi".into()));
         let pane = &e.snapshot()[0].panes[0];
         assert_eq!(pane.process_name.as_deref(), Some("pi"));
+        assert!(pane.process_is_agent);
+        assert_eq!(pane.agent_name.as_deref(), Some("pi"));
         assert_eq!(pane.status, PaneStatus::Working);
 
         e.apply(
@@ -1085,6 +1139,58 @@ mod tests {
             PaneStatus::Working,
             "a new run must replace the previous Done state"
         );
+    }
+
+    #[test]
+    fn tmux_non_agent_process_tracks_running_and_done() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("zsh".into()));
+
+        e.set_process_name("ws", 1, Some("cargo".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.process_name.as_deref(), Some("cargo"));
+        assert_eq!(
+            pane.status,
+            PaneStatus::Working,
+            "every non-shell command must enter the running lifecycle"
+        );
+
+        e.set_process_name("ws", 1, Some("zsh".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.process_name.as_deref(), Some("cargo"));
+        assert_eq!(
+            pane.status,
+            PaneStatus::Done,
+            "returning to the shell must leave an unread completed command"
+        );
+    }
+
+    #[test]
+    fn released_authoritative_agent_keeps_its_identity() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_agent_process_name("ws", 1, Some("review-bot".into()));
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Working,
+                initial: false,
+            }],
+            "",
+            1,
+        );
+
+        e.set_agent_process_name("ws", 1, None);
+        e.apply("ws", 1, &[AttentionSignal::ClearAuthoritativeStatus], "", 2);
+
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(
+            pane.process_name.as_deref(),
+            Some("review-bot"),
+            "an acknowledged/released agent must remain available to the Agents projection"
+        );
+        assert!(pane.process_is_agent);
+        assert_eq!(pane.agent_name.as_deref(), Some("review-bot"));
     }
 
     #[test]

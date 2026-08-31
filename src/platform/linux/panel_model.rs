@@ -3,12 +3,12 @@
 //! 无 GTK 依赖：tab 切换、query 保留、Tab1 工作区过滤/状态标记、
 //! Tab2 注意力排序、Tab3 搜索占位。GTK 层只负责渲染。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
 use crate::platform::linux::quickconnect_panel::{filter_panel_items, PanelItem};
-use crate::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
+use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
 /// 面板 tab。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +76,7 @@ pub struct AttentionPanelRow {
     pub pane_id: u32,
     pub title: String,
     pub detail: String,
-    pub indicator: AgentIndicator,
+    pub indicator: ActivityIndicator,
 }
 
 /// Tab3 结果：工作区 PaneBuf 搜索命中行。
@@ -117,13 +117,17 @@ pub fn filter_workspace_rows(
         .collect()
 }
 
-/// Tab2 过滤：query 匹配工作区名/进程/last_line；只保留 Blocked/Done；
-/// blocked 先于 done；label `待处理 {n}` 由调用方按行数生成。
+/// Tab2 过滤：query 匹配工作区名/进程/last_line；保留所有 Working，
+/// 以及尚未确认的 Blocked/Done。顺序沿用调用方的稳定 pane 顺序。
 pub fn filter_attention_rows(panes: &[PaneAttention], query: &str) -> Vec<AttentionRow> {
     let q = query.trim().to_lowercase();
-    let mut rows: Vec<AttentionRow> = panes
+    panes
         .iter()
-        .filter(|p| matches!(p.status, PaneStatus::Blocked | PaneStatus::Done))
+        .filter(|pane| {
+            pane.status == PaneStatus::Working
+                || (matches!(pane.status, PaneStatus::Blocked | PaneStatus::Done)
+                    && !pane.acknowledged)
+        })
         .filter(|p| {
             q.is_empty()
                 || p.workspace_id.to_lowercase().contains(&q)
@@ -136,96 +140,60 @@ pub fn filter_attention_rows(panes: &[PaneAttention], query: &str) -> Vec<Attent
         })
         .cloned()
         .map(|attention| AttentionRow { attention })
-        .collect();
-    // blocked 先于 done；同状态按 seq 新者优先。
-    rows.sort_by(|a, b| {
-        let a_blocked = a.attention.status == PaneStatus::Blocked;
-        let b_blocked = b.attention.status == PaneStatus::Blocked;
-        b_blocked
-            .cmp(&a_blocked)
-            .then(b.attention.seq.cmp(&a.attention.seq))
-    });
-    rows
+        .collect()
 }
 
-/// 合并常驻 agent 与传统 attention 行。
-///
-/// agent 顺序直接沿用 `AgentSidebarItem::from_pool` 的 pool/tab/pane 顺序；
-/// 同一 pane 即使同时处于 Blocked/Done，也只展示一次 agent 行。
+/// 给 Attention 中仍可见的命令补上 agent 的 title/detail。
+/// 已读 agent 只留在侧栏，不再被无条件并入 Attention。
 pub fn filter_attention_panel_rows(
     agents: &[AgentSidebarItem],
     panes: &[PaneAttention],
     query: &str,
 ) -> Vec<AttentionPanelRow> {
-    let q = query.trim().to_lowercase();
-    let pane_by_key: HashMap<(String, u32), &PaneAttention> = panes
+    let agent_by_key: HashMap<(String, u32), &AgentSidebarItem> = agents
         .iter()
-        .map(|pane| ((pane.workspace_id.clone(), pane.pane_id), pane))
+        .map(|agent| ((agent.workspace_id.replica_id(), agent.pane_id), agent))
         .collect();
-    let mut agent_keys = HashSet::new();
-    let mut rows = Vec::new();
-
-    for agent in agents {
-        let workspace_id = agent.workspace_id.replica_id();
-        let key = (workspace_id.clone(), agent.pane_id);
-        agent_keys.insert(key.clone());
-        let linked = pane_by_key.get(&key).copied();
-        let matches = q.is_empty()
-            || workspace_id.to_lowercase().contains(&q)
-            || agent.title.to_lowercase().contains(&q)
-            || agent.detail.to_lowercase().contains(&q)
-            || linked.is_some_and(|pane| {
-                pane.process_name
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&q)
-                    || pane.last_line.to_lowercase().contains(&q)
-            });
-        if matches {
-            rows.push(AttentionPanelRow {
-                workspace_id,
-                pane_id: agent.pane_id,
-                title: agent.title.clone(),
-                detail: agent.detail.clone(),
-                indicator: agent.indicator,
-            });
-        }
-    }
-
-    rows.extend(
-        filter_attention_rows(panes, query)
-            .into_iter()
-            .filter(|row| {
-                !agent_keys.contains(&(row.attention.workspace_id.clone(), row.attention.pane_id))
-            })
-            .map(|row| {
-                let attention = row.attention;
+    let q = query.trim().to_lowercase();
+    filter_attention_rows(panes, "")
+        .into_iter()
+        .filter_map(|row| {
+            let attention = row.attention;
+            let key = (attention.workspace_id.clone(), attention.pane_id);
+            let (title, detail) = if let Some(agent) = agent_by_key.get(&key) {
+                (agent.title.clone(), agent.detail.clone())
+            } else {
                 let title = attention
                     .process_name
                     .as_deref()
                     .filter(|name| !name.trim().is_empty())
-                    .unwrap_or("Attention")
+                    .unwrap_or("Command")
                     .to_string();
                 let detail = if attention.last_line.trim().is_empty() {
                     attention.workspace_id.clone()
                 } else {
                     format!("{} · {}", attention.workspace_id, attention.last_line)
                 };
-                AttentionPanelRow {
-                    workspace_id: attention.workspace_id,
-                    pane_id: attention.pane_id,
-                    title,
-                    detail,
-                    indicator: if attention.acknowledged {
-                        AgentIndicator::None
-                    } else {
-                        AgentIndicator::NeedsAttention
-                    },
-                }
-            }),
-    );
-    rows
+                (title, detail)
+            };
+            let matches = q.is_empty()
+                || attention.workspace_id.to_lowercase().contains(&q)
+                || title.to_lowercase().contains(&q)
+                || detail.to_lowercase().contains(&q)
+                || attention.last_line.to_lowercase().contains(&q);
+            matches.then_some(AttentionPanelRow {
+                workspace_id: attention.workspace_id,
+                pane_id: attention.pane_id,
+                title,
+                detail,
+                indicator: match attention.status {
+                    PaneStatus::Working => ActivityIndicator::Running,
+                    PaneStatus::Blocked | PaneStatus::Done => ActivityIndicator::Done,
+                    _ => ActivityIndicator::None,
+                },
+            })
+        })
+        .collect()
 }
 
 /// Tab3：按 query 过滤命中行；空结果返回占位 flag。
@@ -249,7 +217,7 @@ mod tests {
     use std::time::Instant;
 
     use crate::core::workspace::id::WorkspaceId;
-    use crate::platform::linux::workspace_sidebar::{AgentIndicator, AgentSidebarItem};
+    use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
     fn attention(ws: &str, pane: u32, status: PaneStatus, seq: u64) -> PaneAttention {
         PaneAttention {
@@ -260,6 +228,9 @@ mod tests {
             last_line: format!("line-{pane}"),
             seq,
             process_name: Some("cat".into()),
+            process_is_agent: false,
+            agent_name: None,
+            shell_name: Some("zsh".into()),
             mute_until: None,
             last_regex_eval: Instant::now(),
         }
@@ -287,19 +258,23 @@ mod tests {
     }
 
     #[test]
-    fn attention_sort_blocked_first() {
+    fn attention_shows_running_and_unread_done_but_hides_read_items() {
+        let mut read_done = attention("ws-read", 5, PaneStatus::Done, 5);
+        read_done.acknowledged = true;
         let rows = filter_attention_rows(
             &[
                 attention("ws-a", 1, PaneStatus::Done, 1),
                 attention("ws-b", 2, PaneStatus::Blocked, 2),
                 attention("ws-c", 3, PaneStatus::Working, 3),
                 attention("ws-d", 4, PaneStatus::Idle, 4),
+                read_done,
             ],
             "",
         );
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].attention.workspace_id, "ws-b");
-        assert_eq!(rows[1].attention.workspace_id, "ws-a");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].attention.workspace_id, "ws-a");
+        assert_eq!(rows[1].attention.workspace_id, "ws-b");
+        assert_eq!(rows[2].attention.workspace_id, "ws-c");
     }
 
     #[test]
@@ -316,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn attention_panel_keeps_all_agents_in_stable_order_without_duplicates() {
+    fn attention_panel_only_keeps_running_and_unread_commands() {
         let first_id = WorkspaceId::new("local", None, "alpha", "tmux", "/work/alpha");
         let second_id = WorkspaceId::new("local", None, "beta", "tmux", "/work/beta");
         let agents = vec![
@@ -325,33 +300,35 @@ mod tests {
                 pane_id: 7,
                 title: "pi".into(),
                 detail: "/work/alpha · main".into(),
-                indicator: AgentIndicator::Running,
+                indicator: ActivityIndicator::Running,
             },
             AgentSidebarItem {
                 workspace_id: second_id.clone(),
                 pane_id: 9,
                 title: "codex".into(),
                 detail: "/work/beta · feature/panel".into(),
-                indicator: AgentIndicator::None,
+                indicator: ActivityIndicator::None,
             },
         ];
+        let mut seen_agent = attention(&second_id.replica_id(), 9, PaneStatus::Done, 2);
+        seen_agent.acknowledged = true;
         let panes = vec![
             attention(&first_id.replica_id(), 7, PaneStatus::Working, 1),
-            attention(&second_id.replica_id(), 9, PaneStatus::Done, 2),
+            seen_agent,
             attention("plain@local", 11, PaneStatus::Blocked, 3),
         ];
 
         let rows = filter_attention_panel_rows(&agents, &panes, "");
-        assert_eq!(rows.len(), 3, "agent panes must not be rendered twice");
+        assert_eq!(rows.len(), 2, "read agents must leave Attention");
         assert_eq!(rows[0].title, "pi");
-        assert_eq!(rows[0].indicator, AgentIndicator::Running);
-        assert_eq!(rows[1].title, "codex");
-        assert_eq!(rows[1].indicator, AgentIndicator::None);
-        assert_eq!(rows[2].workspace_id, "plain@local");
+        assert_eq!(rows[0].indicator, ActivityIndicator::Running);
+        assert_eq!(rows[1].workspace_id, "plain@local");
 
         let filtered = filter_attention_panel_rows(&agents, &panes, "feature/panel");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].title, "codex");
+        assert!(
+            filtered.is_empty(),
+            "read agents must stay hidden when queried"
+        );
     }
 
     #[test]
