@@ -2,9 +2,9 @@ import AppKit
 import XCTest
 @testable import MuxtermAppLib
 
-/// W16c：blocked 看见不熄、输入才熄；TOML 正则能点亮后台 pane。
+/// blocked 看见后标记已读并离开 Attention；TOML 正则能再次点亮后台 pane。
 final class AttentionSemanticsE2ETests: XCTestCase {
-    func testBlockedSurvivesViewClearsOnInputRegexLights() throws {
+    func testBlockedLeavesAttentionAfterViewAndRegexLightsAgain() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("muxterm-attn-\(ProcessInfo.processInfo.processIdentifier)")
         try FileManager.default.createDirectory(at: tmp.appendingPathComponent("muxterm"), withIntermediateDirectories: true)
@@ -44,10 +44,10 @@ final class AttentionSemanticsE2ETests: XCTestCase {
         AppE2E.pump(80)
         app.testPollOnce()
         app.testBecameVisible(pane1)
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             app.testBlockedCount(),
-            1,
-            "切到 blocked pane 只是看见，红点必须还在。count=\(app.testBlockedCount())"
+            0,
+            "切到 blocked pane 后已读，必须离开 Attention。count=\(app.testBlockedCount())"
         )
 
         app.testSendInput(Data("x".utf8))
@@ -56,7 +56,7 @@ final class AttentionSemanticsE2ETests: XCTestCase {
                 app.testPollOnce()
                 return app.testBlockedCount() == 0
             },
-            "对该 pane 输入之后 blocked 必须熄灭。count=\(app.testBlockedCount())"
+            "已读 pane 输入后仍不得重新进入 Attention。count=\(app.testBlockedCount())"
         )
 
         app.testSwitchPane(pane0)

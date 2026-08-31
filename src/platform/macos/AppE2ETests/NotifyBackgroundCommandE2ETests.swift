@@ -39,16 +39,22 @@ final class NotifyBackgroundCommandE2ETests: XCTestCase {
         AppE2E.pump(80)
         if app.testAttentionRowCount() > 0 {
             let title = app.attentionPanel.testAttentionRowTitle(0)
+            let selected = app.unifiedPanel.testSelectedAttentionRow()
+            let diagnostic = selected.map {
+                let process = $0.pane.processName ?? "nil"
+                return "pane=\($0.pane.paneId) status=\($0.pane.status.rawValue) "
+                    + "process=\(process) names=\(app.testAttentionProcessNames())"
+            } ?? "selected=nil names=\(app.testAttentionProcessNames())"
             XCTAssertFalse(
                 title.contains("AA_BG") || title.contains("AA_FG"),
-                "注意力行不得用 last_line 片段当标题。title=\(title)"
+                "注意力行不得用 last_line 片段当标题。title=\(title) \(diagnostic)"
             )
             XCTAssertTrue(
                 title.lowercased().contains("sleep")
                     || title.lowercased().contains("zsh")
                     || title.lowercased().contains("bash")
                     || title.lowercased().contains("cat"),
-                "标题必须含进程名。title=\(title)"
+                "标题必须含进程名。title=\(title) \(diagnostic)"
             )
             XCTAssertTrue(
                 title.lowercased().contains("local")

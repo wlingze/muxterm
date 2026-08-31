@@ -5369,8 +5369,8 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
             font-weight: 600;
         }}
         .muxterm-sidebar-agent-dot {{ font-size: 10px; }}
-        .muxterm-sidebar-agent-dot.running {{ color: #df8e1d; }}
-        .muxterm-sidebar-agent-dot.done {{ color: #40a02b; }}
+        .muxterm-sidebar-agent-dot.running {{ color: #40a02b; }}
+        .muxterm-sidebar-agent-dot.done {{ color: #df8e1d; }}
         .muxterm-main-split > separator {{
             min-width: 1px;
             background: alpha({fg}, 0.18);

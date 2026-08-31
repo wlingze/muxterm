@@ -64,8 +64,9 @@ pub struct PaneAttention {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceAttention {
     pub workspace_id: String,
-    /// 该工作区 blocked pane 数（列表用）。
+    /// 该工作区尚未查看的 blocked pane 数（列表/badge 用）。
     pub blocked: usize,
+    /// 该工作区尚未查看的 done pane 数。
     pub done: usize,
     pub working: usize,
     pub panes: Vec<PaneAttention>,
@@ -484,11 +485,11 @@ impl<C: Clock> AttentionEngine<C> {
             .map(|(workspace_id, panes)| {
                 let blocked = panes
                     .iter()
-                    .filter(|p| p.status == PaneStatus::Blocked)
+                    .filter(|p| p.status == PaneStatus::Blocked && !p.acknowledged)
                     .count();
                 let done = panes
                     .iter()
-                    .filter(|p| p.status == PaneStatus::Done)
+                    .filter(|p| p.status == PaneStatus::Done && !p.acknowledged)
                     .count();
                 let working = panes
                     .iter()
@@ -509,12 +510,15 @@ impl<C: Clock> AttentionEngine<C> {
         out
     }
 
-    /// 红点 N：mute 未到期的 blocked **工作区**数。
+    /// 红点 N：mute 未到期且尚未查看的 blocked **工作区**数。
     pub fn blocked_workspace_count(&self) -> usize {
         let now = self.clock.now();
         let mut ws: HashSet<&str> = HashSet::new();
         for p in self.panes.values() {
-            if p.status == PaneStatus::Blocked && !p.mute_until.map(|m| m > now).unwrap_or(false) {
+            if p.status == PaneStatus::Blocked
+                && !p.acknowledged
+                && !p.mute_until.map(|m| m > now).unwrap_or(false)
+            {
                 ws.insert(p.workspace_id.as_str());
             }
         }
@@ -527,6 +531,7 @@ impl<C: Clock> AttentionEngine<C> {
         let mut out = Vec::new();
         for p in self.panes.values() {
             if p.status == PaneStatus::Blocked
+                && !p.acknowledged
                 && !p.mute_until.map(|m| m > now).unwrap_or(false)
                 && !self.notified_blocked.contains(&p.workspace_id)
             {
@@ -547,6 +552,7 @@ impl<C: Clock> AttentionEngine<C> {
         let mut out = Vec::new();
         for p in self.panes.values() {
             if p.status == PaneStatus::Done
+                && !p.acknowledged
                 && !p.mute_until.map(|m| m > now).unwrap_or(false)
                 && !self.notified_done.contains(&p.workspace_id)
             {
@@ -566,7 +572,11 @@ impl<C: Clock> AttentionEngine<C> {
             let key = (pane.workspace_id.clone(), pane.pane_id);
             let muted = pane.mute_until.map(|m| m > now).unwrap_or(false);
             match pane.status {
-                PaneStatus::Blocked if !muted && !self.notified_blocked_panes.contains(&key) => {
+                PaneStatus::Blocked
+                    if !pane.acknowledged
+                        && !muted
+                        && !self.notified_blocked_panes.contains(&key) =>
+                {
                     self.notified_blocked_panes.insert(key);
                     out.push(AttentionNotification {
                         workspace_id: pane.workspace_id.clone(),
@@ -577,7 +587,9 @@ impl<C: Clock> AttentionEngine<C> {
                         seq: pane.seq,
                     });
                 }
-                PaneStatus::Done if !muted && !self.notified_done_panes.contains(&key) => {
+                PaneStatus::Done
+                    if !pane.acknowledged && !muted && !self.notified_done_panes.contains(&key) =>
+                {
                     self.notified_done_panes.insert(key);
                     out.push(AttentionNotification {
                         workspace_id: pane.workspace_id.clone(),
@@ -648,7 +660,11 @@ impl<C: Clock> AttentionEngine<C> {
         let entry = self.entry_mut(ws, pane);
         entry.last_regex_eval = now;
         if hit {
-            entry.status = transition(entry.status, PaneEvent::RegexMatch);
+            let next = transition(entry.status, PaneEvent::RegexMatch);
+            if next != entry.status {
+                entry.status = next;
+                entry.acknowledged = !matches!(next, PaneStatus::Blocked | PaneStatus::Done);
+            }
         }
     }
 
@@ -1191,6 +1207,11 @@ mod tests {
             PaneStatus::Done,
             "returning to the shell must leave an unread completed command"
         );
+
+        e.on_became_visible("ws", 1);
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Idle);
+        assert!(pane.acknowledged);
     }
 
     #[test]
@@ -1260,7 +1281,6 @@ mod tests {
         assert!(pane.process_is_agent);
         assert_eq!(pane.agent_name.as_deref(), Some("review-bot"));
     }
-
     #[test]
     fn process_name_keeps_shell_fallback_without_overwriting_command() {
         let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
@@ -1341,6 +1361,9 @@ mod tests {
         let pane = &e.snapshot()[0].panes[0];
         assert_eq!(pane.status, PaneStatus::Blocked);
         assert!(pane.acknowledged);
+        assert_eq!(e.blocked_workspace_count(), 0);
+        assert_eq!(e.snapshot()[0].blocked, 0);
+        assert!(e.take_notifications().is_empty());
 
         // 同一权威状态的元数据刷新不能重新点黄；真正的新状态会重置未读。
         e.apply(

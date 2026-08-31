@@ -884,8 +884,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 ])
                 return l
             }()
-            let status = row.pane.status == .blocked ? "● " : "✓ "
-            label.stringValue = status + row.title
+            label.stringValue = "● " + row.title
+            label.textColor = row.pane.status == .working ? .systemGreen : .systemOrange
             label.font = NSFont.systemFont(ofSize: 12)
             label.maximumNumberOfLines = 1
             cell.setAccessibilityIdentifier("muxterm.attention.hit-\(row)")

@@ -169,6 +169,7 @@ impl MuxtermHandle {
     fn apply_attention_for_events(&mut self, ws_id: &WorkspaceId, events: &[StateChange]) {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_process_names: Vec<(u32, Option<String>, bool)> = Vec::new();
+        let mut removed_panes = Vec::new();
         {
             let Some(ws) = self.pool_mut().get_mut(ws_id) else {
                 return;
@@ -208,6 +209,8 @@ impl MuxtermHandle {
                         })
                         .flatten();
                     pending.push((pane.0, signals, last_line, seq, command));
+                } else if let StateChange::PaneClosed { pane } = ev {
+                    removed_panes.push(pane.0);
                 } else if let StateChange::StatusBarSubscription {
                     name,
                     value,
@@ -242,6 +245,9 @@ impl MuxtermHandle {
             }
             self.attention
                 .apply(&ws_name, pane, &signals, &last_line, seq);
+        }
+        for pane in removed_panes {
+            self.attention.remove_pane(&ws_name, pane);
         }
     }
 }
@@ -3256,6 +3262,60 @@ mod tests {
                 !String::from_utf8_lossy(payload).contains("pane.agent_status_changed"),
                 "FFI payload 禁止泄漏 Herdr wire event 名"
             );
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_agent_event_updates_attention_without_surface_output() {
+        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        assert!(!h.is_null());
+        unsafe {
+            let mut runtime = MockRuntime::with_single_pane();
+            runtime.events.push(StateChange::PaneAgentChanged {
+                pane: PaneId(1),
+                agent: Some(Box::new(PaneAgentInfo {
+                    terminal_id: None,
+                    name: Some("codex".into()),
+                    kind: Some("codex".into()),
+                    title: Some("Waiting for input".into()),
+                    terminal_title: None,
+                    terminal_title_stripped: None,
+                    display_name: Some("Codex".into()),
+                    status: PaneAgentStatus::Done,
+                    screen_detection_skipped: false,
+                    state_labels: BTreeMap::new(),
+                    tokens: BTreeMap::new(),
+                    session: None,
+                    focused: false,
+                    launch_pending: false,
+                    interactive_ready: true,
+                    state_change_seq: 2,
+                    cwd: Some("/repo".into()),
+                    foreground_cwd: None,
+                    revision: 2,
+                })),
+                initial: false,
+            });
+            let workspace = Workspace::new(
+                WorkspaceId::new("local", None, "agents", "herdr", "w1"),
+                "agents".into(),
+                Box::new(runtime),
+            );
+            (&mut *h).pool_mut().insert_connected(workspace);
+
+            let mut events = [CStateChange::default(); 16];
+            assert!(muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32) > 0);
+
+            let raw = muxterm_attention_snapshot(h);
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            muxterm_free_string(raw);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let pane = &value["workspaces"][0]["panes"][0];
+            assert_eq!(pane["status"], "done", "{text}");
+            assert_eq!(pane["process_name"], "codex", "{text}");
+            assert_eq!(pane["acknowledged"], false, "{text}");
+
             muxterm_free(h);
         }
     }

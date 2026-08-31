@@ -8,9 +8,9 @@ public enum PaneAttentionStatus: String, Sendable, Equatable {
     case blocked
     case idle
 
-    /// 是否应出现在注意力列表（Blocked / Done）。
+    /// 是否属于 Attention 可展示状态。已读过滤由 `PaneAttention` 决定。
     public var isListed: Bool {
-        self == .blocked || self == .done
+        self == .working || self == .blocked || self == .done
     }
 }
 
@@ -18,6 +18,7 @@ public enum PaneAttentionStatus: String, Sendable, Equatable {
 public struct PaneAttention: Equatable, Sendable {
     public let paneId: UInt32
     public let status: PaneAttentionStatus
+    public let acknowledged: Bool
     public let lastLine: String
     public let seq: UInt64
     public let processName: String?
@@ -25,12 +26,14 @@ public struct PaneAttention: Equatable, Sendable {
     public init(
         paneId: UInt32,
         status: PaneAttentionStatus,
+        acknowledged: Bool = false,
         lastLine: String,
         seq: UInt64,
         processName: String?
     ) {
         self.paneId = paneId
         self.status = status
+        self.acknowledged = acknowledged
         self.lastLine = lastLine
         self.seq = seq
         self.processName = processName
@@ -95,6 +98,7 @@ public struct AttentionSnapshot: Equatable, Sendable {
                         return PaneAttention(
                             paneId: paneId,
                             status: status,
+                            acknowledged: (p["acknowledged"] as? Bool) ?? false,
                             lastLine: (p["last_line"] as? String) ?? "",
                             seq: (p["seq"] as? UInt64) ?? (p["seq"] as? NSNumber)?.uint64Value ?? 0,
                             processName: p["process_name"] as? String
@@ -149,6 +153,7 @@ public enum AttentionRowLabel {
         let known = [
             "codex", "cursor", "claude", "gemini", "aider", "opencode",
             "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
+            "pi", "hermes",
         ]
         let tokens = value.lowercased().split { character in
             !(character.isLetter || character.isNumber || character == "-" || character == "_")
@@ -175,7 +180,7 @@ public enum AttentionRowLabel {
     }
 }
 
-/// 注意力列表纯逻辑：只保留 Blocked/Done，blocked 先于 done，同状态按 seq 新者优先。
+/// 注意力列表纯逻辑：保留 running 与未读 done/blocked；已读完成项不再出现。
 public enum AttentionList {
     public static func rows(from snapshot: AttentionSnapshot, query: String) -> [AttentionRow] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -184,7 +189,9 @@ public enum AttentionList {
             let transport = ws.workspaceId.contains("@ssh")
                 ? "ssh"
                 : (ws.workspaceId.contains("@") ? "local" : "tmux")
-            for pane in ws.panes where pane.status.isListed {
+            for pane in ws.panes where pane.status.isListed
+                && (pane.status == .working || !pane.acknowledged)
+            {
                 let processText = AttentionRowLabel.normalizedProcess(pane.processName)
                     ?? pane.processName
                     ?? ""
@@ -205,10 +212,18 @@ public enum AttentionList {
             }
         }
         rows.sort { a, b in
-            let aBlocked = a.pane.status == .blocked
-            let bBlocked = b.pane.status == .blocked
-            if aBlocked != bBlocked {
-                return aBlocked
+            func rank(_ status: PaneAttentionStatus) -> Int {
+                switch status {
+                case .blocked: 0
+                case .done: 1
+                case .working: 2
+                case .unknown, .idle: 3
+                }
+            }
+            let aRank = rank(a.pane.status)
+            let bRank = rank(b.pane.status)
+            if aRank != bRank {
+                return aRank < bRank
             }
             return a.pane.seq > b.pane.seq
         }

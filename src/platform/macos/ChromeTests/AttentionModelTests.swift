@@ -14,7 +14,7 @@ final class AttentionSnapshotDecodeTests: XCTestCase {
               "done": 0,
               "working": 0,
               "panes": [
-                {"pane_id": 1, "status": "blocked", "last_line": "ask?", "seq": 3, "process_name": "cat"}
+                {"pane_id": 1, "status": "blocked", "acknowledged": false, "last_line": "ask?", "seq": 3, "process_name": "cat"}
               ]
             },
             {
@@ -23,7 +23,7 @@ final class AttentionSnapshotDecodeTests: XCTestCase {
               "done": 1,
               "working": 0,
               "panes": [
-                {"pane_id": 2, "status": "done", "last_line": "complete", "seq": 7, "process_name": null}
+                {"pane_id": 2, "status": "done", "acknowledged": true, "last_line": "complete", "seq": 7, "process_name": null}
               ]
             }
           ]
@@ -36,8 +36,10 @@ final class AttentionSnapshotDecodeTests: XCTestCase {
         XCTAssertEqual(snapshot.workspaces.count, 2)
         XCTAssertEqual(snapshot.workspaces[0].workspaceId, "legion@local")
         XCTAssertEqual(snapshot.workspaces[0].panes[0].status, .blocked)
+        XCTAssertFalse(snapshot.workspaces[0].panes[0].acknowledged)
         XCTAssertEqual(snapshot.workspaces[0].panes[0].lastLine, "ask?")
         XCTAssertEqual(snapshot.workspaces[1].panes[0].status, .done)
+        XCTAssertTrue(snapshot.workspaces[1].panes[0].acknowledged)
     }
 
     func testDecodeFailureReturnsNil() {
@@ -64,7 +66,7 @@ final class AttentionListTests: XCTestCase {
         )
     }
 
-    func testOnlyBlockedAndDoneAreListed() {
+    func testRunningAndUnreadDoneAreListed() {
         let snap = snapshot(panes: [
             (1, .blocked, 1, "ask?"),
             (2, .done, 2, "complete"),
@@ -72,9 +74,36 @@ final class AttentionListTests: XCTestCase {
             (4, .idle, 4, "idle"),
         ])
         let rows = AttentionList.rows(from: snap, query: "")
-        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.count, 3)
         XCTAssertEqual(rows[0].pane.paneId, 1)
         XCTAssertEqual(rows[1].pane.paneId, 2)
+        XCTAssertEqual(rows[2].pane.paneId, 3)
+    }
+
+    func testReadDoneDoesNotRemainInAttention() {
+        let snap = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: "ws@local",
+                    blocked: 0,
+                    done: 0,
+                    working: 0,
+                    panes: [
+                        PaneAttention(
+                            paneId: 7,
+                            status: .done,
+                            acknowledged: true,
+                            lastLine: "complete",
+                            seq: 9,
+                            processName: "codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        XCTAssertTrue(AttentionList.rows(from: snap, query: "").isEmpty)
     }
 
     func testBlockedFirstThenNewerSeq() {
@@ -184,5 +213,7 @@ final class AttentionRowLabelTests: XCTestCase {
             AttentionRowLabel.display(process: "npx @openai/codex", transport: "local", path: "~"),
             "codex  local  ~"
         )
+        XCTAssertEqual(AttentionRowLabel.normalizedProcess("pi"), "pi")
+        XCTAssertEqual(AttentionRowLabel.normalizedProcess("hermes-agent"), "hermes")
     }
 }
