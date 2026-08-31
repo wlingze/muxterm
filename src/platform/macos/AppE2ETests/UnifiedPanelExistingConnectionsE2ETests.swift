@@ -5,6 +5,44 @@ import MuxtermChrome
 /// Workspaces 根列表必须提供与 Linux 对齐的 Existing Connections 入口，
 /// 且选择已有 session 只能 attach，不能进入 Project 的 create fallback。
 final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
+    func testCatalogRuntimeListExposesHerdrForProjectChoices() throws {
+        let runtimes = try CoreBridge.runtimeCatalog()
+        XCTAssertEqual(runtimes.compactMap { TargetRuntime(rawValue: $0.id) }, [.tmux, .herdr, .shell])
+
+        AppE2E.ensureApp()
+        let window = TargetConfigWindow(
+            owner: nil,
+            store: QuickConnectStore(),
+            sshHosts: [],
+            availableRuntimes: runtimes.compactMap { TargetRuntime(rawValue: $0.id) }
+        )
+        defer { window.close() }
+        XCTAssertEqual(window.testAvailableRuntimes(), [.tmux, .herdr, .shell])
+    }
+
+    func testCatalogHerdrCandidateMapsTypedIdentityWithoutParsingID() {
+        let candidate = CoreWorkspaceCandidate(
+            id: "opaque-display-id",
+            name: "muxterm",
+            runtime: "herdr",
+            transport: "ssh",
+            target: "buildbox",
+            session: "agents",
+            socket: "/remote/.config/herdr/sessions/agents/herdr.sock",
+            workspaceID: "w7"
+        )
+
+        XCTAssertEqual(candidate.targetConfig, TargetConfig(
+            name: "muxterm",
+            runtime: .herdr,
+            transport: .ssh(name: "buildbox"),
+            path: "",
+            session: "agents",
+            socket: "/remote/.config/herdr/sessions/agents/herdr.sock",
+            workspaceID: "w7"
+        ))
+    }
+
     func testExistingRowUsesAttachCallbackInsteadOfProjectConnect() {
         AppE2E.ensureApp()
         let choice = ExistingConnectionChoice(
@@ -25,6 +63,37 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
 
         XCTAssertEqual(attached, choice)
         XCTAssertEqual(projectConnectCount, 0, "Existing 行不得进入 Project create-if-missing 流程")
+        panel.dismiss()
+    }
+
+    func testHerdrExistingRowKeepsIdentityAndUsesAttachOnlyCallback() {
+        AppE2E.ensureApp()
+        let config = TargetConfig(
+            name: "muxterm",
+            runtime: .herdr,
+            transport: .local,
+            path: "",
+            session: "agents",
+            socket: "/tmp/muxterm-test-agents/herdr.sock",
+            workspaceID: "w7"
+        )
+        let choice = ExistingConnectionChoice(config: config)
+        let panel = makePanel()
+        var attached: ExistingConnectionChoice?
+        var projectConnectCount = 0
+        panel.onConnect = { _ in projectConnectCount += 1 }
+        panel.onLoadExistingConnections = { completion in completion(.success([choice])) }
+        panel.onAttachExistingConnection = { attached = $0 }
+        panel.present()
+
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingConnections))
+        panel.testSetQuery("w7")
+        XCTAssertTrue(panel.testWorkspaceTitles().contains("muxterm"))
+        panel.testSetQuery("")
+        panel.testActivateWorkspaceItem(matching: "muxterm")
+
+        XCTAssertEqual(attached?.config, config)
+        XCTAssertEqual(projectConnectCount, 0)
         panel.dismiss()
     }
 

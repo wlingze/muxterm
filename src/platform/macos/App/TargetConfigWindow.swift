@@ -14,6 +14,8 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
 
     private let store: QuickConnectStore
     private let sshHosts: [SSHHostInfo]
+    /// Core Catalog 登记顺序；UI 不自行维护 runtime allowlist。
+    private let availableRuntimes: [TargetRuntime]
 
     private let runtimeStack = NSStackView()
     private let transportStack = NSStackView()
@@ -38,11 +40,17 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         editing config: TargetConfig? = nil,
         owner: NSWindow?,
         store: QuickConnectStore,
-        sshHosts: [SSHHostInfo]
+        sshHosts: [SSHHostInfo],
+        availableRuntimes: [TargetRuntime] = TargetRuntime.allCases
     ) {
         self.editing = config
         self.store = store
         self.sshHosts = sshHosts
+        var runtimes = availableRuntimes
+        if let runtime = config?.runtime, !runtimes.contains(runtime) {
+            runtimes.append(runtime)
+        }
+        self.availableRuntimes = runtimes.isEmpty ? TargetRuntime.allCases : runtimes
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
             styleMask: [.titled, .closable],
@@ -90,9 +98,9 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         let runtimeLabel = sectionLabel("Runtime")
         runtimeStack.orientation = .horizontal
         runtimeStack.spacing = 10
-        for r in TargetRuntime.allCases {
-            let card = optionCard(title: r.rawValue, subtitle: r == .tmux ? "attach/create tmux" : "plain shell")
-            card.tag = r == .tmux ? 0 : 1
+        for (index, runtime) in availableRuntimes.enumerated() {
+            let card = optionCard(title: runtime.rawValue, subtitle: runtimeSubtitle(runtime))
+            card.tag = index
             card.target = self
             card.action = #selector(runtimeSelected(_:))
             runtimeStack.addArrangedSubview(card)
@@ -245,17 +253,30 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
 
     private func updateRuntimeCards() {
         for view in runtimeStack.arrangedSubviews {
-            guard let button = view as? NSButton else { continue }
-            let isTMUX = button.tag == 0
-            let selected = selection.isSelected(runtime: isTMUX ? .tmux : .shell)
+            guard let button = view as? NSButton,
+                  availableRuntimes.indices.contains(button.tag)
+            else { continue }
+            let runtime = availableRuntimes[button.tag]
+            let selected = selection.isSelected(runtime: runtime)
             button.state = selected ? .on : .off
             applyOptionCardStyle(
                 button,
                 selected: selected,
                 kind: "runtime",
-                option: isTMUX ? "tmux" : "shell",
-                subtitle: isTMUX ? "attach/create tmux" : "plain shell"
+                option: runtime.rawValue,
+                subtitle: runtimeSubtitle(runtime)
             )
+        }
+    }
+
+    private func runtimeSubtitle(_ runtime: TargetRuntime) -> String {
+        switch runtime {
+        case .tmux:
+            return "attach/create tmux"
+        case .herdr:
+            return "attach/create Herdr workspace"
+        case .shell:
+            return "plain shell"
         }
     }
 
@@ -473,7 +494,8 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     // MARK: - Actions
 
     @objc private func runtimeSelected(_ sender: NSButton) {
-        selection.selectRuntime(sender.tag == 0 ? .tmux : .shell)
+        guard availableRuntimes.indices.contains(sender.tag) else { return }
+        selection.selectRuntime(availableRuntimes[sender.tag])
         updateRuntimeCards()
     }
 
@@ -560,14 +582,24 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         if name.isEmpty {
             name = QuickConnect.defaultName(for: path)
         }
+        let preservesIdentity = editing?.runtime == selection.runtime
+            && editing?.transport == transportValue
         let config = TargetConfig(
             name: name,
             runtime: selection.runtime,
             transport: transportValue,
-            path: path
+            path: path,
+            session: preservesIdentity ? editing?.session : nil,
+            socket: preservesIdentity ? editing?.socket : nil,
+            workspaceID: preservesIdentity ? editing?.workspaceID : nil
         )
         isSaving = true
         onSave?(config)
         close()
+    }
+
+    /// AppKit 回归测试：Project runtime 卡必须精确跟随 Catalog 列表。
+    func testAvailableRuntimes() -> [TargetRuntime] {
+        availableRuntimes
     }
 }

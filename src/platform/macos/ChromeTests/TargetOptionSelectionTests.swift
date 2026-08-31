@@ -6,6 +6,7 @@ final class TargetOptionSelectionTests: XCTestCase {
         let selection = TargetOptionSelection()
         XCTAssertTrue(selection.isSelected(runtime: .tmux))
         XCTAssertFalse(selection.isSelected(runtime: .shell))
+        XCTAssertFalse(selection.isSelected(runtime: .herdr))
         XCTAssertTrue(selection.isSelected(transport: .local))
         XCTAssertFalse(selection.isSelected(transport: .ssh(name: "ryzen")))
     }
@@ -18,6 +19,15 @@ final class TargetOptionSelectionTests: XCTestCase {
         selection.selectRuntime(.tmux)
         XCTAssertTrue(selection.isSelected(runtime: .tmux))
         XCTAssertFalse(selection.isSelected(runtime: .shell))
+
+        selection.selectRuntime(.herdr)
+        XCTAssertTrue(selection.isSelected(runtime: .herdr))
+        XCTAssertFalse(selection.isSelected(runtime: .tmux))
+        XCTAssertFalse(selection.isSelected(runtime: .shell))
+    }
+
+    func testRuntimeCatalogModelIncludesHerdr() {
+        XCTAssertEqual(TargetRuntime.allCases, [.shell, .tmux, .herdr])
     }
 
     func testSelectingTransportKeepsExactlyOneSelected() {

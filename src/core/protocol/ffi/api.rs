@@ -489,21 +489,7 @@ pub unsafe extern "C" fn muxterm_discover_sessions_json(
         match (*h).catalog.discover_sessions(&transport, &target) {
             Ok(rows) => json_string(serde_json::json!({
                 "ok": true,
-                "workspaces": rows.iter().map(|r| {
-                    let target = if r.transport_id == "local" {
-                        "local".to_string()
-                    } else {
-                        r.target.clone()
-                    };
-                    serde_json::json!({
-                        "id": format!("{}/{}/{}/{}", r.transport_id, target, r.runtime_id, r.name),
-                        "name": r.name,
-                        "runtime": r.runtime_id,
-                        "transport": r.transport_id,
-                        "target": target,
-                        "in_pool": false,
-                    })
-                }).collect::<Vec<_>>(),
+                "workspaces": rows.iter().map(session_candidate_json).collect::<Vec<_>>(),
             })),
             Err(e) => json_error(e),
         }
@@ -611,6 +597,9 @@ fn session_candidate_json(r: &crate::core::catalog::driver::SessionCandidate) ->
         "transport": r.transport_id,
         "target": target,
         "in_pool": false,
+        "session": r.session,
+        "socket": r.socket,
+        "workspace_id": r.workspace_id,
     })
 }
 /// 抓取 status bar 快照（tmux 兼容：`show -g` / `show -w -g` + `display-message`）。
@@ -816,6 +805,21 @@ fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     }
 }
 
+/// 创建不预开任何 Workspace 的 Catalog handle。
+///
+/// 新的 Project / Recent / Existing 产品路径先拿这一整个 Catalog，再调用
+/// `muxterm_workspace_open_target_json`。旧 `muxterm_new*` 继续作为兼容薄封装。
+#[no_mangle]
+pub extern "C" fn muxterm_catalog_new() -> *mut MuxtermHandle {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(rt) = new_ffi_runtime() else {
+            return ptr::null_mut();
+        };
+        boxed_handle(crate::core::catalog::Catalog::with_builtins(), rt)
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
 /// 创建 handle（deprecated 转发：建空池并打开一个工作区）。
 ///
 /// W7 起新代码用 [`muxterm_workspace_open`]；本函数保留给 macOS 暂用。
@@ -907,13 +911,8 @@ fn legacy_new_handle(
     let alias = cstr_opt(ssh_alias);
     let start_dir = cstr_opt(start_directory);
 
-    let rt = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(_) => return ptr::null_mut(),
+    let Some(rt) = new_ffi_runtime() else {
+        return ptr::null_mut();
     };
     let mut catalog = crate::core::catalog::Catalog::with_builtins();
 
@@ -930,6 +929,21 @@ fn legacy_new_handle(
         return ptr::null_mut();
     }
 
+    boxed_handle(catalog, rt)
+}
+
+fn new_ffi_runtime() -> Option<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .ok()
+}
+
+fn boxed_handle(
+    catalog: crate::core::catalog::Catalog,
+    rt: tokio::runtime::Runtime,
+) -> *mut MuxtermHandle {
     let attention_config = crate::core::config::Config::load()
         .map(|c| c.attention)
         .unwrap_or_default();
@@ -1123,6 +1137,36 @@ fn target_config_from_json(
     Some(config)
 }
 
+fn resolved_target_json(resolved: &crate::core::catalog::ResolvedTarget) -> serde_json::Value {
+    let canonical = &resolved.canonical;
+    serde_json::json!({
+        "canonical": {
+            "name": canonical.name,
+            "runtime": canonical.runtime.as_str(),
+            "transport": match &canonical.transport {
+                TargetTransport::Local => "local",
+                TargetTransport::Ssh { .. } => "ssh",
+            },
+            "target": match &canonical.transport {
+                TargetTransport::Ssh { name } => name,
+                TargetTransport::Local => "",
+            },
+            "path": canonical.path,
+            "session": canonical.session,
+            "socket": canonical.socket,
+            "workspace_id": canonical.workspace_id,
+        },
+        "spec": {
+            "transport": resolved.spec.transport,
+            "alias": resolved.spec.alias,
+            "session": resolved.spec.session,
+            "runtime": resolved.spec.runtime,
+            "path": resolved.spec.path,
+            "socket": resolved.spec.socket,
+        },
+    })
+}
+
 /// 通过 JSON target 打开工作区（additive 入口，走 Catalog resolver）。
 ///
 /// `target_json`：`{"name":"…","runtime":"herdr","transport":"local"|"ssh",
@@ -1162,6 +1206,7 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
                 "ok": true,
                 "id": workspace.id().as_str(),
                 "name": workspace.name(),
+                "resolved_target": workspace.resolved_target().map(resolved_target_json),
             })),
             Err(err) => json_error(err),
         }
@@ -1185,35 +1230,7 @@ pub unsafe extern "C" fn muxterm_workspace_list(h: *mut MuxtermHandle) -> *mut c
             .list()
             .into_iter()
             .map(|w| {
-                let resolved = w.resolved_target().map(|r| {
-                    let canonical = &r.canonical;
-                    serde_json::json!({
-                        "canonical": {
-                            "name": canonical.name,
-                            "runtime": canonical.runtime.as_str(),
-                            "transport": match &canonical.transport {
-                                TargetTransport::Local => "local",
-                                TargetTransport::Ssh { .. } => "ssh",
-                            },
-                            "target": match &canonical.transport {
-                                TargetTransport::Ssh { name } => name,
-                                TargetTransport::Local => "",
-                            },
-                            "path": canonical.path,
-                            "session": canonical.session,
-                            "socket": canonical.socket,
-                            "workspace_id": canonical.workspace_id,
-                        },
-                        "spec": {
-                            "transport": r.spec.transport,
-                            "alias": r.spec.alias,
-                            "session": r.spec.session,
-                            "runtime": r.spec.runtime,
-                            "path": r.spec.path,
-                            "socket": r.spec.socket,
-                        },
-                    })
-                });
+                let resolved = w.resolved_target().map(resolved_target_json);
                 serde_json::json!({
                     "id": w.id().as_str(),
                     "name": w.name(),
@@ -3676,6 +3693,62 @@ mod tests {
         }
     }
 
+    /// macOS 新产品路径需要一个不预开 shell/tmux 的 Catalog handle，随后再走
+    /// descriptor-aware `workspace_open_target_json`。
+    #[test]
+    fn ffi_catalog_new_starts_empty_and_exposes_builtin_runtimes() {
+        let h = muxterm_catalog_new();
+        assert!(!h.is_null());
+        unsafe {
+            let list_raw = muxterm_workspace_list(h);
+            let list_text = CStr::from_ptr(list_raw).to_string_lossy().into_owned();
+            muxterm_free_string(list_raw);
+            let list: serde_json::Value = serde_json::from_str(&list_text).unwrap();
+            assert_eq!(list["workspaces"], serde_json::json!([]));
+
+            let runtime_raw = muxterm_runtime_list_json(h);
+            let runtime_text = CStr::from_ptr(runtime_raw).to_string_lossy().into_owned();
+            muxterm_free_string(runtime_raw);
+            let runtimes: serde_json::Value = serde_json::from_str(&runtime_text).unwrap();
+            let ids: Vec<&str> = runtimes["runtimes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|runtime| runtime["id"].as_str())
+                .collect();
+            assert_eq!(ids, ["tmux", "herdr", "shell"]);
+            muxterm_free(h);
+        }
+    }
+
+    /// Existing Connection 不能只拿显示名；Herdr attach 必须跨 FFI 保留
+    /// named session、target-side socket 与 workspace_id。
+    #[test]
+    fn session_candidate_json_preserves_runtime_attach_identity() {
+        let candidate = crate::core::catalog::driver::SessionCandidate {
+            runtime_id: "herdr".into(),
+            transport_id: "ssh".into(),
+            target: "buildbox".into(),
+            namespace: Some("agents".into()),
+            name: "muxterm".into(),
+            extra: "w7".into(),
+            session: Some("agents".into()),
+            socket: Some("/remote/.config/herdr/sessions/agents/herdr.sock".into()),
+            workspace_id: Some("w7".into()),
+        };
+
+        let json = session_candidate_json(&candidate);
+        assert_eq!(json["runtime"], "herdr");
+        assert_eq!(json["transport"], "ssh");
+        assert_eq!(json["target"], "buildbox");
+        assert_eq!(json["session"], "agents");
+        assert_eq!(
+            json["socket"],
+            "/remote/.config/herdr/sessions/agents/herdr.sock"
+        );
+        assert_eq!(json["workspace_id"], "w7");
+    }
+
     /// C5：transport_list JSON 含 local/ssh。
     #[test]
     fn ffi_transport_list_contains_local_ssh() {
@@ -3773,9 +3846,17 @@ mod tests {
             .or_else(|| rest.find("\n/// 通过 core 发现"))
             .unwrap_or(rest.len().min(2500));
         let body = &rest[..end];
+        let helper_start = src
+            .find("fn session_candidate_json")
+            .expect("统一 SessionCandidate JSON helper 应存在");
+        let helper_rest = &src[helper_start..];
+        let helper_end = helper_rest
+            .find("\n/// 抓取 status bar")
+            .unwrap_or(helper_rest.len().min(2500));
+        let helper = &helper_rest[..helper_end];
         assert!(
-            body.contains("\"target\""),
-            "JSON 必须带 target=connect name，否则面板副标题只能是插件 id ssh: {body}"
+            body.contains("\"target\"") || helper.contains("\"target\""),
+            "JSON（含统一 helper）必须带 target=connect name，否则面板副标题只能是插件 id ssh: {body}\n{helper}"
         );
         assert!(
             body.contains("all"),
@@ -3940,11 +4021,9 @@ mod tests {
     /// 旧消费者忽略未知字段。
     #[test]
     fn ffi_workspace_open_target_json_roundtrip_and_list_resolved_target() {
-        let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+        let h = muxterm_catalog_new();
         assert!(!h.is_null());
         unsafe {
-            assert_eq!(muxterm_connect(h), 0);
-
             // 打开一个 shell target（AttachOnly 对 shell 直接成功）。
             let out = muxterm_workspace_open_target_json(
                 h,
@@ -3958,6 +4037,10 @@ mod tests {
             assert_eq!(value["ok"], true, "{text}");
             let id = value["id"].as_str().expect("open 返回 id").to_string();
             assert!(id.contains("shell"), "id 应含 runtime: {id}");
+            assert_eq!(
+                value["resolved_target"]["canonical"]["path"], "/tmp/qc-proj",
+                "open 响应必须直接交回 canonical descriptor: {text}"
+            );
 
             // list 行必须带 resolved_target（canonical 完整身份字段）。
             let list = muxterm_workspace_list(h);

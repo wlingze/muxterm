@@ -377,4 +377,62 @@ final class ConnectionPoolTests: XCTestCase {
         XCTAssertEqual(shell.targetConfig.runtime, .shell)
         XCTAssertEqual(shell.targetConfig.transport, .local)
     }
+
+    func testHerdrConnectionKeyKeepsWorkspaceIdentitySeparateFromProjectPath() {
+        let key = ConnectionKey(
+            transport: "local",
+            alias: nil,
+            session: "agents",
+            runtime: "herdr",
+            path: "/Users/me/Developer/muxterm",
+            socket: "/Users/me/.config/herdr/sessions/agents/herdr.sock",
+            workspaceID: "w7"
+        )
+
+        XCTAssertEqual(key.targetConfig.runtime, .herdr)
+        XCTAssertEqual(key.targetConfig.path, "/Users/me/Developer/muxterm")
+        XCTAssertEqual(key.targetConfig.session, "agents")
+        XCTAssertEqual(key.targetConfig.socket, "/Users/me/.config/herdr/sessions/agents/herdr.sock")
+        XCTAssertEqual(key.targetConfig.workspaceID, "w7")
+    }
+
+    func testResolvedRuntimeIdentityDoesNotDependOnProjectPath() {
+        let project = ConnectionKey(
+            transport: "local",
+            alias: nil,
+            session: "agents",
+            runtime: "herdr",
+            path: "/Users/me/Developer/muxterm",
+            socket: "/Users/me/.config/herdr/sessions/agents/herdr.sock",
+            workspaceID: "w7"
+        )
+        let existing = ConnectionKey(
+            transport: "local",
+            alias: nil,
+            session: "agents",
+            runtime: "herdr",
+            path: "",
+            socket: "/Users/me/.config/herdr/sessions/agents/herdr.sock",
+            workspaceID: "w7"
+        )
+
+        XCTAssertEqual(project, existing)
+        XCTAssertEqual(Set([project, existing]).count, 1)
+
+        let provisionalA = ConnectionKey(
+            transport: "local",
+            alias: nil,
+            session: "",
+            runtime: "herdr",
+            path: "/Users/me/Developer/a"
+        )
+        let provisionalB = ConnectionKey(
+            transport: "local",
+            alias: nil,
+            session: "",
+            runtime: "herdr",
+            path: "/Users/me/Developer/b"
+        )
+        XCTAssertNotEqual(provisionalA, provisionalB)
+    }
 }

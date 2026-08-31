@@ -59,11 +59,17 @@ public final class QuickConnectStore {
         recents = Array(newRecents.prefix(Self.maxRecent))
     }
 
-    /// 新增或更新一个 project（按唯一 ID name+transport 匹配）。返回是否新增。
+    /// 新增或更新一个 project。返回是否新增。
+    ///
+    /// Herdr Project 第一次保存时还没有 workspace identity；连接成功后 Core 会返回
+    /// canonical identity，此时用它替换同一个 Project 的占位记录，避免列表出现两条。
     @discardableResult
     public func upsertProject(_ config: TargetConfig) -> Bool {
         let id = QuickConnect.uniqueID(for: config)
-        if let idx = projects.firstIndex(where: { QuickConnect.uniqueID(for: $0) == id }) {
+        if let idx = projects.firstIndex(where: {
+            QuickConnect.uniqueID(for: $0) == id
+                || Self.isMatchingHerdrProvisional($0, resolved: config)
+        }) {
             projects[idx] = config
             persistProjects?(projects)
             return false
@@ -71,6 +77,29 @@ public final class QuickConnectStore {
         projects.append(config)
         persistProjects?(projects)
         return true
+    }
+
+    private static func isMatchingHerdrProvisional(
+        _ candidate: TargetConfig,
+        resolved config: TargetConfig
+    ) -> Bool {
+        guard hasResolvedHerdrIdentity(config),
+              candidate.runtime == .herdr,
+              !hasResolvedHerdrIdentity(candidate)
+        else {
+            return false
+        }
+
+        return candidate.name == config.name
+            && candidate.transport == config.transport
+            && candidate.path == config.path
+    }
+
+    private static func hasResolvedHerdrIdentity(_ config: TargetConfig) -> Bool {
+        config.runtime == .herdr
+            && !(config.session?.isEmpty ?? true)
+            && !(config.socket?.isEmpty ?? true)
+            && !(config.workspaceID?.isEmpty ?? true)
     }
 
     /// 删除 project（按唯一 ID name+transport）。
@@ -206,6 +235,15 @@ public final class QuickConnectStore {
             out += "transport_name = \(Self.tomlString(name))\n"
         }
         out += "path = \(Self.tomlString(config.path))\n"
+        if let session = config.session {
+            out += "session = \(Self.tomlString(session))\n"
+        }
+        if let socket = config.socket {
+            out += "socket = \(Self.tomlString(socket))\n"
+        }
+        if let workspaceID = config.workspaceID {
+            out += "workspace_id = \(Self.tomlString(workspaceID))\n"
+        }
         return out
     }
 
@@ -275,6 +313,14 @@ public final class QuickConnectStore {
         default:
             return nil
         }
-        return TargetConfig(name: name, runtime: runtime, transport: transport, path: path)
+        return TargetConfig(
+            name: name,
+            runtime: runtime,
+            transport: transport,
+            path: path,
+            session: fields["session"],
+            socket: fields["socket"],
+            workspaceID: fields["workspace_id"]
+        )
     }
 }

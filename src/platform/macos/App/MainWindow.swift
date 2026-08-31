@@ -20,6 +20,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let query: String
     }
 
+    private struct CatalogConnection {
+        let bridge: CoreBridge
+        let target: TargetConfig
+    }
+
     var bridge: CoreBridge
     var terminalManager: TerminalManager
     let content: ContentView
@@ -1178,52 +1183,46 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Unified Quick Panel 的 Existing Connections 只发现当前 transport
-    /// 上的 tmux sessions。发现时固化 `-L` socket，选择时不重新推断身份。
+    /// Unified Quick Panel 的 Existing Connections 由 Catalog 扁平发现
+    /// tmux + Herdr；当前显式 tmux socket 作为附加 identity 合并进去。
     private func loadExistingConnections(
         completion: @escaping (Result<[ExistingConnectionChoice], Error>) -> Void
     ) {
-        // Herdr/daemon 的 Existing catalog 尚未暴露到 macOS discovery；不能把
-        // Herdr socket 错当成 tmux `-L`。先保持空列表，tmux/local/SSH 走已
-        // 有的 Core discovery 契约。
-        if bridge.backendType == "herdr" || bridge.backendType == "daemon" {
-            completion(.success([]))
-            return
-        }
-
-        let socket = bridge.socket
+        let target: ConnectionTarget
         if let alias = bridge.sshAlias {
-            let host = SSHHostInfo(alias: alias, hostname: "", user: nil, port: nil)
-            let target = ConnectionTarget.ssh(host)
-            discovery.attachedRemoteSocket = socket
-            discovery.listRemoteSessions(host: host) { result in
-                completion(result.map { sessions in
-                    sessions.map {
-                        ExistingConnectionChoice(target: target, session: $0, socket: socket)
-                    }
-                })
-            }
+            target = .ssh(SSHHostInfo(alias: alias, hostname: "", user: nil, port: nil))
         } else {
-            let target = ConnectionTarget.local
-            discovery.attachedLocalSocket = socket
-            discovery.listLocalSessions { result in
-                completion(result.map { sessions in
-                    sessions.map {
-                        ExistingConnectionChoice(target: target, session: $0, socket: socket)
-                    }
-                })
-            }
+            target = .local
         }
+        discovery.listExistingConnections(
+            currentTarget: target,
+            currentSocket: terminalManager.usesClientResize ? bridge.socket : nil,
+            completion: completion
+        )
     }
 
     /// Existing 行是严格 attach-only：不创建目录、不进入 ProjectConnectFlow。
     private func attachExistingConnection(_ choice: ExistingConnectionChoice) {
         unifiedPanel.dismiss()
-        attach(
-            target: choice.target,
-            session: choice.session.name,
-            resolvedSocket: choice.socket
-        )
+        switch choice.config.runtime {
+        case .tmux:
+            attach(
+                target: choice.target,
+                session: choice.session.name,
+                resolvedSocket: choice.socket
+            )
+        case .herdr:
+            content.setConnectProgress(stage: .attach)
+            connectCatalogTarget(config: choice.config, intent: .attachOnly) { [weak self] result in
+                self?.finishCatalogConnect(result)
+            }
+        case .shell:
+            // Shell 没有 Discover；防御未知/未来候选时仍走严格 attach-only。
+            content.setConnectProgress(stage: .attach)
+            connectCatalogTarget(config: choice.config, intent: .attachOnly) { [weak self] result in
+                self?.finishCatalogConnect(result)
+            }
+        }
     }
 
     /// 按 QuickConnect 目标连接：tmux 有 name → attach，无 name → 创建；
@@ -1235,6 +1234,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         switch config.runtime {
         case .tmux:
             connectProject(config: config)
+        case .herdr:
+            connectHerdrProject(config: config)
         case .shell:
             switch config.transport {
             case .local:
@@ -1435,10 +1436,111 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Herdr Project 先按普通重连（AttachOnly）解析；只有保存的 Project
+    /// 明确无匹配时才尝试 CreateIfMissing，且 Core 仍要求用户已选择 named
+    /// session/socket，绝不由 macOS 偷选 default server。
+    private func connectHerdrProject(config: TargetConfig) {
+        let isSavedProject = quickConnectStore.projects.contains {
+            QuickConnect.uniqueID(for: $0) == QuickConnect.uniqueID(for: config)
+        }
+        content.setConnectProgress(stage: .attach)
+        connectCatalogTarget(config: config, intent: .attachOnly) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let connection):
+                if isSavedProject {
+                    self.quickConnectStore.upsertProject(connection.target)
+                }
+                self.finishCatalogConnect(.success(connection))
+            case .failure where isSavedProject:
+                self.connectCatalogTarget(config: config, intent: .createIfMissing) { [weak self] createResult in
+                    guard let self else { return }
+                    if case .success(let connection) = createResult {
+                        self.quickConnectStore.upsertProject(connection.target)
+                    }
+                    self.finishCatalogConnect(createResult)
+                }
+            case .failure(let error):
+                self.finishCatalogConnect(.failure(error))
+            }
+        }
+    }
+
+    /// descriptor-aware Runtime 建连；Catalog resolver 返回的 canonical target
+    /// 用于 warm key 与 Recent，不能从 WorkspaceId 五段字符串反推。
+    private func connectCatalogTarget(
+        config: TargetConfig,
+        intent: CoreTargetOpenIntent,
+        completion: @escaping (Result<CatalogConnection, Error>) -> Void
+    ) {
+        let requestedKey = Self.connectionKey(config: config, session: config.session)
+        if let slot = connectionPool.slots[requestedKey], slot.lifecycle != .evicting {
+            let canonical = QuickConnect.mergingProjectMetadata(
+                resolved: slot.targetConfig,
+                requested: config
+            )
+            slot.targetConfig = canonical
+            activate(slot: slot)
+            completion(.success(CatalogConnection(bridge: slot.bridge, target: canonical)))
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let nextBridge = try CoreBridge.connect(target: config, intent: intent)
+                let resolved = nextBridge.resolvedTargetConfig ?? config
+                let key = Self.connectionKey(config: resolved, session: resolved.session)
+                DispatchQueue.main.async {
+                    guard let self else {
+                        nextBridge.shutdown()
+                        return
+                    }
+                    if let existing = self.connectionPool.slots[key],
+                       existing.lifecycle != .evicting
+                    {
+                        let canonical = QuickConnect.mergingProjectMetadata(
+                            resolved: existing.targetConfig,
+                            requested: resolved
+                        )
+                        existing.targetConfig = canonical
+                        self.activate(slot: existing)
+                        DispatchQueue.global(qos: .utility).async {
+                            nextBridge.shutdown()
+                        }
+                        completion(.success(CatalogConnection(
+                            bridge: existing.bridge,
+                            target: canonical
+                        )))
+                        return
+                    }
+                    let slot = WarmConnectionSlot(
+                        key: key,
+                        bridge: nextBridge,
+                        targetConfig: resolved,
+                        now: 0
+                    )
+                    self.activate(slot: slot)
+                    completion(.success(CatalogConnection(bridge: nextBridge, target: resolved)))
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    private func finishCatalogConnect(_ result: Result<CatalogConnection, Error>) {
+        content.setConnectProgress(stage: nil)
+        if case .failure(let error) = result {
+            showError(error)
+        }
+    }
+
     /// 从 TargetConfig + session 构造 pool key（连接身份）。
     private static func connectionKey(
         config: TargetConfig,
-        session: String
+        session: String?
     ) -> ConnectionKey {
         let alias: String?
         if case .ssh(let name) = config.transport {
@@ -1449,9 +1551,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return ConnectionKey(
             transport: config.transport.isSSH ? "ssh" : "local",
             alias: alias,
-            session: session,
+            session: session ?? (config.runtime == .tmux ? config.name : ""),
             runtime: config.runtime.rawValue,
-            path: config.path
+            path: config.path,
+            socket: config.socket,
+            workspaceID: config.workspaceID
         )
     }
 
@@ -1544,7 +1648,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             editing: config,
             owner: window,
             store: quickConnectStore,
-            sshHosts: hosts
+            sshHosts: hosts,
+            availableRuntimes: (try? CoreBridge.runtimeCatalog())?
+                .compactMap { TargetRuntime(rawValue: $0.id) }
+                ?? TargetRuntime.allCases
         )
         win.onSave = { [weak self] saved in
             self?.quickConnectStore.upsertProject(saved)

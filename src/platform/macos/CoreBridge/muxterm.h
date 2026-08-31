@@ -103,6 +103,8 @@ struct CLayoutNode {
 
 // ── 生命周期（W7：MuxtermHandle = WorkspacePool）──
 struct MuxtermHandle;
+// 新产品入口：创建不预开 Workspace 的 Catalog handle。
+struct MuxtermHandle* muxterm_catalog_new(void);
 // deprecated 转发：建池并打开一个工作区（macOS 暂用）。
 struct MuxtermHandle* muxterm_new(const char* backend_type, const char* socket, const char* session);
 // deprecated 转发：一步建连（macOS 暂用）。
@@ -126,6 +128,8 @@ int muxterm_workspace_open(
     struct MuxtermHandle* h,
     const char* transport, const char* alias, const char* session,
     const char* runtime, const char* path, const char* socket);
+char* muxterm_workspace_open_target_json(
+    struct MuxtermHandle* h, const char* target_json, const char* intent);
 char* muxterm_workspace_list(struct MuxtermHandle* h);
 int muxterm_workspace_activate(struct MuxtermHandle* h, const char* id);
 int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
@@ -184,6 +188,9 @@ char* muxterm_pane_last_n_lines(struct MuxtermHandle* h, uint32_t pane_id, uint3
 
 // ── 无状态 discovery（由 core 读取 SSH config / 查询 tmux）──
 // 返回 malloc 风格的 JSON 字符串，调用 muxterm_free_string 释放。
+char* muxterm_runtime_list_json(struct MuxtermHandle* h);
+char* muxterm_discover_sessions_json(
+    struct MuxtermHandle* h, const char* transport, const char* target);
 char* muxterm_discover_ssh_hosts_json(const char* config_path);
 char* muxterm_list_dir_json(
     const char* backend_type,

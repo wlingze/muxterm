@@ -1394,6 +1394,64 @@ final class QuickConnectModelTests: XCTestCase {
         XCTAssertEqual(QuickConnect.uniqueID(for: ssh), "m@ryzen")
     }
 
+    func testHerdrUniqueIDUsesNamedSessionSocketAndWorkspaceID() {
+        let target = TargetConfig(
+            name: "muxterm",
+            runtime: .herdr,
+            transport: .local,
+            path: "/x/muxterm",
+            session: "agents-a",
+            socket: "/tmp/agents-a/herdr.sock",
+            workspaceID: "w1"
+        )
+        let id = QuickConnect.uniqueID(for: target)
+
+        var renamed = target
+        renamed.name = "renamed"
+        renamed.path = "/other/project"
+        XCTAssertEqual(QuickConnect.uniqueID(for: renamed), id)
+
+        var otherSession = target
+        otherSession.session = "agents-b"
+        var otherSocket = target
+        otherSocket.socket = "/tmp/agents-b/herdr.sock"
+        var otherWorkspace = target
+        otherWorkspace.workspaceID = "w2"
+        var otherTransport = target
+        // SSH alias 可以恰好叫 local；transport kind 仍必须让它与本机分开。
+        otherTransport.transport = .ssh(name: "local")
+
+        XCTAssertNotEqual(QuickConnect.uniqueID(for: otherSession), id)
+        XCTAssertNotEqual(QuickConnect.uniqueID(for: otherSocket), id)
+        XCTAssertNotEqual(QuickConnect.uniqueID(for: otherWorkspace), id)
+        XCTAssertNotEqual(QuickConnect.uniqueID(for: otherTransport), id)
+        XCTAssertFalse(id.contains(target.path))
+    }
+
+    func testResolvedExistingTargetKeepsSavedProjectMetadata() {
+        let existing = TargetConfig(
+            name: "candidate-label",
+            runtime: .herdr,
+            transport: .local,
+            path: "",
+            session: "agents",
+            socket: "/tmp/agents/herdr.sock",
+            workspaceID: "w7"
+        )
+        var project = existing
+        project.name = "muxterm-project"
+        project.path = "/x/muxterm"
+
+        XCTAssertEqual(
+            QuickConnect.mergingProjectMetadata(resolved: existing, requested: project),
+            project
+        )
+        XCTAssertEqual(
+            QuickConnect.mergingProjectMetadata(resolved: project, requested: existing),
+            project
+        )
+    }
+
     func testBadgesShowRecentAndProjectIndependently() {
         let config = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
         let recent = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
@@ -1511,6 +1569,24 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertEqual(store.projects.count, 2)
     }
 
+    func testResolvedHerdrProjectReplacesMatchingProvisionalProject() {
+        let store = QuickConnectStore()
+        let provisional = TargetConfig(
+            name: "muxterm",
+            runtime: .herdr,
+            transport: .local,
+            path: "/x/muxterm"
+        )
+        var resolved = provisional
+        resolved.session = "agents"
+        resolved.socket = "/tmp/agents/herdr.sock"
+        resolved.workspaceID = "w7"
+
+        XCTAssertTrue(store.upsertProject(provisional))
+        XCTAssertFalse(store.upsertProject(resolved))
+        XCTAssertEqual(store.projects, [resolved])
+    }
+
     func testEncodeDecodeRoundTrip() {
         let store = QuickConnectStore()
         store.recordRecent(cfg("recent", "/x/r", transport: .ssh(name: "ryzen")))
@@ -1522,6 +1598,31 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertTrue(store2.recents.isEmpty)
         XCTAssertEqual(store2.projects, store.projects)
         XCTAssertEqual(store2.projects.first?.runtime, .shell)
+    }
+
+    func testHerdrProjectIdentityRoundTripsWithoutUsingPathAsWorkspaceID() {
+        let store = QuickConnectStore()
+        let project = TargetConfig(
+            name: "muxterm",
+            runtime: .herdr,
+            transport: .ssh(name: "buildbox"),
+            path: "/srv/muxterm",
+            session: "agents",
+            socket: "/remote/.config/herdr/sessions/agents/herdr.sock",
+            workspaceID: "w7"
+        )
+        store.upsertProject(project)
+
+        let encoded = store.encode()
+        let restored = QuickConnectStore()
+        restored.decode(encoded)
+
+        XCTAssertEqual(restored.projects, [project])
+        XCTAssertEqual(restored.projects.first?.path, "/srv/muxterm")
+        XCTAssertEqual(restored.projects.first?.workspaceID, "w7")
+        let text = String(decoding: encoded, as: UTF8.self)
+        XCTAssertTrue(text.contains("session = \"agents\""))
+        XCTAssertTrue(text.contains("workspace_id = \"w7\""))
     }
 
     func testEncodePersistsProjectsOnly() {

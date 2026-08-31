@@ -26,7 +26,7 @@ private enum UnifiedWorkspaceItem {
         case .back:
             return MuxtermI18n.shared.tr(.existingBack)
         case .existing(let choice):
-            return choice.session.name
+            return choice.config.name
         case .loading:
             return MuxtermI18n.shared.tr(.existingLoading)
         case .empty:
@@ -43,7 +43,14 @@ private enum UnifiedWorkspaceItem {
         case .back:
             return true
         case .existing(let choice):
-            return "\(choice.session.name) \(choice.target.displayName) tmux session"
+            let config = choice.config
+            return [
+                QuickConnect.searchText(for: config),
+                choice.target.displayName,
+                config.session ?? "",
+                config.socket ?? "",
+                config.workspaceID ?? "",
+            ].joined(separator: " ")
                 .lowercased()
                 .contains(query)
         }
@@ -295,8 +302,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                                 $1.target.displayName
                             ) == .orderedAscending
                         }
-                        return $0.session.name.localizedCaseInsensitiveCompare(
-                            $1.session.name
+                        if $0.config.runtime != $1.config.runtime {
+                            return $0.config.runtime.rawValue.localizedCaseInsensitiveCompare(
+                                $1.config.runtime.rawValue
+                            ) == .orderedAscending
+                        }
+                        return $0.config.name.localizedCaseInsensitiveCompare(
+                            $1.config.name
                         ) == .orderedAscending
                     }
                     self.existingItems = [.back]
@@ -821,17 +833,29 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let id = NSUserInterfaceItemIdentifier("ExistingConnection")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? ExistingConnectionCellView
                     ?? ExistingConnectionCellView(identifier: id)
-                cell.title = choice.session.name
-                var detail = "\(choice.target.displayName) · tmux · " + MuxtermI18n.shared.tr(
-                    .tmuxWindows,
-                    arguments: ["count": "\(choice.session.windowCount)"]
-                )
-                if choice.session.attached {
-                    detail += " · " + MuxtermI18n.shared.tr(.tmuxAttached)
+                cell.title = choice.config.name
+                var details = [choice.target.displayName, choice.config.runtime.rawValue]
+                if let windowCount = choice.windowCount {
+                    details.append(MuxtermI18n.shared.tr(
+                        .tmuxWindows,
+                        arguments: ["count": "\(windowCount)"]
+                    ))
+                    if choice.attached == true {
+                        details.append(MuxtermI18n.shared.tr(.tmuxAttached))
+                    }
+                } else {
+                    if let session = choice.config.session {
+                        details.append(session)
+                    }
+                    if let workspaceID = choice.config.workspaceID {
+                        details.append(workspaceID)
+                    }
                 }
-                cell.detail = detail
+                cell.detail = details.joined(separator: " · ")
                 cell.setAccessibilityIdentifier(
-                    "muxterm.quickConnect.existing.\(choice.target.displayName).\(choice.session.name)"
+                    "muxterm.quickConnect.existing.\(choice.target.displayName)."
+                        + "\(choice.config.runtime.rawValue).\(choice.config.session ?? "")."
+                        + "\(choice.config.workspaceID ?? choice.config.name)"
                 )
                 return cell
             case .loading, .empty:

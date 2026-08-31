@@ -9,10 +9,12 @@ public struct ConnectionKey: Hashable, Sendable {
     public let transport: String // "local" / "ssh"
     public let alias: String?    // SSH host alias；local 为 nil
     public let session: String
-    public let runtime: String   // "tmux" / "shell"
+    public let runtime: String   // "tmux" / "shell" / "herdr"
     public let path: String
-    /// Target-side tmux socket; nil means the default server.
+    /// Target-side runtime socket; nil means the runtime default.
     public let socket: String?
+    /// Herdr workspace id；tmux/shell 为 nil，不能复用 `path`。
+    public let workspaceID: String?
 
     public init(
         transport: String,
@@ -20,7 +22,8 @@ public struct ConnectionKey: Hashable, Sendable {
         session: String,
         runtime: String,
         path: String,
-        socket: String? = nil
+        socket: String? = nil,
+        workspaceID: String? = nil
     ) {
         self.transport = transport
         self.alias = alias
@@ -28,6 +31,42 @@ public struct ConnectionKey: Hashable, Sendable {
         self.runtime = runtime
         self.path = path
         self.socket = socket
+        self.workspaceID = workspaceID
+    }
+
+    /// 完整 runtime identity 已经能唯一定位 Workspace，Project path 只剩元数据；
+    /// identity 尚不完整时 path 仍是 provisional key 的必要部分。
+    private var hasResolvedWorkspaceIdentity: Bool {
+        !session.isEmpty
+            && !(socket?.isEmpty ?? true)
+            && !(workspaceID?.isEmpty ?? true)
+    }
+
+    public static func == (lhs: ConnectionKey, rhs: ConnectionKey) -> Bool {
+        guard lhs.transport == rhs.transport,
+              lhs.alias == rhs.alias,
+              lhs.session == rhs.session,
+              lhs.runtime == rhs.runtime,
+              lhs.socket == rhs.socket,
+              lhs.workspaceID == rhs.workspaceID,
+              lhs.hasResolvedWorkspaceIdentity == rhs.hasResolvedWorkspaceIdentity
+        else {
+            return false
+        }
+        return lhs.hasResolvedWorkspaceIdentity || lhs.path == rhs.path
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(transport)
+        hasher.combine(alias)
+        hasher.combine(session)
+        hasher.combine(runtime)
+        hasher.combine(socket)
+        hasher.combine(workspaceID)
+        hasher.combine(hasResolvedWorkspaceIdentity)
+        if !hasResolvedWorkspaceIdentity {
+            hasher.combine(path)
+        }
     }
 }
 
@@ -42,7 +81,15 @@ public extension ConnectionKey {
         } else {
             transport = .local
         }
-        return TargetConfig(name: name, runtime: runtime, transport: transport, path: path)
+        return TargetConfig(
+            name: name,
+            runtime: runtime,
+            transport: transport,
+            path: path,
+            session: session.isEmpty ? nil : session,
+            socket: socket,
+            workspaceID: workspaceID
+        )
     }
 }
 
@@ -135,6 +182,9 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
         guard let oldKey = activeKey, let slot = slots[oldKey] else { return }
         var config = slot.targetConfig
         config.name = name
+        if rekeySession {
+            config.session = name
+        }
         slot.targetConfig = config
         guard rekeySession else { return }
 
@@ -144,7 +194,8 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
             session: name,
             runtime: oldKey.runtime,
             path: oldKey.path,
-            socket: oldKey.socket
+            socket: oldKey.socket,
+            workspaceID: oldKey.workspaceID
         )
         guard newKey != oldKey, slots[newKey] == nil else { return }
         slots.removeValue(forKey: oldKey)

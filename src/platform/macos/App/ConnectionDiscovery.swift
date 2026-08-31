@@ -1,4 +1,5 @@
 import Foundation
+import MuxtermChrome
 
 /// 命令面板使用的 tmux session 摘要。
 struct TmuxSessionInfo: Equatable {
@@ -7,13 +8,61 @@ struct TmuxSessionInfo: Equatable {
     let attached: Bool
 }
 
-/// Unified Quick Panel 中一条可直接 attach 的已有连接。
-/// socket 在发现时固化，避免用户从隔离 `-L` server 选中后因当前 Workspace
-/// 变化而误连默认 server。
+/// Unified Quick Panel 中一条可直接 attach 的已有 Runtime workspace。
+/// Herdr 的 named session/socket/workspace_id 与 tmux 的 session/socket 都在
+/// `TargetConfig` 中固化，选择后不从当前 Workspace 反推。
 struct ExistingConnectionChoice: Equatable {
-    let target: ConnectionTarget
-    let session: TmuxSessionInfo
-    let socket: String?
+    let config: TargetConfig
+    let windowCount: Int?
+    let attached: Bool?
+
+    init(config: TargetConfig, windowCount: Int? = nil, attached: Bool? = nil) {
+        self.config = config
+        self.windowCount = windowCount
+        self.attached = attached
+    }
+
+    /// 兼容 tmux 命令面板与既有测试的构造入口。
+    init(target: ConnectionTarget, session: TmuxSessionInfo, socket: String?) {
+        let transport: TargetTransport
+        switch target {
+        case .local:
+            transport = .local
+        case .ssh(let host):
+            transport = .ssh(name: host.alias)
+        }
+        self.init(
+            config: TargetConfig(
+                name: session.name,
+                runtime: .tmux,
+                transport: transport,
+                path: "",
+                session: session.name,
+                socket: socket
+            ),
+            windowCount: session.windowCount,
+            attached: session.attached
+        )
+    }
+
+    var target: ConnectionTarget {
+        switch config.transport {
+        case .local:
+            return .local
+        case .ssh(let alias):
+            return .ssh(SSHHostInfo(alias: alias, hostname: "", user: nil, port: nil))
+        }
+    }
+
+    var session: TmuxSessionInfo {
+        TmuxSessionInfo(
+            name: config.session ?? config.name,
+            windowCount: windowCount ?? 0,
+            attached: attached ?? false
+        )
+    }
+
+    var socket: String? { config.socket }
 }
 
 /// core 从用户 SSH config 解析出的 Host alias。
@@ -89,6 +138,72 @@ final class ConnectionDiscovery {
 
     init(sshConfigPath: String? = ProcessInfo.processInfo.environment["MUXTERM_SSH_CONFIG_PATH"]) {
         self.sshConfigPath = sshConfigPath
+    }
+
+    /// Workspaces 顶层的扁平 Existing 列表：Catalog 扇出 tmux + Herdr ×
+    /// local/SSH。若当前 tmux 使用显式隔离 socket，再把该 socket 的候选合并
+    /// 进来，不能因通用 discovery 回退到默认 server 而丢失当前连接。
+    func listExistingConnections(
+        currentTarget: ConnectionTarget,
+        currentSocket: String?,
+        completion: @escaping (Result<[ExistingConnectionChoice], Error>) -> Void
+    ) {
+        let generation = beginRequest()
+        runAsync({
+            var choices = try CoreBridge.discoverCatalogSessions()
+                .compactMap(\.targetConfig)
+                .map { ExistingConnectionChoice(config: $0) }
+
+            if let currentSocket {
+                let backend: String
+                let alias: String?
+                switch currentTarget {
+                case .local:
+                    backend = "local"
+                    alias = nil
+                case .ssh(let host):
+                    backend = "ssh"
+                    alias = host.alias
+                }
+                let sessions = try CoreBridge.discoverTmuxSessions(
+                    backendType: backend,
+                    target: alias,
+                    socket: currentSocket,
+                    configPath: self.sshConfigPath
+                )
+                choices.append(contentsOf: sessions.map {
+                    ExistingConnectionChoice(
+                        target: currentTarget,
+                        session: Self.sessionInfo($0),
+                        socket: currentSocket
+                    )
+                })
+            }
+
+            var seen = Set<String>()
+            return choices.filter { choice in
+                let config = choice.config
+                let transportIdentity: String
+                switch config.transport {
+                case .local:
+                    transportIdentity = "local"
+                case .ssh(let alias):
+                    transportIdentity = "ssh:\(alias)"
+                }
+                let key = [
+                    transportIdentity,
+                    config.runtime.rawValue,
+                    config.session ?? "",
+                    config.socket ?? "",
+                    config.workspaceID ?? "",
+                    config.name,
+                ].joined(separator: "|")
+                return seen.insert(key).inserted
+            }
+        }) { [weak self] result in
+            guard let self, self.isCurrent(generation) else { return }
+            completion(result)
+        }
     }
 
     func listLocalSessions(completion: @escaping (Result<[TmuxSessionInfo], Error>) -> Void) {

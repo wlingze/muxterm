@@ -79,6 +79,52 @@ struct CoreTmuxSession: Decodable, Equatable {
     let created: UInt64
 }
 
+/// Catalog runtime card；Project 配置窗口只展示可映射到产品模型的条目。
+struct CoreRuntimeInfo: Decodable, Equatable {
+    let id: String
+    let name: String
+    let support: [String]
+    let acceptedTransports: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, support
+        case acceptedTransports = "accepted_transports"
+    }
+}
+
+/// Catalog Existing candidate。Runtime 身份字段保持 typed，不从 `id` 反解。
+struct CoreWorkspaceCandidate: Decodable, Equatable {
+    let id: String
+    let name: String
+    let runtime: String
+    let transport: String
+    let target: String
+    let session: String?
+    let socket: String?
+    let workspaceID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, runtime, transport, target, session, socket
+        case workspaceID = "workspace_id"
+    }
+
+    var targetConfig: TargetConfig? {
+        guard let runtime = TargetRuntime(rawValue: runtime) else { return nil }
+        let transport: TargetTransport = self.transport == "ssh"
+            ? .ssh(name: target)
+            : .local
+        return TargetConfig(
+            name: name,
+            runtime: runtime,
+            transport: transport,
+            path: "",
+            session: session,
+            socket: socket,
+            workspaceID: workspaceID
+        )
+    }
+}
+
 /// core 目录列表返回的条目（名字 + 是否目录）。
 struct CoreFsEntry: Decodable, Equatable {
     let name: String
@@ -122,6 +168,105 @@ private struct TmuxSessionsResponse: Decodable {
     var resolved: [CoreTmuxSession] {
         sessions ?? workspaces ?? []
     }
+}
+
+private struct RuntimeListResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let runtimes: [CoreRuntimeInfo]?
+}
+
+private struct WorkspaceCandidatesResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let workspaces: [CoreWorkspaceCandidate]?
+}
+
+private struct CoreCanonicalTarget: Decodable {
+    let name: String
+    let runtime: String
+    let transport: String
+    let target: String
+    let path: String
+    let session: String?
+    let socket: String?
+    let workspaceID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, runtime, transport, target, path, session, socket
+        case workspaceID = "workspace_id"
+    }
+
+    var targetConfig: TargetConfig? {
+        guard let runtime = TargetRuntime(rawValue: runtime) else { return nil }
+        let resolvedTransport: TargetTransport = transport == "ssh"
+            ? .ssh(name: target)
+            : .local
+        return TargetConfig(
+            name: name,
+            runtime: runtime,
+            transport: resolvedTransport,
+            path: path,
+            session: session,
+            socket: socket,
+            workspaceID: workspaceID
+        )
+    }
+}
+
+private struct CoreResolvedTarget: Decodable {
+    let canonical: CoreCanonicalTarget
+}
+
+private struct OpenTargetResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let id: String?
+    let name: String?
+    let resolvedTarget: CoreResolvedTarget?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, error, id, name
+        case resolvedTarget = "resolved_target"
+    }
+}
+
+private struct CoreTargetRequest: Encodable {
+    let name: String
+    let runtime: String
+    let transport: String
+    let target: String?
+    let path: String
+    let session: String?
+    let socket: String?
+    let workspaceID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, runtime, transport, target, path, session, socket
+        case workspaceID = "workspace_id"
+    }
+
+    init(_ config: TargetConfig) {
+        name = config.name
+        runtime = config.runtime.rawValue
+        switch config.transport {
+        case .local:
+            transport = "local"
+            target = nil
+        case .ssh(let alias):
+            transport = "ssh"
+            target = alias
+        }
+        path = config.path
+        session = config.session
+        socket = config.socket
+        workspaceID = config.workspaceID
+    }
+}
+
+enum CoreTargetOpenIntent: String {
+    case attachOnly = "attach_only"
+    case createIfMissing = "create_if_missing"
 }
 
 private struct CreatedSessionResponse: Decodable {
@@ -289,6 +434,8 @@ final class CoreBridge {
     var sshAlias: String?
     /// 最近一次 BackendStatus（pane_id 字段复用状态码）。
     private(set) var lastStatus: UInt32 = 2 // Connected
+    /// Catalog resolver 返回的规范描述；Recent/连接 key 不从 WorkspaceId 猜字段。
+    private(set) var resolvedTargetConfig: TargetConfig?
     private var pendingError: String?
     private var pollFailureReported = false
 
@@ -306,6 +453,46 @@ final class CoreBridge {
     }
 
     // MARK: - Core discovery
+
+    /// 新建 Project 卡片的数据源。使用独立空 Catalog，避免与前台 poll 竞争。
+    static func runtimeCatalog() throws -> [CoreRuntimeInfo] {
+        guard let catalog = muxterm_catalog_new() else {
+            throw BridgeError.createFailed
+        }
+        defer { muxterm_free(catalog) }
+        let response: RuntimeListResponse = try decodeDiscoveryJSON(
+            muxterm_runtime_list_json(catalog)
+        )
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+            )
+        }
+        return response.runtimes ?? []
+    }
+
+    /// 扁平发现所有 connect name 上可 attach 的 Runtime workspace。
+    static func discoverCatalogSessions(
+        transport: String = "all",
+        target: String = ""
+    ) throws -> [CoreWorkspaceCandidate] {
+        guard let catalog = muxterm_catalog_new() else {
+            throw BridgeError.createFailed
+        }
+        defer { muxterm_free(catalog) }
+        let pointer = transport.withCString { transportPtr in
+            target.withCString { targetPtr in
+                muxterm_discover_sessions_json(catalog, transportPtr, targetPtr)
+            }
+        }
+        let response: WorkspaceCandidatesResponse = try decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+            )
+        }
+        return response.workspaces ?? []
+    }
 
     /// 读取 core 解析出的用户 SSH alias，不在 macOS 侧读取或解释 ssh config。
     static func discoverSSHHosts(configPath: String? = nil) throws -> [CoreSSHHost] {
@@ -427,7 +614,8 @@ final class CoreBridge {
         socket: String?,
         session: String?,
         sshAlias: String?,
-        startDirectory: String?
+        startDirectory: String?,
+        resolvedTargetConfig: TargetConfig? = nil
     ) {
         self.handle = handle
         self.backendType = backendType.lowercased()
@@ -441,6 +629,7 @@ final class CoreBridge {
         self.sshAlias = query.sshAlias
         self.session = session
         self.startDirectory = startDirectory
+        self.resolvedTargetConfig = resolvedTargetConfig
     }
 
     /// 创建 handle 并 connect。
@@ -529,6 +718,55 @@ final class CoreBridge {
             sshAlias: sshAlias,
             startDirectory: startDirectory
         )
+    }
+
+    /// Catalog descriptor-aware 建连。Project/Recent/Existing 的 Herdr 路径不得
+    /// 落回 legacy `muxterm_new_connect`（它没有 workspace_id）。
+    static func connect(
+        target: TargetConfig,
+        intent: CoreTargetOpenIntent
+    ) throws -> CoreBridge {
+        guard let handle = muxterm_catalog_new() else {
+            throw BridgeError.createFailed
+        }
+        do {
+            let data = try JSONEncoder().encode(CoreTargetRequest(target))
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw CoreBridgeDiscoveryError.message(
+                    MuxtermI18n.shared.tr(.errorCoreDiscoveryInvalidUtf8)
+                )
+            }
+            let pointer = json.withCString { targetPtr in
+                intent.rawValue.withCString { intentPtr in
+                    muxterm_workspace_open_target_json(handle, targetPtr, intentPtr)
+                }
+            }
+            let response: OpenTargetResponse = try decodeDiscoveryJSON(pointer)
+            guard response.ok else {
+                throw CoreBridgeDiscoveryError.message(
+                    response.error ?? MuxtermI18n.shared.tr(.errorBridgeConnect, arguments: ["code": "-1"])
+                )
+            }
+            let resolved = response.resolvedTarget?.canonical.targetConfig ?? target
+            let alias: String?
+            if case .ssh(let name) = resolved.transport {
+                alias = name
+            } else {
+                alias = nil
+            }
+            return CoreBridge(
+                handle: handle,
+                backendType: resolved.runtime.rawValue,
+                socket: resolved.socket,
+                session: resolved.session,
+                sshAlias: alias,
+                startDirectory: resolved.path,
+                resolvedTargetConfig: resolved
+            )
+        } catch {
+            muxterm_free(handle)
+            throw error
+        }
     }
 
     /// status bar 订阅是否已启用（tmux ≥3.2 `refresh-client -B`）。

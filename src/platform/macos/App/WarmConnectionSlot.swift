@@ -46,10 +46,11 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         key: ConnectionKey,
         bridge: CoreBridge,
         terminalManager: TerminalManager? = nil,
+        targetConfig: TargetConfig? = nil,
         now: UInt64
     ) {
         self.key = key
-        self.targetConfig = key.targetConfig
+        self.targetConfig = targetConfig ?? key.targetConfig
         self.bridge = bridge
         self.terminalManager = terminalManager ?? TerminalManager(bridge: bridge)
         self.lastUsedAt = now
