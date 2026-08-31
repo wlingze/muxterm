@@ -29,7 +29,7 @@
 
 核心设计原则：
 - tmux 与非 tmux 模式体验**完全一致**（像 iTerm2 的 tmux integration）
-- 快捷键统一：Alt+N/T/D/1-9/[]/R/P
+- 快捷键统一：Alt+N/T/D/1-9/[]/R/P；Ctrl+Alt+1..5 按侧栏固定顺序切 workspace
 - VSCode 风格命令面板（Alt+P）
 - Alacritty 风格配置文件（TOML）
 - 所有操作可配（快捷键 / 主题 / 字体 / 行为）

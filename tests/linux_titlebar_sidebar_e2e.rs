@@ -437,6 +437,42 @@ fn title_bar_actions_and_workspace_sidebar() {
             2,
             "sidebar must list every connected workspace"
         );
+        for number in [1, 2] {
+            assert!(
+                find_by_name(
+                    &app.window,
+                    &format!("muxterm-sidebar-workspace-shortcut-{number}")
+                )
+                .is_some(),
+                "workspace {number} must show its Ctrl+Alt+{number} shortcut"
+            );
+        }
+        let ordered_workspaces = app.test_workspace_replica_ids();
+        let ctrl = window_key_controller(&app.window).expect("window key controller");
+        let workspace_mods = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK;
+        simulate_key_press(&ctrl, gdk::Key::_1, workspace_mods);
+        pump_main_loop(100);
+        assert_eq!(
+            app.test_active_workspace_replica_id(),
+            ordered_workspaces[0],
+            "Ctrl+Alt+1 must activate the first workspace"
+        );
+        assert_eq!(
+            app.test_workspace_replica_ids(),
+            ordered_workspaces,
+            "activating a workspace must not reorder the numbered list"
+        );
+        simulate_key_press(&ctrl, gdk::Key::_2, workspace_mods);
+        pump_main_loop(100);
+        assert_eq!(
+            app.test_active_workspace_replica_id(),
+            ordered_workspaces[1],
+            "Ctrl+Alt+2 must activate the second workspace"
+        );
+        assert!(
+            app.test_active_terminal_has_focus(),
+            "workspace shortcut switching must leave input focus in the terminal"
+        );
         let second_row = workspace_list
             .row_at_index(1)
             .expect("second workspace row");

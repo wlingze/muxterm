@@ -568,7 +568,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 | 11 | resize→feed + 输出合并 | ✅ pane_view 25ms | ⚠️ replica 播种在，几何仍有损（C8） | ✅ core 单测有真实样本 |
 | 11b | 终端层末帧渲染 | ✅ render_policy | ⚠️ S3/S4/S9 只 contains 末帧 token，不比行号 | ⚠️ 合成 CUP；勿用空的 real-codex.txt |
 | 12 | 镜像模式丢弃应答 | ✅ mirror + 真实 OSC 样本 | ✅ mirror e2e | ✅ 真实样本 |
-| 13 | 键位扩展 | ✅ keymap defaults | ⚠️ Alt+S/V/1/2 已覆盖；Quit/字体/全屏按键待补 | — |
+| 13 | 键位扩展 | ✅ keymap defaults | ⚠️ Alt+S/V/1/2 与 Ctrl+Alt+1..5 workspace 已覆盖；Quit/字体/全屏按键待补 | — |
 | 14 | i18n 补齐 | ✅ en/zh parity | ✅ 面板 tab/占位文案在 panel e2e 断言 | — |
 | 15 | scrollback 上限/seq/search | ✅ emulate C1.* | — | — |
 | 16 | 粘贴安全 | ✅ mirror sanitize | — | — |
@@ -620,7 +620,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 
 - 默认窗口有一个 tab / 一个 pane，焦点在终端
 - Alt+T 新 tab；Alt+S / Alt+V 水平/垂直分割（Alt+D / Alt+Shift+D 为兼容别名）；Alt+1/2/0
-  切 tab；Alt+[ / Alt+] 切 pane
+  切 tab；Ctrl+Alt+1..5 按侧栏固定编号切 workspace；Alt+[ / Alt+] 切 pane
 - Alt+P 命令面板可用；Alt+Q QuickConnect 面板打开、搜索、连接
 - TargetConfig 窗口可编辑保存；目录补全不竞态
 - 状态栏显示正确、点击窗口可切 tab；状态栏模式可切换

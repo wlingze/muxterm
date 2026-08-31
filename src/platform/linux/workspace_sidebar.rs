@@ -29,6 +29,8 @@ pub struct WorkspaceSidebarItem {
     pub runtime: String,
     pub transport: String,
     pub active: bool,
+    /// Ctrl+Alt+N 快捷编号；目前只暴露固定顺序的前五个 workspace。
+    pub shortcut: Option<u8>,
 }
 
 impl WorkspaceSidebarItem {
@@ -57,6 +59,7 @@ impl WorkspaceSidebarItem {
             runtime,
             transport,
             active: active_id == Some(workspace.id()),
+            shortcut: None,
         }
     }
 
@@ -65,7 +68,12 @@ impl WorkspaceSidebarItem {
         let active_id = pool.active_id();
         pool.list()
             .into_iter()
-            .map(|workspace| Self::from_workspace(workspace, active_id))
+            .enumerate()
+            .map(|(index, workspace)| {
+                let mut item = Self::from_workspace(workspace, active_id);
+                item.shortcut = (index < 5).then_some((index + 1) as u8);
+                item
+            })
             .collect()
     }
 }
@@ -698,7 +706,7 @@ impl WorkspaceSidebar {
                 .spacing(2)
                 .margin_top(8)
                 .margin_bottom(8)
-                .margin_start(12)
+                .margin_start(if item.shortcut.is_some() { 4 } else { 12 })
                 .hexpand(true)
                 .build();
 
@@ -738,6 +746,15 @@ impl WorkspaceSidebar {
                         callback(&id);
                     }
                 });
+            }
+            if let Some(shortcut) = item.shortcut {
+                let badge = Label::new(Some(&shortcut.to_string()));
+                badge.set_widget_name(&format!("muxterm-sidebar-workspace-shortcut-{shortcut}"));
+                badge.add_css_class("muxterm-sidebar-workspace-shortcut");
+                badge.set_width_chars(2);
+                badge.set_margin_start(6);
+                badge.set_tooltip_text(Some(&format!("Ctrl+Alt+{shortcut}")));
+                content.append(&badge);
             }
             content.append(&labels);
             content.append(&close);
@@ -1047,7 +1064,7 @@ mod tests {
     async fn pool_items_keep_open_order_when_active_workspace_changes() {
         let mut pool =
             WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        for name in ["alpha", "beta", "gamma"] {
+        for name in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] {
             let workspace_id = WorkspaceId::new("local", None, name, "shell", name);
             pool.open(workspace_id, name.into(), |_| {
                 Box::new(MockRuntime::with_single_pane())
@@ -1058,11 +1075,17 @@ mod tests {
         let beta = WorkspaceId::new("local", None, "beta", "shell", "beta");
         pool.activate(&beta);
 
-        let names: Vec<String> = WorkspaceSidebarItem::from_pool(&pool)
-            .into_iter()
-            .map(|item| item.name)
-            .collect();
-        assert_eq!(names, ["alpha", "beta", "gamma"]);
+        let items = WorkspaceSidebarItem::from_pool(&pool);
+        let names: Vec<String> = items.iter().map(|item| item.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+        );
+        assert_eq!(
+            items.iter().map(|item| item.shortcut).collect::<Vec<_>>(),
+            [Some(1), Some(2), Some(3), Some(4), Some(5), None],
+            "workspace shortcut numbers must follow stable opened_order"
+        );
     }
 
     #[test]

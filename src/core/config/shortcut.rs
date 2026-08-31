@@ -31,6 +31,11 @@ pub enum Action {
     SwitchTab8,
     SwitchTab9,
     SwitchTabLast,
+    SwitchWorkspace1,
+    SwitchWorkspace2,
+    SwitchWorkspace3,
+    SwitchWorkspace4,
+    SwitchWorkspace5,
     SwitchPanePrev,
     SwitchPaneNext,
     Search,
@@ -65,6 +70,11 @@ impl Action {
             "switch_tab_8" => Action::SwitchTab8,
             "switch_tab_9" => Action::SwitchTab9,
             "switch_tab_last" => Action::SwitchTabLast,
+            "switch_workspace_1" => Action::SwitchWorkspace1,
+            "switch_workspace_2" => Action::SwitchWorkspace2,
+            "switch_workspace_3" => Action::SwitchWorkspace3,
+            "switch_workspace_4" => Action::SwitchWorkspace4,
+            "switch_workspace_5" => Action::SwitchWorkspace5,
             "switch_pane_prev" => Action::SwitchPanePrev,
             "switch_pane_next" => Action::SwitchPaneNext,
             "search" => Action::Search,
@@ -82,7 +92,7 @@ impl Action {
     }
 }
 
-/// 默认快捷键（Alt+N/T/D/Shift+D/1-9/0/[ ]/R/P）。
+/// 默认快捷键（Alt+N/T/D/Shift+D/1-9/0/[ ]/R/P；Ctrl+Alt+1-5 workspace）。
 pub fn default_keybindings() -> Vec<KeyBinding> {
     vec![
         kb("n", &["alt"], "new_window"),
@@ -102,6 +112,11 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         kb("8", &["alt"], "switch_tab_8"),
         kb("9", &["alt"], "switch_tab_9"),
         kb("0", &["alt"], "switch_tab_last"),
+        kb("1", &["control", "alt"], "switch_workspace_1"),
+        kb("2", &["control", "alt"], "switch_workspace_2"),
+        kb("3", &["control", "alt"], "switch_workspace_3"),
+        kb("4", &["control", "alt"], "switch_workspace_4"),
+        kb("5", &["control", "alt"], "switch_workspace_5"),
         kb("[", &["alt"], "switch_pane_prev"),
         kb("]", &["alt"], "switch_pane_next"),
         kb("r", &["alt"], "search"),

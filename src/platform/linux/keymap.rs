@@ -170,6 +170,24 @@ mod tests {
         assert_eq!(km.lookup_str("9", &["alt"]), Some(Action::SwitchTab9));
     }
 
+    /// Ctrl+Alt+1..5 按 WorkspacePool 的固定打开顺序切 workspace。
+    #[test]
+    fn test_keymap_ctrl_alt_digits_switch_workspaces() {
+        let km = KeyMap::from_bindings(&default_keybindings());
+        assert_eq!(
+            km.lookup_str("1", &["control", "alt"]),
+            Some(Action::SwitchWorkspace1)
+        );
+        assert_eq!(
+            km.lookup_str("3", &["control", "alt"]),
+            Some(Action::SwitchWorkspace3)
+        );
+        assert_eq!(
+            km.lookup_str("5", &["control", "alt"]),
+            Some(Action::SwitchWorkspace5)
+        );
+    }
+
     /// 对应：Alt+0 → 最后一个 tab。
     #[test]
     fn test_keymap_alt_0_switch_tab_last() {

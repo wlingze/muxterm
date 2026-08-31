@@ -777,6 +777,7 @@ key_path = "~/.ssh/id_rsa"
             "new_pane_vertical",
             "switch_tab_1",
             "switch_tab_last",
+            "switch_workspace_1",
             "switch_pane_prev",
             "switch_pane_next",
             "search",
@@ -807,6 +808,10 @@ key_path = "~/.ssh/id_rsa"
             Action::NewPaneVertical
         );
         assert_eq!(Action::from_str("switch_tab_last"), Action::SwitchTabLast);
+        assert_eq!(
+            Action::from_str("switch_workspace_5"),
+            Action::SwitchWorkspace5
+        );
         assert_eq!(Action::from_str("quick_connect"), Action::QuickConnect);
         assert_eq!(Action::from_str("quit"), Action::Quit);
         assert_eq!(Action::from_str("copy"), Action::Copy);

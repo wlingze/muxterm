@@ -90,6 +90,13 @@ pub fn primary_modifier(primary_key: &str, is_macos: bool) -> &'static str {
     }
 }
 
+fn uses_primary_alt(modifiers: &[String]) -> bool {
+    modifiers.iter().any(|modifier| modifier == "alt")
+        && !modifiers
+            .iter()
+            .any(|modifier| matches!(modifier.as_str(), "control" | "super" | "command"))
+}
+
 /// Preset bindings with the primary Alt modifier replaced by the configured
 /// primary key. Non-primary chords (Ctrl+Shift copy/paste, Ctrl+Q quit) are
 /// left untouched.
@@ -102,7 +109,7 @@ pub fn resolve_preset_bindings(
     preset_bindings(preset)
         .into_iter()
         .map(|mut binding| {
-            if binding.modifiers.iter().any(|modifier| modifier == "alt") {
+            if uses_primary_alt(&binding.modifiers) {
                 binding.modifiers = binding
                     .modifiers
                     .iter()
@@ -133,7 +140,7 @@ pub fn resolve_effective_keybindings(shortcuts: &ShortcutConfig) -> Vec<KeyBindi
                 binding.key = (*key).to_string();
             }
         }
-        if binding.mods.iter().any(|modifier| modifier == "alt") {
+        if uses_primary_alt(&binding.mods) {
             binding.mods = binding
                 .mods
                 .iter()
@@ -229,6 +236,15 @@ mod tests {
             .expect("copy binding");
         assert!(copy.modifiers.contains(&"control".to_string()));
         assert!(copy.modifiers.contains(&"shift".to_string()));
+        let workspace = bindings
+            .iter()
+            .find(|binding| {
+                binding.key == "1"
+                    && binding.modifiers.contains(&"control".to_string())
+                    && binding.modifiers.contains(&"alt".to_string())
+            })
+            .expect("Ctrl+Alt+1 workspace binding");
+        assert_eq!(workspace.modifiers.len(), 2);
     }
 
     #[test]
@@ -241,6 +257,8 @@ mod tests {
             "new_pane_vertical",
             "switch_tab_1",
             "switch_tab_last",
+            "switch_workspace_1",
+            "switch_workspace_5",
             "switch_pane_prev",
             "switch_pane_next",
             "search",
@@ -274,6 +292,11 @@ fn resolve_effective_keybindings_applies_primary_and_overrides() {
         .find(|binding| binding.action == "quick_connect")
         .expect("quick connect binding");
     assert!(quick.mods.contains(&"control".to_string()));
+    let workspace = bindings
+        .iter()
+        .find(|binding| binding.action == "switch_workspace_1")
+        .expect("workspace shortcut");
+    assert_eq!(workspace.mods, ["control", "alt"]);
 
     shortcuts
         .overrides

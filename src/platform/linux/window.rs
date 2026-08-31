@@ -1723,6 +1723,11 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
                 request_switch_tab(s, t.id.0);
             }
         }
+        Action::SwitchWorkspace1 => switch_workspace_n(s, 1),
+        Action::SwitchWorkspace2 => switch_workspace_n(s, 2),
+        Action::SwitchWorkspace3 => switch_workspace_n(s, 3),
+        Action::SwitchWorkspace4 => switch_workspace_n(s, 4),
+        Action::SwitchWorkspace5 => switch_workspace_n(s, 5),
         Action::SwitchPaneNext | Action::SwitchPanePrev => {
             switch_pane_offset(s, matches!(action, Action::SwitchPaneNext));
         }
@@ -2162,6 +2167,19 @@ fn switch_tab_n(s: &mut UiState, n: usize) {
     let tabs = s.active_workspace().state().tabs();
     if let Some(t) = tabs.get(n.saturating_sub(1)) {
         request_switch_tab(s, t.id.0);
+    }
+}
+
+fn switch_workspace_n(s: &mut UiState, n: usize) {
+    let target = s
+        .pool
+        .list()
+        .get(n.saturating_sub(1))
+        .map(|workspace| workspace.id().clone());
+    if let Some(target) = target {
+        if s.pool.active_id() != Some(&target) {
+            activate_existing(s, target);
+        }
     }
 }
 
@@ -5327,6 +5345,12 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
         }}
         .muxterm-sidebar-row-name {{ color: {fg}; }}
         .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
+        .muxterm-sidebar-workspace-shortcut {{
+            color: {fg};
+            opacity: 0.52;
+            font-size: 11px;
+            font-weight: 600;
+        }}
         .muxterm-sidebar-agent-dot {{ font-size: 10px; }}
         .muxterm-sidebar-agent-dot.running {{ color: #df8e1d; }}
         .muxterm-sidebar-agent-dot.done {{ color: #40a02b; }}
