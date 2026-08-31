@@ -14,8 +14,8 @@ use std::process::Command;
 use std::rc::Rc;
 use std::time::Instant;
 
-use gtk4::gdk;
 use gtk4::prelude::*;
+use gtk4::{gdk, glib};
 use support::linux_gtk::*;
 
 use muxterm::core::attention::engine::PaneAttention;
@@ -239,8 +239,7 @@ fn three_tab_panel_full_flow() {
 
             // 5. 选择 + Enter 是 Attention 唯一动作。
             list.select_row(Some(&pi_row));
-            let entry_ctrl = window_key_controller(&entry).expect("Entry 应有 controller");
-            simulate_key_press(&entry_ctrl, gdk::Key::Return, gdk::ModifierType::empty());
+            entry.emit_activate();
             pump_main_loop(40);
             assert_eq!(
                 jumps.borrow().as_slice(),
@@ -465,7 +464,7 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                     "向上滚回顶部后输入焦点仍必须在搜索框"
                 );
 
-                entry.set_text("muxterm");
+                entry.set_text("legion");
                 pump_main_loop(40);
                 assert!(
                     entry_owns_window_focus(&win, &entry),
@@ -478,11 +477,14 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                 );
                 assert!(
                     list.selected_row()
-                        .is_some_and(|row| row.widget_name().contains("muxterm")),
-                    "过滤后渲染行必须对应 muxterm，实际 {:?}",
+                        .is_some_and(|row| row.widget_name().contains("legion")),
+                    "过滤后渲染行必须对应 legion，实际 {:?}",
                     list.selected_row().map(|row| row.widget_name())
                 );
-                simulate_key_press(&controller, gdk::Key::Return, gdk::ModifierType::empty());
+                // 真实键盘 Enter 由 GtkEntry 的 activate 信号表达。最后一个字符后
+                // 不推进主循环，确保激活会先提交最新过滤条件，而不是打开旧选中项。
+                entry.set_text("muxterm");
+                entry.emit_activate();
                 pump_main_loop(40);
                 assert_eq!(connected.borrow().as_slice(), &["muxterm".to_string()]);
                 assert!(
@@ -560,8 +562,28 @@ fn rapid_typing_and_attention_navigation_stay_lightweight() {
                     .downcast::<gtk4::Entry>()
                     .expect("Entry 类型");
                 let baseline_search = search_calls.get();
+                muxterm::platform::linux::quickconnect_panel::refresh_current();
+                pump_main_loop(40);
+                assert_eq!(
+                    search_calls.get(),
+                    baseline_search,
+                    "已有连接探测刷新不得重建无关的 Search tab"
+                );
+                let main_context = glib::MainContext::default();
                 entry.set_text("m");
+                while main_context.iteration(false) {}
+                assert_eq!(
+                    search_calls.get(),
+                    baseline_search,
+                    "字符间的 ready source 调度不得立即执行昂贵搜索"
+                );
                 entry.set_text("mu");
+                while main_context.iteration(false) {}
+                assert_eq!(
+                    search_calls.get(),
+                    baseline_search,
+                    "连续输入期间必须继续合并重建"
+                );
                 entry.set_text("mux");
                 assert_eq!(
                     search_calls.get(),
@@ -672,10 +694,14 @@ fn existing_connections_navigation() {
             let folder = find_by_name(&win, "muxterm-existing-connections")
                 .expect("根列表第一项必须是 muxterm-existing-connections");
             assert!(folder.is_visible());
+            let entry = find_by_name(&win, "muxterm-panel-entry")
+                .expect("共享搜索框应存在")
+                .downcast::<gtk4::Entry>()
+                .expect("Entry 类型");
 
-            // 点 Folder → 扁平列表：Back，禁止本地/SSH 目录。
-            let row = list.row_at_index(0).expect("Folder 行");
-            row.activate();
+            // Enter Folder → 扁平列表：Back，禁止本地/SSH 目录。
+            assert_eq!(list.selected_row().map(|row| row.index()), Some(0));
+            entry.emit_activate();
             pump_main_loop(60);
             assert!(
                 find_by_name(&win, "muxterm-existing-local").is_none(),
@@ -695,8 +721,8 @@ fn existing_connections_navigation() {
                 .expect("列表应存在")
                 .downcast::<gtk4::ListBox>()
                 .expect("ListBox 类型");
-            let back = list.row_at_index(0).expect("Back 行");
-            back.activate();
+            assert_eq!(list.selected_row().map(|row| row.index()), Some(0));
+            entry.emit_activate();
             pump_main_loop(60);
             assert!(
                 find_by_name(&win, "__new_project__").is_some(),

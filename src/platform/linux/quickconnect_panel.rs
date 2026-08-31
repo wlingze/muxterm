@@ -36,6 +36,7 @@ const NEW_PROJECT_ID: &str = "__new_project__";
 const PANEL_ENTRY_HEIGHT: i32 = 36;
 const PANEL_MAX_WIDTH: i32 = 640;
 const PANEL_TEXT_MAX_CHARS: i32 = 64;
+const PANEL_REBUILD_DEBOUNCE_MS: u64 = 24;
 
 /// ListBox 保留搜索框焦点时不会自动跟随选中行滚动；按行坐标只移动
 /// 必要距离，确保键盘选中的整行始终留在 ScrolledWindow 视口内。
@@ -553,7 +554,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let scope_all = scope_all.clone();
         let scope_bar = scope_bar.clone();
         let existing = existing.clone();
-        let entry = entry.clone();
         let visible_actions = visible_actions.clone();
         move || {
             while let Some(child) = list.first_child() {
@@ -827,33 +827,68 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 }
             }
             *visible_actions.borrow_mut() = actions;
-            entry.grab_focus();
         }
     };
     rebuild();
-    let rebuild_pending = Rc::new(Cell::new(false));
+    let rebuild_generation = Rc::new(Cell::new(0u64));
+    let pending_rebuild = Rc::new(Cell::new(None::<u64>));
     let schedule_rebuild = {
         let rebuild = rebuild.clone();
-        let rebuild_pending = rebuild_pending.clone();
+        let rebuild_generation = rebuild_generation.clone();
+        let pending_rebuild = pending_rebuild.clone();
         let finished = finished.clone();
         move || {
-            if *finished.borrow() || rebuild_pending.replace(true) {
+            if *finished.borrow() {
                 return;
             }
+            let generation = rebuild_generation.get().wrapping_add(1);
+            rebuild_generation.set(generation);
+            pending_rebuild.set(Some(generation));
             let rebuild = rebuild.clone();
-            let rebuild_pending = rebuild_pending.clone();
+            let pending_rebuild = pending_rebuild.clone();
             let finished = finished.clone();
-            glib::idle_add_local_once(move || {
-                rebuild_pending.set(false);
-                if !*finished.borrow() {
+            glib::timeout_add_local_once(
+                Duration::from_millis(PANEL_REBUILD_DEBOUNCE_MS),
+                move || {
+                    if *finished.borrow() || pending_rebuild.get() != Some(generation) {
+                        return;
+                    }
+                    pending_rebuild.set(None);
                     rebuild();
-                }
-            });
+                },
+            );
+        }
+    };
+    let flush_rebuild = {
+        let rebuild = rebuild.clone();
+        let rebuild_generation = rebuild_generation.clone();
+        let pending_rebuild = pending_rebuild.clone();
+        let finished = finished.clone();
+        move || {
+            if *finished.borrow() {
+                return;
+            }
+            if pending_rebuild.replace(None).is_some() {
+                rebuild_generation.set(rebuild_generation.get().wrapping_add(1));
+                rebuild();
+            }
         }
     };
     {
         let schedule_rebuild = schedule_rebuild.clone();
-        PANEL_REFRESH.with(|slot| *slot.borrow_mut() = Some(Box::new(schedule_rebuild)));
+        let model = model.clone();
+        let existing = existing.clone();
+        PANEL_REFRESH.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // 已有连接探测只影响 Workspaces 的子目录；在根目录、
+                // Attention 或 Search 中重建整表只会打断输入。
+                if model.borrow().tab == PanelTab::Workspaces
+                    && existing.borrow().nav != ExistingNav::Root
+                {
+                    schedule_rebuild();
+                }
+            }));
+        });
     }
 
     // 搜索框持续持有输入焦点，因此 ListBox 自身不会替选中行滚动。
@@ -884,6 +919,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     ] {
         let model = model.clone();
         let schedule_rebuild = schedule_rebuild.clone();
+        let entry = entry.clone();
         btn.connect_toggled(move |b| {
             if b.is_active() {
                 let changed = {
@@ -897,6 +933,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 };
                 if changed {
                     schedule_rebuild();
+                    entry.grab_focus();
                 }
             }
         });
@@ -910,6 +947,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     ] {
         let model = model.clone();
         let schedule_rebuild = schedule_rebuild.clone();
+        let entry = entry.clone();
         btn.connect_toggled(move |b| {
             if b.is_active() {
                 // 只有 tab 真正变化才重建，避免 set_active 重入死循环。
@@ -924,6 +962,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 };
                 if changed {
                     schedule_rebuild();
+                    entry.grab_focus();
                 }
             }
         });
@@ -936,7 +975,16 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let existing = existing.clone();
         let visible_actions = visible_actions.clone();
         let schedule_rebuild = schedule_rebuild.clone();
+        let flush_rebuild = flush_rebuild.clone();
+        let finished = finished.clone();
+        let entry = entry.clone();
         move || {
+            if *finished.borrow() {
+                return;
+            }
+            // Enter 紧跟最后一个字符时，timeout 尚未重建列表。先同步提交
+            // 最新 query，避免激活旧行或因尚无选中行而静默失效。
+            flush_rebuild();
             let Some(row) = list.selected_row() else {
                 return;
             };
@@ -963,6 +1011,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     existing.borrow_mut().nav = next.clone();
                     (callbacks.on_existing_nav)(next);
                     schedule_rebuild();
+                    entry.grab_focus();
                 }
                 VisibleAction::Jump {
                     workspace_id,
@@ -981,10 +1030,13 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let activate = activate.clone();
         move |_, _| activate()
     });
+    entry.connect_activate({
+        let activate = activate.clone();
+        move |_| activate()
+    });
 
     {
         let dismiss = dismiss.clone();
-        let activate = activate.clone();
         let model = model.clone();
         let schedule_rebuild = schedule_rebuild.clone();
         let list = list.clone();
@@ -994,10 +1046,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         controller.connect_key_pressed(move |_c, key, _code, mods| match key {
             Key::Escape => {
                 dismiss();
-                glib::Propagation::Stop
-            }
-            Key::Return | Key::KP_Enter => {
-                activate();
                 glib::Propagation::Stop
             }
             Key::Tab => {

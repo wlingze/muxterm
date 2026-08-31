@@ -525,8 +525,7 @@ fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
             .expect("panel entry")
             .downcast::<gtk4::Entry>()
             .expect("panel entry type");
-        let entry_ctrl = window_key_controller(&entry).expect("panel key controller");
-        simulate_key_press(&entry_ctrl, gdk::Key::Return, gdk::ModifierType::empty());
+        entry.emit_activate();
         assert!(
             wait_until_widget(8_000, || {
                 app.test_poll_once();
