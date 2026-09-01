@@ -279,6 +279,17 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
         }
     }
 
+    /// 关闭并移除指定 warm slot。返回 false 表示 key 不存在。
+    ///
+    /// 这不是 LRU 淘汰：用户明确要求关闭该 Workspace。tmux slot 会 detach
+    /// 保留远端 session；local shell 会 shutdown 终止进程。
+    @discardableResult
+    public func close(key: ConnectionKey) -> Bool {
+        guard let slot = slots[key] else { return false }
+        evict(slot, reason: .capacity)
+        return true
+    }
+
     /// 后台连接继续 poll，保持 warm；不得同步 displayIfNeeded。
     public func pollBackgroundSlots() {
         for slot in slots.values where slot.lifecycle == .background {

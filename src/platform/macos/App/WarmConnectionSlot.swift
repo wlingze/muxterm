@@ -34,6 +34,9 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         }
     }
     var lastUsedAt: UInt64
+    /// 第一次进入 warm pool 的顺序。固定 Cmd+Ctrl+N 编号使用它，
+    /// 不随最近使用/激活重排；Linux WorkspacePool::opened_order 同语义。
+    var openedOrder: UInt64
 
     /// 最近一次后台 poll 后的快照（只读缓存，避免后台刷新 UI）。
     var lastSnapshot: FrameSnapshot {
@@ -47,13 +50,15 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         bridge: CoreBridge,
         terminalManager: TerminalManager? = nil,
         targetConfig: TargetConfig? = nil,
-        now: UInt64
+        now: UInt64,
+        openedOrder: UInt64 = 0
     ) {
         self.key = key
         self.targetConfig = targetConfig ?? key.targetConfig
         self.bridge = bridge
         self.terminalManager = terminalManager ?? TerminalManager(bridge: bridge)
         self.lastUsedAt = now
+        self.openedOrder = openedOrder
     }
 
     /// ConnectionPool 协议入口：后台只排空 FFI，不碰 Surface。

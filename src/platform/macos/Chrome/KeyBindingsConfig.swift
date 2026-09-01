@@ -31,7 +31,14 @@ public enum KeyBindingsConfig {
         case "reset_font_size": return .resetFontSize
         case "toggle_pane_fullscreen": return .togglePaneFullscreen
         case "switch_tab_last": return .switchLastTab
+        case "toggle_sidebar": return .toggleSidebar
         default:
+            if name.hasPrefix("switch_workspace_"),
+               let n = Int(name.dropFirst("switch_workspace_".count)),
+               (1...5).contains(n)
+            {
+                return .switchWorkspace(n)
+            }
             // switch_tab_N
             if name.hasPrefix("switch_tab_"),
                let n = Int(name.dropFirst("switch_tab_".count)),

@@ -4,17 +4,23 @@ import MuxtermChrome
 /// Native main-window sidebar mirroring Linux's two persistent sections.
 final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
+    var onWorkspaceClose: ((String) -> Void)?
     var onAgentActivate: ((String, UInt32) -> Void)?
+    var onCommandActivate: ((String, UInt32) -> Void)?
 
     private let sections = NSSplitView()
     private let workspaceTable = NSTableView()
     private let agentTable = NSTableView()
+    private let commandTable = NSTableView()
     private let workspaceScroll = NSScrollView()
     private let agentScroll = NSScrollView()
+    private let commandScroll = NSScrollView()
     private let workspaceHeader = NSButton()
     private let agentHeader = NSButton()
+    private let commandHeader = NSButton()
     private var workspaces: [WorkspaceSidebarItem] = []
     private var agents: [AgentSidebarItem] = []
+    private var commands: [CommandSidebarItem] = []
     private var isReloadingSelection = false
 
     override init(frame frameRect: NSRect) {
@@ -33,6 +39,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             scroll: agentScroll,
             identifier: "muxterm.sidebar.agents"
         )
+        configureTable(
+            commandTable,
+            scroll: commandScroll,
+            identifier: "muxterm.sidebar.commands"
+        )
         configureHeader(
             workspaceHeader,
             title: "WORKSPACES",
@@ -43,17 +54,25 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             title: "AGENTS",
             action: #selector(toggleAgentSection)
         )
+        configureHeader(
+            commandHeader,
+            title: "COMMANDS",
+            action: #selector(toggleCommandSection)
+        )
 
         let workspaceSection = section(header: workspaceHeader, scroll: workspaceScroll)
         workspaceSection.setAccessibilityIdentifier("muxterm.sidebar.workspaces.section")
         let agentSection = section(header: agentHeader, scroll: agentScroll)
         agentSection.setAccessibilityIdentifier("muxterm.sidebar.agents.section")
+        let commandSection = section(header: commandHeader, scroll: commandScroll)
+        commandSection.setAccessibilityIdentifier("muxterm.sidebar.commands.section")
 
         sections.translatesAutoresizingMaskIntoConstraints = false
         sections.isVertical = false
         sections.dividerStyle = .thin
         sections.addArrangedSubview(workspaceSection)
         sections.addArrangedSubview(agentSection)
+        sections.addArrangedSubview(commandSection)
         sections.setAccessibilityIdentifier("muxterm.sidebar.sections")
         addSubview(sections)
         NSLayoutConstraint.activate([
@@ -71,8 +90,9 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     override func layout() {
         super.layout()
-        if sections.subviews.count == 2, sections.subviews[0].frame.height == 0 {
-            sections.setPosition(max(120, bounds.height * 0.5), ofDividerAt: 0)
+        if sections.subviews.count == 3, sections.subviews[0].frame.height == 0 {
+            sections.setPosition(max(120, bounds.height * 0.4), ofDividerAt: 0)
+            sections.setPosition(max(120, bounds.height * 0.7), ofDividerAt: 1)
         }
     }
 
@@ -95,8 +115,17 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         agentTable.reloadData()
     }
 
+    func setCommands(_ items: [CommandSidebarItem]) {
+        guard commands != items else { return }
+        commands = items
+        commandTable.reloadData()
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === workspaceTable ? workspaces.count : agents.count
+        if tableView === workspaceTable { return workspaces.count }
+        if tableView === agentTable { return agents.count }
+        if tableView === commandTable { return commands.count }
+        return 0
     }
 
     func tableView(
@@ -112,29 +141,56 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                 marker: item.isActive ? "●" : "○",
                 markerColor: item.isActive ? .controlAccentColor : .tertiaryLabelColor,
                 title: item.name,
-                detail: "\(item.runtime) @ \(item.transport)"
+                detail: "\(item.runtime) @ \(item.transport)",
+                shortcut: item.shortcut,
+                closeAction: { [weak self] in
+                    self?.onWorkspaceClose?(item.workspaceId)
+                }
             )
             cell.setAccessibilityIdentifier("muxterm.sidebar.workspace.\(safeID(item.workspaceId))")
+            return cell
+        }
+
+        if tableView === commandTable {
+            guard commands.indices.contains(row) else { return nil }
+            let item = commands[row]
+            let cell = sidebarCell(in: tableView, identifier: "CommandSidebarCell")
+            cell.set(
+                marker: "●",
+                markerColor: indicatorColor(item.indicator),
+                title: item.title,
+                detail: item.detail
+            )
+            cell.setAccessibilityIdentifier(
+                "muxterm.sidebar.command.\(safeID(item.workspaceId)).\(item.paneId)"
+            )
             return cell
         }
 
         guard agents.indices.contains(row) else { return nil }
         let item = agents[row]
         let cell = sidebarCell(in: tableView, identifier: "AgentSidebarCell")
-        let color: NSColor
-        switch item.indicator {
-        case .running:
-            color = .systemGreen
-        case .done:
-            color = .systemOrange
-        case .read:
-            color = .tertiaryLabelColor
-        }
-        cell.set(marker: "●", markerColor: color, title: item.title, detail: item.detail)
+        cell.set(
+            marker: "●",
+            markerColor: indicatorColor(item.indicator),
+            title: item.title,
+            detail: item.detail
+        )
         cell.setAccessibilityIdentifier(
             "muxterm.sidebar.agent.\(safeID(item.workspaceId)).\(item.paneId)"
         )
         return cell
+    }
+
+    private func indicatorColor(_ indicator: AgentSidebarIndicator) -> NSColor {
+        switch indicator {
+        case .running:
+            .systemGreen
+        case .done:
+            .systemOrange
+        case .read:
+            .tertiaryLabelColor
+        }
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -149,6 +205,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             guard agents.indices.contains(row) else { return }
             let agent = agents[row]
             onAgentActivate?(agent.workspaceId, agent.paneId)
+        } else if table === commandTable {
+            let row = table.selectedRow
+            guard commands.indices.contains(row) else { return }
+            let command = commands[row]
+            onCommandActivate?(command.workspaceId, command.paneId)
         }
     }
 
@@ -158,6 +219,10 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     @objc private func toggleAgentSection() {
         setSection(agentScroll, expanded: agentHeader.state == .on)
+    }
+
+    @objc private func toggleCommandSection() {
+        setSection(commandScroll, expanded: commandHeader.state == .on)
     }
 
     private func configureTable(
@@ -214,8 +279,18 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     private func setSection(_ scroll: NSScrollView, expanded: Bool) {
         scroll.isHidden = !expanded
-        let header = scroll === workspaceScroll ? workspaceHeader : agentHeader
-        let title = scroll === workspaceScroll ? "WORKSPACES" : "AGENTS"
+        let header: NSButton
+        let title: String
+        if scroll === workspaceScroll {
+            header = workspaceHeader
+            title = "WORKSPACES"
+        } else if scroll === agentScroll {
+            header = agentHeader
+            title = "AGENTS"
+        } else {
+            header = commandHeader
+            title = "COMMANDS"
+        }
         header.title = "\(expanded ? "▾" : "▸")  \(title)"
     }
 
@@ -240,14 +315,28 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     func testWorkspaceCount() -> Int { workspaces.count }
     func testAgentCount() -> Int { agents.count }
+    func testCommandCount() -> Int { commands.count }
+    func testCommandTitles() -> [String] { commands.map(\.title) }
     func testAgentIndicators() -> [AgentSidebarIndicator] { agents.map(\.indicator) }
     func testWorkspaceNames() -> [String] { workspaces.map(\.name) }
+    func testWorkspaceIDs() -> [String] { workspaces.map(\.workspaceId) }
 }
 
 private final class WorkspaceSidebarCellView: NSTableCellView {
     private let marker = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
+    private let shortcutLabel = NSTextField(labelWithString: "")
+    private let closeButton = NSButton()
+    private var closeAction: (() -> Void)?
+    private var closeButtonWidth: NSLayoutConstraint!
+    private var titleLeadingToClose: NSLayoutConstraint!
+    private var isHovered = false {
+        didSet {
+            guard isHovered != oldValue else { return }
+            updateCloseVisibility()
+        }
+    }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -262,17 +351,46 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         detailLabel.font = .systemFont(ofSize: 10.5)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingTail
+        shortcutLabel.translatesAutoresizingMaskIntoConstraints = false
+        shortcutLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        shortcutLabel.textColor = .tertiaryLabelColor
+        shortcutLabel.alignment = .center
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.title = "✕"
+        closeButton.isBordered = false
+        closeButton.font = .systemFont(ofSize: 10, weight: .semibold)
+        closeButton.controlSize = .small
+        closeButton.setButtonType(.momentaryPushIn)
+        closeButton.toolTip = "Close workspace"
+        closeButton.setAccessibilityIdentifier("muxterm.sidebar.workspace.close")
+        closeButton.action = #selector(closeClicked)
+        closeButton.target = self
         addSubview(marker)
+        addSubview(shortcutLabel)
         addSubview(titleLabel)
         addSubview(detailLabel)
+        addSubview(closeButton)
         textField = titleLabel
+        updateTrackingAreas()
+
+        closeButtonWidth = closeButton.widthAnchor.constraint(equalToConstant: 0)
+        titleLeadingToClose = titleLabel.trailingAnchor.constraint(
+            equalTo: closeButton.leadingAnchor,
+            constant: 0
+        )
         NSLayoutConstraint.activate([
             marker.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             marker.centerYAnchor.constraint(equalTo: centerYAnchor),
             marker.widthAnchor.constraint(equalToConstant: 12),
-            titleLabel.leadingAnchor.constraint(equalTo: marker.trailingAnchor, constant: 7),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            shortcutLabel.leadingAnchor.constraint(equalTo: marker.trailingAnchor, constant: 7),
+            shortcutLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            shortcutLabel.widthAnchor.constraint(equalToConstant: 14),
+            titleLabel.leadingAnchor.constraint(equalTo: shortcutLabel.trailingAnchor, constant: 4),
+            titleLeadingToClose,
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButtonWidth,
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
@@ -284,10 +402,54 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         nil
     }
 
-    func set(marker: String, markerColor: NSColor, title: String, detail: String) {
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area = trackingAreas.first(where: { $0.owner === self }) {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(
+            NSTrackingArea(
+                rect: bounds,
+                options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            )
+        )
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+    }
+
+    private func updateCloseVisibility() {
+        let showsClose = closeAction != nil && isHovered
+        closeButtonWidth.constant = showsClose ? 20 : 0
+        titleLeadingToClose.constant = showsClose ? -4 : 0
+        closeButton.isHidden = !showsClose
+    }
+
+    @objc private func closeClicked() {
+        closeAction?()
+    }
+
+    func set(
+        marker: String,
+        markerColor: NSColor,
+        title: String,
+        detail: String,
+        shortcut: Int? = nil,
+        closeAction: (() -> Void)? = nil
+    ) {
         self.marker.stringValue = marker
         self.marker.textColor = markerColor
+        shortcutLabel.stringValue = shortcut.map(String.init) ?? ""
         titleLabel.stringValue = title
         detailLabel.stringValue = detail
+        self.closeAction = closeAction
+        updateCloseVisibility()
     }
 }

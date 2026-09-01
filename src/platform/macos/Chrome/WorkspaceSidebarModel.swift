@@ -84,6 +84,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let runtime: String
     public let transport: String
     public let isActive: Bool
+    public let shortcut: Int?
     public let structuredAgents: [StructuredPaneAgent]
 
     public init(
@@ -92,6 +93,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         runtime: String,
         transport: String,
         isActive: Bool,
+        shortcut: Int? = nil,
         structuredAgents: [StructuredPaneAgent] = []
     ) {
         self.workspaceId = workspaceId
@@ -99,6 +101,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         self.runtime = runtime
         self.transport = transport
         self.isActive = isActive
+        self.shortcut = shortcut
         self.structuredAgents = structuredAgents
     }
 }
@@ -111,6 +114,29 @@ public enum AgentSidebarIndicator: Sendable, Equatable {
 }
 
 public struct AgentSidebarItem: Sendable, Equatable {
+    public let workspaceId: String
+    public let paneId: UInt32
+    public let title: String
+    public let detail: String
+    public let indicator: AgentSidebarIndicator
+
+    public init(
+        workspaceId: String,
+        paneId: UInt32,
+        title: String,
+        detail: String,
+        indicator: AgentSidebarIndicator
+    ) {
+        self.workspaceId = workspaceId
+        self.paneId = paneId
+        self.title = title
+        self.detail = detail
+        self.indicator = indicator
+    }
+}
+
+/// A running or unread ordinary command. Agents remain in the Agents section.
+public struct CommandSidebarItem: Sendable, Equatable {
     public let workspaceId: String
     public let paneId: UInt32
     public let title: String
@@ -190,6 +216,72 @@ public enum WorkspaceSidebarProjection {
             }
         }
         return result
+    }
+
+    /// Project ordinary commands across warm workspaces.
+    ///
+    /// Agents (structured or known by process name) stay in Agents; commands are
+    /// visible only while Running or while Blocked/Done remains unread.
+    public static func commands(
+        workspaces: [WorkspaceSidebarItem],
+        attention: AttentionSnapshot?
+    ) -> [CommandSidebarItem] {
+        var agentPaneKeys = Set<PaneKey>()
+        for workspace in workspaces {
+            for agent in workspace.structuredAgents {
+                agentPaneKeys.insert(PaneKey(workspaceId: workspace.workspaceId, paneId: agent.paneId))
+            }
+        }
+        for workspace in workspaces {
+            for pane in attention?.workspaces.first(where: {
+                $0.workspaceId == workspace.workspaceId
+            })?.panes ?? [] where knownAgentName(pane.processName) != nil {
+                agentPaneKeys.insert(PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId))
+            }
+        }
+
+        var result: [CommandSidebarItem] = []
+        for workspace in workspaces {
+            guard let panes = attention?.workspaces
+                .first(where: { $0.workspaceId == workspace.workspaceId })?
+                .panes
+            else { continue }
+            for pane in panes {
+                guard !agentPaneKeys.contains(
+                    PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId)
+                ), let title = nonEmptyProcessName(pane.processName)
+                else { continue }
+                switch pane.status {
+                case .working:
+                    result.append(CommandSidebarItem(
+                        workspaceId: workspace.workspaceId,
+                        paneId: pane.paneId,
+                        title: title,
+                        detail: detail(workspace: workspace, paneId: pane.paneId),
+                        indicator: .running
+                    ))
+                case .blocked, .done:
+                    guard !pane.acknowledged else { continue }
+                    result.append(CommandSidebarItem(
+                        workspaceId: workspace.workspaceId,
+                        paneId: pane.paneId,
+                        title: title,
+                        detail: detail(workspace: workspace, paneId: pane.paneId),
+                        indicator: .done
+                    ))
+                case .unknown, .idle:
+                    continue
+                }
+            }
+        }
+        return result
+    }
+
+    private static func nonEmptyProcessName(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
     }
 
     private struct PaneKey: Hashable {

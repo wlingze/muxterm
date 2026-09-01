@@ -411,6 +411,35 @@ extension MainWindowController {
         bridge.session
     }
 
+    func testWorkspaceCount() -> Int {
+        workspaceSidebar.testWorkspaceCount()
+    }
+
+    func testWorkspaceIDs() -> [String] {
+        workspaceSidebar.testWorkspaceIDs()
+    }
+
+    func testWorkspaceNames() -> [String] {
+        workspaceSidebar.testWorkspaceNames()
+    }
+
+    func refreshWorkspaceSidebarForTest() {
+        refreshWorkspaceSidebar(force: true)
+    }
+
+    func testCloseWorkspace(workspaceId: String) {
+        closeWorkspace(workspaceId)
+    }
+
+    func testSwitchBackToFirstWorkspace() {
+        switchToWorkspaceAtFixedIndex(1)
+    }
+
+    func testWindowClosing() -> Bool {
+        isClosing
+    }
+
+
     func testTogglePaneFullscreen() {
         toggleActivePaneFullscreen()
         pollOnce()
@@ -453,6 +482,35 @@ extension MainWindowController {
             context: nil,
             characters: arrow,
             charactersIgnoringModifiers: arrow,
+            isARepeat: false,
+            keyCode: keyCode
+        )
+    }
+
+    /// 构造带修饰键的普通字符事件，走生产 `handleKey`。
+    func testMakeKeyEvent(
+        key: String,
+        keyCode: UInt16,
+        command: Bool = false,
+        control: Bool = false,
+        option: Bool = false,
+        shift: Bool = false
+    ) -> NSEvent? {
+        guard let window else { return nil }
+        var flags: NSEvent.ModifierFlags = []
+        if command { flags.insert(.command) }
+        if control { flags.insert(.control) }
+        if option { flags.insert(.option) }
+        if shift { flags.insert(.shift) }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: key,
+            charactersIgnoringModifiers: key,
             isARepeat: false,
             keyCode: keyCode
         )

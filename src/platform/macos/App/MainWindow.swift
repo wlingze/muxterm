@@ -39,6 +39,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var settingsWindow: SettingsWindowController?
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
+    private var nextWorkspaceOpenedOrder: UInt64 = 1
     private let quickConnectStore: QuickConnectStore
     private var pollTimer: Timer?
     /// 主窗口 local key monitor 的 token；独立 NSPanel 的事件不能进入这里。
@@ -240,7 +241,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
             _ = self?.activateWorkspaceIfAvailable(workspaceId)
         }
+        workspaceSidebar.onWorkspaceClose = { [weak self] workspaceId in
+            self?.closeWorkspace(workspaceId)
+        }
         workspaceSidebar.onAgentActivate = { [weak self] workspaceId, paneId in
+            guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
+            _ = self.bridge.attentionAcknowledge(paneId: paneId)
+            self.jumpToPane(tabId: nil, paneId: paneId)
+            self.refreshWorkspaceSidebar()
+        }
+        workspaceSidebar.onCommandActivate = { [weak self] workspaceId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
             _ = self.bridge.attentionAcknowledge(paneId: paneId)
             self.jumpToPane(tabId: nil, paneId: paneId)
@@ -424,6 +434,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             targetConfig: initialTarget,
             now: 0
         )
+        initialSlot.openedOrder = nextWorkspaceOpenedOrder
+        nextWorkspaceOpenedOrder += 1
         connectionPool.acquire(key: initialKey) { _ in initialSlot }
 
         installKeyEquivalents()
@@ -654,6 +666,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @objc func switchToLastTab() {
         guard let tabId = tabEntriesForSwitching().last?.id else { return }
         requestSwitchTab(tabId)
+    }
+
+    /// Cmd+Ctrl+N：按固定打开顺序切换 Workspace，不随最近使用重排。
+    /// 与 Linux Ctrl+Alt+N 使用同一组 `switch_workspace_N` 语义。
+    func switchToWorkspaceAtFixedIndex(_ oneBased: Int) {
+        guard (1...5).contains(oneBased) else { return }
+        let ordered = workspaceSidebarFixedSlots()
+        guard ordered.indices.contains(oneBased - 1) else { return }
+        activate(slot: ordered[oneBased - 1])
     }
 
     @objc func splitHorizontal() {
@@ -975,19 +996,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return workspaceReplicaID(from: bridge, target: target)
     }
 
-    private func sidebarItems() -> [WorkspaceSidebarItem] {
-        let slots = connectionPool.slots.values
+    private func workspaceSidebarFixedSlots() -> [WarmConnectionSlot] {
+        connectionPool.slots.values
             .filter { $0.lifecycle != .evicting }
             .sorted { lhs, rhs in
-                if (lhs.lifecycle == .active) != (rhs.lifecycle == .active) {
-                    return lhs.lifecycle == .active
+                if lhs.openedOrder != rhs.openedOrder {
+                    return lhs.openedOrder < rhs.openedOrder
                 }
-                if lhs.lastUsedAt != rhs.lastUsedAt {
-                    return lhs.lastUsedAt > rhs.lastUsedAt
-                }
-                return lhs.targetConfig.name < rhs.targetConfig.name
+                return lhs.key.session < rhs.key.session
             }
-        return slots.compactMap { slot in
+    }
+
+    private func sidebarItems() -> [WorkspaceSidebarItem] {
+        let slots = workspaceSidebarFixedSlots()
+        return slots.enumerated().compactMap { index, slot in
+            let shortcut = index < 5 ? index + 1 : nil
             // `withBridge` holds the slot lock; capture lock-backed lifecycle
             // first so the projection never attempts to acquire it recursively.
             let isActive = slot.lifecycle == .active
@@ -999,19 +1022,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     runtime: target.runtime.rawValue,
                     transport: target.transport.label,
                     isActive: isActive,
+                    shortcut: shortcut,
                     structuredAgents: candidate.structuredAgentSnapshot()
                 )
             }
         }
     }
 
-    private func refreshWorkspaceSidebar(force: Bool = false) {
+    func refreshWorkspaceSidebar(force: Bool = false) {
         guard force || isWorkspaceSidebarOpen else { return }
         let workspaces = sidebarItems()
         workspaceSidebar.setWorkspaces(workspaces)
+        let attention = attentionSnapshotForPanel()
         workspaceSidebar.setAgents(WorkspaceSidebarProjection.agents(
             workspaces: workspaces,
-            attention: attentionSnapshotForPanel()
+            attention: attention
+        ))
+        workspaceSidebar.setCommands(WorkspaceSidebarProjection.commands(
+            workspaces: workspaces,
+            attention: attention
         ))
     }
 
@@ -1138,6 +1167,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 terminalManager: terminalManager,
                 now: 0
             )
+            currentSlot.openedOrder = nextWorkspaceOpenedOrder
+            nextWorkspaceOpenedOrder += 1
             _ = connectionPool.acquire(key: currentKey) { _ in currentSlot }
         }
         let key = ConnectionKey(
@@ -1148,7 +1179,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             path: "",
             socket: nextBridge.socket
         )
+        nextBridge.session = session
         activate(slot: WarmConnectionSlot(key: key, bridge: nextBridge, now: 0))
+    }
+
+    /// Close a warm workspace from the sidebar. The active slot falls forward to
+    /// the next warm workspace; closing the last one closes the session window.
+    func closeWorkspace(_ workspaceId: String) {
+        guard let slot = connectionPool.slots.values.first(where: { candidate in
+            candidate.lifecycle != .evicting && candidate.withBridge { bridge in
+                workspaceReplicaID(from: bridge, target: candidate.targetConfig) == workspaceId
+            } == true
+        }) else { return }
+
+        let wasActive = slot.lifecycle == .active
+        let ordered = workspaceSidebarFixedSlots()
+        let index = ordered.firstIndex(where: { $0 === slot }) ?? 0
+        let fallback = wasActive
+            ? ordered.dropFirst(index + 1).first
+                ?? ordered.prefix(index).last
+            : nil
+
+        connectionPool.close(key: slot.key)
+        content.paneLayout.dropParked(except: Array(connectionPool.slots.values.map(\.terminalManager)))
+        if wasActive {
+            if let fallback {
+                activate(slot: fallback)
+            } else {
+                closeSessionWindow()
+            }
+        }
+        refreshWorkspaceSidebar(force: true)
     }
 
     @discardableResult
@@ -1738,7 +1799,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let oldBridge = bridge
         slot.prepareForForeground()
         slot.applyPendingSurfaceEvents()
-        connectionPool.acquire(key: slot.key) { _ in slot }
+        if slot.openedOrder == 0 {
+            slot.openedOrder = nextWorkspaceOpenedOrder
+            nextWorkspaceOpenedOrder += 1
+        }
+        _ = connectionPool.acquire(key: slot.key) { _ in slot }
         bridge = slot.bridge
         terminalManager = slot.terminalManager
         trafficRateSampler.reset()
@@ -3582,6 +3647,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             resetTerminalFontSize(nil)
         case .togglePaneFullscreen:
             toggleActivePaneFullscreen()
+        case .toggleSidebar:
+            toggleWorkspaceSidebar()
+        case .switchWorkspace(let n):
+            switchToWorkspaceAtFixedIndex(n)
         }
         return true
     }

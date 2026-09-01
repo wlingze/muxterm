@@ -162,6 +162,71 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         XCTAssertTrue(AttentionList.rows(from: attention, query: "").isEmpty)
     }
 
+    func testCommandsSeparateRunningAndUnreadCommandsFromAgents() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            name: "dev",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true,
+            shortcut: 1
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 0,
+                    working: 2,
+                    panes: [
+                        PaneAttention(
+                            paneId: 1,
+                            status: .working,
+                            acknowledged: true,
+                            lastLine: "building",
+                            seq: 1,
+                            processName: "cargo test"
+                        ),
+                        PaneAttention(
+                            paneId: 2,
+                            status: .done,
+                            acknowledged: false,
+                            lastLine: "finished",
+                            seq: 2,
+                            processName: "sleep"
+                        ),
+                        PaneAttention(
+                            paneId: 3,
+                            status: .done,
+                            acknowledged: true,
+                            lastLine: "read",
+                            seq: 3,
+                            processName: "make"
+                        ),
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            acknowledged: true,
+                            lastLine: "codex",
+                            seq: 4,
+                            processName: "codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let commands = WorkspaceSidebarProjection.commands(
+            workspaces: [workspace],
+            attention: attention
+        )
+
+        XCTAssertEqual(commands.map(\.title), ["cargo test", "sleep"])
+        XCTAssertEqual(commands.map(\.paneId), [1, 2])
+        XCTAssertEqual(commands.map(\.indicator), [.running, .done])
+    }
+
     func testOrdinaryCommandDoesNotBecomePermanentAgent() {
         let workspaceId = "local@@dev@tmux@dev"
         let workspace = WorkspaceSidebarItem(
