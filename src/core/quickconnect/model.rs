@@ -2,6 +2,7 @@
 //!
 //! 目标配置 / 展示 / 派生逻辑，供 QuickConnect 面板与单测共用。
 
+use std::collections::HashSet;
 use std::path::Path;
 
 /// 快速连接目标的运行时（shell / tmux）。
@@ -116,19 +117,276 @@ impl TargetConfig {
     /// 身份 key：transport target、runtime、session、target-side socket 与
     /// workspace_id。`name`/`path` 是显示/项目元数据，不参与身份。
     pub fn identity_key(&self) -> String {
-        let transport_target = match &self.transport {
-            TargetTransport::Local => "".to_string(),
-            TargetTransport::Ssh { name } => name.clone(),
+        let (transport, target) = match &self.transport {
+            TargetTransport::Local => ("local", ""),
+            TargetTransport::Ssh { name } => ("ssh", name.as_str()),
         };
-        format!(
-            "{}|{}|{}|{}|{}",
-            transport_target,
-            self.runtime.as_str(),
-            self.session.as_deref().unwrap_or_default(),
-            self.socket.as_deref().unwrap_or_default(),
-            self.workspace_id.as_deref().unwrap_or_default(),
-        )
+        let runtime = self.runtime.as_str();
+        let components = match self.runtime {
+            // Shell 的 cwd 是它的 attach identity；name 只用于显示。
+            TargetRuntime::Shell => vec![
+                runtime.to_string(),
+                transport.to_string(),
+                target.to_string(),
+                if self.path.is_empty() {
+                    self.name.clone()
+                } else {
+                    self.path.clone()
+                },
+            ],
+            // Project 记录通常没有单独的 session 字段，但 tmux Project
+            // 的 name 就是创建/attach 时使用的 session 名。
+            TargetRuntime::Tmux => vec![
+                runtime.to_string(),
+                transport.to_string(),
+                target.to_string(),
+                self.session
+                    .clone()
+                    .filter(|session| !session.is_empty())
+                    .unwrap_or_else(|| self.name.clone()),
+                self.socket.clone().unwrap_or_default(),
+            ],
+            // Herdr 只有三项 typed identity 都存在时才可跨 Project/Existing
+            // 复用；旧配置则保留 name/path 作为 provisional key。
+            TargetRuntime::Herdr
+                if self.session.as_deref().is_some_and(|v| !v.is_empty())
+                    && self.socket.as_deref().is_some_and(|v| !v.is_empty())
+                    && self.workspace_id.as_deref().is_some_and(|v| !v.is_empty()) =>
+            {
+                vec![
+                    runtime.to_string(),
+                    transport.to_string(),
+                    target.to_string(),
+                    self.session.clone().unwrap_or_default(),
+                    self.socket.clone().unwrap_or_default(),
+                    self.workspace_id.clone().unwrap_or_default(),
+                ]
+            }
+            TargetRuntime::Herdr => vec![
+                "herdr-provisional".to_string(),
+                transport.to_string(),
+                target.to_string(),
+                self.name.clone(),
+                self.path.clone(),
+            ],
+        };
+        // 长度前缀避免 session/socket/path 中的分隔符造成碰撞。
+        components
+            .iter()
+            .map(|component| format!("{}:{component}", component.len()))
+            .collect::<Vec<_>>()
+            .join("|")
     }
+
+    /// 用于工作区面板搜索的字段集合。
+    ///
+    /// 这些字段都是目标描述的一部分；尤其是 SSH alias、session、socket
+    /// 和 Herdr workspace_id，不能只靠用户可见的 name/path 搜索到。
+    fn search_fields(&self) -> Vec<String> {
+        let transport = match &self.transport {
+            TargetTransport::Local => "local".to_string(),
+            TargetTransport::Ssh { name } => format!("ssh {name}"),
+        };
+        vec![
+            self.name.clone(),
+            self.runtime.as_str().to_string(),
+            transport,
+            self.path.clone(),
+            self.session.clone().unwrap_or_default(),
+            self.socket.clone().unwrap_or_default(),
+            self.workspace_id.clone().unwrap_or_default(),
+        ]
+    }
+}
+
+/// 工作区面板查询。
+///
+/// 普通词使用大小写不敏感的子序列匹配（例如 `mterm` 可以命中
+/// `muxterm`）；多个普通词必须全部命中。`@tmux`、`@herdr`、`@shell`
+/// 是 runtime 条件，`@local` 是本地传输条件，其他 `@xxx` 会被当成
+/// SSH alias 条件。多个 `@` 条件同样是 AND 关系。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkspaceQuery {
+    terms: Vec<String>,
+    runtime_filters: Vec<TargetRuntime>,
+    local_only: bool,
+    ssh_alias_filters: Vec<String>,
+}
+
+impl WorkspaceQuery {
+    pub fn parse(raw: &str) -> Self {
+        let mut query = Self::default();
+        for token in raw.split_whitespace() {
+            let Some(filter) = token.strip_prefix('@') else {
+                query.terms.push(token.to_lowercase());
+                continue;
+            };
+            if filter.is_empty() {
+                continue;
+            }
+            let filter = filter.to_lowercase();
+            if let Some(runtime) = TargetRuntime::from_str(&filter) {
+                query.runtime_filters.push(runtime);
+            } else if filter == "local" {
+                query.local_only = true;
+            } else {
+                query.ssh_alias_filters.push(filter);
+            }
+        }
+        query
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+            && self.runtime_filters.is_empty()
+            && !self.local_only
+            && self.ssh_alias_filters.is_empty()
+    }
+
+    /// 返回目标是否满足全部搜索条件。
+    pub fn matches(&self, config: &TargetConfig) -> bool {
+        self.score(config).is_some()
+    }
+
+    /// 返回用于排序的匹配分数；不匹配时返回 `None`。
+    ///
+    /// 分数只用于把更紧密的结果排在前面，不改变过滤语义。精确子串
+    /// 优先于稀疏子序列，较短字段优先于较长字段。
+    pub fn score(&self, config: &TargetConfig) -> Option<u32> {
+        if self
+            .runtime_filters
+            .iter()
+            .any(|runtime| runtime != &config.runtime)
+        {
+            return None;
+        }
+        if self.local_only && !matches!(config.transport, TargetTransport::Local) {
+            return None;
+        }
+        for alias in &self.ssh_alias_filters {
+            let TargetTransport::Ssh { name } = &config.transport else {
+                return None;
+            };
+            if !name.eq_ignore_ascii_case(alias) {
+                return None;
+            }
+        }
+
+        let fields = config.search_fields();
+        let mut score = 10_000u32;
+        for term in &self.terms {
+            let term_score = fields
+                .iter()
+                .filter_map(|field| fuzzy_field_score(field, term))
+                .max()?;
+            score = score.saturating_add(term_score);
+        }
+        // 条件越具体，结果越靠前；普通的 filter query 仍只依赖 matches。
+        score = score
+            .saturating_add((self.runtime_filters.len() as u32) * 2_000)
+            .saturating_add(if self.local_only || !self.ssh_alias_filters.is_empty() {
+                2_000
+            } else {
+                0
+            });
+        Some(score)
+    }
+
+    /// 当前输入 token 的补全候选。返回值带 `@`，可直接替换 token。
+    pub fn completion_candidates(raw: &str, ssh_aliases: &[String]) -> Vec<String> {
+        let Some(token) = current_token(raw) else {
+            return Vec::new();
+        };
+        let Some(prefix) = token.strip_prefix('@') else {
+            return Vec::new();
+        };
+        let mut candidates = vec![
+            "@shell".to_string(),
+            "@tmux".to_string(),
+            "@herdr".to_string(),
+            "@local".to_string(),
+        ];
+        let mut seen: HashSet<String> = candidates
+            .iter()
+            .map(|value| value.to_lowercase())
+            .collect();
+        for alias in ssh_aliases {
+            let alias = alias.trim();
+            if !alias.is_empty() {
+                let candidate = format!("@{alias}");
+                if seen.insert(candidate.to_lowercase()) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        let prefix = prefix.to_lowercase();
+        candidates.retain(|candidate| {
+            let candidate = candidate.strip_prefix('@').unwrap_or(candidate);
+            prefix.is_empty() || fuzzy_subsequence(candidate, &prefix).is_some()
+        });
+        candidates
+    }
+
+    /// 用补全候选替换输入中的最后一个 token，并保留前面的条件。
+    pub fn replace_current_token(raw: &str, replacement: &str) -> String {
+        let start = raw
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map(|(index, ch)| index + ch.len_utf8())
+            .unwrap_or(0);
+        format!("{}{}", &raw[..start], replacement)
+    }
+}
+
+fn current_token(raw: &str) -> Option<&str> {
+    if raw.chars().last().is_some_and(char::is_whitespace) {
+        return None;
+    }
+    raw.split_whitespace().last()
+}
+
+fn fuzzy_field_score(field: &str, query: &str) -> Option<u32> {
+    let field = field.to_lowercase();
+    let query = query.to_lowercase();
+    if query.is_empty() {
+        return Some(0);
+    }
+    if field.contains(&query) {
+        return Some(2_000u32.saturating_sub(field.chars().count() as u32));
+    }
+    fuzzy_subsequence(&field, &query).map(|gaps| {
+        1_000u32
+            .saturating_sub(gaps)
+            .saturating_sub(field.chars().count() as u32 / 4)
+    })
+}
+
+/// 返回匹配字符之间的 gap 数；越小表示越紧密。
+fn fuzzy_subsequence(candidate: &str, query: &str) -> Option<u32> {
+    let candidate: Vec<char> = candidate.chars().collect();
+    let mut gaps = 0u32;
+    let mut previous_position = None;
+    for wanted in query.chars() {
+        let mut found = false;
+        for (position, actual) in candidate.iter().enumerate() {
+            if previous_position.is_some_and(|previous| position <= previous) {
+                continue;
+            }
+            if *actual == wanted {
+                if let Some(previous) = previous_position {
+                    gaps = gaps.saturating_add(position.saturating_sub(previous + 1) as u32);
+                }
+                previous_position = Some(position);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+    Some(gaps)
 }
 
 /// 快速连接条目上的小标记：目标同时是 Recent 和/或 Project。
@@ -192,14 +450,47 @@ impl QuickConnect {
         config.runtime == TargetRuntime::Tmux && !existing_name.unwrap_or("").trim().is_empty()
     }
 
-    /// 展示文本（搜索用）：name + 副标题 + path。
+    /// 展示文本（搜索用）：name + runtime/transport + path + attach identity。
     pub fn search_text(config: &TargetConfig) -> String {
-        format!("{} {} {}", config.name, Self::subtitle(config), config.path).to_lowercase()
+        config.search_fields().join(" ").to_lowercase()
     }
 
-    /// 目标唯一 ID：`name@transport`。
+    /// 工作区面板的统一查询匹配。
+    pub fn matches_query(config: &TargetConfig, query: &str) -> bool {
+        WorkspaceQuery::parse(query).matches(config)
+    }
+
+    /// 工作区面板的统一查询分数。
+    pub fn search_score(config: &TargetConfig, query: &str) -> Option<u32> {
+        WorkspaceQuery::parse(query).score(config)
+    }
+
+    /// 按查询过滤并按模糊匹配紧密度排序。
+    pub fn filter_entries(entries: &[QuickConnectEntry], query: &str) -> Vec<QuickConnectEntry> {
+        let parsed = WorkspaceQuery::parse(query);
+        let mut matched: Vec<(usize, u32, QuickConnectEntry)> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                parsed
+                    .score(&entry.config)
+                    .map(|score| (index, score, entry.clone()))
+            })
+            .collect();
+        matched.sort_by(
+            |(left_index, left_score, _), (right_index, right_score, _)| {
+                right_score
+                    .cmp(left_score)
+                    .then(left_index.cmp(right_index))
+            },
+        );
+        matched.into_iter().map(|(_, _, entry)| entry).collect()
+    }
+
+    /// 目标唯一 ID：与 attach identity 一致；name/path 只在 identity 不完整
+    /// 的 Project/Herdr provisional 阶段参与 key。
     pub fn unique_id(config: &TargetConfig) -> String {
-        format!("{}@{}", config.name, config.transport.label())
+        config.identity_key()
     }
 
     /// 计算目标应显示的标记：Recent 在前、Project 在后。
@@ -220,7 +511,7 @@ impl QuickConnect {
     }
 
     /// 面板条目：先展示最近的前 `recent_limit` 条（最新在前），
-    /// 再补 Project 中未出现的目标。按唯一 ID 去重。
+    /// 再补 Project 中未出现的目标。按 attach identity 去重。
     pub fn entries(
         recents: &[TargetConfig],
         projects: &[TargetConfig],
@@ -302,7 +593,130 @@ mod tests {
             "~/x",
         );
         assert_ne!(QuickConnect::unique_id(&a), QuickConnect::unique_id(&b));
-        assert_eq!(QuickConnect::unique_id(&a), "srv@local");
+        assert_eq!(QuickConnect::unique_id(&a), a.identity_key());
+    }
+
+    #[test]
+    fn workspace_query_fuzzy_matches_all_terms() {
+        let config = TargetConfig::new(
+            "muxterm",
+            TargetRuntime::Tmux,
+            TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+            "/home/wlz/Developer/muxterm",
+        );
+        assert!(QuickConnect::matches_query(&config, "mterm @tmux @ryzen"));
+        assert!(QuickConnect::matches_query(&config, "@ryzen mux"));
+        assert!(!QuickConnect::matches_query(&config, "mterm @shell"));
+        assert!(!QuickConnect::matches_query(&config, "mterm @local"));
+        assert!(!QuickConnect::matches_query(&config, "mterm @legion"));
+    }
+
+    #[test]
+    fn workspace_query_is_case_insensitive_and_combines_runtime_transport_filters() {
+        let remote_tmux = cfg(
+            "MuxTerm",
+            TargetRuntime::Tmux,
+            TargetTransport::Ssh {
+                name: "RyZen".into(),
+            },
+            "/srv/muxterm",
+        );
+        let local_tmux = cfg(
+            "MuxTerm",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "/srv/muxterm",
+        );
+
+        assert!(QuickConnect::matches_query(
+            &remote_tmux,
+            "MXE @TMUX @RYZEN"
+        ));
+        assert!(!QuickConnect::matches_query(
+            &local_tmux,
+            "MXE @TMUX @RYZEN"
+        ));
+        assert!(QuickConnect::matches_query(&local_tmux, "mxe @tmux @local"));
+        assert!(!QuickConnect::matches_query(
+            &remote_tmux,
+            "mxe @tmux @local"
+        ));
+    }
+
+    #[test]
+    fn workspace_query_searches_attach_fields() {
+        let mut config = cfg(
+            "display-name",
+            TargetRuntime::Herdr,
+            TargetTransport::Local,
+            "/project",
+        );
+        config.session = Some("agents".into());
+        config.socket = Some("/tmp/agents.sock".into());
+        config.workspace_id = Some("w7".into());
+        assert!(QuickConnect::matches_query(&config, "agent"));
+        assert!(QuickConnect::matches_query(&config, "w7"));
+        assert!(QuickConnect::matches_query(&config, "sock"));
+    }
+
+    #[test]
+    fn workspace_query_completion_replaces_only_current_token() {
+        let candidates = WorkspaceQuery::completion_candidates(
+            "project @ry",
+            &["ryzen".into(), "legion".into()],
+        );
+        assert_eq!(candidates, vec!["@ryzen"]);
+        assert_eq!(
+            WorkspaceQuery::replace_current_token("project @ry", "@ryzen"),
+            "project @ryzen"
+        );
+        assert!(WorkspaceQuery::completion_candidates("project ", &["ryzen".into()]).is_empty());
+    }
+
+    #[test]
+    fn workspace_query_completion_lists_runtime_local_and_ssh_aliases() {
+        assert_eq!(
+            WorkspaceQuery::completion_candidates(
+                "@",
+                &["ryzen".into(), "RYZEN".into(), "legion".into()]
+            ),
+            vec![
+                "@shell".to_string(),
+                "@tmux".to_string(),
+                "@herdr".to_string(),
+                "@local".to_string(),
+                "@ryzen".to_string(),
+                "@legion".to_string(),
+            ]
+        );
+        assert_eq!(
+            WorkspaceQuery::completion_candidates("@tm", &["ryzen".into()]),
+            vec!["@tmux".to_string()]
+        );
+    }
+
+    #[test]
+    fn workspace_query_filter_sorts_tighter_match_first() {
+        let close = cfg(
+            "muxterm",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "~/x",
+        );
+        let sparse = cfg(
+            "m-u-x-t-e-r",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "~/x",
+        );
+        let entries = vec![
+            QuickConnectEntry::new(sparse, vec![]),
+            QuickConnectEntry::new(close, vec![]),
+        ];
+        let filtered = QuickConnect::filter_entries(&entries, "mxe");
+        assert_eq!(filtered[0].config.name, "muxterm");
     }
 
     #[test]

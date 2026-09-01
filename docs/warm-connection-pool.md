@@ -3,8 +3,9 @@
 ## 目标
 
 QuickConnect 已使用过的目标在切换时不立即关闭连接：前台只切换渲染，
-后台连接继续维护（继续 poll、保留 terminal state / snapshot），按
-LRU / TTL / memory pressure 淘汰。目标：warm switch 明显快于 cold connect。
+后台连接继续维护（继续 poll、保留 terminal state / snapshot），按用户明确关闭、
+TTL / memory pressure 回收；容量阈值只触发提醒，不自动做 LRU 淘汰。目标：
+warm switch 明显快于 cold connect。
 
 ## ConnectionKey
 
@@ -52,8 +53,9 @@ tmux 用 detach 保留 server/session；local shell 单独策略（不能误杀�
 - active slot 至多一个；其余 background
 - `acquire(key, create:)`：命中 active/background → reuse；未命中 → create
 - `release(key)`：切到 background，不 shutdown
-- `evictIfNeeded()`：超过 `maxSlots` 时按 LRU（lastUsedAt 升序）淘汰
-  background slot；TTL 到期也淘汰
+- `isOverCapacity` / `oldestBackgroundCandidates(limit:)`：超过 `maxSlots` 时提供
+  最久未使用的 background 候选给 UI，由用户选择关闭；不会因 acquire 自动 LRU 淘汰
+- `evictForCapacity()`：仅供显式容量清理路径使用；TTL 到期仍按策略淘汰
 - `evictUnderMemoryPressure()`：策略回调 / 协议单测，不虚构真实压力
 - 后台 poll：由 App 层 timer 驱动遍历 background slots，输出队列有上限
 

@@ -117,7 +117,9 @@ Live 显示仍走 Surface：原始字节按 `(WorkspaceId, PaneId)` 进入产品
 hidden tab/background workspace 继续 feed，只是不绘制。PaneBuf 给搜索/提醒，禁止
 `visible_ansi` dump。
 
-Workspace 不是无限的。`WorkspacePoolPolicy.max_slots` 默认 5，超出按 LRU detach。后台格子继续吃字节进 Index；像素 Surface 只保留已经建过的。
+WorkspacePool 不再因为容量静默淘汰工作区。`WorkspacePoolPolicy.max_slots` 默认 20，
+它是软提醒阈值：超过后 UI 列出最久未使用的后台 Workspace，由用户选择关闭；在用户选择前
+后台格子继续吃字节进 Index，像素 Surface 只保留已经建过的。
 
 ---
 
@@ -185,7 +187,7 @@ descriptor 作为完整 value 在 open 时注入；相同 identity 的 slot 复�
   registry 仍按 `(WorkspaceId, PaneId)` raw feed，不能只处理 attention 后丢像素事件
 - foreground 转换：只由 Pool 调用 Runtime 的通用 `set_foreground()`；platform 不按
   runtime 名字判断
-- 淘汰：超容量 / TTL → Tmux detach，Shell shutdown
+- 关闭/淘汰：用户选择关闭超出软阈值的 Workspace，或 TTL/内存压力策略触发时，Tmux detach、Shell shutdown
 - 搜索/提醒跨池里所有 Workspace
 
 platform **不得**再实现第二套淘汰/复用。macOS/Linux 的 slot 若还在，只表示「这个 WorkspaceId 的 **像素控件缓存**」（VTE 别扔掉），连接本身在 core 池里。

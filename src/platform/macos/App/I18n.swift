@@ -69,6 +69,10 @@ enum MuxtermTextKey: CaseIterable {
     case existingConnections
     case existingEmpty
     case existingLoading
+    case workspaceCapacityTitle
+    case workspaceCapacityMessage
+    case workspaceCapacityCloseSelected
+    case workspaceCapacityKeepAll
     case freeformUseTypedTarget
     case hintNewTab
     case hintQuit
@@ -285,6 +289,10 @@ enum MuxtermTextKey: CaseIterable {
         case .existingConnections: return "existing_connections"
         case .existingEmpty: return "existing_empty"
         case .existingLoading: return "existing_loading"
+        case .workspaceCapacityTitle: return "workspace_capacity_title"
+        case .workspaceCapacityMessage: return "workspace_capacity_message"
+        case .workspaceCapacityCloseSelected: return "workspace_capacity_close_selected"
+        case .workspaceCapacityKeepAll: return "workspace_capacity_keep_all"
         case .freeformUseTypedTarget: return "freeform_use_typed_target"
         case .hintNewTab: return "hint_new_tab"
         case .hintQuit: return "hint_quit"

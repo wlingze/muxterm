@@ -3,8 +3,8 @@ import Foundation
 /// Warm connection pool 的纯逻辑（无 AppKit 依赖）。
 ///
 /// 连接池持有多个后台连接；前台同一时刻至多一个 active slot。
-/// 切换目标时优先复用已有连接（不 shutdown），只在容量超限 / TTL 到期 /
-/// memory pressure 时才淘汰（tmux 用 detach，保留 server/session）。
+/// 切换目标时优先复用已有连接（不 shutdown）。容量超限只触发 UI 提醒；
+/// 用户明确关闭、TTL 到期或 memory pressure 时才淘汰（tmux 用 detach，保留 server/session）。
 public struct ConnectionKey: Hashable, Sendable {
     public let transport: String // "local" / "ssh"
     public let alias: String?    // SSH host alias；local 为 nil
@@ -103,6 +103,20 @@ public enum ConnectionEvictionReason: Equatable, Sendable {
     case capacity
     case ttl
     case memoryPressure
+    case closed
+}
+
+/// 后台连接容量提醒显示给用户的摘要。
+public struct ConnectionCapacityCandidate: Equatable, Sendable {
+    public let key: ConnectionKey
+    public let targetConfig: TargetConfig
+    public let lastUsedAt: UInt64
+
+    public init(key: ConnectionKey, targetConfig: TargetConfig, lastUsedAt: UInt64) {
+        self.key = key
+        self.targetConfig = targetConfig
+        self.lastUsedAt = lastUsedAt
+    }
 }
 
 /// 连接池中一个连接的抽象：真实实现持有 CoreBridge / TerminalManager。
@@ -145,6 +159,32 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
 
     public var slotCount: Int { slots.count }
 
+    public var maxSlots: Int { max(1, policy.maxSlots) }
+
+    /// 容量是软提醒阈值；新连接不会因此静默淘汰旧 Workspace。
+    public var isOverCapacity: Bool { slotCount > maxSlots }
+
+    /// 返回最久未使用的后台连接，供 UI 让用户选择性关闭。
+    public func oldestBackgroundCandidates(limit: Int) -> [ConnectionCapacityCandidate] {
+        guard limit > 0 else { return [] }
+        return slots.values
+            .filter { $0.lifecycle == .background }
+            .sorted {
+                if $0.lastUsedAt != $1.lastUsedAt {
+                    return $0.lastUsedAt < $1.lastUsedAt
+                }
+                return $0.key.session < $1.key.session
+            }
+            .prefix(limit)
+            .map {
+                ConnectionCapacityCandidate(
+                    key: $0.key,
+                    targetConfig: $0.targetConfig,
+                    lastUsedAt: $0.lastUsedAt
+                )
+            }
+    }
+
     /// 最近打开的目标（按 lastUsedAt 倒序），供 QuickConnect 的 Recent 列表。
     public func recentTargetConfigs(limit: Int = 5) -> [TargetConfig] {
         guard limit > 0 else { return [] }
@@ -169,6 +209,12 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
                 return $0.key.session < $1.key.session
             })
         return ordered.prefix(limit).map(\.targetConfig)
+    }
+
+    /// 连接池中的完整 Workspace 快照，按最近使用顺序返回。
+    /// 与紧凑 Recent 展示不同，搜索需要包含软阈值之后仍保留的连接。
+    public func allRecentTargetConfigs() -> [TargetConfig] {
+        recentTargetConfigs(limit: Int.max)
     }
 
     /// 当前前台连接对应的目标（用于 QuickConnect 行高亮）。
@@ -234,7 +280,6 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
         slot.lifecycle = .active
         slots[key] = slot
         activeKey = key
-        evictForCapacity()
         return (slot, true)
     }
 
@@ -245,9 +290,10 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
         activeKey = nil
     }
 
-    /// 淘汰超过 maxSlots 的 background（LRU：lastUsedAt 升序）。
+    /// 显式容量清理：按 LRU（lastUsedAt 升序）淘汰超过 maxSlots 的 background。
+    /// acquire 本身不会调用此方法。
     public func evictForCapacity() {
-        let maxSlots = max(1, policy.maxSlots)
+        let maxSlots = self.maxSlots
         guard slots.count > maxSlots else { return }
         let background = slots.values
             .filter { $0.lifecycle == .background }
@@ -286,7 +332,7 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
     @discardableResult
     public func close(key: ConnectionKey) -> Bool {
         guard let slot = slots[key] else { return false }
-        evict(slot, reason: .capacity)
+        evict(slot, reason: .closed)
         return true
     }
 

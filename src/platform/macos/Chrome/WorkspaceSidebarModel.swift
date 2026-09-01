@@ -163,7 +163,7 @@ public enum WorkspaceSidebarProjection {
     private static let knownAgents = [
         "codex", "cursor", "claude", "gemini", "aider", "opencode",
         "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
-        "pi", "hermes",
+        "pi", "hermes", "droid",
     ]
 
     public static func agents(
@@ -205,7 +205,9 @@ public enum WorkspaceSidebarProjection {
                 .first(where: { $0.workspaceId == workspace.workspaceId })?
                 .panes ?? []
             for pane in generic where !structuredPaneIDs.contains(pane.paneId) {
-                guard let name = knownAgentName(pane.processName) else { continue }
+                let isAgent = pane.processIsAgent || knownAgentName(pane.processName) != nil
+                guard isAgent else { continue }
+                let name = knownAgentName(pane.processName) ?? pane.processName ?? "Agent"
                 result.append(AgentSidebarItem(
                     workspaceId: workspace.workspaceId,
                     paneId: pane.paneId,
@@ -215,7 +217,19 @@ public enum WorkspaceSidebarProjection {
                 ))
             }
         }
-        return result
+        return result.sorted { lhs, rhs in
+            let rank: (AgentSidebarIndicator) -> Int = { indicator in
+                switch indicator {
+                case .done: 0
+                case .running: 1
+                case .read: 2
+                }
+            }
+            let lhsRank = rank(lhs.indicator)
+            let rhsRank = rank(rhs.indicator)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
     }
 
     /// Project ordinary commands across warm workspaces.
@@ -235,7 +249,7 @@ public enum WorkspaceSidebarProjection {
         for workspace in workspaces {
             for pane in attention?.workspaces.first(where: {
                 $0.workspaceId == workspace.workspaceId
-            })?.panes ?? [] where knownAgentName(pane.processName) != nil {
+            })?.panes ?? [] where pane.processIsAgent || knownAgentName(pane.processName) != nil {
                 agentPaneKeys.insert(PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId))
             }
         }

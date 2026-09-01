@@ -194,5 +194,9 @@
   "existing_ssh": "SSH",
   "existing_back": "返回",
   "existing_empty": "没有正在运行的 tmux 或 Herdr",
-  "existing_probing": "正在检查远程…"
+  "existing_probing": "正在检查远程…",
+  "workspace_capacity_title": "工作区数量较多",
+  "workspace_capacity_message": "当前保留了 {{count}} 个工作区（软提醒阈值 {{limit}}）。可以选择关闭长期未使用的后台工作区；当前工作区不会被列出。",
+  "workspace_capacity_close_selected": "关闭选中项",
+  "workspace_capacity_keep_all": "全部保留"
 }

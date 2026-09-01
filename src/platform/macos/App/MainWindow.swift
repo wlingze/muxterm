@@ -107,6 +107,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
     /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
     private let connectionPool: ConnectionPool<WarmConnectionSlot>
+    /// 已针对该 slot 数量显示过一次容量提醒；用户选择保留后不在每个 poll
+    /// 重复打断，数量变化（新建或关闭）后才重新评估。
+    private var capacityWarningPresentedForSlotCount: Int?
     /// 终端字体配置（config.toml `[font]`；Cmd +/- 缩放时保留 family）。
     private var terminalFontSettings: MuxtermTerminalFont.Settings
     /// Cmd +/- / Cmd 0 只写 Core `[font] size`；不再使用 UserDefaults 覆盖。
@@ -119,7 +122,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var themeName = "light"
         var statusBarMode = StatusBarMode.tmux
         var tabBarPosition = TabBarPosition.bottom
-        var poolMaxSlots = 4
+        var poolMaxSlots = MuxtermConfig.defaultPoolMaxSlots
         var projects: [TargetConfig] = []
     }
 
@@ -286,6 +289,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 return
             }
             self.loadExistingConnections(completion: completion)
+        }
+        unifiedPanel.onLoadSSHAliases = { [weak self] completion in
+            guard let self else {
+                completion(.success([]))
+                return
+            }
+            self.loadSSHAliases(completion: completion)
         }
         unifiedPanel.onAttachExistingConnection = { [weak self] choice in
             self?.attachExistingConnection(choice)
@@ -840,7 +850,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let unifiedPanel else { return }
         // Recent 由连接池派生（最近打开且仍 warm 的连接）；当前连接用于行高亮。
         unifiedPanel.currentConfig = connectionPool.currentTargetConfig
-        quickConnectStore.replaceRecents(connectionPool.recentTargetConfigs())
+        quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
         unifiedPanel.show(tab: .workspaces)
     }
 
@@ -1202,6 +1212,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         connectionPool.close(key: slot.key)
         content.paneLayout.dropParked(except: Array(connectionPool.slots.values.map(\.terminalManager)))
+        quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
         if wasActive {
             if let fallback {
                 activate(slot: fallback)
@@ -1210,6 +1221,83 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         refreshWorkspaceSidebar(force: true)
+    }
+
+    /// 容量是 soft limit：超过阈值时只提醒用户，绝不静默移除后台 Workspace。
+    /// 列出的都是最久未使用的后台 slot，当前活动 Workspace 永远不会出现在
+    /// 选择框中；用户选择后才调用同一条 sidebar close/evict 资源路径。
+    private func presentWorkspaceCapacityWarningIfNeeded() {
+        guard !isClosing else { return }
+        if !connectionPool.isOverCapacity {
+            capacityWarningPresentedForSlotCount = nil
+            return
+        }
+        guard capacityWarningPresentedForSlotCount != connectionPool.slotCount,
+              let ownerWindow = window
+        else { return }
+
+        let slotCount = connectionPool.slotCount
+        let overflow = max(1, slotCount - connectionPool.maxSlots)
+        let candidates = connectionPool.oldestBackgroundCandidates(
+            limit: min(8, overflow)
+        )
+        guard !candidates.isEmpty else { return }
+        capacityWarningPresentedForSlotCount = slotCount
+
+        let alert = NSAlert()
+        alert.messageText = MuxtermI18n.shared.tr(.workspaceCapacityTitle)
+        alert.informativeText = MuxtermI18n.shared.tr(
+            .workspaceCapacityMessage,
+            arguments: [
+                "count": "\(slotCount)",
+                "limit": "\(connectionPool.maxSlots)",
+            ]
+        )
+        alert.alertStyle = .warning
+
+        let choices = candidates.map { candidate -> (ConnectionCapacityCandidate, NSButton) in
+            let config = candidate.targetConfig
+            let button = NSButton(
+                checkboxWithTitle: "\(config.name) · \(config.runtime.rawValue) @ \(config.transport.label)",
+                target: nil,
+                action: nil
+            )
+            button.state = .off
+            return (candidate, button)
+        }
+        let accessory = NSStackView(views: choices.map(\.1))
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 6
+        accessory.setFrameSize(NSSize(
+            width: 380,
+            height: max(24, accessory.fittingSize.height)
+        ))
+        alert.accessoryView = accessory
+        alert.addButton(withTitle: MuxtermI18n.shared.tr(.workspaceCapacityCloseSelected))
+        alert.addButton(withTitle: MuxtermI18n.shared.tr(.workspaceCapacityKeepAll))
+
+        alert.beginSheetModal(for: ownerWindow) { [weak self] response in
+            guard let self else { return }
+            if response == .alertFirstButtonReturn {
+                for (candidate, checkbox) in choices where checkbox.state == .on {
+                    _ = self.connectionPool.close(key: candidate.key)
+                }
+                self.content.paneLayout.dropParked(
+                    except: Array(self.connectionPool.slots.values.map(\.terminalManager))
+                )
+                self.quickConnectStore.replaceAllRecents(
+                    self.connectionPool.allRecentTargetConfigs()
+                )
+                self.refreshWorkspaceSidebar(force: true)
+                self.unifiedPanel.refreshData()
+            }
+            // 关闭了部分候选后仍然超限时，不在同一轮连续弹窗；下一次新增
+            // slot（或手动关闭使数量变化）再重新提醒。
+            self.capacityWarningPresentedForSlotCount = self.connectionPool.isOverCapacity
+                ? self.connectionPool.slotCount
+                : nil
+        }
     }
 
     @discardableResult
@@ -1431,6 +1519,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             currentSocket: terminalManager.usesClientResize ? bridge.socket : nil,
             completion: completion
         )
+    }
+
+    /// `@alias` 补全读取全部 SSH config alias，不要求该 host 已经有可 attach
+    /// 的 workspace；发现过程在后台线程执行。
+    private func loadSSHAliases(completion: @escaping (Result<[String], Error>) -> Void) {
+        discovery.listSSHAliases(completion: completion)
     }
 
     /// Existing 行是严格 attach-only：不创建目录、不进入 ProjectConnectFlow。
@@ -1792,7 +1886,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 激活一个 warm slot：替换 bridge / TerminalManager / PaneLayout 的渲染源。
-    /// 旧 slot 由 ConnectionPool.acquire 自动降为 background，不 shutdown。
+    /// 旧 slot 由 ConnectionPool.acquire 自动降为 background，不 shutdown；
+    /// 新 slot 进入后再由 UI 检查 soft capacity。
     /// 激活已有 warm slot。保持 module-internal，供 in-process E2E 验证跨
     /// Workspace 搜索/Attention 跳转；产品入口仍由 Quick Connect 驱动。
     func activate(slot: WarmConnectionSlot) {
@@ -1803,7 +1898,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             slot.openedOrder = nextWorkspaceOpenedOrder
             nextWorkspaceOpenedOrder += 1
         }
-        _ = connectionPool.acquire(key: slot.key) { _ in slot }
+        let (_, created) = connectionPool.acquire(key: slot.key) { _ in slot }
+        quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
         bridge = slot.bridge
         terminalManager = slot.terminalManager
         trafficRateSampler.reset()
@@ -1867,6 +1963,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             DispatchQueue.global(qos: .utility).async {
                 oldBridge.shutdown()
             }
+        }
+        if created {
+            presentWorkspaceCapacityWarningIfNeeded()
         }
     }
 

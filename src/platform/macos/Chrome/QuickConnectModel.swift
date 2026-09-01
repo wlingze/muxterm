@@ -95,6 +95,167 @@ public struct TargetConfig: Equatable, Sendable {
         self.socket = socket
         self.workspaceID = workspaceID
     }
+
+    /// 工作区面板搜索字段：展示名、runtime、传输/SSH alias、路径以及
+    /// attach identity。Project 与 Existing 使用同一组字段。
+    fileprivate var searchFields: [String] {
+        let transport: String
+        switch self.transport {
+        case .local:
+            transport = "local"
+        case .ssh(let name):
+            transport = "ssh \(name)"
+        }
+        return [
+            name,
+            runtime.rawValue,
+            transport,
+            path,
+            session ?? "",
+            socket ?? "",
+            workspaceID ?? "",
+        ]
+    }
+}
+
+/// Workspaces tab 的查询规则。
+///
+/// 普通词使用大小写不敏感的子序列匹配；`@tmux` / `@herdr` / `@shell`
+/// 过滤 runtime，`@local` 过滤本地传输，其他 `@xxx` 过滤 SSH alias。
+/// 所有普通词和 `@` 条件都必须同时满足。
+public struct WorkspaceQuery: Equatable, Sendable {
+    private let terms: [String]
+    private let runtimeFilters: [TargetRuntime]
+    private let localOnly: Bool
+    private let sshAliasFilters: [String]
+
+    public init(_ raw: String) {
+        var terms: [String] = []
+        var runtimeFilters: [TargetRuntime] = []
+        var localOnly = false
+        var sshAliasFilters: [String] = []
+
+        for token in raw.split(whereSeparator: { $0.isWhitespace }) {
+            guard token.first == "@" else {
+                terms.append(token.lowercased())
+                continue
+            }
+            let filter = String(token.dropFirst()).lowercased()
+            guard !filter.isEmpty else { continue }
+            if let runtime = TargetRuntime(rawValue: filter) {
+                runtimeFilters.append(runtime)
+            } else if filter == "local" {
+                localOnly = true
+            } else {
+                sshAliasFilters.append(filter)
+            }
+        }
+        self.terms = terms
+        self.runtimeFilters = runtimeFilters
+        self.localOnly = localOnly
+        self.sshAliasFilters = sshAliasFilters
+    }
+
+    public var isEmpty: Bool {
+        terms.isEmpty && runtimeFilters.isEmpty && !localOnly && sshAliasFilters.isEmpty
+    }
+
+    public func matches(_ config: TargetConfig) -> Bool {
+        score(for: config) != nil
+    }
+
+    /// 越高表示匹配越紧密；只用于排序，不改变匹配结果。
+    public func score(for config: TargetConfig) -> Int? {
+        guard runtimeFilters.allSatisfy({ $0 == config.runtime }) else { return nil }
+        if localOnly, config.transport != .local { return nil }
+        for alias in sshAliasFilters {
+            guard case .ssh(let name) = config.transport,
+                  name.caseInsensitiveCompare(alias) == .orderedSame
+            else { return nil }
+        }
+
+        var score = 10_000
+        for term in terms {
+            guard let termScore = config.searchFields.compactMap({ Self.fieldScore($0, term) }).max()
+            else { return nil }
+            score += termScore
+        }
+        score += runtimeFilters.count * 2_000
+        if localOnly || !sshAliasFilters.isEmpty { score += 2_000 }
+        return score
+    }
+
+    /// 返回当前 `@` token 的候选；结果带 `@`，可直接替换输入 token。
+    public static func completionCandidates(
+        for raw: String,
+        sshAliases: [String]
+    ) -> [String] {
+        guard let token = currentToken(in: raw), token.first == "@" else { return [] }
+        let prefix = String(token.dropFirst()).lowercased()
+        var candidates = ["@shell", "@tmux", "@herdr", "@local"]
+        for alias in sshAliases {
+            let alias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !alias.isEmpty else { continue }
+            let candidate = "@\(alias)"
+            if !candidates.contains(where: {
+                $0.caseInsensitiveCompare(candidate) == .orderedSame
+            }) {
+                candidates.append(candidate)
+            }
+        }
+        return candidates.filter { candidate in
+            let value = String(candidate.dropFirst()).lowercased()
+            return prefix.isEmpty || fuzzyGapScore(value, prefix) != nil
+        }
+    }
+
+    /// 用补全候选替换最后一个 token，并保留前面的查询条件。
+    public static func replaceCurrentToken(in raw: String, with replacement: String) -> String {
+        guard let separator = raw.lastIndex(where: { $0.isWhitespace }) else {
+            return replacement
+        }
+        let start = raw.index(after: separator)
+        return String(raw[..<start]) + replacement
+    }
+
+    private static func currentToken(in raw: String) -> Substring? {
+        guard raw.last?.isWhitespace != true else { return nil }
+        return raw.split(whereSeparator: { $0.isWhitespace }).last
+    }
+
+    private static func fieldScore(_ field: String, _ query: String) -> Int? {
+        let field = field.lowercased()
+        let query = query.lowercased()
+        guard !query.isEmpty else { return 0 }
+        if field.contains(query) {
+            return max(0, 2_000 - field.count)
+        }
+        guard let gaps = fuzzyGapScore(field, query) else { return nil }
+        return max(0, 1_000 - gaps - field.count / 4)
+    }
+
+    /// 返回匹配字符间的 gap 数。
+    private static func fuzzyGapScore(_ candidate: String, _ query: String) -> Int? {
+        let candidate = Array(candidate)
+        var previous: Int?
+        var gaps = 0
+        var cursor = 0
+        for wanted in query {
+            var found: Int?
+            while cursor < candidate.count {
+                let position = cursor
+                cursor += 1
+                if candidate[position] == wanted {
+                    found = position
+                    break
+                }
+            }
+            guard let position = found else { return nil }
+            if let previous { gaps += position - previous - 1 }
+            previous = position
+        }
+        return gaps
+    }
 }
 
 /// 快速连接目标的展示与派生逻辑（纯函数，便于单测）。
@@ -120,35 +281,60 @@ public enum QuickConnect {
         config.runtime == .tmux && !config.name.isEmpty
     }
 
-    /// 展示文本（搜索用）：name + 副标题 + path。
+    /// 展示文本（搜索用）：name + runtime/transport + path + attach identity。
     public static func searchText(for config: TargetConfig) -> String {
-        "\(config.name) \(subtitle(for: config)) \(config.path)".lowercased()
+        config.searchFields.joined(separator: " ").lowercased()
+    }
+
+    public static func matchesQuery(_ query: String, config: TargetConfig) -> Bool {
+        WorkspaceQuery(query).matches(config)
+    }
+
+    public static func searchScore(_ query: String, config: TargetConfig) -> Int? {
+        WorkspaceQuery(query).score(for: config)
+    }
+
+    public static func filterEntries(
+        _ entries: [QuickConnectEntry],
+        query: String
+    ) -> [QuickConnectEntry] {
+        let parsed = WorkspaceQuery(query)
+        return entries.enumerated()
+            .compactMap { index, entry in
+                parsed.score(for: entry.config).map { (index, $0, entry) }
+            }
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                return $0.0 < $1.0
+            }
+            .map { $0.2 }
     }
 
     /// 目标的唯一 ID。
     ///
-    /// tmux/shell 保持历史语义（`name @ transport`）。Herdr 解析完成后必须按
-    /// Runtime 返回的 attach identity 去重，不能用展示名或项目路径冒充 workspace id；
-    /// 创建前尚无 identity 时，暂时用 transport + path 作为 Project 占位键。
+    /// 目标唯一 ID 与 attach identity 一致；name/path 只在 Herdr identity
+    /// 尚不完整的 Project provisional 阶段参与 key。
     public static func uniqueID(for config: TargetConfig) -> String {
-        guard config.runtime == .herdr else {
-            return "\(config.name)@\(config.transport.label)"
+        let transport = transportIdentity(config.transport)
+        let components: [String]
+        switch config.runtime {
+        case .shell:
+            components = [config.runtime.rawValue] + transport
+                + [config.path.isEmpty ? config.name : config.path]
+        case .tmux:
+            components = [config.runtime.rawValue] + transport
+                + [nonEmpty(config.session) ?? config.name, config.socket ?? ""]
+        case .herdr:
+            if let session = nonEmpty(config.session),
+               let socket = nonEmpty(config.socket),
+               let workspaceID = nonEmpty(config.workspaceID)
+            {
+                components = [config.runtime.rawValue] + transport + [session, socket, workspaceID]
+            } else {
+                components = ["herdr-provisional"] + transport + [config.name, config.path]
+            }
         }
-
-        if let session = nonEmpty(config.session),
-           let socket = nonEmpty(config.socket),
-           let workspaceID = nonEmpty(config.workspaceID)
-        {
-            return scopedID(
-                "herdr",
-                transportIdentity(config.transport) + [session, socket, workspaceID]
-            )
-        }
-
-        return scopedID(
-            "herdr-project",
-            transportIdentity(config.transport) + [config.path]
-        )
+        return components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
     }
 
     /// Local 的 target 是空串；SSH target 是 Host alias。kind 与 target 分开
@@ -209,7 +395,7 @@ public enum QuickConnect {
     }
 
     /// 面板条目：先展示最近的前 `recentLimit` 条（最新在前），
-    /// 再补 Project 中未出现的目标。按唯一 ID（name+transport）去重。
+    /// 再补 Project 中未出现的目标。按 attach identity 去重。
     public static func entries(
         recents: [TargetConfig],
         projects: [TargetConfig],

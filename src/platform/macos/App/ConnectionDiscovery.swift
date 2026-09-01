@@ -267,6 +267,15 @@ final class ConnectionDiscovery {
         }
     }
 
+    /// 异步读取全部 SSH alias，供 Quick Panel 的 `@alias` 补全使用。
+    /// 补全不应因为 SSH 配置解析或慢磁盘读取阻塞主线程。
+    func listSSHAliases(completion: @escaping (Result<[String], Error>) -> Void) {
+        let configPath = sshConfigPath
+        runAsync({
+            try CoreBridge.discoverSSHHosts(configPath: configPath).map(\.alias)
+        }, completion: completion)
+    }
+
     func createSession(
         target: ConnectionTarget,
         directory: String,

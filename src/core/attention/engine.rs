@@ -16,7 +16,7 @@ use crate::core::config::AttentionConfig;
 
 const KNOWN_AGENTS: &[&str] = &[
     "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline", "goose", "amp",
-    "grok", "windsurf", "kiro", "pi", "hermes",
+    "grok", "windsurf", "kiro", "pi", "hermes", "droid",
 ];
 
 /// 从进程名/argv 中识别通用 agent 名；不依赖具体 Runtime。
@@ -381,8 +381,12 @@ impl<C: Clock> AttentionEngine<C> {
                 );
             }
         }
+        let previous_was_shell = previous.as_deref().is_none_or(Self::is_shell);
+        // pane-cmd may report only `node`/`pi` for wrappers. `process_name` is a
+        // display field and intentionally retains the finished agent after the
+        // run; lifecycle edges therefore use the observed foreground process.
         let starts_command = !is_shell
-            && (previous.as_deref().is_none_or(Self::is_shell)
+            && (previous_was_shell
                 || matches!(
                     self.panes.get(&key).map(|pane| pane.status),
                     Some(PaneStatus::Unknown | PaneStatus::Idle | PaneStatus::Done)
@@ -1252,6 +1256,47 @@ mod tests {
         assert_eq!(pane.agent_name.as_deref(), Some("codex"));
         assert!(pane.process_is_agent);
         assert_eq!(pane.status, PaneStatus::Working);
+    }
+
+    #[test]
+    fn cursor_agent_rerun_after_shell_clears_and_reenters_working() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 9, Some("zsh".into()));
+
+        e.set_process_name(
+            "ws",
+            9,
+            Some("/Applications/Cursor.app/cursor-agent --profile code".into()),
+        );
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
+
+        e.set_process_name("ws", 9, Some("zsh".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+
+        e.on_became_visible("ws", 9);
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+        assert!(e.snapshot()[0].panes[0].process_is_agent);
+
+        e.set_process_name(
+            "ws",
+            9,
+            Some("/Applications/Cursor.app/cursor-agent --resume".into()),
+        );
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Working);
+        assert!(pane.process_is_agent);
+        assert_eq!(pane.agent_name.as_deref(), Some("cursor"));
+    }
+
+    #[test]
+    fn known_agent_names_cover_modern_cli_agents() {
+        for (argv, agent) in [
+            ("droid droid-agent", Some("droid")),
+            ("amp amp-agent", Some("amp")),
+            ("/opt/cursor-agent", Some("cursor")),
+        ] {
+            assert_eq!(known_agent_process_name(argv), agent, "{argv}");
+        }
     }
 
     #[test]

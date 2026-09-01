@@ -227,6 +227,108 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         XCTAssertEqual(commands.map(\.indicator), [.running, .done])
     }
 
+    func testCoreClassifiedWrapperAgentGoesToAgentsNotCommands() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            name: "dev",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 7,
+                            status: .working,
+                            acknowledged: true,
+                            lastLine: "agent",
+                            seq: 9,
+                            processName: "cursor",
+                            processIsAgent: true
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let agents = WorkspaceSidebarProjection.agents(
+            workspaces: [workspace],
+            attention: attention
+        )
+        let commands = WorkspaceSidebarProjection.commands(
+            workspaces: [workspace],
+            attention: attention
+        )
+
+        XCTAssertEqual(agents.map(\.title), ["cursor"])
+        XCTAssertTrue(commands.isEmpty)
+    }
+
+    func testAgentsSortUnreadBeforeRunningBeforeRead() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            name: "dev",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 0,
+                    working: 0,
+                    panes: [
+                        PaneAttention(
+                            paneId: 1,
+                            status: .working,
+                            acknowledged: true,
+                            lastLine: "",
+                            seq: 1,
+                            processName: "codex",
+                            processIsAgent: true
+                        ),
+                        PaneAttention(
+                            paneId: 2,
+                            status: .done,
+                            acknowledged: false,
+                            lastLine: "",
+                            seq: 2,
+                            processName: "droid",
+                            processIsAgent: true
+                        ),
+                        PaneAttention(
+                            paneId: 3,
+                            status: .idle,
+                            acknowledged: true,
+                            lastLine: "",
+                            seq: 3,
+                            processName: "amp",
+                            processIsAgent: true
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let agents = WorkspaceSidebarProjection.agents(
+            workspaces: [workspace],
+            attention: attention
+        )
+
+        XCTAssertEqual(agents.map(\.title), ["droid", "codex", "amp"])
+        XCTAssertEqual(agents.map(\.indicator), [.done, .running, .read])
+    }
+
     func testOrdinaryCommandDoesNotBecomePermanentAgent() {
         let workspaceId = "local@@dev@tmux@dev"
         let workspace = WorkspaceSidebarItem(

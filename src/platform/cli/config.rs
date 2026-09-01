@@ -354,6 +354,7 @@ fn project_from_args(args: &[String]) -> Result<ProjectDocument> {
             options: Default::default(),
             session: flag_value(args, "--session"),
             socket: flag_value(args, "--socket"),
+            workspace_id: None,
         },
         transport: ProjectTransport {
             id: required("--transport")?,

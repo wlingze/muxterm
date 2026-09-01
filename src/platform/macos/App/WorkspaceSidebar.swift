@@ -1,6 +1,10 @@
 import AppKit
 import MuxtermChrome
 
+enum SidebarTestSection {
+    case workspaces, agents, commands, hiddenCommands
+}
+
 /// Native main-window sidebar mirroring Linux's two persistent sections.
 final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
@@ -8,16 +12,22 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     var onAgentActivate: ((String, UInt32) -> Void)?
     var onCommandActivate: ((String, UInt32) -> Void)?
 
-    private let sections = NSSplitView()
+    private let sections = NSStackView()
     private let workspaceTable = NSTableView()
     private let agentTable = NSTableView()
     private let commandTable = NSTableView()
+    private let hiddenCommandTable = NSTableView()
     private let workspaceScroll = NSScrollView()
     private let agentScroll = NSScrollView()
     private let commandScroll = NSScrollView()
+    private let hiddenCommandScroll = NSScrollView()
     private let workspaceHeader = NSButton()
     private let agentHeader = NSButton()
     private let commandHeader = NSButton()
+    private let hiddenCommandHeader = NSButton()
+    private var hiddenCommandKeys = Set<CommandVisibilityKey>()
+    private var sectionViews: [NSScrollView: NSView] = [:]
+    private var sectionHeightConstraints: [NSScrollView: NSLayoutConstraint] = [:]
     private var workspaces: [WorkspaceSidebarItem] = []
     private var agents: [AgentSidebarItem] = []
     private var commands: [CommandSidebarItem] = []
@@ -44,6 +54,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             scroll: commandScroll,
             identifier: "muxterm.sidebar.commands"
         )
+        configureTable(
+            hiddenCommandTable,
+            scroll: hiddenCommandScroll,
+            identifier: "muxterm.sidebar.hiddenCommands"
+        )
         configureHeader(
             workspaceHeader,
             title: "WORKSPACES",
@@ -59,6 +74,12 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             title: "COMMANDS",
             action: #selector(toggleCommandSection)
         )
+        configureHeader(
+            hiddenCommandHeader,
+            title: "HIDDEN COMMANDS",
+            action: #selector(toggleHiddenCommandSection)
+        )
+        hiddenCommandHeader.state = .off
 
         let workspaceSection = section(header: workspaceHeader, scroll: workspaceScroll)
         workspaceSection.setAccessibilityIdentifier("muxterm.sidebar.workspaces.section")
@@ -66,13 +87,29 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         agentSection.setAccessibilityIdentifier("muxterm.sidebar.agents.section")
         let commandSection = section(header: commandHeader, scroll: commandScroll)
         commandSection.setAccessibilityIdentifier("muxterm.sidebar.commands.section")
+        let hiddenCommandSection = section(header: hiddenCommandHeader, scroll: hiddenCommandScroll)
+        hiddenCommandSection.setAccessibilityIdentifier("muxterm.sidebar.hiddenCommands.section")
+        sectionViews = [
+            workspaceScroll: workspaceSection,
+            agentScroll: agentSection,
+            commandScroll: commandSection,
+            hiddenCommandScroll: hiddenCommandSection,
+        ]
 
         sections.translatesAutoresizingMaskIntoConstraints = false
-        sections.isVertical = false
-        sections.dividerStyle = .thin
-        sections.addArrangedSubview(workspaceSection)
-        sections.addArrangedSubview(agentSection)
-        sections.addArrangedSubview(commandSection)
+        sections.orientation = .vertical
+        sections.alignment = .leading
+        sections.spacing = 0
+        sections.distribution = .fill
+        for view in [hiddenCommandSection, commandSection, agentSection, workspaceSection] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            sections.addArrangedSubview(view)
+            sections.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
+        }
+        setSection(workspaceScroll, expanded: true)
+        setSection(agentScroll, expanded: true)
+        setSection(commandScroll, expanded: true)
+        setSection(hiddenCommandScroll, expanded: false)
         sections.setAccessibilityIdentifier("muxterm.sidebar.sections")
         addSubview(sections)
         NSLayoutConstraint.activate([
@@ -86,14 +123,6 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         nil
-    }
-
-    override func layout() {
-        super.layout()
-        if sections.subviews.count == 3, sections.subviews[0].frame.height == 0 {
-            sections.setPosition(max(120, bounds.height * 0.4), ofDividerAt: 0)
-            sections.setPosition(max(120, bounds.height * 0.7), ofDividerAt: 1)
-        }
     }
 
     func setWorkspaces(_ items: [WorkspaceSidebarItem]) {
@@ -116,15 +145,38 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     }
 
     func setCommands(_ items: [CommandSidebarItem]) {
-        guard commands != items else { return }
+        let currentKeys = Set(items.map(CommandVisibilityKey.init))
+        hiddenCommandKeys.formIntersection(currentKeys)
+        guard commands != items else {
+            hiddenCommandTable.reloadData()
+            return
+        }
         commands = items
         commandTable.reloadData()
+        hiddenCommandTable.reloadData()
+    }
+
+    private func toggleCommandVisibility(_ key: CommandVisibilityKey) {
+        if !hiddenCommandKeys.insert(key).inserted {
+            hiddenCommandKeys.remove(key)
+        }
+        commandTable.reloadData()
+        hiddenCommandTable.reloadData()
+    }
+
+    private var visibleCommands: [CommandSidebarItem] {
+        commands.filter { !hiddenCommandKeys.contains(CommandVisibilityKey($0)) }
+    }
+
+    private var hiddenCommands: [CommandSidebarItem] {
+        commands.filter { hiddenCommandKeys.contains(CommandVisibilityKey($0)) }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === workspaceTable { return workspaces.count }
         if tableView === agentTable { return agents.count }
-        if tableView === commandTable { return commands.count }
+        if tableView === commandTable { return visibleCommands.count }
+        if tableView === hiddenCommandTable { return hiddenCommands.count }
         return 0
     }
 
@@ -143,7 +195,9 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                 title: item.name,
                 detail: "\(item.runtime) @ \(item.transport)",
                 shortcut: item.shortcut,
-                closeAction: { [weak self] in
+                trailingTooltip: "Close workspace",
+                trailingAccessibilityID: "muxterm.sidebar.workspace.close.\(safeID(item.workspaceId))",
+                trailingAction: { [weak self] in
                     self?.onWorkspaceClose?(item.workspaceId)
                 }
             )
@@ -151,18 +205,31 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             return cell
         }
 
-        if tableView === commandTable {
-            guard commands.indices.contains(row) else { return nil }
-            let item = commands[row]
-            let cell = sidebarCell(in: tableView, identifier: "CommandSidebarCell")
+        if tableView === commandTable || tableView === hiddenCommandTable {
+            let visible = tableView === commandTable
+            let source = visible ? visibleCommands : hiddenCommands
+            guard source.indices.contains(row) else { return nil }
+            let item = source[row]
+            let key = CommandVisibilityKey(item)
+            let cell = sidebarCell(
+                in: tableView,
+                identifier: visible ? "CommandSidebarCell" : "HiddenCommandSidebarCell"
+            )
             cell.set(
                 marker: "●",
                 markerColor: indicatorColor(item.indicator),
                 title: item.title,
-                detail: item.detail
+                detail: item.detail,
+                trailingSymbol: visible ? "eye.slash" : "eye",
+                trailingTooltip: visible ? "Hide command" : "Show command",
+                trailingAccessibilityID: "muxterm.sidebar.command.visibility.\(safeID(item.workspaceId)).\(item.paneId)",
+                trailingShowsOnHover: false,
+                trailingAction: { [weak self] in
+                    self?.toggleCommandVisibility(key)
+                }
             )
             cell.setAccessibilityIdentifier(
-                "muxterm.sidebar.command.\(safeID(item.workspaceId)).\(item.paneId)"
+                "muxterm.sidebar.\(visible ? "command" : "hiddenCommand").\(safeID(item.workspaceId)).\(item.paneId)"
             )
             return cell
         }
@@ -205,10 +272,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             guard agents.indices.contains(row) else { return }
             let agent = agents[row]
             onAgentActivate?(agent.workspaceId, agent.paneId)
-        } else if table === commandTable {
+        } else if table === commandTable || table === hiddenCommandTable {
+            let source = table === commandTable ? visibleCommands : hiddenCommands
             let row = table.selectedRow
-            guard commands.indices.contains(row) else { return }
-            let command = commands[row]
+            guard source.indices.contains(row) else { return }
+            let command = source[row]
             onCommandActivate?(command.workspaceId, command.paneId)
         }
     }
@@ -223,6 +291,10 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     @objc private func toggleCommandSection() {
         setSection(commandScroll, expanded: commandHeader.state == .on)
+    }
+
+    @objc private func toggleHiddenCommandSection() {
+        setSection(hiddenCommandScroll, expanded: hiddenCommandHeader.state == .on)
     }
 
     private func configureTable(
@@ -287,11 +359,54 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         } else if scroll === agentScroll {
             header = agentHeader
             title = "AGENTS"
-        } else {
+        } else if scroll === commandScroll {
             header = commandHeader
             title = "COMMANDS"
+        } else {
+            header = hiddenCommandHeader
+            title = "HIDDEN COMMANDS"
         }
         header.title = "\(expanded ? "▾" : "▸")  \(title)"
+        updateSectionConstraints()
+    }
+
+    /// VSCode/Cursor section packing.
+    ///
+    /// Expanded sections divide all remaining height. Collapsed sections keep
+    /// only their 28pt header; those before the first expanded section pack to
+    /// the top, those after the last expanded section pack to the bottom, and
+    /// all-collapsed packs to the top.
+    private func updateSectionConstraints() {
+        for constraint in sectionHeightConstraints.values {
+            constraint.isActive = false
+        }
+        sectionHeightConstraints.removeAll()
+
+        let ordered: [(scroll: NSScrollView, expanded: Bool)] = [
+            (workspaceScroll, workspaceHeader.state == .on),
+            (agentScroll, agentHeader.state == .on),
+            (commandScroll, commandHeader.state == .on),
+            (hiddenCommandScroll, hiddenCommandHeader.state == .on),
+        ]
+        let expandedCount = ordered.filter(\.expanded).count
+        for (scroll, expanded) in ordered {
+            guard let view = sectionViews[scroll] else { continue }
+            let constraint: NSLayoutConstraint
+            if expanded {
+                constraint = view.heightAnchor.constraint(
+                    greaterThanOrEqualToConstant: 120
+                )
+                constraint.priority = .required
+            } else {
+                constraint = view.heightAnchor.constraint(equalToConstant: 28)
+            }
+            constraint.isActive = true
+            sectionHeightConstraints[scroll] = constraint
+        }
+        sections.distribution = expandedCount == 0 ? .fill : .fillEqually
+        // Equal distribution applies only to expanded sections; manually pinned
+        // collapsed sections are excluded by their exact height constraints.
+        needsLayout = true
     }
 
     private func sidebarCell(
@@ -315,8 +430,45 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     func testWorkspaceCount() -> Int { workspaces.count }
     func testAgentCount() -> Int { agents.count }
-    func testCommandCount() -> Int { commands.count }
-    func testCommandTitles() -> [String] { commands.map(\.title) }
+    func testCommandCount() -> Int { visibleCommands.count }
+    func testCommandTitles() -> [String] { visibleCommands.map(\.title) }
+    func testHiddenCommandTitles() -> [String] { hiddenCommands.map(\.title) }
+    func testToggleCommandVisibility(workspaceId: String, paneId: UInt32) {
+        guard let item = commands.first(where: {
+            $0.workspaceId == workspaceId && $0.paneId == paneId
+        }) else { return }
+        toggleCommandVisibility(CommandVisibilityKey(item))
+    }
+
+    func testSetSectionExpanded(_ section: SidebarTestSection, _ expanded: Bool) {
+        let scroll: NSScrollView
+        switch section {
+        case .workspaces: scroll = workspaceScroll
+        case .agents: scroll = agentScroll
+        case .commands: scroll = commandScroll
+        case .hiddenCommands: scroll = hiddenCommandScroll
+        }
+        let header: NSButton
+        switch section {
+        case .workspaces: header = workspaceHeader
+        case .agents: header = agentHeader
+        case .commands: header = commandHeader
+        case .hiddenCommands: header = hiddenCommandHeader
+        }
+        header.state = expanded ? .on : .off
+        setSection(scroll, expanded: expanded)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
+    func testSectionFrames() -> [SidebarTestSection: NSRect] {
+        [
+            .workspaces: workspaceScroll.superview?.frame ?? .zero,
+            .agents: agentScroll.superview?.frame ?? .zero,
+            .commands: commandScroll.superview?.frame ?? .zero,
+            .hiddenCommands: hiddenCommandScroll.superview?.frame ?? .zero,
+        ]
+    }
     func testAgentIndicators() -> [AgentSidebarIndicator] { agents.map(\.indicator) }
     func testWorkspaceNames() -> [String] { workspaces.map(\.name) }
     func testWorkspaceIDs() -> [String] { workspaces.map(\.workspaceId) }
@@ -327,14 +479,15 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let shortcutLabel = NSTextField(labelWithString: "")
-    private let closeButton = NSButton()
-    private var closeAction: (() -> Void)?
-    private var closeButtonWidth: NSLayoutConstraint!
-    private var titleLeadingToClose: NSLayoutConstraint!
+    private let trailingButton = NSButton()
+    private var trailingAction: (() -> Void)?
+    private var trailingShowsOnHover = true
+    private var trailingButtonWidth: NSLayoutConstraint!
+    private var titleLeadingToTrailing: NSLayoutConstraint!
     private var isHovered = false {
         didSet {
             guard isHovered != oldValue else { return }
-            updateCloseVisibility()
+            updateTrailingVisibility()
         }
     }
 
@@ -355,27 +508,24 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         shortcutLabel.font = .systemFont(ofSize: 10, weight: .semibold)
         shortcutLabel.textColor = .tertiaryLabelColor
         shortcutLabel.alignment = .center
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.title = "✕"
-        closeButton.isBordered = false
-        closeButton.font = .systemFont(ofSize: 10, weight: .semibold)
-        closeButton.controlSize = .small
-        closeButton.setButtonType(.momentaryPushIn)
-        closeButton.toolTip = "Close workspace"
-        closeButton.setAccessibilityIdentifier("muxterm.sidebar.workspace.close")
-        closeButton.action = #selector(closeClicked)
-        closeButton.target = self
+        trailingButton.translatesAutoresizingMaskIntoConstraints = false
+        trailingButton.isBordered = false
+        trailingButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        trailingButton.controlSize = .small
+        trailingButton.setButtonType(.momentaryPushIn)
+        trailingButton.action = #selector(trailingClicked)
+        trailingButton.target = self
         addSubview(marker)
         addSubview(shortcutLabel)
         addSubview(titleLabel)
         addSubview(detailLabel)
-        addSubview(closeButton)
+        addSubview(trailingButton)
         textField = titleLabel
         updateTrackingAreas()
 
-        closeButtonWidth = closeButton.widthAnchor.constraint(equalToConstant: 0)
-        titleLeadingToClose = titleLabel.trailingAnchor.constraint(
-            equalTo: closeButton.leadingAnchor,
+        trailingButtonWidth = trailingButton.widthAnchor.constraint(equalToConstant: 0)
+        titleLeadingToTrailing = titleLabel.trailingAnchor.constraint(
+            equalTo: trailingButton.leadingAnchor,
             constant: 0
         )
         NSLayoutConstraint.activate([
@@ -386,11 +536,11 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
             shortcutLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             shortcutLabel.widthAnchor.constraint(equalToConstant: 14),
             titleLabel.leadingAnchor.constraint(equalTo: shortcutLabel.trailingAnchor, constant: 4),
-            titleLeadingToClose,
+            titleLeadingToTrailing,
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            closeButtonWidth,
+            trailingButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            trailingButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            trailingButtonWidth,
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
@@ -425,15 +575,16 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         isHovered = false
     }
 
-    private func updateCloseVisibility() {
-        let showsClose = closeAction != nil && isHovered
-        closeButtonWidth.constant = showsClose ? 20 : 0
-        titleLeadingToClose.constant = showsClose ? -4 : 0
-        closeButton.isHidden = !showsClose
+    private func updateTrailingVisibility() {
+        let showsTrailing = trailingAction != nil
+            && (!trailingShowsOnHover || isHovered)
+        trailingButtonWidth.constant = showsTrailing ? 24 : 0
+        titleLeadingToTrailing.constant = showsTrailing ? -4 : 0
+        trailingButton.isHidden = !showsTrailing
     }
 
-    @objc private func closeClicked() {
-        closeAction?()
+    @objc private func trailingClicked() {
+        trailingAction?()
     }
 
     func set(
@@ -442,14 +593,48 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         title: String,
         detail: String,
         shortcut: Int? = nil,
-        closeAction: (() -> Void)? = nil
+        closeAction: (() -> Void)? = nil,
+        trailingSymbol: String? = nil,
+        trailingTooltip: String? = nil,
+        trailingAccessibilityID: String? = nil,
+        trailingShowsOnHover: Bool = true,
+        trailingAction: (() -> Void)? = nil
     ) {
         self.marker.stringValue = marker
         self.marker.textColor = markerColor
         shortcutLabel.stringValue = shortcut.map(String.init) ?? ""
         titleLabel.stringValue = title
         detailLabel.stringValue = detail
-        self.closeAction = closeAction
-        updateCloseVisibility()
+
+        let symbol = trailingSymbol ?? (closeAction == nil ? nil : "xmark")
+        if let symbol {
+            trailingButton.image = NSImage(
+                systemSymbolName: symbol,
+                accessibilityDescription: trailingTooltip
+            )
+            trailingButton.imagePosition = .imageOnly
+            trailingButton.contentTintColor = .secondaryLabelColor
+        } else {
+            trailingButton.image = nil
+        }
+        trailingButton.toolTip = trailingTooltip
+        if let id = trailingAccessibilityID {
+            trailingButton.setAccessibilityIdentifier(id)
+        }
+        self.trailingShowsOnHover = trailingShowsOnHover
+        self.trailingAction = trailingAction ?? closeAction
+        updateTrailingVisibility()
+    }
+}
+
+private struct CommandVisibilityKey: Hashable {
+    let workspaceId: String
+    let paneId: UInt32
+    let title: String
+
+    init(_ item: CommandSidebarItem) {
+        workspaceId = item.workspaceId
+        paneId = item.paneId
+        title = item.title
     }
 }

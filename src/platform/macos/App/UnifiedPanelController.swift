@@ -35,24 +35,16 @@ private enum UnifiedWorkspaceItem {
     }
 
     func matches(_ query: String) -> Bool {
+        let normalizedQuery = query.lowercased()
         switch self {
         case .existingConnections, .newProject, .loading, .empty:
-            return title.lowercased().contains(query)
+            return title.lowercased().contains(normalizedQuery)
         case .target(let config, _, _):
-            return QuickConnect.searchText(for: config).contains(query)
+            return QuickConnect.matchesQuery(query, config: config)
         case .back:
             return true
         case .existing(let choice):
-            let config = choice.config
-            return [
-                QuickConnect.searchText(for: config),
-                choice.target.displayName,
-                config.session ?? "",
-                config.socket ?? "",
-                config.workspaceID ?? "",
-            ].joined(separator: " ")
-                .lowercased()
-                .contains(query)
+            return QuickConnect.matchesQuery(query, config: choice.config)
         }
     }
 }
@@ -69,6 +61,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     var onConnect: ((TargetConfig) -> Void)?
     var onLoadExistingConnections: ((@escaping (Result<[ExistingConnectionChoice], Error>) -> Void) -> Void)?
+    var onLoadSSHAliases: ((@escaping (Result<[String], Error>) -> Void) -> Void)?
     var onAttachExistingConnection: ((ExistingConnectionChoice) -> Void)?
     var onExistingConnectionsError: ((Error) -> Void)?
     var onEditProject: ((TargetConfig) -> Void)?
@@ -99,6 +92,17 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private var allItems: [UnifiedWorkspaceItem] = []
     private var visibleItems: [UnifiedWorkspaceItem] = []
     private var existingItems: [UnifiedWorkspaceItem] = []
+    /// 根目录搜索使用的全部 Existing workspace；空 query 不展示它们，
+    /// 但用户开始输入后必须与 Project/Recent 一起参与过滤。
+    private var rootExistingChoices: [ExistingConnectionChoice] = []
+    /// Discovery 成功返回空数组也是一个完成状态；否则每次 reload 都会
+    /// 重新发起请求，形成空结果下的 discovery 循环。
+    private var rootExistingLoaded = false
+    private var rootExistingLoading = false
+    /// `@alias` 补全使用全部 SSH config alias，而不仅是当前有 workspace 的 host。
+    private var sshAliases: [String] = []
+    private var sshAliasesLoaded = false
+    private var sshAliasesLoading = false
     private var workspaceNavigation = UnifiedWorkspaceNavigation.root
     private var existingRequestGeneration: UInt64 = 0
     private var hits: [SearchHit] = []
@@ -169,8 +173,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         input.stringValue = ""
         workspaceNavigation = .root
         existingItems = []
+        rootExistingChoices = []
+        rootExistingLoaded = false
+        rootExistingLoading = false
         existingRequestGeneration &+= 1
         reload()
+        loadSSHAliasesIfNeeded()
         guard let window else { return }
         window.level = .floating
         CompactPanelLayout.prepare(window, owner: ownerWindow, preferred: Self.preferredContentSize)
@@ -214,6 +222,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     // MARK: - 数据
 
     private func reload() {
+        if model.tab == .workspaces, workspaceNavigation == .root {
+            ensureRootExistingChoicesIfNeeded()
+        }
         if model.tab == .workspaces || allItems.isEmpty {
             loadWorkspaceItems()
         }
@@ -253,30 +264,148 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
         allItems = [.existingConnections]
-        allItems.append(contentsOf: QuickConnect.entries(
+        let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let entries = QuickConnect.entries(
             recents: store.recents,
-            projects: store.projects
-        ).map { entry in
+            projects: store.projects,
+            recentLimit: queryIsNonEmpty ? QuickConnectStore.maxRecent : 5
+        )
+        allItems.append(contentsOf: entries.map { entry in
             .target(
                 entry.config,
                 badges: entry.badges,
                 isCurrent: currentId == QuickConnect.uniqueID(for: entry.config)
             )
         })
+        if queryIsNonEmpty {
+            var seen = Set(entries.map { QuickConnect.uniqueID(for: $0.config) })
+            for choice in rootExistingChoices {
+                guard seen.insert(QuickConnect.uniqueID(for: choice.config)).inserted else {
+                    continue
+                }
+                allItems.append(.existing(choice))
+            }
+            if rootExistingLoading, rootExistingChoices.isEmpty {
+                allItems.append(.loading)
+            }
+        }
         allItems.append(.newProject)
     }
 
     private func applyFilter() {
-        let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
         visibleItems = query.isEmpty
             ? allItems
             : allItems.filter { $0.matches(query) }
+    }
+
+    /// 对 Existing 结果统一排序并按 attach identity 去重。
+    private func sortedExistingChoices(
+        _ choices: [ExistingConnectionChoice]
+    ) -> [ExistingConnectionChoice] {
+        var seen = Set<String>()
+        return choices.sorted {
+            if $0.target.displayName != $1.target.displayName {
+                return $0.target.displayName.localizedCaseInsensitiveCompare(
+                    $1.target.displayName
+                ) == .orderedAscending
+            }
+            if $0.config.runtime != $1.config.runtime {
+                return $0.config.runtime.rawValue.localizedCaseInsensitiveCompare(
+                    $1.config.runtime.rawValue
+                ) == .orderedAscending
+            }
+            return $0.config.name.localizedCaseInsensitiveCompare($1.config.name)
+                == .orderedAscending
+        }.filter { seen.insert(QuickConnect.uniqueID(for: $0.config)).inserted }
+    }
+
+    /// 根目录只在真正需要搜索时启动 Existing discovery；结果回来后仍留在
+    /// 根目录时立即刷新，因而慢 SSH 不会阻塞输入，也不会漏掉新结果。
+    private func ensureRootExistingChoicesIfNeeded() {
+        let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard model.tab == .workspaces,
+              workspaceNavigation == .root,
+              queryIsNonEmpty,
+              !rootExistingLoaded,
+              !rootExistingLoading
+        else { return }
+
+        rootExistingLoading = true
+        existingRequestGeneration &+= 1
+        let generation = existingRequestGeneration
+        guard let loader = onLoadExistingConnections else {
+            rootExistingLoading = false
+            rootExistingLoaded = true
+            return
+        }
+        loader { [weak self] result in
+            let apply = { [weak self] in
+                guard let self, self.existingRequestGeneration == generation else { return }
+                self.rootExistingLoading = false
+                self.rootExistingLoaded = true
+                switch result {
+                case .success(let choices):
+                    self.rootExistingChoices = self.sortedExistingChoices(choices)
+                case .failure(let error):
+                    self.rootExistingChoices = []
+                    self.onExistingConnectionsError?(error)
+                }
+                guard self.window?.isVisible == true,
+                      self.workspaceNavigation == .root,
+                      self.model.tab == .workspaces
+                else { return }
+                self.reload()
+            }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
+            }
+        }
+    }
+
+    /// 预加载 SSH alias，确保输入单个 `@` 时也能提示“当前没有 workspace
+    /// 的 host”。失败时静默保留运行时补全，不弹打扰式错误。
+    private func loadSSHAliasesIfNeeded() {
+        guard !sshAliasesLoaded, !sshAliasesLoading else { return }
+        sshAliasesLoading = true
+        guard let loader = onLoadSSHAliases else {
+            sshAliasesLoading = false
+            sshAliasesLoaded = true
+            return
+        }
+        loader { [weak self] result in
+            let apply = { [weak self] in
+                guard let self else { return }
+                self.sshAliasesLoading = false
+                self.sshAliasesLoaded = true
+                if case .success(let aliases) = result {
+                    self.sshAliases = aliases
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .reduce(into: []) { values, alias in
+                            if !values.contains(where: {
+                                $0.caseInsensitiveCompare(alias) == .orderedSame
+                            }) {
+                                values.append(alias)
+                            }
+                        }
+                }
+            }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
+            }
+        }
     }
 
     private func openExistingConnections() {
         workspaceNavigation = .existingConnections
         model.query = ""
         input.stringValue = ""
+        rootExistingLoading = false
         existingRequestGeneration &+= 1
         let generation = existingRequestGeneration
         existingItems = [.back, .loading]
@@ -296,27 +425,17 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 else { return }
                 switch result {
                 case .success(let choices):
-                    let sorted = choices.sorted {
-                        if $0.target.displayName != $1.target.displayName {
-                            return $0.target.displayName.localizedCaseInsensitiveCompare(
-                                $1.target.displayName
-                            ) == .orderedAscending
-                        }
-                        if $0.config.runtime != $1.config.runtime {
-                            return $0.config.runtime.rawValue.localizedCaseInsensitiveCompare(
-                                $1.config.runtime.rawValue
-                            ) == .orderedAscending
-                        }
-                        return $0.config.name.localizedCaseInsensitiveCompare(
-                            $1.config.name
-                        ) == .orderedAscending
-                    }
+                    let sorted = self.sortedExistingChoices(choices)
+                    self.rootExistingChoices = sorted
+                    self.rootExistingLoaded = true
                     self.existingItems = [.back]
                     self.existingItems.append(contentsOf: sorted.map(UnifiedWorkspaceItem.existing))
                     if sorted.isEmpty {
                         self.existingItems.append(.empty)
                     }
                 case .failure(let error):
+                    self.rootExistingChoices = []
+                    self.rootExistingLoaded = true
                     self.existingItems = [.back, .empty]
                     self.onExistingConnectionsError?(error)
                 }
@@ -332,6 +451,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func returnToWorkspaceRoot() {
         existingRequestGeneration &+= 1
+        rootExistingLoading = false
+        rootExistingChoices = []
+        rootExistingLoaded = false
         workspaceNavigation = .root
         model.query = ""
         input.stringValue = ""
@@ -759,6 +881,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 }
                 return nil
             case 48: // Tab
+                if self.completeCurrentWorkspaceToken() {
+                    return nil
+                }
                 self.model.cycleTab(back: event.modifierFlags.contains(.shift))
                 self.applyTab()
                 self.reload()
@@ -782,7 +907,49 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func controlTextDidChange(_ obj: Notification) {
         model.query = input.stringValue
+        loadSSHAliasesIfNeeded()
         reload()
+    }
+
+    /// NSTextField 原生 completion；Tab 事件同时走同一条替换逻辑，避免
+    /// 面板的 tab 循环吞掉 `@` 补全。
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        completions words: [String],
+        forPartialWordRange charRange: NSRange,
+        indexOfSelectedItem index: UnsafeMutablePointer<Int>
+    ) -> [String] {
+        guard control === input, model.tab == .workspaces else { return [] }
+        index.pointee = 0
+        return WorkspaceQuery.completionCandidates(
+            for: input.stringValue,
+            sshAliases: sshAliases
+        )
+    }
+
+    private func completeCurrentWorkspaceToken() -> Bool {
+        guard model.tab == .workspaces,
+              let replacement = WorkspaceQuery.completionCandidates(
+                  for: input.stringValue,
+                  sshAliases: sshAliases
+              ).first
+        else { return false }
+        let completed = WorkspaceQuery.replaceCurrentToken(
+            in: input.stringValue,
+            with: replacement
+        )
+        // 已经是完整候选时把 Tab 留给面板切换；否则 `@tmux` 会被
+        // 每次按 Tab 原样替换，永远无法切到 Attention/Search。
+        guard completed != input.stringValue else { return false }
+        input.stringValue = completed
+        model.query = completed
+        if let editor = input.currentEditor() as? NSTextView {
+            let end = (completed as NSString).length
+            editor.setSelectedRange(NSRange(location: end, length: 0))
+        }
+        reload()
+        return true
     }
 
     // MARK: - 表格

@@ -36,6 +36,38 @@ impl ExistingEntry {
     pub fn subtitle(&self) -> String {
         format!("{} @ {}", self.runtime.as_str(), self.transport.label())
     }
+
+    /// 转换成可供 Catalog resolver 使用的目标描述。
+    ///
+    /// Existing 的 attach identity 必须来自发现结果中的 typed 字段；这里
+    /// 不从 workspace id 猜项目路径，也不从本机 HOME 猜 SSH socket。
+    pub fn target_config(&self) -> crate::core::quickconnect::model::TargetConfig {
+        use crate::core::quickconnect::model::TargetConfig;
+
+        let path = if self.runtime == TargetRuntime::Herdr {
+            String::new()
+        } else {
+            "~".to_string()
+        };
+        let mut config = TargetConfig::new(
+            self.title.clone(),
+            self.runtime,
+            self.transport.clone(),
+            path,
+        );
+        config.session = match self.runtime {
+            TargetRuntime::Tmux => self.tmux_session.clone(),
+            TargetRuntime::Herdr => self.herdr_session.clone(),
+            TargetRuntime::Shell => None,
+        };
+        config.socket = match self.runtime {
+            TargetRuntime::Tmux => self.tmux_socket.clone(),
+            TargetRuntime::Herdr => self.herdr_socket.clone(),
+            TargetRuntime::Shell => None,
+        };
+        config.workspace_id = self.herdr_workspace_id.clone();
+        config
+    }
 }
 
 /// 本地 tmux：只读 `list-sessions`（测试传 `-L muxterm-test-*`）。

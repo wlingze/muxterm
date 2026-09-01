@@ -22,6 +22,9 @@ public struct PaneAttention: Equatable, Sendable {
     public let lastLine: String
     public let seq: UInt64
     public let processName: String?
+    /// Core's authoritative classification. A process can be called `node` by
+    /// tmux but still be an agent when the resolved foreground argv is Codex.
+    public let processIsAgent: Bool
 
     public init(
         paneId: UInt32,
@@ -29,7 +32,8 @@ public struct PaneAttention: Equatable, Sendable {
         acknowledged: Bool = false,
         lastLine: String,
         seq: UInt64,
-        processName: String?
+        processName: String?,
+        processIsAgent: Bool = false
     ) {
         self.paneId = paneId
         self.status = status
@@ -37,6 +41,7 @@ public struct PaneAttention: Equatable, Sendable {
         self.lastLine = lastLine
         self.seq = seq
         self.processName = processName
+        self.processIsAgent = processIsAgent
     }
 }
 
@@ -101,7 +106,8 @@ public struct AttentionSnapshot: Equatable, Sendable {
                             acknowledged: (p["acknowledged"] as? Bool) ?? false,
                             lastLine: (p["last_line"] as? String) ?? "",
                             seq: (p["seq"] as? UInt64) ?? (p["seq"] as? NSNumber)?.uint64Value ?? 0,
-                            processName: p["process_name"] as? String
+                            processName: p["process_name"] as? String,
+                            processIsAgent: (p["process_is_agent"] as? Bool) ?? false
                         )
                     } ?? []
                 return WorkspaceAttention(
@@ -153,7 +159,7 @@ public enum AttentionRowLabel {
         let known = [
             "codex", "cursor", "claude", "gemini", "aider", "opencode",
             "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
-            "pi", "hermes",
+            "pi", "hermes", "droid",
         ]
         let tokens = value.lowercased().split { character in
             !(character.isLetter || character.isNumber || character == "-" || character == "_")

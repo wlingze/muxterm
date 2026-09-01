@@ -299,6 +299,37 @@ final class AgentRenderE2ETests: XCTestCase {
     /// 真实 AppKit 事件路径回归：不能只调用 `scrollUp()`，必须由
     /// `NSWindow.sendEvent` 命中 terminal view 后进入 SwiftTerm 的
     /// `scrollWheel(with:)`。
+    func testAlternateAgentScrollRoutesToRuntimeNotLocalHistory() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 31,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 240)
+        )
+        view.getTerminal().resize(cols: 80, rows: 8)
+        view.feedOutput(Data("\u{1b}[?1049h\u{1b}[HCODEX_AGENT".utf8))
+        XCTAssertTrue(view.getTerminal().isCurrentBufferAlternate)
+
+        let event = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .line,
+            wheelCount: 1,
+            wheel1: 4,
+            wheel2: 0,
+            wheel3: 0
+        ).flatMap(NSEvent.init(cgEvent:))
+        XCTAssertNotNil(event)
+        view.scrollWheel(with: event ?? NSEvent())
+        XCTAssertTrue(
+            view.lastScrollWheelRoutedToRuntime,
+            "Codex/Cursor agent 的 alternate-screen 滚动必须交给 tmux/runtime 处理"
+        )
+
+        view.feedOutput(Data("\u{1b}[?1049l".utf8))
+        XCTAssertFalse(view.getTerminal().isCurrentBufferAlternate)
+        view.scrollWheel(with: event ?? NSEvent())
+        XCTAssertFalse(view.lastScrollWheelRoutedToRuntime)
+    }
+
     func testAppKitScrollWheelReachesTerminalView() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

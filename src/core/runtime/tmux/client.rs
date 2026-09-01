@@ -79,7 +79,7 @@ pub struct TmuxEventReceiver {
 // Keep enough burst headroom for normal repaint traffic while ensuring a
 // stalled UI reaches an explicit OutputGap quickly instead of accumulating an
 // unbounded tail. The gap is recovered by an authoritative pane snapshot.
-const OUTPUT_EVENT_BUFFER: usize = 64;
+const OUTPUT_EVENT_BUFFER: usize = 256;
 
 /// 创建拆分后的 control/output 事件通道。
 pub fn event_channel() -> (TmuxEventSender, TmuxEventReceiver) {
@@ -213,12 +213,12 @@ impl TmuxEventSink for mpsc::UnboundedSender<TmuxEvent> {
 /// 同一 pane 连续 `%output` 在进入有界 lane 前合并成一块。
 ///
 /// tmux 控制协议按行推送；Codex/htop 一次重绘可以产生远超
-/// [`OUTPUT_EVENT_BUFFER`] 条 `%output`。若不合并，共享 64 槽会立刻
+/// [`OUTPUT_EVENT_BUFFER`] 条 `%output`。若不合并，共享 bounded lane 会立刻
 /// OutputGap，backend 再 pause + 大 capture，表现为卡死后再整屏重绘。
 const OUTPUT_COALESCE_MAX_BYTES: usize = 32 * 1024;
 /// PTY/SSH reader 的一次 logical burst 在短暂空闲后才 flush。这样底层 4KiB
-/// read 边界不会退化成 Surface 事件边界，同时单次按键输出最多只增加 1ms 延迟。
-pub(crate) const OUTPUT_COALESCE_IDLE: std::time::Duration = std::time::Duration::from_millis(1);
+/// read 边界不会退化成 Surface 事件边界，同时安静输出最多只增加 8ms 延迟。
+pub(crate) const OUTPUT_COALESCE_IDLE: std::time::Duration = std::time::Duration::from_millis(8);
 
 pub(crate) struct OutputBatcher<S: TmuxEventSink> {
     inner: S,
@@ -1531,7 +1531,7 @@ mod tests {
         }
         assert!(
             !saw_gap,
-            "Codex 式连续 %output 必须合并，不能打满 64 槽再 OutputGap"
+            "Codex 式连续 %output 必须合并，不能打满 bounded lane 再 OutputGap"
         );
         assert!(saw_response, "控制响应不能被未合并的 output 水位挡住");
         assert!(
@@ -1634,26 +1634,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chunked_reader_coalesces_large_redraw_before_bounded_output_lane() {
+    async fn interleaved_ssh_reader_burst_does_not_overflow_output_lane() {
         let (tx, mut rx) = event_channel();
-        let (read_tx, read_rx) = mpsc::channel(256);
-        let pane = PaneId(7);
-        let chunks = OUTPUT_EVENT_BUFFER * 2;
-        let payload = "x".repeat(3_000);
-        for _ in 0..chunks {
-            read_tx
-                .send(Ok(format!("%output %7 {payload}\r\n").into_bytes()))
-                .await
-                .unwrap();
-        }
-        drop(read_tx);
-
-        read_pty_loop(PtyReader::from_channel(read_rx), OutputBatcher::new(tx)).await;
+        let (read_tx, read_rx) = mpsc::channel(32);
+        let reader_task = tokio::spawn(read_pty_loop(
+            PtyReader::from_channel(read_rx),
+            OutputBatcher::new(tx),
+        ));
+        // The production UI drains this lane while the reader is running.  A
+        // test that waits for the reader before receiving would deadlock once
+        // the bounded lane fills, hiding the behavior being tested.
+        let drain_task = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+        let sender_task = tokio::spawn(async move {
+            let payload = "x".repeat(512);
+            for _ in 0..96 {
+                for pane in [1u32, 2] {
+                    read_tx
+                        .send(Ok(format!("%output %{pane} {payload}\r\n").into_bytes()))
+                        .await
+                        .unwrap();
+                }
+                // 模拟 SSH transport 每 1ms 送达一个交错批次。8ms 窗内必须
+                // 按 pane 继续合并，不能每毫秒 flush 打满 bounded lane。
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            drop(read_tx);
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            sender_task.await.unwrap();
+            reader_task.await.unwrap();
+        })
+        .await
+        .expect("reader burst must finish without waiting for a blocked output receiver");
 
         let mut output_events = 0usize;
         let mut output_bytes = 0usize;
         let mut saw_gap = false;
-        while let Ok(event) = rx.try_recv() {
+        for event in drain_task
+            .await
+            .expect("output drain task must finish after reader closes")
+        {
+            match event {
+                TmuxEvent::Message(Message::Output { content, .. }) => {
+                    output_events += 1;
+                    output_bytes += content.len();
+                }
+                TmuxEvent::OutputGap { .. } => saw_gap = true,
+                TmuxEvent::Exit { .. } => {}
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert!(!saw_gap, "SSH 多 pane 交错输出不得打满 output lane");
+        assert_eq!(output_bytes, 96 * 2 * 512);
+        assert!(
+            output_events <= 32,
+            "8ms idle 窗内按 pane 合并，实际事件数 {output_events}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chunked_reader_coalesces_large_redraw_before_bounded_output_lane() {
+        let (tx, rx) = event_channel();
+        let (read_tx, read_rx) = mpsc::channel(256);
+        let pane = PaneId(7);
+        let chunks = OUTPUT_EVENT_BUFFER * 2;
+        let payload = "x".repeat(3_000);
+        let payload_len = payload.len();
+        let reader_task = tokio::spawn(read_pty_loop(
+            PtyReader::from_channel(read_rx),
+            OutputBatcher::new(tx),
+        ));
+        let drain_task = tokio::spawn(async move {
+            let mut events = Vec::new();
+            let mut rx = rx;
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+        let sender_payload = payload.clone();
+        let sender_task = tokio::spawn(async move {
+            for _ in 0..chunks {
+                read_tx
+                    .send(Ok(format!("%output %7 {sender_payload}\r\n").into_bytes()))
+                    .await
+                    .unwrap();
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            sender_task.await.unwrap();
+            reader_task.await.unwrap();
+        })
+        .await
+        .expect("chunked reader must finish without a blocked output receiver");
+
+        let mut output_events = 0usize;
+        let mut output_bytes = 0usize;
+        let mut saw_gap = false;
+        for event in drain_task
+            .await
+            .expect("output drain task must finish after reader closes")
+        {
             match event {
                 TmuxEvent::Message(Message::Output {
                     pane: event_pane,
@@ -1674,10 +1761,11 @@ mod tests {
         }
 
         assert!(!saw_gap, "reader 分块不得绕过 coalescer 打满 output lane");
-        assert_eq!(output_bytes, chunks * payload.len());
+        assert_eq!(output_bytes, chunks * payload_len);
+        let expected_max_events = (chunks * payload_len).div_ceil(OUTPUT_COALESCE_MAX_BYTES) + 1;
         assert!(
-            output_events <= 16,
-            "384KiB redraw 应合并为约 32KiB 事件，实际 {output_events}"
+            output_events <= expected_max_events,
+            "大块 redraw 应按约 32KiB 合并，最多 {expected_max_events} 个事件，实际 {output_events}"
         );
     }
 

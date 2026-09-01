@@ -115,6 +115,7 @@ fn import_legacy_project(value: &toml::Value) -> Option<Result<ProjectDocument>>
             options: BTreeMap::new(),
             session,
             socket,
+            workspace_id: None,
         },
         transport,
         command,

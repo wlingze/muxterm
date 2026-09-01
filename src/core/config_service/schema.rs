@@ -343,6 +343,9 @@ pub struct ProjectRuntime {
     /// Runtime socket (tmux `-L` name or Herdr API socket).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
+    /// Herdr workspace id (`wN`); tmux/shell remain `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
@@ -370,6 +373,7 @@ impl ProjectDocument {
                 options: BTreeMap::new(),
                 session: config.session.clone(),
                 socket: config.socket.clone(),
+                workspace_id: config.workspace_id.clone(),
             },
             transport: ProjectTransport {
                 id: transport_id,
@@ -418,6 +422,13 @@ impl ProjectDocument {
             self.runtime
                 .options
                 .get("socket")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        target.workspace_id = self.runtime.workspace_id.clone().or_else(|| {
+            self.runtime
+                .options
+                .get("workspace_id")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });

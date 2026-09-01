@@ -15,9 +15,10 @@ fallback = ["Noto Sans Mono", "monospace"]
 [statusbar]
 mode = "tmux"
 
-# 连接池：warm 连接上限（同时决定 QuickConnect Recent 显示条数上限）
+# 连接池：warm Workspace 的软提醒阈值；超过后提醒选择关闭长期未使用的后台 Workspace。
+# 超过阈值不会自动淘汰，QuickConnect 仍可继续打开 Workspace。
 [pool]
-max_slots = 5
+max_slots = 20
 
 # 主题（对应 configs/themes/<name>.toml）
 [theme]

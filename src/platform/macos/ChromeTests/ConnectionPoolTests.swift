@@ -176,7 +176,7 @@ final class ConnectionPoolTests: XCTestCase {
         XCTAssertEqual(pool.slotCount, 1)
     }
 
-    func testLRUEvictsOldestBackgroundWhenCapacityExceeded() {
+    func testCapacityDoesNotEvictUntilExplicitCleanup() {
         let pool = makePool(maxSlots: 2)
         now = 100
         let keyA = makeKey(session: "a")
@@ -194,10 +194,20 @@ final class ConnectionPoolTests: XCTestCase {
         XCTAssertTrue(created)
         XCTAssertEqual(slotC.lifecycle, .active)
 
-        // maxSlots=2，已有 A/B 两个 background；新 C active 后应淘汰最旧 A
+        // maxSlots=2，超过阈值只产生提醒候选；新 C active 后不能静默淘汰 A。
+        XCTAssertEqual(slotA.lifecycle, .background)
+        XCTAssertTrue(slotA.evictReasons.isEmpty)
+        XCTAssertEqual(slotB.lifecycle, .background)
+        XCTAssertEqual(pool.slotCount, 3)
+        XCTAssertTrue(pool.isOverCapacity)
+        XCTAssertEqual(
+            pool.oldestBackgroundCandidates(limit: 2).map { $0.key.session },
+            ["a", "b"]
+        )
+
+        pool.evictForCapacity()
         XCTAssertEqual(slotA.lifecycle, .evicting)
         XCTAssertEqual(slotA.evictReasons, [.capacity])
-        XCTAssertEqual(slotB.lifecycle, .background)
         XCTAssertEqual(pool.slotCount, 2)
     }
 
@@ -250,9 +260,13 @@ final class ConnectionPoolTests: XCTestCase {
         let keyB = makeKey(session: "b")
         let (slotB, created) = pool.acquire(key: keyB) { [self] _ in createSlot(keyB) }
         XCTAssertTrue(created)
-        // maxSlots=1：新 active B 会让 A（background）被淘汰，B 不能淘汰自己
-        XCTAssertEqual(slotA.lifecycle, .evicting)
+        // maxSlots=1：新 active B 只让 A 保持后台，B 不能因容量被淘汰。
+        XCTAssertEqual(slotA.lifecycle, .background)
         XCTAssertEqual(slotB.lifecycle, .active)
+        XCTAssertEqual(pool.slotCount, 2)
+        XCTAssertTrue(pool.isOverCapacity)
+        pool.evictForCapacity()
+        XCTAssertEqual(slotA.lifecycle, .evicting)
         XCTAssertEqual(pool.slotCount, 1)
     }
 
@@ -291,6 +305,21 @@ final class ConnectionPoolTests: XCTestCase {
         XCTAssertEqual(recents.first?.transport, .ssh(name: "ryzen"))
         XCTAssertEqual(recents.last?.runtime, .shell)
         XCTAssertEqual(recents.last?.path, "/x/a")
+    }
+
+    func testAllRecentTargetConfigsIncludesWorkspacesBeyondSoftLimit() {
+        let pool = makePool(maxSlots: 20)
+        for index in 0..<25 {
+            let key = makeKey(session: "workspace-\(index)", path: "/x/workspace-\(index)")
+            _ = pool.acquire(key: key) { [self] _ in createSlot(key) }
+            pool.release(key: key)
+        }
+
+        let all = pool.allRecentTargetConfigs()
+
+        XCTAssertEqual(all.count, 25)
+        XCTAssertTrue(all.contains { $0.name == "workspace-24" })
+        XCTAssertTrue(pool.isOverCapacity)
     }
 
     func testRecentAlwaysKeepsActiveTargetFirst() {

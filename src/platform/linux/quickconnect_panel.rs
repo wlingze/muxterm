@@ -4,7 +4,7 @@
 //! 回车连接、双击编辑、末行 New Project。
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box as GtkBox, Entry, EventControllerKey, GestureClick, Label, ListBox, ListBoxRow,
-    Orientation, Overlay, ScrolledWindow, SelectionMode, Window,
+    Orientation, Overlay, Popover, PositionType, ScrolledWindow, SelectionMode, Window,
 };
 
 use crate::core::attention::engine::PaneAttention;
@@ -28,6 +28,7 @@ use crate::platform::linux::panel_model::{
 use crate::platform::linux::quick_pick;
 use crate::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
+    WorkspaceQuery,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
@@ -81,6 +82,9 @@ pub struct ExistingPanelState {
     pub locals: Vec<ExistingEntry>,
     pub hosts: Vec<String>,
     pub remote: std::collections::HashMap<String, Vec<ExistingEntry>>,
+    /// SSH config 中的全部 alias（即使该 host 当前没有可连接 workspace，
+    /// 也要能用于 `@alias` 补全）。
+    pub ssh_aliases: Vec<String>,
     /// SSH 探测是否在跑：空 host + inflight → Loading；空 + 完成 → Empty。
     pub probe_inflight: bool,
 }
@@ -163,43 +167,70 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
     if q.is_empty() {
         return items.to_vec();
     }
-    items
+    let mut matched: Vec<(usize, u32, PanelItem)> = items
         .iter()
-        .filter(|item| match item {
-            PanelItem::Target(entry, _) => QuickConnect::search_text(&entry.config).contains(&q),
-            PanelItem::NewProject => {
-                let label = format!(
-                    "new project {}",
-                    i18n::tr(TextKey::NewProject).to_lowercase()
-                );
-                label.contains(&q)
-            }
-            PanelItem::Folder { title, .. } => title.to_lowercase().contains(&q),
-            PanelItem::Back => true,
-            PanelItem::Existing(e) => format!("{} {}", e.title, e.subtitle())
-                .to_lowercase()
-                .contains(&q),
-            PanelItem::Host { alias } => alias.to_lowercase().contains(&q),
-            PanelItem::Loading => true,
-            PanelItem::Empty { title } => title.to_lowercase().contains(&q),
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let score = match item {
+                PanelItem::Target(entry, _) => QuickConnect::search_score(&entry.config, &q),
+                PanelItem::NewProject => {
+                    let label = format!(
+                        "new project {}",
+                        i18n::tr(TextKey::NewProject).to_lowercase()
+                    );
+                    label.contains(&q).then_some(0)
+                }
+                PanelItem::Folder { title, .. } => title.to_lowercase().contains(&q).then_some(0),
+                PanelItem::Back => Some(0),
+                PanelItem::Existing(e) => QuickConnect::search_score(&e.target_config(), &q),
+                PanelItem::Host { alias } => alias.to_lowercase().contains(&q).then_some(0),
+                PanelItem::Loading => Some(0),
+                PanelItem::Empty { title } => title.to_lowercase().contains(&q).then_some(0),
+            }?;
+            Some((index, score, item.clone()))
         })
-        .cloned()
-        .collect()
+        .collect();
+    matched.sort_by(
+        |(left_index, left_score, _), (right_index, right_score, _)| {
+            right_score
+                .cmp(left_score)
+                .then(left_index.cmp(right_index))
+        },
+    );
+    matched.into_iter().map(|(_, _, item)| item).collect()
 }
 
 pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
+    build_items_with_recent_limit(store, current, 5)
+}
+
+fn build_items_with_recent_limit(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+    recent_limit: usize,
+) -> Vec<PanelItem> {
     let current_id = current.map(QuickConnect::unique_id);
-    let mut items: Vec<PanelItem> = QuickConnect::entries(&store.recents, &store.projects, 5)
-        .into_iter()
-        .map(|entry| {
-            let is_current = current_id
-                .as_ref()
-                .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
-            PanelItem::Target(entry, is_current)
-        })
-        .collect();
+    let mut items: Vec<PanelItem> =
+        QuickConnect::entries(&store.recents, &store.projects, recent_limit)
+            .into_iter()
+            .map(|entry| {
+                let is_current = current_id
+                    .as_ref()
+                    .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
+                PanelItem::Target(entry, is_current)
+            })
+            .collect();
     items.push(PanelItem::NewProject);
     items
+}
+
+/// 搜索用的完整 Recent/Project 集合；空 query 的展示仍由 `build_items` 保持
+/// 紧凑，只在用户开始输入时把这里的隐藏 Recent 合并进来。
+pub fn build_search_items(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+) -> Vec<PanelItem> {
+    build_items_with_recent_limit(store, current, store.recents.len())
 }
 
 /// W20b：根列表 = 第一项「已有的连接」Folder + 原 Recent/Project + New Project。
@@ -212,6 +243,81 @@ pub fn build_root_items(
         title: i18n::tr(TextKey::ExistingConnections),
     }];
     items.extend(build_items(store, current));
+    items
+}
+
+/// 把已有连接压平成根查询候选。空 query 时仍只显示 Folder，避免改变
+/// 原有的工作区入口；用户开始搜索后才把 local/SSH 的 Existing 行并入结果。
+pub fn existing_root_items(existing: &ExistingPanelState) -> Vec<PanelItem> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    let mut entries = existing.locals.clone();
+    let mut aliases: Vec<&String> = existing.remote.keys().collect();
+    aliases.sort();
+    for alias in aliases {
+        if let Some(rows) = existing.remote.get(alias) {
+            entries.extend(rows.iter().cloned());
+        }
+    }
+    entries.sort_by_key(|entry| QuickConnect::unique_id(&entry.target_config()));
+    for entry in entries {
+        let id = QuickConnect::unique_id(&entry.target_config());
+        if seen.insert(id) {
+            result.push(PanelItem::Existing(entry));
+        }
+    }
+    result
+}
+
+/// 根目录搜索候选：Recent/Project 仍保持原顺序，已存在连接仅在用户
+/// 输入查询后并入，避免空面板被大量 runtime 行挤满。
+pub fn root_items_with_existing(
+    base: &[PanelItem],
+    existing: &ExistingPanelState,
+    query: &str,
+) -> Vec<PanelItem> {
+    root_items_with_existing_and_search(base, &[], existing, query)
+}
+
+/// 根目录搜索候选的完整版本：非空 query 时合并完整 Recent/Project 集合，
+/// 再追加 Existing workspace；空 query 仍只返回紧凑的 `base`。
+pub fn root_items_with_existing_and_search(
+    base: &[PanelItem],
+    search_base: &[PanelItem],
+    existing: &ExistingPanelState,
+    query: &str,
+) -> Vec<PanelItem> {
+    let mut items = base.to_vec();
+    if query.trim().is_empty() {
+        return items;
+    }
+    let mut seen: HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            PanelItem::Target(entry, _) => Some(QuickConnect::unique_id(&entry.config)),
+            _ => None,
+        })
+        .collect();
+    for item in search_base {
+        let PanelItem::Target(entry, _) = item else {
+            continue;
+        };
+        if seen.insert(QuickConnect::unique_id(&entry.config)) {
+            items.push(item.clone());
+        }
+    }
+    let root_existing = existing_root_items(existing);
+    if root_existing.is_empty() && existing.probe_inflight {
+        items.push(PanelItem::Loading);
+    }
+    for item in root_existing {
+        let PanelItem::Existing(entry) = &item else {
+            continue;
+        };
+        if seen.insert(QuickConnect::unique_id(&entry.target_config())) {
+            items.push(item);
+        }
+    }
     items
 }
 
@@ -317,6 +423,9 @@ fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction
 pub struct PanelShowArgs {
     pub initial_tab: PanelTab,
     pub workspaces: Vec<PanelItem>,
+    /// 非空搜索时追加的完整 Recent/Project 候选；空列表表示与 `workspaces`
+    /// 相同，兼容只关心紧凑列表的测试调用方。
+    pub workspace_search_items: Vec<PanelItem>,
     pub agents: Vec<AgentSidebarItem>,
     pub attention: Vec<PaneAttention>,
     pub on_connect: Box<dyn Fn(TargetConfig)>,
@@ -354,6 +463,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     let PanelShowArgs {
         initial_tab,
         workspaces,
+        workspace_search_items,
         agents,
         attention,
         on_connect,
@@ -469,13 +579,28 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     overlay.add_overlay(&backdrop);
     overlay.add_overlay(&panel);
 
+    // GTK4 没有 GTK3 的 EntryCompletion；用轻量 Popover 提供同等行为，
+    // Tab 也会直接采用第一条候选并保留前面的查询条件。
+    let completion_list = ListBox::new();
+    completion_list.set_selection_mode(SelectionMode::Browse);
+    completion_list.add_css_class("quick-pick-completions");
+    let completion_popover = Popover::builder()
+        .has_arrow(false)
+        .position(PositionType::Bottom)
+        .build();
+    completion_popover.set_parent(&entry);
+    completion_popover.set_child(Some(&completion_list));
+    completion_popover.set_width_request(220);
+
     let model = Rc::new(RefCell::new(PanelModel::open(initial_tab)));
     let all = Rc::new(workspaces);
+    let search_all = Rc::new(workspace_search_items);
     let agents = Rc::new(agents);
     let attention = Rc::new(attention);
     let callbacks = Rc::new(PanelShowArgs {
         initial_tab,
         workspaces: Vec::new(),
+        workspace_search_items: Vec::new(),
         agents: Vec::new(),
         attention: Vec::new(),
         on_connect,
@@ -490,6 +615,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_existing_nav,
     });
     let finished = Rc::new(RefCell::new(false));
+    let completion_values = Rc::new(RefCell::new(Vec::<String>::new()));
 
     let on_close = Rc::new(on_close);
     let dismiss = {
@@ -503,12 +629,77 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 return;
             }
             *finished.borrow_mut() = true;
+            completion_popover.popdown();
+            completion_popover.set_child(None::<&gtk4::Widget>);
+            completion_popover.unparent();
             overlay.remove_overlay(&backdrop);
             overlay.remove_overlay(&panel);
             on_close();
         }
     };
     PANEL_DISMISS.with(|slot| *slot.borrow_mut() = Some(Box::new(dismiss.clone())));
+
+    let update_completion: Rc<dyn Fn()> = {
+        let entry = entry.clone();
+        let model = model.clone();
+        let existing = existing.clone();
+        let completion_list = completion_list.clone();
+        let completion_popover = completion_popover.clone();
+        let completion_values = completion_values.clone();
+        Rc::new(move || {
+            let query = entry.text().to_string();
+            let is_workspace_tab = model.borrow().tab == PanelTab::Workspaces;
+            let aliases = {
+                let ex = existing.borrow();
+                let mut aliases = ex.ssh_aliases.clone();
+                aliases.extend(ex.hosts.iter().cloned());
+                aliases
+            };
+            let candidates = if is_workspace_tab {
+                WorkspaceQuery::completion_candidates(&query, &aliases)
+            } else {
+                Vec::new()
+            };
+            *completion_values.borrow_mut() = candidates.clone();
+            while let Some(child) = completion_list.first_child() {
+                completion_list.remove(&child);
+            }
+            for candidate in &candidates {
+                let row = ListBoxRow::new();
+                row.set_activatable(true);
+                let label = Label::new(Some(candidate));
+                label.set_halign(Align::Start);
+                label.set_margin_start(10);
+                label.set_margin_end(10);
+                label.set_margin_top(4);
+                label.set_margin_bottom(4);
+                row.set_child(Some(&label));
+                completion_list.append(&row);
+            }
+            if candidates.is_empty() || !entry.has_focus() {
+                completion_popover.popdown();
+            } else {
+                completion_list.select_row(completion_list.row_at_index(0).as_ref());
+                completion_popover.popup();
+            }
+        })
+    };
+    completion_list.connect_row_activated({
+        let entry = entry.clone();
+        let completion_popover = completion_popover.clone();
+        let completion_values = completion_values.clone();
+        move |_, row| {
+            let index = row.index() as usize;
+            let Some(replacement) = completion_values.borrow().get(index).cloned() else {
+                return;
+            };
+            let query = entry.text().to_string();
+            entry.set_text(&WorkspaceQuery::replace_current_token(&query, &replacement));
+            entry.set_position(-1);
+            completion_popover.popdown();
+            entry.grab_focus();
+        }
+    });
 
     {
         let dismiss = dismiss.clone();
@@ -539,6 +730,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let list = list.clone();
         let model = model.clone();
         let all = all.clone();
+        let search_all = search_all.clone();
         let agents = agents.clone();
         let attention = attention.clone();
         let callbacks = callbacks.clone();
@@ -555,6 +747,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let scope_bar = scope_bar.clone();
         let existing = existing.clone();
         let visible_actions = visible_actions.clone();
+        let update_completion = update_completion.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
@@ -565,11 +758,12 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 let m = model.borrow();
                 (m.tab, m.query.clone())
             };
-            // W20：非 Root 时列表来自已有的连接子目录。
+            // W20：非 Root 时列表来自已有的连接子目录；Root 在有 query
+            // 时把所有已发现可 attach 的 workspace 也并入搜索候选。
             let all: Vec<PanelItem> = {
                 let ex = existing.borrow();
                 if ex.nav == ExistingNav::Root {
-                    (*all).clone()
+                    root_items_with_existing_and_search(&all, &search_all, &ex, &query)
                 } else {
                     existing_items(
                         ex.nav.clone(),
@@ -827,6 +1021,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 }
             }
             *visible_actions.borrow_mut() = actions;
+            update_completion();
         }
     };
     rebuild();
@@ -878,15 +1073,15 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let schedule_rebuild = schedule_rebuild.clone();
         let model = model.clone();
         let existing = existing.clone();
+        let update_completion = update_completion.clone();
         PANEL_REFRESH.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(move || {
-                // 已有连接探测只影响 Workspaces 的子目录；在根目录、
-                // Attention 或 Search 中重建整表只会打断输入。
-                if model.borrow().tab == PanelTab::Workspaces
-                    && existing.borrow().nav != ExistingNav::Root
-                {
+                // Existing 探测结果也会成为根目录搜索候选，因此根目录
+                // 同样需要刷新；Attention/Search 不受影响。
+                if model.borrow().tab == PanelTab::Workspaces {
                     schedule_rebuild();
                 }
+                update_completion();
             }));
         });
     }
@@ -905,8 +1100,10 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     {
         let model = model.clone();
         let schedule_rebuild = schedule_rebuild.clone();
+        let update_completion = update_completion.clone();
         entry.connect_changed(move |e| {
             model.borrow_mut().query = e.text().to_string();
+            update_completion();
             schedule_rebuild();
         });
     }
@@ -1042,6 +1239,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let list = list.clone();
         let entry = entry.clone();
         let entry_for_keys = entry.clone();
+        let completion_popover = completion_popover.clone();
+        let completion_values = completion_values.clone();
         let controller = EventControllerKey::new();
         controller.connect_key_pressed(move |_c, key, _code, mods| match key {
             Key::Escape => {
@@ -1049,6 +1248,31 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 glib::Propagation::Stop
             }
             Key::Tab => {
+                let query = entry.text().to_string();
+                let aliases = {
+                    let ex = existing.borrow();
+                    let mut aliases = ex.ssh_aliases.clone();
+                    aliases.extend(ex.hosts.iter().cloned());
+                    aliases
+                };
+                let candidates = if model.borrow().tab == PanelTab::Workspaces {
+                    WorkspaceQuery::completion_candidates(&query, &aliases)
+                } else {
+                    Vec::new()
+                };
+                if let Some(replacement) = candidates.first() {
+                    let completed = WorkspaceQuery::replace_current_token(&query, replacement);
+                    // 完整 token 再按 Tab 应回到面板 tab 切换；否则
+                    // `@tmux` 会被原样替换并吞掉每次 Tab。
+                    if completed != query {
+                        entry.set_text(&completed);
+                        entry.set_position(-1);
+                        completion_values.borrow_mut().clear();
+                        completion_popover.popdown();
+                        schedule_rebuild();
+                        return glib::Propagation::Stop;
+                    }
+                }
                 model
                     .borrow_mut()
                     .cycle_tab(mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK));
@@ -1275,28 +1499,7 @@ fn reachability_dot(reach: SshReach) -> Label {
 
 /// W20：ExistingEntry → TargetConfig（attach only；socket/session 带上）。
 fn existing_entry_to_config(entry: &ExistingEntry) -> TargetConfig {
-    let mut cfg = TargetConfig::new(
-        entry.title.clone(),
-        entry.runtime,
-        entry.transport.clone(),
-        if entry.runtime == TargetRuntime::Herdr {
-            String::new()
-        } else {
-            "~".into()
-        },
-    );
-    cfg.socket = match entry.runtime {
-        TargetRuntime::Tmux => entry.tmux_socket.clone(),
-        TargetRuntime::Herdr => entry.herdr_socket.clone(),
-        TargetRuntime::Shell => None,
-    };
-    cfg.session = match entry.runtime {
-        TargetRuntime::Tmux => entry.tmux_session.clone(),
-        TargetRuntime::Herdr => entry.herdr_session.clone(),
-        TargetRuntime::Shell => None,
-    };
-    cfg.workspace_id = entry.herdr_workspace_id.clone();
-    cfg
+    entry.target_config()
 }
 
 fn badge_label(badge: QuickBadge) -> String {
@@ -1385,6 +1588,67 @@ mod tests {
             }
         ));
         assert!(matches!(items[2], PanelItem::NewProject));
+    }
+
+    #[test]
+    fn root_search_includes_existing_workspace_without_duplicate_project() {
+        let mut store = QuickConnectStore::in_memory();
+        store.projects.push(cfg("project"));
+        let base = build_root_items(&store, None);
+        let existing = ExistingPanelState {
+            locals: vec![ExistingEntry {
+                title: "orphan".into(),
+                runtime: TargetRuntime::Tmux,
+                transport: TargetTransport::Local,
+                tmux_session: Some("orphan".into()),
+                tmux_socket: Some("muxterm-test-root-search".into()),
+                herdr_session: None,
+                herdr_workspace_id: None,
+                herdr_socket: None,
+            }],
+            ..ExistingPanelState::default()
+        };
+
+        let root = root_items_with_existing(&base, &existing, "orph");
+        let rows = filter_panel_items(&root, "orph");
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0], PanelItem::Existing(_)));
+    }
+
+    #[test]
+    fn root_search_includes_recent_beyond_compact_display_limit() {
+        let mut store = QuickConnectStore::in_memory();
+        for index in 0..6 {
+            store.recents.push(cfg(&format!("recent-{index}")));
+        }
+        let base = build_root_items(&store, None);
+        let search_base = build_search_items(&store, None);
+        let existing = ExistingPanelState::default();
+
+        // 空面板仍保持 5 条 Recent 的紧凑展示；非空搜索必须能命中第 6 条。
+        assert_eq!(
+            base.iter()
+                .filter(|item| matches!(item, PanelItem::Target(_, _)))
+                .count(),
+            5
+        );
+        let root = root_items_with_existing_and_search(&base, &search_base, &existing, "recent-5");
+        let rows = filter_panel_items(&root, "recent-5");
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(&rows[0], PanelItem::Target(entry, _) if entry.config.name == "recent-5"));
+    }
+
+    #[test]
+    fn root_search_shows_loading_until_existing_discovery_finishes() {
+        let store = QuickConnectStore::in_memory();
+        let base = build_root_items(&store, None);
+        let existing = ExistingPanelState {
+            probe_inflight: true,
+            ..ExistingPanelState::default()
+        };
+
+        let root = root_items_with_existing(&base, &existing, "tmux");
+        assert!(root.iter().any(|item| matches!(item, PanelItem::Loading)));
     }
 
     /// C9：Home 是扁平 runtime list，不是 local/SSH 目录。

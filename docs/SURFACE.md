@@ -174,7 +174,7 @@ ivyTerm 在 capture 后用若干 `\n` + `ESC[#A` 把视口对齐到底（`scroll
    中间帧只 feed **原始** last frame），不要 dump。
 4. **Seed once.** capture 完成前不画 live；完成后一次性 feed；再增量。
 5. **Follow tail.** 直播 `history_offset=0`；新输出后视口在底（alt-screen 由字节自己切）。禁止用 replica dump 模拟滚动来「修」TUI。
-6. **Bytes in, bytes out.** 键盘 → `send-keys -H`；`%output` 解转义 → 原样 feed。
+6. **Bytes in, bytes out.** 键盘 → `send-keys -H`；`%output` 解转义 → 原样 feed。alternate-screen 内的滚轮/触控板属于终端输入，不得改写本地 scrollback 视口。
 7. **`%pause` 是数据丢失屏障，不是切 tab 刷新。** 正常切换已打开的 Surface 禁止 `pause` + capture；但 reader OutputGap、平台缓存溢出或 tmux 主动 `%pause` 说明增量已不连续，必须保持该 pane fenced，安装一次权威 snapshot/full frame 后才能恢复 live。洪水 pane 的主动 `pause-after` **尚未实现**（TODO，见 §7.4）。
 8. **Pane id.** 控制协议里 pane 是 `%N`。`缺少 @ 前缀: %64` 必须当 bug 修，不是忽略。
 9. **Index never becomes Surface.** `visible_ansi` / `surface_seed_ansi` / `scroll_ansi` / `paneSurfaceSeedANSI` **不得**进 VTE/SwiftTerm。Herdr `pane.read` / `visible_ansi` 也只播种 Index；只有经过当前 generation/event ordinal/wire seq 过滤的原始 `terminal.frame` 才能进入 Surface。full 建 baseline，diff 追赶；旧 generation 永不重播。
@@ -212,7 +212,7 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续
 - `%pause` / `%extended-output` 能 parse
 - 384KiB live redraw 即使被本地 PTY / SSH transport 拆成 4KiB chunks，也必须在有界
   lane 前合并为约 32KiB events；多个 pane 交错刷新时分别保序，不能互相制造
-  `OutputGap`；安静输出在 1ms idle window 后交付
+  `OutputGap`；安静输出在 8ms idle window 后交付
 
 ### 5.2 中：Surface（GTK VTE，无 AppWindow 或一个 Window）
 
@@ -283,7 +283,7 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 
 切 tab：已有 Surface 只显示/隐藏，继续吃 `PaneOutput`。不要 core 预渲染一帧再贴到前端。
 
-前台 Workspace：该工作区里出 PTY 的 pane 都可以有 Surface（tab 栏上的页都算打开）。后台 Workspace：连接和 Index 仍在池里；像素控件只保留已经建过的，不再新建。池有容量上限，不是无限多个 Workspace 同时养全套 SwiftTerm。
+前台 Workspace：该工作区里出 PTY 的 pane 都可以有 Surface（tab 栏上的页都算打开）。后台 Workspace：连接和 Index 仍在池里；像素控件只保留已经建过的，不再新建。池默认以 20 个 Workspace 作为软提醒阈值；超过后由用户选择关闭长期未使用项，不静默移除连接。
 
 ### 7.3 本轮实现
 
@@ -293,7 +293,7 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 - 后台 Workspace：core 继续吃字节进 Index；已经建过的 Surface 在**主线程**继续 `feed` 到**该 Workspace 自己的** VT 树。禁止在后台 GCD 队列改 SwiftTerm。不新建 widget，不把 Index dump 当切回来的刷新。未建 Surface 的有界 live 缓存一旦溢出，丢弃整段缓存并发 `RequestPaneSnapshot`；绝不从 CSI/OSC/DCS 中间截 suffix。
 - 切 Workspace / 切已加载的 tab：挂已有 Surface 树，不拆 Auto Layout 重建。
 - 第一次 seed 仍用 Runtime 的 `PaneSnapshot`（可见屏 + 模式）。attach 前 tmux 历史在可见屏之后按行回填（`PaneHistory`），写入 native scrollback，不 `reset`，也不把 `-S -N` 当 VT 流 `feed()`。
-- Workspace 数量受池上限约束，默认 5，不是无限格。
+- Workspace 数量默认以 20 为软提醒阈值；超出后由用户选择关闭后台项，不能静默淘汰仍在使用的 Workspace。
 
 ### 7.4 TODO（本轮不实现）
 
@@ -305,7 +305,7 @@ Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateCh
 - 已打开的 tab/pane 切换：没有 pause、没有 capture、没有 reset。
 - attach 首屏：可见 `capture-pane` 发出之前，控制通道不得塞 `list-sessions` / 全 pane OSC `-r`。慢 SSH 可以等，但不能空超时后再抓 `-S -10000`。
 - 打字和 TUI 跟 `PaneOutput` 走，不跟 Index dump 走。
-- 池里 Workspace 数量受 `WorkspacePoolPolicy.max_slots` 限制（默认 5）。
+- `WorkspacePoolPolicy.max_slots` 默认 20，是容量提醒阈值而非硬上限；超过后只提醒用户选择关闭后台 Workspace。
 - 某个 pane 刷爆时允许掉帧；TODO 落地后只 pause 那一个 pane。
 
 ---

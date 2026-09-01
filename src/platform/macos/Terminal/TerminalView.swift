@@ -78,6 +78,7 @@ final class MuxTerminalView: TerminalView {
     private var isSendingUserMouseReport = false
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
+    private(set) var lastScrollWheelRoutedToRuntime = false
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
     private var lastAccessibilityUpdate = Date.distantPast
     private static let accessibilityUpdateInterval: TimeInterval = 1.0
@@ -160,6 +161,20 @@ final class MuxTerminalView: TerminalView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        // tmux 的 agent TUI（Codex/Cursor）在 alternate screen 中自己维护
+        // 历史。此时本地 SwiftTerm scrollback 没有意义，把鼠标上报保持打开，
+        // 让 tmux/agent 的滚轮绑定处理；不回写 core viewport。
+        if getTerminal().isCurrentBufferAlternate {
+            lastScrollWheelRoutedToRuntime = true
+            let previous = allowMouseReporting
+            allowMouseReporting = true
+            isSendingUserMouseReport = true
+            super.scrollWheel(with: event)
+            isSendingUserMouseReport = false
+            allowMouseReporting = previous
+            return
+        }
+        lastScrollWheelRoutedToRuntime = false
         withUserMouseReporting { super.scrollWheel(with: event) }
     }
 

@@ -134,15 +134,15 @@ impl Default for StatusbarConfig {
     }
 }
 
-/// `[pool]`：QuickConnect warm connection pool 上限。
+/// `[pool]`：QuickConnect warm Workspace 的软提醒阈值。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct PoolConfig {
-    /// 同时保留的 warm 连接数（同时决定 Recent 显示条数上限）。
+    /// 超过该数量时提醒用户选择关闭后台 Workspace；不会自动淘汰。
     #[serde(default = "default_pool_max_slots")]
     pub max_slots: u32,
 }
 fn default_pool_max_slots() -> u32 {
-    5
+    20
 }
 impl Default for PoolConfig {
     fn default() -> Self {

@@ -1,7 +1,7 @@
 //! WorkspacePool：旧连接池进 core。
 //!
-//! 池负责 open / list / activate / 后台 `take_events` 喂 PaneBuf / 淘汰
-//! （tmux Detach、shell Shutdown）。容量、TTL、按 `WorkspaceId` 复用。
+//! 池负责 open / list / activate / 后台 `take_events` 喂 PaneBuf / 回收
+//! （tmux Detach、shell Shutdown）。容量提醒、TTL、按 `WorkspaceId` 复用。
 //! platform 不得再实现第二套淘汰/复用。
 
 use std::collections::HashMap;
@@ -47,6 +47,16 @@ impl WorkspacePoolPolicy {
     }
 }
 
+/// 可供用户选择关闭的后台工作区摘要。
+///
+/// 池只暴露稳定身份和显示名；Runtime/Pane 的具体资源仍由池独占，UI
+/// 不会因此复制第二份 Workspace。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCapacityCandidate {
+    pub id: WorkspaceId,
+    pub name: String,
+}
+
 /// 池里一格：Workspace + 生命周期元数据。
 struct PooledWorkspace {
     workspace: Workspace,
@@ -67,7 +77,7 @@ pub struct WorkspacePool {
 
 impl Default for WorkspacePool {
     fn default() -> Self {
-        Self::new(WorkspacePoolPolicy::new(5))
+        Self::new(WorkspacePoolPolicy::new(20))
     }
 }
 
@@ -89,6 +99,41 @@ impl WorkspacePool {
 
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+
+    /// 当前策略中的软提醒阈值。
+    pub fn max_slots(&self) -> usize {
+        self.policy.max_slots.max(1)
+    }
+
+    /// 池超过软提醒阈值时返回 true。打开工作区不会因此静默淘汰旧项。
+    pub fn is_over_capacity(&self) -> bool {
+        self.slots.len() > self.max_slots()
+    }
+
+    /// 按最久未使用顺序返回后台工作区摘要，供 UI 提醒用户选择性关闭。
+    pub fn oldest_background_candidates(&self, limit: usize) -> Vec<WorkspaceCapacityCandidate> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut slots: Vec<&PooledWorkspace> = self
+            .slots
+            .values()
+            .filter(|slot| slot.lifecycle == WorkspaceLifecycle::Background)
+            .collect();
+        slots.sort_by(|left, right| {
+            left.last_used_at
+                .cmp(&right.last_used_at)
+                .then(left.opened_order.cmp(&right.opened_order))
+        });
+        slots
+            .into_iter()
+            .take(limit)
+            .map(|slot| WorkspaceCapacityCandidate {
+                id: slot.workspace.id().clone(),
+                name: slot.workspace.name().to_string(),
+            })
+            .collect()
     }
 
     /// 当前前台工作区 id。
@@ -125,6 +170,28 @@ impl WorkspacePool {
         let mut slots: Vec<&PooledWorkspace> = self.slots.values().collect();
         slots.sort_by_key(|slot| slot.opened_order);
         slots.into_iter().map(|slot| &slot.workspace).collect()
+    }
+
+    /// 按最近使用顺序列出工作区（含前台和后台）。
+    ///
+    /// `list` 保留侧栏的稳定打开顺序；Recent 则必须读取生命周期元数据，
+    /// 不能把两种顺序混用。
+    pub fn recent_workspaces(&self, limit: usize) -> Vec<&Workspace> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut slots: Vec<&PooledWorkspace> = self.slots.values().collect();
+        slots.sort_by(|left, right| {
+            right
+                .last_used_at
+                .cmp(&left.last_used_at)
+                .then(right.opened_order.cmp(&left.opened_order))
+        });
+        slots
+            .into_iter()
+            .take(limit)
+            .map(|slot| &slot.workspace)
+            .collect()
     }
 
     fn allocate_opened_order(&mut self) -> u64 {
@@ -180,7 +247,6 @@ impl WorkspacePool {
             self.transition_active(&id);
             let slot = self.slots.get_mut(&id).expect("exists 分支必须命中");
             slot.last_used_at = now;
-            self.evict_for_capacity();
             return Ok(&mut self.slots.get_mut(&id).expect("slot 必须存在").workspace);
         }
 
@@ -199,7 +265,6 @@ impl WorkspacePool {
             },
         );
         self.transition_active(&id);
-        self.evict_for_capacity();
         Ok(&mut self
             .slots
             .get_mut(&id)
@@ -301,7 +366,6 @@ impl WorkspacePool {
             },
         );
         self.transition_active(&id);
-        self.evict_for_capacity();
         id
     }
 
@@ -362,7 +426,7 @@ impl WorkspacePool {
         true
     }
 
-    /// 淘汰超过容量的后台工作区（LRU）。
+    /// 显式容量清理：淘汰超过容量的后台工作区（LRU）。打开工作区不会调用它。
     pub fn evict_for_capacity(&mut self) {
         let max_slots = self.policy.max_slots.max(1);
         if self.slots.len() <= max_slots {
@@ -561,6 +625,40 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn recent_workspaces_use_last_used_order_not_open_order() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(8));
+        let ids = [id("alpha", "tmux"), id("beta", "tmux"), id("gamma", "tmux")];
+        for workspace_id in &ids {
+            pool.open(workspace_id.clone(), workspace_id.session.clone(), |_| {
+                Box::new(MockRuntime::with_single_pane())
+            })
+            .await
+            .unwrap();
+        }
+
+        // 直接固定测试元数据，避免依赖系统时钟的分辨率。
+        pool.slots
+            .get_mut(&ids[0])
+            .expect("alpha 必须存在")
+            .last_used_at = Instant::now() - Duration::from_secs(3);
+        pool.slots
+            .get_mut(&ids[1])
+            .expect("beta 必须存在")
+            .last_used_at = Instant::now() - Duration::from_secs(1);
+        pool.slots
+            .get_mut(&ids[2])
+            .expect("gamma 必须存在")
+            .last_used_at = Instant::now() - Duration::from_secs(2);
+
+        let recent: Vec<WorkspaceId> = pool
+            .recent_workspaces(3)
+            .into_iter()
+            .map(|workspace| workspace.id().clone())
+            .collect();
+        assert_eq!(recent, vec![ids[1].clone(), ids[2].clone(), ids[0].clone()]);
+    }
+
     /// W6：search_all 跨工作区/pane 返回带 tab 的命中；同 pane 不同 tab 不串。
     #[tokio::test]
     async fn search_all_finds_hits_across_workspaces_and_panes() {
@@ -605,9 +703,9 @@ mod tests {
         assert!(pool.search_all("missing").is_empty());
     }
 
-    /// 超容量：PersistDetach mock 计数 detach，非持久 mock 计数 shutdown。
+    /// 显式容量清理：PersistDetach mock 计数 detach，非持久 mock 计数 shutdown。
     #[tokio::test]
-    async fn over_capacity_evicts_tmux_with_detach_and_shell_with_shutdown() {
+    async fn explicit_capacity_eviction_releases_old_background_workspaces() {
         let log = Arc::new(Mutex::new(Vec::new()));
 
         // PersistDetach：容量 2，开 3 个 → 最早的后台被 Detach。
@@ -625,6 +723,16 @@ mod tests {
                 .await
                 .unwrap();
         }
+        assert_eq!(tmux_pool.len(), 3, "打开超过阈值时不能静默淘汰 workspace");
+        assert!(tmux_pool.is_over_capacity());
+        assert_eq!(
+            tmux_pool
+                .oldest_background_candidates(1)
+                .first()
+                .map(|candidate| candidate.name.as_str()),
+            Some("a")
+        );
+        tmux_pool.evict_for_capacity();
         assert_eq!(tmux_pool.len(), 2);
         assert!(
             log.lock()
@@ -650,6 +758,8 @@ mod tests {
                 .await
                 .unwrap();
         }
+        assert_eq!(shell_pool.len(), 2, "打开超过阈值时不能静默淘汰 workspace");
+        shell_pool.evict_for_capacity();
         assert_eq!(shell_pool.len(), 1);
         assert!(
             shell_log

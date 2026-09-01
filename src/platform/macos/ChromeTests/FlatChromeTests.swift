@@ -1389,12 +1389,18 @@ final class QuickConnectModelTests: XCTestCase {
         XCTAssertFalse(QuickConnect.shouldAttach(existingName: "sess", config: shell))
     }
 
-    func testUniqueIDUsesNameAndTransport() {
+    func testUniqueIDUsesRuntimeTransportAndSessionIdentity() {
         let local = TargetConfig(name: "m", runtime: .tmux, transport: .local, path: "/x")
-        XCTAssertEqual(QuickConnect.uniqueID(for: local), "m@local")
+        XCTAssertEqual(
+            QuickConnect.uniqueID(for: local),
+            "4:tmux|5:local|0:|1:m|0:"
+        )
 
         let ssh = TargetConfig(name: "m", runtime: .tmux, transport: .ssh(name: "ryzen"), path: "/x")
-        XCTAssertEqual(QuickConnect.uniqueID(for: ssh), "m@ryzen")
+        XCTAssertEqual(
+            QuickConnect.uniqueID(for: ssh),
+            "4:tmux|3:ssh|5:ryzen|1:m|0:"
+        )
     }
 
     func testHerdrUniqueIDUsesNamedSessionSocketAndWorkspaceID() {
@@ -1696,6 +1702,18 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertEqual(store.recents.map(\.name), ["a", "b"])
         let text = String(data: store.encode(), encoding: .utf8) ?? ""
         XCTAssertFalse(text.contains("[[recents]]"))
+    }
+
+    func testReplaceAllRecentsKeepsWorkspacesBeyondHistoryLimit() {
+        let store = QuickConnectStore()
+        let all = (0..<(QuickConnectStore.maxRecent + 5)).map {
+            cfg("workspace-\($0)", "/x/workspace-\($0)")
+        }
+
+        store.replaceAllRecents(all)
+
+        XCTAssertEqual(store.recents.count, QuickConnectStore.maxRecent + 5)
+        XCTAssertEqual(store.recents.last?.name, "workspace-\(QuickConnectStore.maxRecent + 4)")
     }
 
     func testTomlEscapesQuotesAndBackslashes() {

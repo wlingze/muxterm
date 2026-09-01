@@ -59,6 +59,13 @@ public final class QuickConnectStore {
         recents = Array(newRecents.prefix(Self.maxRecent))
     }
 
+    /// 用连接池的完整 Workspace 快照替换内存态（不触发落盘）。
+    /// 连接池的容量是软提醒阈值，可能合法地超过 20；快速面板搜索必须
+    /// 能命中第 21 个及之后的 Workspace，因此这里不套用手动 Recent 历史上限。
+    public func replaceAllRecents(_ newRecents: [TargetConfig]) {
+        recents = newRecents
+    }
+
     /// 新增或更新一个 project。返回是否新增。
     ///
     /// Herdr Project 第一次保存时还没有 workspace identity；连接成功后 Core 会返回
@@ -178,13 +185,23 @@ public final class QuickConnectStore {
         projects.compactMap { project in
             guard let name = project["name"] as? String,
                   let path = project["path"] as? String,
-                  let runtimeRaw = (project["runtime"] as? [String: Any])?["id"] as? String
+                  let runtimeInfo = project["runtime"] as? [String: Any],
+                  let runtimeRaw = runtimeInfo["id"] as? String
             else { return nil }
             guard let runtime = TargetRuntime(rawValue: runtimeRaw) else { return nil }
-            let transportRaw = (project["transport"] as? [String: Any])?["id"] as? String ?? "local"
-            let target = (project["transport"] as? [String: Any])?["target"] as? String ?? ""
+            let transportInfo = project["transport"] as? [String: Any]
+            let transportRaw = transportInfo?["id"] as? String ?? "local"
+            let target = transportInfo?["target"] as? String ?? ""
             let transport: TargetTransport = transportRaw == "ssh" ? .ssh(name: target) : .local
-            return TargetConfig(name: name, runtime: runtime, transport: transport, path: path)
+            return TargetConfig(
+                name: name,
+                runtime: runtime,
+                transport: transport,
+                path: path,
+                session: runtimeInfo["session"] as? String,
+                socket: runtimeInfo["socket"] as? String,
+                workspaceID: runtimeInfo["workspace_id"] as? String
+            )
         }
     }
 
@@ -198,12 +215,21 @@ public final class QuickConnectStore {
             case .ssh(let name):
                 transport = ["id": "ssh", "target": name]
             }
-            let transportID = transport["id"] as? String ?? "local"
+            var runtime: [String: Any] = ["id": project.runtime.rawValue]
+            if let session = project.session {
+                runtime["session"] = session
+            }
+            if let socket = project.socket {
+                runtime["socket"] = socket
+            }
+            if let workspaceID = project.workspaceID {
+                runtime["workspace_id"] = workspaceID
+            }
             return [
-                "id": "\(project.name)@\(transportID)",
+                "id": QuickConnect.uniqueID(for: project),
                 "name": project.name,
                 "path": project.path,
-                "runtime": ["id": project.runtime.rawValue],
+                "runtime": runtime,
                 "transport": transport,
                 "command": [],
                 "env": [:]

@@ -231,8 +231,8 @@ public enum MuxtermTerminalFont {
 
 /// 主配置 `~/.config/muxterm/config.toml` 的轻量读取（纯逻辑，便于单测）。
 public enum MuxtermConfig {
-    /// 连接池 warm slot 上限；与 QuickConnect 的 recent 展示上限对齐。
-    public static let defaultPoolMaxSlots = 5
+    /// 连接池 soft 上限；超过后由 UI 提醒用户选择关闭后台 workspace。
+    public static let defaultPoolMaxSlots = 20
 
     /// 读取 `[pool] max_slots`；缺省 / 非法回退默认值。
     public static func poolMaxSlots(from toml: String?) -> Int {

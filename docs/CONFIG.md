@@ -100,6 +100,7 @@ config_version = 1
 | `theme.dark` | string | `black` | 立即预览 |
 | `statusbar.mode` | `tmux`/`theme` | `tmux` | 立即预览 |
 | `scrollback.lines` | integer，100–1,000,000 | `10000` | 新建 Pane |
+| `pool.max_slots` | integer，≥1 | `20` | 新建/切换 Workspace |
 
 `theme.name = "system"` 根据系统外观在 `theme.light` 和 `theme.dark` 之间选择；
 填写其他主题名时固定使用该主题。首期只提供 Muxterm 自有 TOML 主题格式，不导入
@@ -107,6 +108,10 @@ config_version = 1
 
 字体选择遵循：用户选中的可用字体、应用捆绑的 JetBrains Mono、系统 monospace。
 缺少用户字体只产生 warning，不修改用户配置，也不安装系统字体。
+
+`pool.max_slots` 是 warm Workspace 的软提醒阈值，不是硬上限。超过阈值时连接池保留全部
+Workspace，界面只列出最久未使用的后台 Workspace，让用户选择性关闭；“全部保留”不会触发
+静默 LRU 淘汰。TTL、内存压力和用户明确关闭仍可按各自策略回收资源。
 
 ### 3.3 Runtime 和行为
 

@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import MuxtermAppLib
+@testable import MuxtermChrome
 
 final class WorkspaceSidebarE2ETests: XCTestCase {
     func testMainWindowSidebarHasPersistentWorkspaceAndAgentSections() throws {
@@ -19,6 +20,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.workspaces.section"))
         XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.agents.section"))
         XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.commands.section"))
+        XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.hiddenCommands.section"))
         XCTAssertNotNil(findView(
             app.window?.titlebarAccessoryViewControllers.first?.view,
             id: "muxterm.sidebar.toggle"
@@ -63,6 +65,59 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         )
         XCTAssertTrue(app.testDispatchKeyEvent(secondEvent), "Cmd-Ctrl-2 必须被窗口快捷键消费")
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
+    }
+
+    func testHiddenCommandEyeTogglesVisibility() {
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        let item = CommandSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            paneId: 8,
+            title: "cargo test",
+            detail: "dev · pane 8",
+            indicator: .running
+        )
+        sidebar.setCommands([item])
+
+        XCTAssertEqual(sidebar.testCommandTitles(), ["cargo test"])
+        XCTAssertTrue(sidebar.testHiddenCommandTitles().isEmpty)
+        sidebar.testToggleCommandVisibility(
+            workspaceId: item.workspaceId,
+            paneId: item.paneId
+        )
+        XCTAssertTrue(sidebar.testCommandTitles().isEmpty)
+        XCTAssertEqual(sidebar.testHiddenCommandTitles(), ["cargo test"])
+
+        let replacement = CommandSidebarItem(
+            workspaceId: item.workspaceId,
+            paneId: item.paneId,
+            title: "npm test",
+            detail: item.detail,
+            indicator: .running
+        )
+        sidebar.setCommands([replacement])
+        XCTAssertEqual(sidebar.testCommandTitles(), ["npm test"])
+        XCTAssertTrue(sidebar.testHiddenCommandTitles().isEmpty)
+
+    }
+
+    func testCollapsedSectionsPackAgainstNearestBoundary() {
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        sidebar.testSetSectionExpanded(.hiddenCommands, false)
+
+        // All-collapsed packs to the top; expanded sections absorb all slack.
+        sidebar.testSetSectionExpanded(.workspaces, false)
+        sidebar.testSetSectionExpanded(.agents, false)
+        sidebar.testSetSectionExpanded(.commands, false)
+        let allCollapsed = sidebar.testSectionFrames()
+        XCTAssertEqual(allCollapsed[.workspaces]?.maxY ?? 0, 28, accuracy: 0.5)
+        XCTAssertEqual(allCollapsed[.agents]?.minY ?? 0, 28, accuracy: 0.5)
+        XCTAssertEqual(allCollapsed[.hiddenCommands]?.maxY ?? 0, 112, accuracy: 0.5)
+
+        sidebar.testSetSectionExpanded(.agents, true)
+        let expandedMiddle = sidebar.testSectionFrames()
+        XCTAssertEqual(expandedMiddle[.workspaces]?.maxY ?? 0, 28, accuracy: 0.5)
+        XCTAssertEqual(expandedMiddle[.commands]?.maxY ?? 0, 612, accuracy: 0.5)
+        XCTAssertEqual(expandedMiddle[.hiddenCommands]?.maxY ?? 0, 640, accuracy: 0.5)
     }
 
     func testWorkspaceCloseButtonRemovesWorkspaceAndFallsForward() throws {

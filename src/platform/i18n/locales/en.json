@@ -194,5 +194,9 @@
   "existing_ssh": "SSH",
   "existing_back": "Back",
   "existing_empty": "No running tmux or Herdr",
-  "existing_probing": "Checking remotes…"
+  "existing_probing": "Checking remotes…",
+  "workspace_capacity_title": "Many workspaces are open",
+  "workspace_capacity_message": "There are {{count}} workspaces in the pool (soft limit {{limit}}). You can close background workspaces that you no longer use; the active workspace is not listed.",
+  "workspace_capacity_close_selected": "Close selected",
+  "workspace_capacity_keep_all": "Keep all"
 }

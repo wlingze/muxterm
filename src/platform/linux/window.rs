@@ -15,8 +15,8 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    ApplicationWindow, Box, Button, CssProvider, EventControllerKey, HeaderBar, Label, Orientation,
-    Paned, Window,
+    ApplicationWindow, Box, Button, CheckButton, CssProvider, EventControllerKey, HeaderBar, Label,
+    Orientation, Paned, Window,
 };
 use vte4::prelude::*;
 
@@ -38,7 +38,9 @@ use crate::core::runtime::HerdrRuntime;
 use crate::core::transport::ssh::probe::SshReach;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
-use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
+use crate::core::workspace::pool::{
+    WorkspaceCapacityCandidate, WorkspacePool, WorkspacePoolPolicy,
+};
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::i18n::{self, Key};
@@ -60,7 +62,7 @@ use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBa
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::platform::linux::quickconnect_panel::{
-    build_root_items, ExistingNav, ExistingPanelState, PanelItem,
+    build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
@@ -127,6 +129,9 @@ struct UiState {
     panel_open: Option<PanelTab>,
     /// 用户显式 Quit（Ctrl+Q / 命令面板）：close_request 放行真正关闭。
     quit_requested: bool,
+    /// 已针对该 slot 数量显示过一次容量提醒；用户选择保留后不在每个
+    /// poll 重复打断，数量变化（新建或关闭）后才重新评估。
+    capacity_warning_presented_for_slot_count: Option<usize>,
     /// 最近一次 STATE_BACKEND_STATUS 的 pane_id 编码（连接状态）。
     runtime_status: u32,
     /// tmux status-left/right 订阅推送值（覆盖默认状态栏文案）。
@@ -546,6 +551,7 @@ impl AppWindow {
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
             panel_open: None,
             quit_requested: false,
+            capacity_warning_presented_for_slot_count: None,
             runtime_status: crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
             status_left: None,
             status_right: None,
@@ -911,6 +917,9 @@ impl AppWindow {
                         drain_local_existing(&st);
                         drain_pending_reconnects(&st);
                         maybe_schedule_reconnect(&st);
+                        if let Some(w) = win_weak.upgrade() {
+                            maybe_warn_workspace_capacity(&st, &w);
+                        }
                         let mut s = st.borrow_mut();
                         // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
                         // 喂好，这里把注意力信号应用到引擎，并把 Surface 事件
@@ -1245,6 +1254,7 @@ impl AppWindow {
         drain_local_existing(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
+        maybe_warn_workspace_capacity(&self._state, &self.window);
         let (n, pending_close) = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -1342,6 +1352,7 @@ impl AppWindow {
         drain_local_existing(&self._state);
         drain_pending_reconnects(&self._state);
         maybe_schedule_reconnect(&self._state);
+        maybe_warn_workspace_capacity(&self._state, &self.window);
         let pending_close = {
             let mut s = self._state.borrow_mut();
             let events = s.active_workspace_mut().refresh();
@@ -3627,21 +3638,9 @@ fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> 
     } else {
         TargetTransport::Local
     };
-    let herdr_socket = if runtime == TargetRuntime::Herdr {
-        if c.socket.as_deref().is_some_and(|socket| !socket.is_empty()) {
-            c.socket.clone()
-        } else {
-            let home = std::env::var("HOME").unwrap_or_default();
-            match c.namespace.as_deref() {
-                Some(ns) if !ns.is_empty() && ns != "default" => {
-                    Some(format!("{home}/.config/herdr/sessions/{ns}/herdr.sock"))
-                }
-                _ => Some(format!("{home}/.config/herdr/herdr.sock")),
-            }
-        }
-    } else {
-        None
-    };
+    let herdr_socket = (runtime == TargetRuntime::Herdr)
+        .then(|| c.socket.clone())
+        .flatten();
     let tmux_socket = (runtime == TargetRuntime::Tmux)
         .then(|| c.socket.clone())
         .flatten();
@@ -3653,20 +3652,24 @@ fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> 
             .then(|| c.session.clone().unwrap_or_else(|| c.name.clone())),
         tmux_socket,
         herdr_session: (runtime == TargetRuntime::Herdr).then(|| {
-            c.namespace
+            c.session
                 .clone()
+                .or_else(|| c.namespace.clone())
                 .filter(|ns| !ns.is_empty())
                 .unwrap_or_else(|| "default".to_string())
         }),
-        herdr_workspace_id: (runtime == TargetRuntime::Herdr)
-            .then(|| c.extra.clone())
-            .filter(|s| !s.is_empty()),
+        herdr_workspace_id: if runtime == TargetRuntime::Herdr {
+            c.workspace_id.clone().filter(|s| !s.is_empty())
+        } else {
+            None
+        },
         herdr_socket,
     }
 }
 
 /// 已有的连接探测增量：先推 local 行，SSH 完成后再推；Done 才清 inflight。
 enum ExistingProbeMsg {
+    Aliases(Vec<String>),
     Rows(Vec<ExistingEntry>),
     Done,
 }
@@ -3692,21 +3695,58 @@ fn merge_existing_entries(ex: &mut ExistingPanelState, entries: Vec<ExistingEntr
     }
 }
 
+fn append_unique_existing_entries(target: &mut Vec<ExistingEntry>, entries: Vec<ExistingEntry>) {
+    for entry in entries {
+        if !target.contains(&entry) {
+            target.push(entry);
+        }
+    }
+}
+
 /// C7/C9：已有的连接探测。先 `discover_sessions("local")` 立刻推表，
 /// 再按 SSH host 最多 4 路并发。禁止等 `all` 串完才刷新（archmini 上 cd/mac 会冻 Loading）。
 fn spawn_local_existing_probe(s: &mut UiState) {
     s.existing.borrow_mut().probe_inflight = true;
+    // Catalog 的通用 local discovery 默认只查默认 tmux server。启动配置或
+    // 已打开 workspace 可能使用显式 `-L` socket；把这些已知 socket 作为只读
+    // discovery 的附加输入，否则 Existing 搜索会漏掉当前用户可链接的会话。
+    let local_tmux_sockets: Vec<String> = {
+        let mut sockets = Vec::new();
+        if let Some(socket) = s
+            .default_socket
+            .as_deref()
+            .filter(|socket| !socket.is_empty())
+        {
+            sockets.push(socket.to_string());
+        }
+        for (id, socket) in &s.workspace_sockets {
+            if id.transport != "ssh" {
+                if let Some(socket) = socket.as_deref().filter(|socket| !socket.is_empty()) {
+                    if !sockets.iter().any(|known| known == socket) {
+                        sockets.push(socket.to_string());
+                    }
+                }
+            }
+        }
+        sockets
+    };
     let (tx, rx) = std::sync::mpsc::channel::<ExistingProbeMsg>();
     s.pending_local_probe.push_back(rx);
     std::thread::spawn(move || {
         let mut catalog = crate::core::catalog::Catalog::with_builtins();
         tracing::debug!(target = "muxterm::linux", "existing probe: local start");
-        let local: Vec<ExistingEntry> = catalog
+        let mut local: Vec<ExistingEntry> = catalog
             .discover_sessions("local", "")
             .unwrap_or_default()
             .iter()
             .map(candidate_to_existing)
             .collect();
+        for socket in local_tmux_sockets {
+            append_unique_existing_entries(
+                &mut local,
+                crate::core::discovery::existing::discover_local_tmux(Some(&socket)),
+            );
+        }
         tracing::debug!(
             target = "muxterm::linux",
             n = local.len(),
@@ -3720,6 +3760,7 @@ fn spawn_local_existing_probe(s: &mut UiState) {
             .into_iter()
             .map(|h| h.alias)
             .collect();
+        let _ = tx.send(ExistingProbeMsg::Aliases(aliases.clone()));
         tracing::debug!(
             target = "muxterm::linux",
             hosts = ?aliases,
@@ -3777,10 +3818,12 @@ fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
                 break;
             };
             match rx.try_recv() {
-                Ok(ExistingProbeMsg::Rows(rows)) => Some(Ok(rows)),
+                Ok(msg @ ExistingProbeMsg::Aliases(_)) | Ok(msg @ ExistingProbeMsg::Rows(_)) => {
+                    Some(msg)
+                }
                 Ok(ExistingProbeMsg::Done) => {
                     s.pending_local_probe.pop_front();
-                    Some(Err(()))
+                    Some(ExistingProbeMsg::Done)
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     wait = true;
@@ -3788,12 +3831,19 @@ fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     s.pending_local_probe.pop_front();
-                    Some(Err(()))
+                    Some(ExistingProbeMsg::Done)
                 }
             }
         };
         match msg {
-            Some(Ok(entries)) => {
+            Some(ExistingProbeMsg::Aliases(aliases)) => {
+                let s = state.borrow();
+                let mut ex = s.existing.borrow_mut();
+                ex.ssh_aliases = aliases;
+                drop(ex);
+                crate::platform::linux::quickconnect_panel::refresh_current();
+            }
+            Some(ExistingProbeMsg::Rows(entries)) => {
                 let n = entries.len();
                 let s = state.borrow();
                 let mut ex = s.existing.borrow_mut();
@@ -3806,7 +3856,7 @@ fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
                 );
                 crate::platform::linux::quickconnect_panel::refresh_current();
             }
-            Some(Err(())) => {
+            Some(ExistingProbeMsg::Done) => {
                 state.borrow().existing.borrow_mut().probe_inflight = false;
                 tracing::debug!(target = "muxterm::linux", "existing probe: ui done");
                 crate::platform::linux::quickconnect_panel::refresh_current();
@@ -3832,6 +3882,10 @@ fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
         .into_iter()
         .map(|h| h.alias)
         .collect();
+    {
+        let s = state.borrow();
+        s.existing.borrow_mut().ssh_aliases = aliases.clone();
+    }
     let (tx, rx) = std::sync::mpsc::channel::<Vec<(String, Vec<ExistingEntry>)>>();
     state.borrow_mut().pending_existing_ssh.push_back(rx);
     std::thread::spawn(move || {
@@ -4107,15 +4161,22 @@ fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
 ///
 /// 内部自行 borrow：面板回调会再次借用 state，调用方不能同时持有 RefMut。
 fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
-    let (workspaces, agents, attention, win, st, ssh_reach) = {
+    let (workspaces, workspace_search_items, agents, attention, win, st, ssh_reach) = {
         let mut s = state.borrow_mut();
-        let recents = recent_target_configs(&s.pool, 5);
-        s.qc_store.replace_recents(&recents);
-        let current = s.pool.active().map(workspace_to_target_config);
+        let recents = recent_target_configs(&s.pool, &s.workspace_sockets, s.pool.len());
+        s.qc_store.replace_all_recents(&recents);
+        let current = s.pool.active().map(|workspace| {
+            let socket = s
+                .workspace_sockets
+                .get(workspace.id())
+                .and_then(|value| value.as_deref());
+            workspace_to_target_config(workspace, socket)
+        });
         let store = s.qc_store.clone();
         let win = window.clone();
         let st = state.clone();
         let workspaces = build_root_items(&store, current.as_ref());
+        let workspace_search_items = build_search_items(&store, current.as_ref());
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
         // 临时输入 surface 互斥：QuickConnect 打开后不保留 pane-find。
         s.pane_find.set_visible(false);
@@ -4129,7 +4190,15 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             .flat_map(|w| w.panes)
             .collect();
         s.panel_open = Some(initial_tab);
-        (workspaces, agents, attention, win, st, ssh_reach)
+        (
+            workspaces,
+            workspace_search_items,
+            agents,
+            attention,
+            win,
+            st,
+            ssh_reach,
+        )
     };
     if !window.is_visible() {
         window.present();
@@ -4139,6 +4208,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         crate::platform::linux::quickconnect_panel::PanelShowArgs {
             initial_tab,
             workspaces,
+            workspace_search_items,
             agents,
             attention,
             on_connect: {
@@ -4802,6 +4872,119 @@ fn activate_existing(s: &mut UiState, id: WorkspaceId) {
     after_activate(s);
 }
 
+/// 超过 soft capacity 时提醒用户选择关闭最久未使用的后台 Workspace。
+///
+/// 提醒状态按 slot 数量去重：点“全部保留”不会在每个 16ms poll 重复弹窗，
+/// 新建或关闭导致数量变化后才重新评估。当前活动 Workspace 只会是 active，
+/// 不会进入 `oldest_background_candidates`。
+fn maybe_warn_workspace_capacity(state: &Rc<RefCell<UiState>>, parent: &Window) {
+    const MAX_CANDIDATES: usize = 8;
+
+    let details = {
+        let mut s = state.borrow_mut();
+        let count = s.pool.len();
+        if !s.pool.is_over_capacity() || s.capacity_warning_presented_for_slot_count == Some(count)
+        {
+            if !s.pool.is_over_capacity() {
+                s.capacity_warning_presented_for_slot_count = None;
+            }
+            None
+        } else {
+            let overflow = count.saturating_sub(s.pool.max_slots()).max(1);
+            let candidates = s
+                .pool
+                .oldest_background_candidates(overflow.min(MAX_CANDIDATES));
+            if candidates.is_empty() {
+                None
+            } else {
+                s.capacity_warning_presented_for_slot_count = Some(count);
+                Some((count, s.pool.max_slots(), candidates))
+            }
+        }
+    };
+    let Some((count, limit, candidates)) = details else {
+        return;
+    };
+
+    let dialog = Window::builder()
+        .title(i18n::tr(Key::WorkspaceCapacityTitle))
+        .modal(true)
+        .transient_for(parent)
+        .default_width(500)
+        .default_height(300)
+        .build();
+    let root = Box::new(Orientation::Vertical, 10);
+    root.set_margin_top(16);
+    root.set_margin_bottom(16);
+    root.set_margin_start(16);
+    root.set_margin_end(16);
+
+    let message = Label::new(Some(&i18n::tr_args(
+        Key::WorkspaceCapacityMessage,
+        &[("count", count.to_string()), ("limit", limit.to_string())],
+    )));
+    message.set_halign(gtk4::Align::Start);
+    message.set_wrap(true);
+    root.append(&message);
+
+    let candidate_box = Box::new(Orientation::Vertical, 4);
+    let choices: Vec<(WorkspaceCapacityCandidate, CheckButton)> = candidates
+        .iter()
+        .map(|candidate| {
+            let check = CheckButton::with_label(&format_capacity_candidate(candidate));
+            (candidate.clone(), check)
+        })
+        .collect();
+    for (_, check) in &choices {
+        candidate_box.append(check);
+    }
+    root.append(&candidate_box);
+
+    let actions = Box::new(Orientation::Horizontal, 8);
+    actions.set_halign(gtk4::Align::End);
+    let keep = Button::with_label(&i18n::tr(Key::WorkspaceCapacityKeepAll));
+    let close_selected = Button::with_label(&i18n::tr(Key::WorkspaceCapacityCloseSelected));
+    actions.append(&keep);
+    actions.append(&close_selected);
+    root.append(&actions);
+    dialog.set_child(Some(&root));
+
+    let dialog_for_keep = dialog.clone();
+    keep.connect_clicked(move |_| dialog_for_keep.close());
+
+    let dialog_for_close = dialog.clone();
+    let state_for_close = state.clone();
+    close_selected.connect_clicked(move |_| {
+        let ids: Vec<WorkspaceId> = choices
+            .iter()
+            .filter(|(_, check)| check.is_active())
+            .map(|(candidate, _)| candidate.id.clone())
+            .collect();
+        let mut s = state_for_close.borrow_mut();
+        for id in ids {
+            close_sidebar_workspace(&mut s, &id);
+        }
+        s.capacity_warning_presented_for_slot_count = if s.pool.is_over_capacity() {
+            Some(s.pool.len())
+        } else {
+            None
+        };
+        dialog_for_close.close();
+    });
+
+    dialog.present();
+}
+
+fn format_capacity_candidate(candidate: &WorkspaceCapacityCandidate) -> String {
+    let target = candidate
+        .id
+        .alias
+        .as_deref()
+        .filter(|alias| !alias.is_empty())
+        .unwrap_or("local");
+    format!("{} · {} @ {}", candidate.name, candidate.id.runtime, target)
+}
+
 fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     let ordered: Vec<WorkspaceId> = s
         .pool
@@ -4851,6 +5034,11 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
         .borrow_mut()
         .retain(|input| &input.workspace != id);
     s.workspace_sockets.remove(id);
+    s.qc_store.replace_all_recents(&recent_target_configs(
+        &s.pool,
+        &s.workspace_sockets,
+        s.pool.len(),
+    ));
     for evicted in s.pool.take_evicted() {
         if s.mounted_ws.as_ref() == Some(&evicted) {
             s.layout_overlay.set_child(None::<&gtk4::Widget>);
@@ -4974,8 +5162,11 @@ fn after_activate(s: &mut UiState) {
     s.last_client_size = None;
     s.pending_client_size = None;
     s.pending_client_hits = 0;
-    s.qc_store
-        .replace_recents(&recent_target_configs(&s.pool, 5));
+    s.qc_store.replace_all_recents(&recent_target_configs(
+        &s.pool,
+        &s.workspace_sockets,
+        s.pool.len(),
+    ));
     refresh_sidebar_if_open(s);
     refresh_ui(s);
     report_all_pane_colours(s);
@@ -5071,11 +5262,19 @@ fn connect_herdr(state: &Rc<RefCell<UiState>>, config: TargetConfig, intent: Pro
 ///
 /// W6 §11.2：优先读 Core 保存的 `ResolvedTarget.canonical`（含 session /
 /// socket / workspace_id）；没有 descriptor 时回退旧五段推导（测试/直开）。
-fn recent_target_configs(pool: &WorkspacePool, limit: usize) -> Vec<TargetConfig> {
-    pool.list()
+fn recent_target_configs(
+    pool: &WorkspacePool,
+    workspace_sockets: &HashMap<WorkspaceId, Option<String>>,
+    limit: usize,
+) -> Vec<TargetConfig> {
+    pool.recent_workspaces(limit)
         .into_iter()
-        .take(limit)
-        .map(workspace_to_target_config)
+        .map(|workspace| {
+            let socket = workspace_sockets
+                .get(workspace.id())
+                .and_then(|value| value.as_deref());
+            workspace_to_target_config(workspace, socket)
+        })
         .collect()
 }
 
@@ -5083,7 +5282,7 @@ fn recent_target_configs(pool: &WorkspacePool, limit: usize) -> Vec<TargetConfig
 ///
 /// 读 `resolved_target().canonical`（Catalog 打开时保存）；无 descriptor 时
 /// 从 WorkspaceId 推导（测试 mock/CLI 直开路径）。
-fn workspace_to_target_config(workspace: &Workspace) -> TargetConfig {
+fn workspace_to_target_config(workspace: &Workspace, tmux_socket: Option<&str>) -> TargetConfig {
     if let Some(resolved) = workspace.resolved_target() {
         return resolved.canonical.clone();
     }
@@ -5105,7 +5304,12 @@ fn workspace_to_target_config(workspace: &Workspace) -> TargetConfig {
     } else {
         TargetTransport::Local
     };
-    TargetConfig::new(name, runtime, transport, id.path.clone())
+    let mut config = TargetConfig::new(name, runtime, transport, id.path.clone());
+    if runtime == TargetRuntime::Tmux {
+        config.session = (!id.session.is_empty()).then(|| id.session.clone());
+        config.socket = tmux_socket.map(str::to_owned);
+    }
+    config
 }
 
 fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only: bool) {

@@ -1,6 +1,6 @@
 //! QuickConnect 数据（Recent + Project）的列表管理（纯逻辑）。
 //!
-//! - Recent：最近连接过的目标（最多 20 条），去重，最近的在最前；
+//! - Recent：手动记录的最近连接最多 20 条，去重，最近的在最前；
 //!   recents 不落盘，由连接池在运行时派生。
 //! - Project：用户配置的预设目标，保存在统一 `config.toml` 的
 //!   `[[projects]]`。本模块不解析或序列化 TOML；增删改通过
@@ -61,7 +61,7 @@ impl QuickConnectStore {
         store
     }
 
-    /// 记录一次连接：放进 recents 最前并按唯一 ID 去重。仅内存态。
+    /// 记录一次连接：放进 recents 最前并按 attach identity 去重。仅内存态。
     pub fn record_recent(&mut self, config: &TargetConfig) {
         let id = QuickConnect::unique_id(config);
         self.recents.retain(|r| QuickConnect::unique_id(r) != id);
@@ -76,7 +76,16 @@ impl QuickConnectStore {
         self.recents = new_recents.iter().take(MAX_RECENT).cloned().collect();
     }
 
-    /// 新增或更新一个 project（按唯一 ID name+transport 匹配）。返回是否新增。
+    /// 用连接池的完整 Workspace 快照替换内存态（不触发落盘）。
+    ///
+    /// 连接池的容量是软提醒阈值，可能合法地超过 20；快速面板搜索必须
+    /// 能命中第 21 个及之后的 Workspace，因此这个入口不套用手动 Recent
+    /// 历史的 `MAX_RECENT` 限制。空面板仍由 UI 只展示前几条。
+    pub fn replace_all_recents(&mut self, new_recents: &[TargetConfig]) {
+        self.recents = new_recents.to_vec();
+    }
+
+    /// 新增或更新一个 project（按 attach identity 匹配）。返回是否新增。
     pub fn upsert_project(&mut self, config: &TargetConfig) -> bool {
         let id = QuickConnect::unique_id(config);
         let added = if let Some(idx) = self
@@ -94,7 +103,7 @@ impl QuickConnectStore {
         added
     }
 
-    /// 删除 project（按唯一 ID name+transport）。
+    /// 删除 project（按 attach identity）。
     pub fn remove_project(&mut self, config: &TargetConfig) {
         let id = QuickConnect::unique_id(config);
         self.projects.retain(|p| QuickConnect::unique_id(p) != id);
@@ -157,7 +166,7 @@ mod tests {
                 &format!("p{i}"),
                 TargetRuntime::Shell,
                 TargetTransport::Local,
-                "~/x",
+                &format!("~/x/{i}"),
             ));
         }
         assert_eq!(store.recents.len(), MAX_RECENT);
@@ -166,16 +175,39 @@ mod tests {
             "p24",
             TargetRuntime::Shell,
             TargetTransport::Local,
-            "~/x",
+            "~/x/24",
         ));
         assert_eq!(store.recents.len(), MAX_RECENT);
         assert_eq!(store.recents[0].name, "p24");
     }
 
     #[test]
+    fn replace_all_recents_keeps_workspaces_beyond_history_limit() {
+        let mut store = QuickConnectStore::in_memory();
+        let all: Vec<TargetConfig> = (0..(MAX_RECENT + 5))
+            .map(|i| {
+                cfg(
+                    &format!("p{i}"),
+                    TargetRuntime::Shell,
+                    TargetTransport::Local,
+                    &format!("~/x/{i}"),
+                )
+            })
+            .collect();
+
+        store.replace_all_recents(&all);
+
+        assert_eq!(store.recents.len(), MAX_RECENT + 5);
+        assert_eq!(
+            store.recents.last().map(|config| config.name.as_str()),
+            Some("p24")
+        );
+    }
+
+    #[test]
     fn upsert_updates_existing() {
         let mut store = QuickConnectStore::in_memory();
-        let a = cfg("srv", TargetRuntime::Shell, TargetTransport::Local, "~/a");
+        let a = cfg("srv", TargetRuntime::Tmux, TargetTransport::Local, "~/a");
         assert!(store.upsert_project(&a));
         let b = cfg("srv", TargetRuntime::Tmux, TargetTransport::Local, "~/b");
         assert!(!store.upsert_project(&b));

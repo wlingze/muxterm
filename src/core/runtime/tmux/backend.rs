@@ -7261,7 +7261,7 @@ mod tests {
                 .is_ok_and(std::process::ExitStatus::success));
 
             // 故意暂停 Runtime 消费，模拟 AppKit 正忙于布局/SwiftTerm feed。
-            // 旧 reader 每个 4KiB 都 flush，会在这段时间打满 64 槽。
+            // 旧 reader 每个 4KiB 都 flush，会在这段时间打满 bounded lane。
             tokio::time::sleep(Duration::from_millis(100)).await;
             let deadline = Instant::now() + Duration::from_secs(2);
             let mut saw_done = false;
