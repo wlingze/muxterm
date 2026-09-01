@@ -626,6 +626,49 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertFalse(text.contains("zzzzzzzz"), "本地溢出的任意 suffix 不得进入 SwiftTerm。got=\(text)")
     }
 
+    /// 已打开 Surface 的 authoritative snapshot 只替换可见屏。它必须保留
+    /// attach 之后 live 形成的 native scrollback，也不能把最初 attach 历史
+    /// 再 prepend 一遍；否则当前画面正确、往上翻却回到旧 attach 基线。
+    func testExistingSurfaceSnapshotPreservesLiveScrollbackAndHistorySeedOnce() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        let paneId: UInt32 = 21
+        let view = MuxTerminalView(
+            paneId: paneId,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        manager.updatePaneSizes([Pane(id: paneId, cols: 80, rows: 24, isActive: true)])
+        manager.testQueueSurfaceSeed(
+            paneId: paneId,
+            view: view,
+            data: Data("ATTACH_BASELINE\r\n".utf8)
+        )
+        manager.testQueueSurfaceHistory(
+            paneId: paneId,
+            lines: ["ATTACH_OFFSCREEN"]
+        )
+        manager.flushSeedsNow(paneIds: [paneId])
+        manager.testFlushFeeds()
+        XCTAssertTrue(view.snapshotResetCount == 1, "precondition: attach seed must complete")
+        XCTAssertTrue(view.canScroll, "precondition: attach history must exist")
+
+        // attach 后产生的多行 live 会进入 SwiftTerm native scrollback。
+        manager.handleOutput(paneId: paneId, data: Data("LIVE_SCROLL_1\r\n".utf8))
+        manager.handleOutput(paneId: paneId, data: Data("LIVE_SCROLL_2\r\n".utf8))
+        manager.testFlushFeeds()
+        XCTAssertTrue(view.canScroll, "precondition: live scrollback must exist")
+
+        manager.handleSnapshot(paneId: paneId, data: Data("AUTHORITATIVE_VISIBLE".utf8))
+
+        XCTAssertEqual(view.snapshotResetCount, 1, "已有 Surface 的恢复 snapshot 不得 reset native scrollback")
+        XCTAssertTrue(view.visibleScreenText().contains("AUTHORITATIVE_VISIBLE"))
+        XCTAssertTrue(view.canScroll, "恢复 snapshot 后 attach 后的 live scrollback 仍应存在")
+        view.scrollLines(100)
+        XCTAssertTrue(view.visibleScreenText().contains("ATTACH_OFFSCREEN"), "attach 前历史必须保留")
+        view.scrollToLatest()
+        XCTAssertTrue(view.visibleScreenText().contains("AUTHORITATIVE_VISIBLE"))
+    }
+
     func testVisibleSeedIsNotStuckBehindBackgroundSeeds() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }

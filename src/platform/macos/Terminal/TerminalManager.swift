@@ -583,16 +583,23 @@ final class TerminalManager: TerminalInputHandler {
         seedingPanes.remove(paneId)
         let view = view(for: paneId)
         ensureValidModelSize(view)
-        if data.isEmpty {
+        if viewExisted {
+            // Snapshot is an authoritative visible-screen replacement, not a new
+            // Surface. Keep native scrollback and the already-applied history seed.
+            view.feedOutput(
+                PaneSnapshotPaintPolicy.baseline(data: data, existingSurface: true),
+                isSnapshot: false
+            )
+            swiftTermSeeded.insert(paneId)
+            setSurfaceReady(paneId, true)
+        } else if data.isEmpty {
             view.feedOutput(Data(), isSnapshot: true)
             swiftTermSeeded.insert(paneId)
             setSurfaceReady(paneId, true)
-            return
-        }
-        if viewExisted {
+        } else {
             swiftTermSeeded.remove(paneId)
+            enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
         }
-        enqueueSeed(paneId: paneId, view: view, data: data, scrollToLatest: true)
         appendSnippet(data)
         recordTraffic(bytes: data.count)
     }
@@ -647,6 +654,12 @@ final class TerminalManager: TerminalInputHandler {
             data: data,
             scrollToLatest: scrollToLatest
         )
+    }
+
+    /// AppKit 回归测试：模拟 attach seed 期间到达的按行历史，不依赖真实 tmux。
+    func testQueueSurfaceHistory(paneId: UInt32, lines: [String]) {
+        savedHistory[paneId] = lines
+        pendingHistory[paneId] = lines
     }
 
     func testQueueSurfaceLiveOutput(paneId: UInt32, data: Data) {

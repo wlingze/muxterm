@@ -875,9 +875,9 @@ impl TmuxRuntime {
             }
             if self.initial_capture_done.contains(&pane) {
                 self.background_capture_only.remove(&pane);
-                // 可见屏已经有了。历史放到下一轮 poll，不要和 select-window
-                // 抢控制通道。
-                self.schedule_pane_history_backfill(pane);
+                // 已经打开的 Surface 切回来只 show/hide（SURFACE.md §11）。
+                // PaneHistory 是一次性 attach 前回填；已完成时重复排队只会
+                // 让 resize/gap 交错路径重发旧历史。
                 continue;
             }
             if self.background_capture_only.contains(&pane) {
@@ -6402,23 +6402,12 @@ mod tests {
         );
         b.history_backfill_hold = false;
         b.flush_deferred_history_backfill();
-        let history = drain_tmux_cmds(&mut rx);
+        let idle = drain_tmux_cmds(&mut rx);
         assert!(
-            history
-                .iter()
-                .any(|cmd| cmd.contains("-S -") && cmd.contains("-E -1")),
-            "空闲后必须补历史行: {history:?}"
+            idle.is_empty(),
+            "切回已经 seed 的 tab 不得再抓历史，否则旧 capture 会覆盖 live scrollback: {idle:?}"
         );
-
-        b.history_backfill_done.insert(pane);
-        b.history_backfill_pending.remove(&pane);
-        b.history_backfill_wanted.remove(&pane);
-        b.query_capture_tab(TabId(2));
-        let cmds = drain_tmux_cmds(&mut rx);
-        assert!(
-            cmds.is_empty(),
-            "历史回填完成后切 tab 不得再发控制命令: {cmds:?}"
-        );
+        assert!(b.history_backfill_wanted.is_empty());
         assert!(!b.resyncs.contains_key(&pane));
     }
 
@@ -6660,6 +6649,47 @@ mod tests {
             !b.history_backfill_wanted.contains(&pane),
             "切 tab 仍不得给 alt-screen 排队历史"
         );
+    }
+
+    #[test]
+    fn tab_switch_after_completed_history_does_not_requery_history() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        b.cmd_tx = Some(tx);
+        let pane = PaneId(121);
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "active".into(),
+                active: true,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "open".into(),
+                active: false,
+            },
+        ];
+        b.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: String::new(),
+            cols: 93,
+            rows: 51,
+        });
+        b.initial_capture_done.insert(pane);
+        b.history_backfill_done.insert(pane);
+        b.capture_grid.insert(pane, (93, 51));
+
+        b.query_capture_tab(TabId(2));
+        let commands = drain_tmux_cmds(&mut rx);
+
+        assert!(
+            commands.is_empty(),
+            "已经 seed 且历史已回填的 tab，切回只能 show/hide Surface，不得再发任何控制命令: {commands:?}"
+        );
+        assert!(!b.resyncs.contains_key(&pane));
+        assert!(b.history_backfill_wanted.is_empty());
     }
 
     #[test]

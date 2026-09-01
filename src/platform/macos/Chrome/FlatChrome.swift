@@ -772,6 +772,27 @@ public enum LastSeenNavigation {
 /// `capture-pane -S -10000` 或 256KB 环当历史重放（iTerm2 也不会这么做）。
 ///
 /// Cursor/Codex 每帧 `CSI H`+`CSI 2J`；一整段重放就是「从很早刷到现在」。
+/// `PaneSnapshot` 在已有 Surface 上是可见网格的权威替换，不是重新建 Surface。
+///
+/// 2026-09-01 dogfood：output-gap 后的 snapshot 重新 reset SwiftTerm，并把
+/// attach 时保存的历史再次 prepend。结果当前屏正确，但上翻回到旧 attach 基线。
+/// 已打开 pane 只能清可见屏并重画 capture；native scrollback 与已应用的历史
+/// 必须原样保留（SURFACE.md §3/§11/§12）。
+public enum PaneSnapshotPaintPolicy {
+    public static func shouldResetExistingSurface() -> Bool { false }
+
+    public static func baseline(
+        data: Data,
+        existingSurface: Bool
+    ) -> Data {
+        guard existingSurface, !data.isEmpty else { return data }
+        var baseline = Data(capacity: data.count + 7)
+        baseline.append(contentsOf: [0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48])
+        baseline.append(data)
+        return baseline
+    }
+}
+
 public enum PanePaintPolicy {
     /// 优先用 PaneBuf 的可见网格 ANSI；没有再从原始字节抽末帧 / 末 N 行。
     public static func firstPaint(visible: Data, raw: Data, rows: Int) -> Data {
