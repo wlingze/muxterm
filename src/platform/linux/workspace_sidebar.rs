@@ -490,6 +490,7 @@ impl WorkspaceSidebar {
             .vexpand(true)
             .build();
         command_section.set_widget_name("muxterm-sidebar-commands-section");
+        command_section.set_size_request(-1, SIDEBAR_SECTION_HEADER_PX * 2);
         command_section.append(&command_section_toggle);
         command_section.append(&command_scrolled);
         command_section.append(&hidden_command_section_toggle);
@@ -499,8 +500,8 @@ impl WorkspaceSidebar {
         lower_sections.set_widget_name("muxterm-sidebar-lower-sections");
         lower_sections.add_css_class("muxterm-sidebar-sections");
         lower_sections.set_wide_handle(false);
-        lower_sections.set_shrink_start_child(false);
-        lower_sections.set_shrink_end_child(false);
+        lower_sections.set_shrink_start_child(true);
+        lower_sections.set_shrink_end_child(true);
         lower_sections.set_start_child(Some(&agent_section));
         lower_sections.set_end_child(Some(&command_section));
         lower_sections.set_position(220);
@@ -510,8 +511,8 @@ impl WorkspaceSidebar {
         sections.set_widget_name("muxterm-sidebar-sections");
         sections.add_css_class("muxterm-sidebar-sections");
         sections.set_wide_handle(false);
-        sections.set_shrink_start_child(false);
-        sections.set_shrink_end_child(false);
+        sections.set_shrink_start_child(true);
+        sections.set_shrink_end_child(true);
         sections.set_start_child(Some(&workspace_section));
         sections.set_end_child(Some(&lower_sections));
         sections.set_position(260);
@@ -572,16 +573,20 @@ impl WorkspaceSidebar {
                 sections.set_resize_end_child(lower_open);
                 lower_sections.set_resize_start_child(agents_open);
                 lower_sections.set_resize_end_child(command_group_open);
-                match (workspaces_open, lower_open) {
-                    (true, true) => sections.set_position(saved_divider.get()),
-                    (true, false) => sections.set_position(i32::MAX),
-                    (false, true) | (false, false) => sections.set_position(0),
-                }
-                match (agents_open, command_group_open) {
-                    (true, true) => lower_sections.set_position(saved_lower_divider.get()),
-                    (true, false) => lower_sections.set_position(i32::MAX),
-                    (false, true) | (false, false) => lower_sections.set_position(0),
-                }
+                sections.set_position(sidebar_split_position(
+                    workspaces_open,
+                    lower_open,
+                    sections.height(),
+                    saved_divider.get(),
+                    SIDEBAR_SECTION_HEADER_PX * 2,
+                ));
+                lower_sections.set_position(sidebar_split_position(
+                    agents_open,
+                    command_group_open,
+                    lower_sections.height(),
+                    saved_lower_divider.get(),
+                    SIDEBAR_SECTION_HEADER_PX * 2,
+                ));
             }
         });
         {
@@ -612,7 +617,11 @@ impl WorkspaceSidebar {
                         || command_section_toggle.is_active()
                         || hidden_command_section_toggle.is_active())
                 {
-                    saved_divider.set(paned.position().max(1));
+                    if let Some(position) =
+                        persist_sidebar_divider(paned.position(), paned.height())
+                    {
+                        saved_divider.set(position);
+                    }
                 }
             });
         }
@@ -626,7 +635,11 @@ impl WorkspaceSidebar {
                     && (command_section_toggle.is_active()
                         || hidden_command_section_toggle.is_active())
                 {
-                    saved_lower_divider.set(paned.position().max(1));
+                    if let Some(position) =
+                        persist_sidebar_divider(paned.position(), paned.height())
+                    {
+                        saved_lower_divider.set(position);
+                    }
                 }
             });
         }
@@ -1101,6 +1114,50 @@ fn command_activity_row(item: &CommandSidebarItem, hidden: bool) -> (ListBoxRow,
     (row, action)
 }
 
+/// 折叠段仍要露出标题；`i32::MAX` 会把整段（含 COMMANDS 标题）压成 0。
+const SIDEBAR_SECTION_HEADER_PX: i32 = 32;
+/// GtkPaned 分割条自身占位，折叠端高度要额外留出，否则标题落在 handle 底下点不到。
+const SIDEBAR_SPLIT_HANDLE_PX: i32 = 8;
+
+fn sidebar_split_position(
+    start_open: bool,
+    end_open: bool,
+    total: i32,
+    saved: i32,
+    end_headers: i32,
+) -> i32 {
+    let total = total.max(1);
+    let end_headers = end_headers.max(SIDEBAR_SECTION_HEADER_PX);
+    match (start_open, end_open) {
+        (true, true) => {
+            let min_end = end_headers.max(80);
+            let min_start = SIDEBAR_SECTION_HEADER_PX.max(80);
+            if total <= min_start + min_end {
+                (total / 2).max(1)
+            } else {
+                saved.clamp(min_start, total - min_end)
+            }
+        }
+        (true, false) => {
+            let keep = end_headers.saturating_add(SIDEBAR_SPLIT_HANDLE_PX);
+            if total <= keep + SIDEBAR_SECTION_HEADER_PX {
+                (total / 2).max(1)
+            } else {
+                total - keep
+            }
+        }
+        (false, true) | (false, false) => SIDEBAR_SECTION_HEADER_PX.min(total).max(1),
+    }
+}
+
+fn persist_sidebar_divider(position: i32, total: i32) -> Option<i32> {
+    let total = total.max(1);
+    if position <= 1 || position >= total.saturating_sub(1) {
+        return None;
+    }
+    Some(position)
+}
+
 fn widget_id(value: &str) -> String {
     value
         .chars()
@@ -1123,6 +1180,27 @@ impl Default for WorkspaceSidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collapsed_commands_keep_header_space() {
+        let pos = sidebar_split_position(true, false, 400, 220, 64);
+        assert_eq!(
+            pos, 328,
+            "Agents 展开、Commands 折叠时必须露出 Commands 标题（含 handle）"
+        );
+        assert_eq!(400 - pos, 72);
+        let open = sidebar_split_position(true, true, 400, 220, 64);
+        assert_eq!(open, 220);
+        let clamped = sidebar_split_position(true, true, 400, 390, 64);
+        assert!(
+            clamped <= 320,
+            "saved divider 贴底时必须给 Commands 留高度: {clamped}"
+        );
+        assert!(persist_sidebar_divider(i32::MAX, 400).is_none());
+        assert!(persist_sidebar_divider(0, 400).is_none());
+        assert_eq!(persist_sidebar_divider(180, 400), Some(180));
+    }
+
     use crate::core::model::backend::mock::MockRuntime;
     use crate::core::model::state::StateChange;
     use crate::core::types::PaneId;
