@@ -624,6 +624,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let panel = panel.clone();
         let finished = finished.clone();
         let on_close = on_close.clone();
+        let completion_popover = completion_popover.clone();
         move || {
             if *finished.borrow() {
                 return;
@@ -1072,7 +1073,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     {
         let schedule_rebuild = schedule_rebuild.clone();
         let model = model.clone();
-        let existing = existing.clone();
         let update_completion = update_completion.clone();
         PANEL_REFRESH.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(move || {
@@ -1237,7 +1237,6 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let model = model.clone();
         let schedule_rebuild = schedule_rebuild.clone();
         let list = list.clone();
-        let entry = entry.clone();
         let entry_for_keys = entry.clone();
         let completion_popover = completion_popover.clone();
         let completion_values = completion_values.clone();
@@ -1248,7 +1247,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 glib::Propagation::Stop
             }
             Key::Tab => {
-                let query = entry.text().to_string();
+                let query = entry_for_keys.text().to_string();
                 let aliases = {
                     let ex = existing.borrow();
                     let mut aliases = ex.ssh_aliases.clone();
@@ -1265,8 +1264,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                     // 完整 token 再按 Tab 应回到面板 tab 切换；否则
                     // `@tmux` 会被原样替换并吞掉每次 Tab。
                     if completed != query {
-                        entry.set_text(&completed);
-                        entry.set_position(-1);
+                        entry_for_keys.set_text(&completed);
+                        entry_for_keys.set_position(-1);
                         completion_values.borrow_mut().clear();
                         completion_popover.popdown();
                         schedule_rebuild();

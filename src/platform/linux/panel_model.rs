@@ -3,7 +3,7 @@
 //! 无 GTK 依赖：tab 切换、query 保留、Tab1 工作区过滤/状态标记、
 //! Tab2 注意力排序、Tab3 搜索占位。GTK 层只负责渲染。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;

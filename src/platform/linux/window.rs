@@ -4919,9 +4919,14 @@ fn maybe_warn_workspace_capacity(state: &Rc<RefCell<UiState>>, parent: &Window) 
     root.set_margin_start(16);
     root.set_margin_end(16);
 
+    let count_text = count.to_string();
+    let limit_text = limit.to_string();
     let message = Label::new(Some(&i18n::tr_args(
         Key::WorkspaceCapacityMessage,
-        &[("count", count.to_string()), ("limit", limit.to_string())],
+        &[
+            ("count", count_text.as_str()),
+            ("limit", limit_text.as_str()),
+        ],
     )));
     message.set_halign(gtk4::Align::Start);
     message.set_wrap(true);
