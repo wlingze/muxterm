@@ -393,14 +393,15 @@ fn to_auth_method(auth: &SshAuth) -> Result<AuthMethod> {
 
 /// 构造远端 tmux -CC 命令。
 ///
-/// - 空名：`tmux -CC new-session`
-/// - 有名：`tmux -CC new-session -A -s '<name>'`（存在则 attach）
+/// - 空名：`env … tmux -u -T RGB,256,UTF-8 -CC new-session`
+/// - 有名：同上并 `-A -s '<name>'`（存在则 attach）
 pub fn build_tmux_cc_command(session_name: &str) -> String {
     let name = session_name.trim();
+    let prefix = "env LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color COLORTERM=truecolor tmux -u -T RGB,256,UTF-8 -CC new-session";
     if name.is_empty() {
-        "tmux -CC new-session".into()
+        prefix.into()
     } else {
-        format!("tmux -CC new-session -A -s {}", shell_single_quote(name))
+        format!("{prefix} -A -s {}", shell_single_quote(name))
     }
 }
 
@@ -489,15 +490,21 @@ mod tests {
 
     #[test]
     fn build_tmux_cc_empty_session() {
-        assert_eq!(build_tmux_cc_command(""), "tmux -CC new-session");
-        assert_eq!(build_tmux_cc_command("  "), "tmux -CC new-session");
+        assert_eq!(
+            build_tmux_cc_command(""),
+            "env LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color COLORTERM=truecolor tmux -u -T RGB,256,UTF-8 -CC new-session"
+        );
+        assert_eq!(
+            build_tmux_cc_command("  "),
+            "env LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color COLORTERM=truecolor tmux -u -T RGB,256,UTF-8 -CC new-session"
+        );
     }
 
     #[test]
     fn build_tmux_cc_named_session() {
         assert_eq!(
             build_tmux_cc_command("dev"),
-            "tmux -CC new-session -A -s 'dev'"
+            "env LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color COLORTERM=truecolor tmux -u -T RGB,256,UTF-8 -CC new-session -A -s 'dev'"
         );
     }
 

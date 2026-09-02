@@ -754,9 +754,10 @@ impl TmuxClient {
         for a in &argv {
             cmd.arg(a);
         }
-        cmd.env("TERM", "xterm-256color")
-            .env("COLORTERM", "truecolor")
-            .stdin(Stdio::piped())
+        for (key, value) in pty::client_terminal_env() {
+            cmd.env(key, value);
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
@@ -805,19 +806,21 @@ impl TmuxClient {
 ///
 /// 构造传给 tmux 可执行文件的 argv（不含二进制名本身）。
 ///
-/// 顺序：`[extra_args] -CC <command> <command args>`。extra_args（如 `-L socket`）
-/// 是 tmux **二进制级**选项，必须放在 `-CC` 之前；`-CC` 之后的第一个 token 才是
-/// tmux 命令（new-session/attach），否则会被 tmux 当成命令参数解析报错。
+/// 顺序：`[extra_args] -u -T RGB,256,UTF-8 -CC <command> <command args>`。
+/// extra_args（如 `-L socket`）是 tmux **二进制级**选项，必须放在 `-CC` 之前；
+/// `-CC` 之后的第一个 token 才是 tmux 命令（new-session/attach）。
 pub(crate) fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
     // 二进制级选项（如 -L socket_name）放在 -CC 前
     for a in &config.extra_args {
         argv.push(a.clone());
     }
-    // 控制客户端必须声明 RGB：否则 tmux 把 Codex 的 24-bit 输入框
-    // （48;2;216;216;216）塌成黑色，字也跟着糊掉。
+    // `-u` = `-T UTF-8`：LANG=C 时 tmux 把非 ASCII 写成 `_`，这就是
+    // `tmux a` 中文坏、`tmux -u a` 才正常的原因。RGB/256 让 24-bit
+    // Codex 输入框不会塌成黑底黑字。
+    argv.push("-u".into());
     argv.push("-T".into());
-    argv.push("RGB,256".into());
+    argv.push("RGB,256,UTF-8".into());
     argv.push("-CC".into());
     match config.mode.clone().unwrap_or_default() {
         ConnectMode::NewSession {
@@ -858,7 +861,11 @@ pub(crate) fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
 /// the conventional remote `~/...` expansion while quoting their suffix.
 pub(crate) fn build_remote_tmux_command(config: &TmuxClientConfig) -> String {
     let argv = build_argv(config);
-    let mut words = Vec::with_capacity(argv.len() + 1);
+    let mut words = Vec::with_capacity(argv.len() + 1 + pty::client_terminal_env().len());
+    words.push("env".to_string());
+    for (key, value) in pty::client_terminal_env() {
+        words.push(format!("{key}={value}"));
+    }
     words.push("tmux".to_string());
     let mut previous_was_c = false;
     for arg in argv {
@@ -1229,6 +1236,26 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
+    fn ssh_attach_argv_forces_utf8_and_rgb() {
+        let config = TmuxClientConfig {
+            mode: Some(ConnectMode::Attach {
+                target: Some("muxterm".into()),
+            }),
+            extra_args: Vec::new(),
+            ssh_alias: Some("mac".into()),
+            ..TmuxClientConfig::default()
+        };
+        let argv = build_argv(&config);
+        assert_eq!(argv.first().map(String::as_str), Some("-u"));
+        let features = argv
+            .windows(2)
+            .find(|w| w[0] == "-T")
+            .map(|w| w[1].as_str());
+        assert_eq!(features, Some("RGB,256,UTF-8"));
+        assert!(argv.iter().any(|a| a == "-CC"));
+    }
+
+    #[test]
     fn ssh_attach_argv_without_socket_has_no_dash_l() {
         let config = TmuxClientConfig {
             mode: Some(ConnectMode::Attach {
@@ -1244,14 +1271,15 @@ mod tests {
         assert_eq!(
             argv,
             vec![
+                "-u",
                 "-T",
-                "RGB,256",
+                "RGB,256,UTF-8",
                 "-CC",
                 "attach",
                 "-t",
                 "yaklang-workspace"
             ],
-            "SSH attach 默认远端 socket 必须是 `tmux -T RGB,256 -CC attach -t <session>`，不能带 -L <alias>"
+            "SSH attach 必须带 -u/UTF-8/RGB，且不能带 -L <alias>"
         );
         assert!(!argv.iter().any(|a| a == "ryzen"));
     }
@@ -1288,7 +1316,7 @@ mod tests {
         };
         assert_eq!(
             build_remote_tmux_command(&config),
-            "tmux '-L' 'socket with space' '-T' 'RGB,256' '-CC' 'new-session' '-s' 'project name' '-c' $HOME/'Project/my repo'"
+            "env LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color COLORTERM=truecolor tmux '-L' 'socket with space' '-u' '-T' 'RGB,256,UTF-8' '-CC' 'new-session' '-s' 'project name' '-c' $HOME/'Project/my repo'"
         );
     }
 

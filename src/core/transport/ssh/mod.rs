@@ -95,10 +95,13 @@ impl ProcessLauncher for SystemLauncher {
         for a in args {
             cmd.arg(a);
         }
-        // OpenSSH 把本地 TERM 传给远端 pty。桌面启动常没有 TERM，
-        // 远端 tmux -CC 会把 24-bit 颜色塌掉。
+        // OpenSSH 把本地 TERM/LANG 传给远端 pty。桌面启动常没有 TERM，
+        // `ssh mac` 也常是 LANG=C：tmux 会把 24-bit 颜色和中文一起塌掉。
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        cmd.env("LANG", "en_US.UTF-8");
+        cmd.env("LC_CTYPE", "en_US.UTF-8");
+        cmd.env("LC_ALL", "en_US.UTF-8");
         let child = pair
             .slave
             .spawn_command(cmd)

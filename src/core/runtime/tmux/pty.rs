@@ -68,11 +68,34 @@ impl Drop for PtyChild {
     }
 }
 
-/// 控制客户端 / SSH pty 必须带上 RGB 能力。桌面启动时常没有 TERM，
-/// tmux 会把 24-bit SGR 收成 16 色，Codex 浅色输入框变成黑底黑字。
+/// 本 GUI 客户端对 tmux/ssh pty 声明的终端环境。
+///
+/// 桌面启动和 `ssh mac` 经常没有 TERM，或 LANG=C：tmux 会把 24-bit
+/// 颜色收成 16 色、把中文收成 `_`。这些变量只作用在控制客户端进程，
+/// 不改用户已有 pane 里的 shell。
+pub const CLIENT_TERM: &str = "xterm-256color";
+pub const CLIENT_COLORTERM: &str = "truecolor";
+pub const CLIENT_UTF8_LOCALE: &str = "en_US.UTF-8";
+
+pub fn client_terminal_env() -> [(&'static str, &'static str); 5] {
+    [
+        ("LANG", CLIENT_UTF8_LOCALE),
+        ("LC_CTYPE", CLIENT_UTF8_LOCALE),
+        ("LC_ALL", CLIENT_UTF8_LOCALE),
+        ("TERM", CLIENT_TERM),
+        ("COLORTERM", CLIENT_COLORTERM),
+    ]
+}
+
+pub fn apply_client_terminal_env(cmd: &mut CommandBuilder) {
+    for (key, value) in client_terminal_env() {
+        cmd.env(key, value);
+    }
+}
+
+/// 兼容旧名。
 pub fn apply_truecolor_env(cmd: &mut CommandBuilder) {
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
+    apply_client_terminal_env(cmd);
 }
 
 /// spawn 一个命令到一对 pty。
@@ -277,8 +300,13 @@ mod tests {
 
     #[test]
     fn spawn_pty_advertises_truecolor_terminal() {
-        let mut child =
-            spawn_pty("printenv", &["TERM", "COLORTERM"], 40, 12).expect("spawn printenv");
+        let mut child = spawn_pty(
+            "printenv",
+            &["TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE"],
+            40,
+            12,
+        )
+        .expect("spawn printenv");
         let reader = child.master.try_clone_reader().expect("try_clone_reader");
         let mut reader = reader;
         let mut buf = Vec::new();
@@ -290,7 +318,10 @@ mod tests {
                 Ok(n) => {
                     buf.extend_from_slice(&tmp[..n]);
                     let out = String::from_utf8_lossy(&buf);
-                    if out.contains("xterm-256color") && out.contains("truecolor") {
+                    if out.contains("xterm-256color")
+                        && out.contains("truecolor")
+                        && out.contains("en_US.UTF-8")
+                    {
                         break;
                     }
                 }
@@ -309,9 +340,14 @@ mod tests {
             out.contains("truecolor"),
             "pty 子进程 COLORTERM 应为 truecolor, 实际: {out:?}"
         );
+        assert!(
+            out.contains("en_US.UTF-8"),
+            "pty 子进程 locale 应为 UTF-8, 实际: {out:?}"
+        );
         let _ = child.child.try_wait();
     }
 
+    #[test]
     fn spawn_pty_echo_and_read_output() {
         // /bin/echo 立即输出后退出，master reader 应能读到它的 stdout
         let mut child = spawn_pty("echo", &["hello-pty"], 40, 12).expect("spawn echo");
