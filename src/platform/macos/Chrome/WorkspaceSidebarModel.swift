@@ -17,6 +17,8 @@ public struct StructuredPaneAgent: Decodable, Sendable, Equatable {
     public let name: String?
     public let kind: String?
     public let status: StructuredAgentStatus
+    public let stateChangeSeq: UInt64
+    public let revision: UInt64
 
     public init(
         paneId: UInt32,
@@ -24,7 +26,9 @@ public struct StructuredPaneAgent: Decodable, Sendable, Equatable {
         title: String?,
         name: String?,
         kind: String?,
-        status: StructuredAgentStatus
+        status: StructuredAgentStatus,
+        stateChangeSeq: UInt64 = 0,
+        revision: UInt64 = 0
     ) {
         self.paneId = paneId
         self.displayName = displayName
@@ -32,12 +36,28 @@ public struct StructuredPaneAgent: Decodable, Sendable, Equatable {
         self.name = name
         self.kind = kind
         self.status = status
+        self.stateChangeSeq = stateChangeSeq
+        self.revision = revision
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        paneId = try values.decode(UInt32.self, forKey: .paneId)
+        displayName = try values.decodeIfPresent(String.self, forKey: .displayName)
+        title = try values.decodeIfPresent(String.self, forKey: .title)
+        name = try values.decodeIfPresent(String.self, forKey: .name)
+        kind = try values.decodeIfPresent(String.self, forKey: .kind)
+        status = try values.decodeIfPresent(StructuredAgentStatus.self, forKey: .status) ?? .unknown
+        stateChangeSeq = try values.decodeIfPresent(UInt64.self, forKey: .stateChangeSeq) ?? 0
+        revision = try values.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
     }
 
     enum CodingKeys: String, CodingKey {
         case paneId = "pane_id"
         case displayName = "display_name"
         case title, name, kind, status
+        case stateChangeSeq = "state_change_seq"
+        case revision
     }
 
     fileprivate func replacingStatus(_ status: StructuredAgentStatus) -> StructuredPaneAgent {
@@ -47,29 +67,75 @@ public struct StructuredPaneAgent: Decodable, Sendable, Equatable {
             title: title,
             name: name,
             kind: kind,
-            status: status
+            status: status,
+            stateChangeSeq: stateChangeSeq,
+            revision: revision
         )
+    }
+}
+
+private struct StructuredAgentVersion: Comparable, Sendable {
+    let stateChangeSeq: UInt64
+    let revision: UInt64
+
+    var isKnown: Bool {
+        stateChangeSeq != 0 || revision != 0
+    }
+
+    func accepts(_ current: StructuredAgentVersion) -> Bool {
+        guard current.isKnown else { return true }
+        guard isKnown else { return false }
+        return stateChangeSeq > current.stateChangeSeq
+            || (stateChangeSeq == current.stateChangeSeq && revision >= current.revision)
+    }
+
+    static func < (lhs: StructuredAgentVersion, rhs: StructuredAgentVersion) -> Bool {
+        if lhs.stateChangeSeq != rhs.stateChangeSeq {
+            return lhs.stateChangeSeq < rhs.stateChangeSeq
+        }
+        return lhs.revision < rhs.revision
     }
 }
 
 /// Pane-scoped agent identity cache. Runtime snapshots may stop reporting an
 /// agent after it exits, but the Agents sidebar keeps the last identity until
-/// the pane itself closes. A missing runtime agent therefore becomes read.
+/// the pane itself closes. A missing runtime agent is marked unknown until a
+/// newer authoritative status or attention snapshot arrives.
 public struct StructuredAgentRegistry: Sendable {
     private var agents: [UInt32: StructuredPaneAgent] = [:]
+    private var versions: [UInt32: StructuredAgentVersion] = [:]
 
     public init() {}
 
     public mutating func observe(paneId: UInt32, agent: StructuredPaneAgent?) {
         if let agent {
+            let incoming = StructuredAgentVersion(
+                stateChangeSeq: agent.stateChangeSeq,
+                revision: agent.revision
+            )
+            let current = versions[paneId] ?? agents[paneId].map {
+                StructuredAgentVersion(
+                    stateChangeSeq: $0.stateChangeSeq,
+                    revision: $0.revision
+                )
+            }
+            if let current, !incoming.accepts(current) {
+                return
+            }
             agents[paneId] = agent
+            if incoming.isKnown {
+                versions[paneId] = incoming
+            }
         } else if let previous = agents[paneId] {
-            agents[paneId] = previous.replacingStatus(.idle)
+            // Runtime 的 agent authority 暂时缺失时不能猜成 idle；保留 identity，
+            // 交给 attention snapshot 在可用时补充显示状态。
+            agents[paneId] = previous.replacingStatus(.unknown)
         }
     }
 
     public mutating func removePane(_ paneId: UInt32) {
         agents.removeValue(forKey: paneId)
+        versions.removeValue(forKey: paneId)
     }
 
     public var snapshot: [StructuredPaneAgent] {
@@ -88,6 +154,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let structuredAgents: [StructuredPaneAgent]
     /// 以当前 Tab 排序生成的 1-based 编号；pane id 仍只用于内部跳转。
     public let tabNumberByPane: [UInt32: Int]
+    /// Pane 所属的稳定 TabId；侧栏点击时直接复用，避免再次遍历 Core 拓扑。
+    public let tabIdByPane: [UInt32: UInt32]
 
     public init(
         workspaceId: String,
@@ -97,7 +165,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         isActive: Bool,
         shortcut: Int? = nil,
         structuredAgents: [StructuredPaneAgent] = [],
-        tabNumberByPane: [UInt32: Int] = [:]
+        tabNumberByPane: [UInt32: Int] = [:],
+        tabIdByPane: [UInt32: UInt32] = [:]
     ) {
         self.workspaceId = workspaceId
         self.name = name
@@ -107,6 +176,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         self.shortcut = shortcut
         self.structuredAgents = structuredAgents
         self.tabNumberByPane = tabNumberByPane
+        self.tabIdByPane = tabIdByPane
     }
 }
 
@@ -119,6 +189,7 @@ public enum AgentSidebarIndicator: Sendable, Equatable {
 
 public struct AgentSidebarItem: Sendable, Equatable {
     public let workspaceId: String
+    public let tabId: UInt32?
     public let paneId: UInt32
     public let title: String
     public let detail: String
@@ -129,6 +200,7 @@ public struct AgentSidebarItem: Sendable, Equatable {
 
     public init(
         workspaceId: String,
+        tabId: UInt32? = nil,
         paneId: UInt32,
         title: String,
         detail: String,
@@ -137,6 +209,7 @@ public struct AgentSidebarItem: Sendable, Equatable {
         tabNumber: Int? = nil
     ) {
         self.workspaceId = workspaceId
+        self.tabId = tabId
         self.paneId = paneId
         self.title = title
         self.detail = detail
@@ -149,6 +222,7 @@ public struct AgentSidebarItem: Sendable, Equatable {
 /// A running or unread ordinary command. Agents remain in the Agents section.
 public struct CommandSidebarItem: Sendable, Equatable {
     public let workspaceId: String
+    public let tabId: UInt32?
     public let paneId: UInt32
     public let title: String
     public let detail: String
@@ -156,12 +230,14 @@ public struct CommandSidebarItem: Sendable, Equatable {
 
     public init(
         workspaceId: String,
+        tabId: UInt32? = nil,
         paneId: UInt32,
         title: String,
         detail: String,
         indicator: AgentSidebarIndicator
     ) {
         self.workspaceId = workspaceId
+        self.tabId = tabId
         self.paneId = paneId
         self.title = title
         self.detail = detail
@@ -205,8 +281,10 @@ public enum WorkspaceSidebarProjection {
                     agent.title,
                 ]) ?? "Agent"
                 let tabNumber = workspace.tabNumberByPane[agent.paneId]
+                let tabId = workspace.tabIdByPane[agent.paneId]
                 result.append(AgentSidebarItem(
                     workspaceId: workspace.workspaceId,
+                    tabId: tabId,
                     paneId: agent.paneId,
                     title: workspace.name,
                     detail: agentDetail(
@@ -231,8 +309,10 @@ public enum WorkspaceSidebarProjection {
                     ?? pane.processName
                     ?? "Agent"
                 let tabNumber = workspace.tabNumberByPane[pane.paneId]
+                let tabId = workspace.tabIdByPane[pane.paneId]
                 result.append(AgentSidebarItem(
                     workspaceId: workspace.workspaceId,
+                    tabId: tabId,
                     paneId: pane.paneId,
                     title: workspace.name,
                     detail: agentDetail(
@@ -309,6 +389,7 @@ public enum WorkspaceSidebarProjection {
                 case .working:
                     result.append(CommandSidebarItem(
                         workspaceId: workspace.workspaceId,
+                        tabId: workspace.tabIdByPane[pane.paneId],
                         paneId: pane.paneId,
                         title: title,
                         detail: detail(workspace: workspace, paneId: pane.paneId),
@@ -318,6 +399,7 @@ public enum WorkspaceSidebarProjection {
                     guard !pane.acknowledged else { continue }
                     result.append(CommandSidebarItem(
                         workspaceId: workspace.workspaceId,
+                        tabId: workspace.tabIdByPane[pane.paneId],
                         paneId: pane.paneId,
                         title: title,
                         detail: detail(workspace: workspace, paneId: pane.paneId),
@@ -418,8 +500,10 @@ public enum WorkspaceSidebarProjection {
             return .running
         case .blocked, .done:
             return attention?.acknowledged == true ? .read : .done
-        case .idle, .unknown:
+        case .idle:
             return .read
+        case .unknown:
+            return attention.map(indicator(attention:)) ?? .read
         }
     }
 

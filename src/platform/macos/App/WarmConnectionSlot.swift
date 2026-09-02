@@ -28,6 +28,9 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     /// Pane → 1-based Tab number for the sidebar. The map is invalidated by
     /// topology changes and rebuilt from the Core snapshot on the next read.
     private var tabNumbersByPaneValue: [UInt32: Int]?
+    /// Pane → stable TabId used by sidebar navigation. Kept beside the display
+    /// number so building the sidebar never needs a second topology walk.
+    private var tabIdsByPaneValue: [UInt32: UInt32]?
     private var workspaceReplicaIDValue: String?
     private var pendingAttentionNotifications: [AttentionNotification] = []
     private var pendingSurfaceEvents: [StateChange] = []
@@ -107,14 +110,25 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         return tabNumbersByPaneValue
     }
 
-    func cacheTabNumbers(_ values: [UInt32: Int]) {
+    var cachedTabIdsByPane: [UInt32: UInt32]? {
         stateLock.lock()
-        tabNumbersByPaneValue = values
+        defer { stateLock.unlock() }
+        return tabIdsByPaneValue
+    }
+
+    func cacheTabTargets(
+        tabIdsByPane: [UInt32: UInt32],
+        tabNumbersByPane: [UInt32: Int]
+    ) {
+        stateLock.lock()
+        tabIdsByPaneValue = tabIdsByPane
+        tabNumbersByPaneValue = tabNumbersByPane
         stateLock.unlock()
     }
 
     func invalidateTabNumbers() {
         stateLock.lock()
+        tabIdsByPaneValue = nil
         tabNumbersByPaneValue = nil
         stateLock.unlock()
     }
@@ -141,6 +155,9 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         self.targetConfig = targetConfig ?? key.targetConfig
         self.bridge = bridge
         self.terminalManager = terminalManager ?? TerminalManager(bridge: bridge)
+        // CoreBridge 在 connect 后已完成有限 bootstrap；把这份首帧状态直接
+        // 放进 warm cache，侧栏首次渲染不必等下一次后台 poll。
+        self.structuredAgentsValue = bridge.structuredAgentSnapshot()
         self.lastUsedAt = now
         self.openedOrder = openedOrder
     }
@@ -259,18 +276,22 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
             stateLock.unlock()
             return false
         }
-        if continueBackgroundMetadata {
+        let shouldCommitBackgroundMetadata = continueBackgroundMetadata
+            && lifecycleValue == .background
+        if shouldCommitBackgroundMetadata {
             if let attention {
                 attentionSnapshotValue = attention
                 if let workspaceID = attention.workspaces.first?.workspaceId {
                     workspaceReplicaIDValue = workspaceID
                 }
             }
+        }
+        if continueBackgroundMetadata {
             if !notifications.isEmpty {
                 pendingAttentionNotifications.append(contentsOf: notifications)
             }
         }
-        if let agents {
+        if shouldCommitBackgroundMetadata, let agents {
             structuredAgentsValue = agents
         }
         let hasPending = !pendingSurfaceEvents.isEmpty || !pendingSurfaceOverflowPanes.isEmpty

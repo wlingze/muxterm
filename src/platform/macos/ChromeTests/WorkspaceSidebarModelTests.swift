@@ -19,7 +19,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         registry.observe(paneId: 4, agent: nil)
         XCTAssertEqual(registry.snapshot.count, 1)
         XCTAssertEqual(registry.snapshot[0].displayName, "Codex")
-        XCTAssertEqual(registry.snapshot[0].status, .idle)
+        XCTAssertEqual(registry.snapshot[0].status, .unknown)
         let workspace = WorkspaceSidebarItem(
             workspaceId: "local@@agents@herdr@w2",
             name: "muxterm",
@@ -34,11 +34,168 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
         XCTAssertEqual(projected.count, 1)
         XCTAssertEqual(projected[0].title, "muxterm")
-        XCTAssertEqual(projected[0].detail, "Idle · Codex")
+        XCTAssertEqual(projected[0].detail, "Unknown · Codex")
         XCTAssertEqual(projected[0].indicator, .read)
 
         registry.removePane(4)
         XCTAssertTrue(registry.snapshot.isEmpty)
+    }
+
+    func testStructuredAgentRegistryRejectsOlderVersion() {
+        var registry = StructuredAgentRegistry()
+        registry.observe(
+            paneId: 4,
+            agent: StructuredPaneAgent(
+                paneId: 4,
+                displayName: "Codex",
+                title: nil,
+                name: "codex",
+                kind: "codex",
+                status: .working,
+                stateChangeSeq: 11,
+                revision: 11
+            )
+        )
+        registry.observe(
+            paneId: 4,
+            agent: StructuredPaneAgent(
+                paneId: 4,
+                displayName: "Codex",
+                title: nil,
+                name: "codex",
+                kind: "codex",
+                status: .idle,
+                stateChangeSeq: 10,
+                revision: 99
+            )
+        )
+        XCTAssertEqual(registry.snapshot[0].status, .working)
+
+        registry.observe(
+            paneId: 4,
+            agent: StructuredPaneAgent(
+                paneId: 4,
+                displayName: "Codex",
+                title: nil,
+                name: "codex",
+                kind: "codex",
+                status: .idle,
+                stateChangeSeq: 12,
+                revision: 1
+            )
+        )
+        XCTAssertEqual(registry.snapshot[0].status, .idle)
+    }
+
+    func testUnknownStructuredStatusUsesAttentionIndicator() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@agents@herdr@w2",
+            name: "muxterm",
+            runtime: "herdr",
+            transport: "local",
+            isActive: false,
+            structuredAgents: [
+                StructuredPaneAgent(
+                    paneId: 4,
+                    displayName: "Codex",
+                    title: nil,
+                    name: "codex",
+                    kind: "codex",
+                    status: .unknown
+                ),
+            ]
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            acknowledged: true,
+                            lastLine: "running",
+                            seq: 1,
+                            processName: "codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let item = try! XCTUnwrap(
+            WorkspaceSidebarProjection.agents(
+                workspaces: [workspace],
+                attention: attention
+            ).first
+        )
+        XCTAssertEqual(item.detail, "Working · Codex")
+        XCTAssertEqual(item.indicator, .running)
+    }
+
+    func testSidebarTargetsCarryStableTabIDs() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            name: "dev",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true,
+            structuredAgents: [
+                StructuredPaneAgent(
+                    paneId: 4,
+                    displayName: "Codex",
+                    title: nil,
+                    name: "codex",
+                    kind: "codex",
+                    status: .working
+                ),
+            ],
+            tabNumberByPane: [4: 2, 8: 3],
+            tabIdByPane: [4: 42, 8: 84]
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 0,
+                    working: 2,
+                    panes: [
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            lastLine: "agent",
+                            seq: 1,
+                            processName: "codex"
+                        ),
+                        PaneAttention(
+                            paneId: 8,
+                            status: .working,
+                            lastLine: "command",
+                            seq: 2,
+                            processName: "cargo"
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let agents = WorkspaceSidebarProjection.agents(
+            workspaces: [workspace],
+            attention: attention
+        )
+        let commands = WorkspaceSidebarProjection.commands(
+            workspaces: [workspace],
+            attention: attention
+        )
+
+        XCTAssertEqual(agents.map(\.tabId), [42])
+        XCTAssertEqual(commands.map(\.tabId), [84])
     }
 
     func testProjectsStructuredHerdrAndTmuxAgentsAcrossWorkspaces() {

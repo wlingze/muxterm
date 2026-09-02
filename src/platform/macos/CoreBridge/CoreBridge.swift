@@ -75,10 +75,14 @@ private struct CorePaneAgentPayload: Decodable {
     let name: String?
     let kind: String?
     let status: StructuredAgentStatus
+    let stateChangeSeq: UInt64?
+    let revision: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case displayName = "display_name"
         case title, name, kind, status
+        case stateChangeSeq = "state_change_seq"
+        case revision
     }
 
     func sidebarAgent(paneId: UInt32) -> StructuredPaneAgent {
@@ -88,7 +92,9 @@ private struct CorePaneAgentPayload: Decodable {
             title: title,
             name: name,
             kind: kind,
-            status: status
+            status: status,
+            stateChangeSeq: stateChangeSeq ?? 0,
+            revision: revision ?? 0
         )
     }
 }
@@ -468,6 +474,9 @@ final class CoreBridge {
     private(set) var resolvedTargetConfig: TargetConfig?
     private var pendingError: String?
     private var pollFailureReported = false
+    /// connect 后先排空的 bootstrap 事件。agent registry 可立即拿到初始
+    /// 状态，但 Surface/拓扑事件仍按原顺序交给正常轮询消费者。
+    private var pendingEvents: [StateChange] = []
     /// Core has already normalized these snapshots; the platform only keeps a
     /// pane-indexed registry so read agents remain visible in the sidebar.
     private var structuredAgents = StructuredAgentRegistry()
@@ -695,6 +704,7 @@ final class CoreBridge {
             sshAlias: nil,
             startDirectory: nil
         )
+        primeInitialEvents()
     }
 
     /// 一步建连：支持指定起始目录（本地/远程 shell）与 tmux-ssh alias。
@@ -743,7 +753,7 @@ final class CoreBridge {
             muxterm_free(handle)
             throw BridgeError.connectFailed(rc)
         }
-        return CoreBridge(
+        let bridge = CoreBridge(
             handle: handle,
             backendType: normalized,
             socket: socket,
@@ -751,6 +761,8 @@ final class CoreBridge {
             sshAlias: sshAlias,
             startDirectory: startDirectory
         )
+        bridge.primeInitialEvents()
+        return bridge
     }
 
     /// Catalog descriptor-aware 建连。Project/Recent/Existing 的 Herdr 路径不得
@@ -787,7 +799,7 @@ final class CoreBridge {
             } else {
                 alias = nil
             }
-            return CoreBridge(
+            let bridge = CoreBridge(
                 handle: handle,
                 backendType: resolved.runtime.rawValue,
                 socket: resolved.socket,
@@ -796,6 +808,8 @@ final class CoreBridge {
                 startDirectory: resolved.path,
                 resolvedTargetConfig: resolved
             )
+            bridge.primeInitialEvents()
+            return bridge
         } catch {
             muxterm_free(handle)
             throw error
@@ -1071,11 +1085,21 @@ final class CoreBridge {
         }
     }
 
-    /// 非阻塞拉取事件（内部拷贝 data/name，指针在返回后即可失效）。
-    ///
-    /// 后台 warm Workspace 可以用较小的批次，避免一次高流量远端输出
-    /// 长时间占用它的 CoreBridge。默认值保持前台原有批量。
-    func pollEvents(maxCount: Int = 64) -> [StateChange] {
+    /// 连接建立后排空有限数量的初始事件，让结构化 agent registry 在首帧
+    /// 之前就有权威状态；事件本身缓存起来，后续仍由正常 poll 顺序消费。
+    private func primeInitialEvents(maxPasses: Int = 4) {
+        guard handle != nil else { return }
+        for _ in 0..<maxPasses {
+            let events = pollFFIEvents(maxCount: 64)
+            guard !events.isEmpty else { break }
+            pendingEvents.append(contentsOf: events)
+            if events.count < 64 { break }
+        }
+    }
+
+    /// 直接从 FFI 取一批事件，并更新 bridge-owned 的轻量 registry。
+    /// 调用者负责保证同一 handle 没有并发 poll。
+    private func pollFFIEvents(maxCount: Int) -> [StateChange] {
         guard let handle else { return [] }
         let count = min(max(maxCount, 1), 64)
         var buf = Array(repeating: CStateChange(), count: count)
@@ -1108,6 +1132,11 @@ final class CoreBridge {
                 name: Self.string(from: c.name)
             )
         }
+        updateStructuredAgents(with: events)
+        return events
+    }
+
+    private func updateStructuredAgents(with events: [StateChange]) {
         for event in events {
             if event.isPaneClosed {
                 structuredAgents.removePane(event.paneId)
@@ -1123,6 +1152,22 @@ final class CoreBridge {
                     agent: payload.agent?.sidebarAgent(paneId: event.paneId)
                 )
             }
+        }
+    }
+
+    /// 非阻塞拉取事件（内部拷贝 data/name，指针在返回后即可失效）。
+    ///
+    /// 后台 warm Workspace 可以用较小的批次，避免一次高流量远端输出
+    /// 长时间占用它的 CoreBridge。默认值保持前台原有批量。
+    func pollEvents(maxCount: Int = 64) -> [StateChange] {
+        let count = min(max(maxCount, 1), 64)
+        var events = Array(pendingEvents.prefix(count))
+        if !events.isEmpty {
+            pendingEvents.removeFirst(events.count)
+        }
+        let remaining = count - events.count
+        if remaining > 0 {
+            events.append(contentsOf: pollFFIEvents(maxCount: remaining))
         }
         return events
     }
