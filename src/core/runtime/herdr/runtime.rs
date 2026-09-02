@@ -16,8 +16,8 @@ use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{
-    BackendStatus, MutationKind, MutationResult, MutationStage, PaneAgentInfo, PaneAgentSession,
-    PaneAgentSessionKind, PaneAgentStatus, PaneInfo, State, StateChange, TabInfo,
+    AgentVersion, BackendStatus, MutationKind, MutationResult, MutationStage, PaneAgentInfo,
+    PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus, PaneInfo, State, StateChange, TabInfo,
 };
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::KeyEvent;
@@ -77,6 +77,9 @@ pub struct HerdrRuntime {
     preferred_client_size: Option<(u16, u16)>,
     outputs: HashMap<PaneId, Vec<u8>>,
     agents: HashMap<PaneId, PaneAgentInfo>,
+    /// 最近一次接受的 agent 版本（含已释放 agent 的墓碑）。旧 snapshot
+    /// 不能凭空把一个刚进入 working 的 pane 改回旧状态。
+    agent_versions: HashMap<PaneId, AgentVersion>,
     status: BackendStatus,
     active_tab: Option<TabId>,
     active_pane: Option<PaneId>,
@@ -139,6 +142,7 @@ impl HerdrRuntime {
             preferred_client_size: None,
             outputs: HashMap::new(),
             agents: HashMap::new(),
+            agent_versions: HashMap::new(),
             status: BackendStatus::Disconnected,
             active_tab: None,
             active_pane: None,
@@ -328,6 +332,8 @@ impl HerdrRuntime {
             })
             .collect::<HashMap<_, _>>();
         let previous_layouts = std::mem::take(&mut self.layouts);
+        let previous_agents = std::mem::take(&mut self.agents);
+        let previous_agent_versions = std::mem::take(&mut self.agent_versions);
         // `focused_*` at snapshot root belongs to the globally focused Herdr
         // workspace. A Muxterm Runtime may bind a background workspace, so its
         // active tab must come from that workspace record instead.
@@ -335,7 +341,6 @@ impl HerdrRuntime {
 
         self.tabs.clear();
         self.panes.clear();
-        self.agents.clear();
         self.active_tab = None;
         self.active_pane = None;
         self.herdr_tab_to_tab.clear();
@@ -428,6 +433,23 @@ impl HerdrRuntime {
             });
         }
 
+        // 拓扑快照可以重建 pane 数组，但不能把 agent 状态当作瞬时字段
+        // 一起清空：事件订阅和 mutation probe 可能返回不同时间点的 snapshot。
+        // 只保留仍然存在的 pane，真正的 pane close 在这里自然清理墓碑。
+        let current_panes = self
+            .panes
+            .iter()
+            .map(|pane| pane.id)
+            .collect::<HashSet<_>>();
+        self.agents = previous_agents
+            .into_iter()
+            .filter(|(pane, _)| current_panes.contains(pane))
+            .collect();
+        self.agent_versions = previous_agent_versions
+            .into_iter()
+            .filter(|(pane, _)| current_panes.contains(pane))
+            .collect();
+
         let current_tabs = self.tabs.iter().map(|tab| tab.id).collect::<HashSet<_>>();
         self.layouts = previous_layouts
             .into_iter()
@@ -442,8 +464,59 @@ impl HerdrRuntime {
             .filter(|agent| agent.workspace_id == self.workspace_id)
         {
             if let Some(pane) = self.herdr_pane_to_pane.get(&agent.pane_id).copied() {
-                self.agents.insert(pane, product_agent(agent));
+                let incoming = product_agent(agent);
+                let current_version = self
+                    .agent_versions
+                    .get(&pane)
+                    .copied()
+                    .or_else(|| self.agents.get(&pane).map(PaneAgentInfo::version))
+                    .unwrap_or_default();
+                if incoming.version().accepts(current_version) {
+                    if incoming.version().is_known() {
+                        self.agent_versions.insert(pane, incoming.version());
+                    }
+                    self.agents.insert(pane, incoming);
+                }
             }
+        }
+
+        // `session.snapshot.agents` may omit a pane after its agent exits. Only
+        // accept that as a release when the pane record carries a newer revision;
+        // an older concurrent snapshot must not erase a newer Working/Blocked
+        // state. Keep the state-sequence part of the tombstone so an old record
+        // with the same sequence cannot resurrect the released agent.
+        let reported_agent_panes = snap
+            .agents
+            .iter()
+            .filter(|agent| agent.workspace_id == self.workspace_id)
+            .filter_map(|agent| self.herdr_pane_to_pane.get(&agent.pane_id).copied())
+            .collect::<HashSet<_>>();
+        let release_candidates = self
+            .agents
+            .iter()
+            .filter(|(pane, _)| !reported_agent_panes.contains(pane))
+            .filter_map(|(pane, current)| {
+                let herdr_pane = self.pane_to_herdr_pane.get(pane)?;
+                let record = snap.panes.iter().find(|record| {
+                    record.workspace_id == self.workspace_id && record.pane_id == *herdr_pane
+                })?;
+                if record.agent.is_some() {
+                    return None;
+                }
+                let current_version = self
+                    .agent_versions
+                    .get(pane)
+                    .copied()
+                    .unwrap_or_else(|| current.version());
+                let release = AgentVersion::new(current_version.state_change_seq, record.revision);
+                release
+                    .has_newer_revision_than(current_version)
+                    .then_some((*pane, release))
+            })
+            .collect::<Vec<_>>();
+        for (pane, release) in release_candidates {
+            self.agents.remove(&pane);
+            self.agent_versions.insert(pane, release);
         }
 
         // Herdr 的 PaneLayoutSnapshot 已包含完整 BSP split 路径、方向、ratio
@@ -1706,6 +1779,7 @@ impl HerdrRuntime {
             self.panes.clear();
             self.layouts.clear();
             self.agents.clear();
+            self.agent_versions.clear();
             self.outputs.clear();
             self.herdr_tab_to_tab.clear();
             self.herdr_pane_to_pane.clear();
@@ -3009,7 +3083,8 @@ impl HerdrRuntime {}
 mod tests {
     use super::*;
     use crate::core::runtime::herdr::session::{
-        HerdrAgentStatus, LayoutPaneRecord, LayoutSplitRecord, TabRecord, WorkspaceRecord,
+        HerdrAgentStatus, LayoutPaneRecord, LayoutSplitRecord, PaneRecord, TabRecord,
+        WorkspaceRecord,
     };
     use crate::core::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
 
@@ -3039,6 +3114,164 @@ mod tests {
         assert_eq!(slot.state, SlotState::Starting);
         assert_eq!(slot.surface_baseline, SurfaceBaseline::AwaitingFull);
         assert_eq!(slot.last_frame_seq, None);
+    }
+
+    fn agent_snapshot(
+        status: HerdrAgentStatus,
+        state_change_seq: u64,
+        revision: u64,
+        pane_agent: Option<&str>,
+        include_agent: bool,
+    ) -> SessionSnapshot {
+        SessionSnapshot {
+            version: "0.8.0".into(),
+            protocol: 19,
+            focused_workspace_id: Some("w1".into()),
+            focused_tab_id: Some("w1:t1".into()),
+            focused_pane_id: Some("w1:p1".into()),
+            workspaces: vec![WorkspaceRecord {
+                workspace_id: "w1".into(),
+                number: 1,
+                label: "agent-workspace".into(),
+                focused: true,
+                pane_count: 1,
+                tab_count: 1,
+                active_tab_id: Some("w1:t1".into()),
+                agent_status: HerdrAgentStatus::Idle,
+                tokens: Default::default(),
+                worktree: None,
+            }],
+            tabs: vec![TabRecord {
+                tab_id: "w1:t1".into(),
+                workspace_id: "w1".into(),
+                number: 1,
+                label: "agent".into(),
+                focused: true,
+                pane_count: 1,
+                agent_status: HerdrAgentStatus::Idle,
+            }],
+            panes: vec![PaneRecord {
+                pane_id: "w1:p1".into(),
+                terminal_id: Some("term-1".into()),
+                workspace_id: "w1".into(),
+                tab_id: "w1:t1".into(),
+                focused: true,
+                cwd: Some("/repo".into()),
+                foreground_cwd: Some("/repo".into()),
+                label: Some("codex".into()),
+                agent: pane_agent.map(str::to_string),
+                title: Some("codex".into()),
+                terminal_title: Some("codex".into()),
+                terminal_title_stripped: Some("codex".into()),
+                display_agent: Some("Codex".into()),
+                agent_status: HerdrAgentStatus::Idle,
+                state_labels: Default::default(),
+                tokens: Default::default(),
+                agent_session: None,
+                scroll: None,
+                revision,
+            }],
+            layouts: vec![],
+            agents: include_agent
+                .then(|| AgentRecord {
+                    terminal_id: Some("term-1".into()),
+                    name: Some("codex".into()),
+                    agent: Some("codex".into()),
+                    title: Some("codex".into()),
+                    terminal_title: Some("codex".into()),
+                    terminal_title_stripped: Some("codex".into()),
+                    display_agent: Some("Codex".into()),
+                    agent_status: status,
+                    screen_detection_skipped: false,
+                    state_labels: Default::default(),
+                    tokens: Default::default(),
+                    agent_session: None,
+                    workspace_id: "w1".into(),
+                    tab_id: "w1:t1".into(),
+                    pane_id: "w1:p1".into(),
+                    focused: true,
+                    launch_pending: false,
+                    interactive_ready: true,
+                    state_change_seq,
+                    cwd: Some("/repo".into()),
+                    foreground_cwd: Some("/repo".into()),
+                    revision,
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn agent_snapshot_accepts_new_state_and_rejects_old_state() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let idle = agent_snapshot(HerdrAgentStatus::Idle, 10, 10, Some("codex"), true);
+        let working = agent_snapshot(HerdrAgentStatus::Working, 11, 11, Some("codex"), true);
+        let old_idle = agent_snapshot(HerdrAgentStatus::Idle, 10, 10, Some("codex"), true);
+
+        assert!(runtime.apply_snapshot(&idle, true));
+        assert_eq!(
+            runtime.pane_agent(&PaneId(1)).unwrap().status,
+            PaneAgentStatus::Idle
+        );
+        assert!(runtime.apply_snapshot(&working, false));
+        assert_eq!(
+            runtime.pane_agent(&PaneId(1)).unwrap().status,
+            PaneAgentStatus::Working
+        );
+        assert!(runtime.apply_snapshot(&old_idle, false));
+        assert_eq!(
+            runtime.pane_agent(&PaneId(1)).unwrap().status,
+            PaneAgentStatus::Working,
+            "旧 snapshot 不得把新 working 覆盖回 idle"
+        );
+    }
+
+    #[test]
+    fn incomplete_agent_snapshot_keeps_current_state_until_release_is_newer() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let working = agent_snapshot(HerdrAgentStatus::Working, 11, 11, Some("codex"), true);
+        let omitted_but_pane_still_identified =
+            agent_snapshot(HerdrAgentStatus::Idle, 0, 11, Some("codex"), false);
+        let released = agent_snapshot(HerdrAgentStatus::Idle, 0, 12, None, false);
+
+        assert!(runtime.apply_snapshot(&working, true));
+        assert!(runtime.apply_snapshot(&omitted_but_pane_still_identified, false));
+        assert_eq!(
+            runtime.pane_agent(&PaneId(1)).unwrap().status,
+            PaneAgentStatus::Working,
+            "缺少 agents 条目但 pane 仍有 agent 身份时不得清空状态"
+        );
+        assert!(runtime.apply_snapshot(&released, false));
+        assert!(
+            runtime.pane_agent(&PaneId(1)).is_none(),
+            "pane revision 前进后才允许接受 agent release"
+        );
+    }
+
+    #[test]
+    fn closing_pane_clears_agent_version_tombstone() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let working = agent_snapshot(HerdrAgentStatus::Working, 11, 11, Some("codex"), true);
+        let closed = SessionSnapshot {
+            panes: vec![],
+            agents: vec![],
+            ..agent_snapshot(HerdrAgentStatus::Idle, 0, 12, None, false)
+        };
+
+        assert!(runtime.apply_snapshot(&working, true));
+        assert!(runtime.apply_snapshot(&closed, false));
+        assert!(runtime.pane_agent(&PaneId(1)).is_none());
+        assert!(runtime.agent_versions.is_empty());
     }
 
     /// Herdr public ids 使用 bijective base-32，不是十进制。用户真实 session

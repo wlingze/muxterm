@@ -78,6 +78,48 @@ pub struct PaneAgentSession {
     pub value: String,
 }
 
+/// Agent 状态的单调版本。
+///
+/// Herdr 同时提供 agent state-change sequence 和 pane revision。前者优先
+/// 表示 agent 生命周期顺序，后者在同一个 state-change sequence 内消除
+/// 快照竞争。两个字段都为 0 时表示旧 Runtime/兼容数据没有版本信息。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct AgentVersion {
+    pub state_change_seq: u64,
+    pub revision: u64,
+}
+
+impl AgentVersion {
+    pub const fn new(state_change_seq: u64, revision: u64) -> Self {
+        Self {
+            state_change_seq,
+            revision,
+        }
+    }
+
+    pub const fn is_known(self) -> bool {
+        self.state_change_seq != 0 || self.revision != 0
+    }
+
+    /// 返回 incoming 是否可以覆盖 current。
+    pub const fn accepts(self, current: Self) -> bool {
+        if !current.is_known() {
+            return true;
+        }
+        if !self.is_known() {
+            return false;
+        }
+        self.state_change_seq > current.state_change_seq
+            || (self.state_change_seq == current.state_change_seq
+                && self.revision >= current.revision)
+    }
+
+    /// 没有 agent 记录时，只能用 pane revision 判断释放是否比现状更新。
+    pub const fn has_newer_revision_than(self, current: Self) -> bool {
+        self.revision != 0 && self.revision > current.revision
+    }
+}
+
 /// 某 pane 上由 Runtime 识别出的完整 agent 信息。
 ///
 /// 字段只使用产品语言；Herdr 的事件名、public id 和 socket JSON 停在
@@ -103,6 +145,12 @@ pub struct PaneAgentInfo {
     pub cwd: Option<String>,
     pub foreground_cwd: Option<String>,
     pub revision: u64,
+}
+
+impl PaneAgentInfo {
+    pub const fn version(&self) -> AgentVersion {
+        AgentVersion::new(self.state_change_seq, self.revision)
+    }
 }
 
 /// 状态变更事件（Runtime → TerminalModel → 前端）。
@@ -426,5 +474,24 @@ mod tests {
         assert!(s.pane(&PaneId(1)).is_none());
         assert!(s.pane_output(&PaneId(1)).is_none());
         assert_eq!(s.status(), BackendStatus::Disconnected);
+    }
+
+    #[test]
+    fn agent_version_prefers_state_sequence_then_revision() {
+        let current = AgentVersion::new(8, 12);
+        assert!(AgentVersion::new(9, 1).accepts(current));
+        assert!(AgentVersion::new(8, 13).accepts(current));
+        assert!(AgentVersion::new(8, 12).accepts(current));
+        assert!(!AgentVersion::new(8, 11).accepts(current));
+        assert!(!AgentVersion::new(7, 99).accepts(current));
+    }
+
+    #[test]
+    fn unversioned_agent_data_only_seeds_empty_state() {
+        let unknown = AgentVersion::default();
+        let known = AgentVersion::new(1, 1);
+        assert!(known.accepts(unknown));
+        assert!(!unknown.accepts(known));
+        assert!(AgentVersion::new(4, 7).has_newer_revision_than(AgentVersion::new(4, 6)));
     }
 }
