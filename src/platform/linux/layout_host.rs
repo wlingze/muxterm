@@ -359,8 +359,10 @@ impl LayoutHost {
                 paned.set_end_child(Some(&w2));
                 paned.set_resize_start_child(true);
                 paned.set_resize_end_child(true);
-                paned.set_shrink_start_child(false);
-                paned.set_shrink_end_child(false);
+                // 小窗口上下切分时 VTE 最小高度可能超过半屏。禁止 shrink
+                // 会让第二片被挤成 0；允许 shrink，位置仍由 ratio 绑定。
+                paned.set_shrink_start_child(true);
+                paned.set_shrink_end_child(true);
                 let ratio_cell = Rc::new(Cell::new(u32::from(*ratio)));
                 ratios.insert(paned.clone(), ratio_cell.clone());
                 bind_split_position(&paned, horizontal, ratio_cell);
@@ -395,6 +397,11 @@ fn apply_split_position(paned: &Paned, horizontal: bool, ratio_permille: u32) {
     } else {
         paned.height()
     };
+    // 新建竖切 GtkPaned 在 realize 前 height=0。此时 set_position(1)
+    // 会把下半 pane 钉在 1px，看起来像切分失败。
+    if total <= 2 {
+        return;
+    }
     let want = split_position_px(total, ratio_permille);
     if (paned.position() - want).abs() > 2 {
         paned.set_position(want);
@@ -412,6 +419,11 @@ fn bind_split_position(paned: &Paned, horizontal: bool, ratio: Rc<Cell<u32>>) {
     let ratio3 = ratio.clone();
     paned.connect_notify_local(Some("height"), move |_, _| {
         apply_split_position(&p, horizontal, ratio3.get());
+    });
+    let p = paned.clone();
+    let ratio4 = ratio.clone();
+    paned.connect_realize(move |_| {
+        apply_split_position(&p, horizontal, ratio4.get());
     });
 }
 
@@ -501,6 +513,13 @@ mod tests {
         assert_eq!(split_position_px(100, 0), 1);
         assert_eq!(split_position_px(100, 1000), 99);
         assert_ne!(split_position_px(640, 500), 1);
+    }
+
+    #[test]
+    fn split_position_unallocated_axis_stays_one_pixel_math_only() {
+        assert_eq!(split_position_px(0, 500), 1);
+        assert_eq!(split_position_px(2, 500), 1);
+        assert_eq!(split_position_px(3, 500), 1);
     }
 
     /// Runtime 边界若意外给出重复 leaf，LayoutHost 必须保留旧树并拒绝，
