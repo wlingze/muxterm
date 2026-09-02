@@ -605,12 +605,20 @@ final class MuxTerminalView: TerminalView {
     ///
     /// 先 `clearContents()` 再写入会在大文本写入失败时把用户原来的剪贴板
     /// 一并清掉；`writeObjects` 也能返回明确的成功/失败结果，避免静默丢失
-    /// 复制内容。
+    /// 复制内容。某些 macOS pasteboard provider 在已有 owner 时会拒绝这条
+    /// 写入，因此失败后再用已知的同步 `setData` 路径重试。
     @discardableResult
     private func writeClipboard(_ data: Data, to pasteboard: NSPasteboard) -> Bool {
         let item = NSPasteboardItem()
         guard item.setData(data, forType: .string) else { return false }
-        let written = pasteboard.writeObjects([item])
+        if pasteboard.writeObjects([item]) {
+            return true
+        }
+
+        // 只在第一条写入明确失败后清空；正常路径保留系统剪贴板的原子
+        // replacement 行为，失败也不会先把旧内容擦掉。
+        pasteboard.clearContents()
+        let written = pasteboard.setData(data, forType: .string)
         if !written {
             tracingClipboardFailure(byteCount: data.count)
         }
