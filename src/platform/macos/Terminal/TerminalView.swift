@@ -218,9 +218,8 @@ final class MuxTerminalView: TerminalView {
     /// Edit 菜单和 Cmd-C/V 走的是 NSResponder，必须在这里写剪贴板 / 发给 pane。
     override func copy(_ sender: Any?) {
         guard let text = getSelection() else { return }
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(text, forType: .string)
+        guard let data = text.data(using: .utf8) else { return }
+        _ = writeClipboard(data, to: .general)
     }
 
     override func paste(_ sender: Any?) {
@@ -602,6 +601,27 @@ final class MuxTerminalView: TerminalView {
         )
     }
 
+    /// 用一个完整的 pasteboard item 原子写入 UTF-8 数据。
+    ///
+    /// 先 `clearContents()` 再写入会在大文本写入失败时把用户原来的剪贴板
+    /// 一并清掉；`writeObjects` 也能返回明确的成功/失败结果，避免静默丢失
+    /// 复制内容。
+    @discardableResult
+    private func writeClipboard(_ data: Data, to pasteboard: NSPasteboard) -> Bool {
+        let item = NSPasteboardItem()
+        guard item.setData(data, forType: .string) else { return false }
+        let written = pasteboard.writeObjects([item])
+        if !written {
+            tracingClipboardFailure(byteCount: data.count)
+        }
+        return written
+    }
+
+    private func tracingClipboardFailure(byteCount: Int) {
+        // 复制失败不应打断终端输入；保留轻量诊断信息供日志定位。
+        NSLog("muxterm: clipboard write failed (bytes: %d)", byteCount)
+    }
+
     /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。
     func setFont(family: String? = nil, size: CGFloat? = nil) {
         if let family, !family.isEmpty, family != fontFamily {
@@ -674,13 +694,7 @@ extension MuxTerminalView: TerminalViewDelegate {
     }
 
     func clipboardCopy(source: TerminalView, content: Data) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        if let str = String(data: content, encoding: .utf8) {
-            pb.setString(str, forType: .string)
-        } else {
-            pb.setData(content, forType: .string)
-        }
+        _ = writeClipboard(content, to: .general)
     }
 
     func clipboardRead(source: TerminalView) -> Data? {

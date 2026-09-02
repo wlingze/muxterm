@@ -711,6 +711,36 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
+    func testLargeClipboardPayloadRoundTripsWithoutTruncation() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        let text = (0..<1_000)
+            .map { "第\($0)行 — copy payload / mixed ASCII 中文\n" }
+            .joined()
+        let payload = Data(text.utf8)
+        XCTAssertGreaterThan(payload.count, 10_000)
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        defer { pasteboard.clearContents() }
+
+        view.clipboardCopy(source: view, content: payload)
+
+        XCTAssertEqual(
+            pasteboard.data(forType: .string),
+            payload,
+            "大文本复制必须完整保留 UTF-8 bytes"
+        )
+        XCTAssertEqual(
+            pasteboard.string(forType: .string),
+            text,
+            "大文本复制不能在写入失败后变成空字符串或截断"
+        )
+    }
+
     func testPrependHistoryDoesNotResetOrHideVisibleTail() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(
