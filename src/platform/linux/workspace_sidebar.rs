@@ -583,20 +583,20 @@ impl WorkspaceSidebar {
                 sections.set_resize_end_child(lower_open);
                 lower_sections.set_resize_start_child(agents_open);
                 lower_sections.set_resize_end_child(command_group_open);
-                sections.set_position(sidebar_split_position(
+                apply_sidebar_split(
+                    &sections,
                     workspaces_open,
                     lower_open,
-                    sections.height(),
                     saved_divider.get(),
                     SIDEBAR_SECTION_HEADER_PX * 2,
-                ));
-                lower_sections.set_position(sidebar_split_position(
+                );
+                apply_sidebar_split(
+                    &lower_sections,
                     agents_open,
                     command_group_open,
-                    lower_sections.height(),
                     saved_lower_divider.get(),
                     SIDEBAR_SECTION_HEADER_PX * 2,
-                ));
+                );
             }
         });
         {
@@ -614,6 +614,22 @@ impl WorkspaceSidebar {
         {
             let update_sections = update_sections.clone();
             hidden_command_section_toggle.connect_toggled(move |_| update_sections());
+        }
+        {
+            let update_sections = update_sections.clone();
+            sections.connect_notify_local(Some("height"), move |_, _| update_sections());
+        }
+        {
+            let update_sections = update_sections.clone();
+            lower_sections.connect_notify_local(Some("height"), move |_, _| update_sections());
+        }
+        {
+            let update_sections = update_sections.clone();
+            sections.connect_realize(move |_| update_sections());
+        }
+        {
+            let update_sections = update_sections.clone();
+            lower_sections.connect_realize(move |_| update_sections());
         }
         {
             let workspace_section_toggle = workspace_section_toggle.clone();
@@ -682,9 +698,21 @@ impl WorkspaceSidebar {
         {
             let revealer = revealer.clone();
             let container = container.clone();
+            let update_sections = update_sections.clone();
             toggle.connect_toggled(move |button| {
                 container.set_visible(button.is_active());
                 revealer.set_reveal_child(button.is_active());
+                if button.is_active() {
+                    update_sections();
+                }
+            });
+        }
+        {
+            let update_sections = update_sections.clone();
+            revealer.connect_notify_local(Some("reveal-child"), move |revealer, _| {
+                if revealer.reveals_child() {
+                    update_sections();
+                }
             });
         }
 
@@ -1136,6 +1164,11 @@ fn sidebar_split_position(
     saved: i32,
     end_headers: i32,
 ) -> i32 {
+    // GtkPaned 未分配时 height=0。此时若算成 1px，列表会被钉死，
+    // 侧栏只剩 WORKSPACES/AGENTS 标题、看不到行。
+    if total <= 2 {
+        return saved.max(1);
+    }
     let total = total.max(1);
     let end_headers = end_headers.max(SIDEBAR_SECTION_HEADER_PX);
     match (start_open, end_open) {
@@ -1157,6 +1190,24 @@ fn sidebar_split_position(
             }
         }
         (false, true) | (false, false) => SIDEBAR_SECTION_HEADER_PX.min(total).max(1),
+    }
+}
+
+fn apply_sidebar_split(
+    paned: &Paned,
+    start_open: bool,
+    end_open: bool,
+    saved: i32,
+    end_headers: i32,
+) {
+    let total = paned.height();
+    // 与 layout_host 相同：realize 前不要 set_position，否则 1px 会粘住。
+    if total <= 2 {
+        return;
+    }
+    let want = sidebar_split_position(start_open, end_open, total, saved, end_headers);
+    if (paned.position() - want).abs() > 1 {
+        paned.set_position(want);
     }
 }
 
@@ -1209,6 +1260,23 @@ mod tests {
         assert!(persist_sidebar_divider(i32::MAX, 400).is_none());
         assert!(persist_sidebar_divider(0, 400).is_none());
         assert_eq!(persist_sidebar_divider(180, 400), Some(180));
+    }
+
+    #[test]
+    fn unallocated_split_keeps_saved_divider() {
+        // GtkPaned 在 realize 前 height=0。若此时把 position 算成 1，
+        // WORKSPACES/AGENTS 列表会被钉在 1px，侧栏只剩标题没有内容。
+        assert_eq!(
+            sidebar_split_position(true, true, 0, 260, 64),
+            260,
+            "height=0 must keep the construction divider"
+        );
+        assert_eq!(
+            sidebar_split_position(true, false, 1, 220, 64),
+            220,
+            "height=1 must not collapse Agents onto the Commands header"
+        );
+        assert_eq!(sidebar_split_position(false, true, 0, 260, 64), 260);
     }
 
     use crate::core::model::backend::mock::MockRuntime;

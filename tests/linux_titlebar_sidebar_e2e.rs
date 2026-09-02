@@ -230,11 +230,28 @@ fn title_bar_actions_and_workspace_sidebar() {
         assert!(agent_scroll.is_visible());
         assert!(!command_scroll.is_visible());
         assert!(!hidden_command_scroll.is_visible());
+        assert!(
+            wait_until_widget(2_000, || {
+                workspace_scroll.allocated_height() > 80 && agent_scroll.allocated_height() > 80
+            }),
+            "default open WORKSPACES/AGENTS lists must have row space; workspace={} agent={} commands={}",
+            workspace_scroll.allocated_height(),
+            agent_scroll.allocated_height(),
+            command_scroll.allocated_height(),
+        );
 
         let workspace_list = find_by_name(&app.window, "muxterm-sidebar-list")
             .expect("workspace list")
             .downcast::<gtk4::ListBox>()
             .expect("workspace list type");
+        let first_workspace = workspace_list
+            .row_at_index(0)
+            .expect("startup workspace row");
+        assert!(
+            first_workspace.allocated_height() > 0,
+            "workspace row widgets must receive height, got {}",
+            first_workspace.allocated_height()
+        );
         let sidebar_labels = widget_label_texts(&workspace_list);
         assert!(
             sidebar_labels.iter().any(|label| label == "shell @ local"),
