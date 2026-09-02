@@ -145,6 +145,14 @@ impl AgentSidebarItem {
                                 ActivityIndicator::None
                             },
                         });
+                    } else if let Some(agent_name) = known_agent_process_name(&pane.title) {
+                        items.push(AgentSidebarItem {
+                            workspace_id: workspace.id().clone(),
+                            pane_id: pane.id.0,
+                            title: agent_name.to_string(),
+                            detail: activity_detail(workspace, None),
+                            indicator: ActivityIndicator::None,
+                        });
                     }
                 }
             }
@@ -171,6 +179,7 @@ fn agent_title(agent: &PaneAgentInfo, pane_title: &str) -> String {
 }
 
 fn activity_detail(workspace: &Workspace, agent: Option<&PaneAgentInfo>) -> String {
+    let identity = command_detail(workspace);
     let path = agent
         .and_then(|agent| agent.foreground_cwd.as_deref().or(agent.cwd.as_deref()))
         .filter(|value| !value.trim().is_empty())
@@ -182,8 +191,7 @@ fn activity_detail(workspace: &Workspace, agent: Option<&PaneAgentInfo>) -> Stri
         })
         .or_else(|| {
             (!workspace.id().path.trim().is_empty()).then_some(workspace.id().path.as_str())
-        })
-        .unwrap_or_else(|| workspace.name());
+        });
     let branch = agent.and_then(|agent| {
         ["branch", "git_branch", "git.branch"]
             .into_iter()
@@ -191,9 +199,11 @@ fn activity_detail(workspace: &Workspace, agent: Option<&PaneAgentInfo>) -> Stri
             .map(String::as_str)
             .filter(|value| !value.trim().is_empty())
     });
-    match branch {
-        Some(branch) => format!("{path} · {branch}"),
-        None => path.to_string(),
+    match (path, branch) {
+        (Some(path), Some(branch)) => format!("{identity} · {path} · {branch}"),
+        (Some(path), None) if path != workspace.name() => format!("{identity} · {path}"),
+        (_, Some(branch)) => format!("{identity} · {branch}"),
+        _ => identity,
     }
 }
 
@@ -1342,8 +1352,30 @@ mod tests {
         );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "Codex");
-        assert_eq!(items[0].detail, "/work/muxterm · feature/sidebar");
+        assert_eq!(
+            items[0].detail,
+            "muxterm@herdr@local · /work/muxterm · feature/sidebar"
+        );
         assert_eq!(items[0].indicator, ActivityIndicator::Running);
+    }
+
+    #[test]
+    fn agents_include_grok_from_pane_title_when_runtime_has_no_agent_record() {
+        let id = WorkspaceId::new("local", None, "w2", "herdr", "w2");
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.panes[0].title = "grok".into();
+        let workspace = Workspace::new(id, "agents-ws".into(), Box::new(runtime));
+        let mut pool =
+            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
+        pool.insert_connected(workspace);
+        let items = AgentSidebarItem::from_pool(&pool, &[]);
+        assert_eq!(items.len(), 1, "pane title grok must appear under Agents");
+        assert_eq!(items[0].title, "grok");
+        assert!(
+            items[0].detail.contains("agents-ws"),
+            "agent row must show workspace identity: {}",
+            items[0].detail
+        );
     }
 
     #[test]
