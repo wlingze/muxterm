@@ -158,6 +158,10 @@ pub struct TerminalState {
     pub bracketed_paste: bool,
     /// mouse reporting 模式（1000/1002/1003/1005/1006）。
     pub mouse_reporting: bool,
+    pub mouse_clicks: bool,
+    pub mouse_button_motion: bool,
+    pub mouse_all_motion: bool,
+    pub mouse_sgr: bool,
     /// focus in/out 上报模式（1004）。
     pub focus_reporting: bool,
     /// 窗口标题（OSC 0/2）。
@@ -321,6 +325,10 @@ impl TerminalState {
             modify_other_keys: ModifyOtherKeys::Reset,
             bracketed_paste: false,
             mouse_reporting: false,
+            mouse_clicks: false,
+            mouse_button_motion: false,
+            mouse_all_motion: false,
+            mouse_sgr: false,
             focus_reporting: false,
             palette: default_palette(),
             charsets: [StandardCharset::default(); 4],
@@ -936,6 +944,11 @@ impl TerminalState {
             incoming.pop_front();
         }
         self.scrollback = incoming;
+    }
+
+    fn sync_mouse_reporting(&mut self) {
+        self.mouse_reporting =
+            self.mouse_clicks || self.mouse_button_motion || self.mouse_all_motion;
     }
 
     /// scrollback 行数。
@@ -1622,11 +1635,20 @@ impl Handler for TerminalState {
                 NamedPrivateMode::LineWrap => self.line_wrap = true,
                 NamedPrivateMode::ShowCursor => self.show_cursor = true,
                 NamedPrivateMode::BracketedPaste => self.bracketed_paste = true,
-                NamedPrivateMode::ReportMouseClicks
-                | NamedPrivateMode::ReportCellMouseMotion
-                | NamedPrivateMode::ReportAllMouseMotion
-                | NamedPrivateMode::Utf8Mouse
-                | NamedPrivateMode::SgrMouse => self.mouse_reporting = true,
+                NamedPrivateMode::ReportMouseClicks => {
+                    self.mouse_clicks = true;
+                    self.sync_mouse_reporting();
+                }
+                NamedPrivateMode::ReportCellMouseMotion => {
+                    self.mouse_button_motion = true;
+                    self.sync_mouse_reporting();
+                }
+                NamedPrivateMode::ReportAllMouseMotion => {
+                    self.mouse_all_motion = true;
+                    self.sync_mouse_reporting();
+                }
+                NamedPrivateMode::SgrMouse => self.mouse_sgr = true,
+                NamedPrivateMode::Utf8Mouse => {}
                 NamedPrivateMode::ReportFocusInOut => self.focus_reporting = true,
                 _ => {}
             },
@@ -1641,11 +1663,20 @@ impl Handler for TerminalState {
                 NamedPrivateMode::LineWrap => self.line_wrap = false,
                 NamedPrivateMode::ShowCursor => self.show_cursor = false,
                 NamedPrivateMode::BracketedPaste => self.bracketed_paste = false,
-                NamedPrivateMode::ReportMouseClicks
-                | NamedPrivateMode::ReportCellMouseMotion
-                | NamedPrivateMode::ReportAllMouseMotion
-                | NamedPrivateMode::Utf8Mouse
-                | NamedPrivateMode::SgrMouse => self.mouse_reporting = false,
+                NamedPrivateMode::ReportMouseClicks => {
+                    self.mouse_clicks = false;
+                    self.sync_mouse_reporting();
+                }
+                NamedPrivateMode::ReportCellMouseMotion => {
+                    self.mouse_button_motion = false;
+                    self.sync_mouse_reporting();
+                }
+                NamedPrivateMode::ReportAllMouseMotion => {
+                    self.mouse_all_motion = false;
+                    self.sync_mouse_reporting();
+                }
+                NamedPrivateMode::SgrMouse => self.mouse_sgr = false,
+                NamedPrivateMode::Utf8Mouse => {}
                 NamedPrivateMode::ReportFocusInOut => self.focus_reporting = false,
                 _ => {}
             },
@@ -2317,7 +2348,7 @@ mod input_mode_tests {
         assert!(!t.bracketed_paste, "CSI ? 2004 l 应关闭");
     }
 
-    /// mouse reporting（1000/1002/1003/1006）开启/关闭。
+    /// mouse reporting（1000/1002/1003）开启/关闭；1006 只改编码。
     #[test]
     fn mouse_reporting_mode() {
         let mut t = TerminalState::new(40, 5);
@@ -2326,9 +2357,20 @@ mod input_mode_tests {
         assert!(t.mouse_reporting, "CSI ? 1000 h 应开启 mouse reporting");
         t.feed(b"\x1b[?1000l");
         assert!(!t.mouse_reporting, "CSI ? 1000 l 应关闭");
-        // SGR mouse (1006)
         t.feed(b"\x1b[?1006h");
+        assert!(
+            !t.mouse_reporting,
+            "1006 只是 SGR 编码，单独开启不得当成 reporting"
+        );
+        assert!(t.mouse_sgr);
+        t.feed(b"\x1b[?1003h\x1b[?1006h");
         assert!(t.mouse_reporting);
+        assert!(t.mouse_all_motion);
+        assert!(t.mouse_sgr);
+        t.feed(b"\x1b[?1006l");
+        assert!(t.mouse_reporting, "关掉 1006 不得把仍开启的 1003 一起清掉");
+        t.feed(b"\x1b[?1003l");
+        assert!(!t.mouse_reporting);
     }
 
     /// focus in/out（1004）开启/关闭。

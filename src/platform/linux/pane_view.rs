@@ -9,6 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use vte4::prelude::*;
@@ -17,6 +18,9 @@ use crate::core::config::{Rgb, Theme};
 use crate::core::protocol::terminal::emulate::TerminalState;
 use crate::core::protocol::terminal::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
+};
+use crate::core::protocol::terminal::mouse::{
+    gtk_button_to_sgr, sgr_report, SGR_HOVER, SGR_MOTION,
 };
 use crate::core::url_detect::UrlOpener;
 use crate::platform::linux::quickconnect::font::FontSettings;
@@ -90,6 +94,10 @@ struct PaneViewInner {
     /// 右键菜单；随 PaneView 常驻，点击时在指针位置弹出。
     menu: gtk4::Popover,
     menu_cb: RefCell<Option<MenuCallback>>,
+    /// 最近一次指针所在字符格（1-based），滚轮 SGR 用。
+    last_pointer_cell: Cell<(u16, u16)>,
+    /// 当前按下的 GTK 按钮（1=左 2=中 3=右），1002 motion 用。
+    pointer_buttons: Cell<u32>,
 }
 
 impl PaneView {
@@ -134,10 +142,13 @@ impl PaneView {
             url_opener: RefCell::new(None),
             menu: gtk4::Popover::new(),
             menu_cb: RefCell::new(None),
+            last_pointer_cell: Cell::new((1, 1)),
+            pointer_buttons: Cell::new(0),
         });
         let view = PaneView { inner };
         view.install_context_menu();
         view.attach_scroll_controller();
+        view.attach_pointer_controllers();
         view
     }
 
@@ -221,10 +232,29 @@ impl PaneView {
         gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
         {
             let menu = menu.clone();
-            gesture.connect_pressed(move |_, _, x, y| {
-                let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            let weak = Rc::downgrade(&self.inner);
+            gesture.connect_pressed(move |g, _, x, y| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let view = PaneView { inner };
+                if view.forward_mouse_button(3, true, x, y, g.current_event_state()) {
+                    g.set_state(gtk4::EventSequenceState::Claimed);
+                    return;
+                }
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
                 menu.set_pointing_to(Some(&rect));
                 menu.popup();
+            });
+        }
+        {
+            let weak = Rc::downgrade(&self.inner);
+            gesture.connect_released(move |g, _, x, y| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let view = PaneView { inner };
+                view.forward_mouse_button(3, false, x, y, g.current_event_state());
             });
         }
         self.inner.renderer.widget().add_controller(gesture);
@@ -235,11 +265,15 @@ impl PaneView {
         *self.inner.menu_cb.borrow_mut() = Some(Rc::new(callback));
     }
 
-    /// W21：生产滚轮路径。主屏滚 VTE 历史；alt-screen 发 CSI 方向键。
-    /// 与 EventControllerScroll 同一函数（测试 test_emit_scroll 也走这里）。
-    fn handle_scroll(&self, delta_y: f64) {
-        let alternate_screen = self.inner.reply_state.borrow().alternate_screen;
-        let Some(action) = wheel_action(alternate_screen, delta_y) else {
+    /// W21：生产滚轮路径。mouse reporting 发 SGR；否则 alt-screen 发 CSI
+    /// 方向键，主屏滚 VTE 历史。测试 test_emit_scroll 走同一函数。
+    fn handle_scroll(&self, delta_y: f64, shift: bool) {
+        let (alternate_screen, mouse_reporting) = {
+            let state = self.inner.reply_state.borrow();
+            (state.alternate_screen, state.mouse_reporting && !shift)
+        };
+        let cell = self.inner.last_pointer_cell.get();
+        let Some(action) = wheel_action(alternate_screen, mouse_reporting, delta_y, cell) else {
             return;
         };
         match action {
@@ -253,9 +287,7 @@ impl PaneView {
                 }
             }
             WheelAction::SendToApp { bytes } => {
-                if let Some(cb) = self.inner.input_cb.borrow().as_ref() {
-                    cb(self.inner.pane_id.get(), &bytes);
-                }
+                send_input_bytes(&self.inner, &bytes);
             }
         }
     }
@@ -265,19 +297,147 @@ impl PaneView {
         let weak = Rc::downgrade(&self.inner);
         let controller =
             gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
-        controller.connect_scroll(move |_c, _dx, dy| {
+        controller.connect_scroll(move |c, _dx, dy| {
             if let Some(inner) = weak.upgrade() {
                 let view = PaneView { inner };
-                view.handle_scroll(dy);
+                let shift = c
+                    .current_event_state()
+                    .contains(gdk::ModifierType::SHIFT_MASK);
+                view.handle_scroll(dy, shift);
             }
             glib::Propagation::Stop
         });
         self.widget().add_controller(controller);
     }
 
+    /// 点击/悬浮：应用开了 1000/1002/1003 时写成 SGR 交给 pane。
+    /// Shift 绕过上报，留给本地选区/菜单（xterm 惯例）。
+    fn attach_pointer_controllers(&self) {
+        let motion = gtk4::EventControllerMotion::new();
+        {
+            let weak = Rc::downgrade(&self.inner);
+            motion.connect_motion(move |c, x, y| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let view = PaneView { inner };
+                let shift = c
+                    .current_event_state()
+                    .contains(gdk::ModifierType::SHIFT_MASK);
+                view.handle_pointer_motion(x, y, shift);
+            });
+        }
+        self.widget().add_controller(motion);
+
+        for button in [1_u32, 2] {
+            let gesture = gtk4::GestureClick::new();
+            gesture.set_button(button);
+            gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+            {
+                let weak = Rc::downgrade(&self.inner);
+                gesture.connect_pressed(move |g, _, x, y| {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    let view = PaneView { inner };
+                    if view.forward_mouse_button(g.button(), true, x, y, g.current_event_state()) {
+                        g.set_state(gtk4::EventSequenceState::Claimed);
+                    }
+                });
+            }
+            {
+                let weak = Rc::downgrade(&self.inner);
+                gesture.connect_released(move |g, _, x, y| {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    let view = PaneView { inner };
+                    view.forward_mouse_button(g.button(), false, x, y, g.current_event_state());
+                });
+            }
+            self.widget().add_controller(gesture);
+        }
+    }
+
+    fn pointer_cell(&self, x: f64, y: f64) -> (u16, u16) {
+        let terminal = self.inner.renderer.terminal();
+        let cw = terminal.char_width().max(1) as f64;
+        let ch = terminal.char_height().max(1) as f64;
+        let cols = self.inner.grid_cols.get().max(1);
+        let rows = self.inner.grid_rows.get().max(1);
+        let col = ((x / cw).floor() as i32 + 1).clamp(1, i32::from(cols)) as u16;
+        let row = ((y / ch).floor() as i32 + 1).clamp(1, i32::from(rows)) as u16;
+        (col, row)
+    }
+
+    fn handle_pointer_motion(&self, x: f64, y: f64, shift: bool) {
+        let cell = self.pointer_cell(x, y);
+        let previous = self.inner.last_pointer_cell.replace(cell);
+        if shift || previous == cell {
+            return;
+        }
+        let (all_motion, button_motion, reporting) = {
+            let state = self.inner.reply_state.borrow();
+            (
+                state.mouse_all_motion,
+                state.mouse_button_motion,
+                state.mouse_reporting,
+            )
+        };
+        if !reporting {
+            return;
+        }
+        let held = self.inner.pointer_buttons.get();
+        let button = if all_motion && held == 0 {
+            SGR_HOVER
+        } else if (all_motion || button_motion) && held != 0 {
+            gtk_button_to_sgr(held).unwrap_or(0) + SGR_MOTION
+        } else {
+            return;
+        };
+        send_input_bytes(&self.inner, &sgr_report(button, cell.0, cell.1, false));
+    }
+
+    /// 应用要鼠标时把按下/松开写成 SGR；返回是否已交给 pane。
+    fn forward_mouse_button(
+        &self,
+        gtk_button: u32,
+        press: bool,
+        x: f64,
+        y: f64,
+        mods: gdk::ModifierType,
+    ) -> bool {
+        let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
+        let cell = self.pointer_cell(x, y);
+        self.inner.last_pointer_cell.set(cell);
+        if press {
+            self.inner.pointer_buttons.set(gtk_button);
+        } else if self.inner.pointer_buttons.get() == gtk_button {
+            self.inner.pointer_buttons.set(0);
+        }
+        if shift || !self.inner.reply_state.borrow().mouse_reporting {
+            return false;
+        }
+        let Some(button) = gtk_button_to_sgr(gtk_button) else {
+            return false;
+        };
+        send_input_bytes(&self.inner, &sgr_report(button, cell.0, cell.1, !press));
+        true
+    }
+
     /// W21 测试钩子：模拟一次滚轮（与生产 EventControllerScroll 同一函数）。
     pub fn test_emit_scroll(&self, delta_y: f64) {
-        self.handle_scroll(delta_y);
+        self.handle_scroll(delta_y, false);
+    }
+
+    /// 测试钩子：当前 reply_state 是否在上报鼠标。
+    pub fn test_mouse_reporting(&self) -> bool {
+        self.inner.reply_state.borrow().mouse_reporting
+    }
+
+    /// 测试钩子：模拟指针移动（与生产 EventControllerMotion 同一函数）。
+    pub fn test_emit_pointer_motion(&self, x: f64, y: f64) {
+        self.handle_pointer_motion(x, y, false);
     }
 
     /// W21 测试钩子：当前 reply_state 是否在 alt-screen。
@@ -966,11 +1126,18 @@ fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) ->
 }
 
 fn apply_mirror_mouse_policy(inner: &PaneViewInner) {
-    if !inner.is_tmux_mirror.get() {
+    // 只关 VTE 本地跟踪，方便无 mouse 时拖选复制。应用自己的
+    // 1000/1003/1006 留在 reply_state，滚轮/悬浮/点击才能穿透给 grok。
+    inner.renderer.terminal().feed(DISABLE_MOUSE_TRACKING);
+}
+
+fn send_input_bytes(inner: &PaneViewInner, bytes: &[u8]) {
+    if bytes.is_empty() {
         return;
     }
-    inner.renderer.terminal().feed(DISABLE_MOUSE_TRACKING);
-    feed_reply_state(inner, DISABLE_MOUSE_TRACKING);
+    if let Some(cb) = inner.input_cb.borrow().as_ref() {
+        cb(inner.pane_id.get(), bytes);
+    }
 }
 
 fn with_remote_feed(inner: &PaneViewInner, f: impl FnOnce()) {
@@ -1099,6 +1266,26 @@ mod tests {
     fn history_replay_is_noop_on_alternate_screen() {
         assert!(history_replay_allowed(false));
         assert!(!history_replay_allowed(true));
+    }
+
+    #[test]
+    fn grok_primary_mouse_wheel_is_sgr_not_history() {
+        use crate::platform::linux::scroll_policy::wheel_action;
+        let mut state = TerminalState::new(80, 24);
+        state.feed(b"\x1b[?1003h\x1b[?1006h");
+        assert!(state.mouse_reporting);
+        assert!(!state.alternate_screen);
+        match wheel_action(state.alternate_screen, state.mouse_reporting, -1.0, (10, 5)) {
+            Some(WheelAction::SendToApp { bytes }) => {
+                assert_eq!(bytes, b"\x1b[<64;10;5M");
+            }
+            other => panic!("0027 grok 主屏 mouse 滚轮必须 SGR: {other:?}"),
+        }
+        state.feed(DISABLE_MOUSE_TRACKING);
+        assert!(
+            !state.mouse_reporting,
+            "常量仍能清 VTE；生产路径不得把它喂进 reply_state"
+        );
     }
 
     #[test]

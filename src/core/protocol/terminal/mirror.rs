@@ -398,6 +398,9 @@ mod tests {
         t.feed(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
         assert!(t.mouse_reporting);
         t.feed(DISABLE_MOUSE_TRACKING);
-        assert!(!t.mouse_reporting, "镜像必须关掉鼠标跟踪，否则无法拖选复制");
+        assert!(
+            !t.mouse_reporting,
+            "VTE 本地必须关掉跟踪才能拖选；reply_state 不得吃这段"
+        );
     }
 }

@@ -7,6 +7,7 @@
 pub mod emulate;
 pub mod input;
 pub mod mirror;
+pub mod mouse;
 pub mod process;
 pub mod scrollback;
 
