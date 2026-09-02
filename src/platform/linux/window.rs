@@ -111,6 +111,9 @@ struct UiState {
     /// - 其它 Runtime（shell / Herdr）：`(Some(pane), cols, rows)` 按 pane 跳过，
     ///   避免切 tab 后同像素尺寸被全局缓存吞掉 ResizePane（htop 0826）。
     last_client_size: Option<(Option<u32>, u16, u16)>,
+    /// Herdr/shell：每个可见 pane 自己的 GTK 分配。0218.log 只 resize
+    /// active pane，分屏里另外两个格子一直停在 snapshot 27×23。
+    last_pane_sizes: HashMap<u32, (u16, u16)>,
     /// tmux SharedClientResize：同一尺寸连续命中才 dispatch（约 10×16ms），
     /// 避免 map 时 106→284→142 连发 -C（dogfood 2152）。
     pending_client_size: Option<(u16, u16)>,
@@ -541,6 +544,7 @@ impl AppWindow {
             active_tab: 0,
             active_pane: 0,
             last_client_size: None,
+            last_pane_sizes: HashMap::new(),
             pending_client_size: None,
             pending_client_hits: 0,
             tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
@@ -3486,6 +3490,15 @@ fn forward_parser_replies_for(s: &mut UiState, wid: &WorkspaceId, pane_id: u32) 
 const CLIENT_SIZE_STABLE_HITS: u8 = 10;
 
 fn sync_window_size(s: &mut UiState) {
+    let shared_client_resize = s
+        .active_workspace()
+        .runtime()
+        .support()
+        .contains(&RuntimeCapability::SharedClientResize);
+    if !shared_client_resize {
+        sync_visible_pane_sizes(s);
+        return;
+    }
     let Some(view) = s.active_layout().pane(s.active_pane) else {
         return;
     };
@@ -3507,57 +3520,72 @@ fn sync_window_size(s: &mut UiState) {
         .panes(&TabId(s.active_tab))
         .len()
         > 1;
-    let shared_client_resize = s
-        .active_workspace()
-        .runtime()
-        .support()
-        .contains(&RuntimeCapability::SharedClientResize);
-    let (cols, rows) = if shared_client_resize {
-        let cols =
-            match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane) {
-                Some(cols) => cols,
-                None => return,
-            };
-        let rows = match ClientSizePolicy::rows(root_h, ch) {
-            Some(rows) => rows,
-            None => return,
-        };
-        (cols, rows)
+    let cols = match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane)
+    {
+        Some(cols) => cols,
+        None => return,
+    };
+    let rows = match ClientSizePolicy::rows(root_h, ch) {
+        Some(rows) => rows,
+        None => return,
+    };
+    if s.last_client_size == Some((None, cols, rows)) {
+        s.pending_client_size = None;
+        s.pending_client_hits = 0;
+        return;
+    }
+    if s.pending_client_size == Some((cols, rows)) {
+        s.pending_client_hits = s.pending_client_hits.saturating_add(1);
     } else {
-        if !allocated {
-            return;
+        s.pending_client_size = Some((cols, rows));
+        s.pending_client_hits = 1;
+    }
+    if s.pending_client_hits < CLIENT_SIZE_STABLE_HITS {
+        return;
+    }
+    s.last_client_size = Some((None, cols, rows));
+    s.pending_client_size = None;
+    s.pending_client_hits = 0;
+    let _ = s
+        .active_workspace_mut()
+        .execute(Task::ResizeClient { cols, rows });
+}
+
+/// Herdr 没有 SharedClientResize：每个可见 split 格子按自己的 VTE 分配
+/// 发 ResizePane。只同步 active pane 会让 0218.log 里 54/57 停在 27×12。
+fn sync_visible_pane_sizes(s: &mut UiState) {
+    let tab = TabId(s.active_tab);
+    let pane_ids: Vec<u32> = s
+        .active_workspace()
+        .state()
+        .panes(&tab)
+        .iter()
+        .map(|pane| pane.id.0)
+        .collect();
+    let mut resizes = Vec::new();
+    for pane in pane_ids {
+        let Some(view) = s.active_layout().pane(pane) else {
+            continue;
+        };
+        let term = view.terminal();
+        let cw = term.char_width();
+        let ch = term.char_height();
+        if cw <= 0 || ch <= 0 || term.width() <= 0 || term.height() <= 0 {
+            continue;
         }
         let cols = (i64::from(term.width()) / cw).clamp(2, i64::from(u16::MAX)) as u16;
         let rows = (i64::from(term.height()) / ch).clamp(1, i64::from(u16::MAX)) as u16;
-        (cols, rows)
-    };
-    if shared_client_resize {
-        if s.last_client_size == Some((None, cols, rows)) {
-            s.pending_client_size = None;
-            s.pending_client_hits = 0;
-            return;
+        view.ensure_grid_size(cols, rows);
+        if s.last_pane_sizes.get(&pane) == Some(&(cols, rows)) {
+            continue;
         }
-        if s.pending_client_size == Some((cols, rows)) {
-            s.pending_client_hits = s.pending_client_hits.saturating_add(1);
-        } else {
-            s.pending_client_size = Some((cols, rows));
-            s.pending_client_hits = 1;
+        s.last_pane_sizes.insert(pane, (cols, rows));
+        if pane == s.active_pane {
+            s.last_client_size = Some((Some(pane), cols, rows));
         }
-        if s.pending_client_hits < CLIENT_SIZE_STABLE_HITS {
-            return;
-        }
-        s.last_client_size = Some((None, cols, rows));
-        s.pending_client_size = None;
-        s.pending_client_hits = 0;
-        let _ = s
-            .active_workspace_mut()
-            .execute(Task::ResizeClient { cols, rows });
-    } else {
-        let pane = s.active_pane;
-        if s.last_client_size == Some((Some(pane), cols, rows)) {
-            return;
-        }
-        s.last_client_size = Some((Some(pane), cols, rows));
+        resizes.push((pane, cols, rows));
+    }
+    for (pane, cols, rows) in resizes {
         let _ = s.active_workspace_mut().execute(Task::ResizePane {
             target: PaneId(pane),
             cols,
@@ -5190,6 +5218,7 @@ fn after_activate(s: &mut UiState) {
     }
     s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
     s.last_client_size = None;
+    s.last_pane_sizes.clear();
     s.pending_client_size = None;
     s.pending_client_hits = 0;
     s.qc_store.replace_all_recents(&recent_target_configs(

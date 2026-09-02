@@ -710,19 +710,26 @@ impl PaneView {
     /// attach 快照播种：不 reset、不 dump，直接把 capture-pane 原始字节
     /// 喂进 VTE（1820.log 白屏修复；live 路径禁止 visible_ansi → reset）。
     pub fn seed_raw(&self, data: &[u8], cols: u16, rows: u16) {
+        let (alloc_cols, alloc_rows) = self.allocated_grid_size();
         tracing::info!(
             target: "muxterm::surface",
             pane = self.inner.pane_id.get(),
             bytes = data.len(),
-            cols = cols,
-            rows = rows,
+            snapshot_cols = cols,
+            snapshot_rows = rows,
+            alloc_cols,
+            alloc_rows,
             "seed_raw"
         );
         if let Some(id) = self.inner.feed_flush_source.borrow_mut().take() {
             id.remove();
         }
         self.inner.pending_feed.borrow_mut().clear();
-        if cols >= 2 || rows >= 1 {
+        // Herdr snapshot 的 cols/rows 是 split 矩形。只用 GTK 分配；
+        // 未分配时保持当前网格，绝不缩到 27×23。
+        if alloc_cols >= 2 && alloc_rows >= 1 {
+            self.ensure_grid_size(alloc_cols, alloc_rows);
+        } else if cols >= 2 || rows >= 1 {
             self.resize_to(cols, rows);
         }
         // seed_raw 不 reset：历史 replay 必须先入队（`\x1b[H\x1b[2J` 会把
