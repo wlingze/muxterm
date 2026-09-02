@@ -5,7 +5,7 @@ enum SidebarTestSection {
     case workspaces, agents, commands, hiddenCommands
 }
 
-/// Native main-window sidebar mirroring Linux's two persistent sections.
+/// Native main-window sidebar with four compact, independently collapsible sections.
 final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
     var onWorkspaceClose: ((String) -> Void)?
@@ -101,7 +101,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         sections.alignment = .leading
         sections.spacing = 0
         sections.distribution = .fill
-        for view in [hiddenCommandSection, commandSection, agentSection, workspaceSection] {
+        for view in [workspaceSection, agentSection, commandSection, hiddenCommandSection] {
             view.translatesAutoresizingMaskIntoConstraints = false
             sections.addArrangedSubview(view)
             sections.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
@@ -129,6 +129,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         guard workspaces != items else { return }
         workspaces = items
         workspaceTable.reloadData()
+        updateSectionHeaderTitles()
         isReloadingSelection = true
         defer { isReloadingSelection = false }
         if let active = items.firstIndex(where: \.isActive) {
@@ -142,6 +143,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         guard agents != items else { return }
         agents = items
         agentTable.reloadData()
+        updateSectionHeaderTitles()
     }
 
     func setCommands(_ items: [CommandSidebarItem]) {
@@ -149,11 +151,13 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         hiddenCommandKeys.formIntersection(currentKeys)
         guard commands != items else {
             hiddenCommandTable.reloadData()
+            updateSectionHeaderTitles()
             return
         }
         commands = items
         commandTable.reloadData()
         hiddenCommandTable.reloadData()
+        updateSectionHeaderTitles()
     }
 
     private func toggleCommandVisibility(_ key: CommandVisibilityKey) {
@@ -162,6 +166,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         }
         commandTable.reloadData()
         hiddenCommandTable.reloadData()
+        updateSectionHeaderTitles()
     }
 
     private var visibleCommands: [CommandSidebarItem] {
@@ -195,6 +200,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                 title: item.name,
                 detail: "\(item.runtime) @ \(item.transport)",
                 shortcut: item.shortcut,
+                trailingSymbol: "xmark",
                 trailingTooltip: "Close workspace",
                 trailingAccessibilityID: "muxterm.sidebar.workspace.close.\(safeID(item.workspaceId))",
                 trailingAction: { [weak self] in
@@ -305,9 +311,9 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
         table.addTableColumn(column)
         table.headerView = nil
-        table.rowHeight = 48
+        table.rowHeight = 36
         table.style = .sourceList
-        table.intercellSpacing = NSSize(width: 0, height: 2)
+        table.intercellSpacing = NSSize(width: 0, height: 1)
         table.dataSource = self
         table.delegate = self
         table.setAccessibilityIdentifier(identifier + ".list")
@@ -318,8 +324,15 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     }
 
     private func configureHeader(_ button: NSButton, title: String, action: Selector) {
-        button.title = "▾  \(title)"
-        button.font = .systemFont(ofSize: 11, weight: .semibold)
+        button.title = title
+        button.image = NSImage(
+            systemSymbolName: "chevron.down",
+            accessibilityDescription: nil
+        )
+        button.imagePosition = .imageLeading
+        button.imageScaling = .scaleProportionallyDown
+        button.contentTintColor = .secondaryLabelColor
+        button.font = .systemFont(ofSize: 10.5, weight: .semibold)
         button.alignment = .left
         button.isBordered = false
         button.setButtonType(.toggle)
@@ -337,10 +350,10 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         view.addSubview(header)
         view.addSubview(scroll)
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
+            header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
             header.topAnchor.constraint(equalTo: view.topAnchor),
-            header.heightAnchor.constraint(equalToConstant: 28),
+            header.heightAnchor.constraint(equalToConstant: 26),
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
@@ -352,28 +365,82 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private func setSection(_ scroll: NSScrollView, expanded: Bool) {
         scroll.isHidden = !expanded
         let header: NSButton
-        let title: String
+        let section: SidebarTestSection
         if scroll === workspaceScroll {
             header = workspaceHeader
-            title = "WORKSPACES"
+            section = .workspaces
         } else if scroll === agentScroll {
             header = agentHeader
-            title = "AGENTS"
+            section = .agents
         } else if scroll === commandScroll {
             header = commandHeader
-            title = "COMMANDS"
+            section = .commands
         } else {
             header = hiddenCommandHeader
-            title = "HIDDEN COMMANDS"
+            section = .hiddenCommands
         }
-        header.title = "\(expanded ? "▾" : "▸")  \(title)"
+        header.image = NSImage(
+            systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+            accessibilityDescription: nil
+        )
+        header.title = sectionTitle(section)
         updateSectionConstraints()
+    }
+
+    private func updateSectionHeaderTitles() {
+        for (scroll, expanded) in [
+            (workspaceScroll, workspaceHeader.state == .on),
+            (agentScroll, agentHeader.state == .on),
+            (commandScroll, commandHeader.state == .on),
+            (hiddenCommandScroll, hiddenCommandHeader.state == .on),
+        ] {
+            let header: NSButton
+            let section: SidebarTestSection
+            if scroll === workspaceScroll {
+                header = workspaceHeader
+                section = .workspaces
+            } else if scroll === agentScroll {
+                header = agentHeader
+                section = .agents
+            } else if scroll === commandScroll {
+                header = commandHeader
+                section = .commands
+            } else {
+                header = hiddenCommandHeader
+                section = .hiddenCommands
+            }
+            header.image = NSImage(
+                systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+                accessibilityDescription: nil
+            )
+            header.title = sectionTitle(section)
+        }
+    }
+
+    private func sectionTitle(_ section: SidebarTestSection) -> String {
+        let title: String
+        let count: Int
+        switch section {
+        case .workspaces:
+            title = "WORKSPACES"
+            count = workspaces.count
+        case .agents:
+            title = "AGENTS"
+            count = agents.count
+        case .commands:
+            title = "COMMANDS"
+            count = visibleCommands.count
+        case .hiddenCommands:
+            title = "HIDDEN COMMANDS"
+            count = hiddenCommands.count
+        }
+        return count > 0 ? "\(title)  \(count)" : title
     }
 
     /// VSCode/Cursor section packing.
     ///
     /// Expanded sections divide all remaining height. Collapsed sections keep
-    /// only their 28pt header; those before the first expanded section pack to
+    /// only their 26pt header; those before the first expanded section pack to
     /// the top, those after the last expanded section pack to the bottom, and
     /// all-collapsed packs to the top.
     private func updateSectionConstraints() {
@@ -398,7 +465,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                 )
                 constraint.priority = .required
             } else {
-                constraint = view.heightAnchor.constraint(equalToConstant: 28)
+                constraint = view.heightAnchor.constraint(equalToConstant: 26)
             }
             constraint.isActive = true
             sectionHeightConstraints[scroll] = constraint
@@ -495,23 +562,24 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         super.init(frame: .zero)
         self.identifier = identifier
         marker.translatesAutoresizingMaskIntoConstraints = false
-        marker.font = .systemFont(ofSize: 10)
+        marker.font = .systemFont(ofSize: 9.5)
         marker.alignment = .center
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingTail
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
-        detailLabel.font = .systemFont(ofSize: 10.5)
+        detailLabel.font = .systemFont(ofSize: 10)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingTail
         shortcutLabel.translatesAutoresizingMaskIntoConstraints = false
-        shortcutLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        shortcutLabel.font = .systemFont(ofSize: 9.5, weight: .semibold)
         shortcutLabel.textColor = .tertiaryLabelColor
         shortcutLabel.alignment = .center
         trailingButton.translatesAutoresizingMaskIntoConstraints = false
         trailingButton.isBordered = false
         trailingButton.font = .systemFont(ofSize: 11, weight: .semibold)
         trailingButton.controlSize = .small
+        trailingButton.imageScaling = .scaleProportionallyDown
         trailingButton.setButtonType(.momentaryPushIn)
         trailingButton.action = #selector(trailingClicked)
         trailingButton.target = self
@@ -529,21 +597,22 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
             constant: 0
         )
         NSLayoutConstraint.activate([
-            marker.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            marker.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
             marker.centerYAnchor.constraint(equalTo: centerYAnchor),
-            marker.widthAnchor.constraint(equalToConstant: 12),
-            shortcutLabel.leadingAnchor.constraint(equalTo: marker.trailingAnchor, constant: 7),
+            marker.widthAnchor.constraint(equalToConstant: 11),
+            shortcutLabel.leadingAnchor.constraint(equalTo: marker.trailingAnchor, constant: 6),
             shortcutLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            shortcutLabel.widthAnchor.constraint(equalToConstant: 14),
-            titleLabel.leadingAnchor.constraint(equalTo: shortcutLabel.trailingAnchor, constant: 4),
+            shortcutLabel.widthAnchor.constraint(equalToConstant: 13),
+            titleLabel.leadingAnchor.constraint(equalTo: shortcutLabel.trailingAnchor, constant: 3),
             titleLeadingToTrailing,
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            trailingButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            trailingButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
             trailingButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             trailingButtonWidth,
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 0),
+            detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -2),
         ])
     }
 
@@ -578,7 +647,7 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     private func updateTrailingVisibility() {
         let showsTrailing = trailingAction != nil
             && (!trailingShowsOnHover || isHovered)
-        trailingButtonWidth.constant = showsTrailing ? 24 : 0
+        trailingButtonWidth.constant = showsTrailing ? 22 : 0
         titleLeadingToTrailing.constant = showsTrailing ? -4 : 0
         trailingButton.isHidden = !showsTrailing
     }
@@ -605,6 +674,10 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         shortcutLabel.stringValue = shortcut.map(String.init) ?? ""
         titleLabel.stringValue = title
         detailLabel.stringValue = detail
+        // NSTableView reuses cells. Always clear the text before applying an
+        // icon so a previous text-button configuration can never leak into a
+        // Workspace close control.
+        trailingButton.title = ""
 
         let symbol = trailingSymbol ?? (closeAction == nil ? nil : "xmark")
         if let symbol {
@@ -616,6 +689,7 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
             trailingButton.contentTintColor = .secondaryLabelColor
         } else {
             trailingButton.image = nil
+            trailingButton.imagePosition = .noImage
         }
         trailingButton.toolTip = trailingTooltip
         if let id = trailingAccessibilityID {

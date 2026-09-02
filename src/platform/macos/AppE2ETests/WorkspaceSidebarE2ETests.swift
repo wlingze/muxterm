@@ -109,15 +109,15 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         sidebar.testSetSectionExpanded(.agents, false)
         sidebar.testSetSectionExpanded(.commands, false)
         let allCollapsed = sidebar.testSectionFrames()
-        XCTAssertEqual(allCollapsed[.workspaces]?.maxY ?? 0, 28, accuracy: 0.5)
-        XCTAssertEqual(allCollapsed[.agents]?.minY ?? 0, 28, accuracy: 0.5)
-        XCTAssertEqual(allCollapsed[.hiddenCommands]?.maxY ?? 0, 112, accuracy: 0.5)
+        XCTAssertEqual(allCollapsed[.workspaces]?.maxY ?? 0, 104, accuracy: 0.5)
+        XCTAssertEqual(allCollapsed[.agents]?.minY ?? 0, 52, accuracy: 0.5)
+        XCTAssertEqual(allCollapsed[.hiddenCommands]?.maxY ?? 0, 26, accuracy: 0.5)
 
         sidebar.testSetSectionExpanded(.agents, true)
         let expandedMiddle = sidebar.testSectionFrames()
-        XCTAssertEqual(expandedMiddle[.workspaces]?.maxY ?? 0, 28, accuracy: 0.5)
-        XCTAssertEqual(expandedMiddle[.commands]?.maxY ?? 0, 612, accuracy: 0.5)
-        XCTAssertEqual(expandedMiddle[.hiddenCommands]?.maxY ?? 0, 640, accuracy: 0.5)
+        XCTAssertEqual(expandedMiddle[.workspaces]?.maxY ?? 0, 640, accuracy: 0.5)
+        XCTAssertEqual(expandedMiddle[.commands]?.maxY ?? 0, 52, accuracy: 0.5)
+        XCTAssertEqual(expandedMiddle[.hiddenCommands]?.maxY ?? 0, 26, accuracy: 0.5)
     }
 
     func testWorkspaceCloseButtonRemovesWorkspaceAndFallsForward() throws {

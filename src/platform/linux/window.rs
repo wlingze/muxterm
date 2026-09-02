@@ -5521,19 +5521,20 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
             background-color: alpha({fg}, 0.035);
             border: none;
             border-radius: 0;
-            min-height: 26px;
+            min-height: 22px;
             padding: 0;
             color: {fg};
         }}
         .muxterm-sidebar-section-header:hover {{ background-color: alpha({fg}, 0.09); }}
-        .muxterm-sidebar-title {{ color: {fg}; font-size: 11px; font-weight: 700; }}
+        .muxterm-sidebar-title {{ color: {fg}; font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }}
         .muxterm-sidebar-section-arrow {{ color: {fg}; opacity: 0.72; }}
         .muxterm-sidebar-sections > separator {{
             min-height: 1px;
             background: alpha({fg}, 0.18);
         }}
-        .muxterm-sidebar-row {{ border-radius: 4px; }}
-        .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); }}
+        .muxterm-sidebar-list {{ background: transparent; padding: 1px 3px 3px; }}
+        .muxterm-sidebar-row {{ border-radius: 4px; margin: 1px 0; }}
+        .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); box-shadow: inset 2px 0 0 alpha({fg}, 0.72); }}
         .muxterm-sidebar-close {{
             min-width: 22px;
             min-height: 22px;
@@ -5552,20 +5553,19 @@ pub(crate) fn chrome_css(theme: &Theme) -> String {
             background-color: transparent;
             border: none;
             box-shadow: none;
-            min-width: 0;
-            min-height: 18px;
-            padding: 1px 4px;
+            min-width: 22px;
+            min-height: 22px;
+            padding: 1px 3px;
             border-radius: 4px;
             color: {fg};
-            font-size: 10px;
             opacity: 0.58;
         }}
         button.muxterm-sidebar-command-visibility:hover {{
             opacity: 1;
             background-color: alpha({fg}, 0.12);
         }}
-        .muxterm-sidebar-row-name {{ color: {fg}; }}
-        .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 11px; }}
+        .muxterm-sidebar-row-name {{ color: {fg}; font-size: 11.5px; font-weight: 500; }}
+        .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 10px; }}
         .muxterm-sidebar-workspace-shortcut {{
             color: {fg};
             opacity: 0.52;

@@ -777,9 +777,9 @@ impl WorkspaceSidebar {
                 .build();
             let labels = GtkBox::builder()
                 .orientation(Orientation::Vertical)
-                .spacing(2)
-                .margin_top(8)
-                .margin_bottom(8)
+                .spacing(1)
+                .margin_top(5)
+                .margin_bottom(5)
                 .margin_start(if item.shortcut.is_some() { 4 } else { 12 })
                 .hexpand(true)
                 .build();
@@ -801,7 +801,7 @@ impl WorkspaceSidebar {
 
             labels.append(&name);
             labels.append(&detail);
-            let close = gtk4::Button::with_label("×");
+            let close = Button::from_icon_name("window-close-symbolic");
             close.set_widget_name(&format!(
                 "muxterm-sidebar-workspace-close-{}",
                 widget_id(&item.id.as_str())
@@ -809,6 +809,7 @@ impl WorkspaceSidebar {
             close.add_css_class("muxterm-sidebar-close");
             close.set_has_frame(false);
             close.set_can_focus(false);
+            close.set_focus_on_click(false);
             close.set_valign(Align::Center);
             close.set_margin_end(6);
             close.set_tooltip_text(Some("Close workspace"));
@@ -1024,11 +1025,11 @@ fn activity_row_with_trailing(
 
     let content = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(8)
-        .margin_top(6)
-        .margin_bottom(6)
-        .margin_start(10)
-        .margin_end(10)
+        .spacing(6)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(8)
+        .margin_end(8)
         .build();
     if item.indicator() != ActivityIndicator::None {
         let dot = Label::new(Some("●"));
@@ -1071,15 +1072,25 @@ fn activity_row_with_trailing(
 }
 
 fn command_activity_row(item: &CommandSidebarItem, hidden: bool) -> (ListBoxRow, Button) {
-    let (label, widget_name) = if hidden {
-        ("显示", "muxterm-sidebar-command-show")
+    let (icon, tooltip, widget_name) = if hidden {
+        (
+            "view-reveal-symbolic",
+            "显示命令",
+            "muxterm-sidebar-command-show",
+        )
     } else {
-        ("不显示", "muxterm-sidebar-command-hide")
+        (
+            "view-conceal-symbolic",
+            "隐藏命令",
+            "muxterm-sidebar-command-hide",
+        )
     };
-    let action = Button::with_label(label);
+    let action = Button::from_icon_name(icon);
     action.set_widget_name(widget_name);
     action.set_has_frame(false);
     action.set_can_focus(false);
+    action.set_focus_on_click(false);
+    action.set_tooltip_text(Some(tooltip));
     action.add_css_class("muxterm-sidebar-command-visibility");
     let row = activity_row_with_trailing(
         if hidden { "hidden-command" } else { "command" },
