@@ -20,7 +20,7 @@ use crate::core::protocol::terminal::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
 };
 use crate::core::protocol::terminal::mouse::{
-    gtk_button_to_sgr, sgr_report, SGR_HOVER, SGR_MOTION,
+    gtk_button_to_sgr, pointer_cell as pixel_to_cell, sgr_report, SGR_HOVER, SGR_MOTION,
 };
 use crate::core::url_detect::UrlOpener;
 use crate::platform::linux::quickconnect::font::FontSettings;
@@ -361,13 +361,15 @@ impl PaneView {
 
     fn pointer_cell(&self, x: f64, y: f64) -> (u16, u16) {
         let terminal = self.inner.renderer.terminal();
-        let cw = terminal.char_width().max(1) as f64;
-        let ch = terminal.char_height().max(1) as f64;
-        let cols = self.inner.grid_cols.get().max(1);
-        let rows = self.inner.grid_rows.get().max(1);
-        let col = ((x / cw).floor() as i32 + 1).clamp(1, i32::from(cols)) as u16;
-        let row = ((y / ch).floor() as i32 + 1).clamp(1, i32::from(rows)) as u16;
-        (col, row)
+        pixel_to_cell(
+            x,
+            y,
+            terminal.char_width() as f64,
+            terminal.char_height() as f64,
+            self.inner.grid_cols.get(),
+            self.inner.grid_rows.get(),
+        )
+        .unwrap_or_else(|| self.inner.last_pointer_cell.get())
     }
 
     fn handle_pointer_motion(&self, x: f64, y: f64, shift: bool) {
@@ -1162,11 +1164,16 @@ fn feed_reply_state(inner: &PaneViewInner, data: &[u8]) {
         return;
     }
     let replies = state.take_reply();
+    let clipboard = state.take_clipboard_set();
+    drop(state);
     if should_forward_parser_response(true, inner.is_tmux_mirror.get()) && !replies.is_empty() {
         inner
             .pending_replies
             .borrow_mut()
             .extend_from_slice(&replies);
+    }
+    if let Some(text) = clipboard {
+        inner.renderer.terminal().clipboard().set_text(&text);
     }
 }
 

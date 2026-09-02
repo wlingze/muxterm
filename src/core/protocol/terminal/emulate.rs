@@ -162,6 +162,8 @@ pub struct TerminalState {
     pub mouse_button_motion: bool,
     pub mouse_all_motion: bool,
     pub mouse_sgr: bool,
+    /// OSC 52 写入系统剪贴板的待处理文本（VTE GTK4 不实现 OSC 52）。
+    clipboard_set: Option<String>,
     /// focus in/out 上报模式（1004）。
     pub focus_reporting: bool,
     /// 窗口标题（OSC 0/2）。
@@ -329,6 +331,7 @@ impl TerminalState {
             mouse_button_motion: false,
             mouse_all_motion: false,
             mouse_sgr: false,
+            clipboard_set: None,
             focus_reporting: false,
             palette: default_palette(),
             charsets: [StandardCharset::default(); 4],
@@ -445,6 +448,11 @@ impl TerminalState {
     /// 字面文本。
     pub fn take_reply(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pending_reply)
+    }
+
+    /// OSC 52 复制请求；取走后由平台写入 GTK 剪贴板。
+    pub fn take_clipboard_set(&mut self) -> Option<String> {
+        self.clipboard_set.take()
     }
 
     /// 取出本次 feed 累计的注意力信号，并清空队列。
@@ -733,6 +741,12 @@ impl TerminalState {
                     self.signals.push(AttentionSignal::AttentionRequest {
                         source: AttentionSource::OscNotify,
                     });
+                }
+            }
+            b"52" => {
+                // OSC 52 ; Pc ; Pd ：Grok/vim 用它复制。查询 `?` 不回写剪贴板。
+                if let Some(text) = parse_osc52_set(&params) {
+                    self.clipboard_set = Some(text);
                 }
             }
             b"1337" => {
@@ -1459,6 +1473,50 @@ fn is_wide(c: char) -> bool {
             | '\u{20000}'..='\u{2FFFD}'
             | '\u{30000}'..='\u{3FFFD}'
     )
+}
+
+/// OSC 52 设置剪贴板：`52 ; Pc ; Pd`，Pd 是 base64。`?` 是查询，忽略。
+fn parse_osc52_set(params: &[&[u8]]) -> Option<String> {
+    let payload = params.get(2).copied().unwrap_or(b"");
+    if payload.is_empty() || payload == b"?" {
+        return None;
+    }
+    let bytes = decode_base64(payload)?;
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.is_empty())
+}
+
+fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
+    let filtered: Vec<u8> = input
+        .iter()
+        .copied()
+        .filter(|b| !b.is_ascii_whitespace() && *b != b'=')
+        .collect();
+    if filtered.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::with_capacity(filtered.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for c in filtered {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 impl Handler for TerminalState {
@@ -2371,6 +2429,17 @@ mod input_mode_tests {
         assert!(t.mouse_reporting, "关掉 1006 不得把仍开启的 1003 一起清掉");
         t.feed(b"\x1b[?1003l");
         assert!(!t.mouse_reporting);
+    }
+
+    #[test]
+    fn osc52_sets_clipboard_text_and_ignores_query() {
+        let mut t = TerminalState::new(40, 5);
+        // echo -n MUXTERM_OSC52 | base64 → TVVYVEVSTV9PU0M1Mg==
+        t.feed(b"\x1b]52;c;TVVYVEVSTV9PU0M1Mg==\x07");
+        assert_eq!(t.take_clipboard_set().as_deref(), Some("MUXTERM_OSC52"));
+        assert!(t.take_clipboard_set().is_none());
+        t.feed(b"\x1b]52;c;?\x07");
+        assert!(t.take_clipboard_set().is_none(), "查询不得把剪贴板吐回 PTY");
     }
 
     /// focus in/out（1004）开启/关闭。

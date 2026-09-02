@@ -997,6 +997,22 @@ impl AppWindow {
         }
     }
 
+    /// 测试用：把字节直接喂进 PaneView（含 reply_state / OSC 52）。
+    pub fn test_feed_pane_view(&self, pane: u32, bytes: &[u8]) {
+        let s = self._state.borrow();
+        if let Some(view) = s.active_layout().pane(pane).cloned() {
+            view.feed_output(bytes);
+            view.flush_deferred_feed();
+        }
+    }
+
+    /// 测试用：当前激活 pane 走生产粘贴路径。
+    pub fn test_paste_active(&self) {
+        let state = self._state.clone();
+        let s = state.borrow();
+        paste_active_pane(&s, &state);
+    }
+
     /// 测试用：向当前激活 pane 发送原始输入（如 `echo hi\n` / `\x04` Ctrl+D）。
     pub fn test_send_input(&self, data: &[u8]) {
         let mut s = self._state.borrow_mut();
@@ -1384,6 +1400,15 @@ impl AppWindow {
     }
 
     /// W21 测试钩子：指定 pane 的 reply_state 是否在 alt-screen。
+    pub fn test_pane_mouse_reporting(&self, pane: u32) -> bool {
+        self._state
+            .borrow()
+            .active_layout()
+            .pane(pane)
+            .map(|v| v.test_mouse_reporting())
+            .unwrap_or(false)
+    }
+
     pub fn test_pane_alternate_screen(&self, pane: u32) -> bool {
         self._state
             .borrow()

@@ -35,6 +35,25 @@ pub fn sgr_report(button: u16, col: u16, row: u16, release: bool) -> Vec<u8> {
     out
 }
 
+/// 像素坐标折算成 1-based 字符格。字号未知时不要用 1px/格（0150.log 出现 193 列）。
+pub fn pointer_cell(
+    x: f64,
+    y: f64,
+    char_w: f64,
+    char_h: f64,
+    cols: u16,
+    rows: u16,
+) -> Option<(u16, u16)> {
+    if char_w < 2.0 || char_h < 2.0 {
+        return None;
+    }
+    let cols = cols.max(1);
+    let rows = rows.max(1);
+    let col = ((x / char_w).floor() as i32 + 1).clamp(1, i32::from(cols)) as u16;
+    let row = ((y / char_h).floor() as i32 + 1).clamp(1, i32::from(rows)) as u16;
+    Some((col, row))
+}
+
 /// GTK 按钮 1/2/3 → SGR 0/1/2。
 pub fn gtk_button_to_sgr(button: u32) -> Option<u16> {
     match button {
@@ -118,5 +137,17 @@ mod tests {
         assert_eq!(gtk_button_to_sgr(2), Some(1));
         assert_eq!(gtk_button_to_sgr(3), Some(2));
         assert_eq!(gtk_button_to_sgr(4), None);
+    }
+
+    #[test]
+    fn pointer_cell_ignores_unknown_glyph_size() {
+        assert_eq!(pointer_cell(193.0, 54.0, 0.0, 16.0, 80, 24), None);
+        assert_eq!(pointer_cell(193.0, 54.0, 1.0, 1.0, 80, 24), None);
+        assert_eq!(pointer_cell(80.0, 32.0, 8.0, 16.0, 80, 24), Some((11, 3)));
+        assert_eq!(
+            pointer_cell(800.0, 800.0, 8.0, 16.0, 80, 24),
+            Some((80, 24)),
+            "不得超出当前网格"
+        );
     }
 }
