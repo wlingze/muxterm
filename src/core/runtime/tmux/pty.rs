@@ -68,6 +68,13 @@ impl Drop for PtyChild {
     }
 }
 
+/// 控制客户端 / SSH pty 必须带上 RGB 能力。桌面启动时常没有 TERM，
+/// tmux 会把 24-bit SGR 收成 16 色，Codex 浅色输入框变成黑底黑字。
+pub fn apply_truecolor_env(cmd: &mut CommandBuilder) {
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+}
+
 /// spawn 一个命令到一对 pty。
 pub fn spawn_pty(bin: &str, args: &[&str], cols: u16, rows: u16) -> Result<PtyChild> {
     let pty_system = NativePtySystem::default();
@@ -83,6 +90,7 @@ pub fn spawn_pty(bin: &str, args: &[&str], cols: u16, rows: u16) -> Result<PtyCh
     for a in args {
         cmd.arg(a);
     }
+    apply_truecolor_env(&mut cmd);
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -268,6 +276,42 @@ mod tests {
     // ── spawn_pty ────────────────────────────────────────────────────────
 
     #[test]
+    fn spawn_pty_advertises_truecolor_terminal() {
+        let mut child =
+            spawn_pty("printenv", &["TERM", "COLORTERM"], 40, 12).expect("spawn printenv");
+        let reader = child.master.try_clone_reader().expect("try_clone_reader");
+        let mut reader = reader;
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match reader.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    let out = String::from_utf8_lossy(&buf);
+                    if out.contains("xterm-256color") && out.contains("truecolor") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("xterm-256color"),
+            "pty 子进程 TERM 应为 xterm-256color, 实际: {out:?}"
+        );
+        assert!(
+            out.contains("truecolor"),
+            "pty 子进程 COLORTERM 应为 truecolor, 实际: {out:?}"
+        );
+        let _ = child.child.try_wait();
+    }
+
     fn spawn_pty_echo_and_read_output() {
         // /bin/echo 立即输出后退出，master reader 应能读到它的 stdout
         let mut child = spawn_pty("echo", &["hello-pty"], 40, 12).expect("spawn echo");

@@ -754,7 +754,9 @@ impl TmuxClient {
         for a in &argv {
             cmd.arg(a);
         }
-        cmd.stdin(Stdio::piped())
+        cmd.env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
@@ -812,6 +814,10 @@ pub(crate) fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
     for a in &config.extra_args {
         argv.push(a.clone());
     }
+    // 控制客户端必须声明 RGB：否则 tmux 把 Codex 的 24-bit 输入框
+    // （48;2;216;216;216）塌成黑色，字也跟着糊掉。
+    argv.push("-T".into());
+    argv.push("RGB,256".into());
     argv.push("-CC".into());
     match config.mode.clone().unwrap_or_default() {
         ConnectMode::NewSession {
@@ -1237,8 +1243,15 @@ mod tests {
         let argv = build_argv(&config);
         assert_eq!(
             argv,
-            vec!["-CC", "attach", "-t", "yaklang-workspace"],
-            "SSH attach 默认远端 socket 必须是 `tmux -CC attach -t <session>`，不能带 -L <alias>"
+            vec![
+                "-T",
+                "RGB,256",
+                "-CC",
+                "attach",
+                "-t",
+                "yaklang-workspace"
+            ],
+            "SSH attach 默认远端 socket 必须是 `tmux -T RGB,256 -CC attach -t <session>`，不能带 -L <alias>"
         );
         assert!(!argv.iter().any(|a| a == "ryzen"));
     }
@@ -1275,7 +1288,7 @@ mod tests {
         };
         assert_eq!(
             build_remote_tmux_command(&config),
-            "tmux '-L' 'socket with space' '-CC' 'new-session' '-s' 'project name' '-c' $HOME/'Project/my repo'"
+            "tmux '-L' 'socket with space' '-T' 'RGB,256' '-CC' 'new-session' '-s' 'project name' '-c' $HOME/'Project/my repo'"
         );
     }
 
