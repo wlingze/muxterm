@@ -3562,7 +3562,7 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
         .iter()
         .map(|pane| pane.id.0)
         .collect();
-    let mut resizes = Vec::new();
+    let mut measured = Vec::new();
     for pane in pane_ids {
         let Some(view) = s.active_layout().pane(pane) else {
             continue;
@@ -3576,14 +3576,14 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
         let cols = (i64::from(term.width()) / cw).clamp(2, i64::from(u16::MAX)) as u16;
         let rows = (i64::from(term.height()) / ch).clamp(1, i64::from(u16::MAX)) as u16;
         view.ensure_grid_size(cols, rows);
-        if s.last_pane_sizes.get(&pane) == Some(&(cols, rows)) {
-            continue;
-        }
-        s.last_pane_sizes.insert(pane, (cols, rows));
+        measured.push((pane, cols, rows));
         if pane == s.active_pane {
             s.last_client_size = Some((Some(pane), cols, rows));
         }
-        resizes.push((pane, cols, rows));
+    }
+    let resizes = pending_pane_resizes(&s.last_pane_sizes, &measured);
+    for &(pane, cols, rows) in &resizes {
+        s.last_pane_sizes.insert(pane, (cols, rows));
     }
     for (pane, cols, rows) in resizes {
         let _ = s.active_workspace_mut().execute(Task::ResizePane {
@@ -3592,6 +3592,18 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
             rows,
         });
     }
+}
+
+/// 0218.log：三个可见格子都要有自己的 ResizePane；已同步过的尺寸跳过。
+fn pending_pane_resizes(
+    last: &HashMap<u32, (u16, u16)>,
+    measured: &[(u32, u16, u16)],
+) -> Vec<(u32, u16, u16)> {
+    measured
+        .iter()
+        .copied()
+        .filter(|(pane, cols, rows)| last.get(pane) != Some(&(*cols, *rows)))
+        .collect()
 }
 
 /// SSH 可达性缓存 TTL（W15d：面板打开时后台探测，TTL 内复用）。
@@ -5733,6 +5745,27 @@ mod tests {
         assert!(should_poll_status(false, last, now, Duration::from_secs(1)));
         // 无订阅但未到间隔 → 不轮询
         assert!(!should_poll_status(false, now, now, Duration::from_secs(1)));
+    }
+
+    #[test]
+    #[test]
+    fn pending_pane_resizes_covers_every_visible_split_leaf() {
+        let mut last = HashMap::new();
+        last.insert(50, (27, 23));
+        let measured = [(50, 120, 40), (54, 120, 20), (57, 120, 19)];
+        let pending = pending_pane_resizes(&last, &measured);
+        assert_eq!(
+            pending,
+            vec![(50, 120, 40), (54, 120, 20), (57, 120, 19)],
+            "active 以外的 split 格子也必须发 ResizePane"
+        );
+        last.insert(50, (120, 40));
+        last.insert(54, (120, 20));
+        last.insert(57, (120, 19));
+        assert!(
+            pending_pane_resizes(&last, &measured).is_empty(),
+            "尺寸未变不得重复 resize"
+        );
     }
 
     #[test]
