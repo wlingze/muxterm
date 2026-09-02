@@ -24,6 +24,8 @@ final class WorkspaceQueryTests: XCTestCase {
         XCTAssertFalse(WorkspaceQuery("MXE @TMUX @RYZEN").matches(local))
         XCTAssertTrue(WorkspaceQuery("mxe @tmux @local").matches(local))
         XCTAssertFalse(WorkspaceQuery("mxe @tmux @local").matches(remote))
+        XCTAssertTrue(WorkspaceQuery("@tmux @ry").matches(remote))
+        XCTAssertTrue(WorkspaceQuery("@tm mux").matches(remote))
     }
 
     func testQueryAlsoSearchesAttachIdentityFields() {

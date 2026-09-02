@@ -7,6 +7,16 @@ public enum TargetRuntime: String, Equatable, Sendable, CaseIterable {
     case herdr
 
     public var label: String { rawValue }
+
+    /// 查询 token：完整名字，或长度 ≥ 2 且在 shell/tmux/herdr 中唯一的前缀。
+    static func fromQueryToken(_ value: String) -> TargetRuntime? {
+        if let exact = TargetRuntime(rawValue: value) {
+            return exact
+        }
+        guard value.count >= 2 else { return nil }
+        let hits = TargetRuntime.allCases.filter { $0.rawValue.hasPrefix(value) }
+        return hits.count == 1 ? hits.first : nil
+    }
 }
 
 /// 连接传输（ssh 需要 name；local 不需要）。
@@ -121,7 +131,9 @@ public struct TargetConfig: Equatable, Sendable {
 /// Workspaces tab 的查询规则。
 ///
 /// 普通词使用大小写不敏感的子序列匹配；`@tmux` / `@herdr` / `@shell`
-/// 过滤 runtime，`@local` 过滤本地传输，其他 `@xxx` 过滤 SSH alias。
+/// 过滤 runtime（`@tm` 这类唯一前缀也可以），`@local` 过滤本地传输，
+/// 其他 `@xxx` 过滤 SSH alias（精确、前缀或模糊）。例如
+/// `@tmux @ryzen` 只留下 ryzen 上的 tmux workspace / project。
 /// 所有普通词和 `@` 条件都必须同时满足。
 public struct WorkspaceQuery: Equatable, Sendable {
     private let terms: [String]
@@ -142,9 +154,9 @@ public struct WorkspaceQuery: Equatable, Sendable {
             }
             let filter = String(token.dropFirst()).lowercased()
             guard !filter.isEmpty else { continue }
-            if let runtime = TargetRuntime(rawValue: filter) {
+            if let runtime = TargetRuntime.fromQueryToken(filter) {
                 runtimeFilters.append(runtime)
-            } else if filter == "local" {
+            } else if filter == "local" || Self.uniqueLocalPrefix(filter) {
                 localOnly = true
             } else {
                 sshAliasFilters.append(filter)
@@ -170,7 +182,7 @@ public struct WorkspaceQuery: Equatable, Sendable {
         if localOnly, config.transport != .local { return nil }
         for alias in sshAliasFilters {
             guard case .ssh(let name) = config.transport,
-                  name.caseInsensitiveCompare(alias) == .orderedSame
+                  Self.sshAliasMatches(name, filter: alias)
             else { return nil }
         }
 
@@ -221,6 +233,18 @@ public struct WorkspaceQuery: Equatable, Sendable {
     private static func currentToken(in raw: String) -> Substring? {
         guard raw.last?.isWhitespace != true else { return nil }
         return raw.split(whereSeparator: { $0.isWhitespace }).last
+    }
+
+    private static func uniqueLocalPrefix(_ filter: String) -> Bool {
+        filter.count >= 2 && "local".hasPrefix(filter)
+    }
+
+    private static func sshAliasMatches(_ alias: String, filter: String) -> Bool {
+        let alias = alias.lowercased()
+        let want = filter.lowercased()
+        if want.isEmpty { return true }
+        if alias == want || alias.hasPrefix(want) { return true }
+        return fuzzyGapScore(alias, want) != nil
     }
 
     private static func fieldScore(_ field: String, _ query: String) -> Int? {

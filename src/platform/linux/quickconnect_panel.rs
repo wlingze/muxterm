@@ -163,29 +163,33 @@ pub enum ExistingNav {
 
 /// 按查询过滤（纯逻辑，便于单测）。
 pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelItem> {
-    let q = query.trim().to_lowercase();
+    let q = query.trim();
     if q.is_empty() {
         return items.to_vec();
     }
+    let parsed = WorkspaceQuery::parse(q);
+    let needle = q.to_lowercase();
     let mut matched: Vec<(usize, u32, PanelItem)> = items
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
             let score = match item {
-                PanelItem::Target(entry, _) => QuickConnect::search_score(&entry.config, &q),
+                PanelItem::Target(entry, _) => parsed.score(&entry.config),
                 PanelItem::NewProject => {
                     let label = format!(
                         "new project {}",
                         i18n::tr(TextKey::NewProject).to_lowercase()
                     );
-                    label.contains(&q).then_some(0)
+                    label.contains(&needle).then_some(0)
                 }
-                PanelItem::Folder { title, .. } => title.to_lowercase().contains(&q).then_some(0),
+                PanelItem::Folder { title, .. } => {
+                    title.to_lowercase().contains(&needle).then_some(0)
+                }
                 PanelItem::Back => Some(0),
-                PanelItem::Existing(e) => QuickConnect::search_score(&e.target_config(), &q),
-                PanelItem::Host { alias } => alias.to_lowercase().contains(&q).then_some(0),
+                PanelItem::Existing(e) => parsed.score(&e.target_config()),
+                PanelItem::Host { alias } => parsed.host_score(alias),
                 PanelItem::Loading => Some(0),
-                PanelItem::Empty { title } => title.to_lowercase().contains(&q).then_some(0),
+                PanelItem::Empty { title } => title.to_lowercase().contains(&needle).then_some(0),
             }?;
             Some((index, score, item.clone()))
         })
@@ -1799,7 +1803,23 @@ mod tests {
         assert!(matches!(back[0], PanelItem::Back));
         let herdr = filter_panel_items(&items, "herdr @");
         assert_eq!(herdr.len(), 2, "Existing 按 subtitle 过滤 + Back 始终保留");
-        assert!(matches!(herdr[1], PanelItem::Existing(_)));
+        assert!(
+            herdr
+                .iter()
+                .any(|item| matches!(item, PanelItem::Existing(_))),
+            "Existing 必须留下: {herdr:?}"
+        );
+        assert!(
+            herdr.iter().any(|item| matches!(item, PanelItem::Back)),
+            "Back 始终保留: {herdr:?}"
+        );
+        let at_herdr = filter_panel_items(&items, "@herdr");
+        assert!(
+            at_herdr
+                .iter()
+                .any(|item| matches!(item, PanelItem::Existing(_))),
+            "@herdr 必须命中 Existing: {at_herdr:?}"
+        );
     }
 
     /// C7：探测结束后空 host 表必须是 Empty，不能继续 Loading。
@@ -1835,5 +1855,92 @@ mod tests {
         assert_eq!(filter_panel_items(&items, "ryzen").len(), 1);
         assert_eq!(filter_panel_items(&items, "work").len(), 1);
         assert_eq!(filter_panel_items(&items, "nomatch").len(), 0);
+    }
+
+    fn existing(title: &str, runtime: TargetRuntime, transport: TargetTransport) -> ExistingEntry {
+        ExistingEntry {
+            title: title.into(),
+            runtime,
+            transport,
+            tmux_session: (runtime == TargetRuntime::Tmux).then(|| title.to_string()),
+            tmux_socket: None,
+            herdr_session: (runtime == TargetRuntime::Herdr).then(|| "default".to_string()),
+            herdr_workspace_id: (runtime == TargetRuntime::Herdr).then(|| title.to_string()),
+            herdr_socket: None,
+        }
+    }
+
+    #[test]
+    fn filter_at_runtime_and_host_selects_existing_tmux_and_project() {
+        let ryzen = TargetTransport::Ssh {
+            name: "ryzen".into(),
+        };
+        let items = vec![
+            PanelItem::Host {
+                alias: "ryzen".into(),
+            },
+            PanelItem::Host {
+                alias: "mac".into(),
+            },
+            PanelItem::Existing(existing("dev", TargetRuntime::Tmux, ryzen.clone())),
+            PanelItem::Existing(existing("agents", TargetRuntime::Herdr, ryzen.clone())),
+            PanelItem::Existing(existing(
+                "local-dev",
+                TargetRuntime::Tmux,
+                TargetTransport::Local,
+            )),
+            PanelItem::Target(
+                QuickConnectEntry::new(
+                    TargetConfig::new("muxterm", TargetRuntime::Tmux, ryzen, "~/muxterm"),
+                    vec![QuickBadge::Project],
+                ),
+                false,
+            ),
+        ];
+
+        let hit = filter_panel_items(&items, "@tmux @ryzen");
+        assert!(
+            hit.iter()
+                .any(|item| matches!(item, PanelItem::Existing(e) if e.title == "dev")),
+            "ryzen 上已有的 tmux workspace 必须能选中连接: {hit:?}"
+        );
+        assert!(
+            hit.iter().any(
+                |item| matches!(item, PanelItem::Target(entry, _) if entry.config.name == "muxterm")
+            ),
+            "ryzen 上的 tmux project 必须能选中连接: {hit:?}"
+        );
+        assert!(
+            hit.iter()
+                .any(|item| matches!(item, PanelItem::Host { alias } if alias == "ryzen")),
+            "@ryzen 也应留下 host 行: {hit:?}"
+        );
+        assert!(hit.iter().all(|item| match item {
+            PanelItem::Existing(e) => {
+                e.runtime == TargetRuntime::Tmux
+                    && matches!(&e.transport, TargetTransport::Ssh { name } if name == "ryzen")
+            }
+            PanelItem::Target(entry, _) => {
+                entry.config.runtime == TargetRuntime::Tmux
+                    && matches!(&entry.config.transport, TargetTransport::Ssh { name } if name == "ryzen")
+            }
+            PanelItem::Host { alias } => alias == "ryzen",
+            _ => false,
+        }));
+
+        let prefix = filter_panel_items(&items, "@tmux @ry");
+        assert!(
+            prefix
+                .iter()
+                .any(|item| matches!(item, PanelItem::Existing(e) if e.title == "dev")),
+            "@ry 必须前缀命中 ryzen: {prefix:?}"
+        );
+        assert_eq!(
+            filter_panel_items(&items, "@tmux")
+                .iter()
+                .filter(|item| matches!(item, PanelItem::Host { .. }))
+                .count(),
+            0
+        );
     }
 }

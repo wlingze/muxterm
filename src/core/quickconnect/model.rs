@@ -31,6 +31,25 @@ impl TargetRuntime {
             _ => None,
         }
     }
+
+    /// 查询 token：完整名字，或长度 ≥ 2 且在 shell/tmux/herdr 中唯一的前缀。
+    /// `@tm` → tmux；配置解析仍走精确的 `from_str`。
+    fn from_query_token(value: &str) -> Option<Self> {
+        if let Some(exact) = Self::from_str(value) {
+            return Some(exact);
+        }
+        if value.len() < 2 {
+            return None;
+        }
+        let hits: Vec<Self> = [Self::Shell, Self::Tmux, Self::Herdr]
+            .into_iter()
+            .filter(|runtime| runtime.as_str().starts_with(value))
+            .collect();
+        match hits.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
+    }
 }
 
 /// 连接传输（ssh 需要名字；local 不需要）。
@@ -203,8 +222,10 @@ impl TargetConfig {
 ///
 /// 普通词使用大小写不敏感的子序列匹配（例如 `mterm` 可以命中
 /// `muxterm`）；多个普通词必须全部命中。`@tmux`、`@herdr`、`@shell`
-/// 是 runtime 条件，`@local` 是本地传输条件，其他 `@xxx` 会被当成
-/// SSH alias 条件。多个 `@` 条件同样是 AND 关系。
+/// 是 runtime 条件（`@tm` 这类唯一前缀也可以），`@local` 是本地传输
+/// 条件，其他 `@xxx` 会被当成 SSH alias 条件（精确、前缀或模糊）。
+/// 例如 `@tmux @ryzen` 只留下 ryzen 上的 tmux workspace / project。
+/// 多个 `@` 条件同样是 AND 关系。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkspaceQuery {
     terms: Vec<String>,
@@ -225,9 +246,9 @@ impl WorkspaceQuery {
                 continue;
             }
             let filter = filter.to_lowercase();
-            if let Some(runtime) = TargetRuntime::from_str(&filter) {
+            if let Some(runtime) = TargetRuntime::from_query_token(&filter) {
                 query.runtime_filters.push(runtime);
-            } else if filter == "local" {
+            } else if filter == "local" || unique_local_prefix(&filter) {
                 query.local_only = true;
             } else {
                 query.ssh_alias_filters.push(filter);
@@ -267,7 +288,7 @@ impl WorkspaceQuery {
             let TargetTransport::Ssh { name } = &config.transport else {
                 return None;
             };
-            if !name.eq_ignore_ascii_case(alias) {
+            if !ssh_alias_token_matches(name, alias) {
                 return None;
             }
         }
@@ -289,6 +310,33 @@ impl WorkspaceQuery {
             } else {
                 0
             });
+        Some(score)
+    }
+
+    /// SSH Host 行：`@ryzen` / `@ry` 命中 alias；仅 `@tmux` 时不展示 Host，
+    /// 把位置留给已有的 workspace / project。
+    pub fn host_score(&self, alias: &str) -> Option<u32> {
+        if self.local_only {
+            return None;
+        }
+        for want in &self.ssh_alias_filters {
+            if !ssh_alias_token_matches(alias, want) {
+                return None;
+            }
+        }
+        if !self.runtime_filters.is_empty()
+            && self.ssh_alias_filters.is_empty()
+            && self.terms.is_empty()
+        {
+            return None;
+        }
+        let mut score = 1_000u32;
+        for term in &self.terms {
+            score = score.saturating_add(fuzzy_field_score(alias, term)?);
+        }
+        if !self.ssh_alias_filters.is_empty() {
+            score = score.saturating_add(2_000);
+        }
         Some(score)
     }
 
@@ -337,6 +385,19 @@ impl WorkspaceQuery {
             .unwrap_or(0);
         format!("{}{}", &raw[..start], replacement)
     }
+}
+
+fn unique_local_prefix(filter: &str) -> bool {
+    filter.len() >= 2 && "local".starts_with(filter)
+}
+
+fn ssh_alias_token_matches(alias: &str, want: &str) -> bool {
+    let alias = alias.to_ascii_lowercase();
+    let want = want.to_ascii_lowercase();
+    if want.is_empty() {
+        return true;
+    }
+    alias == want || alias.starts_with(&want) || fuzzy_subsequence(&alias, &want).is_some()
 }
 
 fn current_token(raw: &str) -> Option<&str> {
@@ -608,9 +669,34 @@ mod tests {
         );
         assert!(QuickConnect::matches_query(&config, "mterm @tmux @ryzen"));
         assert!(QuickConnect::matches_query(&config, "@ryzen mux"));
+        assert!(
+            QuickConnect::matches_query(&config, "@tmux @ry"),
+            "@ry 必须前缀命中 ryzen"
+        );
+        assert!(
+            QuickConnect::matches_query(&config, "@tm mux"),
+            "@tm 必须唯一前缀命中 tmux"
+        );
         assert!(!QuickConnect::matches_query(&config, "mterm @shell"));
         assert!(!QuickConnect::matches_query(&config, "mterm @local"));
         assert!(!QuickConnect::matches_query(&config, "mterm @legion"));
+    }
+
+    #[test]
+    fn workspace_query_host_score_keeps_alias_and_hides_runtime_only() {
+        let query = WorkspaceQuery::parse("@tmux @ryzen");
+        assert!(query.host_score("ryzen").is_some());
+        assert!(query.host_score("RyZen").is_some());
+        assert!(query.host_score("mac").is_none());
+        assert!(WorkspaceQuery::parse("@ry").host_score("ryzen").is_some());
+        assert!(
+            WorkspaceQuery::parse("@tmux").host_score("ryzen").is_none(),
+            "仅 runtime 条件时 Host 行不应挡住 Existing"
+        );
+        assert!(WorkspaceQuery::parse("ryz").host_score("ryzen").is_some());
+        assert!(WorkspaceQuery::parse("@local")
+            .host_score("ryzen")
+            .is_none());
     }
 
     #[test]
