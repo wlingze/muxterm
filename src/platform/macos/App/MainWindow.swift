@@ -259,17 +259,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
         }
-        workspaceSidebar.onAgentActivate = { [weak self] workspaceId, paneId in
+        workspaceSidebar.onAgentActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
             _ = self.bridge.attentionAcknowledge(paneId: paneId)
-            self.jumpToPane(tabId: nil, paneId: paneId)
-            self.refreshWorkspaceSidebar()
+            self.jumpToPane(tabId: tabId, paneId: paneId)
         }
-        workspaceSidebar.onCommandActivate = { [weak self] workspaceId, paneId in
+        workspaceSidebar.onCommandActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
             _ = self.bridge.attentionAcknowledge(paneId: paneId)
-            self.jumpToPane(tabId: nil, paneId: paneId)
-            self.refreshWorkspaceSidebar()
+            self.jumpToPane(tabId: tabId, paneId: paneId)
         }
 
         commandPalette = CommandPaletteController(ownerWindow: window)
@@ -1055,26 +1053,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Build the user-facing 1-based Tab number without exposing runtime pane
-    /// topology in the sidebar. Core keeps the Tab order authoritative.
-    private static func tabNumbersByPane(from candidate: CoreBridge) -> [UInt32: Int] {
-        var result: [UInt32: Int] = [:]
+    /// Build the sidebar's pane navigation cache in one topology walk. Core
+    /// keeps both the stable TabId and the user-facing 1-based order
+    /// authoritative.
+    private static func tabTargetsByPane(
+        from candidate: CoreBridge
+    ) -> (tabIdsByPane: [UInt32: UInt32], tabNumbersByPane: [UInt32: Int]) {
+        var tabIdsByPane: [UInt32: UInt32] = [:]
+        var tabNumbersByPane: [UInt32: Int] = [:]
         for (index, tab) in candidate.getTabs().enumerated() {
             for pane in candidate.getPanes(tabId: tab.id) {
-                result[pane.id] = index + 1
+                tabIdsByPane[pane.id] = tab.id
+                tabNumbersByPane[pane.id] = index + 1
             }
         }
-        return result
+        return (tabIdsByPane, tabNumbersByPane)
     }
 
-    private func tabNumbersByPane(for slot: WarmConnectionSlot) -> [UInt32: Int] {
-        if let cached = slot.cachedTabNumbersByPane {
-            return cached
+    private func tabTargetsByPane(
+        for slot: WarmConnectionSlot
+    ) -> (tabIdsByPane: [UInt32: UInt32], tabNumbersByPane: [UInt32: Int]) {
+        if let tabIds = slot.cachedTabIdsByPane,
+           let tabNumbers = slot.cachedTabNumbersByPane
+        {
+            return (tabIds, tabNumbers)
         }
         let values = slot.withBridge { candidate in
-            Self.tabNumbersByPane(from: candidate)
-        } ?? [:]
-        slot.cacheTabNumbers(values)
+            Self.tabTargetsByPane(from: candidate)
+        } ?? (tabIdsByPane: [:], tabNumbersByPane: [:])
+        slot.cacheTabTargets(
+            tabIdsByPane: values.tabIdsByPane,
+            tabNumbersByPane: values.tabNumbersByPane
+        )
         return values
     }
 
@@ -1087,7 +1097,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let structuredAgents = slot.bridge === bridge
                 ? slot.withBridge { $0.structuredAgentSnapshot() } ?? []
                 : slot.cachedStructuredAgents
-            let tabNumbersByPane = tabNumbersByPane(for: slot)
+            let tabTargets = tabTargetsByPane(for: slot)
             return WorkspaceSidebarItem(
                 workspaceId: workspaceReplicaID(for: slot),
                 name: target.name,
@@ -1096,7 +1106,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 isActive: isActive,
                 shortcut: shortcut,
                 structuredAgents: structuredAgents,
-                tabNumberByPane: tabNumbersByPane
+                tabNumberByPane: tabTargets.tabNumbersByPane,
+                tabIdByPane: tabTargets.tabIdsByPane
             )
         }
     }
@@ -1114,6 +1125,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             workspaces: workspaces,
             attention: attention
         ))
+        workspaceSidebar.setActiveTarget(
+            workspaceId: activeWorkspaceReplicaID,
+            tabId: lastSnapshot.activeTab,
+            paneId: activePaneID
+        )
     }
 
     private func attentionSnapshotForPanel() -> AttentionSnapshot? {
@@ -1421,7 +1437,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportStatusError(
                 MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
             )
+            return
         }
+        // 侧栏点击需要立即反映乐观切换；下一轮权威 snapshot 会再次校准。
+        // 这样点击跨 tab 的 Agent/Command 后不会先跳回旧 row 的高亮。
+        workspaceSidebar.setActiveTarget(
+            workspaceId: activeWorkspaceReplicaID,
+            tabId: resolvedTab,
+            paneId: paneId
+        )
         needsLayoutReload = true
         if seq > 0 || !query.isEmpty {
             pendingSearchJump = PendingSearchJump(paneId: paneId, seq: seq, query: query)
@@ -2146,20 +2170,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         let departingPane = activePaneID
-        if let departingPane {
-            settleLastSeenBaseline(for: departingPane)
-        }
-        // settle 过程中可能已经收到另一个切换确认；重新检查目标，避免
-        // 对已经成为 active 的 tab 再发一次 select-window。
-        guard tabId != lastSnapshot.activeTab else { return }
         let departingLatest = departingPane.map {
             bridge.paneLatestLineSeq(paneId: $0)
         }
         tabSwitchGate.request(tab: tabId)
         content.statusBar.markCurrentWindow(tabId)
+        let cachedTargetPane: UInt32?
         if let paneId = content.paneLayout.revealCachedTab(tabId) {
+            cachedTargetPane = paneId
             focusPaneTerminal(paneId)
         } else {
+            cachedTargetPane = nil
             needsLayoutReload = true
         }
         guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
@@ -2167,6 +2188,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
+        // A tab switch with no cached tree has no pane to select yet. Clear
+        // stale Agent/Command highlights now; the next authoritative snapshot
+        // will select the target row if it is a known sidebar item.
+        workspaceSidebar.setActiveTarget(
+            workspaceId: activeWorkspaceReplicaID,
+            tabId: tabId,
+            paneId: cachedTargetPane
+        )
         if let departingPane {
             recordLastSeen(for: departingPane, latest: departingLatest)
         }
@@ -3339,11 +3368,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 活动 tab 的 snap.panes 只够画当前 layout。后台 tab 的 Surface 还要
         // 跟着 pane 尺寸走，否则切回去时格子已经对了、pty 还是旧 cols。
         var allPanes: [Pane] = []
+        var tabIdsByPane: [UInt32: UInt32] = [:]
         var tabNumbersByPane: [UInt32: Int] = [:]
         for (index, tab) in snap.tabs.enumerated() {
             let panes = bridge.getPanes(tabId: tab.id)
             allPanes.append(contentsOf: panes)
             for pane in panes {
+                tabIdsByPane[pane.id] = tab.id
                 tabNumbersByPane[pane.id] = index + 1
             }
         }
@@ -3382,11 +3413,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         applyPendingSearchJumpIfReady()
         scheduleTabTreeWarmup()
         cacheActiveSlotSnapshot(
+            tabIdsByPane: snap.tabs.isEmpty ? nil : tabIdsByPane,
             tabNumbersByPane: snap.tabs.isEmpty ? nil : tabNumbersByPane
         )
     }
 
-    private func cacheActiveSlotSnapshot(tabNumbersByPane: [UInt32: Int]? = nil) {
+    private func cacheActiveSlotSnapshot(
+        tabIdsByPane: [UInt32: UInt32]? = nil,
+        tabNumbersByPane: [UInt32: Int]? = nil
+    ) {
         guard let activeKey = connectionPool.activeKey,
               let slot = connectionPool.slots[activeKey],
               slot.bridge === bridge
@@ -3394,8 +3429,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         slot.cacheSnapshot(lastSnapshot)
-        if let tabNumbersByPane {
-            slot.cacheTabNumbers(tabNumbersByPane)
+        if let tabIdsByPane, let tabNumbersByPane {
+            slot.cacheTabTargets(
+                tabIdsByPane: tabIdsByPane,
+                tabNumbersByPane: tabNumbersByPane
+            )
         }
     }
 
@@ -3505,26 +3543,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         lastSeenJump = lastSeenJump?.paneId == paneId ? nil : lastSeenJump
         if lastSeenVisiblePane == paneId {
             setLastSeenVisible(false, paneId: paneId)
-        }
-    }
-
-    /// 切 tab 前给尚未建立 PaneBuf 的旧 pane 一个有限的索引 settle 窗口。
-    ///
-    /// `muxterm_execute(select-window)` 会在 Core 内乐观改变 active tab；如果
-    /// 先执行它，再读取旧 pane 的 latest，排队中的初始 snapshot 可能把离开
-    /// 基线推迟或重置。这里最多处理几轮已经到达的事件，不阻塞等待网络，
-    /// 仍由后续普通 poll 负责最终解决 pending baseline。
-    private func settleLastSeenBaseline(for paneId: UInt32) {
-        guard bridge.paneLatestLineSeq(paneId: paneId) <= 0 else { return }
-        for _ in 0..<4 {
-            pollOnce()
-            if bridge.paneLatestLineSeq(paneId: paneId) > 0 {
-                return
-            }
-            RunLoop.current.run(
-                mode: .default,
-                before: Date().addingTimeInterval(0.005)
-            )
         }
     }
 

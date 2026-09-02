@@ -9,8 +9,8 @@ enum SidebarTestSection {
 final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
     var onWorkspaceClose: ((String) -> Void)?
-    var onAgentActivate: ((String, UInt32) -> Void)?
-    var onCommandActivate: ((String, UInt32) -> Void)?
+    var onAgentActivate: ((String, UInt32?, UInt32) -> Void)?
+    var onCommandActivate: ((String, UInt32?, UInt32) -> Void)?
 
     private let sections = NSStackView()
     private let workspaceTable = NSTableView()
@@ -160,6 +160,81 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         updateSectionHeaderTitles()
     }
 
+    /// 将四个列表的选中态绑定到当前真正显示的 pane。
+    ///
+    /// Agent、Command 和 Hidden Command 都是同一组导航目标的不同投影，
+    /// 当前 pane 变化时只能有一个投影显示选中框；不匹配任何条目时全部
+    /// 清空，避免旧 row 因为切换 Workspace 或 pane 而残留高亮。
+    func setActiveTarget(workspaceId: String?, tabId: UInt32?, paneId: UInt32?) {
+        isReloadingSelection = true
+        defer { isReloadingSelection = false }
+
+        if let workspaceId,
+           let workspaceRow = workspaces.firstIndex(where: {
+               $0.workspaceId == workspaceId
+           })
+        {
+            workspaceTable.selectRowIndexes(
+                IndexSet(integer: workspaceRow),
+                byExtendingSelection: false
+            )
+        } else {
+            workspaceTable.deselectAll(nil)
+        }
+
+        guard let workspaceId, let paneId else {
+            agentTable.deselectAll(nil)
+            commandTable.deselectAll(nil)
+            hiddenCommandTable.deselectAll(nil)
+            return
+        }
+
+        // paneId 在一个 Workspace 内是稳定且唯一的；如果两端都有 tabId，
+        // 再用它排除过期的 pane 映射。旧版本/首帧缺失 tabId 时仍按 pane
+        // 同步高亮。
+        func isTarget(workspace: String, pane: UInt32, tab: UInt32?) -> Bool {
+            workspace == workspaceId
+                && pane == paneId
+                && (tabId == nil || tab == nil || tab == tabId)
+        }
+        if let agentRow = agents.firstIndex(where: {
+            isTarget(workspace: $0.workspaceId, pane: $0.paneId, tab: $0.tabId)
+        }) {
+            agentTable.selectRowIndexes(
+                IndexSet(integer: agentRow),
+                byExtendingSelection: false
+            )
+            commandTable.deselectAll(nil)
+            hiddenCommandTable.deselectAll(nil)
+            return
+        }
+
+        if let commandRow = visibleCommands.firstIndex(where: {
+            isTarget(workspace: $0.workspaceId, pane: $0.paneId, tab: $0.tabId)
+        }) {
+            commandTable.selectRowIndexes(
+                IndexSet(integer: commandRow),
+                byExtendingSelection: false
+            )
+            agentTable.deselectAll(nil)
+            hiddenCommandTable.deselectAll(nil)
+            return
+        }
+
+        if let hiddenRow = hiddenCommands.firstIndex(where: {
+            isTarget(workspace: $0.workspaceId, pane: $0.paneId, tab: $0.tabId)
+        }) {
+            hiddenCommandTable.selectRowIndexes(
+                IndexSet(integer: hiddenRow),
+                byExtendingSelection: false
+            )
+        } else {
+            hiddenCommandTable.deselectAll(nil)
+        }
+        agentTable.deselectAll(nil)
+        commandTable.deselectAll(nil)
+    }
+
     private func toggleCommandVisibility(_ key: CommandVisibilityKey) {
         if !hiddenCommandKeys.insert(key).inserted {
             hiddenCommandKeys.remove(key)
@@ -277,13 +352,21 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             let row = table.selectedRow
             guard agents.indices.contains(row) else { return }
             let agent = agents[row]
-            onAgentActivate?(agent.workspaceId, agent.paneId)
+            commandTable.deselectAll(nil)
+            hiddenCommandTable.deselectAll(nil)
+            onAgentActivate?(agent.workspaceId, agent.tabId, agent.paneId)
         } else if table === commandTable || table === hiddenCommandTable {
             let source = table === commandTable ? visibleCommands : hiddenCommands
             let row = table.selectedRow
             guard source.indices.contains(row) else { return }
             let command = source[row]
-            onCommandActivate?(command.workspaceId, command.paneId)
+            agentTable.deselectAll(nil)
+            if table === commandTable {
+                hiddenCommandTable.deselectAll(nil)
+            } else {
+                commandTable.deselectAll(nil)
+            }
+            onCommandActivate?(command.workspaceId, command.tabId, command.paneId)
         }
     }
 
@@ -539,6 +622,24 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     func testAgentIndicators() -> [AgentSidebarIndicator] { agents.map(\.indicator) }
     func testWorkspaceNames() -> [String] { workspaces.map(\.name) }
     func testWorkspaceIDs() -> [String] { workspaces.map(\.workspaceId) }
+    func testSelectedWorkspaceID() -> String? {
+        let row = workspaceTable.selectedRow
+        return workspaces.indices.contains(row) ? workspaces[row].workspaceId : nil
+    }
+    func testSelectedAgentPaneID() -> UInt32? {
+        let row = agentTable.selectedRow
+        return agents.indices.contains(row) ? agents[row].paneId : nil
+    }
+    func testSelectedCommandPaneID() -> UInt32? {
+        let row = commandTable.selectedRow
+        let values = visibleCommands
+        return values.indices.contains(row) ? values[row].paneId : nil
+    }
+    func testSelectedHiddenCommandPaneID() -> UInt32? {
+        let row = hiddenCommandTable.selectedRow
+        let values = hiddenCommands
+        return values.indices.contains(row) ? values[row].paneId : nil
+    }
 }
 
 private final class WorkspaceSidebarCellView: NSTableCellView {

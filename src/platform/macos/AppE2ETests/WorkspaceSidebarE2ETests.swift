@@ -100,6 +100,57 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
 
     }
 
+    func testSidebarSelectionFollowsActivePaneAndClearsUnrelatedRows() {
+        let workspaceID = "local@@dev@tmux@dev"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        sidebar.setWorkspaces([
+            WorkspaceSidebarItem(
+                workspaceId: workspaceID,
+                name: "dev",
+                runtime: "tmux",
+                transport: "local",
+                isActive: true
+            ),
+        ])
+        sidebar.setAgents([
+            AgentSidebarItem(
+                workspaceId: workspaceID,
+                tabId: 42,
+                paneId: 4,
+                title: "dev",
+                detail: "Working · Codex · Tab 2",
+                indicator: .running,
+                agentName: "Codex",
+                tabNumber: 2
+            ),
+        ])
+        sidebar.setCommands([
+            CommandSidebarItem(
+                workspaceId: workspaceID,
+                tabId: 84,
+                paneId: 8,
+                title: "cargo test",
+                detail: "dev · Tab 3",
+                indicator: .running
+            ),
+        ])
+
+        sidebar.setActiveTarget(workspaceId: workspaceID, tabId: 42, paneId: 4)
+        XCTAssertEqual(sidebar.testSelectedWorkspaceID(), workspaceID)
+        XCTAssertEqual(sidebar.testSelectedAgentPaneID(), 4)
+        XCTAssertNil(sidebar.testSelectedCommandPaneID())
+        XCTAssertNil(sidebar.testSelectedHiddenCommandPaneID())
+
+        sidebar.setActiveTarget(workspaceId: workspaceID, tabId: 84, paneId: 8)
+        XCTAssertNil(sidebar.testSelectedAgentPaneID())
+        XCTAssertEqual(sidebar.testSelectedCommandPaneID(), 8)
+
+        sidebar.setActiveTarget(workspaceId: workspaceID, tabId: nil, paneId: 99)
+        XCTAssertNil(sidebar.testSelectedAgentPaneID())
+        XCTAssertNil(sidebar.testSelectedCommandPaneID())
+        XCTAssertNil(sidebar.testSelectedHiddenCommandPaneID())
+    }
+
     func testCollapsedSectionsPackAgainstNearestBoundary() {
         let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
         sidebar.testSetSectionExpanded(.hiddenCommands, false)
