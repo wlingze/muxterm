@@ -33,6 +33,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: nil
         )
         XCTAssertEqual(projected.count, 1)
+        XCTAssertEqual(projected[0].title, "muxterm")
+        XCTAssertEqual(projected[0].detail, "Idle · Codex")
         XCTAssertEqual(projected[0].indicator, .read)
 
         registry.removePane(4)
@@ -55,14 +57,16 @@ final class WorkspaceSidebarModelTests: XCTestCase {
                     kind: "codex",
                     status: .working
                 ),
-            ]
+            ],
+            tabNumberByPane: [4: 2]
         )
         let tmux = WorkspaceSidebarItem(
             workspaceId: "local@@dev@tmux@dev",
             name: "dev",
             runtime: "tmux",
             transport: "local",
-            isActive: false
+            isActive: false,
+            tabNumberByPane: [9: 1]
         )
         let attention = AttentionSnapshot(
             blockedCount: 0,
@@ -107,7 +111,11 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertEqual(items.map(\.title), ["Codex", "pi"])
+        XCTAssertEqual(items.map(\.title), ["muxterm", "dev"])
+        XCTAssertEqual(items.map(\.detail), [
+            "Working · Codex · Tab 2",
+            "Working · pi · Tab 1",
+        ])
         XCTAssertEqual(items.map(\.indicator), [.running, .running])
         XCTAssertEqual(items.map(\.workspaceId), [herdr.workspaceId, tmux.workspaceId])
     }
@@ -129,7 +137,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
                     kind: "codex",
                     status: .done
                 ),
-            ]
+            ],
+            tabNumberByPane: [4: 2]
         )
         let readPane = PaneAttention(
             paneId: 4,
@@ -158,6 +167,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
 
         XCTAssertEqual(agents.count, 1)
+        XCTAssertEqual(agents[0].title, "muxterm")
+        XCTAssertEqual(agents[0].detail, "Done · Codex · Tab 2")
+        XCTAssertEqual(agents[0].tabNumber, 2)
+        XCTAssertFalse(agents[0].detail.localizedCaseInsensitiveContains("pane"))
         XCTAssertEqual(agents[0].indicator, .read)
         XCTAssertTrue(AttentionList.rows(from: attention, query: "").isEmpty)
     }
@@ -233,7 +246,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             name: "dev",
             runtime: "tmux",
             transport: "local",
-            isActive: true
+            isActive: true,
+            tabNumberByPane: [7: 1]
         )
         let attention = AttentionSnapshot(
             blockedCount: 0,
@@ -267,7 +281,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertEqual(agents.map(\.title), ["cursor"])
+        XCTAssertEqual(agents.map(\.title), ["dev"])
+        XCTAssertEqual(agents.map(\.detail), ["Working · cursor · Tab 1"])
         XCTAssertTrue(commands.isEmpty)
     }
 
@@ -277,7 +292,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             name: "dev",
             runtime: "tmux",
             transport: "local",
-            isActive: true
+            isActive: true,
+            tabNumberByPane: [1: 1, 2: 1, 3: 2]
         )
         let attention = AttentionSnapshot(
             blockedCount: 0,
@@ -325,7 +341,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertEqual(agents.map(\.title), ["droid", "codex", "amp"])
+        XCTAssertEqual(agents.map(\.agentName), ["droid", "codex", "amp"])
+        XCTAssertEqual(agents.map(\.title), ["dev", "dev", "dev"])
         XCTAssertEqual(agents.map(\.indicator), [.done, .running, .read])
     }
 

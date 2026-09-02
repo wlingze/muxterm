@@ -4,6 +4,14 @@ import MuxtermChrome
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
 final class MainWindowController: NSWindowController, NSWindowDelegate {
+    private static let tabNumberTopologyEvents: Set<UInt32> = [
+        STATE_TAB_ADDED,
+        STATE_TAB_CLOSED,
+        STATE_TAB_ORDER_CHANGED,
+        STATE_PANE_ADDED,
+        STATE_PANE_CLOSED,
+    ]
+
     /// Project 连接流程的引用包装：异步回调需要可变状态；用
     /// `activeProjectFlow` 身份比较防止旧连接的回调覆盖新连接。
     private final class ProjectConnectFlowBox {
@@ -1044,7 +1052,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     return lhs.openedOrder < rhs.openedOrder
                 }
                 return lhs.key.session < rhs.key.session
+        }
+    }
+
+    /// Build the user-facing 1-based Tab number without exposing runtime pane
+    /// topology in the sidebar. Core keeps the Tab order authoritative.
+    private static func tabNumbersByPane(from candidate: CoreBridge) -> [UInt32: Int] {
+        var result: [UInt32: Int] = [:]
+        for (index, tab) in candidate.getTabs().enumerated() {
+            for pane in candidate.getPanes(tabId: tab.id) {
+                result[pane.id] = index + 1
             }
+        }
+        return result
+    }
+
+    private func tabNumbersByPane(for slot: WarmConnectionSlot) -> [UInt32: Int] {
+        if let cached = slot.cachedTabNumbersByPane {
+            return cached
+        }
+        let values = slot.withBridge { candidate in
+            Self.tabNumbersByPane(from: candidate)
+        } ?? [:]
+        slot.cacheTabNumbers(values)
+        return values
     }
 
     private func sidebarItems() -> [WorkspaceSidebarItem] {
@@ -1056,6 +1087,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let structuredAgents = slot.bridge === bridge
                 ? slot.withBridge { $0.structuredAgentSnapshot() } ?? []
                 : slot.cachedStructuredAgents
+            let tabNumbersByPane = tabNumbersByPane(for: slot)
             return WorkspaceSidebarItem(
                 workspaceId: workspaceReplicaID(for: slot),
                 name: target.name,
@@ -1063,7 +1095,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 transport: target.transport.label,
                 isActive: isActive,
                 shortcut: shortcut,
-                structuredAgents: structuredAgents
+                structuredAgents: structuredAgents,
+                tabNumberByPane: tabNumbersByPane
             )
         }
     }
@@ -2866,6 +2899,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         resolvePendingLastSeen()
         scheduleBackgroundSlotPoll()
         let events = bridge.pollEvents()
+        if events.contains(where: { Self.tabNumberTopologyEvents.contains($0.type) }),
+           let activeSlot = connectionPool.activeKey.flatMap({ connectionPool.slots[$0] })
+        {
+            activeSlot.invalidateTabNumbers()
+        }
         // Core 已在 pollEvents() 中应用了这些状态变化。前台 Workspace 的
         // 每个 pane 都要吃 PTY（SURFACE.md §7：tab 栏上的页都算打开）。
         lastPaneOutputEventCount = events.filter { $0.isPaneOutput || $0.isPaneFrame }.count
@@ -3300,7 +3338,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         lastSnapshot = snap
         // 活动 tab 的 snap.panes 只够画当前 layout。后台 tab 的 Surface 还要
         // 跟着 pane 尺寸走，否则切回去时格子已经对了、pty 还是旧 cols。
-        let allPanes = snap.tabs.flatMap { tab in bridge.getPanes(tabId: tab.id) }
+        var allPanes: [Pane] = []
+        var tabNumbersByPane: [UInt32: Int] = [:]
+        for (index, tab) in snap.tabs.enumerated() {
+            let panes = bridge.getPanes(tabId: tab.id)
+            allPanes.append(contentsOf: panes)
+            for pane in panes {
+                tabNumbersByPane[pane.id] = index + 1
+            }
+        }
         terminalManager.updatePaneSizes(allPanes.isEmpty ? snap.panes : allPanes)
         reportPaneColoursIfNeeded(snap.panes)
         content.updateTabs(snap.tabs)
@@ -3335,10 +3381,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         applyPendingSearchJumpIfReady()
         scheduleTabTreeWarmup()
-        cacheActiveSlotSnapshot()
+        cacheActiveSlotSnapshot(
+            tabNumbersByPane: snap.tabs.isEmpty ? nil : tabNumbersByPane
+        )
     }
 
-    private func cacheActiveSlotSnapshot() {
+    private func cacheActiveSlotSnapshot(tabNumbersByPane: [UInt32: Int]? = nil) {
         guard let activeKey = connectionPool.activeKey,
               let slot = connectionPool.slots[activeKey],
               slot.bridge === bridge
@@ -3346,6 +3394,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         slot.cacheSnapshot(lastSnapshot)
+        if let tabNumbersByPane {
+            slot.cacheTabNumbers(tabNumbersByPane)
+        }
     }
 
     /// 每拍只预热一个还没点过的 tab，第一次点击就能走缓存树。

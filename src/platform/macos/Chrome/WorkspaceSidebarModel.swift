@@ -86,6 +86,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let isActive: Bool
     public let shortcut: Int?
     public let structuredAgents: [StructuredPaneAgent]
+    /// 以当前 Tab 排序生成的 1-based 编号；pane id 仍只用于内部跳转。
+    public let tabNumberByPane: [UInt32: Int]
 
     public init(
         workspaceId: String,
@@ -94,7 +96,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         transport: String,
         isActive: Bool,
         shortcut: Int? = nil,
-        structuredAgents: [StructuredPaneAgent] = []
+        structuredAgents: [StructuredPaneAgent] = [],
+        tabNumberByPane: [UInt32: Int] = [:]
     ) {
         self.workspaceId = workspaceId
         self.name = name
@@ -103,6 +106,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         self.isActive = isActive
         self.shortcut = shortcut
         self.structuredAgents = structuredAgents
+        self.tabNumberByPane = tabNumberByPane
     }
 }
 
@@ -119,19 +123,26 @@ public struct AgentSidebarItem: Sendable, Equatable {
     public let title: String
     public let detail: String
     public let indicator: AgentSidebarIndicator
+    /// The name used for sorting and for the second display line.
+    public let agentName: String
+    public let tabNumber: Int?
 
     public init(
         workspaceId: String,
         paneId: UInt32,
         title: String,
         detail: String,
-        indicator: AgentSidebarIndicator
+        indicator: AgentSidebarIndicator,
+        agentName: String = "Agent",
+        tabNumber: Int? = nil
     ) {
         self.workspaceId = workspaceId
         self.paneId = paneId
         self.title = title
         self.detail = detail
         self.indicator = indicator
+        self.agentName = agentName
+        self.tabNumber = tabNumber
     }
 }
 
@@ -187,17 +198,25 @@ public enum WorkspaceSidebarProjection {
                 let attention = attentionByPane[
                     PaneKey(workspaceId: workspace.workspaceId, paneId: agent.paneId)
                 ]
+                let agentName = firstNonempty([
+                    agent.displayName,
+                    agent.name,
+                    agent.kind,
+                    agent.title,
+                ]) ?? "Agent"
+                let tabNumber = workspace.tabNumberByPane[agent.paneId]
                 result.append(AgentSidebarItem(
                     workspaceId: workspace.workspaceId,
                     paneId: agent.paneId,
-                    title: firstNonempty([
-                        agent.displayName,
-                        agent.title,
-                        agent.name,
-                        agent.kind,
-                    ]) ?? "Agent",
-                    detail: detail(workspace: workspace, paneId: agent.paneId),
-                    indicator: indicator(status: agent.status, attention: attention)
+                    title: workspace.name,
+                    detail: agentDetail(
+                        status: statusLabel(status: agent.status, attention: attention),
+                        agentName: agentName,
+                        tabNumber: tabNumber
+                    ),
+                    indicator: indicator(status: agent.status, attention: attention),
+                    agentName: agentName,
+                    tabNumber: tabNumber
                 ))
             }
 
@@ -207,13 +226,23 @@ public enum WorkspaceSidebarProjection {
             for pane in generic where !structuredPaneIDs.contains(pane.paneId) {
                 let isAgent = pane.processIsAgent || knownAgentName(pane.processName) != nil
                 guard isAgent else { continue }
-                let name = knownAgentName(pane.processName) ?? pane.processName ?? "Agent"
+                let name = knownAgentName(pane.processName)
+                    ?? AttentionRowLabel.normalizedProcess(pane.processName)
+                    ?? pane.processName
+                    ?? "Agent"
+                let tabNumber = workspace.tabNumberByPane[pane.paneId]
                 result.append(AgentSidebarItem(
                     workspaceId: workspace.workspaceId,
                     paneId: pane.paneId,
-                    title: name,
-                    detail: detail(workspace: workspace, paneId: pane.paneId),
-                    indicator: indicator(attention: pane)
+                    title: workspace.name,
+                    detail: agentDetail(
+                        status: statusLabel(status: pane.status),
+                        agentName: name,
+                        tabNumber: tabNumber
+                    ),
+                    indicator: indicator(attention: pane),
+                    agentName: name,
+                    tabNumber: tabNumber
                 ))
             }
         }
@@ -228,7 +257,18 @@ public enum WorkspaceSidebarProjection {
             let lhsRank = rank(lhs.indicator)
             let rhsRank = rank(rhs.indicator)
             if lhsRank != rhsRank { return lhsRank < rhsRank }
-            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            let nameOrder = lhs.agentName.localizedCaseInsensitiveCompare(rhs.agentName)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+            let workspaceOrder = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+            if workspaceOrder != .orderedSame {
+                return workspaceOrder == .orderedAscending
+            }
+            if lhs.tabNumber != rhs.tabNumber {
+                return (lhs.tabNumber ?? Int.max) < (rhs.tabNumber ?? Int.max)
+            }
+            return lhs.paneId < rhs.paneId
         }
     }
 
@@ -329,6 +369,44 @@ public enum WorkspaceSidebarProjection {
 
     private static func detail(workspace: WorkspaceSidebarItem, paneId: UInt32) -> String {
         "\(workspace.name) · pane \(paneId)"
+    }
+
+    private static func agentDetail(
+        status: String,
+        agentName: String,
+        tabNumber: Int?
+    ) -> String {
+        var values = [status, agentName]
+        if let tabNumber, tabNumber > 0 {
+            values.append("Tab \(tabNumber)")
+        }
+        return values.joined(separator: " · ")
+    }
+
+    private static func statusLabel(
+        status: StructuredAgentStatus,
+        attention: PaneAttention?
+    ) -> String {
+        if status == .unknown, let attention {
+            return statusLabel(status: attention.status)
+        }
+        switch status {
+        case .idle: return "Idle"
+        case .working: return "Working"
+        case .blocked: return "Blocked"
+        case .done: return "Done"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    private static func statusLabel(status: PaneAttentionStatus) -> String {
+        switch status {
+        case .idle: return "Idle"
+        case .working: return "Working"
+        case .blocked: return "Blocked"
+        case .done: return "Done"
+        case .unknown: return "Unknown"
+        }
     }
 
     private static func indicator(

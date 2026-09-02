@@ -25,6 +25,9 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     private var lastSnapshotValue = FrameSnapshot()
     private var attentionSnapshotValue: AttentionSnapshot?
     private var structuredAgentsValue: [StructuredPaneAgent] = []
+    /// Pane → 1-based Tab number for the sidebar. The map is invalidated by
+    /// topology changes and rebuilt from the Core snapshot on the next read.
+    private var tabNumbersByPaneValue: [UInt32: Int]?
     private var workspaceReplicaIDValue: String?
     private var pendingAttentionNotifications: [AttentionNotification] = []
     private var pendingSurfaceEvents: [StateChange] = []
@@ -96,6 +99,26 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         return structuredAgentsValue
     }
 
+    /// Cached Tab numbers are a value snapshot so sidebar refreshes do not
+    /// touch the remote bridge on every poll.
+    var cachedTabNumbersByPane: [UInt32: Int]? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return tabNumbersByPaneValue
+    }
+
+    func cacheTabNumbers(_ values: [UInt32: Int]) {
+        stateLock.lock()
+        tabNumbersByPaneValue = values
+        stateLock.unlock()
+    }
+
+    func invalidateTabNumbers() {
+        stateLock.lock()
+        tabNumbersByPaneValue = nil
+        stateLock.unlock()
+    }
+
     /// 主线程消费后台已经取走的通知；通知的 FFI 查询不再发生在 UI 切换路径。
     func takePendingAttentionNotifications() -> [AttentionNotification] {
         dispatchPrecondition(condition: .onQueue(.main))
@@ -160,6 +183,9 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
 
         let events = bridge.pollEvents(maxCount: 32)
         _ = bridge.takeError()
+        if events.contains(where: { Self.changesTabNumber($0.type) }) {
+            invalidateTabNumbers()
+        }
         var surface: [StateChange] = []
         for ev in events {
             if ev.type == STATE_STATUS_SUBSCRIPTION,
@@ -250,6 +276,14 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         let hasPending = !pendingSurfaceEvents.isEmpty || !pendingSurfaceOverflowPanes.isEmpty
         stateLock.unlock()
         return hasPending
+    }
+
+    private static func changesTabNumber(_ type: UInt32) -> Bool {
+        type == STATE_TAB_ADDED
+            || type == STATE_TAB_CLOSED
+            || type == STATE_TAB_ORDER_CHANGED
+            || type == STATE_PANE_ADDED
+            || type == STATE_PANE_CLOSED
     }
 
     /// 规范化后台 Surface 队列。
