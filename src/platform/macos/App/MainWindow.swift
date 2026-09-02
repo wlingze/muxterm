@@ -28,6 +28,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let query: String
     }
 
+    /// Workspace 已经完成视觉切换，但目标 CoreBridge 仍被上一轮后台
+    /// FFI 占用时的延迟激活记录。缓存路径先把窗口交给用户，锁释放后再
+    /// 做一次权威刷新；generation 防止旧 Workspace 的回调覆盖新选择。
+    private struct PendingForegroundActivation {
+        let slot: WarmConnectionSlot
+        let oldBridge: CoreBridge
+        let restoredParkedTree: Bool
+        let hasPendingSurfaceCatchUp: Bool
+        let created: Bool
+        let generation: UInt64
+        let startedAt: TimeInterval
+        let wasDeferred: Bool
+    }
+
+    /// 在 utility 队列完成的权威拓扑读取。主线程只应用这些值类型并挂载
+    /// 已缓存的 AppKit 树，不再在 Workspace 点击回调里逐项询问远端。
+    private struct ForegroundAuthoritySnapshot {
+        let frame: FrameSnapshot
+        let allPanes: [Pane]
+        let tabIdsByPane: [UInt32: UInt32]
+        let tabNumbersByPane: [UInt32: Int]
+    }
+
     private struct CatalogConnection {
         let bridge: CoreBridge
         let target: TargetConfig
@@ -68,6 +91,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var replyOverlayPaneId: UInt32?
     /// 搜索跳转：切 tab 完成后再滚到命中行。
     private var pendingSearchJump: PendingSearchJump?
+    /// 后台 FFI 正在使用目标 bridge 时，激活先走缓存；主线程只在这里
+    /// 保存一次重试，不得在 Workspace 点击路径上阻塞等待。
+    private var pendingForegroundActivation: PendingForegroundActivation?
+    private var foregroundActivationGeneration: UInt64 = 0
+    /// 当前 utility 队列正在读取哪个激活代的权威快照。旧代结果只能丢弃，
+    /// 不能覆盖用户已经再次选择的 Workspace。
+    private var foregroundAuthorityRefreshGeneration: UInt64?
+    /// Agent/Command 点击可能紧跟 Workspace 激活到达；等目标 bridge ready
+    /// 后重放，避免点击动作因短暂锁竞争丢失。
+    private var pendingForegroundActions: [() -> Void] = []
     /// pane → 最近一次离开时的稳定行 ID。连接切换时清空，避免把不同
     /// workspace 的 seq 混用。
     private var lastSeenLineSeq: [UInt32: UInt64] = [:]
@@ -261,13 +294,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         workspaceSidebar.onAgentActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            _ = self.bridge.attentionAcknowledge(paneId: paneId)
-            self.jumpToPane(tabId: tabId, paneId: paneId)
+            self.performWhenForegroundReady { [weak self] in
+                guard let self else { return }
+                _ = self.bridge.attentionAcknowledge(paneId: paneId)
+                self.jumpToPane(tabId: tabId, paneId: paneId)
+            }
         }
         workspaceSidebar.onCommandActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            _ = self.bridge.attentionAcknowledge(paneId: paneId)
-            self.jumpToPane(tabId: tabId, paneId: paneId)
+            self.performWhenForegroundReady { [weak self] in
+                guard let self else { return }
+                _ = self.bridge.attentionAcknowledge(paneId: paneId)
+                self.jumpToPane(tabId: tabId, paneId: paneId)
+            }
         }
 
         commandPalette = CommandPaletteController(ownerWindow: window)
@@ -281,10 +320,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.attentionSnapshotForPanel()
             },
             paneOutput: { [weak self] paneId in
-                self?.bridge.getPaneOutput(paneId: paneId) ?? Data()
+                guard let self, self.pendingForegroundActivation == nil else {
+                    return Data()
+                }
+                return self.bridge.getPaneOutput(paneId: paneId)
             },
             sendInput: { [weak self] paneId, data in
-                _ = self?.bridge.sendInput(paneId: paneId, data: data)
+                guard let self else { return }
+                self.performWhenForegroundReady {
+                    _ = self.bridge.sendInput(paneId: paneId, data: data)
+                }
             },
             search: { [weak self] query, scope in
                 self?.searchHitsForPanel(query: query, scope: scope) ?? []
@@ -320,31 +365,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.editProject(config)
         }
         unifiedPanel.onJump = { [weak self] workspaceId, tabId, paneId, seq, query in
+            guard let self else { return }
             if let workspaceId {
-                _ = self?.activateWorkspaceIfAvailable(workspaceId)
+                guard self.activateWorkspaceIfAvailable(workspaceId) else {
+                    return
+                }
             }
-            self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
+            self.performWhenForegroundReady { [weak self] in
+                self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
+            }
         }
         unifiedPanel.onPreview = { [weak self] workspaceId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.toggleReplyOverlay(paneId: paneId)
+            self.performWhenForegroundReady { [weak self] in
+                self?.toggleReplyOverlay(paneId: paneId)
+            }
         }
         unifiedPanel.onAcknowledge = { [weak self] workspaceId, paneId in
-            guard let self else { return }
-            guard self.withWorkspaceBridge(workspaceId, { targetBridge in
-                _ = targetBridge.attentionAcknowledge(paneId: paneId)
-            }) else {
-                return
-            }
-            // Open/Jump 之后列表和 badge 都应立即反映“已读”，不等待下一轮
-            // 60Hz poll；后台 Workspace 也必须走它自己的 bridge。
-            self.unifiedPanel.refreshData()
+            self?.acknowledgeWorkspacePane(workspaceId: workspaceId, paneId: paneId)
         }
         unifiedPanel.onMute = { [weak self] workspaceId, paneId, seconds in
-            guard let self else { return }
-            _ = self.withWorkspaceBridge(workspaceId) { targetBridge in
-                _ = targetBridge.attentionMute(paneId: paneId, seconds: seconds)
-            }
+            self?.muteWorkspacePane(
+                workspaceId: workspaceId,
+                paneId: paneId,
+                seconds: seconds
+            )
         }
         unifiedPanel.onDismissed = { [weak self] in
             self?.restoreTerminalFocusIfAllowed()
@@ -378,11 +423,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
-            self.focusPaneTerminal(paneId)
-            if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
-                self.reportStatusError(
-                    MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
-                )
+            self.performWhenForegroundReady { [weak self] in
+                guard let self else { return }
+                self.focusPaneTerminal(paneId)
+                if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
+                    self.reportStatusError(
+                        MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
+                    )
+                }
             }
         }
         content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, ready in
@@ -392,7 +440,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
-                ?? self.bridge.snapshot().panes.first(where: \.isActive)?.id
+                ?? (self.pendingForegroundActivation == nil
+                    ? self.bridge.snapshot().panes.first(where: \.isActive)?.id
+                    : nil)
             guard TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(
                 isActivePane: active == paneId,
                 ready: ready
@@ -619,6 +669,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @discardableResult
     func movePaneToNewTab(_ paneId: UInt32) -> Bool {
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                _ = self?.movePaneToNewTab(paneId)
+            }
+            return true
+        }
         guard terminalManager.usesClientResize,
               lastSnapshot.panes.count > 1,
               lastSnapshot.panes.contains(where: { $0.id == paneId })
@@ -710,6 +766,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 当前 pane 全屏切换：tmux/ssh 发 `resize-pane -Z`，本地 shell 用布局全屏。
     @objc func toggleActivePaneFullscreen() {
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.toggleActivePaneFullscreen()
+            }
+            return
+        }
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id
         else {
@@ -980,16 +1042,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 统一面板的实时查询范围覆盖当前 warm 连接；当前 Workspace 固定排在
     /// 首位，其余按稳定 Workspace ID 排序。搜索本身需要进入后台 bridge，
     /// 但侧栏/Attention 展示优先读 WarmConnectionSlot 的后台缓存。
-    private func forEachPanelBridge(_ body: (CoreBridge) -> Void) {
-        body(bridge)
+    private func forEachPanelBridge(_ body: (CoreBridge, WarmConnectionSlot?) -> Void) {
+        // 延迟 Workspace 激活期间，`bridge` 已经指向目标但仍可能被旧的
+        // 后台 poll 持有；不要让搜索回调在主线程触碰它。
+        if pendingForegroundActivation == nil {
+            let activeSlot = connectionPool.activeKey.flatMap { connectionPool.slots[$0] }
+            body(bridge, activeSlot)
+        }
         let background = connectionPool.slots.values
             .filter { $0.bridge !== bridge && $0.lifecycle != .evicting }
             .sorted {
                 QuickConnect.uniqueID(for: $0.targetConfig)
                     < QuickConnect.uniqueID(for: $1.targetConfig)
-            }
+        }
         for slot in background {
-            _ = slot.withBridge(body)
+            _ = slot.tryWithBridge { candidate in
+                body(candidate, slot)
+            }
         }
     }
 
@@ -1015,20 +1084,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func workspaceReplicaID(for slot: WarmConnectionSlot) -> String {
-        if slot.bridge === bridge {
-            return slot.cachedWorkspaceReplicaID
-                ?? workspaceReplicaID(from: bridge, target: slot.targetConfig)
-        }
-        return slot.cachedWorkspaceReplicaID
-            ?? fallbackReplicaID(for: slot.targetConfig)
+        slot.cachedWorkspaceReplicaID ?? fallbackReplicaID(for: slot.targetConfig)
     }
 
     /// 后台连接的 Attention 展示只读缓存；这样侧栏刷新不会因为远端
     /// bridge 正在 poll 而等待。首轮缓存由 utility poll 尽快填充。
     private func attentionSnapshot(for slot: WarmConnectionSlot) -> AttentionSnapshot? {
-        if slot.bridge === bridge {
-            return attentionSnapshot(from: bridge)
-        }
         return slot.cachedAttentionSnapshot
     }
 
@@ -1042,7 +1103,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return workspaceReplicaID(from: bridge, target: target)
     }
 
-    private func workspaceSidebarFixedSlots() -> [WarmConnectionSlot] {
+    /// Workspace 点击可能已经把窗口切到目标缓存，但目标 bridge 还在等
+    /// 上一批后台 FFI 释放。动作必须等到权威刷新完成后再重放，不能在
+    /// 主线程直接碰那把锁。
+    private func performWhenForegroundReady(_ action: @escaping () -> Void) {
+        guard !isClosing else { return }
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append(action)
+        } else {
+            action()
+        }
+    }
+
+    var foregroundActivationIsPending: Bool {
+        pendingForegroundActivation != nil
+    }
+
+    func workspaceSidebarFixedSlots() -> [WarmConnectionSlot] {
         connectionPool.slots.values
             .filter { $0.lifecycle != .evicting }
             .sorted { lhs, rhs in
@@ -1078,14 +1155,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         {
             return (tabIds, tabNumbers)
         }
-        let values = slot.withBridge { candidate in
-            Self.tabTargetsByPane(from: candidate)
-        } ?? (tabIdsByPane: [:], tabNumbersByPane: [:])
-        slot.cacheTabTargets(
-            tabIdsByPane: values.tabIdsByPane,
-            tabNumbersByPane: values.tabNumbersByPane
-        )
-        return values
+        // Sidebar refresh is a render-only path. If the background topology
+        // poll has not populated this slot yet, leave the maps empty and let
+        // the next poll publish them; never synchronously walk a remote bridge.
+        return (tabIdsByPane: [:], tabNumbersByPane: [:])
     }
 
     private func sidebarItems() -> [WorkspaceSidebarItem] {
@@ -1094,9 +1167,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let shortcut = index < 5 ? index + 1 : nil
             let isActive = slot.lifecycle == .active
             let target = slot.targetConfig
-            let structuredAgents = slot.bridge === bridge
-                ? slot.withBridge { $0.structuredAgentSnapshot() } ?? []
-                : slot.cachedStructuredAgents
+            let structuredAgents = slot.cachedStructuredAgents
             let tabTargets = tabTargetsByPane(for: slot)
             return WorkspaceSidebarItem(
                 workspaceId: workspaceReplicaID(for: slot),
@@ -1132,7 +1203,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    private func attentionSnapshotForPanel() -> AttentionSnapshot? {
+    private func attentionSnapshotForPanel(refreshActive: Bool = false) -> AttentionSnapshot? {
         var workspaces: [WorkspaceAttention] = []
         var seen = Set<String>()
         func append(_ snapshot: AttentionSnapshot) {
@@ -1140,9 +1211,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 workspaces.append(workspace)
             }
         }
-        let activeSnapshot = connectionPool.activeKey
-            .flatMap { connectionPool.slots[$0]?.cachedAttentionSnapshot }
-            ?? attentionSnapshot(from: bridge)
+        let activeSnapshot: AttentionSnapshot?
+        if pendingForegroundActivation != nil {
+            activeSnapshot = connectionPool.activeKey
+                .flatMap { connectionPool.slots[$0]?.cachedAttentionSnapshot }
+        } else if refreshActive {
+            // 面板打开/刷新是低频的用户动作。此时读取 active bridge 的
+            // 权威快照，避免上一拍 sidebar cache 让刚完成的 command
+            // 仍显示 process_name=nil；高频侧栏调用默认仍走 cache。
+            activeSnapshot = attentionSnapshot(from: bridge)
+        } else {
+            activeSnapshot = connectionPool.activeKey
+                .flatMap { connectionPool.slots[$0]?.cachedAttentionSnapshot }
+        }
         if let snapshot = activeSnapshot {
             append(snapshot)
         }
@@ -1161,13 +1242,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func searchHitsForPanel(query: String, scope: SearchScope) -> [SearchHit] {
+        // 在延迟激活窗口内，active bridge 仍可能被上一批后台 FFI 使用。
+        // 面板先显示空结果，ready 后 completeForegroundActivation 会刷新。
+        guard pendingForegroundActivation == nil else { return [] }
         var allHits: [SearchHit] = []
         var seen = Set<String>()
-        let consume: (CoreBridge) -> Void = { candidate in
+        let consume: (CoreBridge, WarmConnectionSlot?) -> Void = { candidate, slot in
             guard let json = candidate.searchAllJSON(query: query),
                   let snapshot = SearchSnapshot.decode(Data(json.utf8))
             else {
                 return
+            }
+            // 搜索结果本身也携带稳定 Workspace ID。后台 attention 尚未
+            // 首轮到达时先把它写入 slot，后续点击搜索命中无需再做同步
+            // FFI 身份探测。
+            if let workspaceID = snapshot.hits.first?.workspaceId {
+                slot?.cacheWorkspaceReplicaID(workspaceID)
             }
             for hit in snapshot.hits {
                 let key = "\(hit.workspaceId)\u{1F}\(hit.tabId)\u{1F}\(hit.paneId)\u{1F}\(hit.seq)"
@@ -1179,7 +1269,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if scope == .all {
             forEachPanelBridge(consume)
         } else {
-            consume(bridge)
+            let activeSlot = connectionPool.activeKey.flatMap { connectionPool.slots[$0] }
+            consume(bridge, activeSlot)
         }
         let workspacePaneIDs = Set(
             bridge.getTabs().flatMap { bridge.getPanes(tabId: $0.id).map(\.id) }
@@ -1411,7 +1502,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // 首轮后台 metadata 尚未抵达时，不能让侧栏/Attention 的激活
             // 因缓存为空而失败；只在 fast path 未命中时实时确认。
             if !matches, slot.cachedAttentionSnapshot == nil {
-                matches = slot.withBridge { candidate in
+                matches = slot.tryWithBridge { candidate in
                     workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
                         || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
                 } ?? false
@@ -1424,11 +1515,76 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return false
     }
 
+    /// 面板中的确认/静音是 UI 动作，后台 Workspace 的 bridge 竞争时只
+    /// 尝试一次；下一轮后台快照会把列表和 badge 校准回来。这样点击面板
+    /// 也不会复制 Legion 的卡顿路径。
+    @discardableResult
+    private func tryWithWorkspaceBridge(
+        _ workspaceId: String,
+        _ body: (CoreBridge) -> Void
+    ) -> Bool {
+        guard pendingForegroundActivation == nil else { return false }
+        if activeWorkspaceReplicaID == workspaceId {
+            body(bridge)
+            return true
+        }
+        for slot in connectionPool.slots.values where slot.lifecycle != .evicting {
+            var matches = workspaceReplicaID(for: slot) == workspaceId
+                || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
+            if !matches, slot.cachedAttentionSnapshot == nil {
+                matches = slot.tryWithBridge { candidate in
+                    workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
+                        || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
+                } ?? false
+            }
+            guard matches else { continue }
+            return slot.tryWithBridge { candidate in
+                body(candidate)
+                return true
+            } ?? false
+        }
+        return false
+    }
+
+    private func acknowledgeWorkspacePane(workspaceId: String, paneId: UInt32) {
+        performWhenForegroundReady { [weak self] in
+            guard let self else { return }
+            let acknowledged = self.tryWithWorkspaceBridge(workspaceId) { targetBridge in
+                _ = targetBridge.attentionAcknowledge(paneId: paneId)
+            }
+            guard acknowledged else {
+                return
+            }
+            // Open/Jump 之后列表和 badge 都应立即反映“已读”，不等待下一轮
+            // 60Hz poll；后台 Workspace 也必须走它自己的 bridge。
+            self.unifiedPanel.refreshData()
+        }
+    }
+
+    private func muteWorkspacePane(
+        workspaceId: String,
+        paneId: UInt32,
+        seconds: UInt64
+    ) {
+        performWhenForegroundReady { [weak self] in
+            guard let self else { return }
+            _ = self.tryWithWorkspaceBridge(workspaceId) { targetBridge in
+                _ = targetBridge.attentionMute(paneId: paneId, seconds: seconds)
+            }
+        }
+    }
+
     /// 跳转到指定 tab + pane（搜索命中 / 注意力行）。
     ///
     /// `tabId` 为 nil 时按 pane 反查（注意力行没有 tab）。tmux window 0
     /// 是真实 tab，不能当哨兵跳过。`seq>0` 时把历史滚到命中行。
     func jumpToPane(tabId: UInt32?, paneId: UInt32, seq: UInt64 = 0, query: String = "") {
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
+            }
+            return
+        }
         let resolvedTab = tabId ?? bridge.tabId(containingPane: paneId)
         if let resolvedTab {
             requestSwitchTab(resolvedTab)
@@ -1462,6 +1618,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             replyOverlayPaneId = nil
             content.replyOverlayContainer.isHidden = true
             content.replyOverlayContainer.setAccessibilityValue("0")
+            return
+        }
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.toggleReplyOverlay(paneId: paneId)
+            }
             return
         }
         guard unifiedPanel?.modelTab == .attention else { return }
@@ -1540,6 +1702,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 按 OSC 133 时间线跳到当前命令之前最近的一条命令。
     @objc func jumpToPreviousCommand() {
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.jumpToPreviousCommand()
+            }
+            return
+        }
         guard let pane = activePaneID else { return }
         let marks = commandMarks(for: pane)
         guard !marks.isEmpty else { return }
@@ -1557,6 +1725,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 按 OSC 133 时间线跳到当前命令之后最近的一条命令；已经在末尾时
     /// 清掉游标并回到实时底部，和向下滚动到底部的语义一致。
     @objc func jumpToNextCommand() {
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.jumpToNextCommand()
+            }
+            return
+        }
         guard let pane = activePaneID else { return }
         let marks = commandMarks(for: pane)
         if let current = commandTimelineCursor[pane],
@@ -1582,7 +1756,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var activePaneID: UInt32? {
-        lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id
+        if let active = lastSnapshot.panes.first(where: \.isActive)?.id {
+            return active
+        }
+        if lastSnapshot.panes.contains(where: { $0.id == lastSnapshot.activePane }) {
+            // pane id 0 is valid; membership, rather than `!= 0`, is the
+            // sentinel check for optimistic/authoritative snapshots.
+            return lastSnapshot.activePane
+        }
+        return lastSnapshot.panes.first?.id
     }
 
     /// 把 core 的 viewport 滚动偏移应用到 SwiftTerm 可见区：
@@ -1607,11 +1789,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 offset > 0,
                 unseenLines: self.terminalManager.unseenLineCount(paneId: paneId)
             )
+            guard self.pendingForegroundActivation == nil else { return }
             guard paneId == self.activePaneID else { return }
             self.refreshHistoryChrome(for: paneId)
         }
         terminalManager.onUnseenLinesChanged = { [weak self] paneId, count in
-            guard let self, paneId == self.activePaneID else { return }
+            guard let self,
+                  self.pendingForegroundActivation == nil,
+                  paneId == self.activePaneID
+            else { return }
             let offset = max(0, self.bridge.paneViewport(paneId: paneId))
             self.content.setJumpLatestVisible(offset > 0, unseenLines: count)
         }
@@ -2005,11 +2191,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 激活已有 warm slot。保持 module-internal，供 in-process E2E 验证跨
     /// Workspace 搜索/Attention 跳转；产品入口仍由 Quick Connect 驱动。
     func activate(slot: WarmConnectionSlot) {
+        guard !isClosing else { return }
+
+        // 每次新的 Workspace 选择都使之前的延迟激活失效。旧目标已经
+        // 被用户明确切走，不能在稍后拿到锁时把画面抢回来。
+        foregroundActivationGeneration &+= 1
+        let generation = foregroundActivationGeneration
+        foregroundAuthorityRefreshGeneration = nil
+        pendingForegroundActivation = nil
+        pendingForegroundActions.removeAll()
+
         let oldBridge = bridge
-        slot.prepareForForeground()
-        // 先交付一个受预算限制的旧队列批次，保证切换立即完成；剩余
-        // catch-up 在下一拍继续，不再把整个远端输出洪水同步重放。
-        let hasPendingSurfaceCatchUp = slot.applyPendingSurfaceEvents()
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let bridgeReady = slot.prepareForForeground()
+        // 只读取队列状态，不在点击回调里同步重放 Surface。远端锁/输出
+        // 洪水必须留给后续主线程小批次，避免 SSH Workspace 点击卡住。
+        let hasPendingSurfaceCatchUp = slot.hasPendingSurfaceWork
         if slot.openedOrder == 0 {
             slot.openedOrder = nextWorkspaceOpenedOrder
             nextWorkspaceOpenedOrder += 1
@@ -2018,6 +2215,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
         bridge = slot.bridge
         terminalManager = slot.terminalManager
+        // 缓存树挂载和首轮 authority 查询期间，TerminalManager 只能做
+        // 本地 SwiftTerm/AppKit 工作；所有 bridge 访问在 utility 队列串行化。
+        terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
         lastSeenLineSeq.removeAll()
         pendingLastSeenPanes.removeAll()
@@ -2042,20 +2242,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         // warm slot 的视图沿用当前主题 palette（终端跟随主题）。
         terminalManager.applyPalette(MuxtermTerminalColors.activePalette)
-        // 连接建立/切换后给全部 pane 上报一次颜色，避免后台 tab 的 codex
-        // 输入框使用 tmux 默认（或上一个连接）的颜色代答。已经打开过的
-        // Workspace 切回来时 OSC 已经报过，再刷会让 TUI 整帧闪一下。
-        if WorkspaceSwitchPaintPolicy.shouldReportColours(restoredParkedTree: restoredParkedTree) {
-            let osc = ColorContrast.oscColors(
-                fg: MuxtermTerminalColors.activePalette.fg,
-                bg: MuxtermTerminalColors.activePalette.bg
-            )
-            _ = bridge.reportAllPaneColours(
-                fgHex: osc.fg,
-                bgHex: osc.bg
-            )
-            reportedColourPanes.removeAll()
-        }
         lastSnapshot = slot.lastSnapshot
         // 切连接后旧 status bar 属于上一个 tmux：先清掉，等新快照到达再显示。
         statusBarSnapshot = nil
@@ -2066,25 +2252,242 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = WorkspaceSwitchPaintPolicy.needsLayoutReload(
             restoredParkedTree: restoredParkedTree
         )
-        refreshUI()
+        let activation = PendingForegroundActivation(
+            slot: slot,
+            oldBridge: oldBridge,
+            restoredParkedTree: restoredParkedTree,
+            hasPendingSurfaceCatchUp: hasPendingSurfaceCatchUp,
+            created: created,
+            generation: generation,
+            startedAt: startedAt,
+            wasDeferred: !bridgeReady
+        )
+
+        NSLog(
+            "muxterm: workspace activation begin target=%@ ready=%@ restored=%@",
+            slot.targetConfig.name,
+            bridgeReady ? "true" : "false",
+            restoredParkedTree ? "true" : "false"
+        )
+        // 无论 bridgeLock 当前是否空闲，都先交付缓存画面，再把权威拓扑
+        // 读取放到后台。这样“可见切换”和“远端校准”不再绑在同一帧。
+        pendingForegroundActivation = activation
+        paintCachedForegroundActivation(slot, restoredParkedTree: restoredParkedTree)
+        scheduleForegroundAuthorityRefresh()
+    }
+
+    /// 用 warm slot 的缓存完成最小视觉切换。snapshot 可能随后被权威
+    /// bridge 修正，但用户不应在 SSH 查询期间看到旧 Workspace 卡住。
+    private func paintCachedForegroundActivation(
+        _ slot: WarmConnectionSlot,
+        restoredParkedTree: Bool
+    ) {
+        let snapshot = slot.lastSnapshot
+        guard !snapshot.tabs.isEmpty || !snapshot.panes.isEmpty else {
+            refreshWorkspaceSidebar()
+            return
+        }
+
+        lastSnapshot = snapshot
+        tabSwitchGate.onSnapshot(tabs: snapshot.tabs.map(\.id))
+        content.updateTabs(snapshot.tabs)
+        terminalManager.updatePaneSizes(snapshot.panes)
+        if !restoredParkedTree, needsLayoutReload,
+           content.paneLayout.apply(
+               layout: snapshot.layout,
+               panes: snapshot.panes,
+               tabId: snapshot.activeTab
+           )
+        {
+            needsLayoutReload = false
+        }
+        content.statusBar.updateDebugSnapshot(snapshot)
+        content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
+        if let activePane = snapshot.panes.first(where: \.isActive)?.id
+            ?? snapshot.panes.first?.id
+        {
+            content.paneLayout.markActivePane(activePane)
+            terminalManager.focusTarget = terminalManager.view(for: activePane)
+            restoreTerminalFocusIfAllowed()
+        }
+        refreshWorkspaceSidebar()
+    }
+
+    private static func captureForegroundAuthority(
+        from bridge: CoreBridge
+    ) -> ForegroundAuthoritySnapshot {
+        let frame = bridge.snapshot()
+        var allPanes: [Pane] = []
+        var tabIdsByPane: [UInt32: UInt32] = [:]
+        var tabNumbersByPane: [UInt32: Int] = [:]
+        for (index, tab) in frame.tabs.enumerated() {
+            let panes = bridge.getPanes(tabId: tab.id)
+            allPanes.append(contentsOf: panes)
+            for pane in panes {
+                tabIdsByPane[pane.id] = tab.id
+                tabNumbersByPane[pane.id] = index + 1
+            }
+        }
+        return ForegroundAuthoritySnapshot(
+            frame: frame,
+            allPanes: allPanes,
+            tabIdsByPane: tabIdsByPane,
+            tabNumbersByPane: tabNumbersByPane
+        )
+    }
+
+    /// 在后台锁内读取目标 Workspace 的权威拓扑。即使远端 capture/pause
+    /// 需要数百毫秒，也只占 utility 队列，主线程已经在显示 warm cache。
+    private func scheduleForegroundAuthorityRefresh() {
+        guard let activation = pendingForegroundActivation,
+              !isClosing
+        else {
+            return
+        }
+        let generation = activation.generation
+        guard foregroundAuthorityRefreshGeneration != generation else { return }
+        foregroundAuthorityRefreshGeneration = generation
+        backgroundPollQueue.async { [weak self] in
+            let result = activation.slot.withBridge { candidate in
+                Self.captureForegroundAuthority(from: candidate)
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let pending = self.pendingForegroundActivation,
+                      pending.generation == generation,
+                      generation == self.foregroundActivationGeneration,
+                      self.foregroundAuthorityRefreshGeneration == generation,
+                      !self.isClosing
+                else {
+                    return
+                }
+                self.foregroundAuthorityRefreshGeneration = nil
+                self.pendingForegroundActivation = nil
+                if let result {
+                    self.applyForegroundAuthoritySnapshot(result)
+                }
+                self.completeForegroundActivation(activation)
+                let actions = self.pendingForegroundActions
+                self.pendingForegroundActions.removeAll()
+                for action in actions {
+                    action()
+                }
+            }
+        }
+    }
+
+    /// 只在主线程应用后台已经取回的值类型快照；这里不调用 CoreBridge。
+    private func applyForegroundAuthoritySnapshot(
+        _ authority: ForegroundAuthoritySnapshot
+    ) {
+        let snap = authority.frame
+        tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
+        guard tabSwitchGate.isReleased() else { return }
+        lastSnapshot = snap
+        terminalManager.updatePaneSizes(authority.allPanes.isEmpty ? snap.panes : authority.allPanes)
+        content.updateTabs(snap.tabs)
+        if needsLayoutReload {
+            if content.paneLayout.apply(
+                layout: snap.layout,
+                panes: snap.panes,
+                tabId: snap.activeTab
+            ) {
+                needsLayoutReload = false
+                content.statusBar.clearLayoutSyncError()
+            } else {
+                content.statusBar.showLayoutSyncing()
+            }
+        }
+        content.paneLayout.pruneTabs(keeping: Set(snap.tabs.map(\.id)))
+        content.statusBar.updateDebugSnapshot(snap)
+        content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
+        if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
+            terminalManager.focusTarget = terminalManager.view(for: activePane)
+            content.paneLayout.markActivePane(activePane)
+            restoreTerminalFocusIfAllowed()
+        }
+        cacheActiveSlotSnapshot(
+            tabIdsByPane: authority.tabIdsByPane,
+            tabNumbersByPane: authority.tabNumbersByPane
+        )
+    }
+
+    private func completeForegroundActivation(
+        _ activation: PendingForegroundActivation
+    ) {
+        guard !isClosing,
+              activation.generation == foregroundActivationGeneration,
+              activation.slot.lifecycle == .active,
+              bridge === activation.slot.bridge
+        else {
+            return
+        }
+
+        let elapsedMilliseconds =
+            (ProcessInfo.processInfo.systemUptime - activation.startedAt) * 1000
+        NSLog(
+            "muxterm: workspace activation ready target=%@ deferred=%@ elapsed_ms=%.1f",
+            activation.slot.targetConfig.name,
+            activation.wasDeferred ? "true" : "false",
+            elapsedMilliseconds
+        )
+
+        // 缓存/权威快照已经完成绘制；从这一刻起恢复正常 bridge 查询，
+        // 但几何同步仍走下一拍，避免把恢复动作重新塞回点击栈。
+        terminalManager.setBridgeQueriesEnabled(true)
+        content.paneLayout.resumeGeometrySync()
         focusActiveTerminal()
         refreshStatusBar(force: true)
         // 切连接后立即更新 SSH 状态 + 流量监控显示。
         updateTrafficMonitor()
+        // 这一拍只读后台缓存；下一个正常 poll 再做 active bridge 的
+        // attention acknowledge/snapshot，避免再次把远端查询放回点击栈。
+        refreshAttentionChrome(allowBridgeQueries: false)
+        // 后台 metadata 可能在 lifecycle 切换为 active 的竞态窗口内完成。
+        // 这些通知不能再由 background poll 留到下一次切换才消费。
+        postAttentionNotifications(
+            activation.slot.takePendingAttentionNotifications()
+        )
         refreshWorkspaceSidebar()
-        if hasPendingSurfaceCatchUp || slot.hasPendingSurfaceWork {
-            enqueueSurfaceCatchUp(slot)
+        unifiedPanel.refreshData()
+        if activation.hasPendingSurfaceCatchUp || activation.slot.hasPendingSurfaceWork {
+            enqueueSurfaceCatchUp(activation.slot)
         }
         // 若旧 bridge 不在 pool（初始连接或非 pool 路径），切走后直接回收；
         // pool 内的旧 slot 由 acquire 降为 background，保持 warm。
-        let oldIsPooled = connectionPool.slots.values.contains { $0.bridge === oldBridge }
-        if !oldIsPooled, oldBridge !== slot.bridge {
+        let oldIsPooled = connectionPool.slots.values.contains {
+            $0.bridge === activation.oldBridge
+        }
+        if !oldIsPooled, activation.oldBridge !== activation.slot.bridge {
             DispatchQueue.global(qos: .utility).async {
-                oldBridge.shutdown()
+                activation.oldBridge.shutdown()
             }
         }
-        if created {
+        if activation.created {
             presentWorkspaceCapacityWarningIfNeeded()
+        }
+
+        // 颜色查询应答很重要，但不影响 Workspace 首帧；放到后台锁内
+        // 上报，完成后下一轮输出即可使用新的 OSC 颜色。
+        if WorkspaceSwitchPaintPolicy.shouldReportColours(
+            restoredParkedTree: activation.restoredParkedTree
+        ) {
+            let osc = ColorContrast.oscColors(
+                fg: MuxtermTerminalColors.activePalette.fg,
+                bg: MuxtermTerminalColors.activePalette.bg
+            )
+            backgroundPollQueue.async { [weak self] in
+                _ = activation.slot.withBridge { candidate in
+                    candidate.reportAllPaneColours(fgHex: osc.fg, bgHex: osc.bg)
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.foregroundActivationGeneration == activation.generation,
+                          self.bridge === activation.slot.bridge
+                    else { return }
+                    self.reportedColourPanes.removeAll()
+                }
+            }
         }
     }
 
@@ -2129,7 +2532,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func focusActiveTerminal() {
-        let snap = lastSnapshot.panes.isEmpty ? bridge.snapshot() : lastSnapshot
+        let snap: FrameSnapshot
+        if !lastSnapshot.panes.isEmpty {
+            snap = lastSnapshot
+        } else if pendingForegroundActivation == nil {
+            snap = bridge.snapshot()
+        } else {
+            return
+        }
         guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
             return
         }
@@ -2161,6 +2571,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func requestSwitchTab(_ tabId: UInt32) {
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.requestSwitchTab(tabId)
+            }
+            return
+        }
         guard tabId != lastSnapshot.activeTab else { return }
         // AppKit can deliver a button action twice before the next poll updates
         // lastSnapshot. The gate is the single in-flight command for a target;
@@ -2256,6 +2672,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func splitActivePane(horizontal: Bool) {
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.splitActivePane(horizontal: horizontal)
+            }
+            return
+        }
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
         }
@@ -2272,11 +2694,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 从全局 active 状态推断。这样 tab 切换后 Cmd+[ / Cmd+] 的行为只
     /// 依赖当前 tab 快照，不会因为旧 staticlib 或焦点事件顺序回到首 tab。
     private func movePane(offset: Int) {
-        let snap = bridge.snapshot()
-        let paneIDs = snap.layout?.leafPaneIDs() ?? snap.panes.map(\.id)
+        if pendingForegroundActivation != nil {
+            pendingForegroundActions.append { [weak self] in
+                self?.movePane(offset: offset)
+            }
+            return
+        }
+        // `lastSnapshot` is maintained by the active poll and by the
+        // background authority cache. Reading CoreBridge here would make a
+        // keyboard shortcut wait for a remote tmux pause/capture round-trip.
+        let snap = lastSnapshot
+        let snapshotPaneIDs = snap.panes.map(\.id)
+        let paneIDs = PaneNavigation.navigationPaneIDs(
+            layoutPaneIDs: snap.layout?.leafPaneIDs(),
+            paneIDs: snapshotPaneIDs
+        )
         guard let target = PaneNavigation.target(
             paneIDs: paneIDs,
-            activePaneID: snap.activePane,
+            activePaneID: activePaneID ?? snap.activePane,
             offset: offset
         ) else { return }
 
@@ -2284,6 +2719,52 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reportStatusError(MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(target)"]))
             return
         }
+
+        // tmux 选择另一个 pane 会自动退出 zoom；重新对目标 pane 执行
+        // `resize-pane -Z`，让“切换的是另一个 pane 的全屏状态”成立。
+        if terminalManager.usesClientResize {
+            let wasZoomed = PaneFullscreenPolicy.zoomedPaneID(
+                layoutPaneIDs: snap.layout?.leafPaneIDs() ?? [],
+                paneIDs: snapshotPaneIDs
+            ) != nil
+            if wasZoomed,
+               bridge.execute(task: MuxTask.togglePaneFullscreen(target)) != 0
+            {
+                reportStatusError(
+                    MuxtermI18n.shared.tr(.errorCommandFailed)
+                )
+            }
+            if wasZoomed {
+                lastSnapshot.layout = .leaf(paneId: target)
+                _ = content.paneLayout.apply(
+                    layout: lastSnapshot.layout,
+                    panes: lastSnapshot.panes,
+                    tabId: lastSnapshot.activeTab
+                )
+            }
+        } else if content.paneLayout.testFullscreenPaneID != nil {
+            content.paneLayout.setFullscreenPane(paneId: target)
+        }
+
+        // select-pane 的状态事件稍后才会到达；先乐观更新焦点、tab pane
+        // 高亮和快照，连续 Cmd/Alt+[ ] 因而不依赖下一次远端 poll。
+        lastSnapshot.activePane = target
+        lastSnapshot.panes = lastSnapshot.panes.map { pane in
+            Pane(
+                id: pane.id,
+                cols: pane.cols,
+                rows: pane.rows,
+                isActive: pane.id == target
+            )
+        }
+        content.paneLayout.markActivePane(target)
+        terminalManager.focusTarget = terminalManager.view(for: target)
+        workspaceSidebar.setActiveTarget(
+            workspaceId: activeWorkspaceReplicaID,
+            tabId: lastSnapshot.activeTab,
+            paneId: target
+        )
+        restoreTerminalFocusIfAllowed()
     }
 
     // MARK: - 命令面板
@@ -2917,6 +3398,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func pollOnce() {
         guard !isClosing else { return }
+        if pendingForegroundActivation != nil {
+            // 目标 bridge 还可能被切换前的后台批次占用。只追赶已经
+            // 排队的 Surface，并继续轮询其它 background slot；任何 active
+            // bridge 的 FFI 都要等 retry 成功后再恢复。
+            if let activeKey = connectionPool.activeKey,
+               let slot = connectionPool.slots[activeKey],
+               slot.lifecycle == .active
+            {
+                if slot.applyPendingSurfaceEvents() {
+                    enqueueSurfaceCatchUp(slot)
+                }
+            }
+            scheduleBackgroundSlotPoll()
+            scheduleForegroundAuthorityRefresh()
+            refreshWorkspaceSidebar()
+            return
+        }
         // 后台排空的事件必须先于 active bridge 的新事件交付。否则切回
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {
@@ -3286,29 +3784,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 注意力引擎：更新状态栏红点 + 弹出 blocked/done 通知。
-    private func refreshAttentionChrome() {
-        guard !isClosing else { return }
+    private func refreshAttentionChrome(allowBridgeQueries: Bool = true) {
+        guard !isClosing, pendingForegroundActivation == nil else { return }
         // 前台 pane 输出视为已看见：CommandDone 清成 Idle（Linux 同款），
         // 前台 `sleep && echo` 不弹完成通知。
         let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id
-        if let activePane {
+        if allowBridgeQueries, let activePane {
             _ = bridge.attentionOnBecameVisible(paneId: activePane)
         }
         // 红点与系统通知覆盖所有 warm Workspace；后台 bridge 仍在 core
         // 中维护 Attention 状态，不能只看当前窗口这一条连接。后台 slot
         // 的快照/通知已经由 utility poll 缓存，主线程只消费值类型副本。
         var blockedCount = 0
-        let activeSnapshot = attentionSnapshot(from: bridge)
-        if let activeSlot = connectionPool.activeKey.flatMap({ connectionPool.slots[$0] }),
-           let activeSnapshot
-        {
-            activeSlot.cacheAttentionSnapshot(activeSnapshot)
+        let activeSnapshot: AttentionSnapshot?
+        if allowBridgeQueries {
+            activeSnapshot = attentionSnapshot(from: bridge)
+        } else {
+            activeSnapshot = connectionPool.activeKey
+                .flatMap { connectionPool.slots[$0]?.cachedAttentionSnapshot }
+        }
+        if let activeSlot = connectionPool.activeKey.flatMap({ connectionPool.slots[$0] }) {
+            if let activeSnapshot {
+                activeSlot.cacheAttentionSnapshot(activeSnapshot)
+            }
+            if allowBridgeQueries {
+                activeSlot.cacheStructuredAgents(bridge.structuredAgentSnapshot())
+            }
         }
         if let activeSnapshot {
             blockedCount += activeSnapshot.blockedCount
         }
-        drainAttentionNotifications(from: bridge)
+        if allowBridgeQueries {
+            drainAttentionNotifications(from: bridge)
+        }
         for slot in connectionPool.slots.values
             where slot.bridge !== bridge && slot.lifecycle != .evicting
         {
@@ -3357,6 +3866,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refreshUI() {
+        guard pendingForegroundActivation == nil else { return }
         let snap = bridge.snapshot()
         tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         if !tabSwitchGate.isReleased() {
@@ -3439,7 +3949,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 每拍只预热一个还没点过的 tab，第一次点击就能走缓存树。
     private func scheduleTabTreeWarmup() {
-        guard TabWarmupPolicy.canStart(
+        guard pendingForegroundActivation == nil,
+              TabWarmupPolicy.canStart(
             activeSurfaceReady: activeSurfaceReadyForTabWarmup()
         ) else {
             return
@@ -3451,7 +3962,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] in
             guard let self else { return }
             self.tabWarmupScheduled = false
-            guard TabWarmupPolicy.canStart(
+            guard self.pendingForegroundActivation == nil,
+                  TabWarmupPolicy.canStart(
                 activeSurfaceReady: self.activeSurfaceReadyForTabWarmup()
             ) else {
                 return
@@ -3470,7 +3982,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func warmNextBackgroundTab() {
-        guard activeSurfaceReadyForTabWarmup() else { return }
+        guard pendingForegroundActivation == nil,
+              activeSurfaceReadyForTabWarmup()
+        else { return }
         let current = lastSnapshot.activeTab
         for tab in lastSnapshot.tabs where tab.id != current {
             if content.paneLayout.hasCachedTab(tab.id) { continue }
@@ -3491,7 +4005,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 切 tab/pane 完成后：按 seq 喂历史帧，并用 SwiftTerm findNext 高亮 query。
     private func applyPendingSearchJumpIfReady() {
-        guard let jump = pendingSearchJump else { return }
+        guard pendingForegroundActivation == nil,
+              let jump = pendingSearchJump
+        else { return }
         guard tabSwitchGate.isReleased() else { return }
         guard lastSnapshot.panes.contains(where: { $0.id == jump.paneId }) else { return }
         pendingSearchJump = nil
@@ -3567,7 +4083,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refreshHistoryChrome(for paneId: UInt32) {
-        guard paneId == activePaneID else { return }
+        guard pendingForegroundActivation == nil, paneId == activePaneID else { return }
         let latest = bridge.paneLatestLineSeq(paneId: paneId)
         let seen = lastSeenLineSeq[paneId]
         let rawOffset = seen.map {
@@ -3668,7 +4184,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 抓取并应用 tmux status bar 快照（只读查询，后台执行）。
     private func refreshStatusBar(force: Bool) {
-        guard terminalManager.usesClientResize else { return }
+        guard terminalManager.usesClientResize,
+              pendingForegroundActivation == nil
+        else { return }
         if !force, Date().timeIntervalSince(lastStatusFetchAt) < 2 {
             return
         }
@@ -3702,7 +4220,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 // 查询期间用户可能已经切走连接：旧连接的快照不能覆盖新连接。
-                guard self.bridge === bridge else { return }
+                guard self.bridge === bridge,
+                      self.pendingForegroundActivation == nil
+                else { return }
                 self.statusBarSnapshot = snapshot
                 self.content.applyStatusBar(snapshot)
                 // 文档 §B+：tmux ≥3.2 用 refresh-client -B 订阅推送（零轮询）；
@@ -4047,8 +4567,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 extension MainWindowController: TerminalInputHandler {
     func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
         let paneId = replyOverlayPaneId ?? view.paneId
+        let payload = Data(data)
         // W19-E：overlay 快速回复不清 Blocked（注意力行保留，Enter 仍可跳转）。
-        _ = bridge.sendInputQuiet(paneId: paneId, data: Data(data))
+        performWhenForegroundReady { [weak self] in
+            _ = self?.bridge.sendInputQuiet(paneId: paneId, data: payload)
+        }
     }
 
     func terminal(_ view: MuxTerminalView, sizeChanged cols: Int, rows: Int) {

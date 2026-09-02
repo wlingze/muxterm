@@ -216,4 +216,19 @@ final class AttentionRowLabelTests: XCTestCase {
         XCTAssertEqual(AttentionRowLabel.normalizedProcess("pi"), "pi")
         XCTAssertEqual(AttentionRowLabel.normalizedProcess("hermes-agent"), "hermes")
     }
+
+    func testExtractsExecutableFromAnsiShellCommand() {
+        let process = "\u{1B}[K\u{1B}[?2004hs\u{08}sleep 1 && echo AA_FG\u{1B}[?2004l"
+
+        XCTAssertEqual(AttentionRowLabel.normalizedProcess(process), "sleep")
+        let title = AttentionRowLabel.display(process: process, transport: "ssh", path: "~")
+        XCTAssertEqual(title, "sleep  ssh  ~")
+        XCTAssertFalse(title.contains("AA_FG"))
+    }
+
+    func testStripsOscTitleBeforeExtractingExecutable() {
+        let process = "\u{1B}]0;sleep 1 && echo AA_BG\u{1B}\\/bin/zsh -i"
+
+        XCTAssertEqual(AttentionRowLabel.normalizedProcess(process), "zsh")
+    }
 }

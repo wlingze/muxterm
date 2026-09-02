@@ -151,20 +151,25 @@ public struct AttentionRow: Equatable, Sendable {
 public enum AttentionRowLabel {
     /// 将 pane-cmd/旧快照里的 wrapper 名称收敛成用户真正关心的 agent 名称。
     /// 例如 `npx @openai/codex`、`/opt/cursor-agent` 都应显示为 codex/cursor，
-    /// 而不是路径或 node wrapper。未知命令仍保留 basename。
+    /// 而不是路径或 node wrapper。未知命令只保留第一个可执行词的 basename，
+    /// 避免把 `sleep 1 && echo output` 这样的命令行/输出混进标题。
     public static func normalizedProcess(_ process: String?) -> String? {
         guard let process else { return nil }
-        let value = process.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = stripTerminalSequences(process)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
         let known = [
             "codex", "cursor", "claude", "gemini", "aider", "opencode",
             "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
             "pi", "hermes", "droid",
         ]
-        let tokens = value.lowercased().split { character in
+        let commandTokens = value.split { character in
+            character.isWhitespace || ";|&<>\"'`()".contains(character)
+        }
+        let identifierTokens = value.lowercased().split { character in
             !(character.isLetter || character.isNumber || character == "-" || character == "_")
         }
-        for token in tokens {
+        for token in identifierTokens {
             let token = String(token)
             if let match = known.first(where: {
                 token == $0 || token.hasPrefix($0 + "-") || token.hasPrefix($0 + "_")
@@ -172,11 +177,78 @@ public enum AttentionRowLabel {
                 return match
             }
         }
-        let basename = value
+        guard let firstToken = commandTokens.first else { return nil }
+        let basename = String(firstToken)
             .split(whereSeparator: { $0 == "/" || $0 == "\\" })
             .last
             .map(String.init) ?? value
         return basename
+    }
+
+    /// `process_name` 可能来自 pane-cmd 或带 ANSI 的 shell 状态行；标题只需要
+    /// 可执行名，因此在分词前丢弃终端控制序列和不可见控制字符。
+    private static func stripTerminalSequences(_ value: String) -> String {
+        let scalars = Array(value.unicodeScalars)
+        var result = String.UnicodeScalarView()
+        var index = 0
+
+        while index < scalars.count {
+            let scalar = scalars[index].value
+            guard scalar == 0x1B else {
+                if scalar == 0x08 || scalar == 0x7F {
+                    // Shell 输入重绘常见 `s\b sleep...`：退格表示前一个
+                    // 字符被重画，不能把它当成命令的第一个词。
+                    if !result.isEmpty {
+                        result.removeLast()
+                    }
+                } else if scalar < 0x20 {
+                    result.append(" ")
+                } else {
+                    result.append(scalars[index])
+                }
+                index += 1
+                continue
+            }
+
+            // CSI: ESC [ ... final byte.
+            index += 1
+            guard index < scalars.count else { break }
+            if scalars[index].value == 0x5B {
+                index += 1
+                while index < scalars.count {
+                    let final = scalars[index].value
+                    index += 1
+                    if (0x40...0x7E).contains(final) { break }
+                }
+                continue
+            }
+
+            // OSC: ESC ] ... BEL or ESC \\.
+            if scalars[index].value == 0x5D {
+                index += 1
+                while index < scalars.count {
+                    let current = scalars[index].value
+                    if current == 0x07 {
+                        index += 1
+                        break
+                    }
+                    if current == 0x1B,
+                       index + 1 < scalars.count,
+                       scalars[index + 1].value == 0x5C
+                    {
+                        index += 2
+                        break
+                    }
+                    index += 1
+                }
+                continue
+            }
+
+            // 其它 ESC 序列通常只有一个 final byte；跳过它，避免把控制码
+            // 参数误识别成进程名。
+            index += 1
+        }
+        return String(result)
     }
 
     public static func display(process: String?, transport: String, path: String) -> String {

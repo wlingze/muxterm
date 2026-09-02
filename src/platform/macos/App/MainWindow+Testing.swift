@@ -435,6 +435,23 @@ extension MainWindowController {
         switchToWorkspaceAtFixedIndex(1)
     }
 
+    /// 在指定固定顺序 Workspace 的 bridge 上制造可控的后台锁竞争。
+    /// 返回信号量只会在后台线程已经持锁后 signal，E2E 可以精确验证
+    /// 点击切换没有等待这段 FFI。
+    @discardableResult
+    func testHoldWorkspaceBridgeAtFixedIndex(
+        _ oneBased: Int,
+        duration: TimeInterval
+    ) -> DispatchSemaphore? {
+        let ordered = workspaceSidebarFixedSlots()
+        guard ordered.indices.contains(oneBased - 1) else { return nil }
+        return ordered[oneBased - 1].holdBridgeForTesting(duration)
+    }
+
+    func testForegroundActivationPending() -> Bool {
+        foregroundActivationIsPending
+    }
+
     func testWindowClosing() -> Bool {
         isClosing
     }

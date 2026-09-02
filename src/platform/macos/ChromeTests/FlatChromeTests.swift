@@ -1185,6 +1185,22 @@ final class PaneFullscreenPolicyTests: XCTestCase {
             nil
         )
     }
+
+    func testTmuxZoomIdentifiesTheVisiblePaneAgainstFullSnapshot() {
+        XCTAssertEqual(
+            PaneFullscreenPolicy.zoomedPaneID(
+                layoutPaneIDs: [61],
+                paneIDs: [61, 62]
+            ),
+            61
+        )
+        XCTAssertNil(
+            PaneFullscreenPolicy.zoomedPaneID(
+                layoutPaneIDs: [61, 62],
+                paneIDs: [61, 62]
+            )
+        )
+    }
 }
 
 final class EventBatchPlanTests: XCTestCase {

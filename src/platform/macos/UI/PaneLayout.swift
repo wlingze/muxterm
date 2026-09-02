@@ -373,7 +373,6 @@ final class PaneLayoutView: NSView {
             host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
         }
         markActivePane(cached.activePaneId)
-        terminalManager.flushSeedsNow(paneIds: cached.paneIds)
         if TabGeometrySyncPolicy.shouldSyncOnCachedReveal() {
             scheduleGeometrySync(paneIds: cached.paneIds)
         }
@@ -400,6 +399,30 @@ final class PaneLayoutView: NSView {
         _ = apply(layout: baseLayout, panes: lastPanes, tabId: currentTabId ?? 0)
     }
 
+    /// 本地 shell 在全屏状态下切到另一个 pane；保持全屏，只替换显示目标。
+    func setFullscreenPane(paneId: UInt32) {
+        guard fullscreenPaneId != nil,
+              fullscreenPaneId != paneId,
+              lastPanes.contains(where: { $0.id == paneId })
+        else {
+            return
+        }
+        fullscreenPaneId = paneId
+        forceRebuild = true
+        _ = apply(layout: baseLayout, panes: lastPanes, tabId: currentTabId ?? 0)
+    }
+
+    var testFullscreenPaneID: UInt32? {
+        fullscreenPaneId
+    }
+
+    /// bridge 查询在缓存激活阶段暂停后，重新安排当前树的尺寸同步；
+    /// `layout()` 可能认为窗口尺寸没有变化，因此不能只依赖 AppKit 再次布局。
+    func resumeGeometrySync() {
+        guard !currentPaneIds.isEmpty else { return }
+        scheduleGeometrySync(paneIds: currentPaneIds)
+    }
+
     /// 更新活跃 pane 高亮与 AX（供 Cmd+[ / ] 焦点跟随断言）。
     func markActivePane(_ paneId: UInt32) {
         for (id, host) in hostByPane {
@@ -423,7 +446,6 @@ final class PaneLayoutView: NSView {
         for host in hostByPane.values {
             host.publishGeometry()
         }
-        terminalManager.flushSeedsNow(paneIds: paneIds)
         terminalManager.syncAllVisibleSizes(paneIds: paneIds, container: self)
         terminalManager.forceRedraw(paneIds: paneIds)
     }

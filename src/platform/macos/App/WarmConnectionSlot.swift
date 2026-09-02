@@ -32,6 +32,11 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     /// number so building the sidebar never needs a second topology walk.
     private var tabIdsByPaneValue: [UInt32: UInt32]?
     private var workspaceReplicaIDValue: String?
+    /// 后台拓扑快照的低频刷新闸门。事件轮询本身保持高频，但完整的
+    /// get-tabs/get-panes/get-layout 只在结构变化或到期时执行，避免把
+    /// 远端控制流查询变成每次侧栏刷新都要等待的同步工作。
+    private var topologyRefreshAt: TimeInterval = -.infinity
+    private var topologyRefreshRequested = true
     private var pendingAttentionNotifications: [AttentionNotification] = []
     private var pendingSurfaceEvents: [StateChange] = []
     /// 某个 pane 的后台输出合并超过安全上限后，丢弃不完整 suffix，等
@@ -95,11 +100,24 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         return workspaceReplicaIDValue
     }
 
+    func cacheWorkspaceReplicaID(_ workspaceID: String) {
+        guard !workspaceID.isEmpty else { return }
+        stateLock.lock()
+        workspaceReplicaIDValue = workspaceID
+        stateLock.unlock()
+    }
+
     /// Core 的结构化 agent 快照副本。
     var cachedStructuredAgents: [StructuredPaneAgent] {
         stateLock.lock()
         defer { stateLock.unlock() }
         return structuredAgentsValue
+    }
+
+    func cacheStructuredAgents(_ agents: [StructuredPaneAgent]) {
+        stateLock.lock()
+        structuredAgentsValue = agents
+        stateLock.unlock()
     }
 
     /// Cached Tab numbers are a value snapshot so sidebar refreshes do not
@@ -130,6 +148,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.lock()
         tabIdsByPaneValue = nil
         tabNumbersByPaneValue = nil
+        topologyRefreshRequested = true
         stateLock.unlock()
     }
 
@@ -191,18 +210,36 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         // bridgeLock 负责让同一 handle 的一次短 FFI 批次安全完成。
         bridgeLock.lock()
         stateLock.lock()
-        let stillUsable = lifecycleValue != .evicting
+        let shouldPoll = lifecycleValue == .background
         stateLock.unlock()
-        guard stillUsable else {
+        guard shouldPoll else {
+            // 激活可能发生在上面的 lifecycle 检查之后、拿到 bridgeLock
+            // 之前。此时不要再启动一批后台 FFI；已经在 lock 内开始的
+            // 那一批仍会在下面入队并由前台 catch-up 消费。
             bridgeLock.unlock()
             return false
         }
 
         let events = bridge.pollEvents(maxCount: 32)
         _ = bridge.takeError()
-        if events.contains(where: { Self.changesTabNumber($0.type) }) {
+        let topologyChanged = events.contains(where: { Self.changesTopology($0.type) })
+        if topologyChanged {
             invalidateTabNumbers()
         }
+        let now = ProcessInfo.processInfo.systemUptime
+        stateLock.lock()
+        let shouldRefreshTopology = topologyChanged
+            || topologyRefreshRequested
+            || lastSnapshotValue.tabs.isEmpty
+            || now - topologyRefreshAt >= 0.5
+        if shouldRefreshTopology {
+            topologyRefreshAt = now
+            topologyRefreshRequested = false
+        }
+        stateLock.unlock()
+        let topology = shouldRefreshTopology
+            ? Self.captureTopology(from: bridge)
+            : nil
         var surface: [StateChange] = []
         for ev in events {
             if ev.type == STATE_STATUS_SUBSCRIPTION,
@@ -232,13 +269,22 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
             }
             pendingDrainedWhileBackground = true
         }
+        if let topology {
+            lastSnapshotValue = topology.snapshot
+            tabIdsByPaneValue = topology.tabIdsByPane
+            tabNumbersByPaneValue = topology.tabNumbersByPane
+        } else if shouldRefreshTopology {
+            // 连接暂时没有可用拓扑时，下一轮仍需重试；不要把一个空的
+            // 过渡结果当成稳定 Workspace 列表。
+            topologyRefreshRequested = true
+        }
         let continueBackgroundMetadata = lifecycleValue == .background
         stateLock.unlock()
         bridgeLock.unlock()
 
-        // 输出洪水只做小批量 poll；后台不再做全量拓扑 snapshot，前台曾经
-        // 使用过的快照由 cacheSnapshot 保留，切回时再由 refreshUI 做一次
-        // 权威读取。注意力快照很小且只在 utility 线程读取，保持每轮 poll
+        // 输出洪水只做小批量 poll；拓扑 snapshot 已在后台低频缓存，前台
+        // 切回先使用缓存，权威结果也不会在主线程同步读取。注意力快照很小
+        // 且只在 utility 线程读取，保持每轮 poll
         // 更新，确保 BEL/agent 状态不会等下一轮 UI 展示才出现。
         var attentionJSON: String?
         var notificationJSON: String?
@@ -299,12 +345,41 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         return hasPending
     }
 
-    private static func changesTabNumber(_ type: UInt32) -> Bool {
-        type == STATE_TAB_ADDED
+    private struct CachedTopology {
+        let snapshot: FrameSnapshot
+        let tabIdsByPane: [UInt32: UInt32]
+        let tabNumbersByPane: [UInt32: Int]
+    }
+
+    private static func changesTopology(_ type: UInt32) -> Bool {
+        type == STATE_LAYOUT_CHANGED
+            || type == STATE_TAB_ADDED
             || type == STATE_TAB_CLOSED
             || type == STATE_TAB_ORDER_CHANGED
             || type == STATE_PANE_ADDED
             || type == STATE_PANE_CLOSED
+            || type == STATE_ACTIVE_TAB_CHANGED
+            || type == STATE_ACTIVE_PANE_CHANGED
+            || type == STATE_PANE_RESIZED
+            || type == STATE_TAB_RENAMED
+    }
+
+    private static func captureTopology(from bridge: CoreBridge) -> CachedTopology? {
+        let snapshot = bridge.snapshot()
+        guard !snapshot.tabs.isEmpty else { return nil }
+        var tabIdsByPane: [UInt32: UInt32] = [:]
+        var tabNumbersByPane: [UInt32: Int] = [:]
+        for (index, tab) in snapshot.tabs.enumerated() {
+            for pane in bridge.getPanes(tabId: tab.id) {
+                tabIdsByPane[pane.id] = tab.id
+                tabNumbersByPane[pane.id] = index + 1
+            }
+        }
+        return CachedTopology(
+            snapshot: snapshot,
+            tabIdsByPane: tabIdsByPane,
+            tabNumbersByPane: tabNumbersByPane
+        )
     }
 
     /// 规范化后台 Surface 队列。
@@ -451,15 +526,36 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         return combined
     }
 
-    /// 在 MainWindow 使用该 slot 的 bridge 前先切换生命周期。若后台 poll
-    /// 已经开始，这里会等它释放锁，确保 Swift/FFI 不发生并发访问。
-    func prepareForForeground() {
+    /// 在 MainWindow 使用该 slot 的 bridge 前先切换生命周期。
+    ///
+    /// 激活路径不能在主线程等待后台 SSH/FFI。若后台当前正持有 bridgeLock，
+    /// 返回 false；调用方先用缓存完成视觉切换，再通过
+    /// `tryPrepareActiveBridge()` 重试。生命周期已经变成 active 后，后台
+    /// poll 不会再开启下一批 FFI。
+    @discardableResult
+    func prepareForForeground() -> Bool {
         stateLock.lock()
+        guard lifecycleValue != .evicting else {
+            stateLock.unlock()
+            return false
+        }
         lifecycleValue = .active
         stateLock.unlock()
-        // 等已在后台运行的一小批 FFI 结束；不把 stateLock 作为这段等待的
-        // 门闩，避免主线程与事件队列互相等待。
-        bridgeLock.lock()
+
+        return tryPrepareActiveBridge()
+    }
+
+    /// 非阻塞地确认 active slot 已经可以安全访问 CoreBridge。
+    @discardableResult
+    func tryPrepareActiveBridge() -> Bool {
+        stateLock.lock()
+        guard lifecycleValue == .active else {
+            stateLock.unlock()
+            return false
+        }
+        stateLock.unlock()
+
+        guard bridgeLock.try() else { return false }
         bridgeLock.unlock()
         // 先把已经排队的 baseline/增量按序交付，再请求可能需要的恢复
         // snapshot；否则旧缺口可能在激活这一拍抢先发出网络任务。
@@ -467,6 +563,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
             true,
             requestRecoverySnapshots: false
         )
+        return true
     }
 
     /// 在后台 slot 上安全访问 CoreBridge。后台 poll、前台激活和淘汰共用
@@ -480,6 +577,37 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.unlock()
         guard alive else { return nil }
         return body(bridge)
+    }
+
+    /// 尝试安全访问 CoreBridge；UI 线程使用它时绝不能因为后台 SSH/FFI
+    /// 正在运行而等待。后台/非 UI 的强一致查询仍使用 `withBridge`。
+    @discardableResult
+    func tryWithBridge<T>(_ body: (CoreBridge) -> T) -> T? {
+        guard bridgeLock.try() else { return nil }
+        defer { bridgeLock.unlock() }
+        stateLock.lock()
+        let alive = lifecycleValue != .evicting
+        stateLock.unlock()
+        guard alive else { return nil }
+        return body(bridge)
+    }
+
+    /// 测试辅助：让同一后台执行上下文短暂持有 bridgeLock，复现远端
+    /// metadata/poll 与主线程 Workspace 激活竞争。返回的信号量在已拿锁后
+    /// signal，测试因此不需要靠 sleep 猜时序。
+    @discardableResult
+    func holdBridgeForTesting(_ duration: TimeInterval) -> DispatchSemaphore {
+        let acquired = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            self.bridgeLock.lock()
+            acquired.signal()
+            if duration > 0 {
+                Thread.sleep(forTimeInterval: duration)
+            }
+            self.bridgeLock.unlock()
+        }
+        return acquired
     }
 
     /// 淘汰：tmux/ssh 先 detach（保留 server/session），再回收 handle；

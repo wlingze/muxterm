@@ -35,4 +35,41 @@ final class PaneNavigationTests: XCTestCase {
         )
         XCTAssertNil(PaneNavigation.target(paneIDs: [], activePaneID: 0, offset: 1))
     }
+
+    func testZoomedLayoutNavigatesAcrossAllPanesInTheCurrentTab() {
+        let visibleLayout: [UInt32] = [41]
+        let snapshotPanes: [UInt32] = [41, 42, 43]
+
+        XCTAssertEqual(
+            PaneNavigation.navigationPaneIDs(
+                layoutPaneIDs: visibleLayout,
+                paneIDs: snapshotPanes
+            ),
+            snapshotPanes
+        )
+        XCTAssertEqual(
+            PaneNavigation.target(
+                paneIDs: PaneNavigation.navigationPaneIDs(
+                    layoutPaneIDs: visibleLayout,
+                    paneIDs: snapshotPanes
+                ),
+                activePaneID: 41,
+                offset: 1
+            ),
+            42
+        )
+    }
+
+    func testNonZoomedLayoutKeepsItsGeometryOrder() {
+        let layout: [UInt32] = [52, 51, 53]
+        let snapshotPanes: [UInt32] = [51, 52, 53]
+
+        XCTAssertEqual(
+            PaneNavigation.navigationPaneIDs(
+                layoutPaneIDs: layout,
+                paneIDs: snapshotPanes
+            ),
+            layout
+        )
+    }
 }

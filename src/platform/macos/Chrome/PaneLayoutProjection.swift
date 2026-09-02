@@ -19,6 +19,24 @@ public enum PaneLayoutProjection {
 
 /// 当前 pane 全屏的纯布局策略（本地 shell 用；tmux 走 `resize-pane -Z`）。
 public enum PaneFullscreenPolicy {
+    /// 识别 tmux `resize-pane -Z` 造成的单叶投影。
+    ///
+    /// 本地 shell 的全屏目标由 `PaneLayoutView` 保存；这里只处理 Core
+    /// 快照中“布局单叶、pane 快照多叶”的 tmux/控制模式形状。
+    public static func zoomedPaneID(
+        layoutPaneIDs: [UInt32],
+        paneIDs: [UInt32]
+    ) -> UInt32? {
+        guard layoutPaneIDs.count == 1,
+              paneIDs.count > 1,
+              let paneId = layoutPaneIDs.first,
+              paneIDs.contains(paneId)
+        else {
+            return nil
+        }
+        return paneId
+    }
+
     /// 返回应当全屏的 pane id；目标不存在时返回 nil（保持原布局）。
     public static func resolvedFullscreenId(
         fullscreenPaneId: UInt32?,

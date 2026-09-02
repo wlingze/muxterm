@@ -52,4 +52,65 @@ final class ZoomE2ETests: XCTestCase {
             "再按一次应恢复 3 leaf。leaves=\(app.testLayoutLeafIDs())"
         )
     }
+
+    func testBracketNavigationKeepsTheNextPaneZoomed() throws {
+        let painted = PaintedWorkspace(label: "zoom-navigation")
+        let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
+        defer { app.testShutdown() }
+
+        XCTAssertTrue(app.waitReady(minTabs: 2, minLeaves: 3), "zoom 前应有 3 leaf")
+        let paneIDs = painted.tab1Panes.compactMap { UInt32($0.dropFirst()) }
+        XCTAssertEqual(paneIDs.count, 3, "夹具 pane id 应可解析")
+        let firstPane = try XCTUnwrap(paneIDs.first)
+        let secondPane = try XCTUnwrap(paneIDs.dropFirst().first)
+        XCTAssertEqual(app.testActivePaneID(), firstPane)
+
+        app.testTogglePaneFullscreen()
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 5) {
+                app.testPollOnce()
+                return Tmux.out(
+                    socket: painted.socket,
+                    args: ["display-message", "-p", "-t", painted.session, "#{window_zoomed_flag}"]
+                ) == "1" && app.testLayoutLeafIDs() == [firstPane]
+            },
+            "第一个 pane 全屏后，tmux 与 GUI 都应只显示该 pane"
+        )
+
+        let next = try XCTUnwrap(
+            app.testMakeKeyEvent(key: "]", keyCode: 30, command: true),
+            "必须能构造 Cmd-]"
+        )
+        XCTAssertTrue(app.testDispatchKeyEvent(next), "Cmd-] 必须被窗口快捷键消费")
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 5) {
+                app.testPollOnce()
+                return app.testActivePaneID() == secondPane
+                    && app.testLayoutLeafIDs() == [secondPane]
+                    && Tmux.out(
+                        socket: painted.socket,
+                        args: ["display-message", "-p", "-t", painted.session, "#{window_zoomed_flag}"]
+                    ) == "1"
+            },
+            "Cmd-] 应切到下一个 pane，并继续保持全屏"
+        )
+
+        let previous = try XCTUnwrap(
+            app.testMakeKeyEvent(key: "[", keyCode: 33, option: true),
+            "必须能构造 Alt-["
+        )
+        XCTAssertTrue(app.testDispatchKeyEvent(previous), "Alt-[ 必须被窗口快捷键消费")
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 5) {
+                app.testPollOnce()
+                return app.testActivePaneID() == firstPane
+                    && app.testLayoutLeafIDs() == [firstPane]
+                    && Tmux.out(
+                        socket: painted.socket,
+                        args: ["display-message", "-p", "-t", painted.session, "#{window_zoomed_flag}"]
+                    ) == "1"
+            },
+            "Alt-[ 应切回上一个 pane，并继续保持全屏"
+        )
+    }
 }

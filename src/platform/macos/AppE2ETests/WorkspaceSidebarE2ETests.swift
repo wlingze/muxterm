@@ -254,6 +254,56 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(app.testActiveWorkspaceSession(), first.session)
     }
 
+    func testSidebarWorkspaceSwitchDoesNotWaitForBackgroundBridgeLock() throws {
+        let first = OnePaneCat(label: "switch-lock-first")
+        let second = OnePaneCat(label: "switch-lock-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == second.session
+        })
+
+        let acquired = try XCTUnwrap(
+            app.testHoldWorkspaceBridgeAtFixedIndex(1, duration: 0.25),
+            "第一个 Workspace 必须存在"
+        )
+        XCTAssertEqual(
+            acquired.wait(timeout: .now() + 1),
+            .success,
+            "测试必须确认后台 bridge 已经持锁"
+        )
+
+        let start = DispatchTime.now()
+        app.testSwitchBackToFirstWorkspace()
+        let elapsed = Double(
+            DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+        ) / 1_000_000_000
+        XCTAssertLessThan(
+            elapsed,
+            0.12,
+            "Workspace 激活不能等待后台 bridge 锁，实际 \(elapsed)s"
+        )
+        XCTAssertEqual(app.testActiveWorkspaceSession(), first.session)
+        XCTAssertTrue(app.testForegroundActivationPending())
+
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 2) {
+                app.testPollOnce()
+                return !app.testForegroundActivationPending()
+            },
+            "后台锁释放后应完成一次权威 foreground catch-up"
+        )
+    }
+
     func testCmdBTogglesSidebarThroughProductionKeyRouter() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
