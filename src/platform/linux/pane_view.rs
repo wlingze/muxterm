@@ -323,10 +323,37 @@ impl PaneView {
         self.ensure_grid_size(cols, rows);
     }
 
+    /// 当前 widget 分配折算成字符格；未 realize / 字号未知时返回 0。
+    fn allocated_grid_size(&self) -> (u16, u16) {
+        let terminal = self.inner.renderer.terminal();
+        let cw = terminal.char_width();
+        let ch = terminal.char_height();
+        let width = terminal.width();
+        let height = terminal.height();
+        if cw <= 0 || ch <= 0 || width <= 0 || height <= 0 {
+            return (0, 0);
+        }
+        let cols = (i64::from(width) / cw).clamp(0, i64::from(u16::MAX)) as u16;
+        let rows = (i64::from(height) / ch).clamp(0, i64::from(u16::MAX)) as u16;
+        (cols, rows)
+    }
+
     /// 网格已是该尺寸则跳过，避免 16ms 轮询里反复 set_size。
+    ///
+    /// Herdr snapshot 的 cols/rows 是 split 矩形，不是 GTK 分配。
+    /// 0027.log：接入后 seed_raw 把 grok pane 缩到 27×23，输入触发
+    /// ResizePane 才恢复。已有分配时不得小于 widget；未分配时不得
+    /// 把默认 80×24 缩小。
     pub fn ensure_grid_size(&self, cols: u16, rows: u16) {
-        let cols = cols.max(2);
-        let rows = rows.max(1);
+        let (alloc_cols, alloc_rows) = self.allocated_grid_size();
+        let (cols, rows) = merge_grid_size(
+            cols,
+            rows,
+            alloc_cols,
+            alloc_rows,
+            self.inner.grid_cols.get(),
+            self.inner.grid_rows.get(),
+        );
         if self.inner.grid_cols.get() == cols && self.inner.grid_rows.get() == rows {
             return;
         }
@@ -991,6 +1018,31 @@ pub fn rgb_hex(c: Rgb) -> String {
     format!("{:02x}{:02x}{:02x}", c.0, c.1, c.2)
 }
 
+/// 合并 snapshot 请求与 GTK 分配。
+///
+/// - 已分配：取 max(请求, 分配)，禁止把 widget 缩到 Herdr split 矩形。
+/// - 未分配：取 max(请求, 当前)，禁止把默认 80×24 缩到 27×23。
+fn merge_grid_size(
+    requested_cols: u16,
+    requested_rows: u16,
+    alloc_cols: u16,
+    alloc_rows: u16,
+    current_cols: u16,
+    current_rows: u16,
+) -> (u16, u16) {
+    let cols = if alloc_cols >= 2 {
+        requested_cols.max(alloc_cols).max(2)
+    } else {
+        requested_cols.max(current_cols).max(2)
+    };
+    let rows = if alloc_rows >= 2 {
+        requested_rows.max(alloc_rows).max(1)
+    } else {
+        requested_rows.max(current_rows).max(1)
+    };
+    (cols, rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,6 +1058,26 @@ mod tests {
     #[test]
     fn coalesce_window_is_25ms() {
         assert_eq!(FEED_COALESCE_MS, 25);
+    }
+
+    #[test]
+    fn merge_grid_size_does_not_shrink_herdr_split_rect() {
+        // 0027.log：seed_raw 27×23，VTE 默认 80×24，尚未拿到分配。
+        assert_eq!(
+            merge_grid_size(27, 23, 0, 0, 80, 24),
+            (80, 24),
+            "未分配时不得把默认网格缩到 snapshot split"
+        );
+        // 已 realize：GTK 分配 100×40，snapshot 仍是 27×23。
+        assert_eq!(
+            merge_grid_size(27, 23, 100, 40, 80, 24),
+            (100, 40),
+            "已分配时以 widget 为下限"
+        );
+        // tmux 快照大于当前网格：允许放大，避免 CUP 越界。
+        assert_eq!(merge_grid_size(132, 41, 0, 0, 80, 24), (132, 41));
+        // 窗口变小：请求与分配都是 50×20。
+        assert_eq!(merge_grid_size(50, 20, 50, 20, 100, 40), (50, 20));
     }
 
     #[test]
