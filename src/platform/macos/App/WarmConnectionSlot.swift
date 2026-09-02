@@ -17,9 +17,20 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     let bridge: CoreBridge
     let terminalManager: TerminalManager
     private let stateLock = NSLock()
+    /// CoreBridge 不能与同一个 handle 并发访问，但不能把这把锁和
+    /// lifecycle/pending 队列锁混用。后台 poll 只短暂持有 bridgeLock，
+    /// 主线程切换时不会被等待中的 Surface 队列反向卡住。
+    private let bridgeLock = NSLock()
     private var lifecycleValue: ConnectionLifecycle = .background
     private var lastSnapshotValue = FrameSnapshot()
+    private var attentionSnapshotValue: AttentionSnapshot?
+    private var structuredAgentsValue: [StructuredPaneAgent] = []
+    private var workspaceReplicaIDValue: String?
+    private var pendingAttentionNotifications: [AttentionNotification] = []
     private var pendingSurfaceEvents: [StateChange] = []
+    /// 某个 pane 的后台输出合并超过安全上限后，丢弃不完整 suffix，等
+    /// Runtime 发新的权威 baseline；不能把中间截断的 ANSI 当作可解析 VT。
+    private var pendingSurfaceOverflowPanes = Set<UInt32>()
     private var pendingDrainedWhileBackground = false
     var lifecycle: ConnectionLifecycle {
         get {
@@ -45,6 +56,56 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         return lastSnapshotValue
     }
 
+    /// 前台使用该 slot 时由 MainWindow 写入的最新拓扑。后台不再重复做
+    /// 全量 snapshot；切回时 refreshUI 仍会读取权威快照。
+    func cacheSnapshot(_ snapshot: FrameSnapshot) {
+        stateLock.lock()
+        lastSnapshotValue = snapshot
+        stateLock.unlock()
+    }
+
+    /// 后台轮询得到的注意力快照。主线程侧栏只读缓存，不为展示再次触碰
+    /// 远端 CoreBridge。
+    var cachedAttentionSnapshot: AttentionSnapshot? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return attentionSnapshotValue
+    }
+
+    /// 写入当前 slot 的值类型注意力快照；激活 slot 时也用它减少重复 JSON 查询。
+    func cacheAttentionSnapshot(_ snapshot: AttentionSnapshot) {
+        stateLock.lock()
+        attentionSnapshotValue = snapshot
+        if let workspaceID = snapshot.workspaces.first?.workspaceId {
+            workspaceReplicaIDValue = workspaceID
+        }
+        stateLock.unlock()
+    }
+
+    /// 后台轮询得到的稳定 Workspace 身份。
+    var cachedWorkspaceReplicaID: String? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return workspaceReplicaIDValue
+    }
+
+    /// Core 的结构化 agent 快照副本。
+    var cachedStructuredAgents: [StructuredPaneAgent] {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return structuredAgentsValue
+    }
+
+    /// 主线程消费后台已经取走的通知；通知的 FFI 查询不再发生在 UI 切换路径。
+    func takePendingAttentionNotifications() -> [AttentionNotification] {
+        dispatchPrecondition(condition: .onQueue(.main))
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let result = pendingAttentionNotifications
+        pendingAttentionNotifications.removeAll()
+        return result
+    }
+
     init(
         key: ConnectionKey,
         bridge: CoreBridge,
@@ -66,6 +127,13 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         _ = drainBackgroundEvents()
     }
 
+    /// 是否还有需要 hop 回主线程的 Surface 工作。
+    var hasPendingSurfaceWork: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return !pendingSurfaceEvents.isEmpty || !pendingSurfaceOverflowPanes.isEmpty
+    }
+
     /// 在后台队列排空该 Workspace 的 core 事件。
     ///
     /// 只做 FFI：poll、Index/attention 进程名、缓存 snapshot。
@@ -73,9 +141,24 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     @discardableResult
     func drainBackgroundEvents() -> Bool {
         stateLock.lock()
-        defer { stateLock.unlock() }
-        guard lifecycleValue == .background else { return false }
-        let events = bridge.pollEvents()
+        guard lifecycleValue == .background else {
+            stateLock.unlock()
+            return false
+        }
+        stateLock.unlock()
+
+        // 不要在 stateLock 内进入 FFI。激活/关闭只需改变 lifecycle，
+        // bridgeLock 负责让同一 handle 的一次短 FFI 批次安全完成。
+        bridgeLock.lock()
+        stateLock.lock()
+        let stillUsable = lifecycleValue != .evicting
+        stateLock.unlock()
+        guard stillUsable else {
+            bridgeLock.unlock()
+            return false
+        }
+
+        let events = bridge.pollEvents(maxCount: 32)
         _ = bridge.takeError()
         var surface: [StateChange] = []
         for ev in events {
@@ -91,32 +174,195 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
                 surface.append(ev)
             }
         }
+
+        // 先把 Surface 事件挂入 slot 队列，再释放 bridgeLock。这样如果主线程
+        // 恰好开始激活，prepareForForeground 等到的就是完整的这一批事件。
+        stateLock.lock()
+        guard lifecycleValue != .evicting else {
+            stateLock.unlock()
+            bridgeLock.unlock()
+            return false
+        }
         if !surface.isEmpty {
-            pendingSurfaceEvents.append(contentsOf: surface)
+            for event in surface {
+                enqueueSurfaceEvent(event)
+            }
             pendingDrainedWhileBackground = true
         }
-        lastSnapshotValue = bridge.snapshot()
-        return !pendingSurfaceEvents.isEmpty
+        let continueBackgroundMetadata = lifecycleValue == .background
+        stateLock.unlock()
+        bridgeLock.unlock()
+
+        // 输出洪水只做小批量 poll；后台不再做全量拓扑 snapshot，前台曾经
+        // 使用过的快照由 cacheSnapshot 保留，切回时再由 refreshUI 做一次
+        // 权威读取。注意力快照很小且只在 utility 线程读取，保持每轮 poll
+        // 更新，确保 BEL/agent 状态不会等下一轮 UI 展示才出现。
+        var attentionJSON: String?
+        var notificationJSON: String?
+        var agents: [StructuredPaneAgent]?
+        if continueBackgroundMetadata {
+            // 生命周期可能在上一个短批次之后已经切换；再次确认后才做
+            // metadata FFI，优先把主线程切换让出来。
+            bridgeLock.lock()
+            stateLock.lock()
+            let shouldReadMetadata = lifecycleValue == .background
+            stateLock.unlock()
+            if shouldReadMetadata {
+                attentionJSON = bridge.attentionSnapshotJSON()
+                notificationJSON = bridge.attentionTakeNotificationsJSON()
+                agents = bridge.structuredAgentSnapshot()
+            } else {
+                attentionJSON = nil
+                notificationJSON = nil
+                agents = nil
+            }
+            bridgeLock.unlock()
+        } else {
+            attentionJSON = nil
+            notificationJSON = nil
+            agents = nil
+        }
+        let attention = attentionJSON.flatMap { json in
+            AttentionSnapshot.decode(Data(json.utf8))
+        }
+        let notifications = notificationJSON.flatMap { json in
+            AttentionNotifications.decode(Data(json.utf8))?.notifications
+        } ?? []
+        stateLock.lock()
+        guard lifecycleValue != .evicting else {
+            stateLock.unlock()
+            return false
+        }
+        if continueBackgroundMetadata {
+            if let attention {
+                attentionSnapshotValue = attention
+                if let workspaceID = attention.workspaces.first?.workspaceId {
+                    workspaceReplicaIDValue = workspaceID
+                }
+            }
+            if !notifications.isEmpty {
+                pendingAttentionNotifications.append(contentsOf: notifications)
+            }
+        }
+        if let agents {
+            structuredAgentsValue = agents
+        }
+        let hasPending = !pendingSurfaceEvents.isEmpty || !pendingSurfaceOverflowPanes.isEmpty
+        stateLock.unlock()
+        return hasPending
+    }
+
+    /// 规范化后台 Surface 队列。
+    ///
+    /// 不同 pane 的输出可以独立合并；同一 pane 只合并 baseline 之后的
+    /// 连续输出。新的 snapshot/frame 会淘汰它之前尚未交付的旧 Surface，
+    /// 但保留按行历史，因为历史属于 native scrollback 的独立 seed。
+    private func enqueueSurfaceEvent(_ event: StateChange) {
+        let paneId = event.paneId
+        if event.isPaneSnapshot || event.isPaneFrame {
+            pendingSurfaceOverflowPanes.remove(paneId)
+            pendingSurfaceEvents.removeAll { candidate in
+                candidate.paneId == paneId
+                    && (candidate.isPaneOutput
+                        || candidate.isPaneSnapshot
+                        || candidate.isPaneFrame)
+            }
+            pendingSurfaceEvents.append(event)
+            return
+        }
+
+        if event.isPaneOutput {
+            guard !pendingSurfaceOverflowPanes.contains(paneId) else { return }
+            if let index = pendingSurfaceEvents.lastIndex(where: {
+                $0.paneId == paneId
+            }) {
+                let previous = pendingSurfaceEvents[index]
+                guard previous.isPaneOutput else {
+                    pendingSurfaceEvents.append(event)
+                    return
+                }
+                let combinedSize = previous.data.count.addingReportingOverflow(event.data.count)
+                guard !combinedSize.overflow,
+                      combinedSize.partialValue <= SurfaceEventBatchPolicy.maxCoalescedOutputBytes
+                else {
+                    pendingSurfaceEvents.removeAll { candidate in
+                        candidate.paneId == paneId && candidate.isPaneOutput
+                    }
+                    pendingSurfaceOverflowPanes.insert(paneId)
+                    return
+                }
+                pendingSurfaceEvents[index] = StateChange(
+                    type: previous.type,
+                    paneId: previous.paneId,
+                    tabId: previous.tabId,
+                    windowId: previous.windowId,
+                    data: Self.appendedData(previous.data, event.data),
+                    name: previous.name
+                )
+                return
+            }
+            pendingSurfaceEvents.append(event)
+            return
+        }
+
+        if event.isPaneClosed {
+            pendingSurfaceOverflowPanes.remove(paneId)
+            pendingSurfaceEvents.removeAll { $0.paneId == paneId }
+        }
+        pendingSurfaceEvents.append(event)
     }
 
     /// 主线程：把后台排空的 PTY 喂给本 slot 的 Surface 树。
     ///
     /// 后台批次即使后来变成前台，也不得为从未打开的 pane 新建 widget。
-    func applyPendingSurfaceEvents() {
+    @discardableResult
+    func applyPendingSurfaceEvents(
+        maxEvents: Int = SurfaceEventBatchPolicy.maxEventsPerPass,
+        timeBudget: TimeInterval = SurfaceEventBatchPolicy.timeBudget
+    ) -> Bool {
         dispatchPrecondition(condition: .onQueue(.main))
         stateLock.lock()
-        let events = pendingSurfaceEvents
-        pendingSurfaceEvents.removeAll()
+        let overflowPanes = pendingSurfaceOverflowPanes
+        pendingSurfaceOverflowPanes.removeAll()
         let fromBackground = pendingDrainedWhileBackground
         pendingDrainedWhileBackground = false
         let alive = lifecycleValue != .evicting
         let nowActive = lifecycleValue == .active
         stateLock.unlock()
-        guard alive else { return }
+        guard alive else { return false }
 
         if fromBackground {
             terminalManager.setViewCreationEnabled(false)
         }
+
+        for paneId in overflowPanes {
+            terminalManager.markNeedsAuthoritativeSnapshot(paneId: paneId)
+        }
+
+        let limit = max(1, maxEvents)
+        let started = ProcessInfo.processInfo.systemUptime
+        var events: [StateChange] = []
+        while events.count < limit {
+            if !events.isEmpty,
+               SurfaceEventBatchPolicy.shouldYield(
+                   processedEvents: events.count,
+                   elapsed: ProcessInfo.processInfo.systemUptime - started,
+                   maxEvents: limit,
+                   timeBudget: timeBudget
+               )
+            {
+                break
+            }
+            stateLock.lock()
+            let next = pendingSurfaceEvents.first
+            if next != nil {
+                pendingSurfaceEvents.removeFirst()
+            }
+            stateLock.unlock()
+            guard let next else { break }
+            events.append(next)
+        }
+
         if !events.isEmpty {
             terminalManager.beginEventBatch()
             for ev in events {
@@ -137,6 +383,17 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         if nowActive {
             terminalManager.setViewCreationEnabled(true)
         }
+
+        stateLock.lock()
+        let hasPending = !pendingSurfaceEvents.isEmpty || !pendingSurfaceOverflowPanes.isEmpty
+        stateLock.unlock()
+        return hasPending
+    }
+
+    private static func appendedData(_ first: Data, _ second: Data) -> Data {
+        var combined = first
+        combined.append(second)
+        return combined
     }
 
     /// 在 MainWindow 使用该 slot 的 bridge 前先切换生命周期。若后台 poll
@@ -145,16 +402,28 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.lock()
         lifecycleValue = .active
         stateLock.unlock()
-        terminalManager.setViewCreationEnabled(true)
+        // 等已在后台运行的一小批 FFI 结束；不把 stateLock 作为这段等待的
+        // 门闩，避免主线程与事件队列互相等待。
+        bridgeLock.lock()
+        bridgeLock.unlock()
+        // 先把已经排队的 baseline/增量按序交付，再请求可能需要的恢复
+        // snapshot；否则旧缺口可能在激活这一拍抢先发出网络任务。
+        terminalManager.setViewCreationEnabled(
+            true,
+            requestRecoverySnapshots: false
+        )
     }
 
     /// 在后台 slot 上安全访问 CoreBridge。后台 poll、前台激活和淘汰共用
     /// 同一把锁；不得把 bridge 引用带出闭包，否则 C ABI handle 可能并发。
     @discardableResult
     func withBridge<T>(_ body: (CoreBridge) -> T) -> T? {
+        bridgeLock.lock()
+        defer { bridgeLock.unlock() }
         stateLock.lock()
-        defer { stateLock.unlock() }
-        guard lifecycleValue != .evicting else { return nil }
+        let alive = lifecycleValue != .evicting
+        stateLock.unlock()
+        guard alive else { return nil }
         return body(bridge)
     }
 
@@ -162,23 +431,33 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     /// local shell 直接 shutdown（无独立 server 可保留）。
     func evict(reason: ConnectionEvictionReason) {
         stateLock.lock()
-        defer { stateLock.unlock() }
         lifecycleValue = .evicting
         pendingSurfaceEvents.removeAll()
+        pendingSurfaceOverflowPanes.removeAll()
         pendingDrainedWhileBackground = false
+        pendingAttentionNotifications.removeAll()
+        stateLock.unlock()
+
+        bridgeLock.lock()
         if terminalManager.usesClientResize {
             _ = bridge.detach()
         }
         bridge.shutdown()
+        bridgeLock.unlock()
     }
 
     /// 窗口/应用关闭：直接回收 handle，不保留后台连接。
     func shutdown() {
         stateLock.lock()
-        defer { stateLock.unlock() }
         lifecycleValue = .evicting
         pendingSurfaceEvents.removeAll()
+        pendingSurfaceOverflowPanes.removeAll()
         pendingDrainedWhileBackground = false
+        pendingAttentionNotifications.removeAll()
+        stateLock.unlock()
+
+        bridgeLock.lock()
         bridge.shutdown()
+        bridgeLock.unlock()
     }
 }

@@ -458,6 +458,27 @@ public enum SurfaceEventPolicy {
     }
 }
 
+/// 后台 Workspace 的 Surface catch-up 预算。
+///
+/// 后台连接必须继续消费事件，但不能把积压的高流量 PTY 在一次主线程
+/// 回调里全部重放。超过预算时保留队列，下一拍继续处理；如果单个 pane
+/// 的合并输出也超过上限，则交给 Runtime 重新发送权威 baseline。
+public enum SurfaceEventBatchPolicy {
+    public static let maxEventsPerPass = 32
+    public static let timeBudget: TimeInterval = 0.004
+    public static let maxCoalescedOutputBytes = 512 * 1024
+
+    public static func shouldYield(
+        processedEvents: Int,
+        elapsed: TimeInterval,
+        maxEvents: Int = maxEventsPerPass,
+        timeBudget: TimeInterval = SurfaceEventBatchPolicy.timeBudget
+    ) -> Bool {
+        processedEvents >= max(1, maxEvents)
+            || elapsed >= max(0, timeBudget)
+    }
+}
+
 /// tmux pane 格子是 Surface 模型的真相。attach 可能先按估出来的 client
 /// 尺寸播种（日志里 128x63），窗口 layout 后变成 93x51；模型必须缩小，
 /// 不能 `max(旧格子, 新格子)` 把 prompt 留在窗口下面。

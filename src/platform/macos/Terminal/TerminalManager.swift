@@ -155,11 +155,25 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 后台 slot 使用：保留事件/索引消费，但禁止创建 AppKit view。
     /// 该开关只影响“懒建 Surface”，不影响已有 view 的清理或尺寸缓存。
-    func setViewCreationEnabled(_ enabled: Bool) {
+    func setViewCreationEnabled(
+        _ enabled: Bool,
+        requestRecoverySnapshots: Bool = true
+    ) {
         viewCreationEnabled = enabled
-        if enabled {
+        if enabled && requestRecoverySnapshots {
             requestAuthoritativeSnapshotsIfNeeded()
         }
+    }
+
+    /// 后台 Surface 队列发现某个 pane 的增量基线已经不完整。
+    ///
+    /// 这里只登记缺口，不立即发 Runtime task。调用方可能还在同一批中
+    /// 交付一个更新的 PaneSnapshot；等该批结束后再请求，避免无谓的重复
+    /// snapshot 和前后两个 baseline 交错。
+    func markNeedsAuthoritativeSnapshot(paneId: UInt32) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        needsAuthoritativeSnapshot.insert(paneId)
+        requestedAuthoritativeSnapshots.remove(paneId)
     }
 
     private func requestAuthoritativeSnapshotsIfNeeded() {

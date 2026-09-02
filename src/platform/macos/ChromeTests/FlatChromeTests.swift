@@ -481,6 +481,33 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         XCTAssertTrue(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: false, hasView: true))
     }
 
+    func testSurfaceEventBatchPolicyHonoursCallerBudget() {
+        XCTAssertFalse(
+            SurfaceEventBatchPolicy.shouldYield(
+                processedEvents: 1,
+                elapsed: 0.001,
+                maxEvents: 32,
+                timeBudget: 0.004
+            )
+        )
+        XCTAssertTrue(
+            SurfaceEventBatchPolicy.shouldYield(
+                processedEvents: 1,
+                elapsed: 0.002,
+                maxEvents: 32,
+                timeBudget: 0.001
+            )
+        )
+        XCTAssertTrue(
+            SurfaceEventBatchPolicy.shouldYield(
+                processedEvents: 32,
+                elapsed: 0,
+                maxEvents: 32,
+                timeBudget: .infinity
+            )
+        )
+    }
+
     func testUnchangedPaneGridMustNotForceScrollToLatest() {
         XCTAssertFalse(
             PaneGridFollowPolicy.shouldScrollToLatest(didResize: false, followTail: true),
