@@ -716,20 +716,77 @@ impl HerdrRuntime {
                 }
                 return true;
             }
+            // pane.split 已把新 pane 写进 panes，但 layout.updated / snapshot
+            // 仍带着旧叶子。零面积记录会让 BSP 重建失败，再走水平兜底就把
+            // 上下切分画成左右，或干脆不进树（dogfood 2135/2249）。
+            if known_tab_panes.len() > existing_leaves.len() {
+                let mut tree = existing.tree.clone();
+                if self.apply_pending_split_to_tree(&mut tree, &known_tab_panes) {
+                    let active = self
+                        .mutation_queue
+                        .in_flight()
+                        .and_then(|pending| pending.expected_pane.as_ref())
+                        .and_then(|id| self.herdr_pane_to_pane.get(id).copied())
+                        .filter(|pane| tree.contains(*pane))
+                        .or_else(|| {
+                            self.herdr_pane_to_pane
+                                .get(&layout.focused_pane_id)
+                                .copied()
+                                .filter(|pane| tree.contains(*pane))
+                        })
+                        .unwrap_or(existing.active);
+                    if !emit_event {
+                        self.snapshot_active.insert(tab, active);
+                    }
+                    let product_layout = TabLayout { tab, tree, active };
+                    self.layouts.insert(tab, product_layout.clone());
+                    self.resync_active_from_layout(tab, active, emit_event);
+                    if emit_event {
+                        self.events.push_back(StateChange::LayoutChanged {
+                            tab,
+                            layout: product_layout,
+                        });
+                    }
+                    return true;
+                }
+            }
         }
 
         let tree = match layout_tree_from_record(layout, &self.herdr_pane_to_pane) {
             Some(tree) => tree,
             None => {
-                if !layout.splits.is_empty() {
-                    tracing::warn!(
-                        target = "muxterm::herdr",
-                        tab = %layout.tab_id,
-                        splits = ?layout.splits,
-                        "Herdr split tree invalid; using legacy horizontal fallback"
-                    );
+                if let Some(existing) = self.layouts.get(&tab).cloned() {
+                    let known_tab_panes: HashSet<PaneId> = self
+                        .panes
+                        .iter()
+                        .filter(|pane| pane.tab == tab)
+                        .map(|pane| pane.id)
+                        .collect();
+                    let mut tree = existing.tree.clone();
+                    if self.apply_pending_split_to_tree(&mut tree, &known_tab_panes) {
+                        tree
+                    } else {
+                        if !layout.splits.is_empty() {
+                            tracing::warn!(
+                                target = "muxterm::herdr",
+                                tab = %layout.tab_id,
+                                splits = ?layout.splits,
+                                "Herdr split tree invalid; using legacy horizontal fallback"
+                            );
+                        }
+                        legacy_horizontal_tree(&leaves)
+                    }
+                } else {
+                    if !layout.splits.is_empty() {
+                        tracing::warn!(
+                            target = "muxterm::herdr",
+                            tab = %layout.tab_id,
+                            splits = ?layout.splits,
+                            "Herdr split tree invalid; using legacy horizontal fallback"
+                        );
+                    }
+                    legacy_horizontal_tree(&leaves)
                 }
-                legacy_horizontal_tree(&leaves)
             }
         };
         let active = self
@@ -751,6 +808,38 @@ impl HerdrRuntime {
             });
         }
         true
+    }
+
+    /// 用 in-flight SplitPane 把新叶子接到现有树上。layout 记录落后时
+    /// 不能等下一次完整几何，否则 GTK 一直停在旧 Leaf。
+    fn apply_pending_split_to_tree(&self, tree: &mut LayoutNode, known: &HashSet<PaneId>) -> bool {
+        let Some(pending) = self.mutation_queue.in_flight() else {
+            return false;
+        };
+        if pending.kind != MutationKind::SplitPane {
+            return false;
+        }
+        let Some(dir) = pending.split_dir else {
+            return false;
+        };
+        let Some(target) = pending
+            .target_pane
+            .as_ref()
+            .and_then(|id| self.herdr_pane_to_pane.get(id).copied())
+        else {
+            return false;
+        };
+        let Some(created) = pending
+            .expected_pane
+            .as_ref()
+            .and_then(|id| self.herdr_pane_to_pane.get(id).copied())
+        else {
+            return false;
+        };
+        if !known.contains(&created) || tree.contains(created) || !tree.contains(target) {
+            return false;
+        }
+        tree.split_at(target, created, dir)
     }
 
     /// 切 tab 时恢复目标 pane：权威快照优先（snapshot_active），layout 兜底。
@@ -2573,7 +2662,17 @@ fn build_layout_subtree(
         }
     }
     if first_panes.is_empty() || second_panes.is_empty() {
-        return None;
+        // 后台 / 刚 split 的快照常带 0x0 rect。中心点比较会把所有 pane
+        // 分到同一侧，BSP 失败后再走水平兜底，上下切分就画成左右。
+        // 叶子按 split path 前序切分：左子树叶子数取自 BSP。
+        let mut left_path = path.to_vec();
+        left_path.push(false);
+        let left_count = subtree_leaf_count(&left_path, splits);
+        if left_count == 0 || left_count >= panes.len() {
+            return None;
+        }
+        first_panes = panes[..left_count].to_vec();
+        second_panes = panes[left_count..].to_vec();
     }
 
     let mut first_path = path.to_vec();
@@ -2586,6 +2685,21 @@ fn build_layout_subtree(
         first: Box::new(build_layout_subtree(&first_path, &first_panes, splits)?),
         second: Box::new(build_layout_subtree(&second_path, &second_panes, splits)?),
     })
+}
+
+fn subtree_leaf_count(
+    path: &[bool],
+    splits: &HashMap<Vec<bool>, &super::session::LayoutSplitRecord>,
+) -> usize {
+    if splits.contains_key(path) {
+        let mut left = path.to_vec();
+        left.push(false);
+        let mut right = path.to_vec();
+        right.push(true);
+        subtree_leaf_count(&left, splits) + subtree_leaf_count(&right, splits)
+    } else {
+        1
+    }
 }
 
 /// 兼容旧录制快照：没有 splits 时保留原先的确定性水平兜底。
@@ -3768,6 +3882,208 @@ mod tests {
             .panes
             .iter()
             .all(|pane| (pane.cols, pane.rows) == (90, 30)));
+    }
+
+    #[test]
+    fn zero_sized_down_split_builds_vertical_tree() {
+        let zero = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let layout = LayoutRecord {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            zoomed: false,
+            area: zero,
+            focused_pane_id: "w1:p2".into(),
+            panes: vec![
+                LayoutPaneRecord {
+                    pane_id: "w1:p1".into(),
+                    focused: false,
+                    rect: zero,
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p2".into(),
+                    focused: true,
+                    rect: zero,
+                },
+            ],
+            splits: vec![LayoutSplitRecord {
+                id: "split_0_root".into(),
+                path: vec![],
+                direction: LayoutSplitDirection::Down,
+                ratio: 0.5,
+                rect: zero,
+            }],
+        };
+        let pane_ids = HashMap::from([("w1:p1".into(), PaneId(50)), ("w1:p2".into(), PaneId(54))]);
+        assert_eq!(
+            layout_tree_from_record(&layout, &pane_ids),
+            Some(LayoutNode::Split {
+                dir: SplitDir::Vertical,
+                ratio: 500,
+                first: Box::new(LayoutNode::Leaf(PaneId(50))),
+                second: Box::new(LayoutNode::Leaf(PaneId(54))),
+            }),
+            "0x0 rect 的 down split 不得塌成水平兜底"
+        );
+    }
+
+    #[test]
+    fn zero_sized_nested_down_split_keeps_vertical_child() {
+        let zero = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let layout = LayoutRecord {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            zoomed: false,
+            area: zero,
+            focused_pane_id: "w1:p3".into(),
+            panes: vec![
+                LayoutPaneRecord {
+                    pane_id: "w1:p1".into(),
+                    focused: false,
+                    rect: zero,
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p2".into(),
+                    focused: false,
+                    rect: zero,
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p3".into(),
+                    focused: true,
+                    rect: zero,
+                },
+            ],
+            splits: vec![
+                LayoutSplitRecord {
+                    id: "split_0_root".into(),
+                    path: vec![],
+                    direction: LayoutSplitDirection::Right,
+                    ratio: 0.5,
+                    rect: zero,
+                },
+                LayoutSplitRecord {
+                    id: "split_1_0".into(),
+                    path: vec![false],
+                    direction: LayoutSplitDirection::Down,
+                    ratio: 0.5,
+                    rect: zero,
+                },
+            ],
+        };
+        let pane_ids = HashMap::from([
+            ("w1:p1".into(), PaneId(50)),
+            ("w1:p2".into(), PaneId(56)),
+            ("w1:p3".into(), PaneId(54)),
+        ]);
+        assert_eq!(
+            layout_tree_from_record(&layout, &pane_ids),
+            Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 500,
+                first: Box::new(LayoutNode::Split {
+                    dir: SplitDir::Vertical,
+                    ratio: 500,
+                    first: Box::new(LayoutNode::Leaf(PaneId(50))),
+                    second: Box::new(LayoutNode::Leaf(PaneId(56))),
+                }),
+                second: Box::new(LayoutNode::Leaf(PaneId(54))),
+            }),
+            "左右切分后再上下切分，0x0 几何仍要保留 nested Vertical"
+        );
+    }
+
+    #[test]
+    fn pending_split_grows_tree_when_layout_snapshot_lags() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        let tab = TabId(26);
+        let first = PaneId(50);
+        let created = PaneId(54);
+        runtime.herdr_tab_to_tab.insert("w2:t1J".into(), tab);
+        runtime.herdr_pane_to_pane.insert("w2:p1J".into(), first);
+        runtime.herdr_pane_to_pane.insert("w2:p1P".into(), created);
+        runtime.panes = vec![
+            PaneInfo {
+                id: first,
+                tab,
+                active: false,
+                title: "left".into(),
+                cols: 54,
+                rows: 23,
+            },
+            PaneInfo {
+                id: created,
+                tab,
+                active: true,
+                title: "down".into(),
+                cols: 54,
+                rows: 11,
+            },
+        ];
+        runtime.layouts.insert(
+            tab,
+            TabLayout {
+                tab,
+                tree: LayoutNode::Leaf(first),
+                active: first,
+            },
+        );
+        let id = runtime
+            .mutation_queue
+            .enqueue(MutationKind::SplitPane, Instant::now())
+            .expect("enqueue");
+        let pending = runtime.mutation_queue.by_id_mut(id).expect("pending");
+        pending.dispatched_at = Some(Instant::now());
+        pending.split_dir = Some(SplitDir::Vertical);
+        pending.target_pane = Some("w2:p1J".into());
+        pending.expected_pane = Some("w2:p1P".into());
+        pending.expected_focus = Some("w2:p1P".into());
+        pending.expected_tab = Some("w2:t1J".into());
+
+        let area = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 54,
+            height: 23,
+        };
+        let lagging = LayoutRecord {
+            workspace_id: "w2".into(),
+            tab_id: "w2:t1J".into(),
+            zoomed: false,
+            area,
+            focused_pane_id: "w2:p1J".into(),
+            panes: vec![LayoutPaneRecord {
+                pane_id: "w2:p1J".into(),
+                focused: true,
+                rect: area,
+            }],
+            splits: vec![],
+        };
+
+        assert!(runtime.apply_layout_record(&lagging, true));
+        let got = runtime.layouts.get(&tab).expect("layout");
+        assert_eq!(
+            got.tree,
+            LayoutNode::Split {
+                dir: SplitDir::Vertical,
+                ratio: 500,
+                first: Box::new(LayoutNode::Leaf(first)),
+                second: Box::new(LayoutNode::Leaf(created)),
+            },
+            "layout 快照仍是单叶子时，in-flight SplitPane 必须把新 pane 接进树"
+        );
+        assert_eq!(got.active, created);
     }
 
     /// dogfood 2105：已知 tab 仍有 2 pane 时，只带 1 pane 的 layout.updated
