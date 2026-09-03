@@ -44,7 +44,10 @@ use crate::core::types::{PaneId, TabId};
 #[allow(dead_code)]
 enum PendingQuery {
     /// 非查询命令的响应占位；避免 split/send-keys 的 `%end` 消耗后续查询。
-    Ignore,
+    Ignore { command: String },
+    /// 已取消命令的响应占位；迟到的 `%begin/%end` 只能消耗这个槽，不能
+    /// 错配到后续真实查询，也不应再制造一条无意义的错误日志。
+    Tombstone,
     /// 新建 attach pane 的 readiness probe（send Enter）。
     ReadyProbe { pane: PaneId },
     /// list-panes -t <tab> -F '...'：解析所有 pane（pane_id, tab_id, active, cols, rows）。
@@ -354,6 +357,82 @@ pub fn supports_colour_report(version: Option<(u32, u32)>) -> bool {
 /// `refresh-client -B`（format 订阅）需要 tmux >= 3.2（文档 §B+）。
 pub fn supports_status_subscription(version: Option<(u32, u32)>) -> bool {
     matches!(version, Some((major, minor)) if major > 3 || (major == 3 && minor >= 2))
+}
+
+/// 为控制命令生成不包含用户输入内容的诊断标签。
+///
+/// `send-keys` 的完整命令可能含有密码、粘贴内容或 shell 命令，日志只能
+/// 记录命令类型。`refresh-client` 的三个能力相关 flag 则保留在标签中，
+/// 方便在收到 `%error` 时执行精确的降级处理。
+fn command_label(line: &str) -> String {
+    let mut words = line.split_whitespace();
+    let Some(command) = words.next() else {
+        return "<empty>".into();
+    };
+    if command == "refresh-client" {
+        if let Some(option @ ("-A" | "-B" | "-r")) = words.next() {
+            return format!("{command} {option}");
+        }
+    }
+    command.to_string()
+}
+
+/// 将 tmux `%error` 响应压成有限长度的安全诊断文本。
+fn tmux_error_detail(lines: &[String]) -> String {
+    let detail = lines
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if detail.is_empty() {
+        return "<no detail>".into();
+    }
+    detail.chars().take(512).collect()
+}
+
+/// tmux 在窗口/pane 已被关闭或 client 已退出时，可能返回这些正常竞态错误。
+fn is_stale_target_error(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "can't find pane",
+        "can't find window",
+        "can't find session",
+        "no such pane",
+        "no such window",
+        "no such session",
+        "pane not found",
+        "window not found",
+        "session not found",
+        "no current client",
+    ]
+    .iter()
+    .any(|needle| detail.contains(needle))
+}
+
+/// 判断一个非查询命令的失败是否属于可预期的兼容性/关闭竞态。
+fn is_expected_ignored_error(command: &str, detail: &str) -> bool {
+    if matches!(command, "refresh-client -B" | "refresh-client -r") {
+        return true;
+    }
+    if command == "refresh-client -A" {
+        return is_stale_target_error(detail) || detail == "<no detail>";
+    }
+    is_stale_target_error(detail)
+        && matches!(
+            command,
+            "send-keys"
+                | "select-pane"
+                | "select-window"
+                | "resize-pane"
+                | "kill-pane"
+                | "list-panes"
+                | "list-windows"
+                | "list-sessions"
+                | "rename-pane"
+                | "rename-window"
+                | "rename-session"
+        )
 }
 
 /// capture-pane 响应 → 终端字节流。
@@ -1352,7 +1431,8 @@ impl TmuxRuntime {
             | PendingQuery::PaneHistory { pane }
             | PendingQuery::PaneResyncState { pane, .. }
             | PendingQuery::PaneResyncCapture { pane, .. } => Some(*pane),
-            PendingQuery::Ignore
+            PendingQuery::Ignore { .. }
+            | PendingQuery::Tombstone
             | PendingQuery::ListPanes { .. }
             | PendingQuery::ListWindows
             | PendingQuery::ListSessions => None,
@@ -1367,7 +1447,7 @@ impl TmuxRuntime {
                 if matches!(query, PendingQuery::PaneHistory { .. }) {
                     self.history_backfill_pending.remove(&pane);
                 }
-                *query = PendingQuery::Ignore;
+                *query = PendingQuery::Tombstone;
             }
         }
         let numbers: Vec<i64> = self
@@ -1384,7 +1464,8 @@ impl TmuxRuntime {
             ) {
                 self.history_backfill_pending.remove(&pane);
             }
-            self.pending_by_number.insert(number, PendingQuery::Ignore);
+            self.pending_by_number
+                .insert(number, PendingQuery::Tombstone);
             self.response_accum.remove(&number);
         }
     }
@@ -2170,7 +2251,7 @@ impl TmuxRuntime {
     fn dispatch_response(&mut self, number: i64, lines: Vec<String>) {
         if let Some(query) = self.pending_by_number.remove(&number) {
             match query {
-                PendingQuery::Ignore => {}
+                PendingQuery::Ignore { .. } | PendingQuery::Tombstone => {}
                 PendingQuery::ReadyProbe { pane } => {
                     self.ready_probe_in_flight.remove(&pane);
                     self.ready_probe_acknowledged.insert(pane);
@@ -2476,13 +2557,51 @@ impl TmuxRuntime {
         self.release_attach_followup_if_ready();
     }
 
+    /// 处理没有专用响应处理器的命令错误。
+    fn handle_command_error(&mut self, number: i64, command: String, err_lines: &[String]) {
+        let detail = tmux_error_detail(err_lines);
+        match command.as_str() {
+            "refresh-client -r" => {
+                // 即使能力探测误判（或远端 tmux 与本地版本不同），一次真实
+                // 拒绝也足以关闭后续颜色上报，避免每个 pane 重复刷错误。
+                self.colour_report_supported = false;
+                self.colour_report_warned = true;
+            }
+            "refresh-client -B" => {
+                // -B 不可用时必须让 GUI 重新走 status bar 轮询；此前这里仍
+                // 保持 active=true，导致老 tmux 永久没有状态更新。
+                self.status_subscription_supported = false;
+                self.status_subscriptions_active = false;
+            }
+            _ => {}
+        }
+
+        if is_expected_ignored_error(&command, &detail) {
+            tracing::debug!(
+                target = "muxterm::tmux",
+                number,
+                command = %command,
+                error = %detail,
+                "tmux control command rejected during compatibility or teardown race"
+            );
+        } else {
+            tracing::warn!(
+                target = "muxterm::tmux",
+                number,
+                command = %command,
+                error = %detail,
+                "tmux control command failed"
+            );
+        }
+    }
+
     /// 处理一条命令响应的 `%error` 边界。
     ///
     /// 出错时移除按 number 登记的查询，并确保 attach 的 capture 失败不会永久
     /// 抑制该 pane 的实时输出（否则会黑屏）。capture 期间已经收到的字节不能
     /// 丢掉：它们是唯一可能包含真实 live 输出的 fallback seed。
     fn handle_response_error(&mut self, number: i64) {
-        let _err_lines = self.response_accum.remove(&number).unwrap_or_default();
+        let err_lines = self.response_accum.remove(&number).unwrap_or_default();
         if let Some(q) = self.pending_by_number.remove(&number) {
             match q {
                 PendingQuery::PaneIndexCapture { pane } => {
@@ -2519,6 +2638,7 @@ impl TmuxRuntime {
                         target = "muxterm::tmux",
                         pane = pane.0,
                         number,
+                        error = %tmux_error_detail(&err_lines),
                         "background pane index capture failed"
                     );
                 }
@@ -2553,14 +2673,17 @@ impl TmuxRuntime {
                             target: "muxterm::tmux",
                             pane = pane.0,
                             bytes = fallback.len(),
+                            error = %tmux_error_detail(&err_lines),
                             "capture 失败，交付暂存 live fallback"
                         );
                         self.push_pane_output(pane, fallback);
                     }
                     tracing::warn!(
                         target: "muxterm::tmux",
-                        "tmux 命令 {number} 的 pane @{} 屏幕恢复失败",
-                        pane.0
+                        pane = pane.0,
+                        number,
+                        error = %tmux_error_detail(&err_lines),
+                        "pane screen capture failed"
                     );
                 }
                 PendingQuery::PaneResyncState { pane, generation }
@@ -2571,6 +2694,7 @@ impl TmuxRuntime {
                         target: "muxterm::tmux::resync",
                         pane = pane.0,
                         number,
+                        error = %tmux_error_detail(&err_lines),
                         "pane snapshot query failed; releasing resync"
                     );
                     if self
@@ -2585,6 +2709,13 @@ impl TmuxRuntime {
                     self.ready_probe_in_flight.remove(&pane);
                     self.ready_probe_acknowledged.remove(&pane);
                     self.ready_probe_at.insert(pane, Instant::now());
+                    tracing::debug!(
+                        target: "muxterm::tmux",
+                        pane = pane.0,
+                        number,
+                        error = %tmux_error_detail(&err_lines),
+                        "pane readiness probe was rejected; scheduling a retry"
+                    );
                 }
                 PendingQuery::PaneHistory { pane } => {
                     self.history_backfill_pending.remove(&pane);
@@ -2594,6 +2725,7 @@ impl TmuxRuntime {
                         target: "muxterm::tmux",
                         pane = pane.0,
                         number,
+                        error = %tmux_error_detail(&err_lines),
                         "pane history backfill failed"
                     );
                     if self.history_holds_pause.remove(&pane) {
@@ -2601,12 +2733,22 @@ impl TmuxRuntime {
                         let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
                     }
                 }
-                other => {
-                    tracing::warn!(
-                        target: "muxterm::tmux",
-                        "tmux 命令 {number} 出错（丢弃查询 {other:?}）",
-                    );
+                PendingQuery::ListPanes { .. } => {
+                    self.handle_command_error(number, "list-panes".into(), &err_lines);
                 }
+                PendingQuery::ListWindows => {
+                    self.handle_command_error(number, "list-windows".into(), &err_lines);
+                }
+                PendingQuery::DisplayMessage { .. } => {
+                    self.handle_command_error(number, "display-message".into(), &err_lines);
+                }
+                PendingQuery::ListSessions => {
+                    self.handle_command_error(number, "list-sessions".into(), &err_lines);
+                }
+                PendingQuery::Ignore { command } => {
+                    self.handle_command_error(number, command, &err_lines);
+                }
+                PendingQuery::Tombstone => {}
             }
         }
     }
@@ -3139,7 +3281,10 @@ impl TmuxRuntime {
     }
 
     fn query_blocks_history(query: &PendingQuery) -> bool {
-        !matches!(query, PendingQuery::Ignore | PendingQuery::ListSessions)
+        !matches!(
+            query,
+            PendingQuery::Ignore { .. } | PendingQuery::Tombstone | PendingQuery::ListSessions
+        )
     }
 
     /// 活动 tab 的 display-message 还没发出可见 capture。这时往通道里
@@ -3459,6 +3604,7 @@ impl TmuxRuntime {
                 "tmux 命令通道未建立",
             ));
         };
+        let command = command_label(&line);
         // UnboundedSender 只会在 sender task 已退出时失败，不会在快速键入/粘贴
         // 时返回 WouldBlock 丢掉 shell 输入；实际写入仍由后台 task 串行化。
         tx.send(line).map_err(|e| {
@@ -3468,8 +3614,10 @@ impl TmuxRuntime {
             )
         })?;
         // 所有 control-mode 命令都按 FIFO 占一个响应槽；查询调用方会
-        // 立即把最后一个占位替换成具体 PendingQuery。
-        self.pending_queries.push_back(PendingQuery::Ignore);
+        // 立即把最后一个占位替换成具体 PendingQuery。普通命令只保留
+        // 安全标签，不能把 send-keys 的用户输入写入日志。
+        self.pending_queries
+            .push_back(PendingQuery::Ignore { command });
         Ok(())
     }
 
@@ -5434,7 +5582,12 @@ mod tests {
     fn command_response_placeholder_does_not_consume_capture_query() {
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let pane = PaneId(4);
-        b.pending_by_number.insert(1, PendingQuery::Ignore);
+        b.pending_by_number.insert(
+            1,
+            PendingQuery::Ignore {
+                command: "send-keys".into(),
+            },
+        );
         b.pending_by_number
             .insert(2, PendingQuery::CapturePane { pane });
 
@@ -7164,6 +7317,63 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert!(backend.held_colour_reports.is_empty());
         assert!(!backend.attach_followup_held);
+    }
+
+    #[test]
+    fn command_labels_do_not_capture_user_payload() {
+        assert_eq!(
+            command_label(r#"send-keys -t %7 -l "secret command""#),
+            "send-keys"
+        );
+        assert_eq!(
+            command_label(r#"refresh-client -r "%7:\e]10;rgb:0000/0000/0000\e\\""#),
+            "refresh-client -r"
+        );
+        assert_eq!(command_label("list-sessions\n"), "list-sessions");
+    }
+
+    #[test]
+    fn rejected_colour_report_disables_future_reports() {
+        let mut backend = TmuxRuntime::new(None);
+        backend.colour_report_supported = true;
+        backend.pending_by_number.insert(
+            1,
+            PendingQuery::Ignore {
+                command: "refresh-client -r".into(),
+            },
+        );
+        backend
+            .response_accum
+            .insert(1, vec!["unknown flag: -r".into()]);
+
+        backend.handle_response_error(1);
+
+        assert!(!backend.colour_report_supported);
+        assert!(is_expected_ignored_error(
+            "refresh-client -r",
+            "unknown flag: -r"
+        ));
+    }
+
+    #[test]
+    fn rejected_status_subscription_falls_back_to_polling() {
+        let mut backend = TmuxRuntime::new(None);
+        backend.status_subscription_supported = true;
+        backend.status_subscriptions_active = true;
+        backend.pending_by_number.insert(
+            1,
+            PendingQuery::Ignore {
+                command: "refresh-client -B".into(),
+            },
+        );
+        backend
+            .response_accum
+            .insert(1, vec!["unknown flag: -B".into()]);
+
+        backend.handle_response_error(1);
+
+        assert!(!backend.status_subscription_supported);
+        assert!(!backend.status_subscriptions_active);
     }
 
     fn unique_socket() -> String {
