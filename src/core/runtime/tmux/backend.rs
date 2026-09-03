@@ -6052,6 +6052,7 @@ mod tests {
         b.cmd_tx = Some(tx);
         b.status = BackendStatus::Connected;
         b.status_subscription_supported = true;
+        b.colour_report_supported = true;
         let pane = PaneId(79);
         b.panes.push(PaneInfo {
             id: pane,
@@ -7142,6 +7143,27 @@ mod tests {
     fn new_runtime_does_not_send_colour_reports_before_capability_detection() {
         let backend = TmuxRuntime::new(None);
         assert!(!backend.colour_report_supported);
+    }
+
+    #[test]
+    fn unsupported_colour_report_does_not_queue_attach_followup() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut backend = TmuxRuntime::new_with_attach(None, "existing");
+        backend.cmd_tx = Some(tx);
+        backend.status = BackendStatus::Connected;
+
+        let outcome = backend
+            .execute(&Task::ReportPaneColours {
+                target: PaneId(7),
+                fg: Rgb(0, 0, 0),
+                bg: Rgb(255, 255, 255),
+            })
+            .expect("颜色上报任务不应失败");
+
+        assert!(matches!(outcome, TaskOutcome::Done));
+        assert!(rx.try_recv().is_err());
+        assert!(backend.held_colour_reports.is_empty());
+        assert!(!backend.attach_followup_held);
     }
 
     fn unique_socket() -> String {
