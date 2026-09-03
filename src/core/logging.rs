@@ -59,6 +59,20 @@ pub fn resolve_config(cli_level: Option<String>, cli_file: Option<PathBuf>) -> L
 
 static LOGGING_INIT: Once = Once::new();
 
+/// 构造应用日志过滤器。
+///
+/// vte 0.13 通过 `log` 记录尚未实现的 OSC 扩展（例如 shell integration 的
+/// OSC 133/1337）。这些序列已经由 `TerminalState` 的注意力扫描器消费，vte
+/// 的 debug 记录不代表应用错误；保留 vte 的 info/warn/error，避免掩盖真正的
+/// 库故障，只把这类 parser 噪声从 debug 日志中排除。
+fn build_filter(level: &str) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::new(level).add_directive(
+        "vte=info"
+            .parse()
+            .expect("固定的 vte 日志 directive 必须有效"),
+    )
+}
+
 /// 初始化全局 tracing subscriber（进程内只生效一次）。
 pub fn init_logging(config: LoggingConfig) -> anyhow::Result<()> {
     let mut result = Ok(());
@@ -69,7 +83,7 @@ pub fn init_logging(config: LoggingConfig) -> anyhow::Result<()> {
 }
 
 fn init_logging_inner(config: LoggingConfig) -> anyhow::Result<()> {
-    let filter = tracing_subscriber::EnvFilter::new(&config.level);
+    let filter = build_filter(&config.level);
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -149,5 +163,17 @@ mod tests {
             std::env::remove_var("MUXTERM_LOG");
             std::env::remove_var("MUXTERM_LOG_FILE");
         }
+    }
+
+    #[test]
+    fn debug_filter_quiets_vte_parser_diagnostics() {
+        let filter = build_filter("debug");
+        let rendered = filter.to_string();
+        let directives: Vec<&str> = rendered.split(',').collect();
+        assert!(directives.contains(&"debug"));
+        assert!(
+            directives.contains(&"vte=info"),
+            "vte 的 unhandled OSC debug 不能污染应用 debug 日志: {directives:?}"
+        );
     }
 }
