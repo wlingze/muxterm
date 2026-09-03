@@ -602,4 +602,18 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     func testAvailableRuntimes() -> [TargetRuntime] {
         availableRuntimes
     }
+
+    func testSetName(_ name: String) {
+        nameCombo.stringValue = name
+        nameManuallyEdited = true
+    }
+
+    func testSetPath(_ path: String) {
+        _ = pathController.updateInput(path)
+        pathCombo.stringValue = pathController.text
+    }
+
+    func testSave() {
+        saveTapped()
+    }
 }

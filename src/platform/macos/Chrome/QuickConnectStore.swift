@@ -86,6 +86,24 @@ public final class QuickConnectStore {
         return true
     }
 
+    /// Replace an existing project while allowing its attach identity to change.
+    ///
+    /// Editing a shell path or a tmux session changes `uniqueID`; matching the
+    /// updated value with `upsertProject` would append a second project instead
+    /// of updating the row the user edited.
+    @discardableResult
+    public func updateProject(_ config: TargetConfig, replacing original: TargetConfig) -> Bool {
+        let originalID = QuickConnect.uniqueID(for: original)
+        guard let index = projects.firstIndex(where: {
+            QuickConnect.uniqueID(for: $0) == originalID
+        }) else {
+            return upsertProject(config)
+        }
+        projects[index] = config
+        persistProjects?(projects)
+        return true
+    }
+
     private static func isMatchingHerdrProvisional(
         _ candidate: TargetConfig,
         resolved config: TargetConfig

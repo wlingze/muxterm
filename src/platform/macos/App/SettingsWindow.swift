@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MuxtermChrome
 
 /// AppKit settings renderer backed by Core's Schema/Manifest transaction API.
 ///
@@ -32,6 +33,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     }
 
     private let bridge: CoreBridge
+    private let quickConnectStore: QuickConnectStore
     private var controls: [String: NSView] = [:]
     private var baselines: [String: Any] = [:]
     private var pendingFontPath: String?
@@ -46,9 +48,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private var visibleCategoryIDs: [String] = []
     private var selectedCategoryID: String?
     private var pages: [String: NSScrollView] = [:]
+    private var projectEditorView: SettingsProjectEditorView?
+    private var activeProjectEditor: TargetConfigWindow?
 
-    init(bridge: CoreBridge) {
+    init(bridge: CoreBridge, quickConnectStore: QuickConnectStore? = nil) {
         self.bridge = bridge
+        self.quickConnectStore = quickConnectStore ?? Self.makeCoreBackedStore(bridge: bridge)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 640),
             styleMask: [.titled, .closable, .resizable],
@@ -61,6 +66,41 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         window.delegate = self
         window.setAccessibilityIdentifier("muxterm.settingsWindow")
         loadSnapshotAndBuild()
+    }
+
+    private static func makeCoreBackedStore(bridge: CoreBridge) -> QuickConnectStore {
+        let projects = projects(from: bridge)
+        return QuickConnectStore(projects: projects) { [weak bridge] updated in
+            guard let bridge else { return }
+            do {
+                let transaction = try bridge.configBegin()
+                try bridge.configPatch(
+                    transaction: transaction,
+                    operations: [[
+                        "op": "replace",
+                        "path": "/projects",
+                        "value": QuickConnectStore.projectJSON(from: updated),
+                    ]]
+                )
+                try bridge.configCommit(transaction: transaction)
+            } catch {
+                NSLog(
+                    "muxterm: failed to persist projects from settings: %@",
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private static func projects(from bridge: CoreBridge) -> [TargetConfig] {
+        guard let text = bridge.configDescribeJSON(),
+              let data = text.data(using: .utf8),
+              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = envelope["data"] as? [String: Any],
+              let values = payload["values"] as? [String: Any],
+              let projects = values["projects"] as? [[String: Any]]
+        else { return [] }
+        return QuickConnectStore.targetConfigs(from: projects)
     }
 
     @available(*, unavailable)
@@ -101,6 +141,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         visibleCategoryIDs = []
         selectedCategoryID = nil
         pages = [:]
+        projectEditorView = nil
 
         guard let groups = manifest["groups"] as? [[String: Any]] else {
             let label = NSTextField(labelWithString: "No settings manifest")
@@ -403,7 +444,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             row.addArrangedSubview(entry)
             row.addArrangedSubview(choose)
             return row
-        case "project_editor", "shortcut_editor":
+        case "project_editor":
+            let editor = SettingsProjectEditorView(projects: quickConnectStore.projects)
+            editor.onNew = { [weak self] in
+                self?.openProjectEditor(nil)
+            }
+            editor.onEdit = { [weak self] index in
+                self?.openProjectEditor(at: index)
+            }
+            editor.onDelete = { [weak self] index in
+                self?.deleteProject(at: index)
+            }
+            projectEditorView = editor
+            return editor
+        case "shortcut_editor":
             let label = NSTextField(labelWithString: "Managed by the dedicated editor")
             label.identifier = NSUserInterfaceItemIdentifier(path)
             label.textColor = .secondaryLabelColor
@@ -436,11 +490,68 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     }
 
     private func loadValues(_ values: [String: Any]) {
-        var projectCount = 0
-        if let projects = values["projects"] as? [[String: Any]] {
-            projectCount = projects.count
+        summaryLabel.stringValue = "Core manifest loaded · \(quickConnectStore.projects.count) project(s) · Apply is transactional"
+    }
+
+    private func refreshProjectEditor() {
+        projectEditorView?.setProjects(quickConnectStore.projects)
+        loadValues([:])
+    }
+
+    private func openProjectEditor(at index: Int) {
+        guard quickConnectStore.projects.indices.contains(index) else { return }
+        openProjectEditor(quickConnectStore.projects[index])
+    }
+
+    private func openProjectEditor(_ config: TargetConfig?) {
+        guard let owner = window else { return }
+        let hosts: [SSHHostInfo]
+        switch ConnectionDiscovery().sshHosts() {
+        case .success(let value):
+            hosts = value
+        case .failure:
+            hosts = []
         }
-        summaryLabel.stringValue = "Core manifest loaded · \(projectCount) project(s) · Apply is transactional"
+        let availableRuntimes = (try? CoreBridge.runtimeCatalog())?
+            .compactMap { TargetRuntime(rawValue: $0.id) }
+            ?? TargetRuntime.allCases
+        let editor = TargetConfigWindow(
+            editing: config,
+            owner: owner,
+            store: quickConnectStore,
+            sshHosts: hosts,
+            availableRuntimes: availableRuntimes
+        )
+        activeProjectEditor = editor
+        editor.onSave = { [weak self] saved in
+            guard let self else { return }
+            if let config {
+                self.quickConnectStore.updateProject(saved, replacing: config)
+            } else {
+                self.quickConnectStore.upsertProject(saved)
+            }
+            self.refreshProjectEditor()
+            self.activeProjectEditor = nil
+        }
+        editor.onCancel = { [weak self] in
+            self?.activeProjectEditor = nil
+        }
+    }
+
+    private func deleteProject(at index: Int) {
+        guard quickConnectStore.projects.indices.contains(index), let owner = window else { return }
+        let project = quickConnectStore.projects[index]
+        let alert = NSAlert()
+        alert.messageText = "Delete Project?"
+        alert.informativeText = "Remove \"\(project.name)\" from the saved projects?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        alert.beginSheetModal(for: owner) { [weak self] response in
+            guard response == .alertSecondButtonReturn, let self else { return }
+            self.quickConnectStore.removeProject(config: project)
+            self.refreshProjectEditor()
+        }
     }
 
     // MARK: - Value collection and Apply/Cancel
@@ -455,6 +566,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     }
 
     private func controlValue(_ view: NSView, baseline: Any?) -> Any? {
+        if let editor = view as? SettingsProjectEditorView {
+            return QuickConnectStore.projectJSON(from: editor.projects)
+        }
         if let checkbox = view as? NSButton {
             return checkbox.state == .on
         }
@@ -684,5 +798,170 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     func testVisiblePageIsScrollable() -> Bool {
         guard let selectedCategoryID, let page = pages[selectedCategoryID] else { return false }
         return page.hasVerticalScroller
+    }
+
+    func testProjectEditorVisible() -> Bool {
+        projectEditorView != nil
+    }
+
+    func testProjectNames() -> [String] {
+        quickConnectStore.projects.map(\.name)
+    }
+
+    func testHasNewProjectButton() -> Bool {
+        projectEditorView?.hasNewProjectButton == true
+    }
+
+    func testProjectEditorContainsPlaceholder() -> Bool {
+        projectEditorView?.containsPlaceholder == true
+    }
+
+    func testOpenProjectEditor(at index: Int) {
+        openProjectEditor(at: index)
+    }
+
+    func testOpenNewProjectEditor() {
+        openProjectEditor(nil)
+    }
+
+    func testActiveTargetConfigWindow() -> TargetConfigWindow? {
+        activeProjectEditor
+    }
+}
+
+/// Settings 中的 Project 列表；编辑细节复用 TargetConfigWindow。
+private final class SettingsProjectEditorView: NSView {
+    var onNew: (() -> Void)?
+    var onEdit: ((Int) -> Void)?
+    var onDelete: ((Int) -> Void)?
+
+    private(set) var projects: [TargetConfig]
+    private let rows = NSStackView()
+    private let newButton = NSButton(title: "New Project", target: nil, action: nil)
+
+    init(projects: [TargetConfig]) {
+        self.projects = projects
+        super.init(frame: .zero)
+        build()
+        setProjects(projects)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    var hasNewProjectButton: Bool {
+        newButton.accessibilityIdentifier() == "muxterm.settings.projects.new"
+    }
+
+    var containsPlaceholder: Bool {
+        rows.arrangedSubviews.contains { view in
+            (view as? NSTextField)?.stringValue == "No projects yet"
+        }
+    }
+
+    func setProjects(_ projects: [TargetConfig]) {
+        self.projects = projects
+        rows.arrangedSubviews.forEach {
+            rows.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        if projects.isEmpty {
+            let empty = NSTextField(labelWithString: "No projects yet")
+            empty.textColor = .secondaryLabelColor
+            rows.addArrangedSubview(empty)
+            return
+        }
+        for (index, project) in projects.enumerated() {
+            rows.addArrangedSubview(makeRow(project: project, index: index))
+        }
+    }
+
+    private func build() {
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 10
+
+        newButton.target = self
+        newButton.action = #selector(newProject)
+        newButton.bezelStyle = .rounded
+        newButton.setAccessibilityIdentifier("muxterm.settings.projects.new")
+        stack.addArrangedSubview(newButton)
+
+        rows.orientation = .vertical
+        rows.alignment = .width
+        rows.spacing = 8
+        stack.addArrangedSubview(rows)
+
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    private func makeRow(project: TargetConfig, index: Int) -> NSView {
+        let name = NSTextField(labelWithString: project.name)
+        name.font = .systemFont(ofSize: 13, weight: .semibold)
+        name.lineBreakMode = .byTruncatingTail
+
+        let details = NSTextField(labelWithString: projectDetail(project))
+        details.textColor = .secondaryLabelColor
+        details.font = .systemFont(ofSize: 11)
+        details.lineBreakMode = .byTruncatingMiddle
+
+        let info = NSStackView(views: [name, details])
+        info.orientation = .vertical
+        info.alignment = .leading
+        info.spacing = 2
+        info.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let edit = NSButton(title: "Edit", target: self, action: #selector(editProject(_:)))
+        edit.tag = index
+        edit.bezelStyle = .rounded
+        edit.setAccessibilityIdentifier("muxterm.settings.projects.\(index).edit")
+        let delete = NSButton(title: "Delete", target: self, action: #selector(deleteProject(_:)))
+        delete.tag = index
+        delete.bezelStyle = .rounded
+        delete.setAccessibilityIdentifier("muxterm.settings.projects.\(index).delete")
+
+        let row = NSStackView(views: [info, edit, delete])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.setAccessibilityIdentifier("muxterm.settings.projects.\(index)")
+        return row
+    }
+
+    private func projectDetail(_ project: TargetConfig) -> String {
+        let transport: String
+        switch project.transport {
+        case .local:
+            transport = "local"
+        case .ssh(let name):
+            transport = "ssh:\(name)"
+        }
+        let path = project.path.isEmpty ? "(no path)" : project.path
+        return "\(project.runtime.rawValue) · \(transport) · \(path)"
+    }
+
+    @objc private func newProject() {
+        onNew?()
+    }
+
+    @objc private func editProject(_ sender: NSButton) {
+        onEdit?(sender.tag)
+    }
+
+    @objc private func deleteProject(_ sender: NSButton) {
+        onDelete?(sender.tag)
     }
 }

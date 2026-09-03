@@ -97,6 +97,103 @@ final class SettingsWindowE2ETests: XCTestCase {
         XCTAssertEqual(settingsCategoryTitle(id: "tab_bar", titleKey: ""), "Tab Bar")
     }
 
+    func testProjectsPageEditsAndPersistsProjectFromGUI() throws {
+        AppE2E.ensureApp()
+        let config = try IsolatedMuxtermConfig(
+            label: "settings-project-edit",
+            toml: Self.projectConfig(name: "before", path: "/tmp/before")
+        )
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+            config.restore()
+        }
+
+        settings.showWindow(nil)
+        AppE2E.pump(50)
+        settings.testSelectCategory("projects")
+
+        XCTAssertTrue(settings.testProjectEditorVisible())
+        XCTAssertEqual(settings.testProjectNames(), ["before"])
+        XCTAssertTrue(settings.testHasNewProjectButton())
+        XCTAssertFalse(settings.testProjectEditorContainsPlaceholder())
+
+        settings.testOpenProjectEditor(at: 0)
+        let editor = try XCTUnwrap(settings.testActiveTargetConfigWindow())
+        editor.testSetName("after")
+        editor.testSetPath("/tmp/after")
+        editor.testSave()
+        AppE2E.pump(50)
+
+        XCTAssertEqual(settings.testProjectNames(), ["after"])
+        let saved = try String(contentsOf: config.configURL, encoding: .utf8)
+        XCTAssertTrue(saved.contains("name = \"after\""))
+        XCTAssertTrue(saved.contains("path = \"/tmp/after\""))
+        let projectNames = try Self.projectNames(in: try XCTUnwrap(bridge.configDescribeJSON()))
+        XCTAssertTrue(
+            projectNames.contains("after"),
+            "GUI 保存必须更新同一个 Core Catalog 的配置快照"
+        )
+    }
+
+    func testProjectsPageCreatesProjectAndRefreshesList() throws {
+        AppE2E.ensureApp()
+        let config = try IsolatedMuxtermConfig(
+            label: "settings-project-new",
+            toml: Self.projectConfig(name: "existing", path: "/tmp/existing")
+        )
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+            config.restore()
+        }
+
+        settings.showWindow(nil)
+        AppE2E.pump(50)
+        settings.testSelectCategory("projects")
+        settings.testOpenNewProjectEditor()
+
+        let editor = try XCTUnwrap(settings.testActiveTargetConfigWindow())
+        editor.testSetName("created")
+        editor.testSetPath("/tmp/created")
+        editor.testSave()
+        AppE2E.pump(50)
+
+        XCTAssertEqual(settings.testProjectNames(), ["existing", "created"])
+        let projectNames = try Self.projectNames(in: try XCTUnwrap(bridge.configDescribeJSON()))
+        XCTAssertTrue(projectNames.contains("created"))
+    }
+
+    private static func projectConfig(name: String, path: String) -> String {
+        """
+        [[projects]]
+        id = "\(name)@local"
+        name = "\(name)"
+        path = "\(path)"
+
+        [projects.runtime]
+        id = "shell"
+
+        [projects.transport]
+        id = "local"
+        target = ""
+        """
+    }
+
+    private static func projectNames(in json: String) throws -> [String] {
+        let envelope = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(envelope["data"] as? [String: Any])
+        let values = try XCTUnwrap(payload["values"] as? [String: Any])
+        let projects = try XCTUnwrap(values["projects"] as? [[String: Any]])
+        return projects.compactMap { $0["name"] as? String }
+    }
+
     private func manifestGroupIDs(_ bridge: CoreBridge) throws -> [String] {
         let text = try XCTUnwrap(bridge.configDescribeJSON())
         let envelope = try XCTUnwrap(

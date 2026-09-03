@@ -1621,6 +1621,16 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertEqual(store.projects.count, 2)
     }
 
+    func testUpdateProjectReplacesOriginalWhenIdentityFieldsChange() {
+        let store = QuickConnectStore()
+        let original = cfg("proj", "/x/one")
+        let updated = cfg("renamed", "/x/two")
+
+        XCTAssertTrue(store.upsertProject(original))
+        XCTAssertTrue(store.updateProject(updated, replacing: original))
+        XCTAssertEqual(store.projects, [updated])
+    }
+
     func testResolvedHerdrProjectReplacesMatchingProvisionalProject() {
         let store = QuickConnectStore()
         let provisional = TargetConfig(

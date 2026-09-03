@@ -927,7 +927,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             settingsWindow.showWindow(self)
             return
         }
-        let controller = SettingsWindowController(bridge: bridge)
+        let controller = SettingsWindowController(
+            bridge: bridge,
+            quickConnectStore: quickConnectStore
+        )
         settingsWindow = controller
         controller.showWindow(self)
     }
