@@ -99,8 +99,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 不能覆盖用户已经再次选择的 Workspace。
     private var foregroundAuthorityRefreshGeneration: UInt64?
     /// Agent/Command 点击可能紧跟 Workspace 激活到达；等目标 bridge ready
-    /// 后重放，避免点击动作因短暂锁竞争丢失。
-    private var pendingForegroundActions: [() -> Void] = []
+    /// 后重放，避免点击动作因短暂锁竞争丢失。动作带目标 slot，重复选择
+    /// 同一个 Workspace 时保留；切到另一个 Workspace 时只丢弃旧目标动作。
+    private struct PendingForegroundAction {
+        let slot: WarmConnectionSlot
+        let action: () -> Void
+    }
+    private var pendingForegroundActions: [PendingForegroundAction] = []
     /// pane → 最近一次离开时的稳定行 ID。连接切换时清空，避免把不同
     /// workspace 的 seq 混用。
     private var lastSeenLineSeq: [UInt32: UInt64] = [:]
@@ -670,7 +675,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func movePaneToNewTab(_ paneId: UInt32) -> Bool {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 _ = self?.movePaneToNewTab(paneId)
             }
             return true
@@ -767,7 +772,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 当前 pane 全屏切换：tmux/ssh 发 `resize-pane -Z`，本地 shell 用布局全屏。
     @objc func toggleActivePaneFullscreen() {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.toggleActivePaneFullscreen()
             }
             return
@@ -1106,10 +1111,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Workspace 点击可能已经把窗口切到目标缓存，但目标 bridge 还在等
     /// 上一批后台 FFI 释放。动作必须等到权威刷新完成后再重放，不能在
     /// 主线程直接碰那把锁。
-    private func performWhenForegroundReady(_ action: @escaping () -> Void) {
+    func performWhenForegroundReady(_ action: @escaping () -> Void) {
         guard !isClosing else { return }
-        if pendingForegroundActivation != nil {
-            pendingForegroundActions.append(action)
+        if let activation = pendingForegroundActivation {
+            pendingForegroundActions.append(PendingForegroundAction(
+                slot: activation.slot,
+                action: action
+            ))
         } else {
             action()
         }
@@ -1580,7 +1588,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 是真实 tab，不能当哨兵跳过。`seq>0` 时把历史滚到命中行。
     func jumpToPane(tabId: UInt32?, paneId: UInt32, seq: UInt64 = 0, query: String = "") {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
             }
             return
@@ -1621,7 +1629,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.toggleReplyOverlay(paneId: paneId)
             }
             return
@@ -1703,7 +1711,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 按 OSC 133 时间线跳到当前命令之前最近的一条命令。
     @objc func jumpToPreviousCommand() {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.jumpToPreviousCommand()
             }
             return
@@ -1726,7 +1734,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 清掉游标并回到实时底部，和向下滚动到底部的语义一致。
     @objc func jumpToNextCommand() {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.jumpToNextCommand()
             }
             return
@@ -2199,7 +2207,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let generation = foregroundActivationGeneration
         foregroundAuthorityRefreshGeneration = nil
         pendingForegroundActivation = nil
-        pendingForegroundActions.removeAll()
+        // 只清掉属于已经被用户切走的 Workspace 的动作。属于本次目标
+        // 的动作（例如重复点击同一行后排队的 pane 跳转）必须保留到
+        // 权威刷新完成，否则点击看起来会“闪一下但没有反应”。
+        pendingForegroundActions.removeAll { $0.slot !== slot }
 
         let oldBridge = bridge
         let startedAt = ProcessInfo.processInfo.systemUptime
@@ -2367,10 +2378,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     self.applyForegroundAuthoritySnapshot(result)
                 }
                 self.completeForegroundActivation(activation)
-                let actions = self.pendingForegroundActions
-                self.pendingForegroundActions.removeAll()
+                let actions = self.pendingForegroundActions.filter {
+                    $0.slot === activation.slot
+                }
+                self.pendingForegroundActions.removeAll {
+                    $0.slot === activation.slot
+                }
                 for action in actions {
-                    action()
+                    action.action()
                 }
             }
         }
@@ -2572,7 +2587,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func requestSwitchTab(_ tabId: UInt32) {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.requestSwitchTab(tabId)
             }
             return
@@ -2673,7 +2688,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func splitActivePane(horizontal: Bool) {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.splitActivePane(horizontal: horizontal)
             }
             return
@@ -2695,7 +2710,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 依赖当前 tab 快照，不会因为旧 staticlib 或焦点事件顺序回到首 tab。
     private func movePane(offset: Int) {
         if pendingForegroundActivation != nil {
-            pendingForegroundActions.append { [weak self] in
+            performWhenForegroundReady { [weak self] in
                 self?.movePane(offset: offset)
             }
             return

@@ -176,6 +176,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         self.terminalManager = terminalManager ?? TerminalManager(bridge: bridge)
         // CoreBridge 在 connect 后已完成有限 bootstrap；把这份首帧状态直接
         // 放进 warm cache，侧栏首次渲染不必等下一次后台 poll。
+        self.lastSnapshotValue = bridge.snapshot()
         self.structuredAgentsValue = bridge.structuredAgentSnapshot()
         self.lastUsedAt = now
         self.openedOrder = openedOrder

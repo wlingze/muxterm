@@ -254,6 +254,104 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(app.testActiveWorkspaceSession(), first.session)
     }
 
+    func testSidebarWorkspaceSwitchPaintsTargetBeforeAuthorityRefresh() throws {
+        let first = OnePaneCat(label: "switch-paint-first")
+        let second = OnePaneCat(label: "switch-paint-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        let secondPaneID = UInt32(second.pane.dropFirst()) ?? 0
+
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+
+        XCTAssertEqual(
+            app.testLayoutLeafIDs(),
+            [secondPaneID],
+            "切换 Workspace 的首帧必须来自目标缓存，不能短暂继续显示旧 Workspace"
+        )
+    }
+
+    func testPendingSidebarActionSurvivesRepeatedWorkspaceSelection() throws {
+        let first = OnePaneCat(label: "switch-action-first")
+        let second = OnePaneCat(label: "switch-action-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == second.session
+        })
+
+        let acquired = try XCTUnwrap(
+            app.testHoldWorkspaceBridgeAtFixedIndex(1, duration: 0.25),
+            "第一个 Workspace 必须存在"
+        )
+        XCTAssertEqual(acquired.wait(timeout: .now() + 1), .success)
+
+        app.testSwitchToWorkspaceAtFixedIndex(1)
+        XCTAssertTrue(app.testForegroundActivationPending())
+
+        var actionExecuted = false
+        app.testPerformWhenForegroundReady {
+            actionExecuted = true
+        }
+
+        // 重复点击同一 Workspace 不应丢掉已经排队的 pane 跳转动作。
+        app.testSwitchToWorkspaceAtFixedIndex(1)
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return !app.testForegroundActivationPending()
+        })
+        XCTAssertTrue(actionExecuted, "重复选择 Workspace 后待执行动作仍必须重放")
+    }
+
+    func testRapidWorkspaceSwitchIgnoresStaleAuthorityRefresh() throws {
+        let first = OnePaneCat(label: "switch-stale-first")
+        let second = OnePaneCat(label: "switch-stale-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == second.session
+        })
+
+        let acquired = try XCTUnwrap(
+            app.testHoldWorkspaceBridgeAtFixedIndex(1, duration: 0.25),
+            "第一个 Workspace 必须存在"
+        )
+        XCTAssertEqual(acquired.wait(timeout: .now() + 1), .success)
+
+        app.testSwitchToWorkspaceAtFixedIndex(1)
+        app.testSwitchToWorkspaceAtFixedIndex(2)
+
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return !app.testForegroundActivationPending()
+                && app.testActiveWorkspaceSession() == second.session
+        }, "旧 Workspace 的权威回调不得抢回用户最新选择")
+    }
+
     func testSidebarWorkspaceSwitchDoesNotWaitForBackgroundBridgeLock() throws {
         let first = OnePaneCat(label: "switch-lock-first")
         let second = OnePaneCat(label: "switch-lock-second")
