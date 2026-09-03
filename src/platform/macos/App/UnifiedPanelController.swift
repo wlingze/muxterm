@@ -8,7 +8,12 @@ private enum UnifiedWorkspaceNavigation: Equatable {
 
 private enum UnifiedWorkspaceItem {
     case existingConnections
-    case target(TargetConfig, badges: [QuickBadge], isCurrent: Bool)
+    case target(
+        TargetConfig,
+        badges: [QuickBadge],
+        isCurrent: Bool,
+        workspaceIndex: Int?
+    )
     case newProject
     case back
     case existing(ExistingConnectionChoice)
@@ -19,7 +24,7 @@ private enum UnifiedWorkspaceItem {
         switch self {
         case .existingConnections:
             return MuxtermI18n.shared.tr(.existingConnections)
-        case .target(let config, _, _):
+        case .target(let config, _, _, _):
             return config.name
         case .newProject:
             return MuxtermI18n.shared.tr(.panelNewProject)
@@ -39,7 +44,7 @@ private enum UnifiedWorkspaceItem {
         switch self {
         case .existingConnections, .newProject, .loading, .empty:
             return title.lowercased().contains(normalizedQuery)
-        case .target(let config, _, _):
+        case .target(let config, _, _, _):
             return QuickConnect.matchesQuery(query, config: config)
         case .back:
             return true
@@ -115,6 +120,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let paneOutput: (UInt32) -> Data
     private let sendInput: (UInt32, Data) -> Void
     private let search: (String, SearchScope) -> [SearchHit]
+    private let workspaceIndex: (TargetConfig) -> Int?
 
     init(
         store: QuickConnectStore,
@@ -122,7 +128,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         snapshot: @escaping () -> AttentionSnapshot?,
         paneOutput: @escaping (UInt32) -> Data,
         sendInput: @escaping (UInt32, Data) -> Void,
-        search: @escaping (String, SearchScope) -> [SearchHit]
+        search: @escaping (String, SearchScope) -> [SearchHit],
+        workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil }
     ) {
         self.store = store
         self.ownerWindow = ownerWindow
@@ -130,6 +137,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.paneOutput = paneOutput
         self.sendInput = sendInput
         self.search = search
+        self.workspaceIndex = workspaceIndex
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.preferredContentSize),
@@ -193,6 +201,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     /// 这样连续按快捷键始终是可预测的导航动作；query 在 tab 之间保留。
     func show(tab: PanelTab, scope: SearchScope? = nil) {
         if window?.isVisible == true {
+            if tab == .workspaces, workspaceNavigation != .root {
+                workspaceNavigation = .root
+                existingItems = []
+                rootExistingChoices = []
+                rootExistingLoaded = false
+                rootExistingLoading = false
+                existingRequestGeneration &+= 1
+            }
             model.tab = tab
             if let scope {
                 model.scope = scope
@@ -247,8 +263,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         table.reloadData()
         let rowCount = numberOfRows(in: table)
         if rowCount > 0 {
-            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            table.scrollRowToVisible(0)
+            let row = defaultSelectedRow()
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            table.scrollRowToVisible(row)
         } else {
             table.deselectAll(nil)
         }
@@ -274,7 +291,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             .target(
                 entry.config,
                 badges: entry.badges,
-                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config)
+                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config),
+                workspaceIndex: workspaceIndex(entry.config)
             )
         })
         if queryIsNonEmpty {
@@ -297,6 +315,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         visibleItems = query.isEmpty
             ? allItems
             : allItems.filter { $0.matches(query) }
+    }
+
+    private func defaultSelectedRow() -> Int {
+        guard model.tab == .workspaces else { return 0 }
+        return visibleItems.firstIndex { item in
+            if case .target(_, _, let isCurrent, _) = item {
+                return isCurrent
+            }
+            return false
+        } ?? 0
     }
 
     /// 对 Existing 结果统一排序并按 attach identity 去重。
@@ -477,7 +505,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             switch visibleItems[table.selectedRow] {
             case .existingConnections:
                 openExistingConnections()
-            case .target(let config, _, _):
+            case .target(let config, _, _, _):
                 onConnect?(config)
             case .newProject:
                 onNewProject?()
@@ -975,13 +1003,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 cell.title = "› " + item.title
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.existingConnections")
                 return cell
-            case .target(let config, let badges, let isCurrent):
+            case .target(let config, let badges, let isCurrent, let workspaceIndex):
                 let id = NSUserInterfaceItemIdentifier("QuickTarget")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                     ?? QuickTargetCellView(identifier: id)
                 cell.config = config
                 cell.badges = badges
                 cell.isCurrent = isCurrent
+                cell.workspaceIndex = workspaceIndex
                 return cell
             case .newProject:
                 let id = NSUserInterfaceItemIdentifier("QuickNew")
@@ -1099,7 +1128,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             return
         }
         switch visibleItems[row] {
-        case .target(let config, _, _):
+        case .target(let config, _, _, _):
             onEditProject?(config)
         default:
             activateSelected()
@@ -1277,6 +1306,20 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         guard row >= 0, row < table.numberOfRows else { return nil }
         table.layoutSubtreeIfNeeded()
         return table.view(atColumn: 0, row: row, makeIfNecessary: true) as? QuickTargetCellView
+    }
+
+    func testWorkspaceIndex(matching title: String) -> Int? {
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }),
+              case .target(_, _, _, let index) = visibleItems[row]
+        else { return nil }
+        return index
+    }
+
+    func testSelectedWorkspaceTitle() -> String? {
+        guard model.tab == .workspaces,
+              visibleItems.indices.contains(table.selectedRow)
+        else { return nil }
+        return visibleItems[table.selectedRow].title
     }
 
     func testContentSize() -> NSSize {

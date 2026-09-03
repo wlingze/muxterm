@@ -338,6 +338,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             search: { [weak self] query, scope in
                 self?.searchHitsForPanel(query: query, scope: scope) ?? []
+            },
+            workspaceIndex: { [weak self] config in
+                self?.workspaceShortcutIndex(for: config)
             }
         )
         unifiedPanel.onConnect = { [weak self] config in
@@ -1169,21 +1172,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return (tabIdsByPane: [:], tabNumbersByPane: [:])
     }
 
+    private func workspaceShortcutIndex(for config: TargetConfig) -> Int? {
+        let targetID = QuickConnect.uniqueID(for: config)
+        let orderedTargetIDs = workspaceSidebarFixedSlots().map {
+            QuickConnect.uniqueID(for: $0.targetConfig)
+        }
+        return WorkspaceShortcutIndex.byWorkspaceID(orderedTargetIDs)[targetID]
+    }
+
     private func sidebarItems() -> [WorkspaceSidebarItem] {
         let slots = workspaceSidebarFixedSlots()
+        let workspaceIDs = slots.map { workspaceReplicaID(for: $0) }
+        let shortcutByWorkspaceID = WorkspaceShortcutIndex.byWorkspaceID(workspaceIDs)
         return slots.enumerated().compactMap { index, slot in
-            let shortcut = index < 5 ? index + 1 : nil
             let isActive = slot.lifecycle == .active
             let target = slot.targetConfig
             let structuredAgents = slot.cachedStructuredAgents
+            let workspaceID = workspaceIDs[index]
             let tabTargets = tabTargetsByPane(for: slot)
             return WorkspaceSidebarItem(
-                workspaceId: workspaceReplicaID(for: slot),
+                workspaceId: workspaceID,
                 name: target.name,
                 runtime: target.runtime.rawValue,
                 transport: target.transport.label,
                 isActive: isActive,
-                shortcut: shortcut,
+                shortcut: shortcutByWorkspaceID[workspaceID],
                 structuredAgents: structuredAgents,
                 tabNumberByPane: tabTargets.tabNumbersByPane,
                 tabIdByPane: tabTargets.tabIdsByPane

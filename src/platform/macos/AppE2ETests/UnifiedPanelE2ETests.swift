@@ -76,6 +76,44 @@ final class UnifiedPanelE2ETests: XCTestCase {
         AppE2E.pump(40)
         XCTAssertEqual(app.unifiedPanel.modelTab, .search)
     }
+
+    func testWorkspacePanelSelectsCurrentWorkspaceAndShowsSidebarIndex() throws {
+        let first = OnePaneCat(label: "panel-index-first")
+        let second = OnePaneCat(label: "panel-index-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == second.session
+        })
+
+        app.openQuickConnect()
+        AppE2E.pump(80)
+
+        XCTAssertEqual(
+            app.unifiedPanel.testSelectedWorkspaceTitle(),
+            second.session,
+            "快速面板打开时必须默认选中当前 Workspace"
+        )
+        XCTAssertEqual(
+            app.unifiedPanel.testWorkspaceIndex(matching: first.session),
+            1,
+            "快速面板的第一个 Workspace 编号必须复用侧栏顺序"
+        )
+        XCTAssertEqual(
+            app.unifiedPanel.testWorkspaceIndex(matching: second.session),
+            2,
+            "当前 Workspace 即使按 Recent 排在前面，也必须保留侧栏编号"
+        )
+    }
 }
 
 private extension UnifiedPanelE2ETests {

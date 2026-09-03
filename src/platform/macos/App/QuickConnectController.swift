@@ -243,6 +243,7 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
             cell.config = config
             cell.badges = badges
             cell.isCurrent = isCurrent
+            cell.workspaceIndex = nil
             return cell
         case .newProject:
             let id = NSUserInterfaceItemIdentifier("QuickNew")
@@ -313,6 +314,7 @@ final class QuickTargetCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let badgeStack = NSStackView()
+    private let workspaceIndexLabel = NSTextField(labelWithString: "")
 
     var config: TargetConfig? {
         didSet { updateLayout() }
@@ -325,6 +327,12 @@ final class QuickTargetCellView: NSTableCellView {
     /// 当前连接：整行用主题色淡底高亮。
     var isCurrent = false {
         didSet { updateHighlight() }
+    }
+
+    /// Fixed opened-order shortcut shown in the Workspace panel. Project-only
+    /// rows leave this empty.
+    var workspaceIndex: Int? {
+        didSet { updateLayout() }
     }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -351,6 +359,10 @@ final class QuickTargetCellView: NSTableCellView {
         detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailLabel.lineBreakMode = .byTruncatingMiddle
         detailLabel.maximumNumberOfLines = 1
+        workspaceIndexLabel.translatesAutoresizingMaskIntoConstraints = false
+        workspaceIndexLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        workspaceIndexLabel.textColor = .controlAccentColor
+        workspaceIndexLabel.alignment = .center
         badgeStack.translatesAutoresizingMaskIntoConstraints = false
         badgeStack.orientation = .horizontal
         badgeStack.alignment = .centerY
@@ -360,8 +372,12 @@ final class QuickTargetCellView: NSTableCellView {
         addSubview(titleLabel)
         addSubview(detailLabel)
         addSubview(badgeStack)
+        addSubview(workspaceIndexLabel)
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            workspaceIndexLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            workspaceIndexLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            workspaceIndexLabel.widthAnchor.constraint(equalToConstant: 22),
+            titleLabel.leadingAnchor.constraint(equalTo: workspaceIndexLabel.trailingAnchor, constant: 6),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
             badgeStack.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
@@ -381,6 +397,10 @@ final class QuickTargetCellView: NSTableCellView {
         guard let config else { return }
         titleLabel.stringValue = config.name
         titleLabel.toolTip = config.name
+        workspaceIndexLabel.stringValue = workspaceIndex.map(String.init) ?? ""
+        workspaceIndexLabel.toolTip = workspaceIndex.map {
+            "Workspace shortcut \($0)"
+        }
         let path = config.path.trimmingCharacters(in: .whitespacesAndNewlines)
         detailLabel.stringValue = path.isEmpty
             ? QuickConnect.subtitle(for: config)
@@ -422,6 +442,10 @@ final class QuickTargetCellView: NSTableCellView {
 
     func testIsCurrent() -> Bool {
         isCurrent
+    }
+
+    func testWorkspaceIndex() -> Int? {
+        workspaceIndex
     }
 
     func testBadgeDotSizes() -> [CGSize] {
