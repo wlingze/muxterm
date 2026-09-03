@@ -807,9 +807,6 @@ pub fn list_remote_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static PATH_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn ssh_host_entry_serializable() {
@@ -1035,6 +1032,7 @@ mod tests {
 
     #[test]
     fn create_local_tmux_session_uses_detached_isolated_socket() {
+        let _guard = crate::core::PATH_ENV_LOCK.lock().unwrap();
         // 安全要求：任何真实 tmux 测试必须用独立 socket，且清理也带同一个 -L。
         let socket = format!(
             "muxterm-test-create-{}-{}",
@@ -1049,7 +1047,7 @@ mod tests {
 
         // tmux 不可用（CI/无 head）时跳过，不破坏默认 server。
         if create_local_tmux_session(Some(&socket), "proj", dir).is_err() {
-            let _ = std::process::Command::new("tmux")
+            let _ = std::process::Command::new(crate::core::executable::resolve_tmux_binary())
                 .args(["-L", &socket, "kill-server"])
                 .output();
             return;
@@ -1075,17 +1073,20 @@ mod tests {
         );
 
         // 清理：只杀自己的测试 server。
-        let cleanup = std::process::Command::new("tmux")
+        let cleanup = std::process::Command::new(crate::core::executable::resolve_tmux_binary())
             .args(["-L", &socket, "kill-server"])
             .output();
-        assert!(cleanup.is_ok(), "清理测试 socket 必须成功");
+        assert!(
+            cleanup.is_ok_and(|output| output.status.success()),
+            "清理测试 socket 必须成功"
+        );
     }
 
     /// GUI app（Finder 启动）PATH 没有 Homebrew：仍要能创建 local tmux
     /// session，并且 `~/...` 工作目录要展开成真实路径。
     #[test]
     fn create_local_tmux_session_works_without_homebrew_in_path() {
-        let _guard = PATH_LOCK.lock().unwrap();
+        let _guard = crate::core::PATH_ENV_LOCK.lock().unwrap();
         let old_path = std::env::var_os("PATH");
         std::env::set_var("PATH", "/usr/bin:/bin");
 
@@ -1117,7 +1118,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         if result.is_err() {
-            let _ = std::process::Command::new("tmux")
+            let _ = std::process::Command::new(crate::core::executable::resolve_tmux_binary())
                 .args(["-L", &socket, "kill-server"])
                 .output();
             return; // 环境无 tmux 时跳过
@@ -1127,8 +1128,12 @@ mod tests {
             sessions.iter().any(|s| s.name == "proj"),
             "受限 PATH 下仍应能创建 session"
         );
-        let _ = std::process::Command::new("tmux")
+        let cleanup = std::process::Command::new(crate::core::executable::resolve_tmux_binary())
             .args(["-L", &socket, "kill-server"])
             .output();
+        assert!(
+            cleanup.is_ok_and(|output| output.status.success()),
+            "清理测试 socket 必须成功"
+        );
     }
 }

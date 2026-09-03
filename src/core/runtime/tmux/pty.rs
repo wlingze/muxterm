@@ -301,12 +301,16 @@ mod tests {
     #[test]
     fn spawn_pty_advertises_truecolor_terminal() {
         let mut child = spawn_pty(
-            "printenv",
-            &["TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE"],
+            "sh",
+            &[
+                "-c",
+                "printf '%s\\n' \"$TERM\" \"$COLORTERM\" \"$LANG\" \"$LC_ALL\" \"$LC_CTYPE\"",
+            ],
             40,
             12,
         )
-        .expect("spawn printenv");
+        .expect("spawn shell");
+        set_nonblocking(&*child.master).expect("set_nonblocking");
         let reader = child.master.try_clone_reader().expect("try_clone_reader");
         let mut reader = reader;
         let mut buf = Vec::new();
@@ -325,6 +329,9 @@ mod tests {
                         break;
                     }
                 }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
                 Err(_) => break,
             }
             if std::time::Instant::now() > deadline {
@@ -332,17 +339,17 @@ mod tests {
             }
         }
         let out = String::from_utf8_lossy(&buf);
-        assert!(
-            out.contains("xterm-256color"),
-            "pty 子进程 TERM 应为 xterm-256color, 实际: {out:?}"
-        );
-        assert!(
-            out.contains("truecolor"),
-            "pty 子进程 COLORTERM 应为 truecolor, 实际: {out:?}"
-        );
-        assert!(
-            out.contains("en_US.UTF-8"),
-            "pty 子进程 locale 应为 UTF-8, 实际: {out:?}"
+        let values: Vec<_> = out.lines().map(str::trim).collect();
+        assert_eq!(
+            values,
+            vec![
+                CLIENT_TERM,
+                CLIENT_COLORTERM,
+                CLIENT_UTF8_LOCALE,
+                CLIENT_UTF8_LOCALE,
+                CLIENT_UTF8_LOCALE,
+            ],
+            "pty 子进程环境变量应由控制客户端显式设置, 实际: {out:?}"
         );
         let _ = child.child.try_wait();
     }
