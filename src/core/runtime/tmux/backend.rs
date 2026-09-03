@@ -316,7 +316,7 @@ pub struct TmuxRuntime {
     /// 字节可能是请求前排队的通知，成功 capture 时不应再次重放；tail 则
     /// 明确属于响应边界之后，必须保留。
     capture_response_seen: HashSet<PaneId>,
-    /// 是否支持 `refresh-client -r`（OSC 10/11 颜色上报；tmux < 3.2 不支持）。
+    /// 是否支持 `refresh-client -r`（OSC 10/11 颜色上报；tmux < 3.5 不支持）。
     colour_report_supported: bool,
     colour_report_warned: bool,
     /// 是否支持 `refresh-client -B`（status bar 订阅；tmux ≥ 3.2，文档 §B+）。
@@ -346,12 +346,9 @@ pub fn parse_tmux_version(text: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
-/// `refresh-client -r`（颜色上报）需要 tmux >= 3.2。
+/// `refresh-client -r`（颜色上报）需要 tmux >= 3.5。
 pub fn supports_colour_report(version: Option<(u32, u32)>) -> bool {
-    match version {
-        None => true, // 版本未知时尝试上报，失败由命令错误自然暴露
-        Some((major, minor)) => major > 3 || (major == 3 && minor >= 2),
-    }
+    matches!(version, Some((major, minor)) if major > 3 || (major == 3 && minor >= 5))
 }
 
 /// `refresh-client -B`（format 订阅）需要 tmux >= 3.2（文档 §B+）。
@@ -715,7 +712,9 @@ impl TmuxRuntime {
             ready_probe_rounds: HashMap::new(),
             new_attach_panes: HashSet::new(),
             capture_response_seen: HashSet::new(),
-            colour_report_supported: true,
+            // connect() 不额外执行 `tmux -V`，能力未知时必须关闭颜色上报；
+            // 否则 tmux 3.4 及更早版本会为每个 pane 产生 `unknown flag -r`。
+            colour_report_supported: false,
             colour_report_warned: false,
             status_subscription_supported: false,
             status_subscriptions_active: false,
@@ -7130,11 +7129,19 @@ mod tests {
     }
 
     #[test]
-    fn colour_report_requires_tmux_3_2() {
+    fn colour_report_requires_tmux_3_5() {
         assert!(!supports_colour_report(Some((3, 1))));
-        assert!(supports_colour_report(Some((3, 2))));
+        assert!(!supports_colour_report(Some((3, 2))));
+        assert!(!supports_colour_report(Some((3, 4))));
+        assert!(supports_colour_report(Some((3, 5))));
         assert!(supports_colour_report(Some((4, 0))));
-        assert!(supports_colour_report(None));
+        assert!(!supports_colour_report(None));
+    }
+
+    #[test]
+    fn new_runtime_does_not_send_colour_reports_before_capability_detection() {
+        let backend = TmuxRuntime::new(None);
+        assert!(!backend.colour_report_supported);
     }
 
     fn unique_socket() -> String {
