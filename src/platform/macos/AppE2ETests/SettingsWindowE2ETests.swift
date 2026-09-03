@@ -89,6 +89,44 @@ final class SettingsWindowE2ETests: XCTestCase {
         XCTAssertTrue(settings.testVisiblePageIsScrollable())
     }
 
+    func testSettingsControlsFillAvailablePageWidth() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+        }
+
+        settings.showWindow(nil)
+        settings.window?.setContentSize(NSSize(width: 980, height: 720))
+        settings.window?.layoutIfNeeded()
+
+        for (category, path) in [
+            ("runtime", "/tmux/default_session"),
+            ("appearance", "/font/family"),
+            ("appearance", "/theme/name"),
+            ("attention", "/attention/blocked_regex"),
+            ("projects", "/projects"),
+        ] {
+            settings.testSelectCategory(category)
+            settings.window?.contentView?.layoutSubtreeIfNeeded()
+            let page = try XCTUnwrap(
+                findView(settings.window?.contentView, id: "muxterm.settings.page.\(category)")
+                    as? NSScrollView
+            )
+            let control = try XCTUnwrap(settings.testControl(path: path))
+            page.contentView.layoutSubtreeIfNeeded()
+            let controlFrame = control.convert(control.bounds, to: page.contentView)
+            let rightGap = page.contentView.bounds.maxX - controlFrame.maxX
+            XCTAssertLessThan(
+                rightGap,
+                80,
+                "\(category) 页的 \(path) 控件右侧不应保留大块空白（gap=\(rightGap)）"
+            )
+        }
+    }
+
     func testCategoryTitleHumanizesManifestKey() {
         XCTAssertEqual(
             settingsCategoryTitle(id: "appearance", titleKey: "settings.appearance"),

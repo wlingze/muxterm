@@ -297,7 +297,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
-        stack.alignment = .leading
+        stack.alignment = .width
         stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 24, right: 24)
 
@@ -481,11 +481,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let label = NSTextField(labelWithString: title)
         label.setContentHuggingPriority(.required, for: .horizontal)
         label.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         control.widthAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
         let row = NSStackView(views: [label, control])
         row.orientation = .horizontal
+        row.distribution = .fill
         row.spacing = 12
         row.alignment = .centerY
+        row.setContentHuggingPriority(.defaultLow, for: .horizontal)
         return row
     }
 
@@ -798,6 +802,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     func testVisiblePageIsScrollable() -> Bool {
         guard let selectedCategoryID, let page = pages[selectedCategoryID] else { return false }
         return page.hasVerticalScroller
+    }
+
+    func testControl(path: String) -> NSView? {
+        controls[path]
     }
 
     func testProjectEditorVisible() -> Bool {
