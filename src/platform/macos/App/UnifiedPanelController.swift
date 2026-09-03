@@ -40,16 +40,22 @@ private enum UnifiedWorkspaceItem {
     }
 
     func matches(_ query: String) -> Bool {
+        score(for: query) != nil
+    }
+
+    /// Search score keeps the same workspace entry order stable while putting
+    /// exact/strong target matches before generic action rows.
+    func score(for query: String) -> Int? {
         let normalizedQuery = query.lowercased()
         switch self {
         case .existingConnections, .newProject, .loading, .empty:
-            return title.lowercased().contains(normalizedQuery)
+            return title.lowercased().contains(normalizedQuery) ? 500 : nil
         case .target(let config, _, _, _):
-            return QuickConnect.matchesQuery(query, config: config)
+            return QuickConnect.searchScore(query, config: config)
         case .back:
-            return true
+            return 0
         case .existing(let choice):
-            return QuickConnect.matchesQuery(query, config: choice.config)
+            return QuickConnect.searchScore(query, config: choice.config)
         }
     }
 }
@@ -121,6 +127,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let sendInput: (UInt32, Data) -> Void
     private let search: (String, SearchScope) -> [SearchHit]
     private let workspaceIndex: (TargetConfig) -> Int?
+    /// MainWindow supplies every currently pooled Workspace so direct panel
+    /// search does not depend on a separate Existing discovery round trip.
+    private let connectedWorkspaces: (() -> [TargetConfig])?
 
     init(
         store: QuickConnectStore,
@@ -129,7 +138,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         paneOutput: @escaping (UInt32) -> Data,
         sendInput: @escaping (UInt32, Data) -> Void,
         search: @escaping (String, SearchScope) -> [SearchHit],
-        workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil }
+        workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil },
+        connectedWorkspaces: (() -> [TargetConfig])? = nil
     ) {
         self.store = store
         self.ownerWindow = ownerWindow
@@ -138,6 +148,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.sendInput = sendInput
         self.search = search
         self.workspaceIndex = workspaceIndex
+        self.connectedWorkspaces = connectedWorkspaces
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.preferredContentSize),
@@ -279,6 +290,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             allItems = existingItems
             return
         }
+        if let connectedWorkspaces {
+            store.replaceAllRecents(connectedWorkspaces())
+        }
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
         allItems = [.existingConnections]
         let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -312,9 +326,19 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func applyFilter() {
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        visibleItems = query.isEmpty
-            ? allItems
-            : allItems.filter { $0.matches(query) }
+        guard !query.isEmpty else {
+            visibleItems = allItems
+            return
+        }
+        visibleItems = allItems.enumerated()
+            .compactMap { index, item in
+                item.score(for: query).map { (index, $0, item) }
+            }
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                return $0.0 < $1.0
+            }
+            .map { $0.2 }
     }
 
     private func defaultSelectedRow() -> Int {

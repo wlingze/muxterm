@@ -341,6 +341,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             workspaceIndex: { [weak self] config in
                 self?.workspaceShortcutIndex(for: config)
+            },
+            connectedWorkspaces: { [weak self] in
+                self?.connectionPool.allRecentTargetConfigs() ?? []
             }
         )
         unifiedPanel.onConnect = { [weak self] config in

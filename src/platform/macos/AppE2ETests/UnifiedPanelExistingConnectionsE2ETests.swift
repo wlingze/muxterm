@@ -119,6 +119,86 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         panel.dismiss()
     }
 
+    func testConnectedWorkspacesAreSearchableBeforeExistingDiscoveryReturns() {
+        AppE2E.ensureApp()
+        let connected = TargetConfig(
+            name: "saved-agents",
+            runtime: .herdr,
+            transport: .ssh(name: "buildbox"),
+            path: "/srv/project",
+            session: "agents",
+            socket: "/remote/herdr.sock",
+            workspaceID: "w7"
+        )
+        let panel = UnifiedPanelController(
+            store: QuickConnectStore(),
+            ownerWindow: nil,
+            snapshot: { nil },
+            paneOutput: { _ in Data() },
+            sendInput: { _, _ in },
+            search: { _, _ in [] },
+            connectedWorkspaces: { [connected] }
+        )
+        var discoveryCompletion: ((Result<[ExistingConnectionChoice], Error>) -> Void)?
+        panel.onLoadExistingConnections = { discoveryCompletion = $0 }
+        var attached: TargetConfig?
+        panel.onConnect = { attached = $0 }
+
+        panel.present(initial: .workspaces)
+        panel.testSetQuery("w7")
+
+        XCTAssertTrue(
+            panel.testWorkspaceTitles().contains("saved-agents"),
+            "已连接 Workspace 必须在异步 Existing discovery 返回前可搜索"
+        )
+        panel.activateForTest()
+        XCTAssertEqual(attached, connected, "Enter 必须连接当前过滤后的同一条目")
+
+        discoveryCompletion?(.success([ExistingConnectionChoice(
+            target: .local,
+            session: TmuxSessionInfo(name: "other", windowCount: 1, attached: false),
+            socket: nil
+        )]))
+        AppE2E.pump(40)
+        XCTAssertTrue(
+            panel.testWorkspaceTitles().contains("saved-agents"),
+            "Existing discovery 追加结果时不得覆盖已连接 Workspace"
+        )
+        panel.dismiss()
+    }
+
+    func testConnectedWorkspaceSearchCoversPathRuntimeAliasSessionAndIdentity() {
+        AppE2E.ensureApp()
+        let connected = TargetConfig(
+            name: "saved-agents",
+            runtime: .herdr,
+            transport: .ssh(name: "buildbox"),
+            path: "/srv/project",
+            session: "agents",
+            socket: "/remote/herdr.sock",
+            workspaceID: "w7"
+        )
+        let panel = UnifiedPanelController(
+            store: QuickConnectStore(),
+            ownerWindow: nil,
+            snapshot: { nil },
+            paneOutput: { _ in Data() },
+            sendInput: { _, _ in },
+            search: { _, _ in [] },
+            connectedWorkspaces: { [connected] }
+        )
+        panel.present(initial: .workspaces)
+
+        for token in ["/srv/project", "herdr", "buildbox", "agents", "w7"] {
+            panel.testSetQuery(token)
+            XCTAssertTrue(
+                panel.testWorkspaceTitles().contains("saved-agents"),
+                "Workspace 搜索必须支持字段 (token)"
+            )
+        }
+        panel.dismiss()
+    }
+
     func testExistingConnectionsDiscoversAndAttachesIsolatedLocalSession() throws {
         let fixture = OnePaneCat(label: "panel-existing")
         let extraSession = "existing-extra-\(ProcessInfo.processInfo.processIdentifier)"
