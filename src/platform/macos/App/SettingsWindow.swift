@@ -22,12 +22,205 @@ func settingsCategoryTitle(id: String, titleKey: String) -> String {
         .joined(separator: " ")
 }
 
+private func settingsHumanize(_ raw: String) -> String {
+    raw.replacingOccurrences(of: ".", with: " ")
+        .replacingOccurrences(of: "/", with: " ")
+        .replacingOccurrences(of: "_", with: " ")
+        .replacingOccurrences(of: "-", with: " ")
+        .split(separator: " ")
+        .map { word in
+            guard let first = word.first else { return "" }
+            return first.uppercased() + word.dropFirst()
+        }
+        .joined(separator: " ")
+}
+
+private func settingsFieldTitle(path: String, titleKey: String) -> String {
+    switch path {
+    case "/font/family": return "Font family"
+    case "/font/size": return "Font size"
+    case "/font/fallback": return "Fallback fonts"
+    case "/theme/name": return "Theme"
+    case "/theme/light": return "Light theme"
+    case "/theme/dark": return "Dark theme"
+    case "/statusbar/mode": return "Status bar appearance"
+    case "/tmux/auto_mouse": return "Enable tmux mouse mode"
+    case "/tmux/default_session": return "Default workspace"
+    case "/tmux/socket": return "tmux socket"
+    case "/pool/max_slots": return "Workspace reminder limit"
+    case "/scrollback/lines": return "Scrollback lines"
+    case "/pane/default_command": return "Default shell command"
+    case "/pane/workdir": return "Initial working directory"
+    case "/attention/enabled": return "Workspace attention"
+    case "/attention/blocked_regex": return "Blocked output patterns"
+    case "/attention/debounce_ms": return "Notification delay"
+    case "/ui/tab_bar_position": return "Tab bar position"
+    case "/ui/tab_bar_height": return "Tab bar height"
+    case "/ui/show_title_bar": return "Show title bar"
+    case "/ui/borderless": return "Borderless window"
+    case "/ssh/host": return "Default SSH host"
+    case "/ssh/port": return "SSH port"
+    case "/ssh/user": return "SSH user"
+    case "/ssh/key_path": return "SSH private key"
+    case "/behavior/on_last_pane_exit": return "When the last pane exits"
+    case "/behavior/on_program_exit_abnormal": return "When a command fails"
+    case "/platform/linux/client_side_decorations": return "Client-side decorations"
+    case "/platform/macos/option_as_alt": return "Treat Option as Alt"
+    case "/shortcuts/preset": return "Keyboard layout"
+    case "/shortcuts/primary_key": return "Primary modifier"
+    case "/projects": return "Saved projects"
+    case "/shortcuts/overrides": return "Custom shortcuts"
+    default:
+        let raw = titleKey.hasPrefix("settings.")
+            ? String(titleKey.dropFirst("settings.".count))
+            : (path.split(separator: "/").last.map(String.init) ?? path)
+        return settingsHumanize(raw)
+    }
+}
+
+private func settingsFieldDescription(path: String) -> String {
+    switch path {
+    case "/font/family": return "The typeface used to draw terminal text."
+    case "/font/size": return "Adjust the terminal scale without changing your display settings."
+    case "/font/fallback": return "Comma-separated fonts used when the primary family is missing a glyph."
+    case "/theme/name": return "Choose a fixed theme or follow your system appearance."
+    case "/theme/light": return "Theme used when the system is in light mode."
+    case "/theme/dark": return "Theme used when the system is in dark mode."
+    case "/statusbar/mode": return "Use tmux colors or keep the status bar in the Muxterm theme."
+    case "/tmux/auto_mouse": return "Forward mouse interactions to attached tmux workspaces."
+    case "/tmux/default_session": return "Workspace to attach on launch; leave empty to start locally."
+    case "/tmux/socket": return "Optional named tmux socket. Empty uses the default server."
+    case "/pool/max_slots": return "Show a reminder when this many warm workspaces are open."
+    case "/scrollback/lines": return "History kept for each newly created pane."
+    case "/pane/default_command": return "Command started for a new local pane."
+    case "/pane/workdir": return "Directory used when a new local pane starts."
+    case "/attention/enabled": return "Show attention badges when a workspace is waiting for you."
+    case "/attention/blocked_regex": return "One regular expression per line that marks output as blocked."
+    case "/attention/debounce_ms": return "Wait this long before raising a new attention signal."
+    case "/ui/tab_bar_position": return "Place the workspace tab bar above or below the terminal."
+    case "/ui/tab_bar_height": return "Height of the compact tab bar in pixels."
+    case "/ui/show_title_bar": return "Keep the native window title visible."
+    case "/ui/borderless": return "Remove the outer window border when supported by the desktop."
+    case "/ssh/host": return "Fallback SSH host used by remote connections."
+    case "/ssh/port": return "TCP port used for the default SSH connection."
+    case "/ssh/user": return "Remote user name; empty uses the current local user."
+    case "/ssh/key_path": return "Private key path; empty allows ssh-agent to provide credentials."
+    case "/behavior/on_last_pane_exit": return "Choose what remains after the final pane closes."
+    case "/behavior/on_program_exit_abnormal": return "Choose how Muxterm handles a non-zero command exit."
+    case "/platform/linux/client_side_decorations": return "Let Muxterm draw its own window controls."
+    case "/platform/macos/option_as_alt": return "Use the Option key as an Alt modifier on macOS."
+    case "/shortcuts/preset": return "Start from a QWERTY or Colemak action layout."
+    case "/shortcuts/primary_key": return "Modifier used for the primary shortcut set."
+    case "/projects": return "Reusable workspace launch profiles shared by Quick Connect."
+    case "/shortcuts/overrides": return "Override or disable individual action bindings."
+    default: return "Configure this setting for new Muxterm sessions."
+    }
+}
+
+private func settingsApplyLabel(_ mode: String) -> String {
+    switch mode {
+    case "immediate": return "LIVE"
+    case "next_workspace": return "NEXT WORKSPACE"
+    default: return "ON SAVE"
+    }
+}
+
+private func settingsOptionLabel(path: String, value: String) -> String {
+    switch (path, value) {
+    case ("/theme/name", "system"): return "Follow system"
+    case ("/theme/name", "black"), ("/theme/dark", "black"), ("/theme/light", "black"): return "Black"
+    case ("/theme/name", "white"), ("/theme/dark", "white"), ("/theme/light", "white"): return "White"
+    case ("/statusbar/mode", "tmux"): return "Match tmux"
+    case ("/statusbar/mode", "theme"): return "Use Muxterm theme"
+    case ("/ui/tab_bar_position", "top"): return "Top"
+    case ("/ui/tab_bar_position", "bottom"): return "Bottom"
+    case ("/behavior/on_last_pane_exit", "close_window"): return "Close the window"
+    case ("/behavior/on_last_pane_exit", "keep_empty"): return "Keep an empty window"
+    case ("/behavior/on_last_pane_exit", "new_shell"): return "Open a new shell"
+    case ("/behavior/on_program_exit_abnormal", "notify"): return "Keep and notify"
+    case ("/behavior/on_program_exit_abnormal", "close"): return "Close the pane"
+    case ("/behavior/on_program_exit_abnormal", "keep"): return "Keep the pane"
+    case ("/shortcuts/primary_key", "auto"): return "Automatic"
+    case ("/shortcuts/primary_key", "alt"): return "Alt"
+    case ("/shortcuts/primary_key", "command"): return "Command"
+    case ("/shortcuts/primary_key", "control"): return "Control"
+    case ("/shortcuts/primary_key", "super"): return "Super"
+    default: return settingsHumanize(value)
+    }
+}
+
+private func settingsCategoryHint(_ id: String) -> String {
+    switch id {
+    case "appearance": return "Fonts & colors"
+    case "runtime": return "Workspaces"
+    case "attention": return "Agent signals"
+    case "ui": return "Window chrome"
+    case "ssh": return "Remote access"
+    case "behavior": return "Exit rules"
+    case "platform": return "Desktop specific"
+    case "projects": return "Launch profiles"
+    case "shortcuts": return "Keyboard"
+    default: return "General"
+    }
+}
+
+private func settingsCategoryDescription(_ id: String) -> String {
+    switch id {
+    case "appearance": return "Tune the terminal you look at all day: type, scale, and color."
+    case "runtime": return "Set defaults for new workspaces, panes, and terminal history."
+    case "attention": return "Decide when Muxterm should surface work that needs your attention."
+    case "ui": return "Shape the surrounding window chrome and tab bar."
+    case "ssh": return "Defaults used when opening remote workspaces over SSH."
+    case "behavior": return "Choose what Muxterm does when panes or commands exit."
+    case "platform": return "Options specific to the desktop platform you are running on."
+    case "projects": return "Save the workspaces you return to most often."
+    case "shortcuts": return "Choose a keyboard preset and customize individual actions."
+    default: return "Configure this part of Muxterm."
+    }
+}
+
+private func settingsCategoryIcon(_ id: String) -> String {
+    switch id {
+    case "appearance": return "Aa"
+    case "runtime": return "▣"
+    case "attention": return "◉"
+    case "ui": return "▤"
+    case "ssh": return "↗"
+    case "behavior": return "↯"
+    case "platform": return "⌘"
+    case "projects": return "▦"
+    case "shortcuts": return "⌨"
+    default: return "•"
+    }
+}
+
+private func settingsValue(at path: String, in values: [String: Any]) -> Any? {
+    var current: Any = values
+    for segment in path.split(separator: "/") {
+        guard let dictionary = current as? [String: Any],
+              let next = dictionary[String(segment)]
+        else { return nil }
+        current = next
+    }
+    return current
+}
+
+private func settingsStyleCard(_ view: NSView, fill: NSColor = .controlBackgroundColor) {
+    view.wantsLayer = true
+    view.layer?.backgroundColor = fill.cgColor
+    view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
+    view.layer?.borderWidth = 1
+    view.layer?.cornerRadius = 12
+}
+
 final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     NSTextFieldDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate
 {
     private struct Category {
         let id: String
         let title: String
+        let hint: String
+        let description: String
         let searchText: String
         let fields: [[String: Any]]
     }
@@ -55,13 +248,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         self.bridge = bridge
         self.quickConnectStore = quickConnectStore ?? Self.makeCoreBackedStore(bridge: bridge)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Settings"
-        window.minSize = NSSize(width: 680, height: 420)
+        window.minSize = NSSize(width: 760, height: 520)
         super.init(window: window)
         window.delegate = self
         window.setAccessibilityIdentifier("muxterm.settingsWindow")
@@ -156,55 +349,120 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             else { continue }
             let titleKey = group["title_key"] as? String ?? ""
             let fields = group["fields"] as? [[String: Any]] ?? []
-            let fieldSearch = fields.flatMap { field in
-                [
-                    field["path"] as? String,
-                    field["title_key"] as? String,
-                    field["description_key"] as? String,
-                ].compactMap { $0 }
-            }.joined(separator: " ")
             let title = settingsCategoryTitle(id: id, titleKey: titleKey)
+            let hint = settingsCategoryHint(id)
+            let description = settingsCategoryDescription(id)
+            var searchParts = [id, titleKey, title, hint, description]
+            for field in fields {
+                guard let path = field["path"] as? String else { continue }
+                let fieldTitle = settingsFieldTitle(
+                    path: path,
+                    titleKey: field["title_key"] as? String ?? ""
+                )
+                searchParts += [
+                    path,
+                    field["title_key"] as? String ?? "",
+                    field["description_key"] as? String ?? "",
+                    fieldTitle,
+                    settingsFieldDescription(path: path),
+                ]
+                if let options = field["options"] as? [String] {
+                    searchParts += options.flatMap { [$0, settingsOptionLabel(path: path, value: $0)] }
+                }
+            }
             categories.append(Category(
                 id: id,
                 title: title,
-                searchText: "\(id) \(titleKey) \(title) \(fieldSearch)".lowercased(),
+                hint: hint,
+                description: description,
+                searchText: searchParts.joined(separator: " ").lowercased(),
                 fields: fields
             ))
         }
         visibleCategoryIDs = categories.map(\.id)
 
-        summaryLabel.textColor = .secondaryLabelColor
-        summaryLabel.lineBreakMode = .byWordWrapping
-        summaryLabel.maximumNumberOfLines = 2
-        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-
         let root = NSView()
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         root.setAccessibilityIdentifier("muxterm.settings.root")
+
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        header.wantsLayer = true
+        header.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        root.addSubview(header)
+
+        let mark = NSTextField(labelWithString: "⌘")
+        mark.translatesAutoresizingMaskIntoConstraints = false
+        mark.alignment = .center
+        mark.font = .systemFont(ofSize: 22, weight: .bold)
+        mark.textColor = .controlAccentColor
+        mark.wantsLayer = true
+        mark.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+        mark.layer?.cornerRadius = 11
+        header.addSubview(mark)
+
+        let headerTitle = NSTextField(labelWithString: "Settings")
+        headerTitle.font = .systemFont(ofSize: 22, weight: .bold)
+        let headerSubtitle = NSTextField(labelWithString: "Make Muxterm feel like yours.")
+        headerSubtitle.font = .systemFont(ofSize: 12)
+        headerSubtitle.textColor = .secondaryLabelColor
+        let configLabel = NSTextField(labelWithString: "Configuration · config.toml")
+        configLabel.font = .systemFont(ofSize: 10)
+        configLabel.textColor = .tertiaryLabelColor
+        let heading = NSStackView(views: [headerTitle, headerSubtitle, configLabel])
+        heading.translatesAutoresizingMaskIntoConstraints = false
+        heading.orientation = .vertical
+        heading.alignment = .leading
+        heading.spacing = 2
+        heading.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        header.addSubview(heading)
+
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.placeholderString = "Search settings"
+        searchField.toolTip = "Search by setting name or keyword"
+        searchField.delegate = self
+        searchField.stringValue = ""
+        searchField.setAccessibilityIdentifier("muxterm.settings.search")
+        header.addSubview(searchField)
+
+        let headerSeparator = NSView()
+        headerSeparator.translatesAutoresizingMaskIntoConstraints = false
+        headerSeparator.wantsLayer = true
+        headerSeparator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        root.addSubview(headerSeparator)
+
         sidebarView.translatesAutoresizingMaskIntoConstraints = false
+        sidebarView.wantsLayer = true
+        sidebarView.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.74).cgColor
         sidebarView.setAccessibilityIdentifier("muxterm.settings.categories")
         pagesContainer.translatesAutoresizingMaskIntoConstraints = false
         pagesContainer.setAccessibilityIdentifier("muxterm.settings.pages")
 
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.placeholderString = "Search Settings"
-        searchField.delegate = self
-        searchField.stringValue = ""
-        searchField.setAccessibilityIdentifier("muxterm.settings.search")
-
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("category"))
         categoryTable.addTableColumn(column)
         categoryTable.headerView = nil
-        categoryTable.rowHeight = 30
+        categoryTable.rowHeight = 56
+        categoryTable.intercellSpacing = NSSize(width: 0, height: 4)
         categoryTable.style = .sourceList
+        categoryTable.backgroundColor = .clear
+        categoryTable.usesAlternatingRowBackgroundColors = false
         categoryTable.dataSource = self
         categoryTable.delegate = self
         categoryTable.setAccessibilityIdentifier("muxterm.settings.categoryList")
         categoryScroll.translatesAutoresizingMaskIntoConstraints = false
         categoryScroll.drawsBackground = false
+        categoryScroll.borderType = .noBorder
         categoryScroll.hasVerticalScroller = true
+        categoryScroll.autohidesScrollers = true
         categoryScroll.documentView = categoryTable
 
-        sidebarView.addSubview(searchField)
+        let sidebarTitle = NSTextField(labelWithString: "CONFIGURATION")
+        sidebarTitle.translatesAutoresizingMaskIntoConstraints = false
+        sidebarTitle.font = .systemFont(ofSize: 10, weight: .bold)
+        sidebarTitle.textColor = .tertiaryLabelColor
+        sidebarView.addSubview(sidebarTitle)
         sidebarView.addSubview(categoryScroll)
         root.addSubview(sidebarView)
 
@@ -227,44 +485,73 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             ])
         }
 
-        let separator = NSBox()
-        separator.boxType = .separator
+        let separator = NSView()
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
         separator.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(separator)
 
         let footer = NSView()
         footer.translatesAutoresizingMaskIntoConstraints = false
+        footer.wantsLayer = true
+        footer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.74).cgColor
         right.addSubview(footer)
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.font = .systemFont(ofSize: 11)
+        summaryLabel.lineBreakMode = .byTruncatingTail
+        summaryLabel.maximumNumberOfLines = 1
+        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
         footer.addSubview(summaryLabel)
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSettings))
         cancel.translatesAutoresizingMaskIntoConstraints = false
+        cancel.bezelStyle = .rounded
         cancel.setAccessibilityIdentifier("muxterm.settings.cancel")
         let apply = NSButton(title: "Apply", target: self, action: #selector(applySettings))
         apply.translatesAutoresizingMaskIntoConstraints = false
+        apply.bezelStyle = .rounded
         apply.keyEquivalent = "\r"
+        apply.toolTip = "Write changes to config.toml"
         apply.setAccessibilityIdentifier("muxterm.settings.apply")
         footer.addSubview(cancel)
         footer.addSubview(apply)
 
         NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            header.topAnchor.constraint(equalTo: root.topAnchor),
+            header.heightAnchor.constraint(equalToConstant: 88),
+            mark.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 28),
+            mark.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            mark.widthAnchor.constraint(equalToConstant: 42),
+            mark.heightAnchor.constraint(equalToConstant: 42),
+            heading.leadingAnchor.constraint(equalTo: mark.trailingAnchor, constant: 12),
+            heading.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            heading.trailingAnchor.constraint(lessThanOrEqualTo: searchField.leadingAnchor, constant: -20),
+            searchField.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -28),
+            searchField.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            searchField.widthAnchor.constraint(equalToConstant: 250),
+            headerSeparator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            headerSeparator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            headerSeparator.topAnchor.constraint(equalTo: header.bottomAnchor),
+            headerSeparator.heightAnchor.constraint(equalToConstant: 1),
             sidebarView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            sidebarView.topAnchor.constraint(equalTo: root.topAnchor),
+            sidebarView.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
             sidebarView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             sidebarView.widthAnchor.constraint(equalToConstant: 180),
-            searchField.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 10),
-            searchField.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -10),
-            searchField.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 12),
+            sidebarTitle.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 18),
+            sidebarTitle.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -12),
+            sidebarTitle.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 20),
             categoryScroll.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
             categoryScroll.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            categoryScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
-            categoryScroll.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor),
+            categoryScroll.topAnchor.constraint(equalTo: sidebarTitle.bottomAnchor, constant: 10),
+            categoryScroll.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor, constant: -12),
             separator.leadingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            separator.topAnchor.constraint(equalTo: root.topAnchor),
+            separator.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
             separator.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             separator.widthAnchor.constraint(equalToConstant: 1),
             right.leadingAnchor.constraint(equalTo: separator.trailingAnchor),
             right.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            right.topAnchor.constraint(equalTo: root.topAnchor),
+            right.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
             right.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             pagesContainer.leadingAnchor.constraint(equalTo: right.leadingAnchor),
             pagesContainer.trailingAnchor.constraint(equalTo: right.trailingAnchor),
@@ -273,11 +560,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             footer.leadingAnchor.constraint(equalTo: right.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: right.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: right.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 56),
-            summaryLabel.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 20),
+            footer.heightAnchor.constraint(equalToConstant: 60),
+            summaryLabel.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 24),
             summaryLabel.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             summaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: cancel.leadingAnchor, constant: -12),
-            apply.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -20),
+            apply.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -24),
             apply.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             cancel.trailingAnchor.constraint(equalTo: apply.leadingAnchor, constant: -8),
             cancel.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
@@ -292,29 +579,74 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.autohidesScrollers = true
         scroll.setAccessibilityIdentifier("muxterm.settings.page.\(category.id)")
 
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .width
-        stack.spacing = 14
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 24, right: 24)
+        stack.spacing = 18
+        stack.edgeInsets = NSEdgeInsets(top: 28, left: 34, bottom: 34, right: 38)
 
         let title = NSTextField(labelWithString: category.title)
-        title.font = .boldSystemFont(ofSize: 18)
-        stack.addArrangedSubview(title)
+        title.font = .systemFont(ofSize: 25, weight: .bold)
+        title.textColor = .labelColor
+        let description = NSTextField(labelWithString: category.description)
+        description.font = .systemFont(ofSize: 12)
+        description.textColor = .secondaryLabelColor
+        description.lineBreakMode = .byWordWrapping
+        description.maximumNumberOfLines = 2
+        let pageHeader = NSStackView(views: [title, description])
+        pageHeader.orientation = .vertical
+        pageHeader.alignment = .leading
+        pageHeader.spacing = 5
+        stack.addArrangedSubview(pageHeader)
+
+        if category.id == "appearance" {
+            stack.addArrangedSubview(settingsAppearancePreview(values: values))
+        }
+
+        let card = NSStackView()
+        card.orientation = .vertical
+        card.alignment = .width
+        card.spacing = 0
+        settingsStyleCard(card, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.56))
+        let cardTitle = NSTextField(labelWithString: category.title)
+        cardTitle.font = .systemFont(ofSize: 13, weight: .bold)
+        let cardHint = NSTextField(labelWithString: "Changes are staged until you click Apply.")
+        cardHint.font = .systemFont(ofSize: 10)
+        cardHint.textColor = .tertiaryLabelColor
+        let cardHeader = NSStackView(views: [cardTitle, cardHint])
+        cardHeader.orientation = .vertical
+        cardHeader.alignment = .leading
+        cardHeader.spacing = 3
+        cardHeader.edgeInsets = NSEdgeInsets(top: 18, left: 16, bottom: 12, right: 16)
+        card.addArrangedSubview(cardHeader)
+
+        var hasField = false
         for field in category.fields {
             guard let path = field["path"] as? String else { continue }
             let control = makeControl(field: field, values: values)
             controls[path] = control
             baselines[path] = value(at: path, in: values)
-            let label = settingsCategoryTitle(
-                id: path.split(separator: "/").last.map(String.init) ?? path,
-                titleKey: field["title_key"] as? String ?? ""
-            )
-            stack.addArrangedSubview(row(label, control))
+            if hasField {
+                card.addArrangedSubview(settingsHorizontalRule())
+            }
+            card.addArrangedSubview(settingRow(
+                title: settingsFieldTitle(
+                    path: path,
+                    titleKey: field["title_key"] as? String ?? ""
+                ),
+                description: settingsFieldDescription(path: path),
+                apply: settingsApplyLabel(field["apply"] as? String ?? "commit"),
+                path: path,
+                control: control
+            ))
+            hasField = true
         }
+        stack.addArrangedSubview(card)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
         stack.addArrangedSubview(spacer)
@@ -327,6 +659,220 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
         return scroll
+    }
+
+    private func settingRow(
+        title: String,
+        description: String,
+        apply: String,
+        path: String,
+        control: NSView
+    ) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        let descriptionLabel = NSTextField(labelWithString: description)
+        descriptionLabel.font = .systemFont(ofSize: 11)
+        descriptionLabel.textColor = .secondaryLabelColor
+        descriptionLabel.lineBreakMode = .byWordWrapping
+        descriptionLabel.maximumNumberOfLines = 2
+
+        let badge = NSTextField(labelWithString: apply)
+        badge.font = .systemFont(ofSize: 9, weight: .bold)
+        badge.textColor = .controlAccentColor
+        badge.alignment = .center
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+        badge.layer?.cornerRadius = 5
+        badge.setContentHuggingPriority(.required, for: .horizontal)
+        badge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 78).isActive = true
+
+        let descriptionLine = NSStackView(views: [descriptionLabel, badge])
+        descriptionLine.orientation = .horizontal
+        descriptionLine.alignment = .centerY
+        descriptionLine.spacing = 8
+        descriptionLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        descriptionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let copy = NSStackView(views: [titleLabel, descriptionLine])
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 3
+        copy.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        copy.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let isFullWidth = control is NSScrollView || control is SettingsProjectEditorView
+        if isFullWidth {
+            let row = NSStackView(views: [copy, control])
+            row.orientation = .vertical
+            row.alignment = .width
+            row.spacing = 12
+            row.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+            return row
+        }
+
+        if let popup = control as? NSPopUpButton {
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+            popup.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        } else if let button = control as? NSButton {
+            button.setContentHuggingPriority(.required, for: .horizontal)
+        } else {
+            control.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+            control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        let row = NSStackView(views: [copy, control])
+        row.orientation = .horizontal
+        row.distribution = .fill
+        row.alignment = .centerY
+        row.spacing = 18
+        row.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+        row.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row.identifier = NSUserInterfaceItemIdentifier("muxterm.settings.row.\(path)")
+        return row
+    }
+
+    private func settingsHorizontalRule() -> NSView {
+        let rule = NSView()
+        rule.wantsLayer = true
+        rule.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.55).cgColor
+        rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return rule
+    }
+
+    private func makeControl(field: [String: Any], values: [String: Any]) -> NSView {
+        let path = field["path"] as? String ?? ""
+        let kind = field["control"] as? String ?? "text"
+        let baseline = value(at: path, in: values)
+
+        switch kind {
+        case "switch":
+            let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(controlChanged(_:)))
+            checkbox.identifier = NSUserInterfaceItemIdentifier(path)
+            checkbox.state = (baseline as? Bool == true) ? .on : .off
+            return checkbox
+        case "number":
+            let field = NSTextField()
+            field.identifier = NSUserInterfaceItemIdentifier(path)
+            field.alignment = .right
+            field.target = self
+            field.action = #selector(controlChanged(_:))
+            field.delegate = self
+            field.placeholderString = "0"
+            if let number = baseline as? NSNumber {
+                field.stringValue = number.stringValue
+            }
+            field.controlSize = .regular
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
+            field.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            return field
+        case "multiline":
+            let textView = NSTextView()
+            textView.isVerticallyResizable = true
+            textView.isHorizontallyResizable = false
+            textView.autoresizingMask = [.width]
+            textView.textContainer?.widthTracksTextView = true
+            textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            textView.identifier = NSUserInterfaceItemIdentifier(path)
+            let scroll = NSScrollView()
+            scroll.hasVerticalScroller = true
+            scroll.autohidesScrollers = true
+            scroll.borderType = .bezelBorder
+            scroll.documentView = textView
+            scroll.heightAnchor.constraint(equalToConstant: 94).isActive = true
+            if let items = baseline as? [String] {
+                textView.string = items.joined(separator: "\n")
+            }
+            return scroll
+        case "select", "theme_picker":
+            let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+            popup.identifier = NSUserInterfaceItemIdentifier(path)
+            popup.target = self
+            popup.action = #selector(controlChanged(_:))
+            if let options = field["options"] as? [String] {
+                for option in options {
+                    popup.addItem(withTitle: settingsOptionLabel(path: path, value: option))
+                    popup.lastItem?.representedObject = option
+                }
+            }
+            let current = baseline as? String ?? ""
+            if popup.itemArray.first(where: { $0.representedObject as? String == current }) == nil {
+                popup.addItem(withTitle: settingsOptionLabel(path: path, value: current))
+                popup.lastItem?.representedObject = current
+            }
+            if let item = popup.itemArray.first(where: { $0.representedObject as? String == current }) {
+                popup.select(item)
+            }
+            return popup
+        case "font_fallback", "string_list":
+            let entry = NSTextField()
+            entry.identifier = NSUserInterfaceItemIdentifier(path)
+            entry.target = self
+            entry.action = #selector(controlChanged(_:))
+            entry.delegate = self
+            entry.placeholderString = "Noto Sans Mono, monospace"
+            if let items = baseline as? [String] {
+                entry.stringValue = items.joined(separator: ", ")
+            }
+            entry.controlSize = .regular
+            entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            return entry
+        case "font_picker":
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.spacing = 8
+            let entry = NSTextField()
+            entry.identifier = NSUserInterfaceItemIdentifier(path)
+            entry.target = self
+            entry.action = #selector(controlChanged(_:))
+            entry.delegate = self
+            entry.placeholderString = "JetBrains Mono"
+            if let family = baseline as? String {
+                entry.stringValue = family
+            }
+            entry.controlSize = .regular
+            entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseFont(_:)))
+            choose.identifier = NSUserInterfaceItemIdentifier(path)
+            choose.bezelStyle = .rounded
+            row.addArrangedSubview(entry)
+            row.addArrangedSubview(choose)
+            row.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            return row
+        case "project_editor":
+            let editor = SettingsProjectEditorView(projects: quickConnectStore.projects)
+            editor.onNew = { [weak self] in
+                self?.openProjectEditor(nil)
+            }
+            editor.onEdit = { [weak self] index in
+                self?.openProjectEditor(at: index)
+            }
+            editor.onDelete = { [weak self] index in
+                self?.deleteProject(at: index)
+            }
+            projectEditorView = editor
+            return editor
+        case "shortcut_editor":
+            let label = NSTextField(labelWithString: "Open the shortcut manager from the main command palette.")
+            label.identifier = NSUserInterfaceItemIdentifier(path)
+            label.textColor = .secondaryLabelColor
+            label.font = .systemFont(ofSize: 11)
+            return label
+        default:
+            let entry = NSTextField()
+            entry.identifier = NSUserInterfaceItemIdentifier(path)
+            entry.target = self
+            entry.action = #selector(controlChanged(_:))
+            entry.delegate = self
+            entry.placeholderString = settingsInputPlaceholder(path)
+            if let text = baseline as? String {
+                entry.stringValue = text
+            }
+            entry.controlSize = .regular
+            entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            return entry
+        }
     }
 
     private func selectCategory(_ id: String?) {
@@ -358,139 +904,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         } else {
             selectCategory(visibleCategoryIDs.first)
         }
-    }
-
-    private func makeControl(field: [String: Any], values: [String: Any]) -> NSView {
-        let path = field["path"] as? String ?? ""
-        let kind = field["control"] as? String ?? "text"
-        let baseline = value(at: path, in: values)
-
-        switch kind {
-        case "switch":
-            let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(controlChanged(_:)))
-            checkbox.identifier = NSUserInterfaceItemIdentifier(path)
-            checkbox.state = (baseline as? Bool == true) ? .on : .off
-            return checkbox
-        case "number":
-            let field = NSTextField()
-            field.identifier = NSUserInterfaceItemIdentifier(path)
-            field.alignment = .right
-            field.target = self
-            field.action = #selector(controlChanged(_:))
-            field.delegate = self
-            if let number = baseline as? NSNumber {
-                field.stringValue = number.stringValue
-            }
-            field.controlSize = .regular
-            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            return field
-        case "multiline":
-            let textView = NSTextView()
-            textView.isVerticallyResizable = true
-            textView.isHorizontallyResizable = false
-            textView.autoresizingMask = [.width]
-            textView.textContainer?.widthTracksTextView = true
-            textView.identifier = NSUserInterfaceItemIdentifier(path)
-            let scroll = NSScrollView()
-            scroll.hasVerticalScroller = true
-            scroll.borderType = .bezelBorder
-            scroll.documentView = textView
-            scroll.heightAnchor.constraint(equalToConstant: 72).isActive = true
-            scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
-            if let items = baseline as? [String] {
-                textView.string = items.joined(separator: "\n")
-            }
-            return scroll
-        case "select", "theme_picker":
-            let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-            popup.identifier = NSUserInterfaceItemIdentifier(path)
-            popup.target = self
-            popup.action = #selector(controlChanged(_:))
-            if let options = field["options"] as? [String] {
-                popup.addItems(withTitles: options)
-            }
-            if let current = baseline as? String {
-                popup.selectItem(withTitle: current)
-            }
-            return popup
-        case "font_fallback", "string_list":
-            let entry = NSTextField()
-            entry.identifier = NSUserInterfaceItemIdentifier(path)
-            entry.target = self
-            entry.action = #selector(controlChanged(_:))
-            entry.delegate = self
-            if let items = baseline as? [String] {
-                entry.stringValue = items.joined(separator: ", ")
-            }
-            entry.controlSize = .regular
-            entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            return entry
-        case "font_picker":
-            let row = NSStackView()
-            row.orientation = .horizontal
-            row.spacing = 6
-            let entry = NSTextField()
-            entry.identifier = NSUserInterfaceItemIdentifier(path)
-            entry.target = self
-            entry.action = #selector(controlChanged(_:))
-            entry.delegate = self
-            if let family = baseline as? String {
-                entry.stringValue = family
-            }
-            entry.controlSize = .regular
-            entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseFont(_:)))
-            choose.identifier = NSUserInterfaceItemIdentifier(path)
-            row.addArrangedSubview(entry)
-            row.addArrangedSubview(choose)
-            return row
-        case "project_editor":
-            let editor = SettingsProjectEditorView(projects: quickConnectStore.projects)
-            editor.onNew = { [weak self] in
-                self?.openProjectEditor(nil)
-            }
-            editor.onEdit = { [weak self] index in
-                self?.openProjectEditor(at: index)
-            }
-            editor.onDelete = { [weak self] index in
-                self?.deleteProject(at: index)
-            }
-            projectEditorView = editor
-            return editor
-        case "shortcut_editor":
-            let label = NSTextField(labelWithString: "Managed by the dedicated editor")
-            label.identifier = NSUserInterfaceItemIdentifier(path)
-            label.textColor = .secondaryLabelColor
-            return label
-        default:
-            let entry = NSTextField()
-            entry.identifier = NSUserInterfaceItemIdentifier(path)
-            entry.target = self
-            entry.action = #selector(controlChanged(_:))
-            entry.delegate = self
-            if let text = baseline as? String {
-                entry.stringValue = text
-            }
-            entry.controlSize = .regular
-            entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            return entry
-        }
-    }
-
-    private func row(_ title: String, _ control: NSView) -> NSStackView {
-        let label = NSTextField(labelWithString: title)
-        label.setContentHuggingPriority(.required, for: .horizontal)
-        label.widthAnchor.constraint(equalToConstant: 180).isActive = true
-        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        control.widthAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
-        let row = NSStackView(views: [label, control])
-        row.orientation = .horizontal
-        row.distribution = .fill
-        row.spacing = 12
-        row.alignment = .centerY
-        row.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        return row
     }
 
     private func loadValues(_ values: [String: Any]) {
@@ -573,6 +986,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         if let editor = view as? SettingsProjectEditorView {
             return QuickConnectStore.projectJSON(from: editor.projects)
         }
+        if let popup = view as? NSPopUpButton {
+            return popup.selectedItem?.representedObject as? String ?? popup.titleOfSelectedItem
+        }
         if let checkbox = view as? NSButton {
             return checkbox.state == .on
         }
@@ -591,9 +1007,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         }
         if let scroll = view as? NSScrollView, let textView = scroll.documentView as? NSTextView {
             return textView.string.split(separator: "\n").map(String.init).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        }
-        if let popup = view as? NSPopUpButton {
-            return popup.titleOfSelectedItem
         }
         if let row = view as? NSStackView {
             // font_picker row: 第一个 NSTextField 就是 family。
@@ -690,25 +1103,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
               let category = categories.first(where: { $0.id == visibleCategoryIDs[row] })
         else { return nil }
         let identifier = NSUserInterfaceItemIdentifier("muxterm.settings.categoryCell")
-        let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView)
-            ?? NSTableCellView()
+        let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? SettingsCategoryCellView)
+            ?? SettingsCategoryCellView(frame: .zero)
         cell.identifier = identifier
-        let label: NSTextField
-        if let existing = cell.textField {
-            label = existing
-        } else {
-            label = NSTextField(labelWithString: "")
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.lineBreakMode = .byTruncatingTail
-            cell.textField = label
-            cell.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-        }
-        label.stringValue = category.title
+        cell.configure(title: category.title, hint: category.hint, icon: settingsCategoryIcon(category.id))
         cell.setAccessibilityIdentifier("muxterm.settings.category.\(category.id)")
         return cell
     }
@@ -837,6 +1235,144 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     }
 }
 
+private func settingsInputPlaceholder(_ path: String) -> String? {
+    switch path {
+    case "/tmux/default_session": return "workspace name"
+    case "/tmux/socket": return "default socket"
+    case "/pane/default_command": return "$SHELL"
+    case "/pane/workdir": return "$HOME"
+    case "/ssh/host": return "example.com"
+    case "/ssh/user": return "optional"
+    case "/ssh/key_path": return "~/.ssh/id_ed25519"
+    default: return nil
+    }
+}
+
+private func settingsAppearancePreview(values: [String: Any]) -> NSView {
+    let preview = NSStackView()
+    preview.orientation = .vertical
+    preview.alignment = .width
+    preview.spacing = 12
+    settingsStyleCard(preview, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.56))
+
+    let title = NSTextField(labelWithString: "Terminal preview")
+    title.font = .systemFont(ofSize: 13, weight: .bold)
+    let badge = NSTextField(labelWithString: "PREVIEW")
+    badge.font = .systemFont(ofSize: 9, weight: .bold)
+    badge.alignment = .center
+    badge.textColor = .controlAccentColor
+    badge.wantsLayer = true
+    badge.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+    badge.layer?.cornerRadius = 5
+    badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
+    let titleRow = NSStackView(views: [title, NSView(), badge])
+    titleRow.orientation = .horizontal
+    titleRow.alignment = .centerY
+    titleRow.spacing = 8
+    titleRow.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 0, right: 16)
+    preview.addArrangedSubview(titleRow)
+
+    let terminal = NSStackView()
+    terminal.orientation = .vertical
+    terminal.alignment = .leading
+    terminal.spacing = 8
+    terminal.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+    terminal.wantsLayer = true
+    terminal.layer?.backgroundColor = NSColor(calibratedRed: 0.06, green: 0.08, blue: 0.11, alpha: 1).cgColor
+    terminal.layer?.cornerRadius = 8
+
+    let dots = NSStackView()
+    dots.orientation = .horizontal
+    dots.spacing = 5
+    for color in [NSColor.systemRed, NSColor.systemYellow, NSColor.systemGreen] {
+        let dot = NSTextField(labelWithString: "●")
+        dot.font = .systemFont(ofSize: 9)
+        dot.textColor = color
+        dots.addArrangedSubview(dot)
+    }
+    terminal.addArrangedSubview(dots)
+    let prompt = NSTextField(labelWithString: "$ muxterm  --workspace ready")
+    prompt.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+    prompt.textColor = NSColor(calibratedRed: 0.55, green: 0.91, blue: 1, alpha: 1)
+    terminal.addArrangedSubview(prompt)
+    let output = NSTextField(labelWithString: "Connected  ·  2 panes  ·  waiting for input")
+    output.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+    output.textColor = NSColor(calibratedRed: 0.66, green: 0.71, blue: 0.78, alpha: 1)
+    terminal.addArrangedSubview(output)
+    preview.addArrangedSubview(terminal)
+
+    let family = (settingsValue(at: "/font/family", in: values) as? String)
+        .flatMap { $0.isEmpty ? nil : $0 } ?? "JetBrains Mono"
+    let size = (settingsValue(at: "/font/size", in: values) as? NSNumber)?.doubleValue ?? 13
+    let themeValue = settingsValue(at: "/theme/name", in: values) as? String ?? "system"
+    let sizeText = String(format: "%.1f", size)
+    let themeText = settingsOptionLabel(path: "/theme/name", value: themeValue)
+    let summary = NSTextField(labelWithString: family + "  ·  " + sizeText + " pt  ·  " + themeText)
+    summary.font = .systemFont(ofSize: 10)
+    summary.textColor = .tertiaryLabelColor
+    let summaryRow = NSStackView(views: [summary])
+    summaryRow.alignment = .leading
+    summaryRow.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 16, right: 16)
+    preview.addArrangedSubview(summaryRow)
+    return preview
+}
+
+private final class SettingsCategoryCellView: NSTableCellView {
+    private let iconLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let hintLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        build()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        build()
+    }
+
+    func configure(title: String, hint: String, icon: String) {
+        titleLabel.stringValue = title
+        hintLabel.stringValue = hint
+        iconLabel.stringValue = icon
+    }
+
+    private func build() {
+        iconLabel.translatesAutoresizingMaskIntoConstraints = false
+        iconLabel.alignment = .center
+        iconLabel.font = .systemFont(ofSize: 15, weight: .bold)
+        iconLabel.textColor = .secondaryLabelColor
+        iconLabel.widthAnchor.constraint(equalToConstant: 28).isActive = true
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        hintLabel.translatesAutoresizingMaskIntoConstraints = false
+        hintLabel.font = .systemFont(ofSize: 10)
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.lineBreakMode = .byTruncatingTail
+
+        let copy = NSStackView(views: [titleLabel, hintLabel])
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 1
+
+        addSubview(iconLabel)
+        addSubview(copy)
+        textField = titleLabel
+        NSLayoutConstraint.activate([
+            iconLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            copy.leadingAnchor.constraint(equalTo: iconLabel.trailingAnchor, constant: 10),
+            copy.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            copy.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+}
+
 /// Settings 中的 Project 列表；编辑细节复用 TargetConfigWindow。
 private final class SettingsProjectEditorView: NSView {
     var onNew: (() -> Void)?
@@ -845,7 +1381,7 @@ private final class SettingsProjectEditorView: NSView {
 
     private(set) var projects: [TargetConfig]
     private let rows = NSStackView()
-    private let newButton = NSButton(title: "New Project", target: nil, action: nil)
+    private let newButton = NSButton(title: "New project…", target: nil, action: nil)
 
     init(projects: [TargetConfig]) {
         self.projects = projects
@@ -878,6 +1414,7 @@ private final class SettingsProjectEditorView: NSView {
         if projects.isEmpty {
             let empty = NSTextField(labelWithString: "No projects yet")
             empty.textColor = .secondaryLabelColor
+            empty.font = .systemFont(ofSize: 12)
             rows.addArrangedSubview(empty)
             return
         }
@@ -899,7 +1436,10 @@ private final class SettingsProjectEditorView: NSView {
         newButton.action = #selector(newProject)
         newButton.bezelStyle = .rounded
         newButton.setAccessibilityIdentifier("muxterm.settings.projects.new")
-        stack.addArrangedSubview(newButton)
+        let toolbar = NSStackView(views: [NSView(), newButton])
+        toolbar.orientation = .horizontal
+        toolbar.alignment = .centerY
+        stack.addArrangedSubview(toolbar)
 
         rows.orientation = .vertical
         rows.alignment = .width
@@ -939,12 +1479,15 @@ private final class SettingsProjectEditorView: NSView {
         let delete = NSButton(title: "Delete", target: self, action: #selector(deleteProject(_:)))
         delete.tag = index
         delete.bezelStyle = .rounded
+        delete.contentTintColor = .systemRed
         delete.setAccessibilityIdentifier("muxterm.settings.projects.\(index).delete")
 
         let row = NSStackView(views: [info, edit, delete])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        settingsStyleCard(row, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.42))
         row.setAccessibilityIdentifier("muxterm.settings.projects.\(index)")
         return row
     }
