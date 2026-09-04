@@ -194,6 +194,21 @@ private func settingsCategoryIcon(_ id: String) -> String {
     }
 }
 
+private func settingsSectionTitle(_ id: String) -> String {
+    switch id {
+    case "appearance": return "Terminal"
+    case "runtime": return "Workspace defaults"
+    case "attention": return "Attention"
+    case "ui": return "Interface"
+    case "ssh": return "SSH defaults"
+    case "behavior": return "Exit behavior"
+    case "platform": return "Platform"
+    case "projects": return "Saved projects"
+    case "shortcuts": return "Keyboard shortcuts"
+    default: return "Settings"
+    }
+}
+
 private func settingsValue(at path: String, in values: [String: Any]) -> Any? {
     var current: Any = values
     for segment in path.split(separator: "/") {
@@ -589,6 +604,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         stack.alignment = .width
         stack.spacing = 18
         stack.edgeInsets = NSEdgeInsets(top: 28, left: 34, bottom: 34, right: 38)
+        stack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        stack.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let contentWidth: CGFloat = -72
 
         let title = NSTextField(labelWithString: category.title)
         title.font = .systemFont(ofSize: 25, weight: .bold)
@@ -602,18 +620,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         pageHeader.orientation = .vertical
         pageHeader.alignment = .leading
         pageHeader.spacing = 5
+        pageHeader.setContentHuggingPriority(.defaultLow, for: .horizontal)
         stack.addArrangedSubview(pageHeader)
-
-        if category.id == "appearance" {
-            stack.addArrangedSubview(settingsAppearancePreview(values: values))
-        }
+        pageHeader.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
         let card = NSStackView()
         card.orientation = .vertical
         card.alignment = .width
         card.spacing = 0
+        card.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        card.setContentCompressionResistancePriority(.required, for: .horizontal)
         settingsStyleCard(card, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.56))
-        let cardTitle = NSTextField(labelWithString: category.title)
+        let cardTitle = NSTextField(labelWithString: settingsSectionTitle(category.id))
         cardTitle.font = .systemFont(ofSize: 13, weight: .bold)
         let cardHint = NSTextField(labelWithString: "Changes are staged until you click Apply.")
         cardHint.font = .systemFont(ofSize: 10)
@@ -623,7 +641,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         cardHeader.alignment = .leading
         cardHeader.spacing = 3
         cardHeader.edgeInsets = NSEdgeInsets(top: 18, left: 16, bottom: 12, right: 16)
+        cardHeader.setContentHuggingPriority(.defaultLow, for: .horizontal)
         card.addArrangedSubview(cardHeader)
+        cardHeader.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
 
         var hasField = false
         for field in category.fields {
@@ -632,9 +652,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             controls[path] = control
             baselines[path] = value(at: path, in: values)
             if hasField {
-                card.addArrangedSubview(settingsHorizontalRule())
+                let rule = settingsHorizontalRule()
+                card.addArrangedSubview(rule)
+                rule.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
             }
-            card.addArrangedSubview(settingRow(
+            let row = settingRow(
                 title: settingsFieldTitle(
                     path: path,
                     titleKey: field["title_key"] as? String ?? ""
@@ -643,13 +665,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 apply: settingsApplyLabel(field["apply"] as? String ?? "commit"),
                 path: path,
                 control: control
-            ))
+            )
+            card.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
             hasField = true
         }
         stack.addArrangedSubview(card)
+        card.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
+        if category.id == "appearance" {
+            let preview = settingsAppearancePreview(values: values)
+            stack.addArrangedSubview(preview)
+            preview.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
+        }
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
         stack.addArrangedSubview(spacer)
+        spacer.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
         scroll.documentView = stack
         NSLayoutConstraint.activate([
@@ -671,9 +702,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.textColor = .labelColor
+        titleLabel.alignment = .left
         let descriptionLabel = NSTextField(labelWithString: description)
         descriptionLabel.font = .systemFont(ofSize: 11)
         descriptionLabel.textColor = .secondaryLabelColor
+        descriptionLabel.alignment = .left
         descriptionLabel.lineBreakMode = .byWordWrapping
         descriptionLabel.maximumNumberOfLines = 2
 
@@ -695,40 +728,67 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         descriptionLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         descriptionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let copy = NSStackView(views: [titleLabel, descriptionLine])
-        copy.orientation = .vertical
-        copy.alignment = .leading
-        copy.spacing = 3
+        let copy = NSView()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        descriptionLine.translatesAutoresizingMaskIntoConstraints = false
         copy.setContentHuggingPriority(.defaultLow, for: .horizontal)
         copy.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        copy.addSubview(titleLabel)
+        copy.addSubview(descriptionLine)
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: copy.leadingAnchor),
+            titleLabel.trailingAnchor.constraint(equalTo: copy.trailingAnchor),
+            titleLabel.topAnchor.constraint(equalTo: copy.topAnchor),
+            descriptionLine.leadingAnchor.constraint(equalTo: copy.leadingAnchor),
+            descriptionLine.trailingAnchor.constraint(equalTo: copy.trailingAnchor),
+            descriptionLine.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+            descriptionLine.bottomAnchor.constraint(equalTo: copy.bottomAnchor),
+        ])
 
         let isFullWidth = control is NSScrollView || control is SettingsProjectEditorView
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        control.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(copy)
+        row.addSubview(control)
         if isFullWidth {
-            let row = NSStackView(views: [copy, control])
-            row.orientation = .vertical
-            row.alignment = .width
-            row.spacing = 12
-            row.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+            NSLayoutConstraint.activate([
+                copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+                copy.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+                copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
+                control.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+                control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+                control.topAnchor.constraint(equalTo: copy.bottomAnchor, constant: 12),
+                control.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -14),
+            ])
             return row
         }
 
+        let controlWidth: CGFloat = 320
         if let popup = control as? NSPopUpButton {
-            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+            popup.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
             popup.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        } else if let composite = control as? NSStackView {
+            // 复合控件固定在右侧，避免把左侧标题/描述列压缩到不可见。
+            composite.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
+            composite.setContentHuggingPriority(.required, for: .horizontal)
+            composite.setContentCompressionResistancePriority(.required, for: .horizontal)
         } else if let button = control as? NSButton {
             button.setContentHuggingPriority(.required, for: .horizontal)
         } else {
-            control.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
-            control.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            control.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
+            control.setContentHuggingPriority(.required, for: .horizontal)
+            control.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
-        let row = NSStackView(views: [copy, control])
-        row.orientation = .horizontal
-        row.distribution = .fill
-        row.alignment = .centerY
-        row.spacing = 18
-        row.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-        row.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        NSLayoutConstraint.activate([
+            copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            copy.trailingAnchor.constraint(equalTo: control.leadingAnchor, constant: -18),
+            copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
+            copy.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -14),
+            control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+            control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
         row.identifier = NSUserInterfaceItemIdentifier("muxterm.settings.row.\(path)")
         return row
     }
@@ -1253,6 +1313,8 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     preview.orientation = .vertical
     preview.alignment = .width
     preview.spacing = 12
+    preview.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    preview.setContentCompressionResistancePriority(.required, for: .horizontal)
     settingsStyleCard(preview, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.56))
 
     let title = NSTextField(labelWithString: "Terminal preview")
@@ -1270,13 +1332,16 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     titleRow.alignment = .centerY
     titleRow.spacing = 8
     titleRow.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 0, right: 16)
+    titleRow.setContentHuggingPriority(.defaultLow, for: .horizontal)
     preview.addArrangedSubview(titleRow)
 
     let terminal = NSStackView()
     terminal.orientation = .vertical
-    terminal.alignment = .leading
+    terminal.alignment = .width
     terminal.spacing = 8
     terminal.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+    terminal.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    terminal.setContentCompressionResistancePriority(.required, for: .horizontal)
     terminal.wantsLayer = true
     terminal.layer?.backgroundColor = NSColor(calibratedRed: 0.06, green: 0.08, blue: 0.11, alpha: 1).cgColor
     terminal.layer?.cornerRadius = 8

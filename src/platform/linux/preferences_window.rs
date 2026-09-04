@@ -529,11 +529,7 @@ pub fn show(
             page_heading.append(&page_description);
             page_content.append(&page_heading);
 
-            if group_id == "appearance" {
-                page_content.append(&appearance_preview(&values));
-            }
-
-            let section_box = section(group_title);
+            let section_box = section(&group_id, group_title);
             let mut page_fields = Vec::new();
             let mut has_field = false;
             if let Some(manifest_fields) = group["fields"].as_array() {
@@ -560,6 +556,9 @@ pub fn show(
                 }
             }
             page_content.append(&section_box);
+            if group_id == "appearance" {
+                page_content.append(&appearance_preview(&values));
+            }
             let page = ScrolledWindow::builder()
                 .child(&page_content)
                 .hexpand(true)
@@ -1421,7 +1420,7 @@ fn gdk_key_to_binding(keyval: gdk::Key, mods: gdk::ModifierType) -> Option<(Stri
     Some((key, modifiers))
 }
 
-fn section(title_key: &str) -> GtkBox {
+fn section(id: &str, title_key: &str) -> GtkBox {
     let box_ = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(0)
@@ -1436,7 +1435,7 @@ fn section(title_key: &str) -> GtkBox {
         .margin_start(16)
         .margin_end(16)
         .build();
-    let label = Label::new(Some(&category_title("", title_key)));
+    let label = Label::new(Some(section_title(id, title_key)));
     label.set_halign(Align::Start);
     label.add_css_class("prefs-card-title");
     header.append(&label);
@@ -1463,6 +1462,21 @@ fn subwindow_header(title: &str, description: &str) -> GtkBox {
     description_label.add_css_class("prefs-page-description");
     header.append(&description_label);
     header
+}
+
+fn section_title(id: &str, title_key: &str) -> String {
+    match id {
+        "appearance" => "Terminal".into(),
+        "runtime" => "Workspace defaults".into(),
+        "attention" => "Attention".into(),
+        "ui" => "Interface".into(),
+        "ssh" => "SSH defaults".into(),
+        "behavior" => "Exit behavior".into(),
+        "platform" => "Platform".into(),
+        "projects" => "Saved projects".into(),
+        "shortcuts" => "Keyboard shortcuts".into(),
+        _ => category_title(id, title_key),
+    }
 }
 
 fn action_title(title_key: &str) -> String {
