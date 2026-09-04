@@ -146,6 +146,7 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
     let content = GtkBox::builder()
         .orientation(Orientation::Horizontal)
         .spacing(18)
+        .hexpand(true)
         .build();
     let copy = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -158,23 +159,32 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
     label.add_css_class("prefs-setting-title");
     copy.append(&label);
 
-    let description_row = GtkBox::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(8)
-        .build();
     let description_label = Label::new(Some(description));
     description_label.set_halign(Align::Start);
     description_label.set_xalign(0.0);
+    description_label.set_hexpand(true);
     description_label.set_wrap(true);
     description_label.set_max_width_chars(58);
     description_label.add_css_class("prefs-setting-description");
-    description_row.append(&description_label);
+    copy.append(&description_label);
+
     let apply_label_widget = Label::new(Some(apply));
     apply_label_widget.set_valign(Align::Center);
+    apply_label_widget.set_halign(Align::Center);
+    apply_label_widget.set_size_request(124, -1);
     apply_label_widget.add_css_class("prefs-apply-badge");
-    description_row.append(&apply_label_widget);
-    copy.append(&description_row);
     content.append(&copy);
+
+    // 所有普通控件共用固定的右侧槽位；开关也靠右，不随左侧文案长度漂移。
+    let control_slot = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(0)
+        .build();
+    control_slot.set_size_request(208, -1);
+    let control_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    control_spacer.set_hexpand(true);
+    control_slot.append(&control_spacer);
+
     row.append(&content);
 
     let field_control = match control {
@@ -184,7 +194,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_active(current.and_then(Value::as_bool).unwrap_or(false));
             widget.set_valign(Align::Center);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_field(path, ControlKind::Switch(widget)))
         }
         "number" => {
@@ -196,7 +207,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_width_chars(9);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_number(path, widget, digits == 0))
         }
         "multiline" => {
@@ -239,7 +251,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_size_request(208, -1);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_field(path, ControlKind::FontPicker(widget)))
         }
         "select" | "theme_picker" => {
@@ -262,7 +275,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_size_request(208, -1);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_field(path, ControlKind::Select(widget)))
         }
         "font_fallback" => {
@@ -283,7 +297,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_size_request(208, -1);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_field(path, ControlKind::StringList(widget)))
         }
         "project_editor" => {
@@ -291,7 +306,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_widget_name(&widget_name);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_field(path, ControlKind::Summary(widget)))
         }
         "shortcut_editor" => {
@@ -299,7 +315,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_widget_name(&widget_name);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_field(path, ControlKind::Summary(widget)))
         }
         _ => {
@@ -310,7 +327,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
             widget.set_size_request(208, -1);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
-            content.append(&widget);
+            control_slot.append(&widget);
+            content.append(&control_slot);
             Some(tracked_field(path, ControlKind::Text(widget)))
         }
     };
@@ -1473,7 +1491,7 @@ fn section_title(id: &str, title_key: &str) -> String {
         "ssh" => "SSH defaults".into(),
         "behavior" => "Exit behavior".into(),
         "platform" => "Platform".into(),
-        "projects" => "Saved projects".into(),
+        "projects" => "Workspace profiles".into(),
         "shortcuts" => "Keyboard shortcuts".into(),
         _ => category_title(id, title_key),
     }

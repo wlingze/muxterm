@@ -203,7 +203,7 @@ private func settingsSectionTitle(_ id: String) -> String {
     case "ssh": return "SSH defaults"
     case "behavior": return "Exit behavior"
     case "platform": return "Platform"
-    case "projects": return "Saved projects"
+    case "projects": return "Workspace profiles"
     case "shortcuts": return "Keyboard shortcuts"
     default: return "Settings"
     }
@@ -719,44 +719,48 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         badge.layer?.cornerRadius = 5
         badge.setContentHuggingPriority(.required, for: .horizontal)
         badge.setContentCompressionResistancePriority(.required, for: .horizontal)
-        badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 78).isActive = true
-
-        let descriptionLine = NSStackView(views: [descriptionLabel, badge])
-        descriptionLine.orientation = .horizontal
-        descriptionLine.alignment = .centerY
-        descriptionLine.spacing = 8
-        descriptionLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        descriptionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        badge.widthAnchor.constraint(equalToConstant: 124).isActive = true
+        badge.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let copy = NSView()
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        descriptionLine.translatesAutoresizingMaskIntoConstraints = false
+        descriptionLabel.translatesAutoresizingMaskIntoConstraints = false
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        badge.translatesAutoresizingMaskIntoConstraints = false
         copy.setContentHuggingPriority(.defaultLow, for: .horizontal)
         copy.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        descriptionLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        descriptionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         copy.addSubview(titleLabel)
-        copy.addSubview(descriptionLine)
+        copy.addSubview(descriptionLabel)
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: copy.leadingAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: copy.trailingAnchor),
             titleLabel.topAnchor.constraint(equalTo: copy.topAnchor),
-            descriptionLine.leadingAnchor.constraint(equalTo: copy.leadingAnchor),
-            descriptionLine.trailingAnchor.constraint(equalTo: copy.trailingAnchor),
-            descriptionLine.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
-            descriptionLine.bottomAnchor.constraint(equalTo: copy.bottomAnchor),
+            descriptionLabel.leadingAnchor.constraint(equalTo: copy.leadingAnchor),
+            descriptionLabel.trailingAnchor.constraint(equalTo: copy.trailingAnchor),
+            descriptionLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+            descriptionLabel.bottomAnchor.constraint(equalTo: copy.bottomAnchor),
         ])
 
+        let controlWidth: CGFloat = 320
         let isFullWidth = control is NSScrollView || control is SettingsProjectEditorView
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
-        copy.translatesAutoresizingMaskIntoConstraints = false
         control.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(copy)
+        row.addSubview(badge)
         row.addSubview(control)
         if isFullWidth {
             NSLayoutConstraint.activate([
                 copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
-                copy.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+                copy.trailingAnchor.constraint(equalTo: badge.leadingAnchor, constant: -12),
                 copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
+                badge.trailingAnchor.constraint(
+                    equalTo: row.trailingAnchor,
+                    constant: -(16 + controlWidth + 12)
+                ),
+                badge.centerYAnchor.constraint(equalTo: copy.centerYAnchor),
                 control.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
                 control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
                 control.topAnchor.constraint(equalTo: copy.bottomAnchor, constant: 12),
@@ -765,7 +769,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             return row
         }
 
-        let controlWidth: CGFloat = 320
         if let popup = control as? NSPopUpButton {
             popup.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
             popup.setContentHuggingPriority(.defaultHigh, for: .horizontal)
@@ -783,9 +786,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         }
         NSLayoutConstraint.activate([
             copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
-            copy.trailingAnchor.constraint(equalTo: control.leadingAnchor, constant: -18),
+            copy.trailingAnchor.constraint(equalTo: badge.leadingAnchor, constant: -12),
             copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
             copy.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -14),
+            badge.trailingAnchor.constraint(
+                equalTo: row.trailingAnchor,
+                constant: -(16 + controlWidth + 12)
+            ),
+            badge.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
             control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
         ])
@@ -1480,11 +1488,15 @@ private final class SettingsProjectEditorView: NSView {
             let empty = NSTextField(labelWithString: "No projects yet")
             empty.textColor = .secondaryLabelColor
             empty.font = .systemFont(ofSize: 12)
+            empty.translatesAutoresizingMaskIntoConstraints = false
             rows.addArrangedSubview(empty)
+            empty.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
             return
         }
         for (index, project) in projects.enumerated() {
-            rows.addArrangedSubview(makeRow(project: project, index: index))
+            let row = makeRow(project: project, index: index)
+            rows.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
         }
     }
 
@@ -1496,20 +1508,31 @@ private final class SettingsProjectEditorView: NSView {
         stack.orientation = .vertical
         stack.alignment = .width
         stack.spacing = 10
+        stack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        stack.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         newButton.target = self
         newButton.action = #selector(newProject)
         newButton.bezelStyle = .rounded
         newButton.setAccessibilityIdentifier("muxterm.settings.projects.new")
-        let toolbar = NSStackView(views: [NSView(), newButton])
-        toolbar.orientation = .horizontal
-        toolbar.alignment = .centerY
+        let toolbar = NSView()
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+        newButton.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.addSubview(newButton)
+        NSLayoutConstraint.activate([
+            newButton.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
+            newButton.topAnchor.constraint(equalTo: toolbar.topAnchor),
+            newButton.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor),
+        ])
         stack.addArrangedSubview(toolbar)
+        toolbar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         rows.orientation = .vertical
         rows.alignment = .width
         rows.spacing = 8
+        rows.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(rows)
+        rows.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -1522,10 +1545,12 @@ private final class SettingsProjectEditorView: NSView {
 
     private func makeRow(project: TargetConfig, index: Int) -> NSView {
         let name = NSTextField(labelWithString: project.name)
+        name.translatesAutoresizingMaskIntoConstraints = false
         name.font = .systemFont(ofSize: 13, weight: .semibold)
         name.lineBreakMode = .byTruncatingTail
 
         let details = NSTextField(labelWithString: projectDetail(project))
+        details.translatesAutoresizingMaskIntoConstraints = false
         details.textColor = .secondaryLabelColor
         details.font = .systemFont(ofSize: 11)
         details.lineBreakMode = .byTruncatingMiddle
@@ -1536,22 +1561,39 @@ private final class SettingsProjectEditorView: NSView {
         info.spacing = 2
         info.setContentHuggingPriority(.defaultLow, for: .horizontal)
         info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        info.translatesAutoresizingMaskIntoConstraints = false
 
         let edit = NSButton(title: "Edit", target: self, action: #selector(editProject(_:)))
+        edit.translatesAutoresizingMaskIntoConstraints = false
         edit.tag = index
         edit.bezelStyle = .rounded
+        edit.setContentHuggingPriority(.required, for: .horizontal)
+        edit.setContentCompressionResistancePriority(.required, for: .horizontal)
         edit.setAccessibilityIdentifier("muxterm.settings.projects.\(index).edit")
         let delete = NSButton(title: "Delete", target: self, action: #selector(deleteProject(_:)))
+        delete.translatesAutoresizingMaskIntoConstraints = false
         delete.tag = index
         delete.bezelStyle = .rounded
         delete.contentTintColor = .systemRed
+        delete.setContentHuggingPriority(.required, for: .horizontal)
+        delete.setContentCompressionResistancePriority(.required, for: .horizontal)
         delete.setAccessibilityIdentifier("muxterm.settings.projects.\(index).delete")
 
-        let row = NSStackView(views: [info, edit, delete])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(info)
+        row.addSubview(edit)
+        row.addSubview(delete)
+        NSLayoutConstraint.activate([
+            info.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
+            info.trailingAnchor.constraint(equalTo: edit.leadingAnchor, constant: -8),
+            info.topAnchor.constraint(equalTo: row.topAnchor, constant: 10),
+            info.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -10),
+            edit.trailingAnchor.constraint(equalTo: delete.leadingAnchor, constant: -8),
+            edit.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            delete.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -12),
+            delete.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
         settingsStyleCard(row, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.42))
         row.setAccessibilityIdentifier("muxterm.settings.projects.\(index)")
         return row

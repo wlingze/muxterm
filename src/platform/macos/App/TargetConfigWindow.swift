@@ -93,6 +93,8 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         root.alignment = .leading
         root.spacing = 14
         root.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 16, right: 20)
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         // Runtime 并列选项
         let runtimeLabel = sectionLabel("Runtime")
@@ -149,6 +151,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
 
         let pathRow = NSStackView(views: [pathCombo, upButton])
         pathRow.orientation = .horizontal
+        pathRow.alignment = .centerY
         pathRow.spacing = 8
         pathRow.translatesAutoresizingMaskIntoConstraints = false
 
@@ -180,9 +183,15 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelTapped))
         let save = NSButton(title: "Save", target: self, action: #selector(saveTapped))
         save.keyEquivalent = "\r"
-        let buttonRow = NSStackView(views: [cancel, save])
+        let buttonRow = NSStackView()
         buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
         buttonRow.spacing = 10
+        let buttonSpacer = NSView()
+        buttonSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        buttonRow.addArrangedSubview(buttonSpacer)
+        buttonRow.addArrangedSubview(cancel)
+        buttonRow.addArrangedSubview(save)
 
         root.addArrangedSubview(buttonRow)
         content.addSubview(root)
@@ -192,9 +201,13 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
             root.topAnchor.constraint(equalTo: content.topAnchor),
             root.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
-            sshNameCombo.widthAnchor.constraint(equalToConstant: 300),
-            pathCombo.widthAnchor.constraint(equalToConstant: 300),
-            nameCombo.widthAnchor.constraint(equalToConstant: 300),
+            runtimeStack.widthAnchor.constraint(equalToConstant: 480),
+            transportStack.widthAnchor.constraint(equalToConstant: 480),
+            sshNameCombo.widthAnchor.constraint(equalToConstant: 480),
+            pathRow.widthAnchor.constraint(equalToConstant: 480),
+            pathCombo.widthAnchor.constraint(equalToConstant: 398),
+            nameCombo.widthAnchor.constraint(equalToConstant: 480),
+            buttonRow.widthAnchor.constraint(equalToConstant: 480),
         ])
     }
 
@@ -202,6 +215,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         let label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         label.textColor = .secondaryLabelColor
+        label.alignment = .left
         return label
     }
 
