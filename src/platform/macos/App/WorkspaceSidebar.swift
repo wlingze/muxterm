@@ -32,6 +32,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private var agents: [AgentSidebarItem] = []
     private var commands: [CommandSidebarItem] = []
     private var isReloadingSelection = false
+    private var workspaceReloadCount = 0
+    private var workspaceSelectionMutationCount = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -127,15 +129,38 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     func setWorkspaces(_ items: [WorkspaceSidebarItem]) {
         guard workspaces != items else { return }
-        workspaces = items
-        workspaceTable.reloadData()
-        updateSectionHeaderTitles()
+
+        let previous = workspaces
+        let identityChanged = previous.map(\.workspaceId) != items.map(\.workspaceId)
+        let changedRows = identityChanged
+            ? IndexSet()
+            : IndexSet(items.indices.filter { index in
+                !sameWorkspacePresentation(previous[index], items[index])
+            })
+
         isReloadingSelection = true
         defer { isReloadingSelection = false }
-        if let active = items.firstIndex(where: \.isActive) {
-            workspaceTable.selectRowIndexes(IndexSet(integer: active), byExtendingSelection: false)
+        workspaces = items
+        if identityChanged {
+            workspaceReloadCount += 1
+            workspaceTable.reloadData()
         } else {
-            workspaceTable.deselectAll(nil)
+            for row in changedRows {
+                guard let cell = workspaceTable.view(
+                    atColumn: 0,
+                    row: row,
+                    makeIfNecessary: false
+                ) as? WorkspaceSidebarCellView else {
+                    continue
+                }
+                configureWorkspaceCell(cell, item: items[row])
+            }
+        }
+        updateSectionHeaderTitles()
+        if let active = items.firstIndex(where: \.isActive) {
+            setSelection(in: workspaceTable, row: active)
+        } else {
+            setSelection(in: workspaceTable, row: nil)
         }
     }
 
@@ -150,7 +175,6 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         let currentKeys = Set(items.map(CommandVisibilityKey.init))
         hiddenCommandKeys.formIntersection(currentKeys)
         guard commands != items else {
-            hiddenCommandTable.reloadData()
             updateSectionHeaderTitles()
             return
         }
@@ -174,18 +198,15 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                $0.workspaceId == workspaceId
            })
         {
-            workspaceTable.selectRowIndexes(
-                IndexSet(integer: workspaceRow),
-                byExtendingSelection: false
-            )
+            setSelection(in: workspaceTable, row: workspaceRow)
         } else {
-            workspaceTable.deselectAll(nil)
+            setSelection(in: workspaceTable, row: nil)
         }
 
         guard let workspaceId, let paneId else {
-            agentTable.deselectAll(nil)
-            commandTable.deselectAll(nil)
-            hiddenCommandTable.deselectAll(nil)
+            setSelection(in: agentTable, row: nil)
+            setSelection(in: commandTable, row: nil)
+            setSelection(in: hiddenCommandTable, row: nil)
             return
         }
 
@@ -200,39 +221,30 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         if let agentRow = agents.firstIndex(where: {
             isTarget(workspace: $0.workspaceId, pane: $0.paneId, tab: $0.tabId)
         }) {
-            agentTable.selectRowIndexes(
-                IndexSet(integer: agentRow),
-                byExtendingSelection: false
-            )
-            commandTable.deselectAll(nil)
-            hiddenCommandTable.deselectAll(nil)
+            setSelection(in: agentTable, row: agentRow)
+            setSelection(in: commandTable, row: nil)
+            setSelection(in: hiddenCommandTable, row: nil)
             return
         }
 
         if let commandRow = visibleCommands.firstIndex(where: {
             isTarget(workspace: $0.workspaceId, pane: $0.paneId, tab: $0.tabId)
         }) {
-            commandTable.selectRowIndexes(
-                IndexSet(integer: commandRow),
-                byExtendingSelection: false
-            )
-            agentTable.deselectAll(nil)
-            hiddenCommandTable.deselectAll(nil)
+            setSelection(in: commandTable, row: commandRow)
+            setSelection(in: agentTable, row: nil)
+            setSelection(in: hiddenCommandTable, row: nil)
             return
         }
 
         if let hiddenRow = hiddenCommands.firstIndex(where: {
             isTarget(workspace: $0.workspaceId, pane: $0.paneId, tab: $0.tabId)
         }) {
-            hiddenCommandTable.selectRowIndexes(
-                IndexSet(integer: hiddenRow),
-                byExtendingSelection: false
-            )
+            setSelection(in: hiddenCommandTable, row: hiddenRow)
         } else {
-            hiddenCommandTable.deselectAll(nil)
+            setSelection(in: hiddenCommandTable, row: nil)
         }
-        agentTable.deselectAll(nil)
-        commandTable.deselectAll(nil)
+        setSelection(in: agentTable, row: nil)
+        setSelection(in: commandTable, row: nil)
     }
 
     private func toggleCommandVisibility(_ key: CommandVisibilityKey) {
@@ -269,20 +281,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             guard workspaces.indices.contains(row) else { return nil }
             let item = workspaces[row]
             let cell = sidebarCell(in: tableView, identifier: "WorkspaceSidebarCell")
-            cell.set(
-                marker: item.isActive ? "●" : "○",
-                markerColor: item.isActive ? .controlAccentColor : .tertiaryLabelColor,
-                title: item.name,
-                detail: "\(item.runtime) @ \(item.transport)",
-                shortcut: item.shortcut,
-                trailingSymbol: "xmark",
-                trailingTooltip: "Close workspace",
-                trailingAccessibilityID: "muxterm.sidebar.workspace.close.\(safeID(item.workspaceId))",
-                trailingAction: { [weak self] in
-                    self?.onWorkspaceClose?(item.workspaceId)
-                }
-            )
-            cell.setAccessibilityIdentifier("muxterm.sidebar.workspace.\(safeID(item.workspaceId))")
+            configureWorkspaceCell(cell, item: item)
             return cell
         }
 
@@ -328,6 +327,26 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             "muxterm.sidebar.agent.\(safeID(item.workspaceId)).\(item.paneId)"
         )
         return cell
+    }
+
+    private func configureWorkspaceCell(
+        _ cell: WorkspaceSidebarCellView,
+        item: WorkspaceSidebarItem
+    ) {
+        cell.set(
+            marker: item.isActive ? "●" : "○",
+            markerColor: item.isActive ? .controlAccentColor : .tertiaryLabelColor,
+            title: item.name,
+            detail: "\(item.runtime) @ \(item.transport)",
+            shortcut: item.shortcut,
+            trailingSymbol: "xmark",
+            trailingTooltip: "Close workspace",
+            trailingAccessibilityID: "muxterm.sidebar.workspace.close.\(safeID(item.workspaceId))",
+            trailingAction: { [weak self] in
+                self?.onWorkspaceClose?(item.workspaceId)
+            }
+        )
+        cell.setAccessibilityIdentifier("muxterm.sidebar.workspace.\(safeID(item.workspaceId))")
     }
 
     private func indicatorColor(_ indicator: AgentSidebarIndicator) -> NSColor {
@@ -500,6 +519,35 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         }
     }
 
+    private func setSelection(in table: NSTableView, row: Int?) {
+        let selectedRow = table.selectedRow
+        let targetRow = row ?? -1
+        guard selectedRow != targetRow else { return }
+        if table === workspaceTable {
+            workspaceSelectionMutationCount += 1
+        }
+        if let row {
+            table.selectRowIndexes(
+                IndexSet(integer: row),
+                byExtendingSelection: false
+            )
+        } else {
+            table.deselectAll(nil)
+        }
+    }
+
+    private func sameWorkspacePresentation(
+        _ lhs: WorkspaceSidebarItem,
+        _ rhs: WorkspaceSidebarItem
+    ) -> Bool {
+        lhs.workspaceId == rhs.workspaceId
+            && lhs.name == rhs.name
+            && lhs.runtime == rhs.runtime
+            && lhs.transport == rhs.transport
+            && lhs.isActive == rhs.isActive
+            && lhs.shortcut == rhs.shortcut
+    }
+
     private func sectionTitle(_ section: SidebarTestSection) -> String {
         let title: String
         let count: Int
@@ -622,6 +670,17 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     func testAgentIndicators() -> [AgentSidebarIndicator] { agents.map(\.indicator) }
     func testWorkspaceNames() -> [String] { workspaces.map(\.name) }
     func testWorkspaceIDs() -> [String] { workspaces.map(\.workspaceId) }
+    func testSelectWorkspace(_ workspaceId: String) {
+        guard let row = workspaces.firstIndex(where: { $0.workspaceId == workspaceId }) else {
+            return
+        }
+        workspaceTable.selectRowIndexes(
+            IndexSet(integer: row),
+            byExtendingSelection: false
+        )
+    }
+    func testWorkspaceReloadCount() -> Int { workspaceReloadCount }
+    func testWorkspaceSelectionMutationCount() -> Int { workspaceSelectionMutationCount }
     func testSelectedWorkspaceID() -> String? {
         let row = workspaceTable.selectedRow
         return workspaces.indices.contains(row) ? workspaces[row].workspaceId : nil

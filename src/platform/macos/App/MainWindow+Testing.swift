@@ -419,6 +419,14 @@ extension MainWindowController {
         workspaceSidebar.testWorkspaceIDs()
     }
 
+    func testSelectSidebarWorkspace(_ workspaceId: String) {
+        workspaceSidebar.testSelectWorkspace(workspaceId)
+    }
+
+    func testSelectedSidebarWorkspaceID() -> String? {
+        workspaceSidebar.testSelectedWorkspaceID()
+    }
+
     func testWorkspaceNames() -> [String] {
         workspaceSidebar.testWorkspaceNames()
     }

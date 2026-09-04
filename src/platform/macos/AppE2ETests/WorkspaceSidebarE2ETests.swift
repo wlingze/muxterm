@@ -67,6 +67,40 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
     }
 
+    func testSidebarWorkspaceRowClickUsesProductionActivationPath() throws {
+        let first = OnePaneCat(label: "ws-sidebar-click-first")
+        let second = OnePaneCat(label: "ws-sidebar-click-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == second.session
+        })
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            app.refreshWorkspaceSidebarForTest()
+            return app.testWorkspaceIDs().count == 2
+        })
+
+        let firstID = try XCTUnwrap(app.testWorkspaceIDs().first)
+        app.testSelectSidebarWorkspace(firstID)
+
+        XCTAssertEqual(
+            app.testActiveWorkspaceSession(),
+            first.session,
+            "侧边栏 Workspace 行点击必须进入生产激活路径"
+        )
+        XCTAssertEqual(app.testSelectedSidebarWorkspaceID(), firstID)
+    }
+
     func testHiddenCommandEyeTogglesVisibility() {
         let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
         let item = CommandSidebarItem(
@@ -149,6 +183,112 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertNil(sidebar.testSelectedAgentPaneID())
         XCTAssertNil(sidebar.testSelectedCommandPaneID())
         XCTAssertNil(sidebar.testSelectedHiddenCommandPaneID())
+    }
+
+    func testWorkspaceMetadataRefreshDoesNotReloadOrResetSelection() {
+        let firstID = "local@@first@tmux@first"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        let first = WorkspaceSidebarItem(
+            workspaceId: firstID,
+            name: "first",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true
+        )
+        sidebar.setWorkspaces([first])
+
+        let reloadsBeforeMetadataUpdate = sidebar.testWorkspaceReloadCount()
+        let selectionMutationsBeforeMetadataUpdate = sidebar.testWorkspaceSelectionMutationCount()
+        let updatedFirst = WorkspaceSidebarItem(
+            workspaceId: firstID,
+            name: "first",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true,
+            structuredAgents: [
+                StructuredPaneAgent(
+                    paneId: 7,
+                    displayName: "Codex",
+                    title: "Review",
+                    name: "codex",
+                    kind: "codex",
+                    status: .working,
+                    stateChangeSeq: 1
+                ),
+            ],
+            tabNumberByPane: [7: 2],
+            tabIdByPane: [7: 42]
+        )
+        sidebar.setWorkspaces([updatedFirst])
+
+        XCTAssertEqual(
+            sidebar.testWorkspaceReloadCount(),
+            reloadsBeforeMetadataUpdate,
+            "只更新 agent/tab metadata 不应重载 Workspace 表"
+        )
+        XCTAssertEqual(
+            sidebar.testWorkspaceSelectionMutationCount(),
+            selectionMutationsBeforeMetadataUpdate,
+            "刷新时不能重复写入同一个 Workspace 选中态"
+        )
+        XCTAssertEqual(
+            sidebar.testSelectedWorkspaceID(),
+            firstID,
+            "metadata 刷新不能覆盖当前 Workspace 选中态"
+        )
+    }
+
+    func testSelectingWorkspaceRowDispatchesWorkspaceActivation() {
+        let firstID = "local@@first@tmux@first"
+        let secondID = "local@@second@tmux@second"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        sidebar.setWorkspaces([
+            WorkspaceSidebarItem(
+                workspaceId: firstID,
+                name: "first",
+                runtime: "tmux",
+                transport: "local",
+                isActive: true
+            ),
+            WorkspaceSidebarItem(
+                workspaceId: secondID,
+                name: "second",
+                runtime: "tmux",
+                transport: "local",
+                isActive: false
+            ),
+        ])
+
+        var activated: [String] = []
+        sidebar.onWorkspaceActivate = { activated.append($0) }
+        sidebar.testSelectWorkspace(secondID)
+
+        XCTAssertEqual(activated, [secondID], "点击 Workspace 必须走生产 selection 回调")
+        XCTAssertEqual(sidebar.testSelectedWorkspaceID(), secondID)
+    }
+
+    func testRepeatedWorkspaceTargetSelectionIsIdempotent() {
+        let workspaceID = "local@@dev@tmux@dev"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        sidebar.setWorkspaces([
+            WorkspaceSidebarItem(
+                workspaceId: workspaceID,
+                name: "dev",
+                runtime: "tmux",
+                transport: "local",
+                isActive: true
+            ),
+        ])
+
+        let mutations = sidebar.testWorkspaceSelectionMutationCount()
+        sidebar.setActiveTarget(workspaceId: workspaceID, tabId: nil, paneId: nil)
+        sidebar.setActiveTarget(workspaceId: workspaceID, tabId: nil, paneId: nil)
+
+        XCTAssertEqual(
+            sidebar.testWorkspaceSelectionMutationCount(),
+            mutations,
+            "重复刷新同一个 Workspace target 不应触发选中态重绘"
+        )
     }
 
     func testCollapsedSectionsPackAgainstNearestBoundary() {
