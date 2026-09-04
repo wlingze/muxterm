@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import XCTest
 @testable import MuxtermAppLib
+import MuxtermChrome
 
 /// 对标 Linux 分类 Preferences：分类由 Core Manifest 驱动，右侧只显示当前页。
 final class SettingsWindowE2ETests: XCTestCase {
@@ -204,6 +205,34 @@ final class SettingsWindowE2ETests: XCTestCase {
         XCTAssertEqual(settings.testProjectNames(), ["existing", "created"])
         let projectNames = try Self.projectNames(in: try XCTUnwrap(bridge.configDescribeJSON()))
         XCTAssertTrue(projectNames.contains("created"))
+    }
+
+    func testProjectEditorPreservesSSHHostWhenEditing() throws {
+        AppE2E.ensureApp()
+        let project = TargetConfig(
+            name: "legion",
+            runtime: .herdr,
+            transport: .ssh(name: "ryzen"),
+            path: "~/Developer/work/legion"
+        )
+        var persisted: [TargetConfig]?
+        let store = QuickConnectStore(projects: [project]) { updated in
+            persisted = updated
+        }
+        let editor = TargetConfigWindow(
+            editing: project,
+            owner: nil,
+            store: store,
+            sshHosts: [SSHHostInfo(alias: "ryzen", hostname: "", user: nil, port: nil)]
+        )
+        editor.onSave = { saved in
+            persisted = [saved]
+        }
+        defer { editor.orderOut(nil) }
+
+        editor.testSave()
+
+        XCTAssertEqual(persisted?.first?.transport, .ssh(name: "ryzen"))
     }
 
     private static func projectConfig(name: String, path: String) -> String {

@@ -238,6 +238,7 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
     // MARK: - Load / state
 
     private func load(_ config: TargetConfig?) {
+        sshNameCombo.stringValue = ""
         if let config {
             selection = TargetOptionSelection(
                 runtime: config.runtime,
@@ -255,6 +256,8 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
             nameManuallyEdited = false
         }
         if case .ssh(let alias) = selection.transport {
+            // 编辑已有 SSH Project 时回填 alias，避免保存时把 target 清空。
+            sshNameCombo.stringValue = alias
             _ = pathController.setTransport(isSSH: true, alias: alias)
         }
         updateRuntimeCards()
@@ -298,8 +301,14 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         for view in transportStack.arrangedSubviews {
             guard let button = view as? NSButton else { continue }
             let isSSH = button.tag == 1
-            let candidate: TargetTransport = isSSH ? .ssh(name: "") : .local
-            let selected = selection.isSelected(transport: candidate)
+            let selected: Bool
+            switch selection.transport {
+            case .local:
+                selected = !isSSH
+            case .ssh:
+                // 卡片表示 transport 类型，alias 由下方输入框单独维护。
+                selected = isSSH
+            }
             button.state = selected ? .on : .off
             applyOptionCardStyle(
                 button,
@@ -587,6 +596,10 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         let transportValue: TargetTransport
         if case .ssh = selection.transport {
             let name = sshNameCombo.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else {
+                presentValidationError("Select or enter an SSH Host before saving.")
+                return
+            }
             transportValue = .ssh(name: name)
         } else {
             transportValue = .local
@@ -610,6 +623,15 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
         isSaving = true
         onSave?(config)
         close()
+    }
+
+    private func presentValidationError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Project cannot be saved"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: self, completionHandler: nil)
     }
 
     /// AppKit 回归测试：Project runtime 卡必须精确跟随 Catalog 列表。
