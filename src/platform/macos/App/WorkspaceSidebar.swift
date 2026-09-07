@@ -9,6 +9,7 @@ enum SidebarTestSection {
 final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
     var onWorkspaceClose: ((String) -> Void)?
+    var onWorkspaceReorder: (([String]) -> Void)?
     var onAgentActivate: ((String, UInt32?, UInt32) -> Void)?
     var onCommandActivate: ((String, UInt32?, UInt32) -> Void)?
 
@@ -33,7 +34,10 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private var commands: [CommandSidebarItem] = []
     private var isReloadingSelection = false
     private var workspaceReloadCount = 0
+    private var agentReloadCount = 0
+    private var commandReloadCount = 0
     private var workspaceSelectionMutationCount = 0
+    private static let workspaceDragType = NSPasteboard.PasteboardType("muxterm.sidebar.workspace")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -44,7 +48,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         configureTable(
             workspaceTable,
             scroll: workspaceScroll,
-            identifier: "muxterm.sidebar.workspaces"
+            identifier: "muxterm.sidebar.workspaces",
+            allowsReorder: true
         )
         configureTable(
             agentTable,
@@ -166,8 +171,26 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     func setAgents(_ items: [AgentSidebarItem]) {
         guard agents != items else { return }
+        let previousIDs = agents.map(agentIdentity)
+        let nextIDs = items.map(agentIdentity)
+        isReloadingSelection = true
+        defer { isReloadingSelection = false }
         agents = items
-        agentTable.reloadData()
+        if previousIDs != nextIDs {
+            agentReloadCount += 1
+            agentTable.reloadData()
+        } else {
+            for row in items.indices {
+                guard let cell = agentTable.view(
+                    atColumn: 0,
+                    row: row,
+                    makeIfNecessary: false
+                ) as? WorkspaceSidebarCellView else {
+                    continue
+                }
+                configureAgentCell(cell, item: items[row])
+            }
+        }
         updateSectionHeaderTitles()
     }
 
@@ -178,9 +201,42 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             updateSectionHeaderTitles()
             return
         }
+        let previousVisible = visibleCommands.map(commandIdentity)
+        let previousHidden = hiddenCommands.map(commandIdentity)
+        isReloadingSelection = true
+        defer { isReloadingSelection = false }
         commands = items
-        commandTable.reloadData()
-        hiddenCommandTable.reloadData()
+        let nextVisible = visibleCommands
+        let nextHidden = hiddenCommands
+        if previousVisible != nextVisible.map(commandIdentity) {
+            commandReloadCount += 1
+            commandTable.reloadData()
+        } else {
+            for row in nextVisible.indices {
+                guard let cell = commandTable.view(
+                    atColumn: 0,
+                    row: row,
+                    makeIfNecessary: false
+                ) as? WorkspaceSidebarCellView else {
+                    continue
+                }
+                configureCommandCell(cell, item: nextVisible[row], visible: true)
+            }
+        }
+        if previousHidden != nextHidden.map(commandIdentity) {
+            hiddenCommandTable.reloadData()
+        } else {
+            for row in nextHidden.indices {
+                guard let cell = hiddenCommandTable.view(
+                    atColumn: 0,
+                    row: row,
+                    makeIfNecessary: false
+                ) as? WorkspaceSidebarCellView else {
+                    continue
+                }
+                configureCommandCell(cell, item: nextHidden[row], visible: false)
+            }
+        }
         updateSectionHeaderTitles()
     }
 
@@ -289,43 +345,17 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             let visible = tableView === commandTable
             let source = visible ? visibleCommands : hiddenCommands
             guard source.indices.contains(row) else { return nil }
-            let item = source[row]
-            let key = CommandVisibilityKey(item)
             let cell = sidebarCell(
                 in: tableView,
                 identifier: visible ? "CommandSidebarCell" : "HiddenCommandSidebarCell"
             )
-            cell.set(
-                marker: "●",
-                markerColor: indicatorColor(item.indicator),
-                title: item.title,
-                detail: item.detail,
-                trailingSymbol: visible ? "eye.slash" : "eye",
-                trailingTooltip: visible ? "Hide command" : "Show command",
-                trailingAccessibilityID: "muxterm.sidebar.command.visibility.\(safeID(item.workspaceId)).\(item.paneId)",
-                trailingShowsOnHover: false,
-                trailingAction: { [weak self] in
-                    self?.toggleCommandVisibility(key)
-                }
-            )
-            cell.setAccessibilityIdentifier(
-                "muxterm.sidebar.\(visible ? "command" : "hiddenCommand").\(safeID(item.workspaceId)).\(item.paneId)"
-            )
+            configureCommandCell(cell, item: source[row], visible: visible)
             return cell
         }
 
         guard agents.indices.contains(row) else { return nil }
-        let item = agents[row]
         let cell = sidebarCell(in: tableView, identifier: "AgentSidebarCell")
-        cell.set(
-            marker: "●",
-            markerColor: indicatorColor(item.indicator),
-            title: item.title,
-            detail: item.detail
-        )
-        cell.setAccessibilityIdentifier(
-            "muxterm.sidebar.agent.\(safeID(item.workspaceId)).\(item.paneId)"
-        )
+        configureAgentCell(cell, item: agents[row])
         return cell
     }
 
@@ -347,6 +377,53 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             }
         )
         cell.setAccessibilityIdentifier("muxterm.sidebar.workspace.\(safeID(item.workspaceId))")
+    }
+
+    private func configureAgentCell(
+        _ cell: WorkspaceSidebarCellView,
+        item: AgentSidebarItem
+    ) {
+        cell.set(
+            marker: "●",
+            markerColor: indicatorColor(item.indicator),
+            title: item.title,
+            detail: item.detail
+        )
+        cell.setAccessibilityIdentifier(
+            "muxterm.sidebar.agent.\(safeID(item.workspaceId)).\(item.paneId)"
+        )
+    }
+
+    private func configureCommandCell(
+        _ cell: WorkspaceSidebarCellView,
+        item: CommandSidebarItem,
+        visible: Bool
+    ) {
+        let key = CommandVisibilityKey(item)
+        cell.set(
+            marker: "●",
+            markerColor: indicatorColor(item.indicator),
+            title: item.title,
+            detail: item.detail,
+            trailingSymbol: visible ? "eye.slash" : "eye",
+            trailingTooltip: visible ? "Hide command" : "Show command",
+            trailingAccessibilityID: "muxterm.sidebar.command.visibility.\(safeID(item.workspaceId)).\(item.paneId)",
+            trailingShowsOnHover: false,
+            trailingAction: { [weak self] in
+                self?.toggleCommandVisibility(key)
+            }
+        )
+        cell.setAccessibilityIdentifier(
+            "muxterm.sidebar.\(visible ? "command" : "hiddenCommand").\(safeID(item.workspaceId)).\(item.paneId)"
+        )
+    }
+
+    private func agentIdentity(_ item: AgentSidebarItem) -> String {
+        "\(item.workspaceId).\(item.paneId)"
+    }
+
+    private func commandIdentity(_ item: CommandSidebarItem) -> String {
+        "\(item.workspaceId).\(item.paneId)"
     }
 
     private func indicatorColor(_ indicator: AgentSidebarIndicator) -> NSColor {
@@ -389,6 +466,47 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         }
     }
 
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard tableView === workspaceTable, workspaces.indices.contains(row) else {
+            return nil
+        }
+        let item = NSPasteboardItem()
+        item.setString(workspaces[row].workspaceId, forType: Self.workspaceDragType)
+        return item
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        validateDrop info: NSDraggingInfo,
+        proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        guard tableView === workspaceTable, dropOperation == .above else { return [] }
+        return .move
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        acceptDrop info: NSDraggingInfo,
+        row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        guard tableView === workspaceTable,
+              dropOperation == .above,
+              let dragged = info.draggingPasteboard.string(forType: Self.workspaceDragType),
+              let from = workspaces.firstIndex(where: { $0.workspaceId == dragged })
+        else {
+            return false
+        }
+        var ids = workspaces.map(\.workspaceId)
+        ids.remove(at: from)
+        let destination = from < row ? row - 1 : row
+        let clamped = min(max(destination, 0), ids.count)
+        ids.insert(dragged, at: clamped)
+        onWorkspaceReorder?(ids)
+        return true
+    }
+
     @objc private func toggleWorkspaceSection() {
         setSection(workspaceScroll, expanded: workspaceHeader.state == .on)
     }
@@ -408,7 +526,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private func configureTable(
         _ table: NSTableView,
         scroll: NSScrollView,
-        identifier: String
+        identifier: String,
+        allowsReorder: Bool = false
     ) {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
         table.addTableColumn(column)
@@ -418,7 +537,12 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         table.intercellSpacing = NSSize(width: 0, height: 1)
         table.dataSource = self
         table.delegate = self
+        table.allowsEmptySelection = true
         table.setAccessibilityIdentifier(identifier + ".list")
+        if allowsReorder {
+            table.registerForDraggedTypes([Self.workspaceDragType])
+            table.setDraggingSourceOperationMask(.move, forLocal: true)
+        }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.documentView = table
@@ -679,8 +803,31 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             byExtendingSelection: false
         )
     }
+
+    func testSelectAgent(workspaceId: String, paneId: UInt32) {
+        guard let row = agents.firstIndex(where: {
+            $0.workspaceId == workspaceId && $0.paneId == paneId
+        }) else {
+            return
+        }
+        agentTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    func testSelectCommand(workspaceId: String, paneId: UInt32) {
+        guard let row = visibleCommands.firstIndex(where: {
+            $0.workspaceId == workspaceId && $0.paneId == paneId
+        }) else {
+            return
+        }
+        commandTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
     func testWorkspaceReloadCount() -> Int { workspaceReloadCount }
+    func testAgentReloadCount() -> Int { agentReloadCount }
+    func testCommandReloadCount() -> Int { commandReloadCount }
     func testWorkspaceSelectionMutationCount() -> Int { workspaceSelectionMutationCount }
+    func testReorderWorkspaces(_ ids: [String]) {
+        onWorkspaceReorder?(ids)
+    }
     func testSelectedWorkspaceID() -> String? {
         let row = workspaceTable.selectedRow
         return workspaces.indices.contains(row) ? workspaces[row].workspaceId : nil

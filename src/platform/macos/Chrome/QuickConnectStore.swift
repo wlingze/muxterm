@@ -225,7 +225,10 @@ public final class QuickConnectStore {
 
     /// TargetConfig 数组 → Core `[[projects]]` JSON（Rust `ProjectDocument` 形状）。
     public static func projectJSON(from projects: [TargetConfig]) -> [[String: Any]] {
-        projects.map { project in
+        var seen = Set<String>()
+        return projects.compactMap { project in
+            let id = QuickConnect.uniqueID(for: project)
+            guard seen.insert(id).inserted else { return nil }
             let transport: [String: Any]
             switch project.transport {
             case .local:

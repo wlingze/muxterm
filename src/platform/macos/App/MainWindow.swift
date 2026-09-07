@@ -117,6 +117,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
     private var pendingForegroundActions: [PendingForegroundAction] = []
     private var pendingPanelJump: PendingPanelJump?
+    /// 侧栏点击后的乐观高亮。poll 刷新在跳转完成前不得把选中态打回旧 pane。
+    private struct PendingSidebarTarget {
+        let workspaceId: String
+        let tabId: UInt32?
+        let paneId: UInt32?
+    }
+    private var pendingSidebarTarget: PendingSidebarTarget?
     /// pane → 最近一次离开时的稳定行 ID。连接切换时清空，避免把不同
     /// workspace 的 seq 混用。
     private var lastSeenLineSeq: [UInt32: UInt64] = [:]
@@ -307,26 +314,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         wireTerminalManagerCallbacks()
 
         workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
-            _ = self?.activateWorkspaceIfAvailable(workspaceId)
+            guard let self else { return }
+            self.pendingSidebarTarget = PendingSidebarTarget(
+                workspaceId: workspaceId,
+                tabId: nil,
+                paneId: nil
+            )
+            _ = self.activateWorkspaceIfAvailable(workspaceId)
         }
         workspaceSidebar.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
         }
+        workspaceSidebar.onWorkspaceReorder = { [weak self] ids in
+            self?.reorderWorkspaces(ids)
+        }
         workspaceSidebar.onAgentActivate = { [weak self] workspaceId, tabId, paneId in
-            guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
-                guard let self else { return }
-                _ = self.bridge.attentionAcknowledge(paneId: paneId)
-                self.jumpToPane(tabId: tabId, paneId: paneId)
-            }
+            self?.activateSidebarTarget(
+                workspaceId: workspaceId,
+                tabId: tabId,
+                paneId: paneId
+            )
         }
         workspaceSidebar.onCommandActivate = { [weak self] workspaceId, tabId, paneId in
-            guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
-                guard let self else { return }
-                _ = self.bridge.attentionAcknowledge(paneId: paneId)
-                self.jumpToPane(tabId: tabId, paneId: paneId)
-            }
+            self?.activateSidebarTarget(
+                workspaceId: workspaceId,
+                tabId: tabId,
+                paneId: paneId
+            )
         }
 
         commandPalette = CommandPaletteController(ownerWindow: window)
@@ -772,12 +786,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Cmd+Ctrl+N：按固定打开顺序切换 Workspace，不随最近使用重排。
-    /// 与 Linux Ctrl+Alt+N 使用同一组 `switch_workspace_N` 语义。
+    /// `0` 永远是侧栏最后一个 Workspace。与 Linux Ctrl+Alt+N 对齐。
     func switchToWorkspaceAtFixedIndex(_ oneBased: Int) {
-        guard (1...5).contains(oneBased) else { return }
         let ordered = workspaceSidebarFixedSlots()
-        guard ordered.indices.contains(oneBased - 1) else { return }
-        activate(slot: ordered[oneBased - 1])
+        let slot: WarmConnectionSlot?
+        if oneBased == 0 {
+            slot = ordered.last
+        } else if (1...9).contains(oneBased) {
+            slot = ordered.indices.contains(oneBased - 1) ? ordered[oneBased - 1] : nil
+        } else {
+            slot = nil
+        }
+        guard let slot else { return }
+        activate(slot: slot)
     }
 
     @objc func splitHorizontal() {
@@ -1236,11 +1257,67 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             workspaces: workspaces,
             attention: attention
         ))
-        workspaceSidebar.setActiveTarget(
-            workspaceId: activeWorkspaceReplicaID,
-            tabId: lastSnapshot.activeTab,
-            paneId: activePaneID
+        if let pending = pendingSidebarTarget {
+            workspaceSidebar.setActiveTarget(
+                workspaceId: pending.workspaceId,
+                tabId: pending.tabId ?? lastSnapshot.activeTab,
+                paneId: pending.paneId ?? activePaneID
+            )
+            let workspaceMatches = activeWorkspaceReplicaID == pending.workspaceId
+            let paneMatches = pending.paneId == nil || pending.paneId == activePaneID
+            if workspaceMatches && paneMatches {
+                pendingSidebarTarget = nil
+            }
+        } else {
+            workspaceSidebar.setActiveTarget(
+                workspaceId: activeWorkspaceReplicaID,
+                tabId: lastSnapshot.activeTab,
+                paneId: activePaneID
+            )
+        }
+    }
+
+    private func activateSidebarTarget(workspaceId: String, tabId: UInt32?, paneId: UInt32) {
+        pendingSidebarTarget = PendingSidebarTarget(
+            workspaceId: workspaceId,
+            tabId: tabId,
+            paneId: paneId
         )
+        workspaceSidebar.setActiveTarget(
+            workspaceId: workspaceId,
+            tabId: tabId,
+            paneId: paneId
+        )
+        acknowledgeWorkspacePane(workspaceId: workspaceId, paneId: paneId)
+        routePanelJump(
+            workspaceId: workspaceId,
+            tabId: tabId,
+            paneId: paneId,
+            seq: 0,
+            query: ""
+        )
+    }
+
+    private func reorderWorkspaces(_ workspaceIds: [String]) {
+        var next: UInt64 = 1
+        var seen = Set<String>()
+        for workspaceId in workspaceIds {
+            guard seen.insert(workspaceId).inserted else { continue }
+            guard let slot = connectionPool.slots.values.first(where: {
+                $0.lifecycle != .evicting && workspaceReplicaID(for: $0) == workspaceId
+            }) else { continue }
+            slot.openedOrder = next
+            next += 1
+        }
+        let remaining = workspaceSidebarFixedSlots().filter { slot in
+            !seen.contains(workspaceReplicaID(for: slot))
+        }
+        for slot in remaining {
+            slot.openedOrder = next
+            next += 1
+        }
+        nextWorkspaceOpenedOrder = next
+        refreshWorkspaceSidebar(force: true)
     }
 
     private func attentionSnapshotForPanel(refreshActive: Bool = false) -> AttentionSnapshot? {

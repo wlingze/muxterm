@@ -601,23 +601,19 @@ final class MuxTerminalView: TerminalView {
         )
     }
 
-    /// 用一个完整的 pasteboard item 原子写入 UTF-8 数据。
+    /// 把复制内容写进系统剪贴板，并且必须覆盖而不是追加。
     ///
-    /// 先 `clearContents()` 再写入会在大文本写入失败时把用户原来的剪贴板
-    /// 一并清掉；`writeObjects` 也能返回明确的成功/失败结果，避免静默丢失
-    /// 复制内容。某些 macOS pasteboard provider 在已有 owner 时会拒绝这条
-    /// 写入，因此失败后再用已知的同步 `setData` 路径重试。
+    /// `NSPasteboard.writeObjects` 在不清空的情况下会再挂一个 item，于是
+    /// 先复制 `1` 再复制 `2` 粘贴会得到 `12`。系统 Edit 菜单走的是
+    /// `clearContents` + `setString`，muxterm 必须同一条路径。
     @discardableResult
-    private func writeClipboard(_ data: Data, to pasteboard: NSPasteboard) -> Bool {
-        let item = NSPasteboardItem()
-        guard item.setData(data, forType: .string) else { return false }
-        if pasteboard.writeObjects([item]) {
+    func writeClipboard(_ data: Data, to pasteboard: NSPasteboard) -> Bool {
+        pasteboard.clearContents()
+        if let text = String(data: data, encoding: .utf8),
+           pasteboard.setString(text, forType: .string)
+        {
             return true
         }
-
-        // 只在第一条写入明确失败后清空；正常路径保留系统剪贴板的原子
-        // replacement 行为，失败也不会先把旧内容擦掉。
-        pasteboard.clearContents()
         let written = pasteboard.setData(data, forType: .string)
         if !written {
             tracingClipboardFailure(byteCount: data.count)

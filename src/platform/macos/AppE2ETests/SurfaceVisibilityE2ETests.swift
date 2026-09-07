@@ -741,6 +741,27 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
+    func testClipboardCopyReplacesSystemPasteboardInsteadOfAppending() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        defer { pasteboard.clearContents() }
+
+        XCTAssertTrue(view.writeClipboard(Data("1".utf8), to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "1")
+        XCTAssertTrue(view.writeClipboard(Data("2".utf8), to: pasteboard))
+        XCTAssertEqual(
+            pasteboard.string(forType: .string),
+            "2",
+            "第二次复制必须覆盖系统剪贴板，不能追加成 12"
+        )
+        XCTAssertEqual(pasteboard.pasteboardItems?.count, 1)
+    }
+
     func testPrependHistoryDoesNotResetOrHideVisibleTail() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

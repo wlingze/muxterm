@@ -181,6 +181,26 @@ final class KeyBindingsTests: XCTestCase {
         )
     }
 
+    func testCmdCtrlDigitsSwitchWorkspacesIncludingLast() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, control: true, key: "1")),
+            .switchWorkspace(1)
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, control: true, key: "9")),
+            .switchWorkspace(9)
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, control: true, key: "0")),
+            .switchWorkspace(0)
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            .resetFontSize,
+            "Cmd+0 必须继续重置字体"
+        )
+    }
+
     func testCmdEnterTogglesPaneFullscreen() {
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "\r")),
@@ -1961,6 +1981,24 @@ final class KeyBindingsConfigTests: XCTestCase {
         XCTAssertEqual((project["runtime"] as? [String: Any])?["id"] as? String, "tmux")
         XCTAssertEqual((project["transport"] as? [String: Any])?["id"] as? String, "ssh")
         XCTAssertEqual((project["transport"] as? [String: Any])?["target"] as? String, "ryzen")
+    }
+
+    func testProjectJSONDropsDuplicateUniqueIDs() {
+        let first = TargetConfig(
+            name: "muxterm",
+            runtime: .tmux,
+            transport: .ssh(name: "ryzen"),
+            path: "~/Developer/self/muxterm"
+        )
+        let duplicate = TargetConfig(
+            name: "muxterm",
+            runtime: .tmux,
+            transport: .ssh(name: "ryzen"),
+            path: "~/elsewhere"
+        )
+        let json = QuickConnectStore.projectJSON(from: [first, duplicate])
+        XCTAssertEqual(json.count, 1)
+        XCTAssertEqual(json[0]["path"] as? String, "~/Developer/self/muxterm")
     }
 
     func testCustomTakesPrecedenceOverDefault() {

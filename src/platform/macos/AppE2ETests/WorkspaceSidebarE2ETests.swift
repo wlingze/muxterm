@@ -238,6 +238,107 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         )
     }
 
+    func testAgentStatusRefreshDoesNotReloadOrDropSelection() {
+        let workspaceID = "local@@dev@tmux@dev"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        let first = AgentSidebarItem(
+            workspaceId: workspaceID,
+            tabId: 42,
+            paneId: 4,
+            title: "dev",
+            detail: "Working · Codex · Tab 2",
+            indicator: .running,
+            agentName: "Codex",
+            tabNumber: 2
+        )
+        sidebar.setAgents([first])
+        sidebar.setActiveTarget(workspaceId: workspaceID, tabId: 42, paneId: 4)
+        let reloads = sidebar.testAgentReloadCount()
+        let updated = AgentSidebarItem(
+            workspaceId: workspaceID,
+            tabId: 42,
+            paneId: 4,
+            title: "dev",
+            detail: "Done · Codex · Tab 2",
+            indicator: .done,
+            agentName: "Codex",
+            tabNumber: 2
+        )
+        sidebar.setAgents([updated])
+        XCTAssertEqual(
+            sidebar.testAgentReloadCount(),
+            reloads,
+            "只更新 agent 状态不应重载 Agents 表"
+        )
+        XCTAssertEqual(sidebar.testSelectedAgentPaneID(), 4)
+    }
+
+    func testSelectingAgentAndCommandRowsDispatchNavigation() {
+        let workspaceID = "local@@dev@tmux@dev"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        sidebar.setAgents([
+            AgentSidebarItem(
+                workspaceId: workspaceID,
+                tabId: 42,
+                paneId: 4,
+                title: "dev",
+                detail: "Working · Codex · Tab 2",
+                indicator: .running,
+                agentName: "Codex",
+                tabNumber: 2
+            ),
+        ])
+        sidebar.setCommands([
+            CommandSidebarItem(
+                workspaceId: workspaceID,
+                tabId: 84,
+                paneId: 8,
+                title: "cargo test",
+                detail: "dev · Tab 3",
+                indicator: .running
+            ),
+        ])
+
+        var agents: [(String, UInt32?, UInt32)] = []
+        var commands: [(String, UInt32?, UInt32)] = []
+        sidebar.onAgentActivate = { agents.append(($0, $1, $2)) }
+        sidebar.onCommandActivate = { commands.append(($0, $1, $2)) }
+        sidebar.testSelectAgent(workspaceId: workspaceID, paneId: 4)
+        sidebar.testSelectCommand(workspaceId: workspaceID, paneId: 8)
+
+        XCTAssertEqual(agents.count, 1)
+        XCTAssertEqual(agents[0].0, workspaceID)
+        XCTAssertEqual(agents[0].2, 4)
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertEqual(commands[0].2, 8)
+    }
+
+    func testWorkspaceReorderCallbackReceivesNewOrder() {
+        let firstID = "local@@first@tmux@first"
+        let secondID = "local@@second@tmux@second"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        sidebar.setWorkspaces([
+            WorkspaceSidebarItem(
+                workspaceId: firstID,
+                name: "first",
+                runtime: "tmux",
+                transport: "local",
+                isActive: true
+            ),
+            WorkspaceSidebarItem(
+                workspaceId: secondID,
+                name: "second",
+                runtime: "tmux",
+                transport: "local",
+                isActive: false
+            ),
+        ])
+        var reordered: [[String]] = []
+        sidebar.onWorkspaceReorder = { reordered.append($0) }
+        sidebar.testReorderWorkspaces([secondID, firstID])
+        XCTAssertEqual(reordered, [[secondID, firstID]])
+    }
+
     func testSelectingWorkspaceRowDispatchesWorkspaceActivation() {
         let firstID = "local@@first@tmux@first"
         let secondID = "local@@second@tmux@second"

@@ -25,7 +25,8 @@ public enum KeyAction: Equatable, Sendable {
     case resetFontSize
     case togglePaneFullscreen
     case toggleSidebar
-    case switchWorkspace(Int) // 1-based, fixed opened order
+    /// 1-based opened-order Workspace; `0` is always the last Workspace.
+    case switchWorkspace(Int)
 }
 
 /// 修饰键 + 主键（大小写无关）的纯数据描述。
@@ -159,9 +160,10 @@ public enum KeyBindings {
             return .toggleSidebar
         }
 
-        // Cmd+Ctrl+1..5 切换固定打开顺序的 Workspace（与 Linux Ctrl+Alt+N 对齐）。
+        // Cmd+Ctrl+1..9 切换固定打开顺序的 Workspace；Cmd+Ctrl+0 永远是最后一个。
+        // 与 Linux Ctrl+Alt+N 对齐。Cmd+0 仍是重置字体。
         if chord.command, chord.control, !chord.shift, !chord.option,
-           let n = Int(key), (1...5).contains(n)
+           let n = Int(key), (0...9).contains(n)
         {
             return .switchWorkspace(n)
         }

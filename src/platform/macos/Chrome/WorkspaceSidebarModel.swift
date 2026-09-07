@@ -1,19 +1,23 @@
 import Foundation
 
-/// Shared 1-based Workspace shortcut projection.
+/// Shared Workspace shortcut projection.
 ///
-/// Sidebar and Quick Connect must use the same opened order. Only the first
-/// five entries have keyboard shortcuts; later workspaces remain reachable by
-/// the panel without claiming another shortcut.
+/// Sidebar and Quick Connect must use the same opened order. Keys 1-9 map to
+/// that order; key 0 always activates the last workspace, even when there are
+/// fewer than ten entries.
 public enum WorkspaceShortcutIndex {
-    public static let maximum = 5
+    public static let maximum = 9
 
     public static func byWorkspaceID(_ orderedIDs: [String]) -> [String: Int] {
-        orderedIDs.prefix(maximum).enumerated().reduce(into: [:]) { result, item in
-            let (offset, id) = item
-            guard result[id] == nil else { return }
+        var result: [String: Int] = [:]
+        for (offset, id) in orderedIDs.prefix(maximum).enumerated() where result[id] == nil {
             result[id] = offset + 1
         }
+        return result
+    }
+
+    public static func lastWorkspaceID(_ orderedIDs: [String]) -> String? {
+        orderedIDs.last
     }
 }
 
