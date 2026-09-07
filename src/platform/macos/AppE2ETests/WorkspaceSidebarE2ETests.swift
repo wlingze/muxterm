@@ -396,6 +396,14 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
         sidebar.layoutSubtreeIfNeeded()
         XCTAssertTrue(sidebar.testSectionsAreResizable())
+        let initial = sidebar.testSectionFrames()
+        XCTAssertGreaterThan(
+            initial[.workspaces]?.height ?? 0,
+            80,
+            "默认展开时 WORKSPACES 不能是 0 高，否则侧栏看起来像消失了"
+        )
+        XCTAssertGreaterThan(initial[.agents]?.height ?? 0, 80)
+        XCTAssertGreaterThan(initial[.commands]?.height ?? 0, 80)
 
         sidebar.testSetSectionExpanded(.hiddenCommands, false)
         sidebar.testSetSectionExpanded(.workspaces, false)
@@ -406,13 +414,30 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(allCollapsed[.workspaces]?.height ?? 0, 26, accuracy: 1.5)
         XCTAssertEqual(allCollapsed[.agents]?.height ?? 0, 26, accuracy: 1.5)
         XCTAssertEqual(allCollapsed[.commands]?.height ?? 0, 26, accuracy: 1.5)
-        XCTAssertEqual(allCollapsed[.hiddenCommands]?.height ?? 0, 26, accuracy: 1.5)
+        XCTAssertGreaterThan(
+            allCollapsed[.hiddenCommands]?.height ?? 0,
+            80,
+            "全部收起时多余高度必须落在最后一栏，不能把四栏都压成 0"
+        )
 
         sidebar.testSetSectionExpanded(.agents, true)
+        sidebar.testSetSectionExpanded(.workspaces, true)
+        sidebar.testSetSectionExpanded(.commands, true)
         sidebar.layoutSubtreeIfNeeded()
-        let expandedMiddle = sidebar.testSectionFrames()
-        XCTAssertGreaterThan(expandedMiddle[.agents]?.height ?? 0, 80)
-        XCTAssertEqual(expandedMiddle[.commands]?.height ?? 0, 26, accuracy: 1.5)
+        let expanded = sidebar.testSectionFrames()
+        XCTAssertGreaterThan(expanded[.workspaces]?.height ?? 0, 80)
+        XCTAssertGreaterThan(expanded[.agents]?.height ?? 0, 80)
+        XCTAssertGreaterThan(expanded[.commands]?.height ?? 0, 80)
+        XCTAssertEqual(expanded[.hiddenCommands]?.height ?? 0, 26, accuracy: 1.5)
+        let workspaceHeight = expanded[.workspaces]?.height ?? 0
+        let agentHeight = expanded[.agents]?.height ?? 0
+        let commandHeight = expanded[.commands]?.height ?? 0
+        let hiddenHeight = expanded[.hiddenCommands]?.height ?? 0
+        XCTAssertGreaterThan(
+            workspaceHeight + agentHeight + commandHeight + hiddenHeight,
+            400,
+            "展开后分区必须填满侧栏，不能高度全是 0"
+        )
     }
 
     func testWorkspaceCloseButtonRemovesWorkspaceAndFallsForward() throws {

@@ -30,6 +30,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private var sectionViews: [NSScrollView: NSView] = [:]
     private var sectionHeightConstraints: [NSScrollView: NSLayoutConstraint] = [:]
     private var orderedSectionScrolls: [NSScrollView] = []
+    private var expandedSections: [ObjectIdentifier: Bool] = [:]
     private var workspaces: [WorkspaceSidebarItem] = []
     private var agents: [AgentSidebarItem] = []
     private var commands: [CommandSidebarItem] = []
@@ -108,10 +109,12 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         sections.isVertical = false
         sections.dividerStyle = .thin
         sections.delegate = self
-        sections.autosaveName = "muxterm.sidebar.sectionSplit"
+        // v1 autosave 在 0 尺寸时写下全 0 frame，下次启动侧栏像消失。
+        sections.autosaveName = "muxterm.sidebar.sectionSplit.v2"
         orderedSectionScrolls = [workspaceScroll, agentScroll, commandScroll, hiddenCommandScroll]
         for view in [workspaceSection, agentSection, commandSection, hiddenCommandSection] {
-            view.translatesAutoresizingMaskIntoConstraints = false
+            // NSSplitView 靠 frame 排子视图；TAMIC=false 会把高度算成 0。
+            view.translatesAutoresizingMaskIntoConstraints = true
             sections.addArrangedSubview(view)
         }
         setSection(workspaceScroll, expanded: true)
@@ -209,30 +212,38 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         commands = items
         let nextVisible = visibleCommands
         let nextHidden = hiddenCommands
-        if previousVisible != nextVisible.map(commandIdentity) {
+        if previousVisible != nextVisible.map(commandIdentity)
+            || commandTable.numberOfRows != nextVisible.count
+        {
             commandReloadCount += 1
             commandTable.reloadData()
         } else {
             for row in nextVisible.indices {
-                guard let cell = commandTable.view(
-                    atColumn: 0,
-                    row: row,
-                    makeIfNecessary: false
-                ) as? WorkspaceSidebarCellView else {
+                guard row < commandTable.numberOfRows,
+                      let cell = commandTable.view(
+                        atColumn: 0,
+                        row: row,
+                        makeIfNecessary: false
+                      ) as? WorkspaceSidebarCellView
+                else {
                     continue
                 }
                 configureCommandCell(cell, item: nextVisible[row], visible: true)
             }
         }
-        if previousHidden != nextHidden.map(commandIdentity) {
+        if previousHidden != nextHidden.map(commandIdentity)
+            || hiddenCommandTable.numberOfRows != nextHidden.count
+        {
             hiddenCommandTable.reloadData()
         } else {
             for row in nextHidden.indices {
-                guard let cell = hiddenCommandTable.view(
-                    atColumn: 0,
-                    row: row,
-                    makeIfNecessary: false
-                ) as? WorkspaceSidebarCellView else {
+                guard row < hiddenCommandTable.numberOfRows,
+                      let cell = hiddenCommandTable.view(
+                        atColumn: 0,
+                        row: row,
+                        makeIfNecessary: false
+                      ) as? WorkspaceSidebarCellView
+                else {
                     continue
                 }
                 configureCommandCell(cell, item: nextHidden[row], visible: false)
@@ -590,6 +601,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     }
 
     private func setSection(_ scroll: NSScrollView, expanded: Bool) {
+        expandedSections[ObjectIdentifier(scroll)] = expanded
         scroll.isHidden = !expanded
         let header: NSButton
         let section: SidebarTestSection
@@ -606,6 +618,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             header = hiddenCommandHeader
             section = .hiddenCommands
         }
+        header.state = expanded ? .on : .off
         header.image = NSImage(
             systemSymbolName: expanded ? "chevron.down" : "chevron.right",
             accessibilityDescription: nil
@@ -708,14 +721,20 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             )
         }
         sections.needsLayout = true
-        sections.layoutSubtreeIfNeeded()
+        applySectionFrames()
+    }
+
+    override func layout() {
+        super.layout()
+        applySectionFrames()
+    }
+
+    private func applySectionFrames() {
+        splitView(sections, resizeSubviewsWithOldSize: sections.bounds.size)
     }
 
     private func isSectionExpanded(_ scroll: NSScrollView) -> Bool {
-        if scroll === workspaceScroll { return workspaceHeader.state == .on }
-        if scroll === agentScroll { return agentHeader.state == .on }
-        if scroll === commandScroll { return commandHeader.state == .on }
-        return hiddenCommandHeader.state == .on
+        expandedSections[ObjectIdentifier(scroll)] ?? (scroll !== hiddenCommandScroll)
     }
 
     func splitView(
@@ -751,36 +770,25 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     }
 
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
-        let divider = splitView.dividerThickness
         let views = splitView.arrangedSubviews
-        let total = splitView.bounds.height - divider * CGFloat(max(views.count - 1, 0))
-        var heights: [CGFloat] = views.enumerated().map { index, view in
-            let expanded = isSectionExpanded(orderedSectionScrolls[index])
-            if !expanded {
-                return 26
-            }
-            return max(80, view.bounds.height)
+        let expanded = orderedSectionScrolls.map(isSectionExpanded)
+        guard let heights = SidebarSectionSplitLayout.heights(
+            boundsHeight: splitView.bounds.height,
+            dividerThickness: splitView.dividerThickness,
+            expanded: expanded,
+            currentHeights: views.map(\.bounds.height)
+        ) else {
+            return
         }
-        let used = heights.reduce(0, +)
-        let slack = total - used
-        if slack != 0 {
-            let expandedIndexes = heights.indices.filter {
-                isSectionExpanded(orderedSectionScrolls[$0])
-            }
-            if expandedIndexes.isEmpty {
-                heights[0] = max(26, heights[0] + slack)
-            } else {
-                let share = slack / CGFloat(expandedIndexes.count)
-                for index in expandedIndexes {
-                    heights[index] = max(80, heights[index] + share)
-                }
-            }
-        }
-        var position: CGFloat = 0
-        for index in 0..<(views.count - 1) {
-            position += heights[index]
-            splitView.setPosition(position, ofDividerAt: index)
-            position += divider
+        let frames = SidebarSectionSplitLayout.frames(
+            bounds: splitView.bounds.size,
+            dividerThickness: splitView.dividerThickness,
+            heights: heights,
+            flipped: splitView.isFlipped
+        )
+        for (view, frame) in zip(views, frames) {
+            view.setFrameOrigin(frame.origin)
+            view.setFrameSize(frame.size)
         }
     }
 
@@ -830,8 +838,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         case .commands: header = commandHeader
         case .hiddenCommands: header = hiddenCommandHeader
         }
-        header.state = expanded ? .on : .off
         setSection(scroll, expanded: expanded)
+        header.state = expanded ? .on : .off
         needsLayout = true
         layoutSubtreeIfNeeded()
     }
