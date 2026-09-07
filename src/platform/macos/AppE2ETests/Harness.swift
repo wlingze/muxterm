@@ -47,7 +47,9 @@ enum AppE2E {
     static let maxOutputEventsPerSec = 400
     static let cupFloodFrames: UInt32 = 400
     static let attachTimeout: TimeInterval = 8
-    static let featureTimeout: TimeInterval = 10
+    // macOS CI runner 的 AppKit/SwiftTerm 事件循环明显慢于开发机；功能
+    // 断言必须给异步 Core poll、布局同步和原生 scrollback 留出完整窗口。
+    static let featureTimeout: TimeInterval = 20
 
     static var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
