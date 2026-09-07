@@ -114,6 +114,9 @@ struct UiState {
     /// Herdr/shell：每个可见 pane 自己的 GTK 分配。0218.log 只 resize
     /// active pane，分屏里另外两个格子一直停在 snapshot 27×23。
     last_pane_sizes: HashMap<u32, (u16, u16)>,
+    /// 切回已有像素缓存后，短暂忽略 ResizePane。Overlay remount 第一帧
+    /// 可能把 VTE 量成几行，Herdr Control Hello 会 SIGWINCH 清掉 token。
+    hold_pane_resize_until: Option<Instant>,
     /// tmux SharedClientResize：同一尺寸连续命中才 dispatch（约 10×16ms），
     /// 避免 map 时 106→284→142 连发 -C（dogfood 2152）。
     pending_client_size: Option<(u16, u16)>,
@@ -545,6 +548,7 @@ impl AppWindow {
             active_pane: 0,
             last_client_size: None,
             last_pane_sizes: HashMap::new(),
+            hold_pane_resize_until: None,
             pending_client_size: None,
             pending_client_hits: 0,
             tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
@@ -2579,6 +2583,11 @@ fn dispatch_event_for(
         StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } => {
             if let Some(view) = resident_pane_view(s, wid, pane.0) {
                 sync_pane_grid_size_for(s, wid, pane.0);
+                // 后台 workspace 冻结已播种像素。observe/control 全帧会先
+                // ESC[2J；隐藏 VTE 仍可能 width>0，flush 后切回只剩空屏。
+                if !is_active && view.is_seeded() && !s.uses_tmux() {
+                    return;
+                }
                 // 未分配像素时仍入队（feed_* 不 flush），可 paint 后再补放。
                 // 直接丢弃会让 Cursor 等候框等 live 重绘永远缺帧。
                 match ev {
@@ -3554,6 +3563,12 @@ fn sync_window_size(s: &mut UiState) {
 /// Herdr 没有 SharedClientResize：每个可见 split 格子按自己的 VTE 分配
 /// 发 ResizePane。只同步 active pane 会让 0218.log 里 54/57 停在 27×12。
 fn sync_visible_pane_sizes(s: &mut UiState) {
+    if s.hold_pane_resize_until
+        .is_some_and(|until| Instant::now() < until)
+    {
+        return;
+    }
+    s.hold_pane_resize_until = None;
     let tab = TabId(s.active_tab);
     let pane_ids: Vec<u32> = s
         .active_workspace()
@@ -5187,7 +5202,9 @@ fn refresh_sidebar_if_open(s: &mut UiState) {
 fn after_activate(s: &mut UiState) {
     // 切工作区 = 改绑体现：挂载该工作区的像素缓存（没有则新建）。
     let id = s.active_ws_id().clone();
-    if s.mounted_ws.as_ref() != Some(&id) {
+    let had_cache = s.pixel_cache.contains_key(&id);
+    let switching = s.mounted_ws.as_ref() != Some(&id);
+    if switching {
         if !s.pixel_cache.contains_key(&id) {
             let uses = s.uses_tmux();
             let weak = s.self_weak.clone();
@@ -5229,10 +5246,15 @@ fn after_activate(s: &mut UiState) {
         s.mounted_ws = Some(id);
     }
     s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
-    s.last_client_size = None;
-    s.last_pane_sizes.clear();
-    s.pending_client_size = None;
-    s.pending_client_hits = 0;
+    if switching && had_cache && !s.uses_tmux() {
+        s.hold_pane_resize_until = Some(Instant::now() + Duration::from_millis(400));
+    } else {
+        s.last_client_size = None;
+        s.last_pane_sizes.clear();
+        s.pending_client_size = None;
+        s.pending_client_hits = 0;
+        s.hold_pane_resize_until = None;
+    }
     s.qc_store.replace_all_recents(&recent_target_configs(
         &s.pool,
         &s.workspace_sockets,
