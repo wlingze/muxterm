@@ -57,7 +57,7 @@ final class CommandTimelineE2ETests: XCTestCase {
         XCTAssertTrue(app.testDispatchKeyEvent(previous), "Cmd+Option+↑ 必须被窗口快捷键消费")
         XCTAssertTrue(app.testDispatchKeyEvent(previous), "第二次 Cmd+Option+↑ 必须继续沿命令轨跳转")
         XCTAssertTrue(
-            AppE2E.wait(timeout: 1) {
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
                 return app.testPaneViewport() > 0
             },
@@ -69,7 +69,7 @@ final class CommandTimelineE2ETests: XCTestCase {
         XCTAssertTrue(app.testDispatchKeyEvent(next), "Cmd+Option+↓ 必须被窗口快捷键消费")
         XCTAssertTrue(app.testDispatchKeyEvent(next), "末尾 Cmd+Option+↓ 必须回到底部")
         XCTAssertTrue(
-            AppE2E.wait(timeout: 1) {
+            AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
                 return app.testPaneViewport() == 0
             },

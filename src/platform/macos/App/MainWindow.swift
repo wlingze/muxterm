@@ -105,7 +105,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let slot: WarmConnectionSlot
         let action: () -> Void
     }
+    /// 面板行可能在后台 Workspace 的身份缓存到达前被选中。保留最后一次
+    /// 跳转请求，下一轮 poll 再解析，不能因为一次非阻塞 identity 查询失败
+    /// 就把用户动作静默丢掉。
+    private struct PendingPanelJump {
+        let workspaceId: String?
+        let tabId: UInt32?
+        let paneId: UInt32
+        let seq: UInt64
+        let query: String
+    }
     private var pendingForegroundActions: [PendingForegroundAction] = []
+    private var pendingPanelJump: PendingPanelJump?
     /// pane → 最近一次离开时的稳定行 ID。连接切换时清空，避免把不同
     /// workspace 的 seq 混用。
     private var lastSeenLineSeq: [UInt32: UInt64] = [:]
@@ -116,6 +127,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 当前 pane 上一次是否已经展示过 last-seen；避免 60Hz poll 重复
     /// 改变全局 overlay 的可见状态。
     private var lastSeenVisiblePane: UInt32?
+    /// Core 在索引快照切换时可能短暂返回 rawOffset=-1。保留已经展示的
+    /// marker 一个很短的窗口，避免用户点击时目标被一次瞬时查询失败清掉。
+    private var lastSeenOffsetFailureSince: [UInt32: TimeInterval] = [:]
+    private static let lastSeenOffsetFailureGrace: TimeInterval = 1.0
     /// 当前 pane 在命令时间线中的游标；手动滚轮/搜索会清掉游标，
     /// Cmd+Option+↑/↓ 则按此游标前后移动。
     private var commandTimelineCursor: [UInt32: UInt64] = [:]
@@ -376,15 +391,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.editProject(config)
         }
         unifiedPanel.onJump = { [weak self] workspaceId, tabId, paneId, seq, query in
-            guard let self else { return }
-            if let workspaceId {
-                guard self.activateWorkspaceIfAvailable(workspaceId) else {
-                    return
-                }
-            }
-            self.performWhenForegroundReady { [weak self] in
-                self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
-            }
+            self?.routePanelJump(
+                workspaceId: workspaceId,
+                tabId: tabId,
+                paneId: paneId,
+                seq: seq,
+                query: query
+            )
         }
         unifiedPanel.onPreview = { [weak self] workspaceId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
@@ -1527,12 +1540,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             var matches = workspaceReplicaID(for: slot) == workspaceId
                 || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
             // 首轮后台 metadata 尚未抵达时，不能让侧栏/Attention 的激活
-            // 因缓存为空而失败；只在 fast path 未命中时实时确认。
-            if !matches, slot.cachedAttentionSnapshot == nil {
+            // 因缓存为空而失败；active slot 的缓存也可能是旧的，需实时确认。
+            if !matches, (slot.cachedAttentionSnapshot == nil || slot.lifecycle == .active) {
                 matches = slot.tryWithBridge { candidate in
                     workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
                         || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
                 } ?? false
+                if matches {
+                    slot.cacheWorkspaceReplicaID(workspaceId)
+                }
             }
             if matches {
                 activate(slot: slot)
@@ -1540,6 +1556,50 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         return false
+    }
+
+    /// 面板跳转的统一入口。workspace identity 解析是非阻塞的，遇到后台
+    /// poll/metadata 竞争时先保存请求；下一轮 poll 会重试并在成功后复用
+    /// 正常的 foreground-ready 路径。
+    private func routePanelJump(
+        workspaceId: String?,
+        tabId: UInt32?,
+        paneId: UInt32,
+        seq: UInt64,
+        query: String
+    ) {
+        if let workspaceId, !activateWorkspaceIfAvailable(workspaceId) {
+            pendingPanelJump = PendingPanelJump(
+                workspaceId: workspaceId,
+                tabId: tabId,
+                paneId: paneId,
+                seq: seq,
+                query: query
+            )
+            return
+        }
+        pendingPanelJump = nil
+        performWhenForegroundReady { [weak self] in
+            self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
+        }
+    }
+
+    private func retryPendingPanelJump() {
+        guard let jump = pendingPanelJump else { return }
+        if let workspaceId = jump.workspaceId,
+           !activateWorkspaceIfAvailable(workspaceId)
+        {
+            return
+        }
+        pendingPanelJump = nil
+        performWhenForegroundReady { [weak self] in
+            self?.jumpToPane(
+                tabId: jump.tabId,
+                paneId: jump.paneId,
+                seq: jump.seq,
+                query: jump.query
+            )
+        }
     }
 
     /// 面板中的确认/静音是 UI 动作，后台 Workspace 的 bridge 竞争时只
@@ -1706,6 +1766,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         applyPaneViewport(paneId: target.paneId, offset: target.offset)
         // 点击后消费这次离开提示；下一次完整的离开→返回才建立新 marker。
         lastSeenLineSeq.removeValue(forKey: target.paneId)
+        lastSeenOffsetFailureSince.removeValue(forKey: target.paneId)
         lastSeenJump = nil
         setLastSeenVisible(false, paneId: target.paneId)
     }
@@ -2253,6 +2314,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pendingLastSeenPanes.removeAll()
         lastSeenJump = nil
         lastSeenVisiblePane = nil
+        lastSeenOffsetFailureSince.removeAll()
         content.setLastSeenVisible(false)
         commandTimelineCursor.removeAll()
         commandNavigationPanes.removeAll()
@@ -3702,6 +3764,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Index 快照由 Core 在 poll 内消费，事件处理完成后再尝试一次，
         // 让“刚切走就还没有 PaneBuf”的首轮时序也能建立基线。
         resolvePendingLastSeen()
+        retryPendingPanelJump()
         refreshAttentionChrome()
         if let activePane = activePaneID {
             refreshHistoryChrome(for: activePane)
@@ -4090,6 +4153,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         pendingLastSeenPanes.remove(paneId)
         lastSeenLineSeq[paneId] = seq
+        lastSeenOffsetFailureSince.removeValue(forKey: paneId)
         lastSeenJump = lastSeenJump?.paneId == paneId ? nil : lastSeenJump
         if lastSeenVisiblePane == paneId {
             setLastSeenVisible(false, paneId: paneId)
@@ -4128,11 +4192,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             seen: seen,
             rawOffset: rawOffset
         ) {
+            lastSeenOffsetFailureSince.removeValue(forKey: paneId)
             lastSeenJump = (paneId, offset)
             setLastSeenVisible(true, paneId: paneId)
+        } else if let seen,
+                  latest > 0,
+                  UInt64(latest) > seen,
+                  rawOffset < 0,
+                  let jump = lastSeenJump,
+                  jump.paneId == paneId
+        {
+            let now = ProcessInfo.processInfo.systemUptime
+            let firstFailure = lastSeenOffsetFailureSince[paneId] ?? now
+            lastSeenOffsetFailureSince[paneId] = firstFailure
+            if now - firstFailure < Self.lastSeenOffsetFailureGrace {
+                // Keep the last known target until Core either resolves it or
+                // confirms that the stable line has been evicted.
+                setLastSeenVisible(true, paneId: paneId)
+            } else {
+                lastSeenOffsetFailureSince.removeValue(forKey: paneId)
+                lastSeenJump = nil
+                setLastSeenVisible(false, paneId: paneId)
+            }
         } else {
-            // latest 没有前进、seq 已 stale 或 core 查询失败时，都必须
-            // 清掉旧目标，不能保留上一轮可用的 offset。
+            // latest 没有前进或 seq 已 stale 时，清掉旧目标；没有可复用
+            // marker 时的瞬时查询失败也不应凭空显示按钮。
+            lastSeenOffsetFailureSince.removeValue(forKey: paneId)
             lastSeenJump = nil
             setLastSeenVisible(false, paneId: paneId)
         }
