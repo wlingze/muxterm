@@ -44,6 +44,7 @@ if [ "$OS" = "Linux" ]; then
     tmux \
     libevent-dev \
     libncurses-dev \
+    libfontconfig1-dev \
     libutempter-dev \
     bison \
     flex \
