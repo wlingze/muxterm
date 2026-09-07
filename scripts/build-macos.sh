@@ -33,21 +33,9 @@ OUT_DIR="$(build_os_dir)"   # -> build/macos
 TARGET_DIR="$(cargo_target_dir)"
 mkdir -p "$OUT_DIR" "$TARGET_DIR"
 
-echo "==> cargo build (tui + ffi) $RELEASE"
-# macOS Rust 主程序：编译 tui（含 ffi），支持 CLI 命令 / `muxterm tui` / `muxterm gui`。
-cargo build --no-default-features --features tui $RELEASE
-
-# Rust 主程序 → build/macos/muxterm
-RUST_BIN="$(cargo_bin_path "$PROFILE")"
-if [[ ! -f "$RUST_BIN" ]]; then
-  echo "ERROR: $RUST_BIN not found after cargo build" >&2
-  exit 1
-fi
-cp -f "$RUST_BIN" "$OUT_DIR/$(binary_name)"
-chmod +x "$OUT_DIR/$(binary_name)"
-
 echo "==> cargo build ffi $RELEASE (静态库供 Swift 链接)"
-# Swift 端静态链接 libmuxterm.a；用同一 shared target 的产物。
+# Swift 端静态链接 libmuxterm.a。tui CLI 必须在 Swift 链接之后再编，
+# 否则这次 ffi 构建会覆盖 target/*/muxterm，把带 tui 的 CLI 丢掉。
 cargo build --no-default-features --features ffi $RELEASE
 
 # Vendor 软链（指向实际 target dir）
@@ -125,6 +113,18 @@ CODESIGN_IDENTITY="${MUXTERM_CODESIGN_IDENTITY:--}"
 codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
 test -d "$APP/Contents/_CodeSignature"
+
+# Rust CLI 最后装：带 tui/gui，且换 inode + ad-hoc 签名，避免 `zsh: killed`。
+cd "$ROOT"
+echo "==> cargo build (tui + ffi) $RELEASE"
+cargo build --no-default-features --features tui $RELEASE
+RUST_BIN="$(cargo_bin_path "$PROFILE")"
+if [[ ! -f "$RUST_BIN" ]]; then
+  echo "ERROR: $RUST_BIN not found after cargo build" >&2
+  exit 1
+fi
+install_executable "$RUST_BIN" "$OUT_DIR/$(binary_name)"
+smoke_cli_help "$OUT_DIR/$(binary_name)"
 
 echo "==> done"
 echo "    rust cli/tui/gui: $OUT_DIR/$(binary_name)"
