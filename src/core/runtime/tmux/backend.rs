@@ -170,6 +170,8 @@ pub struct TmuxRuntime {
     // ── 内部 state ──────────────────────────────────────────
     /// 当前 bind 的 tmux session 名（= Workspace 名）。
     workspace_name: String,
+    /// Project / Workspace 起始目录。NewTab 用它，而不是当前 pane cwd。
+    workspace_workdir: Option<String>,
     active_session: Option<TmuxSessionId>,
     /// list-sessions 查询到的 server 上全部 session（供池层发现）。
     known_sessions: Vec<(TmuxSessionId, String)>,
@@ -734,6 +736,7 @@ impl TmuxRuntime {
             command_error_rx: None,
             traffic: None,
             workspace_name: String::new(),
+            workspace_workdir: None,
             active_session: None,
             known_sessions: vec![],
             tabs: vec![],
@@ -1135,7 +1138,38 @@ impl TmuxRuntime {
             name: None,
             start_directory: start_directory.map(|s| s.to_string()),
         });
+        backend.set_workspace_workdir(start_directory.unwrap_or_default());
         backend
+    }
+
+    /// Catalog 打开时记下 Project 路径；attach 已有 session 同样需要。
+    pub fn set_workspace_workdir(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        let trimmed = path.trim();
+        self.workspace_workdir = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+    }
+
+    /// NewTab 的工作目录：显式 workdir > workspace 路径。SSH 不在本地展开 `~`。
+    fn new_tab_directory(&self, workdir: &Option<String>) -> Option<String> {
+        let raw = workdir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.workspace_workdir.clone())?;
+        Some(self.prepare_remote_or_local_dir(&raw))
+    }
+
+    fn prepare_remote_or_local_dir(&self, dir: &str) -> String {
+        if self.config.ssh_alias.is_some() {
+            dir.trim().to_string()
+        } else {
+            crate::core::config::expand_config_value(dir)
+        }
     }
 
     /// 把指定 tab 标记为 active，并发出 ActiveTabChanged 事件。
@@ -4183,11 +4217,11 @@ impl Runtime for TmuxRuntime {
                         reason: "tmux 未连接".into(),
                     });
                 };
-                if let Some(dir) = workdir {
+                if let Some(dir) = self.new_tab_directory(workdir) {
                     let c = cmd::new_window_with_directory(
                         sess,
                         name.as_deref(),
-                        Some(dir),
+                        Some(&dir),
                         command.as_deref(),
                     );
                     if self.dispatch_tmux_command(&c).is_err() {
@@ -8919,6 +8953,81 @@ mod tests {
                 .any(|cmd| cmd.contains("capture-pane") && cmd.contains("%0")),
             "已经 seed 过的 pane 不得再 capture: {seed:?}"
         );
+    }
+
+    #[test]
+    fn new_tab_without_explicit_dir_uses_workspace_project_path() {
+        let mut b = TmuxRuntime::new(None);
+        b.active_session = Some(TmuxSessionId(4));
+        b.set_workspace_workdir("~/Developer/self/muxterm");
+        b.tabs.push(TabInfo {
+            id: TabId(7),
+            name: "current".into(),
+            active: true,
+        });
+        b.panes.push(PaneInfo {
+            id: PaneId(3),
+            tab: TabId(7),
+            cols: 80,
+            rows: 24,
+            active: true,
+            title: String::new(),
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+
+        b.execute(&Task::NewTab {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        let cmd = rx.try_recv().expect("应直接发送 new-window");
+        assert!(cmd.contains("-c \""), "必须带 Project 路径: {cmd}");
+        assert!(
+            !cmd.contains("#{pane_current_path}"),
+            "有 workspace path 时不得用 pane cwd: {cmd}"
+        );
+        assert!(
+            cmd.contains("Developer/self/muxterm") || cmd.contains("/muxterm"),
+            "本地应展开或不丢路径: {cmd}"
+        );
+    }
+
+    #[test]
+    fn ssh_new_tab_keeps_remote_tilde_path() {
+        let mut b = TmuxRuntime::new_ssh_attach("ryzen", None, "muxterm");
+        b.active_session = Some(TmuxSessionId(4));
+        b.set_workspace_workdir("~/Developer/self/muxterm");
+        b.tabs.push(TabInfo {
+            id: TabId(7),
+            name: "current".into(),
+            active: true,
+        });
+        b.panes.push(PaneInfo {
+            id: PaneId(3),
+            tab: TabId(7),
+            cols: 80,
+            rows: 24,
+            active: true,
+            title: String::new(),
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+        b.execute(&Task::NewTab {
+            name: None,
+            command: None,
+            workdir: None,
+        })
+        .unwrap();
+        let cmd = rx.try_recv().expect("应直接发送 new-window");
+        assert!(
+            cmd.contains("-c \"~/Developer/self/muxterm\""),
+            "SSH 必须把远端 ~ 交给 tmux 展开，不能先在本机展开: {cmd}"
+        );
+        assert!(!cmd.contains("#{pane_current_path}"), "{cmd}");
     }
 
     #[test]

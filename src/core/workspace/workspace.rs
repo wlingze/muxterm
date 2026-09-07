@@ -145,7 +145,11 @@ impl Workspace {
                     .resolved_target
                     .as_ref()
                     .map(|target| target.canonical.path.trim().to_string())
-                    .filter(|path| !path.is_empty());
+                    .filter(|path| !path.is_empty())
+                    .or_else(|| {
+                        let path = self.id.path.trim();
+                        (!path.is_empty()).then(|| path.to_string())
+                    });
                 Task::NewTab {
                     name,
                     command,

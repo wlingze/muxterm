@@ -97,6 +97,7 @@ impl RuntimeDriver for TmuxDriver {
             TmuxRuntime::new_with_attach(spec.socket.as_deref(), &spec.session)
         };
         rt.set_scrollback_lines(spec.scrollback_lines);
+        rt.set_workspace_workdir(spec.path.clone());
         Ok(Box::new(rt))
     }
 }
