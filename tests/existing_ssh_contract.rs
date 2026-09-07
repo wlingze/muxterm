@@ -19,6 +19,7 @@ use muxterm::core::discovery::existing::{
 use muxterm::core::model::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
 use muxterm::core::model::task::Task;
 use muxterm::core::quickconnect::model::TargetRuntime;
+use muxterm::core::runtime::herdr::session::HerdrAgentStatus;
 use muxterm::core::runtime::HerdrRuntime;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;
@@ -163,7 +164,8 @@ fn ssh_herdr_forward_attach_contract() {
     sshd.apply_ssh_config_env();
     let agent_command = TempAgentCommand::pi("ssh-forward");
     let herdr = IsolatedHerdr::start("fwd-attach");
-    let (ws, _tab, pane) = herdr.create_workspace("/tmp", "mux-fwd");
+    let (ws, _tab, pane) =
+        herdr.create_workspace(&agent_command.cwd().to_string_lossy(), "mux-fwd");
 
     let (local_socket, forward) = muxterm::core::runtime::herdr::forward::start_herdr_ssh_forward(
         &sshd.alias,
@@ -260,9 +262,8 @@ fn ssh_herdr_forward_attach_contract() {
 
     // 同一条 SSH API forward 上启动真实 pi，并通过结构化 API 报告完整
     // agent metadata；Runtime 必须把远端 wire 统一成 PaneAgentChanged。
-    let agent_executable = agent_command.cwd().join("pi");
     session
-        .pane_send_text(&pane, &agent_executable.to_string_lossy())
+        .pane_send_text(&pane, agent_command.invocation())
         .expect("SSH forward 应能启动真实 pi");
     session
         .pane_send_keys(&pane, &["enter".to_string()])
@@ -498,17 +499,66 @@ fn ssh_herdr_forward_attach_contract() {
             }),
         )
         .expect("SSH forward 清除 agent authority");
+    // 与 linux_herdr_agent_e2e 一致：先等 detector 接管，再画 Done 帧。
+    // hook 仍跳过 screen detection 时 mark_done 会被吃掉，Workspace 会停在 Working。
+    let detector_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let snapshot = session
+            .snapshot()
+            .expect("SSH forward 读取 detector snapshot");
+        let server_ready = snapshot.agents.iter().any(|agent| {
+            agent.pane_id == pane
+                && agent.agent_status == HerdrAgentStatus::Working
+                && !agent.screen_detection_skipped
+        });
+        let _ = workspace.refresh();
+        let local_ready = workspace.pane_agent(active).is_some_and(|agent| {
+            agent.status == PaneAgentStatus::Working && !agent.screen_detection_skipped
+        });
+        if server_ready && local_ready {
+            break;
+        }
+        assert!(
+            Instant::now() < detector_deadline,
+            "SSH clear_agent_authority 后 detector 未接管: workspace={:?} herdr={snapshot:#?}",
+            workspace.pane_agent(active)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     agent_command.mark_done();
+    let server_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let snapshot = session.snapshot().expect("SSH forward 读取 done snapshot");
+        let _ = workspace.refresh();
+        let left_working =
+            snapshot.agents.iter().any(|agent| {
+                agent.pane_id == pane && agent.agent_status != HerdrAgentStatus::Working
+            }) || snapshot.agents.iter().all(|agent| agent.pane_id != pane);
+        if left_working {
+            break;
+        }
+        assert!(
+            Instant::now() < server_deadline,
+            "SSH mark_done 后 server detector 仍是 Working: {snapshot:#?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     agent_command.stop();
+    session
+        .pane_send_keys(&pane, &["ctrl+c".to_string()])
+        .expect("SSH forward 应能停止隔离 pi");
     let release_deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let _ = workspace.refresh();
         if workspace.pane_agent(active).is_none() {
             break;
         }
+        let snapshot = session
+            .snapshot()
+            .expect("SSH forward 读取 release snapshot");
         assert!(
             Instant::now() < release_deadline,
-            "SSH agent 退出后未清除 Workspace agent: {:?}",
+            "SSH agent 退出后未清除 Workspace agent: workspace={:?} herdr={snapshot:#?}",
             workspace.pane_agent(active)
         );
         std::thread::sleep(Duration::from_millis(50));

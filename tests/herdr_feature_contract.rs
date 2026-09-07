@@ -733,7 +733,14 @@ fn herdr_agent_snapshot_and_transitions_reach_workspace_with_full_metadata() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert!(released, "agent release 必须清除 Workspace 的 pane agent");
+    assert!(
+        released,
+        "agent release 必须清除 Workspace 的 pane agent: workspace={:?} herdr={:#?}",
+        workspace.pane_agent(pane),
+        session
+            .snapshot()
+            .expect("release 后应能读取 Herdr snapshot")
+    );
     assert!(workspace.pane_agent(pane).is_none());
     assert!(workspace
         .take_attention_signals(pane)

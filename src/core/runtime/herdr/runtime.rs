@@ -471,20 +471,39 @@ impl HerdrRuntime {
                     .copied()
                     .or_else(|| self.agents.get(&pane).map(PaneAgentInfo::version))
                     .unwrap_or_default();
-                if incoming.version().accepts(current_version) {
+                let current_is_detector = self
+                    .agents
+                    .get(&pane)
+                    .is_some_and(|agent| !agent.screen_detection_skipped);
+                // `pane.clear_agent_authority` 把 hook seq 冻在清权值上。
+                // 之后 screen detector 的 Done/Idle 经常带 seq=0 或复用该
+                // seq，不能当成旧 hook 快照丢掉。
+                let accept = if !incoming.screen_detection_skipped && current_is_detector {
+                    incoming.revision >= current_version.revision
+                        && (incoming.state_change_seq == 0
+                            || incoming.version().accepts(current_version))
+                } else {
+                    incoming.version().accepts(current_version)
+                };
+                if accept {
                     if incoming.version().is_known() {
-                        self.agent_versions.insert(pane, incoming.version());
+                        let stored = if incoming.state_change_seq == 0 {
+                            AgentVersion::new(current_version.state_change_seq, incoming.revision)
+                        } else {
+                            incoming.version()
+                        };
+                        self.agent_versions.insert(pane, stored);
                     }
                     self.agents.insert(pane, incoming);
                 }
             }
         }
 
-        // `session.snapshot.agents` may omit a pane after its agent exits. Only
-        // accept that as a release when the pane record carries a newer revision;
-        // an older concurrent snapshot must not erase a newer Working/Blocked
-        // state. Keep the state-sequence part of the tombstone so an old record
-        // with the same sequence cannot resurrect the released agent.
+        // `session.snapshot.agents` 在 agent 退出或 `release_agent` 后会省略
+        // 该 pane。Herdr 0.8.0 的 release 常常不抬 pane revision，因此同
+        // revision 且 `pane.agent is None` 也是一次合法释放。更旧的 revision
+        // 仍视为并发旧快照，不能把更新的 Working/Blocked 抹掉。墓碑保留
+        // state-change seq，避免同 seq 的旧记录把已释放 agent 救活。
         let reported_agent_panes = snap
             .agents
             .iter()
@@ -509,8 +528,7 @@ impl HerdrRuntime {
                     .copied()
                     .unwrap_or_else(|| current.version());
                 let release = AgentVersion::new(current_version.state_change_seq, record.revision);
-                release
-                    .has_newer_revision_than(current_version)
+                (record.revision != 0 && record.revision >= current_version.revision)
                     .then_some((*pane, release))
             })
             .collect::<Vec<_>>();
@@ -3237,6 +3255,24 @@ mod tests {
         pane_agent: Option<&str>,
         include_agent: bool,
     ) -> SessionSnapshot {
+        agent_snapshot_with(
+            status,
+            state_change_seq,
+            revision,
+            pane_agent,
+            include_agent,
+            false,
+        )
+    }
+
+    fn agent_snapshot_with(
+        status: HerdrAgentStatus,
+        state_change_seq: u64,
+        revision: u64,
+        pane_agent: Option<&str>,
+        include_agent: bool,
+        screen_detection_skipped: bool,
+    ) -> SessionSnapshot {
         SessionSnapshot {
             version: "0.8.0".into(),
             protocol: 19,
@@ -3296,7 +3332,7 @@ mod tests {
                     terminal_title_stripped: Some("codex".into()),
                     display_agent: Some("Codex".into()),
                     agent_status: status,
-                    screen_detection_skipped: false,
+                    screen_detection_skipped,
                     state_labels: Default::default(),
                     tokens: Default::default(),
                     agent_session: None,
@@ -3366,6 +3402,62 @@ mod tests {
         assert!(
             runtime.pane_agent(&PaneId(1)).is_none(),
             "pane revision 前进后才允许接受 agent release"
+        );
+    }
+
+    #[test]
+    fn same_revision_omission_releases_when_pane_agent_identity_is_gone() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let blocked = agent_snapshot_with(HerdrAgentStatus::Blocked, 3, 4, Some("pi"), true, true);
+        let released = agent_snapshot(HerdrAgentStatus::Idle, 0, 4, None, false);
+
+        assert!(runtime.apply_snapshot(&blocked, true));
+        assert!(runtime.apply_snapshot(&released, false));
+        assert!(
+            runtime.pane_agent(&PaneId(1)).is_none(),
+            "release_agent 在同一 pane revision 上省略 agents 也必须释放"
+        );
+    }
+
+    #[test]
+    fn detector_status_after_hook_clear_accepts_unsequenced_done_and_same_revision_release() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let hook_working =
+            agent_snapshot_with(HerdrAgentStatus::Working, 4, 1, Some("pi"), true, true);
+        let detector_working =
+            agent_snapshot_with(HerdrAgentStatus::Working, 4, 1, Some("pi"), true, false);
+        let detector_done =
+            agent_snapshot_with(HerdrAgentStatus::Done, 0, 1, Some("pi"), true, false);
+        let released = agent_snapshot(HerdrAgentStatus::Idle, 0, 1, None, false);
+
+        assert!(runtime.apply_snapshot(&hook_working, true));
+        assert!(runtime.apply_snapshot(&detector_working, false));
+        assert_eq!(
+            runtime.pane_agent(&PaneId(1)).map(|agent| {
+                (
+                    agent.status,
+                    agent.screen_detection_skipped,
+                    agent.state_change_seq,
+                )
+            }),
+            Some((PaneAgentStatus::Working, false, 4))
+        );
+        assert!(runtime.apply_snapshot(&detector_done, false));
+        assert_eq!(
+            runtime.pane_agent(&PaneId(1)).map(|agent| agent.status),
+            Some(PaneAgentStatus::Done),
+            "hook 清权后 detector Done（seq=0、同一 revision）必须覆盖 Working"
+        );
+        assert!(runtime.apply_snapshot(&released, false));
+        assert!(
+            runtime.pane_agent(&PaneId(1)).is_none(),
+            "detector 已到 Done 后，同 revision 的 agents 省略必须释放"
         );
     }
 
