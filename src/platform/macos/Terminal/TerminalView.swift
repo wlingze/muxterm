@@ -76,6 +76,9 @@ final class MuxTerminalView: TerminalView {
     /// 上报也交给 `send(source: Terminal)`；它不能和 pane 输出解析器应答
     /// 走同一条丢弃策略，否则 htop 点击、TUI 滚轮都到不了 tmux。
     private var isSendingUserMouseReport = false
+    /// 上一次双击选词结果，再次双击同一范围时扩成路径。
+    private var lastWordSelection: (row: Int, result: ProgressiveWordSelection.Result)?
+    private var pendingSelectionClear: DispatchWorkItem?
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
     private(set) var lastScrollWheelRoutedToRuntime = false
@@ -147,6 +150,102 @@ final class MuxTerminalView: TerminalView {
         setAccessibilityValue("")
     }
 
+    /// TUI 开了 mouse 协议时把点击交给 pane；Shift 继续走本地选区。
+    private func mouseReportingConsumes(_ event: NSEvent) -> Bool {
+        allowMouseReporting
+            && !event.modifierFlags.contains(.shift)
+            && getTerminal().mouseMode != .off
+    }
+
+    /// 第一次双击选 `b`，再次双击同一词扩成 `a/b/c`。括号仍交给 SwiftTerm。
+    @discardableResult
+    private func handleProgressiveWordClick(_ event: NSEvent) -> Bool {
+        if mouseReportingConsumes(event) {
+            pendingSelectionClear?.cancel()
+            pendingSelectionClear = nil
+            lastWordSelection = nil
+            return false
+        }
+        guard let hit = bufferGridHit(with: event) else { return false }
+        switch event.clickCount {
+        case 1:
+            pendingSelectionClear?.cancel()
+            if let previous = lastWordSelection, previous.row == hit.row,
+               previous.result.contains(column: hit.col)
+            {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    self.selectNone()
+                    self.lastWordSelection = nil
+                    self.setNeedsDisplay(self.bounds)
+                }
+                pendingSelectionClear = work
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + NSEvent.doubleClickInterval,
+                    execute: work
+                )
+                return true
+            }
+            lastWordSelection = nil
+            return false
+        case 2:
+            pendingSelectionClear?.cancel()
+            pendingSelectionClear = nil
+            let cells = lineCells(bufferRow: hit.row)
+            let previous = lastWordSelection?.row == hit.row ? lastWordSelection?.result : nil
+            guard let result = ProgressiveWordSelection.select(
+                cells: cells,
+                column: hit.col,
+                previous: previous
+            ) else {
+                lastWordSelection = nil
+                return false
+            }
+            setSelectionRange(
+                start: Position(col: result.start, row: hit.row),
+                end: Position(col: result.end, row: hit.row)
+            )
+            lastWordSelection = (hit.row, result)
+            setNeedsDisplay(bounds)
+            return true
+        default:
+            pendingSelectionClear?.cancel()
+            pendingSelectionClear = nil
+            lastWordSelection = nil
+            return false
+        }
+    }
+
+    private func bufferGridHit(with event: NSEvent) -> (col: Int, row: Int)? {
+        guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
+            return nil
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let term = getTerminal()
+        let cols = max(term.cols, 1)
+        let rows = max(term.rows, 1)
+        let col = min(max(Int(point.x / cell.width), 0), cols - 1)
+        let screenRow = min(max(Int((bounds.height - point.y) / cell.height), 0), rows - 1)
+        return (col, screenRow + term.buffer.yDisp)
+    }
+
+    private func lineCells(bufferRow: Int) -> [Character] {
+        let term = getTerminal()
+        let cols = term.cols
+        if let line = term.getScrollInvariantLine(row: bufferRow) {
+            return (0..<cols).map { col in
+                col < line.count ? term.getCharacter(for: line[col]) : " "
+            }
+        }
+        let screenRow = bufferRow - term.buffer.yDisp
+        if let line = term.getLine(row: screenRow) {
+            return (0..<cols).map { col in
+                col < line.count ? term.getCharacter(for: line[col]) : " "
+            }
+        }
+        return []
+    }
+
     /// 用户鼠标走 `send(source: Terminal)`，tmux 镜像默认会丢掉解析器应答。
     /// 在点击/拖拽/滚轮期间打开上报并标记，才能把 CSI 送进 pane。
     private func withUserMouseReporting(_ body: () -> Void) {
@@ -175,10 +274,17 @@ final class MuxTerminalView: TerminalView {
             return
         }
         lastScrollWheelRoutedToRuntime = false
+        let towardLatest = event.scrollingDeltaY < 0
         withUserMouseReporting { super.scrollWheel(with: event) }
+        if towardLatest, JumpLatestCaption.shouldSnapToLatest(scrollPosition: scrollPosition) {
+            scrollToLatest()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
+        if handleProgressiveWordClick(event) {
+            return
+        }
         withUserMouseReporting { super.mouseDown(with: event) }
     }
 

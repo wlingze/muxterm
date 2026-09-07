@@ -217,5 +217,9 @@
   "tab_bar_top_detail": "Move the tab bar to the top",
   "tab_bar_bottom_detail": "Move the tab bar to the bottom",
   "status_done": "Task complete",
-  "menu_search_panes": "Search Panes"
+  "menu_search_panes": "Search Panes",
+  "jump_latest": "↓ Latest",
+  "jump_latest_unseen": "↓ Latest · +{{count}}",
+  "jump_latest_tooltip": "Jump to the latest output",
+  "jump_latest_tooltip_unseen": "Jump to the latest output ({{count}} new lines)"
 }

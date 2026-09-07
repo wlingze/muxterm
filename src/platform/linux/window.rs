@@ -425,8 +425,9 @@ impl AppWindow {
                 .expect("startup layout")
                 .root_box,
         ));
-        let jump_latest = gtk4::Button::with_label("↓");
+        let jump_latest = gtk4::Button::with_label("↓ 最新");
         jump_latest.set_widget_name("muxterm-jump-latest");
+        jump_latest.set_tooltip_text(Some("回到实时输出"));
         jump_latest.set_halign(gtk4::Align::End);
         jump_latest.set_valign(gtk4::Align::End);
         jump_latest.set_margin_end(12);
@@ -2395,9 +2396,10 @@ fn update_jump_latest(s: &UiState) {
         // 回到尾部：搜索高亮不再有意义（W17c）。
         s.search_highlight.set_visible(false);
     } else if s.jump_unseen > 0 {
-        s.jump_latest.set_label(&format!("↓ +{}", s.jump_unseen));
+        s.jump_latest
+            .set_label(&format!("↓ 最新 · +{}", s.jump_unseen));
     } else {
-        s.jump_latest.set_label("↓");
+        s.jump_latest.set_label("↓ 最新");
     }
 }
 

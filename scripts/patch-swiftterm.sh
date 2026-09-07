@@ -334,6 +334,31 @@ if "MUXTERM_KEEP_SELECTION_RESIZE" not in mac_text:
     print("==> applied SwiftTerm keep-selection resizeSubviews patch")
 else:
     print("==> SwiftTerm keep-selection resizeSubviews patch already applied")
+
+if "MUXTERM_SET_SELECTION" not in mac_text:
+    old = """    public override func selectAll(_ sender: Any?)
+    {
+        selectAll ()
+    }
+"""
+    new = """    public override func selectAll(_ sender: Any?)
+    {
+        selectAll ()
+    }
+
+    /// Muxterm: set the native selection from buffer coordinates.
+    public func setSelectionRange(start: Position, end: Position) { // MUXTERM_SET_SELECTION
+        selection.setSelection(start: start, end: end)
+        setNeedsDisplay(bounds)
+    }
+"""
+    if old not in mac_text:
+        print("ERROR: SwiftTerm selectAll changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
+        sys.exit(1)
+    mac_text = mac_text.replace(old, new, 1)
+    print("==> applied SwiftTerm setSelectionRange patch")
+else:
+    print("==> SwiftTerm setSelectionRange patch already applied")
 mac.write_text(mac_text)
 PY
 

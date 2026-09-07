@@ -513,10 +513,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.jumpLatestButton.action = #selector(jumpToLatest)
         content.lastSeenButton.target = self
         content.lastSeenButton.action = #selector(jumpToLastSeen)
-        content.commandMarkOKButton.target = self
-        content.commandMarkOKButton.action = #selector(jumpToLastSuccessfulCommand)
-        content.commandMarkFailButton.target = self
-        content.commandMarkFailButton.action = #selector(jumpToLastFailedCommand)
+        content.commandMarkRail.onSelectMark = { [weak self] mark in
+            guard let self, let pane = self.activePaneID else { return }
+            self.commandTimelineCursor[pane] = mark.seq
+            self.commandNavigationPanes.insert(pane)
+            self.applyPaneViewport(paneId: pane, offset: mark.offset)
+        }
+        content.commandMarkRail.onSelectOffset = { [weak self] offset in
+            guard let self, let pane = self.activePaneID else { return }
+            if offset == 0 {
+                self.jumpToLatest()
+            } else {
+                self.applyPaneViewport(paneId: pane, offset: offset)
+            }
+        }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
         }
@@ -1871,23 +1881,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         lastSeenOffsetFailureSince.removeValue(forKey: target.paneId)
         lastSeenJump = nil
         setLastSeenVisible(false, paneId: target.paneId)
-    }
-
-    @objc private func jumpToLastSuccessfulCommand() {
-        guard let pane = activePaneID,
-              let mark = commandMarks(for: pane).reversed().first(where: { $0.exitCode == 0 })
-        else { return }
-        jumpToCommandMark(mark, paneId: pane)
-    }
-
-    @objc private func jumpToLastFailedCommand() {
-        guard let pane = activePaneID,
-              let mark = commandMarks(for: pane).reversed().first(where: {
-                  guard let code = $0.exitCode else { return false }
-                  return code != 0
-              })
-        else { return }
-        jumpToCommandMark(mark, paneId: pane)
     }
 
     /// 按 OSC 133 时间线跳到当前命令之前最近的一条命令。
@@ -4337,20 +4330,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             setLastSeenVisible(false, paneId: paneId)
         }
 
-        var ok: (command: String, exitCode: Int, offset: UInt32)?
-        var fail: (command: String, exitCode: Int, offset: UInt32)?
-        for mark in bridge.paneCommandMarks(paneId: paneId).reversed() {
-                // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
-                // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
-                guard let code = mark.exitCode, let offset = mark.historyOffset else { continue }
-                if code == 0, ok == nil {
-                    ok = (mark.command, code, offset)
-                } else if code != 0, fail == nil {
-                    fail = (mark.command, code, offset)
-                }
-                if ok != nil, fail != nil { break }
+        var ticks: [CommandMarkTick] = []
+        for mark in bridge.paneCommandMarks(paneId: paneId) {
+            // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
+            // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
+            guard let offset = mark.historyOffset else { continue }
+            ticks.append(
+                CommandMarkTick(
+                    seq: mark.seq,
+                    command: mark.command,
+                    exitCode: mark.exitCode,
+                    offset: offset
+                )
+            )
         }
-        content.setCommandMarks(ok: ok, fail: fail)
+        let rows = UInt32(max(1, Int(lastSnapshot.panes.first(where: { $0.id == paneId })?.rows ?? 24)))
+        let rawMax = bridge.paneHistoryMaxOffset(paneId: paneId, rows: rows)
+        let maxOffset = rawMax < 0 ? (ticks.map(\.offset).max() ?? 0) : UInt32(rawMax)
+        content.setCommandMarks(ticks, maxOffset: maxOffset)
     }
 
     private func setLastSeenVisible(_ visible: Bool, paneId: UInt32) {

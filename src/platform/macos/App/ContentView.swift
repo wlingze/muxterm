@@ -9,13 +9,14 @@ final class ContentView: NSView {
     let statusBar = StatusBarView()
     /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
     let disconnectOverlay = NSTextField(labelWithString: "")
-    /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
+    /// 回底胶囊（愿景：滚离底部后显示「↓ 最新 · +N」）。
     let jumpLatestButton = NSButton()
     /// 最近一次离开 pane 时的行位置。
     let lastSeenButton = NSButton()
-    /// 当前 pane 最近一次成功/失败命令的刻度。
-    let commandMarkOKButton = NSButton()
-    let commandMarkFailButton = NSButton()
+    /// OSC 133 命令轨（滚动条一侧覆盖层，绿成功 / 红失败）。
+    let commandMarkRail = CommandMarkRailView()
+    private var jumpLatestTrailing: NSLayoutConstraint?
+    private var railWidthConstraint: NSLayoutConstraint?
     /// 连接进度全窗口覆盖（W19-C：不是小对话框）。
     let connectProgressOverlay = NSTextField(labelWithString: "")
     /// 注意力 Cmd-Enter 的独立 replica overlay（W19-E）。
@@ -59,11 +60,20 @@ final class ContentView: NSView {
         replyOverlayContainer.isHidden = true
 
         jumpLatestButton.translatesAutoresizingMaskIntoConstraints = false
-        jumpLatestButton.title = "↓"
+        jumpLatestButton.title = MuxtermI18n.shared.tr(.jumpLatest)
         jumpLatestButton.bezelStyle = .rounded
+        jumpLatestButton.isBordered = false
+        jumpLatestButton.wantsLayer = true
+        jumpLatestButton.layer?.cornerRadius = 13
+        jumpLatestButton.layer?.masksToBounds = true
+        jumpLatestButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        jumpLatestButton.contentTintColor = .labelColor
+        jumpLatestButton.focusRingType = .none
+        jumpLatestButton.controlSize = .small
         jumpLatestButton.isHidden = true
         jumpLatestButton.setAccessibilityIdentifier("muxterm.jumpLatest")
         jumpLatestButton.setAccessibilityElement(true)
+        jumpLatestButton.toolTip = MuxtermI18n.shared.tr(.jumpLatestTooltip)
 
         lastSeenButton.translatesAutoresizingMaskIntoConstraints = false
         lastSeenButton.title = "上次看到这里"
@@ -73,42 +83,45 @@ final class ContentView: NSView {
         lastSeenButton.setAccessibilityElement(true)
         lastSeenButton.toolTip = "跳回上次离开 pane 的位置"
 
-        for button in [commandMarkOKButton, commandMarkFailButton] {
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.bezelStyle = .rounded
-            button.isHidden = true
-            button.setAccessibilityElement(true)
+        commandMarkRail.translatesAutoresizingMaskIntoConstraints = false
+        commandMarkRail.isHidden = true
+        commandMarkRail.onExpandedChange = { [weak self] expanded in
+            self?.railWidthConstraint?.constant = CommandMarkRailLayout.width(expanded: expanded)
+            self?.refreshJumpLatestTrailing()
         }
-        commandMarkOKButton.title = "✓"
-        commandMarkOKButton.setAccessibilityIdentifier("muxterm.cmdMark.ok")
-        commandMarkFailButton.title = "✗"
-        commandMarkFailButton.setAccessibilityIdentifier("muxterm.cmdMark.fail")
-        commandMarkOKButton.contentTintColor = .systemGreen
-        commandMarkFailButton.contentTintColor = .systemRed
 
         addSubview(paneLayout)
         addSubview(statusBar)
         addSubview(disconnectOverlay)
         addSubview(lastSeenButton)
-        addSubview(commandMarkOKButton)
-        addSubview(commandMarkFailButton)
+        addSubview(commandMarkRail)
         addSubview(jumpLatestButton)
         addSubview(connectProgressOverlay)
         addSubview(replyOverlayContainer)
+
+        let railWidth = commandMarkRail.widthAnchor.constraint(
+            equalToConstant: CommandMarkRailLayout.collapsedWidth
+        )
+        let jumpTrailing = jumpLatestButton.trailingAnchor.constraint(
+            equalTo: paneLayout.trailingAnchor,
+            constant: -12
+        )
+        railWidthConstraint = railWidth
+        jumpLatestTrailing = jumpTrailing
 
         NSLayoutConstraint.activate([
             disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
             disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor),
             lastSeenButton.centerXAnchor.constraint(equalTo: paneLayout.centerXAnchor),
             lastSeenButton.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 12),
-            commandMarkFailButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            commandMarkFailButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            commandMarkOKButton.trailingAnchor.constraint(equalTo: commandMarkFailButton.leadingAnchor, constant: -4),
-            commandMarkOKButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            jumpLatestButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            jumpLatestButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
-            jumpLatestButton.widthAnchor.constraint(equalToConstant: 32),
-            jumpLatestButton.heightAnchor.constraint(equalToConstant: 28),
+            commandMarkRail.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor),
+            commandMarkRail.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 4),
+            commandMarkRail.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor, constant: -4),
+            railWidth,
+            jumpTrailing,
+            jumpLatestButton.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor, constant: -12),
+            jumpLatestButton.heightAnchor.constraint(equalToConstant: 26),
+            jumpLatestButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
         ])
 
         // 顶部：status | pane
@@ -200,13 +213,27 @@ final class ContentView: NSView {
         needsLayout = true
     }
 
-    /// 回底按钮：viewport 滚离底部时显示；有未读行时显示 `↓ +N`。
+    /// 回底胶囊：viewport 滚离底部时显示；有未读行时显示 `↓ 最新 · +N`。
     func setJumpLatestVisible(_ visible: Bool, unseenLines: UInt32 = 0) {
         jumpLatestButton.isHidden = !visible
-        jumpLatestButton.title = unseenLines > 0 ? "↓ +\(unseenLines)" : "↓"
-        jumpLatestButton.toolTip = unseenLines > 0
-            ? "回到底部（\(unseenLines) 行新输出）"
-            : "回到底部"
+        let i18n = MuxtermI18n.shared
+        let title: String
+        if unseenLines > 0 {
+            title = i18n.tr(
+                .jumpLatestUnseen,
+                arguments: ["count": "\(unseenLines)"]
+            )
+            jumpLatestButton.toolTip = i18n.tr(
+                .jumpLatestTooltipUnseen,
+                arguments: ["count": "\(unseenLines)"]
+            )
+        } else {
+            title = i18n.tr(.jumpLatest)
+            jumpLatestButton.toolTip = i18n.tr(.jumpLatestTooltip)
+        }
+        jumpLatestButton.title = "  \(title)  "
+        styleJumpLatestCapsule(emphasized: unseenLines > 0)
+        refreshJumpLatestTrailing()
         needsLayout = true
     }
 
@@ -215,24 +242,30 @@ final class ContentView: NSView {
         needsLayout = true
     }
 
-    func setCommandMarks(ok: (command: String, exitCode: Int, offset: UInt32)?,
-                         fail: (command: String, exitCode: Int, offset: UInt32)?) {
-        commandMarkOKButton.isHidden = ok == nil
-        commandMarkFailButton.isHidden = fail == nil
-        if let ok {
-            commandMarkOKButton.toolTip = "成功：\(ok.command)（退出码 \(ok.exitCode)）"
-            commandMarkOKButton.setAccessibilityValue(ok.command)
-        } else {
-            commandMarkOKButton.toolTip = nil
-            commandMarkOKButton.setAccessibilityValue(nil)
+    func setCommandMarks(_ marks: [CommandMarkTick], maxOffset: UInt32) {
+        commandMarkRail.apply(marks: marks, maxOffset: maxOffset)
+        if commandMarkRail.isHidden {
+            railWidthConstraint?.constant = 0
+        } else if !commandMarkRail.expanded {
+            railWidthConstraint?.constant = CommandMarkRailLayout.collapsedWidth
         }
-        if let fail {
-            commandMarkFailButton.toolTip = "失败：\(fail.command)（退出码 \(fail.exitCode)）"
-            commandMarkFailButton.setAccessibilityValue(fail.command)
-        } else {
-            commandMarkFailButton.toolTip = nil
-            commandMarkFailButton.setAccessibilityValue(nil)
-        }
+        refreshJumpLatestTrailing()
         needsLayout = true
+    }
+
+    private func refreshJumpLatestTrailing() {
+        let railSpace: CGFloat = commandMarkRail.isHidden
+            ? 0
+            : CommandMarkRailLayout.width(expanded: commandMarkRail.expanded) + 6
+        jumpLatestTrailing?.constant = -(12 + railSpace)
+    }
+
+    private func styleJumpLatestCapsule(emphasized: Bool) {
+        let fill = emphasized
+            ? NSColor.controlAccentColor.withAlphaComponent(0.22)
+            : NSColor.labelColor.withAlphaComponent(0.08)
+        jumpLatestButton.layer?.backgroundColor = fill.cgColor
+        jumpLatestButton.layer?.borderWidth = 1
+        jumpLatestButton.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
     }
 }

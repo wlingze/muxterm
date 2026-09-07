@@ -148,6 +148,10 @@ enum MuxtermTextKey: CaseIterable {
     case previousCommandDetail
     case nextCommand
     case nextCommandDetail
+    case jumpLatest
+    case jumpLatestUnseen
+    case jumpLatestTooltip
+    case jumpLatestTooltipUnseen
     case quickConnect
     case quickConnectDetail
     case searchPanesDetail
@@ -368,6 +372,10 @@ enum MuxtermTextKey: CaseIterable {
         case .previousCommandDetail: return "previous_command_detail"
         case .nextCommand: return "next_command"
         case .nextCommandDetail: return "next_command_detail"
+        case .jumpLatest: return "jump_latest"
+        case .jumpLatestUnseen: return "jump_latest_unseen"
+        case .jumpLatestTooltip: return "jump_latest_tooltip"
+        case .jumpLatestTooltipUnseen: return "jump_latest_tooltip_unseen"
         case .quickConnect: return "quick_connect"
         case .quickConnectDetail: return "quick_connect_detail"
         case .searchPanesDetail: return "search_panes_detail"

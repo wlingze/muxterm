@@ -217,5 +217,9 @@
   "tab_bar_top_detail": "把标签栏移到顶部",
   "tab_bar_bottom_detail": "把标签栏移到底部",
   "status_done": "任务完成",
-  "menu_search_panes": "搜索 Pane"
+  "menu_search_panes": "搜索 Pane",
+  "jump_latest": "↓ 最新",
+  "jump_latest_unseen": "↓ 最新 · +{{count}}",
+  "jump_latest_tooltip": "回到实时输出",
+  "jump_latest_tooltip_unseen": "回到实时输出（{{count}} 行新输出）"
 }

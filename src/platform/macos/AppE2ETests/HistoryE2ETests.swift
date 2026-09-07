@@ -45,6 +45,11 @@ final class HistoryE2ETests: XCTestCase {
             "搜索跳转式滚到顶之后 SwiftTerm 必须能看见离屏历史 \(fx.token)"
         )
         XCTAssertTrue(app.testJumpLatestVisible(), "向上滚动后必须出现回底按钮 muxterm.jumpLatest")
+        let jumpTitle = app.testJumpLatestTitle()
+        XCTAssertTrue(
+            jumpTitle.contains("最新") || jumpTitle.contains("Latest"),
+            "回底必须是「↓ 最新」胶囊，不能只剩一个箭头。got=\(jumpTitle)"
+        )
         XCTAssertGreaterThan(app.testPaneViewport(), 0, "滚离底部后 viewport 应 > 0")
 
         app.testClickJumpLatest()

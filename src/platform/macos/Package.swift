@@ -44,6 +44,7 @@ let appLibSources = [
     "UI/TabBar.swift",
     "UI/PaneLayout.swift",
     "UI/StatusBarView.swift",
+    "UI/CommandMarkRailView.swift",
 ]
 
 let package = Package(

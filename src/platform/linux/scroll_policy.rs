@@ -50,6 +50,30 @@ pub fn wheel_action(
     }
 }
 
+/// 向下滚到接近底部时吸附到实时尾部（对应愿景「下拉跳转到最后」）。
+///
+/// `upper` 是 VTE 内容高度，`page` 是可见高度；最大合法 value 是 `upper-page`。
+pub fn snap_history_to_latest(
+    value: f64,
+    lower: f64,
+    upper: f64,
+    page: f64,
+    scrolling_toward_latest: bool,
+) -> f64 {
+    let max_value = (upper - page).max(lower);
+    let clamped = value.clamp(lower, max_value);
+    if !scrolling_toward_latest {
+        return clamped;
+    }
+    let remaining = max_value - clamped;
+    let threshold = (page / 6.0).max(2.0);
+    if remaining <= threshold {
+        max_value
+    } else {
+        clamped
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +143,25 @@ mod tests {
     fn wheel_action_zero_delta_is_none() {
         assert_eq!(wheel_action(false, false, 0.0, (1, 1)), None);
         assert_eq!(wheel_action(true, true, 0.0, (1, 1)), None);
+    }
+
+    #[test]
+    fn snap_history_to_latest_only_near_bottom_when_scrolling_down() {
+        assert_eq!(
+            snap_history_to_latest(973.0, 0.0, 1000.0, 24.0, true),
+            976.0,
+            "接近底部向下滚必须吸到 max_value"
+        );
+        assert_eq!(
+            snap_history_to_latest(400.0, 0.0, 1000.0, 24.0, true),
+            400.0,
+            "离底部还远时不能整页跳到底"
+        );
+        assert_eq!(
+            snap_history_to_latest(973.0, 0.0, 1000.0, 24.0, false),
+            973.0,
+            "向上滚不得因为接近底部而吸附"
+        );
+        assert_eq!(snap_history_to_latest(10.0, 0.0, 1000.0, 24.0, false), 10.0);
     }
 }

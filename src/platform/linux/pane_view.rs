@@ -25,7 +25,7 @@ use crate::core::protocol::terminal::mouse::{
 use crate::core::url_detect::UrlOpener;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
-use crate::platform::linux::scroll_policy::{wheel_action, WheelAction};
+use crate::platform::linux::scroll_policy::{snap_history_to_latest, wheel_action, WheelAction};
 
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;
@@ -281,9 +281,13 @@ impl PaneView {
                 if let Some(adj) = self.inner.renderer.terminal().vadjustment() {
                     let step = adj.step_increment().max(1.0);
                     let target = adj.value() + lines as f64 * step;
-                    let lower = adj.lower();
-                    let upper = (adj.upper() - adj.page_size()).max(lower);
-                    adj.set_value(target.clamp(lower, upper));
+                    adj.set_value(snap_history_to_latest(
+                        target,
+                        adj.lower(),
+                        adj.upper(),
+                        adj.page_size(),
+                        lines > 0,
+                    ));
                 }
             }
             WheelAction::SendToApp { bytes } => {
