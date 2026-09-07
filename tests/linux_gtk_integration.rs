@@ -325,10 +325,11 @@ fn assert_build_2tab3pane_via_keys() {
     simulate_key_press(&ctrl, gdk::Key::s, gdk::ModifierType::ALT_MASK);
     assert!(
         wait_until(&app, 2500, |a| a.test_tab_and_pane_counts().1 >= 2
-            || a.test_status_text().contains("2 panes")),
-        "Alt+S 后应有 2 panes，got={:?} status={}",
+            && a.test_gtk_layout_signature() == "H(L,L)"),
+        "Alt+S 后应有水平 2 panes，got={:?} status={} gtk={}",
         app.test_tab_and_pane_counts(),
-        app.test_status_text()
+        app.test_status_text(),
+        app.test_gtk_layout_signature()
     );
     assert_active_pane_echo(&app, "s2");
 
@@ -336,16 +337,11 @@ fn assert_build_2tab3pane_via_keys() {
     simulate_key_press(&ctrl, gdk::Key::v, gdk::ModifierType::ALT_MASK);
     assert!(
         wait_until(&app, 2500, |a| a.test_tab_and_pane_counts().1 >= 3
-            || a.test_status_text().contains("3 panes")),
-        "Alt+V 后应有 3 panes，got={:?} status={}",
+            && a.test_gtk_layout_signature() == "H(L,V(L,L))"),
+        "Alt+V 后应为 H(L,V(L,L))，got={:?} status={} gtk={}",
         app.test_tab_and_pane_counts(),
-        app.test_status_text()
-    );
-
-    let root = app.window.child().expect("root");
-    assert!(
-        count_paned(&root) >= 2 && has_nested_paned(&root),
-        "3-pane 应为嵌套 Paned"
+        app.test_status_text(),
+        app.test_gtk_layout_signature()
     );
     assert_active_pane_echo(&app, "v3");
 

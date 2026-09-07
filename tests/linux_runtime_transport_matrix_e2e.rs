@@ -26,7 +26,7 @@ use muxterm::core::catalog::Catalog;
 use muxterm::core::config::{Action, Config};
 use muxterm::core::model::backend::RuntimeCapability;
 use muxterm::core::model::task::TaskOutcome;
-use muxterm::core::quickconnect::model::TargetConfig;
+use muxterm::core::quickconnect::model::{QuickConnect, TargetConfig};
 use muxterm::platform::linux::window::AppWindow;
 
 use support::herdr_test_support::herdr_available;
@@ -1958,7 +1958,8 @@ fn scenario_project_existing_parity(
     // 1) 真实 Project 行 click（store 预置的 Project 行）。
     app.test_open_panel(0);
     pump_main_loop(80);
-    let project_name = format!("parity-{transport}@{}", transport_label(transport, fixture));
+    let config = project_target_config(fixture, transport)?;
+    let project_name = QuickConnect::unique_id(&config);
     let list = find_by_name(&app.test_window(), "muxterm-panel-list")
         .context("面板列表应存在")?
         .downcast::<gtk4::ListBox>()
@@ -1978,7 +1979,6 @@ fn scenario_project_existing_parity(
     );
 
     // 2) 内存态 identity：identity key、attach spec identity、id/workspace 相同。
-    let config = project_target_config(fixture, transport)?;
     let mut store = muxterm::core::quickconnect::store::QuickConnectStore::in_memory();
     store.upsert_project(&config);
     assert_eq!(store.projects.len(), 1);
@@ -2079,15 +2079,18 @@ fn existing_connect_name(fixture: &MatrixFixture, transport: &str) -> String {
 
 /// 按 widget name 在面板列表里找行。
 fn find_row_by_name(list: &gtk4::ListBox, name: &str) -> Result<gtk4::ListBoxRow> {
+    let mut names = Vec::new();
     for idx in 0.. {
         let Some(row) = list.row_at_index(idx) else {
             break;
         };
-        if row.widget_name() == name {
+        let row_name = row.widget_name().to_string();
+        if row_name == name {
             return Ok(row);
         }
+        names.push(row_name);
     }
-    anyhow::bail!("面板列表找不到行 {name}")
+    anyhow::bail!("面板列表找不到行 {name}: 现有 {names:?}")
 }
 
 /// 按 widget name 前缀在面板列表里找行。

@@ -104,7 +104,7 @@ run_linux() {
         xvfb_opts=-a
     fi
     set +e
-    xvfb-run "$xvfb_opts" env GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
+    xvfb-run "$xvfb_opts" env GTK_A11Y=none GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
         --test linux_gtk_integration \
         --test linux_herdr_e2e \
         --test linux_herdr_switch_e2e \
