@@ -1453,7 +1453,8 @@ fn section(id: &str, title_key: &str) -> GtkBox {
         .margin_start(16)
         .margin_end(16)
         .build();
-    let label = Label::new(Some(section_title(id, title_key)));
+    let title = section_title(id, title_key);
+    let label = Label::new(Some(&title));
     label.set_halign(Align::Start);
     label.add_css_class("prefs-card-title");
     header.append(&label);
