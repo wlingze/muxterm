@@ -151,6 +151,7 @@ fn three_tab_panel_full_flow() {
                         ssh_target("ryzen"),
                         ssh_target("dead"),
                     ],
+                    workspace_search_items: vec![],
                     agents: vec![
                         agent(
                             "legion",
@@ -357,6 +358,7 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                             .chain(std::iter::once(target("muxterm")))
                             .chain((2..32).map(|i| target(&format!("workspace-{i:02}"))))
                             .collect(),
+                        workspace_search_items: vec![],
                         agents: vec![],
                         attention: vec![],
                         on_connect: Box::new(move |cfg| {
@@ -538,6 +540,7 @@ fn rapid_typing_and_attention_navigation_stay_lightweight() {
                     PanelShowArgs {
                         initial_tab: PanelTab::Search,
                         workspaces: vec![target("muxterm")],
+                        workspace_search_items: vec![],
                         agents: vec![],
                         attention: vec![
                             attention("one", 1, PaneStatus::Blocked, "first"),
@@ -684,6 +687,7 @@ fn existing_connections_navigation() {
                         target("muxterm"),
                         PanelItem::NewProject,
                     ],
+                    workspace_search_items: vec![],
                     agents: vec![],
                     attention: vec![],
                     on_connect: Box::new(|_| {}),

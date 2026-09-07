@@ -54,6 +54,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
             PanelShowArgs {
                 initial_tab: PanelTab::Search,
                 workspaces: vec![],
+                workspace_search_items: vec![],
                 agents: vec![],
                 attention: vec![],
                 on_connect: Box::new(|_| {}),
