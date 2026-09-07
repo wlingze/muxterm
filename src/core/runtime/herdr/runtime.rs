@@ -2114,7 +2114,7 @@ impl HerdrRuntime {
         // 必须在**队列里的真实项**上写 dispatched_at，再快照派发参数；
         // 不能 clone 后只标记副本（副本不写回 -> has_in_flight 永远 false，
         // 同一 mutation 每个 tick 重复派发，服务端会创建重复 tab）。
-        let (operation_id, kind, new_tab_name, target_pane, split_dir) = {
+        let (operation_id, kind, new_tab_name, target_pane, split_dir, workdir) = {
             let Some(head) = self.mutation_queue.head_mut() else {
                 return Ok(());
             };
@@ -2128,6 +2128,7 @@ impl HerdrRuntime {
                 head.new_tab_name.clone(),
                 head.target_pane.clone(),
                 head.split_dir,
+                head.workdir.clone(),
             )
         };
         let result = match kind {
@@ -2140,6 +2141,9 @@ impl HerdrRuntime {
                 if let Some(name) = &new_tab_name {
                     params["label"] = serde_json::json!(name);
                 }
+                if let Some(cwd) = &workdir {
+                    params["cwd"] = serde_json::json!(cwd);
+                }
                 self.session.call("tab.create", params)
             }
             MutationKind::SplitPane => {
@@ -2151,13 +2155,14 @@ impl HerdrRuntime {
                     Some(SplitDir::Vertical) => "down",
                     None => return Err(anyhow!("SplitPane 缺 direction")),
                 };
-                self.session.call(
-                    "pane.split",
-                    serde_json::json!({
-                        "pane_id": target,
-                        "direction": direction,
-                    }),
-                )
+                let mut params = serde_json::json!({
+                    "pane_id": target,
+                    "direction": direction,
+                });
+                if let Some(cwd) = &workdir {
+                    params["cwd"] = serde_json::json!(cwd);
+                }
+                self.session.call("pane.split", params)
             }
         };
         match result {
@@ -3052,7 +3057,7 @@ impl Runtime for HerdrRuntime {
             Task::NewTab {
                 name,
                 command: _,
-                workdir: _,
+                workdir,
             } => {
                 // 异步 mutation：入队返回 Accepted，最终由 MutationSettled 收敛。
                 let now = Instant::now();
@@ -3071,6 +3076,7 @@ impl Runtime for HerdrRuntime {
                     .by_id_mut(operation_id)
                     .expect("刚入队必须存在");
                 pending.new_tab_name = name.clone();
+                pending.workdir = workdir.clone();
                 pending.expected_tab = None;
                 pending.expected_pane = None;
                 pending.expected_focus = None;
@@ -3086,7 +3092,7 @@ impl Runtime for HerdrRuntime {
                 target,
                 dir,
                 command: _,
-                workdir: _,
+                workdir,
             } => {
                 let target = target.unwrap_or_else(|| self.active_pane.unwrap_or(PaneId(1)));
                 let Some(tab) = self
@@ -3120,6 +3126,7 @@ impl Runtime for HerdrRuntime {
                 pending.target_tab = Some(self.tab_to_herdr_tab[&tab].clone());
                 pending.target_pane = Some(herdr_pane);
                 pending.split_dir = Some(*dir);
+                pending.workdir = workdir.clone();
                 pending.expected_tab = None;
                 pending.expected_pane = None;
                 pending.expected_focus = None;

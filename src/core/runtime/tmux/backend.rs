@@ -8921,6 +8921,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn new_tab_uses_explicit_workspace_directory() {
+        let mut b = TmuxRuntime::new(None);
+        b.active_session = Some(TmuxSessionId(4));
+        b.tabs.push(TabInfo {
+            id: TabId(7),
+            name: "current".into(),
+            active: true,
+        });
+        b.panes.push(PaneInfo {
+            id: PaneId(3),
+            tab: TabId(7),
+            cols: 80,
+            rows: 24,
+            active: true,
+            title: String::new(),
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        b.cmd_tx = Some(tx);
+        b.status = BackendStatus::Connected;
+
+        let outcome = b
+            .execute(&Task::NewTab {
+                name: None,
+                command: None,
+                workdir: Some("/tmp/a".into()),
+            })
+            .unwrap();
+        assert_eq!(outcome, TaskOutcome::Done);
+        let cmd = rx.try_recv().expect("应直接发送 new-window");
+        assert!(
+            cmd.contains("-c \"/tmp/a\""),
+            "显式 workspace path 必须进 new-window: {cmd}"
+        );
+        assert!(
+            !cmd.contains("#{pane_current_path}"),
+            "有 workspace path 时不得再用 pane cwd: {cmd}"
+        );
+    }
+
     /// 未指定 workdir 的 NewTab 必须让 tmux 在同一条命令里展开当前 pane cwd。
     /// 旧实现先 display-message、等响应，再发 new-window；控制通道繁忙时这会
     /// 把一次点击放大成数秒延迟。

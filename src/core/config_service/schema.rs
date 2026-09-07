@@ -64,6 +64,7 @@ impl ConfigDocument {
         validate_toml_shape(&value)?;
         let mut document: Self = toml::from_str(raw).context("配置文档反序列化失败")?;
         document.normalize_legacy_defaults(raw);
+        document.normalize_projects();
         document.validate()?;
         Ok(document)
     }
@@ -132,6 +133,14 @@ impl ConfigDocument {
                 .map(ShortcutOverride::from_legacy)
                 .collect();
         }
+    }
+
+    /// 同一 runtime/transport/session 的 Project 只保留第一条。旧 compact id
+    /// 与 `name@transport` 并存时，Apply 会因 uniqueID 碰撞报错。
+    fn normalize_projects(&mut self) {
+        let mut seen = BTreeSet::new();
+        self.projects
+            .retain(|project| seen.insert(project.logical_key()));
     }
 
     fn validate_projects(&self) -> Result<()> {
@@ -358,6 +367,40 @@ pub struct ProjectTransport {
 }
 
 impl ProjectDocument {
+    fn logical_key(&self) -> String {
+        let session = self
+            .runtime
+            .session
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(self.name.as_str())
+            .trim()
+            .to_ascii_lowercase();
+        let target = if self.transport.target.trim().is_empty() {
+            self.transport
+                .options
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        } else {
+            self.transport.target.clone()
+        };
+        format!(
+            "{}|{}|{}|{}|{}",
+            self.runtime.id.trim().to_ascii_lowercase(),
+            self.transport.id.trim().to_ascii_lowercase(),
+            target.trim().to_ascii_lowercase(),
+            session,
+            self.runtime
+                .socket
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        )
+    }
+
     /// Convert a QuickConnect target into the serializable Project contract.
     pub fn from_target(config: &TargetConfig) -> Self {
         let (transport_id, target) = match &config.transport {
@@ -622,4 +665,43 @@ fn check_keys(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_toml_dedupes_equivalent_projects() {
+        let raw = r#"
+config_version = 1
+
+[[projects]]
+id = "4:tmux|3:ssh|5:ryzen|7:muxterm|0:"
+name = "muxterm"
+path = "~/Developer/self/muxterm"
+
+[projects.runtime]
+id = "tmux"
+
+[projects.transport]
+id = "ssh"
+target = "ryzen"
+
+[[projects]]
+id = "muxterm@ssh"
+name = "muxterm"
+path = "~/Developer/self/muxterm"
+
+[projects.runtime]
+id = "tmux"
+
+[projects.transport]
+id = "ssh"
+target = "ryzen"
+"#;
+        let document = ConfigDocument::from_toml(raw).expect("duplicate projects must load");
+        assert_eq!(document.projects.len(), 1, "{:?}", document.projects);
+        assert_eq!(document.projects[0].id, "4:tmux|3:ssh|5:ryzen|7:muxterm|0:");
+    }
 }

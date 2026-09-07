@@ -172,6 +172,34 @@ impl WorkspacePool {
         slots.into_iter().map(|slot| &slot.workspace).collect()
     }
 
+    /// 按侧栏拖拽后的顺序重写 `opened_order`。未知 id 忽略；未出现的格子
+    /// 保持相对顺序接在后面。
+    pub fn reorder(&mut self, ordered_ids: &[WorkspaceId]) {
+        let mut next = 0u64;
+        let mut seen = std::collections::HashSet::new();
+        for id in ordered_ids {
+            if let Some(slot) = self.slots.get_mut(id) {
+                slot.opened_order = next;
+                next = next.saturating_add(1);
+                seen.insert(id.clone());
+            }
+        }
+        let mut rest: Vec<WorkspaceId> = self
+            .slots
+            .keys()
+            .filter(|id| !seen.contains(*id))
+            .cloned()
+            .collect();
+        rest.sort_by_key(|id| self.slots[id].opened_order);
+        for id in rest {
+            if let Some(slot) = self.slots.get_mut(&id) {
+                slot.opened_order = next;
+                next = next.saturating_add(1);
+            }
+        }
+        self.next_opened_order = next;
+    }
+
     /// 按最近使用顺序列出工作区（含前台和后台）。
     ///
     /// `list` 保留侧栏的稳定打开顺序；Recent 则必须读取生命周期元数据，
@@ -957,6 +985,36 @@ mod tests {
         assert_eq!(pool.len(), 1);
         assert!(pool.get(&a).is_none());
         assert_eq!(pool.take_evicted(), vec![a]);
+    }
+
+    #[tokio::test]
+    async fn reorder_changes_stable_opened_order() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(8));
+        let a = id("a", "tmux");
+        let b = id("b", "tmux");
+        let c = id("c", "tmux");
+        for name in ["a", "b", "c"] {
+            pool.open(id(name, "tmux"), name.into(), |_| {
+                Box::new(MockRuntime::with_single_pane())
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            pool.list()
+                .iter()
+                .map(|workspace| workspace.name().to_string())
+                .collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+        pool.reorder(&[c.clone(), a.clone(), b.clone()]);
+        assert_eq!(
+            pool.list()
+                .iter()
+                .map(|workspace| workspace.name().to_string())
+                .collect::<Vec<_>>(),
+            ["c", "a", "b"]
+        );
     }
 
     /// list 返回全部工作区；close 走 PersistDetach 能力 Detach。

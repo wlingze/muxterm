@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(km.lookup_str("9", &["alt"]), Some(Action::SwitchTab9));
     }
 
-    /// Ctrl+Alt+1..5 按 WorkspacePool 的固定打开顺序切 workspace。
+    /// Ctrl+Alt+1..9 按 WorkspacePool 的固定打开顺序切 workspace；0 永远是最后一个。
     #[test]
     fn test_keymap_ctrl_alt_digits_switch_workspaces() {
         let km = KeyMap::from_bindings(&default_keybindings());
@@ -185,6 +185,14 @@ mod tests {
         assert_eq!(
             km.lookup_str("5", &["control", "alt"]),
             Some(Action::SwitchWorkspace5)
+        );
+        assert_eq!(
+            km.lookup_str("9", &["control", "alt"]),
+            Some(Action::SwitchWorkspace9)
+        );
+        assert_eq!(
+            km.lookup_str("0", &["control", "alt"]),
+            Some(Action::SwitchWorkspaceLast)
         );
     }
 

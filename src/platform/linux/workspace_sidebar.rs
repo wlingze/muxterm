@@ -29,7 +29,7 @@ pub struct WorkspaceSidebarItem {
     pub runtime: String,
     pub transport: String,
     pub active: bool,
-    /// Ctrl+Alt+N 快捷编号；目前只暴露固定顺序的前五个 workspace。
+    /// Ctrl+Alt+N 快捷编号；固定顺序的前九个 workspace。0 永远是最后一个，不占编号。
     pub shortcut: Option<u8>,
 }
 
@@ -71,7 +71,7 @@ impl WorkspaceSidebarItem {
             .enumerate()
             .map(|(index, workspace)| {
                 let mut item = Self::from_workspace(workspace, active_id);
-                item.shortcut = (index < 5).then_some((index + 1) as u8);
+                item.shortcut = (index < 9).then_some((index + 1) as u8);
                 item
             })
             .collect()
@@ -307,6 +307,7 @@ impl CommandSidebarItem {
 
 type WorkspaceActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
 type WorkspaceCloseCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
+type WorkspaceReorderCb = Rc<RefCell<Option<Box<dyn Fn(&[WorkspaceId])>>>>;
 type ActivityActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId, u32)>>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -380,6 +381,7 @@ pub struct WorkspaceSidebar {
     hidden_commands: Rc<RefCell<HashSet<HiddenCommandKey>>>,
     on_activate: WorkspaceActivateCb,
     on_close: WorkspaceCloseCb,
+    on_reorder: WorkspaceReorderCb,
     on_agent_activate: ActivityActivateCb,
     on_command_activate: ActivityActivateCb,
 }
@@ -690,6 +692,7 @@ impl WorkspaceSidebar {
         let hidden_commands = Rc::new(RefCell::new(HashSet::new()));
         let on_activate: WorkspaceActivateCb = Rc::new(RefCell::new(None));
         let on_close: WorkspaceCloseCb = Rc::new(RefCell::new(None));
+        let on_reorder: WorkspaceReorderCb = Rc::new(RefCell::new(None));
         let on_agent_activate: ActivityActivateCb = Rc::new(RefCell::new(None));
         let on_command_activate: ActivityActivateCb = Rc::new(RefCell::new(None));
 
@@ -795,6 +798,7 @@ impl WorkspaceSidebar {
             hidden_commands,
             on_activate,
             on_close,
+            on_reorder,
             on_agent_activate,
             on_command_activate,
         }
@@ -991,6 +995,17 @@ impl WorkspaceSidebar {
 
     pub fn connect_workspace_closed<F: Fn(&WorkspaceId) + 'static>(&self, callback: F) {
         *self.on_close.borrow_mut() = Some(Box::new(callback));
+    }
+
+    pub fn connect_workspace_reordered<F: Fn(&[WorkspaceId]) + 'static>(&self, callback: F) {
+        *self.on_reorder.borrow_mut() = Some(Box::new(callback));
+    }
+
+    /// 测试用：走生产 reorder 回调。
+    pub fn reorder_workspaces_for_test(&self, ids: &[WorkspaceId]) {
+        if let Some(callback) = self.on_reorder.borrow().as_ref() {
+            callback(ids);
+        }
     }
 
     pub fn connect_agent_activated<F: Fn(&WorkspaceId, u32) + 'static>(&self, callback: F) {
@@ -1394,9 +1409,18 @@ mod tests {
         );
         assert_eq!(
             items.iter().map(|item| item.shortcut).collect::<Vec<_>>(),
-            [Some(1), Some(2), Some(3), Some(4), Some(5), None],
+            [Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)],
             "workspace shortcut numbers must follow stable opened_order"
         );
+
+        let zeta = WorkspaceId::new("local", None, "zeta", "shell", "zeta");
+        let alpha = WorkspaceId::new("local", None, "alpha", "shell", "alpha");
+        pool.reorder(&[zeta.clone(), alpha.clone()]);
+        let reordered = WorkspaceSidebarItem::from_pool(&pool);
+        assert_eq!(reordered[0].name, "zeta");
+        assert_eq!(reordered[0].shortcut, Some(1));
+        assert_eq!(reordered[1].name, "alpha");
+        assert_eq!(reordered[1].shortcut, Some(2));
     }
 
     #[test]

@@ -72,7 +72,13 @@ impl SettingsService {
             fs::read_to_string(&path)
                 .with_context(|| format!("读取配置失败: {}", path.display()))?
         } else {
-            ConfigDocument::default().to_toml()?
+            let raw = ConfigDocument::default().to_toml()?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
+            }
+            atomic_write(&path, &raw)?;
+            raw
         };
         let document = ConfigDocument::from_toml(&raw)?;
         let revision = revision_for(&raw);
@@ -600,6 +606,16 @@ mod tests {
             "muxterm-config-service-{name}-{}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn open_creates_missing_config_file() {
+        let path = temp_path("create-default.toml");
+        let _ = fs::remove_file(&path);
+        let service = SettingsService::open(&path).unwrap();
+        assert!(path.exists(), "缺省配置必须落到磁盘");
+        assert_eq!(service.document().config.pool.max_slots, 20);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

@@ -26,6 +26,8 @@ pub struct PendingMutation {
     pub kind: MutationKind,
     /// NewTab 的显式名称（None = 完全省略 label）。
     pub new_tab_name: Option<String>,
+    /// NewTab / SplitPane 的工作目录；None = Runtime 默认（tab 用 workspace path，pane 继承当前 pane）。
+    pub workdir: Option<String>,
     /// SplitPane 的方向。
     pub split_dir: Option<crate::core::model::layout::SplitDir>,
     /// 派发时的 lifecycle generation（detach 后晚到结果直接丢弃）。
@@ -54,6 +56,7 @@ impl PendingMutation {
             mutation_id,
             kind,
             new_tab_name: None,
+            workdir: None,
             split_dir: None,
             lifecycle_generation: 0,
             target_tab: None,

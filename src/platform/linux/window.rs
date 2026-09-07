@@ -649,6 +649,18 @@ impl AppWindow {
             state
                 .borrow()
                 .sidebar
+                .connect_workspace_reordered(move |ids| {
+                    let mut s = st.borrow_mut();
+                    s.pool.reorder(ids);
+                    refresh_sidebar_if_open(&mut s);
+                });
+        }
+
+        {
+            let st = state.clone();
+            state
+                .borrow()
+                .sidebar
                 .connect_agent_activated(move |id, pane| {
                     activate_sidebar_activity(&mut st.borrow_mut(), id, pane);
                 });
@@ -1767,11 +1779,20 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
                 request_switch_tab(s, t.id.0);
             }
         }
-        Action::SwitchWorkspace1 => switch_workspace_n(s, 1),
-        Action::SwitchWorkspace2 => switch_workspace_n(s, 2),
-        Action::SwitchWorkspace3 => switch_workspace_n(s, 3),
-        Action::SwitchWorkspace4 => switch_workspace_n(s, 4),
-        Action::SwitchWorkspace5 => switch_workspace_n(s, 5),
+        Action::SwitchWorkspace1
+        | Action::SwitchWorkspace2
+        | Action::SwitchWorkspace3
+        | Action::SwitchWorkspace4
+        | Action::SwitchWorkspace5
+        | Action::SwitchWorkspace6
+        | Action::SwitchWorkspace7
+        | Action::SwitchWorkspace8
+        | Action::SwitchWorkspace9
+        | Action::SwitchWorkspaceLast => {
+            if let Some(n) = action.switch_workspace_index() {
+                switch_workspace_n(s, n);
+            }
+        }
         Action::SwitchPaneNext | Action::SwitchPanePrev => {
             switch_pane_offset(s, matches!(action, Action::SwitchPaneNext));
         }
@@ -2215,11 +2236,13 @@ fn switch_tab_n(s: &mut UiState, n: usize) {
 }
 
 fn switch_workspace_n(s: &mut UiState, n: usize) {
-    let target = s
-        .pool
-        .list()
-        .get(n.saturating_sub(1))
-        .map(|workspace| workspace.id().clone());
+    let workspaces = s.pool.list();
+    let target = if n == 0 {
+        workspaces.last()
+    } else {
+        workspaces.get(n.saturating_sub(1))
+    }
+    .map(|workspace| workspace.id().clone());
     if let Some(target) = target {
         if s.pool.active_id() != Some(&target) {
             activate_existing(s, target);
