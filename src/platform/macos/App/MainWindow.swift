@@ -373,6 +373,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             connectedWorkspaces: { [weak self] in
                 self?.connectionPool.allRecentTargetConfigs() ?? []
+            },
+            sidebarWorkspaces: { [weak self] in
+                self?.sidebarItems() ?? []
             }
         )
         unifiedPanel.onConnect = { [weak self] config in
@@ -2379,6 +2382,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Workspace 搜索/Attention 跳转；产品入口仍由 Quick Connect 驱动。
     func activate(slot: WarmConnectionSlot) {
         guard !isClosing else { return }
+        if connectionPool.activeKey == slot.key, bridge === slot.bridge {
+            return
+        }
 
         // 每次新的 Workspace 选择都使之前的延迟激活失效。旧目标已经
         // 被用户明确切走，不能在稍后拿到锁时把画面抢回来。

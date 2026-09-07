@@ -158,6 +158,55 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         XCTAssertEqual(item.indicator, .running)
     }
 
+    func testAgentStatusFollowsAttentionWhenStructuredStaysWorking() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            name: "muxterm",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true,
+            structuredAgents: [
+                StructuredPaneAgent(
+                    paneId: 4,
+                    displayName: "Codex",
+                    title: nil,
+                    name: "codex",
+                    kind: "codex",
+                    status: .working
+                ),
+            ]
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 1,
+                    working: 0,
+                    panes: [
+                        PaneAttention(
+                            paneId: 4,
+                            status: .done,
+                            acknowledged: false,
+                            lastLine: "complete",
+                            seq: 2,
+                            processName: "codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let item = try! XCTUnwrap(
+            WorkspaceSidebarProjection.agents(
+                workspaces: [workspace],
+                attention: attention
+            ).first
+        )
+        XCTAssertEqual(item.detail, "Done · Codex")
+        XCTAssertEqual(item.indicator, .done)
+    }
+
     func testSidebarTargetsCarryStableTabIDs() {
         let workspace = WorkspaceSidebarItem(
             workspaceId: "local@@dev@tmux@dev",

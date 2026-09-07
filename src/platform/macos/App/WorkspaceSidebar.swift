@@ -6,14 +6,14 @@ enum SidebarTestSection {
 }
 
 /// Native main-window sidebar with four compact, independently collapsible sections.
-final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSplitViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
     var onWorkspaceClose: ((String) -> Void)?
     var onWorkspaceReorder: (([String]) -> Void)?
     var onAgentActivate: ((String, UInt32?, UInt32) -> Void)?
     var onCommandActivate: ((String, UInt32?, UInt32) -> Void)?
 
-    private let sections = NSStackView()
+    private let sections = NSSplitView()
     private let workspaceTable = NSTableView()
     private let agentTable = NSTableView()
     private let commandTable = NSTableView()
@@ -29,6 +29,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private var hiddenCommandKeys = Set<CommandVisibilityKey>()
     private var sectionViews: [NSScrollView: NSView] = [:]
     private var sectionHeightConstraints: [NSScrollView: NSLayoutConstraint] = [:]
+    private var orderedSectionScrolls: [NSScrollView] = []
     private var workspaces: [WorkspaceSidebarItem] = []
     private var agents: [AgentSidebarItem] = []
     private var commands: [CommandSidebarItem] = []
@@ -104,14 +105,14 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         ]
 
         sections.translatesAutoresizingMaskIntoConstraints = false
-        sections.orientation = .vertical
-        sections.alignment = .leading
-        sections.spacing = 0
-        sections.distribution = .fill
+        sections.isVertical = false
+        sections.dividerStyle = .thin
+        sections.delegate = self
+        sections.autosaveName = "muxterm.sidebar.sectionSplit"
+        orderedSectionScrolls = [workspaceScroll, agentScroll, commandScroll, hiddenCommandScroll]
         for view in [workspaceSection, agentSection, commandSection, hiddenCommandSection] {
             view.translatesAutoresizingMaskIntoConstraints = false
             sections.addArrangedSubview(view)
-            sections.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
         }
         setSection(workspaceScroll, expanded: true)
         setSection(agentScroll, expanded: true)
@@ -692,43 +693,95 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         return count > 0 ? "\(title)  \(count)" : title
     }
 
-    /// VSCode/Cursor section packing.
-    ///
-    /// Expanded sections divide all remaining height. Collapsed sections keep
-    /// only their 26pt header; those before the first expanded section pack to
-    /// the top, those after the last expanded section pack to the bottom, and
-    /// all-collapsed packs to the top.
+    /// Collapsed sections keep a 26pt header. Expanded sections stay draggable
+    /// in the split view so Agents/Commands can be resized independently.
     private func updateSectionConstraints() {
         for constraint in sectionHeightConstraints.values {
             constraint.isActive = false
         }
         sectionHeightConstraints.removeAll()
-
-        let ordered: [(scroll: NSScrollView, expanded: Bool)] = [
-            (workspaceScroll, workspaceHeader.state == .on),
-            (agentScroll, agentHeader.state == .on),
-            (commandScroll, commandHeader.state == .on),
-            (hiddenCommandScroll, hiddenCommandHeader.state == .on),
-        ]
-        let expandedCount = ordered.filter(\.expanded).count
-        for (scroll, expanded) in ordered {
-            guard let view = sectionViews[scroll] else { continue }
-            let constraint: NSLayoutConstraint
-            if expanded {
-                constraint = view.heightAnchor.constraint(
-                    greaterThanOrEqualToConstant: 120
-                )
-                constraint.priority = .required
-            } else {
-                constraint = view.heightAnchor.constraint(equalToConstant: 26)
-            }
-            constraint.isActive = true
-            sectionHeightConstraints[scroll] = constraint
+        for (index, scroll) in orderedSectionScrolls.enumerated() {
+            let expanded = isSectionExpanded(scroll)
+            sections.setHoldingPriority(
+                expanded ? .defaultLow : .required,
+                forSubviewAt: index
+            )
         }
-        sections.distribution = expandedCount == 0 ? .fill : .fillEqually
-        // Equal distribution applies only to expanded sections; manually pinned
-        // collapsed sections are excluded by their exact height constraints.
-        needsLayout = true
+        sections.needsLayout = true
+        sections.layoutSubtreeIfNeeded()
+    }
+
+    private func isSectionExpanded(_ scroll: NSScrollView) -> Bool {
+        if scroll === workspaceScroll { return workspaceHeader.state == .on }
+        if scroll === agentScroll { return agentHeader.state == .on }
+        if scroll === commandScroll { return commandHeader.state == .on }
+        return hiddenCommandHeader.state == .on
+    }
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMinCoordinate proposedMinimumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        let minHeight: CGFloat = isSectionExpanded(orderedSectionScrolls[dividerIndex]) ? 80 : 26
+        var origin: CGFloat = 0
+        for index in 0..<dividerIndex {
+            origin += splitView.arrangedSubviews[index].bounds.height + splitView.dividerThickness
+        }
+        return origin + minHeight
+    }
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        let next = dividerIndex + 1
+        let minNext: CGFloat = next < orderedSectionScrolls.count
+            && isSectionExpanded(orderedSectionScrolls[next]) ? 80 : 26
+        return splitView.bounds.height - minNext
+    }
+
+    func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
+        false
+    }
+
+    func splitView(_ splitView: NSSplitView, canCollapse subview: NSView) -> Bool {
+        false
+    }
+
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        let divider = splitView.dividerThickness
+        let views = splitView.arrangedSubviews
+        let total = splitView.bounds.height - divider * CGFloat(max(views.count - 1, 0))
+        var heights: [CGFloat] = views.enumerated().map { index, view in
+            let expanded = isSectionExpanded(orderedSectionScrolls[index])
+            if !expanded {
+                return 26
+            }
+            return max(80, view.bounds.height)
+        }
+        let used = heights.reduce(0, +)
+        let slack = total - used
+        if slack != 0 {
+            let expandedIndexes = heights.indices.filter {
+                isSectionExpanded(orderedSectionScrolls[$0])
+            }
+            if expandedIndexes.isEmpty {
+                heights[0] = max(26, heights[0] + slack)
+            } else {
+                let share = slack / CGFloat(expandedIndexes.count)
+                for index in expandedIndexes {
+                    heights[index] = max(80, heights[index] + share)
+                }
+            }
+        }
+        var position: CGFloat = 0
+        for index in 0..<(views.count - 1) {
+            position += heights[index]
+            splitView.setPosition(position, ofDividerAt: index)
+            position += divider
+        }
     }
 
     private func sidebarCell(
@@ -781,6 +834,10 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         setSection(scroll, expanded: expanded)
         needsLayout = true
         layoutSubtreeIfNeeded()
+    }
+
+    func testSectionsAreResizable() -> Bool {
+        !sections.isVertical && sections.arrangedSubviews.count == 4
     }
 
     func testSectionFrames() -> [SidebarTestSection: NSRect] {

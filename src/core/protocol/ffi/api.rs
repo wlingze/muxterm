@@ -2664,17 +2664,48 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
             .snapshot()
             .into_iter()
             .map(|ws| {
-                // 从池里找工作区路径（W19 注意力行标题需要 path）。
-                let path = handle
+                let found = handle
                     .pool()
                     .list()
-                    .iter()
-                    .find(|w| w.id().replica_id() == ws.workspace_id)
-                    .map(|w| w.id().path.as_str())
-                    .filter(|p| !p.trim().is_empty())
-                    .unwrap_or("~");
+                    .into_iter()
+                    .find(|w| w.id().replica_id() == ws.workspace_id);
+                let path = found
+                    .as_ref()
+                    .and_then(|w| {
+                        w.resolved_target()
+                            .map(|target| target.canonical.path.trim().to_string())
+                            .filter(|value| !value.is_empty())
+                            .or_else(|| {
+                                let path = w.id().path.trim();
+                                (!path.is_empty()).then(|| path.to_string())
+                            })
+                    })
+                    .unwrap_or_else(|| "~".into());
+                let name = found
+                    .as_ref()
+                    .map(|w| w.name().to_string())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| ws.workspace_id.clone());
+                let transport = found
+                    .as_ref()
+                    .map(|w| {
+                        if w.id().transport == "ssh" {
+                            w.id().alias.clone().unwrap_or_else(|| "ssh".into())
+                        } else {
+                            "local".into()
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        if ws.workspace_id.contains("@ssh") || ws.workspace_id.contains(":ssh") {
+                            "ssh".into()
+                        } else {
+                            "local".into()
+                        }
+                    });
                 serde_json::json!({
                     "workspace_id": ws.workspace_id,
+                    "name": name,
+                    "transport": transport,
                     "path": path,
                     "blocked": ws.blocked,
                     "done": ws.done,

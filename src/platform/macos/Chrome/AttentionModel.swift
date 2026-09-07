@@ -25,6 +25,7 @@ public struct PaneAttention: Equatable, Sendable {
     /// Core's authoritative classification. A process can be called `node` by
     /// tmux but still be an agent when the resolved foreground argv is Codex.
     public let processIsAgent: Bool
+    public let agentName: String?
 
     public init(
         paneId: UInt32,
@@ -33,7 +34,8 @@ public struct PaneAttention: Equatable, Sendable {
         lastLine: String,
         seq: UInt64,
         processName: String?,
-        processIsAgent: Bool = false
+        processIsAgent: Bool = false,
+        agentName: String? = nil
     ) {
         self.paneId = paneId
         self.status = status
@@ -42,12 +44,15 @@ public struct PaneAttention: Equatable, Sendable {
         self.seq = seq
         self.processName = processName
         self.processIsAgent = processIsAgent
+        self.agentName = agentName
     }
 }
 
 /// 工作区聚合注意力视图。
 public struct WorkspaceAttention: Equatable, Sendable {
     public let workspaceId: String
+    public let name: String
+    public let transport: String
     public let path: String
     public let blocked: Int
     public let done: Int
@@ -56,6 +61,8 @@ public struct WorkspaceAttention: Equatable, Sendable {
 
     public init(
         workspaceId: String,
+        name: String = "",
+        transport: String = "",
         path: String = "~",
         blocked: Int,
         done: Int,
@@ -63,6 +70,8 @@ public struct WorkspaceAttention: Equatable, Sendable {
         panes: [PaneAttention]
     ) {
         self.workspaceId = workspaceId
+        self.name = name
+        self.transport = transport
         self.path = path
         self.blocked = blocked
         self.done = done
@@ -107,11 +116,14 @@ public struct AttentionSnapshot: Equatable, Sendable {
                             lastLine: (p["last_line"] as? String) ?? "",
                             seq: (p["seq"] as? UInt64) ?? (p["seq"] as? NSNumber)?.uint64Value ?? 0,
                             processName: p["process_name"] as? String,
-                            processIsAgent: (p["process_is_agent"] as? Bool) ?? false
+                            processIsAgent: (p["process_is_agent"] as? Bool) ?? false,
+                            agentName: p["agent_name"] as? String
                         )
                     } ?? []
                 return WorkspaceAttention(
                     workspaceId: workspaceId,
+                    name: (ws["name"] as? String) ?? "",
+                    transport: (ws["transport"] as? String) ?? "",
                     path: (ws["path"] as? String) ?? "~",
                     blocked: (ws["blocked"] as? Int) ?? 0,
                     done: (ws["done"] as? Int) ?? 0,
@@ -129,20 +141,35 @@ public struct AttentionRow: Equatable, Sendable {
     public let transport: String
     public let path: String
     public let pane: PaneAttention
+    public let workspaceName: String
+    public let agentName: String
+    public let tabNumber: Int?
 
-    public init(workspaceId: String, transport: String, path: String, pane: PaneAttention) {
+    public init(
+        workspaceId: String,
+        transport: String,
+        path: String,
+        pane: PaneAttention,
+        workspaceName: String = "",
+        agentName: String = "",
+        tabNumber: Int? = nil
+    ) {
         self.workspaceId = workspaceId
         self.transport = transport
         self.path = path
         self.pane = pane
+        self.workspaceName = workspaceName
+        self.agentName = agentName
+        self.tabNumber = tabNumber
     }
 
-    /// 行标题：进程名 + transport + path，不用 last_line 片段。
+    /// 与侧栏 Agents 行同一套：workspace · status · agent · Tab N。
     public var title: String {
-        AttentionRowLabel.display(
-            process: pane.processName,
-            transport: transport,
-            path: path
+        AttentionRowLabel.sidebarAligned(
+            workspaceName: workspaceName,
+            status: pane.status,
+            agentName: agentName,
+            tabNumber: tabNumber
         )
     }
 }
@@ -256,36 +283,88 @@ public enum AttentionRowLabel {
         let name = trimmed.isEmpty ? "?" : trimmed
         return "\(name)  \(transport)  \(path)"
     }
+
+    public static func sidebarAligned(
+        workspaceName: String,
+        status: PaneAttentionStatus,
+        agentName: String,
+        tabNumber: Int?
+    ) -> String {
+        let statusText: String
+        switch status {
+        case .idle: statusText = "Idle"
+        case .working: statusText = "Working"
+        case .blocked: statusText = "Blocked"
+        case .done: statusText = "Done"
+        case .unknown: statusText = "Unknown"
+        }
+        var parts: [String] = []
+        let workspace = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !workspace.isEmpty {
+            parts.append(workspace)
+        }
+        parts.append(statusText)
+        let agent = agentName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !agent.isEmpty {
+            parts.append(agent)
+        }
+        if let tabNumber, tabNumber > 0 {
+            parts.append("Tab \(tabNumber)")
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 /// 注意力列表纯逻辑：保留 running 与未读 done/blocked；已读完成项不再出现。
 public enum AttentionList {
-    public static func rows(from snapshot: AttentionSnapshot, query: String) -> [AttentionRow] {
+    public static func rows(
+        from snapshot: AttentionSnapshot,
+        workspaces: [WorkspaceSidebarItem] = [],
+        query: String
+    ) -> [AttentionRow] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var rows: [AttentionRow] = []
         for ws in snapshot.workspaces {
-            let transport = ws.workspaceId.contains("@ssh")
-                ? "ssh"
-                : (ws.workspaceId.contains("@") ? "local" : "tmux")
+            let chrome = workspaces.first { $0.workspaceId == ws.workspaceId }
+            let transport = !ws.transport.isEmpty
+                ? ws.transport
+                : (chrome?.transport
+                    ?? (ws.workspaceId.contains("@ssh") ? "ssh" : "local"))
+            let workspaceName = firstNonempty([
+                chrome?.name,
+                ws.name,
+                ws.workspaceId.split(separator: "@").first.map(String.init),
+            ]) ?? ws.workspaceId
             for pane in ws.panes where pane.status.isListed
                 && (pane.status == .working || !pane.acknowledged)
             {
-                let processText = AttentionRowLabel.normalizedProcess(pane.processName)
-                    ?? pane.processName
-                    ?? ""
+                let agentName = firstNonempty([
+                    chrome?.structuredAgents.first(where: { $0.paneId == pane.paneId }).flatMap {
+                        firstNonempty([$0.displayName, $0.name, $0.kind, $0.title])
+                    },
+                    pane.agentName,
+                    AttentionRowLabel.normalizedProcess(pane.processName),
+                    pane.processName,
+                ]) ?? ""
+                let processText = agentName
                 guard q.isEmpty
                     || ws.workspaceId.lowercased().contains(q)
+                    || workspaceName.lowercased().contains(q)
                     || processText.lowercased().contains(q)
                     || (pane.processName ?? "").lowercased().contains(q)
                     || pane.lastLine.lowercased().contains(q)
+                    || transport.lowercased().contains(q)
                 else {
                     continue
                 }
                 rows.append(AttentionRow(
                     workspaceId: ws.workspaceId,
                     transport: transport,
-                    path: ws.path,
-                    pane: pane
+                    path: chrome.map { "\($0.runtime) @ \($0.transport)" } ?? ws.path,
+                    pane: pane,
+                    workspaceName: workspaceName,
+                    agentName: agentName,
+                    tabNumber: chrome?.tabNumberByPane[pane.paneId]
                 ))
             }
         }
@@ -306,6 +385,14 @@ public enum AttentionList {
             return a.pane.seq > b.pane.seq
         }
         return rows
+    }
+
+    private static func firstNonempty(_ values: [String?]) -> String? {
+        values.compactMap { value in
+            guard let value else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }.first
     }
 }
 

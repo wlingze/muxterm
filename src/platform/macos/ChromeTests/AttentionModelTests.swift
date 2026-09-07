@@ -35,6 +35,7 @@ final class AttentionSnapshotDecodeTests: XCTestCase {
         XCTAssertEqual(snapshot.blockedCount, 2)
         XCTAssertEqual(snapshot.workspaces.count, 2)
         XCTAssertEqual(snapshot.workspaces[0].workspaceId, "legion@local")
+        XCTAssertEqual(snapshot.workspaces[0].path, "~")
         XCTAssertEqual(snapshot.workspaces[0].panes[0].status, .blocked)
         XCTAssertFalse(snapshot.workspaces[0].panes[0].acknowledged)
         XCTAssertEqual(snapshot.workspaces[0].panes[0].lastLine, "ask?")
@@ -132,6 +133,56 @@ final class AttentionListTests: XCTestCase {
         XCTAssertEqual(AttentionList.rows(from: snap, query: "codex").count, 1)
         XCTAssertEqual(AttentionList.rows(from: snap, query: "confirm").count, 1)
         XCTAssertEqual(AttentionList.rows(from: snap, query: "missing").count, 0)
+    }
+
+    func testAttentionTitleMatchesSidebarWorkspaceAgentAndTab() {
+        let snap = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: "muxterm@ryzen",
+                    name: "muxterm",
+                    transport: "ryzen",
+                    path: "~/Developer/self/muxterm",
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            lastLine: "running",
+                            seq: 1,
+                            processName: "codex",
+                            agentName: "Codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let chrome = WorkspaceSidebarItem(
+            workspaceId: "muxterm@ryzen",
+            name: "muxterm",
+            runtime: "tmux",
+            transport: "ryzen",
+            isActive: true,
+            structuredAgents: [
+                StructuredPaneAgent(
+                    paneId: 4,
+                    displayName: "Codex",
+                    title: nil,
+                    name: "codex",
+                    kind: "codex",
+                    status: .working
+                ),
+            ],
+            tabNumberByPane: [4: 2]
+        )
+        let rows = AttentionList.rows(from: snap, workspaces: [chrome], query: "")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].title, "muxterm · Working · Codex · Tab 2")
+        XCTAssertFalse(rows[0].title.contains("local"))
+        XCTAssertFalse(rows[0].title.contains("~"))
     }
 }
 

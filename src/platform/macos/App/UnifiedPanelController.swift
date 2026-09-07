@@ -130,6 +130,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     /// MainWindow supplies every currently pooled Workspace so direct panel
     /// search does not depend on a separate Existing discovery round trip.
     private let connectedWorkspaces: (() -> [TargetConfig])?
+    private let sidebarWorkspaces: (() -> [WorkspaceSidebarItem])?
 
     init(
         store: QuickConnectStore,
@@ -139,7 +140,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         sendInput: @escaping (UInt32, Data) -> Void,
         search: @escaping (String, SearchScope) -> [SearchHit],
         workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil },
-        connectedWorkspaces: (() -> [TargetConfig])? = nil
+        connectedWorkspaces: (() -> [TargetConfig])? = nil,
+        sidebarWorkspaces: (() -> [WorkspaceSidebarItem])? = nil
     ) {
         self.store = store
         self.ownerWindow = ownerWindow
@@ -149,6 +151,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.search = search
         self.workspaceIndex = workspaceIndex
         self.connectedWorkspaces = connectedWorkspaces
+        self.sidebarWorkspaces = sidebarWorkspaces
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.preferredContentSize),
@@ -256,7 +259,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             loadWorkspaceItems()
         }
         if PanelReloadPolicy.needsAttentionSnapshot(model.tab) {
-            rows = snapshot().map { AttentionList.rows(from: $0, query: model.query) } ?? []
+            rows = snapshot().map {
+                AttentionList.rows(
+                    from: $0,
+                    workspaces: sidebarWorkspaces?() ?? [],
+                    query: model.query
+                )
+            } ?? []
         } else {
             rows = []
         }

@@ -392,24 +392,27 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         )
     }
 
-    func testCollapsedSectionsPackAgainstNearestBoundary() {
+    func testCollapsedSectionsKeepHeaderHeightAndExpandedSectionsStayResizable() {
         let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
-        sidebar.testSetSectionExpanded(.hiddenCommands, false)
+        sidebar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(sidebar.testSectionsAreResizable())
 
-        // All-collapsed packs to the top; expanded sections absorb all slack.
+        sidebar.testSetSectionExpanded(.hiddenCommands, false)
         sidebar.testSetSectionExpanded(.workspaces, false)
         sidebar.testSetSectionExpanded(.agents, false)
         sidebar.testSetSectionExpanded(.commands, false)
+        sidebar.layoutSubtreeIfNeeded()
         let allCollapsed = sidebar.testSectionFrames()
-        XCTAssertEqual(allCollapsed[.workspaces]?.maxY ?? 0, 104, accuracy: 0.5)
-        XCTAssertEqual(allCollapsed[.agents]?.minY ?? 0, 52, accuracy: 0.5)
-        XCTAssertEqual(allCollapsed[.hiddenCommands]?.maxY ?? 0, 26, accuracy: 0.5)
+        XCTAssertEqual(allCollapsed[.workspaces]?.height ?? 0, 26, accuracy: 1.5)
+        XCTAssertEqual(allCollapsed[.agents]?.height ?? 0, 26, accuracy: 1.5)
+        XCTAssertEqual(allCollapsed[.commands]?.height ?? 0, 26, accuracy: 1.5)
+        XCTAssertEqual(allCollapsed[.hiddenCommands]?.height ?? 0, 26, accuracy: 1.5)
 
         sidebar.testSetSectionExpanded(.agents, true)
+        sidebar.layoutSubtreeIfNeeded()
         let expandedMiddle = sidebar.testSectionFrames()
-        XCTAssertEqual(expandedMiddle[.workspaces]?.maxY ?? 0, 640, accuracy: 0.5)
-        XCTAssertEqual(expandedMiddle[.commands]?.maxY ?? 0, 52, accuracy: 0.5)
-        XCTAssertEqual(expandedMiddle[.hiddenCommands]?.maxY ?? 0, 26, accuracy: 0.5)
+        XCTAssertGreaterThan(expandedMiddle[.agents]?.height ?? 0, 80)
+        XCTAssertEqual(expandedMiddle[.commands]?.height ?? 0, 26, accuracy: 1.5)
     }
 
     func testWorkspaceCloseButtonRemovesWorkspaceAndFallsForward() throws {

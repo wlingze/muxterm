@@ -490,7 +490,7 @@ public enum WorkspaceSidebarProjection {
         status: StructuredAgentStatus,
         attention: PaneAttention?
     ) -> String {
-        if status == .unknown, let attention {
+        if let attention {
             return statusLabel(status: attention.status)
         }
         switch status {
@@ -516,15 +516,16 @@ public enum WorkspaceSidebarProjection {
         status: StructuredAgentStatus,
         attention: PaneAttention?
     ) -> AgentSidebarIndicator {
+        if let attention {
+            return indicator(attention: attention)
+        }
         switch status {
         case .working:
             return .running
         case .blocked, .done:
-            return attention?.acknowledged == true ? .read : .done
-        case .idle:
+            return .done
+        case .idle, .unknown:
             return .read
-        case .unknown:
-            return attention.map(indicator(attention:)) ?? .read
         }
     }
 
