@@ -20,13 +20,13 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::core::protocol::terminal::mirror::should_forward_parser_response;
 use crate::ffi::{
     STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
 use crate::platform::ffi_client::FfiClient;
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
+use crate::platform::tui::mirror::should_forward_parser_response;
 use crate::platform::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
 };
