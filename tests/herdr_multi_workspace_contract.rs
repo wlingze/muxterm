@@ -8,6 +8,7 @@ mod support;
 use std::sync::Arc;
 use std::time::Instant;
 
+use muxterm::core::catalog::Catalog;
 use muxterm::core::runtime::HerdrRuntime;
 use muxterm::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use muxterm::core::workspace::spec::WorkspaceSpec;
@@ -49,8 +50,10 @@ fn herdr_multi_workspace_contract() {
         .worker_threads(2)
         .build()
         .expect("tokio");
-    rt.block_on(pool.open_spec(&spec_a)).expect("open A 失败");
-    rt.block_on(pool.open_spec(&spec_b)).expect("open B 失败");
+    rt.block_on(pool.open_spec(&spec_a, |spec| Catalog::with_builtins().new_runtime(spec)))
+        .expect("open A 失败");
+    rt.block_on(pool.open_spec(&spec_b, |spec| Catalog::with_builtins().new_runtime(spec)))
+        .expect("open B 失败");
 
     // 内部必须共享同一条 HerdrSession（同一 socket）。
     let sa = pool

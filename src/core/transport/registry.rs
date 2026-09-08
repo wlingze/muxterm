@@ -29,6 +29,10 @@ impl ConnectionRegistry {
         self.connections.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.connections.is_empty()
+    }
+
     pub fn get(&self, transport_id: &str, target: &str) -> Option<Arc<dyn TargetConnection>> {
         self.connections
             .get(&(transport_id.to_string(), target.to_string()))
