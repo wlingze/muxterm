@@ -29,7 +29,9 @@ use super::callbacks::FfiCallbacks;
 pub use super::functions::attention::{
     muxterm_attention_acknowledge, muxterm_attention_mute, muxterm_attention_on_became_visible,
     muxterm_attention_set_process_name, muxterm_attention_snapshot,
-    muxterm_attention_take_notifications,
+    muxterm_attention_take_notifications, muxterm_workspace_attention_acknowledge,
+    muxterm_workspace_attention_mute, muxterm_workspace_attention_on_became_visible,
+    muxterm_workspace_attention_set_process_name,
 };
 pub use super::functions::catalog::{
     muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,
@@ -54,7 +56,12 @@ pub use super::functions::snapshot::{
     muxterm_pane_command_marks_json, muxterm_pane_history_max_offset, muxterm_pane_last_n_lines,
     muxterm_pane_latest_line_seq, muxterm_pane_scroll_ansi, muxterm_pane_surface_seed_ansi,
     muxterm_pane_viewport, muxterm_pane_viewport_for_seq, muxterm_pane_visible_ansi,
-    muxterm_set_pane_viewport,
+    muxterm_set_pane_viewport, muxterm_workspace_pane_command_marks_json,
+    muxterm_workspace_pane_history_max_offset, muxterm_workspace_pane_last_n_lines,
+    muxterm_workspace_pane_latest_line_seq, muxterm_workspace_pane_scroll_ansi,
+    muxterm_workspace_pane_surface_seed_ansi, muxterm_workspace_pane_viewport,
+    muxterm_workspace_pane_viewport_for_seq, muxterm_workspace_pane_visible_ansi,
+    muxterm_workspace_set_pane_viewport,
 };
 pub use super::functions::support::MuxtermHandle;
 pub(crate) use super::functions::support::{
@@ -62,9 +69,12 @@ pub(crate) use super::functions::support::{
 };
 pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{
-    muxterm_execute, muxterm_execute_json, muxterm_report_all_pane_colours,
-    muxterm_report_pane_colours, muxterm_resize_client, muxterm_resize_pane,
-    muxterm_resize_pane_axis, muxterm_send_input, muxterm_send_input_quiet,
+    muxterm_execute, muxterm_execute_json, muxterm_execute_workspace,
+    muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
+    muxterm_resize_pane, muxterm_resize_pane_axis, muxterm_send_input, muxterm_send_input_quiet,
+    muxterm_workspace_resize_client, muxterm_workspace_resize_pane,
+    muxterm_workspace_resize_pane_axis, muxterm_workspace_send_input,
+    muxterm_workspace_send_input_quiet,
 };
 pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
@@ -75,7 +85,9 @@ pub use super::functions::transport::{
 pub use super::functions::workspace::{
     muxterm_create_tmux_session_json, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_workspace_activate, muxterm_workspace_close,
-    muxterm_workspace_create, muxterm_workspace_list, muxterm_workspace_open,
+    muxterm_workspace_create, muxterm_workspace_get_layout, muxterm_workspace_get_pane_output,
+    muxterm_workspace_get_panes, muxterm_workspace_get_tabs, muxterm_workspace_list,
+    muxterm_workspace_open,
 };
 use super::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, BACKEND_STATUS_CONNECTED,
@@ -492,6 +504,196 @@ mod tests {
                 -1
             );
 
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_workspace_task_targets_background_workspace_without_activation() {
+        let h = muxterm_catalog_new();
+        assert!(!h.is_null());
+        unsafe {
+            (*h).catalog = crate::core::catalog::Catalog::new();
+            let first_id = WorkspaceId::new("local", None, "first", "shell", "/one");
+            let second_id = WorkspaceId::new("local", None, "second", "shell", "/two");
+            (*h).catalog.pool_mut().insert_connected(Workspace::new(
+                first_id.clone(),
+                "first".into(),
+                Box::new(MockRuntime::with_single_pane()),
+            ));
+            (*h).catalog.pool_mut().insert_connected(Workspace::new(
+                second_id.clone(),
+                "second".into(),
+                Box::new(MockRuntime::with_single_pane()),
+            ));
+            (*h).catalog.pool_mut().activate(&second_id);
+
+            let task = CTask {
+                type_: TASK_NEW_TAB,
+                target_pane: 0,
+                target_tab: 0,
+                dir: 0,
+                name: ptr::null(),
+            };
+            let first_id_text = CString::new(first_id.as_str()).unwrap();
+            assert_eq!(
+                muxterm_execute_workspace(h, first_id_text.as_ptr(), &task),
+                0,
+                "background workspace task should be accepted"
+            );
+            assert_eq!((*h).pool().active_id(), Some(&second_id));
+            assert_eq!(
+                (*h).pool().get(&first_id).unwrap().state().tabs().len(),
+                2,
+                "the task must mutate the selected background workspace"
+            );
+
+            let mut tabs = [CTab {
+                id: 0,
+                name: ptr::null(),
+                is_active: 0,
+            }; 4];
+            assert_eq!(
+                muxterm_workspace_get_tabs(h, first_id_text.as_ptr(), tabs.as_mut_ptr(), 4),
+                2
+            );
+            let mut panes = [CPane {
+                id: 0,
+                cols: 0,
+                rows: 0,
+                is_active: 0,
+            }; 4];
+            assert_eq!(
+                muxterm_workspace_get_panes(
+                    h,
+                    first_id_text.as_ptr(),
+                    tabs[0].id,
+                    panes.as_mut_ptr(),
+                    4
+                ),
+                1
+            );
+            let mut layout = CLayoutNode {
+                type_: LAYOUT_LEAF,
+                pane_id: 0,
+                ratio: 0,
+                first: ptr::null(),
+                second: ptr::null(),
+            };
+            assert_eq!(
+                muxterm_workspace_get_layout(h, first_id_text.as_ptr(), tabs[0].id, &mut layout),
+                0
+            );
+            let mut output = [0u8; 8];
+            assert!(
+                muxterm_workspace_get_pane_output(
+                    h,
+                    first_id_text.as_ptr(),
+                    panes[0].id,
+                    output.as_mut_ptr(),
+                    output.len()
+                ) >= 0
+            );
+
+            let pane_id = panes[0].id;
+            let input = b"background-input";
+            assert_eq!(
+                muxterm_workspace_send_input(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    input.as_ptr(),
+                    input.len()
+                ),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_send_input_quiet(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    input.as_ptr(),
+                    input.len()
+                ),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_resize_pane(h, first_id_text.as_ptr(), pane_id, 100, 30),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_resize_client(h, first_id_text.as_ptr(), 100, 30),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_resize_pane_axis(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    DIR_HORIZONTAL,
+                    90
+                ),
+                0
+            );
+
+            let mut history = [0u8; 64];
+            assert!(
+                muxterm_workspace_pane_scroll_ansi(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    0,
+                    10,
+                    history.as_mut_ptr(),
+                    history.len()
+                ) >= 0
+            );
+            assert_eq!(
+                muxterm_workspace_pane_viewport(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_set_pane_viewport(h, first_id_text.as_ptr(), pane_id, 1),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_pane_history_max_offset(h, first_id_text.as_ptr(), pane_id, 10),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_pane_latest_line_seq(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            let marks =
+                muxterm_workspace_pane_command_marks_json(h, first_id_text.as_ptr(), pane_id);
+            assert!(!marks.is_null());
+            muxterm_free_string(marks);
+            let lines = muxterm_workspace_pane_last_n_lines(h, first_id_text.as_ptr(), pane_id, 10);
+            assert!(!lines.is_null());
+            muxterm_free_string(lines);
+
+            assert_eq!(
+                muxterm_workspace_attention_on_became_visible(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_attention_acknowledge(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_attention_set_process_name(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    c"bash".as_ptr()
+                ),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_attention_mute(h, first_id_text.as_ptr(), pane_id, 1),
+                0
+            );
+            assert_eq!((*h).pool().active_id(), Some(&second_id));
             muxterm_free(h);
         }
     }

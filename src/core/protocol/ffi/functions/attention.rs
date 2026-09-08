@@ -6,6 +6,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use crate::core::attention::engine::AttentionNotificationKind;
 
 use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
+use super::support::parse_workspace_id;
+
+fn workspace_replica_id(handle: &MuxtermHandle, workspace_id: *const c_char) -> Option<String> {
+    let workspace_id = cstr_opt(workspace_id)?;
+    let workspace_id = parse_workspace_id(&workspace_id);
+    handle
+        .pool()
+        .get(&workspace_id)
+        .map(|_| workspace_id.replica_id())
+}
 
 /// Return the current attention snapshot as JSON.
 ///
@@ -203,6 +213,114 @@ pub unsafe extern "C" fn muxterm_attention_mute(
         };
         handle.attention.mute_for(
             &ws_id.replica_id(),
+            pane_id,
+            std::time::Duration::from_secs(seconds),
+        );
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// Mark a pane visible in a specific workspace without changing activation.
+///
+/// # Safety
+/// `h` and `workspace_id` are valid pointers; `workspace_id` is
+/// NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_attention_on_became_visible(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(workspace_id) = workspace_replica_id(handle, workspace_id) else {
+            return -1;
+        };
+        handle.attention.on_became_visible(&workspace_id, pane_id);
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// Acknowledge a pane notification in a specific workspace.
+///
+/// # Safety
+/// `h` and `workspace_id` are valid pointers; `workspace_id` is
+/// NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_attention_acknowledge(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(workspace_id) = workspace_replica_id(handle, workspace_id) else {
+            return -1;
+        };
+        handle.attention.acknowledge(&workspace_id, pane_id);
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// Update a pane's process name in a specific workspace.
+///
+/// # Safety
+/// `h` and `workspace_id` are valid pointers; both strings are
+/// NUL-terminated or `name` is null.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_attention_set_process_name(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    name: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(workspace_id) = workspace_replica_id(handle, workspace_id) else {
+            return -1;
+        };
+        handle
+            .attention
+            .set_process_name(&workspace_id, pane_id, cstr_opt(name));
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// Mute a pane in a specific workspace for a number of seconds.
+///
+/// # Safety
+/// `h` and `workspace_id` are valid pointers; `workspace_id` is
+/// NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_attention_mute(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    seconds: u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(workspace_id) = workspace_replica_id(handle, workspace_id) else {
+            return -1;
+        };
+        handle.attention.mute_for(
+            &workspace_id,
             pane_id,
             std::time::Duration::from_secs(seconds),
         );
