@@ -12,7 +12,7 @@ use std::ptr::{self, NonNull};
 use crate::ffi::{
     self, CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, LAYOUT_LEAF,
     LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_BACKEND_STATUS, STATE_PANE_CLOSED, STATE_PANE_FRAME,
-    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
+    STATE_PANE_HISTORY, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
 
 const DISCOVERY_TIMEOUT_MS: u32 = 10_000;
@@ -160,6 +160,7 @@ pub enum ClientEventKind {
     PaneOutput,
     PaneFrame,
     PaneSnapshot,
+    PaneHistory,
     PaneClosed,
     PaneResized,
     Other(u32),
@@ -171,6 +172,7 @@ impl ClientEvent {
             STATE_PANE_OUTPUT => ClientEventKind::PaneOutput,
             STATE_PANE_FRAME => ClientEventKind::PaneFrame,
             STATE_PANE_SNAPSHOT => ClientEventKind::PaneSnapshot,
+            STATE_PANE_HISTORY => ClientEventKind::PaneHistory,
             STATE_PANE_CLOSED => ClientEventKind::PaneClosed,
             STATE_PANE_RESIZED => ClientEventKind::PaneResized,
             type_ => ClientEventKind::Other(type_),
