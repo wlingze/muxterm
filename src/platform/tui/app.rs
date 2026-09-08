@@ -20,6 +20,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::platform::command_queue::{ClientCommand, CommandQueue};
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{ClientEventKind, ClientTask, FfiClient};
 use crate::platform::mirror::should_forward_parser_response;
@@ -57,6 +58,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
         FfiClient::new(runtime_type, socket.as_deref(), session.as_deref())
             .context("FfiClient::new")?,
     );
+    let mut commands = CommandQueue::default();
 
     // 连接后给查询响应一点时间，再做一次 poll 让初始状态到达
     std::thread::sleep(Duration::from_millis(300));
@@ -78,7 +80,8 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     // 首帧：立即渲染一次（不依赖事件）
     let snap = FrameSnapshot::from_client(bridge.client());
     let replies = sync_terminals(&mut term_mgr, &snap);
-    maybe_send_replies(bridge.client(), runtime_type, replies);
+    maybe_send_replies(&mut commands, runtime_type, replies);
+    let _ = commands.flush(bridge.client());
     draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
     // 每 50ms 事件轮询；仅当有实际状态变更时（事件非空 / 按键 / resize）才重绘，
@@ -135,13 +138,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                         break;
                     } else {
                         let snap = FrameSnapshot::from_client(bridge.client());
-                        if handle_key(
-                            bridge.client_mut(),
-                            &key,
-                            &snap,
-                            &mut palette_open,
-                            &mut palette,
-                        ) {
+                        if handle_key(&mut commands, &key, &snap, &mut palette_open, &mut palette) {
                             needs_redraw = true;
                         }
                     }
@@ -153,11 +150,21 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     let cols = c.saturating_sub(2).max(20);
                     let rows = r.saturating_sub(8).max(8);
                     if runtime_type != "local" {
-                        let _ = bridge.client().resize_client(cols, rows);
+                        commands.push(ClientCommand::Resize {
+                            workspace_id: None,
+                            pane_id: None,
+                            cols,
+                            rows,
+                        });
                     } else if let Some(pane) =
                         active_pane_id(&FrameSnapshot::from_client(bridge.client()))
                     {
-                        let _ = bridge.client().resize_pane(pane, cols, rows);
+                        commands.push(ClientCommand::Resize {
+                            workspace_id: None,
+                            pane_id: Some(pane),
+                            cols,
+                            rows,
+                        });
                     }
                     needs_redraw = true;
                 }
@@ -165,11 +172,14 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
             }
         }
 
+        let _ = commands.flush(bridge.client());
+
         // 仅在确有变化时重绘
         if needs_redraw {
             let snap = FrameSnapshot::from_client(bridge.client());
             let replies = sync_terminals(&mut term_mgr, &snap);
-            maybe_send_replies(bridge.client(), runtime_type, replies);
+            maybe_send_replies(&mut commands, runtime_type, replies);
+            let _ = commands.flush(bridge.client());
             draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
         }
     }
@@ -208,16 +218,25 @@ fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(
 /// 仅本地 / daemon 后端需要（前端是该 PTY 的终端模拟器，写回 pty 是正确行为）。
 /// tmux 控制模式下应答经 `send-keys -l` 回写会被 pane 回显并执行，造成
 /// `git lg` 的 `10;rgb:...` / `65;...c` 泄漏，因此必须丢弃。
-fn maybe_send_replies(bridge: &FfiClient, runtime_type: &str, replies: Vec<(u32, Vec<u8>)>) {
+fn maybe_send_replies(
+    commands: &mut CommandQueue,
+    runtime_type: &str,
+    replies: Vec<(u32, Vec<u8>)>,
+) {
     let is_tmux_mirror = !is_direct_pty_terminal(runtime_type);
     if should_forward_parser_response(true, is_tmux_mirror) {
-        send_replies(bridge, replies);
+        send_replies(commands, replies);
     }
 }
 
-fn send_replies(bridge: &FfiClient, replies: Vec<(u32, Vec<u8>)>) {
+fn send_replies(commands: &mut CommandQueue, replies: Vec<(u32, Vec<u8>)>) {
     for (pane_id, data) in replies {
-        let _ = bridge.send_input(pane_id, &data);
+        commands.push(ClientCommand::Input {
+            workspace_id: None,
+            pane_id,
+            data,
+            quiet: false,
+        });
     }
 }
 
@@ -533,7 +552,7 @@ fn join_dir(name: &str, base: &Option<String>) -> String {
 
 /// 处理按键：结构命令走 execute，字符输入走 encode + send_input。
 fn handle_key(
-    bridge: &mut FfiClient,
+    commands: &mut CommandQueue,
     key: &KeyEvent,
     snap: &FrameSnapshot,
     palette_open: &mut bool,
@@ -551,7 +570,10 @@ fn handle_key(
             let lower = c.to_ascii_lowercase();
             match lower {
                 't' => {
-                    let _ = bridge.execute_task(ClientTask::NewTab);
+                    commands.push(ClientCommand::Task {
+                        workspace_id: None,
+                        task: ClientTask::NewTab,
+                    });
                     return true;
                 }
                 'p' => {
@@ -562,8 +584,11 @@ fn handle_key(
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
                     let n = lower.to_digit(10).unwrap() as usize;
                     if n <= snap.tabs.len() {
-                        let _ = bridge.execute_task(ClientTask::SwitchTab {
-                            tab_id: snap.tabs[n - 1].id,
+                        commands.push(ClientCommand::Task {
+                            workspace_id: None,
+                            task: ClientTask::SwitchTab {
+                                tab_id: snap.tabs[n - 1].id,
+                            },
                         });
                         return true;
                     }
@@ -572,37 +597,57 @@ fn handle_key(
                 'w' => {
                     let tab = snap.tabs.iter().find(|t| t.is_active).or(snap.tabs.first());
                     if let Some(t) = tab {
-                        let _ = bridge.execute_task(ClientTask::CloseTab { tab_id: t.id });
+                        commands.push(ClientCommand::Task {
+                            workspace_id: None,
+                            task: ClientTask::CloseTab { tab_id: t.id },
+                        });
                         return true;
                     }
                     return false;
                 }
                 's' => {
-                    let _ = bridge.execute_task(ClientTask::SplitPane {
-                        pane_id: target.unwrap_or(0),
-                        horizontal: true,
+                    commands.push(ClientCommand::Task {
+                        workspace_id: None,
+                        task: ClientTask::SplitPane {
+                            pane_id: target.unwrap_or(0),
+                            horizontal: true,
+                        },
                     });
                     return true;
                 }
                 'v' => {
-                    let _ = bridge.execute_task(ClientTask::SplitPane {
-                        pane_id: target.unwrap_or(0),
-                        horizontal: false,
+                    commands.push(ClientCommand::Task {
+                        workspace_id: None,
+                        task: ClientTask::SplitPane {
+                            pane_id: target.unwrap_or(0),
+                            horizontal: false,
+                        },
                     });
                     return true;
                 }
                 '[' => {
-                    let _ = bridge.execute_task(ClientTask::PreviousPane);
+                    commands.push(ClientCommand::Task {
+                        workspace_id: None,
+                        task: ClientTask::PreviousPane,
+                    });
                     return true;
                 }
                 ']' => {
-                    let _ = bridge.execute_task(ClientTask::NextPane);
+                    commands.push(ClientCommand::Task {
+                        workspace_id: None,
+                        task: ClientTask::NextPane,
+                    });
                     return true;
                 }
                 _ => {
                     let Some(pane) = target else { return false };
                     let bytes = encode(&MuxKeyEvent::Alt(c));
-                    let _ = bridge.send_input(pane, &bytes);
+                    commands.push(ClientCommand::Input {
+                        workspace_id: None,
+                        pane_id: pane,
+                        data: bytes,
+                        quiet: false,
+                    });
                     return true;
                 }
             }
@@ -614,7 +659,12 @@ fn handle_key(
         if let KeyCode::Char(c) = key.code {
             let Some(pane) = target else { return false };
             let bytes = encode(&MuxKeyEvent::Ctrl(c));
-            let _ = bridge.send_input(pane, &bytes);
+            commands.push(ClientCommand::Input {
+                workspace_id: None,
+                pane_id: pane,
+                data: bytes,
+                quiet: false,
+            });
             return true;
         }
     }
@@ -635,6 +685,11 @@ fn handle_key(
         _ => return false,
     };
     let bytes = encode(&mux_key);
-    let _ = bridge.send_input(pane, &bytes);
+    commands.push(ClientCommand::Input {
+        workspace_id: None,
+        pane_id: pane,
+        data: bytes,
+        quiet: false,
+    });
     true
 }

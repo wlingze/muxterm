@@ -19,6 +19,9 @@ pub mod ffi_client;
 #[cfg(any(feature = "gtk", feature = "tui"))]
 pub mod event_pump;
 
+#[cfg(any(feature = "gtk", feature = "tui"))]
+pub mod command_queue;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 
