@@ -16,6 +16,7 @@ use crate::core::catalog::ResolveIntent;
 use crate::core::config::parse_hex;
 use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 use crate::core::logging::{init_logging, LoggingConfig};
+use crate::core::projects::{ProjectStore, ProjectsService};
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::{Task, TaskOutcome};
@@ -55,6 +56,8 @@ type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<St
 pub struct MuxtermHandle {
     /// 进程内一份 backend 总状态（Driver/Transport/Connect/Inventory/Pool）。
     pub(crate) catalog: crate::core::catalog::Catalog,
+    /// Core-owned Project records projected from the same SettingsService.
+    pub(crate) projects: ProjectsService,
     pub(crate) rt: tokio::runtime::Runtime,
     pub(crate) callbacks: FfiCallbacks,
     /// 注意力引擎（跨工作区聚合；poll 时自动应用 PaneOutput 信号）。
@@ -113,6 +116,14 @@ impl MuxtermHandle {
 
     pub(crate) fn pool_mut(&mut self) -> &mut WorkspacePool {
         self.catalog.pool_mut()
+    }
+
+    pub(crate) fn projects(&self) -> &ProjectsService {
+        &self.projects
+    }
+
+    pub(crate) fn projects_mut(&mut self) -> &mut ProjectsService {
+        &mut self.projects
     }
 
     /// 当前前台工作区。
@@ -949,18 +960,36 @@ fn new_ffi_runtime() -> Option<tokio::runtime::Runtime> {
 }
 
 fn boxed_handle(
-    catalog: crate::core::catalog::Catalog,
+    mut catalog: crate::core::catalog::Catalog,
     rt: tokio::runtime::Runtime,
 ) -> *mut MuxtermHandle {
     let attention_config = crate::core::config::Config::load()
         .map(|c| c.attention)
         .unwrap_or_default();
+    let settings = open_settings_service();
+    if let Err(error) = catalog.set_templates(settings.document().templates.clone()) {
+        tracing::warn!(
+            target = "muxterm::config",
+            "WorkspaceTemplate 加载失败，使用空注册表: {error}"
+        );
+    }
+    let projects = match ProjectStore::from_settings(&settings) {
+        Ok(store) => ProjectsService::new(store),
+        Err(error) => {
+            tracing::warn!(
+                target = "muxterm::config",
+                "Project 加载失败，使用内存空集合: {error}"
+            );
+            ProjectsService::in_memory()
+        }
+    };
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
+        projects,
         rt,
         callbacks: FfiCallbacks::default(),
         attention: AttentionEngine::new(attention_config, RealClock),
-        settings: open_settings_service(),
+        settings,
         event_data: Vec::new(),
         event_names: Vec::new(),
         tab_names: Vec::new(),
