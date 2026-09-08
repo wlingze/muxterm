@@ -9,13 +9,64 @@
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 
 pub mod local;
+pub mod registry;
 pub mod ssh;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 // pub use local::LocalProcessTransport;
 // pub use ssh::SshProcessTransport;
+
+/// Channel kinds are the only transport capability a Runtime provider needs
+/// to resolve a Runtime × Transport combination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelKind {
+    /// A command running over a byte-oriented PTY or pipe.
+    Exec,
+    /// A connection to an existing Unix socket.
+    UnixSocket,
+}
+
+/// Request for a Runtime-owned byte channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelRequest {
+    Exec {
+        argv: Vec<String>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+        pty: Option<PtySize>,
+    },
+    UnixSocket {
+        path: PathBuf,
+    },
+}
+
+impl ChannelRequest {
+    pub fn kind(&self) -> ChannelKind {
+        match self {
+            Self::Exec { .. } => ChannelKind::Exec,
+            Self::UnixSocket { .. } => ChannelKind::UnixSocket,
+        }
+    }
+}
+
+/// Runtime-facing byte channel. It contains no terminal or pane semantics.
+pub trait ByteChannel: Send {
+    fn read(&mut self) -> std::io::Result<Option<Vec<u8>>>;
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize>;
+    fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()>;
+    fn shutdown(&mut self) -> anyhow::Result<()>;
+}
+
+/// Reusable target-level connection owned by the transport registry.
+pub trait TargetConnection: Send + Sync {
+    fn transport_id(&self) -> &str;
+    fn target(&self) -> &str;
+    fn open_channel(&self, request: ChannelRequest) -> anyhow::Result<Box<dyn ByteChannel>>;
+    fn probe(&self) -> anyhow::Result<()>;
+}
 
 /// PTY 字符格尺寸。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

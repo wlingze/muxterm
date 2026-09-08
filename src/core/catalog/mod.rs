@@ -3,7 +3,7 @@
 //! 契约：`docs/CATALOG.md`。施工：`docs/CATALOG-PLAN.md`。
 //!
 //! `trait Runtime` 只表示已经 attach 的格子。列出候选、拿管道、探活
-//! 都在 Catalog：Driver 表、Transport 表、Connect 缓存、Inventory、Pool。
+//! 都在 Catalog：Driver 表、TransportProvider 表、Connect 缓存、Inventory、Pool。
 
 pub mod builtin;
 pub mod connect;
@@ -21,18 +21,18 @@ use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 
 pub use connect::Connect;
-pub use driver::{RuntimeDriver, RuntimeInfo, SessionCandidate};
+pub use driver::{RuntimeInfo, RuntimeProvider, SessionCandidate};
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
 pub use resolver::{config_to_spec, ResolveIntent, ResolvedTarget};
-pub use transport::{TargetInfo, Transport, TransportInfo};
+pub use transport::{TargetInfo, TransportInfo, TransportProvider};
 
 /// 进程内一份 backend 总状态。
 pub struct Catalog {
     /// Driver 表。顺序 = 注册顺序；`with_builtins` 按 tmux, herdr, shell 登记。
-    runtimes: Vec<Box<dyn RuntimeDriver>>,
-    /// Transport 表。顺序 = 注册顺序；`with_builtins` 按 local, ssh 登记。
-    transports: Vec<Box<dyn Transport>>,
+    runtimes: Vec<Box<dyn RuntimeProvider>>,
+    /// TransportProvider 表。顺序 = 注册顺序；`with_builtins` 按 local, ssh 登记。
+    transports: Vec<Box<dyn TransportProvider>>,
     connects: HashMap<(String, String), Arc<Connect>>,
     inventory: Inventory,
     pool: WorkspacePool,
@@ -56,7 +56,7 @@ impl Catalog {
         }
     }
 
-    /// 生产入口：注册内置 Driver / Transport。
+    /// 生产入口：注册内置 Driver / TransportProvider。
     ///
     /// 只注册，不 connect、不探用户默认 herdr.sock。
     pub fn with_builtins() -> Self {
@@ -71,7 +71,7 @@ impl Catalog {
     }
 
     /// 注册一个 Runtime 插件。同 id 原地覆盖（保持位置）；新 id 追加到末尾。
-    pub fn register_runtime(&mut self, driver: Box<dyn RuntimeDriver>) {
+    pub fn register_runtime(&mut self, driver: Box<dyn RuntimeProvider>) {
         let id = driver.id();
         if let Some(i) = self.runtimes.iter().position(|d| d.id() == id) {
             self.runtimes[i] = driver;
@@ -80,8 +80,8 @@ impl Catalog {
         }
     }
 
-    /// 注册一个 Transport 插件。同 id 原地覆盖；新 id 追加。
-    pub fn register_transport(&mut self, transport: Box<dyn Transport>) {
+    /// 注册一个 TransportProvider 插件。同 id 原地覆盖；新 id 追加。
+    pub fn register_transport(&mut self, transport: Box<dyn TransportProvider>) {
         let id = transport.id();
         if let Some(i) = self.transports.iter().position(|t| t.id() == id) {
             self.transports[i] = transport;
@@ -95,26 +95,26 @@ impl Catalog {
         self.runtimes.iter().map(|d| d.info()).collect()
     }
 
-    /// 已注册 Transport 的静态信息。顺序 = 注册顺序。
+    /// 已注册 TransportProvider 的静态信息。顺序 = 注册顺序。
     pub fn transport_list(&self) -> Vec<TransportInfo> {
         self.transports.iter().map(|t| t.info()).collect()
     }
 
-    fn runtime(&self, id: &str) -> Option<&dyn RuntimeDriver> {
+    fn runtime(&self, id: &str) -> Option<&dyn RuntimeProvider> {
         self.runtimes
             .iter()
             .find(|d| d.id() == id)
             .map(|d| d.as_ref())
     }
 
-    fn transport(&self, id: &str) -> Option<&dyn Transport> {
+    fn transport(&self, id: &str) -> Option<&dyn TransportProvider> {
         self.transports
             .iter()
             .find(|t| t.id() == id)
             .map(|t| t.as_ref())
     }
 
-    /// 列出某个 Transport 的 target（Local 单例 / SSH hosts）。
+    /// 列出某个 TransportProvider 的 target（Local 单例 / SSH hosts）。
     pub fn discover_targets(&self, transport_id: &str) -> anyhow::Result<Vec<TargetInfo>> {
         let t = self
             .transport(transport_id)
@@ -214,19 +214,38 @@ impl Catalog {
     pub async fn open(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<&mut Workspace> {
         let runtime_id = spec.runtime.as_str();
         let transport_id = spec.transport.as_str();
-        let accepted: Vec<String> = {
+        let (accepted, requirements): (
+            Vec<String>,
+            &'static [crate::core::transport::ChannelKind],
+        ) = {
             let driver = self
                 .runtime(runtime_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown runtime '{runtime_id}'"))?;
-            driver
-                .accepted_transports()
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
+            (
+                driver
+                    .accepted_transports()
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                driver.channel_requirements(),
+            )
         };
         if !accepted.iter().any(|t| t == transport_id) {
             return Err(anyhow::anyhow!(
                 "runtime '{runtime_id}' does not accept transport '{transport_id}'"
+            ));
+        }
+        let compatible = {
+            let transport = self
+                .transport(transport_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
+            requirements
+                .iter()
+                .all(|kind| transport.supported_channels().contains(kind))
+        };
+        if !compatible {
+            return Err(anyhow::anyhow!(
+                "runtime '{runtime_id}' requires channels {requirements:?}, but transport '{transport_id}' supports a different set"
             ));
         }
         let target = spec.alias.as_deref().unwrap_or("");
@@ -234,7 +253,7 @@ impl Catalog {
         let runtime = self
             .runtime(runtime_id)
             .expect("刚查过的 Driver 必须仍在")
-            .open(Arc::clone(&connect), spec)?;
+            .new_instance(Arc::clone(&connect), spec)?;
         let id = spec.id();
         let name = spec.name();
         self.pool.open(id, name, |_| runtime).await
@@ -252,19 +271,38 @@ impl Catalog {
     async fn build_owned(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Workspace> {
         let runtime_id = spec.runtime.as_str();
         let transport_id = spec.transport.as_str();
-        let accepted: Vec<String> = {
+        let (accepted, requirements): (
+            Vec<String>,
+            &'static [crate::core::transport::ChannelKind],
+        ) = {
             let driver = self
                 .runtime(runtime_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown runtime '{runtime_id}'"))?;
-            driver
-                .accepted_transports()
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
+            (
+                driver
+                    .accepted_transports()
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                driver.channel_requirements(),
+            )
         };
         if !accepted.iter().any(|t| t == transport_id) {
             return Err(anyhow::anyhow!(
                 "runtime '{runtime_id}' does not accept transport '{transport_id}'"
+            ));
+        }
+        let compatible = {
+            let transport = self
+                .transport(transport_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
+            requirements
+                .iter()
+                .all(|kind| transport.supported_channels().contains(kind))
+        };
+        if !compatible {
+            return Err(anyhow::anyhow!(
+                "runtime '{runtime_id}' requires channels {requirements:?}, but transport '{transport_id}' supports a different set"
             ));
         }
         let target = spec.alias.as_deref().unwrap_or("");
@@ -272,7 +310,7 @@ impl Catalog {
         let runtime = self
             .runtime(runtime_id)
             .expect("刚查过的 Driver 必须仍在")
-            .open(Arc::clone(&connect), spec)?;
+            .new_instance(Arc::clone(&connect), spec)?;
         let id = spec.id();
         let name = spec.name();
         Ok(Workspace::new_with_scrollback(
@@ -480,7 +518,7 @@ impl Catalog {
 
     /// 探活未打开的 target。禁止为此 attach Runtime。
     ///
-    /// 对每个 Transport 的 target：connect 失败 → Reach::Err；成功 →
+    /// 对每个 TransportProvider 的 target：connect 失败 → Reach::Err；成功 →
     /// 各接受该 transport 的 Driver.list（短命令）成功 → Reach::Ok。
     /// 只写 Inventory，不打开 Workspace。
     pub fn refresh_inventory(&mut self) -> anyhow::Result<()> {
@@ -541,7 +579,7 @@ impl Catalog {
 /// 对一条 Connect 扇出所有接受该 transport 的 Driver。
 /// tmux 与 herdr 并行，避免死 SSH host 把 2s+2s 串成 4s。
 fn list_sessions_on_connect(
-    runtimes: &[Box<dyn RuntimeDriver>],
+    runtimes: &[Box<dyn RuntimeProvider>],
     transport_id: &str,
     connect: &Connect,
 ) -> Vec<SessionCandidate> {

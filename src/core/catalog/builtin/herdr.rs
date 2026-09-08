@@ -6,17 +6,18 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 
 use crate::core::catalog::connect::Connect;
-use crate::core::catalog::driver::{RuntimeDriver, SessionCandidate};
+use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
 use crate::core::runtime::herdr::forward::start_herdr_ssh_forward;
 use crate::core::runtime::herdr::runtime::HerdrRuntime;
 use crate::core::runtime::herdr::session::HerdrSession;
 use crate::core::runtime::{Runtime, RuntimeCapability};
+use crate::core::transport::ChannelKind;
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// herdr 插件（local / ssh）。
 pub struct HerdrDriver;
 
-impl RuntimeDriver for HerdrDriver {
+impl RuntimeProvider for HerdrDriver {
     fn id(&self) -> &'static str {
         "herdr"
     }
@@ -39,6 +40,10 @@ impl RuntimeDriver for HerdrDriver {
 
     fn accepted_transports(&self) -> &'static [&'static str] {
         &["local", "ssh"]
+    }
+
+    fn channel_requirements(&self) -> &'static [ChannelKind] {
+        &[ChannelKind::UnixSocket]
     }
 
     fn list(&self, connect: &Connect, namespace: Option<&str>) -> Result<Vec<SessionCandidate>> {
