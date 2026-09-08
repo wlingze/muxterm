@@ -57,7 +57,7 @@ impl ConnectionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::catalog::connect::Connect;
+    use crate::core::transport::connection::Connect;
 
     #[test]
     fn acquire_reuses_one_target_connection() {
