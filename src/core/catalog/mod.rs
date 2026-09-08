@@ -18,9 +18,10 @@ use crate::core::projects::Project;
 use crate::core::protocol::candidate::{
     Candidate, CandidateRef, ExistingCandidate, ExistingCandidateRef,
 };
+use crate::core::runtime::provider::runtime_supports_channels;
 use crate::core::runtime::Runtime;
 use crate::core::transport::registry::ConnectionRegistry;
-use crate::core::transport::TargetConnection;
+use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::provenance::WorkspaceProvenance;
@@ -35,6 +36,8 @@ pub use driver::SessionCandidate;
 pub use inventory::{Inventory, InventorySnapshot, Reach};
 pub use resolver::{config_to_spec, OpenRequest, ResolveIntent, ResolvedTarget};
 pub use transport::{TargetInfo, TransportInfo, TransportProvider};
+
+type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>);
 
 /// 进程内一份 backend 总状态。
 pub struct Catalog {
@@ -127,7 +130,24 @@ impl Catalog {
 
     /// 已注册 Driver 的静态信息（新建项目卡的数据源）。顺序 = 注册顺序。
     pub fn runtime_list(&self) -> Vec<RuntimeInfo> {
-        self.runtimes.iter().map(|d| d.info()).collect()
+        self.runtimes
+            .iter()
+            .map(|runtime| RuntimeInfo {
+                id: runtime.id().to_string(),
+                name: runtime.name().to_string(),
+                support: runtime.support().to_vec(),
+                // Keep this legacy DTO field as a projection for existing
+                // clients; the relation itself is channel-based.
+                accepted_transports: self
+                    .transports
+                    .iter()
+                    .filter(|transport| {
+                        runtime_supports_channels(runtime.as_ref(), transport.supported_channels())
+                    })
+                    .map(|transport| transport.id().to_string())
+                    .collect(),
+            })
+            .collect()
     }
 
     /// 已注册 TransportProvider 的静态信息。顺序 = 注册顺序。
@@ -186,10 +206,14 @@ impl Catalog {
     ) -> anyhow::Result<Vec<SessionCandidate>> {
         if transport_id == "all" {
             let names = self.all_connect_names();
-            let mut jobs: Vec<(String, Option<Arc<dyn TargetConnection>>)> = Vec::new();
+            let mut jobs: Vec<DiscoveryJob> = Vec::new();
             for (tid, tgt) in names {
+                let supported_channels = self
+                    .transport(&tid)
+                    .map(|transport| transport.supported_channels().to_vec())
+                    .unwrap_or_default();
                 let connect = self.connect(&tid, &tgt).ok();
-                jobs.push((tid, connect));
+                jobs.push((tid, connect, supported_channels));
             }
             let runtimes = &self.runtimes;
             let mut out = Vec::new();
@@ -197,16 +221,17 @@ impl Catalog {
                 thread::scope(|scope| {
                     let handles: Vec<_> = chunk
                         .iter()
-                        .map(|(tid, connect)| {
+                        .map(|(tid, connect, supported_channels)| {
                             let transport_id = tid.as_str();
                             let connect = connect.clone();
+                            let supported_channels = supported_channels.clone();
                             scope.spawn(move || {
                                 let Some(connect) = connect else {
                                     return Vec::new();
                                 };
                                 let mut rows = list_sessions_on_connect(
                                     runtimes,
-                                    transport_id,
+                                    &supported_channels,
                                     connect.as_ref(),
                                 );
                                 if transport_id == "local" {
@@ -225,13 +250,17 @@ impl Catalog {
             }
             return Ok(out);
         }
+        let supported_channels = self
+            .transport(transport_id)
+            .map(|transport| transport.supported_channels().to_vec())
+            .unwrap_or_default();
         let connect = match self.connect(transport_id, target) {
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
         };
         Ok(list_sessions_on_connect(
             &self.runtimes,
-            transport_id,
+            &supported_channels,
             connect.as_ref(),
         ))
     }
@@ -255,34 +284,21 @@ impl Catalog {
     pub fn new_runtime(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Box<dyn Runtime>> {
         let runtime_id = spec.runtime.as_str();
         let transport_id = spec.transport.as_str();
-        let (accepted, requirements): (
-            Vec<String>,
-            &'static [crate::core::transport::ChannelKind],
-        ) = {
+        let requirements = {
             let driver = self
                 .runtime(runtime_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown runtime '{runtime_id}'"))?;
-            (
-                driver
-                    .accepted_transports()
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect(),
-                driver.channel_requirements(),
-            )
+            driver.channel_requirements()
         };
-        if !accepted.iter().any(|t| t == transport_id) {
-            return Err(anyhow::anyhow!(
-                "runtime '{runtime_id}' does not accept transport '{transport_id}'"
-            ));
-        }
         let compatible = {
             let transport = self
                 .transport(transport_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
-            requirements
-                .iter()
-                .all(|kind| transport.supported_channels().contains(kind))
+            runtime_supports_channels(
+                self.runtime(runtime_id)
+                    .expect("刚查过的 RuntimeProvider 必须仍在"),
+                transport.supported_channels(),
+            )
         };
         if !compatible {
             return Err(anyhow::anyhow!(
@@ -797,6 +813,10 @@ impl Catalog {
         let transport_ids: Vec<String> =
             self.transports.iter().map(|t| t.id().to_string()).collect();
         for transport_id in transport_ids {
+            let supported_channels = self
+                .transport(&transport_id)
+                .map(|transport| transport.supported_channels().to_vec())
+                .unwrap_or_default();
             let targets: Vec<TargetInfo> = match self.transport(&transport_id) {
                 Some(t) => t.list_targets().unwrap_or_default(),
                 None => continue,
@@ -806,10 +826,7 @@ impl Catalog {
                     Ok(connect) => {
                         let mut ok = false;
                         for driver in &self.runtimes {
-                            if !driver
-                                .accepted_transports()
-                                .contains(&transport_id.as_str())
-                            {
+                            if !runtime_supports_channels(driver.as_ref(), &supported_channels) {
                                 continue;
                             }
                             if driver.list(connect.as_ref(), None).is_ok() {
@@ -916,13 +933,13 @@ fn target_config_from_existing(
 /// tmux 与 herdr 并行，避免死 SSH host 把 2s+2s 串成 4s。
 fn list_sessions_on_connect(
     runtimes: &[Box<dyn RuntimeProvider>],
-    transport_id: &str,
+    supported_channels: &[ChannelKind],
     connect: &dyn TargetConnection,
 ) -> Vec<SessionCandidate> {
     thread::scope(|scope| {
         let handles: Vec<_> = runtimes
             .iter()
-            .filter(|driver| driver.accepted_transports().contains(&transport_id))
+            .filter(|driver| runtime_supports_channels(driver.as_ref(), supported_channels))
             .map(|driver| scope.spawn(|| driver.list(connect, None).unwrap_or_default()))
             .collect();
         handles

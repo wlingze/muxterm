@@ -39,14 +39,14 @@ impl RuntimeProvider for MockDriver {
     fn support(&self) -> &'static [RuntimeCapability] {
         self.support
     }
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        self.accepted
-    }
     fn list(
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
     ) -> anyhow::Result<Vec<SessionCandidate>> {
+        if !self.accepted.contains(&connect.transport_id()) {
+            return Ok(Vec::new());
+        }
         if self.list_err {
             anyhow::bail!("mock list failed");
         }
@@ -113,10 +113,6 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
 
     fn support(&self) -> &'static [RuntimeCapability] {
         &[]
-    }
-
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        &["exec-only"]
     }
 
     fn channel_requirements(&self) -> &'static [ChannelKind] {
@@ -545,10 +541,6 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
 
         fn support(&self) -> &'static [RuntimeCapability] {
             &[RuntimeCapability::Discover]
-        }
-
-        fn accepted_transports(&self) -> &'static [&'static str] {
-            &["local", "ssh"]
         }
 
         fn list(

@@ -40,10 +40,6 @@ impl RuntimeProvider for TmuxDriver {
         ]
     }
 
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        &["local", "ssh"]
-    }
-
     fn list(
         &self,
         connect: &dyn TargetConnection,

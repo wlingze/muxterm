@@ -17,6 +17,7 @@ pub struct RuntimeInfo {
     pub id: String,
     pub name: String,
     pub support: Vec<RuntimeCapability>,
+    /// Transport ids derived by Catalog from channel capabilities.
     pub accepted_transports: Vec<String>,
 }
 
@@ -25,9 +26,6 @@ pub trait RuntimeProvider: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn support(&self) -> &'static [RuntimeCapability];
-
-    /// Compatibility bridge for the old Catalog transport filter.
-    fn accepted_transports(&self) -> &'static [&'static str];
 
     /// Runtime channel requirements are checked before opening a target.
     fn channel_requirements(&self) -> &'static [ChannelKind] {
@@ -75,17 +73,19 @@ pub trait RuntimeProvider: Send + Sync {
     ) -> anyhow::Result<Box<dyn Runtime>> {
         Err(anyhow::anyhow!("runtime provider has no instance factory"))
     }
+}
 
-    fn info(&self) -> RuntimeInfo {
-        RuntimeInfo {
-            id: self.id().to_string(),
-            name: self.name().to_string(),
-            support: self.support().to_vec(),
-            accepted_transports: self
-                .accepted_transports()
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect(),
-        }
-    }
+/// Whether a transport can provide every channel required by a runtime.
+///
+/// Runtime and transport providers remain independent: neither side lists the
+/// other side's ids. Catalog calls this relation when resolving, discovering,
+/// and projecting provider information.
+pub fn runtime_supports_channels(
+    runtime: &dyn RuntimeProvider,
+    supported_channels: &[ChannelKind],
+) -> bool {
+    runtime
+        .channel_requirements()
+        .iter()
+        .all(|kind| supported_channels.contains(kind))
 }

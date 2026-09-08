@@ -38,10 +38,6 @@ impl RuntimeProvider for HerdrDriver {
         ]
     }
 
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        &["local", "ssh"]
-    }
-
     fn channel_requirements(&self) -> &'static [ChannelKind] {
         &[ChannelKind::UnixSocket]
     }
