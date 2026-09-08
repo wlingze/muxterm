@@ -11,6 +11,7 @@ pub mod command;
 pub mod pane_history;
 mod pane_process;
 pub mod protocol;
+pub mod provider;
 pub mod pty;
 pub mod ssh_client;
 pub mod status;

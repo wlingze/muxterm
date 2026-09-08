@@ -8,10 +8,12 @@
 pub mod contract;
 pub mod daemon;
 pub mod herdr;
+pub mod provider;
 pub mod shell;
 pub mod tmux;
 
 pub use contract::{Runtime, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
+pub use provider::RuntimeProvider;
 
 // Re-export backend implementations. Their concrete types remain an internal
 // compatibility surface until RuntimeProvider registration owns construction.

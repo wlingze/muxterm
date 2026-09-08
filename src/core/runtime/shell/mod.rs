@@ -38,6 +38,8 @@ use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
 use crate::core::transport::{PtySize as TransportPtySize, Transport, TransportSignal};
 use crate::core::types::{PaneId, TabId};
 
+pub mod provider;
+
 /// 默认字符格尺寸。
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;

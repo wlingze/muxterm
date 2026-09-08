@@ -590,7 +590,9 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
 }
 
 /// C9：SessionCandidate → §6.2 JSON（target = connect name；id 含 connect name）。
-fn session_candidate_json(r: &crate::core::catalog::driver::SessionCandidate) -> serde_json::Value {
+fn session_candidate_json(
+    r: &crate::core::protocol::candidate::ExistingCandidate,
+) -> serde_json::Value {
     let target = if r.transport_id == "local" {
         "local".to_string()
     } else {
@@ -3787,7 +3789,7 @@ mod tests {
     /// named session、target-side socket 与 workspace_id。
     #[test]
     fn session_candidate_json_preserves_runtime_attach_identity() {
-        let candidate = crate::core::catalog::driver::SessionCandidate {
+        let candidate = crate::core::protocol::candidate::ExistingCandidate {
             runtime_id: "herdr".into(),
             transport_id: "ssh".into(),
             target: "buildbox".into(),

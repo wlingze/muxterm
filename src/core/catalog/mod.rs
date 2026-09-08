@@ -21,8 +21,9 @@ use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 
+pub use crate::core::runtime::provider::{RuntimeInfo, RuntimeProvider};
 pub use connect::Connect;
-pub use driver::{RuntimeInfo, RuntimeProvider, SessionCandidate};
+pub use driver::SessionCandidate;
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
 pub use resolver::{config_to_spec, ResolveIntent, ResolvedTarget};

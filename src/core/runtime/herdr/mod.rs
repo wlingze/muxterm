@@ -9,6 +9,7 @@ pub mod events;
 pub mod forward;
 pub mod mutation;
 pub mod observe;
+pub mod provider;
 pub mod registry;
 pub mod runtime;
 pub mod session;
