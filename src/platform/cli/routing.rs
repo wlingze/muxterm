@@ -1,9 +1,9 @@
 //! CLI 路由：从 main.rs 提取的命令分发逻辑。
 
-use crate::core::model::Runtime;
 use crate::core::model::TerminalModel;
 use crate::core::runtime::shell::ShellRuntime;
 use crate::core::runtime::tmux::TmuxRuntime;
+use crate::core::runtime::Runtime;
 use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
 

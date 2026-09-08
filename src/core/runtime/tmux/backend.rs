@@ -25,7 +25,6 @@ use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::core::config::Rgb;
-use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
@@ -37,6 +36,7 @@ use crate::core::runtime::tmux::pane_process::{resolve_subscription_value, PANE_
 use crate::core::runtime::tmux::protocol::{
     parse_layout_tree, LayoutTree, Message, NotificationKind, TmuxSessionId,
 };
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::types::{PaneId, TabId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。

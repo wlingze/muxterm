@@ -44,7 +44,7 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
 
     // 创建 backend + model
     // 有 tmux_socket → TmuxRuntime（-CC 连接 tmux），否则 ShellRuntime
-    let runtime: Box<dyn crate::core::model::Runtime> = if let Some(ref ts) = tmux_socket {
+    let runtime: Box<dyn crate::core::runtime::Runtime> = if let Some(ref ts) = tmux_socket {
         // 检查 tmux server 是否已有同名 session
         let existing = crate::core::discovery::list_local_tmux_sessions(Some(ts))
             .into_iter()

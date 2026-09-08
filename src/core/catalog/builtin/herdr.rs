@@ -7,10 +7,10 @@ use anyhow::{anyhow, Result};
 
 use crate::core::catalog::connect::Connect;
 use crate::core::catalog::driver::{RuntimeDriver, SessionCandidate};
-use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::runtime::herdr::forward::start_herdr_ssh_forward;
 use crate::core::runtime::herdr::runtime::HerdrRuntime;
 use crate::core::runtime::herdr::session::HerdrSession;
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// herdr 插件（local / ssh）。

@@ -979,11 +979,11 @@ fn legacy_runtime_spec(
 ) -> Option<(
     WorkspaceId,
     String,
-    std::boxed::Box<dyn crate::core::model::Runtime>,
+    std::boxed::Box<dyn crate::core::runtime::Runtime>,
     usize,
 )> {
     let scrollback_lines = configured_scrollback_lines();
-    let runtime: std::boxed::Box<dyn crate::core::model::Runtime> = match kind {
+    let runtime: std::boxed::Box<dyn crate::core::runtime::Runtime> = match kind {
         "tmux" => {
             let sock_ref = sock.as_deref();
             let mut tmux = if let Some(name) = sess.as_deref() {

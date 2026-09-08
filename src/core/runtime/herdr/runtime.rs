@@ -13,7 +13,6 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
-use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::core::model::state::{
     AgentVersion, BackendStatus, MutationKind, MutationResult, MutationStage, PaneAgentInfo,
@@ -21,6 +20,7 @@ use crate::core::model::state::{
 };
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::KeyEvent;
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::types::{PaneId, TabId};
 
 use super::events::{EventStream, EventStreamEvent};
@@ -191,12 +191,12 @@ impl HerdrRuntime {
     }
 
     /// 产品 worktree 方法：list 走 session.worktree_list（能力已在 support）。
-    pub fn worktrees(&self) -> anyhow::Result<Vec<crate::core::model::backend::WorktreeInfo>> {
+    pub fn worktrees(&self) -> anyhow::Result<Vec<crate::core::runtime::WorktreeInfo>> {
         let list = self.session.worktree_list(&self.workspace_id)?;
         Ok(list
             .worktrees
             .into_iter()
-            .map(|w| crate::core::model::backend::WorktreeInfo {
+            .map(|w| crate::core::runtime::WorktreeInfo {
                 path: w.path,
                 branch: w.branch,
                 repo_root: w.repo_root,
@@ -218,7 +218,7 @@ impl HerdrRuntime {
     /// 创建 worktree：Herdr 建好后返回新格 WorkspaceSpec。
     pub fn create_worktree(
         &self,
-        spec: &crate::core::model::backend::WorktreeCreateSpec,
+        spec: &crate::core::runtime::WorktreeCreateSpec,
     ) -> anyhow::Result<crate::core::workspace::spec::WorkspaceSpec> {
         let record = self.session.worktree_create(
             &self.workspace_id,
@@ -3180,13 +3180,13 @@ impl Runtime for HerdrRuntime {
         ));
         Ok(())
     }
-    fn list_worktrees(&self) -> Result<Vec<crate::core::model::backend::WorktreeInfo>> {
+    fn list_worktrees(&self) -> Result<Vec<crate::core::runtime::WorktreeInfo>> {
         self.worktrees()
     }
 
     fn create_worktree_spec(
         &self,
-        spec: &crate::core::model::backend::WorktreeCreateSpec,
+        spec: &crate::core::runtime::WorktreeCreateSpec,
     ) -> Result<crate::core::workspace::spec::WorkspaceSpec> {
         self.create_worktree(spec)
     }

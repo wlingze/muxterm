@@ -1,11 +1,11 @@
 //! Runtime 插件（Driver）。列出候选、打开成 `Box<dyn Runtime>`。
 //!
-//! 不是已经 attach 的 [`crate::core::model::backend::Runtime`]。
+//! 不是已经 attach 的 [`crate::core::runtime::Runtime`]。
 
 use std::sync::Arc;
 
 use crate::core::catalog::connect::Connect;
-use crate::core::model::backend::{Runtime, RuntimeCapability};
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// Driver 的静态卡片信息（新建项目 / FFI `runtime_list`）。
