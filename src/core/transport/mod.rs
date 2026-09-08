@@ -45,6 +45,15 @@ pub enum ChannelRequest {
     },
 }
 
+/// Result of a short-lived target command used by Core services such as
+/// Projects. Runtime-owned interactive channels remain `ByteChannel`s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub status: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
 impl ChannelRequest {
     pub fn kind(&self) -> ChannelKind {
         match self {
@@ -67,6 +76,15 @@ pub trait TargetConnection: Send + Sync {
     fn transport_id(&self) -> &str;
     fn target(&self) -> &str;
     fn open_channel(&self, request: ChannelRequest) -> anyhow::Result<Box<dyn ByteChannel>>;
+    /// Execute a bounded, non-interactive command on this target.
+    ///
+    /// The default keeps existing test connections source-compatible; real
+    /// providers may implement it when Core services need target-side work.
+    fn exec_command(&self, _request: ChannelRequest) -> anyhow::Result<CommandOutput> {
+        Err(anyhow::anyhow!(
+            "target connection does not support bounded commands"
+        ))
+    }
     fn probe(&self) -> anyhow::Result<()>;
 }
 
