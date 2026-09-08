@@ -183,7 +183,7 @@ pub struct WorkspaceInfo {
 
 /// 列出工作区候选（FFI discovery，带创建时间与 tab 数）。
 pub fn list_workspace_candidates(socket: Option<&str>) -> Vec<WorkspaceInfo> {
-    FfiClient::discover_workspaces("tmux", None, socket)
+    FfiClient::discover_existing("tmux", None, socket)
         .unwrap_or_default()
         .into_iter()
         .map(|s| WorkspaceInfo {

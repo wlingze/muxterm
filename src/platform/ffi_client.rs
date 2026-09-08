@@ -514,14 +514,6 @@ impl FfiClient {
         Ok(serde_json::from_value(value["entries"].clone())?)
     }
 
-    pub fn discover_workspaces(
-        runtime_type: &str,
-        target: Option<&str>,
-        socket: Option<&str>,
-    ) -> anyhow::Result<Vec<ExistingCandidate>> {
-        Self::discover_existing(runtime_type, target, socket)
-    }
-
     /// Discover attachable Existing candidates through the public FFI.
     pub fn discover_existing(
         runtime_type: &str,

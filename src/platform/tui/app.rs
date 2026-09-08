@@ -283,7 +283,7 @@ fn resolve_runtime(opts: &TuiOpts) -> (&'static str, Option<String>, Option<Stri
 
 /// 用 core discovery 查找已有的工作区候选（产品名，不是 tmux session）。
 fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
-    FfiClient::discover_workspaces("local", None, socket)
+    FfiClient::discover_existing("local", None, socket)
         .ok()?
         .first()
         .map(|workspace| workspace.name.clone())
@@ -411,12 +411,12 @@ fn load_step_data(palette: &mut PaletteState) {
             // 顶部默认 new + 已存在 session 列表
             let sessions = match palette.source {
                 ConnectSource::Local => {
-                    FfiClient::discover_workspaces("local", None, palette.socket.as_deref())
+                    FfiClient::discover_existing("local", None, palette.socket.as_deref())
                         .unwrap_or_default()
                 }
                 ConnectSource::Ssh => {
                     let host = palette.host.clone().unwrap_or_default();
-                    FfiClient::discover_workspaces("ssh", Some(host.as_str()), None)
+                    FfiClient::discover_existing("ssh", Some(host.as_str()), None)
                         .unwrap_or_default()
                 }
             };
