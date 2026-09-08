@@ -108,6 +108,28 @@ impl ViewStore {
             .map(|events| events.into_iter().collect())
             .unwrap_or_default()
     }
+
+    /// Take the newest queued authoritative baseline for one pane.
+    ///
+    /// Events before that baseline are already represented by the snapshot and
+    /// can be discarded. Events after it remain queued for the render drain.
+    pub fn take_pane_baseline(&mut self, workspace_id: &str, pane_id: u32) -> Option<Vec<u8>> {
+        let mailbox = self
+            .workspaces
+            .get_mut(workspace_id)
+            .and_then(|workspace| workspace.render_mailboxes.get_mut(&pane_id))?;
+        let baseline_index = mailbox.iter().rposition(|event| {
+            matches!(
+                event.kind(),
+                ClientEventKind::PaneSnapshot | ClientEventKind::PaneFrame
+            )
+        })?;
+        let data = mailbox.get(baseline_index)?.data.clone();
+        for _ in 0..=baseline_index {
+            mailbox.pop_front();
+        }
+        Some(data)
+    }
 }
 
 #[cfg(test)]
@@ -187,5 +209,38 @@ mod tests {
         assert!(store
             .take_pane_render_events("local//one/shell/", 0)
             .is_empty());
+    }
+
+    #[test]
+    fn newest_baseline_replaces_older_mailbox_data() {
+        let mut store = ViewStore::default();
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 1),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_SNAPSHOT, 7, 2),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 3),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_FRAME, 7, 4),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 5),
+        );
+
+        assert_eq!(
+            store.take_pane_baseline("local//one/shell/", 7),
+            Some(vec![4])
+        );
+        let remaining = store.take_pane_render_events("local//one/shell/", 7);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].data, vec![5]);
     }
 }

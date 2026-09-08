@@ -3441,12 +3441,17 @@ fn seed_unseeded_pane_for(
         }
         return;
     }
-    if let Some(bytes) = s
-        .pool
-        .get(wid)
-        .and_then(|workspace| workspace.state().pane_output(&PaneId(pane_id)))
-        .map(|b| b.to_vec())
-    {
+    let workspace_key = wid.as_str();
+    let bytes = s
+        .view_store
+        .take_pane_baseline(&workspace_key, pane_id)
+        .or_else(|| {
+            s.pool
+                .get(wid)
+                .and_then(|workspace| workspace.state().pane_output(&PaneId(pane_id)))
+                .map(|bytes| bytes.to_vec())
+        });
+    if let Some(bytes) = bytes {
         tracing::info!(
             target: "muxterm::surface",
             pane = pane_id,
@@ -3459,7 +3464,7 @@ fn seed_unseeded_pane_for(
         tracing::info!(
             target: "muxterm::surface",
             pane = pane_id,
-            "pane view unseeded and core pane_output empty"
+            "pane view unseeded and no queued or compatibility baseline is available"
         );
     }
 }
