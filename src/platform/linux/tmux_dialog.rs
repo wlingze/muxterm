@@ -335,6 +335,10 @@ mod tests {
             windows: 4,
             attached: false,
             created: 0,
+            namespace: None,
+            session: None,
+            socket: None,
+            workspace_id: None,
         }];
         let items = tmux_session_pick_items(&sessions);
         assert!(is_create_session_id(&items[0].id));

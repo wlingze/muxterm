@@ -290,6 +290,7 @@ pub(crate) fn session_candidate_json(
         "transport": candidate.transport_id,
         "target": target,
         "in_pool": false,
+        "namespace": candidate.namespace,
         "session": candidate.session,
         "socket": candidate.socket,
         "workspace_id": candidate.workspace_id,
