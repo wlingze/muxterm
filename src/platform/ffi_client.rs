@@ -399,7 +399,13 @@ pub enum ClientTask {
     SplitPane { pane_id: u32, horizontal: bool },
     NextPane,
     PreviousPane,
+    SwitchPane { pane_id: u32 },
     TogglePaneFullscreen { pane_id: u32 },
+    BreakPane { pane_id: u32 },
+    RefreshTabs,
+    RequestPaneSnapshot { pane_id: u32 },
+    Detach,
+    Shutdown,
 }
 
 /// Safe ownership boundary for one Core FFI handle.
@@ -1501,9 +1507,17 @@ fn task_to_ffi(task: ClientTask) -> CTask {
         ),
         ClientTask::NextPane => (ffi::TASK_NEXT_PANE, 0, 0, 0),
         ClientTask::PreviousPane => (ffi::TASK_PREV_PANE, 0, 0, 0),
+        ClientTask::SwitchPane { pane_id } => (ffi::TASK_SWITCH_PANE, pane_id, 0, 0),
         ClientTask::TogglePaneFullscreen { pane_id } => {
             (ffi::TASK_TOGGLE_PANE_FULLSCREEN, pane_id, 0, 0)
         }
+        ClientTask::BreakPane { pane_id } => (ffi::TASK_BREAK_PANE, pane_id, 0, 0),
+        ClientTask::RefreshTabs => (ffi::TASK_REFRESH_TABS, 0, 0, 0),
+        ClientTask::RequestPaneSnapshot { pane_id } => {
+            (ffi::TASK_REQUEST_PANE_SNAPSHOT, pane_id, 0, 0)
+        }
+        ClientTask::Detach => (ffi::TASK_DETACH, 0, 0, 0),
+        ClientTask::Shutdown => (ffi::TASK_SHUTDOWN, 0, 0, 0),
     };
     CTask {
         type_,
@@ -1578,6 +1592,24 @@ mod tests {
         let fullscreen = task_to_ffi(ClientTask::TogglePaneFullscreen { pane_id: 12 });
         assert_eq!(fullscreen.type_, ffi::TASK_TOGGLE_PANE_FULLSCREEN);
         assert_eq!(fullscreen.target_pane, 12);
+    }
+
+    #[test]
+    fn frontend_lifecycle_tasks_translate_to_abi() {
+        let switch = task_to_ffi(ClientTask::SwitchPane { pane_id: 13 });
+        assert_eq!(switch.type_, ffi::TASK_SWITCH_PANE);
+        assert_eq!(switch.target_pane, 13);
+
+        let snapshot = task_to_ffi(ClientTask::RequestPaneSnapshot { pane_id: 14 });
+        assert_eq!(snapshot.type_, ffi::TASK_REQUEST_PANE_SNAPSHOT);
+        assert_eq!(snapshot.target_pane, 14);
+
+        assert_eq!(
+            task_to_ffi(ClientTask::RefreshTabs).type_,
+            ffi::TASK_REFRESH_TABS
+        );
+        assert_eq!(task_to_ffi(ClientTask::Detach).type_, ffi::TASK_DETACH);
+        assert_eq!(task_to_ffi(ClientTask::Shutdown).type_, ffi::TASK_SHUTDOWN);
     }
 
     #[test]
