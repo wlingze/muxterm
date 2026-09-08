@@ -75,7 +75,9 @@ pub use super::functions::transport::{
 pub use super::functions::workspace::{
     muxterm_create_tmux_session_json, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_workspace_activate, muxterm_workspace_close,
-    muxterm_workspace_create, muxterm_workspace_list, muxterm_workspace_open,
+    muxterm_workspace_create, muxterm_workspace_get_layout, muxterm_workspace_get_pane_output,
+    muxterm_workspace_get_panes, muxterm_workspace_get_tabs, muxterm_workspace_list,
+    muxterm_workspace_open,
 };
 use super::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, BACKEND_STATUS_CONNECTED,
@@ -534,6 +536,53 @@ mod tests {
                 (*h).pool().get(&first_id).unwrap().state().tabs().len(),
                 2,
                 "the task must mutate the selected background workspace"
+            );
+
+            let mut tabs = [CTab {
+                id: 0,
+                name: ptr::null(),
+                is_active: 0,
+            }; 4];
+            assert_eq!(
+                muxterm_workspace_get_tabs(h, first_id_text.as_ptr(), tabs.as_mut_ptr(), 4),
+                2
+            );
+            let mut panes = [CPane {
+                id: 0,
+                cols: 0,
+                rows: 0,
+                is_active: 0,
+            }; 4];
+            assert_eq!(
+                muxterm_workspace_get_panes(
+                    h,
+                    first_id_text.as_ptr(),
+                    tabs[0].id,
+                    panes.as_mut_ptr(),
+                    4
+                ),
+                1
+            );
+            let mut layout = CLayoutNode {
+                type_: LAYOUT_LEAF,
+                pane_id: 0,
+                ratio: 0,
+                first: ptr::null(),
+                second: ptr::null(),
+            };
+            assert_eq!(
+                muxterm_workspace_get_layout(h, first_id_text.as_ptr(), tabs[0].id, &mut layout),
+                0
+            );
+            let mut output = [0u8; 8];
+            assert!(
+                muxterm_workspace_get_pane_output(
+                    h,
+                    first_id_text.as_ptr(),
+                    panes[0].id,
+                    output.as_mut_ptr(),
+                    output.len()
+                ) >= 0
             );
             muxterm_free(h);
         }

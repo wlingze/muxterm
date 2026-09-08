@@ -169,6 +169,10 @@ int muxterm_get_tabs(struct MuxtermHandle* h, struct CTab* out, int max_count);
 int muxterm_get_panes(struct MuxtermHandle* h, uint32_t tab_id, struct CPane* out, int max_count);
 int muxterm_get_pane_output(struct MuxtermHandle* h, uint32_t pane_id, uint8_t* buf, size_t buf_len);
 int muxterm_get_layout(struct MuxtermHandle* h, uint32_t tab_id, struct CLayoutNode* out);
+int muxterm_workspace_get_tabs(struct MuxtermHandle* h, const char* workspace_id, struct CTab* out, int max_count);
+int muxterm_workspace_get_panes(struct MuxtermHandle* h, const char* workspace_id, uint32_t tab_id, struct CPane* out, int max_count);
+int muxterm_workspace_get_pane_output(struct MuxtermHandle* h, const char* workspace_id, uint32_t pane_id, uint8_t* buf, size_t buf_len);
+int muxterm_workspace_get_layout(struct MuxtermHandle* h, const char* workspace_id, uint32_t tab_id, struct CLayoutNode* out);
 
 // ── 搜索 / 注意力 / 历史（W14/W16 跨平台契约）──
 char* muxterm_search_all(struct MuxtermHandle* h, const char* query);

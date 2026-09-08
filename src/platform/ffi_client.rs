@@ -586,6 +586,35 @@ impl FfiClient {
             .collect()
     }
 
+    /// Read tabs from a specific workspace without changing Core activation.
+    pub fn get_workspace_tabs(&self, workspace_id: &str) -> Vec<ClientTab> {
+        let workspace_id = cstring(workspace_id);
+        let mut buffer = [CTab {
+            id: 0,
+            name: ptr::null(),
+            is_active: 0,
+        }; TAB_CAPACITY];
+        let count = unsafe {
+            ffi::muxterm_workspace_get_tabs(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                buffer.as_mut_ptr(),
+                TAB_CAPACITY as i32,
+            )
+        };
+        if count <= 0 {
+            return Vec::new();
+        }
+        buffer[..(count as usize).min(TAB_CAPACITY)]
+            .iter()
+            .map(|tab| ClientTab {
+                id: tab.id,
+                name: copy_c_string(tab.name),
+                is_active: tab.is_active != 0,
+            })
+            .collect()
+    }
+
     pub fn get_panes(&self, tab_id: u32) -> Vec<ClientPane> {
         let mut buffer = [CPane {
             id: 0,
@@ -596,6 +625,39 @@ impl FfiClient {
         let count = unsafe {
             ffi::muxterm_get_panes(
                 self.handle.as_ptr(),
+                tab_id,
+                buffer.as_mut_ptr(),
+                PANE_CAPACITY as i32,
+            )
+        };
+        if count <= 0 {
+            return Vec::new();
+        }
+        buffer[..(count as usize).min(PANE_CAPACITY)]
+            .iter()
+            .map(|pane| ClientPane {
+                id: pane.id,
+                cols: pane.cols,
+                rows: pane.rows,
+                is_active: pane.is_active != 0,
+                title: String::new(),
+            })
+            .collect()
+    }
+
+    /// Read panes from a specific workspace without changing Core activation.
+    pub fn get_workspace_panes(&self, workspace_id: &str, tab_id: u32) -> Vec<ClientPane> {
+        let workspace_id = cstring(workspace_id);
+        let mut buffer = [CPane {
+            id: 0,
+            cols: 0,
+            rows: 0,
+            is_active: 0,
+        }; PANE_CAPACITY];
+        let count = unsafe {
+            ffi::muxterm_workspace_get_panes(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
                 tab_id,
                 buffer.as_mut_ptr(),
                 PANE_CAPACITY as i32,
@@ -628,11 +690,54 @@ impl FfiClient {
         (rc == 0).then(|| unsafe { clone_layout(&root) })
     }
 
+    /// Read a tab layout from a specific workspace without changing
+    /// activation.
+    pub fn get_workspace_layout(&self, workspace_id: &str, tab_id: u32) -> Option<ClientLayout> {
+        let workspace_id = cstring(workspace_id);
+        let mut root = CLayoutNode {
+            type_: LAYOUT_LEAF,
+            pane_id: 0,
+            ratio: 0,
+            first: ptr::null(),
+            second: ptr::null(),
+        };
+        let rc = unsafe {
+            ffi::muxterm_workspace_get_layout(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                tab_id,
+                &mut root,
+            )
+        };
+        (rc == 0).then(|| unsafe { clone_layout(&root) })
+    }
+
     pub fn get_pane_output(&self, pane_id: u32) -> Vec<u8> {
         let mut buffer = vec![0u8; PANE_OUTPUT_CAPACITY];
         let count = unsafe {
             ffi::muxterm_get_pane_output(
                 self.handle.as_ptr(),
+                pane_id,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            )
+        };
+        if count <= 0 {
+            return Vec::new();
+        }
+        buffer.truncate((count as usize).min(buffer.len()));
+        buffer
+    }
+
+    /// Read accumulated pane output from a specific workspace without
+    /// changing Core activation.
+    pub fn get_workspace_pane_output(&self, workspace_id: &str, pane_id: u32) -> Vec<u8> {
+        let workspace_id = cstring(workspace_id);
+        let mut buffer = vec![0u8; PANE_OUTPUT_CAPACITY];
+        let count = unsafe {
+            ffi::muxterm_workspace_get_pane_output(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
                 pane_id,
                 buffer.as_mut_ptr(),
                 buffer.len(),

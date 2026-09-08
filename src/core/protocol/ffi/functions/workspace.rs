@@ -270,6 +270,56 @@ pub unsafe extern "C" fn muxterm_get_tabs(
     n as i32
 }
 
+/// List tabs in a specific workspace without changing pool activation.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `out` are valid pointers; `workspace_id` is a
+/// NUL-terminated UTF-8 string and `out` points to `max_count` entries.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_get_tabs(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    out: *mut CTab,
+    max_count: i32,
+) -> i32 {
+    if h.is_null() || workspace_id.is_null() || out.is_null() || max_count <= 0 {
+        return -1;
+    }
+    let Some(workspace_id) = cstr_opt(workspace_id) else {
+        return -1;
+    };
+    let workspace_id = parse_workspace_id(&workspace_id);
+    let handle = &mut *h;
+    let tabs = {
+        let Some(ws) = handle.pool().get(&workspace_id) else {
+            return -1;
+        };
+        ws.state()
+            .tabs()
+            .iter()
+            .map(|t| (t.id.0, t.name.clone(), t.active))
+            .collect::<Vec<_>>()
+    };
+    handle.tab_names.clear();
+    let n = tabs.len().min(max_count as usize);
+    let slice = std::slice::from_raw_parts_mut(out, n);
+    for (i, (id, name, active)) in tabs.iter().take(n).enumerate() {
+        let name_ptr = match CString::new(name.as_str()) {
+            Ok(cs) => {
+                handle.tab_names.push(cs);
+                handle.tab_names.last().unwrap().as_ptr()
+            }
+            Err(_) => ptr::null(),
+        };
+        slice[i] = CTab {
+            id: *id,
+            name: name_ptr,
+            is_active: u8::from(*active),
+        };
+    }
+    n as i32
+}
+
 /// List panes in a tab of the active workspace.
 ///
 /// # Safety
@@ -290,6 +340,44 @@ pub unsafe extern "C" fn muxterm_get_panes(
         return 0;
     };
     let panes = ws.state().panes(&tid);
+    let n = panes.len().min(max_count as usize);
+    let slice = std::slice::from_raw_parts_mut(out, n);
+    for (i, p) in panes.iter().take(n).enumerate() {
+        slice[i] = CPane {
+            id: p.id.0,
+            cols: p.cols,
+            rows: p.rows,
+            is_active: u8::from(p.active),
+        };
+    }
+    n as i32
+}
+
+/// List panes in a tab of a specific workspace without changing activation.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `out` are valid pointers; `workspace_id` is a
+/// NUL-terminated UTF-8 string and `out` points to `max_count` entries.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_get_panes(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    tab_id: u32,
+    out: *mut CPane,
+    max_count: i32,
+) -> i32 {
+    if h.is_null() || workspace_id.is_null() || out.is_null() || max_count <= 0 {
+        return -1;
+    }
+    let Some(workspace_id) = cstr_opt(workspace_id) else {
+        return -1;
+    };
+    let workspace_id = parse_workspace_id(&workspace_id);
+    let handle = &*h;
+    let Some(ws) = handle.pool().get(&workspace_id) else {
+        return -1;
+    };
+    let panes = ws.state().panes(&TabId(tab_id));
     let n = panes.len().min(max_count as usize);
     let slice = std::slice::from_raw_parts_mut(out, n);
     for (i, p) in panes.iter().take(n).enumerate() {
@@ -338,6 +426,45 @@ pub unsafe extern "C" fn muxterm_get_pane_output(
     .unwrap_or(-1)
 }
 
+/// Read pane output from a specific workspace without changing activation.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `buf` are valid pointers; `workspace_id` is a
+/// NUL-terminated UTF-8 string and `buf` points to `buf_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_get_pane_output(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() || buf.is_null() {
+            return -1;
+        }
+        let Some(workspace_id) = cstr_opt(workspace_id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &*h;
+        let Some(ws) = handle.pool().get(&workspace_id) else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let Some(out) = ws.state().pane_output(&pane) else {
+            return 0;
+        };
+        let n = out.len().min(buf_len);
+        let start = out.len() - n;
+        std::ptr::copy_nonoverlapping(out.as_ptr().add(start), buf, n);
+        n as i32
+    }))
+    .unwrap_or(-1)
+}
+
 /// Export a tab layout tree to a C layout node and its stable child pool.
 ///
 /// # Safety
@@ -362,6 +489,44 @@ pub unsafe extern "C" fn muxterm_get_layout(
         return -1;
     };
     let tree = tl.tree.clone();
+    let root_idx = push_layout_node(&mut handle.layout_nodes, &tree);
+    *out = handle.layout_nodes[root_idx];
+    fixup_layout_pointers(&mut handle.layout_nodes);
+    *out = handle.layout_nodes[root_idx];
+    0
+}
+
+/// Export a tab layout from a specific workspace without changing activation.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `out` are valid pointers; `workspace_id` is a
+/// NUL-terminated UTF-8 string and the layout pointers remain valid until the
+/// next layout query or handle free.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_get_layout(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    tab_id: u32,
+    out: *mut CLayoutNode,
+) -> i32 {
+    if h.is_null() || workspace_id.is_null() || out.is_null() {
+        return -1;
+    }
+    let Some(workspace_id) = cstr_opt(workspace_id) else {
+        return -1;
+    };
+    let workspace_id = parse_workspace_id(&workspace_id);
+    let handle = &mut *h;
+    let tree = {
+        let Some(ws) = handle.pool().get(&workspace_id) else {
+            return -1;
+        };
+        let Some(tl) = ws.state().layout(&TabId(tab_id)) else {
+            return -1;
+        };
+        tl.tree.clone()
+    };
+    handle.layout_nodes.clear();
     let root_idx = push_layout_node(&mut handle.layout_nodes, &tree);
     *out = handle.layout_nodes[root_idx];
     fixup_layout_pointers(&mut handle.layout_nodes);
