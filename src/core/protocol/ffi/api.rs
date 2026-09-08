@@ -13,7 +13,7 @@ use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
 use crate::core::attention::signal::AttentionSignal;
 use crate::core::config::parse_hex;
-use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
+use crate::core::config_service::SettingsService;
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::projects::{ProjectStore, ProjectsService};
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
@@ -31,6 +31,11 @@ use crate::core::workspace::workspace::Workspace;
 use super::callbacks::FfiCallbacks;
 pub use super::functions::catalog::{
     muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,
+};
+pub use super::functions::config::{
+    muxterm_config_begin_json, muxterm_config_cancel_json, muxterm_config_commit_json,
+    muxterm_config_describe_json, muxterm_config_events_json, muxterm_config_patch_json,
+    muxterm_config_reload_json,
 };
 pub use super::functions::workspace::{
     muxterm_workspace_activate, muxterm_workspace_close, muxterm_workspace_list,
@@ -297,20 +302,6 @@ pub(crate) fn json_error(error: impl std::fmt::Display) -> *mut c_char {
     json_string(serde_json::json!({
         "ok": false,
         "error": error.to_string(),
-    }))
-}
-
-/// Structured error envelope for the configuration API. Legacy discovery and
-/// runtime calls keep the historical string error field for ABI compatibility.
-fn config_json_error(error: impl std::fmt::Display) -> *mut c_char {
-    json_string(serde_json::json!({
-        "ok": false,
-        "error": {
-            "code": "config_error",
-            "message": error.to_string(),
-            "path": serde_json::Value::Null,
-            "suggestion": "检查 config schema、JSON Pointer 和字段类型",
-        },
     }))
 }
 
@@ -1104,166 +1095,6 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
         let mut handle = Box::from_raw(h);
         handle.pool_mut().shutdown_all();
     }));
-}
-
-/// Return the resolved configuration, defaults, JSON Schema and UI Manifest.
-/// The returned string is released with `muxterm_free_string`.
-///
-/// # Safety
-/// `h` must be a live handle returned by `muxterm_new` or `muxterm_new_connect`.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_config_describe_json(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return config_json_error("handle 为空");
-        }
-        let snapshot = (&*h).settings.snapshot();
-        json_string(serde_json::json!({
-            "ok": true,
-            "data": snapshot,
-            "warnings": [],
-        }))
-    }))
-    .unwrap_or_else(|_| config_json_error("config describe panic"))
-}
-
-/// Begin a Core-owned draft transaction.
-///
-/// # Safety
-/// `h` must be a live handle returned by `muxterm_new` or `muxterm_new_connect`.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_config_begin_json(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return config_json_error("handle 为空");
-        }
-        let transaction = (&mut *h).settings.begin();
-        json_string(serde_json::json!({"ok": true, "data": {"transaction": transaction}}))
-    }))
-    .unwrap_or_else(|_| config_json_error("config begin panic"))
-}
-
-/// Apply an RFC 6902-style add/replace/remove patch to a draft transaction.
-///
-/// # Safety
-/// `h`, `transaction`, and `patch` must be valid pointers; the strings must be
-/// NUL-terminated UTF-8 and the handle must remain alive for this call.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_config_patch_json(
-    h: *mut MuxtermHandle,
-    transaction: *const c_char,
-    patch: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return config_json_error("handle 为空");
-        }
-        let Some(transaction) = cstr_opt(transaction) else {
-            return config_json_error("transaction 为空");
-        };
-        let Some(patch) = cstr_opt(patch) else {
-            return config_json_error("patch 为空");
-        };
-        let operations: Vec<JsonPatchOperation> = match serde_json::from_str(&patch) {
-            Ok(value) => value,
-            Err(error) => return config_json_error(format!("patch JSON 无效: {error}")),
-        };
-        match (&mut *h).settings.patch(&transaction, &operations) {
-            Ok(result) => {
-                json_string(serde_json::json!({"ok": true, "data": result, "warnings": []}))
-            }
-            Err(error) => config_json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| config_json_error("config patch panic"))
-}
-
-/// Commit a draft transaction after validation and optimistic merge.
-///
-/// # Safety
-/// `h` must be live and `transaction` must point to a NUL-terminated UTF-8
-/// transaction ID created by `muxterm_config_begin_json`.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_config_commit_json(
-    h: *mut MuxtermHandle,
-    transaction: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return config_json_error("handle 为空");
-        }
-        let Some(transaction) = cstr_opt(transaction) else {
-            return config_json_error("transaction 为空");
-        };
-        match (&mut *h).settings.commit(&transaction) {
-            Ok(revision) => json_string(
-                serde_json::json!({"ok": true, "data": {"revision": revision}, "warnings": []}),
-            ),
-            Err(error) => config_json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| config_json_error("config commit panic"))
-}
-
-/// Cancel a draft transaction and roll back previews.
-///
-/// # Safety
-/// `h` must be live and `transaction` must point to a NUL-terminated UTF-8
-/// transaction ID created by `muxterm_config_begin_json`.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_config_cancel_json(
-    h: *mut MuxtermHandle,
-    transaction: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return config_json_error("handle 为空");
-        }
-        let Some(transaction) = cstr_opt(transaction) else {
-            return config_json_error("transaction 为空");
-        };
-        match (&mut *h).settings.cancel(&transaction) {
-            Ok(()) => json_string(serde_json::json!({"ok": true, "data": {}, "warnings": []})),
-            Err(error) => config_json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| config_json_error("config cancel panic"))
-}
-
-/// Reload configuration from disk and return the new revision.
-///
-/// # Safety
-/// `h` must be a live handle returned by `muxterm_new` or `muxterm_new_connect`.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_config_reload_json(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return config_json_error("handle 为空");
-        }
-        match (&mut *h).settings.reload() {
-            Ok(revision) => json_string(
-                serde_json::json!({"ok": true, "data": {"revision": revision}, "warnings": []}),
-            ),
-            Err(error) => config_json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| config_json_error("config reload panic"))
-}
-
-/// Drain configuration preview/commit/reload events.
-///
-/// # Safety
-/// `h` must be a live handle returned by `muxterm_new` or `muxterm_new_connect`.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_config_events_json(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return config_json_error("handle 为空");
-        }
-        let events: Vec<ConfigEvent> = (&mut *h).settings.drain_events();
-        json_string(serde_json::json!({"ok": true, "data": {"events": events}, "warnings": []}))
-    }))
-    .unwrap_or_else(|_| config_json_error("config events panic"))
 }
 
 /// 连接后端。0=ok，-1=err。
