@@ -16,7 +16,6 @@ use crate::core::catalog::ResolveIntent;
 use crate::core::config::parse_hex;
 use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 use crate::core::logging::{init_logging, LoggingConfig};
-use crate::core::model::terminal_model::TerminalModel;
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::{Task, TaskOutcome};
@@ -28,6 +27,7 @@ use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use crate::core::workspace::spec::WorkspaceSpec;
+use crate::core::workspace::terminal_model::TerminalModel;
 use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;

@@ -15,13 +15,14 @@
 #![allow(dead_code)]
 
 pub mod backend;
-pub mod terminal_model;
 
 // Compatibility paths while protocol owns the DTO module tree.
 #[allow(unused_imports)]
 pub use crate::core::protocol::{layout, state, task};
 
 // 便捷 re-export（被 TerminalModel / 平台层使用）
+#[allow(unused_imports)]
+pub use crate::core::workspace::terminal_model::{StateChangeCallback, TerminalModel};
 #[allow(unused_imports)]
 pub use backend::Runtime;
 #[allow(unused_imports)]
@@ -30,5 +31,3 @@ pub use layout::{LayoutNode, RemoveRootError, SplitDir, WindowLayout};
 pub use state::{BackendStatus, PaneInfo, State, StateChange, TabInfo, WorkspaceInfo};
 #[allow(unused_imports)]
 pub use task::{Task, TaskOutcome};
-#[allow(unused_imports)]
-pub use terminal_model::{StateChangeCallback, TerminalModel};
