@@ -1,15 +1,19 @@
 //! Workspace pool and legacy workspace-open C ABI functions.
 
-use std::ffi::c_char;
+use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::ptr;
 
 use crate::core::protocol::ffi::api::{
     configured_scrollback_lines, cstr_opt, discovery_timeout, json_error, json_string,
-    MuxtermHandle,
+    resolve_c_io_pane, MuxtermHandle,
 };
+use crate::core::protocol::layout::{LayoutNode, SplitDir};
+use crate::core::types::TabId;
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::spec::WorkspaceSpec;
 
+use super::super::types::{CLayoutNode, CPane, CTab, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V};
 use super::catalog::resolved_target_json;
 
 /// Create a detached tmux session through the Core discovery service.
@@ -220,6 +224,207 @@ pub unsafe extern "C" fn muxterm_workspace_close(h: *mut MuxtermHandle, id: *con
         }
     }))
     .unwrap_or(-1)
+}
+
+/// List tabs in the active workspace.
+///
+/// # Safety
+/// `out` points to at least `max_count` elements; names remain valid until
+/// the next tabs query or handle free.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_get_tabs(
+    h: *mut MuxtermHandle,
+    out: *mut CTab,
+    max_count: i32,
+) -> i32 {
+    if h.is_null() || out.is_null() || max_count <= 0 {
+        return -1;
+    }
+    let handle = &mut *h;
+    handle.tab_names.clear();
+    let Some(ws) = handle.active_workspace() else {
+        return 0;
+    };
+    let tabs: Vec<(u32, String, bool)> = ws
+        .state()
+        .tabs()
+        .iter()
+        .map(|t| (t.id.0, t.name.clone(), t.active))
+        .collect();
+    let n = tabs.len().min(max_count as usize);
+    let slice = std::slice::from_raw_parts_mut(out, n);
+    for (i, (id, name, active)) in tabs.iter().take(n).enumerate() {
+        let name_ptr = match CString::new(name.as_str()) {
+            Ok(cs) => {
+                handle.tab_names.push(cs);
+                handle.tab_names.last().unwrap().as_ptr()
+            }
+            Err(_) => ptr::null(),
+        };
+        slice[i] = CTab {
+            id: *id,
+            name: name_ptr,
+            is_active: u8::from(*active),
+        };
+    }
+    n as i32
+}
+
+/// List panes in a tab of the active workspace.
+///
+/// # Safety
+/// `out` points to at least `max_count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_get_panes(
+    h: *mut MuxtermHandle,
+    tab_id: u32,
+    out: *mut CPane,
+    max_count: i32,
+) -> i32 {
+    if h.is_null() || out.is_null() || max_count <= 0 {
+        return -1;
+    }
+    let handle = &*h;
+    let tid = TabId(tab_id);
+    let Some(ws) = handle.active_workspace() else {
+        return 0;
+    };
+    let panes = ws.state().panes(&tid);
+    let n = panes.len().min(max_count as usize);
+    let slice = std::slice::from_raw_parts_mut(out, n);
+    for (i, p) in panes.iter().take(n).enumerate() {
+        slice[i] = CPane {
+            id: p.id.0,
+            cols: p.cols,
+            rows: p.rows,
+            is_active: u8::from(p.active),
+        };
+    }
+    n as i32
+}
+
+/// Read the most recent accumulated pane output into `buf`.
+///
+/// When the buffer is smaller than the output, the newest bytes are copied.
+///
+/// # Safety
+/// `buf` points to at least `buf_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_get_pane_output(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || buf.is_null() {
+            return -1;
+        }
+        let handle = &*h;
+        let Some(ws) = handle.active_workspace() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let Some(out) = ws.state().pane_output(&pane) else {
+            return 0;
+        };
+        let n = out.len().min(buf_len);
+        let start = out.len() - n;
+        std::ptr::copy_nonoverlapping(out.as_ptr().add(start), buf, n);
+        n as i32
+    }))
+    .unwrap_or(-1)
+}
+
+/// Export a tab layout tree to a C layout node and its stable child pool.
+///
+/// # Safety
+/// `out` is non-null; child pointers remain valid until the next layout query
+/// or handle free.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_get_layout(
+    h: *mut MuxtermHandle,
+    tab_id: u32,
+    out: *mut CLayoutNode,
+) -> i32 {
+    if h.is_null() || out.is_null() {
+        return -1;
+    }
+    let handle = &mut *h;
+    handle.layout_nodes.clear();
+    let tid = TabId(tab_id);
+    let Some(ws) = handle.active_workspace() else {
+        return -1;
+    };
+    let Some(tl) = ws.state().layout(&tid) else {
+        return -1;
+    };
+    let tree = tl.tree.clone();
+    let root_idx = push_layout_node(&mut handle.layout_nodes, &tree);
+    *out = handle.layout_nodes[root_idx];
+    fixup_layout_pointers(&mut handle.layout_nodes);
+    *out = handle.layout_nodes[root_idx];
+    0
+}
+
+fn push_layout_node(pool: &mut Vec<CLayoutNode>, node: &LayoutNode) -> usize {
+    match node {
+        LayoutNode::Leaf(pid) => {
+            let idx = pool.len();
+            pool.push(CLayoutNode {
+                type_: LAYOUT_LEAF,
+                pane_id: pid.0,
+                ratio: 0,
+                first: ptr::null(),
+                second: ptr::null(),
+            });
+            idx
+        }
+        LayoutNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => {
+            let type_ = match dir {
+                SplitDir::Horizontal => LAYOUT_SPLIT_H,
+                SplitDir::Vertical => LAYOUT_SPLIT_V,
+            };
+            let idx = pool.len();
+            pool.push(CLayoutNode {
+                type_,
+                pane_id: 0,
+                ratio: u32::from(*ratio),
+                first: ptr::null(),
+                second: ptr::null(),
+            });
+            let a = push_layout_node(pool, first);
+            let b = push_layout_node(pool, second);
+            pool[idx].first = a as *const CLayoutNode;
+            pool[idx].second = b as *const CLayoutNode;
+            idx
+        }
+    }
+}
+
+fn fixup_layout_pointers(pool: &mut [CLayoutNode]) {
+    let base = pool.as_ptr();
+    let len = pool.len();
+    for node in pool.iter_mut() {
+        if node.type_ == LAYOUT_LEAF {
+            continue;
+        }
+        let a = node.first as usize;
+        let b = node.second as usize;
+        if a < len {
+            node.first = unsafe { base.add(a) };
+        }
+        if b < len {
+            node.second = unsafe { base.add(b) };
+        }
+    }
 }
 
 fn parse_workspace_id(id: &str) -> WorkspaceId {
