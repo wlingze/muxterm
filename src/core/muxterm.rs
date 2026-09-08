@@ -12,10 +12,12 @@ use std::ptr;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::AttentionEngine;
 use crate::core::attention::signal::AttentionSignal;
+use crate::core::catalog::{OpenRequest, ResolveIntent, ResolvedTarget};
 use crate::core::config_service::SettingsService;
 use crate::core::projects::ProjectsService;
 use crate::core::protocol::state::StateChange;
 use crate::core::workspace::pool::WorkspacePool;
+use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 
 use crate::core::protocol::ffi::callbacks::FfiCallbacks;
@@ -29,8 +31,14 @@ type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<St
 /// migrated to service methods.  Frontends never receive this Rust object;
 /// they use the public FFI facade and its safe client wrapper.
 pub struct Muxterm {
-    /// Catalog and its live WorkspacePool during the compatibility migration.
+    /// Catalog: provider/discovery/resolution services.
     pub(crate) catalog: crate::core::catalog::Catalog,
+    /// The single live WorkspacePool owned by the product session.
+    ///
+    /// Catalog keeps a compatibility pool only for standalone catalog tests and
+    /// legacy callers. FFI handles move that pool here during construction so
+    /// the production handle has exactly one live runtime owner.
+    pub(crate) pool: WorkspacePool,
     /// Core-owned Project records projected from the same SettingsService.
     pub(crate) projects: ProjectsService,
     /// Synchronous executor used by the C ABI boundary.
@@ -51,11 +59,11 @@ pub struct Muxterm {
 
 impl Muxterm {
     pub(crate) fn pool(&self) -> &WorkspacePool {
-        self.catalog.pool()
+        &self.pool
     }
 
     pub(crate) fn pool_mut(&mut self) -> &mut WorkspacePool {
-        self.catalog.pool_mut()
+        &mut self.pool
     }
 
     pub(crate) fn projects(&self) -> &ProjectsService {
@@ -64,6 +72,104 @@ impl Muxterm {
 
     pub(crate) fn projects_mut(&mut self) -> &mut ProjectsService {
         &mut self.projects
+    }
+
+    /// Resolve and open a product workspace through the single live pool.
+    ///
+    /// The provider lookup stays in Catalog, while pool insertion and
+    /// template application belong to the composition root that owns the
+    /// runtime instances.
+    pub(crate) async fn open_spec(
+        &mut self,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<&mut Workspace> {
+        Self::open_spec_parts(&mut self.catalog, &mut self.pool, spec).await
+    }
+
+    /// Open using explicitly split owner fields. The FFI boundary uses this
+    /// form so its Tokio runtime can be borrowed independently from Catalog
+    /// and the live pool.
+    pub(crate) async fn open_spec_parts<'a>(
+        catalog: &'a mut crate::core::catalog::Catalog,
+        pool: &'a mut WorkspacePool,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<&'a mut Workspace> {
+        let workspace_id = spec.id();
+        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
+        let template = spec
+            .template
+            .as_ref()
+            .and_then(|name| catalog.template_registry().get(name))
+            .cloned();
+        let runtime = catalog.new_runtime(spec)?;
+        let workspace = pool.open_spec_with_runtime(spec, runtime).await?;
+        if should_apply_template {
+            if let Some(template) = template {
+                workspace.start_template(template)?;
+            }
+        }
+        Ok(workspace)
+    }
+
+    /// Open a resolver result and retain its canonical descriptor in Core.
+    pub(crate) async fn open_resolved(
+        &mut self,
+        resolved: ResolvedTarget,
+    ) -> anyhow::Result<&mut Workspace> {
+        Self::open_resolved_parts(&mut self.catalog, &mut self.pool, resolved).await
+    }
+
+    /// Open a resolved target using explicitly split owner fields.
+    pub(crate) async fn open_resolved_parts<'a>(
+        catalog: &'a mut crate::core::catalog::Catalog,
+        pool: &'a mut WorkspacePool,
+        resolved: ResolvedTarget,
+    ) -> anyhow::Result<&'a mut Workspace> {
+        let workspace_id = resolved.workspace_id();
+        if let Some(existing) = pool.get(&workspace_id) {
+            if existing.resolved_target().map(|r| &r.spec) == Some(&resolved.spec) {
+                return Ok(pool.get_mut(&workspace_id).expect("刚查过必须存在"));
+            }
+            anyhow::bail!(
+                "identity key 撞到已打开 WorkspaceId {}（spec 不一致）",
+                workspace_id
+            );
+        }
+        let spec = resolved.spec.clone();
+        let canonical = resolved.canonical.clone();
+        let workspace = Self::open_spec_parts(catalog, pool, &spec).await?;
+        workspace.set_resolved_target(ResolvedTarget { canonical, spec });
+        Ok(workspace)
+    }
+
+    /// Resolve a product open request using recent descriptors from the live
+    /// pool, without making Catalog own or borrow that pool.
+    pub(crate) fn resolve_open_request(
+        &mut self,
+        request: &OpenRequest,
+    ) -> anyhow::Result<ResolvedTarget> {
+        let recent: Vec<ResolvedTarget> = self
+            .pool
+            .list()
+            .into_iter()
+            .filter_map(|workspace| workspace.resolved_target().cloned())
+            .collect();
+        self.catalog.resolve_open_request_with_recent(
+            request,
+            self.projects.list_projects(),
+            &recent,
+        )
+    }
+
+    /// Resolve and open a compatibility TargetConfig without exposing a spec
+    /// to the frontend caller.
+    pub(crate) async fn open_target(
+        &mut self,
+        config: &crate::core::quickconnect::model::TargetConfig,
+        intent: ResolveIntent,
+    ) -> anyhow::Result<&mut Workspace> {
+        let resolved = self.catalog.resolve_target(config, intent)?;
+        self.open_resolved(resolved).await
     }
 
     pub(crate) fn active_workspace(&self) -> Option<&Workspace> {

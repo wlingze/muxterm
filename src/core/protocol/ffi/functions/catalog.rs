@@ -4,6 +4,7 @@ use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::core::catalog::{OpenRequest, ResolveIntent};
+use crate::core::muxterm::Muxterm;
 use crate::core::protocol::candidate::CandidateRef;
 
 use super::super::api::{json_error, json_string, MuxtermHandle};
@@ -30,10 +31,11 @@ pub unsafe extern "C" fn muxterm_candidates_json(
             Ok(rows) => rows,
             Err(error) => return json_error(error),
         };
-        let candidates = handle.catalog.candidates(
+        let candidates = handle.catalog.candidates_with_pool(
             handle.projects.list_projects(),
             &existing,
             recent_limit as usize,
+            handle.pool(),
         );
         json_string(serde_json::json!({
             "ok": true,
@@ -69,16 +71,16 @@ pub unsafe extern "C" fn muxterm_open_json(
             Err(error) => return json_error(format!("OpenRequest JSON 解析失败: {error}")),
         };
         let handle = &mut *h;
-        let previous_active = handle.catalog.pool().active_id().cloned();
-        let resolved = match handle
-            .catalog
-            .resolve_open_request(&request, handle.projects.list_projects())
-        {
+        let previous_active = handle.pool().active_id().cloned();
+        let resolved = match handle.resolve_open_request(&request) {
             Ok(resolved) => resolved,
             Err(error) => return json_error(error),
         };
         let workspace_id = resolved.workspace_id();
-        let result = handle.rt.block_on(handle.catalog.open_resolved(resolved));
+        let result = {
+            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
+            rt.block_on(Muxterm::open_resolved_parts(catalog, pool, resolved))
+        };
         let (name, resolved_target) = match result {
             Ok(workspace) => (
                 workspace.name().to_string(),
@@ -89,7 +91,7 @@ pub unsafe extern "C" fn muxterm_open_json(
 
         if !request.activate {
             if let Some(previous_active) = previous_active {
-                handle.catalog.pool_mut().activate(&previous_active);
+                handle.pool_mut().activate(&previous_active);
             }
         }
         if let CandidateRef::Worktree {
@@ -149,8 +151,15 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
             _ => ResolveIntent::AttachOnly,
         };
         let handle = &mut *h;
-        let fut = handle.catalog.open_target(&config, intent);
-        match handle.rt.block_on(fut) {
+        let result = {
+            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
+            let resolved = match catalog.resolve_target(&config, intent) {
+                Ok(resolved) => resolved,
+                Err(error) => return json_error(error),
+            };
+            rt.block_on(Muxterm::open_resolved_parts(catalog, pool, resolved))
+        };
+        match result {
             Ok(workspace) => json_string(serde_json::json!({
                 "ok": true,
                 "id": workspace.id().as_str(),

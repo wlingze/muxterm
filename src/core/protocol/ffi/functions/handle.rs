@@ -182,8 +182,12 @@ fn boxed_handle(
             ProjectsService::in_memory()
         }
     };
+    // The FFI handle is the product composition root. Move the live pool out
+    // of Catalog so all runtimes have one Core owner in production.
+    let pool = catalog.take_pool();
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
+        pool,
         projects,
         rt,
         callbacks: FfiCallbacks::default(),

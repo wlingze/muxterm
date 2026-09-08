@@ -98,8 +98,8 @@ pub unsafe extern "C" fn muxterm_connect(h: *mut MuxtermHandle) -> i32 {
             return -1;
         }
         let handle = &mut *h;
-        let MuxtermHandle { catalog, rt, .. } = handle;
-        let Some(ws) = catalog.pool_mut().active_mut() else {
+        let (rt, pool) = (&handle.rt, &mut handle.pool);
+        let Some(ws) = pool.active_mut() else {
             return -1;
         };
         match rt.block_on(ws.connect()) {
