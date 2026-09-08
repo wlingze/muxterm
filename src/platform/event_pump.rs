@@ -115,6 +115,7 @@ impl EventPump {
         store: &mut ViewStore,
         workspace: crate::platform::ffi_client::ClientWorkspace,
     ) {
+        let workspace_id = workspace.id.clone();
         let tabs = self.client.get_workspace_tabs(&workspace.id);
         let panes = tabs
             .iter()
@@ -125,7 +126,16 @@ impl EventPump {
                 )
             })
             .collect();
+        let layouts = tabs
+            .iter()
+            .filter_map(|tab| {
+                self.client
+                    .get_workspace_layout(&workspace.id, tab.id)
+                    .map(|layout| (tab.id, layout))
+            })
+            .collect();
         store.replace_topology(workspace, tabs, panes);
+        store.replace_layouts(&workspace_id, layouts);
     }
 }
 
