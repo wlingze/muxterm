@@ -448,7 +448,7 @@ impl Catalog {
                     .runtime("herdr")
                     .ok_or_else(|| anyhow::anyhow!("herdr runtime 未注册"))?;
                 let namespace = config.session.clone();
-                let candidates = driver.list(connect.as_ref(), namespace.as_deref())?;
+                let candidates = driver.discover(connect.as_ref(), namespace.as_deref())?;
 
                 // exact identity：workspace_id 精确命中。
                 if let Some(wid) = &config.workspace_id {
@@ -733,7 +733,7 @@ impl Catalog {
         let driver = self
             .runtime(&identity.runtime_id)
             .ok_or_else(|| anyhow::anyhow!("unknown runtime '{}'", identity.runtime_id))?;
-        let candidates = driver.list(connect.as_ref(), identity.session.as_deref())?;
+        let candidates = driver.discover(connect.as_ref(), identity.session.as_deref())?;
         let candidate = candidates
             .iter()
             .find(|candidate| existing_identity_matches(candidate, identity))
@@ -829,7 +829,7 @@ impl Catalog {
                             if !runtime_supports_channels(driver.as_ref(), &supported_channels) {
                                 continue;
                             }
-                            if driver.list(connect.as_ref(), None).is_ok() {
+                            if driver.discover(connect.as_ref(), None).is_ok() {
                                 ok = true;
                                 break;
                             }
@@ -940,7 +940,7 @@ fn list_sessions_on_connect(
         let handles: Vec<_> = runtimes
             .iter()
             .filter(|driver| runtime_supports_channels(driver.as_ref(), supported_channels))
-            .map(|driver| scope.spawn(|| driver.list(connect, None).unwrap_or_default()))
+            .map(|driver| scope.spawn(|| driver.discover(connect, None).unwrap_or_default()))
             .collect();
         handles
             .into_iter()

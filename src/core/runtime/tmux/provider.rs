@@ -40,7 +40,7 @@ impl RuntimeProvider for TmuxDriver {
         ]
     }
 
-    fn list(
+    fn discover(
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
@@ -83,7 +83,7 @@ impl RuntimeProvider for TmuxDriver {
             .collect())
     }
 
-    fn open(
+    fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,

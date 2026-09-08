@@ -39,7 +39,7 @@ impl RuntimeProvider for MockDriver {
     fn support(&self) -> &'static [RuntimeCapability] {
         self.support
     }
-    fn list(
+    fn discover(
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
@@ -61,7 +61,7 @@ impl RuntimeProvider for MockDriver {
             })
             .collect())
     }
-    fn open(
+    fn new_instance(
         &self,
         _connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,
@@ -119,7 +119,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
         &[ChannelKind::UnixSocket]
     }
 
-    fn list(
+    fn discover(
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
@@ -127,7 +127,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
         Ok(Vec::new())
     }
 
-    fn open(
+    fn new_instance(
         &self,
         _connect: Arc<dyn TargetConnection>,
         _spec: &WorkspaceSpec,
@@ -543,7 +543,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
             &[RuntimeCapability::Discover]
         }
 
-        fn list(
+        fn discover(
             &self,
             connect: &dyn TargetConnection,
             _namespace: Option<&str>,
@@ -563,7 +563,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
             }])
         }
 
-        fn open(
+        fn new_instance(
             &self,
             _connect: Arc<dyn TargetConnection>,
             _spec: &WorkspaceSpec,

@@ -27,7 +27,7 @@ impl RuntimeProvider for ShellDriver {
         &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane]
     }
 
-    fn list(
+    fn discover(
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
@@ -35,7 +35,7 @@ impl RuntimeProvider for ShellDriver {
         Ok(Vec::new())
     }
 
-    fn open(
+    fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,

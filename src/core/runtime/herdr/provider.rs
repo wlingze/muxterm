@@ -42,7 +42,7 @@ impl RuntimeProvider for HerdrDriver {
         &[ChannelKind::UnixSocket]
     }
 
-    fn list(
+    fn discover(
         &self,
         connect: &dyn TargetConnection,
         namespace: Option<&str>,
@@ -116,7 +116,7 @@ impl RuntimeProvider for HerdrDriver {
         Ok(out)
     }
 
-    fn open(
+    fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,

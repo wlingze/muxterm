@@ -43,36 +43,14 @@ pub trait RuntimeProvider: Send + Sync {
         &self,
         connection: &dyn TargetConnection,
         namespace: Option<&str>,
-    ) -> anyhow::Result<Vec<ExistingCandidate>> {
-        self.list(connection, namespace)
-    }
-
-    /// Compatibility name used by the current Catalog implementation.
-    fn list(
-        &self,
-        _connection: &dyn TargetConnection,
-        _namespace: Option<&str>,
-    ) -> anyhow::Result<Vec<ExistingCandidate>> {
-        Ok(Vec::new())
-    }
+    ) -> anyhow::Result<Vec<ExistingCandidate>>;
 
     /// Construct an unconnected Runtime instance.
     fn new_instance(
         &self,
         connection: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,
-    ) -> anyhow::Result<Box<dyn Runtime>> {
-        self.open(connection, spec)
-    }
-
-    /// Compatibility name for the pre-provider Catalog implementation.
-    fn open(
-        &self,
-        _connection: Arc<dyn TargetConnection>,
-        _spec: &WorkspaceSpec,
-    ) -> anyhow::Result<Box<dyn Runtime>> {
-        Err(anyhow::anyhow!("runtime provider has no instance factory"))
-    }
+    ) -> anyhow::Result<Box<dyn Runtime>>;
 }
 
 /// Whether a transport can provide every channel required by a runtime.
