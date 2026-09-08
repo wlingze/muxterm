@@ -18,16 +18,17 @@ use gtk4::{
 
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
-use crate::core::discovery::existing::ExistingEntry;
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
     PanelTab, SearchRow, SearchScope,
 };
 use crate::platform::linux::quick_pick;
+use crate::platform::linux::quickconnect::existing::{
+    ExistingEntry, ExistingRuntime, ExistingTransport,
+};
 use crate::platform::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
-    WorkspaceQuery,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetTransport, WorkspaceQuery,
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
@@ -883,7 +884,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                 // named session.  Keep the session in the
                                 // widget identity so two sessions exposing
                                 // `w1` cannot make the first row win attach.
-                                let identity = if entry.runtime == TargetRuntime::Herdr {
+                                let identity = if entry.runtime == ExistingRuntime::Herdr {
                                     format!(
                                         "{}-{}",
                                         identity,
@@ -1456,8 +1457,8 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
 /// C9：connect name：本机 "local" / SSH Host alias。
 fn existing_connect_name(entry: &ExistingEntry) -> String {
     match &entry.transport {
-        TargetTransport::Local => "local".to_string(),
-        TargetTransport::Ssh { name } => name.clone(),
+        ExistingTransport::Local => "local".to_string(),
+        ExistingTransport::Ssh { name } => name.clone(),
     }
 }
 
@@ -1474,7 +1475,7 @@ fn existing_row(entry: &ExistingEntry) -> GtkBox {
         .orientation(Orientation::Horizontal)
         .spacing(6)
         .build();
-    if let TargetTransport::Ssh { name } = &entry.transport {
+    if let ExistingTransport::Ssh { name } = &entry.transport {
         let dot = Label::new(Some("●"));
         dot.set_widget_name(&ssh_dot_widget_name(name));
         dot.add_css_class(ssh_dot_css_class(SshReach::Unknown));
@@ -1606,8 +1607,8 @@ mod tests {
         let existing = ExistingPanelState {
             locals: vec![ExistingEntry {
                 title: "orphan".into(),
-                runtime: TargetRuntime::Tmux,
-                transport: TargetTransport::Local,
+                runtime: ExistingRuntime::Tmux,
+                transport: ExistingTransport::Local,
                 tmux_session: Some("orphan".into()),
                 tmux_socket: Some("muxterm-test-root-search".into()),
                 herdr_session: None,
@@ -1664,8 +1665,8 @@ mod tests {
     fn existing_items_home_is_flat_local_and_ssh_self() {
         let local = ExistingEntry {
             title: "mux-dup".into(),
-            runtime: TargetRuntime::Tmux,
-            transport: TargetTransport::Local,
+            runtime: ExistingRuntime::Tmux,
+            transport: ExistingTransport::Local,
             tmux_session: Some("mux-dup".into()),
             tmux_socket: None,
             herdr_session: None,
@@ -1674,8 +1675,8 @@ mod tests {
         };
         let ssh_self = ExistingEntry {
             title: "mux-dup".into(),
-            runtime: TargetRuntime::Tmux,
-            transport: TargetTransport::Ssh {
+            runtime: ExistingRuntime::Tmux,
+            transport: ExistingTransport::Ssh {
                 name: "self".into(),
             },
             tmux_session: Some("mux-dup".into()),
@@ -1716,10 +1717,10 @@ mod tests {
         assert_eq!(existing.len(), 2, "local + ssh-self 必须双份: {items:?}");
         assert!(existing
             .iter()
-            .any(|e| { e.title == "mux-dup" && matches!(e.transport, TargetTransport::Local) }));
+            .any(|e| { e.title == "mux-dup" && matches!(e.transport, ExistingTransport::Local) }));
         assert!(existing.iter().any(|e| {
             e.title == "mux-dup"
-                && matches!(&e.transport, TargetTransport::Ssh { name } if name == "self")
+                && matches!(&e.transport, ExistingTransport::Ssh { name } if name == "self")
         }));
     }
 
@@ -1728,7 +1729,7 @@ mod tests {
     fn existing_row_widget_includes_connect_name() {
         let src = include_str!("quickconnect_panel.rs");
         let start = src
-            .find("PanelItem::Existing(entry)")
+            .find("PanelItem::Existing(entry) =>")
             .expect("Existing 行渲染应存在");
         let chunk = &src[start..];
         assert!(
@@ -1752,8 +1753,8 @@ mod tests {
     fn existing_attach_config_preserves_target_identity() {
         let tmux = existing_entry_to_config(&ExistingEntry {
             title: "matrix".into(),
-            runtime: TargetRuntime::Tmux,
-            transport: TargetTransport::Local,
+            runtime: ExistingRuntime::Tmux,
+            transport: ExistingTransport::Local,
             tmux_session: Some("matrix".into()),
             tmux_socket: Some("muxterm-test-existing".into()),
             herdr_session: None,
@@ -1766,8 +1767,8 @@ mod tests {
 
         let herdr = existing_entry_to_config(&ExistingEntry {
             title: "worktree".into(),
-            runtime: TargetRuntime::Herdr,
-            transport: TargetTransport::Local,
+            runtime: ExistingRuntime::Herdr,
+            transport: ExistingTransport::Local,
             tmux_session: None,
             tmux_socket: None,
             herdr_session: Some("named".into()),
@@ -1791,8 +1792,8 @@ mod tests {
             PanelItem::Back,
             PanelItem::Existing(ExistingEntry {
                 title: "w1".into(),
-                runtime: TargetRuntime::Herdr,
-                transport: TargetTransport::Local,
+                runtime: ExistingRuntime::Herdr,
+                transport: ExistingTransport::Local,
                 tmux_session: None,
                 tmux_socket: None,
                 herdr_session: Some("default".into()),
@@ -1862,21 +1863,28 @@ mod tests {
         assert_eq!(filter_panel_items(&items, "nomatch").len(), 0);
     }
 
-    fn existing(title: &str, runtime: TargetRuntime, transport: TargetTransport) -> ExistingEntry {
+    fn existing(
+        title: &str,
+        runtime: ExistingRuntime,
+        transport: ExistingTransport,
+    ) -> ExistingEntry {
         ExistingEntry {
             title: title.into(),
             runtime,
             transport,
-            tmux_session: (runtime == TargetRuntime::Tmux).then(|| title.to_string()),
+            tmux_session: (runtime == ExistingRuntime::Tmux).then(|| title.to_string()),
             tmux_socket: None,
-            herdr_session: (runtime == TargetRuntime::Herdr).then(|| "default".to_string()),
-            herdr_workspace_id: (runtime == TargetRuntime::Herdr).then(|| title.to_string()),
+            herdr_session: (runtime == ExistingRuntime::Herdr).then(|| "default".to_string()),
+            herdr_workspace_id: (runtime == ExistingRuntime::Herdr).then(|| title.to_string()),
             herdr_socket: None,
         }
     }
 
     #[test]
     fn filter_at_runtime_and_host_selects_existing_tmux_and_project() {
+        let existing_ryzen = ExistingTransport::Ssh {
+            name: "ryzen".into(),
+        };
         let ryzen = TargetTransport::Ssh {
             name: "ryzen".into(),
         };
@@ -1887,12 +1895,20 @@ mod tests {
             PanelItem::Host {
                 alias: "mac".into(),
             },
-            PanelItem::Existing(existing("dev", TargetRuntime::Tmux, ryzen.clone())),
-            PanelItem::Existing(existing("agents", TargetRuntime::Herdr, ryzen.clone())),
+            PanelItem::Existing(existing(
+                "dev",
+                ExistingRuntime::Tmux,
+                existing_ryzen.clone(),
+            )),
+            PanelItem::Existing(existing(
+                "agents",
+                ExistingRuntime::Herdr,
+                existing_ryzen.clone(),
+            )),
             PanelItem::Existing(existing(
                 "local-dev",
-                TargetRuntime::Tmux,
-                TargetTransport::Local,
+                ExistingRuntime::Tmux,
+                ExistingTransport::Local,
             )),
             PanelItem::Target(
                 QuickConnectEntry::new(
@@ -1922,8 +1938,8 @@ mod tests {
         );
         assert!(hit.iter().all(|item| match item {
             PanelItem::Existing(e) => {
-                e.runtime == TargetRuntime::Tmux
-                    && matches!(&e.transport, TargetTransport::Ssh { name } if name == "ryzen")
+                e.runtime == ExistingRuntime::Tmux
+                    && matches!(&e.transport, ExistingTransport::Ssh { name } if name == "ryzen")
             }
             PanelItem::Target(entry, _) => {
                 entry.config.runtime == TargetRuntime::Tmux
