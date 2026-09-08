@@ -24,7 +24,7 @@ use muxterm::core::transport::ssh::probe::SshReach;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::platform::linux::quickconnect::model::{
-    QuickBadge, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
 use muxterm::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
 use muxterm::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
@@ -757,6 +757,113 @@ fn existing_connections_navigation() {
                 "导航回调应被触发: {:?}",
                 navs.borrow()
             );
+        });
+    });
+}
+
+/// CI 回归：Existing/Project 行 `activate()` 时若 debounce rebuild 未提交，
+/// 旧实现会先 flush 毁掉被点行并改选第一行，attach 静默停在默认 shell。
+/// 键盘 Enter 仍应 flush（见 keyboard_navigation 测试）；点击必须按被点行派发。
+#[test]
+fn row_activate_ignores_pending_rebuild() {
+    run_isolated("row_activate_ignores_pending_rebuild", || {
+        gtk4::test_synced(|| {
+            gtk_test_framework_smoke();
+            let win = gtk4::Window::builder()
+                .title("panel-row-activate")
+                .default_width(800)
+                .default_height(600)
+                .build();
+            win.present();
+            gtk4::test_widget_wait_for_draw(&win);
+
+            let connected = Rc::new(RefCell::new(Vec::<String>::new()));
+            let connected_cb = connected.clone();
+            let new_project = Rc::new(Cell::new(0u32));
+            let new_project_cb = new_project.clone();
+            show(
+                &win,
+                PanelShowArgs {
+                    initial_tab: PanelTab::Workspaces,
+                    workspaces: vec![
+                        PanelItem::Folder {
+                            id: "existing-connections",
+                            title: "已有的连接".into(),
+                        },
+                        target("legion"),
+                        target("muxterm"),
+                        PanelItem::NewProject,
+                    ],
+                    workspace_search_items: vec![],
+                    agents: vec![],
+                    attention: vec![],
+                    on_connect: Box::new(move |cfg| {
+                        connected_cb.borrow_mut().push(cfg.name);
+                    }),
+                    on_existing_connect: Box::new(|_| {}),
+                    on_edit: Box::new(|_| {}),
+                    on_new_project: Box::new(move || {
+                        new_project_cb.set(new_project_cb.get() + 1);
+                    }),
+                    on_jump_pane: Box::new(|_, _, _| {}),
+                    search: Box::new(|_, _| vec![]),
+                    on_close: Box::new(|| {}),
+                    ssh_reach: HashMap::new(),
+                    existing: Rc::new(RefCell::new(
+                        muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                    )),
+                    on_existing_nav: Box::new(|_| {}),
+                },
+            );
+            pump_main_loop(80);
+
+            let muxterm_id = QuickConnect::unique_id(&TargetConfig::new(
+                "muxterm",
+                TargetRuntime::Tmux,
+                TargetTransport::Local,
+                "~/x",
+            ));
+            let list = find_by_name(&win, "muxterm-panel-list")
+                .expect("列表应存在")
+                .downcast::<gtk4::ListBox>()
+                .expect("ListBox 类型");
+            let muxterm_row = find_by_name(&win, &muxterm_id)
+                .expect("muxterm Project 行应存在")
+                .downcast::<gtk4::ListBoxRow>()
+                .expect("muxterm 行应是 ListBoxRow");
+            assert_ne!(
+                list.selected_row().map(|row| row.index()),
+                Some(muxterm_row.index()),
+                "被点行不得是当前选中的第一行，否则测不出 flush 改选"
+            );
+
+            let entry = find_by_name(&win, "muxterm-panel-entry")
+                .expect("共享搜索框应存在")
+                .downcast::<gtk4::Entry>()
+                .expect("Entry 类型");
+            // 不推进主循环：changed → schedule_rebuild 仍挂着 debounce。
+            entry.set_text("zzzz-no-match");
+            muxterm_row.activate();
+            pump_main_loop(40);
+
+            assert_eq!(
+                connected.borrow().as_slice(),
+                &["muxterm".to_string()],
+                "pending rebuild 时点击必须连接被点行，不能 flush 成第一行/空列表"
+            );
+            assert_eq!(
+                new_project.get(),
+                0,
+                "点击 Project 行不得误触发 New Project"
+            );
+            assert!(
+                find_by_name(&win, "muxterm-panel").is_none(),
+                "点击连接后应关闭面板"
+            );
+
+            win.close();
+            win.destroy();
+            pump_main_loop(40);
         });
     });
 }

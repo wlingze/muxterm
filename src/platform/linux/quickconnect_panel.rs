@@ -1169,71 +1169,82 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         });
     }
 
-    let activate = {
-        let list = list.clone();
+    let run_action = {
         let callbacks = callbacks.clone();
         let dismiss = dismiss.clone();
         let existing = existing.clone();
-        let visible_actions = visible_actions.clone();
         let schedule_rebuild = schedule_rebuild.clone();
-        let flush_rebuild = flush_rebuild.clone();
-        let finished = finished.clone();
         let entry = entry.clone();
-        move || {
+        move |action: VisibleAction| match action {
+            VisibleAction::Connect(config) => {
+                dismiss();
+                (callbacks.on_connect)(config);
+            }
+            VisibleAction::ExistingConnect(config) => {
+                dismiss();
+                (callbacks.on_existing_connect)(config);
+            }
+            VisibleAction::NewProject => {
+                dismiss();
+                (callbacks.on_new_project)();
+            }
+            VisibleAction::Navigate(next) => {
+                existing.borrow_mut().nav = next.clone();
+                (callbacks.on_existing_nav)(next);
+                schedule_rebuild();
+                entry.grab_focus();
+            }
+            VisibleAction::Jump {
+                workspace_id,
+                pane_id,
+                seq,
+            } => {
+                // 搜索跳转由 window 侧关闭；独立面板测试会保留面板量宽度。
+                (callbacks.on_jump_pane)(workspace_id, pane_id, seq);
+            }
+            VisibleAction::None => {}
+        }
+    };
+    let activate_row = {
+        let visible_actions = visible_actions.clone();
+        let run_action = run_action.clone();
+        let finished = finished.clone();
+        move |row: &ListBoxRow| {
             if *finished.borrow() {
                 return;
             }
-            // Enter 紧跟最后一个字符时，timeout 尚未重建列表。先同步提交
-            // 最新 query，避免激活旧行或因尚无选中行而静默失效。
-            flush_rebuild();
-            let Some(row) = list.selected_row() else {
-                return;
-            };
             let idx = row.index() as usize;
             let action = visible_actions
                 .borrow()
                 .get(idx)
                 .cloned()
                 .unwrap_or(VisibleAction::None);
-            match action {
-                VisibleAction::Connect(config) => {
-                    dismiss();
-                    (callbacks.on_connect)(config);
-                }
-                VisibleAction::ExistingConnect(config) => {
-                    dismiss();
-                    (callbacks.on_existing_connect)(config);
-                }
-                VisibleAction::NewProject => {
-                    dismiss();
-                    (callbacks.on_new_project)();
-                }
-                VisibleAction::Navigate(next) => {
-                    existing.borrow_mut().nav = next.clone();
-                    (callbacks.on_existing_nav)(next);
-                    schedule_rebuild();
-                    entry.grab_focus();
-                }
-                VisibleAction::Jump {
-                    workspace_id,
-                    pane_id,
-                    seq,
-                } => {
-                    // 搜索跳转由 window 侧关闭；独立面板测试会保留面板量宽度。
-                    (callbacks.on_jump_pane)(workspace_id, pane_id, seq);
-                }
-                VisibleAction::None => {}
-            }
+            run_action(action);
         }
     };
 
     list.connect_row_activated({
-        let activate = activate.clone();
-        move |_, _| activate()
+        let activate_row = activate_row.clone();
+        move |_, row| activate_row(row)
     });
     entry.connect_activate({
-        let activate = activate.clone();
-        move |_| activate()
+        let activate_row = activate_row.clone();
+        let flush_rebuild = flush_rebuild.clone();
+        let list = list.clone();
+        let finished = finished.clone();
+        move |_| {
+            if *finished.borrow() {
+                return;
+            }
+            // Enter 紧跟最后一个字符时，timeout 尚未重建列表。先同步提交
+            // 最新 query，避免激活旧行或因尚无选中行而静默失效。
+            // 点击/row.activate() 不得走这条路径：flush 会毁掉被点的行
+            // 并改选第一行（Existing 的 Back、根列表的 Folder），attach 静默失败。
+            flush_rebuild();
+            if let Some(row) = list.selected_row() {
+                activate_row(&row);
+            }
+        }
     });
 
     {
