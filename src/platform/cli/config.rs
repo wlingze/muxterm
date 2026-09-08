@@ -361,6 +361,8 @@ fn project_from_args(args: &[String]) -> Result<ProjectDocument> {
             target: flag_value(args, "--target").unwrap_or_default(),
             options: Default::default(),
         },
+        template: None,
+        worktrees: Vec::new(),
         command: args
             .iter()
             .enumerate()

@@ -118,6 +118,8 @@ fn import_legacy_project(value: &toml::Value) -> Option<Result<ProjectDocument>>
             workspace_id: None,
         },
         transport,
+        template: None,
+        worktrees: Vec::new(),
         command,
         env,
     }))

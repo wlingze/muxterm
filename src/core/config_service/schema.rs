@@ -326,10 +326,29 @@ pub struct ProjectDocument {
     pub path: String,
     pub runtime: ProjectRuntime,
     pub transport: ProjectTransport,
+    /// Optional template applied only when the Project creates a Workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// Git worktrees registered under this Project.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<WorktreeDocument>,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+/// Persisted Project child describing one git checkout.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
+pub struct WorktreeDocument {
+    pub id: String,
+    pub path: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub repo_root: String,
+    #[serde(default)]
+    pub linked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
@@ -380,6 +399,8 @@ impl ProjectDocument {
                 target,
                 options: BTreeMap::new(),
             },
+            template: None,
+            worktrees: Vec::new(),
             command: Vec::new(),
             env: BTreeMap::new(),
         }
