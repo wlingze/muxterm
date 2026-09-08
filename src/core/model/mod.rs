@@ -10,8 +10,8 @@
 //!
 //! Step 2：TerminalModel 已接入，MockRuntime 覆盖常见 Task 行为；后续 Step 3+
 //! 接入 ShellRuntime / TmuxRuntime 后，逐步把平台层切到 TerminalModel。
-// 重构过渡期：`protocol::model` 的部分 API 尚未被 GTK 前端使用（GTK 仍走旧路径），
-// 保留全部 API 供 TUI 前端 + 未来 GTK 切换。统一放宽 dead_code。
+// 重构过渡期：legacy model 的部分 API 尚未被 GTK 前端使用（GTK 仍走旧路径），
+// 保留全部兼容 API 供 TUI 前端 + 未来 GTK 切换。统一放宽 dead_code。
 #![allow(dead_code)]
 
 pub mod backend;

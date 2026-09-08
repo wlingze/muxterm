@@ -1,25 +1,15 @@
 //! Core protocol layer: model + terminal + ffi (C ABI).
 
 pub mod candidate;
-pub mod terminal;
-
-// The DTO source files remain in their legacy location for this incremental
-// migration, but these declarations make protocol the owning module tree.
-#[path = "../model/layout.rs"]
 pub mod layout;
-#[path = "../model/state.rs"]
 pub mod state;
-#[path = "../model/task.rs"]
 pub mod task;
+pub mod terminal;
 
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
 // Stable protocol namespaces.
-//
-// The implementation files are still kept under the legacy `model` module
-// during the incremental migration, but callers use this boundary so the
-// eventual crate split does not change every Runtime/frontend import again.
 
 /// Runtime 能力声明。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
