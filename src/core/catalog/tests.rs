@@ -883,3 +883,88 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
     assert_eq!(resolved.spec, spec);
     assert_eq!(resolved.canonical.name, "Recent Project");
 }
+
+#[tokio::test]
+async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
+    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::core::workspace::provenance::WorkspaceProvenance;
+
+    let mut project = Project::new(
+        "project-a",
+        "Project A",
+        TargetConfig::new(
+            "project",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "/repo",
+        ),
+    );
+    project.target.session = Some("demo".into());
+    project.target.socket = Some("muxterm-test-candidates".into());
+    project
+        .add_worktree(Worktree::new(
+            "wt-a",
+            "/repo-wt",
+            "feature/a",
+            "/repo",
+            true,
+        ))
+        .unwrap();
+
+    let existing = SessionCandidate {
+        runtime_id: "tmux".into(),
+        transport_id: "local".into(),
+        target: String::new(),
+        namespace: None,
+        name: "demo".into(),
+        extra: "wire-detail".into(),
+        session: Some("demo".into()),
+        socket: Some("muxterm-test-candidates".into()),
+        workspace_id: None,
+    };
+    let spec =
+        WorkspaceSpec::local_tmux(Some("demo".into()), Some("muxterm-test-candidates".into()));
+    let workspace_id = spec.id();
+    let mut catalog = Catalog::new();
+    catalog
+        .pool_mut()
+        .open(workspace_id.clone(), "demo".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+    catalog
+        .pool_mut()
+        .get_mut(&workspace_id)
+        .unwrap()
+        .set_resolved_target(ResolvedTarget {
+            canonical: project.target.clone(),
+            spec,
+        });
+    catalog
+        .pool_mut()
+        .get_mut(&workspace_id)
+        .unwrap()
+        .set_provenance(Some(WorkspaceProvenance::project("project-a")));
+
+    let rows = catalog.candidates(&[project], &[existing], 1);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
+        vec![
+            crate::core::protocol::candidate::CandidateKind::Project,
+            crate::core::protocol::candidate::CandidateKind::Worktree,
+            crate::core::protocol::candidate::CandidateKind::Existing,
+            crate::core::protocol::candidate::CandidateKind::Recent,
+        ]
+    );
+    assert!(
+        rows[0].in_pool.is_some(),
+        "project provenance should be indexed"
+    );
+    assert!(
+        rows[2].in_pool.is_some(),
+        "existing identity should be indexed"
+    );
+    assert_eq!(rows[3].in_pool, Some(workspace_id));
+}

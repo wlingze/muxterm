@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::core::projects::Project;
-use crate::core::protocol::candidate::{CandidateRef, ExistingCandidateRef};
+use crate::core::protocol::candidate::{
+    Candidate, CandidateRef, ExistingCandidate, ExistingCandidateRef,
+};
 use crate::core::runtime::Runtime;
 use crate::core::transport::registry::ConnectionRegistry;
 use crate::core::transport::TargetConnection;
@@ -596,6 +598,114 @@ impl Catalog {
                 Ok(resolved)
             }
         }
+    }
+
+    /// Build the unified Project/Worktree/Existing/Recent list without
+    /// creating Runtime instances or performing discovery itself.
+    pub fn candidates(
+        &self,
+        projects: &[Project],
+        existing: &[ExistingCandidate],
+        recent_limit: usize,
+    ) -> Vec<Candidate> {
+        let mut rows = Vec::new();
+        for project in projects {
+            let mut project_row = Candidate::project(project.id.to_string(), project.name.clone());
+            project_row.subtitle = project.target.path.clone();
+            project_row.badges = vec![
+                project.target.runtime.as_str().into(),
+                project.target.transport.label(),
+            ];
+            project_row.in_pool = self.workspace_for_provenance(project.id.as_str(), None);
+            rows.push(project_row);
+
+            for worktree in &project.worktrees {
+                let mut worktree_row = Candidate::worktree(
+                    project.id.to_string(),
+                    worktree.id.to_string(),
+                    if worktree.branch.trim().is_empty() {
+                        worktree.id.to_string()
+                    } else {
+                        worktree.branch.clone()
+                    },
+                );
+                worktree_row.subtitle = worktree.path.clone();
+                worktree_row.badges = vec!["worktree".into()];
+                worktree_row.in_pool =
+                    self.workspace_for_provenance(project.id.as_str(), Some(worktree.id.as_str()));
+                rows.push(worktree_row);
+            }
+        }
+
+        for candidate in existing {
+            let mut row = Candidate::existing(candidate, None);
+            let identity = match &row.reference {
+                CandidateRef::Existing { identity } => identity,
+                _ => unreachable!("Candidate::existing must retain Existing reference"),
+            };
+            row.in_pool = self.workspace_for_existing(identity);
+            rows.push(row);
+        }
+
+        for workspace in self.pool.recent_workspaces(recent_limit) {
+            let Some(resolved) = workspace.resolved_target() else {
+                continue;
+            };
+            let mut row =
+                Candidate::recent(resolved.canonical.identity_key(), resolved.display_name());
+            row.subtitle = resolved.spec.path.clone();
+            row.badges = vec![
+                resolved.spec.runtime.clone(),
+                resolved.spec.transport.clone(),
+            ];
+            row.in_pool = Some(workspace.id().clone());
+            rows.push(row);
+        }
+        rows
+    }
+
+    fn workspace_for_provenance(
+        &self,
+        project_id: &str,
+        worktree_id: Option<&str>,
+    ) -> Option<WorkspaceId> {
+        self.pool.list().into_iter().find_map(|workspace| {
+            let provenance = workspace.provenance()?;
+            let same_project = provenance
+                .project_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == project_id);
+            let same_worktree = provenance
+                .worktree_id
+                .as_ref()
+                .map(|id| Some(id.as_str()) == worktree_id)
+                .unwrap_or(worktree_id.is_none());
+            (same_project && same_worktree).then(|| workspace.id().clone())
+        })
+    }
+
+    fn workspace_for_existing(&self, identity: &ExistingCandidateRef) -> Option<WorkspaceId> {
+        self.pool.list().into_iter().find_map(|workspace| {
+            let resolved = workspace.resolved_target()?;
+            let canonical = &resolved.canonical;
+            let target = match &canonical.transport {
+                crate::core::quickconnect::model::TargetTransport::Local => "",
+                crate::core::quickconnect::model::TargetTransport::Ssh { name } => name.as_str(),
+            };
+            let transport_id = match &canonical.transport {
+                crate::core::quickconnect::model::TargetTransport::Local => "local",
+                crate::core::quickconnect::model::TargetTransport::Ssh { .. } => "ssh",
+            };
+            let target_matches =
+                identity.target == target || (target.is_empty() && identity.target == "local");
+            (canonical.runtime.as_str() == identity.runtime_id
+                && transport_id == identity.transport_id
+                && target_matches
+                && canonical.session == identity.session
+                && canonical.socket == identity.socket
+                && canonical.workspace_id == identity.workspace_id)
+                .then(|| workspace.id().clone())
+        })
     }
 
     fn resolve_existing_candidate(
