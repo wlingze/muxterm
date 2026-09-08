@@ -919,7 +919,9 @@ impl AppWindow {
         // 首次刷新 + 窗口级 16ms 轮询（切连接后仍打到当前 active slot）
         {
             let mut s = state.borrow_mut();
-            let events = s.active_workspace_mut().refresh();
+            let events = EventPump::poll_pool_active(&mut s.pool)
+                .map(|(_, events)| events)
+                .unwrap_or_default();
             let wid = s.active_ws_id().clone();
             let ws = workspace_replica_id(&wid);
             for event in &events {
@@ -956,14 +958,16 @@ impl AppWindow {
                         // 后台工作区由 core 池 poll：PaneBuf 已在 Workspace::refresh 里
                         // 喂好，这里把注意力信号应用到引擎，并把 Surface 事件
                         // 按 (WorkspaceId, PaneId) 送进对应 background pixel cache。
-                        for (wid, events) in s.pool.poll_background() {
+                        for (wid, events) in EventPump::poll_pool_background(&mut s.pool) {
                             dispatch_event_batch_for(&mut s, &wid, events);
                         }
                         s.pool.evict_expired();
                         for wid in s.pool.take_evicted() {
                             s.pixel_cache.remove(&wid);
                         }
-                        let events = s.active_workspace_mut().refresh();
+                        let events = EventPump::poll_pool_active(&mut s.pool)
+                            .map(|(_, events)| events)
+                            .unwrap_or_default();
                         let mut structural = false;
                         for ev in &events {
                             if matches!(
@@ -1305,7 +1309,9 @@ impl AppWindow {
         maybe_warn_workspace_capacity(&self._state, &self.window);
         let (n, pending_close) = {
             let mut s = self._state.borrow_mut();
-            let events = s.active_workspace_mut().refresh();
+            let events = EventPump::poll_pool_active(&mut s.pool)
+                .map(|(_, events)| events)
+                .unwrap_or_default();
             let n = events
                 .iter()
                 .filter(|e| {
@@ -1403,7 +1409,9 @@ impl AppWindow {
         maybe_warn_workspace_capacity(&self._state, &self.window);
         let pending_close = {
             let mut s = self._state.borrow_mut();
-            let events = s.active_workspace_mut().refresh();
+            let events = EventPump::poll_pool_active(&mut s.pool)
+                .map(|(_, events)| events)
+                .unwrap_or_default();
             dispatch_event_batch(&mut s, events);
             drain_attention_notifications(&mut s);
             sync_pane_outputs(&mut s);

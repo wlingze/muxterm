@@ -7,6 +7,12 @@
 use crate::platform::ffi_client::{ClientWorkspaceEvent, FfiClient};
 
 #[cfg(feature = "gtk")]
+use crate::core::protocol::state::StateChange;
+#[cfg(feature = "gtk")]
+use crate::core::workspace::id::WorkspaceId;
+#[cfg(feature = "gtk")]
+use crate::core::workspace::pool::WorkspacePool;
+#[cfg(feature = "gtk")]
 use crate::platform::linux::view_store::ViewStore;
 
 /// Owns the FFI client while providing the single workspace-event poll path.
@@ -71,6 +77,23 @@ impl EventPump {
         self.client = client;
     }
 
+    /// Poll the legacy GTK pool through the same event-pump boundary used by
+    /// the FFI source. This adapter is temporary: it keeps the production
+    /// migration to one consumer from adding a second runtime owner.
+    #[cfg(feature = "gtk")]
+    pub fn poll_pool_background(pool: &mut WorkspacePool) -> Vec<(WorkspaceId, Vec<StateChange>)> {
+        pool.poll_background()
+    }
+
+    /// Poll the active workspace through the compatibility source and retain
+    /// its stable identity next to the batch for the eventual FFI path.
+    #[cfg(feature = "gtk")]
+    pub fn poll_pool_active(pool: &mut WorkspacePool) -> Option<(WorkspaceId, Vec<StateChange>)> {
+        let workspace_id = pool.active_id()?.clone();
+        let events = pool.active_mut()?.refresh();
+        Some((workspace_id, events))
+    }
+
     #[cfg(feature = "gtk")]
     fn refresh_workspace(&self, store: &mut ViewStore, workspace_id: &str) {
         let Ok(workspaces) = self.client.workspace_list() else {
@@ -109,6 +132,10 @@ impl EventPump {
 #[cfg(all(test, feature = "gtk"))]
 mod tests {
     use super::EventPump;
+    use crate::core::runtime::mock::MockRuntime;
+    use crate::core::workspace::id::WorkspaceId;
+    use crate::core::workspace::pool::WorkspacePool;
+    use crate::core::workspace::workspace::Workspace;
     use crate::platform::ffi_client::{ClientEvent, ClientWorkspaceEvent, FfiClient};
     use crate::platform::linux::view_store::ViewStore;
 
@@ -141,5 +168,19 @@ mod tests {
         let events = store.take_pane_render_events("local//one/shell/", 7);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, b"output");
+    }
+
+    #[test]
+    fn compatibility_pool_poll_keeps_workspace_identity_with_the_batch() {
+        let mut pool = WorkspacePool::default();
+        let id = WorkspaceId::new("local", None, "pump", "shell", "");
+        pool.insert_connected(Workspace::new(
+            id.clone(),
+            "pump".into(),
+            Box::new(MockRuntime::with_single_pane()),
+        ));
+
+        let (observed, _) = EventPump::poll_pool_active(&mut pool).expect("active workspace");
+        assert_eq!(observed, id);
     }
 }
