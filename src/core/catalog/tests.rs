@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use super::{Catalog, Reach, ResolvedTarget};
 use crate::core::catalog::connect::Connect;
-use crate::core::catalog::driver::{RuntimeDriver, SessionCandidate};
-use crate::core::catalog::transport::{TargetInfo, Transport};
+use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
+use crate::core::catalog::transport::{TargetInfo, TransportProvider};
 use crate::core::model::backend::mock::MockRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
+use crate::core::transport::ChannelKind;
 use crate::core::workspace::spec::WorkspaceSpec;
 
 struct MockDriver {
@@ -21,7 +22,7 @@ struct MockDriver {
     opened: Arc<AtomicUsize>,
 }
 
-impl RuntimeDriver for MockDriver {
+impl RuntimeProvider for MockDriver {
     fn id(&self) -> &'static str {
         self.id
     }
@@ -73,7 +74,7 @@ struct MockTransport {
     targets: Vec<TargetInfo>,
 }
 
-impl Transport for MockTransport {
+impl TransportProvider for MockTransport {
     fn id(&self) -> &'static str {
         self.id
     }
@@ -89,6 +90,46 @@ impl Transport for MockTransport {
         }
         self.connects.fetch_add(1, Ordering::SeqCst);
         Ok(Connect::new(self.id, target))
+    }
+}
+
+struct UnixSocketOnlyDriver;
+
+impl RuntimeProvider for UnixSocketOnlyDriver {
+    fn id(&self) -> &'static str {
+        "unix-only"
+    }
+
+    fn name(&self) -> &'static str {
+        "Unix only"
+    }
+
+    fn support(&self) -> &'static [RuntimeCapability] {
+        &[]
+    }
+
+    fn accepted_transports(&self) -> &'static [&'static str] {
+        &["exec-only"]
+    }
+
+    fn channel_requirements(&self) -> &'static [ChannelKind] {
+        &[ChannelKind::UnixSocket]
+    }
+
+    fn list(
+        &self,
+        _connect: &Connect,
+        _namespace: Option<&str>,
+    ) -> anyhow::Result<Vec<SessionCandidate>> {
+        Ok(Vec::new())
+    }
+
+    fn open(
+        &self,
+        _connect: Arc<Connect>,
+        _spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
+        Ok(Box::new(MockRuntime::with_single_pane()))
     }
 }
 
@@ -484,7 +525,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
         max_active: Arc<AtomicUsize>,
     }
 
-    impl RuntimeDriver for SlowListDriver {
+    impl RuntimeProvider for SlowListDriver {
         fn id(&self) -> &'static str {
             "slow"
         }
@@ -560,4 +601,27 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
         max_active.load(Ordering::SeqCst) >= 2,
         "必须观察到多个 connect 同时 list；源码里出现 thread/scope 不算行为证据"
     );
+}
+
+#[tokio::test]
+async fn incompatible_channel_requirements_are_rejected_without_fallback() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "exec-only",
+        name: "Exec only",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "exec-only")],
+    }));
+    cat.register_runtime(Box::new(UnixSocketOnlyDriver));
+
+    let result = cat
+        .open(&mock_spec("unix-only", "exec-only", None, ""))
+        .await;
+    assert!(
+        result.is_err(),
+        "UnixSocket runtime must not silently fall back to Exec"
+    );
+    let error = result.err().unwrap();
+    assert!(error.to_string().contains("requires channels"));
 }

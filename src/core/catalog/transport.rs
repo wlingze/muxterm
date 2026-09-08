@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use crate::core::catalog::connect::Connect;
+use crate::core::transport::ChannelKind;
 
 /// Transport 插件的静态信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,10 +40,15 @@ impl TargetInfo {
     }
 }
 
-/// Local / SSH 插件：列出 target，给出可复用 Connect。
-pub trait Transport: Send + Sync {
+/// Local / SSH provider：列出 target，给出可复用 TargetConnection。
+pub trait TransportProvider: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
+
+    /// 此 target 能打开的通道类型。
+    fn supported_channels(&self) -> &'static [ChannelKind] {
+        &[ChannelKind::Exec]
+    }
 
     fn list_targets(&self) -> anyhow::Result<Vec<TargetInfo>>;
 
@@ -52,3 +58,6 @@ pub trait Transport: Send + Sync {
         TransportInfo::new(self.id(), self.name())
     }
 }
+
+/// 旧命名兼容别名；新代码统一使用 [`TransportProvider`]。
+pub use TransportProvider as Transport;

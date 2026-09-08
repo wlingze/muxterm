@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::core::catalog::connect::Connect;
 use crate::core::runtime::{Runtime, RuntimeCapability};
+use crate::core::transport::ChannelKind;
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// Driver 的静态卡片信息（新建项目 / FFI `runtime_list`）。
@@ -38,12 +39,18 @@ pub struct SessionCandidate {
     pub workspace_id: Option<String>,
 }
 
-/// Runtime 插件：在 Connect 上 list / open，自己不持有活连接池。
-pub trait RuntimeDriver: Send + Sync {
+/// Runtime provider：在 TargetConnection 上 discover / instantiate，自己不持有
+/// 活连接池。
+pub trait RuntimeProvider: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn support(&self) -> &'static [RuntimeCapability];
     fn accepted_transports(&self) -> &'static [&'static str];
+
+    /// Runtime 需要的通道类型；Catalog 用它和 TransportProvider 的能力求交。
+    fn channel_requirements(&self) -> &'static [ChannelKind] {
+        &[ChannelKind::Exec]
+    }
 
     /// Herdr named session 等命名空间。tmux 可返回空。
     fn namespaces(&self, connect: &Connect) -> anyhow::Result<Vec<String>> {
@@ -60,6 +67,17 @@ pub trait RuntimeDriver: Send + Sync {
     fn open(&self, connect: Arc<Connect>, spec: &WorkspaceSpec)
         -> anyhow::Result<Box<dyn Runtime>>;
 
+    /// 构造尚未 connect 的 Runtime instance。
+    ///
+    /// `open` 是旧命名的兼容入口；新调用方应使用 `new_instance`。
+    fn new_instance(
+        &self,
+        connect: Arc<Connect>,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
+        self.open(connect, spec)
+    }
+
     fn info(&self) -> RuntimeInfo {
         RuntimeInfo {
             id: self.id().to_string(),
@@ -73,3 +91,6 @@ pub trait RuntimeDriver: Send + Sync {
         }
     }
 }
+
+/// 旧命名兼容别名；新代码统一使用 [`RuntimeProvider`]。
+pub use RuntimeProvider as RuntimeDriver;

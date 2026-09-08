@@ -1,4 +1,4 @@
-//! 内置 Driver / Transport 插件（包装现有实现，不复制协议解析）。
+//! 内置 Driver / TransportProvider 插件（包装现有实现，不复制协议解析）。
 //!
 //! `with_builtins` 按 tmux, herdr, shell / local, ssh 顺序登记；表是数组。
 
@@ -8,11 +8,11 @@ pub mod shell;
 pub mod ssh;
 pub mod tmux;
 
-use super::driver::RuntimeDriver;
-use super::transport::Transport;
+use super::driver::RuntimeProvider;
+use super::transport::TransportProvider;
 
 /// 生产入口用的内置插件表（顺序锁死，不要排序）。
-pub fn builtin_runtimes() -> Vec<Box<dyn RuntimeDriver>> {
+pub fn builtin_runtimes() -> Vec<Box<dyn RuntimeProvider>> {
     vec![
         Box::new(tmux::TmuxDriver),
         Box::new(herdr::HerdrDriver),
@@ -20,7 +20,7 @@ pub fn builtin_runtimes() -> Vec<Box<dyn RuntimeDriver>> {
     ]
 }
 
-/// 内置 Transport 插件表（顺序锁死）。
-pub fn builtin_transports() -> Vec<Box<dyn Transport>> {
+/// 内置 TransportProvider 插件表（顺序锁死）。
+pub fn builtin_transports() -> Vec<Box<dyn TransportProvider>> {
     vec![Box::new(local::LocalTransport), Box::new(ssh::SshTransport)]
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 
 use crate::core::catalog::connect::Connect;
-use crate::core::catalog::driver::{RuntimeDriver, SessionCandidate};
+use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
 use crate::core::runtime::shell::ShellRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::workspace::spec::WorkspaceSpec;
@@ -13,7 +13,7 @@ use crate::core::workspace::spec::WorkspaceSpec;
 /// shell 插件：transport 差异在 Runtime 构造时归一化。
 pub struct ShellDriver;
 
-impl RuntimeDriver for ShellDriver {
+impl RuntimeProvider for ShellDriver {
     fn id(&self) -> &'static str {
         "shell"
     }
