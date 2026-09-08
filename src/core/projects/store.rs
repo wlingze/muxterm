@@ -18,12 +18,12 @@ impl ProjectStore {
         Self::default()
     }
 
-    pub fn new_unified(config_path: Option<PathBuf>) -> Result<Self> {
-        let Some(path) = config_path else {
-            return Ok(Self::in_memory());
-        };
-        let mut settings = SettingsService::open(&path)?;
-        settings.migrate_legacy_quickconnect()?;
+    /// Build the project projection from the already-loaded unified settings.
+    ///
+    /// Keeping the source `SettingsService` shared with the handle avoids a
+    /// second config parse and makes migrations performed during startup
+    /// visible to the Projects domain immediately.
+    pub fn from_settings(settings: &SettingsService) -> Result<Self> {
         let projects = settings
             .document()
             .projects
@@ -32,8 +32,17 @@ impl ProjectStore {
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             projects,
-            config_path: Some(path),
+            config_path: Some(settings.path().to_path_buf()),
         })
+    }
+
+    pub fn new_unified(config_path: Option<PathBuf>) -> Result<Self> {
+        let Some(path) = config_path else {
+            return Ok(Self::in_memory());
+        };
+        let mut settings = SettingsService::open(&path)?;
+        settings.migrate_legacy_quickconnect()?;
+        Self::from_settings(&settings)
     }
 
     pub fn projects(&self) -> &[Project] {
@@ -110,8 +119,10 @@ fn validate_project(project: &Project) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config_service::{ConfigDocument, SettingsService};
     use crate::core::projects::Project;
     use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use std::fs;
 
     fn project(id: &str, path: &str) -> Project {
         Project::new(
@@ -142,5 +153,24 @@ mod tests {
             .expect_err("empty project id must be rejected");
         assert!(error.to_string().contains("不能为空"));
         assert!(store.projects().is_empty());
+    }
+
+    #[test]
+    fn store_projects_from_the_loaded_settings_document() {
+        let path =
+            std::env::temp_dir().join(format!("muxterm-project-store-{}.toml", std::process::id()));
+        let mut document = ConfigDocument::default();
+        document
+            .projects
+            .push(project("loaded", "/loaded").to_document());
+        fs::write(&path, document.to_toml().unwrap()).unwrap();
+
+        let settings = SettingsService::open(&path).unwrap();
+        let store = ProjectStore::from_settings(&settings).unwrap();
+
+        assert_eq!(store.projects().len(), 1);
+        assert_eq!(store.projects()[0].id.as_str(), "loaded");
+        assert_eq!(store.projects()[0].target.path, "/loaded");
+        fs::remove_file(path).unwrap();
     }
 }
