@@ -29,7 +29,9 @@ use super::callbacks::FfiCallbacks;
 pub use super::functions::attention::{
     muxterm_attention_acknowledge, muxterm_attention_mute, muxterm_attention_on_became_visible,
     muxterm_attention_set_process_name, muxterm_attention_snapshot,
-    muxterm_attention_take_notifications,
+    muxterm_attention_take_notifications, muxterm_workspace_attention_acknowledge,
+    muxterm_workspace_attention_mute, muxterm_workspace_attention_on_became_visible,
+    muxterm_workspace_attention_set_process_name,
 };
 pub use super::functions::catalog::{
     muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,
@@ -54,7 +56,12 @@ pub use super::functions::snapshot::{
     muxterm_pane_command_marks_json, muxterm_pane_history_max_offset, muxterm_pane_last_n_lines,
     muxterm_pane_latest_line_seq, muxterm_pane_scroll_ansi, muxterm_pane_surface_seed_ansi,
     muxterm_pane_viewport, muxterm_pane_viewport_for_seq, muxterm_pane_visible_ansi,
-    muxterm_set_pane_viewport,
+    muxterm_set_pane_viewport, muxterm_workspace_pane_command_marks_json,
+    muxterm_workspace_pane_history_max_offset, muxterm_workspace_pane_last_n_lines,
+    muxterm_workspace_pane_latest_line_seq, muxterm_workspace_pane_scroll_ansi,
+    muxterm_workspace_pane_surface_seed_ansi, muxterm_workspace_pane_viewport,
+    muxterm_workspace_pane_viewport_for_seq, muxterm_workspace_pane_visible_ansi,
+    muxterm_workspace_set_pane_viewport,
 };
 pub use super::functions::support::MuxtermHandle;
 pub(crate) use super::functions::support::{
@@ -65,6 +72,9 @@ pub use super::functions::task::{
     muxterm_execute, muxterm_execute_json, muxterm_execute_workspace,
     muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
     muxterm_resize_pane, muxterm_resize_pane_axis, muxterm_send_input, muxterm_send_input_quiet,
+    muxterm_workspace_resize_client, muxterm_workspace_resize_pane,
+    muxterm_workspace_resize_pane_axis, muxterm_workspace_send_input,
+    muxterm_workspace_send_input_quiet,
 };
 pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
@@ -584,6 +594,106 @@ mod tests {
                     output.len()
                 ) >= 0
             );
+
+            let pane_id = panes[0].id;
+            let input = b"background-input";
+            assert_eq!(
+                muxterm_workspace_send_input(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    input.as_ptr(),
+                    input.len()
+                ),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_send_input_quiet(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    input.as_ptr(),
+                    input.len()
+                ),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_resize_pane(h, first_id_text.as_ptr(), pane_id, 100, 30),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_resize_client(h, first_id_text.as_ptr(), 100, 30),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_resize_pane_axis(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    DIR_HORIZONTAL,
+                    90
+                ),
+                0
+            );
+
+            let mut history = [0u8; 64];
+            assert!(
+                muxterm_workspace_pane_scroll_ansi(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    0,
+                    10,
+                    history.as_mut_ptr(),
+                    history.len()
+                ) >= 0
+            );
+            assert_eq!(
+                muxterm_workspace_pane_viewport(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_set_pane_viewport(h, first_id_text.as_ptr(), pane_id, 1),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_pane_history_max_offset(h, first_id_text.as_ptr(), pane_id, 10),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_pane_latest_line_seq(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            let marks =
+                muxterm_workspace_pane_command_marks_json(h, first_id_text.as_ptr(), pane_id);
+            assert!(!marks.is_null());
+            muxterm_free_string(marks);
+            let lines = muxterm_workspace_pane_last_n_lines(h, first_id_text.as_ptr(), pane_id, 10);
+            assert!(!lines.is_null());
+            muxterm_free_string(lines);
+
+            assert_eq!(
+                muxterm_workspace_attention_on_became_visible(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_attention_acknowledge(h, first_id_text.as_ptr(), pane_id),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_attention_set_process_name(
+                    h,
+                    first_id_text.as_ptr(),
+                    pane_id,
+                    c"bash".as_ptr()
+                ),
+                0
+            );
+            assert_eq!(
+                muxterm_workspace_attention_mute(h, first_id_text.as_ptr(), pane_id, 1),
+                0
+            );
+            assert_eq!((*h).pool().active_id(), Some(&second_id));
             muxterm_free(h);
         }
     }

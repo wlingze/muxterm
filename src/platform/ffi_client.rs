@@ -211,6 +211,88 @@ pub struct ClientPane {
     pub title: String,
 }
 
+/// One owned command mark returned by the activity/history query surface.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientCommandMark {
+    pub seq: u64,
+    pub command: String,
+    pub exit_code: Option<u8>,
+    pub history_offset: Option<u32>,
+}
+
+/// Owned attention/activity state for one pane.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientAttentionPane {
+    pub workspace_id: String,
+    pub pane_id: u32,
+    pub status: String,
+    #[serde(default)]
+    pub acknowledged: bool,
+    #[serde(default)]
+    pub last_line: String,
+    #[serde(default)]
+    pub seq: u64,
+    #[serde(default)]
+    pub process_name: Option<String>,
+    #[serde(default)]
+    pub process_is_agent: bool,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub shell_name: Option<String>,
+}
+
+/// Owned cross-workspace activity/attention aggregate.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientWorkspaceAttention {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub blocked: usize,
+    #[serde(default)]
+    pub done: usize,
+    #[serde(default)]
+    pub working: usize,
+    #[serde(default)]
+    pub panes: Vec<ClientAttentionPane>,
+}
+
+/// Owned activity snapshot.  The current Core implementation projects the
+/// attention aggregate; the frontend does not need to know that detail.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientActivitySnapshot {
+    #[serde(default)]
+    pub blocked_count: usize,
+    #[serde(default)]
+    pub workspaces: Vec<ClientWorkspaceAttention>,
+}
+
+/// One owned activity notification.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientActivityNotification {
+    pub workspace_id: String,
+    pub pane_id: u32,
+    pub kind: String,
+    #[serde(default)]
+    pub process_name: Option<String>,
+    #[serde(default)]
+    pub last_line: String,
+    #[serde(default)]
+    pub seq: u64,
+}
+
+/// Owned activity notifications drained from Core.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientActivityNotifications {
+    #[serde(default)]
+    pub notifications: Vec<ClientActivityNotification>,
+    #[serde(default)]
+    pub blocked: Vec<String>,
+    #[serde(default)]
+    pub done: Vec<String>,
+}
+
 /// SSH host entry returned by Core discovery.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct SshHostEntry {
@@ -393,6 +475,90 @@ impl FfiClient {
         let workspace_id = cstring(workspace_id);
         let raw = task_to_ffi(task);
         unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
+    /// Write input to a pane in a specific workspace without activating it.
+    pub fn send_workspace_input(&self, workspace_id: &str, pane_id: u32, data: &[u8]) -> i32 {
+        if data.is_empty() {
+            return 0;
+        }
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_send_input(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                data.as_ptr(),
+                data.len(),
+            )
+        }
+    }
+
+    /// Write input without changing attention state in a specific workspace.
+    pub fn send_workspace_input_quiet(&self, workspace_id: &str, pane_id: u32, data: &[u8]) -> i32 {
+        if data.is_empty() {
+            return 0;
+        }
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_send_input_quiet(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                data.as_ptr(),
+                data.len(),
+            )
+        }
+    }
+
+    pub fn resize_workspace_client(&self, workspace_id: &str, cols: u16, rows: u16) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_resize_client(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                cols,
+                rows,
+            )
+        }
+    }
+
+    pub fn resize_workspace_pane(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        cols: u16,
+        rows: u16,
+    ) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_resize_pane(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                cols,
+                rows,
+            )
+        }
+    }
+
+    pub fn resize_workspace_pane_axis(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        axis: u32,
+        size: u16,
+    ) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_resize_pane_axis(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                axis,
+                size,
+            )
+        }
     }
 
     /// Explicitly detach the current control client.
@@ -750,6 +916,201 @@ impl FfiClient {
         buffer
     }
 
+    /// Read scrollback bytes from a specific workspace without activation.
+    pub fn get_workspace_pane_scroll_ansi(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        offset: u32,
+        rows: u32,
+    ) -> Vec<u8> {
+        let workspace_id = cstring(workspace_id);
+        let mut buffer = vec![0u8; PANE_OUTPUT_CAPACITY];
+        let count = unsafe {
+            ffi::muxterm_workspace_pane_scroll_ansi(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                offset,
+                rows,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            )
+        };
+        if count <= 0 {
+            return Vec::new();
+        }
+        buffer.truncate((count as usize).min(buffer.len()));
+        buffer
+    }
+
+    /// Read a workspace pane's visible grid for compatibility/diagnostics.
+    pub fn get_workspace_pane_visible_ansi(&self, workspace_id: &str, pane_id: u32) -> Vec<u8> {
+        let workspace_id = cstring(workspace_id);
+        let mut buffer = vec![0u8; PANE_OUTPUT_CAPACITY];
+        let count = unsafe {
+            ffi::muxterm_workspace_pane_visible_ansi(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            )
+        };
+        if count <= 0 {
+            return Vec::new();
+        }
+        buffer.truncate((count as usize).min(buffer.len()));
+        buffer
+    }
+
+    /// Read a one-time workspace pane Surface seed.
+    pub fn get_workspace_pane_surface_seed_ansi(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+    ) -> Vec<u8> {
+        let workspace_id = cstring(workspace_id);
+        let required = unsafe {
+            ffi::muxterm_workspace_pane_surface_seed_ansi(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if required <= 0 {
+            return Vec::new();
+        }
+        let mut buffer = vec![0u8; required as usize];
+        let count = unsafe {
+            ffi::muxterm_workspace_pane_surface_seed_ansi(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            )
+        };
+        if count <= 0 {
+            return Vec::new();
+        }
+        buffer.truncate((count as usize).min(buffer.len()));
+        buffer
+    }
+
+    pub fn workspace_pane_viewport(&self, workspace_id: &str, pane_id: u32) -> Option<u32> {
+        let workspace_id = cstring(workspace_id);
+        let offset = unsafe {
+            ffi::muxterm_workspace_pane_viewport(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+            )
+        };
+        (offset >= 0).then_some(offset as u32)
+    }
+
+    pub fn set_workspace_pane_viewport(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        offset: u32,
+    ) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_set_pane_viewport(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                offset,
+            )
+        }
+    }
+
+    pub fn workspace_pane_history_max_offset(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        rows: u32,
+    ) -> Option<u32> {
+        let workspace_id = cstring(workspace_id);
+        let offset = unsafe {
+            ffi::muxterm_workspace_pane_history_max_offset(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                rows,
+            )
+        };
+        (offset >= 0).then_some(offset as u32)
+    }
+
+    pub fn workspace_pane_command_marks(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+    ) -> anyhow::Result<Vec<ClientCommandMark>> {
+        let workspace_id = cstring(workspace_id);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_pane_command_marks_json(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+            )
+        })?;
+        Ok(serde_json::from_value(value["marks"].clone())?)
+    }
+
+    pub fn workspace_pane_latest_line_seq(&self, workspace_id: &str, pane_id: u32) -> Option<u64> {
+        let workspace_id = cstring(workspace_id);
+        let seq = unsafe {
+            ffi::muxterm_workspace_pane_latest_line_seq(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+            )
+        };
+        u64::try_from(seq).ok()
+    }
+
+    pub fn workspace_pane_viewport_for_seq(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        seq: u64,
+    ) -> Option<u32> {
+        let workspace_id = cstring(workspace_id);
+        let offset = unsafe {
+            ffi::muxterm_workspace_pane_viewport_for_seq(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                seq,
+            )
+        };
+        (offset >= 0).then_some(offset as u32)
+    }
+
+    pub fn workspace_pane_last_n_lines(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        n: u32,
+    ) -> anyhow::Result<Vec<String>> {
+        let workspace_id = cstring(workspace_id);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_pane_last_n_lines(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                n,
+            )
+        })?;
+        Ok(serde_json::from_value(value["lines"].clone())?)
+    }
+
     pub fn send_input(&self, pane_id: u32, data: &[u8]) -> i32 {
         if data.is_empty() {
             return 0;
@@ -796,6 +1157,74 @@ impl FfiClient {
         let bg = cstring(bg_hex);
         unsafe {
             ffi::muxterm_report_all_pane_colours(self.handle.as_ptr(), fg.as_ptr(), bg.as_ptr())
+        }
+    }
+
+    /// Read the owned activity/attention aggregate across all workspaces.
+    pub fn activity_snapshot(&self) -> anyhow::Result<ClientActivitySnapshot> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_attention_snapshot(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    /// Drain owned activity notifications without exposing Core references.
+    pub fn take_activity_notifications(&self) -> anyhow::Result<ClientActivityNotifications> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_attention_take_notifications(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    pub fn workspace_attention_on_became_visible(&self, workspace_id: &str, pane_id: u32) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_attention_on_became_visible(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+            )
+        }
+    }
+
+    pub fn workspace_attention_acknowledge(&self, workspace_id: &str, pane_id: u32) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_attention_acknowledge(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+            )
+        }
+    }
+
+    pub fn workspace_attention_set_process_name(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        name: Option<&str>,
+    ) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let name = cstring_opt(name);
+        unsafe {
+            ffi::muxterm_workspace_attention_set_process_name(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                name.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            )
+        }
+    }
+
+    pub fn workspace_attention_mute(&self, workspace_id: &str, pane_id: u32, seconds: u64) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_attention_mute(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                seconds,
+            )
         }
     }
 

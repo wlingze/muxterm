@@ -168,6 +168,203 @@ pub unsafe extern "C" fn muxterm_execute_workspace(
     .unwrap_or(-1)
 }
 
+/// Write raw bytes to a pane in a specific Core-owned workspace without
+/// changing the pool's active workspace.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `data` are valid pointers; `workspace_id` is
+/// NUL-terminated and `data` points to at least `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_send_input(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() || data.is_null() {
+            return -1;
+        }
+        let Some(workspace_id) = cstr_opt(workspace_id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let bytes = std::slice::from_raw_parts(data, len).to_vec();
+        let pane = {
+            let handle = &*h;
+            let Some(ws) = handle.pool().get(&workspace_id) else {
+                return -1;
+            };
+            let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+                return -1;
+            };
+            pane
+        };
+        let handle = &mut *h;
+        handle
+            .attention
+            .on_user_input(&workspace_id.replica_id(), pane.0);
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::WriteRaw {
+            target: pane,
+            data: bytes,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Write raw bytes without clearing attention state in a specific workspace.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `data` are valid pointers; `workspace_id` is
+/// NUL-terminated and `data` points to at least `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_send_input_quiet(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() || data.is_null() {
+            return -1;
+        }
+        let Some(workspace_id) = cstr_opt(workspace_id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let bytes = std::slice::from_raw_parts(data, len).to_vec();
+        let handle = &mut *h;
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::WriteRaw {
+            target: pane,
+            data: bytes,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Resize a pane in a specific Core-owned workspace without activation.
+///
+/// # Safety
+/// `h` and `workspace_id` are valid pointers; `workspace_id` is
+/// NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_resize_pane(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() || cols == 0 || rows == 0 {
+            return -1;
+        }
+        let Some(workspace_id) = cstr_opt(workspace_id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &mut *h;
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::ResizePane {
+            target: pane,
+            cols,
+            rows,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Resize the control client belonging to a specific workspace.
+///
+/// # Safety
+/// `h` and `workspace_id` are valid pointers; `workspace_id` is
+/// NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_resize_client(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    cols: u16,
+    rows: u16,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() || cols == 0 || rows == 0 {
+            return -1;
+        }
+        let Some(workspace_id) = cstr_opt(workspace_id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &mut *h;
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::ResizeClient { cols, rows }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Resize one pane split axis in a specific workspace.
+///
+/// # Safety
+/// `h` and `workspace_id` are valid pointers; `workspace_id` is
+/// NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_resize_pane_axis(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    axis: u32,
+    size: u16,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null()
+            || workspace_id.is_null()
+            || size == 0
+            || (axis != DIR_HORIZONTAL && axis != DIR_VERTICAL)
+        {
+            return -1;
+        }
+        let Some(workspace_id) = cstr_opt(workspace_id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &mut *h;
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let dir = if axis == DIR_VERTICAL {
+            SplitDir::Vertical
+        } else {
+            SplitDir::Horizontal
+        };
+        task_result_code(ws.execute(Task::ResizePaneAxis {
+            target: pane,
+            dir,
+            size,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
 /// Parse key descriptions used by `muxterm_execute_json`.
 fn key_event_from_json(text: &str) -> Vec<crate::core::protocol::terminal::input::KeyEvent> {
     use crate::core::protocol::terminal::input::{ArrowDir, KeyEvent};
