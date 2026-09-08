@@ -4,7 +4,7 @@
 [WORKSPACE.md](WORKSPACE.md)、[RUNTIME.md](RUNTIME.md)、
 [HERDR-RUNTIME-STABILITY.md](HERDR-RUNTIME-STABILITY.md)、
 [HERDR-TESTING.md](HERDR-TESTING.md)、
-[CATALOG.md](CATALOG.md)、[SURFACE.md](SURFACE.md)、
+[CATALOG.md](CATALOG.md)、[SURFACE.md](SURFACE.md)、[FRONTEND.md](FRONTEND.md)、
 [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md)、[TASKS.md](../TASKS.md)。
 
 ## 0. 结构门禁
@@ -42,7 +42,7 @@ herdr × local
 herdr × SSH
 ```
 
-前端验收（[`SURFACE.md`](SURFACE.md) §5.2 / §8）：
+前端验收（[`FRONTEND.md`](FRONTEND.md) §7；像素 [`SURFACE.md`](SURFACE.md) §5）：
 
 - 切 workspace / tab 的点击路径零 FFI、零锁；首帧 ≤ 1 帧
 - 快速连点只发最后一个目标
@@ -50,7 +50,7 @@ herdr × SSH
 - 隐藏 chatty pane 三档策略；回看先显示最后已知帧，不白屏
 
 tmux / Herdr 安全红线见 §3.3 与 [`HERDR-TESTING.md`](HERDR-TESTING.md)。
-连接复用在 Core `ConnectionRegistry`；前端是常驻 Scene + EventPump，见 [`SURFACE.md`](SURFACE.md) §8。
+连接复用在 Core `ConnectionRegistry`；前端是常驻 Scene + EventPump，见 [`FRONTEND.md`](FRONTEND.md)。
 
 ## 1. 四条硬性要求（验收红线）
 
@@ -228,7 +228,8 @@ FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_sn
 
 1. 读文档：`docs/WORKSPACE.md` → `docs/RUNTIME.md` → `PRODUCT.md` → `AGENTS.md` →
    `docs/SURFACE.md` → 本文档。动 Herdr 还要读 `docs/HERDR-RUNTIME-STABILITY.md` 与
-   `docs/HERDR-TESTING.md`。施工顺序见 [`../TASKS.md`](../TASKS.md)。Surface e2e 是回归门。
+   `docs/HERDR-TESTING.md`。动 frontend 还要读 `docs/FRONTEND.md`。
+   施工顺序见 [`../TASKS.md`](../TASKS.md)。Surface e2e 是回归门。
 2. RED：写最小单测或 e2e，先看到失败（真实数据 fixture 优先）。
 3. GREEN：写最小实现，只改本功能相关文件。
 4. 补测试：增加边界、错误路径、真实 tmux 数据复放。

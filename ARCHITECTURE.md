@@ -2,11 +2,12 @@
 
 产品树：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)。
 Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。像素：[`docs/SURFACE.md`](docs/SURFACE.md)。
+前端：[`docs/FRONTEND.md`](docs/FRONTEND.md)。
 Catalog：[`docs/CATALOG.md`](docs/CATALOG.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
 目录：[`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。施工：[`TASKS.md`](TASKS.md)。
 
-本文写分层与前端通用层。交互细节以 WORKSPACE / SURFACE 为准。没有产品 Session、虚拟 Window、
-复合 RuntimeMode 或 frontend 连接池。
+本文写分层。前端页面、Scene、EventPump、平台映射以 [`docs/FRONTEND.md`](docs/FRONTEND.md) 为准。
+没有产品 Session、虚拟 Window、复合 RuntimeMode 或 frontend 连接池。
 
 ## 1. 分层
 
@@ -63,34 +64,13 @@ frontend 只见 Candidate / OpenRequest。WorkspaceSpec 是 Core 内部。
 
 一个 poll batch 顺序：topology → activity → frame → output。
 
-## 5. 前端通用层
+## 5. 前端
 
-平台无关词汇（各前端用本语言实现同一套，禁止第二套概念名）：
+frontend 只经 C FFI + `ffi_client`。已打开 Workspace 各有一棵常驻 Scene；切换零 Core 调用。
+完整词汇表、页面骨架、平台映射、性能预算、验收见 [`docs/FRONTEND.md`](docs/FRONTEND.md)。
+像素定律见 [`docs/SURFACE.md`](docs/SURFACE.md)。
 
-| 组件 | 职责 |
-|------|------|
-| AppShell | 窗口骨架：Sidebar + SceneStack + Overlay |
-| Scene | 一个已打开 Workspace 的完整视图树；从 open 到 close 常驻 |
-| SceneStack | 切换 = 换可见子树；切换时不调 Core |
-| PaneSurface | 每 pane 恰好一个常驻 VT |
-| ViewStore | per-WorkspaceId 的 UI 只读快照 |
-| EventPump | **唯一** FFI 事件消费者 |
-| CommandQueue | UI → Core 的 Task；合并同类命令 |
-| Overlay | QuickPanel / CommandPalette / Search / Attention |
-
-Linux Scene 容器是 `GtkStack` page：一次只显示一个子 widget，子页面仍留在树里（[GTK4 GtkStack](https://docs.gtk.org/gtk4/class.Stack.html)）。macOS：CoreBridge 是唯一 FFI 口，没有 WarmConnectionSlot / `bridgeLock` / 串行后台队列 / 前台校准，见 [`docs/SURFACE.md`](docs/SURFACE.md) §8–§9。
-
-切 Workspace / Tab 的点击路径：**零 FFI、零锁、首帧 ≤ 1 帧**。
-
-## 6. 交互（各 GUI 必须一致）
-
-- 嵌套分割：每次只替换当前叶子 pane，不重新平铺全树。
-- 焦点：操作后焦点回到终端，不落到工具栏。不要底部输入框发 send-keys。
-- Tab 显示：序号 + 名字；多 pane 可加数量后缀。不要每个 pane 一个 Notebook tab。
-- 关 GUI 窗：有 `PersistDetach` 的 Runtime **detach**；shell **shutdown**。
-- 快捷键与命令面板走 Action Catalog，不按 GTK/AppKit 类型存盘。
-
-## 7. 测试与安全
+## 6. 测试与安全
 
 - tmux 测试只用隔离 socket `-L muxterm-test-<unique>`。禁止对默认 server `kill-server` / `kill-session`。
 - Herdr 测试只用 named session `muxterm-test-<unique>`。禁止无名字的 `herdr server stop`。

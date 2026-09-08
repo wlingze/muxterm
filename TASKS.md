@@ -1,7 +1,8 @@
 # TASKS.md — 施工顺序
 
 产品结构见 [`docs/WORKSPACE.md`](docs/WORKSPACE.md)。Runtime 见 [`docs/RUNTIME.md`](docs/RUNTIME.md)。
-像素与常驻 Scene 见 [`docs/SURFACE.md`](docs/SURFACE.md)。目录见 [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
+像素见 [`docs/SURFACE.md`](docs/SURFACE.md)。前端见 [`docs/FRONTEND.md`](docs/FRONTEND.md)。
+目录见 [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
 测试门禁见 [`docs/TESTING.md`](docs/TESTING.md)。
 
 每个阶段保持可编译、可测试。增量提交。tmux 测试只用 `-L muxterm-test-*`。
@@ -125,7 +126,7 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 
 ## Phase 9 — 前端场景化
 
-通用层：Scene / SceneStack / ViewStore / EventPump / CommandQueue / Overlay / Settings。
+契约：[`docs/FRONTEND.md`](docs/FRONTEND.md)。通用层：Scene / SceneStack / ViewStore / EventPump / CommandQueue / Overlay / Settings。
 
 - linux：Scene = `GtkStack` page；拆 `window.rs` 等巨石；删除 `LayoutHost` retain 丢弃。
 - macOS：删除 WarmConnectionSlot / `bridgeLock` / `backgroundPollQueue` / 前台权威校准。
@@ -135,8 +136,8 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 验收：切 workspace/tab 零 FFI、零锁、无 recapture / reset / 白屏；
 `rg 'bridgeLock|backgroundPollQueue|WarmConnectionSlot|ForegroundAuthority'` 在 macOS 前端为空。
 
-切换延迟来自 frontend 自己的锁和串行队列，不是 tmux 全局锁。机制与验收见
-[`docs/SURFACE.md`](docs/SURFACE.md) §8–§9。
+切换延迟来自 frontend 自己的锁和串行队列，不是 tmux 全局锁。见
+[`docs/FRONTEND.md`](docs/FRONTEND.md) 与 [`docs/SURFACE.md`](docs/SURFACE.md) §9。
 
 ## 非目标
 

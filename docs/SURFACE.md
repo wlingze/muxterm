@@ -1,7 +1,7 @@
 # SURFACE.md — 单面架构与常驻场景
 
 机制名：**Surface**（中文：**单面**）。产品层级：[`WORKSPACE.md`](WORKSPACE.md)。
-Runtime：[`RUNTIME.md`](RUNTIME.md)。
+Runtime：[`RUNTIME.md`](RUNTIME.md)。前端 Scene / EventPump / 页面：[`FRONTEND.md`](FRONTEND.md)。
 Herdr full/diff：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5。
 参考树：`/home/wlz/Developer/terminal/`（只读，不进本仓库）。
 
@@ -251,37 +251,15 @@ Workspace **不**解析控制协议，不画像素，不把 Index 网格再编�
 
 ---
 
-## 8. 常驻 Scene + 单事件泵
+## 8. Surface 如何挂进 Scene
 
-平台无关词汇（各前端用本语言实现同一套）：
+Scene / EventPump / 页面见 [`FRONTEND.md`](FRONTEND.md)。像素进常驻 VT 的规则：
 
-```text
-Core（Muxterm / WorkspacePool）
-  │  poll 批次（topology → activity → frame → output）
-  ▼
-EventPump（唯一 FFI 事件消费者；经 ffi_client）
-  │  按 WorkspaceId 分发；经主线程桥写 ViewStore
-  ▼
-ViewStore → Scene / Sidebar / Overlay
-
-反向：UI 手势 → CommandQueue → Core Task → MutationSettled → ViewStore
-```
-
-- **Scene**：一个已打开 Workspace 的完整视图树（TabBar + PaneGrid + 每 pane 一个 PaneSurface）。从 open 到 close 常驻。
-- **SceneStack**：切换 = 换可见子树。切换时不调 Core。
-- **CommandQueue**：合并同一目标的连续 SwitchTab / activate，只发最后一个。
-- **resize**：只对可见 Scene 发 `Task::Resize`；隐藏 Scene 记 pending size。
-
-去锁论证：旧设计的锁来自「后台 poll 与前台激活并发碰同一个 C handle」。新设计里 FFI 入口只剩
-EventPump 与 CommandQueue，Core 内部串行化；UI 线程从不直接碰 handle。并发访问是锁存在的前提；
-入口收敛后前提消失。拓扑常流 ⇒ 缓存永远权威 ⇒ 没有 warm/cold。
-
-Linux：Scene = `GtkStack` page。删除 `LayoutHost::apply_layout` 的 retain 丢弃。
-macOS：删除 WarmConnectionSlot / `bridgeLock` / `backgroundPollQueue` / 前台权威校准。
-CoreBridge 瘦身为 FFI + DTO 解码。ConnectionPool 的 warm/cold 概念删除；live owner 是 Core WorkspacePool。
-
-一个 poll batch 必须先提交最终 topology，再发 activity，然后 frame，最后 output。
-迟到输入不得改投新的 active pane。
+- 每个已打开 pane 一个 PaneSurface，切换只 show/hide，继续 `feed` `PaneOutput`。
+- 一个 poll batch：先提交最终 topology，再 activity，然后 frame，最后 output。
+- resize 只对可见 Scene 发 `Task::Resize`；隐藏 Scene 记 pending size。
+- 迟到输入不得改投新的 active pane。
+- Linux 不得 `LayoutHost::apply_layout` `retain` 丢掉不可见 pane 的 widget。
 
 ---
 
@@ -342,5 +320,4 @@ backgroundPollQueue 串行
 | gap fenced + 20s seed 堵住激活 | fenced 保留（数据正确性），但只影响该 pane 的异步补基线；首帧用最后已知画面 |
 
 验证时继续用独立 tmux socket，禁止对用户默认 server 做 `kill-session` / `kill-server`。
-
-原诊断全文曾记在未跟踪的 dogfood 笔记里；现行契约以本节为准。
+前端落地见 [`FRONTEND.md`](FRONTEND.md) §5。

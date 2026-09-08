@@ -58,11 +58,12 @@ Cargo workspace：`muxterm-protocol` / `muxterm-core` / `muxterm-runtime` /
 | 文档 | 角色 |
 |------|------|
 | [`../PRODUCT.md`](../PRODUCT.md) | 产品 |
-| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | 分层与前端通用层 |
+| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | 分层 |
 | [`../TASKS.md`](../TASKS.md) | 施工顺序 |
 | [`WORKSPACE.md`](WORKSPACE.md) | 产品树与 FFI |
 | [`RUNTIME.md`](RUNTIME.md) | Runtime × Transport |
-| [`SURFACE.md`](SURFACE.md) | 像素与常驻 Scene |
+| [`SURFACE.md`](SURFACE.md) | 像素定律 |
+| [`FRONTEND.md`](FRONTEND.md) | 前端 Scene / 页面 / 各平台 |
 | [`CATALOG.md`](CATALOG.md) | 能打开什么 |
 | [`CONFIG.md`](CONFIG.md) | 配置 |
 | [`ID-SYSTEM.md`](ID-SYSTEM.md) | ID |

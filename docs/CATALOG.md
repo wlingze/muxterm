@@ -167,6 +167,8 @@ daemon 不注册为 provider，不出现在用户可选择的 runtime 列表。
 
 ## 6. 前端怎么用
 
+页面与 Scene 见 [`FRONTEND.md`](FRONTEND.md)。Catalog 侧：
+
 - 新建卡片：`runtime_list()` / `transport_list()` + `support()` 决定次级动作
 - 一级列表：`candidates()`（Project / Worktree / Existing / Recent）
 - 已有的连接：Existing 扁平列表，不要本地 / SSH / Host 多层目录

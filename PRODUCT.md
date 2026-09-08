@@ -1,8 +1,8 @@
 # Muxterm
 
 产品结构：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)。Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。
-像素 / 前端场景：[`docs/SURFACE.md`](docs/SURFACE.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
-施工：[`TASKS.md`](TASKS.md)。
+像素：[`docs/SURFACE.md`](docs/SURFACE.md)。前端：[`docs/FRONTEND.md`](docs/FRONTEND.md)。
+配置：[`docs/CONFIG.md`](docs/CONFIG.md)。施工：[`TASKS.md`](TASKS.md)。
 
 ## 一句话
 
@@ -58,8 +58,9 @@ QuickConnect / 命令面板列出 **Candidate**（Project / Worktree / Existing 
 
 切换已打开的 Workspace / Tab：**点击路径零 Core 调用、零锁等待**。每个已打开 Workspace 一棵常驻 Scene，每 pane 一个常驻 Surface。切换 = 换可见场景。
 
-前端没有 warm/cold slot、`bridgeLock`、串行后台队列或前台校准。切换延迟不是 tmux 全局锁，
-机制见 [`docs/SURFACE.md`](docs/SURFACE.md) §8–§9。像素定律见同文档 §3。
+前端没有 warm/cold slot、`bridgeLock`、串行后台队列或前台校准。页面与 Scene 见
+[`docs/FRONTEND.md`](docs/FRONTEND.md)。像素定律见 [`docs/SURFACE.md`](docs/SURFACE.md) §3。
+切换延迟不是 tmux 全局锁，见同文档 §9。
 
 ## 能力与问询
 
@@ -81,7 +82,8 @@ GUI 问 Runtime 能力只用 `support()`，禁止 `if runtime == "herdr"`。Work
 |------|------|
 | [`docs/WORKSPACE.md`](docs/WORKSPACE.md) | 产品树、打开路径、FFI/CLI |
 | [`docs/RUNTIME.md`](docs/RUNTIME.md) | Runtime × Transport、provider、能力、适配表 |
-| [`docs/SURFACE.md`](docs/SURFACE.md) | 单面、三条 lane、常驻 Scene、去锁 |
+| [`docs/SURFACE.md`](docs/SURFACE.md) | 单面、像素定律 |
+| [`docs/FRONTEND.md`](docs/FRONTEND.md) | Scene / EventPump / 页面 / 各平台落地 |
 | [`docs/CATALOG.md`](docs/CATALOG.md) | 能打开什么；不是组合根 |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | `config.toml` 契约 |
 | [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md) | 目录与 crate 分层 |

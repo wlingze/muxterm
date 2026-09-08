@@ -1,7 +1,8 @@
 # Muxterm Config Contract
 
 `config_version = 1`。字段语义和事务行为以本文为准。
-产品树：[`WORKSPACE.md`](WORKSPACE.md)。目录：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
+产品树：[`WORKSPACE.md`](WORKSPACE.md)。前端如何消费配置：[`FRONTEND.md`](FRONTEND.md) §4。
+目录：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
 
 ## 1. 设计目标
 

@@ -1,7 +1,7 @@
 # WORKSPACE.md — Muxterm 产品结构与 Core 边界
 
 Catalog：[`CATALOG.md`](CATALOG.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
-像素：[`SURFACE.md`](SURFACE.md)。配置：[`CONFIG.md`](CONFIG.md)。
+像素：[`SURFACE.md`](SURFACE.md)。前端：[`FRONTEND.md`](FRONTEND.md)。配置：[`CONFIG.md`](CONFIG.md)。
 身份：[`ID-SYSTEM.md`](ID-SYSTEM.md)。Herdr 身份细节：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
 tmux 适配（只给 `runtime/tmux`）：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
 

@@ -1,7 +1,7 @@
 # Linux 终端渲染优化
 
 `frontend/linux` 的 Surface 渲染。Core 不拥有字形；live API 是原始字节 feed，不是 `visible_ansi`。
-像素定律：[`SURFACE.md`](SURFACE.md)。
+像素定律：[`SURFACE.md`](SURFACE.md)。前端 Scene：[`FRONTEND.md`](FRONTEND.md)。
 
 验证环境：Arch Linux, vte4 0.84.0, gtk4 4.22.4。
 

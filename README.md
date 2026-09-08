@@ -219,8 +219,9 @@ muxterm/
 
 1. [`PRODUCT.md`](PRODUCT.md) — 产品目标
 2. [`docs/WORKSPACE.md`](docs/WORKSPACE.md) — 产品树与打开路径
-3. [`TASKS.md`](TASKS.md) — 施工顺序
-4. [`AGENTS.md`](AGENTS.md) — commit / 测试 / tmux 安全
+3. [`docs/FRONTEND.md`](docs/FRONTEND.md) — 前端 Scene / 页面
+4. [`TASKS.md`](TASKS.md) — 施工顺序
+5. [`AGENTS.md`](AGENTS.md) — commit / 测试 / tmux 安全
 
 常用命令：
 

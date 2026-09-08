@@ -4,7 +4,7 @@
 > 产品：[`PRODUCT.md`](PRODUCT.md)。结构：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)
 > （Muxterm 组合根 → WorkspacePool → Workspace = Runtime(Transport) + path → Tab → Pane；
 > Window 只是体现）。Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。
-> 像素 / 常驻 Scene：[`docs/SURFACE.md`](docs/SURFACE.md)。
+> 像素：[`docs/SURFACE.md`](docs/SURFACE.md)。前端：[`docs/FRONTEND.md`](docs/FRONTEND.md)。
 > Catalog：[`docs/CATALOG.md`](docs/CATALOG.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
 > 目录：[`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
 > 施工：[`TASKS.md`](TASKS.md)。
@@ -27,7 +27,7 @@ TUI、CLI 都是 frontend。Core 是库；frontend 只经 C FFI + 统一 `ffi_cl
 
 1. 先读 `docs/WORKSPACE.md`、`PRODUCT.md`，再动代码。
    动 Runtime / Herdr 还要读 `docs/RUNTIME.md`。
-   像素 / 前端场景还要读 `docs/SURFACE.md`。
+   像素还要读 `docs/SURFACE.md`。动 frontend 还要读 `docs/FRONTEND.md`。
    **不要**实现产品 Session / 虚拟 Window。
    **不要**在 frontend 做连接池、warm/cold slot、`bridgeLock`、串行后台校准。
    **不要**让 frontend 直接 `use` Core 内部模块或 Runtime concrete type。
