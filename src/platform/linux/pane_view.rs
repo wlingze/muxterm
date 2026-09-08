@@ -16,15 +16,15 @@ use vte4::prelude::*;
 
 use crate::core::config::{Rgb, Theme};
 use crate::core::protocol::terminal::emulate::TerminalState;
-use crate::core::protocol::terminal::mouse::{
-    gtk_button_to_sgr, pointer_cell as pixel_to_cell, sgr_report, SGR_HOVER, SGR_MOTION,
-};
 use crate::core::url_detect::UrlOpener;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 use crate::platform::linux::scroll_policy::{wheel_action, WheelAction};
 use crate::platform::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
+};
+use crate::platform::mouse::{
+    gtk_button_to_sgr, pointer_cell as pixel_to_cell, sgr_report, SGR_HOVER, SGR_MOTION,
 };
 
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。

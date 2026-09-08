@@ -5,7 +5,7 @@
 //! 对齐 iTerm2 alternate-mouse-scroll：无 mouse 的 alt-screen 下滚轮 = Up/Down。
 //! 纯函数，无 GTK 依赖，便于单测。
 
-use crate::core::protocol::terminal::mouse::{sgr_wheel, wheel_notches};
+use crate::platform::mouse::{sgr_wheel, wheel_notches};
 
 /// 每「格」滚动的行数（仅 CSI 方向键路径）。
 pub const WHEEL_LINES_PER_NOTCH: i32 = 3;

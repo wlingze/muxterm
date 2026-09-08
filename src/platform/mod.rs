@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod i18n;
 pub mod mirror;
+pub mod mouse;
 
 #[cfg(any(feature = "gtk", feature = "tui"))]
 pub mod ffi_client;
