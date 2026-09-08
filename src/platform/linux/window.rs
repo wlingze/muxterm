@@ -42,7 +42,7 @@ use crate::core::workspace::pool::{
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::event_pump::EventPump;
-use crate::platform::ffi_client::{ClientEvent, ClientWorkspaceEvent, FfiClient};
+use crate::platform::ffi_client::{ClientEvent, ClientEventKind, ClientWorkspaceEvent, FfiClient};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -3460,6 +3460,7 @@ fn seed_unseeded_pane_for(
         );
         view.seed_raw(&bytes, cols, rows);
         s.snapshot_seeded_this_batch.insert(pane_id);
+        drain_view_store_render_events(s, wid, view, pane_id);
     } else {
         tracing::info!(
             target: "muxterm::surface",
@@ -3467,6 +3468,32 @@ fn seed_unseeded_pane_for(
             "pane view unseeded and no queued or compatibility baseline is available"
         );
     }
+}
+
+/// Flush render events retained while a pane had no realized Surface.
+fn drain_view_store_render_events(
+    s: &mut UiState,
+    wid: &WorkspaceId,
+    view: &std::rc::Rc<PaneView>,
+    pane_id: u32,
+) {
+    let workspace_key = wid.as_str();
+    for event in s
+        .view_store
+        .take_pane_render_events(&workspace_key, pane_id)
+    {
+        match event.kind() {
+            ClientEventKind::PaneHistory => view.prepend_history(&event.data),
+            ClientEventKind::PaneFrame => view.feed_full(&event.data),
+            ClientEventKind::PaneOutput => view.feed_output(&event.data),
+            ClientEventKind::PaneSnapshot
+            | ClientEventKind::PaneClosed
+            | ClientEventKind::PaneResized
+            | ClientEventKind::Other(_) => {}
+        }
+    }
+    view.flush_deferred_history();
+    view.flush_deferred_feed();
 }
 
 fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
