@@ -45,6 +45,7 @@ use crate::platform::ffi_client::{ClientEvent, ClientPane, ClientTab, ClientWork
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
+use crate::platform::linux::event_batch::batch_order_plan;
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
@@ -2455,42 +2456,6 @@ fn active_workspace_id(s: &UiState) -> String {
 /// WorkspaceId → ReplicaStore 键（`name@transport`，与 QuickConnect 一致）。
 fn workspace_replica_id(id: &WorkspaceId) -> String {
     id.replica_id()
-}
-
-/// 批处理顺序计划：结构 →（frame/snapshot/history）→ output。
-///
-/// 纯函数（L0 可测）：tmux/Herdr 可在同一轮把 resize、snapshot 和 live
-/// output 一起送到 UI；按输入顺序直接喂会让 CUP/DECSTBM 仍按旧网格解释。
-/// 返回三个阶段的索引序列（各阶段内部保持原始顺序）。
-fn batch_order_plan(events: &[StateChange]) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
-    let has_structural = events.iter().any(|ev| {
-        matches!(
-            ev,
-            StateChange::TabAdded { .. }
-                | StateChange::TabClosed { .. }
-                | StateChange::LayoutChanged { .. }
-                | StateChange::PaneAdded { .. }
-                | StateChange::PaneClosed { .. }
-                | StateChange::PaneResized { .. }
-        )
-    });
-    if !has_structural {
-        // 无结构事件：保持原始顺序直接分发。
-        return ((0..events.len()).collect(), Vec::new(), Vec::new());
-    }
-    let mut structure = Vec::new();
-    let mut baseline = Vec::new();
-    let mut output = Vec::new();
-    for (i, ev) in events.iter().enumerate() {
-        match ev {
-            StateChange::PaneSnapshot { .. }
-            | StateChange::PaneFrame { .. }
-            | StateChange::PaneHistory { .. } => baseline.push(i),
-            StateChange::PaneOutput { .. } => output.push(i),
-            _ => structure.push(i),
-        }
-    }
-    (structure, baseline, output)
 }
 
 /// Effects collected while applying one Core event batch.
