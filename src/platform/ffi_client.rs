@@ -10,13 +10,14 @@ use std::ffi::{CStr, CString};
 use std::ptr::{self, NonNull};
 
 use crate::ffi::{
-    self, CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H,
-    LAYOUT_SPLIT_V, STATE_BACKEND_STATUS, STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT,
-    STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
+    self, CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, LAYOUT_LEAF,
+    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_BACKEND_STATUS, STATE_PANE_CLOSED, STATE_PANE_FRAME,
+    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
 
 const DISCOVERY_TIMEOUT_MS: u32 = 10_000;
 const EVENT_CAPACITY: usize = 64;
+const WORKSPACE_EVENT_CAPACITY: usize = 64;
 const TAB_CAPACITY: usize = 32;
 const PANE_CAPACITY: usize = 64;
 const PANE_OUTPUT_CAPACITY: usize = 256 * 1024;
@@ -30,6 +31,52 @@ pub struct ClientEvent {
     pub window_id: u32,
     pub data: Vec<u8>,
     pub name: String,
+}
+
+/// An owned row from the Core-owned workspace pool.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientWorkspace {
+    pub id: String,
+    pub name: String,
+    pub runtime: String,
+    #[serde(default)]
+    pub active: bool,
+}
+
+/// An owned workspace event.  The workspace identity is copied before the C
+/// buffer is released, so callers never retain a pointer into the handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientWorkspaceEvent {
+    pub workspace_id: String,
+    pub event: ClientEvent,
+}
+
+/// Target data accepted by the semantic workspace-open ABI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientTarget {
+    pub name: String,
+    pub runtime: String,
+    pub transport: String,
+    pub target: Option<String>,
+    pub path: String,
+    pub session: Option<String>,
+    pub socket: Option<String>,
+}
+
+/// Resolver intent for [`FfiClient::open_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientOpenIntent {
+    AttachOnly,
+    CreateIfMissing,
+}
+
+/// Result of opening a semantic target through Core.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientOpenedWorkspace {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub resolved_target: Option<serde_json::Value>,
 }
 
 /// Product-level event kinds exposed to frontends instead of raw ABI numbers.
@@ -275,6 +322,61 @@ impl FfiClient {
         unsafe { ffi::muxterm_shutdown(self.handle.as_ptr()) }
     }
 
+    /// List the live workspaces owned by this Core handle.
+    pub fn workspace_list(&self) -> anyhow::Result<Vec<ClientWorkspace>> {
+        let value =
+            Self::discovery_json(|| unsafe { ffi::muxterm_workspace_list(self.handle.as_ptr()) })?;
+        Ok(serde_json::from_value(value["workspaces"].clone())?)
+    }
+
+    /// Activate a Core-owned workspace by its stable product identity.
+    pub fn activate_workspace(&self, id: &str) -> anyhow::Result<()> {
+        let id = cstring(id);
+        let rc = unsafe { ffi::muxterm_workspace_activate(self.handle.as_ptr(), id.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Core workspace activation failed with code {rc}"
+            ))
+        }
+    }
+
+    /// Close a Core-owned workspace by its stable product identity.
+    pub fn close_workspace(&self, id: &str) -> anyhow::Result<()> {
+        let id = cstring(id);
+        let rc = unsafe { ffi::muxterm_workspace_close(self.handle.as_ptr(), id.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Core workspace close failed with code {rc}"
+            ))
+        }
+    }
+
+    /// Open a target through the Catalog resolver and return only owned DTOs.
+    pub fn open_target(
+        &self,
+        target: &ClientTarget,
+        intent: ClientOpenIntent,
+    ) -> anyhow::Result<ClientOpenedWorkspace> {
+        let target_json = client_target_json(target);
+        let target = cstring(&target_json.to_string());
+        let intent = cstring(match intent {
+            ClientOpenIntent::AttachOnly => "attach_only",
+            ClientOpenIntent::CreateIfMissing => "create_if_missing",
+        });
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_open_target_json(
+                self.handle.as_ptr(),
+                target.as_ptr(),
+                intent.as_ptr(),
+            )
+        })?;
+        Ok(serde_json::from_value(value)?)
+    }
+
     /// Poll and immediately copy all borrowed C data into owned values.
     pub fn poll_events(&self) -> Vec<ClientEvent> {
         let mut buffer = [CStateChange::default(); EVENT_CAPACITY];
@@ -290,24 +392,59 @@ impl FfiClient {
         }
         buffer[..(count as usize).min(EVENT_CAPACITY)]
             .iter()
-            .map(|event| {
-                if event.type_ == STATE_BACKEND_STATUS {
-                    self.last_status.set(event.pane_id);
-                }
-                ClientEvent {
-                    type_: event.type_,
-                    pane_id: event.pane_id,
-                    tab_id: event.tab_id,
-                    window_id: event.window_id,
-                    data: copy_bytes(event.data, event.data_len),
-                    name: copy_c_string(event.name),
-                }
+            .map(|event| self.copy_event(event))
+            .collect()
+    }
+
+    /// Poll active and background workspace events with their full identity.
+    pub fn poll_workspace_events(&self) -> Vec<ClientWorkspaceEvent> {
+        let mut buffer = [CWorkspaceStateChange {
+            workspace_id: ptr::null(),
+            event: CStateChange {
+                type_: 0,
+                pane_id: 0,
+                tab_id: 0,
+                window_id: 0,
+                data: ptr::null(),
+                data_len: 0,
+                name: ptr::null(),
+            },
+        }; WORKSPACE_EVENT_CAPACITY];
+        let count = unsafe {
+            ffi::muxterm_poll_workspace_events(
+                self.handle.as_ptr(),
+                buffer.as_mut_ptr(),
+                WORKSPACE_EVENT_CAPACITY as i32,
+            )
+        };
+        if count <= 0 {
+            return Vec::new();
+        }
+        buffer[..(count as usize).min(WORKSPACE_EVENT_CAPACITY)]
+            .iter()
+            .map(|event| ClientWorkspaceEvent {
+                workspace_id: copy_c_string(event.workspace_id),
+                event: self.copy_event(&event.event),
             })
             .collect()
     }
 
     pub fn status_code(&self) -> u32 {
         self.last_status.get()
+    }
+
+    fn copy_event(&self, event: &CStateChange) -> ClientEvent {
+        if event.type_ == STATE_BACKEND_STATUS {
+            self.last_status.set(event.pane_id);
+        }
+        ClientEvent {
+            type_: event.type_,
+            pane_id: event.pane_id,
+            tab_id: event.tab_id,
+            window_id: event.window_id,
+            data: copy_bytes(event.data, event.data_len),
+            name: copy_c_string(event.name),
+        }
     }
 
     /// Read the registered runtime provider metadata through FFI.
@@ -620,6 +757,18 @@ fn cstring_opt(value: Option<&str>) -> Option<CString> {
     value.map(cstring)
 }
 
+fn client_target_json(target: &ClientTarget) -> serde_json::Value {
+    serde_json::json!({
+        "name": target.name,
+        "runtime": target.runtime,
+        "transport": target.transport,
+        "target": target.target,
+        "path": target.path,
+        "session": target.session,
+        "socket": target.socket,
+    })
+}
+
 fn copy_bytes(data: *const u8, len: usize) -> Vec<u8> {
     if data.is_null() || len == 0 {
         Vec::new()
@@ -837,5 +986,53 @@ mod tests {
         assert_eq!(info.name, "Herdr");
         assert_eq!(info.support, ["PersistDetach", "Discover"]);
         assert_eq!(info.accepted_transports, ["local", "ssh"]);
+    }
+
+    #[test]
+    fn workspace_dtos_keep_pool_identity_and_open_result() {
+        let workspaces: Vec<ClientWorkspace> = serde_json::from_value(serde_json::json!([
+            {
+                "id": "local//default/shell/",
+                "name": "default",
+                "runtime": "shell",
+                "active": true
+            }
+        ]))
+        .expect("workspace list JSON should decode");
+        assert_eq!(workspaces[0].id, "local//default/shell/");
+        assert!(workspaces[0].active);
+
+        let opened: ClientOpenedWorkspace = serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "id": "local//default/tmux/",
+            "name": "default",
+            "resolved_target": {"canonical": {"runtime": "tmux"}}
+        }))
+        .expect("workspace open JSON should decode");
+        assert_eq!(opened.id, "local//default/tmux/");
+        assert_eq!(
+            opened.resolved_target.as_ref().expect("resolved target")["canonical"]["runtime"],
+            "tmux"
+        );
+    }
+
+    #[test]
+    fn client_target_json_preserves_attach_identity_fields() {
+        let target = ClientTarget {
+            name: "buildbox".into(),
+            runtime: "herdr".into(),
+            transport: "ssh".into(),
+            target: Some("devbox".into()),
+            path: "/workspace/project".into(),
+            session: Some("agent".into()),
+            socket: Some("/tmp/herdr.sock".into()),
+        };
+
+        let value = client_target_json(&target);
+        assert_eq!(value["runtime"], "herdr");
+        assert_eq!(value["transport"], "ssh");
+        assert_eq!(value["target"], "devbox");
+        assert_eq!(value["session"], "agent");
+        assert_eq!(value["socket"], "/tmp/herdr.sock");
     }
 }
