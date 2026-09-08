@@ -64,7 +64,8 @@ pub struct ClientTarget {
 }
 
 /// Resolver intent for [`FfiClient::open_target`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ClientOpenIntent {
     AttachOnly,
     CreateIfMissing,
@@ -77,6 +78,80 @@ pub struct ClientOpenedWorkspace {
     pub name: String,
     #[serde(default)]
     pub resolved_target: Option<serde_json::Value>,
+}
+
+/// Candidate source exposed by the Catalog FFI.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientCandidateKind {
+    Project,
+    Worktree,
+    Existing,
+    Recent,
+}
+
+/// Owned identity for an Existing candidate.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientExistingCandidateRef {
+    pub runtime_id: String,
+    pub transport_id: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+/// Owned candidate identity sent back to Core when a row is selected.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ClientCandidateRef {
+    Project {
+        project_id: String,
+    },
+    Worktree {
+        project_id: String,
+        worktree_id: String,
+    },
+    Existing {
+        identity: ClientExistingCandidateRef,
+    },
+    Recent {
+        key: String,
+    },
+}
+
+/// One owned row from the unified Catalog candidate list.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientCandidate {
+    pub kind: ClientCandidateKind,
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
+    #[serde(default)]
+    pub badges: Vec<String>,
+    #[serde(default)]
+    pub in_pool: Option<String>,
+    #[serde(rename = "ref")]
+    pub reference: ClientCandidateRef,
+}
+
+/// Owned product-level open request.  Frontends never construct a
+/// WorkspaceSpec; Core resolves this request through Catalog.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientOpenRequest {
+    pub candidate: ClientCandidateRef,
+    pub intent: ClientOpenIntent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default = "default_activate")]
+    pub activate: bool,
+}
+
+fn default_activate() -> bool {
+    true
 }
 
 /// Product-level event kinds exposed to frontends instead of raw ABI numbers.
@@ -353,6 +428,23 @@ impl FfiClient {
                 "Core workspace close failed with code {rc}"
             ))
         }
+    }
+
+    /// List the unified Project/Worktree/Existing/Recent Catalog candidates.
+    pub fn candidates(&self, recent_limit: u32) -> anyhow::Result<Vec<ClientCandidate>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_candidates_json(self.handle.as_ptr(), recent_limit)
+        })?;
+        Ok(serde_json::from_value(value["candidates"].clone())?)
+    }
+
+    /// Open a selected Catalog candidate through the product-level resolver.
+    pub fn open(&self, request: &ClientOpenRequest) -> anyhow::Result<ClientOpenedWorkspace> {
+        let request = cstring(&serde_json::to_string(request)?);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_open_json(self.handle.as_ptr(), request.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value)?)
     }
 
     /// Open a target through the Catalog resolver and return only owned DTOs.
@@ -1014,6 +1106,54 @@ mod tests {
             opened.resolved_target.as_ref().expect("resolved target")["canonical"]["runtime"],
             "tmux"
         );
+    }
+
+    #[test]
+    fn candidate_and_open_request_json_keep_typed_identity() {
+        let candidate: ClientCandidate = serde_json::from_value(serde_json::json!({
+            "kind": "existing",
+            "title": "agent",
+            "subtitle": "buildbox",
+            "badges": ["herdr", "ssh"],
+            "in_pool": "ssh/buildbox/agent/herdr/w7",
+            "ref": {
+                "kind": "existing",
+                "value": {
+                    "identity": {
+                        "runtime_id": "herdr",
+                        "transport_id": "ssh",
+                        "target": "buildbox",
+                        "session": "agent",
+                        "workspace_id": "w7"
+                    }
+                }
+            }
+        }))
+        .expect("candidate JSON should decode");
+
+        assert_eq!(candidate.kind, ClientCandidateKind::Existing);
+        assert_eq!(
+            candidate.in_pool.as_deref(),
+            Some("ssh/buildbox/agent/herdr/w7")
+        );
+        let ClientCandidateRef::Existing { identity } = candidate.reference else {
+            panic!("expected existing candidate identity");
+        };
+        assert_eq!(identity.workspace_id.as_deref(), Some("w7"));
+
+        let request = ClientOpenRequest {
+            candidate: ClientCandidateRef::Recent {
+                key: "recent-key".into(),
+            },
+            intent: ClientOpenIntent::AttachOnly,
+            template: None,
+            activate: false,
+        };
+        let encoded = serde_json::to_value(&request).expect("open request should encode");
+        assert_eq!(encoded["candidate"]["kind"], "recent");
+        assert_eq!(encoded["candidate"]["value"]["key"], "recent-key");
+        assert_eq!(encoded["intent"], "attach_only");
+        assert_eq!(encoded["activate"], false);
     }
 
     #[test]
