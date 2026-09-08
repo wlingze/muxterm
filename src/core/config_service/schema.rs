@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::config::{Config, KeyBinding};
 use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+use crate::core::workspace::template::WorkspaceTemplate;
 
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -24,6 +25,8 @@ pub struct ConfigDocument {
     pub config: Config,
     #[serde(default)]
     pub projects: Vec<ProjectDocument>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<WorkspaceTemplate>,
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
     #[serde(default)]
@@ -51,6 +54,7 @@ impl Default for ConfigDocument {
             config_version: CONFIG_VERSION,
             config,
             projects: Vec::new(),
+            templates: Vec::new(),
             shortcuts: ShortcutConfig::default(),
             platform: PlatformConfig::default(),
             extensions: BTreeMap::new(),
@@ -96,6 +100,7 @@ impl ConfigDocument {
             return Err(anyhow!("statusbar.mode 只能是 tmux 或 theme"));
         }
         self.validate_projects()?;
+        self.validate_templates()?;
         self.validate_shortcuts()?;
         Ok(())
     }
@@ -189,6 +194,11 @@ impl ConfigDocument {
                 ));
             }
         }
+        Ok(())
+    }
+
+    fn validate_templates(&self) -> Result<()> {
+        crate::core::workspace::template::TemplateRegistry::new(self.templates.clone())?;
         Ok(())
     }
 
@@ -557,6 +567,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
             "behavior",
             "keybindings",
             "projects",
+            "templates",
             "shortcuts",
             "platform",
             "extensions",
