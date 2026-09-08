@@ -24,7 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, StatefulWidget, Widget};
 
 use crate::platform::tui::emulate::Cell as TermCell;
-use crate::platform::tui::ffi_bridge::{BridgeLayout, FrameSnapshot};
+use crate::platform::tui::model::{FrameSnapshot, TuiLayout, TuiTab};
 use crate::platform::tui::palette::PaletteState;
 use crate::platform::tui::theme::Theme;
 
@@ -154,12 +154,7 @@ fn draw_title_bar(buf: &mut Buffer, area: Rect, snap: &FrameSnapshot, theme: &Th
         .render(area, buf);
 }
 
-fn draw_tab_bar(
-    buf: &mut Buffer,
-    area: Rect,
-    tabs: &[crate::platform::tui::ffi_bridge::BridgeTab],
-    theme: &Theme,
-) {
+fn draw_tab_bar(buf: &mut Buffer, area: Rect, tabs: &[TuiTab], theme: &Theme) {
     if tabs.is_empty() {
         Paragraph::new(" (no tab) ")
             .style(theme.dim_style())
@@ -204,17 +199,17 @@ fn draw_content(
 fn draw_layout_node(
     buf: &mut Buffer,
     area: Rect,
-    node: &BridgeLayout,
+    node: &TuiLayout,
     snap: &FrameSnapshot,
     screens: &std::collections::HashMap<u32, Vec<Vec<TermCell>>>,
     cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
     match node {
-        BridgeLayout::Leaf { pane_id } => {
+        TuiLayout::Leaf { pane_id } => {
             draw_leaf(buf, area, *pane_id, snap, screens, cursors, theme)
         }
-        BridgeLayout::Split {
+        TuiLayout::Split {
             horizontal,
             ratio,
             first,
@@ -578,26 +573,26 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::tui::ffi_bridge::{BridgeLayout, BridgePane, BridgeTab, FrameSnapshot};
+    use crate::platform::tui::model::{FrameSnapshot, TuiLayout, TuiPane, TuiTab};
     use std::collections::HashMap;
 
     fn snap_single_pane() -> FrameSnapshot {
         let mut outputs = HashMap::new();
         outputs.insert(1, b"hello\nworld\n".to_vec());
         FrameSnapshot {
-            tabs: vec![BridgeTab {
+            tabs: vec![TuiTab {
                 id: 1,
                 name: "t1".into(),
                 is_active: true,
             }],
-            panes: vec![BridgePane {
+            panes: vec![TuiPane {
                 id: 1,
                 cols: 80,
                 rows: 24,
                 is_active: true,
                 title: "bash".into(),
             }],
-            layout: Some(BridgeLayout::Leaf { pane_id: 1 }),
+            layout: Some(TuiLayout::Leaf { pane_id: 1 }),
             outputs,
             status: "connected".into(),
             active_tab: 1,
@@ -611,26 +606,26 @@ mod tests {
         outputs.insert(2, b"line1\nline2\n".to_vec());
         FrameSnapshot {
             tabs: vec![
-                BridgeTab {
+                TuiTab {
                     id: 1,
                     name: "t1".into(),
                     is_active: true,
                 },
-                BridgeTab {
+                TuiTab {
                     id: 2,
                     name: "t2".into(),
                     is_active: false,
                 },
             ],
             panes: vec![
-                BridgePane {
+                TuiPane {
                     id: 1,
                     cols: 40,
                     rows: 24,
                     is_active: true,
                     title: "bash".into(),
                 },
-                BridgePane {
+                TuiPane {
                     id: 2,
                     cols: 40,
                     rows: 24,
@@ -638,11 +633,11 @@ mod tests {
                     title: "zsh".into(),
                 },
             ],
-            layout: Some(BridgeLayout::Split {
+            layout: Some(TuiLayout::Split {
                 horizontal: true,
                 ratio: 500,
-                first: Box::new(BridgeLayout::Leaf { pane_id: 1 }),
-                second: Box::new(BridgeLayout::Leaf { pane_id: 2 }),
+                first: Box::new(TuiLayout::Leaf { pane_id: 1 }),
+                second: Box::new(TuiLayout::Leaf { pane_id: 2 }),
             }),
             outputs,
             status: "connected".into(),
@@ -918,19 +913,19 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert(pane_id, out);
         FrameSnapshot {
-            tabs: vec![BridgeTab {
+            tabs: vec![TuiTab {
                 id: 1,
                 name: "t1".into(),
                 is_active: true,
             }],
-            panes: vec![BridgePane {
+            panes: vec![TuiPane {
                 id: pane_id,
                 cols: 80,
                 rows: 24,
                 is_active: true,
                 title: title.into(),
             }],
-            layout: Some(BridgeLayout::Leaf { pane_id }),
+            layout: Some(TuiLayout::Leaf { pane_id }),
             outputs,
             status: "connected".into(),
             active_tab: 1,

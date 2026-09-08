@@ -1,6 +1,6 @@
 //! TUI 事件循环入口（经 FFI + ratatui）。
 //!
-//! `run()` 进入 crossterm raw mode + alternate screen，经 `CoreBridge` 调用
+//! `run()` 进入 crossterm raw mode + alternate screen，经共享 `FfiClient` 调用
 //! `muxterm_*` C ABI（不直接持有 TerminalModel / Runtime）。
 //! 轮询键盘 → execute / send_input；轮询 poll_events → 重绘。
 //! Ctrl-Q 退出，Alt+T 新建 tab，Alt+S / Alt+V 分割 pane，Alt+P 连接向导。
@@ -22,9 +22,9 @@ use ratatui::Terminal;
 
 use crate::platform::ffi_client::{ClientEventKind, ClientTask, FfiClient};
 use crate::platform::tui::emulate::Cell;
-use crate::platform::tui::ffi_bridge::{CoreBridge, FrameSnapshot};
 use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::mirror::should_forward_parser_response;
+use crate::platform::tui::model::FrameSnapshot;
 use crate::platform::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
 };
@@ -51,9 +51,9 @@ pub fn run(opts: TuiOpts) -> Result<()> {
 fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     execute!(out, EnterAlternateScreen).context("enter alternate screen")?;
 
-    let (runtime_type, socket, session) = resolve_runtime(&opts);
-    let mut bridge = CoreBridge::new(runtime_type, socket.as_deref(), session.as_deref())
-        .context("CoreBridge::new")?;
+    let (mut runtime_type, socket, session) = resolve_runtime(&opts);
+    let mut bridge = FfiClient::new(runtime_type, socket.as_deref(), session.as_deref())
+        .context("FfiClient::new")?;
 
     // 连接后给查询响应一点时间，再做一次 poll 让初始状态到达
     std::thread::sleep(Duration::from_millis(300));
@@ -70,12 +70,12 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     // tmux 控制模式（tmux / tmux-ssh）拥有 pane 的 PTY 与协议，前端只是渲染
     // 镜像：解析出的查询应答必须丢弃，不能经 send-keys 回写，否则 `git lg`
     // 的 `10;rgb:...` / `65;...c` 会泄漏成 shell 里的字面命令。
-    term_mgr.forward_replies = is_direct_pty_terminal(bridge.runtime());
+    term_mgr.forward_replies = is_direct_pty_terminal(runtime_type);
 
     // 首帧：立即渲染一次（不依赖事件）
-    let snap = bridge.snapshot();
+    let snap = FrameSnapshot::from_client(&bridge);
     let replies = sync_terminals(&mut term_mgr, &snap);
-    maybe_send_replies(&bridge, replies);
+    maybe_send_replies(&bridge, runtime_type, replies);
     draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
     // 每 50ms 事件轮询；仅当有实际状态变更时（事件非空 / 按键 / resize）才重绘，
@@ -121,6 +121,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                             &mut palette,
                             &key,
                             &mut bridge,
+                            &mut runtime_type,
                             &mut term_mgr,
                             &mut palette_open,
                         )? {
@@ -129,7 +130,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     } else if is_quit(&key) {
                         break;
                     } else {
-                        let snap = bridge.snapshot();
+                        let snap = FrameSnapshot::from_client(&bridge);
                         if handle_key(&mut bridge, &key, &snap, &mut palette_open, &mut palette) {
                             needs_redraw = true;
                         }
@@ -141,9 +142,10 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     // 重绘后被裁切/错位。
                     let cols = c.saturating_sub(2).max(20);
                     let rows = r.saturating_sub(8).max(8);
-                    if bridge.runtime() != "local" {
+                    if runtime_type != "local" {
                         let _ = bridge.resize_client(cols, rows);
-                    } else if let Some(pane) = active_pane_id(&bridge.snapshot()) {
+                    } else if let Some(pane) = active_pane_id(&FrameSnapshot::from_client(&bridge))
+                    {
                         let _ = bridge.resize_pane(pane, cols, rows);
                     }
                     needs_redraw = true;
@@ -154,9 +156,9 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
 
         // 仅在确有变化时重绘
         if needs_redraw {
-            let snap = bridge.snapshot();
+            let snap = FrameSnapshot::from_client(&bridge);
             let replies = sync_terminals(&mut term_mgr, &snap);
-            maybe_send_replies(&bridge, replies);
+            maybe_send_replies(&bridge, runtime_type, replies);
             draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
         }
     }
@@ -195,14 +197,14 @@ fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(
 /// 仅本地 / daemon 后端需要（前端是该 PTY 的终端模拟器，写回 pty 是正确行为）。
 /// tmux 控制模式下应答经 `send-keys -l` 回写会被 pane 回显并执行，造成
 /// `git lg` 的 `10;rgb:...` / `65;...c` 泄漏，因此必须丢弃。
-fn maybe_send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
-    let is_tmux_mirror = !is_direct_pty_terminal(bridge.runtime());
+fn maybe_send_replies(bridge: &FfiClient, runtime_type: &str, replies: Vec<(u32, Vec<u8>)>) {
+    let is_tmux_mirror = !is_direct_pty_terminal(runtime_type);
     if should_forward_parser_response(true, is_tmux_mirror) {
         send_replies(bridge, replies);
     }
 }
 
-fn send_replies(bridge: &CoreBridge, replies: Vec<(u32, Vec<u8>)>) {
+fn send_replies(bridge: &FfiClient, replies: Vec<(u32, Vec<u8>)>) {
     for (pane_id, data) in replies {
         let _ = bridge.send_input(pane_id, &data);
     }
@@ -299,11 +301,12 @@ fn is_quit(key: &KeyEvent) -> bool {
 /// 向导按键。返回 `Ok(true)` 表示需要重绘。
 ///
 /// 在进入某一步时自动加载对应的数据（hosts / sessions / 目录），
-/// 完成后触发重连（重建 `CoreBridge`）。
+/// 完成后触发重连（替换共享 `FfiClient`）。
 fn handle_palette_key(
     palette: &mut PaletteState,
     key: &KeyEvent,
-    bridge: &mut CoreBridge,
+    bridge: &mut FfiClient,
+    runtime_type: &mut &'static str,
     term_mgr: &mut TerminalManager,
     palette_open: &mut bool,
 ) -> Result<bool> {
@@ -317,10 +320,10 @@ fn handle_palette_key(
                 Some(action) => {
                     // 向导完成 → 重连（用当前 socket）
                     let sock = palette.socket.clone();
-                    reconnect(bridge, &action, sock.as_deref())?;
+                    reconnect(bridge, runtime_type, &action, sock.as_deref())?;
                     // 重连后旧 pane 状态全部失效：清空并按新后端重设应答策略。
                     term_mgr.clear();
-                    term_mgr.forward_replies = is_direct_pty_terminal(bridge.runtime());
+                    term_mgr.forward_replies = is_direct_pty_terminal(runtime_type);
                     *palette_open = false;
                     Ok(true)
                 }
@@ -448,8 +451,13 @@ fn load_step_data(palette: &mut PaletteState) {
     }
 }
 
-/// 连接动作 → 重建 CoreBridge。
-fn reconnect(bridge: &mut CoreBridge, action: &ConnectAction, socket: Option<&str>) -> Result<()> {
+/// 连接动作 → 替换共享 FFI client。
+fn reconnect(
+    bridge: &mut FfiClient,
+    runtime_kind: &mut &'static str,
+    action: &ConnectAction,
+    socket: Option<&str>,
+) -> Result<()> {
     let sock = socket.map(|s| s.to_string());
     let (runtime_type, socket, session, ssh_alias, start_dir) = match action {
         ConnectAction::Attach {
@@ -482,7 +490,7 @@ fn reconnect(bridge: &mut CoreBridge, action: &ConnectAction, socket: Option<&st
         },
     };
 
-    let new_bridge = CoreBridge::new_connect(
+    let new_bridge = FfiClient::new_connect(
         runtime_type,
         socket.as_deref(),
         session.as_deref(),
@@ -490,6 +498,7 @@ fn reconnect(bridge: &mut CoreBridge, action: &ConnectAction, socket: Option<&st
         start_dir.as_deref(),
     )?;
     *bridge = new_bridge;
+    *runtime_kind = runtime_type;
     // 等初始状态
     std::thread::sleep(Duration::from_millis(300));
     let _ = bridge.poll_events();
@@ -513,7 +522,7 @@ fn join_dir(name: &str, base: &Option<String>) -> String {
 
 /// 处理按键：结构命令走 execute，字符输入走 encode + send_input。
 fn handle_key(
-    bridge: &mut CoreBridge,
+    bridge: &mut FfiClient,
     key: &KeyEvent,
     snap: &FrameSnapshot,
     palette_open: &mut bool,

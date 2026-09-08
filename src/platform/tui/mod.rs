@@ -1,13 +1,13 @@
 //! TUI 前端（crossterm + ratatui，经 FFI 调核心）。
 //!
-//! 现代跨平台文本终端前端：`CoreBridge` 拉快照 → ratatui 渲染；键盘经
+//! 现代跨平台文本终端前端：共享 `FfiClient` 拉取 owned view model → ratatui 渲染；键盘经
 //! `execute` / `send_input` 回写。适合无 GTK 的机器（headless / SSH / Windows）。
 
 pub mod app;
 pub mod emulate;
-pub mod ffi_bridge;
 pub mod input;
 pub mod mirror;
+pub mod model;
 pub mod palette;
 pub mod render;
 pub mod terminal;
