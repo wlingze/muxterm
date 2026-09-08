@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod ffi_bridge;
+pub mod input;
 pub mod palette;
 pub mod render;
 pub mod terminal;
