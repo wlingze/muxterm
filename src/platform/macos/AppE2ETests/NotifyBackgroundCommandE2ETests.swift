@@ -54,17 +54,15 @@ final class NotifyBackgroundCommandE2ETests: XCTestCase {
                     || title.lowercased().contains("zsh")
                     || title.lowercased().contains("bash")
                     || title.lowercased().contains("cat"),
-                "标题必须含进程名。title=\(title) \(diagnostic)"
+                "第二行必须含进程名。title=\(title) \(diagnostic)"
             )
             XCTAssertTrue(
-                title.lowercased().contains("local")
-                    || title.lowercased().contains("tmux")
-                    || title.lowercased().contains("ssh"),
-                "标题必须含 transport。title=\(title)"
+                title.contains("\n"),
+                "Attention 行必须是工作区名 + 状态两行。title=\(title)"
             )
             XCTAssertTrue(
-                title.contains("/") || title.contains("~"),
-                "标题必须含 path。title=\(title)"
+                app.unifiedPanel.testAttentionRowUsesNormalTextColor(0),
+                "状态色只应出现在左侧色块，文字保持正常前景色。title=\(title)"
             )
         }
     }

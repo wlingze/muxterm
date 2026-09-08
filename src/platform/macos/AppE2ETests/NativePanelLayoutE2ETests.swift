@@ -84,6 +84,70 @@ final class NativePanelLayoutE2ETests: XCTestCase {
         XCTAssertFalse(panel.testEmptyStateText().isEmpty)
     }
 
+    func testAttentionRowsUseTwoLineWorkspaceLayoutAndUntintedText() {
+        AppE2E.ensureApp()
+        let store = QuickConnectStore()
+        let snapshot = AttentionSnapshot(
+            blockedCount: 1,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: "muxterm@ryzen",
+                    name: "muxterm",
+                    transport: "ryzen",
+                    path: "~/Developer/self/muxterm",
+                    blocked: 1,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            lastLine: "running",
+                            seq: 2,
+                            processName: "codex",
+                            agentName: "Codex"
+                        ),
+                        PaneAttention(
+                            paneId: 7,
+                            status: .blocked,
+                            lastLine: "ask?",
+                            seq: 1,
+                            processName: "codex",
+                            agentName: "Codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let chrome = WorkspaceSidebarItem(
+            workspaceId: "muxterm@ryzen",
+            name: "muxterm",
+            runtime: "tmux",
+            transport: "ryzen",
+            isActive: true,
+            tabNumberByPane: [4: 2, 7: 3]
+        )
+        let panel = UnifiedPanelController(
+            store: store,
+            ownerWindow: nil,
+            snapshot: { snapshot },
+            paneOutput: { _ in Data() },
+            sendInput: { _, _ in },
+            search: { _, _ in [] },
+            sidebarWorkspaces: { [chrome] }
+        )
+        panel.present(initial: .attention)
+        defer { panel.dismiss() }
+        AppE2E.pump(40)
+
+        XCTAssertEqual(panel.testRowCount(), 2)
+        XCTAssertEqual(panel.testAttentionRowTitle(0), "muxterm\nBlocked · Codex · Tab 3")
+        XCTAssertEqual(panel.testAttentionRowTitle(1), "muxterm\nWorking · Codex · Tab 2")
+        XCTAssertTrue(panel.testAttentionRowUsesNormalTextColor(0))
+        XCTAssertTrue(panel.testAttentionRowUsesNormalTextColor(1))
+        try? writeSnapshot(panel.window, name: "unified-panel-attention")
+    }
+
     /// 设置 `MUXTERM_UI_SNAPSHOT_DIR` 时输出 AppKit 位图，供人工视觉 QA；
     /// 默认测试只做内存布局验证，不写文件。
     private func writeSnapshot(_ window: NSWindow?, name: String) throws {

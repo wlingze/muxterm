@@ -1096,27 +1096,11 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             }
         case .attention:
             guard row < rows.count else { return nil }
-            let row = rows[row]
+            let item = rows[row]
             let id = NSUserInterfaceItemIdentifier("AttentionRow")
-            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView
-                ?? NSTableCellView()
-            cell.identifier = id
-            let label = cell.textField ?? {
-                let l = NSTextField(labelWithString: "")
-                l.translatesAutoresizingMaskIntoConstraints = false
-                cell.addSubview(l)
-                cell.textField = l
-                NSLayoutConstraint.activate([
-                    l.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
-                    l.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
-                    l.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                ])
-                return l
-            }()
-            label.stringValue = "● " + row.title
-            label.textColor = row.pane.status == .working ? .systemGreen : .systemOrange
-            label.font = NSFont.systemFont(ofSize: 12)
-            label.maximumNumberOfLines = 1
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? AttentionRowCellView
+                ?? AttentionRowCellView(identifier: id)
+            cell.apply(item)
             cell.setAccessibilityIdentifier("muxterm.attention.hit-\(row)")
             return cell
         case .search:
@@ -1335,10 +1319,18 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func testAttentionRowTitle(_ index: Int) -> String {
         table.layoutSubtreeIfNeeded()
-        guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? NSTableCellView else {
+        guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? AttentionRowCellView else {
             return ""
         }
-        return cell.textField?.stringValue ?? ""
+        return [cell.testTitle, cell.testDetail].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    func testAttentionRowUsesNormalTextColor(_ index: Int) -> Bool {
+        table.layoutSubtreeIfNeeded()
+        guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? AttentionRowCellView else {
+            return false
+        }
+        return cell.testUsesUntintedText
     }
 
     func testTableColumnWidth() -> CGFloat {
@@ -1388,6 +1380,97 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func testUsesSegmentedNavigation() -> Bool {
         tabControl.segmentCount == 3 && scopeControl.segmentCount == 3
+    }
+}
+
+/// Attention 行：左侧 8pt 色块表示状态，两行文字保持正常前景色。
+private final class AttentionRowCellView: NSTableCellView {
+    private let marker = StatusColorBlockView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+
+    var testTitle: String { titleLabel.stringValue }
+    var testDetail: String { detailLabel.stringValue }
+    var testUsesUntintedText: Bool {
+        !Self.isStatusTint(titleLabel.textColor) && !Self.isStatusTint(detailLabel.textColor)
+    }
+
+    private static func isStatusTint(_ color: NSColor?) -> Bool {
+        guard let color else { return false }
+        return color == .systemGreen || color == .systemOrange
+    }
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        marker.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = NSFont.systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.maximumNumberOfLines = 1
+        addSubview(marker)
+        addSubview(titleLabel)
+        addSubview(detailLabel)
+        NSLayoutConstraint.activate([
+            marker.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            marker.centerYAnchor.constraint(equalTo: centerYAnchor),
+            marker.widthAnchor.constraint(equalToConstant: StatusColorBlockView.size),
+            marker.heightAnchor.constraint(equalToConstant: StatusColorBlockView.size),
+            titleLabel.leadingAnchor.constraint(equalTo: marker.trailingAnchor, constant: 8),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func apply(_ row: AttentionRow) {
+        marker.fill = Self.color(for: row.indicator)
+        titleLabel.stringValue = row.title
+        detailLabel.stringValue = row.detail
+        setAccessibilityLabel("\(row.title), \(row.detail)")
+    }
+
+    private static func color(for indicator: AgentSidebarIndicator) -> NSColor {
+        switch indicator {
+        case .running:
+            return .systemGreen
+        case .done:
+            return .systemOrange
+        case .read:
+            return .tertiaryLabelColor
+        }
+    }
+}
+
+/// 和工作区徽章同一尺寸的圆角色块，只上色，不染色文字。
+private final class StatusColorBlockView: NSView {
+    static let size: CGFloat = 8
+
+    var fill: NSColor = .systemGreen {
+        didSet { needsDisplay = true }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: Self.size, height: Self.size)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        fill.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 2, yRadius: 2).fill()
     }
 }
 

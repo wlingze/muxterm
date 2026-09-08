@@ -163,14 +163,31 @@ public struct AttentionRow: Equatable, Sendable {
         self.tabNumber = tabNumber
     }
 
-    /// 与侧栏 Agents 行同一套：workspace · status · agent · Tab N。
+    /// 第一行：工作区名，和侧栏 Agents / Workspaces 的 title 一致。
     public var title: String {
-        AttentionRowLabel.sidebarAligned(
-            workspaceName: workspaceName,
+        let workspace = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return workspace.isEmpty ? workspaceId : workspace
+    }
+
+    /// 第二行：状态 · agent · Tab N，和侧栏 Agents 的 detail 一致。
+    public var detail: String {
+        AttentionRowLabel.detail(
             status: pane.status,
             agentName: agentName,
             tabNumber: tabNumber
         )
+    }
+
+    /// 与侧栏 Agents/Commands 同一套色：运行绿、未读完成/阻塞橙、已读灰。
+    public var indicator: AgentSidebarIndicator {
+        switch pane.status {
+        case .working:
+            return .running
+        case .blocked, .done:
+            return pane.acknowledged ? .read : .done
+        case .unknown, .idle:
+            return .read
+        }
     }
 }
 
@@ -284,26 +301,22 @@ public enum AttentionRowLabel {
         return "\(name)  \(transport)  \(path)"
     }
 
-    public static func sidebarAligned(
-        workspaceName: String,
+    public static func statusText(_ status: PaneAttentionStatus) -> String {
+        switch status {
+        case .idle: return "Idle"
+        case .working: return "Working"
+        case .blocked: return "Blocked"
+        case .done: return "Done"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    public static func detail(
         status: PaneAttentionStatus,
         agentName: String,
         tabNumber: Int?
     ) -> String {
-        let statusText: String
-        switch status {
-        case .idle: statusText = "Idle"
-        case .working: statusText = "Working"
-        case .blocked: statusText = "Blocked"
-        case .done: statusText = "Done"
-        case .unknown: statusText = "Unknown"
-        }
-        var parts: [String] = []
-        let workspace = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !workspace.isEmpty {
-            parts.append(workspace)
-        }
-        parts.append(statusText)
+        var parts = [statusText(status)]
         let agent = agentName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !agent.isEmpty {
             parts.append(agent)
@@ -311,6 +324,21 @@ public enum AttentionRowLabel {
         if let tabNumber, tabNumber > 0 {
             parts.append("Tab \(tabNumber)")
         }
+        return parts.joined(separator: " · ")
+    }
+
+    public static func sidebarAligned(
+        workspaceName: String,
+        status: PaneAttentionStatus,
+        agentName: String,
+        tabNumber: Int?
+    ) -> String {
+        var parts: [String] = []
+        let workspace = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !workspace.isEmpty {
+            parts.append(workspace)
+        }
+        parts.append(detail(status: status, agentName: agentName, tabNumber: tabNumber))
         return parts.joined(separator: " · ")
     }
 }
