@@ -60,9 +60,9 @@ pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{muxterm_execute, muxterm_execute_json};
 pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
-    muxterm_discover_sessions_json, muxterm_discover_targets_json,
-    muxterm_discover_tmux_sessions_json, muxterm_discover_workspaces_json,
-    muxterm_transport_list_json,
+    muxterm_discover_sessions_json, muxterm_discover_ssh_hosts_json, muxterm_discover_targets_json,
+    muxterm_discover_tmux_sessions_json, muxterm_discover_workspaces_json, muxterm_list_dir_json,
+    muxterm_status_snapshot_json, muxterm_transport_list_json,
 };
 pub use super::functions::workspace::{
     muxterm_workspace_activate, muxterm_workspace_close, muxterm_workspace_list,
@@ -307,7 +307,7 @@ pub(crate) fn json_error(error: impl std::fmt::Display) -> *mut c_char {
     }))
 }
 
-fn discovery_timeout(timeout_ms: u32) -> std::time::Duration {
+pub(crate) fn discovery_timeout(timeout_ms: u32) -> std::time::Duration {
     std::time::Duration::from_millis(u64::from(timeout_ms.clamp(100, 60_000)))
 }
 
@@ -327,129 +327,6 @@ pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_
         }
     }))
     .unwrap_or(-1)
-}
-
-/// 发现用户现有 SSH 配置中的 Host alias。
-///
-/// 返回的 JSON 字符串由 [`muxterm_free_string`] 释放；函数本身不会把 SSH
-/// 配置复制到 Muxterm，也不会触发连接或认证。
-#[no_mangle]
-pub extern "C" fn muxterm_discover_ssh_hosts_json(config_path: *const c_char) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        let path = cstr_opt(config_path);
-        match crate::core::discovery::list_ssh_hosts(path.as_deref().map(std::path::Path::new)) {
-            Ok(hosts) => json_string(serde_json::json!({
-                "ok": true,
-                "hosts": hosts,
-            })),
-            Err(error) => json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("SSH host discovery panic"))
-}
-
-/// 列出本地或远端目录条目（`name` + `is_dir`），供「选起始目录」UI 逐步浏览。
-///
-/// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
-/// 中的 alias。返回 `{"ok":true,"entries":[...]}`，字符串由
-/// [`muxterm_free_string`] 释放。`path` 为空时：本地取 HOME，SSH 取 `~`。
-#[no_mangle]
-pub extern "C" fn muxterm_list_dir_json(
-    transport_type: *const c_char,
-    target: *const c_char,
-    config_path: *const c_char,
-    path: *const c_char,
-    timeout_ms: u32,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        let transport = cstr_opt(transport_type)
-            .unwrap_or_else(|| "local".into())
-            .to_ascii_lowercase();
-        let target = cstr_opt(target);
-        let config_path = cstr_opt(config_path);
-        let path = cstr_opt(path).unwrap_or_else(|| {
-            if transport == "ssh" {
-                "~".to_string()
-            } else {
-                ".".to_string()
-            }
-        });
-        let result = match transport.as_str() {
-            "local" => {
-                let expanded = if path == "~" {
-                    std::env::var("HOME").unwrap_or_else(|_| ".".into())
-                } else {
-                    path
-                };
-                Ok(crate::core::discovery::list_local_dir(
-                    std::path::Path::new(&expanded),
-                ))
-            }
-            "ssh" => {
-                let Some(alias) = target.as_deref().filter(|value| !value.trim().is_empty()) else {
-                    return json_error("SSH directory listing requires a host alias");
-                };
-                crate::core::discovery::list_remote_dir(
-                    alias,
-                    &path,
-                    config_path.as_deref(),
-                    discovery_timeout(timeout_ms),
-                )
-            }
-            _ => return json_error(format!("unsupported directory transport: {transport}")),
-        };
-        match result {
-            Ok(entries) => json_string(serde_json::json!({
-                "ok": true,
-                "entries": entries,
-            })),
-            Err(error) => json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("directory listing panic"))
-}
-
-/// 抓取 status bar 快照（tmux 兼容：`show -g` / `show -w -g` + `display-message`）。
-///
-/// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是
-/// `~/.ssh/config` 的 alias。返回 `{"ok":true,"status":{...}}` JSON 字符串，
-/// 由 [`muxterm_free_string`] 释放。只读命令，不干扰控制客户端。
-#[no_mangle]
-pub extern "C" fn muxterm_status_snapshot_json(
-    transport_type: *const c_char,
-    target: *const c_char,
-    socket: *const c_char,
-    session: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        let transport = cstr_opt(transport_type)
-            .unwrap_or_else(|| "local".into())
-            .to_ascii_lowercase();
-        let ssh_alias = if transport == "ssh" {
-            cstr_opt(target)
-        } else {
-            None
-        };
-        let session = match cstr_opt(session) {
-            Some(s) if !s.trim().is_empty() => s,
-            _ => {
-                return json_error("session 为空");
-            }
-        };
-        let cfg = crate::core::runtime::tmux::status::StatusQueryConfig {
-            socket: cstr_opt(socket),
-            ssh_alias,
-            session,
-        };
-        match crate::core::runtime::tmux::status::fetch_snapshot(&cfg) {
-            Ok(status) => json_string(serde_json::json!({
-                "ok": true,
-                "status": status,
-            })),
-            Err(error) => json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("status snapshot panic"))
 }
 
 /// 当前 tmux 后端是否已启用 status bar 订阅（`refresh-client -B`）。

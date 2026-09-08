@@ -4,7 +4,117 @@ use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Duration;
 
-use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
+use super::super::api::{cstr_opt, discovery_timeout, json_error, json_string, MuxtermHandle};
+
+/// Discover Host aliases from the user's SSH configuration.
+#[no_mangle]
+pub extern "C" fn muxterm_discover_ssh_hosts_json(config_path: *const c_char) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let path = cstr_opt(config_path);
+        match crate::core::discovery::list_ssh_hosts(path.as_deref().map(std::path::Path::new)) {
+            Ok(hosts) => json_string(serde_json::json!({
+                "ok": true,
+                "hosts": hosts,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("SSH host discovery panic"))
+}
+
+/// List local or remote directory entries for the start-directory picker.
+#[no_mangle]
+pub extern "C" fn muxterm_list_dir_json(
+    transport_type: *const c_char,
+    target: *const c_char,
+    config_path: *const c_char,
+    path: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let transport = cstr_opt(transport_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let target = cstr_opt(target);
+        let config_path = cstr_opt(config_path);
+        let path = cstr_opt(path).unwrap_or_else(|| {
+            if transport == "ssh" {
+                "~".to_string()
+            } else {
+                ".".to_string()
+            }
+        });
+        let result = match transport.as_str() {
+            "local" => {
+                let expanded = if path == "~" {
+                    std::env::var("HOME").unwrap_or_else(|_| ".".into())
+                } else {
+                    path
+                };
+                Ok(crate::core::discovery::list_local_dir(
+                    std::path::Path::new(&expanded),
+                ))
+            }
+            "ssh" => {
+                let Some(alias) = target.as_deref().filter(|value| !value.trim().is_empty()) else {
+                    return json_error("SSH directory listing requires a host alias");
+                };
+                crate::core::discovery::list_remote_dir(
+                    alias,
+                    &path,
+                    config_path.as_deref(),
+                    discovery_timeout(timeout_ms),
+                )
+            }
+            _ => return json_error(format!("unsupported directory transport: {transport}")),
+        };
+        match result {
+            Ok(entries) => json_string(serde_json::json!({
+                "ok": true,
+                "entries": entries,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("directory listing panic"))
+}
+
+/// Fetch a tmux-compatible status-bar snapshot for a local or SSH target.
+#[no_mangle]
+pub extern "C" fn muxterm_status_snapshot_json(
+    transport_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    session: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let transport = cstr_opt(transport_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let ssh_alias = if transport == "ssh" {
+            cstr_opt(target)
+        } else {
+            None
+        };
+        let session = match cstr_opt(session) {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => return json_error("session 为空"),
+        };
+        let cfg = crate::core::runtime::tmux::status::StatusQueryConfig {
+            socket: cstr_opt(socket),
+            ssh_alias,
+            session,
+        };
+        match crate::core::runtime::tmux::status::fetch_snapshot(&cfg) {
+            Ok(status) => json_string(serde_json::json!({
+                "ok": true,
+                "status": status,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("status snapshot panic"))
+}
 
 /// List the registered transport providers.
 ///
