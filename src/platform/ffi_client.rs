@@ -1120,6 +1120,15 @@ impl FfiClient {
         unsafe { ffi::muxterm_send_input(self.handle.as_ptr(), pane_id, data.as_ptr(), data.len()) }
     }
 
+    pub fn send_input_quiet(&self, pane_id: u32, data: &[u8]) -> i32 {
+        if data.is_empty() {
+            return 0;
+        }
+        unsafe {
+            ffi::muxterm_send_input_quiet(self.handle.as_ptr(), pane_id, data.as_ptr(), data.len())
+        }
+    }
+
     pub fn resize_client(&self, cols: u16, rows: u16) -> i32 {
         unsafe { ffi::muxterm_resize_client(self.handle.as_ptr(), cols, rows) }
     }
