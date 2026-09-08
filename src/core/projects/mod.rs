@@ -1,5 +1,11 @@
 //! Projects 领域与 Workspace provenance 共用的稳定标识。
 
+mod project;
+mod worktree;
+
+pub use project::Project;
+pub use worktree::Worktree;
+
 /// 配置项 Project 的稳定标识。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProjectId(String);
