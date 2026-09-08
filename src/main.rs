@@ -268,13 +268,13 @@ fn main() -> anyhow::Result<()> {
             cli.log_file.clone(),
         ),
     };
-    let cfg = muxterm::core::logging::resolve_config(cli_level, cli_log_file);
+    let cfg = muxterm::app::resolve_config(cli_level, cli_log_file);
     let is_macos_gui_launcher =
         cfg!(target_os = "macos") && matches!(&cli.cmd, Some(CliSubcommand::Gui { .. }));
     if !is_macos_gui_launcher {
-        muxterm::core::logging::init_logging(cfg)?;
+        muxterm::app::init_logging(cfg)?;
         // W19d：日志就绪后装 panic hook，未接住的 panic 也进 --log-file。
-        muxterm::core::fault::install_hook();
+        muxterm::app::install_hook();
     }
     // macOS 的 `muxterm gui` 只是启动器：Swift app 进程会自己 init 同一个
     // log-file；CLI 再 init 会两个进程同时写文件造成日志双写。
@@ -396,7 +396,7 @@ fn run_tui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Res
         tracing::info!(target = "muxterm", "muxterm 启动（TUI）");
         if let Some(ref name) = session {
             if socket.is_none() {
-            muxterm::platform::cli::routing::ensure_local_daemon(name)?;
+                muxterm::platform::cli::routing::ensure_local_daemon(name)?;
             }
         }
         muxterm::platform::tui::app::run(muxterm::platform::tui::app::TuiOpts { socket, session })
