@@ -41,7 +41,7 @@ use crate::core::workspace::pool::{
 };
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
-use crate::platform::ffi_client::FfiClient;
+use crate::platform::ffi_client::{ClientEvent, ClientPane, ClientTab, ClientWorkspace, FfiClient};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -63,8 +63,10 @@ use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::platform::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
+use crate::platform::linux::scene_stack::SceneStack;
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
+use crate::platform::linux::view_store::ViewStore;
 use crate::platform::linux::workspace_sidebar::{
     AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
@@ -82,6 +84,10 @@ struct UiState {
     pool: WorkspacePool,
     /// 每个工作区一个像素缓存（VTE 不随切走销毁；Runtime 不在 GUI）。
     pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
+    /// 常驻 Workspace Scene 的产品身份与可见场景。
+    scene_stack: SceneStack,
+    /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
+    view_store: ViewStore,
     /// 当前挂载到窗口的 LayoutHost 对应的工作区。
     mounted_ws: Option<WorkspaceId>,
     /// 本轮结构事件触发 refresh_ui 后，已经从 core snapshot seed 的 pane。
@@ -527,6 +533,8 @@ impl AppWindow {
         let state = Rc::new(RefCell::new(UiState {
             pool,
             pixel_cache,
+            scene_stack: SceneStack::with_visible(startup_id.as_str()),
+            view_store: ViewStore::default(),
             mounted_ws: Some(startup_id.clone()),
             snapshot_seeded_this_batch: HashSet::new(),
             rt,
@@ -2545,6 +2553,9 @@ fn dispatch_event_for(
     effects: &mut UiBatchEffects,
 ) {
     let ws = wid.replica_id();
+    if let Some(event) = client_render_event(ev) {
+        s.view_store.push_render_event(&wid.as_str(), event);
+    }
     apply_attention_event_from_workspace(s, wid, &ws, ev);
     let is_active = s.pool.active_id() == Some(wid);
     match ev {
@@ -2862,9 +2873,36 @@ fn apply_attention_event_from_workspace(
     }
 }
 
+fn client_render_event(event: &StateChange) -> Option<ClientEvent> {
+    let (type_, pane, data) = match event {
+        StateChange::PaneOutput { pane, data } => {
+            (crate::ffi::types::STATE_PANE_OUTPUT, pane, data)
+        }
+        StateChange::PaneFrame { pane, data } => (crate::ffi::types::STATE_PANE_FRAME, pane, data),
+        StateChange::PaneSnapshot { pane, data } => {
+            (crate::ffi::types::STATE_PANE_SNAPSHOT, pane, data)
+        }
+        StateChange::PaneHistory { pane, data } => {
+            (crate::ffi::types::STATE_PANE_HISTORY, pane, data)
+        }
+        _ => return None,
+    };
+    Some(ClientEvent {
+        type_,
+        pane_id: pane.0,
+        tab_id: 0,
+        window_id: 0,
+        data: data.clone(),
+        name: String::new(),
+    })
+}
+
 fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffects) {
     let ws = active_workspace_id(s);
     let wid = s.active_ws_id().clone();
+    if let Some(event) = client_render_event(ev) {
+        s.view_store.push_render_event(&wid.as_str(), event);
+    }
     apply_attention_event_from_workspace(s, &wid, &ws, ev);
     match ev {
         StateChange::PaneSnapshot { pane, data } => {
@@ -3103,12 +3141,45 @@ fn refresh_ui(s: &mut UiState) {
 /// feeds an already-realized Surface from that workspace's Core state.
 fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
     let is_active = s.pool.active_id() == Some(wid);
-    let (tab_ids, active_tab, layouts, panes) = {
+    let (workspace_snapshot, view_tabs, view_panes, tab_ids, active_tab, layouts, panes) = {
         let Some(workspace) = s.pool.get(wid) else {
             return;
         };
         let state = workspace.state();
         let tabs = state.tabs();
+        let workspace_snapshot = ClientWorkspace {
+            id: wid.as_str().to_string(),
+            name: workspace.name().to_string(),
+            runtime: state.workspace_runtime().to_string(),
+            active: is_active,
+        };
+        let view_tabs: Vec<ClientTab> = tabs
+            .iter()
+            .map(|tab| ClientTab {
+                id: tab.id.0,
+                name: tab.name.clone(),
+                is_active: tab.active,
+            })
+            .collect();
+        let view_panes: Vec<(u32, Vec<ClientPane>)> = tabs
+            .iter()
+            .map(|tab| {
+                (
+                    tab.id.0,
+                    state
+                        .panes(&tab.id)
+                        .iter()
+                        .map(|pane| ClientPane {
+                            id: pane.id.0,
+                            cols: pane.cols,
+                            rows: pane.rows,
+                            is_active: pane.active,
+                            title: pane.title.clone(),
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
         let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id.0).collect();
         let active_tab = tabs
             .iter()
@@ -3130,8 +3201,20 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
                     .collect()
             })
             .unwrap_or_default();
-        (tab_ids, active_tab, layouts, panes)
+        (
+            workspace_snapshot,
+            view_tabs,
+            view_panes,
+            tab_ids,
+            active_tab,
+            layouts,
+            panes,
+        )
     };
+
+    s.scene_stack.ensure(&wid.as_str());
+    s.view_store
+        .replace_topology(workspace_snapshot, view_tabs, view_panes);
 
     if is_active {
         // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
@@ -5092,6 +5175,8 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     s.surface_input_queue
         .borrow_mut()
         .retain(|input| &input.workspace != id);
+    s.scene_stack.remove(&id.as_str());
+    s.view_store.remove_workspace(&id.as_str());
     s.workspace_sockets.remove(id);
     s.qc_store.replace_all_recents(&recent_target_configs(
         &s.pool,
@@ -5103,6 +5188,8 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
             s.layout_overlay.set_child(None::<&gtk4::Widget>);
             s.mounted_ws = None;
         }
+        s.scene_stack.remove(&evicted.as_str());
+        s.view_store.remove_workspace(&evicted.as_str());
         s.pixel_cache.remove(&evicted);
     }
 
@@ -5176,6 +5263,8 @@ fn refresh_sidebar_if_open(s: &mut UiState) {
 fn after_activate(s: &mut UiState) {
     // 切工作区 = 改绑体现：挂载该工作区的像素缓存（没有则新建）。
     let id = s.active_ws_id().clone();
+    s.scene_stack.ensure(&id.as_str());
+    let _ = s.scene_stack.show(&id.as_str());
     let had_cache = s.pixel_cache.contains_key(&id);
     let switching = s.mounted_ws.as_ref() != Some(&id);
     if switching {
