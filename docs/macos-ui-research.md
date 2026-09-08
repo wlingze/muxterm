@@ -1,5 +1,9 @@
 # macOS 终端 UI 技术调研报告
 
+> **历史调研（2026-07-24）。** 横幅：2026-09-08。
+> 像素契约：[`SURFACE.md`](SURFACE.md)。前端只经 FFI：[`ARCHITECTURE.md`](../ARCHITECTURE.md)。
+> 不要按「一个 handle 一个 pane」或把 `muxterm_get_pane_output` 当 live Surface API 实现。
+>
 > 调研日期：2026-07-24
 > 项目：muxterm — Rust 核心 (libmuxterm.a) → macOS 原生前端
 > 数据来源：GitHub API + 官方 README + 源码目录结构（全部实时验证）

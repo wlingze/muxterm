@@ -1,7 +1,9 @@
 # Phase 1 总结：Project attach→create fallback、卡片高亮、目录补全（2026-08-12）
 
+> **历史快照。** 横幅：2026-09-08。Warm connection pool 后来做过，又于 2026-09-08 废止
+> （[`warm-connection-pool.md`](warm-connection-pool.md)、[`SURFACE.md`](SURFACE.md) §9）。
 > 时间核验：2026-08-12T20:22+08:00（Asia/Shanghai）。
-> 本阶段严格按 brief 执行前三项；**未实现 warm connection pool**（Phase 4，留待下阶段）。
+> 本阶段严格按 brief 执行前三项；当时**未实现** warm connection pool。
 > 未提交、未 push；原任务已核验的两处 A/B 改动（MainWindow.swift、TerminalView.swift）保持在工作区。
 
 ## 完成内容

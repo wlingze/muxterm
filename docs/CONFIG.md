@@ -1,22 +1,37 @@
 # Muxterm Config Contract
 
-> 状态：已实现契约（`config_version = 1`）。本文描述的字段、Schema/Manifest、事务、FFI/CLI 和 Linux/macOS 设置窗口均已落地；macOS 侧仍需在 macOS runner 上编译与 XCTest。
->
+> 状态：已实现契约（`config_version = 1`），2026-09-08 补引用方向与 `[[templates]]`。
 > 本文是 Muxterm 配置系统的权威文档。代码、CLI、FFI、Linux GTK 和 macOS AppKit
-> 都必须以本文的字段语义和事务行为为准；其他架构文档只保留摘要和链接。
+> 都必须以本文的字段语义和事务行为为准。
+> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。目录：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
+>
+> 核对时间：2026-09-08T15:02:22+08:00。
 
 ## 1. 设计目标
 
-Muxterm 的配置语义属于 Core。平台层只负责把 Core 返回的 Schema、Settings
-Manifest 和值渲染为原生控件，然后把用户操作提交回 Core。
+Muxterm 的配置语义属于 Core。frontend 只负责把 Core 返回的 Schema、Settings
+Manifest 和值渲染为原生控件，然后把用户操作经 FFI 提交回 Core。
 
 ```text
-TOML files -> SettingsService -> resolved Config + JSON Schema + Manifest
+TOML files -> ConfigStore / SettingsService -> resolved Config + JSON Schema + Manifest
                                       |
-                         JSON/FFI or direct Core API
+                         JSON / C FFI（frontend 只经 ffi_client）
                                       |
                     GTK4/libadwaita  |  AppKit  |  CLI/TUI
 ```
+
+**引用方向（唯一允许的箭头）：**
+
+```text
+config  →  protocol（ids / task 名 / error）
+projects / workspace / activity / catalog / frontend  →  config
+runtime / transport  →  （不读 config）
+```
+
+- `config` **不** import Runtime / Workspace / Projects 的领域类型。`[[projects]]`、`[[templates]]` 在 config 里是序列化记录，由 `projects::store` / `workspace::template` 转成领域类型。
+- Runtime / Transport 需要的值（socket、ssh 参数、cwd、默认命令）经 `Catalog::resolve` 写进 `WorkspaceSpec`，或在 `Muxterm::new` 时经 provider 参数注入。合同测试不需要配置文件。
+- **没有全局单例。** `Muxterm::new(ConfigStore)` 注入。
+- `store.commit()` 后发 `ConfigChanged { paths }`；frontend 热应用主题 / 快捷键，不重启、不重建 Scene。
 
 配置系统必须满足：
 
@@ -78,6 +93,7 @@ config_version = 1
 [platform.macos]
 
 [[projects]]
+[[templates]]
 
 [shortcuts]
 [[shortcuts.overrides]]
@@ -109,9 +125,10 @@ config_version = 1
 字体选择遵循：用户选中的可用字体、应用捆绑的 JetBrains Mono、系统 monospace。
 缺少用户字体只产生 warning，不修改用户配置，也不安装系统字体。
 
-`pool.max_slots` 是 warm Workspace 的软提醒阈值，不是硬上限。超过阈值时连接池保留全部
-Workspace，界面只列出最久未使用的后台 Workspace，让用户选择性关闭；“全部保留”不会触发
-静默 LRU 淘汰。TTL、内存压力和用户明确关闭仍可按各自策略回收资源。
+`pool.max_slots` 是 WorkspacePool 的软提醒阈值，不是硬上限，也**不是** warm slot 容量。
+超过阈值时池保留全部已打开 Workspace，界面只列出最久未使用的项，让用户选择性关闭；
+不会触发静默 LRU 淘汰。TTL、内存压力和用户明确关闭仍可按各自策略回收资源。
+frontend 不再维护第二套连接池。
 
 ### 3.3 Runtime 和行为
 
@@ -127,12 +144,16 @@ Workspace，界面只列出最久未使用的后台 Workspace，让用户选择�
 | `attention` | `enabled`、`blocked_regex`、`debounce_ms` |
 | `ui` | `tab_bar_position`、`tab_bar_height`、`show_title_bar`、`borderless` |
 
-`tmux`、`herdr`、`shell` 必须通过 Catalog 的 runtime descriptor 和 capability
-描述。platform 不直接检查 runtime 字符串，也不拼接 tmux 或 Herdr 命令。
+`tmux` / `ssh` / `pane` 这些分组是**序列化记录**，给 resolver 写成 `WorkspaceSpec`。
+Runtime / Transport 实现不得打开 `config.toml`。frontend 不直接检查 runtime 字符串，
+也不拼接 tmux 或 Herdr 命令。问能力用 `support()`。
 
-## 4. Project / Workspace 模型
+新增 `[[templates]]` 与 `projects[].template` 是 additive 可选字段，不必升
+`config_version`。改已有字段语义才升版本并写 `migration.rs`。
 
-Project 是可重复使用的 Workspace 启动规格，不是产品层 Session：
+## 4. Project / Worktree / WorkspaceTemplate
+
+Project 是可重复使用的项目管理记录，不是产品层 Session，也不是 Workspace：
 
 ```toml
 [[projects]]
@@ -150,15 +171,28 @@ socket = ""
 [projects.transport]
 id = "local"
 target = ""
+
+template = "workstation"
+```
+
+```toml
+[[templates]]
+name = "workstation"
+
+[[templates.tabs]]
+name = "Monitor"
+active = true
 ```
 
 Project 的稳定 `id` 在重命名时保持不变。`runtime` 和 `transport` 的 options 由
-Core descriptor 提供 Schema；首期实现 shell、tmux、Herdr、local 和 SSH。
+Core descriptor 提供 Schema；实现 shell、tmux、Herdr、local 和 SSH。
 
-Recent 连接是运行时池派生数据，不落盘。旧 `quickconnect.toml` 会由 Core 读取并
-合并到主文档；当前实现保留原文件作为可恢复备份，不会在迁移过程中静默删除。
-其中的 `socket`、`session`、command 和 env 均映射到 `ProjectDocument`，重复 `id`
-时主文档优先。
+- `template` 按名字引用 `[[templates]]`。模板只在新建会话（intent 结果为 create）时应用。
+- Worktree 记录挂在 Project 下，不进 `Workspace → Tab → Pane`。
+- Recent / last-used 是运行状态，**不要**写进手写的 `config.toml`。落盘位置若需要，另开文件。
+
+旧 `quickconnect.toml` 会由 Core 读取并合并到主文档；当前实现保留原文件作为可恢复备份，
+不会在迁移过程中静默删除。重复 `id` 时主文档优先。
 
 ## 5. 快捷键
 
@@ -321,14 +355,15 @@ JSON Pointer、文件、行、列、用户可读消息和修复建议。
 
 ## 11. 平台边界和 UI 要求
 
-Core 负责：配置模型、默认值、Schema、Manifest、Action Catalog、Projects、主题、
-字体语义、事务、迁移、持久化、合并、通知。
+Core 负责：配置模型、默认值、Schema、Manifest、Action Catalog、Projects、Templates、主题、
+字体语义、事务、迁移、持久化、合并、通知。设置页由 Schema/Manifest 生成，frontend 不硬编码字段。
 
 Linux/macOS 负责：原生窗口、原生字体选择器、平台字体枚举、Manifest 控件、键盘
-事件转换、Accessibility、i18n 和视觉布局。
+事件转换、Accessibility、i18n 和视觉布局。设置修改经 draft transaction 提交；
+`ConfigChanged` 热应用，不重建 Scene。
 
 平台禁止：直接读取/写入 config 文件、复制 Config 默认值、维护 QuickConnect
-持久化、解析 runtime 协议、实现第二套快捷键动作表。
+持久化、解析 runtime 协议、实现第二套快捷键动作表、让 Runtime/Transport 读 config。
 
 ## 12. 验收矩阵
 
@@ -345,6 +380,7 @@ Linux/macOS 负责：原生窗口、原生字体选择器、平台字体枚举�
 
 - 首期不直接兼容 Alacritty、Ghostty、iTerm2、Kitty 或其他主题格式。
 - 不实现主题插件系统、主题市场或 YAML parser。
-- 不允许 Project 覆盖全局外观，不实现布局 DSL。
+- 不允许 Project 覆盖全局外观。WorkspaceTemplate 不是通用布局 DSL，只描述新建会话的 Tab/Pane。
 - 不引入产品层 Session 或虚拟 Window。
 - 不把 JetBrains Mono 安装到系统字体目录。
+- 不为了目录层次拆出没有独立所有权的 `config_edit` / `config_service` 平行模块；三处配置代码并入一个 `config/`。

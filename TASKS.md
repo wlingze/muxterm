@@ -1,8 +1,13 @@
-# TASKS.md — macOS UI 功能 → Linux GTK 移植执行计划
+# TASKS.md — 历史施工单（2026-08 Linux 移植）
 
-> **2026-08-16 01:09：W1 已落地**（`3f19923`）。**Codex 从 W2 做到 W8，中间不要等用户。**
-> 架构 [`docs/WORKSPACE.md`](docs/WORKSPACE.md) §6。
-> 不要重做 C7/C8/E/F。测试 [`docs/TESTING.md`](docs/TESTING.md)。
+> **历史文档。不要当现行队列。** 冻结日期：2026-08-16；横幅更新：2026-09-08。
+> 现行产品结构：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)。
+> 像素 / 去锁：[`docs/SURFACE.md`](docs/SURFACE.md)。
+> 测试：[`docs/TESTING.md`](docs/TESTING.md)。
+> 现行施工顺序（不入库）：仓库根目录 `refactor-muxterm-0908.md`。
+>
+> 下文是把 macOS UI 移植到 Linux GTK 的 14 项计划，含当时的 Warm Connection Pool。
+> Warm slot / `bridgeLock` / 前台校准已废止，不要按 B4 再做一份。
 >
 > 基线时间：2026-08-13 19:5x CST（Asia/Shanghai）
 > 分支：`feat/linux-quickconnect-ui`

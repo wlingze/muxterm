@@ -1,11 +1,12 @@
 # HERDR-TESTING.md — Herdr、Runtime×Transport 与 CI 验收契约
 
-> 状态：测试契约 + W10 本地实现复核（2026-08-25）；远端 required CI 尚未在当前 HEAD 复核
-> 最终复核：`2026-08-25T12:10:25+08:00`（CST；当前 HEAD、旧 PR #20 required logs、
-> 本地门禁均已核对；未 push）
+> 状态：Herdr / runtime×transport 专项门禁。横幅：2026-09-08。
+> 隔离 named session、禁止 `herdr server stop`、禁止 `visible_ansi` 进 VTE、required 格不得 skip——这些仍然有效。
+> 路径名 `platform/`、`ffi_bridge`、`set_foreground` 以总契约为准（frontend / ffi_client / 无前后台 slot）。
+> 最终复核：`2026-08-25T12:10:25+08:00`
 > Runtime 设计：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)
 > 总测试规范：[`TESTING.md`](TESTING.md)
-> 实施计划：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
+> 实施计划（历史）：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
 
 本文回答两个问题：
 

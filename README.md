@@ -1,16 +1,19 @@
 # Muxterm
 
-跨平台 **tmux control mode (`-CC`) 原生 UI 终端**：Linux（GTK4 桌面 / TUI）与 macOS（SwiftUI）。
+跨平台终端：把 tmux / Herdr / 本地 shell 收成原生 Tab / Pane UI，而不是黑框 + `Ctrl+B`。
 
-用共享 Rust 核心把本地或远程 tmux 的 session / window / pane 渲染成原生 tab 与分割布局，而不是「黑框终端 + `Ctrl+B`」。体验接近 iTerm2 的 tmux 集成。详见 [PRODUCT.md](PRODUCT.md)。
+产品层级是 **Workspace = Runtime(Transport) + path**。Linux（GTK4）、macOS（Swift）、TUI、CLI 都是 frontend，只经共享 Rust Core 的 C FFI。详见 [PRODUCT.md](PRODUCT.md)。
+
+> 2026-09-08 契约已冻结。代码仍在迁移（现行目录是 `src/platform/` 与单 package）。目标树见 [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md)。
 
 ## 功能概览
 
-- **tmux `-CC` 原生集成**：pane 输出进原生终端视图，布局变化同步到 UI
-- **Tab / Pane**：每个 pane 可对应 tab；支持水平 / 垂直分割
-- **本地与远程**：本地 `tmux -CC`，以及通过 SSH 连接远程 tmux session
-- **命令面板**：VSCode 风格（默认 `Alt+P`），含 `ssh: connect` 等命令
-- **可配置**：TOML 配置（字体、主题、快捷键、SSH、滚动缓冲等）
+- **Runtime × Transport**：shell / tmux / herdr 与 local / ssh 独立组合，不是手写 `LocalTmux` 四种 mode
+- **Tab / Pane**：每个 Workspace 同一套拓扑；tmux window → Tab，tmux pane → Pane
+- **本地与远程**：local 或 `ssh <alias>`；同一 SSH host 复用一条 TargetConnection
+- **Project / Worktree / 模板**：项目清单、git worktree 联动、新建会话时应用 WorkspaceTemplate
+- **命令面板**：VSCode 风格（默认 `Alt+P` / macOS Command+P）
+- **可配置**：单一 `config.toml`（字体、主题、快捷键、Projects、templates）
 
 ## 截图
 
@@ -20,7 +23,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `overview.png` | 主界面：tab 栏 + pane 分割 |
+| `overview.png` | 主界面：侧栏 + tab 栏 + pane 分割 |
 | `command-palette.png` | 命令面板 |
 | `ssh-connect.png` | SSH 远程连接流程 |
 
@@ -34,9 +37,9 @@
 
 | 组件 | 说明 |
 |------|------|
-| Linux | 桌面环境（GTK4） |
+| Linux | 桌面环境（GTK4）才能跑 `muxterm gui` |
 | Rust | 建议 stable（开发机实测 `rustc 1.97.1`） |
-| tmux | 建议 3.x（实测 `3.7b`） |
+| tmux | 建议 3.x（实测 `3.7b`）；tmux runtime 需要 |
 | 系统库 | `gtk4`、`vte`（GTK4 版）、OpenSSL 等开发包 |
 
 Arch 示例：
@@ -56,12 +59,12 @@ sudo apt-get install -y build-essential pkg-config \
 
 ### 从 Release 下载
 
-GitHub Release 自动构建三种产物（打 tag `v*.*.*` 触发，或手动 dispatch）：
+GitHub Release 自动构建产物（打 tag `v*.*.*` 触发，或手动 dispatch）：
 
 | 产物 | 平台 | 类型 | 运行时依赖 |
 |------|------|------|-----------|
-| `muxterm-cli-linux-x86_64-*` | Linux x86_64 | CLI/TUI 命令行工具 | glibc (ubuntu-latest), tmux for tmux ops |
-| `muxterm-gtk-linux-x86_64-*` | Linux x86_64 | GTK4 GUI 应用 | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
+| `muxterm-cli-linux-x86_64-*` | Linux x86_64 | CLI/TUI | glibc (ubuntu-latest), tmux for tmux ops |
+| `muxterm-gtk-linux-x86_64-*` | Linux x86_64 | GTK4 GUI | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
 | `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app 包 | macOS 13+ |
 
 每个产物附带 `.sha256` 校验文件。
@@ -93,19 +96,26 @@ cd muxterm
 ./build/linux/muxterm        # macOS 上是 ./build/macos/muxterm
 ```
 
-每个仓库/ worktree 使用**本地**编译缓存（`.cargo/config.toml` 不设置 `target-dir`，
+每个仓库 / worktree 使用**本地**编译缓存（`.cargo/config.toml` 不设置 `target-dir`，
 cargo 默认 `./target`）与本地产物目录 `./build/<os>/`，不跨 worktree 共享；可用环境变量 `CARGO_TARGET_DIR` 覆盖。
 
 调试运行：
 
 ```bash
-cargo run
-# 或更详细日志
-cargo run -- --verbose
-# 显式选前端
-cargo run --features gtk -- --gtk
-cargo run --no-default-features --features tui -- --tui
+# 无 subcommand = CLI
+cargo run -- --help
+
+# TUI
+cargo run --no-default-features --features tui -- tui
+
+# Linux GUI
+cargo run --features gtk -- gui
+
+# 详细日志
+cargo run --features gtk -- gui --verbose
 ```
+
+兼容期内 `--tui` / `--gtk` 仍可用；目标入口是 subcommand `tui` / `gui`。
 
 可选：把二进制装到 PATH：
 
@@ -125,19 +135,22 @@ cp configs/config.example.toml ~/.config/muxterm/config.toml
 常用段落：
 
 - `[font]` / `[theme]` — 字体与主题（主题文件在 `configs/themes/`）
-- `[tmux]` — 鼠标、默认 session
-- `[ssh]` — 远程 host / port / user / key
-- `[[keybindings]]` — 快捷键自定义
+- `[[projects]]` — 项目清单（目标 Runtime / Transport / 路径）
+- `[[templates]]` — WorkspaceTemplate（新建会话时的 tab / pane）
+- `[shortcuts]` — 快捷键
+- `[platform.linux]` / `[platform.macos]` — 平台专属
+
+权威字段见 [`docs/CONFIG.md`](docs/CONFIG.md)。Runtime / Transport **不直接读**配置文件；值经 WorkspaceSpec 或 provider 参数注入。
 
 ## 使用方法
 
-启动后，Muxterm 会以 GTK4 窗口呈现本地/远程 tmux 的 pane。
+`muxterm gui` 以当前系统 GUI 呈现已打开的 Workspace。`muxterm tui` 在终端里做同一件事。无 subcommand 时是 CLI。
 
 ### 默认快捷键
 
 | 快捷键 | 作用 |
 |--------|------|
-| `Alt+N` | 新窗口（new-window ≈ 新 tab + pane） |
+| `Alt+N` | 新 Tab |
 | `Alt+T` | 新本地 shell tab |
 | `Alt+D` | 水平分割 pane |
 | `Alt+Shift+D` | 垂直分割 pane |
@@ -145,22 +158,26 @@ cp configs/config.example.toml ~/.config/muxterm/config.toml
 | `Alt+0` | 最后一个 tab |
 | `Alt+[` / `Alt+]` | 上一个 / 下一个 pane |
 | `Alt+R` | Pane 切换器（模糊搜索） |
-| `Alt+P` | 命令面板 |
+| `Alt+P` | 命令面板（macOS 为 Command+P） |
 | `Alt+Shift+Q` | 退出 |
 
-### 命令面板与 SSH
+Linux 的 `primary_key = "auto"` 解析为 Alt；macOS 解析为 Command。见 [`docs/CONFIG.md`](docs/CONFIG.md) §5。
 
-1. 按 `Alt+P` 打开命令面板  
-2. 选择 `ssh: connect`（或输入关键字过滤）  
-3. 在 QuickPick 中输入 `user@host`（或依赖 `config.toml` 的 `[ssh]`）  
-4. 连接成功后，远程 tmux `-CC` 的 pane 会出现在本地 UI 中  
+### 命令面板与打开
 
-断开可用命令面板中的 `ssh: disconnect`。
+1. 打开命令面板
+2. 从 Candidate 列表选 Project / Worktree / Existing / Recent
+3. Core 解析成 WorkspaceSpec 并打开；frontend 不手写 spec
+4. 已在池里的 Workspace 点击即切换可见 Scene，不重连
 
 ### CLI
 
 ```text
-muxterm [OPTIONS]
+muxterm [OPTIONS] [COMMAND]
+
+无 subcommand     CLI（list-workspaces / new-tab / send-keys …）
+muxterm tui       TUI 前端
+muxterm gui       当前系统 GUI
 
 Options:
   -v, --verbose              启用详细日志（也可用 RUST_LOG）
@@ -172,56 +189,40 @@ Options:
 示例：用独立 socket，不影响默认 tmux 会话：
 
 ```bash
-muxterm -L muxterm
+muxterm -L muxterm list-workspaces
 ```
 
-## 项目结构
+`-s` 是工作区名，不是 tmux `$N`。不要对用户默认 server 跑 `kill-session`。
+
+## 项目结构（目标）
 
 ```text
 muxterm/
 ├── src/
-│   ├── lib.rs                  # 库根（pub mod core + platform）
-│   ├── main.rs                 # 薄入口（arg 解析 → 委托 platform::cli/tui/linux）
-│   ├── core/                   # 非 GUI 核心，平台无关
-│   │   ├── model/              # Session→Window→Tab→Pane 模型 + Backend trait
-│   │   ├── protocol/
-│   │   │   ├── terminal/       # 输入编码 / 进程查询 / scrollback
-│   │   │   └── ffi/            # C ABI 导出（macOS/Linux TUI 经此调用）
-│   │   ├── runtime/
-│   │   │   ├── shell/          # 本地 shell 后端（LocalBackend）
-│   │   │   ├── tmux/           # tmux -CC 后端 + 协议解析 + pty
-│   │   │   └── daemon.rs       # daemon IPC 后端（DaemonBackend）
-│   │   ├── transport/          # local + ssh 字节流传输
-│   │   ├── config.rs           # TOML 配置 + 主题
-│   │   ├── discovery.rs        # SSH session 发现
-│   │   ├── types.rs            # PaneId / WindowId / TabId / SessionId
-│   │   └── buffer_cap.rs       # 输出/事件有界缓冲
-│   └── platform/              # 前端
-│       ├── cli/               # CLI 命令（解析 + 路由 + daemon + 格式化）
-│       ├── tui/               # crossterm TUI（feature = "tui"）
-│       ├── linux/             # GTK4 + vte4（feature = "gtk"）
-│       └── macos/             # SwiftUI + SwiftPM（C ABI via CoreBridge）
-├── scripts/                    # 构建脚本
-│   ├── build-cli.sh            # cargo build --features ffi
-│   ├── build-tui.sh            # cargo build --features tui
-│   ├── build-linux.sh          # cargo build --features gtk
-│   └── build-macos.sh          # cargo build ffi release + swift build
-├── configs/                    # 示例配置与主题
-├── tests/                      # 集成 / 回归测试
-├── PRODUCT.md                  # 产品规划
-├── ARCHITECTURE.md             # 架构与交互规范
-└── AGENTS.md                   # 给 coding agent 的开发约定
+│   ├── lib.rs                 # 唯一 Core library root
+│   ├── main.rs                # 唯一 binary：薄入口，无 mod 声明
+│   ├── core/                  # 现状：单 crate 内的 Core（将拆 workspace crate）
+│   └── frontend/              # 目标目录；现状仍是 src/platform/
+│       ├── ffi_client.rs
+│       ├── cli/ tui/ linux/ macos/ windows/
+├── scripts/                   # 构建脚本
+├── configs/                   # 示例配置与主题
+├── tests/                     # 集成 / 回归测试
+├── docs/                      # 契约文档
+├── PRODUCT.md
+├── ARCHITECTURE.md
+└── AGENTS.md
 ```
 
-更细的模块职责见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+现行代码树与目标对照见 [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
 
 ## 开发指南
 
 开始前建议阅读：
 
-1. [`PRODUCT.md`](PRODUCT.md) — 产品目标与路线图  
-2. [`ARCHITECTURE.md`](ARCHITECTURE.md) — 交互与模块边界  
-3. [`AGENTS.md`](AGENTS.md) — commit / 测试约定  
+1. [`PRODUCT.md`](PRODUCT.md) — 产品目标
+2. [`docs/WORKSPACE.md`](docs/WORKSPACE.md) — 产品树与打开路径
+3. [`AGENTS.md`](AGENTS.md) — commit / 测试 / tmux 安全
 
 常用命令：
 
@@ -243,12 +244,14 @@ cargo check --no-default-features --features ffi
 
 CI 按职责和路径分流（仅 `main` push / 到 `main` 的 PR，避免 feature branch 的 push + PR 重复运行）：
 
-- 核心共享检查：[`ci.yml`](.github/workflows/ci.yml)，包含现有 core/common tests 与 Four-Mode local/SSH × shell/tmux 矩阵。
-- Linux 平台检查：[`linux.yml`](.github/workflows/linux.yml)，仅覆盖 Linux GTK/VTE。
-- macOS 平台检查：[`macos.yml`](.github/workflows/macos.yml)，仅覆盖 macOS FFI/XCUITest。
-- Release workflow [`release.yml`](.github/workflows/release.yml) 保持 tag / 手动触发，独立于 PR CI。
+- 核心共享检查：[`ci.yml`](.github/workflows/ci.yml)
+- Linux 平台检查：[`linux.yml`](.github/workflows/linux.yml)
+- macOS 平台检查：[`macos.yml`](.github/workflows/macos.yml)
+- Release workflow [`release.yml`](.github/workflows/release.yml) 保持 tag / 手动触发，独立于 PR CI
 
 稳定 aggregate check 名称：`core / required`、`four-mode / aggregate`、`linux / required`、`macos / required`。由于 Linux/macOS workflow 使用路径触发器，主分支保护应按仓库的路径规则集/required workflow 能力配置平台检查；不要把未触发路径的 `linux / required` 或 `macos / required` 当作所有 PR 都必须出现的单一全局 status。
+
+「four-mode」矩阵的产品含义是 **Runtime × Transport**（shell/tmux × local/ssh），不是复合 `RuntimeMode` 枚举。Herdr 专项见 [`docs/HERDR-TESTING.md`](docs/HERDR-TESTING.md)。
 
 ## 许可证
 

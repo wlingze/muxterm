@@ -1,7 +1,9 @@
 # 产品愿景 vs 实现 vs 测试（2026-08-17）
 
-> 对照：`PRODUCT.md`、`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §2.14 / §2.15 / §6 / §9。
-> 修订：`2026-08-17T15:11:19+08:00`。W17 / W18 已绿。Linux 本轮关账；后续 macOS 开发。
+> **历史快照。** 横幅：2026-09-08。当时「Linux 关账、Herdr 以后」已被后续 Herdr 接入与 2026-09-08 契约取代。
+> 现行产品：[`../PRODUCT.md`](../PRODUCT.md)、[`WORKSPACE.md`](WORKSPACE.md)。
+> 对照原稿：`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md`。
+> 修订：`2026-08-17T15:11:19+08:00`。W17 / W18 已绿。
 
 愿景 1.0 = **A（日用）+ B（可见性）+ C（搜索）**，外加负责人这轮点名的：真 SSH attach、上次看到这里、命令刻度、pane/工作区/全局搜索、回底 +N。D/E、Herdr、ET、手机、账号不是本轮。
 

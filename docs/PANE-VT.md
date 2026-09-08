@@ -1,9 +1,13 @@
 # PANE-VT.md — 工作区池（讨论稿，已收口）
 
-> **2026-08-15 22:50：本文降为讨论记录。** 权威命名与结构：[`WORKSPACE.md`](WORKSPACE.md)。
-> **2026-08-24：** §2–3 的「镜子」是 Index，不是显示缓存。像素契约见 [`SURFACE.md`](SURFACE.md) §7。
-> 映射：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
-> 像素：[`SURFACE.md`](SURFACE.md)（F 已冻结）。
+> **讨论记录，不是实现契约。** 横幅：2026-09-08。
+> 权威：[`WORKSPACE.md`](WORKSPACE.md)（Workspace = Runtime(Transport)+path）、
+> [`SURFACE.md`](SURFACE.md)（常驻 Scene；Index 不是显示缓存）。
+> 文中 `RuntimeMode`、`WarmConnectionSlot`、`ConnectionPool`、`workspace = 一条 tmux session`
+> 均已作废。
+>
+> **2026-08-15 22:50：本文降为讨论记录。**
+> **2026-08-24：** §2–3 的「镜子」是 Index，不是显示缓存。
 >
 > 讨论修订：2026-08-15 22:35 CST（`2026-08-15T22:35:07+08:00`）
 > **产品层没有 Session**；没有虚拟 Window `w1`。Window 只是 Workspace 的体现。池在 core。

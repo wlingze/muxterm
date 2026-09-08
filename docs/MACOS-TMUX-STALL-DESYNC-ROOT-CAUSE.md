@@ -1,5 +1,10 @@
 # macOS tmux 卡顿、画面冻结与前后台不一致根因分析
 
+> **历史诊断（2026-08-21）。** 横幅：2026-09-08。
+> 结论方向（控制与渲染解耦、不要 UI 绑定的 pump）已被三条 lane + 常驻 Scene + 单事件泵吸收。
+> 2026-09-08 dogfood 进一步证明切换延迟是 frontend `bridgeLock` + 串行后台队列，不是 tmux 全局锁：
+> [`SURFACE.md`](SURFACE.md) §8–§9。
+>
 > 调查时间：2026-08-21（Asia/Shanghai）  
 > 证据日志：`test-2026-0821-1328.log`、`test-2026-0821-1642.log`  
 > 对照实现：本地 tmux `control.c`、iTerm2 `TmuxGateway.m` / `PTYSession.m` / `TmuxController.m`  

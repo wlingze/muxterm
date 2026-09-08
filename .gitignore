@@ -17,6 +17,8 @@ tests/logs/
 .codex-next-task.md
 .codex-*.md
 REFACTOR-PLAN.md
+refactor-muxterm-0908.md
+MACOS-REMOTE-CALIBRATION-LOCK.md
 migration-plan.md
 build/
 .build-target/

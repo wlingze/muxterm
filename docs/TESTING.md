@@ -1,13 +1,59 @@
 # Muxterm 测试与开发规范
 
-> 适用：`/home/wlz/Developer/self/muxterm`（当前分支 `feature/runtime/support_herdr`）。
+> 适用：当前 worktree（先 `pwd` / `git status`）。契约冻结 2026-09-08。
 > 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [WORKSPACE.md](WORKSPACE.md)、[RUNTIME.md](RUNTIME.md)（Herdr 接入）、
-> [HERDR-RUNTIME-STABILITY.md](HERDR-RUNTIME-STABILITY.md)（Herdr 稳定性设计）、
-> [HERDR-TESTING.md](HERDR-TESTING.md)（Herdr/runtime×transport 专项门禁）、
-> [CATALOG.md](CATALOG.md)（Catalog）、[VISION-AUDIT.md](VISION-AUDIT.md)、
-> [SURFACE.md](SURFACE.md)（F 已冻结）、[TASKS.md](../TASKS.md)（已冻结）、
-> [bugfix-log.md](bugfix-log.md)。
+> [WORKSPACE.md](WORKSPACE.md)、[RUNTIME.md](RUNTIME.md)、
+> [HERDR-RUNTIME-STABILITY.md](HERDR-RUNTIME-STABILITY.md)、
+> [HERDR-TESTING.md](HERDR-TESTING.md)、
+> [CATALOG.md](CATALOG.md)、[SURFACE.md](SURFACE.md)、
+> [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md)。
+> [TASKS.md](../TASKS.md) 是 2026-08 Linux 移植施工单，已冻结，不是现行队列。
+> 结构门禁的目标命令见 §0；§2 起仍是**当前代码**能跑的套件。
+
+## 0. 2026-09-08 结构门禁（目标；随 Phase 落地）
+
+施工完成前用 `rg` 兜底；crate 拆分后改由编译器守边界。
+
+```text
+禁止根 src/main.rs 声明 Core modules
+禁止 src/bin/ 出现 muxterm 以外的第二个 frontend binary
+禁止 core 引用 frontend/platform
+禁止 frontend/bin 引用 core 内部模块
+禁止 frontend 出现 TmuxRuntime/HerdrRuntime/ShellRuntime
+禁止 RuntimeMode 复合 variant
+禁止 WorkspaceSpec::build_runtime 作为产品路径
+禁止 Catalog builtin concrete constructors
+禁止 visible_ansi dump 进入 Surface frontend
+禁止 RuntimeDriver / TargetTransportProvider / ByteTransport 旧命名
+禁止 frontend 散装 ffi_bridge（统一 ffi_client）
+禁止 frontend 构造 / 引用 WorkspaceSpec（只见 Candidate / OpenRequest）
+禁止 core::config 引用 runtime / workspace / projects 领域类型
+禁止 runtime / transport 读取 config
+禁止 runtime/ 出现 ActivityRecord；禁止 workspace/ 出现 wire 词（%output / terminal.frame / $N）
+禁止 anyhow 出现在 core 库层 trait 签名
+禁止 bridgeLock / backgroundPollQueue / WarmConnectionSlot / ForegroundAuthority（macOS 前端）
+```
+
+矩阵（隔离 socket / named Herdr session）：
+
+```text
+shell × local
+shell × SSH
+tmux × local
+tmux × SSH
+herdr × local
+herdr × SSH
+```
+
+前端验收（[`SURFACE.md`](SURFACE.md) §5.2 / §8）：
+
+- 切 workspace / tab 的点击路径零 FFI、零锁；首帧 ≤ 1 帧
+- 快速连点只发最后一个目标
+- 隐藏 workspace 的 Control / Activity 常流
+- 隐藏 chatty pane 三档策略；回看先显示最后已知帧，不白屏
+
+tmux / Herdr 安全红线见 §3.3 与 [`HERDR-TESTING.md`](HERDR-TESTING.md)。Warm Connection Pool
+**不再是**产品功能；见 [`warm-connection-pool.md`](warm-connection-pool.md)。
 
 ## 1. 四条硬性要求（验收红线）
 
@@ -26,7 +72,7 @@
 | TUI 集成 | `tests/tui_integration.rs`、`streaming_output_integration.rs` | TUI 渲染捕获、时间行为（持续/高频/长行输出） |
 | FFI 回归 | `tests/tui_split_ffi_regression.rs`、`tui_wizard_ffi_regression.rs`、`tui_wizard_ssh_ffi_regression.rs` | UI 按键最终走的 FFI 路径 |
 | SSH e2e | `tests/ssh_streaming_integration.rs`、`ssh_transport_unit.rs`、`ssh_no_fallback.rs` | loopback sshd，`--ignored` 运行 |
-| GUI e2e | `tests/linux_gtk_integration.rs`、`tests/linux_quickconnect_e2e.rs` | Xvfb 下真实 GTK4 窗口 + 隔离 tmux |
+| GUI e2e | `tests/linux_gtk_integration.rs`、`tests/linux_quickconnect_e2e.rs` | Xvfb 下真实 GTK4 窗口 + 隔离 tmux。目标前端目录是 `frontend/linux`；现状仍是 `src/platform/linux` |
 | 真实数据 | `tests/samples/*.txt`（进 git）、`tests/logs/*.log`（本地素材，不进 git） | 前者被 core 单测引用；后者用于本地复现 |
 
 ## 3. 硬性规则
@@ -161,8 +207,8 @@ macOS 客户端复用同一套 core 契约，测试分三层：
 | 层 | 载体 | 说明 |
 |---|---|---|
 | FFI e2e | `tests/macos_e2e.rs` | 镜像 `tmux_attach_contract` / `tmux_feature_contract` / `linux_disconnect_e2e` / `linux_attach_history_e2e`：attach 2tab/3pane、搜索、BEL→blocked、OSC 133 D→done、断线保留末帧、离屏历史 + viewport 回底 |
-| Swift 单测 | `src/platform/macos/ChromeTests/AttentionModelTests.swift`、`SearchModelTests.swift` | 注意力快照解析/过滤/排序、搜索命中解析/过滤、通知 JSON 解析 |
-| XCUITest | `src/platform/macos/MuxtermAppUITests/MuxtermAppUITests.swift` | 搜索命中跳转、BEL 红点、断线水印、历史回底（需 GUI 会话，CI macos runner 跑） |
+| Swift 单测 | `src/platform/macos/ChromeTests/…`（目标 `frontend/macos`） | 注意力快照解析/过滤/排序、搜索命中解析/过滤、通知 JSON 解析 |
+| XCUITest | `src/platform/macos/MuxtermAppUITests/…` | 搜索命中跳转、BEL 红点、断线水印、历史回底（需 GUI 会话，CI macos runner 跑） |
 
 跑：
 
@@ -394,7 +440,7 @@ tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shel
 
 ### 5.13 已有的连接 + 新建 Herdr（W20）
 
-规格见 [`CATALOG.md`](CATALOG.md) §0（C9 扁平列表）。一级仍是预设项目；最上固定「已有的连接」；点进去就是可 attach 行，不要本地 / SSH 目录。
+规格见 [`CATALOG.md`](CATALOG.md) §1.4 / §6（扁平 Existing 列表）。一级仍是预设项目；最上固定「已有的连接」；点进去就是可 attach 行，不要本地 / SSH 目录。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -408,9 +454,11 @@ tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shel
 
 禁止：测试连 `/home/wlz/.config/herdr/herdr.sock`；`herdr server stop`；生产 Runtime 走 `Command::new("herdr")`；GTK 线程同步 ssh；没有 tmux/Herdr 的 SSH host 仍占满列表。
 
-### 5.14 Catalog（Driver / Transport / Connect / Inventory）
+### 5.14 Catalog（providers / inventory / resolver）
 
 规格：[`CATALOG.md`](CATALOG.md)。`trait Runtime` 不负责 `ls`。插件表是**有序数组**，`runtime_list()` 就是登记顺序。
+测试名里若仍写 Driver / Connect，指的是现状代码；目标名是 RuntimeProvider / TargetConnection。
+`open_uses_driver_not_build_runtime` 的意图保留：产品路径不走 `WorkspaceSpec::build_runtime()`。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -431,7 +479,7 @@ tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shel
 
 ### 5.15 Catalog SSH Host `local` + 缩放热路径（C7 / C8）
 
-规格：[`CATALOG.md`](CATALOG.md) §1.2–1.3，见 [`CATALOG.md`](CATALOG.md) C7/C8。素材：`test_2026-0818-0133.log`（只 `rg`，禁止 `include_str!`）。
+规格：[`CATALOG.md`](CATALOG.md) §1.2–1.3（三个 `local`、列出 SSH 不要 `-tt`）。素材：`test_2026-0818-0133.log`（只 `rg`，禁止 `include_str!`）。
 
 三个都叫 `local`：Transport `"local"`（单例 target `""`）、SSH Host alias `local`（LoopbackSshd 连 127.0.0.1）、`runtime_list()` 的 `"tmux"|"herdr"|"shell"`。测试用 **`Host local`**，走 `discover_sessions("ssh", "local")`。
 
@@ -454,7 +502,7 @@ tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shel
 
 ### 5.16 扁平已有的连接 + connect name `all`（C9）
 
-规格：[`CATALOG.md`](CATALOG.md) §1.4，见 [`CATALOG.md`](CATALOG.md) C9。W20 多层目录作废。
+规格：[`CATALOG.md`](CATALOG.md) §1.4 / §6。W20 多层目录作废。
 
 connect name = `local` + SSH Host alias。`discover_sessions("all","")` 扇出。同一隔离 tmux 经 local 和 Host `self` 必须**两行**。不要求 `archmini` / `cd`。
 
@@ -557,7 +605,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 | 1 | QuickConnect 面板 | ✅ model/store/panel 构建 | ❌ 待补（打开/搜索/高亮/回车连接） | ⚠️ 连接流程在 e2e 覆盖 |
 | 2 | TargetConfig 窗口 | ✅ options/directory/debounce | ⚠️ SSH toggle debounce 已覆盖；完整窗口流程待补 | ✅ 隔离 tmux 目录发现 |
 | 3 | Project 连接流程 | ✅ project_flow | ✅ attach→create→attach | ✅ e2e 真实 tmux |
-| 4 | Warm Connection Pool | ✅ pool | ✅ detach 保留 session | ✅ e2e 真实 tmux |
+| 4 | ~~Warm Connection Pool~~（2026-09-08 废止，见 [`warm-connection-pool.md`](warm-connection-pool.md)） | 现状仍有 slot 测试 | 目标：常驻 Scene + EventPump，零锁切换 | 仍要：detach 保留 session |
 | 5 | 统一 status bar（左中右 + 最右三按钮） | ✅ lifecycle / status_bar | ✅ linux_chrome_e2e S5/S6 | — |
 | 5b | 鼠标点 tab 切窗口 | ✅ attach session id（C7.0） | ✅ S13a；live S13b | ✅ dogfood-1326 + 1540（1540 已无「忽略其它 session」） |
 | 6 | 主题切换 + 重报色 | ✅ theme/font | ⚠️ 偏好持久化已覆盖；即时切换/颜色重报待补 | ⚠️ 部分 |

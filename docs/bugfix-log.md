@@ -1,5 +1,8 @@
 # Muxterm Bug 修复日志（2026-08-13）
 
+> **历史日志。** 横幅：2026-09-08。不作为实现契约。
+> 现行像素定律：[`SURFACE.md`](SURFACE.md)。产品树：[`WORKSPACE.md`](WORKSPACE.md)。
+
 ## 0. 打开：GUI abort @ emulate.rs:718（2026-08-17）
 
 - 现象：Mini 上 `muxterm gui --debug --log-file test_2026-0817-19{02,03}.log` 两次进程退出。stderr `insertion index (is 58) should be <= len (is 50)` / `(37) vs (23)`，随后 `panic in a function that cannot unwind`（glib 16ms poll）。

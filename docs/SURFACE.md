@@ -1,25 +1,24 @@
-# SURFACE.md — 单面架构（Muxterm Surface）
+# SURFACE.md — 单面架构与常驻场景
 
 > 机制名：**Surface**（中文：**单面**）
-> 状态：调研定案，2026-08-15 21:26 CST；**2026-08-24 纠偏**见 §7（核查 `2026-08-24T16:55:34+08:00`）
-> 性质：长期保留的架构文档。Linux 像素路径（F1–F6）已冻结；2026-08-22 补充 Herdr
-> source-separation/Ctrl-L 契约。
-> **产品层级与工作区池** 见 [`WORKSPACE.md`](WORKSPACE.md)。
-> [`PANE-VT.md`](PANE-VT.md) 是讨论稿，以 WORKSPACE.md 为准。§2–3 的「镜子」是 Index，不是显示缓存。
-> Herdr 的 full/diff、generation 与 Index 播种规则见
-> [`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5；专项测试见
-> [`HERDR-TESTING.md`](HERDR-TESTING.md)。
+> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
+> 像素定律（§3）自 2026-08-15 起有效；2026-08-24 纠偏见 §7。
+> 2026-09-08：常驻 Scene + 单事件泵；删除 warm/cold slot、`bridgeLock`、串行后台队列、前台校准（§8–§9）。
+> 产品层级：[`WORKSPACE.md`](WORKSPACE.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
+> Herdr full/diff：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5。
 > 参考树：`/home/wlz/Developer/terminal/`（只读，不进本仓库）
 
-**一句话：** Director 维持 tmux 连接与拓扑；每个 **已打开** pane 只有一个前端 VT 负责画面；同一字节流可以另有只读 Index 做搜索/通知。**禁止**把第二份网格再序列化成 ANSI 灌进 VTE/SwiftTerm。Core 保活连接，不画像素。
+**一句话：** 每个已打开 pane 只有一个前端 VT 负责画面；Runtime 交出原始字节，Workspace 不画像素。
+每个已打开 Workspace 一棵常驻 Scene。切换 = 换可见场景，点击路径零 Core 调用、零锁等待。
+**禁止**把 Index 网格再序列化成 ANSI 灌进 VTE/SwiftTerm。
 
 ---
 
-## 0. 为什么现在的路线是错的
+## 0. 为什么 dump 路径是错的（历史，2026-08-15）
 
-Linux 当前显示路径（Phase C–E 叠出来的）：
+Linux 当时的显示路径（Phase C–E 叠出来的）：
 
-```
+```text
 程序 → tmux server VT
      → %output ANSI
      → ReplicaStore / TerminalState     ← 仿真器 1
@@ -28,91 +27,60 @@ Linux 当前显示路径（Phase C–E 叠出来的）：
      → 像素
 ```
 
-这是 **三重仿真**（tmux 自己已经是一份）。`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md` §2.11.8 写过「双重仿真接缝」；我们又在客户端加了第三份。
+这是 **三重仿真**（tmux 自己已经是一份）。真机后果（`test_2026-0815-2105.log`，SSH
+`yaklang-workspace` + `muxterm`）：Codex 闪烁、切 pane 白屏、输入像「整句越来越长」、
+滚轮走 dump replica 历史。
 
-真机后果（`test_2026-0815-2105.log`，13:05–13:18 UTC，SSH `yaklang-workspace` + `muxterm`）：
+`1365` / `2730` 不是两份完整帧，是同一帧被 tmux 切碎的前后半，必须按序 `feed`。
+用户贴的「同一段话越来越长」是验收用例：可见文本里必须 **只有一行** 该句。
 
-| 现象 | 对应机制 |
-|---|---|
-| Codex 胡乱闪烁、切 pane 白屏 | CUP 风暴里 `reset(true)+feed(visible_ansi)`，每 25ms 清屏 |
-| 跳到 agent 只看到中间，tmux 里滑到末尾才好 | 播的是「某一时刻的网格 dump」，不是 VTE 跟着字节流停在尾部 |
-| 输入像「整句越来越长」而不是原地多一个字 | 同一行被当新行追加（缺 `\r`/CUP，或 dump 叠在旧 VTE 上）。**不是** `-l` 打 ASCII 字母本身。2105 里 819 次 `send-keys -l` 是输入通道；画面病在显示路径 |
-| 鼠标滚动怪 | VTE `scrollback_lines=0`，滚轮去 dump replica 历史（又一次 reset+ANSI） |
+这条路径已经作废。下文定律仍然以它为反面教材。
 
-2105 同时：`实时 %output` **298404** 条（pane 39 = 227376，len `2730`×25499 / `1365`×11632）；`解析失败: pane id 缺少 @ 前缀: %64` 共 8 次 WARN（`%pane-mode-changed` 走了 `PaneId::parse`，只认 `@`）。数据在，显示路径在自毁。
+### 0.1 输入通道（与画面病分开）
 
-用户贴的「同一段话越来越长」是验收用例，不是文案：VTE 里必须 **只有一行** 该句，不能 N 份前缀。
-
-### 0.1 `1365` / `2730` 不是「两份完整帧」
-
-Codex 一类 TUI 的一次重绘会被 tmux 切成连续 `%output` 碎片（常见 1365 然后 2730）。它们是 **同一帧的前后半**，必须按序 `vte.feed`。
-
-`last_visible_frame` 丢掉前半；`present_from_replica` 用第二份网格补回来，于是每 25ms `reset` → 白闪。旧 E-R1 把「VTE 只显示 replica 的 `visible_ansi`」写成正确直播——**那条处方作废**，以本文为准。
-
-生产代码（HEAD `d802f05`）：
-
-- `window.rs` `STATE_PANE_OUTPUT`：已 seeded 则 `feed_output` 原始字节，否则 `present_from_replica(visible_ansi)`
-- `pane_view.rs` `flush_pending_feed`：CUP 风暴 `reset` + `replica_ansi_provider()`
-- `window.rs` `refresh_ui`：切 tab 再 dump 一次（白屏）
-- `renderer.rs` `apply_mirror_policy`：`scrollback_lines=0`
-
-### 0.2 输入通道（与画面病分开）
-
-官方 `tmux.1`：`-l` = 字面 UTF-8；`-H` = 每个参数一个十六进制 ASCII 字节。克隆树 `tmux/cmd-send-keys.c`：`-H` → `KEYC_LITERAL|n`。ivyTerm 按键走 `-H`，剪贴板走 `-l`。Muxterm `send_keys_bytes` 全是 `-l`。F 阶段把 GTK 按键改成 `-H`；不要指望单改 `-H` 治好「句子越来越长」。
+官方 `tmux.1`：`-l` = 字面 UTF-8；`-H` = 每个参数一个十六进制 ASCII 字节。
+ivyTerm 按键走 `-H`，剪贴板走 `-l`。Surface 输入必须是 **字节通道 `-H`**（或等价）。
+不要指望单改 `-H` 治好「句子越来越长」。
 
 ---
 
-## 1. 机制名与三角色
+## 1. 三角色（2026-09-08 用三条 lane 重述）
 
-| 角色 | 英文 | 职责 | 禁止 |
+| 角色 | 对应 lane / 组件 | 职责 | 禁止 |
 |---|---|---|---|
-| **Director** | 控制面 | `-CC` 连接、session/window/pane 树、layout、`refresh-client`、`send-keys`、`%pause` | 不画像素 |
-| **Surface** | 显示面 | 每个进入产品拓扑的 pane **恰好一个常驻** VT；隐藏时可从 widget tree 摘下，但仍按 id `feed` 原始 pane 字节 | 不 `reset` 追帧；不吃 `visible_ansi` |
-| **Index** | 索引面 | 同一字节流的只读副本：搜索、attention、peek | **永不**把网格再编码回 Surface |
+| **Control** | Control lane + Workspace 拓扑 | 树、layout、焦点、gap barrier、Task | 不画像素；不解析 `%output` |
+| **Surface** | Render-data lane + 常驻 PaneSurface | 每个进入产品拓扑的 pane **恰好一个常驻** VT；隐藏时不绘制但仍 `feed` | 不 `reset` 追帧；不吃 `visible_ansi` |
+| **Index / Activity** | Index + Activity lane | 同一字节流的只读副本：搜索、OSC 133、BEL、commands/agents | **永不**把网格再编码回 Surface |
 
-本地 shell（无 tmux）也是 Surface：VTE 连 PTY。tmux 时 PTY 换成 `%output` 管道，**仿真器个数不变**。
+本地 shell（无 tmux）也是 Surface：VT 连 PTY。tmux 时 PTY 换成解转义后的 `%output` 管道，
+**仿真器个数不变**。
 
-这与愿景文档「Rust core 是事实源、GUI 只渲染」**不冲突**：事实源是 **pane 字节流 + 拓扑**，不是「core 网格 dump」。Index 可以是 core 里的 `TerminalState`，但只供搜索/通知。
+事实源是 **pane 字节流 + 拓扑**，不是「core 网格 dump」。
 
-**名字先不改。** Surface 只命名「一个 pane 的那张显示面」。多路 tmux 常驻、切过去立刻能看，靠的是 **Director 连接池 + Surface 常驻（hide，不销毁）**，不是另搞一套 dump。见 §1.1。
+### 1.1 别人怎么做；切过去为什么快
 
-```
-                    ┌──────────── Director ────────────┐
-  tmux -CC  ──%──►  │  parse  │  topology  │  commands │
-                    └────┬───────────┬─────────────────┘
-                         │ raw bytes │
-              ┌──────────┴───────────┴──────────┐
-              ▼                                 ▼
-         Surface (VTE)                      Index (ReplicaStore)
-         feed, 无 reset 追帧                search / attention
-         像素、滚动、选择                    禁止 visible_ansi→VTE
-```
-
-### 1.1 别人怎么叫；有没有中间层；切过去为什么快
-
-| 项目 | 连接 / 协议 | 显示（≈我们的 Surface） | 「中间层」 |
+| 项目 | 连接 / 协议 | 显示 | 「中间层」 |
 |---|---|---|---|
-| iTerm2 | `TmuxGateway` + `TmuxController` | 每个 pane 一个 `PTYSession`（VT100） | **没有**第二份网格 dump。`TmuxHistoryParser` 只在 **第一次** capture 填 scrollback |
-| ivyTerm | `TmuxAPI` | 每个 pane 一个 VTE（`TmuxTerminal`）；Adwaita tab 里 widget **留着** | 无 replica dump |
-| Ghostty | tmux `Viewer` | core `Terminal`；GUI 叫 **`Surface`**（`src/Surface.zig`：一块能画、能收键的最小 widget，不管它是窗口还是 tab） | Viewer 不是第二仿真器 |
-| WezTerm | **`TmuxDomain`**（一种 mux Domain，可同时有多个 Domain） | `TmuxPty` 假 PTY → 仍是 WezTerm **那一个**仿真器 | Domain 是连接，不是 dump |
-| cmux | remote tmux control | **`TerminalSurface.processRemoteOutput`** | seed 结构（discard/snapshot/catch-up），不是每帧重拍 |
-| Muxterm 现在 | `CoreBridge` / pool | `PaneView` + VTE | **多出来的** `ReplicaStore.visible_ansi` → `reset`：这层该降成 Index |
+| iTerm2 | `TmuxGateway` + `TmuxController` | 每个 pane 一个 `PTYSession` | **没有**第二份网格 dump。历史只在第一次 capture 填 scrollback |
+| ivyTerm | `TmuxAPI` | 每个 pane 一个 VTE；tab 里 widget **留着** | 无 replica dump |
+| Ghostty | tmux `Viewer` | core `Terminal`；GUI 叫 **`Surface`** | Viewer 不是第二仿真器 |
+| WezTerm | `TmuxDomain` | `TmuxPty` 假 PTY → 仍是那一个仿真器 | Domain 是连接，不是 dump |
+| cmux | remote tmux control | `TerminalSurface.processRemoteOutput` | seed 结构，不是每帧重拍 |
 
-我们叫 Surface，是因为 Ghostty / cmux / 图形 API（Vulkan、GTK `GdkSurface`）都用这个词表示 **像素落点**。它没有覆盖「多路 tmux」——那一块 Muxterm 已有名字：`ConnectionPool` / `WarmConnectionSlot`。整套机制 = Director（含池）+ **常驻** Surface + Index。名字略窄，先不动。
+**同一条 tmux 里换 window/pane：** widget 不拆，切过去是 show/hide，**不是**重连、不是再 capture、不是 dump。
+**多条 tmux / 多机：** 多个连接（Muxterm 里是多个 Workspace + 可复用 TargetConnection）。
+**没打开的 window：** 可以不建 VT；**已打开的**后台仍吃字节。
 
-**他们有「多路 + 快切」，而且这正是 `-CC` 客户端的本意。** 不是我们独创。
-
-- **同一条 tmux 里换 window/pane：** ivyTerm 的 tab 子 widget 不拆；iTerm2 已打开的 window 里 `PTYSession` 一直在吃 `%output`；WezTerm pane 活在 mux 里。切过去是 show/hide（GTK 本来就不画隐藏页），**不是**重连、不是再 capture、不是 dump 网格。
-- **多条 tmux / 多机：** WezTerm 多个 Domain；iTerm2 多个 `TmuxController`；Muxterm `ConnectionPool` 已经按 key 保活，切目标不 shutdown。
-- **「不重要的不渲染」：** iTerm2 的 `hiddenWindows_`——**没打开**的 tmux window 根本不建 VT，仪表盘里再 open 才 capture 一次。已打开的，后台仍吃字节（跟不上才 `%pause`，再看时 unpause + 补历史，第一次会慢一点）。没有人在已打开的 tab 之间「只 dump 重要行」。
-
-Muxterm 现在切 tab **慢且白**，是因为做了别人不做的两件事：
+Muxterm 切 tab 曾经慢且白，是因为做了别人不做的两件事：
 
 1. `refresh_ui` 再 `present_from_replica`（重播网格 + reset）
-2. `LayoutHost::apply_layout` `panes.retain(当前布局)`——换 window 就把上一窗的 VTE **扔掉**，回来只能再播种
+2. `LayoutHost::apply_layout` `panes.retain(当前布局)`——换 window 就把上一窗的 VTE **扔掉**
 
-Surface 方案要快，必须：**别的 tab 的 PaneView 留在 HashMap 里**，只从 GTK 树摘下、换窗再挂回去；`%output` 继续 feed 后台 Surface（或以后 `%pause`）。这和「只画当前看得见的」不冲突：GTK 不画隐藏 widget；CPU 上可以选择 pause 洪水 pane。
+Surface 方案要快，必须：**别的 tab 的 PaneSurface 留着**，只从 widget 树摘下、再挂回去。
+2026-09-08 把同一条推广到 **Workspace 级常驻 Scene**。
+
+旧文档把「多路 + 快切」命名为 `ConnectionPool` / `WarmConnectionSlot`。那套机制 **已删除**（§8–§9）。
+连接复用在 Core `ConnectionRegistry`；像素常驻在 frontend Scene。
 
 ---
 
@@ -120,72 +88,56 @@ Surface 方案要快，必须：**别的 tab 的 PaneView 留在 HashMap 里**�
 
 只读。改 Muxterm 时对照，不要抄 UI。
 
-| 目录 | 项目 | tmux 显示怎么做 | 对我们的结论 |
-|---|---|---|---|
-| `iterm2/` | iTerm2 | `%output` → `tmuxReadTask:` 进 **该 pane 的 VT100**；历史用 `capture-pane -peqJ` **一次**，`TmuxHistoryParser` 填 scrollback；之后只增量 | **模仿对象。** 显示面 = 唯一 VT |
-| `ivyterm/` | ivyTerm（gtk4+VTE，最近邻） | 解转义 `%output` → `vte.feed`；未 synced 丢弃 live；`capture-pane -J -p -eC -S - -E -` 一次；`send-keys -H` | **Linux 应抄这条路径** |
-| `ghostty/` `src/terminal/tmux/` | Ghostty Viewer | 每 pane 一个 `Terminal`；capture 完成前 ignore output（源码 TODO 已写明） | 与 ivyTerm 同一状态机 |
-| `wezterm/` `mux/src/tmux_pty.rs` | WezTerm | 假 PTY：`%output` 当 read，`SendKeys` 当 write；真正仿真器仍是 WezTerm 那一个 | 「字节当 PTY」= Surface |
-| `cmux/` | manaflow-ai/cmux | `surface.processRemoteOutput`；seed = capture 快照 + 丢弃快照前 live + catch-up；**禁止**在 seed 前把 live 当画面 | 种子/追赶模型可抄；他们自认不做本地 reflow |
-| `tmux/` | tmux | `control.c`：`%output` 队列、`%pause` | 客户端必须会 pause，否则 20 万行打爆 |
-| `alacritty/` | Alacritty | **无** `-CC`。渲染参考（GPU 网格） | 不要从这里抄 tmux |
-| `herdr/` | Herdr | 换掉 tmux 的 runtime；`terminal.frame` 给第三方 | 以后接 Runtime，不是本轮 |
-| `remux/` | camerondurham/remux | 跨机发现 pane，不渲染 VT | 产品层「工作区池」，不是 Surface |
-| `tmex/` `psmux/` | tmex / psmux | tmex 通知；psmux 是 `-CC` 替身，输入测 `send-keys -H` | 输入编码测 `-H` |
+| 目录 | 项目 | 对我们的结论 |
+|---|---|---|
+| `iterm2/` | iTerm2 | **模仿对象。** 显示面 = 唯一 VT |
+| `ivyterm/` | ivyTerm | Linux 应抄：解转义 → `vte.feed`；capture 一次；`send-keys -H` |
+| `ghostty/` | Ghostty Viewer | 与 ivyTerm 同一状态机 |
+| `wezterm/` | WezTerm | 「字节当 PTY」= Surface |
+| `cmux/` | cmux | seed = snapshot + discard + catch-up |
+| `tmux/` | tmux | 客户端必须会 pause，否则 20 万行打爆 |
 
-cmux 远程 tmux 测试密度极高（`cmuxTests/RemoteTmux*`、`docs/remote-tmux-*.md`）。他们的原则：**tmux 网格是权威，客户端 seed 一次再 feed-forward**，不是每帧重拍。
+### 2.1 共同状态机
 
-### 2.1 共同状态机（iTerm2 / ivyTerm / Ghostty / cmux）
-
-```
+```text
 attach
-  → 建 Surface（空 VTE）
-  → capture-pane（可见或含历史）  [pending]
-  → 此期间到达的 %output 进 discarded 队列，不画
-  → capture 到齐：feed 快照，标记 synced
-  → 快照之后的 %output catch-up 按序 feed
-  → 稳态：每个 %output 只 vte.feed(raw)，永不 reset
-切 pane / 切 tab
+  → 建 Surface（空 VT）
+  → 权威 baseline（可见屏 snapshot / full frame）  [pending]
+  → 此期间到达的增量进 discarded 队列，不画
+  → baseline 到齐：feed 快照，标记 synced
+  → catch-up 按序 feed
+  → 稳态：每个 PaneOutput 只 feed(raw)，永不 reset
+切 pane / 切 tab / 切 workspace
   → 已 synced 的 Surface 只显示/隐藏，不 reset
   → 新 pane 走上面的 seed，不做 visible_ansi
 ```
 
-ivyTerm 在 capture 后用若干 `\n` + `ESC[#A` 把视口对齐到底（`scroll_view`）。这解释了「只看到中间、在 tmux 里滑到末尾才好」——视口没钉在尾部。
-
 ### 2.2 输入
 
-| 实现 | 编码 |
-|---|---|
-| ivyTerm | `send-keys -t %N -H` 十六进制字节 |
-| psmux 测试 | `-H` 是字节通道，有 roundtrip 单测 |
-| Muxterm 现在 | `send_keys_bytes` → `send-keys -l`；2105 全是 `-l` 逐字符 |
-
-`-l` 把 CSI/`\r` 当文字或错误转义。Surface 输入必须是 **字节通道 `-H`**（或等价的 hex），与 ivyTerm 一致。
+ivyTerm / psmux：`send-keys -t %N -H`。Muxterm Surface 输入必须是字节通道 `-H`（或等价）。
 
 ---
 
 ## 3. 硬性定律（违反 = 回归）
 
-1. **One Surface.** 一个进入产品拓扑的 pane，显示路径上只有一个常驻 VT parse；当前不可见
-   不等于未注册。
-2. **No dump.** `ReplicaStore::visible_ansi` / `present_from_replica` **不得**出现在 live `%output` 或 CUP 风暴路径。Index 自用。
-3. **No reset to chase frames.** `vte.reset` 只允许新建 Surface 或确认的 resize 错格；
-   用户 Ctrl-L 必须走终端输入，不能由 UI 直接 reset。CUP 风暴用原始帧喂 VTE（或丢
-   中间帧只 feed **原始** last frame），不要 dump。
-4. **Seed once.** capture 完成前不画 live；完成后一次性 feed；再增量。
-5. **Follow tail.** 直播 `history_offset=0`；新输出后视口在底（alt-screen 由字节自己切）。禁止用 replica dump 模拟滚动来「修」TUI。
-6. **Bytes in, bytes out.** 键盘 → `send-keys -H`；`%output` 解转义 → 原样 feed。alternate-screen 内的滚轮/触控板属于终端输入，不得改写本地 scrollback 视口。
-7. **`%pause` 是数据丢失屏障，不是切 tab 刷新。** 正常切换已打开的 Surface 禁止 `pause` + capture；但 reader OutputGap、平台缓存溢出或 tmux 主动 `%pause` 说明增量已不连续，必须保持该 pane fenced，安装一次权威 snapshot/full frame 后才能恢复 live。洪水 pane 的主动 `pause-after` **尚未实现**（TODO，见 §7.4）。
-8. **Pane id.** 控制协议里 pane 是 `%N`。`缺少 @ 前缀: %64` 必须当 bug 修，不是忽略。
-9. **Index never becomes Surface.** `visible_ansi` / `surface_seed_ansi` / `scroll_ansi` / `paneSurfaceSeedANSI` **不得**进 VTE/SwiftTerm。Herdr `pane.read` / `visible_ansi` 也只播种 Index；只有经过当前 generation/event ordinal/wire seq 过滤的原始 `terminal.frame` 才能进入 Surface。full 建 baseline，diff 追赶；旧 generation 永不重播。
-10. **Open Surfaces keep eating.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与后台 workspace 的 PaneView 继续 `feed` 原始 PTY 字节，只是不绘制。`poll_background()` 不能只喂 Index/attention 后丢掉 Surface event；切回时只能 show/hide，不能靠 Index dump 补画。
-11. **No recapture on navigation.** 已经 seed 过的 pane，切 tab/pane 不得再抓屏；只有明确的数据丢失边界可重拍，并且 snapshot 必须原子 reset 旧 VT parser，禁止续喂猜测 suffix。
-12. **History is lines, not a stream.** 第一次打开时 Runtime 把 capture 解析成行写入 Surface scrollback，不是 VT `feed()` 重放。已打开的 tab 再切回来只显示，不再抓。
+1. **One Surface.** 一个进入产品拓扑的 pane，显示路径上只有一个常驻 VT parse；当前不可见不等于未注册。
+2. **No dump.** `visible_ansi` / `present_from_replica` **不得**出现在 live `%output` 或 CUP 风暴路径。Index 自用。
+3. **No reset to chase frames.** `vte.reset` 只允许新建 Surface 或确认的 resize 错格；用户 Ctrl-L 必须走终端输入。
+4. **Seed once.** baseline 完成前不画 live；完成后一次性 feed；再增量。
+5. **Follow tail.** 直播 `history_offset=0`；新输出后视口在底。禁止用 replica dump 模拟滚动。
+6. **Bytes in, bytes out.** 键盘 → `send-keys -H`；`%output` 解转义 → 原样 feed。
+7. **`%pause` 是数据丢失屏障，不是切 tab 刷新。** 正常切换禁止 pause + capture；OutputGap / 平台缓存溢出 / tmux 主动 `%pause` 必须保持该 pane fenced，安装一次权威 snapshot/full frame 后才能恢复 live。洪水 pane 的主动 `pause-after` **尚未实现**（TODO，见 §7.4）。
+8. **Pane id.** 控制协议里 pane 是 `%N`。`缺少 @ 前缀: %64` 必须当 bug 修。
+9. **Index never becomes Surface.** `visible_ansi` / `surface_seed_ansi` / `scroll_ansi` / `paneSurfaceSeedANSI` **不得**进 VTE/SwiftTerm。Herdr `pane.read` 也只播种 Index。
+10. **Open Surfaces keep eating.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与隐藏 workspace 的 PaneSurface 继续 `feed` 原始字节，只是不绘制。切回时只能 show/hide。
+11. **No recapture on navigation.** 已经 seed 过的 pane，切 tab/pane/workspace 不得再抓屏。
+12. **History is lines, not a stream.** 第一次打开时 Runtime 把 capture 解析成行写入 Surface scrollback，不是 VT `feed()` 重放。
 
-Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续原始 frame/output 改变
-像素；切 tab、resize、observer 重连或 Index 更新都不得把旧屏重新 feed 回来。
+Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。
 
 本地 shell 不受 4、7、11、12 约束（它有真 PTY）。定律 1、2、9、10 对本地同样成立。
+
+`visible_ansi`、`surface_seed_ansi`、`scroll_ansi` **不是** live Surface API。迁移期间若 Index/诊断仍需要，放在 Core 内部并标为临时。
 
 ---
 
@@ -194,129 +146,205 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。清屏后只允许后续
 | 旧物 | Surface 下 |
 |---|---|
 | `LINUX-PLAN` Phase C/D/E | 控制面/chrome 可留；**显示路径作废** |
-| ReplicaStore | 降为 Index，继续 feed 同一字节 |
-| `scroll_history` + 几何 ANSI | 删除显示用途。滚动用 VTE 自己的 scrollback（shell）或 alt-screen 字节（TUI） |
-| `RenderPolicy` + `last_visible_frame` | 只允许作用在 **原始** `%output` 上（丢中间 CUP 帧），结果仍是原始字节，不是 `visible_ansi` |
-| C8 ASCII PROMPT 测试 | 可留作 Index 单测，**不能**当 Surface 完成 |
-| 搜索 / attention 小终端 | **Surface 绿了再做。** 小终端也是 Surface，吃同一字节，禁止 dump |
+| ReplicaStore | 降为 Index |
+| `scroll_history` + 几何 ANSI | 删除显示用途 |
+| WarmConnectionSlot / ConnectionPool / `bridgeLock` | **删除**。见 §8–§9 |
+| `set_foreground` 作为 frontend 产品 API | **删除**。Herdr control/observe 是 adapter 内部 |
+| 搜索 / attention | Activity lane + Overlay；小终端也是 Surface，禁止 dump |
 
 ---
 
-## 5. 测试金字塔（必须能抓住 2105）
+## 5. 测试金字塔（必须能抓住 2105 和 0908）
 
-### 5.1 小：Director / 协议
+### 5.1 小：协议
 
 - `%output` 解转义与原文 bytes 恒等（含 CUP、UTF-8 盒线、真彩）
-- `send-keys -H` 对任意 `[u8]` roundtrip（对照 psmux `test_send_keys_literal_byte.rs`）
-- `parse_line("%… %64 …")` 接受 `%` pane id，不再 WARN `@`
+- `send-keys -H` 对任意 `[u8]` roundtrip
+- `parse_line("%… %64 …")` 接受 `%` pane id
 - `%pause` / `%extended-output` 能 parse
-- 384KiB live redraw 即使被本地 PTY / SSH transport 拆成 4KiB chunks，也必须在有界
-  lane 前合并为约 32KiB events；多个 pane 交错刷新时分别保序，不能互相制造
-  `OutputGap`；安静输出在 8ms idle window 后交付
+- 384KiB live redraw 在有界 lane 前合并；多 pane 交错保序，不能互相制造 `OutputGap`
 
-### 5.2 中：Surface（GTK VTE，无 AppWindow 或一个 Window）
+### 5.2 中：Surface
 
-函数名固定（回归门测试的契约）。
-
-- `surface_live_feed_does_not_reset`：synced 后 20 帧 CUP，`RenderTrace.resets` 不增加；可见 `frame-19`
-- `surface_typing_overwrites_in_place`：`\r` + 更长前缀；完整句在 `visible_text` **恰好一次**
-- `surface_codex_fixture_raw_feed`：`codex-tui-sanitized` **直接 feed**；头+底+盒线
-- `surface_seed_drops_output_until_capture`：capture 前 live 不进 VTE；之后 catch-up 进
-- `seeded_output_gap_replaces_partial_sgr_before_live_resumes`：在 `ESC[38;2;…` 中间制造 gap；capture 前后半截不得进入 snapshot，权威 frame 后才恢复 live
-- macOS 后台缓存超过上限：不得 `suffix(cap)`；必须请求 `RequestPaneSnapshot`，新 baseline 前 Surface 保持未就绪
-- 切 pane/tab 的 `resets` 增量：widget 或 `linux_live_e2e` 的 `isolated_tmux_switch_tab_resets_bounded`
+- `surface_live_feed_does_not_reset`：synced 后 20 帧 CUP，`RenderTrace.resets` 不增加
+- `surface_typing_overwrites_in_place`：完整句在 `visible_text` **恰好一次**
+- `surface_codex_fixture_raw_feed`
+- `surface_seed_drops_output_until_capture`
+- `seeded_output_gap_replaces_partial_sgr_before_live_resumes`
+- 切 pane/tab/workspace 的 `resets` 增量有界
+- 点击路径零 FFI（e2e 插桩：activate 到首帧之间无 Core 调用、无锁等待）
 
 ### 5.3 大：隔离 tmux e2e（`-L muxterm-test-*`）
 
-- 建 session，AppWindow attach，`send-keys` 打 `MUXTERM_TYPE_TOKEN`，5s 内 VTE **恰好一份** token，且在底行附近
-- 再开一个 window，点 tab：VTE 非空、过程中 `resets` 不暴涨（阈值写进测试，例如切一次 ≤1）
-- 隔离 tmux 里跑合成 CUP 脚本（`codex-tui-sanitized` 或 `ESC[H` 20 帧）：停在末帧，无白屏（resets 有界）
-- 滚轮：shell 输出 200 行后向上能看到 `line-0`（VTE scrollback，**不是** replica dump API）
+- 打 `MUXTERM_TYPE_TOKEN`，5s 内 VTE **恰好一份** token
+- 再开一个 window，点 tab：VTE 非空、`resets` 不暴涨
+- 隔离 tmux 里跑合成 CUP 脚本：停在末帧，无白屏
+- 滚轮：shell 输出 200 行后向上能看到 `line-0`（native scrollback，不是 replica dump）
 
-禁止：`include_str!` 34MB `*.log`；直接 `popover.popup()`；只 `contains(TOKEN)` 不数出现次数。
+禁止：`include_str!` 大体积 `*.log`；只 `contains(TOKEN)` 不数出现次数。
 
 ---
 
 ## 6. 参考树维护
 
-`/home/wlz/Developer/terminal/` 不提交。更新：`git -C <repo> pull --ff-only`（均为 `--depth 1`）。清单见该目录 `README.md`。
-
-核查时间：`2026-08-15T21:26:10+08:00`；§7 核查 `2026-08-24T16:55:34+08:00`。源码以克隆树为准。
+`/home/wlz/Developer/terminal/` 不提交。核查时间：`2026-08-15T21:26:10+08:00`；
+§7 核查 `2026-08-24T16:55:34+08:00`。源码以克隆树为准。
 
 | 声明 | 来源 |
 |---|---|
-| `%output` 进唯一 VT；`%pause` | iTerm2 `TmuxGateway.m` `tmuxReadTask:`；`PTYSession.m` `pausePanes`；tmux `control.c` / `tmux.1` CONTROL MODE |
-| 未 synced 丢弃 live；`vte.feed`；capture 一次；`-H` | ivyTerm `tmux_widgets/terminal/mod.rs` `feed_output`；`tmux_api/send.rs` |
-| capture 完成前 ignore `%output` | Ghostty `src/terminal/tmux/viewer.zig` 行 21–22 |
-| seed = snapshot + discard + catch-up | cmux `Sources/RemoteTmuxPaneSeed.swift` |
-| `-H` 十六进制字节 | `tmux.1` send-keys；`cmd-send-keys.c` `args_has(..., 'H')`；[OpenBSD tmux.1](https://man.openbsd.org/tmux.1) |
-| 假 PTY | WezTerm `mux/src/tmux_pty.rs` |
-| 历史写成格子，不是 ANSI `feed` | iTerm2 `TmuxWindowOpener.m` `capture-pane -peqJN -S -N` → `TmuxHistoryParser` → `VT100Screen.setHistory:` |
-| 控制模式是文本，客户端自己画 | [tmux wiki Control Mode](https://github.com/tmux/tmux/wiki/Control-Mode)（核查 `2026-08-24T16:34:51+08:00`） |
+| `%output` 进唯一 VT；`%pause` | iTerm2 `TmuxGateway.m`；tmux `control.c` / `tmux.1` CONTROL MODE |
+| 未 synced 丢弃 live；`vte.feed`；capture 一次；`-H` | ivyTerm `feed_output`；`tmux_api/send.rs` |
+| capture 完成前 ignore `%output` | Ghostty `src/terminal/tmux/viewer.zig` |
+| seed = snapshot + discard + catch-up | cmux `RemoteTmuxPaneSeed.swift` |
+| `-H` 十六进制字节 | `tmux.1` send-keys；[OpenBSD tmux.1](https://man.openbsd.org/tmux.1) |
+| 控制模式是文本，客户端自己画 | [tmux wiki Control Mode](https://github.com/tmux/tmux/wiki/Control-Mode) |
+
+GTK4 `GtkStack` 一次只显示一个子 widget，子页面仍留在树里
+（[class.Stack](https://docs.gtk.org/gtk4/class.Stack.html)，核对 2026-09-08）。
+常驻多 Scene 的稳态绘制成本 ≈ 单 Scene。
 
 ---
 
 ## 7. 2026-08-24：字节直达（纠偏）
 
-核查：`2026-08-24T16:55:34+08:00`。
+文档 2026-08-15 已经禁止 dump。实现后来把 Workspace/PaneBuf 当成显示缓存：切 tab
+`pause`+capture，再用 `surface_seed_ansi` 灌进 SwiftTerm。卡顿和「历史只能滑一点」都来自这条。
 
-文档 2026-08-15 已经禁止 dump。实现后来把 Workspace/PaneBuf 当成显示缓存：切 tab `pause`+capture，再用 `surface_seed_ansi` 灌进 SwiftTerm。卡顿和「历史只能滑一点」都来自这条，不是来自「core 里有 Workspace」。
+### 7.1 内容去处（2026-09-08：三条 lane）
 
-### 7.1 两路内容，两个去处
-
-`runtime/tmux` 解析 `-CC` 之后只交出两种产品数据。Workspace 和前端都看不见 `%output` / `capture-pane` / `$N`。
+Runtime 解析 wire 之后交出三类产品数据。Workspace 和前端都看不见 `%output` / `capture-pane` / `$N`。
 
 | Runtime 解析出来的 | 产品事件 | 谁用 |
 |---|---|---|
-| 控制协议（窗口树、焦点、layout、pause 通知） | `LayoutChanged` / `ActiveTabChanged` / `PaneResized` / … | Workspace 存拓扑；前端改分割和 tab |
-| PTY 字节（解转义后的 pane 输出） | `PaneOutput { pane, data }` | **只**进该 pane 的前端 Surface |
+| 控制协议 | Control lane | Workspace 存拓扑；前端改分割和 tab |
+| PTY 字节 | `PaneOutput` / `PaneFrame` / `PaneHistory` | **只**进该 pane 的前端 Surface；同一份复制给 Index |
+| 权威信号 | `RuntimeSignal` | Workspace 生成 ActivityRecord |
 
-Workspace **不**解析控制协议。它收 Runtime 已经翻译好的 `StateChange`，维护 Tab/Pane 树，把同一份 `PaneOutput` 喂给 Index（搜索/attention）。它不画像素，不把 Index 网格再编码回去。
-
-以后换 Runtime（Herdr 等）只要交出同一套 `StateChange`。产品层不对 tmux 特化。QuickConnect 里可以出现 runtime 名字 `tmux`，那是用户选工作区类型，不是协议泄漏。
-
-前端认的能力是「直连 PTY」还是「镜像 PTY」（查询应答、client 尺寸），不是 `if tmux`。
+Workspace **不**解析控制协议，不画像素，不把 Index 网格再编码回去。
 
 ### 7.2 谁渲染
 
-每个 **已打开** pane 一个前端 VT（VTE / SwiftTerm）。PTY 字节 `feed`，禁止 `reset` 追帧。
+每个 **已打开** pane 一个前端 VT。PTY 字节 `feed`，禁止 `reset` 追帧。
 
-切 tab：已有 Surface 只显示/隐藏，继续吃 `PaneOutput`。不要 core 预渲染一帧再贴到前端。
+切 tab / 切 workspace：已有 Surface 只显示/隐藏，继续吃 `PaneOutput`。不要 core 预渲染一帧再贴到前端。
 
-前台 Workspace：该工作区里出 PTY 的 pane 都可以有 Surface（tab 栏上的页都算打开）。后台 Workspace：连接和 Index 仍在池里；像素控件只保留已经建过的，不再新建。池默认以 20 个 Workspace 作为软提醒阈值；超过后由用户选择关闭长期未使用项，不静默移除连接。
+**没有前后台之分。** 所有已打开 Workspace 的 Control / Activity / Render 都常流。隐藏 Scene 不绘制，
+但 VT 继续 feed。资源不够时按 pane 降档（live / coalesce / pause），这是资源旋钮，不是正确性条件：
+切过去永远先看到最后已知帧，任何档位都不允许白屏等待。
 
-### 7.3 本轮实现
+池默认以 20 个 Workspace 作为软提醒阈值；超过后由用户选择关闭长期未使用项，不静默移除连接。
 
-- 切到已经 seed 过的 tab：Runtime 不再 `pause` / `capture-pane`（`initial_capture_done` 直接跳过）。
-- 已经 seed 的 Surface：正常切换不重拍；`output-dropped` / OutputGap / `%pause` 是例外的数据丢失屏障，按 pane pause → visible capture → `PaneSnapshot` reset → continue。失败保持 fenced 并有界重试，禁止直接 resume。
-- 前台 Workspace 的 `PaneOutput` / `PaneSnapshot` 进该工作区所有 pane 的 Surface（tab 栏上的页都算打开）；禁止 `paneSurfaceSeedANSI` / `visible_ansi` 当显示。
-- 后台 Workspace：core 继续吃字节进 Index；已经建过的 Surface 在**主线程**继续 `feed` 到**该 Workspace 自己的** VT 树。禁止在后台 GCD 队列改 SwiftTerm。不新建 widget，不把 Index dump 当切回来的刷新。未建 Surface 的有界 live 缓存一旦溢出，丢弃整段缓存并发 `RequestPaneSnapshot`；绝不从 CSI/OSC/DCS 中间截 suffix。
-- 切 Workspace / 切已加载的 tab：挂已有 Surface 树，不拆 Auto Layout 重建。
-- 第一次 seed 仍用 Runtime 的 `PaneSnapshot`（可见屏 + 模式）。attach 前 tmux 历史在可见屏之后按行回填（`PaneHistory`），写入 native scrollback，不 `reset`，也不把 `-S -N` 当 VT 流 `feed()`。
-- Workspace 数量默认以 20 为软提醒阈值；超出后由用户选择关闭后台项，不能静默淘汰仍在使用的 Workspace。
+### 7.3 已落地的实现要点
 
-### 7.4 TODO（本轮不实现）
+- 切到已经 seed 过的 tab：Runtime 不再 `pause` / `capture-pane`。
+- OutputGap / `%pause`：按 pane pause → visible capture → `PaneSnapshot` reset → continue。失败保持 fenced。
+- 第一次 seed 用 `PaneSnapshot`；历史按行回填（`PaneHistory`），不 `feed()` `-S -N`。
+- 禁止 `paneSurfaceSeedANSI` / `visible_ansi` 当显示。
 
-1. **洪水 `pause-after`。** 某个 pane 的 Surface 跟不上时，只对 **该 pane** `refresh-client -A %N:pause`，追上再 continue。代码里搜 `TODO(surface-7.4)`。现在不要用 pause 当切 tab 手段。不能无限吃 CUP 风暴还保证 60fps。
-2. ~~**第一次打开按行填历史。**~~ **已落地（2026-08-25）：** Runtime 在可见屏 seed / continue 之后抓 `capture-pane -peqN -S -N -E -1`（物理行，不要 `-J`），产品事件 `PaneHistory` 带行数据；前端 `muxtermPrependHistoryLines` 按列宽写入 scrollback。禁止把 `-S -10000` 当 VT 流 `feed()`，也禁止为了不卡而永远只抓可见屏。已打开的 tab 再切回来不得再抓。
+### 7.4 TODO（洪水 `pause-after`）
 
-### 7.5 不卡顿的验收（不是保证任意负载 60fps）
+某个 pane 的 Surface 跟不上时，只对 **该 pane** `refresh-client -A %N:pause`，追上再 continue。
+代码里搜 `TODO(surface-7.4)`。现在不要用 pause 当切 tab 手段。
 
-- 已打开的 tab/pane 切换：没有 pause、没有 capture、没有 reset。
-- attach 首屏：可见 `capture-pane` 发出之前，控制通道不得塞 `list-sessions` / 全 pane OSC `-r`。慢 SSH 可以等，但不能空超时后再抓 `-S -10000`。
+### 7.5 不卡顿的验收
+
+- 已打开的 tab/pane/workspace 切换：没有 pause、没有 capture、没有 reset、没有 FFI、没有锁。
 - 打字和 TUI 跟 `PaneOutput` 走，不跟 Index dump 走。
-- `WorkspacePoolPolicy.max_slots` 默认 20，是容量提醒阈值而非硬上限；超过后只提醒用户选择关闭后台 Workspace。
 - 某个 pane 刷爆时允许掉帧；TODO 落地后只 pause 那一个 pane。
+- 切换首帧 ≤ 1 帧（60Hz 下 16ms 预算）。
 
 ---
 
-## 8. Topology batch commit boundary（2026-08-24）
+## 8. 常驻 Scene + 单事件泵（2026-09-08）
 
-Structural events 和像素事件不能交错提交。一个 poll batch 必须先把最终 topology 应用到
-Core，再对每个 affected workspace 执行一次 LayoutHost sync/mount；只有这个 commit boundary
-之后才能 feed full frame，最后才能 feed output。structural-only batch 也必须提交一次，不能
-因没有 frame/output 而逐事件 inline refresh。
+平台无关词汇（各前端用本语言实现同一套）：
 
-PaneView input callback 只产生 `(WorkspaceId, PaneId, bytes)` FIFO item；GLib poll drain 时
-按 owner 路由 `WriteRaw`。切 tab、切 workspace、detach 或 layout rebuild 不得把迟到输入改投
-新的 active pane。Attach、Reattach 和 Create 的 Surface mount 都遵守同一 boundary。
+```text
+Core（Muxterm / WorkspacePool）
+  │  poll 批次（topology → activity → frame → output）
+  ▼
+EventPump（唯一 FFI 事件消费者；经 ffi_client）
+  │  按 WorkspaceId 分发；经主线程桥写 ViewStore
+  ▼
+ViewStore → Scene / Sidebar / Overlay
+
+反向：UI 手势 → CommandQueue → Core Task → MutationSettled → ViewStore
+```
+
+- **Scene**：一个已打开 Workspace 的完整视图树（TabBar + PaneGrid + 每 pane 一个 PaneSurface）。从 open 到 close 常驻。
+- **SceneStack**：切换 = 换可见子树。切换时不调 Core。
+- **CommandQueue**：合并同一目标的连续 SwitchTab / activate，只发最后一个。
+- **resize**：只对可见 Scene 发 `Task::Resize`；隐藏 Scene 记 pending size。
+
+去锁论证：旧设计的锁来自「后台 poll 与前台激活并发碰同一个 C handle」。新设计里 FFI 入口只剩
+EventPump 与 CommandQueue，Core 内部串行化；UI 线程从不直接碰 handle。并发访问是锁存在的前提；
+入口收敛后前提消失。拓扑常流 ⇒ 缓存永远权威 ⇒ 没有 warm/cold。
+
+Linux：Scene = `GtkStack` page。删除 `LayoutHost::apply_layout` 的 retain 丢弃。
+macOS：删除 WarmConnectionSlot / `bridgeLock` / `backgroundPollQueue` / 前台权威校准。
+CoreBridge 瘦身为 FFI + DTO 解码。ConnectionPool 的 warm/cold 概念删除；live owner 是 Core WorkspacePool。
+
+一个 poll batch 必须先提交最终 topology，再发 activity，然后 frame，最后 output。
+迟到输入不得改投新的 active pane。
+
+---
+
+## 9. 切换延迟不是 tmux 全局锁（2026-09-08 dogfood）
+
+侧栏快速切换时看到的「远端校准在抢锁」、以及 `workspace activation ready … elapsed_ms≈3400 / 5260`，
+**不是**「多个客户端挂到同一个 tmux session 上，抢了一把 tmux 全局锁」。
+
+### 9.1 真正卡住的是 Muxterm 自己的两条串行路径
+
+1. 每个 warm slot 一把 `bridgeLock`（`NSLock`），保护同一个 C ABI handle 不被后台 poll 和前台激活同时碰。
+2. 所有后台 poll 和权威拓扑刷新共用同一条串行队列 `muxterm.macos.background-poll`。
+
+SSH 上的 `refresh-client -A %N:pause` + `capture-pane` 会把**这一条**控制通道占住几百毫秒到二十秒。
+队列和锁因此一起变长。
+
+### 9.2 证据要点
+
+- 三个 Workspace = 三条独立 `-CC`，挂的是 **不同 session**（legion / muxterm / yaklang-workspace）。
+- 其它 session 的 `%session-window-changed` 被主动忽略，不是 3–5 秒激活延迟的原因。
+- `muxterm_get_tabs` / `muxterm_get_panes` 读的是 Core 内存态。校准慢，是因为轮到它之前队列已被 pause/capture 占住。
+- 首屏 seed timeout 20s（`INITIAL_SEED_TIMEOUT`）会把控制通道堵死。
+- 快速连点会 `generation++` 作废旧校准，并把堆积的 `SwitchTab`（`@61/@0/@61/@0`）在校准结束后一口气重放。
+
+pause 的作用域是 `refresh-client -A "%N:pause"`：只停**本 client** 上这个 pane 的 control output，
+不会把远端 session 里的 shell 停住，也不会把其它 client 锁死。
+
+再开 iTerm / 另一个 `tmux attach` 到**同一个** session 会抢 current-window 和 client 尺寸，
+可能造成「窗跳来跳去」，但解释不了 `bridgeLock` 等待和 20s seed deadline。
+
+### 9.3 故障链
+
+```text
+侧栏点 Workspace
+  → activate() generation++
+  → 立刻 paint 缓存（用户已看到新画面）
+  → 权威刷新进入 backgroundPollQueue
+
+同时：其它 warm slot 正在同一条队列上 drainBackgroundEvents
+      reader-output-lane 溢出 → mark_output_gap → pause + capture-pane（SSH RTT）
+
+backgroundPollQueue 串行
+  → withBridge 等 bridgeLock
+  → captureForegroundAuthority（内存快照本身很快）
+  → elapsed_ms=3s~5s
+  → 重放堆积的 SwitchTab
+```
+
+### 9.4 架构对应（不是补丁列表）
+
+| 旧机制 | 新机制 |
+|---|---|
+| 每 slot 一把 `bridgeLock` | 无锁：FFI 只剩 EventPump / CommandQueue |
+| 单条串行 `backgroundPollQueue` | EventPump 一个循环 drain Pool 已合并的多工作区批次 |
+| 激活后 `captureForegroundAuthority` | 无校准：Control / Activity 对所有已打开 workspace 常流 |
+| warm / cold slot | Scene 常驻；Core WorkspacePool 是唯一 live owner |
+| `pendingForegroundActions` 重放 | CommandQueue 合并同目标命令 |
+| gap fenced + 20s seed 堵住激活 | fenced 保留（数据正确性），但只影响该 pane 的异步补基线；首帧用最后已知画面 |
+
+验证时继续用独立 tmux socket，禁止对用户默认 server 做 `kill-session` / `kill-server`。
+
+原诊断全文曾记在未跟踪的 dogfood 笔记里；现行契约以本节为准。

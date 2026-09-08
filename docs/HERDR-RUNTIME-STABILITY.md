@@ -1,10 +1,13 @@
 # HERDR-RUNTIME-STABILITY.md — Herdr Runtime 稳定性契约
 
-> 状态：设计契约 + W10 实现复核（2026-08-25）；远端 required CI 尚未在当前 HEAD 复核
-> 适用分支：`feature/runtime/support_herdr`
-> 最终复核：`2026-08-25T12:10:25+08:00`（CST；当前 HEAD、旧 PR #20 required logs、
-> 本地门禁均已核对；未 push）
-> 实施计划：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
+> 状态：Herdr adapter 专项契约（stream generation、mutation 收敛、identity）。
+> 横幅：2026-09-08。产品树 / 打开路径 / 像素以
+> [`WORKSPACE.md`](WORKSPACE.md)、[`CATALOG.md`](CATALOG.md)、[`SURFACE.md`](SURFACE.md) 为准。
+> 若本文出现 Catalog 含 Pool、`set_foreground` 作为 frontend API、platform 路径、
+> frontend 构造 WorkspaceSpec，以 2026-09-08 总契约为准；本文只约束 Herdr wire。
+> 适用分支（当时）：`feature/runtime/support_herdr`
+> 最终复核：`2026-08-25T12:10:25+08:00`
+> 实施计划（历史）：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
 > 测试契约：[`HERDR-TESTING.md`](HERDR-TESTING.md)
 
 本文是 Herdr runtime 稳定化的专项设计契约。产品层级仍以

@@ -1,7 +1,13 @@
 # 真实案例日志（本地测试素材）
 
-本目录存放 muxterm 开发时抓取的真实终端/协议日志，用来复现和回归
-以下问题：
+本目录存放 muxterm 开发时抓取的真实终端/协议日志，用来复现和回归。
+体积大，**不纳入 git**（`.gitignore` 的 `*.log` 已覆盖）。单测禁止 `include_str!` 这些原日志；
+小而可断言的片段进 `tests/samples/`。
+
+2026-09-08 dogfood（远端校准抢锁）的结论已写入 [`docs/SURFACE.md`](../../docs/SURFACE.md) §9：
+不是 tmux 全局锁，是 frontend `bridgeLock` + 串行后台队列。
+
+用来复现和回归的历史问题：
 
 - `test-2026-0813-1159.log` / `1210`：codex 输入框阶梯、查询应答泄漏
 - `test-2026-0813-1308.log`：主题/颜色渲染、status bar 数据
