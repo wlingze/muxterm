@@ -41,7 +41,10 @@ use crate::core::workspace::pool::{
 };
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
-use crate::platform::ffi_client::{ClientEvent, ClientPane, ClientTab, ClientWorkspace, FfiClient};
+use crate::platform::event_pump::EventPump;
+use crate::platform::ffi_client::{
+    ClientEvent, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent, FfiClient,
+};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -2531,7 +2534,13 @@ fn dispatch_event_for(
 ) {
     let ws = wid.replica_id();
     if let Some(event) = client_render_event(ev) {
-        s.view_store.push_render_event(&wid.as_str(), event);
+        EventPump::apply_workspace_event(
+            &mut s.view_store,
+            ClientWorkspaceEvent {
+                workspace_id: wid.as_str(),
+                event,
+            },
+        );
     }
     apply_attention_event_from_workspace(s, wid, &ws, ev);
     let is_active = s.pool.active_id() == Some(wid);
@@ -2878,7 +2887,13 @@ fn dispatch_event(s: &mut UiState, ev: &StateChange, effects: &mut UiBatchEffect
     let ws = active_workspace_id(s);
     let wid = s.active_ws_id().clone();
     if let Some(event) = client_render_event(ev) {
-        s.view_store.push_render_event(&wid.as_str(), event);
+        EventPump::apply_workspace_event(
+            &mut s.view_store,
+            ClientWorkspaceEvent {
+                workspace_id: wid.as_str(),
+                event,
+            },
+        );
     }
     apply_attention_event_from_workspace(s, &wid, &ws, ev);
     match ev {
