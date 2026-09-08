@@ -5,7 +5,6 @@
 //! `trait Runtime` 只表示已经 attach 的格子。列出候选、拿管道、探活
 //! 都在 Catalog：Driver 表、TransportProvider 表、Connect 缓存、Inventory、Pool。
 
-pub mod builtin;
 pub mod connect;
 pub mod driver;
 pub mod inventory;
@@ -64,10 +63,10 @@ impl Catalog {
     /// 只注册，不 connect、不探用户默认 herdr.sock。
     pub fn with_builtins() -> Self {
         let mut cat = Self::new();
-        for driver in builtin::builtin_runtimes() {
+        for driver in crate::core::runtime::registry::with_builtins() {
             cat.register_runtime(driver);
         }
-        for transport in builtin::builtin_transports() {
+        for transport in crate::core::transport::registry::with_builtins() {
             cat.register_transport(transport);
         }
         cat
