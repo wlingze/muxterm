@@ -34,7 +34,7 @@ use gtk4::{Orientation, Widget};
 
 use muxterm::core::config::Config;
 use muxterm::core::quickconnect::model::TargetRuntime;
-use muxterm::platform::ffi_client::{ClientTab, SshHostEntry};
+use muxterm::platform::ffi_client::{ClientTab, FfiClient, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
@@ -73,7 +73,7 @@ fn assert_target_config_ssh_toggle_after_debounce() {
             port: 22,
             user: "wlz".into(),
         }],
-        muxterm::core::catalog::Catalog::with_builtins().runtime_list(),
+        FfiClient::discover_runtimes().expect("runtime metadata through FFI"),
         |_| {},
         || {},
     );
@@ -114,7 +114,7 @@ fn assert_target_config_herdr_card_saves() {
         None,
         QuickConnectStore::in_memory(),
         vec![],
-        muxterm::core::catalog::Catalog::with_builtins().runtime_list(),
+        FfiClient::discover_runtimes().expect("runtime metadata through FFI"),
         move |cfg| {
             *s.borrow_mut() = Some(cfg.runtime);
         },
