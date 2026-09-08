@@ -20,11 +20,12 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::core::protocol::ffi::types::{
-    STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
-};
 use crate::core::protocol::terminal::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::core::protocol::terminal::mirror::should_forward_parser_response;
+use crate::ffi::{
+    STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
+};
+use crate::platform::ffi_client::FfiClient;
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
@@ -284,9 +285,10 @@ fn resolve_runtime(opts: &TuiOpts) -> (&'static str, Option<String>, Option<Stri
 
 /// 用 core discovery 查找已有的工作区候选（产品名，不是 tmux session）。
 fn find_existing_tmux_session(socket: Option<&str>) -> Option<String> {
-    crate::core::discovery::list_local_tmux_sessions(socket)
+    FfiClient::discover_workspaces("local", None, socket)
+        .ok()?
         .first()
-        .map(|s| s.name.clone())
+        .map(|workspace| workspace.name.clone())
 }
 
 /// Ctrl-Q / Ctrl-D / Ctrl-C 退出。
@@ -391,7 +393,11 @@ fn load_step_data(palette: &mut PaletteState) {
             ]);
         }
         WizardStep::Host => {
-            let hosts = crate::core::discovery::list_local_ssh_hosts(None);
+            let hosts = FfiClient::discover_ssh_hosts()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|host| host.alias)
+                .collect::<Vec<_>>();
             let items: Vec<WizardItem> = if hosts.is_empty() {
                 vec![WizardItem::plain("（未配置 ~/.ssh/config Host）", "")]
             } else {
@@ -406,19 +412,13 @@ fn load_step_data(palette: &mut PaletteState) {
             // 顶部默认 new + 已存在 session 列表
             let sessions = match palette.source {
                 ConnectSource::Local => {
-                    crate::core::discovery::list_local_tmux_sessions(palette.socket.as_deref())
+                    FfiClient::discover_workspaces("local", None, palette.socket.as_deref())
+                        .unwrap_or_default()
                 }
                 ConnectSource::Ssh => {
                     let host = palette.host.clone().unwrap_or_default();
-                    let timeout = Duration::from_secs(5);
-                    let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                    crate::core::discovery::list_ssh_tmux_sessions(
-                        &host,
-                        ssh_config.as_deref(),
-                        None,
-                        timeout,
-                    )
-                    .unwrap_or_default()
+                    FfiClient::discover_workspaces("ssh", Some(host.as_str()), None)
+                        .unwrap_or_default()
                 }
             };
             let mut items = vec![WizardItem::new_item()];
@@ -439,7 +439,7 @@ fn load_step_data(palette: &mut PaletteState) {
                     .unwrap_or_else(|_| ".".into())
             });
             palette.dir = Some(dir.clone());
-            let entries = crate::core::discovery::list_local_dir(&PathBuf::from(&dir));
+            let entries = FfiClient::list_dir("local", None, &dir).unwrap_or_default();
             let mut items = vec![WizardItem::dir("..（返回上级）", "..")];
             for e in entries {
                 if e.is_dir {
