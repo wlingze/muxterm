@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
-use crate::core::model::TerminalModel;
 use crate::core::protocol::task::Task;
 use crate::core::runtime::tmux::TmuxRuntime;
 use crate::core::types::{PaneId, TabId};
+use crate::core::workspace::terminal_model::TerminalModel;
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,

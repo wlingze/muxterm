@@ -536,8 +536,8 @@ fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::protocol::task::Task;
+    use crate::core::runtime::mock::MockRuntime;
 
     fn workspace(name: &str) -> Workspace {
         let id = WorkspaceId::new("local", None, name, "tmux", "");

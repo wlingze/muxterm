@@ -122,8 +122,8 @@ pub fn cli_command_to_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockRuntime;
-    use crate::core::model::TerminalModel;
+    use crate::core::runtime::mock::MockRuntime;
+    use crate::core::workspace::terminal_model::TerminalModel;
 
     fn make_model() -> TerminalModel {
         TerminalModel::new(Box::new(MockRuntime::with_single_pane()))

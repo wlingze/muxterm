@@ -17,8 +17,8 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
-use crate::core::model::TerminalModel;
 use crate::core::runtime::shell::ShellRuntime;
+use crate::core::workspace::terminal_model::TerminalModel;
 use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::format_output;
 use crate::platform::cli::ipc::{Request, Response};
