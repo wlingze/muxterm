@@ -376,6 +376,53 @@ impl Catalog {
         Ok(workspace_id)
     }
 
+    /// Native worktree creation against an explicitly supplied live pool.
+    ///
+    /// The product FFI handle owns the live `WorkspacePool`; the Catalog keeps
+    /// a separate compatibility pool for standalone callers. This variant
+    /// keeps provider construction in Catalog while inserting the new runtime
+    /// into the caller's actual product pool.
+    pub async fn create_native_worktree_with_pool(
+        &mut self,
+        pool: &mut WorkspacePool,
+        source: &WorkspaceId,
+        worktree: &crate::core::runtime::WorktreeCreateSpec,
+        provenance: Option<WorkspaceProvenance>,
+        template: Option<TemplateName>,
+    ) -> anyhow::Result<WorkspaceId> {
+        let mut spec = {
+            let workspace = pool
+                .get(source)
+                .ok_or_else(|| anyhow::anyhow!("workspace {source} 不在池里"))?;
+            if !workspace
+                .runtime()
+                .support()
+                .contains(&crate::core::runtime::RuntimeCapability::WorktreeCreate)
+            {
+                anyhow::bail!("runtime 不支持 native WorktreeCreate");
+            }
+            workspace.runtime().create_worktree_spec(worktree)?
+        };
+        spec.provenance = provenance.clone();
+        spec.template = template;
+        let workspace_id = spec.id();
+        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
+        let template_record = spec
+            .template
+            .as_ref()
+            .and_then(|name| self.templates.get(name))
+            .cloned();
+        let runtime = self.new_runtime(&spec)?;
+        let workspace = pool.open_spec_with_runtime(&spec, runtime).await?;
+        workspace.set_provenance(provenance);
+        if should_apply_template {
+            if let Some(template) = template_record {
+                workspace.start_template(template)?;
+            }
+        }
+        Ok(workspace_id)
+    }
+
     /// 打开一个 spec 并返回**自有** Workspace（不进本 Catalog 池）。
     ///
     /// GUI 后台线程需要：Catalog 只做身份解析 + Driver open（共享 Connect），

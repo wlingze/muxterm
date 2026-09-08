@@ -4,8 +4,11 @@ use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::core::protocol::task::Task;
+use crate::core::runtime::HerdrRuntime;
+use crate::core::types::PaneId;
 
 use super::super::api::{json_error, json_string, task_result_code, MuxtermHandle};
+use super::support::parse_workspace_id;
 
 /// Return whether the active tmux backend has status-bar subscriptions enabled.
 ///
@@ -85,6 +88,49 @@ pub unsafe extern "C" fn muxterm_runtime_list_json(h: *mut MuxtermHandle) -> *mu
         }))
     }))
     .unwrap_or_else(|_| json_error("runtime list panic"))
+}
+
+/// Return Herdr stream diagnostics for one product workspace pane.
+///
+/// This is intentionally a Core-owned diagnostic DTO: GTK must not downcast a
+/// live Runtime or borrow the WorkspacePool just to support an E2E probe.
+/// Non-Herdr workspaces return a successful `null` probe.
+///
+/// # Safety
+/// `h` is a live handle and `workspace_id` is a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_herdr_probe_json(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let Some(workspace_id) = super::support::cstr_opt(workspace_id) else {
+            return json_error("workspace id 为空");
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &*h;
+        let Some(workspace) = handle.pool().get(&workspace_id) else {
+            return json_error("workspace 不存在");
+        };
+        let Some(runtime) = workspace.runtime().as_any().downcast_ref::<HerdrRuntime>() else {
+            return json_string(serde_json::json!({"ok": true, "probe": null}));
+        };
+        let pane = PaneId(pane_id);
+        json_string(serde_json::json!({
+            "ok": true,
+            "probe": {
+                "stream_starts": runtime.test_stream_starts(pane),
+                "control_takeover_starts": runtime.test_control_takeover_starts(pane),
+                "takeover_suppressed": runtime.test_takeover_suppressed(pane),
+                "actual_mode": format!("{:?}", runtime.test_actual_mode(pane)),
+            },
+        }))
+    }))
+    .unwrap_or_else(|_| json_error("Herdr probe panic"))
 }
 
 /// Connect the active workspace backend. Returns 0 on success, -1 on error.

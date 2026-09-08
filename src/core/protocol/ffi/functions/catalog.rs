@@ -7,7 +7,8 @@ use crate::core::catalog::{OpenRequest, ResolveIntent};
 use crate::core::muxterm::Muxterm;
 use crate::core::protocol::candidate::CandidateRef;
 
-use super::super::api::{json_error, json_string, MuxtermHandle};
+use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
+use super::support::parse_workspace_id;
 
 /// List the unified Project/Worktree/Existing/Recent candidates.
 ///
@@ -170,6 +171,67 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
         }
     }))
     .unwrap_or_else(|_| json_error("workspace_open_target_json panic"))
+}
+
+/// Create a native worktree from a live workspace and open its resulting
+/// workspace through the Core-owned product pool.
+///
+/// The frontend sends only product fields. Runtime construction, Herdr's
+/// `worktree.create`, and pool insertion remain inside Core.
+///
+/// # Safety
+/// All pointers are either null or NUL-terminated UTF-8 strings and `h` is a
+/// live handle returned by a constructor.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_worktree_create_json(
+    h: *mut MuxtermHandle,
+    source_workspace_id: *const c_char,
+    branch: *const c_char,
+    path: *const c_char,
+    base: *const c_char,
+    label: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let Some(source_workspace_id) = cstr_opt(source_workspace_id) else {
+            return json_error("source workspace id 为空");
+        };
+        let Some(branch) = cstr_opt(branch).filter(|value| !value.trim().is_empty()) else {
+            return json_error("worktree branch 不能为空");
+        };
+        let Some(path) = cstr_opt(path).filter(|value| !value.trim().is_empty()) else {
+            return json_error("worktree path 不能为空");
+        };
+        let source = parse_workspace_id(&source_workspace_id);
+        let spec = crate::core::runtime::WorktreeCreateSpec {
+            branch,
+            path,
+            base: cstr_opt(base).filter(|value| !value.trim().is_empty()),
+            label: cstr_opt(label).filter(|value| !value.trim().is_empty()),
+        };
+        let handle = &mut *h;
+        let result = {
+            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
+            rt.block_on(catalog.create_native_worktree_with_pool(pool, &source, &spec, None, None))
+        };
+        match result {
+            Ok(workspace_id) => {
+                let Some(workspace) = handle.pool().get(&workspace_id) else {
+                    return json_error("worktree workspace 创建后未进入 Core pool");
+                };
+                json_string(serde_json::json!({
+                    "ok": true,
+                    "id": workspace.id().as_str(),
+                    "name": workspace.name(),
+                    "resolved_target": workspace.resolved_target().map(resolved_target_json),
+                }))
+            }
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("workspace worktree create panic"))
 }
 
 pub(crate) fn target_config_from_json(

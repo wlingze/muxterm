@@ -33,6 +33,39 @@ fn workspace_pane_mut(
     Some((workspace, pane))
 }
 
+/// Take parser-generated OSC/CSI replies for one workspace pane.
+///
+/// The returned pointer is owned by the handle and remains valid until the
+/// next Core buffer reset or handle free. Callers must copy it immediately.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `len_out` are valid pointers; `workspace_id` is a
+/// NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_take_pane_reply(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    len_out: *mut usize,
+) -> *const u8 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() || len_out.is_null() {
+            return std::ptr::null();
+        }
+        let handle = &mut *h;
+        let bytes = {
+            let Some((workspace, pane)) = workspace_pane_mut(handle, workspace_id, pane_id) else {
+                return std::ptr::null();
+            };
+            workspace.take_reply(pane)
+        };
+        let (ptr, len) = handle.push_data(&bytes);
+        *len_out = len;
+        ptr
+    }))
+    .unwrap_or(std::ptr::null())
+}
+
 /// Read a pane's scrollback window as ANSI bytes.
 ///
 /// # Safety
