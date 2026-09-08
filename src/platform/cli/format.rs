@@ -5,22 +5,7 @@
 use crate::core::protocol::state::State;
 use crate::core::types::{PaneId, TabId};
 
-/// 输出格式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum OutputFormat {
-    Json,
-    Text,
-}
-
-impl OutputFormat {
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "text" | "txt" => OutputFormat::Text,
-            _ => OutputFormat::Json,
-        }
-    }
-}
+pub use crate::core::protocol::daemon::{OutputFormat, StateSnapshot};
 
 /// 格式化查询结果输出。
 pub fn format_output(
@@ -42,21 +27,6 @@ pub fn format_output(
         DumpState => format_dump_state(state),
         _ => String::new(), // 非 query 命令无输出
     }
-}
-
-/// 完整状态快照（供 TUI DaemonRuntime 反序列化）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct StateSnapshot {
-    pub workspace_name: String,
-    pub workspace_runtime: String,
-    pub tabs: Vec<crate::core::protocol::state::TabInfo>,
-    pub panes: Vec<crate::core::protocol::state::PaneInfo>,
-    pub layouts: Vec<crate::core::protocol::layout::TabLayout>,
-    /// pane_id.0 → 累计输出（lossy UTF-8；含 ANSI）。
-    pub outputs: Vec<(u32, String)>,
-    pub status: crate::core::protocol::state::BackendStatus,
-    pub active_tab: Option<u32>,
-    pub active_pane: Option<u32>,
 }
 
 fn format_dump_state(state: &dyn State) -> String {
