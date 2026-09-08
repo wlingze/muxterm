@@ -39,9 +39,11 @@ final class CommandTimelineE2ETests: XCTestCase {
         let script = AppE2E.repoRoot.appendingPathComponent("tests/scripts/osc133_rounds.py")
         XCTAssertTrue(FileManager.default.isReadableFile(atPath: script.path))
         let suffix = "MAC_\(ProcessInfo.processInfo.processIdentifier)"
+        // attachWindow 是 1280×800；CI runner 可见行数远大于 24。填充必须
+        // 超过可见网格，第二次 Cmd+Option+↑ 才能离开 offset=0。
         Tmux.ok(socket: socket, args: [
             "respawn-pane", "-k", "-t", target,
-            "env MUXTERM_CMD_SUFFIX=\(suffix) MUXTERM_CMD_PAD_LINES=32 python3 -u \(script.path)",
+            "env MUXTERM_CMD_SUFFIX=\(suffix) MUXTERM_CMD_PAD_LINES=96 python3 -u \(script.path)",
         ])
         Tmux.waitCapture(socket: socket, target: target, needle: "CMD_FAIL_\(suffix)")
         XCTAssertTrue(

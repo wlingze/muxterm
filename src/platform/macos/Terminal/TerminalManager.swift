@@ -986,6 +986,11 @@ final class TerminalManager: TerminalInputHandler {
     /// 不 reset、不 feed snapshot，因此不会破坏 live VT 状态。
     func applyViewport(paneId: UInt32, offset: UInt32) {
         let view = view(for: paneId)
+        // Core viewport 与 SwiftTerm 滚动解耦：seed 期间仍要把 offset 写回
+        // FFI，否则命令时间线/last-seen 读到的仍是 0。
+        if bridgeQueriesEnabled {
+            _ = bridge?.setPaneViewport(paneId: paneId, offset: offset)
+        }
         if seedingPanes.contains(paneId) {
             pendingViewportOffsets[paneId] = offset
             onViewportChanged?(paneId, offset)
