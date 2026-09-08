@@ -28,7 +28,7 @@ use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::catalog::ResolveIntent;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
 use crate::core::config_service::SettingsService;
-use crate::core::protocol::layout::{LayoutNode, SplitDir};
+use crate::core::protocol::layout::SplitDir;
 use crate::core::protocol::state::{BackendStatus, StateChange};
 use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::quickconnect::model::QuickConnect;
@@ -42,10 +42,7 @@ use crate::core::workspace::pool::{
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::event_pump::EventPump;
-use crate::platform::ffi_client::{
-    ClientEvent, ClientLayout, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent,
-    FfiClient,
-};
+use crate::platform::ffi_client::{ClientEvent, ClientWorkspaceEvent, FfiClient};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -3139,107 +3136,45 @@ fn refresh_ui(s: &mut UiState) {
 ///
 /// This function intentionally does not switch the active window for a
 /// background workspace.  It only creates/reparents resident PaneViews and
-/// feeds an already-realized Surface from that workspace's Core state.
+/// feeds an already-realized Surface from the frontend-owned ViewStore state.
 fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
     let is_active = s.pool.active_id() == Some(wid);
-    let (workspace_snapshot, view_tabs, view_panes, tab_ids, active_tab, layouts, panes) = {
-        let Some(workspace) = s.pool.get(wid) else {
-            return;
-        };
-        let state = workspace.state();
-        let tabs = state.tabs();
-        let workspace_snapshot = ClientWorkspace {
-            id: wid.as_str().to_string(),
-            name: workspace.name().to_string(),
-            runtime: state.workspace_runtime().to_string(),
-            active: is_active,
-        };
-        let view_tabs: Vec<ClientTab> = tabs
-            .iter()
-            .map(|tab| ClientTab {
-                id: tab.id.0,
-                name: tab.name.clone(),
-                is_active: tab.active,
-            })
-            .collect();
-        let view_panes: Vec<(u32, Vec<ClientPane>)> = tabs
-            .iter()
-            .map(|tab| {
-                (
-                    tab.id.0,
-                    state
-                        .panes(&tab.id)
-                        .iter()
-                        .map(|pane| ClientPane {
-                            id: pane.id.0,
-                            cols: pane.cols,
-                            rows: pane.rows,
-                            is_active: pane.active,
-                            title: pane.title.clone(),
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-        let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id.0).collect();
-        let active_tab = tabs
-            .iter()
-            .find(|t| t.active)
-            .map(|t| t.id.0)
-            .or_else(|| tabs.first().map(|t| t.id.0));
-        // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
-        // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
-        let layouts: Vec<(u32, ClientLayout)> = tabs
-            .iter()
-            .filter_map(|t| {
-                state
-                    .layout(&t.id)
-                    .map(|l| (t.id.0, client_layout_from_core(&l.tree)))
-            })
-            .collect();
-        let panes: Vec<(u32, u16, u16, bool)> = active_tab
-            .map(|tid| {
-                state
-                    .panes(&TabId(tid))
-                    .iter()
-                    .map(|p| (p.id.0, p.cols, p.rows, p.active))
-                    .collect()
-            })
-            .unwrap_or_default();
-        (
-            workspace_snapshot,
-            view_tabs,
-            view_panes,
-            tab_ids,
-            active_tab,
-            layouts,
-            panes,
-        )
+    let workspace_key = wid.as_str();
+    if !EventPump::sync_pool_workspace(&s.pool, &mut s.view_store, wid) {
+        return;
+    }
+    let Some(view) = s.view_store.workspace(&workspace_key) else {
+        return;
     };
-
-    s.scene_stack.ensure(&wid.as_str());
-    s.view_store
-        .replace_topology(workspace_snapshot, view_tabs, view_panes);
-    s.view_store.replace_layouts(&wid.as_str(), layouts);
-
-    // Read the owned DTOs back from the view store before mutating the
-    // resident GTK layout host.  The compatibility snapshot above is the
-    // current source; the renderer already follows the frontend-owned path.
-    let layouts: Vec<(u32, ClientLayout)> = s
-        .view_store
-        .workspace(&wid.as_str())
-        .map(|view| {
-            tab_ids
+    let tab_ids: Vec<u32> = view.tabs.iter().map(|tab| tab.id).collect();
+    let active_tab = view
+        .tabs
+        .iter()
+        .find(|tab| tab.is_active)
+        .map(|tab| tab.id)
+        .or_else(|| tab_ids.first().copied());
+    // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
+    // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
+    let layouts = tab_ids
+        .iter()
+        .filter_map(|tab_id| {
+            view.layouts
+                .get(tab_id)
+                .cloned()
+                .map(|layout| (*tab_id, layout))
+        })
+        .collect::<Vec<_>>();
+    let panes: Vec<(u32, u16, u16, bool)> = active_tab
+        .and_then(|tab_id| view.panes.get(&tab_id))
+        .map(|panes| {
+            panes
                 .iter()
-                .filter_map(|tab_id| {
-                    view.layouts
-                        .get(tab_id)
-                        .cloned()
-                        .map(|layout| (*tab_id, layout))
-                })
+                .map(|pane| (pane.id, pane.cols, pane.rows, pane.is_active))
                 .collect()
         })
         .unwrap_or_default();
+
+    s.scene_stack.ensure(&workspace_key);
 
     if is_active {
         // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
@@ -3295,24 +3230,6 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
                 }
             }
         }
-    }
-}
-
-/// Convert the compatibility Core snapshot into the owned frontend layout DTO.
-fn client_layout_from_core(layout: &LayoutNode) -> ClientLayout {
-    match layout {
-        LayoutNode::Leaf(pane_id) => ClientLayout::Leaf { pane_id: pane_id.0 },
-        LayoutNode::Split {
-            dir,
-            ratio,
-            first,
-            second,
-        } => ClientLayout::Split {
-            horizontal: matches!(dir, SplitDir::Horizontal),
-            ratio: u32::from(*ratio),
-            first: std::boxed::Box::new(client_layout_from_core(first)),
-            second: std::boxed::Box::new(client_layout_from_core(second)),
-        },
     }
 }
 
