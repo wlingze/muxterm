@@ -41,7 +41,7 @@ use crate::core::workspace::pool::{
 };
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
-use crate::platform::event_pump::EventPump;
+use crate::platform::event_pump::{EventPump, PoolInputOutcome};
 use crate::platform::ffi_client::{ClientEvent, ClientEventKind, ClientWorkspaceEvent, FfiClient};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -3361,36 +3361,33 @@ fn drain_surface_input(s: &mut UiState) {
             data.extend_from_slice(&next.data);
         }
         s.last_raw_input = data.clone();
-        let Some(workspace) = s.pool.get_mut(&workspace_id) else {
-            tracing::debug!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id,
-                "drop input for evicted workspace"
-            );
-            continue;
-        };
-        if workspace.state().pane(&pane_id).is_none() {
-            tracing::debug!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id,
-                "drop input for closed pane"
-            );
-            continue;
-        }
-        let result = workspace.execute(Task::WriteRaw {
-            target: pane_id,
-            data,
-        });
-        if let Err(error) = result {
-            tracing::warn!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id,
-                error = %error,
-                "surface input write failed"
-            );
+        match EventPump::send_pool_input(&mut s.pool, &workspace_id, pane_id, data) {
+            Ok(PoolInputOutcome::Sent) => {}
+            Ok(PoolInputOutcome::WorkspaceMissing) => {
+                tracing::debug!(
+                    target = "muxterm::surface",
+                    workspace = %workspace_id,
+                    pane = %pane_id,
+                    "drop input for evicted workspace"
+                );
+            }
+            Ok(PoolInputOutcome::PaneMissing) => {
+                tracing::debug!(
+                    target = "muxterm::surface",
+                    workspace = %workspace_id,
+                    pane = %pane_id,
+                    "drop input for closed pane"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::surface",
+                    workspace = %workspace_id,
+                    pane = %pane_id,
+                    error = %error,
+                    "surface input write failed"
+                );
+            }
         }
     }
 }

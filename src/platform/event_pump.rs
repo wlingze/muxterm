@@ -13,6 +13,10 @@ use crate::core::protocol::layout::{LayoutNode, SplitDir};
 #[cfg(feature = "gtk")]
 use crate::core::protocol::state::StateChange;
 #[cfg(feature = "gtk")]
+use crate::core::protocol::task::Task;
+#[cfg(feature = "gtk")]
+use crate::core::types::PaneId;
+#[cfg(feature = "gtk")]
 use crate::core::workspace::id::WorkspaceId;
 #[cfg(feature = "gtk")]
 use crate::core::workspace::pool::WorkspacePool;
@@ -22,6 +26,14 @@ use crate::platform::linux::view_store::ViewStore;
 /// Owns the FFI client while providing the single workspace-event poll path.
 pub struct EventPump {
     client: FfiClient,
+}
+
+#[cfg(feature = "gtk")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolInputOutcome {
+    Sent,
+    WorkspaceMissing,
+    PaneMissing,
 }
 
 impl EventPump {
@@ -56,6 +68,29 @@ impl EventPump {
     #[cfg(feature = "gtk")]
     pub fn apply_workspace_event(store: &mut ViewStore, event: ClientWorkspaceEvent) {
         store.apply_workspace_event(event);
+    }
+
+    /// Send one coalesced Surface input through the compatibility source.
+    /// The public shape deliberately matches the eventual FFI command path,
+    /// so GTK input does not own a second direct Workspace execution branch.
+    #[cfg(feature = "gtk")]
+    pub fn send_pool_input(
+        pool: &mut WorkspacePool,
+        workspace_id: &WorkspaceId,
+        pane_id: PaneId,
+        data: Vec<u8>,
+    ) -> anyhow::Result<PoolInputOutcome> {
+        let Some(workspace) = pool.get_mut(workspace_id) else {
+            return Ok(PoolInputOutcome::WorkspaceMissing);
+        };
+        if workspace.state().pane(&pane_id).is_none() {
+            return Ok(PoolInputOutcome::PaneMissing);
+        }
+        workspace.execute(Task::WriteRaw {
+            target: pane_id,
+            data,
+        })?;
+        Ok(PoolInputOutcome::Sent)
     }
 
     /// Copy one compatibility-pool topology into the same owned DTO sink used
@@ -228,6 +263,7 @@ fn client_layout_from_core(layout: &LayoutNode) -> ClientLayout {
 mod tests {
     use super::EventPump;
     use crate::core::runtime::mock::MockRuntime;
+    use crate::core::types::PaneId;
     use crate::core::workspace::id::WorkspaceId;
     use crate::core::workspace::pool::WorkspacePool;
     use crate::core::workspace::workspace::Workspace;
@@ -303,5 +339,33 @@ mod tests {
         assert_eq!(view.tabs.len(), 1);
         assert_eq!(view.panes.len(), 1);
         assert_eq!(view.layouts.len(), 1);
+    }
+
+    #[test]
+    fn compatibility_input_reports_workspace_and_pane_lifecycle() {
+        let mut pool = WorkspacePool::default();
+        let id = WorkspaceId::new("local", None, "pump", "shell", "");
+        pool.insert_connected(Workspace::new(
+            id.clone(),
+            "pump".into(),
+            Box::new(MockRuntime::with_single_pane()),
+        ));
+
+        assert_eq!(
+            EventPump::send_pool_input(&mut pool, &id, PaneId(1), b"echo\n".to_vec())
+                .expect("input dispatch"),
+            super::PoolInputOutcome::Sent
+        );
+        assert_eq!(
+            EventPump::send_pool_input(&mut pool, &id, PaneId(99), b"x".to_vec())
+                .expect("missing pane is a lifecycle outcome"),
+            super::PoolInputOutcome::PaneMissing
+        );
+        let missing = WorkspaceId::new("local", None, "missing", "shell", "");
+        assert_eq!(
+            EventPump::send_pool_input(&mut pool, &missing, PaneId(1), b"x".to_vec())
+                .expect("missing workspace is a lifecycle outcome"),
+            super::PoolInputOutcome::WorkspaceMissing
+        );
     }
 }
