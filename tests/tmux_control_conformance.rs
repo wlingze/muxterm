@@ -6,9 +6,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::core::model::state::StateChange;
-use muxterm::core::model::TerminalModel;
+use muxterm::core::protocol::state::StateChange;
 use muxterm::core::runtime::TmuxRuntime;
+use muxterm::core::workspace::terminal_model::TerminalModel;
 use support::tmux_test_support::{
     create_session, kill_server, list_pane_ids, send_keys_line, tmux_available, unique_socket,
 };

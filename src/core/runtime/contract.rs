@@ -1,8 +1,8 @@
 //! Runtime 的公共契约。
 //!
 //! 这里定义的是一个已连接 Runtime 实例必须提供的行为；具体实现位于
-//! `runtime/{shell,tmux,herdr}`。旧的 `core::model::backend` 路径暂时通过
-//! re-export 保持兼容，迁移完成后将删除该兼容入口。
+//! `runtime/{shell,tmux,herdr}`。旧的 generic model 路径暂时通过 re-export
+//! 保持兼容，迁移完成后将删除该兼容入口。
 
 use crate::core::protocol::state::{BackendStatus, State, StateChange};
 use crate::core::protocol::task::{Task, TaskOutcome};

@@ -228,7 +228,7 @@ pub fn failed_settlement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::SplitDir;
+    use crate::core::protocol::layout::SplitDir;
 
     fn now() -> Instant {
         Instant::now()

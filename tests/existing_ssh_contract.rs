@@ -16,8 +16,8 @@ use muxterm::core::catalog::Catalog;
 use muxterm::core::discovery::existing::{
     discover_local_herdr, discover_ssh_herdr, discover_ssh_tmux,
 };
-use muxterm::core::model::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
-use muxterm::core::model::task::Task;
+use muxterm::core::protocol::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
+use muxterm::core::protocol::task::Task;
 use muxterm::core::quickconnect::model::TargetRuntime;
 use muxterm::core::runtime::herdr::session::HerdrAgentStatus;
 use muxterm::core::runtime::HerdrRuntime;

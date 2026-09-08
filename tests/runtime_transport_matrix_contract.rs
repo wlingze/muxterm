@@ -13,7 +13,7 @@ use std::process::Command;
 use anyhow::{ensure, Context, Result};
 
 use muxterm::core::catalog::Catalog;
-use muxterm::core::model::task::{Task, TaskOutcome};
+use muxterm::core::protocol::task::{Task, TaskOutcome};
 use muxterm::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::herdr_available;
 use support::runtime_transport_matrix::{
@@ -161,7 +161,7 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
                 && !workspace
                     .runtime()
                     .support()
-                    .contains(&muxterm::core::model::backend::RuntimeCapability::PersistDetach),
+                    .contains(&muxterm::core::runtime::RuntimeCapability::PersistDetach),
             "没有 PersistDetach 的内置 Runtime 必须是 shell"
         );
         ensure!(

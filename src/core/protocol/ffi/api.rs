@@ -3158,12 +3158,12 @@ pub unsafe extern "C" fn muxterm_pane_last_n_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::protocol::ffi::muxterm_set_callbacks;
     use crate::core::protocol::ffi::types::DIR_HORIZONTAL;
     use crate::core::protocol::state::{
         PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
     };
+    use crate::core::runtime::mock::MockRuntime;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

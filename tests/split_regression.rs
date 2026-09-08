@@ -405,10 +405,10 @@ fn paneid_target_matches_real_tmux_pane_id() {
 /// 这个测试保持 model 存活足够长，所以命令能到达 tmux。
 #[test]
 fn backend_split_actually_creates_pane_in_tmux() {
-    use muxterm::core::model::layout::SplitDir;
-    use muxterm::core::model::task::Task;
-    use muxterm::core::model::TerminalModel;
+    use muxterm::core::protocol::layout::SplitDir;
+    use muxterm::core::protocol::task::Task;
     use muxterm::core::runtime::TmuxRuntime;
+    use muxterm::core::workspace::terminal_model::TerminalModel;
 
     let socket = unique_socket("layer4");
     let session = format!("backend-split-{}", rand_suffix());
@@ -513,10 +513,10 @@ fn backend_split_actually_creates_pane_in_tmux() {
 /// 新 tab 的 pane，不能因异步 cwd/焦点竞态退化到第一个 window。
 #[test]
 fn backend_split_new_tab_targets_its_pane_with_second_session_present() {
-    use muxterm::core::model::layout::SplitDir;
-    use muxterm::core::model::task::Task;
-    use muxterm::core::model::TerminalModel;
+    use muxterm::core::protocol::layout::SplitDir;
+    use muxterm::core::protocol::task::Task;
     use muxterm::core::runtime::TmuxRuntime;
+    use muxterm::core::workspace::terminal_model::TerminalModel;
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter("muxterm::tmux=debug")

@@ -1279,8 +1279,8 @@ mod tests {
         assert_eq!(sidebar_split_position(false, true, 0, 260, 64), 260);
     }
 
-    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::protocol::state::StateChange;
+    use crate::core::runtime::mock::MockRuntime;
     use crate::core::types::PaneId;
     use std::collections::BTreeMap;
     use std::time::Instant;

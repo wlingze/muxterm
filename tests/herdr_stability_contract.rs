@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Context, Result};
 
 use muxterm::core::catalog::Catalog;
-use muxterm::core::model::task::{Task, TaskOutcome};
+use muxterm::core::protocol::task::{Task, TaskOutcome};
 use muxterm::core::runtime::herdr::observe::StreamMode;
 use muxterm::core::runtime::herdr::wire::{
     read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,

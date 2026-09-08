@@ -10,12 +10,12 @@
 #![allow(clippy::let_underscore_future)]
 #![allow(unused_variables)]
 
-use muxterm::core::model::state::{BackendStatus, State};
-use muxterm::core::model::task::Task;
-use muxterm::core::model::TerminalModel;
+use muxterm::core::protocol::state::{BackendStatus, State};
+use muxterm::core::protocol::task::Task;
 use muxterm::core::protocol::terminal::input::KeyEvent;
 use muxterm::core::runtime::TmuxRuntime;
 use muxterm::core::types::PaneId;
+use muxterm::core::workspace::terminal_model::TerminalModel;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -376,7 +376,7 @@ fn multi_pane_concurrent_output() {
     model
         .execute(Task::SplitPane {
             target: Some(pane0),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         })
@@ -654,7 +654,7 @@ fn sustained_multi_pane_stress_stays_bounded() {
     model
         .execute(Task::SplitPane {
             target: Some(pane0),
-            dir: muxterm::core::model::layout::SplitDir::Horizontal,
+            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         })

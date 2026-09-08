@@ -9,12 +9,12 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use muxterm::core::model::layout::SplitDir;
-use muxterm::core::model::state::{BackendStatus, State, StateChange};
-use muxterm::core::model::task::{Task, TaskOutcome};
-use muxterm::core::model::TerminalModel;
+use muxterm::core::protocol::layout::SplitDir;
+use muxterm::core::protocol::state::{BackendStatus, State, StateChange};
+use muxterm::core::protocol::task::{Task, TaskOutcome};
 use muxterm::core::runtime::TmuxRuntime;
 use muxterm::core::types::{PaneId, TabId};
+use muxterm::core::workspace::terminal_model::TerminalModel;
 use muxterm::platform::cli::entry::cli_command_to_task;
 use muxterm::platform::cli::parse_cli_command;
 use std::process::Command;
@@ -2997,7 +2997,7 @@ fn bug7_edge_attach_send_keys() {
         .execute(Task::ResizeClient { cols: 80, rows: 24 })
         .unwrap();
     assert!(
-        matches!(outcome, muxterm::core::model::task::TaskOutcome::Done),
+        matches!(outcome, muxterm::core::protocol::task::TaskOutcome::Done),
         "{outcome:?}"
     );
     let _ = model.poll_events();
@@ -3095,7 +3095,9 @@ fn detach_reattach_layout_persists() {
     assert_eq!(model.runtime_status(), BackendStatus::Disconnected);
     assert!(detach_events.iter().any(|event| matches!(
         event,
-        muxterm::core::model::state::StateChange::BackendStatusChanged(BackendStatus::Disconnected)
+        muxterm::core::protocol::state::StateChange::BackendStatusChanged(
+            BackendStatus::Disconnected
+        )
     )));
     let _ = model.shutdown();
 

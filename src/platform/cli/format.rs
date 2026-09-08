@@ -307,7 +307,7 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockRuntime;
+    use crate::core::runtime::mock::MockRuntime;
     use crate::platform::cli::command::CliCommand;
 
     fn mock_with_pane() -> MockRuntime {

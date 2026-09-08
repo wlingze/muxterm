@@ -17,9 +17,9 @@ use anyhow::{ensure, Context, Result};
 use gtk4::prelude::*;
 
 use muxterm::core::config::{Action, Config};
-use muxterm::core::model::backend::RuntimeCapability;
-use muxterm::core::model::task::TaskOutcome;
+use muxterm::core::protocol::task::TaskOutcome;
 use muxterm::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
+use muxterm::core::runtime::RuntimeCapability;
 use muxterm::core::workspace::spec::WorkspaceSpec;
 use muxterm::platform::linux::window::AppWindow;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};

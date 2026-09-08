@@ -536,8 +536,8 @@ fn release_runtime(workspace: &mut Workspace, id: &WorkspaceId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::backend::mock::MockRuntime;
     use crate::core::protocol::task::Task;
+    use crate::core::runtime::mock::MockRuntime;
     use crate::core::types::{PaneId, TabId};
     use std::sync::{Arc, Mutex};
 

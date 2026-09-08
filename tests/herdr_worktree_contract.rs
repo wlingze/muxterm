@@ -5,7 +5,7 @@
 mod support;
 
 use muxterm::core::catalog::Catalog;
-use muxterm::core::model::backend::WorktreeCreateSpec;
+use muxterm::core::runtime::WorktreeCreateSpec;
 use muxterm::core::types::TabId;
 use muxterm::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use muxterm::core::workspace::spec::WorkspaceSpec;
