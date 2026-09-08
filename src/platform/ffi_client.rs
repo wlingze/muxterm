@@ -11,7 +11,8 @@ use std::ptr::{self, NonNull};
 
 use crate::ffi::{
     self, CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H,
-    LAYOUT_SPLIT_V, STATE_BACKEND_STATUS,
+    LAYOUT_SPLIT_V, STATE_BACKEND_STATUS, STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT,
+    STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
 
 const DISCOVERY_TIMEOUT_MS: u32 = 10_000;
@@ -29,6 +30,30 @@ pub struct ClientEvent {
     pub window_id: u32,
     pub data: Vec<u8>,
     pub name: String,
+}
+
+/// Product-level event kinds exposed to frontends instead of raw ABI numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientEventKind {
+    PaneOutput,
+    PaneFrame,
+    PaneSnapshot,
+    PaneClosed,
+    PaneResized,
+    Other(u32),
+}
+
+impl ClientEvent {
+    pub fn kind(&self) -> ClientEventKind {
+        match self.type_ {
+            STATE_PANE_OUTPUT => ClientEventKind::PaneOutput,
+            STATE_PANE_FRAME => ClientEventKind::PaneFrame,
+            STATE_PANE_SNAPSHOT => ClientEventKind::PaneSnapshot,
+            STATE_PANE_CLOSED => ClientEventKind::PaneClosed,
+            STATE_PANE_RESIZED => ClientEventKind::PaneResized,
+            type_ => ClientEventKind::Other(type_),
+        }
+    }
 }
 
 /// An owned layout tree copied from the C ABI node pool.
@@ -647,5 +672,26 @@ mod tests {
         assert_eq!(tab.type_, ffi::TASK_SWITCH_TAB);
         assert_eq!(tab.target_tab, 4);
         assert_eq!(tab.target_pane, 0);
+    }
+
+    #[test]
+    fn event_kind_hides_raw_state_constants_from_frontends() {
+        let event = ClientEvent {
+            type_: STATE_PANE_OUTPUT,
+            pane_id: 7,
+            tab_id: 0,
+            window_id: 0,
+            data: Vec::new(),
+            name: String::new(),
+        };
+        assert_eq!(event.kind(), ClientEventKind::PaneOutput);
+        assert_eq!(
+            ClientEvent {
+                type_: u32::MAX,
+                ..event
+            }
+            .kind(),
+            ClientEventKind::Other(u32::MAX)
+        );
     }
 }

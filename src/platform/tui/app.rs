@@ -20,10 +20,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::ffi::{
-    STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
-};
-use crate::platform::ffi_client::{ClientTask, FfiClient};
+use crate::platform::ffi_client::{ClientEventKind, ClientTask, FfiClient};
 use crate::platform::tui::emulate::Cell;
 use crate::platform::tui::ffi_bridge::{CoreBridge, FrameSnapshot};
 use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
@@ -91,21 +88,21 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
         // 开始解析。绝不在这里用累计输出重放历史（重放会重新生成旧查询应答，
         // 泄漏进 shell，也会在 tab 切换后把截断尾部渲染成乱码）。
         for ev in &events {
-            match ev.type_ {
-                STATE_PANE_OUTPUT => {
+            match ev.kind() {
+                ClientEventKind::PaneOutput => {
                     term_mgr.feed_event(ev.pane_id, &ev.data);
                 }
-                STATE_PANE_FRAME => {
+                ClientEventKind::PaneFrame => {
                     term_mgr.feed_frame_event(ev.pane_id, &ev.data);
                 }
-                STATE_PANE_SNAPSHOT => {
+                ClientEventKind::PaneSnapshot => {
                     term_mgr.replace_snapshot(ev.pane_id, &ev.data);
                 }
-                STATE_PANE_CLOSED => {
+                ClientEventKind::PaneClosed => {
                     // 只有 pane 真正关闭才移除状态；切 tab 不调用 retain。
                     term_mgr.remove(ev.pane_id);
                 }
-                STATE_PANE_RESIZED if ev.data.len() >= 4 => {
+                ClientEventKind::PaneResized if ev.data.len() >= 4 => {
                     // data 携带 cols/rows（各 2 字节小端）
                     let cols = u16::from_le_bytes([ev.data[0], ev.data[1]]);
                     let rows = u16::from_le_bytes([ev.data[2], ev.data[3]]);

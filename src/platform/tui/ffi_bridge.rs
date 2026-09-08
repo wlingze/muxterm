@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-use crate::ffi::{STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT};
 use crate::platform::ffi_client::{
     ClientEvent, ClientLayout, ClientPane, ClientTab, ClientTask, FfiClient,
 };
@@ -152,18 +151,6 @@ impl CoreBridge {
             active_tab,
             active_pane,
         }
-    }
-
-    pub fn is_pane_output(ev: &BridgeEvent) -> bool {
-        ev.type_ == STATE_PANE_OUTPUT
-    }
-
-    pub fn is_pane_frame(ev: &BridgeEvent) -> bool {
-        ev.type_ == STATE_PANE_FRAME
-    }
-
-    pub fn is_pane_snapshot(ev: &BridgeEvent) -> bool {
-        ev.type_ == STATE_PANE_SNAPSHOT
     }
 }
 
