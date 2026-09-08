@@ -37,6 +37,9 @@ pub use super::functions::config::{
     muxterm_config_describe_json, muxterm_config_events_json, muxterm_config_patch_json,
     muxterm_config_reload_json,
 };
+pub use super::functions::runtime::{
+    muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
+};
 pub use super::functions::workspace::{
     muxterm_workspace_activate, muxterm_workspace_close, muxterm_workspace_list,
     muxterm_workspace_open,
@@ -405,30 +408,6 @@ pub extern "C" fn muxterm_list_dir_json(
         }
     }))
     .unwrap_or_else(|_| json_error("directory listing panic"))
-}
-
-/// 新建项目卡数据源：Catalog::runtime_list（登记顺序，含 support / transports）。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_runtime_list_json(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let list = (*h).catalog.runtime_list();
-        json_string(serde_json::json!({
-            "ok": true,
-            "runtimes": list.iter().map(|r| serde_json::json!({
-                "id": r.id,
-                "name": r.name,
-                "support": r.support.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>(),
-                "accepted_transports": r.accepted_transports,
-            })).collect::<Vec<_>>(),
-        }))
-    }))
-    .unwrap_or_else(|_| json_error("runtime list panic"))
 }
 
 /// Transport 插件表：Catalog::transport_list。
@@ -810,7 +789,7 @@ pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
     }
 }
 
-fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
+pub(crate) fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     match result {
         Ok(TaskOutcome::Done) => 0,
         // Accepted = 异步 mutation 已入队（不是完成）；旧 ABI 记为请求成功。
@@ -1095,68 +1074,6 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
         let mut handle = Box::from_raw(h);
         handle.pool_mut().shutdown_all();
     }));
-}
-
-/// 连接后端。0=ok，-1=err。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_connect(h: *mut MuxtermHandle) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        let MuxtermHandle { catalog, rt, .. } = handle;
-        let Some(ws) = catalog.pool_mut().active_mut() else {
-            return -1;
-        };
-        match rt.block_on(ws.connect()) {
-            Ok(()) => 0,
-            Err(_) => -1,
-        }
-    }))
-    .unwrap_or(-1)
-}
-
-/// 关闭后端。0=ok，-1=err。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_shutdown(h: *mut MuxtermHandle) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        handle.pool_mut().shutdown_all();
-        0
-    }))
-    .unwrap_or(-1)
-}
-
-/// 分离当前 control client，但保留 tmux session / daemon。
-///
-/// 这是一个独立于 `muxterm_shutdown` 的前端动作；调用方随后仍应释放
-/// handle。所有异常都转成 -1，不能让 FFI 边界 panic 到 GUI 进程。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_detach(h: *mut MuxtermHandle) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        match handle.active_workspace_mut() {
-            Some(ws) => task_result_code(ws.execute(Task::Detach)),
-            None => -1,
-        }
-    }))
-    .unwrap_or(-1)
 }
 
 fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
