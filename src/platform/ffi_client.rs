@@ -137,6 +137,7 @@ pub enum ClientTask {
     SplitPane { pane_id: u32, horizontal: bool },
     NextPane,
     PreviousPane,
+    TogglePaneFullscreen { pane_id: u32 },
 }
 
 /// Safe ownership boundary for one Core FFI handle.
@@ -602,6 +603,9 @@ fn task_to_ffi(task: ClientTask) -> CTask {
         ),
         ClientTask::NextPane => (ffi::TASK_NEXT_PANE, 0, 0, 0),
         ClientTask::PreviousPane => (ffi::TASK_PREV_PANE, 0, 0, 0),
+        ClientTask::TogglePaneFullscreen { pane_id } => {
+            (ffi::TASK_TOGGLE_PANE_FULLSCREEN, pane_id, 0, 0)
+        }
     };
     CTask {
         type_,
@@ -672,6 +676,10 @@ mod tests {
         assert_eq!(tab.type_, ffi::TASK_SWITCH_TAB);
         assert_eq!(tab.target_tab, 4);
         assert_eq!(tab.target_pane, 0);
+
+        let fullscreen = task_to_ffi(ClientTask::TogglePaneFullscreen { pane_id: 12 });
+        assert_eq!(fullscreen.type_, ffi::TASK_TOGGLE_PANE_FULLSCREEN);
+        assert_eq!(fullscreen.target_pane, 12);
     }
 
     #[test]

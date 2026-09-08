@@ -17,8 +17,8 @@ use gtk4::{
 
 use crate::core::catalog::driver::RuntimeInfo;
 use crate::core::transport::ssh::probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
+use crate::platform::ffi_client::{FfiClient, SshHostEntry};
 use crate::platform::i18n::{self, Key};
-use crate::platform::linux::ffi_bridge::{CoreBridge, SshHostEntry};
 use crate::platform::linux::quickconnect::directory::{
     DirectoryListingResponse, DirectorySuggestionController,
 };
@@ -633,7 +633,7 @@ fn start_listing(state: &Rc<RefCell<EditorState>>, suggest: &ListBox, alive: &Rc
     let path = request.path.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = CoreBridge::list_dir(transport, target.as_deref(), &path);
+        let result = FfiClient::list_dir(transport, target.as_deref(), &path);
         let _ = tx.send(result);
     });
     let state = state.clone();

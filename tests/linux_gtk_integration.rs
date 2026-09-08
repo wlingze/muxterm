@@ -34,7 +34,7 @@ use gtk4::{Orientation, Widget};
 
 use muxterm::core::config::Config;
 use muxterm::core::quickconnect::model::TargetRuntime;
-use muxterm::platform::linux::ffi_bridge::{BridgeTab, SshHostEntry};
+use muxterm::platform::ffi_client::{ClientTab, SshHostEntry};
 use muxterm::platform::linux::keymap::KeyMap;
 use muxterm::platform::linux::layout_host::LayoutHost;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
@@ -195,12 +195,12 @@ fn assert_tab_bar_renders() {
         .build();
     win.present();
     tabs.set_tabs(&[
-        BridgeTab {
+        ClientTab {
             id: 1,
             name: "shell".into(),
             is_active: true,
         },
-        BridgeTab {
+        ClientTab {
             id: 2,
             name: "build".into(),
             is_active: false,

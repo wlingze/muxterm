@@ -455,7 +455,7 @@ struct FrameSnapshot {
 // MARK: - CoreBridge
 
 /// 封装 `muxterm.h` C ABI；生命周期对应 Rust `MuxtermHandle`。
-/// 与 TUI `src/platform/tui/ffi_bridge.rs` 逻辑同构。
+/// 与 TUI 的共享 `FfiClient`/view-model 路径保持同一套 FFI 语义。
 final class CoreBridge {
     private var handle: OpaquePointer?
     /// 当前连接的后端类型；tmux/ssh 都通过控制 client 同步整体尺寸。
