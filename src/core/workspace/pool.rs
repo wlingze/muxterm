@@ -291,6 +291,21 @@ impl WorkspacePool {
         .await
     }
 
+    /// 收编一个已经由 Catalog 构造好的 Runtime，避免在持有池可变借用时
+    /// 再次借用 Catalog 构造 provider。
+    pub async fn open_spec_with_runtime(
+        &mut self,
+        spec: &crate::core::workspace::spec::WorkspaceSpec,
+        runtime: Box<dyn Runtime>,
+    ) -> anyhow::Result<&mut Workspace> {
+        let id = spec.id();
+        let name = spec.name();
+        self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
+            Ok(runtime)
+        })
+        .await
+    }
+
     /// 列出当前工作区所在仓库的 checkout（需 `WorktreeList`）。
     ///
     /// 无能力 → `Err`，零 git、零 socket；有能力的 Runtime 提供产品方法。

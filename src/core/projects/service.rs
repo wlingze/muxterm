@@ -178,6 +178,73 @@ impl ProjectsService {
         .await
     }
 
+    /// Native Runtime worktree strategy (currently Herdr): the Runtime owns
+    /// the checkout creation, while Projects owns the resulting provenance.
+    pub async fn create_native_worktree_and_open(
+        &mut self,
+        catalog: &mut Catalog,
+        project_id: &ProjectId,
+        spec: &WorktreeCreateSpec,
+        template_override: Option<TemplateName>,
+    ) -> Result<WorkspaceId> {
+        let project = self
+            .get_project(project_id)
+            .ok_or_else(|| anyhow!("project 不存在: {project_id}"))?
+            .clone();
+        if project.target.runtime != TargetRuntime::Herdr {
+            return Err(anyhow!(
+                "native worktree strategy 只适用于支持 WorktreeCreate 的 Runtime"
+            ));
+        }
+        let source = self
+            .open_project(catalog, project_id, ResolveIntent::AttachOnly, None)
+            .await?;
+        let worktree_id = allocate_worktree_id(&project, spec);
+        let template = template_override.or(project.template.clone());
+        let workspace_id = catalog
+            .create_native_worktree(
+                &source,
+                spec,
+                Some(project.worktree_provenance(&worktree_id)),
+                template,
+            )
+            .await?;
+
+        let mut updated = project;
+        updated.add_worktree(Worktree::new(
+            worktree_id,
+            spec.path.clone(),
+            spec.branch.clone(),
+            updated.target.path.clone(),
+            true,
+        ))?;
+        self.store.upsert(updated)?;
+        Ok(workspace_id)
+    }
+
+    /// Select native vs generic strategy, then return only after the new
+    /// Workspace has been inserted into Catalog's pool.
+    pub async fn create_worktree(
+        &mut self,
+        catalog: &mut Catalog,
+        project_id: &ProjectId,
+        spec: &WorktreeCreateSpec,
+        template_override: Option<TemplateName>,
+    ) -> Result<WorkspaceId> {
+        let runtime = self
+            .get_project(project_id)
+            .ok_or_else(|| anyhow!("project 不存在: {project_id}"))?
+            .target
+            .runtime;
+        if runtime == TargetRuntime::Herdr {
+            self.create_native_worktree_and_open(catalog, project_id, spec, template_override)
+                .await
+        } else {
+            self.create_generic_worktree_and_open(catalog, project_id, spec, template_override)
+                .await
+        }
+    }
+
     /// Open a Project through the single Catalog resolver path.
     pub async fn open_project(
         &self,

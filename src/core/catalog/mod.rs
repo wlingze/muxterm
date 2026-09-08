@@ -17,8 +17,11 @@ use std::thread;
 use crate::core::runtime::Runtime;
 use crate::core::transport::registry::ConnectionRegistry;
 use crate::core::transport::TargetConnection;
+use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::WorkspacePool;
+use crate::core::workspace::provenance::WorkspaceProvenance;
 use crate::core::workspace::spec::WorkspaceSpec;
+use crate::core::workspace::template::TemplateName;
 use crate::core::workspace::workspace::Workspace;
 
 pub use crate::core::runtime::provider::{RuntimeInfo, RuntimeProvider};
@@ -271,6 +274,38 @@ impl Catalog {
         let id = spec.id();
         let name = spec.name();
         self.pool.open(id, name, |_| runtime).await
+    }
+
+    /// Native Runtime worktree path: ask the source Runtime for a new spec,
+    /// then construct and insert the resulting Workspace through the pool.
+    pub async fn create_native_worktree(
+        &mut self,
+        source: &WorkspaceId,
+        worktree: &crate::core::runtime::WorktreeCreateSpec,
+        provenance: Option<WorkspaceProvenance>,
+        template: Option<TemplateName>,
+    ) -> anyhow::Result<WorkspaceId> {
+        let mut spec = {
+            let workspace = self
+                .pool
+                .get(source)
+                .ok_or_else(|| anyhow::anyhow!("workspace {source} 不在池里"))?;
+            if !workspace
+                .runtime()
+                .support()
+                .contains(&crate::core::runtime::RuntimeCapability::WorktreeCreate)
+            {
+                anyhow::bail!("runtime 不支持 native WorktreeCreate");
+            }
+            workspace.runtime().create_worktree_spec(worktree)?
+        };
+        spec.provenance = provenance.clone();
+        spec.template = template;
+        let workspace_id = spec.id();
+        let runtime = self.new_runtime(&spec)?;
+        let workspace = self.pool.open_spec_with_runtime(&spec, runtime).await?;
+        workspace.set_provenance(provenance);
+        Ok(workspace_id)
     }
 
     /// 打开一个 spec 并返回**自有** Workspace（不进本 Catalog 池）。

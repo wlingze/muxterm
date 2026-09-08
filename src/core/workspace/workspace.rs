@@ -89,6 +89,11 @@ impl Workspace {
         self.provenance.as_ref()
     }
 
+    /// 设置由 native Worktree provider 返回的 Workspace 归属。
+    pub fn set_provenance(&mut self, provenance: Option<WorkspaceProvenance>) {
+        self.provenance = provenance;
+    }
+
     /// 保存规范化目标（仅 Catalog::open_resolved 调用；platform 不得复制第二份）。
     pub fn set_resolved_target(
         &mut self,
