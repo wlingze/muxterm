@@ -55,3 +55,60 @@ impl Worktree {
         }
     }
 }
+
+/// Build argv for `git worktree add` without invoking a shell.
+pub fn git_worktree_add_argv(
+    repo_root: &str,
+    path: &str,
+    branch: Option<&str>,
+    base: Option<&str>,
+) -> Vec<String> {
+    let mut argv = vec![
+        "git".to_string(),
+        "-C".to_string(),
+        repo_root.to_string(),
+        "worktree".to_string(),
+        "add".to_string(),
+    ];
+    if let Some(branch) = branch.filter(|branch| !branch.trim().is_empty()) {
+        argv.push("-b".into());
+        argv.push(branch.into());
+    }
+    argv.push(path.into());
+    if let Some(base) = base.filter(|base| !base.trim().is_empty()) {
+        argv.push(base.into());
+    }
+    argv
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::git_worktree_add_argv;
+
+    #[test]
+    fn git_worktree_command_is_shell_free_and_preserves_paths() {
+        assert_eq!(
+            git_worktree_add_argv(
+                "/repo root",
+                "/checkout path",
+                Some("feature/x"),
+                Some("main")
+            ),
+            vec![
+                "git",
+                "-C",
+                "/repo root",
+                "worktree",
+                "add",
+                "-b",
+                "feature/x",
+                "/checkout path",
+                "main"
+            ]
+        );
+        assert_eq!(
+            git_worktree_add_argv("/repo", "/checkout", None, None),
+            vec!["git", "-C", "/repo", "worktree", "add", "/checkout"]
+        );
+    }
+}

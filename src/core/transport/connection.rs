@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{ByteChannel, ChannelRequest, TargetConnection};
+use super::{ByteChannel, ChannelRequest, CommandOutput, TargetConnection};
 
 /// A reusable target connection (local no-op / SSH control context / test mock).
 #[derive(Debug)]
@@ -43,6 +43,51 @@ impl TargetConnection for Connect {
             "target connection '{}' has no channel adapter yet",
             self.target
         ))
+    }
+
+    fn exec_command(&self, request: ChannelRequest) -> anyhow::Result<CommandOutput> {
+        let super::ChannelRequest::Exec {
+            argv,
+            cwd,
+            env,
+            pty: _,
+        } = request
+        else {
+            return Err(anyhow::anyhow!(
+                "bounded commands cannot open a Unix socket"
+            ));
+        };
+        let Some(program) = argv.first() else {
+            return Err(anyhow::anyhow!("bounded command argv 不能为空"));
+        };
+
+        let mut command = if self.transport_id == "ssh" {
+            if cwd.is_some() {
+                return Err(anyhow::anyhow!(
+                    "SSH bounded command must encode cwd in its argv"
+                ));
+            }
+            let mut command = std::process::Command::new("ssh");
+            command.arg(&self.target).arg("--").arg(program);
+            command.args(&argv[1..]);
+            command
+        } else {
+            let mut command = std::process::Command::new(program);
+            command.args(&argv[1..]);
+            if let Some(cwd) = cwd {
+                command.current_dir(cwd);
+            }
+            command
+        };
+        command.envs(env);
+        let output = command
+            .output()
+            .map_err(|error| anyhow::anyhow!("执行 target command 失败: {error}"))?;
+        Ok(CommandOutput {
+            status: output.status.code().unwrap_or(1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 
     fn probe(&self) -> anyhow::Result<()> {
