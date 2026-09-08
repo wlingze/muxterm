@@ -244,6 +244,16 @@ pub struct ClientCommandMark {
     pub history_offset: Option<u32>,
 }
 
+/// One owned search hit returned by the Core index.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientSearchHit {
+    pub workspace_id: String,
+    pub tab_id: u32,
+    pub pane_id: u32,
+    pub seq: u64,
+    pub line: String,
+}
+
 /// Owned attention/activity state for one pane.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientAttentionPane {
@@ -1141,6 +1151,15 @@ impl FfiClient {
         Ok(serde_json::from_value(value["lines"].clone())?)
     }
 
+    /// Search the Core-owned indexes without activating a workspace.
+    pub fn search_all(&self, query: &str) -> anyhow::Result<Vec<ClientSearchHit>> {
+        let query = cstring(query);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_search_all(self.handle.as_ptr(), query.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["hits"].clone())?)
+    }
+
     pub fn send_input(&self, pane_id: u32, data: &[u8]) -> i32 {
         if data.is_empty() {
             return 0;
@@ -1610,6 +1629,21 @@ mod tests {
         );
         assert_eq!(task_to_ffi(ClientTask::Detach).type_, ffi::TASK_DETACH);
         assert_eq!(task_to_ffi(ClientTask::Shutdown).type_, ffi::TASK_SHUTDOWN);
+    }
+
+    #[test]
+    fn search_hits_decode_as_owned_frontend_dtos() {
+        let hit: ClientSearchHit = serde_json::from_value(serde_json::json!({
+            "workspace_id": "local//demo/shell/",
+            "tab_id": 1,
+            "pane_id": 7,
+            "seq": 42,
+            "line": "cargo test",
+        }))
+        .expect("search hit DTO");
+        assert_eq!(hit.workspace_id, "local//demo/shell/");
+        assert_eq!(hit.seq, 42);
+        assert_eq!(hit.line, "cargo test");
     }
 
     #[test]
