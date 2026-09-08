@@ -98,9 +98,12 @@ pub struct SshHostEntry {
     pub user: String,
 }
 
-/// Workspace candidate returned by Core discovery.
+/// Existing workspace candidate returned by Core discovery.
+///
+/// The identity fields are intentionally owned here.  A frontend must not
+/// retain a Core candidate or reconstruct attach data from its display name.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
-pub struct WorkspaceCandidate {
+pub struct ExistingCandidate {
     pub name: String,
     #[serde(default)]
     pub id: String,
@@ -112,6 +115,30 @@ pub struct WorkspaceCandidate {
     pub target: String,
     #[serde(default)]
     pub in_pool: bool,
+    #[serde(default)]
+    pub windows: u32,
+    #[serde(default)]
+    pub attached: bool,
+    #[serde(default)]
+    pub created: u64,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub socket: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+}
+
+/// Compatibility name for the workspace picker; the DTO is an Existing
+/// candidate even when a caller displays it as a workspace.
+pub type WorkspaceCandidate = ExistingCandidate;
+
+/// An owned tmux session row returned by the transport discovery ABI.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct TmuxSessionEntry {
+    pub name: String,
     #[serde(default)]
     pub windows: u32,
     #[serde(default)]
@@ -459,6 +486,15 @@ impl FfiClient {
         target: Option<&str>,
         socket: Option<&str>,
     ) -> anyhow::Result<Vec<WorkspaceCandidate>> {
+        Self::discover_existing(runtime_type, target, socket)
+    }
+
+    /// Discover attachable Existing candidates through the public FFI.
+    pub fn discover_existing(
+        runtime_type: &str,
+        target: Option<&str>,
+        socket: Option<&str>,
+    ) -> anyhow::Result<Vec<ExistingCandidate>> {
         let runtime = cstring(runtime_type);
         let target = cstring_opt(target);
         let socket = cstring_opt(socket);
@@ -472,6 +508,27 @@ impl FfiClient {
             )
         })?;
         Ok(serde_json::from_value(value["workspaces"].clone())?)
+    }
+
+    /// Discover tmux sessions on one explicit target-side socket.
+    pub fn discover_tmux_sessions(
+        transport_type: &str,
+        target: Option<&str>,
+        socket: Option<&str>,
+    ) -> anyhow::Result<Vec<TmuxSessionEntry>> {
+        let transport = cstring(transport_type);
+        let target = cstring_opt(target);
+        let socket = cstring_opt(socket);
+        let value = Self::discovery_json(|| {
+            ffi::muxterm_discover_tmux_sessions_json(
+                transport.as_ptr(),
+                target.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                socket.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                ptr::null(),
+                DISCOVERY_TIMEOUT_MS,
+            )
+        })?;
+        Ok(serde_json::from_value(value["sessions"].clone())?)
     }
 
     pub fn create_workspace(
@@ -701,5 +758,43 @@ mod tests {
             .kind(),
             ClientEventKind::Other(u32::MAX)
         );
+    }
+
+    #[test]
+    fn existing_candidate_keeps_attach_identity_owned() {
+        let candidate: ExistingCandidate = serde_json::from_value(serde_json::json!({
+            "name": "agent-workspace",
+            "runtime": "herdr",
+            "transport": "ssh",
+            "target": "buildbox",
+            "namespace": "agents",
+            "session": "agents",
+            "socket": "/remote/.config/herdr/sessions/agents/herdr.sock",
+            "workspace_id": "w7"
+        }))
+        .expect("Existing candidate JSON should decode");
+
+        assert_eq!(candidate.name, "agent-workspace");
+        assert_eq!(candidate.target, "buildbox");
+        assert_eq!(candidate.namespace.as_deref(), Some("agents"));
+        assert_eq!(candidate.session.as_deref(), Some("agents"));
+        assert_eq!(
+            candidate.socket.as_deref(),
+            Some("/remote/.config/herdr/sessions/agents/herdr.sock")
+        );
+        assert_eq!(candidate.workspace_id.as_deref(), Some("w7"));
+    }
+
+    #[test]
+    fn tmux_session_entry_defaults_optional_metadata() {
+        let session: TmuxSessionEntry = serde_json::from_value(serde_json::json!({
+            "name": "muxterm-test-existing"
+        }))
+        .expect("tmux session JSON should decode");
+
+        assert_eq!(session.name, "muxterm-test-existing");
+        assert_eq!(session.windows, 0);
+        assert!(!session.attached);
+        assert_eq!(session.created, 0);
     }
 }
