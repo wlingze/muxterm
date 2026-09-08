@@ -5,13 +5,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::core::catalog::connect::Connect;
 use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
 use crate::core::runtime::herdr::forward::start_herdr_ssh_forward;
 use crate::core::runtime::herdr::runtime::HerdrRuntime;
 use crate::core::runtime::herdr::session::HerdrSession;
 use crate::core::runtime::{Runtime, RuntimeCapability};
-use crate::core::transport::ChannelKind;
+use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// herdr 插件（local / ssh）。
@@ -46,7 +45,11 @@ impl RuntimeProvider for HerdrDriver {
         &[ChannelKind::UnixSocket]
     }
 
-    fn list(&self, connect: &Connect, namespace: Option<&str>) -> Result<Vec<SessionCandidate>> {
+    fn list(
+        &self,
+        connect: &dyn TargetConnection,
+        namespace: Option<&str>,
+    ) -> Result<Vec<SessionCandidate>> {
         if connect.transport_id() == "ssh" {
             let entries = crate::core::discovery::existing::discover_ssh_herdr(
                 connect.target(),
@@ -93,7 +96,7 @@ impl RuntimeProvider for HerdrDriver {
             .collect())
     }
 
-    fn namespaces(&self, connect: &Connect) -> Result<Vec<String>> {
+    fn namespaces(&self, connect: &dyn TargetConnection) -> Result<Vec<String>> {
         if connect.transport_id() == "ssh" {
             return Ok(Vec::new());
         }
@@ -116,7 +119,11 @@ impl RuntimeProvider for HerdrDriver {
         Ok(out)
     }
 
-    fn open(&self, connect: Arc<Connect>, spec: &WorkspaceSpec) -> Result<Box<dyn Runtime>> {
+    fn open(
+        &self,
+        connect: Arc<dyn TargetConnection>,
+        spec: &WorkspaceSpec,
+    ) -> Result<Box<dyn Runtime>> {
         let session_name = if spec.session.is_empty() {
             "default"
         } else {

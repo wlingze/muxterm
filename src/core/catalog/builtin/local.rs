@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::core::catalog::connect::Connect;
 use crate::core::catalog::transport::{TargetInfo, TransportProvider};
-use crate::core::transport::ChannelKind;
+use crate::core::transport::{ChannelKind, TargetConnection};
 
 /// local 传输插件。
 pub struct LocalTransport;
@@ -28,7 +28,7 @@ impl TransportProvider for LocalTransport {
         Ok(vec![TargetInfo::new("", "local")])
     }
 
-    fn connect(&self, target: &str) -> Result<Arc<Connect>> {
+    fn connect(&self, target: &str) -> Result<Arc<dyn TargetConnection>> {
         Ok(Connect::new("local", target))
     }
 }

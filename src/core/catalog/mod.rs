@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 
+use crate::core::transport::TargetConnection;
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
@@ -33,7 +34,7 @@ pub struct Catalog {
     runtimes: Vec<Box<dyn RuntimeProvider>>,
     /// TransportProvider 表。顺序 = 注册顺序；`with_builtins` 按 local, ssh 登记。
     transports: Vec<Box<dyn TransportProvider>>,
-    connects: HashMap<(String, String), Arc<Connect>>,
+    connects: HashMap<(String, String), Arc<dyn TargetConnection>>,
     inventory: Inventory,
     pool: WorkspacePool,
 }
@@ -123,7 +124,11 @@ impl Catalog {
     }
 
     /// 取出或新建一条可复用管道。同一 `(transport, target)` 返回同一 `Arc`。
-    pub fn connect(&mut self, transport_id: &str, target: &str) -> anyhow::Result<Arc<Connect>> {
+    pub fn connect(
+        &mut self,
+        transport_id: &str,
+        target: &str,
+    ) -> anyhow::Result<Arc<dyn TargetConnection>> {
         let key = (transport_id.to_string(), target.to_string());
         if let Some(existing) = self.connects.get(&key) {
             return Ok(Arc::clone(existing));
@@ -148,7 +153,7 @@ impl Catalog {
     ) -> anyhow::Result<Vec<SessionCandidate>> {
         if transport_id == "all" {
             let names = self.all_connect_names();
-            let mut jobs: Vec<(String, Option<Arc<Connect>>)> = Vec::new();
+            let mut jobs: Vec<(String, Option<Arc<dyn TargetConnection>>)> = Vec::new();
             for (tid, tgt) in names {
                 let connect = self.connect(&tid, &tgt).ok();
                 jobs.push((tid, connect));
@@ -166,8 +171,11 @@ impl Catalog {
                                 let Some(connect) = connect else {
                                     return Vec::new();
                                 };
-                                let mut rows =
-                                    list_sessions_on_connect(runtimes, transport_id, &connect);
+                                let mut rows = list_sessions_on_connect(
+                                    runtimes,
+                                    transport_id,
+                                    connect.as_ref(),
+                                );
                                 if transport_id == "local" {
                                     for row in &mut rows {
                                         row.target = "local".to_string();
@@ -191,7 +199,7 @@ impl Catalog {
         Ok(list_sessions_on_connect(
             &self.runtimes,
             transport_id,
-            &connect,
+            connect.as_ref(),
         ))
     }
 
@@ -372,7 +380,7 @@ impl Catalog {
                     .runtime("herdr")
                     .ok_or_else(|| anyhow::anyhow!("herdr runtime 未注册"))?;
                 let namespace = config.session.clone();
-                let candidates = driver.list(&connect, namespace.as_deref())?;
+                let candidates = driver.list(connect.as_ref(), namespace.as_deref())?;
 
                 // exact identity：workspace_id 精确命中。
                 if let Some(wid) = &config.workspace_id {
@@ -540,7 +548,7 @@ impl Catalog {
                             {
                                 continue;
                             }
-                            if driver.list(&connect, None).is_ok() {
+                            if driver.list(connect.as_ref(), None).is_ok() {
                                 ok = true;
                                 break;
                             }
@@ -581,7 +589,7 @@ impl Catalog {
 fn list_sessions_on_connect(
     runtimes: &[Box<dyn RuntimeProvider>],
     transport_id: &str,
-    connect: &Connect,
+    connect: &dyn TargetConnection,
 ) -> Vec<SessionCandidate> {
     thread::scope(|scope| {
         let handles: Vec<_> = runtimes
