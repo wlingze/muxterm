@@ -23,7 +23,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, StatefulWidget, Widget};
 
-use crate::core::protocol::terminal::emulate::Cell as TermCell;
+use crate::platform::tui::emulate::Cell as TermCell;
 use crate::platform::tui::ffi_bridge::{BridgeLayout, FrameSnapshot};
 use crate::platform::tui::palette::PaletteState;
 use crate::platform::tui::theme::Theme;
@@ -95,10 +95,7 @@ pub fn strip_ansi(input: &str) -> String {
 pub fn render_frame(
     buf: &mut Buffer,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<
-        u32,
-        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
-    >,
+    screens: &std::collections::HashMap<u32, Vec<Vec<TermCell>>>,
     cursors: &std::collections::HashMap<u32, usize>,
     palette: Option<&PaletteState>,
     opts: RenderOpts,
@@ -191,10 +188,7 @@ fn draw_content(
     buf: &mut Buffer,
     area: Rect,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<
-        u32,
-        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
-    >,
+    screens: &std::collections::HashMap<u32, Vec<Vec<TermCell>>>,
     cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
@@ -212,10 +206,7 @@ fn draw_layout_node(
     area: Rect,
     node: &BridgeLayout,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<
-        u32,
-        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
-    >,
+    screens: &std::collections::HashMap<u32, Vec<Vec<TermCell>>>,
     cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
@@ -291,10 +282,7 @@ fn draw_leaf(
     area: Rect,
     pane_id: u32,
     snap: &FrameSnapshot,
-    screens: &std::collections::HashMap<
-        u32,
-        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
-    >,
+    screens: &std::collections::HashMap<u32, Vec<Vec<TermCell>>>,
     cursors: &std::collections::HashMap<u32, usize>,
     theme: &Theme,
 ) {
@@ -818,7 +806,8 @@ mod tests {
 
     #[test]
     fn colored_cells_reach_buffer() {
-        use crate::core::protocol::terminal::emulate::TerminalState;
+        use crate::platform::tui::emulate::TerminalState;
+
         // 用 ANSI 红字喂进终端模拟器
         let mut ts = TerminalState::new(80, 24);
         ts.feed(b"\x1b[31mRED\x1b[0m\n");

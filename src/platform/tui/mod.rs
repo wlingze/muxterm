@@ -4,6 +4,7 @@
 //! `execute` / `send_input` 回写。适合无 GTK 的机器（headless / SSH / Windows）。
 
 pub mod app;
+pub mod emulate;
 pub mod ffi_bridge;
 pub mod input;
 pub mod mirror;

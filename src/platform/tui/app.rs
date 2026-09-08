@@ -24,6 +24,7 @@ use crate::ffi::{
     STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
 use crate::platform::ffi_client::FfiClient;
+use crate::platform::tui::emulate::Cell;
 use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
 use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::mirror::should_forward_parser_response;
@@ -237,10 +238,8 @@ fn draw<W: std::io::Write>(
     palette_open: bool,
 ) -> Result<()> {
     // 收集每个 pane 的带样式屏幕网格（含光标行，用于视口定位）
-    let mut screens: std::collections::HashMap<
-        u32,
-        Vec<Vec<crate::core::protocol::terminal::emulate::Cell>>,
-    > = std::collections::HashMap::new();
+    let mut screens: std::collections::HashMap<u32, Vec<Vec<Cell>>> =
+        std::collections::HashMap::new();
     let mut cursors = std::collections::HashMap::new();
     for p in &snap.panes {
         if let Some((sc, cur)) = term_mgr.styled_screen_with_cursor(p.id) {

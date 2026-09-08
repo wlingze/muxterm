@@ -1,8 +1,7 @@
 //! TUI 终端渲染层：每个 pane 用一个无头 [`TerminalState`] 模拟终端屏幕。
 //!
-//! GTK 前端用 VTE（真实终端模拟器）渲染，TUI 没有 VTE，但项目自带
-//! `core::protocol::terminal::emulate::TerminalState`（基于 vte crate）能正确
-//! 跟踪光标移动 / 覆盖写 / 清屏 / 换行，生成真实的屏幕网格。
+//! GTK 前端用 VTE（真实终端模拟器）渲染，TUI 由自己的 `emulate` 模块
+//!（基于 vte crate）跟踪光标移动 / 覆盖写 / 清屏 / 换行，生成真实的屏幕网格。
 //!
 //! 之前 TUI 把 pane 的**累计原始输出**当作纯文本行直接打印，导致：
 //! - 回显字符双写（`ls` 变 `ls ls`）
@@ -12,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::protocol::terminal::emulate::{Cell, TerminalState};
+use crate::platform::tui::emulate::{Cell, TerminalState};
 
 /// 每 pane 的终端状态 + 尺寸。
 pub struct PaneTerminal {
