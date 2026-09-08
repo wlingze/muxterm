@@ -392,6 +392,17 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         )
     }
 
+    func testZeroHeightSidebarKeepsArrangedSubviewWidth() {
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 0))
+        sidebar.layoutSubtreeIfNeeded()
+        let frames = sidebar.testArrangedSectionFrames()
+        XCTAssertEqual(frames.count, 4)
+        for frame in frames {
+            XCTAssertEqual(frame.width, 240, accuracy: 1.5)
+            XCTAssertEqual(frame.height, 0, accuracy: 1.5)
+        }
+    }
+
     func testCollapsedSectionsKeepHeaderHeightAndExpandedSectionsStayResizable() {
         let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
         sidebar.layoutSubtreeIfNeeded()

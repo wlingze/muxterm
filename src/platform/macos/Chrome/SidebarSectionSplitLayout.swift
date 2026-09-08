@@ -75,6 +75,16 @@ public enum SidebarSectionSplitLayout {
         return heights
     }
 
+    /// 启动时 split view 常为 `{width, 0}`。委托若直接 return，子视图会留在
+    /// `{0,0,0,0}`，NSSplitView 会抱怨 outer edges 对不齐。宽跟上、高为 0。
+    public static func degenerateFrames(count: Int, width: CGFloat) -> [CGRect] {
+        guard count > 0 else { return [] }
+        return Array(
+            repeating: CGRect(x: 0, y: 0, width: max(width, 0), height: 0),
+            count: count
+        )
+    }
+
     public static func frames(
         bounds: CGSize,
         dividerThickness: CGFloat,

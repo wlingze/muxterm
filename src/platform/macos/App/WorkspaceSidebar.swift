@@ -772,20 +772,25 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
         let views = splitView.arrangedSubviews
         let expanded = orderedSectionScrolls.map(isSectionExpanded)
-        guard let heights = SidebarSectionSplitLayout.heights(
+        let frames: [CGRect]
+        if let heights = SidebarSectionSplitLayout.heights(
             boundsHeight: splitView.bounds.height,
             dividerThickness: splitView.dividerThickness,
             expanded: expanded,
             currentHeights: views.map(\.bounds.height)
-        ) else {
-            return
+        ) {
+            frames = SidebarSectionSplitLayout.frames(
+                bounds: splitView.bounds.size,
+                dividerThickness: splitView.dividerThickness,
+                heights: heights,
+                flipped: splitView.isFlipped
+            )
+        } else {
+            frames = SidebarSectionSplitLayout.degenerateFrames(
+                count: views.count,
+                width: splitView.bounds.width
+            )
         }
-        let frames = SidebarSectionSplitLayout.frames(
-            bounds: splitView.bounds.size,
-            dividerThickness: splitView.dividerThickness,
-            heights: heights,
-            flipped: splitView.isFlipped
-        )
         for (view, frame) in zip(views, frames) {
             view.setFrameOrigin(frame.origin)
             view.setFrameSize(frame.size)
@@ -846,6 +851,10 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     func testSectionsAreResizable() -> Bool {
         !sections.isVertical && sections.arrangedSubviews.count == 4
+    }
+
+    func testArrangedSectionFrames() -> [NSRect] {
+        sections.arrangedSubviews.map(\.frame)
     }
 
     func testSectionFrames() -> [SidebarTestSection: NSRect] {

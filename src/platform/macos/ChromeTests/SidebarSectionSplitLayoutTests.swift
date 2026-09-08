@@ -10,8 +10,19 @@ final class SidebarSectionSplitLayoutTests: XCTestCase {
                 expanded: [true, true, true, false],
                 currentHeights: [0, 0, 0, 0]
             ),
-            "高度为 0 时不能排 frame，否则会出现 {0,-25} 乱序"
+            "高度为 0 时不能按 80pt 最小高度排，否则会出现 {0,-25} 乱序"
         )
+    }
+
+    func testDegenerateFramesFillZeroHeightBoundsWidth() {
+        let frames = SidebarSectionSplitLayout.degenerateFrames(count: 4, width: 240)
+        XCTAssertEqual(frames.count, 4)
+        for frame in frames {
+            XCTAssertEqual(frame.width, 240, accuracy: 0.5)
+            XCTAssertEqual(frame.height, 0, accuracy: 0.5)
+            XCTAssertEqual(frame.minY, 0, accuracy: 0.5)
+            XCTAssertEqual(frame.maxY, 0, accuracy: 0.5)
+        }
     }
 
     func testDefaultExpandedLayoutFillsTheSidebar() throws {
