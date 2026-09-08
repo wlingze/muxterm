@@ -8,7 +8,7 @@ mod worktree;
 pub use project::Project;
 pub use service::ProjectsService;
 pub use store::ProjectStore;
-pub use worktree::Worktree;
+pub use worktree::{git_worktree_add_argv, Worktree};
 
 /// 配置项 Project 的稳定标识。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

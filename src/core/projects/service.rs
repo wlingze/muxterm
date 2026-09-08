@@ -3,16 +3,41 @@
 use anyhow::{anyhow, Result};
 
 use crate::core::catalog::{Catalog, ResolveIntent};
+use crate::core::config::expand_config_value;
+use crate::core::quickconnect::model::{TargetRuntime, TargetTransport};
+use crate::core::runtime::WorktreeCreateSpec;
+use crate::core::transport::ChannelRequest;
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::template::TemplateName;
 
-use super::{Project, ProjectId, ProjectStore};
+use super::{git_worktree_add_argv, Project, ProjectId, ProjectStore, Worktree, WorktreeId};
 
 /// Projects facade. It owns records, while Catalog owns connections and live
 /// Workspace instances.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectsService {
     store: ProjectStore,
+}
+
+fn allocate_worktree_id(project: &Project, spec: &WorktreeCreateSpec) -> WorktreeId {
+    let seed = spec
+        .label
+        .as_deref()
+        .filter(|label| !label.trim().is_empty())
+        .or_else(|| (!spec.branch.trim().is_empty()).then_some(spec.branch.as_str()))
+        .unwrap_or(spec.path.as_str());
+    let base = WorktreeId::new(seed);
+    if project.worktree(&base).is_none() {
+        return base;
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = WorktreeId::new(format!("{seed}-{suffix}"));
+        if project.worktree(&candidate).is_none() {
+            return candidate;
+        }
+        suffix += 1;
+    }
 }
 
 impl ProjectsService {
@@ -60,6 +85,99 @@ impl ProjectsService {
         self.store.remove(id)
     }
 
+    /// Create a Worktree with the generic git strategy used by shell/tmux.
+    ///
+    /// The command is submitted to the target connection as argv; no platform
+    /// frontend constructs `git worktree` commands and no Herdr path falls back
+    /// to this strategy.
+    pub fn create_generic_worktree(
+        &mut self,
+        catalog: &mut Catalog,
+        project_id: &ProjectId,
+        spec: &WorktreeCreateSpec,
+    ) -> Result<WorktreeId> {
+        let project = self
+            .get_project(project_id)
+            .ok_or_else(|| anyhow!("project 不存在: {project_id}"))?
+            .clone();
+        if project.target.runtime == TargetRuntime::Herdr {
+            return Err(anyhow!("Herdr project 必须使用 native worktree strategy"));
+        }
+
+        let (transport_id, target) = match &project.target.transport {
+            TargetTransport::Local => ("local", ""),
+            TargetTransport::Ssh { name } => ("ssh", name.as_str()),
+        };
+        let connection = catalog.connect(transport_id, target)?;
+        let local = matches!(project.target.transport, TargetTransport::Local);
+        let repo_root = if local {
+            expand_config_value(&project.target.path)
+        } else {
+            project.target.path.clone()
+        };
+        let worktree_path = if local {
+            expand_config_value(&spec.path)
+        } else {
+            spec.path.clone()
+        };
+        let base = spec.base.as_deref().map(|base| {
+            if local {
+                expand_config_value(base)
+            } else {
+                base.to_string()
+            }
+        });
+        let argv = git_worktree_add_argv(
+            &repo_root,
+            &worktree_path,
+            (!spec.branch.trim().is_empty()).then_some(spec.branch.as_str()),
+            base.as_deref(),
+        );
+        let output = connection.exec_command(ChannelRequest::Exec {
+            argv,
+            cwd: None,
+            env: Vec::new(),
+            pty: None,
+        })?;
+        if output.status != 0 {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("git worktree add 失败: {}", detail.trim()));
+        }
+
+        let worktree_id = allocate_worktree_id(&project, spec);
+        let worktree = Worktree::new(
+            worktree_id.clone(),
+            worktree_path,
+            spec.branch.clone(),
+            repo_root,
+            true,
+        );
+        let mut updated = project;
+        updated.add_worktree(worktree)?;
+        self.store.upsert(updated)?;
+        Ok(worktree_id)
+    }
+
+    /// Generic create followed by the normal Catalog open path. Completion is
+    /// defined by the new Workspace entering the pool.
+    pub async fn create_generic_worktree_and_open(
+        &mut self,
+        catalog: &mut Catalog,
+        project_id: &ProjectId,
+        spec: &WorktreeCreateSpec,
+        template_override: Option<TemplateName>,
+    ) -> Result<WorkspaceId> {
+        let worktree_id = self.create_generic_worktree(catalog, project_id, spec)?;
+        self.open_worktree(
+            catalog,
+            project_id,
+            &worktree_id,
+            ResolveIntent::CreateIfMissing,
+            template_override,
+        )
+        .await
+    }
+
     /// Open a Project through the single Catalog resolver path.
     pub async fn open_project(
         &self,
@@ -105,8 +223,14 @@ impl ProjectsService {
         };
         target.path = worktree.path;
         target.workspace_id = None;
+        if target.runtime == TargetRuntime::Tmux {
+            target.session = Some(worktree.id.to_string());
+        }
 
         let mut resolved = catalog.resolve_target(&target, intent)?;
+        if target.runtime == TargetRuntime::Tmux && intent == ResolveIntent::CreateIfMissing {
+            resolved.spec.create = true;
+        }
         resolved.spec.provenance = Some(project.worktree_provenance(worktree_id));
         resolved.spec.template = template_override.or(project.template.clone());
         let workspace_id = resolved.workspace_id();
