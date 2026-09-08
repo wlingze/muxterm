@@ -21,9 +21,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::platform::ffi_client::{ClientEventKind, ClientTask, FfiClient};
+use crate::platform::mirror::should_forward_parser_response;
 use crate::platform::tui::emulate::Cell;
 use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
-use crate::platform::tui::mirror::should_forward_parser_response;
 use crate::platform::tui::model::FrameSnapshot;
 use crate::platform::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
