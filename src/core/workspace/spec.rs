@@ -6,6 +6,7 @@
 //! socket / ssh / dir 等解析结果字段。
 
 use crate::core::workspace::id::WorkspaceId;
+use crate::core::workspace::provenance::WorkspaceProvenance;
 
 /// 打开一个工作区的产品规格（不含 tmux 词）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub struct WorkspaceSpec {
     pub create: bool,
     /// attach 初始 capture 的历史行数（W16a：`capture-pane -S -N`）。
     pub scrollback_lines: u32,
+    /// 从 Projects 打开时携带的 Project/Worktree 归属。
+    pub provenance: Option<WorkspaceProvenance>,
 }
 
 impl WorkspaceSpec {
@@ -34,6 +37,7 @@ impl WorkspaceSpec {
             socket,
             create: false,
             scrollback_lines: 10_000,
+            provenance: None,
         }
     }
 
@@ -54,6 +58,7 @@ impl WorkspaceSpec {
             socket,
             create: false,
             scrollback_lines: 10_000,
+            provenance: None,
         }
     }
 
@@ -73,6 +78,7 @@ impl WorkspaceSpec {
             socket: Some(socket_path.into()),
             create: false,
             scrollback_lines: 10_000,
+            provenance: None,
         }
     }
 
@@ -86,6 +92,7 @@ impl WorkspaceSpec {
             socket: None,
             create: false,
             scrollback_lines: 10_000,
+            provenance: None,
         }
     }
 
@@ -99,6 +106,7 @@ impl WorkspaceSpec {
             socket: None,
             create: false,
             scrollback_lines: 10_000,
+            provenance: None,
         }
     }
 
@@ -118,6 +126,7 @@ impl WorkspaceSpec {
             socket: Some(socket_path.into()),
             create: false,
             scrollback_lines: 10_000,
+            provenance: None,
         }
     }
 
@@ -247,6 +256,7 @@ mod tests {
             socket: None,
             create: false,
             scrollback_lines: 10_000,
+            provenance: None,
         };
         let err = Catalog::with_builtins().new_runtime(&spec).err();
         assert!(

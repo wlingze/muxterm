@@ -18,6 +18,7 @@ pub mod executable;
 pub mod fault;
 pub mod format;
 pub mod logging;
+pub mod projects;
 pub mod protocol;
 pub mod quickconnect;
 pub mod render_policy;

@@ -6,6 +6,7 @@
 pub mod id;
 pub mod pane_buf;
 pub mod pool;
+pub mod provenance;
 pub mod spec;
 pub mod terminal_model;
 #[allow(clippy::module_inception)] // 计划目录约定：workspace/workspace.rs 放 Workspace 本体
