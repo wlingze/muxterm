@@ -7,6 +7,7 @@
 
 pub mod contract;
 pub mod daemon;
+pub mod daemon_client;
 pub mod herdr;
 pub mod mock;
 pub mod provider;
