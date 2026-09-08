@@ -4,7 +4,9 @@
 //! 与今天 platform 的 `ConnectionKey` 同构；W2 的池按它复用。
 
 /// 稳定字符串标识：`transport/alias/session/runtime/path`。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct WorkspaceId {
     pub transport: String,
     pub alias: Option<String>,

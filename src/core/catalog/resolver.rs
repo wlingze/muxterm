@@ -5,15 +5,38 @@
 //! runtime / session / target-side socket / workspace_id），name/path 是
 //! 显示/项目元数据，不参与身份。
 
+use crate::core::protocol::candidate::CandidateRef;
 use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::core::workspace::spec::WorkspaceSpec;
+use crate::core::workspace::template::TemplateName;
 
 /// 打开意图：Existing/Recent/普通 Project 重连 = AttachOnly（无匹配不创建）；
 /// 初次新建 Project 才允许 CreateIfMissing。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ResolveIntent {
     AttachOnly,
     CreateIfMissing,
+}
+
+/// Frontend-facing request. Catalog resolves the CandidateRef into a
+/// WorkspaceSpec; the frontend never constructs the spec itself.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct OpenRequest {
+    pub candidate: CandidateRef,
+    pub intent: ResolveIntent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<TemplateName>,
+    #[serde(default = "default_activate")]
+    pub activate: bool,
+}
+
+fn default_activate() -> bool {
+    true
 }
 
 /// 解析失败阶段（用户通知显示阶段 + 身份摘要）。
@@ -130,4 +153,37 @@ pub fn herdr_candidate_to_config(
     config.socket = target_side_socket;
     config.workspace_id = Some(workspace_id);
     config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_request_round_trips_typed_reference_and_defaults_activation() {
+        let request = OpenRequest {
+            candidate: CandidateRef::Worktree {
+                project_id: "project-a".into(),
+                worktree_id: "worktree-a".into(),
+            },
+            intent: ResolveIntent::CreateIfMissing,
+            template: Some(TemplateName::try_from("review").unwrap()),
+            activate: true,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["intent"], "create_if_missing");
+        assert_eq!(json["candidate"]["kind"], "worktree");
+        assert_eq!(json["template"], "review");
+
+        let decoded: OpenRequest = serde_json::from_value(serde_json::json!({
+            "candidate": {
+                "kind": "project",
+                "value": {"project_id": "project-a"}
+            },
+            "intent": "attach_only"
+        }))
+        .unwrap();
+        assert!(decoded.activate);
+        assert_eq!(decoded.intent, ResolveIntent::AttachOnly);
+    }
 }
