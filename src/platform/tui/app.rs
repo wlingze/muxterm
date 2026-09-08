@@ -23,9 +23,9 @@ use ratatui::Terminal;
 use crate::ffi::{
     STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
-use crate::platform::ffi_client::FfiClient;
+use crate::platform::ffi_client::{ClientTask, FfiClient};
 use crate::platform::tui::emulate::Cell;
-use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
+use crate::platform::tui::ffi_bridge::{CoreBridge, FrameSnapshot};
 use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::mirror::should_forward_parser_response;
 use crate::platform::tui::palette::{
@@ -534,7 +534,7 @@ fn handle_key(
             let lower = c.to_ascii_lowercase();
             match lower {
                 't' => {
-                    let _ = bridge.execute(tasks::new_tab());
+                    let _ = bridge.execute_task(ClientTask::NewTab);
                     return true;
                 }
                 'p' => {
@@ -545,7 +545,9 @@ fn handle_key(
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
                     let n = lower.to_digit(10).unwrap() as usize;
                     if n <= snap.tabs.len() {
-                        let _ = bridge.execute(tasks::switch_tab(snap.tabs[n - 1].id));
+                        let _ = bridge.execute_task(ClientTask::SwitchTab {
+                            tab_id: snap.tabs[n - 1].id,
+                        });
                         return true;
                     }
                     return false;
@@ -553,25 +555,31 @@ fn handle_key(
                 'w' => {
                     let tab = snap.tabs.iter().find(|t| t.is_active).or(snap.tabs.first());
                     if let Some(t) = tab {
-                        let _ = bridge.execute(tasks::close_tab(t.id));
+                        let _ = bridge.execute_task(ClientTask::CloseTab { tab_id: t.id });
                         return true;
                     }
                     return false;
                 }
                 's' => {
-                    let _ = bridge.execute(tasks::split_h(target.unwrap_or(0)));
+                    let _ = bridge.execute_task(ClientTask::SplitPane {
+                        pane_id: target.unwrap_or(0),
+                        horizontal: true,
+                    });
                     return true;
                 }
                 'v' => {
-                    let _ = bridge.execute(tasks::split_v(target.unwrap_or(0)));
+                    let _ = bridge.execute_task(ClientTask::SplitPane {
+                        pane_id: target.unwrap_or(0),
+                        horizontal: false,
+                    });
                     return true;
                 }
                 '[' => {
-                    let _ = bridge.execute(tasks::prev_pane());
+                    let _ = bridge.execute_task(ClientTask::PreviousPane);
                     return true;
                 }
                 ']' => {
-                    let _ = bridge.execute(tasks::next_pane());
+                    let _ = bridge.execute_task(ClientTask::NextPane);
                     return true;
                 }
                 _ => {
