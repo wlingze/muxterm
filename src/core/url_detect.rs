@@ -1,11 +1,7 @@
 //! URL 检测与打开（LINUX-PLAN §4.2）。
 //!
-//! core 只做纯函数：`url_at_line` 从一行文本的列位置找 URL；`link_at` 从
-//! OSC 8 的 Cell.link 取 URI。打开走 `UrlOpener` trait，测试注入 Recording，
-//! 生产实现禁止真的调浏览器（由 GTK 层接 `gio::AppInfo`）。
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! Core 只做纯函数：`url_at_line` 从一行文本的列位置找 URL；`link_at` 从
+//! OSC 8 的 Cell.link 取 URI。URL 打开动作属于 platform/frontend。
 
 use crate::core::protocol::terminal::emulate::TerminalState;
 
@@ -76,36 +72,6 @@ pub fn link_at(state: &TerminalState, row: usize, col: usize) -> Option<String> 
     state.cell(row, col).and_then(|c| c.link.clone())
 }
 
-/// URL 打开出口（测试注入 Recording，生产接 GTK）。
-pub trait UrlOpener {
-    fn open(&self, uri: &str);
-}
-
-/// 无操作 opener。
-pub struct NullOpener;
-
-impl UrlOpener for NullOpener {
-    fn open(&self, _uri: &str) {}
-}
-
-/// 记录型 opener（测试断言 URI，禁止真开浏览器）。
-#[derive(Clone, Default)]
-pub struct RecordingOpener {
-    pub opened: Rc<RefCell<Vec<String>>>,
-}
-
-impl RecordingOpener {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl UrlOpener for RecordingOpener {
-    fn open(&self, uri: &str) {
-        self.opened.borrow_mut().push(uri.to_string());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,19 +119,5 @@ mod tests {
             Some("https://example.invalid/x".to_string())
         );
         assert_eq!(link_at(&t, 0, 5), None);
-    }
-
-    /// S11：OSC 8 包着的 URL，Recording opener 收到一次。
-    #[test]
-    fn url_click_records_https_uri() {
-        let mut t = TerminalState::new(80, 24);
-        t.feed(b"\x1b]8;;https://example.invalid/x\x1b\\hello");
-        let uri = link_at(&t, 0, 0).expect("OSC 8 应给 URI");
-        let opener = RecordingOpener::new();
-        opener.open(&uri);
-        assert_eq!(
-            *opener.opened.borrow(),
-            vec!["https://example.invalid/x".to_string()]
-        );
     }
 }

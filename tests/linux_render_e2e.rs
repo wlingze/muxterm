@@ -80,7 +80,7 @@ fn first_paint_keeps_prompt_on_last_row(view: &PaneView) {
 
 /// S11：OSC 8 包着的 URL，Recording opener 收到一次（不真开浏览器）。
 fn url_click_records_https_uri(view: &PaneView) {
-    use muxterm::core::url_detect::RecordingOpener;
+    use muxterm::platform::url_opener::RecordingOpener;
     use std::rc::Rc;
 
     let opener = Rc::new(RecordingOpener::new());
