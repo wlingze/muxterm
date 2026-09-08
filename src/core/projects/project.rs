@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use crate::core::config_service::ProjectDocument;
 use crate::core::quickconnect::model::TargetConfig;
 use crate::core::workspace::provenance::WorkspaceProvenance;
+use crate::core::workspace::template::TemplateName;
 
 use super::{ProjectId, Worktree, WorktreeId};
 
@@ -14,7 +15,7 @@ pub struct Project {
     pub id: ProjectId,
     pub name: String,
     pub target: TargetConfig,
-    pub template: Option<String>,
+    pub template: Option<TemplateName>,
     pub worktrees: Vec<Worktree>,
 }
 
@@ -43,7 +44,11 @@ impl Project {
             id: ProjectId::from(document.id.clone()),
             name: document.name.clone(),
             target,
-            template: document.template.clone(),
+            template: document
+                .template
+                .as_deref()
+                .map(TemplateName::try_from)
+                .transpose()?,
             worktrees: document
                 .worktrees
                 .iter()
@@ -57,7 +62,7 @@ impl Project {
         document.id = self.id.to_string();
         document.name = self.name.clone();
         document.path = self.target.path.clone();
-        document.template = self.template.clone();
+        document.template = self.template.as_ref().map(ToString::to_string);
         document.worktrees = self.worktrees.iter().map(Worktree::to_document).collect();
         document
     }
@@ -116,7 +121,7 @@ mod tests {
     #[test]
     fn project_round_trips_worktree_projection() {
         let mut project = project();
-        project.template = Some("default".into());
+        project.template = Some(TemplateName::try_from("default").unwrap());
         project
             .add_worktree(Worktree::new(
                 "wt-main",

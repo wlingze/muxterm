@@ -145,6 +145,7 @@ fn mock_spec(runtime: &str, transport: &str, alias: Option<&str>, session: &str)
         create: false,
         scrollback_lines: 10_000,
         provenance: None,
+        template: None,
     }
 }
 

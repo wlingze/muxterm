@@ -1100,6 +1100,7 @@ pub unsafe extern "C" fn muxterm_workspace_open(
             create: false,
             scrollback_lines: configured_scrollback_lines() as u32,
             provenance: None,
+            template: None,
         };
         let fut = handle.catalog.open(&spec);
         match handle.rt.block_on(fut) {
@@ -1178,6 +1179,7 @@ fn resolved_target_json(resolved: &crate::core::catalog::ResolvedTarget) -> serd
                     "worktree_id": provenance.worktree_id.as_ref().map(ToString::to_string),
                 })
             }),
+            "template": resolved.spec.template.as_ref().map(ToString::to_string),
         },
     })
 }

@@ -105,6 +105,7 @@ pub fn config_to_spec(config: &TargetConfig) -> WorkspaceSpec {
         create: false,
         scrollback_lines: 10_000,
         provenance: None,
+        template: None,
     }
 }
 
