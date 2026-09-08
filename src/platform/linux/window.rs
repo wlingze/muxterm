@@ -429,6 +429,7 @@ impl AppWindow {
             .vexpand(true)
             .transition_type(gtk4::StackTransitionType::None)
             .build();
+        scene_stack_view.set_widget_name("muxterm-scene-stack");
         scene_stack_view.add_named(
             &pixel_cache
                 .get(&startup_id)

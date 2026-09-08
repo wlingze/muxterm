@@ -504,6 +504,19 @@ fn title_bar_actions_and_workspace_sidebar() {
             2,
             "sidebar must list every connected workspace"
         );
+        let scene_stack = find_by_name(&app.window, "muxterm-scene-stack")
+            .expect("workspace scenes must be hosted by a GTK Stack")
+            .downcast::<gtk4::Stack>()
+            .expect("workspace scene host must be a Stack");
+        assert_eq!(
+            scene_stack.pages().n_items(),
+            2,
+            "opening a workspace must retain both scene pages"
+        );
+        let second_scene_page = scene_stack
+            .visible_child_name()
+            .map(|name| name.to_string())
+            .expect("second workspace must reveal a scene page");
         for number in [1, 2] {
             assert!(
                 find_by_name(
@@ -524,6 +537,14 @@ fn title_bar_actions_and_workspace_sidebar() {
             ordered_workspaces[0],
             "Ctrl+Alt+1 must activate the first workspace"
         );
+        let first_scene_page = scene_stack
+            .visible_child_name()
+            .map(|name| name.to_string())
+            .expect("first workspace must reveal a scene page");
+        assert_ne!(
+            &first_scene_page, &second_scene_page,
+            "switching must only change the visible scene page"
+        );
         assert_eq!(
             app.test_workspace_replica_ids(),
             ordered_workspaces,
@@ -535,6 +556,11 @@ fn title_bar_actions_and_workspace_sidebar() {
             app.test_active_workspace_replica_id(),
             ordered_workspaces[1],
             "Ctrl+Alt+2 must activate the second workspace"
+        );
+        assert_eq!(
+            scene_stack.visible_child_name().as_deref(),
+            Some(second_scene_page.as_str()),
+            "the second workspace must reveal its retained scene page"
         );
         assert!(
             app.test_active_terminal_has_focus(),
@@ -554,6 +580,16 @@ fn title_bar_actions_and_workspace_sidebar() {
             app.test_workspace_replica_ids(),
             original_workspaces,
             "closing the active workspace must return to the stable neighboring workspace"
+        );
+        assert_eq!(
+            scene_stack.pages().n_items(),
+            1,
+            "closing a workspace must remove only its scene page"
+        );
+        assert_eq!(
+            scene_stack.visible_child_name().as_deref(),
+            Some(first_scene_page.as_str()),
+            "closing the active workspace must reveal the fallback scene page"
         );
         assert_eq!(count_widget_names(&app.window, "muxterm-sidebar-row"), 1);
         let last_row = workspace_list.row_at_index(0).expect("last workspace row");
