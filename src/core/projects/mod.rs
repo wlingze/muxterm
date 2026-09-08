@@ -1,10 +1,12 @@
 //! Projects 领域与 Workspace provenance 共用的稳定标识。
 
 mod project;
+mod service;
 mod store;
 mod worktree;
 
 pub use project::Project;
+pub use service::ProjectsService;
 pub use store::ProjectStore;
 pub use worktree::Worktree;
 
