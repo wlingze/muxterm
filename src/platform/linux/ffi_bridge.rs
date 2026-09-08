@@ -3,75 +3,29 @@
 //! 所有核心交互经此模块，不直接使用 TerminalModel / Runtime trait。
 //! GTK 主线程轮询事件；`MuxtermHandle` 生命周期由本结构体管理。
 
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
 use std::ptr;
 
 use gtk4::glib;
 
-use crate::core::protocol::ffi::api::{
-    muxterm_connect, muxterm_detach, muxterm_discover_ssh_hosts_json,
-    muxterm_discover_workspaces_json, muxterm_execute, muxterm_free, muxterm_free_string,
-    muxterm_get_layout, muxterm_get_pane_output, muxterm_get_panes, muxterm_get_tabs,
-    muxterm_list_dir_json, muxterm_new, muxterm_new_connect, muxterm_poll_events,
-    muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
-    muxterm_resize_pane, muxterm_send_input, muxterm_status_snapshot_json,
-    muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up,
-    muxterm_workspace_create, MuxtermHandle,
+use crate::ffi::{
+    CTask, DIR_HORIZONTAL, DIR_VERTICAL, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT,
+    TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
+    TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
-use crate::core::protocol::ffi::types::{
-    CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
-    STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_SNAPSHOT,
-};
+use crate::platform::ffi_client::{ClientEvent, ClientLayout, ClientPane, ClientTab, FfiClient};
 
-/// 从 FFI 拷贝出的、可在 Rust 侧安全持有的事件。
-#[derive(Debug, Clone)]
-pub struct BridgeEvent {
-    pub type_: u32,
-    pub pane_id: u32,
-    pub tab_id: u32,
-    pub window_id: u32,
-    pub data: Vec<u8>,
-    pub name: String,
-}
-
-/// 布局树（owned，从 CLayoutNode 深拷贝）。
-#[derive(Debug, Clone)]
-pub enum BridgeLayout {
-    Leaf {
-        pane_id: u32,
-    },
-    Split {
-        horizontal: bool,
-        ratio: u32,
-        first: Box<BridgeLayout>,
-        second: Box<BridgeLayout>,
-    },
-}
-
-/// Tab 快照（owned）。
-#[derive(Debug, Clone)]
-pub struct BridgeTab {
-    pub id: u32,
-    pub name: String,
-    pub is_active: bool,
-}
-
-/// Pane 快照（owned）。
-#[derive(Debug, Clone)]
-pub struct BridgePane {
-    pub id: u32,
-    pub cols: u16,
-    pub rows: u16,
-    pub is_active: bool,
-}
+pub type BridgeEvent = ClientEvent;
+pub type BridgeLayout = ClientLayout;
+pub type BridgeTab = ClientTab;
+pub type BridgePane = ClientPane;
+pub use crate::platform::ffi_client::{FsEntry, SshHostEntry, WorkspaceCandidate};
 
 /// 核心 FFI 桥。
 ///
 /// **非线程安全**：仅在 GTK 主线程使用（内含 `*mut`，自动 !Send/!Sync）。
 /// 事件轮询用 `glib::timeout_add_local` 挂在 GTK 主循环上（见 [`Self::start_polling`]）。
 pub struct CoreBridge {
-    handle: *mut MuxtermHandle,
+    client: FfiClient,
     /// 当前连接的后端类型（local / tmux / tmux-ssh / daemon）。
     pub runtime_type: String,
     /// tmux `-L` socket 名（可选）。
@@ -91,29 +45,15 @@ impl CoreBridge {
         socket: Option<&str>,
         session: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let bt = CString::new(runtime_type).unwrap_or_default();
-        let sock_c = socket.and_then(|s| CString::new(s).ok());
-        let sess_c = session.and_then(|s| CString::new(s).ok());
-        let sock_ptr = sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
-        let sess_ptr = sess_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
-
-        let handle = muxterm_new(bt.as_ptr(), sock_ptr, sess_ptr);
-        if handle.is_null() {
-            anyhow::bail!(crate::platform::i18n::tr(
-                crate::platform::i18n::Key::ErrorBridgeCreate
-            ));
-        }
-        let rc = unsafe { muxterm_connect(handle) };
-        if rc != 0 {
-            unsafe { muxterm_free(handle) };
-            anyhow::bail!(crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::ErrorBridgeConnect,
-                &[("code", &rc.to_string())],
-            ));
-        }
+        let client = FfiClient::new(runtime_type, socket, session).map_err(|error| {
+            anyhow::anyhow!(
+                "{}: {error}",
+                crate::platform::i18n::tr(crate::platform::i18n::Key::ErrorBridgeConnect)
+            )
+        })?;
         let runtime_type = runtime_type.to_ascii_lowercase();
         Ok(Self {
-            handle,
+            client,
             runtime_type,
             socket: socket.map(|s| s.to_string()),
             session: session.map(|s| s.to_string()),
@@ -134,30 +74,14 @@ impl CoreBridge {
         ssh_alias: Option<&str>,
         start_directory: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let bt = CString::new(runtime_type).unwrap_or_default();
-        let sock_c = socket.and_then(|s| CString::new(s).ok());
-        let sess_c = session.and_then(|s| CString::new(s).ok());
-        let alias_c = ssh_alias.and_then(|s| CString::new(s).ok());
-        let dir_c = start_directory.and_then(|s| CString::new(s).ok());
-        let sock_ptr = sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
-        let sess_ptr = sess_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
-        let alias_ptr = alias_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
-        let dir_ptr = dir_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
-
-        let handle = muxterm_new_connect(bt.as_ptr(), sock_ptr, sess_ptr, alias_ptr, dir_ptr);
-        if handle.is_null() {
-            anyhow::bail!(crate::platform::i18n::tr(
-                crate::platform::i18n::Key::ErrorBridgeCreate
-            ));
-        }
-        let rc = unsafe { muxterm_connect(handle) };
-        if rc != 0 {
-            unsafe { muxterm_free(handle) };
-            anyhow::bail!(crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::ErrorBridgeConnect,
-                &[("code", &rc.to_string())],
-            ));
-        }
+        let client =
+            FfiClient::new_connect(runtime_type, socket, session, ssh_alias, start_directory)
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "{}: {error}",
+                        crate::platform::i18n::tr(crate::platform::i18n::Key::ErrorBridgeConnect)
+                    )
+                })?;
         let normalized = runtime_type.to_ascii_lowercase();
         // QuickConnect 面板统一用 runtime_type="tmux-ssh" + alias 建连，
         // 但旧代码/配置也可能传 "ssh"：这里归一化记录。
@@ -167,7 +91,7 @@ impl CoreBridge {
             (normalized, ssh_alias.map(|s| s.to_string()))
         };
         Ok(Self {
-            handle,
+            client,
             runtime_type,
             socket: socket.map(|s| s.to_string()),
             session: session.map(|s| s.to_string()),
@@ -202,17 +126,12 @@ impl CoreBridge {
 
     /// tmux status bar 订阅是否已生效（`%subscription-changed` 推送，无需轮询）。
     pub fn status_subscription_active(&self) -> bool {
-        unsafe { muxterm_status_subscription_active(self.handle) != 0 }
+        self.client.status_subscription_active()
     }
 
     /// 当前连接累计读写字节 `(down, up)`（SSH 才有非零值）。
     pub fn traffic_bytes(&self) -> (u64, u64) {
-        unsafe {
-            (
-                muxterm_traffic_down(self.handle),
-                muxterm_traffic_up(self.handle),
-            )
-        }
+        self.client.traffic_bytes()
     }
 
     /// 停止事件轮询定时器。
@@ -223,139 +142,57 @@ impl CoreBridge {
     }
 
     pub fn execute(&self, task: CTask) -> i32 {
-        unsafe { muxterm_execute(self.handle, &task) }
+        self.client.execute(&task)
     }
 
     /// 显式分离 tmux/SSH control client；session 由 tmux server 保留。
     pub fn detach(&self) -> i32 {
-        unsafe { muxterm_detach(self.handle) }
+        self.client.detach()
     }
 
     /// 轮询事件；立刻拷贝 data/name，避免下次 poll 失效。
     pub fn poll_events(&self) -> Vec<BridgeEvent> {
-        let mut buf = [CStateChange::default(); 64];
-        let n = unsafe { muxterm_poll_events(self.handle, buf.as_mut_ptr(), 64) };
-        if n <= 0 {
-            return Vec::new();
-        }
-        buf[..n as usize]
-            .iter()
-            .map(|c| {
-                let data = if c.data.is_null() || c.data_len == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { std::slice::from_raw_parts(c.data, c.data_len).to_vec() }
-                };
-                let name = cstr_to_string(c.name);
-                BridgeEvent {
-                    type_: c.type_,
-                    pane_id: c.pane_id,
-                    tab_id: c.tab_id,
-                    window_id: c.window_id,
-                    data,
-                    name,
-                }
-            })
-            .collect()
+        self.client.poll_events()
     }
 
     pub fn get_tabs(&self) -> Vec<BridgeTab> {
-        let mut buf = [CTab {
-            id: 0,
-            name: ptr::null(),
-            is_active: 0,
-        }; 32];
-        let n = unsafe { muxterm_get_tabs(self.handle, buf.as_mut_ptr(), 32) };
-        if n <= 0 {
-            return Vec::new();
-        }
-        buf[..n as usize]
-            .iter()
-            .map(|t| BridgeTab {
-                id: t.id,
-                name: cstr_to_string(t.name),
-                is_active: t.is_active != 0,
-            })
-            .collect()
+        self.client.get_tabs()
     }
 
     pub fn get_panes(&self, tab_id: u32) -> Vec<BridgePane> {
-        let mut buf = [CPane {
-            id: 0,
-            cols: 0,
-            rows: 0,
-            is_active: 0,
-        }; 64];
-        let n = unsafe { muxterm_get_panes(self.handle, tab_id, buf.as_mut_ptr(), 64) };
-        if n <= 0 {
-            return Vec::new();
-        }
-        buf[..n as usize]
-            .iter()
-            .map(|p| BridgePane {
-                id: p.id,
-                cols: p.cols,
-                rows: p.rows,
-                is_active: p.is_active != 0,
-            })
-            .collect()
+        self.client.get_panes(tab_id)
     }
 
     pub fn get_layout(&self, tab_id: u32) -> Option<BridgeLayout> {
-        let mut root = CLayoutNode {
-            type_: LAYOUT_LEAF,
-            pane_id: 0,
-            ratio: 0,
-            first: ptr::null(),
-            second: ptr::null(),
-        };
-        let rc = unsafe { muxterm_get_layout(self.handle, tab_id, &mut root) };
-        if rc != 0 {
-            return None;
-        }
-        Some(unsafe { clone_layout(&root) })
+        self.client.get_layout(tab_id)
     }
 
     pub fn get_pane_output(&self, pane_id: u32) -> Vec<u8> {
-        let mut buf = vec![0u8; 256 * 1024];
-        let n =
-            unsafe { muxterm_get_pane_output(self.handle, pane_id, buf.as_mut_ptr(), buf.len()) };
-        if n <= 0 {
-            return Vec::new();
-        }
-        buf.truncate(n as usize);
-        buf
+        self.client.get_pane_output(pane_id)
     }
 
     pub fn send_input(&self, pane_id: u32, data: &[u8]) -> i32 {
-        if data.is_empty() {
-            return 0;
-        }
-        unsafe { muxterm_send_input(self.handle, pane_id, data.as_ptr(), data.len()) }
+        self.client.send_input(pane_id, data)
     }
 
     /// 同步 tmux/SSH control client 的整体字符格尺寸。
     pub fn resize_client(&self, cols: u16, rows: u16) -> i32 {
-        unsafe { muxterm_resize_client(self.handle, cols, rows) }
+        self.client.resize_client(cols, rows)
     }
 
     /// 同步本地 pane 的 pty 字符格尺寸。
     pub fn resize_pane(&self, pane_id: u32, cols: u16, rows: u16) -> i32 {
-        unsafe { muxterm_resize_pane(self.handle, pane_id, cols, rows) }
+        self.client.resize_pane(pane_id, cols, rows)
     }
 
     /// 上报单个 pane 的前景/背景色（`refresh-client -r`），供 tmux 代答 OSC 10/11。
     pub fn report_pane_colours(&self, pane_id: u32, fg_hex: &str, bg_hex: &str) -> i32 {
-        let fg_c = CString::new(fg_hex).unwrap_or_default();
-        let bg_c = CString::new(bg_hex).unwrap_or_default();
-        unsafe { muxterm_report_pane_colours(self.handle, pane_id, fg_c.as_ptr(), bg_c.as_ptr()) }
+        self.client.report_pane_colours(pane_id, fg_hex, bg_hex)
     }
 
     /// 上报所有 pane 的颜色（主题切换后必须整段对齐）。
     pub fn report_all_pane_colours(&self, fg_hex: &str, bg_hex: &str) -> i32 {
-        let fg_c = CString::new(fg_hex).unwrap_or_default();
-        let bg_c = CString::new(bg_hex).unwrap_or_default();
-        unsafe { muxterm_report_all_pane_colours(self.handle, fg_c.as_ptr(), bg_c.as_ptr()) }
+        self.client.report_all_pane_colours(fg_hex, bg_hex)
     }
 
     /// 抓取 status bar 快照（只读查询，tmux 兼容），返回解析后的快照。
@@ -371,45 +208,18 @@ impl CoreBridge {
         } else {
             self.runtime_type.as_str()
         };
-        let bt_c = CString::new(ffi_runtime).unwrap_or_default();
-        let alias_c = self
-            .ssh_alias
-            .as_ref()
-            .and_then(|s| CString::new(s.clone()).ok());
-        let sock_c = self
-            .socket
-            .as_ref()
-            .and_then(|s| CString::new(s.clone()).ok());
-        let sess_c = self
-            .session
-            .as_ref()
-            .and_then(|s| CString::new(s.clone()).ok());
-        let Some(sess) = &sess_c else {
-            return None;
-        };
-        let raw = muxterm_status_snapshot_json(
-            bt_c.as_ptr(),
-            alias_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
-            sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
-            sess.as_ptr(),
-        );
-        if raw.is_null() {
-            return None;
-        }
-        let text = unsafe { CStr::from_ptr(raw) }
-            .to_string_lossy()
-            .into_owned();
-        unsafe { muxterm_free_string(raw) };
-        #[derive(serde::Deserialize)]
-        struct Response {
-            ok: bool,
-            status: Option<crate::platform::linux::quickconnect::status_style::StatusBarSnapshot>,
-        }
-        let response: Response = serde_json::from_str(&text).ok()?;
-        if !response.ok {
-            return None;
-        }
-        response.status
+        let session = self.session.as_deref()?;
+        let value = FfiClient::status_snapshot_json(
+            ffi_runtime,
+            self.ssh_alias.as_deref(),
+            self.socket.as_deref(),
+            session,
+        )
+        .ok()?;
+        value
+            .get("status")
+            .cloned()
+            .and_then(|status| serde_json::from_value(status).ok())
     }
 
     pub fn is_pane_output(ev: &BridgeEvent) -> bool {
@@ -428,47 +238,6 @@ impl CoreBridge {
 impl Drop for CoreBridge {
     fn drop(&mut self) {
         self.stop_polling();
-        if !self.handle.is_null() {
-            // `muxterm_free` 内部会再调一次 shutdown；勿先 shutdown 再 free，
-            // 避免后端二次清理导致堆损坏（集成测试里表现为后续 VTE 分配 double free）。
-            unsafe {
-                muxterm_free(self.handle);
-            }
-            self.handle = ptr::null_mut();
-        }
-    }
-}
-
-fn cstr_to_string(p: *const c_char) -> String {
-    if p.is_null() {
-        return String::new();
-    }
-    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
-}
-
-unsafe fn clone_layout(node: &CLayoutNode) -> BridgeLayout {
-    match node.type_ {
-        LAYOUT_SPLIT_H | LAYOUT_SPLIT_V => {
-            let first = if node.first.is_null() {
-                BridgeLayout::Leaf { pane_id: 0 }
-            } else {
-                clone_layout(&*node.first)
-            };
-            let second = if node.second.is_null() {
-                BridgeLayout::Leaf { pane_id: 0 }
-            } else {
-                clone_layout(&*node.second)
-            };
-            BridgeLayout::Split {
-                horizontal: node.type_ == LAYOUT_SPLIT_H,
-                ratio: node.ratio,
-                first: Box::new(first),
-                second: Box::new(second),
-            }
-        }
-        _ => BridgeLayout::Leaf {
-            pane_id: node.pane_id,
-        },
     }
 }
 
@@ -476,90 +245,10 @@ unsafe fn clone_layout(node: &CLayoutNode) -> BridgeLayout {
 // 无状态 discovery（本地 / SSH 目录、tmux session、SSH host）
 // ============================================================================
 
-/// core SSH host discovery 返回的条目。
-#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
-pub struct SshHostEntry {
-    pub alias: String,
-    pub hostname: String,
-    pub port: u16,
-    pub user: String,
-}
-
-/// core discovery 返回的工作区候选摘要（产品名，不是 tmux session）。
-///
-/// C9：JSON 带 `target`（connect name）+ 新 id 形状；旧 `windows/attached/created`
-/// 字段保留并默认缺省，老调用方不炸。
-#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
-pub struct WorkspaceCandidate {
-    pub name: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub runtime: String,
-    #[serde(default)]
-    pub transport: String,
-    #[serde(default)]
-    pub target: String,
-    #[serde(default)]
-    pub in_pool: bool,
-    #[serde(default)]
-    pub windows: u32,
-    #[serde(default)]
-    pub attached: bool,
-    #[serde(default)]
-    pub created: u64,
-}
-
-/// core 目录列表返回的条目。
-#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
-pub struct FsEntry {
-    pub name: String,
-    pub is_dir: bool,
-}
-
-/// 运行一次返回 JSON 的 discovery FFI，并解析为 serde 值。
-///
-/// 调用方负责在非 GTK 线程执行（SSH 查询可能阻塞数秒）。
-fn discovery_json<F>(call: F) -> anyhow::Result<serde_json::Value>
-where
-    F: FnOnce() -> *mut c_char,
-{
-    let raw = call();
-    if raw.is_null() {
-        anyhow::bail!(crate::platform::i18n::tr(
-            crate::platform::i18n::Key::ErrorCoreDiscoveryNoResponse
-        ));
-    }
-    let text = unsafe { CStr::from_ptr(raw) }
-        .to_string_lossy()
-        .into_owned();
-    unsafe { muxterm_free_string(raw) };
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-        anyhow::anyhow!(crate::platform::i18n::tr_args(
-            crate::platform::i18n::Key::ErrorCoreDiscoveryInvalidJson,
-            &[("error", &e.to_string())],
-        ))
-    })?;
-    if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        let error = value
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        anyhow::bail!(error.to_string());
-    }
-    Ok(value)
-}
-
-fn cstr_pair(value: Option<&str>) -> Option<CString> {
-    value.and_then(|s| CString::new(s).ok())
-}
-
 impl CoreBridge {
     /// 发现用户 SSH 配置中的 Host alias。
     pub fn discover_ssh_hosts() -> anyhow::Result<Vec<SshHostEntry>> {
-        let value = discovery_json(|| muxterm_discover_ssh_hosts_json(ptr::null()))?;
-        let hosts: Vec<SshHostEntry> = serde_json::from_value(value["hosts"].clone())?;
-        Ok(hosts)
+        FfiClient::discover_ssh_hosts()
     }
 
     /// 列出本地或远端目录条目。
@@ -568,20 +257,7 @@ impl CoreBridge {
         target: Option<&str>,
         path: &str,
     ) -> anyhow::Result<Vec<FsEntry>> {
-        let bt_c = CString::new(runtime_type).unwrap_or_default();
-        let target_c = cstr_pair(target);
-        let path_c = CString::new(path).unwrap_or_default();
-        let value = discovery_json(|| {
-            muxterm_list_dir_json(
-                bt_c.as_ptr(),
-                target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
-                ptr::null(),
-                path_c.as_ptr(),
-                10_000,
-            )
-        })?;
-        let entries: Vec<FsEntry> = serde_json::from_value(value["entries"].clone())?;
-        Ok(entries)
+        FfiClient::list_dir(runtime_type, target, path)
     }
 
     /// 发现本地或 SSH 工作区候选。
@@ -590,21 +266,7 @@ impl CoreBridge {
         target: Option<&str>,
         socket: Option<&str>,
     ) -> anyhow::Result<Vec<WorkspaceCandidate>> {
-        let bt_c = CString::new(runtime_type).unwrap_or_default();
-        let target_c = cstr_pair(target);
-        let sock_c = cstr_pair(socket);
-        let value = discovery_json(|| {
-            muxterm_discover_workspaces_json(
-                bt_c.as_ptr(),
-                target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
-                sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
-                ptr::null(),
-                10_000,
-            )
-        })?;
-        let sessions: Vec<WorkspaceCandidate> =
-            serde_json::from_value(value["workspaces"].clone())?;
-        Ok(sessions)
+        FfiClient::discover_workspaces(runtime_type, target, socket)
     }
 
     /// 创建 detached 工作区（Project attach→create fallback 用）。
@@ -615,37 +277,13 @@ impl CoreBridge {
         session: &str,
         directory: &str,
     ) -> anyhow::Result<String> {
-        let bt_c = CString::new(runtime_type).unwrap_or_default();
-        let target_c = cstr_pair(target);
-        let sock_c = cstr_pair(socket);
-        let sess_c = CString::new(session).unwrap_or_default();
-        let dir_c = CString::new(directory).unwrap_or_default();
-        let value = discovery_json(|| {
-            muxterm_workspace_create(
-                bt_c.as_ptr(),
-                target_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
-                sock_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null()),
-                ptr::null(),
-                sess_c.as_ptr(),
-                dir_c.as_ptr(),
-                10_000,
-            )
-        })?;
-        Ok(value["session"]
-            .as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| session.to_string()))
+        FfiClient::create_workspace(runtime_type, target, socket, session, directory)
     }
 }
 
 /// 构造常用 CTask 的便捷函数。
 pub mod tasks {
     use super::*;
-    use crate::core::protocol::ffi::types::{
-        DIR_HORIZONTAL, DIR_VERTICAL, TASK_CLOSE_PANE, TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB,
-        TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
-        TASK_TOGGLE_PANE_FULLSCREEN,
-    };
 
     pub fn split_h(target_pane: u32) -> CTask {
         CTask {
@@ -761,7 +399,7 @@ pub mod tasks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::protocol::ffi::types::{
+    use crate::ffi::{
         DIR_HORIZONTAL, DIR_VERTICAL, STATE_PANE_FRAME, STATE_PANE_OUTPUT, TASK_CLOSE_PANE,
         TASK_CLOSE_TAB, TASK_DETACH, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_SPLIT_PANE,
         TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
