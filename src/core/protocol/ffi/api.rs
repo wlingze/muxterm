@@ -12,7 +12,6 @@ use std::time::Duration;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
 use crate::core::attention::signal::AttentionSignal;
-use crate::core::catalog::ResolveIntent;
 use crate::core::config::parse_hex;
 use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 use crate::core::logging::{init_logging, LoggingConfig};
@@ -22,17 +21,21 @@ use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::protocol::terminal::input::KeyEvent;
-use crate::core::quickconnect::model::TargetTransport;
 use crate::core::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
-use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::terminal_model::TerminalModel;
 use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;
-pub use super::functions::catalog::{muxterm_candidates_json, muxterm_open_json};
+pub use super::functions::catalog::{
+    muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,
+};
+pub use super::functions::workspace::{
+    muxterm_workspace_activate, muxterm_workspace_close, muxterm_workspace_list,
+    muxterm_workspace_open,
+};
 use super::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, BACKEND_STATUS_CONNECTED,
     BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
@@ -1082,284 +1085,10 @@ fn legacy_runtime_spec(
 
 /// FFI legacy/workspace-open 没有单独的 scrollback 参数时，读取用户配置。
 /// 配置不可读时回退到 core 默认值，不能让 attach 直接失去历史。
-fn configured_scrollback_lines() -> usize {
+pub(crate) fn configured_scrollback_lines() -> usize {
     crate::core::config::Config::load()
         .map(|config| config.scrollback.lines.max(1) as usize)
         .unwrap_or(DEFAULT_SCROLLBACK_LINES)
-}
-
-/// 打开一个工作区并设为前台。0=ok，-1=err。
-///
-/// `transport`：`"local"` / `"ssh"`；`runtime`：`"tmux"` / `"shell"` / `"daemon"`。
-/// `alias`：SSH 的 `~/.ssh/config` Host 名；`session`：tmux session 名；
-/// `path`：shell 工作目录 / daemon socket 路径；`socket`：tmux `-L` socket 名。
-/// tmux 的 capture 与 Workspace/PaneBuf 历史上限统一读取 `[scrollback].lines`。
-///
-/// # Safety
-/// `h` 有效且未 free；字符串参数 NUL 结尾。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_workspace_open(
-    h: *mut MuxtermHandle,
-    transport: *const c_char,
-    alias: *const c_char,
-    session: *const c_char,
-    runtime: *const c_char,
-    path: *const c_char,
-    socket: *const c_char,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
-        let alias = cstr_opt(alias);
-        let session = cstr_opt(session).unwrap_or_default();
-        let runtime = cstr_opt(runtime).unwrap_or_else(|| "shell".into());
-        let path = cstr_opt(path).unwrap_or_default();
-        let socket = cstr_opt(socket);
-
-        let handle = &mut *h;
-        // Catalog 路径：未知 runtime / 不接受 transport → -1，不悄悄变 shell。
-        let spec = WorkspaceSpec {
-            transport: transport.clone(),
-            alias: alias.clone(),
-            session: session.clone(),
-            runtime: runtime.clone(),
-            path: path.clone(),
-            socket: socket.clone(),
-            create: false,
-            scrollback_lines: configured_scrollback_lines() as u32,
-            provenance: None,
-            template: None,
-        };
-        let fut = handle.catalog.open(&spec);
-        match handle.rt.block_on(fut) {
-            Ok(_) => 0,
-            Err(_) => -1,
-        }
-    }))
-    .unwrap_or(-1)
-}
-
-/// JSON 目标 → TargetConfig（W6 §11.3 additive 入口的解析）。
-/// 字段：name / runtime / transport("local"|"ssh") / target(SSH 别名) /
-/// path / session / socket(target-side) / workspace_id。未知字段忽略。
-pub(crate) fn target_config_from_json(
-    v: &serde_json::Value,
-) -> Option<crate::core::quickconnect::model::TargetConfig> {
-    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
-    let name = v.get("name")?.as_str()?.to_string();
-    let runtime = TargetRuntime::from_str(v.get("runtime")?.as_str()?)?;
-    let transport = match v.get("transport").and_then(serde_json::Value::as_str) {
-        Some("ssh") => TargetTransport::Ssh {
-            name: v.get("target")?.as_str()?.to_string(),
-        },
-        _ => TargetTransport::Local,
-    };
-    let path = v
-        .get("path")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let mut config = TargetConfig::new(name, runtime, transport, path);
-    config.session = v
-        .get("session")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    config.socket = v
-        .get("socket")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    config.workspace_id = v
-        .get("workspace_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    Some(config)
-}
-
-pub(crate) fn resolved_target_json(
-    resolved: &crate::core::catalog::ResolvedTarget,
-) -> serde_json::Value {
-    let canonical = &resolved.canonical;
-    serde_json::json!({
-        "canonical": {
-            "name": canonical.name,
-            "runtime": canonical.runtime.as_str(),
-            "transport": match &canonical.transport {
-                TargetTransport::Local => "local",
-                TargetTransport::Ssh { .. } => "ssh",
-            },
-            "target": match &canonical.transport {
-                TargetTransport::Ssh { name } => name,
-                TargetTransport::Local => "",
-            },
-            "path": canonical.path,
-            "session": canonical.session,
-            "socket": canonical.socket,
-            "workspace_id": canonical.workspace_id,
-        },
-        "spec": {
-            "transport": resolved.spec.transport,
-            "alias": resolved.spec.alias,
-            "session": resolved.spec.session,
-            "runtime": resolved.spec.runtime,
-            "path": resolved.spec.path,
-            "socket": resolved.spec.socket,
-            "provenance": resolved.spec.provenance.as_ref().map(|provenance| {
-                serde_json::json!({
-                    "project_id": provenance.project_id.as_ref().map(ToString::to_string),
-                    "worktree_id": provenance.worktree_id.as_ref().map(ToString::to_string),
-                })
-            }),
-            "template": resolved.spec.template.as_ref().map(ToString::to_string),
-        },
-    })
-}
-
-/// 通过 JSON target 打开工作区（additive 入口，走 Catalog resolver）。
-///
-/// `target_json`：`{"name":"…","runtime":"herdr","transport":"local"|"ssh",
-/// "target":ssh别名,"path":项目目录,"session":…,"socket":target-side,
-/// "workspace_id":…}`。`intent`：`"attach_only"` 或 `"create_if_missing"`。
-/// 返回 `{"ok":true,"id":…}` 或 `{"ok":false,"error":…}`（`muxterm_free_string` 释放）。
-///
-/// # Safety
-/// `h` 有效且未 free；`target` / `intent` NUL 结尾。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_workspace_open_target_json(
-    h: *mut MuxtermHandle,
-    target: *const c_char,
-    intent: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || target.is_null() {
-            return json_error("handle 或 target 为空");
-        }
-        let Ok(target) = CStr::from_ptr(target).to_str() else {
-            return json_error("target 不是合法 UTF-8");
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(target) else {
-            return json_error("target JSON 解析失败");
-        };
-        let Some(config) = target_config_from_json(&value) else {
-            return json_error("target JSON 缺必要字段（name/runtime/transport）");
-        };
-        let intent = match cstr_opt(intent).as_deref() {
-            Some("create_if_missing") => ResolveIntent::CreateIfMissing,
-            _ => ResolveIntent::AttachOnly,
-        };
-        let handle = &mut *h;
-        let fut = handle.catalog.open_target(&config, intent);
-        match handle.rt.block_on(fut) {
-            Ok(workspace) => json_string(serde_json::json!({
-                "ok": true,
-                "id": workspace.id().as_str(),
-                "name": workspace.name(),
-                "resolved_target": workspace.resolved_target().map(resolved_target_json),
-            })),
-            Err(err) => json_error(err),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("workspace_open_target_json panic"))
-}
-
-/// 列出池里全部工作区，返回 JSON 字符串（`muxterm_free_string` 释放）。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_workspace_list(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let handle = &*h;
-        let workspaces: Vec<serde_json::Value> = handle
-            .pool()
-            .list()
-            .into_iter()
-            .map(|w| {
-                let resolved = w.resolved_target().map(resolved_target_json);
-                serde_json::json!({
-                    "id": w.id().as_str(),
-                    "name": w.name(),
-                    "runtime": w.state().workspace_runtime(),
-                    "active": handle.pool().active_id() == Some(w.id()),
-                    // W6 §11.3：optional resolved_target；旧消费者忽略未知字段。
-                    "resolved_target": resolved,
-                })
-            })
-            .collect();
-        json_string(serde_json::json!({ "ok": true, "workspaces": workspaces }))
-    }))
-    .unwrap_or_else(|_| json_error("workspace list panic"))
-}
-
-/// 激活池里一个工作区。0=ok，-1=err。
-///
-/// `id` 是 `muxterm_workspace_list` 返回的 `id` 字符串。
-///
-/// # Safety
-/// `h` 有效且未 free；`id` NUL 结尾。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_workspace_activate(
-    h: *mut MuxtermHandle,
-    id: *const c_char,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let Some(id) = cstr_opt(id) else {
-            return -1;
-        };
-        let wid = parse_workspace_id(&id);
-        let handle = &mut *h;
-        match handle.pool_mut().activate(&wid) {
-            Some(_) => 0,
-            None => -1,
-        }
-    }))
-    .unwrap_or(-1)
-}
-
-/// 关闭池里一个工作区（tmux Detach / shell Shutdown）。0=ok，-1=err。
-///
-/// # Safety
-/// `h` 有效且未 free；`id` NUL 结尾。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_workspace_close(h: *mut MuxtermHandle, id: *const c_char) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let Some(id) = cstr_opt(id) else {
-            return -1;
-        };
-        let wid = parse_workspace_id(&id);
-        let handle = &mut *h;
-        if handle.pool_mut().close(&wid) {
-            0
-        } else {
-            -1
-        }
-    }))
-    .unwrap_or(-1)
-}
-
-/// 从 `transport/alias/session/runtime/path` 字符串解析 WorkspaceId。
-fn parse_workspace_id(id: &str) -> WorkspaceId {
-    let parts: Vec<&str> = id.splitn(5, '/').collect();
-    let transport = parts.first().copied().unwrap_or("").to_string();
-    let alias = parts
-        .get(1)
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned);
-    let session = parts.get(2).copied().unwrap_or("").to_string();
-    let runtime = parts.get(3).copied().unwrap_or("").to_string();
-    let path = parts.get(4).copied().unwrap_or("").to_string();
-    WorkspaceId::new(&transport, alias.as_deref(), &session, &runtime, &path)
 }
 
 /// 释放 handle。

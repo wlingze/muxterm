@@ -3,10 +3,10 @@
 use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::core::catalog::OpenRequest;
+use crate::core::catalog::{OpenRequest, ResolveIntent};
 use crate::core::protocol::candidate::CandidateRef;
 
-use super::super::api::{json_error, json_string, resolved_target_json, MuxtermHandle};
+use super::super::api::{json_error, json_string, MuxtermHandle};
 
 /// List the unified Project/Worktree/Existing/Recent candidates.
 ///
@@ -116,4 +116,122 @@ pub unsafe extern "C" fn muxterm_open_json(
         }))
     }))
     .unwrap_or_else(|_| json_error("open request panic"))
+}
+
+/// JSON target → TargetConfig compatibility open path.
+///
+/// Product callers should prefer `muxterm_open_json`; this entry remains for
+/// migration clients that have not yet converted TargetConfig to OpenRequest.
+///
+/// # Safety
+/// `h` is valid and not freed; `target` and `intent` are NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_open_target_json(
+    h: *mut MuxtermHandle,
+    target: *const c_char,
+    intent: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || target.is_null() {
+            return json_error("handle 或 target 为空");
+        }
+        let Ok(target) = CStr::from_ptr(target).to_str() else {
+            return json_error("target 不是合法 UTF-8");
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(target) else {
+            return json_error("target JSON 解析失败");
+        };
+        let Some(config) = target_config_from_json(&value) else {
+            return json_error("target JSON 缺必要字段（name/runtime/transport）");
+        };
+        let intent = match super::super::api::cstr_opt(intent).as_deref() {
+            Some("create_if_missing") => ResolveIntent::CreateIfMissing,
+            _ => ResolveIntent::AttachOnly,
+        };
+        let handle = &mut *h;
+        let fut = handle.catalog.open_target(&config, intent);
+        match handle.rt.block_on(fut) {
+            Ok(workspace) => json_string(serde_json::json!({
+                "ok": true,
+                "id": workspace.id().as_str(),
+                "name": workspace.name(),
+                "resolved_target": workspace.resolved_target().map(resolved_target_json),
+            })),
+            Err(err) => json_error(err),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("workspace_open_target_json panic"))
+}
+
+pub(crate) fn target_config_from_json(
+    v: &serde_json::Value,
+) -> Option<crate::core::quickconnect::model::TargetConfig> {
+    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+
+    let name = v.get("name")?.as_str()?.to_string();
+    let runtime = TargetRuntime::from_str(v.get("runtime")?.as_str()?)?;
+    let transport = match v.get("transport").and_then(serde_json::Value::as_str) {
+        Some("ssh") => TargetTransport::Ssh {
+            name: v.get("target")?.as_str()?.to_string(),
+        },
+        _ => TargetTransport::Local,
+    };
+    let path = v
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let mut config = TargetConfig::new(name, runtime, transport, path);
+    config.session = v
+        .get("session")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    config.socket = v
+        .get("socket")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    config.workspace_id = v
+        .get("workspace_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Some(config)
+}
+
+pub(crate) fn resolved_target_json(
+    resolved: &crate::core::catalog::ResolvedTarget,
+) -> serde_json::Value {
+    let canonical = &resolved.canonical;
+    serde_json::json!({
+        "canonical": {
+            "name": canonical.name,
+            "runtime": canonical.runtime.as_str(),
+            "transport": match &canonical.transport {
+                crate::core::quickconnect::model::TargetTransport::Local => "local",
+                crate::core::quickconnect::model::TargetTransport::Ssh { .. } => "ssh",
+            },
+            "target": match &canonical.transport {
+                crate::core::quickconnect::model::TargetTransport::Ssh { name } => name,
+                crate::core::quickconnect::model::TargetTransport::Local => "",
+            },
+            "path": canonical.path,
+            "session": canonical.session,
+            "socket": canonical.socket,
+            "workspace_id": canonical.workspace_id,
+        },
+        "spec": {
+            "transport": resolved.spec.transport,
+            "alias": resolved.spec.alias,
+            "session": resolved.spec.session,
+            "runtime": resolved.spec.runtime,
+            "path": resolved.spec.path,
+            "socket": resolved.spec.socket,
+            "provenance": resolved.spec.provenance.as_ref().map(|provenance| {
+                serde_json::json!({
+                    "project_id": provenance.project_id.as_ref().map(ToString::to_string),
+                    "worktree_id": provenance.worktree_id.as_ref().map(ToString::to_string),
+                })
+            }),
+            "template": resolved.spec.template.as_ref().map(ToString::to_string),
+        },
+    })
 }
