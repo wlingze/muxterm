@@ -147,7 +147,7 @@ fn rand_nanos() -> u32 {
 /// core `State`：2 tab、当前 tab 3 leaf、四个 token 都在某个 pane_output 里。
 #[allow(dead_code)]
 pub fn assert_core_painted_topology(
-    state: &dyn muxterm::core::model::state::State,
+    state: &dyn muxterm::core::protocol::state::State,
     ws: &PaintedWorkspace,
 ) {
     let tabs = state.tabs();
@@ -192,13 +192,13 @@ pub fn assert_core_painted_topology(
 
 /// 数一批事件里的 PaneOutput。
 #[allow(dead_code)]
-pub fn count_pane_output_events(events: &[muxterm::core::model::state::StateChange]) -> usize {
+pub fn count_pane_output_events(events: &[muxterm::core::protocol::state::StateChange]) -> usize {
     events
         .iter()
         .filter(|e| {
             matches!(
                 e,
-                muxterm::core::model::state::StateChange::PaneOutput { .. }
+                muxterm::core::protocol::state::StateChange::PaneOutput { .. }
             )
         })
         .count()

@@ -24,9 +24,9 @@ use gtk4::prelude::*;
 
 use muxterm::core::catalog::Catalog;
 use muxterm::core::config::{Action, Config};
-use muxterm::core::model::backend::RuntimeCapability;
-use muxterm::core::model::task::TaskOutcome;
+use muxterm::core::protocol::task::TaskOutcome;
 use muxterm::core::quickconnect::model::{QuickConnect, TargetConfig};
+use muxterm::core::runtime::RuntimeCapability;
 use muxterm::platform::linux::window::AppWindow;
 
 use support::herdr_test_support::herdr_available;

@@ -12,7 +12,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::core::model::backend::mock::MockRuntime;
+use muxterm::core::runtime::mock::MockRuntime;
 use muxterm::core::types::PaneId;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::core::workspace::workspace::Workspace;

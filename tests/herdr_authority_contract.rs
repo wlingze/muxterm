@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Context, Result};
 
 use muxterm::core::catalog::Catalog;
-use muxterm::core::model::layout::SplitDir;
-use muxterm::core::model::state::{MutationResult, StateChange};
-use muxterm::core::model::task::{Task, TaskOutcome};
+use muxterm::core::protocol::layout::SplitDir;
+use muxterm::core::protocol::state::{MutationResult, StateChange};
+use muxterm::core::protocol::task::{Task, TaskOutcome};
 use muxterm::core::runtime::HerdrRuntime;
 use muxterm::core::types::{PaneId, TabId};
 use muxterm::core::workspace::spec::WorkspaceSpec;

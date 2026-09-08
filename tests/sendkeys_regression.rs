@@ -116,10 +116,10 @@ fn send_keys_pure_special_produces_single_special_command() {
 /// 通过 TmuxRuntime 发送 echo MARKER + Enter，用原生 tmux capture-pane 验证。
 #[test]
 fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
-    use muxterm::core::model::task::Task;
-    use muxterm::core::model::TerminalModel;
+    use muxterm::core::protocol::task::Task;
     use muxterm::core::protocol::terminal::input::KeyEvent;
     use muxterm::core::runtime::TmuxRuntime;
+    use muxterm::core::workspace::terminal_model::TerminalModel;
 
     let socket = unique_socket("backend-sk");
     let session = format!("sk-test-{}", rand_suffix());

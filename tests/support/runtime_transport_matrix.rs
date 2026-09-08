@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 
-use muxterm::core::model::backend::RuntimeCapability;
-use muxterm::core::model::layout::{LayoutNode, SplitDir};
-use muxterm::core::model::state::{BackendStatus, MutationResult, StateChange};
-use muxterm::core::model::task::{Task, TaskOutcome};
+use muxterm::core::protocol::layout::{LayoutNode, SplitDir};
+use muxterm::core::protocol::state::{BackendStatus, MutationResult, StateChange};
+use muxterm::core::protocol::task::{Task, TaskOutcome};
 use muxterm::core::protocol::terminal::emulate::TerminalState;
+use muxterm::core::runtime::RuntimeCapability;
 use muxterm::core::types::{PaneId, TabId};
 use muxterm::core::workspace::spec::WorkspaceSpec;
 use muxterm::core::workspace::workspace::Workspace;

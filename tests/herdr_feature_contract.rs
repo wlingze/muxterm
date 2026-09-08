@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use muxterm::core::attention::signal::AttentionSignal;
 use muxterm::core::attention::state::PaneStatus;
-use muxterm::core::model::layout::{LayoutNode, SplitDir};
-use muxterm::core::model::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
-use muxterm::core::model::task::Task;
+use muxterm::core::protocol::layout::{LayoutNode, SplitDir};
+use muxterm::core::protocol::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
+use muxterm::core::protocol::task::Task;
 use muxterm::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
 use muxterm::core::runtime::HerdrRuntime;
 use muxterm::core::workspace::id::WorkspaceId;
@@ -312,7 +312,7 @@ fn herdr_runtime_split_pane_down_updates_vertical_layout() {
         })
         .expect("Herdr down SplitPane 应成功");
     let operation_id = match outcome {
-        muxterm::core::model::task::TaskOutcome::Accepted { operation_id } => operation_id,
+        muxterm::core::protocol::task::TaskOutcome::Accepted { operation_id } => operation_id,
         other => panic!("SplitPane 必须 Accepted，实际 {other:?}"),
     };
 
@@ -330,7 +330,7 @@ fn herdr_runtime_split_pane_down_updates_vertical_layout() {
                 assert_eq!(settled_id, operation_id, "settlement operation 不匹配");
                 assert_eq!(
                     result,
-                    muxterm::core::model::state::MutationResult::Completed,
+                    muxterm::core::protocol::state::MutationResult::Completed,
                     "SplitPane 必须 Completed"
                 );
                 settled = true;
