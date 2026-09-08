@@ -1,11 +1,8 @@
 # HERDR-TESTING.md — Herdr、Runtime×Transport 与 CI 验收契约
 
-> 状态：测试契约 + W10 本地实现复核（2026-08-25）；远端 required CI 尚未在当前 HEAD 复核
-> 最终复核：`2026-08-25T12:10:25+08:00`（CST；当前 HEAD、旧 PR #20 required logs、
-> 本地门禁均已核对；未 push）
-> Runtime 设计：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)
-> 总测试规范：[`TESTING.md`](TESTING.md)
-> 实施计划：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
+隔离 named session。禁止无名字的 `herdr server stop`。禁止 `visible_ansi` 进 VTE。
+required 格不得 skip。Runtime 设计：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)。
+总测试规范：[`TESTING.md`](TESTING.md)。前端走 `ffi_client`，没有前后台 slot。
 
 本文回答两个问题：
 

@@ -1,8 +1,9 @@
-# Linux 终端渲染优化调研报告
+# Linux 终端渲染优化
 
-> 调研时间：2026-07-24
-> 验证环境：Arch Linux, vte4 0.84.0, gtk4 4.22.4
-> 项目：muxterm (wlingze/muxterm)
+`frontend/linux` 的 Surface 渲染。Core 不拥有字形；live API 是原始字节 feed，不是 `visible_ansi`。
+像素定律：[`SURFACE.md`](SURFACE.md)。前端 Scene：[`FRONTEND.md`](FRONTEND.md)。
+
+验证环境：Arch Linux, vte4 0.84.0, gtk4 4.22.4。
 
 ## 一、VTE4 (vte4-gtk4) 的性能瓶颈
 

@@ -16,7 +16,6 @@ tests/logs/
 .env
 .codex-next-task.md
 .codex-*.md
-REFACTOR-PLAN.md
 migration-plan.md
 build/
 .build-target/
