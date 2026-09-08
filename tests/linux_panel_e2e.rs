@@ -20,7 +20,6 @@ use support::linux_gtk::*;
 
 use muxterm::core::attention::engine::PaneAttention;
 use muxterm::core::attention::state::PaneStatus;
-use muxterm::core::transport::ssh::probe::SshReach;
 use muxterm::core::workspace::id::WorkspaceId;
 use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::platform::linux::quickconnect::model::{
@@ -28,6 +27,7 @@ use muxterm::platform::linux::quickconnect::model::{
 };
 use muxterm::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
 use muxterm::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use muxterm::platform::ssh_probe::SshReach;
 
 fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
     PaneAttention {
