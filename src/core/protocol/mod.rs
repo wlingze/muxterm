@@ -2,6 +2,15 @@
 
 pub mod terminal;
 
+// The DTO source files remain in their legacy location for this incremental
+// migration, but these declarations make protocol the owning module tree.
+#[path = "../model/layout.rs"]
+pub mod layout;
+#[path = "../model/state.rs"]
+pub mod state;
+#[path = "../model/task.rs"]
+pub mod task;
+
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
@@ -10,12 +19,6 @@ pub mod ffi;
 /// The implementation files are still kept under the legacy `model` module
 /// during the incremental migration, but callers use this boundary so the
 /// eventual crate split does not change every Runtime/frontend import again.
-#[allow(unused_imports)]
-pub use crate::core::model::layout;
-#[allow(unused_imports)]
-pub use crate::core::model::state;
-#[allow(unused_imports)]
-pub use crate::core::model::task;
 
 /// Runtime 能力声明。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
