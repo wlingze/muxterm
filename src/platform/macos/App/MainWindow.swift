@@ -1569,6 +1569,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         query: String
     ) {
         if let workspaceId, !activateWorkspaceIfAvailable(workspaceId) {
+            // replica id 字符串暂时对不上时，若当前连接已经有这个 pane，
+            // 仍立即跳转（Linux jump_to_attention_pane 同语义）。只有跨
+            // Workspace 且目标 slot 尚未 ready 才排队等下一轮 poll。
+            if bridge.tabId(containingPane: paneId) != nil {
+                pendingPanelJump = nil
+                performWhenForegroundReady { [weak self] in
+                    self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
+                }
+                return
+            }
             pendingPanelJump = PendingPanelJump(
                 workspaceId: workspaceId,
                 tabId: tabId,
@@ -1682,14 +1692,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
             return
         }
-        // 侧栏点击需要立即反映乐观切换；下一轮权威 snapshot 会再次校准。
-        // 这样点击跨 tab 的 Agent/Command 后不会先跳回旧 row 的高亮。
+        // select-pane 的状态事件可能被 Surface catch-up 推迟；先乐观
+        // 更新快照和焦点，与 nextPane 同语义。权威 snapshot 下一轮校准。
+        lastSnapshot.activePane = paneId
+        lastSnapshot.panes = lastSnapshot.panes.map { pane in
+            Pane(
+                id: pane.id,
+                cols: pane.cols,
+                rows: pane.rows,
+                isActive: pane.id == paneId
+            )
+        }
+        content.paneLayout.markActivePane(paneId)
+        terminalManager.focusTarget = terminalManager.view(for: paneId)
         workspaceSidebar.setActiveTarget(
             workspaceId: activeWorkspaceReplicaID,
-            tabId: resolvedTab,
+            tabId: resolvedTab ?? lastSnapshot.activeTab,
             paneId: paneId
         )
         needsLayoutReload = true
+        restoreTerminalFocusIfAllowed()
         if seq > 0 || !query.isEmpty {
             pendingSearchJump = PendingSearchJump(paneId: paneId, seq: seq, query: query)
             applyPendingSearchJumpIfReady()
@@ -3515,6 +3537,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {
             scheduleBackgroundSlotPoll()
+            // 积压 Surface 只推迟新的 pollEvents，不能把已经生效的
+            // SwitchPane/面板跳转一起饿死。
+            if needsLayoutReload {
+                refreshUI()
+            }
+            retryPendingPanelJump()
             return
         }
         terminalManager.beginEventBatch()
