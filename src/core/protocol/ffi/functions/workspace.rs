@@ -4,12 +4,92 @@ use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::core::protocol::ffi::api::{
-    configured_scrollback_lines, cstr_opt, json_error, json_string, MuxtermHandle,
+    configured_scrollback_lines, cstr_opt, discovery_timeout, json_error, json_string,
+    MuxtermHandle,
 };
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::spec::WorkspaceSpec;
 
 use super::catalog::resolved_target_json;
+
+/// Create a detached tmux session through the Core discovery service.
+#[no_mangle]
+pub extern "C" fn muxterm_workspace_create(
+    transport_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    config_path: *const c_char,
+    session: *const c_char,
+    directory: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let transport = cstr_opt(transport_type)
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        let target = cstr_opt(target);
+        let socket = cstr_opt(socket);
+        let config_path = cstr_opt(config_path);
+        let Some(session) = cstr_opt(session).filter(|value| !value.trim().is_empty()) else {
+            return json_error("tmux session name is required");
+        };
+        let Some(directory) = cstr_opt(directory).filter(|value| !value.trim().is_empty()) else {
+            return json_error("tmux working directory is required");
+        };
+
+        let result = match transport.as_str() {
+            "local" => crate::core::discovery::create_local_tmux_session(
+                socket.as_deref(),
+                &session,
+                &directory,
+            ),
+            "ssh" => {
+                let Some(alias) = target.as_deref().filter(|value| !value.trim().is_empty()) else {
+                    return json_error("SSH session creation requires a host alias");
+                };
+                crate::core::discovery::create_ssh_tmux_session(
+                    alias,
+                    config_path.as_deref(),
+                    socket.as_deref(),
+                    &session,
+                    &directory,
+                    discovery_timeout(timeout_ms),
+                )
+            }
+            _ => return json_error(format!("unsupported session transport: {transport}")),
+        };
+        match result {
+            Ok(()) => json_string(serde_json::json!({
+                "ok": true,
+                "session": session,
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("tmux session creation panic"))
+}
+
+/// Deprecated alias for `muxterm_workspace_create`.
+#[no_mangle]
+pub extern "C" fn muxterm_create_tmux_session_json(
+    transport_type: *const c_char,
+    target: *const c_char,
+    socket: *const c_char,
+    config_path: *const c_char,
+    session: *const c_char,
+    directory: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    muxterm_workspace_create(
+        transport_type,
+        target,
+        socket,
+        config_path,
+        session,
+        directory,
+        timeout_ms,
+    )
+}
 
 /// Open a workspace through the compatibility WorkspaceSpec-shaped ABI.
 ///
