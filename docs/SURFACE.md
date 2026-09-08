@@ -1,12 +1,9 @@
 # SURFACE.md — 单面架构与常驻场景
 
-> 机制名：**Surface**（中文：**单面**）
-> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
-> 像素定律（§3）自 2026-08-15 起有效；2026-08-24 纠偏见 §7。
-> 2026-09-08：常驻 Scene + 单事件泵；删除 warm/cold slot、`bridgeLock`、串行后台队列、前台校准（§8–§9）。
-> 产品层级：[`WORKSPACE.md`](WORKSPACE.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
-> Herdr full/diff：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5。
-> 参考树：`/home/wlz/Developer/terminal/`（只读，不进本仓库）
+机制名：**Surface**（中文：**单面**）。产品层级：[`WORKSPACE.md`](WORKSPACE.md)。
+Runtime：[`RUNTIME.md`](RUNTIME.md)。
+Herdr full/diff：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §4–§5。
+参考树：`/home/wlz/Developer/terminal/`（只读，不进本仓库）。
 
 **一句话：** 每个已打开 pane 只有一个前端 VT 负责画面；Runtime 交出原始字节，Workspace 不画像素。
 每个已打开 Workspace 一棵常驻 Scene。切换 = 换可见场景，点击路径零 Core 调用、零锁等待。
@@ -14,9 +11,9 @@
 
 ---
 
-## 0. 为什么 dump 路径是错的（历史，2026-08-15）
+## 0. 为什么不能把 Index dump 成 ANSI
 
-Linux 当时的显示路径（Phase C–E 叠出来的）：
+错误路径：
 
 ```text
 程序 → tmux server VT
@@ -34,7 +31,7 @@ Linux 当时的显示路径（Phase C–E 叠出来的）：
 `1365` / `2730` 不是两份完整帧，是同一帧被 tmux 切碎的前后半，必须按序 `feed`。
 用户贴的「同一段话越来越长」是验收用例：可见文本里必须 **只有一行** 该句。
 
-这条路径已经作废。下文定律仍然以它为反面教材。
+live 路径禁止这样做。定律见 §3。
 
 ### 0.1 输入通道（与画面病分开）
 
@@ -44,7 +41,7 @@ ivyTerm 按键走 `-H`，剪贴板走 `-l`。Surface 输入必须是 **字节通
 
 ---
 
-## 1. 三角色（2026-09-08 用三条 lane 重述）
+## 1. 三角色（三条 lane）
 
 | 角色 | 对应 lane / 组件 | 职责 | 禁止 |
 |---|---|---|---|
@@ -77,10 +74,10 @@ Muxterm 切 tab 曾经慢且白，是因为做了别人不做的两件事：
 2. `LayoutHost::apply_layout` `panes.retain(当前布局)`——换 window 就把上一窗的 VTE **扔掉**
 
 Surface 方案要快，必须：**别的 tab 的 PaneSurface 留着**，只从 widget 树摘下、再挂回去。
-2026-09-08 把同一条推广到 **Workspace 级常驻 Scene**。
+同一条推广到 **Workspace 级常驻 Scene**。
 
-旧文档把「多路 + 快切」命名为 `ConnectionPool` / `WarmConnectionSlot`。那套机制 **已删除**（§8–§9）。
-连接复用在 Core `ConnectionRegistry`；像素常驻在 frontend Scene。
+连接复用在 Core `ConnectionRegistry`；像素常驻在 frontend Scene。不要在 frontend 再做
+warm/cold slot。见 §8–§9。
 
 ---
 
@@ -141,16 +138,16 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。
 
 ---
 
-## 4. 和旧计划的关系
+## 4. 组件对照
 
-| 旧物 | Surface 下 |
+| 组件 | 职责 |
 |---|---|
-| `LINUX-PLAN` Phase C/D/E | 控制面/chrome 可留；**显示路径作废** |
-| ReplicaStore | 降为 Index |
-| `scroll_history` + 几何 ANSI | 删除显示用途 |
-| WarmConnectionSlot / ConnectionPool / `bridgeLock` | **删除**。见 §8–§9 |
-| `set_foreground` 作为 frontend 产品 API | **删除**。Herdr control/observe 是 adapter 内部 |
-| 搜索 / attention | Activity lane + Overlay；小终端也是 Surface，禁止 dump |
+| Index（原 ReplicaStore） | 搜索 / OSC 133 / BEL；不灌 Surface |
+| PaneHistory | 第一次打开按行写入 native scrollback，不是 VT `feed` 重放 |
+| ConnectionRegistry | Core 侧连接复用 |
+| Scene / EventPump | 常驻视图 + 唯一 FFI 事件泵。见 §8–§9 |
+| Herdr control/observe | adapter 内部 wire 事实，不是 frontend 的 `set_foreground` |
+| Activity Overlay | commands / agents / attention；小终端也是 Surface，禁止 dump |
 
 ---
 
@@ -200,17 +197,16 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。
 | 控制模式是文本，客户端自己画 | [tmux wiki Control Mode](https://github.com/tmux/tmux/wiki/Control-Mode) |
 
 GTK4 `GtkStack` 一次只显示一个子 widget，子页面仍留在树里
-（[class.Stack](https://docs.gtk.org/gtk4/class.Stack.html)，核对 2026-09-08）。
+（[class.Stack](https://docs.gtk.org/gtk4/class.Stack.html)）。
 常驻多 Scene 的稳态绘制成本 ≈ 单 Scene。
 
 ---
 
-## 7. 2026-08-24：字节直达（纠偏）
+## 7. 字节直达
 
-文档 2026-08-15 已经禁止 dump。实现后来把 Workspace/PaneBuf 当成显示缓存：切 tab
-`pause`+capture，再用 `surface_seed_ansi` 灌进 SwiftTerm。卡顿和「历史只能滑一点」都来自这条。
+Workspace 和 Index 不是显示缓存。切 tab 禁止 `pause`+capture 再用 `surface_seed_ansi` 灌进 Surface。
 
-### 7.1 内容去处（2026-09-08：三条 lane）
+### 7.1 三条 lane
 
 Runtime 解析 wire 之后交出三类产品数据。Workspace 和前端都看不见 `%output` / `capture-pane` / `$N`。
 
@@ -255,7 +251,7 @@ Workspace **不**解析控制协议，不画像素，不把 Index 网格再编�
 
 ---
 
-## 8. 常驻 Scene + 单事件泵（2026-09-08）
+## 8. 常驻 Scene + 单事件泵
 
 平台无关词汇（各前端用本语言实现同一套）：
 
@@ -289,7 +285,7 @@ CoreBridge 瘦身为 FFI + DTO 解码。ConnectionPool 的 warm/cold 概念删�
 
 ---
 
-## 9. 切换延迟不是 tmux 全局锁（2026-09-08 dogfood）
+## 9. 切换延迟不是 tmux 全局锁
 
 侧栏快速切换时看到的「远端校准在抢锁」、以及 `workspace activation ready … elapsed_ms≈3400 / 5260`，
 **不是**「多个客户端挂到同一个 tmux session 上，抢了一把 tmux 全局锁」。

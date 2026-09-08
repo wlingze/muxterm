@@ -1,10 +1,7 @@
 # Muxterm Transport 与协议分层
 
-> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
-> **本文不再是 2026-07-28 的四模式施工单。** 旧 `RuntimeMode { LocalShell, LocalTmux, SshShell, SshTmux }`、
-> Session/Window 协议、`muxterm_open(mode)` 全部作废。
-> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
-> Catalog：[`CATALOG.md`](CATALOG.md)。Config：[`CONFIG.md`](CONFIG.md)。
+产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
+Catalog：[`CATALOG.md`](CATALOG.md)。Config：[`CONFIG.md`](CONFIG.md)。
 
 **一句话：** 主链是 **Frontend（ffi_client）→ Muxterm 组合根 → Workspace → Runtime → ByteChannel**。
 Runtime 与 Transport 独立组合。SSH 只提供连接和字节流。
@@ -106,9 +103,7 @@ local：`Exec` + `UnixSocket`。ssh：远端 `Exec` + socket 转发。
 
 ---
 
-## 4. 仍有效的工程选择
-
-这些从 2026-07-28 文稿保留：
+## 4. 工程选择
 
 - 系统 `ssh <alias>`，不自研 SSH。
 - Transport 是字节管道，不懂 Tab/Pane。
@@ -116,11 +111,11 @@ local：`Exec` + `UnixSocket`。ssh：远端 `Exec` + socket 转发。
 - Config 不是 Runtime 的子层（细节 [`CONFIG.md`](CONFIG.md)）。
 - FFI 不把 Core 内部 buffer 借给 frontend 长期持有；poll 时复制 bytes。
 
-## 5. 明确作废
+## 5. 禁止
 
-- `RuntimeMode` 0=LocalShell … 3=SshTmux
+- `RuntimeMode` 复合变体（`LocalShell` / `SshTmux` …）
 - `muxterm_get_sessions` / `muxterm_get_windows` 作为产品 API
-- Core Protocol 的 Session/Window 层级
+- 产品层 Session / Window
 - `Backend` / `TerminalModel` 作为数据仓库
-- DaemonBackend 作为用户可选 Runtime
-- `src/platform` 直接 `use` Core 内部模块
+- daemon 作为用户可选 Runtime
+- frontend 直接 `use` Core 内部模块

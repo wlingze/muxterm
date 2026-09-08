@@ -1,11 +1,8 @@
 # CATALOG.md — Catalog 是「能打开什么」的目录
 
-> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
-> 代码现状：Catalog 仍是 god facade（插件表 + Connect + Inventory + Pool），FFI handle
-> 仍指向它。目标：Catalog 收窄；组合根是 `Muxterm`。
-> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
-> 像素：[`SURFACE.md`](SURFACE.md)。
-> Herdr identity：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
+产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
+像素：[`SURFACE.md`](SURFACE.md)。
+Herdr identity：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
 
 **一句话：** Catalog 回答三个问题：有哪些 Runtime / Transport 可选；某个 target 上现在有哪些
 可 attach 的东西；用户选中的 Candidate 应解析成什么 `WorkspaceSpec`。它**不拥有** Workspace、
@@ -78,8 +75,7 @@ attach 需要远端 pty：`ssh -tt -o ConnectTimeout=10`。
 没有 Catalog 时，QuickConnect、CLI、macOS 各自发现、各自拼 spec、各自 fallback。
 有 Catalog 之后：发现、探活、兼容性检查、结构化错误只有一处。
 
-它**不是**为了再做一个「什么都往里塞」的单例。Pool、连接复用、Project 打开都曾经挂在
-Catalog 上，职责说不清。本轮拆成：
+Catalog **不是**「什么都往里塞」的单例。组合关系：
 
 ```text
 Muxterm

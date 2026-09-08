@@ -1,16 +1,13 @@
 # RUNTIME.md — Runtime 是什么
 
-> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
-> 代码现状：trait 仍在 `src/core/model/backend.rs`，`RuntimeMode` 2×2 facade 仍在，
-> `DaemonRuntime` 仍是独立 adapter。新代码按本文写。
-> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md)。
-> tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
-> 像素：[`SURFACE.md`](SURFACE.md)。Herdr 流/身份：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)。
-> 专项门禁：[`HERDR-TESTING.md`](HERDR-TESTING.md)。
->
-> 核对：本机 `herdr` 与官方 [Concepts](https://herdr.dev/docs/concepts/)、
-> [Socket API](https://herdr.dev/docs/socket-api/)、[CLI](https://herdr.dev/docs/cli-reference/)
-> 仍是 adapter 实现的权威来源；产品层不出现 Herdr wire 名。
+产品树：[`WORKSPACE.md`](WORKSPACE.md)。Catalog：[`CATALOG.md`](CATALOG.md)。
+tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
+像素：[`SURFACE.md`](SURFACE.md)。Herdr 流/身份：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)。
+专项门禁：[`HERDR-TESTING.md`](HERDR-TESTING.md)。
+
+Herdr adapter 以官方 [Concepts](https://herdr.dev/docs/concepts/)、
+[Socket API](https://herdr.dev/docs/socket-api/)、[CLI](https://herdr.dev/docs/cli-reference/)
+为准；产品层不出现 Herdr wire 名。
 
 **一句话：** Runtime 是给一个 Muxterm Workspace **填** Tab/Pane、收字节、执行 Task 的接口。
 tmux、shell、Herdr 都是实现。SSH 不是 Runtime，是 Transport。GUI 不许按实现名字写
@@ -96,7 +93,7 @@ runtime::herdr::register(registry)
 
 需要 `Box<dyn Runtime>`，因此 async 方法用 `#[async_trait]`。
 （Rust 1.75 起 trait 内 `async fn` 脱糖为 `impl Future`，不可 dyn 分发：
-[Rust 1.75.0 blog](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0/)，核对 2026-09-08。）
+[Rust 1.75.0 blog](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0/)。）
 
 ```rust
 #[async_trait]

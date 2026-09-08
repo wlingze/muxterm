@@ -1,11 +1,9 @@
 # WORKSPACE.md — Muxterm 产品结构与 Core 边界
 
-> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
-> 代码现状：仍接近 2026-08 的 Catalog-含-Pool 树。新代码按本文写。
-> Catalog：[`CATALOG.md`](CATALOG.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
-> 像素：[`SURFACE.md`](SURFACE.md)。配置：[`CONFIG.md`](CONFIG.md)。
-> 身份：[`ID-SYSTEM.md`](ID-SYSTEM.md)。Herdr 身份细节：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
-> tmux 适配（只给 `runtime/tmux`）：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
+Catalog：[`CATALOG.md`](CATALOG.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
+像素：[`SURFACE.md`](SURFACE.md)。配置：[`CONFIG.md`](CONFIG.md)。
+身份：[`ID-SYSTEM.md`](ID-SYSTEM.md)。Herdr 身份细节：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md) §7。
+tmux 适配（只给 `runtime/tmux`）：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
 
 **一句话：** Muxterm 的结构是 **Muxterm → WorkspacePool → Workspace → Tab → Pane**。
 **Workspace = Runtime(Transport) + path**。GUI Window 只是某个 Workspace 的体现。

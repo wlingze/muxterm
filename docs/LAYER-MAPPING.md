@@ -3,7 +3,7 @@
 > **只给 `src/core/runtime/tmux/` 看。** 产品结构见 [`WORKSPACE.md`](WORKSPACE.md)。
 > Core Protocol / FFI / CLI / GUI **禁止**出现 tmux 的 session/window/pane 类型。
 > Herdr 对照在 [`RUNTIME.md`](RUNTIME.md) §6.2，不要写进本表。
-> 修订：2026-09-08 契约冻结。像素 [`SURFACE.md`](SURFACE.md)。
+> 像素 [`SURFACE.md`](SURFACE.md)。
 
 TmuxRuntime 是一个 **适配器**：把 tmux 控制模式填进 Muxterm 已经定好的
 **Workspace = Runtime(Transport) + path → Tab → Pane**。不是反过来让产品层去迁就 tmux。
@@ -69,7 +69,4 @@ Workspace "demo"          ← 产品；GUI Window 体现它
 
 外面的 list-workspaces / `muxterm_workspace_list` 看到的是 Workspace，不是 `$N`。
 
-## 旧模型（作废）
-
-`Session → 虚拟 w1 → Tab → Pane`。不要实现。
-`RuntimeMode { LocalTmux, SshTmux }`。不要实现。SSH 是 Transport，不是 Runtime 变体。
+产品树没有 Session / 虚拟 Window。SSH 是 Transport，不是 Runtime 变体。

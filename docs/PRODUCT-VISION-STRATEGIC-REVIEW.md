@@ -1,10 +1,5 @@
 # Muxterm 产品愿景与上层设计评审报告
 
-> **历史战略评审（2026-08-14）。** 横幅：2026-09-08。工程契约已改写：没有产品 Session/Window，
-> 没有 WarmConnectionSlot，daemon 不是独立 Runtime，Herdr 已接入。
-> 仍可作产品意图参考（工作区为切换单位、可见性、搜索）。不要按本文的工程分层施工。
-> 现行：[`../PRODUCT.md`](../PRODUCT.md)、[`WORKSPACE.md`](WORKSPACE.md)、[`SURFACE.md`](SURFACE.md)。
->
 > 对应任务书：`docs/PRODUCT-VISION-STRATEGIC-REVIEW-PROMPT.md`
 > 评审时间：**2026-08-13 23:05 CST (UTC+8)** 一轮；同日 23:31 二轮修订；
 > **2026-08-14 00:2x–01:4x CST 三轮（联网对标 + 竞态研判 + 方向定案）**

@@ -2,9 +2,7 @@
 
 跨平台终端：把 tmux / Herdr / 本地 shell 收成原生 Tab / Pane UI，而不是黑框 + `Ctrl+B`。
 
-产品层级是 **Workspace = Runtime(Transport) + path**。Linux（GTK4）、macOS（Swift）、TUI、CLI 都是 frontend，只经共享 Rust Core 的 C FFI。详见 [PRODUCT.md](PRODUCT.md)。
-
-> 2026-09-08 契约已冻结。代码仍在迁移（现行目录是 `src/platform/` 与单 package）。目标树见 [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md)。
+产品层级是 **Workspace = Runtime(Transport) + path**。Linux（GTK4）、macOS（Swift）、TUI、CLI 都是 frontend，只经共享 Rust Core 的 C FFI。详见 [PRODUCT.md](PRODUCT.md)。目录见 [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md)。
 
 ## 功能概览
 
@@ -194,27 +192,26 @@ muxterm -L muxterm list-workspaces
 
 `-s` 是工作区名，不是 tmux `$N`。不要对用户默认 server 跑 `kill-session`。
 
-## 项目结构（目标）
+## 项目结构
 
 ```text
 muxterm/
 ├── src/
 │   ├── lib.rs                 # 唯一 Core library root
 │   ├── main.rs                # 唯一 binary：薄入口，无 mod 声明
-│   ├── core/                  # 现状：单 crate 内的 Core（将拆 workspace crate）
-│   └── frontend/              # 目标目录；现状仍是 src/platform/
-│       ├── ffi_client.rs
-│       ├── cli/ tui/ linux/ macos/ windows/
-├── scripts/                   # 构建脚本
-├── configs/                   # 示例配置与主题
-├── tests/                     # 集成 / 回归测试
-├── docs/                      # 契约文档
+│   ├── core/
+│   └── frontend/              # cli / tui / linux / macos / windows + ffi_client
+├── scripts/
+├── configs/
+├── tests/
+├── docs/
 ├── PRODUCT.md
 ├── ARCHITECTURE.md
+├── TASKS.md
 └── AGENTS.md
 ```
 
-现行代码树与目标对照见 [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
+模块职责见 [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
 
 ## 开发指南
 
@@ -222,7 +219,8 @@ muxterm/
 
 1. [`PRODUCT.md`](PRODUCT.md) — 产品目标
 2. [`docs/WORKSPACE.md`](docs/WORKSPACE.md) — 产品树与打开路径
-3. [`AGENTS.md`](AGENTS.md) — commit / 测试 / tmux 安全
+3. [`TASKS.md`](TASKS.md) — 施工顺序
+4. [`AGENTS.md`](AGENTS.md) — commit / 测试 / tmux 安全
 
 常用命令：
 

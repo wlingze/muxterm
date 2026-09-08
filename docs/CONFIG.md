@@ -1,11 +1,7 @@
 # Muxterm Config Contract
 
-> 状态：已实现契约（`config_version = 1`），2026-09-08 补引用方向与 `[[templates]]`。
-> 本文是 Muxterm 配置系统的权威文档。代码、CLI、FFI、Linux GTK 和 macOS AppKit
-> 都必须以本文的字段语义和事务行为为准。
-> 产品树：[`WORKSPACE.md`](WORKSPACE.md)。目录：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
->
-> 核对时间：2026-09-08T15:02:22+08:00。
+`config_version = 1`。字段语义和事务行为以本文为准。
+产品树：[`WORKSPACE.md`](WORKSPACE.md)。目录：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
 
 ## 1. 设计目标
 

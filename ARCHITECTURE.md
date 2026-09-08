@@ -1,13 +1,12 @@
 # Muxterm Architecture
 
-> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
-> 代码现状：仍在旧树。施工顺序：仓库根目录 `refactor-muxterm-0908.md`（不入库）。
-> 产品树权威：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)。
-> Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。像素：[`docs/SURFACE.md`](docs/SURFACE.md)。
-> Catalog：[`docs/CATALOG.md`](docs/CATALOG.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
-> 目录：[`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
+产品树：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)。
+Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。像素：[`docs/SURFACE.md`](docs/SURFACE.md)。
+Catalog：[`docs/CATALOG.md`](docs/CATALOG.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
+目录：[`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。施工：[`TASKS.md`](TASKS.md)。
 
-本文只写分层与前端通用层。交互细节以 WORKSPACE / SURFACE 为准；不要在这里恢复 Session、虚拟 Window、复合 RuntimeMode 或 platform 连接池。
+本文写分层与前端通用层。交互细节以 WORKSPACE / SURFACE 为准。没有产品 Session、虚拟 Window、
+复合 RuntimeMode 或 frontend 连接池。
 
 ## 1. 分层
 
@@ -31,7 +30,7 @@ Muxterm library（src/lib.rs 是唯一 Core module root）
 
 依赖方向：**frontend → FFI → Core**。Core 不得 `use crate::frontend`（现状的 `platform`）。frontend 不得 `use` Runtime concrete type、WorkspacePool、discovery、VT emulate。
 
-唯一 binary：薄 `src/main.rs`，无 `mod` 声明，只调用 lib 的 frontend 启动函数。Cargo 惯例：默认可执行文件是 `src/main.rs`（[Cargo Book: Package Layout](https://doc.rust-lang.org/cargo/guide/project-layout.html)，核对 2026-09-08）。
+唯一 binary：薄 `src/main.rs`，无 `mod` 声明，只调用 lib 的 frontend 启动函数。Cargo 惯例：默认可执行文件是 `src/main.rs`（[Cargo Book: Package Layout](https://doc.rust-lang.org/cargo/guide/project-layout.html)）。
 
 目标 crate 分层（Phase 1–2）：`muxterm-protocol` / `muxterm-core` / `muxterm-runtime` / `muxterm-transport` / frontend。拆分完成前用 `rg` 门禁兜底。
 
@@ -79,21 +78,17 @@ frontend 只见 Candidate / OpenRequest。WorkspaceSpec 是 Core 内部。
 | CommandQueue | UI → Core 的 Task；合并同类命令 |
 | Overlay | QuickPanel / CommandPalette / Search / Attention |
 
-Linux Scene 容器是 `GtkStack` page：一次只显示一个子 widget，子页面仍留在树里（[GTK4 GtkStack](https://docs.gtk.org/gtk4/class.Stack.html)，核对 2026-09-08）。macOS 对照实现纪律：CoreBridge 是唯一 FFI 口，但 **WarmConnectionSlot / bridgeLock / 串行后台队列 / 前台校准要删除**，见 [`docs/SURFACE.md`](docs/SURFACE.md) §9。
+Linux Scene 容器是 `GtkStack` page：一次只显示一个子 widget，子页面仍留在树里（[GTK4 GtkStack](https://docs.gtk.org/gtk4/class.Stack.html)）。macOS：CoreBridge 是唯一 FFI 口，没有 WarmConnectionSlot / `bridgeLock` / 串行后台队列 / 前台校准，见 [`docs/SURFACE.md`](docs/SURFACE.md) §8–§9。
 
 切 Workspace / Tab 的点击路径：**零 FFI、零锁、首帧 ≤ 1 帧**。
 
-## 6. 仍有效的交互（各 GUI 必须一致）
-
-这些行为不依赖旧 `platform/` 目录名：
+## 6. 交互（各 GUI 必须一致）
 
 - 嵌套分割：每次只替换当前叶子 pane，不重新平铺全树。
-- 焦点：操作后焦点回到终端，不落到工具栏。
-- Tab 显示：序号 + 名字；多 pane 可加数量后缀。
+- 焦点：操作后焦点回到终端，不落到工具栏。不要底部输入框发 send-keys。
+- Tab 显示：序号 + 名字；多 pane 可加数量后缀。不要每个 pane 一个 Notebook tab。
 - 关 GUI 窗：有 `PersistDetach` 的 Runtime **detach**；shell **shutdown**。
 - 快捷键与命令面板走 Action Catalog，不按 GTK/AppKit 类型存盘。
-
-旧文里的「每个 pane 一个 Notebook tab」「底部输入框发 send-keys」「`title_watch` 每秒轮询」不再是契约。
 
 ## 7. 测试与安全
 

@@ -1,10 +1,8 @@
 # Muxterm
 
-> 契约冻结：2026-09-08（`2026-09-08T15:02:22+08:00`，Asia/Shanghai）
-> 代码现状：仍在旧树（`src/platform/`、Catalog 含 Pool、`RuntimeMode`、warm slot）。
-> 施工顺序不入库：仓库根目录 `refactor-muxterm-0908.md`。
-> 产品结构：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)。Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。
-> 像素 / 前端场景：[`docs/SURFACE.md`](docs/SURFACE.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
+产品结构：[`docs/WORKSPACE.md`](docs/WORKSPACE.md)。Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。
+像素 / 前端场景：[`docs/SURFACE.md`](docs/SURFACE.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
+施工：[`TASKS.md`](TASKS.md)。
 
 ## 一句话
 
@@ -30,13 +28,13 @@ GUI **Window 不是产品树节点**，只是某个 Workspace 的体现。产品
 
 ## 平台
 
-| 前端 | 形态 | 状态 |
-|------|------|------|
-| Linux | GTK4 + vte4，目录 `frontend/linux` | 现行实现在 `src/platform/linux`，按目标树迁移 |
-| macOS | Swift + SwiftTerm，目录 `frontend/macos` | 现行实现在 `src/platform/macos` |
-| TUI | ratatui，`muxterm tui` | 现行实现在 `src/platform/tui` |
-| CLI | 无 Scene；无 subcommand 即 CLI | 现行实现在 `src/platform/cli` |
-| Windows | 占位 `frontend/windows` | 本轮不实现 |
+| 前端 | 形态 |
+|------|------|
+| Linux | GTK4 + vte4，`frontend/linux` |
+| macOS | Swift + SwiftTerm，`frontend/macos` |
+| TUI | ratatui，`muxterm tui` |
+| CLI | 无 Scene；无 subcommand 即 CLI |
+| Windows | 占位 `frontend/windows` |
 
 唯一 binary 是薄 `src/main.rs`（禁止 `mod` 声明）：无 subcommand = CLI，`muxterm tui`，`muxterm gui`（linux→GTK4，macos→macOS 前端）。
 
@@ -60,14 +58,8 @@ QuickConnect / 命令面板列出 **Candidate**（Project / Worktree / Existing 
 
 切换已打开的 Workspace / Tab：**点击路径零 Core 调用、零锁等待**。每个已打开 Workspace 一棵常驻 Scene，每 pane 一个常驻 Surface。切换 = 换可见场景。
 
-已删除的机制（2026-09-08 dogfood 证实它们造成秒级激活延迟，且**不是** tmux 全局锁）：
-
-- warm / cold slot
-- 每 slot 一把 `bridgeLock`
-- 串行后台 poll 队列
-- 前台权威校准
-
-诊断摘要见 [`docs/SURFACE.md`](docs/SURFACE.md) §9；像素定律见同文档 §3。
+前端没有 warm/cold slot、`bridgeLock`、串行后台队列或前台校准。切换延迟不是 tmux 全局锁，
+机制见 [`docs/SURFACE.md`](docs/SURFACE.md) §8–§9。像素定律见同文档 §3。
 
 ## 能力与问询
 
@@ -92,5 +84,6 @@ GUI 问 Runtime 能力只用 `support()`，禁止 `if runtime == "herdr"`。Work
 | [`docs/SURFACE.md`](docs/SURFACE.md) | 单面、三条 lane、常驻 Scene、去锁 |
 | [`docs/CATALOG.md`](docs/CATALOG.md) | 能打开什么；不是组合根 |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | `config.toml` 契约 |
-| [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md) | 目标目录与 crate 分层 |
+| [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md) | 目录与 crate 分层 |
+| [`TASKS.md`](TASKS.md) | 施工顺序 |
 | [`AGENTS.md`](AGENTS.md) | coding agent 约定 |

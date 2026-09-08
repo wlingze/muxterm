@@ -7,10 +7,7 @@
 > 像素 / 常驻 Scene：[`docs/SURFACE.md`](docs/SURFACE.md)。
 > Catalog：[`docs/CATALOG.md`](docs/CATALOG.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
 > 目录：[`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
-> 施工顺序（不入库）：仓库根目录 `refactor-muxterm-0908.md`。
->
-> 契约冻结 2026-09-08。代码仍在旧树（`src/platform/`、Catalog 含 Pool、`RuntimeMode`）。
-> 新代码按目标契约写，不要把旧目录当长期架构。
+> 施工：[`TASKS.md`](TASKS.md)。
 
 ## 角色
 
@@ -22,7 +19,6 @@ TUI、CLI 都是 frontend。Core 是库；frontend 只经 C FFI + 统一 `ffi_cl
 
 - 先 `pwd` / `git status` 确认当前 worktree 与分支，不要假设路径。
 - 常见布局：bare 仓库 + worktree（例如 `~/Developer/self/muxterm/.worktree/...`）。
-  旧文档里的 `~/Project/muxterm/` 可能仍是某台机器上的 main worktree。
 - GitHub：`https://github.com/wlingze/muxterm`
 - Rust：系统 `rustc` / `cargo`（开发机曾实测 1.97.1）
 - tmux 3.x（开发机曾实测 3.7b）；GTK4 在 Linux 构建 GUI 时需要

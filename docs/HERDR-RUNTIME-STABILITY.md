@@ -1,21 +1,11 @@
 # HERDR-RUNTIME-STABILITY.md — Herdr Runtime 稳定性契约
 
-> 状态：Herdr adapter 专项契约（stream generation、mutation 收敛、identity）。
-> 横幅：2026-09-08。产品树 / 打开路径 / 像素以
-> [`WORKSPACE.md`](WORKSPACE.md)、[`CATALOG.md`](CATALOG.md)、[`SURFACE.md`](SURFACE.md) 为准。
-> 若本文出现 Catalog 含 Pool、`set_foreground` 作为 frontend API、platform 路径、
-> frontend 构造 WorkspaceSpec，以 2026-09-08 总契约为准；本文只约束 Herdr wire。
-> 适用分支（当时）：`feature/runtime/support_herdr`
-> 最终复核：`2026-08-25T12:10:25+08:00`
-> 实施计划（历史）：[`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
-> 测试契约：[`HERDR-TESTING.md`](HERDR-TESTING.md)
+Herdr adapter 专项：stream generation、mutation 收敛、identity。
+产品树：[`WORKSPACE.md`](WORKSPACE.md)。Runtime：[`RUNTIME.md`](RUNTIME.md)。
+像素：[`SURFACE.md`](SURFACE.md)。打开路径：[`CATALOG.md`](CATALOG.md)。
+测试：[`HERDR-TESTING.md`](HERDR-TESTING.md)。
 
-本文是 Herdr runtime 稳定化的专项设计契约。产品层级仍以
-[`WORKSPACE.md`](WORKSPACE.md) 为准，Runtime 公共语义以
-[`RUNTIME.md`](RUNTIME.md) 为准，像素路径以 [`SURFACE.md`](SURFACE.md)
-为准，发现与打开以 [`CATALOG.md`](CATALOG.md) 为准。本文只补充这些总契约
-没有展开的 Herdr stream 生命周期、创建收敛和连接身份规则；若本文与上述总契约
-冲突，先修正文档冲突，不允许实现 agent 自行选择一份。
+本文只补充上述文档没有展开的 Herdr wire 生命周期和连接身份。若与总契约冲突，改本文。
 
 ---
 
@@ -127,11 +117,10 @@ Muxterm protocol-19 wire 测试和官方 v0.8.0 release 为准；握手版本不
 
 ### 3.4 产品边界不变量
 
-- GUI 只能通过统一 Runtime/Pool 接口表达 foreground，禁止
-  `if runtime == "herdr"`。
-- Project、Recent、Existing 都必须经 `Catalog::open_target` →
-  `Catalog::open_resolved`；后者调用 Pool 的 descriptor-aware 打开入口。platform 与这些
-  产品入口都不能直接调用裸 `WorkspacePool::open_spec`。
+- GUI 问能力只用 `support()`，禁止 `if runtime == "herdr"`。
+- Project、Recent、Existing 都走 Candidate → `OpenRequest` → `Catalog::resolve` →
+  `WorkspacePool::open`。frontend 不构造 `WorkspaceSpec`，也不直接调用裸
+  `WorkspacePool::open_spec`。
 - Herdr session/socket/workspace id 不能只存在于 Linux widget 或 side table。
 
 ---
@@ -190,20 +179,19 @@ Herdr 协议 19 提供两种不同语义：
 - `ObserveTerminal`：只读，可有多个 observer，不拥有输入、resize 或 takeover 权。
 - `ControlTerminal`：可写，一个终端同时只有一个 controller。
 
-Muxterm 的策略锁死为：
+Muxterm 的策略锁死为（这是 **Herdr adapter 内部** 的 wire mode，不是 frontend 的前后台 slot）：
 
 | Workspace/Pane 状态 | desired mode |
 |---|---|
-| Pool 当前 active workspace 的 active pane | Control |
-| active workspace 的隐藏 pane 或隐藏 tab | Observe |
-| Pool 后台 workspace 的所有 pane | Observe |
+| 可见 Scene 的 focus pane | Control |
+| 已打开但未 focus 的 pane（含隐藏 tab / 隐藏 Scene） | Observe |
 | detach/shutdown/已关闭 pane | Stopped，无 stream |
 
-统一 Runtime trait 增加默认 no-op 的 `set_foreground(bool)`。Pool 在 active/background
-转换时调用它；HerdrRuntime 再结合自己的 active pane 计算 desired mode。tmux/shell
-不需要实现特殊行为。
+所有已打开 Workspace 的产品事件仍然常流（Control / Activity / Render 三条 lane）。
+frontend 不调用 `set_foreground`。HerdrRuntime 根据 Pool 给出的 focus pane 自己算
+desired mode。tmux/shell 不需要实现特殊行为。
 
-切 tab、切 pane和切 workspace 都执行一次 reconciliation：先算出所有 pane 的
+切 tab、切 pane 和切可见 Scene 都执行一次 reconciliation：先算出所有 pane 的
 desired mode，再对实际 registry 做最小变更。禁止在多个事件 handler 中分别
 start/replace 同一 pane。
 
@@ -212,7 +200,7 @@ start/replace 同一 pane。
 或真实 input 创建新的 `control_intent_epoch`。来自 Herdr 的重复 focus snapshot、相同
 Pool active 状态和 resize 都不是新的用户意图。
 
-仅由 open/reattach/`set_foreground(true)`/Pool activate 触发的首次 Control 尝试必须
+仅由 open/reattach/第一次成为可见 Scene 的 focus pane 触发的首次 Control 尝试必须
 `takeover=false`：没有别的 controller 时可正常获得 control，有冲突时降 Observe。只有
 `Task::SwitchPane` 等真实本地 focus edge，或用户第一笔真实 input，才允许该 intent 的首次
 Control handshake 使用 `takeover=true`；第一笔 input 进入 intent-bound queue，handshake 后
@@ -658,27 +646,18 @@ RuntimeConnect
 
 ### 8.1 公共 Core 接口
 
-- `Runtime::set_foreground(&mut self, foreground: bool)`：默认 no-op；Pool 驱动。
 - `StateChange::PaneIndexSnapshot { pane, data }`：只给 Index。
 - `TaskOutcome::Accepted { operation_id }`：异步 mutation 已进入有界队列，不是完成。
 - `StateChange::MutationSettled { operation_id, kind, result }`：异步 mutation 的唯一最终
   Completed/Failed 事件；失败携带产品阶段和原因。
-- `TargetConfig.workspace_id: Option<String>`：Project identity，不再复用 path。
-- `WorkspaceSpec.workspace_id: Option<String>`：Driver attach target，与项目 path 分离。
-- `ResolvedTarget { canonical: TargetConfig, spec: WorkspaceSpec }`：Core-owned 的规范连接描述。
+- `OpenRequest` / `Candidate`：frontend 可见的打开输入。
+- `WorkspaceSpec.workspace_id: Option<String>`：attach identity，与项目 path 分离。
 - `ResolveIntent::{AttachOnly, CreateIfMissing}`：把 attach 与显式创建权限分开。
-- `Catalog::resolve_target(&TargetConfig, ResolveIntent) -> Result<ResolvedTarget>`：
-  Project/Recent/Existing 共享解析器，但调用意图明确。
-- `Catalog::open_target(&TargetConfig, ResolveIntent)` / 内部
-  `open_resolved(&ResolvedTarget)`：打开并让 Pool 构造持有 descriptor 的 Workspace；低层裸
-  `open(&WorkspaceSpec)` 不能用于 Project/Recent/Existing。
-- `WorkspacePool::open_resolved(ResolvedTarget, runtime)`（签名可按现有 async/closure 风格
-  微调）：唯一 descriptor-aware 收编入口；构造 Workspace 时注入 descriptor，并在复用前做
-  identity/WorkspaceId collision 检查。
-- `Workspace::resolved_target()`（或等价 Pool 查询）：Core Recent 数据源，platform 只渲染。
-- `CWorkspaceStateChange` + `muxterm_poll_workspace_events(...)`：additive FFI；保留
-  WorkspaceId 后再把 raw Surface event 交给 platform。旧 `muxterm_poll_events` 只返回 active
-  workspace，不能继续混入无身份的 background event。
+- `Catalog::resolve(OpenRequest) -> Result<WorkspaceSpec>`：唯一能产出 spec 的地方。
+- `Muxterm::open(OpenRequest)` → resolve → `WorkspacePool::open`。低层裸
+  `open(&WorkspaceSpec)` 只留给测试/迁移。
+- `Workspace::provenance()`：侧栏按 Project / Worktree 归组；frontend 只渲染。
+- `muxterm_poll_workspace_events(...)`：三 lane 批次，带 `WorkspaceId`。EventPump 是唯一消费者。
 
 FFI 采用 additive、ABI-safe 映射：保留旧 `muxterm_execute` 返回码；新增
 `muxterm_execute_json` 暴露 Accepted operation id；新增 `STATE_MUTATION_SETTLED=16`，把
@@ -688,8 +667,7 @@ settlement JSON 放进既有 `CStateChange.data/data_len`，不改变 C struct �
 JSON 追加 optional `resolved_target`，旧消费者可以忽略。新增 workspace event wrapper 也不
 改变 `CStateChange` 的 size/offset；其 `event.window_id` 继续为 0。
 
-上述 resolver/identity 类型固定放在 `src/core/catalog/resolver.rs` 并从
-`core::catalog` re-export；禁止在 `platform/linux`、`platform/macos` 或两端各建一份。
+resolver/identity 类型固定放在 `src/core/catalog/resolver.rs`；禁止 frontend 各建一份。
 
 这些接口使用产品语言，不暴露 `w1:p1`、ControlTerminal 或 Herdr event 名。
 
@@ -737,8 +715,7 @@ mutation_id, mutation_queue_depth
 
 ## 10. 实施边界
 
-实施按 [`../.plan-herdr-runtime-stabilization-20260822.md`](../.plan-herdr-runtime-stabilization-20260822.md)
-的 RED→GREEN commit 顺序执行。实现 agent 不得：
+实现时不得：
 
 - 合并或跳过 RED 场景来维持中间提交绿色；
 - 通过增加 sleep、放宽 token/行号断言或新增 `#[ignore]` 修 CI；

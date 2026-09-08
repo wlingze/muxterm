@@ -1,18 +1,15 @@
 # Muxterm 测试与开发规范
 
-> 适用：当前 worktree（先 `pwd` / `git status`）。契约冻结 2026-09-08。
-> 配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
-> [WORKSPACE.md](WORKSPACE.md)、[RUNTIME.md](RUNTIME.md)、
-> [HERDR-RUNTIME-STABILITY.md](HERDR-RUNTIME-STABILITY.md)、
-> [HERDR-TESTING.md](HERDR-TESTING.md)、
-> [CATALOG.md](CATALOG.md)、[SURFACE.md](SURFACE.md)、
-> [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md)。
-> [TASKS.md](../TASKS.md) 是 2026-08 Linux 移植施工单，已冻结，不是现行队列。
-> 结构门禁的目标命令见 §0；§2 起仍是**当前代码**能跑的套件。
+配套文档：[AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、
+[WORKSPACE.md](WORKSPACE.md)、[RUNTIME.md](RUNTIME.md)、
+[HERDR-RUNTIME-STABILITY.md](HERDR-RUNTIME-STABILITY.md)、
+[HERDR-TESTING.md](HERDR-TESTING.md)、
+[CATALOG.md](CATALOG.md)、[SURFACE.md](SURFACE.md)、
+[PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md)、[TASKS.md](../TASKS.md)。
 
-## 0. 2026-09-08 结构门禁（目标；随 Phase 落地）
+## 0. 结构门禁
 
-施工完成前用 `rg` 兜底；crate 拆分后改由编译器守边界。
+crate 拆分前用 `rg` 兜底；拆分后由编译器守边界。
 
 ```text
 禁止根 src/main.rs 声明 Core modules
@@ -52,8 +49,8 @@ herdr × SSH
 - 隐藏 workspace 的 Control / Activity 常流
 - 隐藏 chatty pane 三档策略；回看先显示最后已知帧，不白屏
 
-tmux / Herdr 安全红线见 §3.3 与 [`HERDR-TESTING.md`](HERDR-TESTING.md)。Warm Connection Pool
-**不再是**产品功能；见 [`warm-connection-pool.md`](warm-connection-pool.md)。
+tmux / Herdr 安全红线见 §3.3 与 [`HERDR-TESTING.md`](HERDR-TESTING.md)。
+连接复用在 Core `ConnectionRegistry`；前端是常驻 Scene + EventPump，见 [`SURFACE.md`](SURFACE.md) §8。
 
 ## 1. 四条硬性要求（验收红线）
 
@@ -72,7 +69,7 @@ tmux / Herdr 安全红线见 §3.3 与 [`HERDR-TESTING.md`](HERDR-TESTING.md)。
 | TUI 集成 | `tests/tui_integration.rs`、`streaming_output_integration.rs` | TUI 渲染捕获、时间行为（持续/高频/长行输出） |
 | FFI 回归 | `tests/tui_split_ffi_regression.rs`、`tui_wizard_ffi_regression.rs`、`tui_wizard_ssh_ffi_regression.rs` | UI 按键最终走的 FFI 路径 |
 | SSH e2e | `tests/ssh_streaming_integration.rs`、`ssh_transport_unit.rs`、`ssh_no_fallback.rs` | loopback sshd，`--ignored` 运行 |
-| GUI e2e | `tests/linux_gtk_integration.rs`、`tests/linux_quickconnect_e2e.rs` | Xvfb 下真实 GTK4 窗口 + 隔离 tmux。目标前端目录是 `frontend/linux`；现状仍是 `src/platform/linux` |
+| GUI e2e | `tests/linux_gtk_integration.rs`、`tests/linux_quickconnect_e2e.rs` | Xvfb 下真实 GTK4 窗口 + 隔离 tmux |
 | 真实数据 | `tests/samples/*.txt`（进 git）、`tests/logs/*.log`（本地素材，不进 git） | 前者被 core 单测引用；后者用于本地复现 |
 
 ## 3. 硬性规则
@@ -207,7 +204,7 @@ macOS 客户端复用同一套 core 契约，测试分三层：
 | 层 | 载体 | 说明 |
 |---|---|---|
 | FFI e2e | `tests/macos_e2e.rs` | 镜像 `tmux_attach_contract` / `tmux_feature_contract` / `linux_disconnect_e2e` / `linux_attach_history_e2e`：attach 2tab/3pane、搜索、BEL→blocked、OSC 133 D→done、断线保留末帧、离屏历史 + viewport 回底 |
-| Swift 单测 | `src/platform/macos/ChromeTests/…`（目标 `frontend/macos`） | 注意力快照解析/过滤/排序、搜索命中解析/过滤、通知 JSON 解析 |
+| Swift 单测 | `frontend/macos` ChromeTests | 注意力快照解析/过滤/排序、搜索命中解析/过滤、通知 JSON 解析 |
 | XCUITest | `src/platform/macos/MuxtermAppUITests/…` | 搜索命中跳转、BEL 红点、断线水印、历史回底（需 GUI 会话，CI macos runner 跑） |
 
 跑：
@@ -231,8 +228,7 @@ FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_sn
 
 1. 读文档：`docs/WORKSPACE.md` → `docs/RUNTIME.md` → `PRODUCT.md` → `AGENTS.md` →
    `docs/SURFACE.md` → 本文档。动 Herdr 还要读 `docs/HERDR-RUNTIME-STABILITY.md` 与
-   `docs/HERDR-TESTING.md`。`TASKS.md` 已冻结，不要当新工作单。F 的 e2e 是回归门，不是
-   本轮要重做的功能。
+   `docs/HERDR-TESTING.md`。施工顺序见 [`../TASKS.md`](../TASKS.md)。Surface e2e 是回归门。
 2. RED：写最小单测或 e2e，先看到失败（真实数据 fixture 优先）。
 3. GREEN：写最小实现，只改本功能相关文件。
 4. 补测试：增加边界、错误路径、真实 tmux 数据复放。
@@ -326,9 +322,7 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 
 禁止：用 replica 注入冒充 live BEL；只断言跳转回调却不检查 pane/关闭/焦点；为了绿把连接改回 `block_on` 主线程。
 
-### 5.7 W16 愿景 1.0 缺口（历史 / 断线水印 / 注意力语义）
-
-审计：[`VISION-AUDIT.md`](VISION-AUDIT.md)。**W15 绿了再做。**
+### 5.7 W16（断线水印 / 注意力语义）
 
 | crate | 必须抓住 |
 |---|---|
@@ -457,8 +451,7 @@ tmux 镜像把 `enable-fallback-scrolling` 关掉，又关掉鼠标报告，shel
 ### 5.14 Catalog（providers / inventory / resolver）
 
 规格：[`CATALOG.md`](CATALOG.md)。`trait Runtime` 不负责 `ls`。插件表是**有序数组**，`runtime_list()` 就是登记顺序。
-测试名里若仍写 Driver / Connect，指的是现状代码；目标名是 RuntimeProvider / TargetConnection。
-`open_uses_driver_not_build_runtime` 的意图保留：产品路径不走 `WorkspaceSpec::build_runtime()`。
+产品路径不走 `WorkspaceSpec::build_runtime()`。provider 名是 RuntimeProvider / TargetConnection。
 
 | 测试 | 必须抓住 |
 |---|---|
@@ -605,7 +598,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 | 1 | QuickConnect 面板 | ✅ model/store/panel 构建 | ❌ 待补（打开/搜索/高亮/回车连接） | ⚠️ 连接流程在 e2e 覆盖 |
 | 2 | TargetConfig 窗口 | ✅ options/directory/debounce | ⚠️ SSH toggle debounce 已覆盖；完整窗口流程待补 | ✅ 隔离 tmux 目录发现 |
 | 3 | Project 连接流程 | ✅ project_flow | ✅ attach→create→attach | ✅ e2e 真实 tmux |
-| 4 | ~~Warm Connection Pool~~（2026-09-08 废止，见 [`warm-connection-pool.md`](warm-connection-pool.md)） | 现状仍有 slot 测试 | 目标：常驻 Scene + EventPump，零锁切换 | 仍要：detach 保留 session |
+| 4 | 常驻 Scene / EventPump / WorkspacePool | 连接复用与切换 | 切 workspace 零 FFI、detach 保留 session | 隔离 tmux |
 | 5 | 统一 status bar（左中右 + 最右三按钮） | ✅ lifecycle / status_bar | ✅ linux_chrome_e2e S5/S6 | — |
 | 5b | 鼠标点 tab 切窗口 | ✅ attach session id（C7.0） | ✅ S13a；live S13b | ✅ dogfood-1326 + 1540（1540 已无「忽略其它 session」） |
 | 6 | 主题切换 + 重报色 | ✅ theme/font | ⚠️ 偏好持久化已覆盖；即时切换/颜色重报待补 | ⚠️ 部分 |

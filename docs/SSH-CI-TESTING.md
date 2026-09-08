@@ -1,8 +1,9 @@
 # SSH CI 测试说明
 
-> 横幅：2026-09-08。CI 里的「four-mode」是 **Runtime × Transport** 矩阵（shell/tmux × local/ssh），
-> 不是复合 `RuntimeMode` 枚举。产品打开路径见 [`CATALOG.md`](CATALOG.md)。
-> 本文档说明 Linux CI 中 SSH long-chain 集成测试的运行方式与 workflow 命令。
+CI 里的「four-mode」是 **Runtime × Transport** 矩阵（shell/tmux × local/ssh），
+不是复合 `RuntimeMode` 枚举。产品打开路径见 [`CATALOG.md`](CATALOG.md)。
+
+Linux CI 中 SSH long-chain 集成测试的运行方式与 workflow 命令：
 >
 > **W18 产品门禁**（GTK / core attach）**自己拉起隔离 sshd**（`LoopbackSshd`，随机端口），
 > 不依赖本脚本，也不连用户 22。跑：
