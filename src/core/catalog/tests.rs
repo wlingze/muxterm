@@ -774,6 +774,26 @@ fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
         Some("muxterm-test-candidate")
     );
     assert!(!resolved.spec.create);
+
+    let all_view_request = OpenRequest {
+        candidate: CandidateRef::Existing {
+            identity: ExistingCandidateRef {
+                runtime_id: "tmux".into(),
+                transport_id: "local".into(),
+                target: "local".into(),
+                session: Some("demo".into()),
+                socket: Some("muxterm-test-candidate".into()),
+                workspace_id: None,
+            },
+        },
+        intent: ResolveIntent::AttachOnly,
+        template: None,
+        activate: true,
+    };
+    let resolved_all_view = catalog
+        .resolve_open_request(&all_view_request, &[])
+        .unwrap();
+    assert_eq!(resolved_all_view.canonical.name, "display-name");
 }
 
 fn single_pane_template() -> WorkspaceTemplate {
