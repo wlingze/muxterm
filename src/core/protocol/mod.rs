@@ -15,11 +15,11 @@ pub mod task;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
-/// Stable protocol namespaces.
-///
-/// The implementation files are still kept under the legacy `model` module
-/// during the incremental migration, but callers use this boundary so the
-/// eventual crate split does not change every Runtime/frontend import again.
+// Stable protocol namespaces.
+//
+// The implementation files are still kept under the legacy `model` module
+// during the incremental migration, but callers use this boundary so the
+// eventual crate split does not change every Runtime/frontend import again.
 
 /// Runtime 能力声明。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
