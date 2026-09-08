@@ -8,11 +8,11 @@ use std::collections::HashMap;
 
 use crate::core::attention::signal::AttentionSignal;
 use crate::core::attention::state::PaneStatus;
-use crate::core::model::backend::Runtime;
 use crate::core::model::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
+use crate::core::runtime::Runtime;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pane_buf::PaneBuf;

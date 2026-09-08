@@ -5,7 +5,7 @@
 //! TmuxRuntime（W12 遗留，未统一）；spec 携带 runtime / transport / name /
 //! socket / ssh / dir，core 内部决定用 TmuxRuntime / ShellRuntime / DaemonRuntime。
 
-use crate::core::model::Runtime;
+use crate::core::runtime::Runtime;
 use crate::core::runtime::{DaemonRuntime, HerdrRuntime, HerdrSession, ShellRuntime, TmuxRuntime};
 use crate::core::workspace::id::WorkspaceId;
 

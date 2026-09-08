@@ -7,8 +7,8 @@ use anyhow::Result;
 
 use crate::core::catalog::connect::Connect;
 use crate::core::catalog::driver::{RuntimeDriver, SessionCandidate};
-use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::runtime::tmux::backend::TmuxRuntime;
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// tmux 插件（local / ssh）。

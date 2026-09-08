@@ -14,9 +14,9 @@
 //! - 需要当前激活 pane 的 Task（`needs_active_pane()`），model 从 state 查询后填入
 //! - 回调在 `poll_events()` 时同步触发（不在 backend execute 时触发），保证单线程确定性
 use crate::core::config::Rgb;
-use crate::core::model::backend::Runtime;
 use crate::core::model::state::{State, StateChange};
 use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::runtime::Runtime;
 use crate::core::types::PaneId;
 use std::collections::VecDeque;
 

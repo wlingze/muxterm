@@ -8,7 +8,7 @@ use crate::core::catalog::connect::Connect;
 use crate::core::catalog::driver::{RuntimeDriver, SessionCandidate};
 use crate::core::catalog::transport::{TargetInfo, Transport};
 use crate::core::model::backend::mock::MockRuntime;
-use crate::core::model::backend::{Runtime, RuntimeCapability};
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::workspace::spec::WorkspaceSpec;
 
 struct MockDriver {

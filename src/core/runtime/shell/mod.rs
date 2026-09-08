@@ -29,11 +29,11 @@ use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EV
 use crate::core::config::{
     expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
 };
-use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{LayoutNode, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
 use crate::core::transport::{PtySize as TransportPtySize, Transport, TransportSignal};
 use crate::core::types::{PaneId, TabId};

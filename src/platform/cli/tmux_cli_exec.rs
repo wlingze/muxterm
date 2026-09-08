@@ -79,7 +79,7 @@ where
     F: FnOnce(&mut TerminalModel) -> anyhow::Result<serde_json::Value>,
 {
     let session_exists = tmux_session_exists(socket, session_name);
-    let runtime: Box<dyn crate::core::model::Runtime> = if session_exists {
+    let runtime: Box<dyn crate::core::runtime::Runtime> = if session_exists {
         Box::new(TmuxRuntime::new_with_attach(socket, session_name))
     } else {
         Box::new(TmuxRuntime::new_with_session_name(socket, session_name))

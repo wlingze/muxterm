@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
-use crate::core::model::backend::{Runtime, RuntimeCapability};
 use crate::core::model::layout::{SplitDir, TabLayout};
 use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
+use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::client::send_command;
 use crate::platform::cli::{CliCommand, OutputFormat, StateSnapshot};

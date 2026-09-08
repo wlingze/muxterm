@@ -10,13 +10,13 @@
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 //! tmux 的 %pane/@window 等真实 ID 只能在 runtime/tmux 内部。
 
+pub mod contract;
 pub mod daemon;
 pub mod herdr;
 pub mod shell;
 pub mod tmux;
 
-// Re-export Runtime trait from model
-pub use crate::core::model::backend::Runtime;
+pub use contract::{Runtime, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
 
 // Re-export backend implementations
 pub use daemon::DaemonRuntime;
