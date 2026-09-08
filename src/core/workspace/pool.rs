@@ -207,8 +207,10 @@ impl WorkspacePool {
         name: String,
         create: impl FnOnce(&WorkspaceId) -> Box<dyn Runtime>,
     ) -> anyhow::Result<&mut Workspace> {
-        self.open_with_scrollback(id, name, DEFAULT_SCROLLBACK_LINES, create)
-            .await
+        self.open_with_scrollback(id, name, DEFAULT_SCROLLBACK_LINES, |workspace_id| {
+            Ok(create(workspace_id))
+        })
+        .await
     }
 
     /// 把 `new_id` 切为前台、旧前台降为后台，并恰好通知一次
@@ -240,7 +242,7 @@ impl WorkspacePool {
         id: WorkspaceId,
         name: String,
         scrollback_lines: usize,
-        create: impl FnOnce(&WorkspaceId) -> Box<dyn Runtime>,
+        create: impl FnOnce(&WorkspaceId) -> anyhow::Result<Box<dyn Runtime>>,
     ) -> anyhow::Result<&mut Workspace> {
         let now = Instant::now();
         if self.slots.contains_key(&id) {
@@ -250,7 +252,7 @@ impl WorkspacePool {
             return Ok(&mut self.slots.get_mut(&id).expect("slot 必须存在").workspace);
         }
 
-        let runtime = create(&id);
+        let runtime = create(&id)?;
         let mut workspace =
             Workspace::new_with_scrollback(id.clone(), name, runtime, scrollback_lines);
         workspace.connect().await?;
@@ -276,14 +278,15 @@ impl WorkspacePool {
     pub async fn open_spec(
         &mut self,
         spec: &crate::core::workspace::spec::WorkspaceSpec,
+        create: impl FnOnce(
+            &crate::core::workspace::spec::WorkspaceSpec,
+        ) -> anyhow::Result<Box<dyn Runtime>>,
     ) -> anyhow::Result<&mut Workspace> {
         let id = spec.id();
         let name = spec.name();
-        // build_runtime 放进 create 闭包：复用已有 slot 时零构造
-        // （对得上 reopen_same_id_reuses_without_new_runtime）。
-        // HerdrSession 共享已迁到 HerdrSession::shared（不用再按字符串旁路）。
+        // Runtime factory 放进 create 闭包：复用已有 slot 时零构造。
         self.open_with_scrollback(id, name, spec.scrollback_lines as usize, move |_| {
-            spec.build_runtime()
+            create(spec)
         })
         .await
     }
@@ -309,6 +312,9 @@ impl WorkspacePool {
         &mut self,
         ws: &WorkspaceId,
         spec: &WorktreeCreateSpec,
+        create: impl FnOnce(
+            &crate::core::workspace::spec::WorkspaceSpec,
+        ) -> anyhow::Result<Box<dyn Runtime>>,
     ) -> anyhow::Result<WorkspaceId> {
         let Some(slot) = self.slots.get(ws) else {
             return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
@@ -319,7 +325,7 @@ impl WorkspacePool {
         }
         let new_spec = slot.workspace.runtime().create_worktree_spec(spec)?;
         let new_id = new_spec.id();
-        self.open_spec(&new_spec).await?;
+        self.open_spec(&new_spec, create).await?;
         Ok(new_id)
     }
 
@@ -330,6 +336,9 @@ impl WorkspacePool {
         &mut self,
         ws: &WorkspaceId,
         path: &str,
+        create: impl FnOnce(
+            &crate::core::workspace::spec::WorkspaceSpec,
+        ) -> anyhow::Result<Box<dyn Runtime>>,
     ) -> anyhow::Result<WorkspaceId> {
         let Some(slot) = self.slots.get(ws) else {
             return Err(anyhow::anyhow!("workspace {ws} 不在池里"));
@@ -340,7 +349,7 @@ impl WorkspacePool {
         }
         let new_spec = slot.workspace.runtime().open_worktree_spec(path)?;
         let new_id = new_spec.id();
-        self.open_spec(&new_spec).await?;
+        self.open_spec(&new_spec, create).await?;
         Ok(new_id)
     }
 
@@ -563,7 +572,12 @@ mod tests {
             base: None,
             label: None,
         };
-        let err = pool.create_worktree(&a, &spec).await.unwrap_err();
+        let err = pool
+            .create_worktree(&a, &spec, |_| {
+                Ok(Box::new(MockRuntime::with_single_pane()) as Box<dyn Runtime>)
+            })
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("WorktreeCreate"),
             "缺 WorktreeCreate 能力必须拒绝: {err}"
@@ -913,6 +927,22 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(*created.lock().unwrap(), 1, "create 只应调用一次");
+        assert_eq!(pool.len(), 1);
+    }
+
+    /// 同一 WorkspaceSpec 再 open 复用时，provider factory 也不得构造 Runtime。
+    #[tokio::test]
+    async fn reopen_spec_reuses_without_runtime_factory() {
+        let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
+        let spec = crate::core::workspace::spec::WorkspaceSpec::local_shell("");
+        pool.open_spec(&spec, |_| {
+            Ok(Box::new(MockRuntime::with_single_pane()) as Box<dyn Runtime>)
+        })
+        .await
+        .unwrap();
+        pool.open_spec(&spec, |_| panic!("复用路径不应调用 Runtime factory"))
+            .await
+            .unwrap();
         assert_eq!(pool.len(), 1);
     }
 

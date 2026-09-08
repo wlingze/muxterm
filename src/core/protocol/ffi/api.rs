@@ -932,7 +932,7 @@ fn legacy_new_handle(
     let fut =
         catalog
             .pool_mut()
-            .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| runtime);
+            .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| Ok(runtime));
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }

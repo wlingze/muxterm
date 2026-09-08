@@ -2,11 +2,9 @@
 //!
 //! W10：GUI 打开工作区走 `WorkspacePool::open_spec`，Runtime 构造在 core。
 //! CLI 的 `routing.rs` / `daemon.rs` / `tmux_cli_exec.rs` 仍直接构造
-//! TmuxRuntime（W12 遗留，未统一）；spec 携带 runtime / transport / name /
-//! socket / ssh / dir，core 内部决定用 TmuxRuntime / ShellRuntime / DaemonRuntime。
+//! Runtime（W12 遗留，未统一）；spec 只携带 runtime / transport / name /
+//! socket / ssh / dir 等解析结果字段。
 
-use crate::core::runtime::Runtime;
-use crate::core::runtime::{DaemonRuntime, HerdrRuntime, HerdrSession, ShellRuntime, TmuxRuntime};
 use crate::core::workspace::id::WorkspaceId;
 
 /// 打开一个工作区的产品规格（不含 tmux 词）。
@@ -148,78 +146,21 @@ impl WorkspaceSpec {
             self.session.clone()
         }
     }
-
-    /// 构造 Runtime（唯一允许出现 TmuxRuntime 名字的 core 入口之一）。
-    pub fn build_runtime(&self) -> Box<dyn Runtime> {
-        match self.runtime.as_str() {
-            "tmux" if self.transport == "ssh" => {
-                let alias = self.alias.as_deref().unwrap_or("");
-                let lines = self.scrollback_lines;
-                if self.session.is_empty() {
-                    let mut rt = TmuxRuntime::new_ssh(alias, self.socket.as_deref());
-                    rt.set_scrollback_lines(lines);
-                    Box::new(rt)
-                } else {
-                    let mut rt =
-                        TmuxRuntime::new_ssh_attach(alias, self.socket.as_deref(), &self.session);
-                    rt.set_scrollback_lines(lines);
-                    Box::new(rt)
-                }
-            }
-            "tmux" => {
-                let lines = self.scrollback_lines;
-                if self.session.is_empty() {
-                    let mut rt = TmuxRuntime::new(self.socket.as_deref());
-                    rt.set_scrollback_lines(lines);
-                    Box::new(rt)
-                } else if self.create {
-                    let mut rt =
-                        TmuxRuntime::new_with_session_name(self.socket.as_deref(), &self.session);
-                    rt.set_scrollback_lines(lines);
-                    Box::new(rt)
-                } else {
-                    let mut rt =
-                        TmuxRuntime::new_with_attach(self.socket.as_deref(), &self.session);
-                    rt.set_scrollback_lines(lines);
-                    Box::new(rt)
-                }
-            }
-            "herdr" => {
-                // 共享 session：同一 (session, socket) 一份 Arc（旧 pool 旁路表迁到
-                // HerdrSession::shared，Catalog Connect/Driver 与这里同源）。
-                let session =
-                    HerdrSession::shared(&self.session, self.socket.clone().unwrap_or_default());
-                Box::new(HerdrRuntime::new(session, &self.path))
-            }
-            "shell" if self.transport == "ssh" => Box::new(ShellRuntime::new_ssh(
-                self.alias.as_deref().unwrap_or_default(),
-                "$SHELL",
-                &self.path,
-            )),
-            "shell" => Box::new(ShellRuntime::new("$SHELL", &self.path)),
-            "daemon" => {
-                let name = if self.session.is_empty() {
-                    "default"
-                } else {
-                    &self.session
-                };
-                let path = if self.path.is_empty() {
-                    DaemonRuntime::default_socket_path(name)
-                } else {
-                    std::path::PathBuf::from(&self.path)
-                };
-                Box::new(DaemonRuntime::new(path, name))
-            }
-            _ => Box::new(ShellRuntime::new("$SHELL", &self.path)),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::catalog::Catalog;
+    use crate::core::runtime::shell::ShellRuntime;
     use crate::core::runtime::tmux::backend::TmuxRuntime;
     use crate::core::runtime::tmux::client::ConnectMode;
+
+    fn new_runtime(spec: &WorkspaceSpec) -> Box<dyn crate::core::runtime::Runtime> {
+        Catalog::with_builtins()
+            .new_runtime(spec)
+            .expect("built-in provider must construct the runtime")
+    }
 
     #[test]
     fn id_and_name_are_stable() {
@@ -245,7 +186,7 @@ mod tests {
     #[test]
     fn ssh_shell_builds_shell_runtime_without_local_fallback() {
         let spec = WorkspaceSpec::ssh_shell("dev", "/srv/project");
-        let runtime = spec.build_runtime();
+        let runtime = new_runtime(&spec);
         assert_eq!(runtime.workspace_runtime(), "shell");
         let shell = runtime
             .as_any()
@@ -259,8 +200,8 @@ mod tests {
         let attach = WorkspaceSpec::local_tmux(Some("demo".into()), None);
         let create = WorkspaceSpec::local_tmux_create("demo".into(), None);
 
-        let rt_attach = attach.build_runtime();
-        let rt_create = create.build_runtime();
+        let rt_attach = new_runtime(&attach);
+        let rt_create = new_runtime(&create);
         assert_eq!(rt_attach.workspace_runtime(), "tmux");
         assert_eq!(rt_create.workspace_runtime(), "tmux");
 
@@ -285,7 +226,7 @@ mod tests {
     #[test]
     fn ssh_empty_session_builds_ssh_runtime() {
         let spec = WorkspaceSpec::ssh_tmux("myhost".into(), None, None);
-        let rt = spec.build_runtime();
+        let rt = new_runtime(&spec);
         assert_eq!(rt.workspace_runtime(), "tmux");
         let tmux = rt
             .as_any()
@@ -296,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_runtime_builds_shell() {
+    fn unknown_runtime_is_rejected() {
         let spec = WorkspaceSpec {
             transport: "local".into(),
             alias: None,
@@ -307,7 +248,11 @@ mod tests {
             create: false,
             scrollback_lines: 10_000,
         };
-        let rt = spec.build_runtime();
-        assert_eq!(rt.workspace_runtime(), "shell");
+        let err = Catalog::with_builtins().new_runtime(&spec).err();
+        assert!(
+            err.as_ref()
+                .is_some_and(|error| error.to_string().contains("unknown runtime")),
+            "unknown runtime must not silently fall back to shell: {err:?}"
+        );
     }
 }
