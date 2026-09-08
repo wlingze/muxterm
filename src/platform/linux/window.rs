@@ -86,6 +86,8 @@ struct UiState {
     pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
     /// 常驻 Workspace Scene 的产品身份与可见场景。
     scene_stack: SceneStack,
+    /// GTK scene container. Every live workspace keeps its LayoutHost page.
+    scene_stack_view: gtk4::Stack,
     /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
     view_store: ViewStore,
     /// 当前挂载到窗口的 LayoutHost 对应的工作区。
@@ -187,7 +189,7 @@ struct UiState {
     pending_reconnects: std::collections::VecDeque<std::sync::mpsc::Receiver<ReconnectResult>>,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
-    /// 终端区 Overlay：LayoutHost.root_box 是主 child，回底按钮浮在上面。
+    /// 终端区 Overlay：常驻 workspace scene stack 是主 child，回底按钮浮在上面。
     layout_overlay: gtk4::Overlay,
     /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
     jump_latest: gtk4::Button,
@@ -422,15 +424,23 @@ impl AppWindow {
 
         // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
         // 终端区包一层 Overlay：回底按钮浮在 VTE 右下角（W16a）。
-        let layout_overlay = gtk4::Overlay::new();
-        layout_overlay.set_hexpand(true);
-        layout_overlay.set_vexpand(true);
-        layout_overlay.set_child(Some(
+        let scene_stack_view = gtk4::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .transition_type(gtk4::StackTransitionType::None)
+            .build();
+        scene_stack_view.add_named(
             &pixel_cache
                 .get(&startup_id)
                 .expect("startup layout")
                 .root_box,
-        ));
+            Some(&startup_id.as_str()),
+        );
+        scene_stack_view.set_visible_child_name(&startup_id.as_str());
+        let layout_overlay = gtk4::Overlay::new();
+        layout_overlay.set_hexpand(true);
+        layout_overlay.set_vexpand(true);
+        layout_overlay.set_child(Some(&scene_stack_view));
         let jump_latest = gtk4::Button::with_label("↓");
         jump_latest.set_widget_name("muxterm-jump-latest");
         jump_latest.set_halign(gtk4::Align::End);
@@ -534,6 +544,7 @@ impl AppWindow {
             pool,
             pixel_cache,
             scene_stack: SceneStack::with_visible(startup_id.as_str()),
+            scene_stack_view,
             view_store: ViewStore::default(),
             mounted_ws: Some(startup_id.clone()),
             snapshot_seeded_this_batch: HashSet::new(),
@@ -5177,6 +5188,11 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
         .retain(|input| &input.workspace != id);
     s.scene_stack.remove(&id.as_str());
     s.view_store.remove_workspace(&id.as_str());
+    remove_scene_page(s, &id.as_str());
+    if s.mounted_ws.as_ref() == Some(id) {
+        s.mounted_ws = None;
+    }
+    s.pixel_cache.remove(id);
     s.workspace_sockets.remove(id);
     s.qc_store.replace_all_recents(&recent_target_configs(
         &s.pool,
@@ -5185,11 +5201,11 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     ));
     for evicted in s.pool.take_evicted() {
         if s.mounted_ws.as_ref() == Some(&evicted) {
-            s.layout_overlay.set_child(None::<&gtk4::Widget>);
             s.mounted_ws = None;
         }
         s.scene_stack.remove(&evicted.as_str());
         s.view_store.remove_workspace(&evicted.as_str());
+        remove_scene_page(s, &evicted.as_str());
         s.pixel_cache.remove(&evicted);
     }
 
@@ -5214,6 +5230,12 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     } else {
         refresh_sidebar_if_open(s);
         maybe_refresh_status(s, true);
+    }
+}
+
+fn remove_scene_page(s: &mut UiState, workspace_id: &str) {
+    if let Some(child) = s.scene_stack_view.child_by_name(workspace_id) {
+        s.scene_stack_view.remove(&child);
     }
 }
 
@@ -5293,19 +5315,16 @@ fn after_activate(s: &mut UiState) {
                 .expect("layout 必须存在")
                 .set_font(&font);
         }
-        let root = s
-            .pixel_cache
-            .get(&id)
-            .expect("layout 必须存在")
-            .root_box
-            .clone();
-        // GtkOverlay 的旧主 child 必须先显式摘下；直接用新 child 覆盖时，
-        // 嵌套 GtkStack 在部分 GTK4 版本会先 set_parent(new) 再清旧 parent，
-        // 触发 gtk_widget_set_parent critical。
-        if s.layout_overlay.child().as_ref() != Some(root.upcast_ref()) {
-            s.layout_overlay.set_child(None::<&gtk4::Widget>);
-            s.layout_overlay.set_child(Some(&root));
+        if s.scene_stack_view.child_by_name(&id.as_str()).is_none() {
+            let root = s
+                .pixel_cache
+                .get(&id)
+                .expect("layout 必须存在")
+                .root_box
+                .clone();
+            s.scene_stack_view.add_named(&root, Some(&id.as_str()));
         }
+        s.scene_stack_view.set_visible_child_name(&id.as_str());
         s.mounted_ws = Some(id);
     }
     s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
