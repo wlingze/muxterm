@@ -76,8 +76,10 @@ final class MuxTerminalView: TerminalView {
     /// 上报也交给 `send(source: Terminal)`；它不能和 pane 输出解析器应答
     /// 走同一条丢弃策略，否则 htop 点击、TUI 滚轮都到不了 tmux。
     private var isSendingUserMouseReport = false
-    /// 上一次双击选词结果，再次双击同一范围时扩成路径。
+    /// 上一次双击选词结果，再次双击同一范围时扩一层（标识符 → 词 → 路径）。
     private var lastWordSelection: (row: Int, result: ProgressiveWordSelection.Result)?
+    /// 这次双击的格子；随后拖选用空白分隔的整词扩展，不按 `/` `-` 切开。
+    private var wordDragPivot: (row: Int, col: Int)?
     private var pendingSelectionClear: DispatchWorkItem?
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
@@ -157,19 +159,22 @@ final class MuxTerminalView: TerminalView {
             && getTerminal().mouseMode != .off
     }
 
-    /// 第一次双击选 `b`，再次双击同一词扩成 `a/b/c`。括号仍交给 SwiftTerm。
+    /// 第一次双击选 `0907`，再双击扩成 `dogfood-0907*`，再扩成
+    /// `feature/dogfood-0907*`。括号仍交给 SwiftTerm。
     @discardableResult
     private func handleProgressiveWordClick(_ event: NSEvent) -> Bool {
         if mouseReportingConsumes(event) {
             pendingSelectionClear?.cancel()
             pendingSelectionClear = nil
             lastWordSelection = nil
+            wordDragPivot = nil
             return false
         }
         guard let hit = bufferGridHit(with: event) else { return false }
         switch event.clickCount {
         case 1:
             pendingSelectionClear?.cancel()
+            wordDragPivot = nil
             if let previous = lastWordSelection, previous.row == hit.row,
                previous.result.contains(column: hit.col)
             {
@@ -199,6 +204,7 @@ final class MuxTerminalView: TerminalView {
                 previous: previous
             ) else {
                 lastWordSelection = nil
+                wordDragPivot = nil
                 return false
             }
             setSelectionRange(
@@ -206,14 +212,48 @@ final class MuxTerminalView: TerminalView {
                 end: Position(col: result.end, row: hit.row)
             )
             lastWordSelection = (hit.row, result)
+            wordDragPivot = (hit.row, hit.col)
             setNeedsDisplay(bounds)
             return true
         default:
             pendingSelectionClear?.cancel()
             pendingSelectionClear = nil
             lastWordSelection = nil
+            wordDragPivot = nil
             return false
         }
+    }
+
+    /// 双击之后的拖选：两端都吸到空白分隔的整词（`feature/dogfood-0907*` 算一个词）。
+    private func applyWordDrag(to hit: (col: Int, row: Int)) {
+        guard let pivot = wordDragPivot else { return }
+        if hit.row == pivot.row {
+            let cells = lineCells(bufferRow: hit.row)
+            guard !cells.isEmpty else { return }
+            let range = ProgressiveWordSelection.dragByTokens(
+                cells: cells,
+                anchorColumn: pivot.col,
+                toColumn: hit.col
+            )
+            setSelectionRange(
+                start: Position(col: range.start, row: hit.row),
+                end: Position(col: range.end, row: hit.row)
+            )
+        } else {
+            let top = hit.row < pivot.row ? hit : (col: pivot.col, row: pivot.row)
+            let bottom = hit.row < pivot.row ? (col: pivot.col, row: pivot.row) : hit
+            let topCells = lineCells(bufferRow: top.row)
+            let bottomCells = lineCells(bufferRow: bottom.row)
+            guard !topCells.isEmpty, !bottomCells.isEmpty else { return }
+            let topToken = ProgressiveWordSelection.tokenSpan(cells: topCells, column: top.col)
+            let bottomToken = ProgressiveWordSelection.tokenSpan(cells: bottomCells, column: bottom.col)
+            setSelectionRange(
+                start: Position(col: topToken.start, row: top.row),
+                end: Position(col: bottomToken.end, row: bottom.row)
+            )
+        }
+        lastWordSelection = nil
+        setNeedsDisplay(bounds)
     }
 
     private func bufferGridHit(with event: NSEvent) -> (col: Int, row: Int)? {
@@ -289,10 +329,20 @@ final class MuxTerminalView: TerminalView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        wordDragPivot = nil
         withUserMouseReporting { super.mouseUp(with: event) }
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if !mouseReportingConsumes(event),
+           wordDragPivot != nil,
+           let hit = bufferGridHit(with: event)
+        {
+            // 先走 SwiftTerm 以保留贴边自动滚，再把选区吸到空白整词。
+            withUserMouseReporting { super.mouseDragged(with: event) }
+            applyWordDrag(to: hit)
+            return
+        }
         withUserMouseReporting { super.mouseDragged(with: event) }
     }
 
