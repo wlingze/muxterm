@@ -4421,7 +4421,7 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
     };
     let st = state.clone();
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
-    let runtimes = crate::core::catalog::Catalog::with_builtins().runtime_list();
+    let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
     let callback_path = path.clone();
     crate::platform::linux::preferences_window::show(
         window,
@@ -4468,7 +4468,7 @@ fn open_target_config(
 ) {
     let store = state.borrow().qc_store.clone();
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
-    let runtimes = crate::core::catalog::Catalog::with_builtins().runtime_list();
+    let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
     let st = state.clone();
     let win = window.clone();
     crate::platform::linux::target_config_window::show(

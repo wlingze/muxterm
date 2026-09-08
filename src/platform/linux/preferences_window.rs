@@ -19,6 +19,7 @@ use gtk4::{
 use serde_json::Value;
 
 use crate::core::config_service::{JsonPatchOperation, SettingsService};
+use crate::platform::ffi_client::ClientRuntimeInfo;
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
@@ -342,7 +343,7 @@ pub fn show(
     config_path: PathBuf,
     on_saved: Box<dyn Fn() + 'static>,
     project_editor: Option<(
-        Vec<crate::core::catalog::driver::RuntimeInfo>,
+        Vec<ClientRuntimeInfo>,
         Vec<crate::platform::ffi_client::SshHostEntry>,
     )>,
 ) -> Window {
@@ -889,7 +890,7 @@ fn confirm_discard(parent: &impl IsA<Window>, on_discard: impl Fn() + 'static) {
 fn show_project_manager(
     parent: &impl IsA<Window>,
     config_path: PathBuf,
-    runtimes: Vec<crate::core::catalog::driver::RuntimeInfo>,
+    runtimes: Vec<ClientRuntimeInfo>,
     hosts: Vec<crate::platform::ffi_client::SshHostEntry>,
     on_changed: Rc<Box<dyn Fn() + 'static>>,
 ) {

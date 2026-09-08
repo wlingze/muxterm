@@ -98,6 +98,17 @@ pub struct SshHostEntry {
     pub user: String,
 }
 
+/// Runtime provider metadata returned by the public FFI catalog view.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientRuntimeInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub support: Vec<String>,
+    #[serde(default)]
+    pub accepted_transports: Vec<String>,
+}
+
 /// Existing workspace candidate returned by Core discovery.
 ///
 /// The identity fields are intentionally owned here.  A frontend must not
@@ -174,6 +185,11 @@ pub struct FfiClient {
 }
 
 impl FfiClient {
+    /// Create a handle for catalog-only queries without opening a workspace.
+    pub fn new_catalog() -> anyhow::Result<Self> {
+        Self::from_raw(ffi::muxterm_catalog_new())
+    }
+
     /// Create a handle and connect its initial workspace.
     pub fn new(
         runtime_type: &str,
@@ -296,6 +312,19 @@ impl FfiClient {
 
     pub fn status_code(&self) -> u32 {
         self.last_status.get()
+    }
+
+    /// Read the registered runtime provider metadata through FFI.
+    pub fn runtime_list(&self) -> anyhow::Result<Vec<ClientRuntimeInfo>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_runtime_list_json(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["runtimes"].clone())?)
+    }
+
+    /// Read runtime provider metadata without exposing a handle to the caller.
+    pub fn discover_runtimes() -> anyhow::Result<Vec<ClientRuntimeInfo>> {
+        Self::new_catalog()?.runtime_list()
     }
 
     pub fn get_tabs(&self) -> Vec<ClientTab> {
@@ -804,5 +833,21 @@ mod tests {
         assert_eq!(session.windows, 0);
         assert!(!session.attached);
         assert_eq!(session.created, 0);
+    }
+
+    #[test]
+    fn runtime_info_is_an_owned_catalog_dto() {
+        let info: ClientRuntimeInfo = serde_json::from_value(serde_json::json!({
+            "id": "herdr",
+            "name": "Herdr",
+            "support": ["PersistDetach", "Discover"],
+            "accepted_transports": ["local", "ssh"]
+        }))
+        .expect("runtime list JSON should decode");
+
+        assert_eq!(info.id, "herdr");
+        assert_eq!(info.name, "Herdr");
+        assert_eq!(info.support, ["PersistDetach", "Discover"]);
+        assert_eq!(info.accepted_transports, ["local", "ssh"]);
     }
 }

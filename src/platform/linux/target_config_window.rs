@@ -15,8 +15,7 @@ use gtk4::{
     ToggleButton, Window,
 };
 
-use crate::core::catalog::driver::RuntimeInfo;
-use crate::platform::ffi_client::{FfiClient, SshHostEntry};
+use crate::platform::ffi_client::{ClientRuntimeInfo, FfiClient, SshHostEntry};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::quickconnect::directory::{
     DirectoryListingResponse, DirectorySuggestionController,
@@ -63,7 +62,7 @@ pub fn show(
     editing: Option<TargetConfig>,
     store: QuickConnectStore,
     ssh_hosts: Vec<SshHostEntry>,
-    runtimes: Vec<RuntimeInfo>,
+    runtimes: Vec<ClientRuntimeInfo>,
     on_save: impl Fn(TargetConfig) + 'static,
     on_cancel: impl Fn() + 'static,
 ) -> Window {
