@@ -15,7 +15,7 @@ use crate::core::attention::signal::AttentionSignal;
 use crate::core::catalog::ResolveIntent;
 use crate::core::config::parse_hex;
 use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
-use crate::core::logging::{init_logging, LoggingConfig};
+use crate::core::logging::{init_logging, log_message, LoggingConfig};
 use crate::core::model::layout::{LayoutNode, SplitDir};
 use crate::core::model::state::StateChange;
 use crate::core::model::task::{Task, TaskOutcome};
@@ -319,6 +319,18 @@ pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_
         }
     }))
     .unwrap_or(-1)
+}
+
+/// 把一行 UI 诊断写入 tracing（与 `--log-file` 同一文件）。
+#[no_mangle]
+pub extern "C" fn muxterm_log_message(level: *const c_char, message: *const c_char) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let level = cstr_opt(level).unwrap_or_else(|| "debug".into());
+        let message = cstr_opt(message).unwrap_or_default();
+        if !message.is_empty() {
+            log_message(&level, &message);
+        }
+    }));
 }
 
 /// 发现用户现有 SSH 配置中的 Host alias。

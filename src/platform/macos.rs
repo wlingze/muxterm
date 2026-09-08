@@ -43,7 +43,8 @@ pub fn launch_app_bundle(
         if let Some(path) = log_file {
             cmd.arg("--log-file").arg(path);
         }
-        // 仅 --debug 时 app 写 stderr，前台继承终端可见（持续刷新）。
+        // `--debug` 且无 `--log-file` 时 app 写 stderr；有 `--log-file` 时
+        // Swift 把 stderr 接到该文件，终端保持干净。
         if let Some(sock) = socket {
             cmd.arg("-L").arg(sock);
         }

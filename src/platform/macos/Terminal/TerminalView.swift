@@ -729,7 +729,7 @@ final class MuxTerminalView: TerminalView {
 
     private func tracingClipboardFailure(byteCount: Int) {
         // 复制失败不应打断终端输入；保留轻量诊断信息供日志定位。
-        NSLog("muxterm: clipboard write failed (bytes: %d)", byteCount)
+        CoreBridge.log("clipboard write failed (bytes: \(byteCount))", level: "error")
     }
 
     /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。

@@ -292,9 +292,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 )
                 try bridge.configCommit(transaction: transaction)
             } catch {
-                NSLog(
-                    "muxterm: failed to persist projects from settings: %@",
-                    error.localizedDescription
+                CoreBridge.log(
+                    "failed to persist projects from settings: \(error.localizedDescription)",
+                    level: "error"
                 )
             }
         }

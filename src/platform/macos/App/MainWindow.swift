@@ -303,7 +303,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     try configBridge.configCommit(transaction: transaction)
                 } catch {
                     // 失败时保留内存列表，不覆盖用户文件；下次启动仍读 Core 快照。
-                    NSLog("muxterm: failed to persist projects: %@", error.localizedDescription)
+                    CoreBridge.log(
+                        "failed to persist projects: \(error.localizedDescription)",
+                        level: "error"
+                    )
                 }
             }
         }
@@ -2453,11 +2456,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             wasDeferred: !bridgeReady
         )
 
-        NSLog(
-            "muxterm: workspace activation begin target=%@ ready=%@ restored=%@",
-            slot.targetConfig.name,
-            bridgeReady ? "true" : "false",
-            restoredParkedTree ? "true" : "false"
+        CoreBridge.log(
+            "workspace activation begin target=\(slot.targetConfig.name) ready=\(bridgeReady) restored=\(restoredParkedTree)"
         )
         // 无论 bridgeLock 当前是否空闲，都先交付缓存画面，再把权威拓扑
         // 读取放到后台。这样“可见切换”和“远端校准”不再绑在同一帧。
@@ -2619,11 +2619,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let elapsedMilliseconds =
             (ProcessInfo.processInfo.systemUptime - activation.startedAt) * 1000
-        NSLog(
-            "muxterm: workspace activation ready target=%@ deferred=%@ elapsed_ms=%.1f",
-            activation.slot.targetConfig.name,
-            activation.wasDeferred ? "true" : "false",
-            elapsedMilliseconds
+        CoreBridge.log(
+            String(
+                format: "workspace activation ready target=%@ deferred=%@ elapsed_ms=%.1f",
+                activation.slot.targetConfig.name,
+                activation.wasDeferred ? "true" : "false",
+                elapsedMilliseconds
+            )
         )
 
         // 缓存/权威快照已经完成绘制；从这一刻起恢复正常 bridge 查询，

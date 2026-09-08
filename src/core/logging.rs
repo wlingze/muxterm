@@ -111,6 +111,16 @@ fn init_logging_inner(config: LoggingConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Swift / FFI 把 UI 诊断写进与 `--log-file` 相同的 tracing 流。
+pub fn log_message(level: &str, message: &str) {
+    match level {
+        "error" => tracing::error!(target: "muxterm::ui", "{message}"),
+        "warn" => tracing::warn!(target: "muxterm::ui", "{message}"),
+        "info" => tracing::info!(target: "muxterm::ui", "{message}"),
+        _ => tracing::debug!(target: "muxterm::ui", "{message}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +173,13 @@ mod tests {
             std::env::remove_var("MUXTERM_LOG");
             std::env::remove_var("MUXTERM_LOG_FILE");
         }
+    }
+
+    #[test]
+    fn log_message_does_not_panic_without_subscriber() {
+        log_message("debug", "workspace activation begin");
+        log_message("error", "clipboard write failed");
+        log_message("info", "ok");
     }
 
     #[test]

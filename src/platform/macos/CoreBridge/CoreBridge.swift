@@ -494,6 +494,15 @@ final class CoreBridge {
         }
     }
 
+    /// UI 诊断写入 tracing，与 `--log-file` 同一文件。
+    static func log(_ message: String, level: String = "debug") {
+        level.withCString { levelPtr in
+            message.withCString { messagePtr in
+                muxterm_log_message(levelPtr, messagePtr)
+            }
+        }
+    }
+
     // MARK: - Core discovery
 
     /// 新建 Project 卡片的数据源。使用独立空 Catalog，避免与前台 poll 竞争。

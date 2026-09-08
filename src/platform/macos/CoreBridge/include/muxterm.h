@@ -122,6 +122,7 @@ int muxterm_connect(struct MuxtermHandle* h);
 int muxterm_shutdown(struct MuxtermHandle* h);
 int muxterm_detach(struct MuxtermHandle* h);
 int muxterm_init_logging(const char* log_file, const char* level);
+void muxterm_log_message(const char* level, const char* message);
 
 // ── Workspace 池（W7 新接口）──
 int muxterm_workspace_open(

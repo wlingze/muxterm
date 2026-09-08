@@ -1,4 +1,6 @@
 import AppKit
+import Darwin
+import MuxtermChrome
 import UserNotifications
 
 /// 系统通知授权状态的纯策略，避免把权限弹窗带进 XCTest / XCUITest。
@@ -107,7 +109,10 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
 
             if shouldLog, let error {
                 // 真正的 UserNotifications API 错误同一进程只记录一次。
-                NSLog("muxterm: notification authorization request failed: %@", error.localizedDescription)
+                CoreBridge.log(
+                    "notification authorization request failed: \(error.localizedDescription)",
+                    level: "error"
+                )
             }
             for completion in completions {
                 completion(granted)
@@ -132,7 +137,10 @@ final class NativeNotificationService: NSObject, UNUserNotificationCenterDelegat
         )
         center.add(request) { error in
             if let error {
-                NSLog("muxterm: notification delivery failed: %@", error.localizedDescription)
+                CoreBridge.log(
+                    "notification delivery failed: \(error.localizedDescription)",
+                    level: "error"
+                )
             }
         }
     }
@@ -178,10 +186,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             let options = Self.resolveBackend(from: CommandLine.arguments)
             // 调试日志：CLI `muxterm gui --debug --log-file` 转发参数，这里在
             // app 进程内初始化 core 的 tracing（写文件或 stderr）。
+            // `--log-file` 时把 stderr 也接到同一文件，NSSplitView / IMK /
+            // NSLog 不再刷终端。
+            if let logFile = options.logFile,
+               GuiLogFilePolicy.shouldRedirectStandardError(logFile: logFile),
+               !NativeNotificationService.isSuppressedProcess
+            {
+                Self.redirectStandardError(to: logFile)
+            }
             if options.debug || options.logFile != nil {
                 let rc = CoreBridge.initLogging(debug: options.debug, logFile: options.logFile)
                 if rc != 0 {
-                    NSLog("muxterm: 初始化日志失败")
+                    fputs("muxterm: 初始化日志失败\n", Darwin.stderr)
+                    CoreBridge.log("初始化日志失败", level: "error")
                 }
             }
             let (backend, socket, session) = (
@@ -535,6 +552,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             NSRunningApplication.current.activate(options: [.activateAllWindows])
         } else {
             NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
+    }
+
+    /// 把 stderr 接到 `--log-file`，让 AppKit / IMK 诊断进同一个文件。
+    @discardableResult
+    static func redirectStandardError(to path: String) -> Bool {
+        path.withCString { cPath in
+            "a".withCString { mode in
+                Darwin.freopen(cPath, mode, Darwin.stderr) != nil
+            }
         }
     }
 
