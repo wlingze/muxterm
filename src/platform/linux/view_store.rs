@@ -8,7 +8,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::super::ffi_client::{
-    ClientEvent, ClientEventKind, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent,
+    ClientEvent, ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace,
+    ClientWorkspaceEvent,
 };
 
 const RENDER_MAILBOX_CAPACITY: usize = 128;
@@ -19,6 +20,9 @@ pub struct WorkspaceView {
     pub workspace: Option<ClientWorkspace>,
     pub tabs: Vec<ClientTab>,
     pub panes: HashMap<u32, Vec<ClientPane>>,
+    /// One owned layout tree per tab. Layouts are part of the control snapshot
+    /// so a renderer never has to query Core while switching scenes.
+    pub layouts: HashMap<u32, ClientLayout>,
     render_mailboxes: HashMap<u32, VecDeque<ClientEvent>>,
 }
 
@@ -55,6 +59,11 @@ impl ViewStore {
         view.workspace = Some(workspace);
         view.tabs = tabs;
         view.panes = panes.into_iter().collect();
+    }
+
+    /// Replace all tab layouts in one owned control snapshot.
+    pub fn replace_layouts(&mut self, workspace_id: &str, layouts: Vec<(u32, ClientLayout)>) {
+        self.ensure_workspace(workspace_id).layouts = layouts.into_iter().collect();
     }
 
     /// Retain only render-data events. Control events are represented by the
@@ -103,7 +112,7 @@ impl ViewStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientEvent, ClientPane, ClientTab, ClientWorkspace, ViewStore};
+    use super::{ClientEvent, ClientLayout, ClientPane, ClientTab, ClientWorkspace, ViewStore};
 
     fn event(type_: u32, pane_id: u32, byte: u8) -> ClientEvent {
         ClientEvent {
@@ -142,6 +151,10 @@ mod tests {
                 }],
             )],
         );
+        store.replace_layouts(
+            "local//one/shell/",
+            vec![(1, ClientLayout::Leaf { pane_id: 7 })],
+        );
         for byte in 0..=u8::MAX {
             store.push_render_event(
                 "local//one/shell/",
@@ -153,6 +166,10 @@ mod tests {
             .expect("workspace snapshot");
         assert_eq!(view.tabs[0].name, "tab");
         assert_eq!(view.panes[&1][0].title, "bash");
+        assert_eq!(
+            view.layouts.get(&1),
+            Some(&ClientLayout::Leaf { pane_id: 7 })
+        );
 
         let events = store.take_pane_render_events("local//one/shell/", 7);
         assert_eq!(events.len(), 128);
