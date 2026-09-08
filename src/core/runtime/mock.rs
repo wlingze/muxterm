@@ -7,12 +7,12 @@
 
 #![allow(dead_code)]
 
-use super::*;
-#[allow(unused_imports)]
 use crate::core::protocol::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::core::protocol::state::{PaneInfo, TabInfo};
-use crate::core::protocol::task::Task;
+use crate::core::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
+use crate::core::protocol::task::{Task, TaskOutcome};
+use crate::core::runtime::contract::{Runtime, RuntimeCapability};
 use crate::core::types::{PaneId, TabId};
+use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。
