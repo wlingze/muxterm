@@ -70,6 +70,20 @@ impl EventPump {
         store.apply_workspace_event(event);
     }
 
+    /// Send input through the production FFI command sink.
+    pub fn send_input(&self, workspace_id: &str, pane_id: u32, data: &[u8]) -> anyhow::Result<()> {
+        let rc = self
+            .client
+            .send_workspace_input(workspace_id, pane_id, data);
+        if rc == 0 {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Core FFI input dispatch failed: workspace={workspace_id}, pane={pane_id}, code={rc}"
+            );
+        }
+    }
+
     /// Send one coalesced Surface input through the compatibility source.
     /// The public shape deliberately matches the eventual FFI command path,
     /// so GTK input does not own a second direct Workspace execution branch.
@@ -299,6 +313,15 @@ mod tests {
         let events = store.take_pane_render_events("local//one/shell/", 7);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, b"output");
+    }
+
+    #[test]
+    fn ffi_input_sink_propagates_core_errors() {
+        let pump = EventPump::new(FfiClient::new_catalog().expect("catalog handle"));
+        let error = pump
+            .send_input("local//missing/shell/", 7, b"x")
+            .expect_err("catalog handle has no workspace");
+        assert!(error.to_string().contains("Core FFI input dispatch failed"));
     }
 
     #[test]
