@@ -9,7 +9,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use crate::core::attention::clock::RealClock;
-use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
+use crate::core::attention::engine::AttentionEngine;
 use crate::core::attention::signal::AttentionSignal;
 use crate::core::config::parse_hex;
 use crate::core::config_service::SettingsService;
@@ -27,6 +27,11 @@ use crate::core::workspace::terminal_model::TerminalModel;
 use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;
+pub use super::functions::attention::{
+    muxterm_attention_acknowledge, muxterm_attention_mute, muxterm_attention_on_became_visible,
+    muxterm_attention_set_process_name, muxterm_attention_snapshot,
+    muxterm_attention_take_notifications,
+};
 pub use super::functions::catalog::{
     muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,
 };
@@ -1698,215 +1703,6 @@ pub unsafe extern "C" fn muxterm_search_all(
         json_string(serde_json::json!({ "ok": true, "hits": hits }))
     }))
     .unwrap_or_else(|_| json_error("search panic"))
-}
-
-/// 注意力引擎快照，返回 JSON。
-///
-/// 返回 `{"ok": true, "blocked_count": N, "workspaces": [...]}`。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let handle = &*h;
-        let workspaces: Vec<serde_json::Value> = handle
-            .attention
-            .snapshot()
-            .into_iter()
-            .map(|ws| {
-                // 从池里找工作区路径（W19 注意力行标题需要 path）。
-                let path = handle
-                    .pool()
-                    .list()
-                    .iter()
-                    .find(|w| w.id().replica_id() == ws.workspace_id)
-                    .map(|w| w.id().path.as_str())
-                    .filter(|p| !p.trim().is_empty())
-                    .unwrap_or("~");
-                serde_json::json!({
-                    "workspace_id": ws.workspace_id,
-                    "path": path,
-                    "blocked": ws.blocked,
-                    "done": ws.done,
-                    "working": ws.working,
-                    "panes": ws.panes.iter().map(|p| {
-                        serde_json::json!({
-                            "pane_id": p.pane_id,
-                            "status": format!("{:?}", p.status).to_lowercase(),
-                            "acknowledged": p.acknowledged,
-                            "last_line": p.last_line,
-                            "seq": p.seq,
-                            "process_name": p.process_name,
-                            "process_is_agent": p.process_is_agent,
-                            "agent_name": p.agent_name,
-                            "shell_name": p.shell_name,
-                        })
-                    }).collect::<Vec<_>>(),
-                })
-            })
-            .collect();
-        json_string(serde_json::json!({
-            "ok": true,
-            "blocked_count": handle.attention.blocked_workspace_count(),
-            "workspaces": workspaces,
-        }))
-    }))
-    .unwrap_or_else(|_| json_error("attention snapshot panic"))
-}
-
-/// 取走本轮新进入 blocked / done 的工作区通知，返回 JSON。
-///
-/// 返回 `{"ok": true, "notifications": [...], "blocked": [...], "done": [...]}`。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_attention_take_notifications(
-    h: *mut MuxtermHandle,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let handle = &mut *h;
-        let notifications = handle.attention.take_notifications();
-        let blocked = notifications
-            .iter()
-            .filter(|n| n.kind == AttentionNotificationKind::Blocked)
-            .map(|n| n.workspace_id.clone())
-            .collect::<Vec<_>>();
-        let done = notifications
-            .iter()
-            .filter(|n| n.kind == AttentionNotificationKind::Done)
-            .map(|n| n.workspace_id.clone())
-            .collect::<Vec<_>>();
-        let records = notifications
-            .into_iter()
-            .map(|n| {
-                serde_json::json!({
-                    "workspace_id": n.workspace_id,
-                    "pane_id": n.pane_id,
-                    "kind": match n.kind {
-                        AttentionNotificationKind::Blocked => "blocked",
-                        AttentionNotificationKind::Done => "done",
-                    },
-                    "process_name": n.process_name,
-                    "last_line": n.last_line,
-                    "seq": n.seq,
-                })
-            })
-            .collect::<Vec<_>>();
-        json_string(serde_json::json!({
-            "ok": true,
-            "notifications": records,
-            "blocked": blocked,
-            "done": done,
-        }))
-    }))
-    .unwrap_or_else(|_| json_error("attention notifications panic"))
-}
-
-/// 标记某 pane 成为前台可见（Done → Idle；Blocked 保持）。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_attention_on_became_visible(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        let Some(ws_id) = handle.pool().active_id() else {
-            return -1;
-        };
-        handle
-            .attention
-            .on_became_visible(&ws_id.replica_id(), pane_id);
-        0
-    }))
-    .unwrap_or(-1)
-}
-
-/// 显式确认某 pane 的通知已读（Blocked/Done → Idle）。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_attention_acknowledge(h: *mut MuxtermHandle, pane_id: u32) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        let Some(ws_id) = handle.pool().active_id() else {
-            return -1;
-        };
-        handle.attention.acknowledge(&ws_id.replica_id(), pane_id);
-        0
-    }))
-    .unwrap_or(-1)
-}
-
-/// 更新某 pane 的进程名（注意力列表展示用）。
-///
-/// # Safety
-/// `h` 有效且未 free；`name` NUL 结尾（可为 NULL）。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_attention_set_process_name(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    name: *const c_char,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        let Some(ws_id) = handle.pool().active_id() else {
-            return -1;
-        };
-        handle
-            .attention
-            .set_process_name(&ws_id.replica_id(), pane_id, cstr_opt(name));
-        0
-    }))
-    .unwrap_or(-1)
-}
-
-/// 静音某 pane 一段时间（秒），不进红点、不通知。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_attention_mute(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    seconds: u64,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        let Some(ws_id) = handle.pool().active_id() else {
-            return -1;
-        };
-        handle.attention.mute_for(
-            &ws_id.replica_id(),
-            pane_id,
-            std::time::Duration::from_secs(seconds),
-        );
-        0
-    }))
-    .unwrap_or(-1)
 }
 
 /// 读取某 pane 的滚动窗口 ANSI 字节（历史查看用）。
