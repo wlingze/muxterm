@@ -14,7 +14,17 @@ use crate::core::types::PaneId;
 ///
 /// 注意：与 GTK `Orientation` 命名相反（GTK Horizontal = 水平排列 = 左右），
 /// 这里沿用 `notebook.rs` 既有语义，避免行为回归。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 pub enum SplitDir {
     Horizontal,
     Vertical,
