@@ -14,6 +14,10 @@ pub mod transport;
 use std::sync::Arc;
 use std::thread;
 
+use crate::core::projects::Project;
+use crate::core::protocol::candidate::{
+    Candidate, CandidateRef, ExistingCandidate, ExistingCandidateRef,
+};
 use crate::core::runtime::Runtime;
 use crate::core::transport::registry::ConnectionRegistry;
 use crate::core::transport::TargetConnection;
@@ -512,6 +516,217 @@ impl Catalog {
         }
     }
 
+    /// Resolve the four product Candidate kinds through one Core entry point.
+    ///
+    /// Project records are supplied by the Projects domain; Catalog still owns
+    /// all runtime/discovery resolution and is the only producer of a spec.
+    pub fn resolve_open_request(
+        &mut self,
+        request: &OpenRequest,
+        projects: &[Project],
+    ) -> anyhow::Result<ResolvedTarget> {
+        match &request.candidate {
+            CandidateRef::Project { project_id } => {
+                let project = projects
+                    .iter()
+                    .find(|project| project.id.as_str() == project_id)
+                    .ok_or_else(|| anyhow::anyhow!("project 不存在: {project_id}"))?;
+                let mut resolved = self.resolve_target(&project.target, request.intent)?;
+                resolved.spec.provenance = Some(project.provenance());
+                resolved.spec.template = request
+                    .template
+                    .clone()
+                    .or_else(|| project.template.clone());
+                resolved.spec.create = request.intent == ResolveIntent::CreateIfMissing;
+                Ok(resolved)
+            }
+            CandidateRef::Worktree {
+                project_id,
+                worktree_id,
+            } => {
+                let project = projects
+                    .iter()
+                    .find(|project| project.id.as_str() == project_id)
+                    .ok_or_else(|| anyhow::anyhow!("project 不存在: {project_id}"))?;
+                let worktree = project
+                    .worktrees
+                    .iter()
+                    .find(|worktree| worktree.id.as_str() == worktree_id)
+                    .ok_or_else(|| anyhow::anyhow!("worktree 不存在: {worktree_id}"))?;
+
+                let mut target = project.target.clone();
+                target.name = if worktree.branch.trim().is_empty() {
+                    worktree.id.to_string()
+                } else {
+                    worktree.branch.clone()
+                };
+                target.path = worktree.path.clone();
+                target.workspace_id = None;
+                if target.runtime == crate::core::quickconnect::model::TargetRuntime::Tmux {
+                    target.session = Some(worktree.id.to_string());
+                }
+
+                let mut resolved = self.resolve_target(&target, request.intent)?;
+                if request.intent == ResolveIntent::CreateIfMissing {
+                    resolved.spec.create = true;
+                }
+                resolved.spec.provenance = Some(project.worktree_provenance(&worktree.id));
+                resolved.spec.template = request
+                    .template
+                    .clone()
+                    .or_else(|| project.template.clone());
+                Ok(resolved)
+            }
+            CandidateRef::Existing { identity } => {
+                let mut resolved = self.resolve_existing_candidate(identity)?;
+                resolved.spec.template = request.template.clone();
+                // An Existing row is an attach identity even if a caller
+                // accidentally supplies CreateIfMissing.
+                resolved.spec.create = false;
+                Ok(resolved)
+            }
+            CandidateRef::Recent { key } => {
+                let mut resolved = self
+                    .pool
+                    .list()
+                    .into_iter()
+                    .filter_map(|workspace| workspace.resolved_target().cloned())
+                    .find(|resolved| resolved.canonical.identity_key() == *key)
+                    .ok_or_else(|| anyhow::anyhow!("recent candidate 不存在: {key}"))?;
+                resolved.spec.template = request.template.clone().or(resolved.spec.template);
+                resolved.spec.create = false;
+                Ok(resolved)
+            }
+        }
+    }
+
+    /// Build the unified Project/Worktree/Existing/Recent list without
+    /// creating Runtime instances or performing discovery itself.
+    pub fn candidates(
+        &self,
+        projects: &[Project],
+        existing: &[ExistingCandidate],
+        recent_limit: usize,
+    ) -> Vec<Candidate> {
+        let mut rows = Vec::new();
+        for project in projects {
+            let mut project_row = Candidate::project(project.id.to_string(), project.name.clone());
+            project_row.subtitle = project.target.path.clone();
+            project_row.badges = vec![
+                project.target.runtime.as_str().into(),
+                project.target.transport.label(),
+            ];
+            project_row.in_pool = self.workspace_for_provenance(project.id.as_str(), None);
+            rows.push(project_row);
+
+            for worktree in &project.worktrees {
+                let mut worktree_row = Candidate::worktree(
+                    project.id.to_string(),
+                    worktree.id.to_string(),
+                    if worktree.branch.trim().is_empty() {
+                        worktree.id.to_string()
+                    } else {
+                        worktree.branch.clone()
+                    },
+                );
+                worktree_row.subtitle = worktree.path.clone();
+                worktree_row.badges = vec!["worktree".into()];
+                worktree_row.in_pool =
+                    self.workspace_for_provenance(project.id.as_str(), Some(worktree.id.as_str()));
+                rows.push(worktree_row);
+            }
+        }
+
+        for candidate in existing {
+            let mut row = Candidate::existing(candidate, None);
+            let identity = match &row.reference {
+                CandidateRef::Existing { identity } => identity,
+                _ => unreachable!("Candidate::existing must retain Existing reference"),
+            };
+            row.in_pool = self.workspace_for_existing(identity);
+            rows.push(row);
+        }
+
+        for workspace in self.pool.recent_workspaces(recent_limit) {
+            let Some(resolved) = workspace.resolved_target() else {
+                continue;
+            };
+            let mut row =
+                Candidate::recent(resolved.canonical.identity_key(), resolved.display_name());
+            row.subtitle = resolved.spec.path.clone();
+            row.badges = vec![
+                resolved.spec.runtime.clone(),
+                resolved.spec.transport.clone(),
+            ];
+            row.in_pool = Some(workspace.id().clone());
+            rows.push(row);
+        }
+        rows
+    }
+
+    fn workspace_for_provenance(
+        &self,
+        project_id: &str,
+        worktree_id: Option<&str>,
+    ) -> Option<WorkspaceId> {
+        self.pool.list().into_iter().find_map(|workspace| {
+            let provenance = workspace.provenance()?;
+            let same_project = provenance
+                .project_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == project_id);
+            let same_worktree = provenance
+                .worktree_id
+                .as_ref()
+                .map(|id| Some(id.as_str()) == worktree_id)
+                .unwrap_or(worktree_id.is_none());
+            (same_project && same_worktree).then(|| workspace.id().clone())
+        })
+    }
+
+    fn workspace_for_existing(&self, identity: &ExistingCandidateRef) -> Option<WorkspaceId> {
+        self.pool.list().into_iter().find_map(|workspace| {
+            let resolved = workspace.resolved_target()?;
+            let canonical = &resolved.canonical;
+            let target = match &canonical.transport {
+                crate::core::quickconnect::model::TargetTransport::Local => "",
+                crate::core::quickconnect::model::TargetTransport::Ssh { name } => name.as_str(),
+            };
+            let transport_id = match &canonical.transport {
+                crate::core::quickconnect::model::TargetTransport::Local => "local",
+                crate::core::quickconnect::model::TargetTransport::Ssh { .. } => "ssh",
+            };
+            let target_matches =
+                identity.target == target || (target.is_empty() && identity.target == "local");
+            (canonical.runtime.as_str() == identity.runtime_id
+                && transport_id == identity.transport_id
+                && target_matches
+                && canonical.session == identity.session
+                && canonical.socket == identity.socket
+                && canonical.workspace_id == identity.workspace_id)
+                .then(|| workspace.id().clone())
+        })
+    }
+
+    fn resolve_existing_candidate(
+        &mut self,
+        identity: &ExistingCandidateRef,
+    ) -> anyhow::Result<ResolvedTarget> {
+        let connect = self.connect(&identity.transport_id, &identity.target)?;
+        let driver = self
+            .runtime(&identity.runtime_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown runtime '{}'", identity.runtime_id))?;
+        let candidates = driver.list(connect.as_ref(), identity.session.as_deref())?;
+        let candidate = candidates
+            .iter()
+            .find(|candidate| existing_identity_matches(candidate, identity))
+            .ok_or_else(|| {
+                anyhow::anyhow!("existing candidate identity 不存在: {}", identity.key())
+            })?;
+        let config = target_config_from_existing(candidate)?;
+        Ok(self.resolved_from_candidate(&config, candidate))
+    }
+
     /// SessionCandidate → ResolvedTarget（identity 字段保留；W6 §11.1 用
     /// typed session/socket/workspace_id，禁止从 extra 猜身份）。
     fn resolved_from_candidate(
@@ -630,6 +845,52 @@ impl Catalog {
     pub fn pool_mut(&mut self) -> &mut WorkspacePool {
         &mut self.pool
     }
+}
+
+fn existing_identity_matches(
+    candidate: &SessionCandidate,
+    identity: &ExistingCandidateRef,
+) -> bool {
+    candidate.runtime_id == identity.runtime_id
+        && candidate.transport_id == identity.transport_id
+        && candidate.target == identity.target
+        && candidate.session == identity.session
+        && candidate.socket == identity.socket
+        && candidate.workspace_id == identity.workspace_id
+}
+
+fn target_config_from_existing(
+    candidate: &SessionCandidate,
+) -> anyhow::Result<crate::core::quickconnect::model::TargetConfig> {
+    use crate::core::quickconnect::model::{TargetRuntime, TargetTransport};
+
+    let runtime = TargetRuntime::from_str(&candidate.runtime_id)
+        .ok_or_else(|| anyhow::anyhow!("unknown runtime '{}'", candidate.runtime_id))?;
+    let transport = match candidate.transport_id.as_str() {
+        "local" => TargetTransport::Local,
+        "ssh" => TargetTransport::Ssh {
+            name: candidate.target.clone(),
+        },
+        other => anyhow::bail!("unknown transport '{other}'"),
+    };
+    let path = if runtime == TargetRuntime::Herdr {
+        candidate.workspace_id.clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let mut config = crate::core::quickconnect::model::TargetConfig::new(
+        candidate.name.clone(),
+        runtime,
+        transport,
+        path,
+    );
+    config.session = candidate
+        .session
+        .clone()
+        .or_else(|| candidate.namespace.clone());
+    config.socket = candidate.socket.clone();
+    config.workspace_id = candidate.workspace_id.clone();
+    Ok(config)
 }
 
 /// 对一条 Connect 扇出所有接受该 transport 的 Driver。

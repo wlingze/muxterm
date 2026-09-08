@@ -2,8 +2,10 @@
 
 use anyhow::{anyhow, Result};
 
+use crate::core::catalog::OpenRequest;
 use crate::core::catalog::{Catalog, ResolveIntent};
 use crate::core::config::expand_config_value;
+use crate::core::protocol::candidate::CandidateRef;
 use crate::core::quickconnect::model::{TargetRuntime, TargetTransport};
 use crate::core::runtime::WorktreeCreateSpec;
 use crate::core::transport::ChannelRequest;
@@ -253,12 +255,18 @@ impl ProjectsService {
         intent: ResolveIntent,
         template_override: Option<TemplateName>,
     ) -> Result<WorkspaceId> {
-        let project = self
-            .get_project(id)
-            .ok_or_else(|| anyhow!("project 不存在: {id}"))?;
-        let mut resolved = catalog.resolve_target(&project.target, intent)?;
-        resolved.spec.provenance = Some(project.provenance());
-        resolved.spec.template = template_override.or_else(|| project.template.clone());
+        if self.get_project(id).is_none() {
+            return Err(anyhow!("project 不存在: {id}"));
+        }
+        let request = OpenRequest {
+            candidate: CandidateRef::Project {
+                project_id: id.to_string(),
+            },
+            intent,
+            template: template_override,
+            activate: true,
+        };
+        let resolved = catalog.resolve_open_request(&request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
         catalog.open_resolved(resolved).await?;
         Ok(workspace_id)
@@ -273,33 +281,23 @@ impl ProjectsService {
         intent: ResolveIntent,
         template_override: Option<TemplateName>,
     ) -> Result<WorkspaceId> {
-        let project = self
+        if self
             .get_project(project_id)
-            .ok_or_else(|| anyhow!("project 不存在: {project_id}"))?
-            .clone();
-        let worktree = project
-            .worktree(worktree_id)
-            .ok_or_else(|| anyhow!("worktree 不存在: {worktree_id}"))?
-            .clone();
-
-        let mut target = project.target.clone();
-        target.name = if worktree.branch.trim().is_empty() {
-            worktree.id.to_string()
-        } else {
-            worktree.branch.clone()
+            .and_then(|project| project.worktree(worktree_id))
+            .is_none()
+        {
+            return Err(anyhow!("worktree 不存在: {project_id}/{worktree_id}"));
+        }
+        let request = OpenRequest {
+            candidate: CandidateRef::Worktree {
+                project_id: project_id.to_string(),
+                worktree_id: worktree_id.to_string(),
+            },
+            intent,
+            template: template_override,
+            activate: true,
         };
-        target.path = worktree.path;
-        target.workspace_id = None;
-        if target.runtime == TargetRuntime::Tmux {
-            target.session = Some(worktree.id.to_string());
-        }
-
-        let mut resolved = catalog.resolve_target(&target, intent)?;
-        if target.runtime == TargetRuntime::Tmux && intent == ResolveIntent::CreateIfMissing {
-            resolved.spec.create = true;
-        }
-        resolved.spec.provenance = Some(project.worktree_provenance(worktree_id));
-        resolved.spec.template = template_override.or(project.template.clone());
+        let resolved = catalog.resolve_open_request(&request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
         catalog.open_resolved(resolved).await?;
 
