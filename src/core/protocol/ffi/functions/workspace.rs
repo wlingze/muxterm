@@ -4,6 +4,7 @@ use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
+use crate::core::muxterm::Muxterm;
 use crate::core::protocol::ffi::api::{
     configured_scrollback_lines, cstr_opt, discovery_timeout, json_error, json_string,
     resolve_c_io_pane, MuxtermHandle,
@@ -136,8 +137,11 @@ pub unsafe extern "C" fn muxterm_workspace_open(
             provenance: None,
             template: None,
         };
-        let fut = handle.catalog.open(&spec);
-        match handle.rt.block_on(fut) {
+        let result = {
+            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
+            rt.block_on(Muxterm::open_spec_parts(catalog, pool, &spec))
+        };
+        match result {
             Ok(_) => 0,
             Err(_) => -1,
         }

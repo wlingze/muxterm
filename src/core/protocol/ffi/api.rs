@@ -186,6 +186,15 @@ mod tests {
                 "ffi-project"
             );
             assert_eq!(value["resolved_target"]["spec"]["runtime"], "shell");
+            assert_eq!(
+                (*h).pool().len(),
+                1,
+                "opened workspace belongs to Muxterm pool"
+            );
+            assert!(
+                (*h).catalog.pool().is_empty(),
+                "production FFI handle must not leave a live pool in Catalog"
+            );
             muxterm_free(h);
         }
     }
@@ -516,17 +525,17 @@ mod tests {
             (*h).catalog = crate::core::catalog::Catalog::new();
             let first_id = WorkspaceId::new("local", None, "first", "shell", "/one");
             let second_id = WorkspaceId::new("local", None, "second", "shell", "/two");
-            (*h).catalog.pool_mut().insert_connected(Workspace::new(
+            (*h).pool_mut().insert_connected(Workspace::new(
                 first_id.clone(),
                 "first".into(),
                 Box::new(MockRuntime::with_single_pane()),
             ));
-            (*h).catalog.pool_mut().insert_connected(Workspace::new(
+            (*h).pool_mut().insert_connected(Workspace::new(
                 second_id.clone(),
                 "second".into(),
                 Box::new(MockRuntime::with_single_pane()),
             ));
-            (*h).catalog.pool_mut().activate(&second_id);
+            (*h).pool_mut().activate(&second_id);
 
             let task = CTask {
                 type_: TASK_NEW_TAB,
@@ -1191,14 +1200,13 @@ mod tests {
             let handle = &mut *h;
             let id2 =
                 crate::core::workspace::id::WorkspaceId::new("local", None, "second", "shell", "");
-            let open_result = handle.rt.block_on(handle.catalog.pool_mut().open(
-                id2.clone(),
-                "second".into(),
-                |_| {
+            let open_result = {
+                let (rt, pool) = (&handle.rt, &mut handle.pool);
+                rt.block_on(pool.open(id2.clone(), "second".into(), |_| {
                     let rt = crate::core::runtime::shell::ShellRuntime::new("$SHELL", "");
                     Box::new(rt)
-                },
-            ));
+                }))
+            };
             assert!(open_result.is_ok(), "第二个 shell workspace 应能打开");
             let mut buf = [CWorkspaceStateChange {
                 workspace_id: ptr::null(),

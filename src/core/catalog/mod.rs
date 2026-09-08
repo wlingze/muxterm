@@ -541,6 +541,26 @@ impl Catalog {
         request: &OpenRequest,
         projects: &[Project],
     ) -> anyhow::Result<ResolvedTarget> {
+        let recent: Vec<ResolvedTarget> = self
+            .pool
+            .list()
+            .into_iter()
+            .filter_map(|workspace| workspace.resolved_target().cloned())
+            .collect();
+        self.resolve_open_request_with_recent(request, projects, &recent)
+    }
+
+    /// Resolve an open request while the live pool is owned by Muxterm.
+    ///
+    /// The resolver still owns the only `WorkspaceSpec` construction path, but
+    /// it receives the recent descriptors as an owned snapshot instead of
+    /// borrowing a pool that belongs to the composition root.
+    pub(crate) fn resolve_open_request_with_recent(
+        &mut self,
+        request: &OpenRequest,
+        projects: &[Project],
+        recent: &[ResolvedTarget],
+    ) -> anyhow::Result<ResolvedTarget> {
         match &request.candidate {
             CandidateRef::Project { project_id } => {
                 let project = projects
@@ -602,12 +622,10 @@ impl Catalog {
                 Ok(resolved)
             }
             CandidateRef::Recent { key } => {
-                let mut resolved = self
-                    .pool
-                    .list()
-                    .into_iter()
-                    .filter_map(|workspace| workspace.resolved_target().cloned())
+                let mut resolved = recent
+                    .iter()
                     .find(|resolved| resolved.canonical.identity_key() == *key)
+                    .cloned()
                     .ok_or_else(|| anyhow::anyhow!("recent candidate 不存在: {key}"))?;
                 resolved.spec.template = request.template.clone().or(resolved.spec.template);
                 resolved.spec.create = false;
@@ -624,6 +642,17 @@ impl Catalog {
         existing: &[ExistingCandidate],
         recent_limit: usize,
     ) -> Vec<Candidate> {
+        self.candidates_with_pool(projects, existing, recent_limit, &self.pool)
+    }
+
+    /// Build candidates against a live pool owned by Muxterm.
+    pub(crate) fn candidates_with_pool(
+        &self,
+        projects: &[Project],
+        existing: &[ExistingCandidate],
+        recent_limit: usize,
+        pool: &WorkspacePool,
+    ) -> Vec<Candidate> {
         let mut rows = Vec::new();
         for project in projects {
             let mut project_row = Candidate::project(project.id.to_string(), project.name.clone());
@@ -632,7 +661,7 @@ impl Catalog {
                 project.target.runtime.as_str().into(),
                 project.target.transport.label(),
             ];
-            project_row.in_pool = self.workspace_for_provenance(project.id.as_str(), None);
+            project_row.in_pool = self.workspace_for_provenance_in(pool, project.id.as_str(), None);
             rows.push(project_row);
 
             for worktree in &project.worktrees {
@@ -647,8 +676,11 @@ impl Catalog {
                 );
                 worktree_row.subtitle = worktree.path.clone();
                 worktree_row.badges = vec!["worktree".into()];
-                worktree_row.in_pool =
-                    self.workspace_for_provenance(project.id.as_str(), Some(worktree.id.as_str()));
+                worktree_row.in_pool = self.workspace_for_provenance_in(
+                    pool,
+                    project.id.as_str(),
+                    Some(worktree.id.as_str()),
+                );
                 rows.push(worktree_row);
             }
         }
@@ -659,11 +691,11 @@ impl Catalog {
                 CandidateRef::Existing { identity } => identity,
                 _ => unreachable!("Candidate::existing must retain Existing reference"),
             };
-            row.in_pool = self.workspace_for_existing(identity);
+            row.in_pool = self.workspace_for_existing_in(pool, identity);
             rows.push(row);
         }
 
-        for workspace in self.pool.recent_workspaces(recent_limit) {
+        for workspace in pool.recent_workspaces(recent_limit) {
             let Some(resolved) = workspace.resolved_target() else {
                 continue;
             };
@@ -680,12 +712,13 @@ impl Catalog {
         rows
     }
 
-    fn workspace_for_provenance(
+    fn workspace_for_provenance_in(
         &self,
+        pool: &WorkspacePool,
         project_id: &str,
         worktree_id: Option<&str>,
     ) -> Option<WorkspaceId> {
-        self.pool.list().into_iter().find_map(|workspace| {
+        pool.list().into_iter().find_map(|workspace| {
             let provenance = workspace.provenance()?;
             let same_project = provenance
                 .project_id
@@ -700,8 +733,12 @@ impl Catalog {
         })
     }
 
-    fn workspace_for_existing(&self, identity: &ExistingCandidateRef) -> Option<WorkspaceId> {
-        self.pool.list().into_iter().find_map(|workspace| {
+    fn workspace_for_existing_in(
+        &self,
+        pool: &WorkspacePool,
+        identity: &ExistingCandidateRef,
+    ) -> Option<WorkspaceId> {
+        pool.list().into_iter().find_map(|workspace| {
             let resolved = workspace.resolved_target()?;
             let canonical = &resolved.canonical;
             let target = match &canonical.transport {
@@ -862,6 +899,15 @@ impl Catalog {
 
     pub fn pool_mut(&mut self) -> &mut WorkspacePool {
         &mut self.pool
+    }
+
+    /// Move the compatibility pool into the product composition root.
+    ///
+    /// A production FFI handle owns the live pool on [`Muxterm`], not inside
+    /// Catalog.  Catalog retains this field only so its resolver/open unit
+    /// tests and legacy in-process callers can migrate independently.
+    pub(crate) fn take_pool(&mut self) -> WorkspacePool {
+        std::mem::take(&mut self.pool)
     }
 }
 
