@@ -42,6 +42,10 @@ pub use super::functions::config::{
 };
 pub(crate) use super::functions::events::state_change_to_c;
 pub use super::functions::events::{muxterm_poll_events, muxterm_poll_workspace_events};
+pub(crate) use super::functions::handle::configured_scrollback_lines;
+pub use super::functions::handle::{
+    muxterm_catalog_new, muxterm_free, muxterm_new, muxterm_new_connect, muxterm_new_connect_sized,
+};
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
 };
@@ -97,47 +101,18 @@ pub struct MuxtermHandle {
     /// Core-owned configuration service shared by GUI, TUI and CLI adapters.
     pub(crate) settings: SettingsService,
     /// `poll_events` 产出的字节 / 字符串，保证指针在下次 poll 前有效。
-    event_data: Vec<Vec<u8>>,
-    event_names: Vec<CString>,
+    pub(crate) event_data: Vec<Vec<u8>>,
+    pub(crate) event_names: Vec<CString>,
     /// `get_tabs` 名称缓冲。
-    tab_names: Vec<CString>,
+    pub(crate) tab_names: Vec<CString>,
     /// `get_layout` 节点池（连续存储，指针稳定至下次 get_layout）。
-    layout_nodes: Vec<CLayoutNode>,
+    pub(crate) layout_nodes: Vec<CLayoutNode>,
     /// `muxterm_poll_*` 的 C 缓冲可能小于一次 refresh 的事件数；
     /// 这里保留未返回的事件（带 WorkspaceId），避免 GUI 轮询 64 个事件时
     /// 丢掉布局或输出。background 事件绝不能失去 WorkspaceId 身份。
     pub(crate) deferred_events: VecDeque<(WorkspaceId, StateChange)>,
     /// workspace 事件 wrapper 的 workspace_id 字符串缓冲。
-    workspace_ids: Vec<CString>,
-}
-
-fn open_settings_service() -> SettingsService {
-    match SettingsService::default_user() {
-        Ok(mut service) => {
-            if let Err(error) = service.migrate_legacy_quickconnect() {
-                tracing::warn!(
-                    target = "muxterm::config",
-                    "QuickConnect 迁移未完成: {error}"
-                );
-            }
-            if let Err(error) = service.migrate_legacy_linux_preferences() {
-                tracing::warn!(
-                    target = "muxterm::config",
-                    "Linux preferences 迁移未完成: {error}"
-                );
-            }
-            service
-        }
-        Err(error) => {
-            tracing::warn!(
-                target = "muxterm::config",
-                "配置不可用，使用内存默认值: {error}"
-            );
-            let path = crate::core::config::Config::user_config_path()
-                .unwrap_or_else(|| std::path::PathBuf::from("config.toml"));
-            SettingsService::in_memory_default(path)
-        }
-    }
+    pub(crate) workspace_ids: Vec<CString>,
 }
 
 impl MuxtermHandle {
@@ -626,284 +601,6 @@ pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
     if !value.is_null() {
         drop(CString::from_raw(value));
     }
-}
-
-/// 创建不预开任何 Workspace 的 Catalog handle。
-///
-/// 新的 Project / Recent / Existing 产品路径先拿这一整个 Catalog，再调用
-/// `muxterm_workspace_open_target_json`。旧 `muxterm_new*` 继续作为兼容薄封装。
-#[no_mangle]
-pub extern "C" fn muxterm_catalog_new() -> *mut MuxtermHandle {
-    catch_unwind(AssertUnwindSafe(|| {
-        let Some(rt) = new_ffi_runtime() else {
-            return ptr::null_mut();
-        };
-        boxed_handle(crate::core::catalog::Catalog::with_builtins(), rt)
-    }))
-    .unwrap_or(ptr::null_mut())
-}
-
-/// 创建 handle（deprecated 转发：建空池并打开一个工作区）。
-///
-/// W7 起新代码用 [`muxterm_workspace_open`]；本函数保留给 macOS 暂用。
-/// `runtime_type`：`"local"` / `"tmux"` / `"daemon"`（大小写不敏感）。
-/// `socket` / `session`：tmux 模式可选；daemon 用 `session` 推导 socket 路径；local 忽略。
-///
-/// 失败返回 null。
-#[no_mangle]
-pub extern "C" fn muxterm_new(
-    runtime_type: *const c_char,
-    socket: *const c_char,
-    session: *const c_char,
-) -> *mut MuxtermHandle {
-    legacy_new_handle(
-        runtime_type,
-        socket,
-        session,
-        ptr::null(),
-        ptr::null(),
-        None,
-    )
-}
-
-/// 创建 handle 并直接连接（deprecated 转发：开一个工作区）。
-///
-/// 相比 [`muxterm_new`]（+ [`muxterm_connect`] 两步），此函数一步完成建连。
-/// W7 起新代码用 [`muxterm_workspace_open`]。
-///
-/// - `runtime_type`：`"local"` / `"tmux"` / `"daemon"` / `"tmux-ssh"`
-/// - `socket`：tmux 的 `-L` socket 名（本地 tmux），SSH 模式为远端 socket（可选）
-/// - `session`：attach 的目标 session 名（非空 → attach 模式；空 → new-session）
-/// - `ssh_alias`：SSH 模式下的 `~/.ssh/config` Host 名（仅 `tmux-ssh` 用）
-/// - `start_directory`：new-session 的起始工作目录（可选）
-///
-/// 失败返回 null。
-#[no_mangle]
-pub extern "C" fn muxterm_new_connect(
-    runtime_type: *const c_char,
-    socket: *const c_char,
-    session: *const c_char,
-    ssh_alias: *const c_char,
-    start_directory: *const c_char,
-) -> *mut MuxtermHandle {
-    legacy_new_handle(
-        runtime_type,
-        socket,
-        session,
-        ssh_alias,
-        start_directory,
-        None,
-    )
-}
-
-/// 与 [`muxterm_new_connect`] 相同，但在 spawn tmux 时提供真实的初始字符网格。
-/// `cols`/`rows` 为 0 时回退到兼容 API 的默认 80x24。
-#[no_mangle]
-pub extern "C" fn muxterm_new_connect_sized(
-    runtime_type: *const c_char,
-    socket: *const c_char,
-    session: *const c_char,
-    ssh_alias: *const c_char,
-    start_directory: *const c_char,
-    cols: u16,
-    rows: u16,
-) -> *mut MuxtermHandle {
-    legacy_new_handle(
-        runtime_type,
-        socket,
-        session,
-        ssh_alias,
-        start_directory,
-        (cols >= 2 && rows >= 1).then_some((cols, rows)),
-    )
-}
-
-fn legacy_new_handle(
-    runtime_type: *const c_char,
-    socket: *const c_char,
-    session: *const c_char,
-    ssh_alias: *const c_char,
-    start_directory: *const c_char,
-    client_size: Option<(u16, u16)>,
-) -> *mut MuxtermHandle {
-    let kind = cstr_opt(runtime_type)
-        .unwrap_or_else(|| "local".into())
-        .to_ascii_lowercase();
-    let sock = cstr_opt(socket);
-    let sess = cstr_opt(session);
-    let alias = cstr_opt(ssh_alias);
-    let start_dir = cstr_opt(start_directory);
-
-    let Some(rt) = new_ffi_runtime() else {
-        return ptr::null_mut();
-    };
-    let mut catalog = crate::core::catalog::Catalog::with_builtins();
-
-    let (id, name, runtime, scrollback_lines) =
-        match legacy_runtime_spec(&kind, sock, sess, alias, start_dir, client_size) {
-            Some(spec) => spec,
-            None => return ptr::null_mut(),
-        };
-    let fut =
-        catalog
-            .pool_mut()
-            .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| Ok(runtime));
-    if rt.block_on(fut).is_err() {
-        return ptr::null_mut();
-    }
-
-    boxed_handle(catalog, rt)
-}
-
-fn new_ffi_runtime() -> Option<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .build()
-        .ok()
-}
-
-fn boxed_handle(
-    mut catalog: crate::core::catalog::Catalog,
-    rt: tokio::runtime::Runtime,
-) -> *mut MuxtermHandle {
-    let attention_config = crate::core::config::Config::load()
-        .map(|c| c.attention)
-        .unwrap_or_default();
-    let settings = open_settings_service();
-    if let Err(error) = catalog.set_templates(settings.document().templates.clone()) {
-        tracing::warn!(
-            target = "muxterm::config",
-            "WorkspaceTemplate 加载失败，使用空注册表: {error}"
-        );
-    }
-    let projects = match ProjectStore::from_settings(&settings) {
-        Ok(store) => ProjectsService::new(store),
-        Err(error) => {
-            tracing::warn!(
-                target = "muxterm::config",
-                "Project 加载失败，使用内存空集合: {error}"
-            );
-            ProjectsService::in_memory()
-        }
-    };
-    Box::into_raw(Box::new(MuxtermHandle {
-        catalog,
-        projects,
-        rt,
-        callbacks: FfiCallbacks::default(),
-        attention: AttentionEngine::new(attention_config, RealClock),
-        settings,
-        event_data: Vec::new(),
-        event_names: Vec::new(),
-        tab_names: Vec::new(),
-        layout_nodes: Vec::new(),
-        deferred_events: VecDeque::new(),
-        workspace_ids: Vec::new(),
-    }))
-}
-
-/// 旧 `muxterm_new` / `muxterm_new_connect` 的 runtime 规格（deprecated 转发）。
-fn legacy_runtime_spec(
-    kind: &str,
-    sock: Option<String>,
-    sess: Option<String>,
-    alias: Option<String>,
-    start_dir: Option<String>,
-    client_size: Option<(u16, u16)>,
-) -> Option<(
-    WorkspaceId,
-    String,
-    std::boxed::Box<dyn crate::core::runtime::Runtime>,
-    usize,
-)> {
-    let scrollback_lines = configured_scrollback_lines();
-    let runtime: std::boxed::Box<dyn crate::core::runtime::Runtime> = match kind {
-        "tmux" => {
-            let sock_ref = sock.as_deref();
-            let mut tmux = if let Some(name) = sess.as_deref() {
-                TmuxRuntime::new_with_attach(sock_ref, name)
-            } else if let Some(dir) = start_dir.as_deref() {
-                TmuxRuntime::new_with_cwd(sock_ref, Some(dir))
-            } else {
-                TmuxRuntime::new(sock_ref)
-            };
-            tmux.set_scrollback_lines(scrollback_lines as u32);
-            if let Some((cols, rows)) = client_size {
-                tmux.set_client_size(cols, rows);
-            }
-            std::boxed::Box::new(tmux)
-        }
-        "ssh" | "tmux-ssh" => {
-            let (alias_name, sock_owned) =
-                TmuxRuntime::ssh_alias_and_tmux_socket(sock.as_deref(), alias.as_deref())?;
-            let sock_ref = sock_owned.as_deref();
-            let mut tmux = if let Some(name) = sess.as_deref() {
-                TmuxRuntime::new_ssh_attach(&alias_name, sock_ref, name)
-            } else {
-                TmuxRuntime::new_ssh(&alias_name, sock_ref)
-            };
-            tmux.set_scrollback_lines(scrollback_lines as u32);
-            if let Some((cols, rows)) = client_size {
-                tmux.set_client_size(cols, rows);
-            }
-            std::boxed::Box::new(tmux)
-        }
-        "daemon" => {
-            let name = sess.clone().unwrap_or_else(|| "default".into());
-            let path = sock
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| DaemonRuntime::default_socket_path(&name));
-            std::boxed::Box::new(DaemonRuntime::new(path, name))
-        }
-        _ => std::boxed::Box::new(ShellRuntime::new(
-            "$SHELL",
-            start_dir.as_deref().unwrap_or(""),
-        )),
-    };
-    let transport = if matches!(kind, "ssh" | "tmux-ssh") {
-        "ssh"
-    } else {
-        "local"
-    };
-    let runtime_kind = if matches!(kind, "daemon") {
-        "daemon"
-    } else if matches!(kind, "ssh" | "tmux-ssh") || kind == "tmux" {
-        "tmux"
-    } else {
-        "shell"
-    };
-    let session = sess.unwrap_or_default();
-    let id = WorkspaceId::new(transport, alias.as_deref(), &session, runtime_kind, "");
-    let name = if session.is_empty() {
-        "muxterm".to_string()
-    } else {
-        session.clone()
-    };
-    Some((id, name, runtime, scrollback_lines))
-}
-
-/// FFI legacy/workspace-open 没有单独的 scrollback 参数时，读取用户配置。
-/// 配置不可读时回退到 core 默认值，不能让 attach 直接失去历史。
-pub(crate) fn configured_scrollback_lines() -> usize {
-    crate::core::config::Config::load()
-        .map(|config| config.scrollback.lines.max(1) as usize)
-        .unwrap_or(DEFAULT_SCROLLBACK_LINES)
-}
-
-/// 释放 handle。
-///
-/// # Safety
-/// `h` 必须来自 `muxterm_new`，且只 free 一次。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
-    if h.is_null() {
-        return;
-    }
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        let mut handle = Box::from_raw(h);
-        handle.pool_mut().shutdown_all();
-    }));
 }
 
 /// 向 pane 写入原始字节。0=ok，-1=err。
