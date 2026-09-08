@@ -3247,13 +3247,26 @@ fn local_status_snapshot(npanes: usize, tabs: &[(u32, String, bool)]) -> StatusB
 }
 
 fn maybe_refresh_status(s: &mut UiState, force: bool) {
-    let state = s.active_workspace().state();
-    let tabs = state.tabs();
-    let npanes = state.panes(&TabId(s.active_tab)).len();
-    let session = state.workspace_name().to_string();
-    let rows: Vec<(u32, String, bool)> = tabs
+    let workspace_key = s.active_ws_id().as_str();
+    let Some(view) = s.view_store.workspace(&workspace_key) else {
+        return;
+    };
+    let session = view
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.name.clone())
+        .unwrap_or_default();
+    let active_tab = view
+        .tabs
         .iter()
-        .map(|t| (t.id.0, t.name.clone(), t.active))
+        .find(|tab| tab.is_active)
+        .map(|tab| tab.id)
+        .unwrap_or(s.active_tab);
+    let npanes = view.panes.get(&active_tab).map(Vec::len).unwrap_or(0);
+    let rows: Vec<(u32, String, bool)> = view
+        .tabs
+        .iter()
+        .map(|tab| (tab.id, tab.name.clone(), tab.is_active))
         .collect();
     let mut snap = if s.uses_tmux() {
         crate::platform::linux::quickconnect::status_style::snapshot_from_tabs(
@@ -3390,13 +3403,26 @@ fn sync_pane_outputs(s: &mut UiState) {
     // Surface：已挂载 pane 的增量走 StateChange::PaneOutput；这里不再 dump replica。
     // F3 的 capture 门接管首屏 seed；未 realized 的 pane 保持 unseeded，
     // 等窗口 present 后由下一次轮询补种（present 前 feed 会被 VTE 丢弃）。
+    let workspace_key = s.active_ws_id().as_str();
     let panes: Vec<(u32, u16, u16)> = s
-        .active_workspace()
-        .state()
-        .panes(&TabId(s.active_tab))
-        .iter()
-        .map(|p| (p.id.0, p.cols, p.rows))
-        .collect();
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| {
+            let tab_id = view
+                .tabs
+                .iter()
+                .find(|tab| tab.is_active)
+                .map(|tab| tab.id)
+                .unwrap_or(s.active_tab);
+            view.panes.get(&tab_id)
+        })
+        .map(|panes| {
+            panes
+                .iter()
+                .map(|pane| (pane.id, pane.cols, pane.rows))
+                .collect()
+        })
+        .unwrap_or_default();
     for (pane_id, cols, rows) in panes {
         if let Some(view) = s.active_layout().pane(pane_id).cloned() {
             view.ensure_grid_size(cols, rows);
@@ -3500,15 +3526,21 @@ fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
     let Some(view) = s.active_layout().pane(pane_id) else {
         return;
     };
-    if let Some(pane) = s
-        .active_workspace()
-        .state()
-        .panes(&TabId(s.active_tab))
-        .iter()
-        .find(|p| p.id.0 == pane_id)
-    {
-        view.ensure_grid_size(pane.cols, pane.rows);
-    }
+    let workspace_key = s.active_ws_id().as_str();
+    let active_tab = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+        .unwrap_or(s.active_tab);
+    let Some(pane) = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|workspace| workspace.panes.get(&active_tab))
+        .and_then(|panes| panes.iter().find(|pane| pane.id == pane_id))
+    else {
+        return;
+    };
+    view.ensure_grid_size(pane.cols, pane.rows);
 }
 
 /// 按 `(WorkspaceId, PaneId)` 对齐字符格（hidden tab / background 也适用）。
@@ -3516,11 +3548,18 @@ fn sync_pane_grid_size_for(s: &UiState, wid: &WorkspaceId, pane_id: u32) {
     let Some(view) = resident_pane_view(s, wid, pane_id) else {
         return;
     };
+    let workspace_key = wid.as_str();
     let (cols, rows) = s
-        .pool
-        .get(wid)
-        .and_then(|w| w.state().pane(&PaneId(pane_id)))
-        .map(|p| (p.cols, p.rows))
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|workspace| {
+            workspace
+                .panes
+                .values()
+                .flat_map(|panes| panes.iter())
+                .find(|pane| pane.id == pane_id)
+        })
+        .map(|pane| (pane.cols, pane.rows))
         .unwrap_or((80, 24));
     view.ensure_grid_size(cols, rows);
 }
@@ -3596,12 +3635,17 @@ fn sync_window_size(s: &mut UiState) {
         return;
     }
     let allocated = term.width() > 0 && term.height() > 0;
+    let workspace_key = s.active_ws_id().as_str();
+    let active_tab = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+        .unwrap_or(s.active_tab);
     let multi_pane = s
-        .active_workspace()
-        .state()
-        .panes(&TabId(s.active_tab))
-        .len()
-        > 1;
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.panes.get(&active_tab))
+        .is_some_and(|panes| panes.len() > 1);
     let cols = match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane)
     {
         Some(cols) => cols,
@@ -3642,14 +3686,18 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
         return;
     }
     s.hold_pane_resize_until = None;
-    let tab = TabId(s.active_tab);
+    let workspace_key = s.active_ws_id().as_str();
+    let active_tab = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+        .unwrap_or(s.active_tab);
     let pane_ids: Vec<u32> = s
-        .active_workspace()
-        .state()
-        .panes(&tab)
-        .iter()
-        .map(|pane| pane.id.0)
-        .collect();
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.panes.get(&active_tab))
+        .map(|panes| panes.iter().map(|pane| pane.id).collect())
+        .unwrap_or_default();
     let mut measured = Vec::new();
     for pane in pane_ids {
         let Some(view) = s.active_layout().pane(pane) else {
