@@ -8,7 +8,6 @@ use std::collections::HashMap;
 
 use crate::core::attention::signal::AttentionSignal;
 use crate::core::attention::state::PaneStatus;
-use crate::core::model::terminal_model::TerminalModel;
 use crate::core::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
 use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
@@ -16,6 +15,7 @@ use crate::core::runtime::Runtime;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pane_buf::PaneBuf;
+use crate::core::workspace::terminal_model::TerminalModel;
 
 /// 一次搜索命中：工作区 + tab + pane + scrollback seq + 行文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
