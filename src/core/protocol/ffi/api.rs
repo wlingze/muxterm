@@ -48,6 +48,7 @@ pub use super::functions::handle::{
 };
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
+    muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up,
 };
 pub use super::functions::search::muxterm_search_all;
 pub use super::functions::snapshot::{
@@ -327,65 +328,6 @@ pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_
         }
     }))
     .unwrap_or(-1)
-}
-
-/// 当前 tmux 后端是否已启用 status bar 订阅（`refresh-client -B`）。
-///
-/// 返回 1 = 已启用（前端关闭轮询定时器，由 `%subscription-changed` 推送）；
-/// 0 = 未启用（tmux < 3.2 / 非 tmux 后端 / 发送失败，前端回退轮询）。
-///
-/// # Safety
-/// `handle` 必须是 [`muxterm_create`] 返回且尚未释放的指针。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_status_subscription_active(handle: *mut MuxtermHandle) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            return 0;
-        }
-        let h = unsafe { &*handle };
-        i32::from(
-            h.active_workspace()
-                .map(|w| w.runtime().status_subscriptions_active())
-                .unwrap_or(false),
-        )
-    }))
-    .unwrap_or(0)
-}
-
-/// 当前连接累计下行字节（SSH transport 读端计数；非 SSH 为 0）。
-///
-/// # Safety
-/// `handle` 必须是 [`muxterm_create`] 返回且尚未释放的指针。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_traffic_down(handle: *mut MuxtermHandle) -> u64 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            return 0;
-        }
-        let h = unsafe { &*handle };
-        h.active_workspace()
-            .map(|w| w.runtime().traffic_bytes().0)
-            .unwrap_or(0)
-    }))
-    .unwrap_or(0)
-}
-
-/// 当前连接累计上行字节（SSH PtyWriter 计数；非 SSH 为 0）。
-///
-/// # Safety
-/// `handle` 必须是 [`muxterm_create`] 返回且尚未释放的指针。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_traffic_up(handle: *mut MuxtermHandle) -> u64 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            return 0;
-        }
-        let h = unsafe { &*handle };
-        h.active_workspace()
-            .map(|w| w.runtime().traffic_bytes().1)
-            .unwrap_or(0)
-    }))
-    .unwrap_or(0)
 }
 
 /// 通过 core 创建 detached tmux session（W7：workspace create）。

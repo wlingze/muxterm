@@ -7,6 +7,62 @@ use crate::core::protocol::task::Task;
 
 use super::super::api::{json_error, json_string, task_result_code, MuxtermHandle};
 
+/// Return whether the active tmux backend has status-bar subscriptions enabled.
+///
+/// # Safety
+/// `handle` is a live handle returned by a constructor and has not been freed.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_status_subscription_active(handle: *mut MuxtermHandle) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return 0;
+        }
+        let h = &*handle;
+        i32::from(
+            h.active_workspace()
+                .map(|w| w.runtime().status_subscriptions_active())
+                .unwrap_or(false),
+        )
+    }))
+    .unwrap_or(0)
+}
+
+/// Return cumulative bytes read by the active runtime.
+///
+/// # Safety
+/// `handle` is a live handle returned by a constructor and has not been freed.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_traffic_down(handle: *mut MuxtermHandle) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return 0;
+        }
+        let h = &*handle;
+        h.active_workspace()
+            .map(|w| w.runtime().traffic_bytes().0)
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
+}
+
+/// Return cumulative bytes written by the active runtime.
+///
+/// # Safety
+/// `handle` is a live handle returned by a constructor and has not been freed.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_traffic_up(handle: *mut MuxtermHandle) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return 0;
+        }
+        let h = &*handle;
+        h.active_workspace()
+            .map(|w| w.runtime().traffic_bytes().1)
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
+}
+
 /// List the registered runtime providers and their capabilities.
 ///
 /// # Safety
