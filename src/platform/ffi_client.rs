@@ -142,10 +142,6 @@ pub struct ExistingCandidate {
     pub workspace_id: Option<String>,
 }
 
-/// Compatibility name for the workspace picker; the DTO is an Existing
-/// candidate even when a caller displays it as a workspace.
-pub type WorkspaceCandidate = ExistingCandidate;
-
 /// An owned tmux session row returned by the transport discovery ABI.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct TmuxSessionEntry {
@@ -522,7 +518,7 @@ impl FfiClient {
         runtime_type: &str,
         target: Option<&str>,
         socket: Option<&str>,
-    ) -> anyhow::Result<Vec<WorkspaceCandidate>> {
+    ) -> anyhow::Result<Vec<ExistingCandidate>> {
         Self::discover_existing(runtime_type, target, socket)
     }
 
