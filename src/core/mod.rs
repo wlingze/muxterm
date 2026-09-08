@@ -18,6 +18,8 @@ pub mod executable;
 pub mod fault;
 pub mod format;
 pub mod logging;
+#[cfg(feature = "ffi")]
+pub mod muxterm;
 pub mod projects;
 pub mod protocol;
 pub mod quickconnect;
