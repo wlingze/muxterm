@@ -43,7 +43,8 @@ use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
-    ClientEvent, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent, FfiClient,
+    ClientEvent, ClientLayout, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent,
+    FfiClient,
 };
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -3188,9 +3189,13 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
             .or_else(|| tabs.first().map(|t| t.id.0));
         // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
         // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
-        let layouts: Vec<(u32, LayoutNode)> = tabs
+        let layouts: Vec<(u32, ClientLayout)> = tabs
             .iter()
-            .filter_map(|t| state.layout(&t.id).map(|l| (t.id.0, l.tree.clone())))
+            .filter_map(|t| {
+                state
+                    .layout(&t.id)
+                    .map(|l| (t.id.0, client_layout_from_core(&l.tree)))
+            })
             .collect();
         let panes: Vec<(u32, u16, u16, bool)> = active_tab
             .map(|tid| {
@@ -3215,6 +3220,26 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
     s.scene_stack.ensure(&wid.as_str());
     s.view_store
         .replace_topology(workspace_snapshot, view_tabs, view_panes);
+    s.view_store.replace_layouts(&wid.as_str(), layouts);
+
+    // Read the owned DTOs back from the view store before mutating the
+    // resident GTK layout host.  The compatibility snapshot above is the
+    // current source; the renderer already follows the frontend-owned path.
+    let layouts: Vec<(u32, ClientLayout)> = s
+        .view_store
+        .workspace(&wid.as_str())
+        .map(|view| {
+            tab_ids
+                .iter()
+                .filter_map(|tab_id| {
+                    view.layouts
+                        .get(tab_id)
+                        .cloned()
+                        .map(|layout| (*tab_id, layout))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     if is_active {
         // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
@@ -3241,8 +3266,8 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
     // 重建布局（pane 控件跨 tab 保留：像素缓存，不因换 tab 销毁）。
     if !layouts.is_empty() {
         if let Some(layout) = s.pixel_cache.get_mut(wid) {
-            for (tab, tree) in &layouts {
-                layout.apply_layout(*tab, tree, &input_cb);
+            for (tab, client_layout) in &layouts {
+                layout.apply_client_layout(*tab, client_layout, &input_cb);
             }
             // 全部 tab 常驻后，把 active tab 放回可见页（apply_layout 会
             // 依次 set_visible_child，最后一次调用决定显示页）。
@@ -3270,6 +3295,24 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
                 }
             }
         }
+    }
+}
+
+/// Convert the compatibility Core snapshot into the owned frontend layout DTO.
+fn client_layout_from_core(layout: &LayoutNode) -> ClientLayout {
+    match layout {
+        LayoutNode::Leaf(pane_id) => ClientLayout::Leaf { pane_id: pane_id.0 },
+        LayoutNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => ClientLayout::Split {
+            horizontal: matches!(dir, SplitDir::Horizontal),
+            ratio: u32::from(*ratio),
+            first: std::boxed::Box::new(client_layout_from_core(first)),
+            second: std::boxed::Box::new(client_layout_from_core(second)),
+        },
     }
 }
 
