@@ -40,6 +40,8 @@ pub use super::functions::config::{
     muxterm_config_describe_json, muxterm_config_events_json, muxterm_config_patch_json,
     muxterm_config_reload_json,
 };
+pub(crate) use super::functions::events::state_change_to_c;
+pub use super::functions::events::{muxterm_poll_events, muxterm_poll_workspace_events};
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
 };
@@ -104,7 +106,7 @@ pub struct MuxtermHandle {
     /// `muxterm_poll_*` 的 C 缓冲可能小于一次 refresh 的事件数；
     /// 这里保留未返回的事件（带 WorkspaceId），避免 GUI 轮询 64 个事件时
     /// 丢掉布局或输出。background 事件绝不能失去 WorkspaceId 身份。
-    deferred_events: VecDeque<(WorkspaceId, StateChange)>,
+    pub(crate) deferred_events: VecDeque<(WorkspaceId, StateChange)>,
     /// workspace 事件 wrapper 的 workspace_id 字符串缓冲。
     workspace_ids: Vec<CString>,
 }
@@ -166,12 +168,12 @@ impl MuxtermHandle {
         self.pool_mut().active_mut()
     }
 
-    fn clear_event_bufs(&mut self) {
+    pub(crate) fn clear_event_bufs(&mut self) {
         self.event_data.clear();
         self.event_names.clear();
     }
 
-    fn push_name(&mut self, s: &str) -> *const c_char {
+    pub(crate) fn push_name(&mut self, s: &str) -> *const c_char {
         match CString::new(s) {
             Ok(cs) => {
                 self.event_names.push(cs);
@@ -181,14 +183,14 @@ impl MuxtermHandle {
         }
     }
 
-    fn push_data(&mut self, data: &[u8]) -> (*const u8, usize) {
+    pub(crate) fn push_data(&mut self, data: &[u8]) -> (*const u8, usize) {
         self.event_data.push(data.to_vec());
         let last = self.event_data.last().unwrap();
         (last.as_ptr(), last.len())
     }
 
     /// workspace wrapper 的 workspace_id 字符串缓冲（下一次 poll/free 前有效）。
-    fn push_workspace_id(&mut self, s: &str) -> *const c_char {
+    pub(crate) fn push_workspace_id(&mut self, s: &str) -> *const c_char {
         match CString::new(s) {
             Ok(cs) => {
                 self.workspace_ids.push(cs);
@@ -200,14 +202,18 @@ impl MuxtermHandle {
 
     /// 把产品事件交给 FFI 队列。Index 快照已经由 Workspace 消费，不能
     /// 再作为没有 Workspace 身份的像素事件外发给平台层。
-    fn defer_event(&mut self, workspace_id: WorkspaceId, event: StateChange) {
+    pub(crate) fn defer_event(&mut self, workspace_id: WorkspaceId, event: StateChange) {
         if should_export_state_change(&event) {
             self.deferred_events.push_back((workspace_id, event));
         }
     }
 
     /// 把一批事件里的 PaneOutput 信号应用到注意力引擎。
-    fn apply_attention_for_events(&mut self, ws_id: &WorkspaceId, events: &[StateChange]) {
+    pub(crate) fn apply_attention_for_events(
+        &mut self,
+        ws_id: &WorkspaceId,
+        events: &[StateChange],
+    ) {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_process_names: Vec<(u32, Option<String>, bool)> = Vec::new();
         let mut removed_panes = Vec::new();
@@ -898,305 +904,6 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
         let mut handle = Box::from_raw(h);
         handle.pool_mut().shutdown_all();
     }));
-}
-
-fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChange {
-    let mut out = CStateChange::default();
-    match ev {
-        StateChange::PaneOutput { pane, data } => {
-            out.type_ = STATE_PANE_OUTPUT;
-            out.pane_id = pane.0;
-            let (p, n) = handle.push_data(data);
-            out.data = p;
-            out.data_len = n;
-        }
-        StateChange::PaneFrame { pane, data } => {
-            out.type_ = STATE_PANE_FRAME;
-            out.pane_id = pane.0;
-            let (p, n) = handle.push_data(data);
-            out.data = p;
-            out.data_len = n;
-        }
-        StateChange::PaneSnapshot { pane, data } => {
-            out.type_ = STATE_PANE_SNAPSHOT;
-            out.pane_id = pane.0;
-            let (p, n) = handle.push_data(data);
-            out.data = p;
-            out.data_len = n;
-        }
-        StateChange::PaneHistory { pane, data } => {
-            out.type_ = STATE_PANE_HISTORY;
-            out.pane_id = pane.0;
-            let (p, n) = handle.push_data(data);
-            out.data = p;
-            out.data_len = n;
-        }
-        StateChange::TabAdded { tab } => {
-            out.type_ = STATE_TAB_ADDED;
-            out.tab_id = tab.0;
-        }
-        StateChange::TabClosed { tab } => {
-            out.type_ = STATE_TAB_CLOSED;
-            out.tab_id = tab.0;
-        }
-        StateChange::LayoutChanged { tab, .. } => {
-            out.type_ = STATE_LAYOUT_CHANGED;
-            out.tab_id = tab.0;
-        }
-        StateChange::PaneAdded { pane, tab } => {
-            out.type_ = STATE_PANE_ADDED;
-            out.pane_id = pane.0;
-            out.tab_id = tab.0;
-        }
-        StateChange::PaneClosed { pane } => {
-            out.type_ = STATE_PANE_CLOSED;
-            out.pane_id = pane.0;
-        }
-        StateChange::ActiveTabChanged { tab } => {
-            out.type_ = STATE_ACTIVE_TAB_CHANGED;
-            out.tab_id = tab.0;
-        }
-        StateChange::ActivePaneChanged { tab, pane } => {
-            out.type_ = STATE_ACTIVE_PANE_CHANGED;
-            out.tab_id = tab.0;
-            out.pane_id = pane.0;
-        }
-        StateChange::TabRenamed { tab, name } => {
-            out.type_ = STATE_TAB_RENAMED;
-            out.tab_id = tab.0;
-            out.name = handle.push_name(name);
-        }
-        StateChange::TabOrderChanged => {
-            out.type_ = STATE_TAB_ORDER_CHANGED;
-        }
-        StateChange::PaneResized { pane, cols, rows } => {
-            out.type_ = STATE_PANE_RESIZED;
-            out.pane_id = pane.0;
-            // 复用 window_id / tab_id 传尺寸不合适；放在 data 里
-            let bytes = [
-                *cols as u8,
-                (*cols >> 8) as u8,
-                *rows as u8,
-                (*rows >> 8) as u8,
-            ];
-            let (p, n) = handle.push_data(&bytes);
-            out.data = p;
-            out.data_len = n;
-        }
-        StateChange::PaneAgentChanged {
-            pane,
-            agent,
-            initial,
-        } => {
-            out.type_ = STATE_PANE_AGENT_CHANGED;
-            out.pane_id = pane.0;
-            // FFI 只暴露 Runtime-neutral 产品模型；Herdr event 名/public id
-            // 已在 Runtime 内归一化，macOS/TUI 不需要识别来源。
-            let payload = serde_json::to_vec(&serde_json::json!({
-                "initial": initial,
-                "agent": agent,
-            }))
-            .unwrap_or_else(|_| b"{\"initial\":false,\"agent\":null}".to_vec());
-            let (ptr, len) = handle.push_data(&payload);
-            out.data = ptr;
-            out.data_len = len;
-        }
-        StateChange::StatusBarSubscription { name, value, pane } => {
-            out.type_ = STATE_STATUS_SUBSCRIPTION;
-            out.pane_id = pane.map(|p| p.0).unwrap_or(0);
-            out.name = handle.push_name(name);
-            let (ptr, len) = handle.push_data(value.as_bytes());
-            out.data = ptr;
-            out.data_len = len;
-        }
-        StateChange::WorkspaceRenamed { name } => {
-            out.type_ = STATE_WORKSPACE_RENAMED;
-            out.name = handle.push_name(name);
-        }
-        StateChange::PoolChanged => {
-            out.type_ = STATE_POOL_CHANGED;
-        }
-        StateChange::BackendStatusChanged(status) => {
-            out.type_ = STATE_BACKEND_STATUS;
-            out.pane_id = match status {
-                crate::core::protocol::state::BackendStatus::Disconnected => {
-                    BACKEND_STATUS_DISCONNECTED
-                }
-                crate::core::protocol::state::BackendStatus::Connecting => {
-                    BACKEND_STATUS_CONNECTING
-                }
-                crate::core::protocol::state::BackendStatus::Connected => BACKEND_STATUS_CONNECTED,
-                crate::core::protocol::state::BackendStatus::Error => BACKEND_STATUS_ERROR,
-                crate::core::protocol::state::BackendStatus::Exited => BACKEND_STATUS_EXITED,
-            };
-        }
-        StateChange::PaneTitleChanged { pane, title } => {
-            out.type_ = STATE_OTHER;
-            out.pane_id = pane.0;
-            out.name = handle.push_name(title);
-        }
-        // Index 专属快照：Core 消费后从 FFI 输出过滤（见 poll 路径）。
-        StateChange::PaneIndexSnapshot { .. } => {
-            out.type_ = STATE_OTHER;
-        }
-        StateChange::MutationSettled {
-            operation_id,
-            kind,
-            result,
-        } => {
-            out.type_ = STATE_MUTATION_SETTLED;
-            // 既有 data buffer 携带完整 JSON；不扩 struct、不吞异步失败。
-            let payload = serde_json::to_vec(&serde_json::json!({
-                "operation_id": operation_id,
-                "kind": kind,
-                "result": result,
-            }))
-            .unwrap_or_else(|_| {
-                b"{\"operation_id\":0,\"kind\":\"new_tab\",\"result\":{\"stage\":\"queue\"}}"
-                    .to_vec()
-            });
-            let (ptr, len) = handle.push_data(&payload);
-            out.data = ptr;
-            out.data_len = len;
-        }
-    }
-    out
-}
-
-/// 非阻塞拉取事件，写入 `out[0..]`，返回写入数量（或 -1）。
-///
-/// 会先 `refresh()` 拉取 runtime 增量（含 pty 输出）。
-///
-/// **旧兼容入口**：只向消费者返回 active workspace 的事件。background 事件
-/// 仍在 Core 内 poll 供 Index/attention 使用，但不能拍平后外发（`CStateChange`
-/// 没有 WorkspaceId，两个 Workspace 的同号 Pane 无法路由）。新消费者请用
-/// [`muxterm_poll_workspace_events`]。
-///
-/// # Safety
-/// `out` 至少 `max_count` 个元素；返回的指针在下次 poll/free 前有效。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_poll_events(
-    h: *mut MuxtermHandle,
-    out: *mut CStateChange,
-    max_count: i32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || out.is_null() || max_count <= 0 {
-            return -1;
-        }
-        let handle = &mut *h;
-        handle.clear_event_bufs();
-        // background 批次在 Core 内 poll（Index/attention 消费），但不外发。
-        for (ws_id, events) in handle.pool_mut().poll_background() {
-            handle.apply_attention_for_events(&ws_id, &events);
-            for ev in events {
-                handle.defer_event(ws_id.clone(), ev);
-            }
-        }
-        let active_id = handle.pool().active_id().cloned();
-        if let Some(ws) = handle.active_workspace_mut() {
-            let events = ws.refresh();
-            if let Some(ws_id) = &active_id {
-                handle.apply_attention_for_events(ws_id, &events);
-                for ev in events {
-                    handle.defer_event(ws_id.clone(), ev);
-                }
-            }
-        }
-        // 旧 poll 只交付 active workspace 事件；background 事件留在队列里
-        // 等 workspace-aware poll 取走（或随 handle 释放）。
-        let ready: Vec<(WorkspaceId, StateChange)> = handle
-            .deferred_events
-            .iter()
-            .filter(|(ws_id, _)| active_id.as_ref().is_some_and(|id| id == ws_id))
-            .take(max_count as usize)
-            .cloned()
-            .collect();
-        let n = ready.len();
-        // 从 deferred 里移除已交付的 active 事件（按 FIFO 位置）。
-        let mut delivered = 0usize;
-        let mut kept = VecDeque::new();
-        for item in handle.deferred_events.drain(..) {
-            let is_active = active_id.as_ref().is_some_and(|id| id == &item.0);
-            if is_active && delivered < n {
-                delivered += 1;
-            } else {
-                kept.push_back(item);
-            }
-        }
-        handle.deferred_events = kept;
-        let slice = std::slice::from_raw_parts_mut(out, n);
-        for (i, (_ws_id, ev)) in ready.iter().enumerate() {
-            let c = state_change_to_c(handle, ev);
-            // 回调（legacy 无 workspace 身份，只允许 active 事件）。
-            if let StateChange::PaneOutput { pane, data } | StateChange::PaneFrame { pane, data } =
-                ev
-            {
-                if let Some(cb) = handle.callbacks.on_output {
-                    cb(pane.0, data.as_ptr(), data.len());
-                }
-            }
-            if let Some(cb) = handle.callbacks.on_state_change {
-                cb(&c);
-            }
-            slice[i] = c;
-        }
-        n as i32
-    }))
-    .unwrap_or(-1)
-}
-
-/// 非阻塞拉取全部批次事件（active + background），每个都带完整五段
-/// `WorkspaceId` 字符串。
-///
-/// 同一 handle 只能选择一种 poll API（旧 [`muxterm_poll_events`] 或本函数），
-/// 禁止同时调用并竞争同一事件队列。`PaneIndexSnapshot` 只由 Core 消费，
-/// 两种 poll 路径都不序列化给像素层。
-///
-/// # Safety
-/// `out` 至少 `max_count` 个元素；返回的指针在下次 poll/free 前有效。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_poll_workspace_events(
-    h: *mut MuxtermHandle,
-    out: *mut CWorkspaceStateChange,
-    max_count: i32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || out.is_null() || max_count <= 0 {
-            return -1;
-        }
-        let handle = &mut *h;
-        handle.clear_event_bufs();
-        for (ws_id, events) in handle.pool_mut().poll_background() {
-            handle.apply_attention_for_events(&ws_id, &events);
-            for ev in events {
-                handle.defer_event(ws_id.clone(), ev);
-            }
-        }
-        let active_id = handle.pool().active_id().cloned();
-        if let Some(ws) = handle.active_workspace_mut() {
-            let events = ws.refresh();
-            if let Some(ws_id) = &active_id {
-                handle.apply_attention_for_events(ws_id, &events);
-                for ev in events {
-                    handle.defer_event(ws_id.clone(), ev);
-                }
-            }
-        }
-        let n = handle.deferred_events.len().min(max_count as usize);
-        let slice = std::slice::from_raw_parts_mut(out, n);
-        let ready: Vec<(WorkspaceId, StateChange)> = handle.deferred_events.drain(..n).collect();
-        for (i, (ws_id, ev)) in ready.iter().enumerate() {
-            let c = state_change_to_c(handle, ev);
-            let ws_name = handle.push_workspace_id(&ws_id.to_string());
-            slice[i] = CWorkspaceStateChange {
-                workspace_id: ws_name,
-                event: c,
-            };
-        }
-        n as i32
-    }))
-    .unwrap_or(-1)
 }
 
 /// 向 pane 写入原始字节。0=ok，-1=err。
