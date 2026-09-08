@@ -1,6 +1,8 @@
 //! Core protocol layer: model + terminal + ffi (C ABI).
 
 pub mod candidate;
+pub mod command;
+pub mod daemon;
 pub mod layout;
 pub mod state;
 pub mod task;
