@@ -5,8 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::core::catalog::connect::Connect;
-use crate::core::transport::ChannelKind;
+use crate::core::transport::{ChannelKind, TargetConnection};
 
 /// Transport 插件的静态信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +51,7 @@ pub trait TransportProvider: Send + Sync {
 
     fn list_targets(&self) -> anyhow::Result<Vec<TargetInfo>>;
 
-    fn connect(&self, target: &str) -> anyhow::Result<Arc<Connect>>;
+    fn connect(&self, target: &str) -> anyhow::Result<Arc<dyn TargetConnection>>;
 
     fn info(&self) -> TransportInfo {
         TransportInfo::new(self.id(), self.name())

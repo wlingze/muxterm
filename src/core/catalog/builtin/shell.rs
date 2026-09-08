@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use crate::core::catalog::connect::Connect;
 use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
 use crate::core::runtime::shell::ShellRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
+use crate::core::transport::TargetConnection;
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// shell 插件：transport 差异在 Runtime 构造时归一化。
@@ -30,11 +30,19 @@ impl RuntimeProvider for ShellDriver {
         &["local", "ssh"]
     }
 
-    fn list(&self, _connect: &Connect, _namespace: Option<&str>) -> Result<Vec<SessionCandidate>> {
+    fn list(
+        &self,
+        _connect: &dyn TargetConnection,
+        _namespace: Option<&str>,
+    ) -> Result<Vec<SessionCandidate>> {
         Ok(Vec::new())
     }
 
-    fn open(&self, connect: Arc<Connect>, spec: &WorkspaceSpec) -> Result<Box<dyn Runtime>> {
+    fn open(
+        &self,
+        connect: Arc<dyn TargetConnection>,
+        spec: &WorkspaceSpec,
+    ) -> Result<Box<dyn Runtime>> {
         match spec.transport.as_str() {
             "local" => Ok(Box::new(ShellRuntime::new("$SHELL", &spec.path))),
             "ssh" => {

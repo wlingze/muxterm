@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::core::catalog::connect::Connect;
 use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
 use crate::core::runtime::tmux::backend::TmuxRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
+use crate::core::transport::TargetConnection;
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// tmux 插件（local / ssh）。
@@ -43,7 +43,11 @@ impl RuntimeProvider for TmuxDriver {
         &["local", "ssh"]
     }
 
-    fn list(&self, connect: &Connect, _namespace: Option<&str>) -> Result<Vec<SessionCandidate>> {
+    fn list(
+        &self,
+        connect: &dyn TargetConnection,
+        _namespace: Option<&str>,
+    ) -> Result<Vec<SessionCandidate>> {
         let ssh_config = Self::ssh_config();
         let (sessions, socket) = if connect.transport_id() == "ssh" {
             // 测试隔离远端 tmux：MUXTERM_TEST_REMOTE_TMUX_SOCKET（对标
@@ -82,7 +86,11 @@ impl RuntimeProvider for TmuxDriver {
             .collect())
     }
 
-    fn open(&self, connect: Arc<Connect>, spec: &WorkspaceSpec) -> Result<Box<dyn Runtime>> {
+    fn open(
+        &self,
+        connect: Arc<dyn TargetConnection>,
+        spec: &WorkspaceSpec,
+    ) -> Result<Box<dyn Runtime>> {
         let mut rt = if connect.transport_id() == "ssh" {
             if spec.session.is_empty() {
                 TmuxRuntime::new_ssh(connect.target(), spec.socket.as_deref())

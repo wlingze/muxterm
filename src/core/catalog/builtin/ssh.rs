@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::core::catalog::connect::Connect;
 use crate::core::catalog::transport::{TargetInfo, TransportProvider};
-use crate::core::transport::ChannelKind;
+use crate::core::transport::{ChannelKind, TargetConnection};
 
 /// ssh 传输插件。
 pub struct SshTransport;
@@ -32,7 +32,7 @@ impl TransportProvider for SshTransport {
             .collect())
     }
 
-    fn connect(&self, target: &str) -> Result<Arc<Connect>> {
+    fn connect(&self, target: &str) -> Result<Arc<dyn TargetConnection>> {
         Ok(Connect::new("ssh", target))
     }
 }

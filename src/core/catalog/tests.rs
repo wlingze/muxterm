@@ -9,7 +9,7 @@ use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
 use crate::core::catalog::transport::{TargetInfo, TransportProvider};
 use crate::core::model::backend::mock::MockRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
-use crate::core::transport::ChannelKind;
+use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::spec::WorkspaceSpec;
 
 struct MockDriver {
@@ -37,7 +37,7 @@ impl RuntimeProvider for MockDriver {
     }
     fn list(
         &self,
-        connect: &Connect,
+        connect: &dyn TargetConnection,
         _namespace: Option<&str>,
     ) -> anyhow::Result<Vec<SessionCandidate>> {
         if self.list_err {
@@ -56,7 +56,7 @@ impl RuntimeProvider for MockDriver {
     }
     fn open(
         &self,
-        _connect: Arc<Connect>,
+        _connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<Box<dyn Runtime>> {
         self.opened.fetch_add(1, Ordering::SeqCst);
@@ -84,7 +84,7 @@ impl TransportProvider for MockTransport {
     fn list_targets(&self) -> anyhow::Result<Vec<TargetInfo>> {
         Ok(self.targets.clone())
     }
-    fn connect(&self, target: &str) -> anyhow::Result<Arc<Connect>> {
+    fn connect(&self, target: &str) -> anyhow::Result<Arc<dyn TargetConnection>> {
         if self.fail {
             anyhow::bail!("mock connect failed");
         }
@@ -118,7 +118,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
 
     fn list(
         &self,
-        _connect: &Connect,
+        _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
     ) -> anyhow::Result<Vec<SessionCandidate>> {
         Ok(Vec::new())
@@ -126,7 +126,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
 
     fn open(
         &self,
-        _connect: Arc<Connect>,
+        _connect: Arc<dyn TargetConnection>,
         _spec: &WorkspaceSpec,
     ) -> anyhow::Result<Box<dyn Runtime>> {
         Ok(Box::new(MockRuntime::with_single_pane()))
@@ -544,7 +544,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
 
         fn list(
             &self,
-            connect: &Connect,
+            connect: &dyn TargetConnection,
             _namespace: Option<&str>,
         ) -> anyhow::Result<Vec<SessionCandidate>> {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -564,7 +564,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
 
         fn open(
             &self,
-            _connect: Arc<Connect>,
+            _connect: Arc<dyn TargetConnection>,
             _spec: &WorkspaceSpec,
         ) -> anyhow::Result<Box<dyn Runtime>> {
             Ok(Box::new(MockRuntime::with_single_pane()))

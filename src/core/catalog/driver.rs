@@ -4,9 +4,8 @@
 
 use std::sync::Arc;
 
-use crate::core::catalog::connect::Connect;
 use crate::core::runtime::{Runtime, RuntimeCapability};
-use crate::core::transport::ChannelKind;
+use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::spec::WorkspaceSpec;
 
 /// Driver 的静态卡片信息（新建项目 / FFI `runtime_list`）。
@@ -53,26 +52,29 @@ pub trait RuntimeProvider: Send + Sync {
     }
 
     /// Herdr named session 等命名空间。tmux 可返回空。
-    fn namespaces(&self, connect: &Connect) -> anyhow::Result<Vec<String>> {
+    fn namespaces(&self, connect: &dyn TargetConnection) -> anyhow::Result<Vec<String>> {
         let _ = connect;
         Ok(Vec::new())
     }
 
     fn list(
         &self,
-        connect: &Connect,
+        connect: &dyn TargetConnection,
         namespace: Option<&str>,
     ) -> anyhow::Result<Vec<SessionCandidate>>;
 
-    fn open(&self, connect: Arc<Connect>, spec: &WorkspaceSpec)
-        -> anyhow::Result<Box<dyn Runtime>>;
+    fn open(
+        &self,
+        connect: Arc<dyn TargetConnection>,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>>;
 
     /// 构造尚未 connect 的 Runtime instance。
     ///
     /// `open` 是旧命名的兼容入口；新调用方应使用 `new_instance`。
     fn new_instance(
         &self,
-        connect: Arc<Connect>,
+        connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<Box<dyn Runtime>> {
         self.open(connect, spec)
