@@ -43,6 +43,7 @@ pub use super::functions::config::{
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
 };
+pub use super::functions::search::muxterm_search_all;
 pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{muxterm_execute, muxterm_execute_json};
 pub(crate) use super::functions::transport::session_candidate_json;
@@ -1667,42 +1668,6 @@ fn fixup_layout_pointers(pool: &mut [CLayoutNode]) {
             node.second = unsafe { base.add(b) };
         }
     }
-}
-
-/// 跨全部工作区搜索 pane 文本，返回 JSON 命中列表。
-///
-/// 返回 `{"ok": true, "hits": [{"workspace_id", "tab_id", "pane_id", "seq", "line"}]}`。
-///
-/// # Safety
-/// `h` 有效且未 free；`query` NUL 结尾。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_search_all(
-    h: *mut MuxtermHandle,
-    query: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let query = cstr_opt(query).unwrap_or_default();
-        let handle = &*h;
-        let hits: Vec<serde_json::Value> = handle
-            .pool()
-            .search_all(&query)
-            .into_iter()
-            .map(|hit| {
-                serde_json::json!({
-                    "workspace_id": hit.workspace_id,
-                    "tab_id": hit.tab_id.0,
-                    "pane_id": hit.pane_id.0,
-                    "seq": hit.seq,
-                    "line": hit.line,
-                })
-            })
-            .collect();
-        json_string(serde_json::json!({ "ok": true, "hits": hits }))
-    }))
-    .unwrap_or_else(|_| json_error("search panic"))
 }
 
 /// 读取某 pane 的滚动窗口 ANSI 字节（历史查看用）。
