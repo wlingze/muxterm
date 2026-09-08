@@ -19,7 +19,6 @@ use gtk4::{
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
 use crate::core::discovery::existing::ExistingEntry;
-use crate::core::transport::ssh::probe::SshReach;
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
@@ -32,6 +31,7 @@ use crate::platform::linux::quickconnect::model::{
 };
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use crate::platform::ssh_probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
 const PANEL_ENTRY_HEIGHT: i32 = 36;
@@ -1408,10 +1408,8 @@ fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReac
     // SSH 可达性灯（W15d）：与 host picker 共用 ssh_dot_widget_name / ssh_dot_css_class。
     if let (Some(reach), TargetTransport::Ssh { name }) = (reach, &entry.config.transport) {
         let dot = Label::new(Some("●"));
-        dot.set_widget_name(&crate::core::transport::ssh::probe::ssh_dot_widget_name(
-            name,
-        ));
-        dot.add_css_class(crate::core::transport::ssh::probe::ssh_dot_css_class(reach));
+        dot.set_widget_name(&ssh_dot_widget_name(name));
+        dot.add_css_class(ssh_dot_css_class(reach));
         dot.set_tooltip_text(Some(match reach {
             SshReach::Ok => "SSH reachable",
             SshReach::Err => "SSH unreachable",
@@ -1478,12 +1476,8 @@ fn existing_row(entry: &ExistingEntry) -> GtkBox {
         .build();
     if let TargetTransport::Ssh { name } = &entry.transport {
         let dot = Label::new(Some("●"));
-        dot.set_widget_name(&crate::core::transport::ssh::probe::ssh_dot_widget_name(
-            name,
-        ));
-        dot.add_css_class(crate::core::transport::ssh::probe::ssh_dot_css_class(
-            SshReach::Unknown,
-        ));
+        dot.set_widget_name(&ssh_dot_widget_name(name));
+        dot.add_css_class(ssh_dot_css_class(SshReach::Unknown));
         title_row.append(&dot);
     }
     let name = Label::new(Some(&entry.title));
@@ -1502,7 +1496,7 @@ fn existing_row(entry: &ExistingEntry) -> GtkBox {
 /// W20：SSH host 行可达性灯（与 host picker 同款）。
 fn reachability_dot(reach: SshReach) -> Label {
     let dot = Label::new(Some("●"));
-    dot.add_css_class(crate::core::transport::ssh::probe::ssh_dot_css_class(reach));
+    dot.add_css_class(ssh_dot_css_class(reach));
     dot.set_tooltip_text(Some(match reach {
         SshReach::Ok => "SSH reachable",
         SshReach::Err => "SSH unreachable",

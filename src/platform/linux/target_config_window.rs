@@ -16,7 +16,6 @@ use gtk4::{
 };
 
 use crate::core::catalog::driver::RuntimeInfo;
-use crate::core::transport::ssh::probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 use crate::platform::ffi_client::{FfiClient, SshHostEntry};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::quickconnect::directory::{
@@ -27,6 +26,9 @@ use crate::platform::linux::quickconnect::model::{
 };
 use crate::platform::linux::quickconnect::options::TargetOptionSelection;
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
+use crate::platform::ssh_probe::{
+    classify_ssh_probe, ssh_dot_css_class, ssh_dot_widget_name, ssh_probe_args, SshReach,
+};
 
 /// 目录补全 debounce：用 generation 作废旧回调。
 ///
@@ -189,14 +191,14 @@ pub fn show(
         let tx = probe_tx.clone();
         let alias = alias.clone();
         std::thread::spawn(move || {
-            let args = crate::core::transport::ssh::probe::ssh_probe_args(&alias, 2);
+            let args = ssh_probe_args(&alias, 2);
             let status = std::process::Command::new("ssh")
                 .args(&args)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();
             let reach = match status {
-                Ok(st) => crate::core::transport::ssh::probe::classify_ssh_probe(st.code()),
+                Ok(st) => classify_ssh_probe(st.code()),
                 Err(_) => SshReach::Err,
             };
             let _ = tx.send((alias, reach));

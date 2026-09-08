@@ -35,7 +35,6 @@ use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::HerdrRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
-use crate::core::transport::ssh::probe::SshReach;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::{
@@ -69,6 +68,7 @@ use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 use crate::platform::linux::workspace_sidebar::{
     AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
+use crate::platform::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
 
 /// 主窗口。
 pub struct AppWindow {
@@ -3627,14 +3627,14 @@ fn spawn_ssh_probe(s: &mut UiState, alias: String) {
     let (tx, rx) = std::sync::mpsc::channel::<(String, SshReach)>();
     s.pending_ssh_probes.push_back(rx);
     std::thread::spawn(move || {
-        let args = crate::core::transport::ssh::probe::ssh_probe_args(&alias, 2);
+        let args = ssh_probe_args(&alias, 2);
         let status = std::process::Command::new("ssh")
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
         let reach = match status {
-            Ok(st) => crate::core::transport::ssh::probe::classify_ssh_probe(st.code()),
+            Ok(st) => classify_ssh_probe(st.code()),
             Err(_) => SshReach::Err,
         };
         let _ = tx.send((alias, reach));
