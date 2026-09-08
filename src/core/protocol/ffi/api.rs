@@ -1099,6 +1099,7 @@ pub unsafe extern "C" fn muxterm_workspace_open(
             socket: socket.clone(),
             create: false,
             scrollback_lines: configured_scrollback_lines() as u32,
+            provenance: None,
         };
         let fut = handle.catalog.open(&spec);
         match handle.rt.block_on(fut) {
@@ -1171,6 +1172,12 @@ fn resolved_target_json(resolved: &crate::core::catalog::ResolvedTarget) -> serd
             "runtime": resolved.spec.runtime,
             "path": resolved.spec.path,
             "socket": resolved.spec.socket,
+            "provenance": resolved.spec.provenance.as_ref().map(|provenance| {
+                serde_json::json!({
+                    "project_id": provenance.project_id.as_ref().map(ToString::to_string),
+                    "worktree_id": provenance.worktree_id.as_ref().map(ToString::to_string),
+                })
+            }),
         },
     })
 }

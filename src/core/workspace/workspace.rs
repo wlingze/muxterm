@@ -15,6 +15,7 @@ use crate::core::runtime::Runtime;
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pane_buf::PaneBuf;
+use crate::core::workspace::provenance::WorkspaceProvenance;
 use crate::core::workspace::terminal_model::TerminalModel;
 
 /// 一次搜索命中：工作区 + tab + pane + scrollback seq + 行文本。
@@ -43,6 +44,8 @@ pub struct Workspace {
     /// Catalog 打开时保存的规范化目标（W6 §11.2）。
     /// Recent/重连/高亮只读这份 Core 元数据，禁止从 WorkspaceId 反向猜。
     resolved_target: Option<crate::core::catalog::resolver::ResolvedTarget>,
+    /// 从解析后的打开 spec 复制的 Project/Worktree 归属。
+    provenance: Option<WorkspaceProvenance>,
 }
 
 impl Workspace {
@@ -67,6 +70,7 @@ impl Workspace {
             agents: HashMap::new(),
             runtime_attention: HashMap::new(),
             resolved_target: None,
+            provenance: None,
         }
     }
 
@@ -80,12 +84,18 @@ impl Workspace {
         self.resolved_target.as_ref()
     }
 
+    /// Workspace 从 Projects 打开时的 Project/Worktree 归属。
+    pub fn provenance(&self) -> Option<&WorkspaceProvenance> {
+        self.provenance.as_ref()
+    }
+
     /// 保存规范化目标（仅 Catalog::open_resolved 调用；platform 不得复制第二份）。
     pub fn set_resolved_target(
         &mut self,
         resolved: crate::core::catalog::resolver::ResolvedTarget,
     ) {
         self.name = resolved.display_name();
+        self.provenance = resolved.spec.provenance.clone();
         self.resolved_target = Some(resolved);
     }
 
@@ -536,8 +546,12 @@ fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::catalog::resolver::ResolvedTarget;
     use crate::core::protocol::task::Task;
+    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
     use crate::core::runtime::mock::MockRuntime;
+    use crate::core::workspace::provenance::WorkspaceProvenance;
+    use crate::core::workspace::spec::WorkspaceSpec;
 
     fn workspace(name: &str) -> Workspace {
         let id = WorkspaceId::new("local", None, name, "tmux", "");
@@ -546,6 +560,30 @@ mod tests {
             name.to_string(),
             Box::new(MockRuntime::with_single_pane()),
         )
+    }
+
+    #[test]
+    fn resolved_spec_provenance_is_retained_by_workspace() {
+        let mut spec = WorkspaceSpec::local_shell("/tmp/project/worktree");
+        spec.provenance = Some(WorkspaceProvenance::worktree("project-a", "worktree-1"));
+        let canonical = TargetConfig::new(
+            "project-a",
+            TargetRuntime::Shell,
+            TargetTransport::Local,
+            "/tmp/project/worktree",
+        );
+        let mut workspace = workspace("project-a");
+        workspace.set_resolved_target(ResolvedTarget { canonical, spec });
+
+        let provenance = workspace.provenance().expect("provenance must be retained");
+        assert_eq!(
+            provenance.project_id.as_ref().unwrap().as_str(),
+            "project-a"
+        );
+        assert_eq!(
+            provenance.worktree_id.as_ref().unwrap().as_str(),
+            "worktree-1"
+        );
     }
 
     /// mock Runtime 推一段 %output 等价事件（WriteRaw → PaneOutput），
