@@ -349,6 +349,10 @@ extension MainWindowController {
         content.lastSeenButton.performClick(nil)
     }
 
+    func testLastSeenJumpOffset() -> UInt32? {
+        lastSeenJumpOffsetForTest()
+    }
+
     func testCommandMarkVisible() -> (ok: Bool, fail: Bool) {
         (!content.commandMarkOKButton.isHidden, !content.commandMarkFailButton.isHidden)
     }

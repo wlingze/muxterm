@@ -4198,6 +4198,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    func lastSeenJumpOffsetForTest() -> UInt32? {
+        lastSeenJump?.offset
+    }
+
     /// 测试用：last-seen 状态机的三个输入，便于 E2E 失败定位。
     func testLastSeenDiagnostics(paneId: UInt32) -> String {
         let latest = bridge.paneLatestLineSeq(paneId: paneId)

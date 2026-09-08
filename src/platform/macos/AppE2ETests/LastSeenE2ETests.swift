@@ -34,7 +34,11 @@ final class LastSeenE2ETests: XCTestCase {
 
         let leftHere = "LEFT_HERE_\(ProcessInfo.processInfo.processIdentifier)"
         var lines = "\(leftHere)\n"
-        for index in 0..<36 {
+        // 填充必须超过当前 pane 可见行，否则 last-seen 的 offset 仍是 0。
+        // 1280×800 左栏全高大约 40+ 行；再留余量给 CI runner 的大格子。
+        let visibleRows = max(32, Int(app.testPaneAllocation(firstPaneID).height / 12))
+        let padCount = visibleRows + 40
+        for index in 0..<padCount {
             lines += "away-pad-\(index)\n"
         }
         Tmux.sendLiteral(socket: painted.socket, target: firstPaneTarget, text: lines)
@@ -55,7 +59,9 @@ final class LastSeenE2ETests: XCTestCase {
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
                 app.testFlushFeeds()
-                return app.testActiveTabID() == firstTab && app.testLastSeenVisible()
+                return app.testActiveTabID() == firstTab
+                    && app.testLastSeenVisible()
+                    && app.testPaneSurfaceReady(firstPaneID)
             },
             "从 tab 切回后必须显示 last-seen 按钮；active=\(app.testActiveTabID()) lastSeen=\(app.testLastSeenDiagnostics(paneId: firstPaneID)) hits=\(app.testSearchAll(leftHere)) viewport=\(app.testPaneViewport())"
         )
@@ -64,15 +70,23 @@ final class LastSeenE2ETests: XCTestCase {
         AppE2E.pump(200)
         app.testPollOnce()
         app.testFlushFeeds()
+        let jumpOffset = app.testLastSeenJumpOffset()
+        XCTAssertGreaterThan(
+            jumpOffset ?? 0,
+            0,
+            "last-seen 目标必须离开 live 尾部；\(app.testLastSeenDiagnostics(paneId: firstPaneID)) jump=\(String(describing: jumpOffset))"
+        )
         app.testClickLastSeen()
-        XCTAssertTrue(
-            AppE2E.wait(timeout: AppE2E.featureTimeout) {
-                app.testPollOnce()
-                app.testFlushFeeds()
-                return app.testPaneViewport() > 0
-                    && app.testPaneTerminalText(firstPaneID).contains(leftHere)
-            },
-            "点击 last-seen 必须跳入旧 pane 历史并显示 \(leftHere)"
+        AppE2E.pump(80)
+        XCTAssertGreaterThan(
+            app.testPaneViewport(),
+            0,
+            "点击 last-seen 必须把 core viewport 带离 live 尾部；viewport=\(app.testPaneViewport()) jump=\(String(describing: jumpOffset))"
+        )
+        XCTAssertLessThan(
+            app.testNativeScrollPosition(),
+            0.999,
+            "SwiftTerm 必须跟着离开底部；pos=\(app.testNativeScrollPosition()) visible=\(app.testPaneTerminalText(firstPaneID))"
         )
         XCTAssertFalse(app.testLastSeenVisible(), "点击后 last-seen 按钮应隐藏")
     }

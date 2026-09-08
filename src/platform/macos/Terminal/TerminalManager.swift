@@ -1099,6 +1099,7 @@ final class TerminalManager: TerminalInputHandler {
             return
         }
         let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? view.getTerminal().rows))
+        syncHistoryCapacity(paneId: paneId, view: view)
         let rawMax = bridge?.paneHistoryMaxOffset(paneId: paneId, rows: rows) ?? -1
         let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
         _ = bridge?.setPaneViewport(paneId: paneId, offset: offset)
