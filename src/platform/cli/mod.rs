@@ -18,5 +18,6 @@ pub use format::{format_output, OutputFormat, StateSnapshot};
 #[allow(unused_imports)]
 pub use tmux_cli::{parse_tmux_cli, CliEnvelope, Target, TmuxCliCommand};
 
+pub mod application;
 pub mod entry;
 pub mod routing;
