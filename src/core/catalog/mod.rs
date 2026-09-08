@@ -21,7 +21,7 @@ use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::provenance::WorkspaceProvenance;
 use crate::core::workspace::spec::WorkspaceSpec;
-use crate::core::workspace::template::TemplateName;
+use crate::core::workspace::template::{TemplateName, TemplateRegistry, WorkspaceTemplate};
 use crate::core::workspace::workspace::Workspace;
 
 pub use crate::core::runtime::provider::{RuntimeInfo, RuntimeProvider};
@@ -41,6 +41,7 @@ pub struct Catalog {
     connections: ConnectionRegistry,
     inventory: Inventory,
     pool: WorkspacePool,
+    templates: TemplateRegistry,
 }
 
 impl Default for Catalog {
@@ -58,7 +59,32 @@ impl Catalog {
             connections: ConnectionRegistry::new(),
             inventory: Inventory::new(),
             pool: WorkspacePool::default(),
+            templates: TemplateRegistry::default(),
         }
+    }
+
+    /// Construct a production Catalog with an initial template registry.
+    pub fn with_builtins_and_templates(templates: Vec<WorkspaceTemplate>) -> anyhow::Result<Self> {
+        let mut catalog = Self::with_builtins();
+        catalog.set_templates(templates)?;
+        Ok(catalog)
+    }
+
+    pub fn template_registry(&self) -> &TemplateRegistry {
+        &self.templates
+    }
+
+    pub fn template_registry_mut(&mut self) -> &mut TemplateRegistry {
+        &mut self.templates
+    }
+
+    pub fn set_templates(&mut self, templates: Vec<WorkspaceTemplate>) -> anyhow::Result<()> {
+        self.templates = TemplateRegistry::new(templates)?;
+        Ok(())
+    }
+
+    pub fn register_template(&mut self, template: WorkspaceTemplate) -> anyhow::Result<()> {
+        self.templates.insert(template)
     }
 
     /// 生产入口：注册内置 Driver / TransportProvider。
@@ -270,10 +296,21 @@ impl Catalog {
 
     /// 按 spec 打开工作区：查 provider → 复用 Connect → 构造 Runtime → 进 Pool。
     pub async fn open(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<&mut Workspace> {
+        let workspace_id = spec.id();
+        let should_apply_template = self.pool.get(&workspace_id).is_none() && spec.create;
+        let template = spec
+            .template
+            .as_ref()
+            .and_then(|name| self.templates.get(name))
+            .cloned();
         let runtime = self.new_runtime(spec)?;
-        let id = spec.id();
-        let name = spec.name();
-        self.pool.open(id, name, |_| runtime).await
+        let workspace = self.pool.open_spec_with_runtime(spec, runtime).await?;
+        if should_apply_template {
+            if let Some(template) = template {
+                workspace.start_template(template)?;
+            }
+        }
+        Ok(workspace)
     }
 
     /// Native Runtime worktree path: ask the source Runtime for a new spec,
@@ -302,9 +339,20 @@ impl Catalog {
         spec.provenance = provenance.clone();
         spec.template = template;
         let workspace_id = spec.id();
+        let should_apply_template = self.pool.get(&workspace_id).is_none() && spec.create;
+        let template_record = spec
+            .template
+            .as_ref()
+            .and_then(|name| self.templates.get(name))
+            .cloned();
         let runtime = self.new_runtime(&spec)?;
         let workspace = self.pool.open_spec_with_runtime(&spec, runtime).await?;
         workspace.set_provenance(provenance);
+        if should_apply_template {
+            if let Some(template) = template_record {
+                workspace.start_template(template)?;
+            }
+        }
         Ok(workspace_id)
     }
 

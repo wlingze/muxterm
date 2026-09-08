@@ -16,6 +16,8 @@ use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pane_buf::PaneBuf;
 use crate::core::workspace::provenance::WorkspaceProvenance;
+use crate::core::workspace::template::WorkspaceTemplate;
+use crate::core::workspace::template_apply::{TemplateApplication, TemplateApplyReport};
 use crate::core::workspace::terminal_model::TerminalModel;
 
 /// 一次搜索命中：工作区 + tab + pane + scrollback seq + 行文本。
@@ -46,6 +48,10 @@ pub struct Workspace {
     resolved_target: Option<crate::core::catalog::resolver::ResolvedTarget>,
     /// 从解析后的打开 spec 复制的 Project/Worktree 归属。
     provenance: Option<WorkspaceProvenance>,
+    /// 仅 create Workspace 使用的非阻塞模板应用器。
+    template_application: Option<TemplateApplication>,
+    /// 模板应用完成后的稳定报告。
+    template_apply_report: Option<TemplateApplyReport>,
 }
 
 impl Workspace {
@@ -71,6 +77,8 @@ impl Workspace {
             runtime_attention: HashMap::new(),
             resolved_target: None,
             provenance: None,
+            template_application: None,
+            template_apply_report: None,
         }
     }
 
@@ -149,7 +157,9 @@ impl Workspace {
 
     /// 建立连接（spawn tmux / 启动本地 shell）。
     pub async fn connect(&mut self) -> anyhow::Result<()> {
-        self.model.connect().await
+        self.model.connect().await?;
+        self.advance_template_application(&[]);
+        Ok(())
     }
 
     /// 关闭 Runtime 并释放资源。
@@ -157,10 +167,40 @@ impl Workspace {
         self.model.shutdown().await
     }
 
+    /// Start applying a create-time template through normal Runtime Tasks.
+    ///
+    /// This method only queues bounded work. Any NewTab/SplitPane accepted by
+    /// the Runtime remains pending until the corresponding topology events and
+    /// MutationSettled event are consumed by refresh/take_events.
+    pub fn start_template(&mut self, template: WorkspaceTemplate) -> anyhow::Result<()> {
+        if self.template_application.is_some() {
+            anyhow::bail!("workspace 已有模板应用正在进行");
+        }
+        if self.template_apply_report.is_some() {
+            anyhow::bail!("workspace 模板已经应用完成");
+        }
+        let mut application = TemplateApplication::new(template)?;
+        application.bootstrap(self.model.state());
+        self.template_application = Some(application);
+        self.advance_template_application(&[]);
+        Ok(())
+    }
+
+    /// Whether a create-time template still has asynchronous work pending.
+    pub fn template_application_pending(&self) -> bool {
+        self.template_application.is_some()
+    }
+
+    /// Stable result once template application has completed or failed.
+    pub fn template_apply_report(&self) -> Option<&TemplateApplyReport> {
+        self.template_apply_report.as_ref()
+    }
+
     /// 拉取尚未消费的状态变更事件，并把 `PaneOutput` 喂进本工作区 pane 文本。
     pub fn take_events(&mut self) -> Vec<StateChange> {
         let events = self.model.take_events();
         self.feed_events(&events);
+        self.advance_template_application(&events);
         events
     }
 
@@ -168,7 +208,33 @@ impl Workspace {
     pub fn refresh(&mut self) -> Vec<StateChange> {
         let events = self.model.refresh();
         self.feed_events(&events);
+        self.advance_template_application(&events);
         events
+    }
+
+    fn advance_template_application(&mut self, events: &[StateChange]) {
+        let Some(mut application) = self.template_application.take() else {
+            return;
+        };
+        let capabilities = self.model.runtime().support();
+        application.observe(self.model.state(), events);
+        loop {
+            let Some(task) = application.next_task(self.model.state(), capabilities) else {
+                break;
+            };
+            match self.model.execute(task) {
+                Ok(outcome) => application.on_task_outcome(outcome),
+                Err(error) => application.on_task_error(error),
+            }
+            if !application.is_pending() {
+                break;
+            }
+        }
+        if application.report().completed {
+            self.template_apply_report = Some(application.report().clone());
+        } else {
+            self.template_application = Some(application);
+        }
     }
 
     /// 某 pane 的文本（可见屏 + scrollback，供搜索/提醒）。
@@ -555,8 +621,12 @@ mod tests {
     use crate::core::protocol::task::Task;
     use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
     use crate::core::runtime::mock::MockRuntime;
+    use crate::core::runtime::RuntimeCapability;
     use crate::core::workspace::provenance::WorkspaceProvenance;
     use crate::core::workspace::spec::WorkspaceSpec;
+    use crate::core::workspace::template::{
+        PaneTemplate, TabTemplate, TemplateLayout, TemplateName, WorkspaceTemplate,
+    };
 
     fn workspace(name: &str) -> Workspace {
         let id = WorkspaceId::new("local", None, name, "tmux", "");
@@ -926,5 +996,54 @@ mod tests {
         assert!(!a_text.contains("beta-only"));
         assert!(b_text.contains("beta-only"));
         assert!(!b_text.contains("alpha-only"));
+    }
+
+    #[test]
+    fn workspace_applies_create_template_after_topology_events() {
+        let id = WorkspaceId::new("local", None, "templated", "tmux", "");
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.capabilities = &[RuntimeCapability::SplitPane];
+        let mut workspace = Workspace::new(id, "templated".into(), Box::new(runtime));
+        let template = WorkspaceTemplate {
+            name: TemplateName::try_from("split").unwrap(),
+            tabs: vec![TabTemplate {
+                name: None,
+                active: true,
+                layout: TemplateLayout::Split {
+                    dir: crate::core::protocol::layout::SplitDir::Horizontal,
+                    first: Box::new(TemplateLayout::Pane(PaneTemplate {
+                        command: None,
+                        cwd: None,
+                        env: Default::default(),
+                        focus: false,
+                    })),
+                    second: Box::new(TemplateLayout::Pane(PaneTemplate {
+                        command: None,
+                        cwd: None,
+                        env: Default::default(),
+                        focus: true,
+                    })),
+                },
+            }],
+        };
+
+        workspace.start_template(template).unwrap();
+        assert!(workspace.template_application_pending());
+        let events = workspace.take_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StateChange::PaneAdded {
+                pane: PaneId(2),
+                tab: TabId(1)
+            }
+        )));
+        let report = workspace
+            .template_apply_report()
+            .expect("template should settle after PaneAdded");
+        assert!(report.completed);
+        assert!(report.failed.is_none());
+        assert_eq!(report.applied_tabs, 1);
+        assert_eq!(report.applied_panes, 2);
+        assert!(report.skipped.is_empty());
     }
 }
