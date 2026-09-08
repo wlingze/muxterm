@@ -7,6 +7,7 @@
 
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::provenance::WorkspaceProvenance;
+use crate::core::workspace::template::TemplateName;
 
 /// 打开一个工作区的产品规格（不含 tmux 词）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +25,8 @@ pub struct WorkspaceSpec {
     pub scrollback_lines: u32,
     /// 从 Projects 打开时携带的 Project/Worktree 归属。
     pub provenance: Option<WorkspaceProvenance>,
+    /// 仅在新建 Workspace 时应用的模板名称；attach 不应执行模板。
+    pub template: Option<TemplateName>,
 }
 
 impl WorkspaceSpec {
@@ -38,6 +41,7 @@ impl WorkspaceSpec {
             create: false,
             scrollback_lines: 10_000,
             provenance: None,
+            template: None,
         }
     }
 
@@ -59,6 +63,7 @@ impl WorkspaceSpec {
             create: false,
             scrollback_lines: 10_000,
             provenance: None,
+            template: None,
         }
     }
 
@@ -79,6 +84,7 @@ impl WorkspaceSpec {
             create: false,
             scrollback_lines: 10_000,
             provenance: None,
+            template: None,
         }
     }
 
@@ -93,6 +99,7 @@ impl WorkspaceSpec {
             create: false,
             scrollback_lines: 10_000,
             provenance: None,
+            template: None,
         }
     }
 
@@ -107,6 +114,7 @@ impl WorkspaceSpec {
             create: false,
             scrollback_lines: 10_000,
             provenance: None,
+            template: None,
         }
     }
 
@@ -127,6 +135,7 @@ impl WorkspaceSpec {
             create: false,
             scrollback_lines: 10_000,
             provenance: None,
+            template: None,
         }
     }
 
@@ -257,6 +266,7 @@ mod tests {
             create: false,
             scrollback_lines: 10_000,
             provenance: None,
+            template: None,
         };
         let err = Catalog::with_builtins().new_runtime(&spec).err();
         assert!(
