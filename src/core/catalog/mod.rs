@@ -3,7 +3,7 @@
 //! 契约：`docs/CATALOG.md`。施工：`docs/CATALOG-PLAN.md`。
 //!
 //! `trait Runtime` 只表示已经 attach 的格子。列出候选、拿管道、探活
-//! 都在 Catalog：Driver 表、TransportProvider 表、Connect 缓存、Inventory、Pool。
+//! 都在 Catalog：provider 视图、ConnectionRegistry、Inventory、Pool。
 
 pub mod connect;
 pub mod driver;
@@ -11,11 +11,11 @@ pub mod inventory;
 pub mod resolver;
 pub mod transport;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 
 use crate::core::runtime::Runtime;
+use crate::core::transport::registry::ConnectionRegistry;
 use crate::core::transport::TargetConnection;
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::spec::WorkspaceSpec;
@@ -35,7 +35,7 @@ pub struct Catalog {
     runtimes: Vec<Box<dyn RuntimeProvider>>,
     /// TransportProvider 表。顺序 = 注册顺序；`with_builtins` 按 local, ssh 登记。
     transports: Vec<Box<dyn TransportProvider>>,
-    connects: HashMap<(String, String), Arc<dyn TargetConnection>>,
+    connections: ConnectionRegistry,
     inventory: Inventory,
     pool: WorkspacePool,
 }
@@ -52,7 +52,7 @@ impl Catalog {
         Self {
             runtimes: Vec::new(),
             transports: Vec::new(),
-            connects: HashMap::new(),
+            connections: ConnectionRegistry::new(),
             inventory: Inventory::new(),
             pool: WorkspacePool::default(),
         }
@@ -130,16 +130,15 @@ impl Catalog {
         transport_id: &str,
         target: &str,
     ) -> anyhow::Result<Arc<dyn TargetConnection>> {
-        let key = (transport_id.to_string(), target.to_string());
-        if let Some(existing) = self.connects.get(&key) {
-            return Ok(Arc::clone(existing));
+        if let Some(existing) = self.connections.get(transport_id, target) {
+            return Ok(existing);
         }
         let t = self
             .transport(transport_id)
             .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
         let connect = t.connect(target)?;
-        self.connects.insert(key, Arc::clone(&connect));
-        Ok(connect)
+        self.connections
+            .acquire(transport_id, target, || Ok(connect.clone()))
     }
 
     /// 扇出到接受该 transport 的 Driver。单个 Driver 失败则跳过，不让整表失败。
