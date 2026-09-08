@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::core::model::state::StateChange;
-use crate::core::model::task::Task;
+use crate::core::protocol::state::StateChange;
+use crate::core::protocol::task::Task;
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::runtime::{Runtime, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
 use crate::core::workspace::id::WorkspaceId;
@@ -528,7 +528,7 @@ fn release_runtime(workspace: &mut Workspace, id: &WorkspaceId) {
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockRuntime;
-    use crate::core::model::task::Task;
+    use crate::core::protocol::task::Task;
     use crate::core::types::{PaneId, TabId};
     use std::sync::{Arc, Mutex};
 

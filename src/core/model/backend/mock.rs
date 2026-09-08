@@ -9,9 +9,9 @@
 
 use super::*;
 #[allow(unused_imports)]
-use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::core::model::state::{PaneInfo, TabInfo};
-use crate::core::model::task::Task;
+use crate::core::protocol::layout::{LayoutNode, SplitDir, TabLayout};
+use crate::core::protocol::state::{PaneInfo, TabInfo};
+use crate::core::protocol::task::Task;
 use crate::core::types::{PaneId, TabId};
 use std::sync::{Arc, Mutex};
 

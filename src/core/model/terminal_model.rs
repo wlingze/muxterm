@@ -14,8 +14,8 @@
 //! - 需要当前激活 pane 的 Task（`needs_active_pane()`），model 从 state 查询后填入
 //! - 回调在 `poll_events()` 时同步触发（不在 backend execute 时触发），保证单线程确定性
 use crate::core::config::Rgb;
-use crate::core::model::state::{State, StateChange};
-use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::protocol::state::{State, StateChange};
+use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::runtime::Runtime;
 use crate::core::types::PaneId;
 use std::collections::VecDeque;
@@ -72,7 +72,7 @@ impl TerminalModel {
     }
 
     /// 当前后端状态（便捷方法）。
-    pub fn runtime_status(&self) -> crate::core::model::state::BackendStatus {
+    pub fn runtime_status(&self) -> crate::core::protocol::state::BackendStatus {
         self.runtime.runtime_status()
     }
 
@@ -285,8 +285,8 @@ impl TerminalModel {
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockRuntime;
-    use crate::core::model::layout::SplitDir;
-    use crate::core::model::state::BackendStatus;
+    use crate::core::protocol::layout::SplitDir;
+    use crate::core::protocol::state::BackendStatus;
     use crate::core::protocol::terminal::input::KeyEvent;
     use crate::core::types::{PaneId, TabId};
 
@@ -572,8 +572,8 @@ mod tests {
     #[test]
     fn report_all_pane_colours_covers_every_tab() {
         use crate::core::config::Rgb;
-        use crate::core::model::layout::{LayoutNode, TabLayout};
-        use crate::core::model::state::{PaneInfo, TabInfo};
+        use crate::core::protocol::layout::{LayoutNode, TabLayout};
+        use crate::core::protocol::state::{PaneInfo, TabInfo};
 
         let mut runtime = MockRuntime::new();
         runtime.status = BackendStatus::Connected;

@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
-use crate::core::model::task::Task;
 use crate::core::model::TerminalModel;
+use crate::core::protocol::task::Task;
 use crate::core::runtime::tmux::TmuxRuntime;
 use crate::core::types::{PaneId, TabId};
 use crate::platform::cli::tmux_cli::{
@@ -525,9 +525,11 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                     let _ = model.refresh();
                     let dir = match direction {
                         SplitDirection::Horizontal => {
-                            crate::core::model::layout::SplitDir::Horizontal
+                            crate::core::protocol::layout::SplitDir::Horizontal
                         }
-                        SplitDirection::Vertical => crate::core::model::layout::SplitDir::Vertical,
+                        SplitDirection::Vertical => {
+                            crate::core::protocol::layout::SplitDir::Vertical
+                        }
                     };
                     // 使用 CLI 传入的 pane ID（muxterm pane id = tmux %N 的 N）
                     model.execute(Task::SplitPane {

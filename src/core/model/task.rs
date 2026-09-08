@@ -7,7 +7,7 @@
 //! Task 是 `Copy`/`Clone` 友好的纯数据，可序列化、可记入历史（undo/redo）。
 //! 所有 Task 都针对「当前激活的 pane/window/session」，除非显式指定 target。
 use crate::core::config::Rgb;
-use crate::core::model::layout::SplitDir;
+use crate::core::protocol::layout::SplitDir;
 use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::types::{PaneId, TabId};
 

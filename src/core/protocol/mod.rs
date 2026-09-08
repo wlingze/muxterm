@@ -5,7 +5,11 @@ pub mod terminal;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
-/// Re-export model submodules for convenience.
+/// Stable protocol namespaces.
+///
+/// The implementation files are still kept under the legacy `model` module
+/// during the incremental migration, but callers use this boundary so the
+/// eventual crate split does not change every Runtime/frontend import again.
 #[allow(unused_imports)]
 pub use crate::core::model::layout;
 #[allow(unused_imports)]

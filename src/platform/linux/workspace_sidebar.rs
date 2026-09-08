@@ -16,7 +16,7 @@ use gtk4::{
 
 use crate::core::attention::engine::{known_agent_process_name, PaneAttention, WorkspaceAttention};
 use crate::core::attention::state::PaneStatus;
-use crate::core::model::state::{PaneAgentInfo, PaneAgentStatus};
+use crate::core::protocol::state::{PaneAgentInfo, PaneAgentStatus};
 use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::workspace::Workspace;
@@ -1280,7 +1280,7 @@ mod tests {
     }
 
     use crate::core::model::backend::mock::MockRuntime;
-    use crate::core::model::state::StateChange;
+    use crate::core::protocol::state::StateChange;
     use crate::core::types::PaneId;
     use std::collections::BTreeMap;
     use std::time::Instant;

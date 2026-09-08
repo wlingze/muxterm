@@ -29,9 +29,9 @@ use crate::core::catalog::ResolveIntent;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
 use crate::core::config_service::SettingsService;
 use crate::core::discovery::existing::ExistingEntry;
-use crate::core::model::layout::{LayoutNode, SplitDir};
-use crate::core::model::state::{BackendStatus, StateChange};
-use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::protocol::layout::{LayoutNode, SplitDir};
+use crate::core::protocol::state::{BackendStatus, StateChange};
+use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::HerdrRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
@@ -1852,7 +1852,7 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
                 let mut s = state.borrow_mut();
                 matches!(
                     s.active_workspace_mut().execute(Task::Detach),
-                    Ok(crate::core::model::task::TaskOutcome::Done)
+                    Ok(crate::core::protocol::task::TaskOutcome::Done)
                 )
             };
             if should_quit {
@@ -2790,11 +2790,11 @@ fn notify_mutation_settled(s: &mut UiState, ev: &StateChange) {
         return;
     };
     let kind_name = match kind {
-        crate::core::model::state::MutationKind::NewTab => "新 tab",
-        crate::core::model::state::MutationKind::SplitPane => "分屏",
+        crate::core::protocol::state::MutationKind::NewTab => "新 tab",
+        crate::core::protocol::state::MutationKind::SplitPane => "分屏",
     };
     match result {
-        crate::core::model::state::MutationResult::Completed => {
+        crate::core::protocol::state::MutationResult::Completed => {
             tracing::info!(
                 target: "muxterm::linux",
                 operation_id = operation_id,
@@ -2802,7 +2802,7 @@ fn notify_mutation_settled(s: &mut UiState, ev: &StateChange) {
                 "异步 mutation 完成"
             );
         }
-        crate::core::model::state::MutationResult::Failed { stage, reason } => {
+        crate::core::protocol::state::MutationResult::Failed { stage, reason } => {
             tracing::warn!(
                 target: "muxterm::linux",
                 operation_id = operation_id,
@@ -2812,10 +2812,10 @@ fn notify_mutation_settled(s: &mut UiState, ev: &StateChange) {
                 "异步 mutation 失败"
             );
             let stage_name = match stage {
-                crate::core::model::state::MutationStage::Queue => "排队",
-                crate::core::model::state::MutationStage::Dispatch => "派发",
-                crate::core::model::state::MutationStage::AuthorityConvergence => "权威收敛",
-                crate::core::model::state::MutationStage::StreamBootstrap => "流启动",
+                crate::core::protocol::state::MutationStage::Queue => "排队",
+                crate::core::protocol::state::MutationStage::Dispatch => "派发",
+                crate::core::protocol::state::MutationStage::AuthorityConvergence => "权威收敛",
+                crate::core::protocol::state::MutationStage::StreamBootstrap => "流启动",
             };
             let body = format!("{kind_name}失败（{stage_name}）：{reason}");
             s.notification_sink
@@ -5863,9 +5863,9 @@ mod tests {
             },
             "layout" => StateChange::LayoutChanged {
                 tab: TabId(1),
-                layout: crate::core::model::layout::TabLayout {
+                layout: crate::core::protocol::layout::TabLayout {
                     tab: TabId(1),
-                    tree: crate::core::model::layout::LayoutNode::leaf(PaneId(1)),
+                    tree: crate::core::protocol::layout::LayoutNode::leaf(PaneId(1)),
                     active: PaneId(1),
                 },
             },

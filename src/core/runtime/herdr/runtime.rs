@@ -13,12 +13,12 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
-use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::core::model::state::{
+use crate::core::protocol::layout::{LayoutNode, SplitDir, TabLayout};
+use crate::core::protocol::state::{
     AgentVersion, BackendStatus, MutationKind, MutationResult, MutationStage, PaneAgentInfo,
     PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus, PaneInfo, State, StateChange, TabInfo,
 };
-use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::types::{PaneId, TabId};
