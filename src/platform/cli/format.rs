@@ -2,7 +2,7 @@
 //!
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
-use crate::core::model::state::State;
+use crate::core::protocol::state::State;
 use crate::core::types::{PaneId, TabId};
 
 /// 输出格式。
@@ -49,12 +49,12 @@ pub fn format_output(
 pub struct StateSnapshot {
     pub workspace_name: String,
     pub workspace_runtime: String,
-    pub tabs: Vec<crate::core::model::state::TabInfo>,
-    pub panes: Vec<crate::core::model::state::PaneInfo>,
-    pub layouts: Vec<crate::core::model::layout::TabLayout>,
+    pub tabs: Vec<crate::core::protocol::state::TabInfo>,
+    pub panes: Vec<crate::core::protocol::state::PaneInfo>,
+    pub layouts: Vec<crate::core::protocol::layout::TabLayout>,
     /// pane_id.0 → 累计输出（lossy UTF-8；含 ANSI）。
     pub outputs: Vec<(u32, String)>,
-    pub status: crate::core::model::state::BackendStatus,
+    pub status: crate::core::protocol::state::BackendStatus,
     pub active_tab: Option<u32>,
     pub active_pane: Option<u32>,
 }
@@ -240,8 +240,8 @@ fn format_layout(state: &dyn State, format: OutputFormat) -> String {
     }
 }
 
-fn layout_node_to_json(node: &crate::core::model::layout::LayoutNode) -> String {
-    use crate::core::model::layout::LayoutNode;
+fn layout_node_to_json(node: &crate::core::protocol::layout::LayoutNode) -> String {
+    use crate::core::protocol::layout::LayoutNode;
     match node {
         LayoutNode::Leaf(pid) => format!(r#""@{}""#, pid.0),
         LayoutNode::Split {
@@ -251,8 +251,8 @@ fn layout_node_to_json(node: &crate::core::model::layout::LayoutNode) -> String 
             second,
         } => {
             let dir_str = match dir {
-                crate::core::model::layout::SplitDir::Horizontal => "horizontal",
-                crate::core::model::layout::SplitDir::Vertical => "vertical",
+                crate::core::protocol::layout::SplitDir::Horizontal => "horizontal",
+                crate::core::protocol::layout::SplitDir::Vertical => "vertical",
             };
             format!(
                 r#"{{"type":"split","dir":"{}","ratio":{},"first":{},"second":{}}}"#,

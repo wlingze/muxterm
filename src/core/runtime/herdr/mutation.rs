@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crate::core::model::state::{MutationKind, MutationResult, MutationStage};
+use crate::core::protocol::state::{MutationKind, MutationResult, MutationStage};
 
 /// mutation FIFO 上限。
 pub const MUTATION_QUEUE_MAX: usize = 32;
@@ -27,7 +27,7 @@ pub struct PendingMutation {
     /// NewTab 的显式名称（None = 完全省略 label）。
     pub new_tab_name: Option<String>,
     /// SplitPane 的方向。
-    pub split_dir: Option<crate::core::model::layout::SplitDir>,
+    pub split_dir: Option<crate::core::protocol::layout::SplitDir>,
     /// 派发时的 lifecycle generation（detach 后晚到结果直接丢弃）。
     pub lifecycle_generation: u64,
     /// 派发时记录的目标（NewTab 无 target pane；SplitPane 有）。

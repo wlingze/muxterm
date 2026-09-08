@@ -15,10 +15,11 @@
 #![allow(dead_code)]
 
 pub mod backend;
-pub mod layout;
-pub mod state;
-pub mod task;
 pub mod terminal_model;
+
+// Compatibility paths while protocol owns the DTO module tree.
+#[allow(unused_imports)]
+pub use crate::core::protocol::{layout, state, task};
 
 // 便捷 re-export（被 TerminalModel / 平台层使用）
 #[allow(unused_imports)]

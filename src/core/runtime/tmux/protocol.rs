@@ -7,7 +7,7 @@
 //! - [`parse_line`]：解析单行原始输出（已按真换行切分）为 `Option<Message>`
 //! - [`ControlEscapeDecoder`]：解码 `%output` 里 C 风格转义字符串
 //! - [`parse_layout_tree`]：把 tmux 的 window_layout 树字符串解析成 [`LayoutTree`]，
-//!   供 TmuxRuntime 映射成 [`LayoutNode`](crate::core::model::layout::LayoutNode)。
+//!   供 TmuxRuntime 映射成 [`LayoutNode`](crate::core::protocol::layout::LayoutNode)。
 //!
 //! 设计要点：
 //! - 纯函数，输入 `&str` 输出 `Message`，方便单元测试。
@@ -22,7 +22,7 @@
 use std::str::FromStr;
 use thiserror::Error;
 
-use crate::core::model::layout::SplitDir;
+use crate::core::protocol::layout::SplitDir;
 pub use crate::core::types::{PaneId, TabId};
 
 /// tmux session id（`$N`）。只存在于 `runtime/tmux`，产品层没有 Session。

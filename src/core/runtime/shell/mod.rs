@@ -29,9 +29,9 @@ use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EV
 use crate::core::config::{
     expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
 };
-use crate::core::model::layout::{LayoutNode, TabLayout};
-use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
-use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::protocol::layout::{LayoutNode, TabLayout};
+use crate::core::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
+use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::transport::ssh::{build_ssh_command, SshProcessTransport};
@@ -1052,8 +1052,8 @@ impl Runtime for ShellRuntime {
                     });
                 };
                 let (cols, rows) = match dir {
-                    crate::core::model::layout::SplitDir::Horizontal => (*size, rows),
-                    crate::core::model::layout::SplitDir::Vertical => (cols, *size),
+                    crate::core::protocol::layout::SplitDir::Horizontal => (*size, rows),
+                    crate::core::protocol::layout::SplitDir::Vertical => (cols, *size),
                 };
                 if !self.resize_pane(*target, cols, rows) {
                     return Ok(TaskOutcome::Rejected {
@@ -1167,7 +1167,7 @@ impl Runtime for ShellRuntime {
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::core::model::layout::SplitDir;
+    use crate::core::protocol::layout::SplitDir;
 
     fn runtime() -> ShellRuntime {
         // 长驻进程，避免测试中途 Exit 触发「末 pane 关 window」逻辑。
@@ -1544,7 +1544,7 @@ mod tests {
         // 轮询 take_events，直到 pane_output 含回显字节
         let got = wait_events(&mut b, std::time::Duration::from_secs(3), |events| {
             events.iter().any(|e| {
-                matches!(e, crate::core::model::state::StateChange::PaneOutput { data, .. }
+                matches!(e, crate::core::protocol::state::StateChange::PaneOutput { data, .. }
                     if String::from_utf8_lossy(data).contains("pasted"))
             })
         })

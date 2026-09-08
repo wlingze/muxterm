@@ -25,9 +25,9 @@ use tokio::sync::mpsc;
 
 use crate::core::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::core::config::Rgb;
-use crate::core::model::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::core::model::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
-use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::protocol::layout::{LayoutNode, SplitDir, TabLayout};
+use crate::core::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
+use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::runtime::tmux::client::{
     ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent, TmuxEventReceiver,
 };
@@ -4620,9 +4620,12 @@ mod tests {
         assert!(!zoomed);
         // 完整 layout 应能解析出嵌套 vertical
         let tree = parse_layout_tree(&layout).unwrap();
-        assert_eq!(tree.dir, crate::core::model::layout::SplitDir::Horizontal);
+        assert_eq!(
+            tree.dir,
+            crate::core::protocol::layout::SplitDir::Horizontal
+        );
         let right = tree.children.as_ref().unwrap().1.as_ref();
-        assert_eq!(right.dir, crate::core::model::layout::SplitDir::Vertical);
+        assert_eq!(right.dir, crate::core::protocol::layout::SplitDir::Vertical);
     }
 
     #[test]
@@ -6220,7 +6223,7 @@ mod tests {
 
         b.query_list_sessions();
         b.setup_status_subscriptions();
-        let _ = b.execute(&crate::core::model::task::Task::ReportPaneColours {
+        let _ = b.execute(&crate::core::protocol::task::Task::ReportPaneColours {
             target: pane,
             fg: crate::core::config::Rgb(0, 0, 0),
             bg: crate::core::config::Rgb(255, 255, 255),
@@ -6667,7 +6670,7 @@ mod tests {
             rows: 67,
         });
         let outcome = b
-            .execute(&crate::core::model::task::Task::ResizeClient {
+            .execute(&crate::core::protocol::task::Task::ResizeClient {
                 cols: 142,
                 rows: 67,
             })
@@ -7608,7 +7611,7 @@ mod tests {
             b.flush_deferred_attach_seeds();
             let panes: Vec<PaneId> = b.panes.iter().map(|pane| pane.id).collect();
             for pane in panes {
-                let _ = b.execute(&crate::core::model::task::Task::ReportPaneColours {
+                let _ = b.execute(&crate::core::protocol::task::Task::ReportPaneColours {
                     target: pane,
                     fg: crate::core::config::Rgb(0, 0, 0),
                     bg: crate::core::config::Rgb(255, 255, 255),
@@ -7895,7 +7898,7 @@ mod tests {
     #[test]
     fn output_flood_does_not_drop_structural_events() {
         use crate::core::buffer_cap::MAX_PANE_OUTPUT_BYTES;
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
@@ -7967,7 +7970,12 @@ mod tests {
         let out_events = b
             .events
             .iter()
-            .filter(|e| matches!(e, crate::core::model::state::StateChange::PaneOutput { .. }))
+            .filter(|e| {
+                matches!(
+                    e,
+                    crate::core::protocol::state::StateChange::PaneOutput { .. }
+                )
+            })
             .count();
         assert_eq!(out_events, 3, "应有 3 个 PaneOutput 事件");
     }
@@ -7975,19 +7983,19 @@ mod tests {
     /// %window-pane-changed：切换某 window 的 active pane，应触发 ActivePaneChanged。
     #[test]
     fn window_pane_changed_updates_active_pane() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
         // 预置一个 window + 两个 pane 在同一 tab
         let win = crate::core::types::TabId(0);
         let tab = crate::core::types::TabId(0);
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: tab,
             name: "t0".into(),
             active: true,
         });
-        b.panes.push(crate::core::model::state::PaneInfo {
+        b.panes.push(crate::core::protocol::state::PaneInfo {
             id: crate::core::types::PaneId(1),
             tab,
             cols: 40,
@@ -7995,7 +8003,7 @@ mod tests {
             active: true,
             title: "p1".into(),
         });
-        b.panes.push(crate::core::model::state::PaneInfo {
+        b.panes.push(crate::core::protocol::state::PaneInfo {
             id: crate::core::types::PaneId(2),
             tab,
             cols: 40,
@@ -8033,19 +8041,19 @@ mod tests {
     /// 前端才能回收保留的终端视图（macOS SwiftTerm 视图只在 PaneClosed 时移除）。
     #[test]
     fn window_close_emits_pane_closed_for_each_pane() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
         let win = crate::core::types::TabId(2);
         let tab = crate::core::types::TabId(2);
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: tab,
             name: "t2".into(),
             active: false,
         });
         for id in [5u32, 6] {
-            b.panes.push(crate::core::model::state::PaneInfo {
+            b.panes.push(crate::core::protocol::state::PaneInfo {
                 id: crate::core::types::PaneId(id),
                 tab,
                 cols: 40,
@@ -8090,7 +8098,7 @@ mod tests {
     /// `list-windows`，否则每次正常 kill-window 都多一个控制通道往返。
     #[test]
     fn unlinked_window_close_is_immediate_even_when_connected() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::{Message, TmuxSessionId};
 
         let mut b = TmuxRuntime::new(None);
@@ -8135,7 +8143,7 @@ mod tests {
     /// 裁决，确认仍存在时取消关闭（tmux unlink→link 的 add+close 组合）。
     #[test]
     fn late_window_close_after_authoritative_list_keeps_tab() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::{Message, TmuxSessionId};
         use crate::core::types::TabId;
 
@@ -8150,7 +8158,7 @@ mod tests {
             "@0,first,1,aaaa,80x24,0,0,1,0,0".into(),
             "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
         ]);
-        b.panes.push(crate::core::model::state::PaneInfo {
+        b.panes.push(crate::core::protocol::state::PaneInfo {
             id: crate::core::types::PaneId(7),
             tab: TabId(1),
             cols: 40,
@@ -8968,13 +8976,13 @@ mod tests {
     /// 避免两步查询期间焦点变化后 split 到其它 tab。
     #[test]
     fn split_inherits_target_pane_directory_atomically() {
-        use crate::core::model::layout::SplitDir;
-        use crate::core::model::task::Task;
+        use crate::core::protocol::layout::SplitDir;
+        use crate::core::protocol::task::Task;
         use tokio::sync::mpsc;
 
         let mut b = TmuxRuntime::new(None);
         // 预置 pane 所在 tab/window
-        b.panes.push(crate::core::model::state::PaneInfo {
+        b.panes.push(crate::core::protocol::state::PaneInfo {
             id: crate::core::types::PaneId(3),
             tab: crate::core::types::TabId(7),
             cols: 80,
@@ -8982,7 +8990,7 @@ mod tests {
             active: true,
             title: "p3".into(),
         });
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: crate::core::types::TabId(7),
             name: "t7".into(),
             active: true,
@@ -8990,7 +8998,7 @@ mod tests {
         // 建立命令通道，捕获后续 dispatch 的命令
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
-        b.status = crate::core::model::state::BackendStatus::Connected;
+        b.status = crate::core::protocol::state::BackendStatus::Connected;
 
         // execute SplitPane（workdir=None）→ 一条原子 split 命令。
         let outcome = b
@@ -9001,7 +9009,7 @@ mod tests {
                 workdir: None,
             })
             .unwrap();
-        assert_eq!(outcome, crate::core::model::task::TaskOutcome::Done);
+        assert_eq!(outcome, crate::core::protocol::task::TaskOutcome::Done);
         let split = rx.try_recv().expect("应发送 split-window");
         assert_eq!(
             split, "split-window -t %3 -h -c \"#{pane_current_path}\"\n",
@@ -9016,7 +9024,7 @@ mod tests {
     /// %session-window-changed：切换 session 的 active window → active tab 切换。
     #[test]
     fn session_window_changed_updates_active_tab() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
@@ -9025,7 +9033,7 @@ mod tests {
         b.active_session = Some(session);
         // 预置两个 tab（对应两个 tmux window @0 @1）
         for (id, active) in [(0u32, true), (1, false)] {
-            b.tabs.push(crate::core::model::state::TabInfo {
+            b.tabs.push(crate::core::protocol::state::TabInfo {
                 id: crate::core::types::TabId(id),
                 name: format!("t{id}"),
                 active,
@@ -9062,14 +9070,14 @@ mod tests {
     /// 不要写死 yaklang-workspace=$0（2026-08-15 日志里它是 $4）。
     #[test]
     fn session_window_changed_ignores_other_session() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
         let attached = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
         b.workspace_name = "yaklang-workspace".into();
         b.active_session = Some(attached);
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: crate::core::types::TabId(0),
             name: "Monitor".into(),
             active: true,
@@ -9130,19 +9138,19 @@ mod tests {
     /// 今天的 dogfood 日志：attach 的是 $4，`%session-window-changed $4 @21` 必须切 tab。
     #[test]
     fn session_window_changed_applies_when_attached_session_is_4() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
         let attached = crate::core::runtime::tmux::protocol::TmuxSessionId(4);
         b.active_session = Some(attached);
         b.workspace_name = "yaklang-workspace".into();
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: crate::core::types::TabId(21),
             name: "code".into(),
             active: false,
         });
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: crate::core::types::TabId(29),
             name: "other".into(),
             active: true,
@@ -9183,7 +9191,7 @@ mod tests {
         let mut b = TmuxRuntime::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: crate::core::types::TabId(0),
             name: "Monitor".into(),
             active: true,
@@ -9209,7 +9217,7 @@ mod tests {
         let mut b = TmuxRuntime::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
-        b.tabs.push(crate::core::model::state::TabInfo {
+        b.tabs.push(crate::core::protocol::state::TabInfo {
             id: crate::core::types::TabId(5),
             name: "code".into(),
             active: true,
@@ -9249,18 +9257,18 @@ mod tests {
     /// 在输出洪峰下延迟到达，前端也能立刻切 tab；通知到达后不重复发事件。
     #[test]
     fn switch_tab_optimistically_marks_active_tab() {
-        use crate::core::model::state::StateChange;
+        use crate::core::protocol::state::StateChange;
         use crate::core::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
-        b.status = crate::core::model::state::BackendStatus::Connected;
+        b.status = crate::core::protocol::state::BackendStatus::Connected;
         let session = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
         b.workspace_name = "s0".into();
         b.active_session = Some(session);
         for (id, active) in [(0u32, true), (1, false), (2, false)] {
-            b.tabs.push(crate::core::model::state::TabInfo {
+            b.tabs.push(crate::core::protocol::state::TabInfo {
                 id: crate::core::types::TabId(id),
                 name: format!("t{id}"),
                 active,
@@ -9302,11 +9310,11 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
         b.cmd_tx = Some(tx);
-        b.status = crate::core::model::state::BackendStatus::Connected;
+        b.status = crate::core::protocol::state::BackendStatus::Connected;
         let session = crate::core::runtime::tmux::protocol::TmuxSessionId(0);
         b.active_session = Some(session);
         for (id, active) in [(18u32, true), (47, false), (52, false)] {
-            b.tabs.push(crate::core::model::state::TabInfo {
+            b.tabs.push(crate::core::protocol::state::TabInfo {
                 id: crate::core::types::TabId(id),
                 name: format!("t{id}"),
                 active,

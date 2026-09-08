@@ -4,8 +4,8 @@
 //! `runtime/{shell,tmux,herdr}`。旧的 `core::model::backend` 路径暂时通过
 //! re-export 保持兼容，迁移完成后将删除该兼容入口。
 
-use crate::core::model::state::{BackendStatus, State, StateChange};
-use crate::core::model::task::{Task, TaskOutcome};
+use crate::core::protocol::state::{BackendStatus, State, StateChange};
+use crate::core::protocol::task::{Task, TaskOutcome};
 use async_trait::async_trait;
 
 /// Runtime 能力位：一个实现返回它真正支持的子集。

@@ -8,7 +8,7 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Paned, Widget};
 
 use crate::core::config::Theme;
-use crate::core::model::layout::{LayoutNode, SplitDir};
+use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::core::types::PaneId;
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::quickconnect::font::FontSettings;

@@ -16,10 +16,10 @@ use crate::core::catalog::ResolveIntent;
 use crate::core::config::parse_hex;
 use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 use crate::core::logging::{init_logging, LoggingConfig};
-use crate::core::model::layout::{LayoutNode, SplitDir};
-use crate::core::model::state::StateChange;
-use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
+use crate::core::protocol::layout::{LayoutNode, SplitDir};
+use crate::core::protocol::state::StateChange;
+use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::protocol::terminal::input::KeyEvent;
 use crate::core::quickconnect::model::TargetTransport;
@@ -1955,13 +1955,15 @@ fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChan
         StateChange::BackendStatusChanged(status) => {
             out.type_ = STATE_BACKEND_STATUS;
             out.pane_id = match status {
-                crate::core::model::state::BackendStatus::Disconnected => {
+                crate::core::protocol::state::BackendStatus::Disconnected => {
                     BACKEND_STATUS_DISCONNECTED
                 }
-                crate::core::model::state::BackendStatus::Connecting => BACKEND_STATUS_CONNECTING,
-                crate::core::model::state::BackendStatus::Connected => BACKEND_STATUS_CONNECTED,
-                crate::core::model::state::BackendStatus::Error => BACKEND_STATUS_ERROR,
-                crate::core::model::state::BackendStatus::Exited => BACKEND_STATUS_EXITED,
+                crate::core::protocol::state::BackendStatus::Connecting => {
+                    BACKEND_STATUS_CONNECTING
+                }
+                crate::core::protocol::state::BackendStatus::Connected => BACKEND_STATUS_CONNECTED,
+                crate::core::protocol::state::BackendStatus::Error => BACKEND_STATUS_ERROR,
+                crate::core::protocol::state::BackendStatus::Exited => BACKEND_STATUS_EXITED,
             };
         }
         StateChange::PaneTitleChanged { pane, title } => {
@@ -3155,11 +3157,11 @@ pub unsafe extern "C" fn muxterm_pane_last_n_lines(
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockRuntime;
-    use crate::core::model::state::{
-        PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
-    };
     use crate::core::protocol::ffi::muxterm_set_callbacks;
     use crate::core::protocol::ffi::types::DIR_HORIZONTAL;
+    use crate::core::protocol::state::{
+        PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
+    };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

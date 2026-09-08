@@ -8,9 +8,9 @@ use std::collections::HashMap;
 
 use crate::core::attention::signal::AttentionSignal;
 use crate::core::attention::state::PaneStatus;
-use crate::core::model::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
-use crate::core::model::task::{Task, TaskOutcome};
 use crate::core::model::terminal_model::TerminalModel;
+use crate::core::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
+use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::core::runtime::Runtime;
 use crate::core::types::{PaneId, TabId};
@@ -537,7 +537,7 @@ fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
 mod tests {
     use super::*;
     use crate::core::model::backend::mock::MockRuntime;
-    use crate::core::model::task::Task;
+    use crate::core::protocol::task::Task;
 
     fn workspace(name: &str) -> Workspace {
         let id = WorkspaceId::new("local", None, name, "tmux", "");
