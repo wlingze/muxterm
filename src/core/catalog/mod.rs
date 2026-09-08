@@ -29,7 +29,7 @@ pub use connect::Connect;
 pub use driver::SessionCandidate;
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
-pub use resolver::{config_to_spec, ResolveIntent, ResolvedTarget};
+pub use resolver::{config_to_spec, OpenRequest, ResolveIntent, ResolvedTarget};
 pub use transport::{TargetInfo, TransportInfo, TransportProvider};
 
 /// 进程内一份 backend 总状态。
