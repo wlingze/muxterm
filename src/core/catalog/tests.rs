@@ -12,6 +12,9 @@ use crate::core::runtime::provider::RuntimeProvider;
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::spec::WorkspaceSpec;
+use crate::core::workspace::template::{
+    PaneTemplate, TabTemplate, TemplateLayout, TemplateName, WorkspaceTemplate,
+};
 
 struct MockDriver {
     id: &'static str,
@@ -627,4 +630,71 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
     );
     let error = result.err().unwrap();
     assert!(error.to_string().contains("requires channels"));
+}
+
+fn single_pane_template() -> WorkspaceTemplate {
+    WorkspaceTemplate {
+        name: TemplateName::try_from("single").unwrap(),
+        tabs: vec![TabTemplate {
+            name: Some("templated".into()),
+            active: true,
+            layout: TemplateLayout::Pane(PaneTemplate {
+                command: None,
+                cwd: None,
+                env: Default::default(),
+                focus: false,
+            }),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn catalog_applies_templates_only_to_create_specs() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "local")],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "mock",
+        name: "Mock",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    cat.register_template(single_pane_template()).unwrap();
+
+    let template_name = TemplateName::try_from("single").unwrap();
+    let mut attach = mock_spec("mock", "local", None, "attach");
+    attach.template = Some(template_name.clone());
+    let attach_id = attach.id();
+    cat.open(&attach).await.unwrap();
+    assert!(
+        cat.pool()
+            .get(&attach_id)
+            .unwrap()
+            .template_apply_report()
+            .is_none(),
+        "attach must not apply a template"
+    );
+
+    let mut create = mock_spec("mock", "local", None, "create");
+    create.create = true;
+    create.template = Some(template_name);
+    let create_id = create.id();
+    cat.open(&create).await.unwrap();
+    let report = cat
+        .pool()
+        .get(&create_id)
+        .unwrap()
+        .template_apply_report()
+        .expect("create must finish the single-pane template");
+    assert!(report.completed);
+    assert_eq!(report.applied_tabs, 1);
+    assert_eq!(report.applied_panes, 1);
 }
