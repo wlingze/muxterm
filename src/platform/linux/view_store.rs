@@ -49,6 +49,23 @@ impl ViewStore {
         self.workspaces.keys().map(String::as_str)
     }
 
+    /// Return all owned workspace views in their stable store order.
+    pub fn workspaces(&self) -> impl Iterator<Item = (&str, &WorkspaceView)> {
+        self.workspaces
+            .iter()
+            .map(|(workspace_id, view)| (workspace_id.as_str(), view))
+    }
+
+    /// Return the workspace marked active by the latest Core topology snapshot.
+    pub fn active_workspace_id(&self) -> Option<&str> {
+        self.workspaces().find_map(|(workspace_id, view)| {
+            view.workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.active)
+                .then_some(workspace_id)
+        })
+    }
+
     pub fn replace_topology(
         &mut self,
         workspace: ClientWorkspace,
@@ -198,6 +215,7 @@ mod tests {
         let view = store
             .workspace("local//one/shell/")
             .expect("workspace snapshot");
+        assert_eq!(store.active_workspace_id(), Some("local//one/shell/"));
         assert_eq!(view.tabs[0].name, "tab");
         assert_eq!(view.panes[&1][0].title, "bash");
         assert_eq!(

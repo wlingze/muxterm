@@ -52,15 +52,21 @@ impl EventPump {
     /// events are retained in their workspace/pane mailbox.
     #[cfg(feature = "gtk")]
     pub fn poll_into(&self, store: &mut ViewStore) -> usize {
+        self.poll_into_with_events(store).len()
+    }
+
+    /// Drain one batch, apply it to the owned store, and return the copied
+    /// events for activity/control adapters that still need the same batch.
+    #[cfg(feature = "gtk")]
+    pub fn poll_into_with_events(&self, store: &mut ViewStore) -> Vec<ClientWorkspaceEvent> {
         let events = self.poll();
-        let count = events.len();
-        for event in events {
+        for event in &events {
             if event.event.is_topology() {
                 self.refresh_workspace(store, &event.workspace_id);
             }
-            Self::apply_workspace_event(store, event);
+            Self::apply_workspace_event(store, event.clone());
         }
-        count
+        events
     }
 
     /// Apply an already-owned event from a compatibility source. This keeps
