@@ -448,7 +448,7 @@ fn pool_must_not_hold_herdr_sessions_sidecar() {
 /// C7：测试隔离远端 tmux 必须能通过 env 传给 TmuxDriver.list。
 #[test]
 fn tmux_driver_list_honors_test_remote_socket_env() {
-    let src = include_str!("builtin/tmux.rs");
+    let src = include_str!("../runtime/tmux/provider.rs");
     assert!(
         src.contains("MUXTERM_TEST_REMOTE_TMUX_SOCKET"),
         "TmuxDriver::list SSH 分支必须读 MUXTERM_TEST_REMOTE_TMUX_SOCKET 传给 list_ssh_tmux_sessions，否则 Host local 测会打到用户默认 server"
@@ -458,7 +458,7 @@ fn tmux_driver_list_honors_test_remote_socket_env() {
 /// C9：本地 list 也必须能指到隔离 `-L`，才能和 ssh-self 对同一 session 出双份。
 #[test]
 fn tmux_driver_list_honors_test_local_socket_env() {
-    let src = include_str!("builtin/tmux.rs");
+    let src = include_str!("../runtime/tmux/provider.rs");
     assert!(
         src.contains("MUXTERM_TEST_LOCAL_TMUX_SOCKET"),
         "TmuxDriver::list 本地分支必须读 MUXTERM_TEST_LOCAL_TMUX_SOCKET 传给 list_local_tmux_sessions，否则 all 的 local 半边会打到用户默认 server"
