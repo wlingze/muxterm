@@ -12,11 +12,12 @@ use std::time::Duration;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
 use crate::core::attention::signal::AttentionSignal;
-use crate::core::catalog::ResolveIntent;
+use crate::core::catalog::{OpenRequest, ResolveIntent};
 use crate::core::config::parse_hex;
 use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::projects::{ProjectStore, ProjectsService};
+use crate::core::protocol::candidate::CandidateRef;
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::{Task, TaskOutcome};
@@ -456,6 +457,41 @@ pub unsafe extern "C" fn muxterm_transport_list_json(h: *mut MuxtermHandle) -> *
         }))
     }))
     .unwrap_or_else(|_| json_error("transport list panic"))
+}
+
+/// List the unified Project/Worktree/Existing/Recent candidates.
+///
+/// Existing rows are refreshed from all registered transport targets before
+/// the four sources are aggregated. `recent_limit` controls how many recent
+/// workspaces are appended to the result.
+///
+/// # Safety
+/// `h` is a valid handle and has not been freed.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_candidates_json(
+    h: *mut MuxtermHandle,
+    recent_limit: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle 为空");
+        }
+        let handle = &mut *h;
+        let existing = match handle.catalog.discover_sessions("all", "") {
+            Ok(rows) => rows,
+            Err(error) => return json_error(error),
+        };
+        let candidates = handle.catalog.candidates(
+            handle.projects.list_projects(),
+            &existing,
+            recent_limit as usize,
+        );
+        json_string(serde_json::json!({
+            "ok": true,
+            "candidates": candidates,
+        }))
+    }))
+    .unwrap_or_else(|_| json_error("candidates list panic"))
 }
 
 /// 列出某个 Transport 的 target（Local 单例 / SSH hosts）。
@@ -1258,6 +1294,81 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
         }
     }))
     .unwrap_or_else(|_| json_error("workspace_open_target_json panic"))
+}
+
+/// Open a product-level [`OpenRequest`] through the Catalog resolver.
+///
+/// The frontend sends Candidate identity and intent only; it never constructs
+/// a WorkspaceSpec. The returned object contains the opened Workspace id and
+/// the Core-owned resolved descriptor for display/debugging.
+///
+/// # Safety
+/// `h` is a valid handle and has not been freed; `request` is a NUL-terminated
+/// UTF-8 JSON string.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_open_json(
+    h: *mut MuxtermHandle,
+    request: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || request.is_null() {
+            return json_error("handle 或 request 为空");
+        }
+        let Ok(request) = CStr::from_ptr(request).to_str() else {
+            return json_error("request 不是合法 UTF-8");
+        };
+        let request = match serde_json::from_str::<OpenRequest>(request) {
+            Ok(request) => request,
+            Err(error) => return json_error(format!("OpenRequest JSON 解析失败: {error}")),
+        };
+        let handle = &mut *h;
+        let previous_active = handle.catalog.pool().active_id().cloned();
+        let resolved = match handle
+            .catalog
+            .resolve_open_request(&request, handle.projects.list_projects())
+        {
+            Ok(resolved) => resolved,
+            Err(error) => return json_error(error),
+        };
+        let workspace_id = resolved.workspace_id();
+        let result = handle.rt.block_on(handle.catalog.open_resolved(resolved));
+        let (name, resolved_target) = match result {
+            Ok(workspace) => (
+                workspace.name().to_string(),
+                workspace.resolved_target().map(resolved_target_json),
+            ),
+            Err(error) => return json_error(error),
+        };
+
+        if !request.activate {
+            if let Some(previous_active) = previous_active {
+                handle.catalog.pool_mut().activate(&previous_active);
+            }
+        }
+        if let CandidateRef::Worktree {
+            project_id,
+            worktree_id,
+        } = &request.candidate
+        {
+            let project_id = crate::core::projects::ProjectId::from(project_id.as_str());
+            let worktree_id = crate::core::projects::WorktreeId::from(worktree_id.as_str());
+            if let Some(worktree) = handle
+                .projects_mut()
+                .store_mut()
+                .get_mut(&project_id)
+                .and_then(|project| project.worktree_mut(&worktree_id))
+            {
+                worktree.open_workspace = Some(workspace_id.clone());
+            }
+        }
+        json_string(serde_json::json!({
+            "ok": true,
+            "id": workspace_id.as_str(),
+            "name": name,
+            "resolved_target": resolved_target,
+        }))
+    }))
+    .unwrap_or_else(|_| json_error("open request panic"))
 }
 
 /// 列出池里全部工作区，返回 JSON 字符串（`muxterm_free_string` 释放）。
@@ -3196,16 +3307,95 @@ pub unsafe extern "C" fn muxterm_pane_last_n_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::projects::Project;
     use crate::core::protocol::ffi::muxterm_set_callbacks;
     use crate::core::protocol::ffi::types::DIR_HORIZONTAL;
     use crate::core::protocol::state::{
         PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
     };
+    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
     use crate::core::runtime::mock::MockRuntime;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEST_TMUX_SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn ffi_open_json_resolves_a_project_candidate() {
+        let h = muxterm_catalog_new();
+        assert!(!h.is_null());
+        unsafe {
+            // Keep this test isolated from the user's persisted project file.
+            (*h).projects = ProjectsService::in_memory();
+            (*h).projects_mut()
+                .create_project(Project::new(
+                    "ffi-project",
+                    "FFI Project",
+                    TargetConfig::new(
+                        "FFI Project",
+                        TargetRuntime::Shell,
+                        TargetTransport::Local,
+                        "/tmp",
+                    ),
+                ))
+                .unwrap();
+            let request = CString::new(
+                r#"{"candidate":{"kind":"project","value":{"project_id":"ffi-project"}},"intent":"create_if_missing"}"#,
+            )
+            .unwrap();
+
+            let response = muxterm_open_json(h, request.as_ptr());
+            assert!(!response.is_null());
+            let text = CStr::from_ptr(response).to_string_lossy().into_owned();
+            muxterm_free_string(response);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["ok"], true);
+            assert_eq!(
+                value["resolved_target"]["spec"]["provenance"]["project_id"],
+                "ffi-project"
+            );
+            assert_eq!(value["resolved_target"]["spec"]["runtime"], "shell");
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_candidates_json_aggregates_core_projects() {
+        let h = muxterm_catalog_new();
+        assert!(!h.is_null());
+        unsafe {
+            // No providers means the discovery leg is empty and cannot touch
+            // a real tmux/SSH endpoint in this unit test.
+            (*h).catalog = crate::core::catalog::Catalog::new();
+            (*h).projects = ProjectsService::in_memory();
+            (*h).projects_mut()
+                .create_project(Project::new(
+                    "candidate-project",
+                    "Candidate Project",
+                    TargetConfig::new(
+                        "Candidate Project",
+                        TargetRuntime::Shell,
+                        TargetTransport::Local,
+                        "/tmp",
+                    ),
+                ))
+                .unwrap();
+
+            let response = muxterm_candidates_json(h, 0);
+            assert!(!response.is_null());
+            let text = CStr::from_ptr(response).to_string_lossy().into_owned();
+            muxterm_free_string(response);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["ok"], true);
+            assert_eq!(value["candidates"].as_array().unwrap().len(), 1);
+            assert_eq!(value["candidates"][0]["kind"], "project");
+            assert_eq!(
+                value["candidates"][0]["ref"]["value"]["project_id"],
+                "candidate-project"
+            );
+            muxterm_free(h);
+        }
+    }
 
     struct IsolatedTmuxServer {
         socket: String,

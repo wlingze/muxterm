@@ -712,7 +712,8 @@ impl Catalog {
         &mut self,
         identity: &ExistingCandidateRef,
     ) -> anyhow::Result<ResolvedTarget> {
-        let connect = self.connect(&identity.transport_id, &identity.target)?;
+        let connect_target = existing_connect_target(identity);
+        let connect = self.connect(&identity.transport_id, connect_target)?;
         let driver = self
             .runtime(&identity.runtime_id)
             .ok_or_else(|| anyhow::anyhow!("unknown runtime '{}'", identity.runtime_id))?;
@@ -853,10 +854,28 @@ fn existing_identity_matches(
 ) -> bool {
     candidate.runtime_id == identity.runtime_id
         && candidate.transport_id == identity.transport_id
-        && candidate.target == identity.target
+        && existing_target_matches(candidate, identity)
         && candidate.session == identity.session
         && candidate.socket == identity.socket
         && candidate.workspace_id == identity.workspace_id
+}
+
+/// The all-target discovery view uses `local` as the user-facing connect name,
+/// while the local provider's canonical target is the empty string. Keep that
+/// display alias out of ConnectionRegistry keys and identity comparisons.
+fn existing_connect_target(identity: &ExistingCandidateRef) -> &str {
+    if identity.transport_id == "local" && identity.target == "local" {
+        ""
+    } else {
+        identity.target.as_str()
+    }
+}
+
+fn existing_target_matches(candidate: &SessionCandidate, identity: &ExistingCandidateRef) -> bool {
+    candidate.target == identity.target
+        || (identity.transport_id == "local"
+            && identity.target == "local"
+            && candidate.target.is_empty())
 }
 
 fn target_config_from_existing(
