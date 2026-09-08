@@ -3,7 +3,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::provider::TransportProvider;
 use super::TargetConnection;
+
+/// Construct the built-in TransportProvider list in stable UI order.
+pub fn with_builtins() -> Vec<Box<dyn TransportProvider>> {
+    vec![
+        Box::new(super::local::provider::LocalTransport),
+        Box::new(super::ssh::provider::SshTransport),
+    ]
+}
 
 /// One reusable connection per `(transport_id, target)` identity.
 #[derive(Default)]

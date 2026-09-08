@@ -9,6 +9,7 @@ pub mod contract;
 pub mod daemon;
 pub mod herdr;
 pub mod provider;
+pub mod registry;
 pub mod shell;
 pub mod tmux;
 
