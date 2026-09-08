@@ -28,7 +28,6 @@ use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::catalog::ResolveIntent;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
 use crate::core::config_service::SettingsService;
-use crate::core::discovery::existing::ExistingEntry;
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::core::protocol::state::{BackendStatus, StateChange};
 use crate::core::protocol::task::{Task, TaskOutcome};
@@ -52,6 +51,7 @@ use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
+use crate::platform::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::platform::linux::quickconnect::project_flow::{
@@ -3702,47 +3702,23 @@ fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
     }
 }
 
-/// C6：Catalog SessionCandidate → 面板 ExistingEntry（socket 按 namespace 推导）。
-fn candidate_to_existing(c: &crate::core::catalog::driver::SessionCandidate) -> ExistingEntry {
-    let runtime = match c.runtime_id.as_str() {
-        "herdr" => TargetRuntime::Herdr,
-        "shell" => TargetRuntime::Shell,
-        _ => TargetRuntime::Tmux,
-    };
-    let transport = if c.transport_id == "ssh" {
-        TargetTransport::Ssh {
-            name: c.target.clone(),
-        }
-    } else {
-        TargetTransport::Local
-    };
-    let herdr_socket = (runtime == TargetRuntime::Herdr)
-        .then(|| c.socket.clone())
-        .flatten();
-    let tmux_socket = (runtime == TargetRuntime::Tmux)
-        .then(|| c.socket.clone())
-        .flatten();
-    ExistingEntry {
-        title: c.name.clone(),
-        runtime,
-        transport,
-        tmux_session: (runtime == TargetRuntime::Tmux)
-            .then(|| c.session.clone().unwrap_or_else(|| c.name.clone())),
-        tmux_socket,
-        herdr_session: (runtime == TargetRuntime::Herdr).then(|| {
-            c.session
-                .clone()
-                .or_else(|| c.namespace.clone())
-                .filter(|ns| !ns.is_empty())
-                .unwrap_or_else(|| "default".to_string())
-        }),
-        herdr_workspace_id: if runtime == TargetRuntime::Herdr {
-            c.workspace_id.clone().filter(|s| !s.is_empty())
-        } else {
-            None
-        },
-        herdr_socket,
-    }
+fn existing_entries(
+    candidates: Vec<crate::platform::ffi_client::ExistingCandidate>,
+) -> Vec<ExistingEntry> {
+    candidates
+        .into_iter()
+        .filter_map(|candidate| match ExistingEntry::from_candidate(candidate) {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::linux",
+                    %error,
+                    "ignoring unsupported Existing candidate"
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 /// 已有的连接探测增量：先推 local 行，SSH 完成后再推；Done 才清 inflight。
@@ -3755,7 +3731,7 @@ enum ExistingProbeMsg {
 fn merge_existing_entries(ex: &mut ExistingPanelState, entries: Vec<ExistingEntry>) {
     for e in entries {
         match &e.transport {
-            TargetTransport::Ssh { name } => {
+            ExistingTransport::Ssh { name } => {
                 if !ex.hosts.contains(name) {
                     ex.hosts.push(name.clone());
                 }
@@ -3764,7 +3740,7 @@ fn merge_existing_entries(ex: &mut ExistingPanelState, entries: Vec<ExistingEntr
                     bucket.push(e);
                 }
             }
-            TargetTransport::Local => {
+            ExistingTransport::Local => {
                 if !ex.locals.contains(&e) {
                     ex.locals.push(e);
                 }
@@ -3781,7 +3757,7 @@ fn append_unique_existing_entries(target: &mut Vec<ExistingEntry>, entries: Vec<
     }
 }
 
-/// C7/C9：已有的连接探测。先 `discover_sessions("local")` 立刻推表，
+/// C7/C9：已有的连接探测。先 `discover_existing("local")` 立刻推表，
 /// 再按 SSH host 最多 4 路并发。禁止等 `all` 串完才刷新（archmini 上 cd/mac 会冻 Loading）。
 fn spawn_local_existing_probe(s: &mut UiState) {
     s.existing.borrow_mut().probe_inflight = true;
@@ -3811,19 +3787,22 @@ fn spawn_local_existing_probe(s: &mut UiState) {
     let (tx, rx) = std::sync::mpsc::channel::<ExistingProbeMsg>();
     s.pending_local_probe.push_back(rx);
     std::thread::spawn(move || {
-        let mut catalog = crate::core::catalog::Catalog::with_builtins();
         tracing::debug!(target = "muxterm::linux", "existing probe: local start");
-        let mut local: Vec<ExistingEntry> = catalog
-            .discover_sessions("local", "")
-            .unwrap_or_default()
-            .iter()
-            .map(candidate_to_existing)
-            .collect();
+        let mut local =
+            existing_entries(FfiClient::discover_existing("local", None, None).unwrap_or_default());
         for socket in local_tmux_sockets {
-            append_unique_existing_entries(
-                &mut local,
-                crate::core::discovery::existing::discover_local_tmux(Some(&socket)),
-            );
+            let entries = FfiClient::discover_tmux_sessions("local", None, Some(&socket))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|session| {
+                    ExistingEntry::tmux(
+                        session.name,
+                        ExistingTransport::Local,
+                        Some(socket.clone()),
+                    )
+                })
+                .collect();
+            append_unique_existing_entries(&mut local, entries);
         }
         tracing::debug!(
             target = "muxterm::linux",
@@ -3832,8 +3811,7 @@ fn spawn_local_existing_probe(s: &mut UiState) {
         );
         let _ = tx.send(ExistingProbeMsg::Rows(local));
 
-        let ssh_config = std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(std::path::PathBuf::from);
-        let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(ssh_config.as_deref())
+        let aliases: Vec<String> = FfiClient::discover_ssh_hosts()
             .unwrap_or_default()
             .into_iter()
             .map(|h| h.alias)
@@ -3856,13 +3834,10 @@ fn spawn_local_existing_probe(s: &mut UiState) {
                                 alias = %alias,
                                 "existing probe: ssh start"
                             );
-                            let mut catalog = crate::core::catalog::Catalog::with_builtins();
-                            let entries: Vec<ExistingEntry> = catalog
-                                .discover_sessions("ssh", &alias)
-                                .unwrap_or_default()
-                                .iter()
-                                .map(candidate_to_existing)
-                                .collect();
+                            let entries = existing_entries(
+                                FfiClient::discover_existing("ssh", Some(&alias), None)
+                                    .unwrap_or_default(),
+                            );
                             tracing::debug!(
                                 target = "muxterm::linux",
                                 alias = %alias,
@@ -3954,8 +3929,7 @@ fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
         s.existing_ssh_probing = true;
         s.existing.borrow_mut().probe_inflight = true;
     }
-    let ssh_config = std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(std::path::PathBuf::from);
-    let aliases: Vec<String> = crate::core::discovery::list_ssh_hosts(ssh_config.as_deref())
+    let aliases: Vec<String> = FfiClient::discover_ssh_hosts()
         .unwrap_or_default()
         .into_iter()
         .map(|h| h.alias)
@@ -3976,13 +3950,10 @@ fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
                         .iter()
                         .map(|alias| {
                             scope.spawn(move || {
-                                let mut catalog = crate::core::catalog::Catalog::with_builtins();
-                                let entries = catalog
-                                    .discover_sessions("ssh", alias)
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .map(candidate_to_existing)
-                                    .collect();
+                                let entries = existing_entries(
+                                    FfiClient::discover_existing("ssh", Some(alias), None)
+                                        .unwrap_or_default(),
+                                );
                                 (alias.clone(), entries)
                             })
                         })
@@ -6001,22 +5972,22 @@ mod tests {
         let spawns = body.matches("thread::spawn").count() + body.matches("thread::scope").count();
         assert!(
             body.contains("chunks(") || spawns >= 2,
-            "spawn_existing_ssh_probe 必须 4 路并发（chunks / scope / 每 host spawn），禁止串行 discover_sessions。body={body}"
+            "spawn_existing_ssh_probe 必须 4 路并发（chunks / scope / 每 host spawn），禁止串行 Existing discovery。body={body}"
         );
     }
 
     /// C9：已有的连接必须先出 local 行，SSH host 再 4 路并发。
-    /// 禁止只调一次 `discover_sessions("all")` 再一次性 send（慢 host 会冻 Loading）。
+    /// 禁止只调一次 `discover_existing("all")` 再一次性 send（慢 host 会冻 Loading）。
     #[test]
     fn spawn_local_existing_probe_must_stream_local_then_parallel_ssh() {
         let src = include_str!("window.rs");
         let body = fn_src(src, "spawn_local_existing_probe");
         let local_at = body
-            .find("discover_sessions(\"local\"")
-            .expect("必须先 discover_sessions(\"local\")");
+            .find("discover_existing(\"local\"")
+            .expect("必须先 discover_existing(\"local\")");
         let ssh_at = body
-            .find("discover_sessions(\"ssh\"")
-            .expect("SSH 侧必须 discover_sessions(\"ssh\", alias)");
+            .find("discover_existing(\"ssh\"")
+            .expect("SSH 侧必须 discover_existing(\"ssh\", alias)");
         assert!(
             local_at < ssh_at,
             "local 必须排在 ssh 扇出之前。body={body}"
@@ -6032,8 +6003,8 @@ mod tests {
             "SSH host 必须 4 路并发（chunks / scope）。body={body}"
         );
         assert!(
-            !body.contains("discover_sessions(\"all\""),
-            "面板探测禁止等 discover_sessions(\"all\") 整表；FFI/Catalog 的 all 仍并行扇出。body={body}"
+            !body.contains("discover_existing(\"all\""),
+            "面板探测禁止等 discover_existing(\"all\") 整表；FFI/Catalog 的 all 仍并行扇出。body={body}"
         );
     }
 
@@ -6056,14 +6027,14 @@ mod tests {
         );
     }
 
-    /// C7：打开面板禁止在调用线程同步 discover_sessions（会冻 GTK）。
+    /// C7：打开面板禁止在调用线程同步 discover_existing（会冻 GTK）。
     #[test]
-    fn open_panel_must_not_discover_sessions_on_caller() {
+    fn open_panel_must_not_probe_existing_on_caller() {
         let src = include_str!("window.rs");
         let body = fn_src(src, "open_panel");
         assert!(
-            !body.contains("discover_sessions"),
-            "open_panel 禁止同步 Catalog::discover_sessions；本地列出搬后台线程。body={body}"
+            !body.contains("discover_existing"),
+            "open_panel 禁止同步 Existing discovery；本地列出搬后台线程。body={body}"
         );
     }
 

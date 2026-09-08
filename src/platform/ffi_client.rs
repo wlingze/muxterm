@@ -457,7 +457,15 @@ impl FfiClient {
     }
 
     pub fn discover_ssh_hosts() -> anyhow::Result<Vec<SshHostEntry>> {
-        let value = Self::discovery_json(|| ffi::muxterm_discover_ssh_hosts_json(ptr::null()))?;
+        let config_path = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+        let config_path = cstring_opt(config_path.as_deref());
+        let value = Self::discovery_json(|| {
+            ffi::muxterm_discover_ssh_hosts_json(
+                config_path
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
+            )
+        })?;
         Ok(serde_json::from_value(value["hosts"].clone())?)
     }
 
