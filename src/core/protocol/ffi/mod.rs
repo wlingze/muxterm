@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod callbacks;
+pub mod functions;
 pub mod types;
 
 pub use api::*;

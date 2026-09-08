@@ -12,12 +12,11 @@ use std::time::Duration;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
 use crate::core::attention::signal::AttentionSignal;
-use crate::core::catalog::{OpenRequest, ResolveIntent};
+use crate::core::catalog::ResolveIntent;
 use crate::core::config::parse_hex;
 use crate::core::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::projects::{ProjectStore, ProjectsService};
-use crate::core::protocol::candidate::CandidateRef;
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::{Task, TaskOutcome};
@@ -33,6 +32,7 @@ use crate::core::workspace::terminal_model::TerminalModel;
 use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;
+pub use super::functions::catalog::{muxterm_candidates_json, muxterm_open_json};
 use super::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, BACKEND_STATUS_CONNECTED,
     BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
@@ -273,7 +273,7 @@ fn should_export_state_change(event: &StateChange) -> bool {
     !matches!(event, StateChange::PaneIndexSnapshot { .. })
 }
 
-fn cstr_opt(p: *const c_char) -> Option<String> {
+pub(crate) fn cstr_opt(p: *const c_char) -> Option<String> {
     if p.is_null() {
         return None;
     }
@@ -283,14 +283,14 @@ fn cstr_opt(p: *const c_char) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn json_string(value: serde_json::Value) -> *mut c_char {
+pub(crate) fn json_string(value: serde_json::Value) -> *mut c_char {
     let text = value.to_string();
     CString::new(text)
         .map(CString::into_raw)
         .unwrap_or(ptr::null_mut())
 }
 
-fn json_error(error: impl std::fmt::Display) -> *mut c_char {
+pub(crate) fn json_error(error: impl std::fmt::Display) -> *mut c_char {
     json_string(serde_json::json!({
         "ok": false,
         "error": error.to_string(),
@@ -457,41 +457,6 @@ pub unsafe extern "C" fn muxterm_transport_list_json(h: *mut MuxtermHandle) -> *
         }))
     }))
     .unwrap_or_else(|_| json_error("transport list panic"))
-}
-
-/// List the unified Project/Worktree/Existing/Recent candidates.
-///
-/// Existing rows are refreshed from all registered transport targets before
-/// the four sources are aggregated. `recent_limit` controls how many recent
-/// workspaces are appended to the result.
-///
-/// # Safety
-/// `h` is a valid handle and has not been freed.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_candidates_json(
-    h: *mut MuxtermHandle,
-    recent_limit: u32,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let handle = &mut *h;
-        let existing = match handle.catalog.discover_sessions("all", "") {
-            Ok(rows) => rows,
-            Err(error) => return json_error(error),
-        };
-        let candidates = handle.catalog.candidates(
-            handle.projects.list_projects(),
-            &existing,
-            recent_limit as usize,
-        );
-        json_string(serde_json::json!({
-            "ok": true,
-            "candidates": candidates,
-        }))
-    }))
-    .unwrap_or_else(|_| json_error("candidates list panic"))
 }
 
 /// 列出某个 Transport 的 target（Local 单例 / SSH hosts）。
@@ -1179,7 +1144,7 @@ pub unsafe extern "C" fn muxterm_workspace_open(
 /// JSON 目标 → TargetConfig（W6 §11.3 additive 入口的解析）。
 /// 字段：name / runtime / transport("local"|"ssh") / target(SSH 别名) /
 /// path / session / socket(target-side) / workspace_id。未知字段忽略。
-fn target_config_from_json(
+pub(crate) fn target_config_from_json(
     v: &serde_json::Value,
 ) -> Option<crate::core::quickconnect::model::TargetConfig> {
     use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
@@ -1212,7 +1177,9 @@ fn target_config_from_json(
     Some(config)
 }
 
-fn resolved_target_json(resolved: &crate::core::catalog::ResolvedTarget) -> serde_json::Value {
+pub(crate) fn resolved_target_json(
+    resolved: &crate::core::catalog::ResolvedTarget,
+) -> serde_json::Value {
     let canonical = &resolved.canonical;
     serde_json::json!({
         "canonical": {
@@ -1294,81 +1261,6 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
         }
     }))
     .unwrap_or_else(|_| json_error("workspace_open_target_json panic"))
-}
-
-/// Open a product-level [`OpenRequest`] through the Catalog resolver.
-///
-/// The frontend sends Candidate identity and intent only; it never constructs
-/// a WorkspaceSpec. The returned object contains the opened Workspace id and
-/// the Core-owned resolved descriptor for display/debugging.
-///
-/// # Safety
-/// `h` is a valid handle and has not been freed; `request` is a NUL-terminated
-/// UTF-8 JSON string.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_open_json(
-    h: *mut MuxtermHandle,
-    request: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || request.is_null() {
-            return json_error("handle 或 request 为空");
-        }
-        let Ok(request) = CStr::from_ptr(request).to_str() else {
-            return json_error("request 不是合法 UTF-8");
-        };
-        let request = match serde_json::from_str::<OpenRequest>(request) {
-            Ok(request) => request,
-            Err(error) => return json_error(format!("OpenRequest JSON 解析失败: {error}")),
-        };
-        let handle = &mut *h;
-        let previous_active = handle.catalog.pool().active_id().cloned();
-        let resolved = match handle
-            .catalog
-            .resolve_open_request(&request, handle.projects.list_projects())
-        {
-            Ok(resolved) => resolved,
-            Err(error) => return json_error(error),
-        };
-        let workspace_id = resolved.workspace_id();
-        let result = handle.rt.block_on(handle.catalog.open_resolved(resolved));
-        let (name, resolved_target) = match result {
-            Ok(workspace) => (
-                workspace.name().to_string(),
-                workspace.resolved_target().map(resolved_target_json),
-            ),
-            Err(error) => return json_error(error),
-        };
-
-        if !request.activate {
-            if let Some(previous_active) = previous_active {
-                handle.catalog.pool_mut().activate(&previous_active);
-            }
-        }
-        if let CandidateRef::Worktree {
-            project_id,
-            worktree_id,
-        } = &request.candidate
-        {
-            let project_id = crate::core::projects::ProjectId::from(project_id.as_str());
-            let worktree_id = crate::core::projects::WorktreeId::from(worktree_id.as_str());
-            if let Some(worktree) = handle
-                .projects_mut()
-                .store_mut()
-                .get_mut(&project_id)
-                .and_then(|project| project.worktree_mut(&worktree_id))
-            {
-                worktree.open_workspace = Some(workspace_id.clone());
-            }
-        }
-        json_string(serde_json::json!({
-            "ok": true,
-            "id": workspace_id.as_str(),
-            "name": name,
-            "resolved_target": resolved_target,
-        }))
-    }))
-    .unwrap_or_else(|_| json_error("open request panic"))
 }
 
 /// 列出池里全部工作区，返回 JSON 字符串（`muxterm_free_string` 释放）。
