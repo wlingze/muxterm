@@ -335,7 +335,7 @@ async fn open_rejects_unknown_runtime() {
 }
 
 #[tokio::test]
-async fn open_uses_driver_not_build_runtime() {
+async fn open_uses_provider_not_spec_factory() {
     let mut cat = Catalog::new();
     let opened = Arc::new(AtomicUsize::new(0));
     cat.register_transport(Box::new(MockTransport {

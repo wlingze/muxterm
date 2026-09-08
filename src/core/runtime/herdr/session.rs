@@ -31,7 +31,7 @@ pub struct HerdrSession {
 /// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
 ///
 /// 旧 WorkspacePool.herdr_sessions 旁路表迁到这里：Catalog 的 Connect /
-/// Driver.open 与 WorkspaceSpec::build_runtime 都从这里拿，语义相同、位置不同。
+/// provider construction 都从这里拿，语义相同、位置不同。
 /// 共享 session 缓存类型：(named session, socket) → Arc。
 type SharedSessionMap = std::collections::HashMap<(String, String), Arc<HerdrSession>>;
 

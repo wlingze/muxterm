@@ -344,7 +344,7 @@ impl AppWindow {
             let spec = WorkspaceSpec::local_tmux(session.clone(), socket.clone())
                 .with_scrollback_lines(cfg.scrollback.lines);
             let id = spec.id();
-            let opened = rt.block_on(pool.open_spec(&spec));
+            let opened = rt.block_on(pool.open_spec(&spec, new_runtime_for_spec));
             match opened {
                 Ok(_) => Some(id),
                 Err(e) => {
@@ -358,7 +358,7 @@ impl AppWindow {
         let startup_id = startup_id.unwrap_or_else(|| {
             let spec = WorkspaceSpec::local_shell("").with_scrollback_lines(cfg.scrollback.lines);
             let id = spec.id();
-            rt.block_on(pool.open_spec(&spec))
+            rt.block_on(pool.open_spec(&spec, new_runtime_for_spec))
                 .expect("local runtime 必须可用");
             id
         });
@@ -4101,12 +4101,17 @@ fn reconnect_spec(id: &WorkspaceId, socket: Option<String>, scrollback: u32) -> 
     }
 }
 
-/// 后台线程：构造新 TmuxRuntime 并 connect（复用 tokio handle 保持任务存活）。
+/// Construct a runtime through the registered providers for the GTK frontend.
+fn new_runtime_for_spec(spec: &WorkspaceSpec) -> anyhow::Result<std::boxed::Box<dyn Runtime>> {
+    crate::core::catalog::Catalog::with_builtins().new_runtime(spec)
+}
+
+/// 后台线程：通过 provider 构造新 Runtime 并 connect（复用 tokio handle 保持任务存活）。
 fn connect_runtime_blocking(
     spec: &WorkspaceSpec,
     handle: &tokio::runtime::Handle,
 ) -> anyhow::Result<std::boxed::Box<dyn Runtime>> {
-    let mut runtime = spec.build_runtime();
+    let mut runtime = new_runtime_for_spec(spec)?;
     handle.block_on(async {
         tokio::time::timeout(Duration::from_secs(10), runtime.connect())
             .await
@@ -4614,7 +4619,7 @@ fn spawn_worktree_create(state: &Rc<RefCell<UiState>>, branch: String, path: Str
             let spec = WorkspaceSpec::herdr(session_name, new_ws, socket);
             let id = spec.id();
             let name = spec.name();
-            let mut runtime = spec.build_runtime();
+            let mut runtime = new_runtime_for_spec(&spec)?;
             handle.block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(10), runtime.connect())
                     .await
@@ -4683,7 +4688,7 @@ struct PendingConnect {
     result: anyhow::Result<Workspace>,
 }
 
-/// 在后台线程完成 `open_spec` 的阻塞部分（build runtime + connect），
+/// 在后台线程完成 spec 的阻塞部分（provider construction + connect），
 /// 结果经 channel 回主线程，由 16ms poll / test_poll_once 收编。
 fn spawn_background_connect(
     state: &Rc<RefCell<UiState>>,
@@ -4717,7 +4722,7 @@ fn connect_workspace_blocking(
 ) -> anyhow::Result<Workspace> {
     let id = spec.id();
     let name = spec.name();
-    let mut runtime = spec.build_runtime();
+    let mut runtime = new_runtime_for_spec(spec)?;
     // transport 已带 ConnectTimeout=10；这里再兜底硬超时，防止个别路径卡死。
     handle.block_on(async {
         tokio::time::timeout(Duration::from_secs(10), runtime.connect())
@@ -5141,7 +5146,7 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
             // 中安全 detach，不会停止用户的 tmux/Herdr server。
             let spec = WorkspaceSpec::local_shell("").with_scrollback_lines(s.scrollback_lines);
             let UiState { rt, pool, .. } = s;
-            if let Err(error) = rt.block_on(pool.open_spec(&spec)) {
+            if let Err(error) = rt.block_on(pool.open_spec(&spec, new_runtime_for_spec)) {
                 tracing::error!(
                     target = "muxterm::linux",
                     "关闭最后工作区后创建本地 shell 失败: {error}"

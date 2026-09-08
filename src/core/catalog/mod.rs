@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 
+use crate::core::runtime::Runtime;
 use crate::core::transport::TargetConnection;
 use crate::core::workspace::pool::WorkspacePool;
 use crate::core::workspace::spec::WorkspaceSpec;
@@ -217,10 +218,10 @@ impl Catalog {
         names
     }
 
-    /// 按 spec 打开工作区：查 Driver → 复用 Connect → Driver.open → 进 Pool。
+    /// 按 spec 通过 provider 构造尚未连接的 Runtime。
     ///
     /// 未知 runtime / 不接受的 transport → Err。禁止悄悄变成 Shell。
-    pub async fn open(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<&mut Workspace> {
+    pub fn new_runtime(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Box<dyn Runtime>> {
         let runtime_id = spec.runtime.as_str();
         let transport_id = spec.transport.as_str();
         let (accepted, requirements): (
@@ -263,6 +264,12 @@ impl Catalog {
             .runtime(runtime_id)
             .expect("刚查过的 Driver 必须仍在")
             .new_instance(Arc::clone(&connect), spec)?;
+        Ok(runtime)
+    }
+
+    /// 按 spec 打开工作区：查 provider → 复用 Connect → 构造 Runtime → 进 Pool。
+    pub async fn open(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<&mut Workspace> {
+        let runtime = self.new_runtime(spec)?;
         let id = spec.id();
         let name = spec.name();
         self.pool.open(id, name, |_| runtime).await
@@ -278,48 +285,7 @@ impl Catalog {
 
     /// Driver open + Workspace 构造（不进池）；descriptor 由调用方按需设置。
     async fn build_owned(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Workspace> {
-        let runtime_id = spec.runtime.as_str();
-        let transport_id = spec.transport.as_str();
-        let (accepted, requirements): (
-            Vec<String>,
-            &'static [crate::core::transport::ChannelKind],
-        ) = {
-            let driver = self
-                .runtime(runtime_id)
-                .ok_or_else(|| anyhow::anyhow!("unknown runtime '{runtime_id}'"))?;
-            (
-                driver
-                    .accepted_transports()
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect(),
-                driver.channel_requirements(),
-            )
-        };
-        if !accepted.iter().any(|t| t == transport_id) {
-            return Err(anyhow::anyhow!(
-                "runtime '{runtime_id}' does not accept transport '{transport_id}'"
-            ));
-        }
-        let compatible = {
-            let transport = self
-                .transport(transport_id)
-                .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
-            requirements
-                .iter()
-                .all(|kind| transport.supported_channels().contains(kind))
-        };
-        if !compatible {
-            return Err(anyhow::anyhow!(
-                "runtime '{runtime_id}' requires channels {requirements:?}, but transport '{transport_id}' supports a different set"
-            ));
-        }
-        let target = spec.alias.as_deref().unwrap_or("");
-        let connect = self.connect(transport_id, target)?;
-        let runtime = self
-            .runtime(runtime_id)
-            .expect("刚查过的 Driver 必须仍在")
-            .new_instance(Arc::clone(&connect), spec)?;
+        let runtime = self.new_runtime(spec)?;
         let id = spec.id();
         let name = spec.name();
         Ok(Workspace::new_with_scrollback(
