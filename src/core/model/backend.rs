@@ -10,4 +10,4 @@ pub use crate::core::runtime::contract::{
 };
 pub use async_trait::async_trait;
 
-pub mod mock;
+pub use crate::core::runtime::mock;
