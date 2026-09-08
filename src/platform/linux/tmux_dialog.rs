@@ -1,7 +1,7 @@
 //! 工作区 attach 流程（VSCode Quick Pick 风格）。
 //!
 //! 由命令面板触发：
-//! 1. 列出 core discovery 的工作区候选（名 + 创建时间 + tab 数）
+//! 1. 经安全 FFI client 列出工作区候选（名 + 创建时间 + tab 数）
 //! 2. 顶部 `+ Create new workspace`
 //! 3. 选已有 → attach；选 Create → 输入名字 → 创建 + attach
 
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::platform::ffi_client::{SshHostEntry, WorkspaceCandidate};
+use crate::platform::ffi_client::{FfiClient, SshHostEntry, WorkspaceCandidate};
 use crate::platform::linux::pane_switcher;
 use crate::platform::linux::quick_pick::{self, QuickPickItem};
 
@@ -124,7 +124,7 @@ pub fn connect_session_pick_items(
 
 /// 弹出工作区选择器。
 ///
-/// `socket` 为 tmux `-L` socket 名（可选）；列出候选时走 core discovery。
+/// `socket` 为 tmux `-L` socket 名（可选）；列出候选时走安全 FFI client。
 pub fn show<F>(parent: &impl IsA<Window>, socket: Option<&str>, on_done: F)
 where
     F: Fn(TmuxAction) + 'static,
@@ -173,7 +173,7 @@ where
     );
 }
 
-/// 工作区候选（来自 core discovery，产品名不是 tmux session）。
+/// 工作区候选（来自 Core FFI discovery，产品名不是 tmux session）。
 #[derive(Debug, Clone)]
 pub struct WorkspaceInfo {
     pub name: String,
@@ -181,9 +181,10 @@ pub struct WorkspaceInfo {
     pub windows: Option<u32>,
 }
 
-/// 列出工作区候选（core discovery，带创建时间与 tab 数）。
+/// 列出工作区候选（FFI discovery，带创建时间与 tab 数）。
 pub fn list_workspace_candidates(socket: Option<&str>) -> Vec<WorkspaceInfo> {
-    crate::core::discovery::list_local_tmux_sessions(socket)
+    FfiClient::discover_workspaces("tmux", None, socket)
+        .unwrap_or_default()
         .into_iter()
         .map(|s| WorkspaceInfo {
             name: s.name,
