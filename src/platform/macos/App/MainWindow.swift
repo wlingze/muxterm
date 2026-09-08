@@ -4516,8 +4516,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let eventFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isReturn = event.keyCode == 36 || event.keyCode == 76
-        // Cmd-P 统一面板可见时，Tab/Shift+Tab/Esc/Enter 走面板。
-        // （headless e2e 里 key window 可能为 nil，用 isVisible 判断。）
+        // Cmd-P 统一面板可见时，Tab/Shift+Tab/Esc/Enter/↑↓ 走面板。
+        // headless e2e 经 testDispatchKeyEvent 调用 handleKey，事件挂在主
+        // 窗口上，不会进面板自己的 local monitor。
         if unifiedPanel?.window?.isVisible == true {
             switch event.keyCode {
             case 53: // Escape
@@ -4525,6 +4526,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 return true
             case 48: // Tab
                 unifiedPanel.cycleTabForTest(back: event.modifierFlags.contains(.shift))
+                return true
+            case 125: // Down
+                unifiedPanel.moveSelection(offset: 1)
+                return true
+            case 126: // Up
+                unifiedPanel.moveSelection(offset: -1)
                 return true
             case 36, 76: // Return / keypad Enter
                 if eventFlags.contains(.command) {

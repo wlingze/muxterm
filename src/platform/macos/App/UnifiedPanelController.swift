@@ -941,10 +941,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 self.reload()
                 return nil
             case 125: // Down
-                self.selectRow(offset: 1)
+                self.moveSelection(offset: 1)
                 return nil
             case 126: // Up
-                self.selectRow(offset: -1)
+                self.moveSelection(offset: -1)
                 return nil
             case 36, 76: // Return / keypad Enter
                 self.activateSelected()
@@ -1305,8 +1305,19 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         muteSelected(seconds: seconds)
     }
 
-    func testSelectRow(offset: Int) {
+    /// 面板可见时的 ↑↓；生产 local monitor 与 e2e `handleKey` 共用。
+    func moveSelection(offset: Int) {
         selectRow(offset: offset)
+    }
+
+    func testSelectRow(offset: Int) {
+        moveSelection(offset: offset)
+    }
+
+    func testSelectAttentionPane(_ paneId: UInt32) {
+        guard let index = rows.firstIndex(where: { $0.pane.paneId == paneId }) else { return }
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.window?.makeFirstResponder(table)
     }
 
     func testSelectedRow() -> Int {

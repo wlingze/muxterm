@@ -11,17 +11,32 @@ final class AttentionNavE2ETests: XCTestCase {
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady(minLeaves: 2))
 
+        // 再开一个后台 pane 并 BEL，保证 ↑↓ 在本地和 CI 都会走到（单行时
+        // 旧测试会跳过方向键，CI 上 working+blocked 两行才暴露 handleKey 漏键）。
+        Tmux.ok(socket: fx.socket, args: ["split-window", "-v", "-t", fx.panes[0], "/bin/cat"])
+        XCTAssertTrue(app.waitReady(minLeaves: 3), "第三个 pane 必须进布局")
+        let extraPane = Tmux.out(socket: fx.socket, args: [
+            "list-panes", "-t", fx.session, "-F", "#{pane_id}",
+        ])
+        .split(whereSeparator: \.isNewline)
+        .map(String.init)
+        .first { $0 != fx.panes[0] && $0 != fx.panes[1] } ?? ""
+        XCTAssertFalse(extraPane.isEmpty, "split-window 必须给出第三个 pane id")
+
         let pane0 = UInt32(fx.panes[0].trimmingCharacters(in: CharacterSet(charactersIn: "%"))) ?? 0
+        let bgPane = UInt32(fx.panes[1].trimmingCharacters(in: CharacterSet(charactersIn: "%"))) ?? 1
         app.testSwitchPane(pane0)
         fx.sendBelOnBackground()
+        Tmux.sendHex(socket: fx.socket, target: extraPane, bytes: [0x07])
+        Tmux.ok(socket: fx.socket, args: ["send-keys", "-t", extraPane, "Enter"])
         XCTAssertTrue(
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
                 app.testOpenAttentionPanel()
                 app.unifiedPanel.refreshData()
-                return app.testBlockedCount() >= 1 || app.testAttentionRowCount() >= 1
+                return app.testAttentionRowCount() >= 2
             },
-            "后台 BEL 必须进注意力"
+            "两个后台 BEL 必须各占一行。rows=\(app.testAttentionRowCount())"
         )
 
         app.testOpenAttentionPanel()
@@ -39,18 +54,18 @@ final class AttentionNavE2ETests: XCTestCase {
         app.attentionPanel.window?.makeKeyAndOrderFront(nil)
         AppE2E.pump(20)
 
-        if app.testAttentionRowCount() >= 2 {
-            let start = app.attentionPanel.testSelectedRow()
-            if let down = app.testMakeArrowEvent(down: true) {
-                _ = app.testDispatchKeyEvent(down)
-                AppE2E.pump(40)
-                XCTAssertNotEqual(
-                    app.attentionPanel.testSelectedRow(),
-                    start,
-                    "↓ 必须移动选中行"
-                )
-            }
-        }
+        XCTAssertGreaterThanOrEqual(app.testAttentionRowCount(), 2)
+        let start = app.attentionPanel.testSelectedRow()
+        let down = try XCTUnwrap(app.testMakeArrowEvent(down: true), "必须能构造 ↓")
+        XCTAssertTrue(app.testDispatchKeyEvent(down), "注意力面板 ↓ 必须被 handleKey 消费")
+        AppE2E.pump(40)
+        XCTAssertNotEqual(
+            app.attentionPanel.testSelectedRow(),
+            start,
+            "↓ 必须移动选中行"
+        )
+        // overlay / Enter 仍针对带 bgToken 的后台 pane，不能停在刚移到的那一行。
+        app.unifiedPanel.testSelectAttentionPane(bgPane)
 
         let cmdEnter = try XCTUnwrap(app.testMakeCmdEnterEvent(), "必须能构造 Cmd-Enter")
         XCTAssertTrue(app.testDispatchKeyEvent(cmdEnter), "注意力面板 Cmd-Enter 必须被消费")
@@ -90,18 +105,17 @@ final class AttentionNavE2ETests: XCTestCase {
 
         app.testOpenAttentionPanel()
         AppE2E.pump(40)
-        app.attentionPanel.testSelectFirstRow()
+        app.unifiedPanel.testSelectAttentionPane(bgPane)
         app.attentionPanel.window?.makeKeyAndOrderFront(nil)
         let enter = try XCTUnwrap(app.testMakeReturnEvent())
         _ = app.testDispatchKeyEvent(enter)
         XCTAssertFalse(app.testAttentionPanelOpen(), "Enter 必须跳转并关掉面板")
-        let target = UInt32(fx.panes[1].trimmingCharacters(in: CharacterSet(charactersIn: "%"))) ?? 1
         XCTAssertTrue(
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 app.testPollOnce()
-                return app.testActivePaneID() == target
+                return app.testActivePaneID() == bgPane
             },
-            "Enter 必须切到该注意力 pane（期望 \(target)，当前 \(app.testActivePaneID())）"
+            "Enter 必须切到该注意力 pane（期望 \(bgPane)，当前 \(app.testActivePaneID())）"
         )
     }
 }
