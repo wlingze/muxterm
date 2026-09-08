@@ -9,6 +9,9 @@
 pub mod cli;
 pub mod i18n;
 
+#[cfg(any(feature = "gtk", feature = "tui"))]
+pub mod ffi_client;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 
