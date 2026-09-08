@@ -3,6 +3,8 @@
 //! 复用现有 `runtime::tmux::pty` 和 `terminal::process` 的模式。
 //! 不理解 shell/tmux 语义，只管字节流 + PTY 控制。
 
+pub mod provider;
+
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 

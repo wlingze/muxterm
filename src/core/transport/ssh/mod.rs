@@ -11,6 +11,7 @@
 //! ssh 进程），测试用 `FakeLauncher`（注入假进程输出）。
 
 pub mod probe;
+pub mod provider;
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
