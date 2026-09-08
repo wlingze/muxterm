@@ -39,14 +39,14 @@ impl RuntimeProvider for MockDriver {
     fn support(&self) -> &'static [RuntimeCapability] {
         self.support
     }
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        self.accepted
-    }
-    fn list(
+    fn discover(
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
     ) -> anyhow::Result<Vec<SessionCandidate>> {
+        if !self.accepted.contains(&connect.transport_id()) {
+            return Ok(Vec::new());
+        }
         if self.list_err {
             anyhow::bail!("mock list failed");
         }
@@ -61,7 +61,7 @@ impl RuntimeProvider for MockDriver {
             })
             .collect())
     }
-    fn open(
+    fn new_instance(
         &self,
         _connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,
@@ -115,15 +115,11 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
         &[]
     }
 
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        &["exec-only"]
-    }
-
     fn channel_requirements(&self) -> &'static [ChannelKind] {
         &[ChannelKind::UnixSocket]
     }
 
-    fn list(
+    fn discover(
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
@@ -131,7 +127,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
         Ok(Vec::new())
     }
 
-    fn open(
+    fn new_instance(
         &self,
         _connect: Arc<dyn TargetConnection>,
         _spec: &WorkspaceSpec,
@@ -547,11 +543,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
             &[RuntimeCapability::Discover]
         }
 
-        fn accepted_transports(&self) -> &'static [&'static str] {
-            &["local", "ssh"]
-        }
-
-        fn list(
+        fn discover(
             &self,
             connect: &dyn TargetConnection,
             _namespace: Option<&str>,
@@ -571,7 +563,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
             }])
         }
 
-        fn open(
+        fn new_instance(
             &self,
             _connect: Arc<dyn TargetConnection>,
             _spec: &WorkspaceSpec,

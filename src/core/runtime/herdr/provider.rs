@@ -38,15 +38,11 @@ impl RuntimeProvider for HerdrDriver {
         ]
     }
 
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        &["local", "ssh"]
-    }
-
     fn channel_requirements(&self) -> &'static [ChannelKind] {
         &[ChannelKind::UnixSocket]
     }
 
-    fn list(
+    fn discover(
         &self,
         connect: &dyn TargetConnection,
         namespace: Option<&str>,
@@ -120,7 +116,7 @@ impl RuntimeProvider for HerdrDriver {
         Ok(out)
     }
 
-    fn open(
+    fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,

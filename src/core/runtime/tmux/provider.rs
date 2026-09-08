@@ -40,11 +40,7 @@ impl RuntimeProvider for TmuxDriver {
         ]
     }
 
-    fn accepted_transports(&self) -> &'static [&'static str] {
-        &["local", "ssh"]
-    }
-
-    fn list(
+    fn discover(
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
@@ -87,7 +83,7 @@ impl RuntimeProvider for TmuxDriver {
             .collect())
     }
 
-    fn open(
+    fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &WorkspaceSpec,
