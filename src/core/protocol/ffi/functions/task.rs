@@ -16,6 +16,7 @@ use super::super::types::{
     TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_REQUEST_PANE_SNAPSHOT,
     TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
+use super::support::parse_workspace_id;
 
 pub(crate) fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     match result {
@@ -121,6 +122,47 @@ pub unsafe extern "C" fn muxterm_execute(h: *mut MuxtermHandle, task: *const CTa
             return -1;
         };
         tracing::debug!(target: "muxterm::ffi", task = ?rust_task, "execute task");
+        task_result_code(ws.execute(rust_task))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Execute a task against a specific Core-owned workspace without changing
+/// the pool's active workspace.  This is the command-side counterpart to
+/// `muxterm_poll_workspace_events` and lets a frontend keep Scene selection
+/// local while routing mutations by WorkspaceId.
+///
+/// # Safety
+/// `h`, `workspace_id`, and `task` are valid pointers; `workspace_id` and the
+/// optional task name are NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_execute_workspace(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    task: *const CTask,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() || task.is_null() {
+            return -1;
+        }
+        let Some(workspace_id) = cstr_opt(workspace_id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &mut *h;
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        let ctask = &*task;
+        let Some(rust_task) = ctask_to_task(ctask, ws) else {
+            return -1;
+        };
+        tracing::debug!(
+            target: "muxterm::ffi",
+            workspace = %workspace_id,
+            task = ?rust_task,
+            "execute workspace task"
+        );
         task_result_code(ws.execute(rust_task))
     }))
     .unwrap_or(-1)

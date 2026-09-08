@@ -62,9 +62,9 @@ pub(crate) use super::functions::support::{
 };
 pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{
-    muxterm_execute, muxterm_execute_json, muxterm_report_all_pane_colours,
-    muxterm_report_pane_colours, muxterm_resize_client, muxterm_resize_pane,
-    muxterm_resize_pane_axis, muxterm_send_input, muxterm_send_input_quiet,
+    muxterm_execute, muxterm_execute_json, muxterm_execute_workspace,
+    muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
+    muxterm_resize_pane, muxterm_resize_pane_axis, muxterm_send_input, muxterm_send_input_quiet,
 };
 pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
@@ -492,6 +492,49 @@ mod tests {
                 -1
             );
 
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_workspace_task_targets_background_workspace_without_activation() {
+        let h = muxterm_catalog_new();
+        assert!(!h.is_null());
+        unsafe {
+            (*h).catalog = crate::core::catalog::Catalog::new();
+            let first_id = WorkspaceId::new("local", None, "first", "shell", "/one");
+            let second_id = WorkspaceId::new("local", None, "second", "shell", "/two");
+            (*h).catalog.pool_mut().insert_connected(Workspace::new(
+                first_id.clone(),
+                "first".into(),
+                Box::new(MockRuntime::with_single_pane()),
+            ));
+            (*h).catalog.pool_mut().insert_connected(Workspace::new(
+                second_id.clone(),
+                "second".into(),
+                Box::new(MockRuntime::with_single_pane()),
+            ));
+            (*h).catalog.pool_mut().activate(&second_id);
+
+            let task = CTask {
+                type_: TASK_NEW_TAB,
+                target_pane: 0,
+                target_tab: 0,
+                dir: 0,
+                name: ptr::null(),
+            };
+            let first_id_text = CString::new(first_id.as_str()).unwrap();
+            assert_eq!(
+                muxterm_execute_workspace(h, first_id_text.as_ptr(), &task),
+                0,
+                "background workspace task should be accepted"
+            );
+            assert_eq!((*h).pool().active_id(), Some(&second_id));
+            assert_eq!(
+                (*h).pool().get(&first_id).unwrap().state().tabs().len(),
+                2,
+                "the task must mutate the selected background workspace"
+            );
             muxterm_free(h);
         }
     }

@@ -5,6 +5,7 @@ use std::os::raw::c_char;
 use std::ptr;
 
 use crate::core::types::PaneId;
+use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::workspace::Workspace;
 
 /// The C handle is one composed product session, not a runtime instance.
@@ -46,4 +47,19 @@ pub(crate) fn resolve_c_io_pane(raw: u32, ws: &Workspace) -> Option<PaneId> {
     } else {
         Some(PaneId(raw))
     }
+}
+
+/// Decode the stable five-component product WorkspaceId used at the C ABI.
+pub(crate) fn parse_workspace_id(id: &str) -> WorkspaceId {
+    let parts: Vec<&str> = id.splitn(5, '/').collect();
+    let transport = parts.first().copied().unwrap_or("").to_string();
+    let alias = parts
+        .get(1)
+        .copied()
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let session = parts.get(2).copied().unwrap_or("").to_string();
+    let runtime = parts.get(3).copied().unwrap_or("").to_string();
+    let path = parts.get(4).copied().unwrap_or("").to_string();
+    WorkspaceId::new(&transport, alias.as_deref(), &session, &runtime, &path)
 }

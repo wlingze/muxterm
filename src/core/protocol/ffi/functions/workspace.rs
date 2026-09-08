@@ -10,11 +10,11 @@ use crate::core::protocol::ffi::api::{
 };
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::core::types::TabId;
-use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::spec::WorkspaceSpec;
 
 use super::super::types::{CLayoutNode, CPane, CTab, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V};
 use super::catalog::resolved_target_json;
+use super::support::parse_workspace_id;
 
 /// Create a detached tmux session through the Core discovery service.
 #[no_mangle]
@@ -425,18 +425,4 @@ fn fixup_layout_pointers(pool: &mut [CLayoutNode]) {
             node.second = unsafe { base.add(b) };
         }
     }
-}
-
-fn parse_workspace_id(id: &str) -> WorkspaceId {
-    let parts: Vec<&str> = id.splitn(5, '/').collect();
-    let transport = parts.first().copied().unwrap_or("").to_string();
-    let alias = parts
-        .get(1)
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned);
-    let session = parts.get(2).copied().unwrap_or("").to_string();
-    let runtime = parts.get(3).copied().unwrap_or("").to_string();
-    let path = parts.get(4).copied().unwrap_or("").to_string();
-    WorkspaceId::new(&transport, alias.as_deref(), &session, &runtime, &path)
 }

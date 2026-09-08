@@ -387,6 +387,14 @@ impl FfiClient {
         self.execute(&raw)
     }
 
+    /// Execute a task against a specific workspace without changing the
+    /// Core pool's active workspace.
+    pub fn execute_workspace_task(&self, workspace_id: &str, task: ClientTask) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let raw = task_to_ffi(task);
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
     /// Explicitly detach the current control client.
     pub fn detach(&self) -> i32 {
         unsafe { ffi::muxterm_detach(self.handle.as_ptr()) }
