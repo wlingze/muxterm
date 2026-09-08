@@ -7,7 +7,6 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::time::Duration;
 
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, AttentionNotificationKind};
@@ -39,6 +38,12 @@ pub use super::functions::config::{
 };
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
+};
+pub(crate) use super::functions::transport::session_candidate_json;
+pub use super::functions::transport::{
+    muxterm_discover_sessions_json, muxterm_discover_targets_json,
+    muxterm_discover_tmux_sessions_json, muxterm_discover_workspaces_json,
+    muxterm_transport_list_json,
 };
 pub use super::functions::workspace::{
     muxterm_workspace_activate, muxterm_workspace_close, muxterm_workspace_list,
@@ -410,191 +415,6 @@ pub extern "C" fn muxterm_list_dir_json(
     .unwrap_or_else(|_| json_error("directory listing panic"))
 }
 
-/// Transport 插件表：Catalog::transport_list。
-///
-/// # Safety
-/// `h` 有效且未 free。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_transport_list_json(h: *mut MuxtermHandle) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let list = (*h).catalog.transport_list();
-        json_string(serde_json::json!({
-            "ok": true,
-            "transports": list.iter().map(|t| serde_json::json!({
-                "id": t.id,
-                "name": t.name,
-            })).collect::<Vec<_>>(),
-        }))
-    }))
-    .unwrap_or_else(|_| json_error("transport list panic"))
-}
-
-/// 列出某个 Transport 的 target（Local 单例 / SSH hosts）。
-///
-/// # Safety
-/// `h` 有效且未 free；`transport` NUL 结尾。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_discover_targets_json(
-    h: *mut MuxtermHandle,
-    transport: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
-        match (*h).catalog.discover_targets(&transport) {
-            Ok(targets) => json_string(serde_json::json!({
-                "ok": true,
-                "targets": targets.iter().map(|t| serde_json::json!({
-                    "id": t.id,
-                    "name": t.name,
-                })).collect::<Vec<_>>(),
-            })),
-            Err(e) => json_error(e),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("discover targets panic"))
-}
-
-/// 扇出发现：该 target 上各 Driver 的可 attach 格子（tmux + herdr）。
-///
-/// # Safety
-/// `h` 有效且未 free；`transport` / `target` NUL 结尾。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_discover_sessions_json(
-    h: *mut MuxtermHandle,
-    transport: *const c_char,
-    target: *const c_char,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return json_error("handle 为空");
-        }
-        let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
-        let target = cstr_opt(target).unwrap_or_default();
-        // transport=all 时 Catalog 扇出全部 connect name（local + SSH alias）。
-        match (*h).catalog.discover_sessions(&transport, &target) {
-            Ok(rows) => json_string(serde_json::json!({
-                "ok": true,
-                "workspaces": rows.iter().map(session_candidate_json).collect::<Vec<_>>(),
-            })),
-            Err(e) => json_error(e),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("discover sessions panic"))
-}
-
-/// 通过 core 发现 local 或 SSH tmux session（W7：workspace 发现）。
-///
-/// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是 `~/.ssh/config`
-/// 中的 alias。所有连接选项仍由系统 `ssh` 读取，`config_path` 仅供测试或显式
-/// 配置使用。返回的 JSON 字符串由 [`muxterm_free_string`] 释放。
-#[no_mangle]
-pub extern "C" fn muxterm_discover_workspaces_json(
-    transport_type: *const c_char,
-    target: *const c_char,
-    socket: *const c_char,
-    config_path: *const c_char,
-    timeout_ms: u32,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        let transport = cstr_opt(transport_type)
-            .unwrap_or_else(|| "local".into())
-            .to_ascii_lowercase();
-        let target = cstr_opt(target).unwrap_or_default();
-        let _socket = cstr_opt(socket);
-        let _config_path = cstr_opt(config_path);
-        let _timeout_ms = timeout_ms;
-        // C5：走 Catalog::discover_sessions 扇出（tmux + herdr），保持 §6.2 形状。
-        let mut catalog = crate::core::catalog::Catalog::with_builtins();
-        match catalog.discover_sessions(&transport, &target) {
-            Ok(rows) => json_string(serde_json::json!({
-                "ok": true,
-                "workspaces": rows.iter().map(session_candidate_json).collect::<Vec<_>>(),
-            })),
-            Err(error) => json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("tmux session discovery panic"))
-}
-
-/// 列出指定 local/SSH tmux server 的 session。
-///
-/// This FFI boundary deliberately keeps the caller's socket and SSH config
-/// in the request.  The macOS palette uses this function for an Existing
-/// target; dropping the socket here would silently query the default server
-/// and leave the palette showing only `New session`.
-#[no_mangle]
-pub extern "C" fn muxterm_discover_tmux_sessions_json(
-    transport_type: *const c_char,
-    target: *const c_char,
-    socket: *const c_char,
-    config_path: *const c_char,
-    timeout_ms: u32,
-) -> *mut c_char {
-    catch_unwind(AssertUnwindSafe(|| {
-        let transport = cstr_opt(transport_type)
-            .unwrap_or_else(|| "local".into())
-            .to_ascii_lowercase();
-        let target = cstr_opt(target).unwrap_or_default();
-        let socket = cstr_opt(socket);
-        let config_path = cstr_opt(config_path);
-        let timeout = Duration::from_millis(u64::from(timeout_ms.max(1)));
-        let result = match transport.as_str() {
-            "local" => Ok(crate::core::discovery::list_local_tmux_sessions(
-                socket.as_deref(),
-            )),
-            "ssh" => crate::core::discovery::list_ssh_tmux_sessions(
-                &target,
-                config_path.as_deref(),
-                socket.as_deref(),
-                timeout,
-            ),
-            other => Err(anyhow::anyhow!(
-                "unknown tmux discovery transport '{other}'"
-            )),
-        };
-        match result {
-            Ok(sessions) => json_string(serde_json::json!({
-                "ok": true,
-                "sessions": sessions.iter().map(|session| serde_json::json!({
-                    "name": session.name,
-                    "windows": session.windows,
-                    "attached": session.attached,
-                    "created": session.created,
-                })).collect::<Vec<_>>(),
-            })),
-            Err(error) => json_error(error),
-        }
-    }))
-    .unwrap_or_else(|_| json_error("tmux session discovery panic"))
-}
-
-/// C9：SessionCandidate → §6.2 JSON（target = connect name；id 含 connect name）。
-fn session_candidate_json(
-    r: &crate::core::protocol::candidate::ExistingCandidate,
-) -> serde_json::Value {
-    let target = if r.transport_id == "local" {
-        "local".to_string()
-    } else {
-        r.target.clone()
-    };
-    serde_json::json!({
-        "id": format!("{}/{}/{}/{}", r.transport_id, target, r.runtime_id, r.name),
-        "name": r.name,
-        "runtime": r.runtime_id,
-        "transport": r.transport_id,
-        "target": target,
-        "in_pool": false,
-        "session": r.session,
-        "socket": r.socket,
-        "workspace_id": r.workspace_id,
-    })
-}
 /// 抓取 status bar 快照（tmux 兼容：`show -g` / `show -w -g` + `display-message`）。
 ///
 /// `transport_type` 为 `local` 或 `ssh`；SSH 模式下 `target` 是
@@ -3497,14 +3317,14 @@ mod tests {
     /// C9：discover_sessions JSON 必须带 connect name（`target`），并接受 `all`。
     #[test]
     fn ffi_discover_sessions_json_includes_target_and_all() {
-        let src = include_str!("api.rs");
+        let src = include_str!("functions/transport.rs");
         let start = src
             .find("pub unsafe extern \"C\" fn muxterm_discover_sessions_json")
             .expect("muxterm_discover_sessions_json 应存在");
         let rest = &src[start..];
         let end = rest
-            .find("pub unsafe extern \"C\" fn muxterm_discover_workspaces_json")
-            .or_else(|| rest.find("\n/// 通过 core 发现"))
+            .find("pub extern \"C\" fn muxterm_discover_workspaces_json")
+            .or_else(|| rest.find("\n/// Discover local or SSH sessions"))
             .unwrap_or(rest.len().min(2500));
         let body = &rest[..end];
         let helper_start = src
