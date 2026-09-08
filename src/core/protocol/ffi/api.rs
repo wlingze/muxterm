@@ -11,7 +11,6 @@ use std::ptr;
 use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::AttentionEngine;
 use crate::core::attention::signal::AttentionSignal;
-use crate::core::config::parse_hex;
 use crate::core::config_service::SettingsService;
 use crate::core::logging::{init_logging, LoggingConfig};
 use crate::core::projects::{ProjectStore, ProjectsService};
@@ -58,7 +57,11 @@ pub use super::functions::snapshot::{
     muxterm_set_pane_viewport,
 };
 pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
-pub use super::functions::task::{muxterm_execute, muxterm_execute_json};
+pub use super::functions::task::{
+    muxterm_execute, muxterm_execute_json, muxterm_report_all_pane_colours,
+    muxterm_report_pane_colours, muxterm_resize_client, muxterm_resize_pane,
+    muxterm_resize_pane_axis, muxterm_send_input, muxterm_send_input_quiet,
+};
 pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
     muxterm_discover_sessions_json, muxterm_discover_ssh_hosts_json, muxterm_discover_targets_json,
@@ -341,176 +344,6 @@ pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
     }
 }
 
-/// 向 pane 写入原始字节。0=ok，-1=err。
-///
-/// # Safety
-/// `data` 至少 `len` 字节。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_send_input(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    data: *const u8,
-    len: usize,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || data.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        let bytes = std::slice::from_raw_parts(data, len).to_vec();
-        let pane = {
-            let Some(ws) = handle.active_workspace() else {
-                return -1;
-            };
-            resolve_c_io_pane(pane_id, ws)
-        };
-        let Some(pane) = pane else {
-            return -1;
-        };
-        let ws_id = handle.pool().active_id().cloned();
-        if let Some(ws_id) = ws_id {
-            handle.attention.on_user_input(&ws_id.replica_id(), pane.0);
-        }
-        let Some(ws) = handle.active_workspace_mut() else {
-            return -1;
-        };
-        task_result_code(ws.execute(Task::WriteRaw {
-            target: pane,
-            data: bytes,
-        }))
-    }))
-    .unwrap_or(-1)
-}
-
-/// 向 pane 写入原始字节，但**不**触发注意力 `on_user_input`（W19-E：
-/// 注意力 reply overlay 的快速回复不应把 Blocked 清成 Idle）。
-///
-/// # Safety
-/// `data` 至少 `len` 字节。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_send_input_quiet(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    data: *const u8,
-    len: usize,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || data.is_null() {
-            return -1;
-        }
-        let handle = &mut *h;
-        let bytes = std::slice::from_raw_parts(data, len).to_vec();
-        let pane = {
-            let Some(ws) = handle.active_workspace() else {
-                return -1;
-            };
-            resolve_c_io_pane(pane_id, ws)
-        };
-        let Some(pane) = pane else {
-            return -1;
-        };
-        let Some(ws) = handle.active_workspace_mut() else {
-            return -1;
-        };
-        task_result_code(ws.execute(Task::WriteRaw {
-            target: pane,
-            data: bytes,
-        }))
-    }))
-    .unwrap_or(-1)
-}
-
-/// 向 tmux 上报 pane 的前景/背景色（`refresh-client -r`），供 OSC 10/11
-/// 查询代答。颜色为 `#rrggbb` / `rrggbb`。0=ok，-1=err。
-///
-/// # Safety
-/// `fg_hex` / `bg_hex` 必须是 NUL 结尾字符串。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_report_pane_colours(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    fg_hex: *const c_char,
-    bg_hex: *const c_char,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let (Some(fg_hex), Some(bg_hex)) = (cstr_opt(fg_hex), cstr_opt(bg_hex)) else {
-            return -1;
-        };
-        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
-            return -1;
-        };
-        let handle = &mut *h;
-        let Some(ws) = handle.active_workspace_mut() else {
-            return -1;
-        };
-        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
-            return -1;
-        };
-        task_result_code(ws.execute(Task::ReportPaneColours {
-            target: pane,
-            fg,
-            bg,
-        }))
-    }))
-    .unwrap_or(-1)
-}
-
-/// 向 tmux 上报**所有** pane 的前景/背景色（`refresh-client -r`）。
-///
-/// 主题切换后必须整段对齐，否则后台 tab 的 codex/agent 输入框会沿用旧
-/// 主题的颜色代答（白/黑输入框与当前主题相反时看不清）。0=ok，-1=err。
-///
-/// # Safety
-/// `fg_hex` / `bg_hex` 必须是 NUL 结尾字符串。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_report_all_pane_colours(
-    h: *mut MuxtermHandle,
-    fg_hex: *const c_char,
-    bg_hex: *const c_char,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() {
-            return -1;
-        }
-        let (Some(fg_hex), Some(bg_hex)) = (cstr_opt(fg_hex), cstr_opt(bg_hex)) else {
-            return -1;
-        };
-        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
-            return -1;
-        };
-        let handle = &mut *h;
-        let Some(ws) = handle.active_workspace_mut() else {
-            return -1;
-        };
-        let panes: Vec<PaneId> = ws
-            .state()
-            .tabs()
-            .iter()
-            .flat_map(|t| ws.state().panes(&t.id))
-            .map(|p| p.id)
-            .collect();
-        let mut dispatched = 0;
-        for pane in panes {
-            if let Ok(TaskOutcome::Done) = ws.execute(Task::ReportPaneColours {
-                target: pane,
-                fg,
-                bg,
-            }) {
-                dispatched += 1;
-            }
-        }
-        if dispatched > 0 {
-            0
-        } else {
-            -1
-        }
-    }))
-    .unwrap_or(-1)
-}
-
 /// C ABI 中 `0` 既是历史上的 active-pane 哨兵，也可能是真实的 tmux pane id。
 /// 只有当前状态不存在 PaneId(0) 时才使用旧哨兵语义。
 pub(crate) fn resolve_c_io_pane(raw: u32, ws: &Workspace) -> Option<PaneId> {
@@ -519,93 +352,6 @@ pub(crate) fn resolve_c_io_pane(raw: u32, ws: &Workspace) -> Option<PaneId> {
     } else {
         Some(PaneId(raw))
     }
-}
-
-/// 调整 pane 的 pty 行列。0=ok，-1=err。
-///
-/// # Safety
-/// `h` 有效。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_resize_pane(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    cols: u16,
-    rows: u16,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || cols == 0 || rows == 0 {
-            return -1;
-        }
-        let handle = &mut *h;
-        let Some(ws) = handle.active_workspace_mut() else {
-            return -1;
-        };
-        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
-            return -1;
-        };
-        task_result_code(ws.execute(Task::ResizePane {
-            target: pane,
-            cols,
-            rows,
-        }))
-    }))
-    .unwrap_or(-1)
-}
-
-/// 调整 tmux 控制 client 的字符格尺寸。0=ok，-1=err。
-///
-/// # Safety
-/// `h` 有效。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_resize_client(h: *mut MuxtermHandle, cols: u16, rows: u16) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || cols == 0 || rows == 0 {
-            return -1;
-        }
-        let handle = &mut *h;
-        match handle.active_workspace_mut() {
-            Some(ws) => task_result_code(ws.execute(Task::ResizeClient { cols, rows })),
-            None => -1,
-        }
-    }))
-    .unwrap_or(-1)
-}
-
-/// 调整分割条相邻 pane 的单一轴尺寸。0=ok，-1=err。
-///
-/// `axis` 使用 `DIR_HORIZONTAL`（宽度）或 `DIR_VERTICAL`（高度）。
-/// # Safety
-/// `h` 有效。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_resize_pane_axis(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    axis: u32,
-    size: u16,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || size == 0 || (axis != DIR_HORIZONTAL && axis != DIR_VERTICAL) {
-            return -1;
-        }
-        let handle = &mut *h;
-        let Some(ws) = handle.active_workspace_mut() else {
-            return -1;
-        };
-        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
-            return -1;
-        };
-        let dir = if axis == DIR_VERTICAL {
-            SplitDir::Vertical
-        } else {
-            SplitDir::Horizontal
-        };
-        task_result_code(ws.execute(Task::ResizePaneAxis {
-            target: pane,
-            dir,
-            size,
-        }))
-    }))
-    .unwrap_or(-1)
 }
 
 /// 列出 tabs，返回写入数量。

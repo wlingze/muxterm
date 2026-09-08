@@ -3,17 +3,18 @@
 use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::core::config::parse_hex;
 use crate::core::protocol::layout::SplitDir;
 use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::types::{PaneId, TabId};
 use crate::core::workspace::workspace::Workspace;
 
-use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
+use super::super::api::{cstr_opt, json_error, json_string, resolve_c_io_pane, MuxtermHandle};
 use super::super::types::{
-    CTask, DIR_VERTICAL, TAB_MOVE_BEFORE, TASK_BREAK_PANE, TASK_CLOSE_PANE, TASK_CLOSE_TAB,
-    TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS,
-    TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_REQUEST_PANE_SNAPSHOT, TASK_SHUTDOWN,
-    TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    CTask, DIR_HORIZONTAL, DIR_VERTICAL, TAB_MOVE_BEFORE, TASK_BREAK_PANE, TASK_CLOSE_PANE,
+    TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
+    TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_REQUEST_PANE_SNAPSHOT,
+    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
 pub(crate) fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
@@ -287,4 +288,255 @@ pub unsafe extern "C" fn muxterm_execute_json(
         }
     }))
     .unwrap_or_else(|_| json_error("execute_json panic"))
+}
+
+/// Write raw bytes to a pane and mark the user input for attention handling.
+///
+/// # Safety
+/// `h` is live; `data` points to at least `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_send_input(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || data.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let bytes = std::slice::from_raw_parts(data, len).to_vec();
+        let pane = {
+            let Some(ws) = handle.active_workspace() else {
+                return -1;
+            };
+            resolve_c_io_pane(pane_id, ws)
+        };
+        let Some(pane) = pane else {
+            return -1;
+        };
+        let ws_id = handle.pool().active_id().cloned();
+        if let Some(ws_id) = ws_id {
+            handle.attention.on_user_input(&ws_id.replica_id(), pane.0);
+        }
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::WriteRaw {
+            target: pane,
+            data: bytes,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Write raw bytes without clearing attention state.
+///
+/// # Safety
+/// `h` is live; `data` points to at least `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_send_input_quiet(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || data.is_null() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let bytes = std::slice::from_raw_parts(data, len).to_vec();
+        let pane = {
+            let Some(ws) = handle.active_workspace() else {
+                return -1;
+            };
+            resolve_c_io_pane(pane_id, ws)
+        };
+        let Some(pane) = pane else {
+            return -1;
+        };
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::WriteRaw {
+            target: pane,
+            data: bytes,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Report one pane's foreground/background colours.
+///
+/// # Safety
+/// `h` is live; colour strings are NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_report_pane_colours(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    fg_hex: *const c_char,
+    bg_hex: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let (Some(fg_hex), Some(bg_hex)) = (cstr_opt(fg_hex), cstr_opt(bg_hex)) else {
+            return -1;
+        };
+        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
+            return -1;
+        };
+        let handle = &mut *h;
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::ReportPaneColours {
+            target: pane,
+            fg,
+            bg,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Report foreground/background colours for every pane.
+///
+/// # Safety
+/// `h` is live; colour strings are NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_report_all_pane_colours(
+    h: *mut MuxtermHandle,
+    fg_hex: *const c_char,
+    bg_hex: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let (Some(fg_hex), Some(bg_hex)) = (cstr_opt(fg_hex), cstr_opt(bg_hex)) else {
+            return -1;
+        };
+        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
+            return -1;
+        };
+        let handle = &mut *h;
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let panes: Vec<PaneId> = ws
+            .state()
+            .tabs()
+            .iter()
+            .flat_map(|t| ws.state().panes(&t.id))
+            .map(|p| p.id)
+            .collect();
+        let mut dispatched = 0;
+        for pane in panes {
+            if let Ok(TaskOutcome::Done) = ws.execute(Task::ReportPaneColours {
+                target: pane,
+                fg,
+                bg,
+            }) {
+                dispatched += 1;
+            }
+        }
+        if dispatched > 0 {
+            0
+        } else {
+            -1
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+/// Resize a pane's pty grid.
+///
+/// # Safety
+/// `h` is live.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_resize_pane(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || cols == 0 || rows == 0 {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::ResizePane {
+            target: pane,
+            cols,
+            rows,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Resize the active tmux control client.
+///
+/// # Safety
+/// `h` is live.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_resize_client(h: *mut MuxtermHandle, cols: u16, rows: u16) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || cols == 0 || rows == 0 {
+            return -1;
+        }
+        let handle = &mut *h;
+        match handle.active_workspace_mut() {
+            Some(ws) => task_result_code(ws.execute(Task::ResizeClient { cols, rows })),
+            None => -1,
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+/// Resize one axis of a pane split.
+///
+/// # Safety
+/// `h` is live.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_resize_pane_axis(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    axis: u32,
+    size: u16,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || size == 0 || (axis != DIR_HORIZONTAL && axis != DIR_VERTICAL) {
+            return -1;
+        }
+        let handle = &mut *h;
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        let dir = if axis == DIR_VERTICAL {
+            SplitDir::Vertical
+        } else {
+            SplitDir::Horizontal
+        };
+        task_result_code(ws.execute(Task::ResizePaneAxis {
+            target: pane,
+            dir,
+            size,
+        }))
+    }))
+    .unwrap_or(-1)
 }
