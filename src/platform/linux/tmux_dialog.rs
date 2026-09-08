@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::platform::linux::ffi_bridge::{SshHostEntry, WorkspaceCandidate};
+use crate::platform::ffi_client::{SshHostEntry, WorkspaceCandidate};
 use crate::platform::linux::pane_switcher;
 use crate::platform::linux::quick_pick::{self, QuickPickItem};
 

@@ -1,6 +1,6 @@
 //! 主窗口：FFI 驱动的 GTK4 前端。
 //!
-//! - 启动 `CoreBridge`（connect）
+//! - 通过共享 `FfiClient` 使用公共 FFI
 //! - 16ms 轮询 `poll_events`，分发到 tab / pane
 //! - 快捷键 → `execute(CTask)`
 //! - 退出 → `shutdown()` 或 Drop（`muxterm_free`）
@@ -43,10 +43,10 @@ use crate::core::workspace::pool::{
 };
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
+use crate::platform::ffi_client::FfiClient;
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
-use crate::platform::linux::ffi_bridge::CoreBridge;
 use crate::platform::linux::keymap::KeyMap;
 use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
@@ -73,7 +73,7 @@ use crate::platform::linux::workspace_sidebar::{
 /// 主窗口。
 pub struct AppWindow {
     pub window: Window,
-    /// 保持 UI 状态与 CoreBridge 存活（轮询闭包只用 Weak，避免循环引用）。
+    /// 保持 UI 状态与 Core 连接状态存活（轮询闭包只用 Weak，避免循环引用）。
     _state: Rc<RefCell<UiState>>,
 }
 
@@ -4451,7 +4451,7 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
         return;
     };
     let st = state.clone();
-    let hosts = CoreBridge::discover_ssh_hosts().unwrap_or_default();
+    let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
     let runtimes = crate::core::catalog::Catalog::with_builtins().runtime_list();
     let callback_path = path.clone();
     crate::platform::linux::preferences_window::show(
@@ -4498,7 +4498,7 @@ fn open_target_config(
     editing: Option<TargetConfig>,
 ) {
     let store = state.borrow().qc_store.clone();
-    let hosts = CoreBridge::discover_ssh_hosts().unwrap_or_default();
+    let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
     let runtimes = crate::core::catalog::Catalog::with_builtins().runtime_list();
     let st = state.clone();
     let win = window.clone();
@@ -4861,7 +4861,7 @@ fn step_project_flow(
         }
         ProjectConnectState::CreateDetached { session, directory } => {
             let (transport, target) = config.transport.create_backend();
-            match CoreBridge::create_workspace(transport, target, None, &session, &directory) {
+            match FfiClient::create_workspace(transport, target, None, &session, &directory) {
                 Ok(_) => {
                     flow.create_succeeded();
                     step_project_flow(state, config, flow);
@@ -5429,7 +5429,7 @@ fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only:
         TmuxAction::NewWorkspace { name } => {
             let session = name.unwrap_or_else(|| "muxterm".into());
             let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            match CoreBridge::create_workspace("local", None, socket.as_deref(), &session, &dir) {
+            match FfiClient::create_workspace("local", None, socket.as_deref(), &session, &dir) {
                 Ok(created) => connect_target(
                     &st,
                     TargetConfig::tmux_session(created, TargetTransport::Local),
@@ -5441,7 +5441,7 @@ fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only:
 }
 
 fn open_ssh_connect(state: &Rc<RefCell<UiState>>, parent: &Window) {
-    let hosts = match CoreBridge::discover_ssh_hosts() {
+    let hosts = match FfiClient::discover_ssh_hosts() {
         Ok(h) if !h.is_empty() => h,
         Ok(_) => {
             tracing::error!(
@@ -5480,7 +5480,7 @@ fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect:
         ("ssh", connect.as_str())
     };
     let sessions =
-        CoreBridge::discover_workspaces(transport, Some(target), None).unwrap_or_default();
+        FfiClient::discover_workspaces(transport, Some(target), None).unwrap_or_default();
     let items = tmux_dialog::connect_session_pick_items(&sessions, &connect);
     let st = state.clone();
     let win = parent.clone();
@@ -5504,7 +5504,7 @@ fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect:
                     } else {
                         Some(connect.as_str())
                     };
-                    match CoreBridge::create_workspace(transport, target, None, &name, &dir) {
+                    match FfiClient::create_workspace(transport, target, None, &name, &dir) {
                         Ok(created) => {
                             let cfg = if connect == "local" {
                                 TargetConfig::tmux_session(created, TargetTransport::Local)
@@ -5774,7 +5774,6 @@ mod tests {
         assert!(!should_poll_status(false, now, now, Duration::from_secs(1)));
     }
 
-    #[test]
     #[test]
     fn pending_pane_resizes_covers_every_visible_split_leaf() {
         let mut last = HashMap::new();

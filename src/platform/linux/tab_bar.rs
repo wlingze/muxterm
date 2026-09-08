@@ -7,8 +7,8 @@ use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Orientation};
 
 use crate::core::attention::state::PaneStatus;
+use crate::platform::ffi_client::ClientTab;
 use crate::platform::linux::attention_ui::tab_prefix;
-use crate::platform::linux::ffi_bridge::BridgeTab;
 use crate::platform::linux::lifecycle::tab_shortcut_label;
 
 type TabActivateCb = Box<dyn Fn(u32)>;
@@ -45,7 +45,7 @@ impl TabBar {
     }
 
     /// 用 FFI tab 列表刷新按钮。
-    pub fn set_tabs(&self, tabs: &[BridgeTab]) {
+    pub fn set_tabs(&self, tabs: &[ClientTab]) {
         while let Some(child) = self.container.first_child() {
             self.container.remove(&child);
         }

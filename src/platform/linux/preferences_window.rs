@@ -343,7 +343,7 @@ pub fn show(
     on_saved: Box<dyn Fn() + 'static>,
     project_editor: Option<(
         Vec<crate::core::catalog::driver::RuntimeInfo>,
-        Vec<crate::platform::linux::ffi_bridge::SshHostEntry>,
+        Vec<crate::platform::ffi_client::SshHostEntry>,
     )>,
 ) -> Window {
     install_preferences_css();
@@ -890,7 +890,7 @@ fn show_project_manager(
     parent: &impl IsA<Window>,
     config_path: PathBuf,
     runtimes: Vec<crate::core::catalog::driver::RuntimeInfo>,
-    hosts: Vec<crate::platform::linux::ffi_bridge::SshHostEntry>,
+    hosts: Vec<crate::platform::ffi_client::SshHostEntry>,
     on_changed: Rc<Box<dyn Fn() + 'static>>,
 ) {
     install_preferences_css();

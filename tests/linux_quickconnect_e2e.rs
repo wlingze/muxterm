@@ -8,13 +8,14 @@
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use muxterm::platform::linux::ffi_bridge::{tasks, CoreBridge};
+use muxterm::platform::ffi_client::{ClientTask, FfiClient};
 use muxterm::platform::linux::pane_view::should_forward_replies;
 use muxterm::platform::linux::quickconnect::font::FontSettings;
 use muxterm::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use muxterm::platform::linux::quickconnect::project_flow::{
     ProjectConnectFlow, ProjectConnectState,
 };
+use muxterm::platform::linux::quickconnect::status_style::StatusBarSnapshot;
 
 fn unique_socket(label: &str) -> String {
     let nanos = SystemTime::now()
@@ -26,6 +27,14 @@ fn unique_socket(label: &str) -> String {
 
 struct IsolatedTmux {
     socket: String,
+}
+
+fn status_snapshot(socket: &str, session: &str) -> Option<StatusBarSnapshot> {
+    let value = FfiClient::status_snapshot_json("tmux", None, Some(socket), session).ok()?;
+    value
+        .get("status")
+        .cloned()
+        .and_then(|status| serde_json::from_value(status).ok())
 }
 
 impl IsolatedTmux {
@@ -123,7 +132,7 @@ fn project_flow_attach_existing_then_create_then_attach() {
         ProjectConnectState::AttachExisting { .. }
     ));
 
-    let bridge = CoreBridge::connect(
+    let bridge = FfiClient::new_connect(
         "tmux",
         Some(&tmux.socket),
         Some("existing"),
@@ -151,13 +160,13 @@ fn project_flow_attach_existing_then_create_then_attach() {
     ));
 
     let (backend, target) = created.transport.create_backend();
-    CoreBridge::create_workspace(backend, target, Some(&tmux.socket), "created", dir)
+    FfiClient::create_workspace(backend, target, Some(&tmux.socket), "created", dir)
         .expect("create detached session");
     create_flow.create_succeeded();
     assert!(tmux.has_session("created"));
 
     let attached =
-        CoreBridge::connect("tmux", Some(&tmux.socket), Some("created"), None, Some(dir))
+        FfiClient::new_connect("tmux", Some(&tmux.socket), Some("created"), None, Some(dir))
             .expect("attach 刚创建的 session");
     let _ = attached.poll_events();
     create_flow.attach_created_succeeded();
@@ -176,7 +185,7 @@ fn pool_detach_keeps_isolated_session() {
     let dir = std::env::temp_dir();
     let dir = dir.to_str().unwrap_or("/tmp");
 
-    let bridge = CoreBridge::connect("tmux", Some(&tmux.socket), Some("warm"), None, Some(dir))
+    let bridge = FfiClient::new_connect("tmux", Some(&tmux.socket), Some("warm"), None, Some(dir))
         .expect("connect warm session");
     let rc = bridge.detach();
     assert_eq!(rc, 0, "detach 应成功");
@@ -186,7 +195,7 @@ fn pool_detach_keeps_isolated_session() {
         "detach 后 isolated session 必须仍在"
     );
 
-    let re = CoreBridge::connect("tmux", Some(&tmux.socket), Some("warm"), None, Some(dir))
+    let re = FfiClient::new_connect("tmux", Some(&tmux.socket), Some("warm"), None, Some(dir))
         .expect("re-attach 复用同一 session");
     let _ = re.poll_events();
     assert!(!re.get_tabs().is_empty());
@@ -201,18 +210,16 @@ fn status_snapshot_and_fullscreen_zoom_on_isolated_tmux() {
     assert!(tmux.new_session("stat"));
     let dir = std::env::temp_dir();
     let dir = dir.to_str().unwrap_or("/tmp");
-    let bridge = CoreBridge::connect("tmux", Some(&tmux.socket), Some("stat"), None, Some(dir))
+    let bridge = FfiClient::new_connect("tmux", Some(&tmux.socket), Some("stat"), None, Some(dir))
         .expect("connect for status");
     let _ = bridge.poll_events();
 
     let snap = wait_until(Duration::from_secs(3), || {
         let _ = bridge.poll_events();
-        bridge
-            .status_snapshot()
-            .is_some_and(|s| s.enabled && !s.windows.is_empty())
+        status_snapshot(&tmux.socket, "stat").is_some_and(|s| s.enabled && !s.windows.is_empty())
     });
     assert!(snap, "status snapshot 应含窗口列表");
-    let snapshot = bridge.status_snapshot().expect("snapshot");
+    let snapshot = status_snapshot(&tmux.socket, "stat").expect("snapshot");
     assert!(
         snapshot.windows.iter().any(|w| w.current),
         "应有当前窗口标记"
@@ -232,7 +239,10 @@ fn status_snapshot_and_fullscreen_zoom_on_isolated_tmux() {
         .map(|p| p.id)
         .or_else(|| panes.first().map(|p| p.id))
         .expect("应有 pane");
-    let _ = bridge.execute(tasks::split_h(pane_id));
+    let _ = bridge.execute_task(ClientTask::SplitPane {
+        pane_id,
+        horizontal: true,
+    });
     let _ = wait_until(Duration::from_secs(2), || {
         let _ = bridge.poll_events();
         bridge.get_panes(pane_id).len() >= 2
@@ -241,13 +251,13 @@ fn status_snapshot_and_fullscreen_zoom_on_isolated_tmux() {
                 .iter()
                 .any(|t| bridge.get_panes(t.id).len() >= 2)
     });
-    let rc = bridge.execute(tasks::toggle_pane_fullscreen(pane_id));
+    let rc = bridge.execute_task(ClientTask::TogglePaneFullscreen { pane_id });
     assert_eq!(rc, 0, "resize-pane -Z 应成功");
     assert!(
         wait_until(Duration::from_secs(2), || tmux.zoomed()),
         "tmux window_zoomed_flag 应为 1"
     );
-    let _ = bridge.execute(tasks::toggle_pane_fullscreen(pane_id));
+    let _ = bridge.execute_task(ClientTask::TogglePaneFullscreen { pane_id });
 }
 
 #[test]
