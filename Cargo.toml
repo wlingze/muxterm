@@ -5,6 +5,10 @@ edition = "2021"
 description = "Native UI terminal for tmux control mode (Linux)"
 license = "MIT"
 
+# Reserved for the planned protocol/core/runtime/transport crate split.
+[workspace]
+resolver = "2"
+
 [features]
 # 默认编译 GTK4 前端（archmini 等 GTK 机器用）。
 default = ["gtk"]
