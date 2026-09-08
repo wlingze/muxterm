@@ -8,8 +8,8 @@ pub mod shell;
 pub mod ssh;
 pub mod tmux;
 
-use super::driver::RuntimeProvider;
 use super::transport::TransportProvider;
+use crate::core::runtime::provider::RuntimeProvider;
 
 /// 生产入口用的内置插件表（顺序锁死，不要排序）。
 pub fn builtin_runtimes() -> Vec<Box<dyn RuntimeProvider>> {

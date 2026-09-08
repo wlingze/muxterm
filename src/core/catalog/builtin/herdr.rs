@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
+use crate::core::protocol::candidate::ExistingCandidate as SessionCandidate;
 use crate::core::runtime::herdr::forward::start_herdr_ssh_forward;
 use crate::core::runtime::herdr::runtime::HerdrRuntime;
 use crate::core::runtime::herdr::session::HerdrSession;
+use crate::core::runtime::provider::RuntimeProvider;
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::spec::WorkspaceSpec;

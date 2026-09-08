@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
+use crate::core::protocol::candidate::ExistingCandidate as SessionCandidate;
+use crate::core::runtime::provider::RuntimeProvider;
 use crate::core::runtime::tmux::backend::TmuxRuntime;
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::transport::TargetConnection;

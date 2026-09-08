@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use super::{Catalog, Reach, ResolvedTarget};
 use crate::core::catalog::connect::Connect;
-use crate::core::catalog::driver::{RuntimeProvider, SessionCandidate};
 use crate::core::catalog::transport::{TargetInfo, TransportProvider};
 use crate::core::model::backend::mock::MockRuntime;
+use crate::core::protocol::candidate::ExistingCandidate as SessionCandidate;
+use crate::core::runtime::provider::RuntimeProvider;
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::spec::WorkspaceSpec;

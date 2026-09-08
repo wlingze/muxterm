@@ -1,5 +1,6 @@
 //! Core protocol layer: model + terminal + ffi (C ABI).
 
+pub mod candidate;
 pub mod terminal;
 
 // The DTO source files remain in their legacy location for this incremental
