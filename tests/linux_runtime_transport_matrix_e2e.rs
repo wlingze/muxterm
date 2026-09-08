@@ -1506,31 +1506,39 @@ fn scenario_ctrl_l_stays_clear(
     let (_, before_token) = execute_printf(app, &before, false)?;
     // 真实 Ctrl-L：0x0c 走生产 WriteRaw 输入路径。
     app.test_send_input(&[0x0c]);
-    pump_main_loop(150);
     // 服务端必须真的清屏（生产 WriteRaw 0x0c 到达 herdr 服务端）。
+    // SSH herdr 的输入往返经常超过一次 150ms pump；按可见屏轮询，
+    // 不要读 recent/scrollback（Ctrl-L 只清屏，不清历史）。
     if runtime == "herdr" {
         if let Some(socket) = fixture.spec.socket.as_ref() {
             let sess = muxterm::core::runtime::herdr::session::HerdrSession::new(
                 fixture.spec.session.clone(),
                 socket,
             );
-            if let Ok(snapshot) = sess.snapshot() {
-                let pane_id = snapshot
+            let deadline = Instant::now() + GTK_MATRIX_TIMEOUT;
+            let mut cleared = false;
+            while Instant::now() < deadline {
+                tick(app);
+                let Ok(snapshot) = sess.snapshot() else {
+                    continue;
+                };
+                let Some(pane_id) = snapshot
                     .panes
                     .iter()
                     .find(|p| p.workspace_id == fixture.spec.path)
-                    .map(|p| p.pane_id.clone());
-                if let Some(pane_id) = pane_id {
-                    let server_has_before = sess
-                        .pane_read_recent_ansi(&pane_id)
-                        .map(|bytes| String::from_utf8_lossy(&bytes).contains(&before_token))
-                        .unwrap_or(true);
-                    ensure!(
-                        !server_has_before,
-                        "herdr 服务端必须已清屏（Ctrl-L 未生效）"
-                    );
+                    .map(|p| p.pane_id.clone())
+                else {
+                    continue;
+                };
+                let Ok(bytes) = sess.pane_read_ansi(&pane_id) else {
+                    continue;
+                };
+                if !String::from_utf8_lossy(&bytes).contains(&before_token) {
+                    cleared = true;
+                    break;
                 }
             }
+            ensure!(cleared, "herdr 服务端必须已清屏（Ctrl-L 未生效）");
         }
     }
     // AFTER 可见（清屏后 prompt 在屏顶，AFTER 必须在整屏文本里）。
