@@ -11,8 +11,11 @@ use std::ptr::{self, NonNull};
 
 use crate::ffi::{
     self, CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, LAYOUT_LEAF,
-    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_BACKEND_STATUS, STATE_PANE_CLOSED, STATE_PANE_FRAME,
-    STATE_PANE_HISTORY, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
+    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED,
+    STATE_BACKEND_STATUS, STATE_LAYOUT_CHANGED, STATE_PANE_ADDED, STATE_PANE_CLOSED,
+    STATE_PANE_FRAME, STATE_PANE_HISTORY, STATE_PANE_OUTPUT, STATE_PANE_RESIZED,
+    STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED, STATE_TAB_ADDED, STATE_TAB_CLOSED,
+    STATE_TAB_ORDER_CHANGED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED,
 };
 
 const DISCOVERY_TIMEOUT_MS: u32 = 10_000;
@@ -177,6 +180,25 @@ impl ClientEvent {
             STATE_PANE_RESIZED => ClientEventKind::PaneResized,
             type_ => ClientEventKind::Other(type_),
         }
+    }
+
+    /// Whether this event requires a fresh owned workspace topology snapshot.
+    pub fn is_topology(&self) -> bool {
+        matches!(
+            self.type_,
+            STATE_TAB_ADDED
+                | STATE_TAB_CLOSED
+                | STATE_LAYOUT_CHANGED
+                | STATE_PANE_ADDED
+                | STATE_PANE_CLOSED
+                | STATE_ACTIVE_TAB_CHANGED
+                | STATE_ACTIVE_PANE_CHANGED
+                | STATE_TAB_RENAMED
+                | STATE_PANE_RESIZED
+                | STATE_WORKSPACE_RENAMED
+                | STATE_POOL_CHANGED
+                | STATE_TAB_ORDER_CHANGED
+        )
     }
 }
 
@@ -1577,6 +1599,29 @@ mod tests {
             .kind(),
             ClientEventKind::Other(u32::MAX)
         );
+    }
+
+    #[test]
+    fn topology_classification_includes_active_and_resize_changes() {
+        let event = ClientEvent {
+            type_: STATE_ACTIVE_TAB_CHANGED,
+            pane_id: 0,
+            tab_id: 1,
+            window_id: 0,
+            data: Vec::new(),
+            name: String::new(),
+        };
+        assert!(event.is_topology());
+        assert!(ClientEvent {
+            type_: STATE_PANE_RESIZED,
+            ..event.clone()
+        }
+        .is_topology());
+        assert!(!ClientEvent {
+            type_: STATE_PANE_OUTPUT,
+            ..event
+        }
+        .is_topology());
     }
 
     #[test]

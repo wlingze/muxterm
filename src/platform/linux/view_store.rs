@@ -8,7 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::super::ffi_client::{
-    ClientEvent, ClientEventKind, ClientPane, ClientTab, ClientWorkspace,
+    ClientEvent, ClientEventKind, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent,
 };
 
 const RENDER_MAILBOX_CAPACITY: usize = 128;
@@ -78,6 +78,14 @@ impl ViewStore {
             mailbox.pop_front();
         }
         mailbox.push_back(event);
+    }
+
+    /// Apply one owned FFI event without exposing the C event buffer to the
+    /// store. Control/topology events are refreshed by `EventPump`; only
+    /// render-data events enter the pane mailbox here.
+    pub fn apply_workspace_event(&mut self, event: ClientWorkspaceEvent) {
+        let workspace_id = event.workspace_id;
+        self.push_render_event(&workspace_id, event.event);
     }
 
     pub fn take_pane_render_events(
