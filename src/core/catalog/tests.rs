@@ -3,10 +3,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::{Catalog, Reach, ResolvedTarget};
+use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget};
 use crate::core::catalog::connect::Connect;
 use crate::core::catalog::transport::{TargetInfo, TransportProvider};
-use crate::core::protocol::candidate::ExistingCandidate as SessionCandidate;
+use crate::core::projects::{Project, Worktree};
+use crate::core::protocol::candidate::{
+    CandidateRef, ExistingCandidate as SessionCandidate, ExistingCandidateRef,
+};
 use crate::core::runtime::mock::MockRuntime;
 use crate::core::runtime::provider::RuntimeProvider;
 use crate::core::runtime::{Runtime, RuntimeCapability};
@@ -632,6 +635,147 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
     assert!(error.to_string().contains("requires channels"));
 }
 
+#[test]
+fn candidate_resolver_maps_project_and_worktree_provenance() {
+    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::core::workspace::template::TemplateName;
+
+    let mut project = Project::new(
+        "project-a",
+        "Project A",
+        TargetConfig::new(
+            "ignored-display-name",
+            TargetRuntime::Shell,
+            TargetTransport::Local,
+            "/repo",
+        ),
+    );
+    project.template = Some(TemplateName::try_from("default").unwrap());
+    project
+        .add_worktree(Worktree::new(
+            "wt-a",
+            "/repo-wt",
+            "feature/a",
+            "/repo",
+            true,
+        ))
+        .unwrap();
+    let projects = vec![project];
+    let mut catalog = Catalog::new();
+
+    let project_request = OpenRequest {
+        candidate: CandidateRef::Project {
+            project_id: "project-a".into(),
+        },
+        intent: ResolveIntent::CreateIfMissing,
+        template: None,
+        activate: true,
+    };
+    let resolved_project = catalog
+        .resolve_open_request(&project_request, &projects)
+        .unwrap();
+    assert_eq!(
+        resolved_project
+            .spec
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.project_id.as_ref())
+            .map(ToString::to_string),
+        Some("project-a".into())
+    );
+    assert_eq!(
+        resolved_project
+            .spec
+            .template
+            .as_ref()
+            .map(ToString::to_string),
+        Some("default".into())
+    );
+    assert!(resolved_project.spec.create);
+
+    let worktree_request = OpenRequest {
+        candidate: CandidateRef::Worktree {
+            project_id: "project-a".into(),
+            worktree_id: "wt-a".into(),
+        },
+        intent: ResolveIntent::AttachOnly,
+        template: Some(TemplateName::try_from("override").unwrap()),
+        activate: true,
+    };
+    let resolved_worktree = catalog
+        .resolve_open_request(&worktree_request, &projects)
+        .unwrap();
+    let provenance = resolved_worktree.spec.provenance.as_ref().unwrap();
+    assert_eq!(
+        provenance.worktree_id.as_ref().map(ToString::to_string),
+        Some("wt-a".into())
+    );
+    assert_eq!(resolved_worktree.spec.path, "/repo-wt");
+    assert_eq!(
+        resolved_worktree
+            .spec
+            .template
+            .as_ref()
+            .map(ToString::to_string),
+        Some("override".into())
+    );
+}
+
+#[test]
+fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
+    let mut catalog = Catalog::new();
+    catalog.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![],
+    }));
+    catalog.register_runtime(Box::new(MockDriver {
+        id: "tmux",
+        name: "tmux",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![SessionCandidate {
+            runtime_id: "tmux".into(),
+            transport_id: "local".into(),
+            target: String::new(),
+            namespace: None,
+            name: "display-name".into(),
+            extra: "wire-detail".into(),
+            session: Some("demo".into()),
+            socket: Some("muxterm-test-candidate".into()),
+            workspace_id: None,
+        }],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+
+    let request = OpenRequest {
+        candidate: CandidateRef::Existing {
+            identity: ExistingCandidateRef {
+                runtime_id: "tmux".into(),
+                transport_id: "local".into(),
+                target: String::new(),
+                session: Some("demo".into()),
+                socket: Some("muxterm-test-candidate".into()),
+                workspace_id: None,
+            },
+        },
+        intent: ResolveIntent::AttachOnly,
+        template: None,
+        activate: true,
+    };
+    let resolved = catalog.resolve_open_request(&request, &[]).unwrap();
+    assert_eq!(resolved.canonical.name, "display-name");
+    assert_eq!(resolved.spec.session, "demo");
+    assert_eq!(
+        resolved.spec.socket.as_deref(),
+        Some("muxterm-test-candidate")
+    );
+    assert!(!resolved.spec.create);
+}
+
 fn single_pane_template() -> WorkspaceTemplate {
     WorkspaceTemplate {
         name: TemplateName::try_from("single").unwrap(),
@@ -697,4 +841,45 @@ async fn catalog_applies_templates_only_to_create_specs() {
     assert!(report.completed);
     assert_eq!(report.applied_tabs, 1);
     assert_eq!(report.applied_panes, 1);
+}
+
+#[tokio::test]
+async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
+    use crate::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+
+    let mut catalog = Catalog::new();
+    let spec = WorkspaceSpec::local_shell("/repo");
+    let workspace_id = spec.id();
+    catalog
+        .pool_mut()
+        .open(workspace_id.clone(), "recent".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+    let canonical = TargetConfig::new(
+        "Recent Project",
+        TargetRuntime::Shell,
+        TargetTransport::Local,
+        "/repo",
+    );
+    let key = canonical.identity_key();
+    catalog
+        .pool_mut()
+        .get_mut(&workspace_id)
+        .unwrap()
+        .set_resolved_target(ResolvedTarget {
+            canonical,
+            spec: spec.clone(),
+        });
+
+    let request = OpenRequest {
+        candidate: CandidateRef::Recent { key },
+        intent: ResolveIntent::AttachOnly,
+        template: None,
+        activate: true,
+    };
+    let resolved = catalog.resolve_open_request(&request, &[]).unwrap();
+    assert_eq!(resolved.spec, spec);
+    assert_eq!(resolved.canonical.name, "Recent Project");
 }
