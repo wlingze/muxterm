@@ -36,9 +36,16 @@ impl EventPump {
             if event.event.is_topology() {
                 self.refresh_workspace(store, &event.workspace_id);
             }
-            store.apply_workspace_event(event);
+            Self::apply_workspace_event(store, event);
         }
         count
+    }
+
+    /// Apply an already-owned event from a compatibility source. This keeps
+    /// the GTK pool adapter and the real FFI source on the same ViewStore path.
+    #[cfg(feature = "gtk")]
+    pub fn apply_workspace_event(store: &mut ViewStore, event: ClientWorkspaceEvent) {
+        store.apply_workspace_event(event);
     }
 
     /// Seed all currently live workspace DTOs without activating any of them.
@@ -102,7 +109,7 @@ impl EventPump {
 #[cfg(all(test, feature = "gtk"))]
 mod tests {
     use super::EventPump;
-    use crate::platform::ffi_client::FfiClient;
+    use crate::platform::ffi_client::{ClientEvent, ClientWorkspaceEvent, FfiClient};
     use crate::platform::linux::view_store::ViewStore;
 
     #[test]
@@ -112,5 +119,27 @@ mod tests {
         assert_eq!(pump.sync_view_store(&mut store).expect("workspace list"), 0);
         assert_eq!(pump.poll_into(&mut store), 0);
         assert!(store.workspace_ids().next().is_none());
+    }
+
+    #[test]
+    fn compatibility_events_use_the_same_owned_view_sink() {
+        let mut store = ViewStore::default();
+        EventPump::apply_workspace_event(
+            &mut store,
+            ClientWorkspaceEvent {
+                workspace_id: "local//one/shell/".into(),
+                event: ClientEvent {
+                    type_: 0,
+                    pane_id: 7,
+                    tab_id: 1,
+                    window_id: 0,
+                    data: b"output".to_vec(),
+                    name: String::new(),
+                },
+            },
+        );
+        let events = store.take_pane_render_events("local//one/shell/", 7);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, b"output");
     }
 }
