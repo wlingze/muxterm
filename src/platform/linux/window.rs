@@ -28,7 +28,7 @@ use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::catalog::ResolveIntent;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
 use crate::core::config_service::SettingsService;
-use crate::core::protocol::layout::{LayoutNode, SplitDir};
+use crate::core::protocol::layout::SplitDir;
 use crate::core::protocol::state::{BackendStatus, StateChange};
 use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::quickconnect::model::QuickConnect;
@@ -41,10 +41,8 @@ use crate::core::workspace::pool::{
 };
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::workspace::Workspace;
-use crate::platform::event_pump::EventPump;
-use crate::platform::ffi_client::{
-    ClientEvent, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent, FfiClient,
-};
+use crate::platform::event_pump::{EventPump, PoolInputOutcome};
+use crate::platform::ffi_client::{ClientEvent, ClientEventKind, ClientWorkspaceEvent, FfiClient};
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -3138,83 +3136,45 @@ fn refresh_ui(s: &mut UiState) {
 ///
 /// This function intentionally does not switch the active window for a
 /// background workspace.  It only creates/reparents resident PaneViews and
-/// feeds an already-realized Surface from that workspace's Core state.
+/// feeds an already-realized Surface from the frontend-owned ViewStore state.
 fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
     let is_active = s.pool.active_id() == Some(wid);
-    let (workspace_snapshot, view_tabs, view_panes, tab_ids, active_tab, layouts, panes) = {
-        let Some(workspace) = s.pool.get(wid) else {
-            return;
-        };
-        let state = workspace.state();
-        let tabs = state.tabs();
-        let workspace_snapshot = ClientWorkspace {
-            id: wid.as_str().to_string(),
-            name: workspace.name().to_string(),
-            runtime: state.workspace_runtime().to_string(),
-            active: is_active,
-        };
-        let view_tabs: Vec<ClientTab> = tabs
-            .iter()
-            .map(|tab| ClientTab {
-                id: tab.id.0,
-                name: tab.name.clone(),
-                is_active: tab.active,
-            })
-            .collect();
-        let view_panes: Vec<(u32, Vec<ClientPane>)> = tabs
-            .iter()
-            .map(|tab| {
-                (
-                    tab.id.0,
-                    state
-                        .panes(&tab.id)
-                        .iter()
-                        .map(|pane| ClientPane {
-                            id: pane.id.0,
-                            cols: pane.cols,
-                            rows: pane.rows,
-                            is_active: pane.active,
-                            title: pane.title.clone(),
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-        let tab_ids: Vec<u32> = tabs.iter().map(|t| t.id.0).collect();
-        let active_tab = tabs
-            .iter()
-            .find(|t| t.active)
-            .map(|t| t.id.0)
-            .or_else(|| tabs.first().map(|t| t.id.0));
-        // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
-        // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
-        let layouts: Vec<(u32, LayoutNode)> = tabs
-            .iter()
-            .filter_map(|t| state.layout(&t.id).map(|l| (t.id.0, l.tree.clone())))
-            .collect();
-        let panes: Vec<(u32, u16, u16, bool)> = active_tab
-            .map(|tid| {
-                state
-                    .panes(&TabId(tid))
-                    .iter()
-                    .map(|p| (p.id.0, p.cols, p.rows, p.active))
-                    .collect()
-            })
-            .unwrap_or_default();
-        (
-            workspace_snapshot,
-            view_tabs,
-            view_panes,
-            tab_ids,
-            active_tab,
-            layouts,
-            panes,
-        )
+    let workspace_key = wid.as_str();
+    if !EventPump::sync_pool_workspace(&s.pool, &mut s.view_store, wid) {
+        return;
+    }
+    let Some(view) = s.view_store.workspace(&workspace_key) else {
+        return;
     };
+    let tab_ids: Vec<u32> = view.tabs.iter().map(|tab| tab.id).collect();
+    let active_tab = view
+        .tabs
+        .iter()
+        .find(|tab| tab.is_active)
+        .map(|tab| tab.id)
+        .or_else(|| tab_ids.first().copied());
+    // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
+    // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
+    let layouts = tab_ids
+        .iter()
+        .filter_map(|tab_id| {
+            view.layouts
+                .get(tab_id)
+                .cloned()
+                .map(|layout| (*tab_id, layout))
+        })
+        .collect::<Vec<_>>();
+    let panes: Vec<(u32, u16, u16, bool)> = active_tab
+        .and_then(|tab_id| view.panes.get(&tab_id))
+        .map(|panes| {
+            panes
+                .iter()
+                .map(|pane| (pane.id, pane.cols, pane.rows, pane.is_active))
+                .collect()
+        })
+        .unwrap_or_default();
 
-    s.scene_stack.ensure(&wid.as_str());
-    s.view_store
-        .replace_topology(workspace_snapshot, view_tabs, view_panes);
+    s.scene_stack.ensure(&workspace_key);
 
     if is_active {
         // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
@@ -3241,8 +3201,8 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
     // 重建布局（pane 控件跨 tab 保留：像素缓存，不因换 tab 销毁）。
     if !layouts.is_empty() {
         if let Some(layout) = s.pixel_cache.get_mut(wid) {
-            for (tab, tree) in &layouts {
-                layout.apply_layout(*tab, tree, &input_cb);
+            for (tab, client_layout) in &layouts {
+                layout.apply_client_layout(*tab, client_layout, &input_cb);
             }
             // 全部 tab 常驻后，把 active tab 放回可见页（apply_layout 会
             // 依次 set_visible_child，最后一次调用决定显示页）。
@@ -3287,13 +3247,26 @@ fn local_status_snapshot(npanes: usize, tabs: &[(u32, String, bool)]) -> StatusB
 }
 
 fn maybe_refresh_status(s: &mut UiState, force: bool) {
-    let state = s.active_workspace().state();
-    let tabs = state.tabs();
-    let npanes = state.panes(&TabId(s.active_tab)).len();
-    let session = state.workspace_name().to_string();
-    let rows: Vec<(u32, String, bool)> = tabs
+    let workspace_key = s.active_ws_id().as_str();
+    let Some(view) = s.view_store.workspace(&workspace_key) else {
+        return;
+    };
+    let session = view
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.name.clone())
+        .unwrap_or_default();
+    let active_tab = view
+        .tabs
         .iter()
-        .map(|t| (t.id.0, t.name.clone(), t.active))
+        .find(|tab| tab.is_active)
+        .map(|tab| tab.id)
+        .unwrap_or(s.active_tab);
+    let npanes = view.panes.get(&active_tab).map(Vec::len).unwrap_or(0);
+    let rows: Vec<(u32, String, bool)> = view
+        .tabs
+        .iter()
+        .map(|tab| (tab.id, tab.name.clone(), tab.is_active))
         .collect();
     let mut snap = if s.uses_tmux() {
         crate::platform::linux::quickconnect::status_style::snapshot_from_tabs(
@@ -3388,36 +3361,33 @@ fn drain_surface_input(s: &mut UiState) {
             data.extend_from_slice(&next.data);
         }
         s.last_raw_input = data.clone();
-        let Some(workspace) = s.pool.get_mut(&workspace_id) else {
-            tracing::debug!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id,
-                "drop input for evicted workspace"
-            );
-            continue;
-        };
-        if workspace.state().pane(&pane_id).is_none() {
-            tracing::debug!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id,
-                "drop input for closed pane"
-            );
-            continue;
-        }
-        let result = workspace.execute(Task::WriteRaw {
-            target: pane_id,
-            data,
-        });
-        if let Err(error) = result {
-            tracing::warn!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id,
-                error = %error,
-                "surface input write failed"
-            );
+        match EventPump::send_pool_input(&mut s.pool, &workspace_id, pane_id, data) {
+            Ok(PoolInputOutcome::Sent) => {}
+            Ok(PoolInputOutcome::WorkspaceMissing) => {
+                tracing::debug!(
+                    target = "muxterm::surface",
+                    workspace = %workspace_id,
+                    pane = %pane_id,
+                    "drop input for evicted workspace"
+                );
+            }
+            Ok(PoolInputOutcome::PaneMissing) => {
+                tracing::debug!(
+                    target = "muxterm::surface",
+                    workspace = %workspace_id,
+                    pane = %pane_id,
+                    "drop input for closed pane"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::surface",
+                    workspace = %workspace_id,
+                    pane = %pane_id,
+                    error = %error,
+                    "surface input write failed"
+                );
+            }
         }
     }
 }
@@ -3430,13 +3400,26 @@ fn sync_pane_outputs(s: &mut UiState) {
     // Surface：已挂载 pane 的增量走 StateChange::PaneOutput；这里不再 dump replica。
     // F3 的 capture 门接管首屏 seed；未 realized 的 pane 保持 unseeded，
     // 等窗口 present 后由下一次轮询补种（present 前 feed 会被 VTE 丢弃）。
+    let workspace_key = s.active_ws_id().as_str();
     let panes: Vec<(u32, u16, u16)> = s
-        .active_workspace()
-        .state()
-        .panes(&TabId(s.active_tab))
-        .iter()
-        .map(|p| (p.id.0, p.cols, p.rows))
-        .collect();
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| {
+            let tab_id = view
+                .tabs
+                .iter()
+                .find(|tab| tab.is_active)
+                .map(|tab| tab.id)
+                .unwrap_or(s.active_tab);
+            view.panes.get(&tab_id)
+        })
+        .map(|panes| {
+            panes
+                .iter()
+                .map(|pane| (pane.id, pane.cols, pane.rows))
+                .collect()
+        })
+        .unwrap_or_default();
     for (pane_id, cols, rows) in panes {
         if let Some(view) = s.active_layout().pane(pane_id).cloned() {
             view.ensure_grid_size(cols, rows);
@@ -3481,12 +3464,17 @@ fn seed_unseeded_pane_for(
         }
         return;
     }
-    if let Some(bytes) = s
-        .pool
-        .get(wid)
-        .and_then(|workspace| workspace.state().pane_output(&PaneId(pane_id)))
-        .map(|b| b.to_vec())
-    {
+    let workspace_key = wid.as_str();
+    let bytes = s
+        .view_store
+        .take_pane_baseline(&workspace_key, pane_id)
+        .or_else(|| {
+            s.pool
+                .get(wid)
+                .and_then(|workspace| workspace.state().pane_output(&PaneId(pane_id)))
+                .map(|bytes| bytes.to_vec())
+        });
+    if let Some(bytes) = bytes {
         tracing::info!(
             target: "muxterm::surface",
             pane = pane_id,
@@ -3495,28 +3483,61 @@ fn seed_unseeded_pane_for(
         );
         view.seed_raw(&bytes, cols, rows);
         s.snapshot_seeded_this_batch.insert(pane_id);
+        drain_view_store_render_events(s, wid, view, pane_id);
     } else {
         tracing::info!(
             target: "muxterm::surface",
             pane = pane_id,
-            "pane view unseeded and core pane_output empty"
+            "pane view unseeded and no queued or compatibility baseline is available"
         );
     }
+}
+
+/// Flush render events retained while a pane had no realized Surface.
+fn drain_view_store_render_events(
+    s: &mut UiState,
+    wid: &WorkspaceId,
+    view: &std::rc::Rc<PaneView>,
+    pane_id: u32,
+) {
+    let workspace_key = wid.as_str();
+    for event in s
+        .view_store
+        .take_pane_render_events(&workspace_key, pane_id)
+    {
+        match event.kind() {
+            ClientEventKind::PaneHistory => view.prepend_history(&event.data),
+            ClientEventKind::PaneFrame => view.feed_full(&event.data),
+            ClientEventKind::PaneOutput => view.feed_output(&event.data),
+            ClientEventKind::PaneSnapshot
+            | ClientEventKind::PaneClosed
+            | ClientEventKind::PaneResized
+            | ClientEventKind::Other(_) => {}
+        }
+    }
+    view.flush_deferred_history();
+    view.flush_deferred_feed();
 }
 
 fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
     let Some(view) = s.active_layout().pane(pane_id) else {
         return;
     };
-    if let Some(pane) = s
-        .active_workspace()
-        .state()
-        .panes(&TabId(s.active_tab))
-        .iter()
-        .find(|p| p.id.0 == pane_id)
-    {
-        view.ensure_grid_size(pane.cols, pane.rows);
-    }
+    let workspace_key = s.active_ws_id().as_str();
+    let active_tab = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+        .unwrap_or(s.active_tab);
+    let Some(pane) = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|workspace| workspace.panes.get(&active_tab))
+        .and_then(|panes| panes.iter().find(|pane| pane.id == pane_id))
+    else {
+        return;
+    };
+    view.ensure_grid_size(pane.cols, pane.rows);
 }
 
 /// 按 `(WorkspaceId, PaneId)` 对齐字符格（hidden tab / background 也适用）。
@@ -3524,11 +3545,18 @@ fn sync_pane_grid_size_for(s: &UiState, wid: &WorkspaceId, pane_id: u32) {
     let Some(view) = resident_pane_view(s, wid, pane_id) else {
         return;
     };
+    let workspace_key = wid.as_str();
     let (cols, rows) = s
-        .pool
-        .get(wid)
-        .and_then(|w| w.state().pane(&PaneId(pane_id)))
-        .map(|p| (p.cols, p.rows))
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|workspace| {
+            workspace
+                .panes
+                .values()
+                .flat_map(|panes| panes.iter())
+                .find(|pane| pane.id == pane_id)
+        })
+        .map(|pane| (pane.cols, pane.rows))
         .unwrap_or((80, 24));
     view.ensure_grid_size(cols, rows);
 }
@@ -3604,12 +3632,17 @@ fn sync_window_size(s: &mut UiState) {
         return;
     }
     let allocated = term.width() > 0 && term.height() > 0;
+    let workspace_key = s.active_ws_id().as_str();
+    let active_tab = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+        .unwrap_or(s.active_tab);
     let multi_pane = s
-        .active_workspace()
-        .state()
-        .panes(&TabId(s.active_tab))
-        .len()
-        > 1;
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.panes.get(&active_tab))
+        .is_some_and(|panes| panes.len() > 1);
     let cols = match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane)
     {
         Some(cols) => cols,
@@ -3650,14 +3683,18 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
         return;
     }
     s.hold_pane_resize_until = None;
-    let tab = TabId(s.active_tab);
+    let workspace_key = s.active_ws_id().as_str();
+    let active_tab = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+        .unwrap_or(s.active_tab);
     let pane_ids: Vec<u32> = s
-        .active_workspace()
-        .state()
-        .panes(&tab)
-        .iter()
-        .map(|pane| pane.id.0)
-        .collect();
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.panes.get(&active_tab))
+        .map(|panes| panes.iter().map(|pane| pane.id).collect())
+        .unwrap_or_default();
     let mut measured = Vec::new();
     for pane in pane_ids {
         let Some(view) = s.active_layout().pane(pane) else {

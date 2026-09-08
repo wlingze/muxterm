@@ -9,9 +9,20 @@ use gtk4::{Orientation, Paned, Widget};
 
 use crate::core::config::Theme;
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
-use crate::core::types::PaneId;
+use crate::platform::ffi_client::ClientLayout;
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::quickconnect::font::FontSettings;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LayoutTree {
+    Leaf(u32),
+    Split {
+        horizontal: bool,
+        ratio: u32,
+        first: Box<LayoutTree>,
+        second: Box<LayoutTree>,
+    },
+}
 
 /// 布局根：持有 pane_id → PaneView，以及当前根 widget。
 pub struct LayoutHost {
@@ -169,8 +180,31 @@ impl LayoutHost {
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
     {
+        let layout = layout_tree_from_core(layout);
+        self.apply_layout_tree(tab_id, &layout, on_input)
+    }
+
+    /// Apply an owned FFI layout DTO without exposing Core's layout types to
+    /// the caller. This is the production path for the future GTK FFI owner.
+    pub fn apply_client_layout<F>(
+        &mut self,
+        tab_id: u32,
+        layout: &ClientLayout,
+        on_input: &F,
+    ) -> bool
+    where
+        F: Fn(u32, &[u8]) + Clone + 'static,
+    {
+        let layout = layout_tree_from_client(layout);
+        self.apply_layout_tree(tab_id, &layout, on_input)
+    }
+
+    fn apply_layout_tree<F>(&mut self, tab_id: u32, layout: &LayoutTree, on_input: &F) -> bool
+    where
+        F: Fn(u32, &[u8]) + Clone + 'static,
+    {
         let effective = match self.fullscreen_pane {
-            Some(id) => LayoutNode::Leaf(PaneId(id)),
+            Some(id) => LayoutTree::Leaf(id),
             None => layout.clone(),
         };
         // GtkWidget 同一时刻只能有一个 parent。Runtime 给出重复 leaf 时保留
@@ -317,7 +351,7 @@ impl LayoutHost {
     }
 
     /// 仅 ratio 变化时，沿现有 GTK 树更新 Paned 位置（不重建、不 unparent）。
-    fn update_split_positions(&self, tab_id: u32, layout: &LayoutNode) {
+    fn update_split_positions(&self, tab_id: u32, layout: &LayoutTree) {
         if let (Some(root), Some(ratios)) =
             (self.tab_roots.get(&tab_id), self.split_ratios.get(&tab_id))
         {
@@ -327,25 +361,24 @@ impl LayoutHost {
 
     fn build_widget(
         &self,
-        layout: &LayoutNode,
+        layout: &LayoutTree,
         ratios: &mut HashMap<Paned, Rc<Cell<u32>>>,
     ) -> Widget {
         match layout {
-            LayoutNode::Leaf(pane_id) => self
+            LayoutTree::Leaf(pane_id) => self
                 .panes
-                .get(&pane_id.0)
+                .get(pane_id)
                 .map(|p| p.widget())
                 .unwrap_or_else(|| {
-                    gtk4::Label::new(Some(&format!("?{}", pane_id.0))).upcast::<Widget>()
+                    gtk4::Label::new(Some(&format!("?{pane_id}"))).upcast::<Widget>()
                 }),
-            LayoutNode::Split {
-                dir,
+            LayoutTree::Split {
+                horizontal,
                 ratio,
                 first,
                 second,
             } => {
-                let horizontal = matches!(dir, SplitDir::Horizontal);
-                let orient = if horizontal {
+                let orient = if *horizontal {
                     Orientation::Horizontal
                 } else {
                     Orientation::Vertical
@@ -363,19 +396,53 @@ impl LayoutHost {
                 // 会让第二片被挤成 0；允许 shrink，位置仍由 ratio 绑定。
                 paned.set_shrink_start_child(true);
                 paned.set_shrink_end_child(true);
-                let ratio_cell = Rc::new(Cell::new(u32::from(*ratio)));
+                let ratio_cell = Rc::new(Cell::new(*ratio));
                 ratios.insert(paned.clone(), ratio_cell.clone());
-                bind_split_position(&paned, horizontal, ratio_cell);
+                bind_split_position(&paned, *horizontal, ratio_cell);
                 paned.upcast()
             }
         }
     }
 }
 
-fn collect_pane_ids(layout: &LayoutNode, out: &mut Vec<u32>) {
+fn layout_tree_from_core(layout: &LayoutNode) -> LayoutTree {
     match layout {
-        LayoutNode::Leaf(pane_id) => out.push(pane_id.0),
-        LayoutNode::Split { first, second, .. } => {
+        LayoutNode::Leaf(pane_id) => LayoutTree::Leaf(pane_id.0),
+        LayoutNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => LayoutTree::Split {
+            horizontal: matches!(dir, SplitDir::Horizontal),
+            ratio: u32::from(*ratio),
+            first: Box::new(layout_tree_from_core(first)),
+            second: Box::new(layout_tree_from_core(second)),
+        },
+    }
+}
+
+fn layout_tree_from_client(layout: &ClientLayout) -> LayoutTree {
+    match layout {
+        ClientLayout::Leaf { pane_id } => LayoutTree::Leaf(*pane_id),
+        ClientLayout::Split {
+            horizontal,
+            ratio,
+            first,
+            second,
+        } => LayoutTree::Split {
+            horizontal: *horizontal,
+            ratio: *ratio,
+            first: Box::new(layout_tree_from_client(first)),
+            second: Box::new(layout_tree_from_client(second)),
+        },
+    }
+}
+
+fn collect_pane_ids(layout: &LayoutTree, out: &mut Vec<u32>) {
+    match layout {
+        LayoutTree::Leaf(pane_id) => out.push(*pane_id),
+        LayoutTree::Split { first, second, .. } => {
             collect_pane_ids(first, out);
             collect_pane_ids(second, out);
         }
@@ -429,22 +496,21 @@ fn bind_split_position(paned: &Paned, horizontal: bool, ratio: Rc<Cell<u32>>) {
 
 fn update_split_positions_walk(
     widget: &Widget,
-    layout: &LayoutNode,
+    layout: &LayoutTree,
     ratios: &HashMap<Paned, Rc<Cell<u32>>>,
 ) {
     match layout {
-        LayoutNode::Leaf(_) => {}
-        LayoutNode::Split {
-            dir,
+        LayoutTree::Leaf(_) => {}
+        LayoutTree::Split {
+            horizontal,
             ratio,
             first,
             second,
         } => {
             if let Ok(paned) = widget.clone().downcast::<Paned>() {
                 if let Some(cell) = ratios.get(&paned) {
-                    cell.set(u32::from(*ratio));
-                    let horizontal = matches!(dir, SplitDir::Horizontal);
-                    apply_split_position(&paned, horizontal, cell.get());
+                    cell.set(*ratio);
+                    apply_split_position(&paned, *horizontal, cell.get());
                 }
                 if let Some(start) = paned.start_child() {
                     update_split_positions_walk(&start, first, ratios);
@@ -457,21 +523,17 @@ fn update_split_positions_walk(
     }
 }
 
-fn layout_signature(layout: &LayoutNode) -> String {
+fn layout_signature(layout: &LayoutTree) -> String {
     match layout {
-        LayoutNode::Leaf(pane_id) => format!("L{}", pane_id.0),
-        LayoutNode::Split {
-            dir,
+        LayoutTree::Leaf(pane_id) => format!("L{pane_id}"),
+        LayoutTree::Split {
+            horizontal,
             ratio,
             first,
             second,
         } => format!(
             "S{}:{}:{}:{}",
-            if matches!(dir, SplitDir::Horizontal) {
-                "H"
-            } else {
-                "V"
-            },
+            if *horizontal { "H" } else { "V" },
             ratio,
             layout_signature(first),
             layout_signature(second)
@@ -483,18 +545,17 @@ fn layout_signature(layout: &LayoutNode) -> String {
 ///
 /// ratio 变化（tmux ResizeClient 后的微调）不应触发 GTK 树重建，否则
 /// VTE widget 被 unparent/reparent 后停止处理已排队的 feed（1820 白屏）。
-fn layout_structure_signature(layout: &LayoutNode) -> String {
+fn layout_structure_signature(layout: &LayoutTree) -> String {
     match layout {
-        LayoutNode::Leaf(pane_id) => format!("L{}", pane_id.0),
-        LayoutNode::Split {
-            dir, first, second, ..
+        LayoutTree::Leaf(pane_id) => format!("L{pane_id}"),
+        LayoutTree::Split {
+            horizontal,
+            first,
+            second,
+            ..
         } => format!(
             "S{}:{}:{}",
-            if matches!(dir, SplitDir::Horizontal) {
-                "H"
-            } else {
-                "V"
-            },
+            if *horizontal { "H" } else { "V" },
             layout_structure_signature(first),
             layout_structure_signature(second)
         ),
@@ -505,6 +566,7 @@ fn layout_structure_signature(layout: &LayoutNode) -> String {
 mod tests {
     use super::*;
     use crate::core::config::Rgb;
+    use crate::core::types::PaneId;
 
     #[test]
     fn split_position_uses_ratio_not_one_pixel() {
@@ -520,6 +582,25 @@ mod tests {
         assert_eq!(split_position_px(0, 500), 1);
         assert_eq!(split_position_px(2, 500), 1);
         assert_eq!(split_position_px(3, 500), 1);
+    }
+
+    #[test]
+    fn client_layout_conversion_preserves_tree_and_ratio() {
+        let layout = ClientLayout::Split {
+            horizontal: true,
+            ratio: 375,
+            first: Box::new(ClientLayout::Leaf { pane_id: 7 }),
+            second: Box::new(ClientLayout::Leaf { pane_id: 8 }),
+        };
+        assert_eq!(
+            layout_tree_from_client(&layout),
+            LayoutTree::Split {
+                horizontal: true,
+                ratio: 375,
+                first: Box::new(LayoutTree::Leaf(7)),
+                second: Box::new(LayoutTree::Leaf(8)),
+            }
+        );
     }
 
     /// Runtime 边界若意外给出重复 leaf，LayoutHost 必须保留旧树并拒绝，
