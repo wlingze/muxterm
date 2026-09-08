@@ -20,6 +20,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{ClientEventKind, ClientTask, FfiClient};
 use crate::platform::mirror::should_forward_parser_response;
 use crate::platform::tui::emulate::Cell;
@@ -52,12 +53,14 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     execute!(out, EnterAlternateScreen).context("enter alternate screen")?;
 
     let (mut runtime_type, socket, session) = resolve_runtime(&opts);
-    let mut bridge = FfiClient::new(runtime_type, socket.as_deref(), session.as_deref())
-        .context("FfiClient::new")?;
+    let mut bridge = EventPump::new(
+        FfiClient::new(runtime_type, socket.as_deref(), session.as_deref())
+            .context("FfiClient::new")?,
+    );
 
     // 连接后给查询响应一点时间，再做一次 poll 让初始状态到达
     std::thread::sleep(Duration::from_millis(300));
-    let _ = bridge.poll_events();
+    let _ = bridge.poll();
 
     let terminal_backend = CrosstermBackend::new(&mut *out);
     let mut terminal = Terminal::new(terminal_backend).context("ratatui Terminal::new")?;
@@ -73,21 +76,22 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     term_mgr.forward_replies = is_direct_pty_terminal(runtime_type);
 
     // 首帧：立即渲染一次（不依赖事件）
-    let snap = FrameSnapshot::from_client(&bridge);
+    let snap = FrameSnapshot::from_client(bridge.client());
     let replies = sync_terminals(&mut term_mgr, &snap);
-    maybe_send_replies(&bridge, runtime_type, replies);
+    maybe_send_replies(bridge.client(), runtime_type, replies);
     draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
 
     // 每 50ms 事件轮询；仅当有实际状态变更时（事件非空 / 按键 / resize）才重绘，
     // 避免空轮询也做昂贵 snapshot+draw（拉取全部 pane 输出 + 全屏渲染）。
     loop {
-        let events = bridge.poll_events();
+        let events = bridge.poll();
         let mut needs_redraw = !events.is_empty();
         // 事件驱动喂增量：后端 `%output` 的字节顺序天然正确，即使累计缓冲因
         // 2MB 上限被截断，事件流也从不跳段，终端模拟器不会从 ANSI 序列中间
         // 开始解析。绝不在这里用累计输出重放历史（重放会重新生成旧查询应答，
         // 泄漏进 shell，也会在 tab 切换后把截断尾部渲染成乱码）。
-        for ev in &events {
+        for workspace_event in &events {
+            let ev = &workspace_event.event;
             match ev.kind() {
                 ClientEventKind::PaneOutput => {
                     term_mgr.feed_event(ev.pane_id, &ev.data);
@@ -130,8 +134,14 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     } else if is_quit(&key) {
                         break;
                     } else {
-                        let snap = FrameSnapshot::from_client(&bridge);
-                        if handle_key(&mut bridge, &key, &snap, &mut palette_open, &mut palette) {
+                        let snap = FrameSnapshot::from_client(bridge.client());
+                        if handle_key(
+                            bridge.client_mut(),
+                            &key,
+                            &snap,
+                            &mut palette_open,
+                            &mut palette,
+                        ) {
                             needs_redraw = true;
                         }
                     }
@@ -143,10 +153,11 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     let cols = c.saturating_sub(2).max(20);
                     let rows = r.saturating_sub(8).max(8);
                     if runtime_type != "local" {
-                        let _ = bridge.resize_client(cols, rows);
-                    } else if let Some(pane) = active_pane_id(&FrameSnapshot::from_client(&bridge))
+                        let _ = bridge.client().resize_client(cols, rows);
+                    } else if let Some(pane) =
+                        active_pane_id(&FrameSnapshot::from_client(bridge.client()))
                     {
-                        let _ = bridge.resize_pane(pane, cols, rows);
+                        let _ = bridge.client().resize_pane(pane, cols, rows);
                     }
                     needs_redraw = true;
                 }
@@ -156,9 +167,9 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
 
         // 仅在确有变化时重绘
         if needs_redraw {
-            let snap = FrameSnapshot::from_client(&bridge);
+            let snap = FrameSnapshot::from_client(bridge.client());
             let replies = sync_terminals(&mut term_mgr, &snap);
-            maybe_send_replies(&bridge, runtime_type, replies);
+            maybe_send_replies(bridge.client(), runtime_type, replies);
             draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
         }
     }
@@ -166,7 +177,7 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     // tmux/daemon 用显式 detach；local shell 没有 tmux client，直接由 Drop
     // 做普通 shutdown。FFI detach 失败时仍让 Drop 兜底，不能 panic。
     if matches!(runtime_type, "tmux" | "daemon") {
-        let _ = bridge.detach();
+        let _ = bridge.client().detach();
     }
     drop(bridge);
     Ok(())
@@ -305,7 +316,7 @@ fn is_quit(key: &KeyEvent) -> bool {
 fn handle_palette_key(
     palette: &mut PaletteState,
     key: &KeyEvent,
-    bridge: &mut FfiClient,
+    bridge: &mut EventPump,
     runtime_type: &mut &'static str,
     term_mgr: &mut TerminalManager,
     palette_open: &mut bool,
@@ -453,7 +464,7 @@ fn load_step_data(palette: &mut PaletteState) {
 
 /// 连接动作 → 替换共享 FFI client。
 fn reconnect(
-    bridge: &mut FfiClient,
+    bridge: &mut EventPump,
     runtime_kind: &mut &'static str,
     action: &ConnectAction,
     socket: Option<&str>,
@@ -497,11 +508,11 @@ fn reconnect(
         ssh_alias.as_deref(),
         start_dir.as_deref(),
     )?;
-    *bridge = new_bridge;
+    bridge.replace_client(new_bridge);
     *runtime_kind = runtime_type;
     // 等初始状态
     std::thread::sleep(Duration::from_millis(300));
-    let _ = bridge.poll_events();
+    let _ = bridge.poll();
     Ok(())
 }
 

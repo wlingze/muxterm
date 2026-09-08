@@ -16,6 +16,9 @@ pub mod url_opener;
 #[cfg(any(feature = "gtk", feature = "tui"))]
 pub mod ffi_client;
 
+#[cfg(any(feature = "gtk", feature = "tui"))]
+pub mod event_pump;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 
