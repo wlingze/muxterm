@@ -8,6 +8,7 @@
 
 pub mod cli;
 pub mod i18n;
+pub mod mirror;
 
 #[cfg(any(feature = "gtk", feature = "tui"))]
 pub mod ffi_client;
