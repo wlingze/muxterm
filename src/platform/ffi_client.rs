@@ -11,7 +11,8 @@ use std::ptr::{self, NonNull};
 
 use crate::ffi::{
     self, CLayoutNode, CPane, CStateChange, CTab, CTask, LAYOUT_LEAF, LAYOUT_SPLIT_H,
-    LAYOUT_SPLIT_V, STATE_BACKEND_STATUS,
+    LAYOUT_SPLIT_V, STATE_BACKEND_STATUS, STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT,
+    STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
 };
 
 const DISCOVERY_TIMEOUT_MS: u32 = 10_000;
@@ -29,6 +30,30 @@ pub struct ClientEvent {
     pub window_id: u32,
     pub data: Vec<u8>,
     pub name: String,
+}
+
+/// Product-level event kinds exposed to frontends instead of raw ABI numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientEventKind {
+    PaneOutput,
+    PaneFrame,
+    PaneSnapshot,
+    PaneClosed,
+    PaneResized,
+    Other(u32),
+}
+
+impl ClientEvent {
+    pub fn kind(&self) -> ClientEventKind {
+        match self.type_ {
+            STATE_PANE_OUTPUT => ClientEventKind::PaneOutput,
+            STATE_PANE_FRAME => ClientEventKind::PaneFrame,
+            STATE_PANE_SNAPSHOT => ClientEventKind::PaneSnapshot,
+            STATE_PANE_CLOSED => ClientEventKind::PaneClosed,
+            STATE_PANE_RESIZED => ClientEventKind::PaneResized,
+            type_ => ClientEventKind::Other(type_),
+        }
+    }
 }
 
 /// An owned layout tree copied from the C ABI node pool.
@@ -100,6 +125,18 @@ pub struct WorkspaceCandidate {
 pub struct FsEntry {
     pub name: String,
     pub is_dir: bool,
+}
+
+/// Frontend task intent translated to the C ABI inside [`FfiClient`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientTask {
+    NewTab,
+    SwitchTab { tab_id: u32 },
+    ClosePane { pane_id: u32 },
+    CloseTab { tab_id: u32 },
+    SplitPane { pane_id: u32, horizontal: bool },
+    NextPane,
+    PreviousPane,
 }
 
 /// Safe ownership boundary for one Core FFI handle.
@@ -177,6 +214,15 @@ impl FfiClient {
     /// the call and its optional name pointer is never retained by Core.
     pub fn execute(&self, task: &CTask) -> i32 {
         unsafe { ffi::muxterm_execute(self.handle.as_ptr(), task) }
+    }
+
+    /// Execute a frontend task after constructing its borrowed C DTO locally.
+    ///
+    /// Frontends should use this method instead of importing `CTask` and the
+    /// task constants from the public ABI module.
+    pub fn execute_task(&self, task: ClientTask) -> i32 {
+        let raw = task_to_ffi(task);
+        self.execute(&raw)
     }
 
     /// Explicitly detach the current control client.
@@ -535,6 +581,37 @@ unsafe fn clone_layout(node: &CLayoutNode) -> ClientLayout {
     }
 }
 
+fn task_to_ffi(task: ClientTask) -> CTask {
+    let (type_, target_pane, target_tab, dir) = match task {
+        ClientTask::NewTab => (ffi::TASK_NEW_TAB, 0, 0, 0),
+        ClientTask::SwitchTab { tab_id } => (ffi::TASK_SWITCH_TAB, 0, tab_id, 0),
+        ClientTask::ClosePane { pane_id } => (ffi::TASK_CLOSE_PANE, pane_id, 0, 0),
+        ClientTask::CloseTab { tab_id } => (ffi::TASK_CLOSE_TAB, 0, tab_id, 0),
+        ClientTask::SplitPane {
+            pane_id,
+            horizontal,
+        } => (
+            ffi::TASK_SPLIT_PANE,
+            pane_id,
+            0,
+            if horizontal {
+                ffi::DIR_HORIZONTAL
+            } else {
+                ffi::DIR_VERTICAL
+            },
+        ),
+        ClientTask::NextPane => (ffi::TASK_NEXT_PANE, 0, 0, 0),
+        ClientTask::PreviousPane => (ffi::TASK_PREV_PANE, 0, 0, 0),
+    };
+    CTask {
+        type_,
+        target_pane,
+        target_tab,
+        dir,
+        name: ptr::null(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +654,44 @@ mod tests {
                 first: Box::new(ClientLayout::Leaf { pane_id: 7 }),
                 second: Box::new(ClientLayout::Leaf { pane_id: 8 }),
             }
+        );
+    }
+
+    #[test]
+    fn frontend_tasks_translate_to_abi_without_exposing_ctask() {
+        let split = task_to_ffi(ClientTask::SplitPane {
+            pane_id: 9,
+            horizontal: false,
+        });
+        assert_eq!(split.type_, ffi::TASK_SPLIT_PANE);
+        assert_eq!(split.target_pane, 9);
+        assert_eq!(split.dir, ffi::DIR_VERTICAL);
+        assert!(split.name.is_null());
+
+        let tab = task_to_ffi(ClientTask::SwitchTab { tab_id: 4 });
+        assert_eq!(tab.type_, ffi::TASK_SWITCH_TAB);
+        assert_eq!(tab.target_tab, 4);
+        assert_eq!(tab.target_pane, 0);
+    }
+
+    #[test]
+    fn event_kind_hides_raw_state_constants_from_frontends() {
+        let event = ClientEvent {
+            type_: STATE_PANE_OUTPUT,
+            pane_id: 7,
+            tab_id: 0,
+            window_id: 0,
+            data: Vec::new(),
+            name: String::new(),
+        };
+        assert_eq!(event.kind(), ClientEventKind::PaneOutput);
+        assert_eq!(
+            ClientEvent {
+                type_: u32::MAX,
+                ..event
+            }
+            .kind(),
+            ClientEventKind::Other(u32::MAX)
         );
     }
 }

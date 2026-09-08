@@ -20,12 +20,9 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::ffi::{
-    STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT,
-};
-use crate::platform::ffi_client::FfiClient;
+use crate::platform::ffi_client::{ClientEventKind, ClientTask, FfiClient};
 use crate::platform::tui::emulate::Cell;
-use crate::platform::tui::ffi_bridge::{tasks, CoreBridge, FrameSnapshot};
+use crate::platform::tui::ffi_bridge::{CoreBridge, FrameSnapshot};
 use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
 use crate::platform::tui::mirror::should_forward_parser_response;
 use crate::platform::tui::palette::{
@@ -91,21 +88,21 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
         // 开始解析。绝不在这里用累计输出重放历史（重放会重新生成旧查询应答，
         // 泄漏进 shell，也会在 tab 切换后把截断尾部渲染成乱码）。
         for ev in &events {
-            match ev.type_ {
-                STATE_PANE_OUTPUT => {
+            match ev.kind() {
+                ClientEventKind::PaneOutput => {
                     term_mgr.feed_event(ev.pane_id, &ev.data);
                 }
-                STATE_PANE_FRAME => {
+                ClientEventKind::PaneFrame => {
                     term_mgr.feed_frame_event(ev.pane_id, &ev.data);
                 }
-                STATE_PANE_SNAPSHOT => {
+                ClientEventKind::PaneSnapshot => {
                     term_mgr.replace_snapshot(ev.pane_id, &ev.data);
                 }
-                STATE_PANE_CLOSED => {
+                ClientEventKind::PaneClosed => {
                     // 只有 pane 真正关闭才移除状态；切 tab 不调用 retain。
                     term_mgr.remove(ev.pane_id);
                 }
-                STATE_PANE_RESIZED if ev.data.len() >= 4 => {
+                ClientEventKind::PaneResized if ev.data.len() >= 4 => {
                     // data 携带 cols/rows（各 2 字节小端）
                     let cols = u16::from_le_bytes([ev.data[0], ev.data[1]]);
                     let rows = u16::from_le_bytes([ev.data[2], ev.data[3]]);
@@ -534,7 +531,7 @@ fn handle_key(
             let lower = c.to_ascii_lowercase();
             match lower {
                 't' => {
-                    let _ = bridge.execute(tasks::new_tab());
+                    let _ = bridge.execute_task(ClientTask::NewTab);
                     return true;
                 }
                 'p' => {
@@ -545,7 +542,9 @@ fn handle_key(
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
                     let n = lower.to_digit(10).unwrap() as usize;
                     if n <= snap.tabs.len() {
-                        let _ = bridge.execute(tasks::switch_tab(snap.tabs[n - 1].id));
+                        let _ = bridge.execute_task(ClientTask::SwitchTab {
+                            tab_id: snap.tabs[n - 1].id,
+                        });
                         return true;
                     }
                     return false;
@@ -553,25 +552,31 @@ fn handle_key(
                 'w' => {
                     let tab = snap.tabs.iter().find(|t| t.is_active).or(snap.tabs.first());
                     if let Some(t) = tab {
-                        let _ = bridge.execute(tasks::close_tab(t.id));
+                        let _ = bridge.execute_task(ClientTask::CloseTab { tab_id: t.id });
                         return true;
                     }
                     return false;
                 }
                 's' => {
-                    let _ = bridge.execute(tasks::split_h(target.unwrap_or(0)));
+                    let _ = bridge.execute_task(ClientTask::SplitPane {
+                        pane_id: target.unwrap_or(0),
+                        horizontal: true,
+                    });
                     return true;
                 }
                 'v' => {
-                    let _ = bridge.execute(tasks::split_v(target.unwrap_or(0)));
+                    let _ = bridge.execute_task(ClientTask::SplitPane {
+                        pane_id: target.unwrap_or(0),
+                        horizontal: false,
+                    });
                     return true;
                 }
                 '[' => {
-                    let _ = bridge.execute(tasks::prev_pane());
+                    let _ = bridge.execute_task(ClientTask::PreviousPane);
                     return true;
                 }
                 ']' => {
-                    let _ = bridge.execute(tasks::next_pane());
+                    let _ = bridge.execute_task(ClientTask::NextPane);
                     return true;
                 }
                 _ => {
