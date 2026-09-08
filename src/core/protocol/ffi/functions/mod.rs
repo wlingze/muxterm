@@ -8,6 +8,7 @@ pub mod handle;
 pub mod runtime;
 pub mod search;
 pub mod snapshot;
+pub(crate) mod support;
 pub mod task;
 pub mod transport;
 pub mod workspace;

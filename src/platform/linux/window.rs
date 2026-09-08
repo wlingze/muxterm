@@ -5448,8 +5448,7 @@ fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect:
     } else {
         ("ssh", connect.as_str())
     };
-    let sessions =
-        FfiClient::discover_workspaces(transport, Some(target), None).unwrap_or_default();
+    let sessions = FfiClient::discover_existing(transport, Some(target), None).unwrap_or_default();
     let items = tmux_dialog::connect_session_pick_items(&sessions, &connect);
     let st = state.clone();
     let win = parent.clone();

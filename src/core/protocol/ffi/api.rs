@@ -56,6 +56,10 @@ pub use super::functions::snapshot::{
     muxterm_pane_viewport, muxterm_pane_viewport_for_seq, muxterm_pane_visible_ansi,
     muxterm_set_pane_viewport,
 };
+pub use super::functions::support::MuxtermHandle;
+pub(crate) use super::functions::support::{
+    cstr_opt, discovery_timeout, json_error, json_string, resolve_c_io_pane,
+};
 pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{
     muxterm_execute, muxterm_execute_json, muxterm_report_all_pane_colours,
@@ -88,37 +92,7 @@ use super::types::{
     TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
-/// The C handle is one composed product session, not a runtime instance.
-pub type MuxtermHandle = crate::core::muxterm::Muxterm;
 pub(crate) use crate::core::muxterm::should_export_state_change;
-
-pub(crate) fn cstr_opt(p: *const c_char) -> Option<String> {
-    if p.is_null() {
-        return None;
-    }
-    unsafe { CStr::from_ptr(p) }
-        .to_str()
-        .ok()
-        .map(|s| s.to_string())
-}
-
-pub(crate) fn json_string(value: serde_json::Value) -> *mut c_char {
-    let text = value.to_string();
-    CString::new(text)
-        .map(CString::into_raw)
-        .unwrap_or(ptr::null_mut())
-}
-
-pub(crate) fn json_error(error: impl std::fmt::Display) -> *mut c_char {
-    json_string(serde_json::json!({
-        "ok": false,
-        "error": error.to_string(),
-    }))
-}
-
-pub(crate) fn discovery_timeout(timeout_ms: u32) -> std::time::Duration {
-    std::time::Duration::from_millis(u64::from(timeout_ms.clamp(100, 60_000)))
-}
 
 /// 初始化核心日志（macOS .app 由 Swift 在创建 CoreBridge 前调用）。
 ///
@@ -146,16 +120,6 @@ pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_
 pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
     if !value.is_null() {
         drop(CString::from_raw(value));
-    }
-}
-
-/// C ABI 中 `0` 既是历史上的 active-pane 哨兵，也可能是真实的 tmux pane id。
-/// 只有当前状态不存在 PaneId(0) 时才使用旧哨兵语义。
-pub(crate) fn resolve_c_io_pane(raw: u32, ws: &Workspace) -> Option<PaneId> {
-    if raw == 0 && ws.state().pane(&PaneId(0)).is_none() {
-        ws.state().active_pane().map(|p| p.id)
-    } else {
-        Some(PaneId(raw))
     }
 }
 
