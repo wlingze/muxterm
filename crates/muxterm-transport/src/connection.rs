@@ -290,7 +290,10 @@ impl ByteChannel for UnixSocketByteChannel {
     fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
         let mut buffer = [0u8; 8192];
         match self.stream.read(&mut buffer) {
-            Ok(0) => Ok(None),
+            Ok(0) => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Unix socket channel EOF",
+            )),
             Ok(size) => Ok(Some(buffer[..size].to_vec())),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
             Err(error) => Err(error),
@@ -457,6 +460,45 @@ mod tests {
                 .any(|window| window == b"socket-ready"),
             "Unix socket output did not arrive: {output:?}"
         );
+        channel.shutdown().expect("shutdown Unix socket channel");
+        server.join().expect("join Unix socket server");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_unix_socket_channel_reports_eof() {
+        use std::os::unix::net::UnixListener;
+
+        let path = std::env::temp_dir().join(format!(
+            "muxterm-transport-eof-{}-{}.sock",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind Unix socket");
+        let server = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept Unix socket");
+        });
+
+        let connection = Connect::new("local", "");
+        let mut channel = connection
+            .open_channel(ChannelRequest::UnixSocket { path: path.clone() })
+            .expect("open local Unix socket channel");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut eof = None;
+        while std::time::Instant::now() < deadline {
+            match channel.read() {
+                Err(error) => {
+                    eof = Some(error);
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+        let error = eof.expect("Unix socket EOF should be reported");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         channel.shutdown().expect("shutdown Unix socket channel");
         server.join().expect("join Unix socket server");
         let _ = std::fs::remove_file(path);
