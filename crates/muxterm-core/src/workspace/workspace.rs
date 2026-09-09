@@ -11,7 +11,7 @@ use crate::activity::attention::state::PaneStatus;
 use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
-use crate::runtime::Runtime;
+use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal};
 use crate::workspace::pane_buf::PaneBuf;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::WorkspaceTemplate;
@@ -195,18 +195,35 @@ impl Workspace {
 
     /// 拉取尚未消费的状态变更事件，并把 `PaneOutput` 喂进本工作区 pane 文本。
     pub fn take_events(&mut self) -> Vec<StateChange> {
-        let events = self.model.take_events();
-        self.feed_events(&events);
-        self.advance_template_application(&events);
-        events
+        self.take_batch().into_state_changes()
     }
 
     /// 先从 Runtime 拉取最新事件（异步输出），再取走并喂进本工作区副本。
     pub fn refresh(&mut self) -> Vec<StateChange> {
-        let events = self.model.refresh();
-        self.feed_events(&events);
-        self.advance_template_application(&events);
-        events
+        self.refresh_batch().into_state_changes()
+    }
+
+    /// 拉取待消费事件，以三条 lane 交付给 Pool。
+    pub fn take_batch(&mut self) -> RuntimeBatch {
+        let batch = self.model.take_batch();
+        self.feed_batch(&batch);
+        self.advance_template_application_for_batch(&batch);
+        batch
+    }
+
+    /// 刷新 Runtime，再以三条 lane 交付给 Pool。
+    pub fn refresh_batch(&mut self) -> RuntimeBatch {
+        let batch = self.model.refresh_batch();
+        self.feed_batch(&batch);
+        self.advance_template_application_for_batch(&batch);
+        batch
+    }
+
+    fn advance_template_application_for_batch(&mut self, batch: &RuntimeBatch) {
+        if self.template_application.is_some() {
+            let events = batch.clone().into_state_changes();
+            self.advance_template_application(&events);
+        }
     }
 
     fn advance_template_application(&mut self, events: &[StateChange]) {
@@ -492,112 +509,136 @@ impl Workspace {
         out
     }
 
-    /// 把事件流里的 pane 输出喂进本工作区 PaneBuf；pane 关闭时删除副本。
-    fn feed_events(&mut self, events: &[StateChange]) {
-        for event in events {
+    /// 把三条 lane 路由进本工作区的 Index/attention 副本。
+    ///
+    /// Control 先落地，随后处理 Runtime signal，再按 baseline → output
+    /// 消费 render data。Surface 不从这里读取 ANSI dump；它消费 FFI 的
+    /// `PaneFrame` / `PaneOutput` 原始字节。
+    fn feed_batch(&mut self, batch: &RuntimeBatch) {
+        let closed_panes: std::collections::HashSet<PaneId> = batch
+            .control
+            .iter()
+            .filter_map(|event| match event {
+                ControlEvent::PaneClosed { pane } => Some(*pane),
+                _ => None,
+            })
+            .collect();
+
+        for event in &batch.control {
             match event {
-                StateChange::PaneOutput { pane, data } => {
-                    let (cols, rows) = self
-                        .state()
-                        .pane(pane)
-                        .map(|p| (p.cols, p.rows))
-                        .unwrap_or((80, 24));
-                    let scrollback_lines = self.scrollback_lines;
-                    let buf = self.panes.entry(*pane).or_insert_with(|| {
-                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
-                    });
-                    buf.feed(data, cols, rows);
-                }
-                StateChange::PaneSnapshot { pane, data } => {
-                    let (cols, rows) = self
-                        .state()
-                        .pane(pane)
-                        .map(|p| (p.cols, p.rows))
-                        .unwrap_or((80, 24));
-                    let scrollback_lines = self.scrollback_lines;
-                    let buf = self.panes.entry(*pane).or_insert_with(|| {
-                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
-                    });
-                    buf.replace_snapshot(data, cols, rows);
-                }
-                StateChange::PaneIndexSnapshot { pane, data } => {
-                    let (cols, rows) = self
-                        .state()
-                        .pane(pane)
-                        .map(|p| (p.cols, p.rows))
-                        .unwrap_or((80, 24));
-                    let scrollback_lines = self.scrollback_lines;
-                    let buf = self.panes.entry(*pane).or_insert_with(|| {
-                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
-                    });
-                    // 无头 Index 快照（pane.read）：与 Surface snapshot 同语义
-                    // 替换 PaneBuf，但 platform 必须忽略，不 feed VTE。
-                    buf.replace_snapshot(data, cols, rows);
-                }
-                StateChange::PaneFrame { pane, data } => {
-                    let (cols, rows) = self
-                        .state()
-                        .pane(pane)
-                        .map(|p| (p.cols, p.rows))
-                        .unwrap_or((80, 24));
-                    let buf = self.panes.entry(*pane).or_insert_with(|| {
-                        PaneBuf::new(usize::from(cols), usize::from(rows), self.scrollback_lines)
-                    });
-                    buf.replace_frame(data, cols, rows);
-                }
-                StateChange::PaneHistory { pane, data } => {
-                    let lines: Vec<String> = String::from_utf8_lossy(data)
-                        .split('\n')
-                        .map(str::to_string)
-                        .collect();
-                    if lines.iter().all(|line| line.is_empty()) {
-                        continue;
-                    }
-                    let (cols, rows) = self
-                        .state()
-                        .pane(pane)
-                        .map(|p| (p.cols, p.rows))
-                        .unwrap_or((80, 24));
-                    let scrollback_lines = self.scrollback_lines;
-                    let buf = self.panes.entry(*pane).or_insert_with(|| {
-                        PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
-                    });
-                    buf.prepend_history(&lines);
-                }
-                StateChange::PaneClosed { pane } => {
+                ControlEvent::PaneClosed { pane } => {
                     self.panes.remove(pane);
                     self.agents.remove(pane);
                     self.runtime_attention.remove(pane);
                 }
-                StateChange::PaneAgentChanged {
-                    pane,
-                    agent,
-                    initial,
-                } => {
-                    let signal = match agent {
-                        Some(agent) => {
-                            self.agents.insert(*pane, agent.as_ref().clone());
-                            AttentionSignal::AuthoritativeStatus {
-                                status: pane_agent_status(agent.status),
-                                initial: *initial,
-                            }
-                        }
-                        None => {
-                            self.agents.remove(pane);
-                            AttentionSignal::ClearAuthoritativeStatus
-                        }
-                    };
-                    self.runtime_attention
-                        .entry(*pane)
-                        .or_default()
-                        .push(signal);
-                }
-                StateChange::WorkspaceRenamed { name } => {
-                    self.name.clone_from(name);
-                }
+                ControlEvent::WorkspaceRenamed { name } => self.name.clone_from(name),
                 _ => {}
             }
         }
+
+        for event in &batch.signals {
+            if let RuntimeSignal::PaneAgentChanged {
+                pane,
+                agent,
+                initial,
+            } = event
+            {
+                let signal = match agent {
+                    Some(agent) => {
+                        self.agents.insert(*pane, agent.as_ref().clone());
+                        AttentionSignal::AuthoritativeStatus {
+                            status: pane_agent_status(agent.status),
+                            initial: *initial,
+                        }
+                    }
+                    None => {
+                        self.agents.remove(pane);
+                        AttentionSignal::ClearAuthoritativeStatus
+                    }
+                };
+                self.runtime_attention
+                    .entry(*pane)
+                    .or_default()
+                    .push(signal);
+            }
+        }
+
+        for event in &batch.render {
+            if !matches!(event, RenderEvent::PaneOutput { .. }) {
+                self.feed_render_event(event, &closed_panes);
+            }
+        }
+        for event in &batch.render {
+            if matches!(event, RenderEvent::PaneOutput { .. }) {
+                self.feed_render_event(event, &closed_panes);
+            }
+        }
+    }
+
+    fn feed_render_event(
+        &mut self,
+        event: &RenderEvent,
+        closed_panes: &std::collections::HashSet<PaneId>,
+    ) {
+        let (pane, data) = match event {
+            RenderEvent::PaneOutput { pane, data }
+            | RenderEvent::PaneSnapshot { pane, data }
+            | RenderEvent::PaneFrame { pane, data }
+            | RenderEvent::PaneIndexSnapshot { pane, data }
+            | RenderEvent::PaneHistory { pane, data } => (*pane, data.as_slice()),
+        };
+        if closed_panes.contains(&pane) {
+            return;
+        }
+        let (cols, rows) = self
+            .state()
+            .pane(&pane)
+            .map(|p| (p.cols, p.rows))
+            .unwrap_or((80, 24));
+        match event {
+            RenderEvent::PaneOutput { .. } => {
+                let scrollback_lines = self.scrollback_lines;
+                let buf = self.panes.entry(pane).or_insert_with(|| {
+                    PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
+                });
+                buf.feed(data, cols, rows);
+            }
+            RenderEvent::PaneSnapshot { .. } | RenderEvent::PaneIndexSnapshot { .. } => {
+                let scrollback_lines = self.scrollback_lines;
+                let buf = self.panes.entry(pane).or_insert_with(|| {
+                    PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
+                });
+                // PaneIndexSnapshot 只更新 Core Index；platform 明确忽略它，
+                // 不把它当成 live Surface baseline。
+                buf.replace_snapshot(data, cols, rows);
+            }
+            RenderEvent::PaneFrame { .. } => {
+                let buf = self.panes.entry(pane).or_insert_with(|| {
+                    PaneBuf::new(usize::from(cols), usize::from(rows), self.scrollback_lines)
+                });
+                buf.replace_frame(data, cols, rows);
+            }
+            RenderEvent::PaneHistory { .. } => {
+                let lines: Vec<String> = String::from_utf8_lossy(data)
+                    .split('\n')
+                    .map(str::to_string)
+                    .collect();
+                if lines.iter().all(|line| line.is_empty()) {
+                    return;
+                }
+                let scrollback_lines = self.scrollback_lines;
+                let buf = self.panes.entry(pane).or_insert_with(|| {
+                    PaneBuf::new(usize::from(cols), usize::from(rows), scrollback_lines)
+                });
+                buf.prepend_history(&lines);
+            }
+        }
+    }
+
+    /// Compatibility helper for tests and old Core callers.
+    fn feed_events(&mut self, events: &[StateChange]) {
+        let batch = RuntimeBatch::from_state_changes(events.iter().cloned());
+        self.feed_batch(&batch);
     }
 }
 
@@ -743,6 +784,32 @@ mod tests {
         }]);
         let raw = w.pane_raw_bytes(PaneId(1));
         assert!(raw.ends_with(b"WORKSPACE_FULL_TWO_DIFF"));
+    }
+
+    #[test]
+    fn lane_batch_applies_frame_before_interleaved_output() {
+        let mut w = workspace("lane-order");
+        let batch = RuntimeBatch {
+            render: vec![
+                RenderEvent::PaneOutput {
+                    pane: PaneId(1),
+                    data: b"_OUTPUT".to_vec(),
+                },
+                RenderEvent::PaneFrame {
+                    pane: PaneId(1),
+                    data: b"\x1b[2J\x1b[HBASELINE".to_vec(),
+                },
+            ],
+            ..RuntimeBatch::default()
+        };
+
+        w.feed_batch(&batch);
+
+        assert_eq!(
+            w.pane_raw_bytes(PaneId(1)),
+            b"\x1b[2J\x1b[HBASELINE_OUTPUT",
+            "frame must establish the baseline before incremental output"
+        );
     }
 
     /// W3：PaneIndexSnapshot 替换 Index（可搜索），不等价于 PaneFrame。
