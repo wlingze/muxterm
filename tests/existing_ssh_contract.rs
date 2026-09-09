@@ -24,6 +24,7 @@ use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::quickconnect::model::TargetRuntime;
 use muxterm::test_support::core::runtime::herdr::session::HerdrAgentStatus;
 use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
@@ -612,7 +613,8 @@ fn catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list() {
     }
     let _env = EnvGuard;
 
-    let mut cat = Catalog::with_builtins();
+    let cat = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
     let runtimes: Vec<String> = cat.runtime_list().into_iter().map(|r| r.id).collect();
     assert_eq!(
         runtimes,
@@ -635,7 +637,7 @@ fn catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list() {
 
     let t0 = Instant::now();
     let sessions = cat
-        .discover_sessions("ssh", "local")
+        .discover_sessions(&mut connections, "ssh", "local")
         .expect("ssh Host local 列出不应 Err");
     let elapsed = t0.elapsed();
     assert!(
@@ -653,7 +655,7 @@ fn catalog_ssh_host_named_local_lists_isolated_tmux_and_runtime_list() {
     );
 
     let local_sessions = cat
-        .discover_sessions("local", "")
+        .discover_sessions(&mut connections, "local", "")
         .expect("local transport 列出不应 Err");
     assert!(
         local_sessions.iter().all(|s| s.transport_id == "local"),
@@ -699,9 +701,10 @@ fn catalog_all_lists_local_and_ssh_self_duplicates() {
     }
     let _env = EnvGuard;
 
-    let mut cat = Catalog::with_builtins();
+    let cat = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
     let sessions = cat
-        .discover_sessions("all", "")
+        .discover_sessions(&mut connections, "all", "")
         .expect("discover_sessions(all) 不应 Err");
     assert!(
         sessions.iter().any(|s| {

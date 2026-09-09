@@ -203,10 +203,12 @@ mod tests {
     use crate::runtime::shell::ShellRuntime;
     use crate::runtime::tmux::backend::TmuxRuntime;
     use crate::runtime::tmux::client::ConnectMode;
+    use crate::transport::registry::ConnectionRegistry;
 
     fn new_runtime(spec: &WorkspaceSpec) -> Box<dyn crate::runtime::Runtime> {
+        let mut connections = ConnectionRegistry::new();
         Catalog::with_builtins()
-            .new_runtime(spec)
+            .new_runtime(&mut connections, spec)
             .expect("built-in provider must construct the runtime")
     }
 
@@ -316,7 +318,10 @@ mod tests {
             provenance: None,
             template: None,
         };
-        let err = Catalog::with_builtins().new_runtime(&spec).err();
+        let mut connections = ConnectionRegistry::new();
+        let err = Catalog::with_builtins()
+            .new_runtime(&mut connections, &spec)
+            .err();
         assert!(
             err.as_ref()
                 .is_some_and(|error| error.to_string().contains("unknown runtime")),

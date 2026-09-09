@@ -19,6 +19,7 @@ use muxterm::test_support::core::protocol::state::{MutationResult, StateChange};
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use muxterm::test_support::core::workspace::workspace::Workspace;
@@ -365,9 +366,10 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         ),
         other => anyhow::bail!("未知 transport {other}"),
     };
-    let mut catalog = Catalog::with_builtins();
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
     let mut pool = WorkspacePool::default();
-    let runtime = catalog.new_runtime(&spec)?;
+    let runtime = catalog.new_runtime(&mut connections, &spec)?;
     let workspace = rt.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
     wait_until(workspace, "初始 Herdr tab/pane", |ws| {
         ws.state().tabs().len() == 1 && ws.state().active_pane().is_some()

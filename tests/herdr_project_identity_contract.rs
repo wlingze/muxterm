@@ -17,6 +17,7 @@ use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::quickconnect::model::{
     TargetConfig, TargetRuntime, TargetTransport,
 };
+use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
@@ -59,9 +60,10 @@ fn local_project_reload_matches_existing_identity() {
         "HERDR_SOCKET_PATH",
         herdr.socket_path().to_string_lossy().to_string(),
     );
-    let mut catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
+    let catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
     let resolved = catalog
-        .resolve_target(&existing, ResolveIntent::AttachOnly)
+        .resolve_target(&mut connections, &existing, ResolveIntent::AttachOnly)
         .expect("AttachOnly 必须命中已存在 workspace");
     assert_eq!(resolved.workspace_id(), spec_a.id());
     assert_eq!(
@@ -90,17 +92,18 @@ fn local_attach_only_never_creates_and_create_requires_running_session() {
         session: Some("w6-never-started".into()),
         workspace_id: None,
     };
-    let mut catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
+    let catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
     let err = catalog
-        .resolve_target(&missing, ResolveIntent::AttachOnly)
+        .resolve_target(&mut connections, &missing, ResolveIntent::AttachOnly)
         .expect_err("AttachOnly 无匹配必须失败");
     assert!(
-        err.to_string().contains("无匹配"),
+        err.to_string().contains("没有匹配"),
         "AttachOnly 错误应说明无匹配: {err}"
     );
     // CreateIfMissing 无 socket → choice-required，不能偷偷换 default。
     let err = catalog
-        .resolve_target(&missing, ResolveIntent::CreateIfMissing)
+        .resolve_target(&mut connections, &missing, ResolveIntent::CreateIfMissing)
         .expect_err("CreateIfMissing 无显式 socket 必须失败");
     assert!(
         err.to_string().contains("socket"),
@@ -129,16 +132,21 @@ fn ssh_herdr_attach_only_never_creates() {
         session: Some("default".into()),
         workspace_id: Some("w1".into()),
     };
-    let mut catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
+    let catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
     let err = catalog
-        .resolve_target(&ssh_target, ResolveIntent::AttachOnly)
+        .resolve_target(&mut connections, &ssh_target, ResolveIntent::AttachOnly)
         .expect_err("SSH 未命中必须失败（零创建命令）");
     assert!(
         err.to_string().contains("无匹配") || err.to_string().contains("AttachOnly"),
         "SSH AttachOnly 错误语义: {err}"
     );
     let err = catalog
-        .resolve_target(&ssh_target, ResolveIntent::CreateIfMissing)
+        .resolve_target(
+            &mut connections,
+            &ssh_target,
+            ResolveIntent::CreateIfMissing,
+        )
         .expect_err("SSH CreateIfMissing 必须禁止创建命令");
     assert!(
         err.to_string().contains("SSH"),

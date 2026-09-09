@@ -37,9 +37,8 @@ pub struct Muxterm {
     pub(crate) connections: ConnectionRegistry,
     /// The single live WorkspacePool owned by the product session.
     ///
-    /// Catalog keeps a compatibility pool only for standalone catalog tests and
-    /// legacy callers. FFI handles move that pool here during construction so
-    /// the production handle has exactly one live runtime owner.
+    /// The product root owns the live runtime instances and the reusable
+    /// target connections used to construct them.
     pub(crate) pool: WorkspacePool,
     /// Core-owned Project records projected from the same SettingsService.
     pub(crate) projects: ProjectsService,
@@ -104,7 +103,7 @@ impl Muxterm {
             .as_ref()
             .and_then(|name| catalog.template_registry().get(name))
             .cloned();
-        let runtime = catalog.new_runtime_with_connections(connections, spec)?;
+        let runtime = catalog.new_runtime(connections, spec)?;
         let workspace = pool
             .open_spec_with_runtime(spec, runtime)
             .await
@@ -175,6 +174,7 @@ impl Muxterm {
             .filter_map(|workspace| workspace.resolved_target().cloned())
             .collect();
         self.catalog.resolve_open_request_with_recent(
+            &mut self.connections,
             request,
             self.projects.list_projects(),
             &recent,
@@ -188,7 +188,9 @@ impl Muxterm {
         config: &crate::quickconnect::model::TargetConfig,
         intent: ResolveIntent,
     ) -> anyhow::Result<&mut Workspace> {
-        let resolved = self.catalog.resolve_target(config, intent)?;
+        let resolved = self
+            .catalog
+            .resolve_target(&mut self.connections, config, intent)?;
         self.open_resolved(resolved).await
     }
 

@@ -152,11 +152,12 @@ fn mock_spec(runtime: &str, transport: &str, alias: Option<&str>, session: &str)
 }
 
 async fn open_in_pool<'a>(
-    catalog: &mut Catalog,
+    catalog: &Catalog,
+    connections: &mut ConnectionRegistry,
     pool: &'a mut WorkspacePool,
     spec: &WorkspaceSpec,
 ) -> anyhow::Result<&'a mut crate::workspace::workspace::Workspace> {
-    catalog.open_spec(pool, spec).await
+    catalog.open_spec(connections, pool, spec).await
 }
 
 #[test]
@@ -266,8 +267,9 @@ fn discover_sessions_fans_out_and_skips_driver_error() {
         list_err: true,
         opened: Arc::new(AtomicUsize::new(0)),
     }));
+    let mut connections = ConnectionRegistry::new();
     let rows = cat
-        .discover_sessions("local", "")
+        .discover_sessions(&mut connections, "local", "")
         .expect("扇出不应因单个 Driver 失败");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "mux");
@@ -277,6 +279,7 @@ fn discover_sessions_fans_out_and_skips_driver_error() {
 #[test]
 fn connect_reuses_arc_for_same_target() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     let n = Arc::new(AtomicUsize::new(0));
     cat.register_transport(Box::new(MockTransport {
         id: "ssh",
@@ -285,8 +288,8 @@ fn connect_reuses_arc_for_same_target() {
         fail: false,
         targets: vec![TargetInfo::new("ryzen", "ryzen")],
     }));
-    let a = cat.connect("ssh", "ryzen").unwrap();
-    let b = cat.connect("ssh", "ryzen").unwrap();
+    let a = cat.connect(&mut connections, "ssh", "ryzen").unwrap();
+    let b = cat.connect(&mut connections, "ssh", "ryzen").unwrap();
     assert!(Arc::ptr_eq(&a, &b));
     assert_eq!(n.load(Ordering::SeqCst), 1);
 }
@@ -294,6 +297,7 @@ fn connect_reuses_arc_for_same_target() {
 #[tokio::test]
 async fn two_opens_same_target_share_one_connect() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     let n = Arc::new(AtomicUsize::new(0));
     cat.register_transport(Box::new(MockTransport {
         id: "ssh",
@@ -313,14 +317,16 @@ async fn two_opens_same_target_share_one_connect() {
     }));
     let mut pool = WorkspacePool::default();
     open_in_pool(
-        &mut cat,
+        &cat,
+        &mut connections,
         &mut pool,
         &mock_spec("tmux", "ssh", Some("ryzen"), "a"),
     )
     .await
     .unwrap();
     open_in_pool(
-        &mut cat,
+        &cat,
+        &mut connections,
         &mut pool,
         &mock_spec("tmux", "ssh", Some("ryzen"), "b"),
     )
@@ -356,12 +362,12 @@ async fn external_connection_registry_reuses_target_across_runtime_builds() {
     }));
     let mut connections = ConnectionRegistry::new();
 
-    cat.new_runtime_with_connections(
+    cat.new_runtime(
         &mut connections,
         &mock_spec("mockrt", "ssh", Some("ryzen"), "first"),
     )
     .unwrap();
-    cat.new_runtime_with_connections(
+    cat.new_runtime(
         &mut connections,
         &mock_spec("mockrt", "ssh", Some("ryzen"), "second"),
     )
@@ -374,6 +380,7 @@ async fn external_connection_registry_reuses_target_across_runtime_builds() {
 #[tokio::test]
 async fn open_rejects_unknown_runtime() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     cat.register_transport(Box::new(MockTransport {
         id: "local",
         name: "Local",
@@ -382,7 +389,7 @@ async fn open_rejects_unknown_runtime() {
         targets: vec![],
     }));
     let err = cat
-        .new_runtime(&mock_spec("unknown", "local", None, "x"))
+        .new_runtime(&mut connections, &mock_spec("unknown", "local", None, "x"))
         .map(|_| ())
         .expect_err("未知 runtime 必须 Err");
     assert!(
@@ -394,6 +401,7 @@ async fn open_rejects_unknown_runtime() {
 #[tokio::test]
 async fn open_uses_provider_not_spec_factory() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     let opened = Arc::new(AtomicUsize::new(0));
     cat.register_transport(Box::new(MockTransport {
         id: "local",
@@ -413,7 +421,8 @@ async fn open_uses_provider_not_spec_factory() {
     }));
     let mut pool = WorkspacePool::default();
     let ws = open_in_pool(
-        &mut cat,
+        &cat,
+        &mut connections,
         &mut pool,
         &mock_spec("mockrt", "local", None, "demo"),
     )
@@ -454,8 +463,13 @@ async fn open_resolved_uses_canonical_workspace_name() {
         workspace_id: Some("w2".into()),
     };
     let mut pool = WorkspacePool::default();
+    let mut connections = ConnectionRegistry::new();
     let ws = cat
-        .open_resolved(&mut pool, ResolvedTarget { canonical, spec })
+        .open_resolved(
+            &mut connections,
+            &mut pool,
+            ResolvedTarget { canonical, spec },
+        )
         .await
         .unwrap();
 
@@ -465,6 +479,7 @@ async fn open_resolved_uses_canonical_workspace_name() {
 #[test]
 fn refresh_inventory_marks_unreachable_without_opening() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     cat.register_transport(Box::new(MockTransport {
         id: "ssh",
         name: "SSH",
@@ -481,7 +496,8 @@ fn refresh_inventory_marks_unreachable_without_opening() {
         list_err: false,
         opened: Arc::new(AtomicUsize::new(0)),
     }));
-    cat.refresh_inventory().expect("探活失败不应 panic");
+    cat.refresh_inventory(&mut connections)
+        .expect("探活失败不应 panic");
     assert_eq!(
         cat.inventory_snapshot().reach("ssh", "dead"),
         Some(Reach::Err)
@@ -502,7 +518,7 @@ fn pool_must_not_hold_herdr_sessions_sidecar() {
     let src = include_str!("../workspace/pool.rs");
     assert!(
         !src.contains("herdr_sessions"),
-        "WorkspacePool 不再持有 herdr_sessions；Connect 表在 Catalog"
+        "WorkspacePool 不再持有 herdr_sessions；Connect 表由调用方持有"
     );
 }
 
@@ -530,6 +546,7 @@ fn tmux_driver_list_honors_test_local_socket_env() {
 #[test]
 fn discover_sessions_all_fans_out_local_and_ssh_targets() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     cat.register_transport(Box::new(MockTransport {
         id: "local",
         name: "Local",
@@ -561,7 +578,9 @@ fn discover_sessions_all_fans_out_local_and_ssh_targets() {
         list_err: false,
         opened: Arc::new(AtomicUsize::new(0)),
     }));
-    let rows = cat.discover_sessions("all", "").expect("all 不应 Err");
+    let rows = cat
+        .discover_sessions(&mut connections, "all", "")
+        .expect("all 不应 Err");
     assert!(
         rows.iter().any(|s| {
             s.runtime_id == "tmux" && s.transport_id == "local" && s.name == "mux-dup"
@@ -653,7 +672,10 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
         max_active: max_active.clone(),
     }));
 
-    let rows = cat.discover_sessions("all", "").expect("all 不应 Err");
+    let mut connections = ConnectionRegistry::new();
+    let rows = cat
+        .discover_sessions(&mut connections, "all", "")
+        .expect("all 不应 Err");
     assert_eq!(rows.len(), 5, "local + 4 SSH host 都必须返回: {rows:?}");
     assert!(
         max_active.load(Ordering::SeqCst) >= 2,
@@ -664,6 +686,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
 #[tokio::test]
 async fn incompatible_channel_requirements_are_rejected_without_fallback() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     cat.register_transport(Box::new(MockTransport {
         id: "exec-only",
         name: "Exec only",
@@ -673,7 +696,10 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
     }));
     cat.register_runtime(Box::new(UnixSocketOnlyDriver));
 
-    let result = cat.new_runtime(&mock_spec("unix-only", "exec-only", None, ""));
+    let result = cat.new_runtime(
+        &mut connections,
+        &mock_spec("unix-only", "exec-only", None, ""),
+    );
     assert!(
         result.is_err(),
         "UnixSocket runtime must not silently fall back to Exec"
@@ -708,7 +734,8 @@ fn candidate_resolver_maps_project_and_worktree_provenance() {
         ))
         .unwrap();
     let projects = vec![project];
-    let mut catalog = Catalog::new();
+    let catalog = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
 
     let project_request = OpenRequest {
         candidate: CandidateRef::Project {
@@ -719,7 +746,7 @@ fn candidate_resolver_maps_project_and_worktree_provenance() {
         activate: true,
     };
     let resolved_project = catalog
-        .resolve_open_request(&project_request, &projects)
+        .resolve_open_request(&mut connections, &project_request, &projects)
         .unwrap();
     assert_eq!(
         resolved_project
@@ -750,7 +777,7 @@ fn candidate_resolver_maps_project_and_worktree_provenance() {
         activate: true,
     };
     let resolved_worktree = catalog
-        .resolve_open_request(&worktree_request, &projects)
+        .resolve_open_request(&mut connections, &worktree_request, &projects)
         .unwrap();
     let provenance = resolved_worktree.spec.provenance.as_ref().unwrap();
     assert_eq!(
@@ -771,6 +798,7 @@ fn candidate_resolver_maps_project_and_worktree_provenance() {
 #[test]
 fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
     let mut catalog = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     catalog.register_transport(Box::new(MockTransport {
         id: "local",
         name: "Local",
@@ -813,7 +841,9 @@ fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
         template: None,
         activate: true,
     };
-    let resolved = catalog.resolve_open_request(&request, &[]).unwrap();
+    let resolved = catalog
+        .resolve_open_request(&mut connections, &request, &[])
+        .unwrap();
     assert_eq!(resolved.canonical.name, "display-name");
     assert_eq!(resolved.spec.session, "demo");
     assert_eq!(
@@ -838,7 +868,7 @@ fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
         activate: true,
     };
     let resolved_all_view = catalog
-        .resolve_open_request(&all_view_request, &[])
+        .resolve_open_request(&mut connections, &all_view_request, &[])
         .unwrap();
     assert_eq!(resolved_all_view.canonical.name, "display-name");
 }
@@ -862,6 +892,7 @@ fn single_pane_template() -> WorkspaceTemplate {
 #[tokio::test]
 async fn catalog_applies_templates_only_to_create_specs() {
     let mut cat = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     cat.register_transport(Box::new(MockTransport {
         id: "local",
         name: "Local",
@@ -885,7 +916,9 @@ async fn catalog_applies_templates_only_to_create_specs() {
     attach.template = Some(template_name.clone());
     let attach_id = attach.id();
     let mut pool = WorkspacePool::default();
-    open_in_pool(&mut cat, &mut pool, &attach).await.unwrap();
+    open_in_pool(&cat, &mut connections, &mut pool, &attach)
+        .await
+        .unwrap();
     assert!(
         pool.get(&attach_id)
             .unwrap()
@@ -898,7 +931,9 @@ async fn catalog_applies_templates_only_to_create_specs() {
     create.create = true;
     create.template = Some(template_name);
     let create_id = create.id();
-    open_in_pool(&mut cat, &mut pool, &create).await.unwrap();
+    open_in_pool(&cat, &mut connections, &mut pool, &create)
+        .await
+        .unwrap();
     let report = pool
         .get(&create_id)
         .unwrap()
@@ -913,7 +948,8 @@ async fn catalog_applies_templates_only_to_create_specs() {
 async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
     use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 
-    let mut catalog = Catalog::new();
+    let catalog = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
     let spec = WorkspaceSpec::local_shell("/repo");
     let workspace_id = spec.id();
     let mut pool = WorkspacePool::default();
@@ -948,7 +984,7 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
         .into_iter()
         .collect::<Vec<_>>();
     let resolved = catalog
-        .resolve_open_request_with_recent(&request, &[], &recent)
+        .resolve_open_request_with_recent(&mut connections, &request, &[], &recent)
         .unwrap();
     assert_eq!(resolved.spec, spec);
     assert_eq!(resolved.canonical.name, "Recent Project");
