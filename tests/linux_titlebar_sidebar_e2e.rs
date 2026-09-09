@@ -10,9 +10,9 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Paned, Revealer, ToggleButton, Widget};
 
-use muxterm::test_support::core::attention::state::PaneStatus;
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::ffi_client::ClientAttentionStatus;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
 use support::linux_gtk::*;
@@ -375,7 +375,7 @@ fn title_bar_actions_and_workspace_sidebar() {
         assert!(!hidden_command.is_visible());
         hidden_command_section_toggle.set_active(false);
 
-        app.test_set_agent_attention(1, "codex", PaneStatus::Working);
+        app.test_set_agent_attention(1, "codex", ClientAttentionStatus::Working);
         pump_main_loop(100);
         assert_eq!(
             count_widget_names(&agent_list, "muxterm-sidebar-agent-row"),
@@ -393,7 +393,7 @@ fn title_bar_actions_and_workspace_sidebar() {
             "a pane classified as an agent must not be duplicated under Commands"
         );
 
-        app.test_set_agent_attention(1, "codex", PaneStatus::Blocked);
+        app.test_set_agent_attention(1, "codex", ClientAttentionStatus::Blocked);
         pump_main_loop(100);
         let row = agent_list.row_at_index(0).expect("blocked agent row");
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("blocked status dot");
@@ -409,7 +409,7 @@ fn title_bar_actions_and_workspace_sidebar() {
             "read agent must remain listed without creating a status point"
         );
 
-        app.test_set_agent_attention(1, "codex", PaneStatus::Done);
+        app.test_set_agent_attention(1, "codex", ClientAttentionStatus::Done);
         pump_main_loop(100);
         let row = agent_list.row_at_index(0).expect("finished agent row");
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("finished status dot");
