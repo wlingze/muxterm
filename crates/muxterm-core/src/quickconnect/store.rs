@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::model::{QuickConnect, TargetConfig};
+use crate::config::ProjectDocument;
 
 /// QuickConnect 数据存储。
 #[derive(Debug, Clone, Default)]
@@ -36,7 +37,7 @@ impl QuickConnectStore {
     /// The GTK project editor can then update the list without opening the
     /// configuration file itself; the caller persists the resulting records
     /// through the public configuration transaction API.
-    pub fn from_project_documents(projects: &[crate::config_service::ProjectDocument]) -> Self {
+    pub fn from_project_documents(projects: &[ProjectDocument]) -> Self {
         let mut store = Self::in_memory();
         for project in projects {
             let Ok(target) = project.to_target() else {
@@ -51,11 +52,11 @@ impl QuickConnectStore {
     }
 
     /// Convert the in-memory editor list back to Core-owned project records.
-    pub fn project_documents(&self) -> Vec<crate::config_service::ProjectDocument> {
+    pub fn project_documents(&self) -> Vec<ProjectDocument> {
         self.projects
             .iter()
             .map(|config| {
-                let mut project = crate::config_service::ProjectDocument::from_target(config);
+                let mut project = ProjectDocument::from_target(config);
                 if let Some(project_id) = self.project_ids.get(&QuickConnect::unique_id(config)) {
                     project.id.clone_from(project_id);
                 }
@@ -138,7 +139,7 @@ impl QuickConnectStore {
             .project_ids
             .get(&id)
             .cloned()
-            .unwrap_or_else(|| crate::config_service::ProjectDocument::from_target(config).id);
+            .unwrap_or_else(|| ProjectDocument::from_target(config).id);
         self.project_ids.insert(id.clone(), project_id);
         let added = if let Some(idx) = self
             .projects
@@ -177,7 +178,7 @@ impl QuickConnectStore {
             self.projects
                 .iter()
                 .map(|config| {
-                    let mut project = crate::config_service::ProjectDocument::from_target(config);
+                    let mut project = ProjectDocument::from_target(config);
                     if let Some(project_id) = self.project_ids.get(&QuickConnect::unique_id(config))
                     {
                         project.id.clone_from(project_id);

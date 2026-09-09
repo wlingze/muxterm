@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::config_service::{ProjectDocument, ProjectRuntime, ProjectTransport};
+use crate::config::{ProjectDocument, ProjectRuntime, ProjectTransport};
 use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 
 impl ProjectDocument {

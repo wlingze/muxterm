@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 
-use crate::config_service::schema::{ProjectDocument, ProjectRuntime, ProjectTransport};
+use crate::config::{ProjectDocument, ProjectRuntime, ProjectTransport};
 pub fn import_legacy_projects(raw: &str) -> Result<Vec<ProjectDocument>> {
     let root: toml::Value = raw.parse().context("旧 QuickConnect TOML 解析失败")?;
     let Some(items) = root.get("projects").and_then(toml::Value::as_array) else {

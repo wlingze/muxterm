@@ -119,7 +119,8 @@ fn validate_project(project: &Project) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config_service::{ConfigDocument, SettingsService};
+    use crate::config::ConfigDocument;
+    use crate::config_service::SettingsService;
     use crate::projects::Project;
     use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
     use std::fs;
