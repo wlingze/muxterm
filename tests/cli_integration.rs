@@ -12,7 +12,7 @@ use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::runtime::ShellRuntime;
 use muxterm::test_support::core::types::{PaneId, TabId};
 use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
-use muxterm::test_support::platform::cli::entry::cli_command_to_task;
+use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
 use muxterm::test_support::platform::cli::{
     format_output, parse_cli_command, CliCommand, OutputFormat,
 };
