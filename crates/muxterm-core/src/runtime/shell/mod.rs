@@ -43,6 +43,7 @@ use crate::transport::{
 use crate::types::{PaneId, TabId};
 
 pub mod daemon;
+pub mod daemon_client;
 pub mod provider;
 
 /// 默认字符格尺寸。
