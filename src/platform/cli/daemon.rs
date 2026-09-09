@@ -17,9 +17,9 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
+use crate::core::runtime::shell::daemon::cli_command_to_task;
 use crate::core::runtime::shell::ShellRuntime;
 use crate::core::workspace::terminal_model::TerminalModel;
-use crate::platform::cli::entry::cli_command_to_task;
 use crate::platform::cli::format_output;
 use crate::platform::cli::ipc::{Request, Response};
 
@@ -183,19 +183,19 @@ fn execute_request(req: &Request, state: &Arc<Mutex<DaemonState>>) -> Response {
     let mut st = state.lock().unwrap();
 
     // 先从 backend 拉取最新事件（pty 输出等）
-    let _ = st.model.refresh();
+    let mut events = st.model.refresh();
 
     // 操作类命令转成 Task 执行
     if let Some(task) = cli_command_to_task(&req.command, st.model.state()) {
         if let Err(e) = st.model.execute(task) {
             return Response::err(format!("执行失败: {e}"));
         }
-        let _ = st.model.refresh();
+        events.extend(st.model.refresh());
     }
 
     // 格式化输出
     let output = format_output(st.model.state(), &req.command, req.format);
-    Response::ok(output)
+    Response::ok_with_events(output, events)
 }
 
 /// 简易 ctrl-c handler：安装 SIGINT/SIGTERM handler 设置 flag。
